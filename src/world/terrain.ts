@@ -1,0 +1,290 @@
+import { flattenHeightForAirport, getAirportInfluence, isPointOnRunway } from "./airport";
+import { clamp, fbm2D, lerp, ridgedFbm2D, saturate, smoothstep, valueNoise2D } from "./noise";
+import { mixSeed } from "./seed";
+import {
+  TERRAIN_BIOME_NAMES,
+  TerrainBiome,
+  type TerrainCollisionSample,
+  type TerrainBiomeId,
+  type TerrainColor,
+  type TerrainSample,
+  type WorldDefinition,
+  type WorldVector3,
+} from "./types";
+
+export const MIN_TERRAIN_HEIGHT = -180;
+export const MAX_TERRAIN_HEIGHT = 2_200;
+export const TERRAIN_NORMAL_SAMPLE_DISTANCE = 2;
+
+function assertFiniteCoordinate(value: number, label: string): void {
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`${label} must be finite`);
+  }
+}
+
+/**
+ * The natural (pre-airport) terrain kernel. It deliberately operates only on
+ * global coordinates and a uint32 seed, so workers and collision code can share
+ * it without any renderer state.
+ */
+export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: number): number {
+  assertFiniteCoordinate(x, "x");
+  assertFiniteCoordinate(z, "z");
+
+  const warpScale = 1 / 18_000;
+  const warpX = valueNoise2D(mixSeed(seedHash, 101), x * warpScale, z * warpScale) * 2_400;
+  const warpZ =
+    valueNoise2D(mixSeed(seedHash, 102), x * warpScale + 19.4, z * warpScale - 7.7) * 2_400;
+  const warpedX = x + warpX;
+  const warpedZ = z + warpZ;
+
+  const continental =
+    fbm2D(mixSeed(seedHash, 110), warpedX / 8_600, warpedZ / 8_600, 4, 2.01, 0.52) * 0.5 +
+    0.5;
+  const land = smoothstep(0.38, 0.57, continental);
+  const continentalShelf = lerp(-105, 135, smoothstep(0.2, 0.8, continental));
+
+  const rolling = fbm2D(mixSeed(seedHash, 120), warpedX / 1_650, warpedZ / 1_650, 5, 2, 0.48);
+  const fine = fbm2D(mixSeed(seedHash, 121), x / 310, z / 310, 3, 2.04, 0.46);
+
+  const mountainField =
+    fbm2D(mixSeed(seedHash, 130), warpedX / 13_500, warpedZ / 13_500, 3, 2, 0.55) * 0.5 +
+    0.5;
+  // A broad foothill mask precedes the rarer high-alpine mask. The old kernel
+  // only emitted meaningful relief when the latter happened to cross a high
+  // threshold, which left otherwise valid seeds visually indistinguishable
+  // from a flat plane for tens of kilometres around the starter airport.
+  const foothillRegion = smoothstep(0.34, 0.7, mountainField);
+  const mountainRegion = smoothstep(0.47, 0.76, mountainField);
+  const ridges = ridgedFbm2D(mixSeed(seedHash, 131), warpedX / 2_550, warpedZ / 2_550, 5);
+  const localRidges = ridgedFbm2D(mixSeed(seedHash, 132), warpedX / 1_050, warpedZ / 1_050, 4);
+  const foothillHeight = land * foothillRegion * Math.pow(ridges, 2.12) * 285;
+  const mountainHeight = land * mountainRegion * Math.pow(ridges, 1.58) * 1_390;
+
+  // Mid-scale relief stops broad mountain masks from becoming smooth domes.
+  // It is strongest around existing uplift, preserving recognizable plains
+  // and coastlines while carving shoulders, gullies, and secondary summits.
+  const rockyKnolls =
+    land *
+    (0.34 + foothillRegion * 0.66) *
+    Math.pow(smoothstep(0.3, 0.86, localRidges), 2.25) *
+    (72 + foothillRegion * 115);
+  const cragDetail =
+    land *
+    mountainRegion *
+    smoothstep(0.42, 0.82, ridges) *
+    (localRidges - 0.48) *
+    360;
+  const valleyCarve =
+    land * foothillRegion * Math.pow(1 - ridges, 3.1) * (55 + mountainRegion * 105);
+
+  // Plains occur naturally where mountainRegion is low; hills become stronger
+  // inland while coastlines retain gentler slopes.
+  const hillStrength = land * (34 + 96 * (1 - mountainRegion * 0.55));
+  const height =
+    continentalShelf +
+    rolling * hillStrength +
+    fine * (5 + land * 12) +
+    rockyKnolls +
+    foothillHeight +
+    mountainHeight +
+    cragDetail -
+    valleyCarve;
+  return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
+}
+
+/** Fast collision-query path: only computes terrain elevation. */
+export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+  const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z);
+  return flattenHeightForAirport(naturalHeight, world.airport, x, z);
+}
+
+/** Height-only physics path with a zero-noise fast path on the flat airport platform. */
+export function sampleTerrainCollisionHeight(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+): number {
+  if (
+    world.airport &&
+    getAirportInfluence(world.airport, x, z) >= 1
+  ) {
+    return world.airport.elevation;
+  }
+  return sampleTerrainHeight(world, x, z);
+}
+
+export function sampleTerrainNormal(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: WorldVector3 = { x: 0, y: 1, z: 0 },
+): WorldVector3 {
+  const delta = TERRAIN_NORMAL_SAMPLE_DISTANCE;
+  const left = sampleTerrainHeight(world, x - delta, z);
+  const right = sampleTerrainHeight(world, x + delta, z);
+  const back = sampleTerrainHeight(world, x, z - delta);
+  const front = sampleTerrainHeight(world, x, z + delta);
+  const gradientX = (right - left) / (2 * delta);
+  const gradientZ = (front - back) / (2 * delta);
+  const inverseLength = 1 / Math.hypot(gradientX, 1, gradientZ);
+  target.x = -gradientX * inverseLength;
+  target.y = inverseLength;
+  target.z = -gradientZ * inverseLength;
+  return target;
+}
+
+function createTerrainCollisionTarget(): TerrainCollisionSample {
+  return {
+    height: 0,
+    normal: { x: 0, y: 1, z: 0 },
+    isRunway: false,
+    friction: 0.86,
+  };
+}
+
+/**
+ * Collision-only terrain sample. It preserves the full sampler's elevation,
+ * normal, runway classification, and physics friction semantics without
+ * evaluating moisture, temperature, biome noise, airport tint, or color.
+ */
+export function sampleTerrainCollision(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: TerrainCollisionSample = createTerrainCollisionTarget(),
+): TerrainCollisionSample {
+  const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
+  if (runway && world.airport) {
+    target.height = world.airport.elevation;
+    target.normal.x = 0;
+    target.normal.y = 1;
+    target.normal.z = 0;
+    target.isRunway = true;
+    target.friction = 1.18;
+    return target;
+  }
+  const height = sampleTerrainHeight(world, x, z);
+  sampleTerrainNormal(world, x, z, target.normal);
+  target.height = height;
+  target.isRunway = runway;
+  target.friction = runway ? 1.18 : height <= world.seaLevel ? 0.05 : 0.86;
+  return target;
+}
+
+export function sampleTerrainMoisture(world: WorldDefinition, x: number, z: number): number {
+  const broad = fbm2D(mixSeed(world.seedHash, 201), x / 5_200, z / 5_200, 4, 2, 0.52);
+  const local = valueNoise2D(mixSeed(world.seedHash, 202), x / 850, z / 850);
+  return saturate(0.5 + broad * 0.42 + local * 0.12);
+}
+
+export function sampleTerrainTemperature(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  height = sampleTerrainHeight(world, x, z),
+): number {
+  const climate = fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
+  const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
+  return saturate(0.66 + climate * 0.2 - elevationCooling);
+}
+
+function classifyBiome(
+  world: WorldDefinition,
+  height: number,
+  slope: number,
+  moisture: number,
+  temperature: number,
+  runway: boolean,
+): TerrainBiomeId {
+  if (runway) return TerrainBiome.RUNWAY;
+  if (height <= world.seaLevel) return TerrainBiome.WATER;
+  if (height <= world.seaLevel + 8 && slope < 0.32) return TerrainBiome.BEACH;
+  if (temperature < 0.2 || height > world.seaLevel + 1_520) return TerrainBiome.SNOW;
+  if (height > world.seaLevel + 920 || (slope > 0.48 && height > world.seaLevel + 460)) {
+    return TerrainBiome.ALPINE;
+  }
+  if (height > world.seaLevel + 390 || slope > 0.28) return TerrainBiome.HIGHLAND;
+  if (moisture > 0.55 && temperature > 0.24) return TerrainBiome.FOREST;
+  return TerrainBiome.GRASSLAND;
+}
+
+const PALETTES: Readonly<Record<TerrainBiomeId, readonly [number, number, number]>> = {
+  [TerrainBiome.WATER]: [0.08, 0.19, 0.25],
+  [TerrainBiome.BEACH]: [0.68, 0.605, 0.425],
+  [TerrainBiome.GRASSLAND]: [0.29, 0.445, 0.215],
+  [TerrainBiome.FOREST]: [0.115, 0.275, 0.15],
+  [TerrainBiome.HIGHLAND]: [0.335, 0.345, 0.255],
+  [TerrainBiome.ALPINE]: [0.405, 0.405, 0.385],
+  [TerrainBiome.SNOW]: [0.825, 0.855, 0.865],
+  [TerrainBiome.RUNWAY]: [0.16, 0.18, 0.19],
+};
+
+function writeTerrainColor(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  biome: TerrainBiomeId,
+  moisture: number,
+  slope: number,
+  height: number,
+  target: TerrainColor,
+): TerrainColor {
+  const palette = PALETTES[biome];
+  const fineVariation = valueNoise2D(mixSeed(world.seedHash, 230), x / 76, z / 76);
+  const broadVariation = valueNoise2D(mixSeed(world.seedHash, 231), x / 680, z / 680);
+  const variation =
+    fineVariation * 0.052 +
+    broadVariation * 0.065 +
+    (moisture - 0.5) * (biome === TerrainBiome.GRASSLAND ? -0.1 : -0.035) -
+    slope * 0.06;
+  const rockBiome = biome === TerrainBiome.HIGHLAND || biome === TerrainBiome.ALPINE;
+  const strata = rockBiome ? Math.sin(height * 0.071 + broadVariation * 5.4) * slope * 0.055 : 0;
+  const warmVariation = broadVariation * (rockBiome ? 0.026 : 0.012);
+  target.r = saturate(palette[0] + variation + strata + warmVariation);
+  target.g = saturate(palette[1] + variation + strata * 0.64);
+  target.b = saturate(palette[2] + variation - strata * 0.18 - warmVariation);
+  return target;
+}
+
+function createTerrainSampleTarget(): TerrainSample {
+  return {
+    height: 0,
+    normal: { x: 0, y: 1, z: 0 },
+    slope: 0,
+    moisture: 0,
+    temperature: 0,
+    biome: TerrainBiome.GRASSLAND,
+    biomeName: "grassland",
+    color: { r: 0, g: 0, b: 0 },
+    airportInfluence: 0,
+    isRunway: false,
+  };
+}
+
+/** Full visual/climate sample. Supply a reusable target to avoid allocations. */
+export function sampleTerrain(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: TerrainSample = createTerrainSampleTarget(),
+): TerrainSample {
+  const height = sampleTerrainHeight(world, x, z);
+  sampleTerrainNormal(world, x, z, target.normal);
+  const slope = saturate(1 - target.normal.y);
+  const moisture = sampleTerrainMoisture(world, x, z);
+  const temperature = sampleTerrainTemperature(world, x, z, height);
+  const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
+  const biome = classifyBiome(world, height, slope, moisture, temperature, runway);
+
+  target.height = height;
+  target.slope = slope;
+  target.moisture = moisture;
+  target.temperature = temperature;
+  target.biome = biome;
+  target.biomeName = TERRAIN_BIOME_NAMES[biome];
+  target.airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
+  target.isRunway = runway;
+  writeTerrainColor(world, x, z, biome, moisture, slope, height, target.color);
+  return target;
+}
