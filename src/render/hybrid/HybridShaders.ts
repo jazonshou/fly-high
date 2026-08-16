@@ -6,6 +6,57 @@ export const HYBRID_FULLSCREEN_VERTEX_SHADER = /* glsl */ `
   }
 `;
 
+export const ANALYTIC_WATER_RAY_EPSILON = 1e-5;
+export const ANALYTIC_WATER_MAX_DISTANCE_FACTOR = 1.5;
+
+/** Scalar reference for the GLSL ray/flat-water intersection validity policy. */
+export function analyticWaterRayDistance(
+  cameraHeight: number,
+  waterLevel: number,
+  worldRayY: number,
+  cameraFar: number,
+): number | null {
+  if (
+    !Number.isFinite(cameraHeight) ||
+    !Number.isFinite(waterLevel) ||
+    !Number.isFinite(worldRayY) ||
+    !Number.isFinite(cameraFar) ||
+    cameraFar <= 0 ||
+    Math.abs(worldRayY) < ANALYTIC_WATER_RAY_EPSILON
+  ) {
+    return null;
+  }
+  const distance = (waterLevel - cameraHeight) / worldRayY;
+  return distance > 0 && distance <= cameraFar * ANALYTIC_WATER_MAX_DISTANCE_FACTOR
+    ? distance
+    : null;
+}
+
+/**
+ * Shared verbatim by effect, temporal, and composite passes. Keeping one body
+ * prevents high-altitude water from being reconstructed at three positions.
+ */
+export const HYBRID_ANALYTIC_WATER_POSITION_GLSL = /* glsl */ `
+  vec3 analyticWaterViewPosition(vec2 uv, float fallbackDepth) {
+    vec3 fallbackPosition = reconstructViewPosition(uv, fallbackDepth);
+    // A flat ocean has an exact geometric solution. Reconstructing it from a
+    // 0.08--32 km perspective depth buffer quantized distant scan rows into
+    // horizontal bands, which the world-space ripple lookup then amplified.
+    vec3 viewRay = normalize(reconstructViewPosition(uv, 0.5));
+    vec3 worldRay = normalize(mat3(cameraWorldMatrix) * viewRay);
+    float denominator = worldRay.y;
+    if (abs(denominator) < ${ANALYTIC_WATER_RAY_EPSILON.toFixed(5)}) {
+      return fallbackPosition;
+    }
+    float rayDistance = (waterLevel - cameraWorldMatrix[3].y) / denominator;
+    if (rayDistance <= 0.0 ||
+        rayDistance > cameraFar * ${ANALYTIC_WATER_MAX_DISTANCE_FACTOR.toFixed(1)}) {
+      return fallbackPosition;
+    }
+    return viewRay * rayDistance;
+  }
+`;
+
 // The same bounded, mipmapped surface spectrum is used by the forward material,
 // half-resolution reflection march, and full-resolution composite. Keeping one
 // world-anchored field across all three stages prevents reflection swim and
@@ -34,18 +85,20 @@ const HYBRID_WATER_SPECTRUM_GLSL = /* glsl */ `
     );
     vec4 broadSample = texture2D(
       waterSurfaceDetailMap,
-      fract(broadPoint * 0.000244140625 + vec2(time * 0.000041, -time * 0.000027))
+      broadPoint * 0.000244140625 + vec2(time * 0.000041, -time * 0.000027)
     );
     vec4 middleSample = texture2D(
       waterSurfaceDetailMap,
-      fract(middlePoint * 0.0009765625 + vec2(-time * 0.00023, time * 0.00017))
+      middlePoint * 0.0009765625 + vec2(-time * 0.00023, time * 0.00017)
     );
     vec4 fineSample = texture2D(
       waterSurfaceDetailMap,
-      fract(finePoint * 0.00390625 + vec2(time * 0.0011, time * 0.00073))
+      finePoint * 0.00390625 + vec2(time * 0.0011, time * 0.00073)
     );
     vec2 broadNormal = broadSample.rg * 2.0 - 1.0;
-    vec2 middleNormal = middleSample.ba * 2.0 - 1.0;
+    // Alpha is the opaque texture tag and is constant one. Sampling BA gave
+    // every wave a permanent +Y slope; use two independent noise channels.
+    vec2 middleNormal = middleSample.br * 2.0 - 1.0;
     vec2 fineNormal = fineSample.gr * 2.0 - 1.0;
     float broadFade = 1.0 - smoothstep(90.0, 480.0, pixelFootprint);
     float middleFade = 1.0 - smoothstep(12.0, 100.0, pixelFootprint);
@@ -120,6 +173,8 @@ export const HYBRID_EFFECT_FRAGMENT_SHADER = /* glsl */ `
     vec4 viewPosition = inverseProjectionMatrix * clipPosition;
     return viewPosition.xyz / max(abs(viewPosition.w), 1e-7);
   }
+
+  ${HYBRID_ANALYTIC_WATER_POSITION_GLSL}
 
   vec3 viewPositionAt(vec2 uv) {
     return reconstructViewPosition(uv, sceneDepth(uv));
@@ -377,20 +432,22 @@ export const HYBRID_EFFECT_FRAGMENT_SHADER = /* glsl */ `
     vec4 beautySample = texture2D(beautyMap, vUv);
     vec3 beauty = beautySample.rgb;
     float rawDepth = sceneDepth(vUv);
-    if (rawDepth >= HYBRID_SKY_DEPTH) {
+    float waterMask = 1.0 - smoothstep(0.02, 0.45, beautySample.a);
+    if (rawDepth >= HYBRID_SKY_DEPTH && waterMask < 0.001) {
       gl_FragColor = vec4(beauty, 1.0);
       return;
     }
-    vec3 viewPosition = reconstructViewPosition(vUv, rawDepth);
-    vec3 geometricViewNormal = estimateViewNormal(vUv, viewPosition);
-    float waterMask = 1.0 - smoothstep(0.02, 0.45, beautySample.a);
-    float visibility = ambientVisibility(vUv, viewPosition, geometricViewNormal);
-    // SSAO describes solid creases. Applying it to the flat depth surface made
-    // the ocean look opaque and dirty, particularly beside shore geometry.
-    visibility = mix(visibility, 1.0, waterMask);
-    vec3 reflectionNormal = geometricViewNormal;
+    vec3 viewPosition = waterMask > 0.001
+      ? analyticWaterViewPosition(vUv, rawDepth)
+      : reconstructViewPosition(vUv, rawDepth);
+    float visibility = 1.0;
+    vec3 reflectionNormal;
     if (waterMask > 0.001) {
       reflectionNormal = proceduralWaterViewNormal(viewPosition);
+    } else {
+      vec3 geometricViewNormal = estimateViewNormal(vUv, viewPosition);
+      visibility = ambientVisibility(vUv, viewPosition, geometricViewNormal);
+      reflectionNormal = geometricViewNormal;
     }
     vec3 reflected = screenSpaceReflection(
       vUv,
@@ -415,6 +472,7 @@ export const HYBRID_TEMPORAL_FRAGMENT_SHADER = /* glsl */ `
   uniform mat4 inverseProjectionMatrix;
   uniform mat4 cameraWorldMatrix;
   uniform mat4 previousViewProjectionMatrix;
+  uniform float cameraFar;
   uniform float waterLevel;
   uniform float historyWeight;
   uniform float waterHistoryWeight;
@@ -436,6 +494,8 @@ export const HYBRID_TEMPORAL_FRAGMENT_SHADER = /* glsl */ `
     return (cameraWorldMatrix * vec4(viewPosition, 1.0)).xyz;
   }
 
+  ${HYBRID_ANALYTIC_WATER_POSITION_GLSL}
+
   void main() {
     vec4 current = texture2D(currentEffectsMap, vUv);
     if (historyValid < 0.5) {
@@ -443,11 +503,18 @@ export const HYBRID_TEMPORAL_FRAGMENT_SHADER = /* glsl */ `
       return;
     }
     float depth = texture2D(depthMap, vUv).x;
-    if (depth >= HYBRID_SKY_DEPTH) {
+    float currentWaterTag = 1.0 - smoothstep(
+      0.02,
+      0.45,
+      texture2D(beautyMap, vUv).a
+    );
+    if (depth >= HYBRID_SKY_DEPTH && currentWaterTag < 0.001) {
       gl_FragColor = current;
       return;
     }
-    vec3 viewPosition = reconstructViewPosition(vUv, depth);
+    vec3 viewPosition = currentWaterTag > 0.001
+      ? analyticWaterViewPosition(vUv, depth)
+      : reconstructViewPosition(vUv, depth);
     vec3 worldPosition = reconstructWorldPosition(viewPosition);
     vec4 previousClip = previousViewProjectionMatrix * vec4(worldPosition, 1.0);
     if (previousClip.w <= 0.0) {
@@ -475,11 +542,6 @@ export const HYBRID_TEMPORAL_FRAGMENT_SHADER = /* glsl */ `
     float depthTolerance = max(
       3.0 / 16777215.0,
       min(currentDepthGradient * 1.75, 0.0015)
-    );
-    float currentWaterTag = 1.0 - smoothstep(
-      0.02,
-      0.45,
-      texture2D(beautyMap, vUv).a
     );
     if (abs(previousDepth - expectedPreviousDepth) > depthTolerance ||
         abs(previousSurface.a - currentWaterTag) > 0.25) {
@@ -556,6 +618,7 @@ export const HYBRID_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
   uniform mat4 inverseProjectionMatrix;
   uniform mat4 cameraWorldMatrix;
   uniform float cameraNear;
+  uniform float cameraFar;
   uniform float waterLevel;
   uniform float waterTime;
   uniform vec2 waterWorldOrigin;
@@ -589,33 +652,24 @@ export const HYBRID_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
     return worldPosition;
   }
 
-  vec3 estimateViewNormal(vec2 uv, vec3 centerPosition) {
-    float leftDepth = depthAt(uv - vec2(beautyTexel.x, 0.0));
-    float rightDepth = depthAt(uv + vec2(beautyTexel.x, 0.0));
-    float downDepth = depthAt(uv - vec2(0.0, beautyTexel.y));
-    float upDepth = depthAt(uv + vec2(0.0, beautyTexel.y));
-    vec3 leftPosition = reconstructViewPosition(uv - vec2(beautyTexel.x, 0.0), leftDepth);
-    vec3 rightPosition = reconstructViewPosition(uv + vec2(beautyTexel.x, 0.0), rightDepth);
-    vec3 downPosition = reconstructViewPosition(uv - vec2(0.0, beautyTexel.y), downDepth);
-    vec3 upPosition = reconstructViewPosition(uv + vec2(0.0, beautyTexel.y), upDepth);
-    vec3 horizontal = abs(leftPosition.z - centerPosition.z) <
-      abs(rightPosition.z - centerPosition.z)
-        ? centerPosition - leftPosition
-        : rightPosition - centerPosition;
-    vec3 vertical = abs(downPosition.z - centerPosition.z) <
-      abs(upPosition.z - centerPosition.z)
-        ? centerPosition - downPosition
-        : upPosition - centerPosition;
-    vec3 result = normalize(cross(horizontal, vertical));
-    if (dot(result, -centerPosition) < 0.0) result = -result;
-    return result;
+  ${HYBRID_ANALYTIC_WATER_POSITION_GLSL}
+
+  float waterMaterialMaskAt(vec2 uv) {
+    float materialTag = texture2D(
+      beautyMap,
+      clamp(uv, vec2(0.0), vec2(1.0))
+    ).a;
+    return 1.0 - smoothstep(0.02, 0.45, materialTag);
   }
 
   float viewDistanceAt(vec2 uv) {
     float depth = depthAt(uv);
-    return depth >= HYBRID_SKY_DEPTH
-      ? 1e9
-      : -reconstructViewPosition(uv, depth).z;
+    float waterMask = waterMaterialMaskAt(uv);
+    if (depth >= HYBRID_SKY_DEPTH && waterMask < 0.001) return 1e9;
+    vec3 viewPosition = waterMask > 0.001
+      ? analyticWaterViewPosition(uv, depth)
+      : reconstructViewPosition(uv, depth);
+    return -viewPosition.z;
   }
 
   vec4 bilateralEffects(vec2 uv, float centerDistance) {
@@ -635,18 +689,6 @@ export const HYBRID_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
       totalWeight += weight;
     }
     return total / totalWeight;
-  }
-
-  float waterMaterialMaskAt(vec2 uv) {
-    float materialTag = texture2D(
-      beautyMap,
-      clamp(uv, vec2(0.0), vec2(1.0))
-    ).a;
-    return 1.0 - smoothstep(0.02, 0.45, materialTag);
-  }
-
-  float waterSurfaceMask(vec2 uv) {
-    return waterMaterialMaskAt(uv);
   }
 
   float shorelineProximity(vec2 uv, float centerDistance) {
@@ -690,18 +732,20 @@ export const HYBRID_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
 
   void main() {
     float rawDepth = depthAt(vUv);
-    vec3 beauty = texture2D(beautyMap, vUv).rgb;
-    if (rawDepth >= HYBRID_SKY_DEPTH) {
+    vec4 beautySample = texture2D(beautyMap, vUv);
+    vec3 beauty = beautySample.rgb;
+    float waterMask = 1.0 - smoothstep(0.02, 0.45, beautySample.a);
+    if (rawDepth >= HYBRID_SKY_DEPTH && waterMask < 0.001) {
       gl_FragColor = vec4(max(beauty, vec3(0.0)), 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
       return;
     }
 
-    vec3 viewPosition = reconstructViewPosition(vUv, rawDepth);
-    vec3 geometricViewNormal = estimateViewNormal(vUv, viewPosition);
+    vec3 viewPosition = waterMask > 0.001
+      ? analyticWaterViewPosition(vUv, rawDepth)
+      : reconstructViewPosition(vUv, rawDepth);
     float centerDistance = max(-viewPosition.z, cameraNear);
-    float waterMask = waterSurfaceMask(vUv);
 
     if (waterMask > 0.001 && waterDetailStrength > 0.0) {
       vec3 worldPosition = worldPositionFromView(viewPosition);

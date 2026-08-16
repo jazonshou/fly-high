@@ -13,6 +13,7 @@ function copyControls(out: FlightControls, requested: FlightControls): void {
   out.trim = requested.trim;
   out.flaps = requested.flaps;
   out.brake = requested.brake;
+  out.gear = requested.gear;
 }
 
 /**

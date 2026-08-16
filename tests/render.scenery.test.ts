@@ -122,18 +122,29 @@ describe("procedural scenery renderer", () => {
       -4_800,
       6_400,
     ]);
-    expect(renderer.group.getObjectByName("near-tree-canopies")).toBeDefined();
-    const broadleafCanopies = renderer.group.getObjectByName("near-tree-canopies") as
+    expect(renderer.group.getObjectByName("near-oak-canopies")).toBeDefined();
+    const broadleafCanopies = renderer.group.getObjectByName("near-oak-canopies") as
       | THREE.InstancedMesh
       | undefined;
-    const conifers = renderer.group.getObjectByName("near-conifer-canopies") as
+    const aspens = renderer.group.getObjectByName("near-aspen-canopies") as
+      | THREE.InstancedMesh
+      | undefined;
+    const conifers = renderer.group.getObjectByName("near-pine-canopies") as
+      | THREE.InstancedMesh
+      | undefined;
+    const spruces = renderer.group.getObjectByName("near-spruce-canopies") as
       | THREE.InstancedMesh
       | undefined;
     expect(broadleafCanopies?.geometry.getAttribute("position").count).toBeGreaterThan(100);
     expect(broadleafCanopies?.castShadow).toBe(true);
+    expect(aspens?.geometry.getAttribute("position").count).toBeGreaterThan(100);
+    expect(aspens?.castShadow).toBe(true);
     expect(conifers).toBeDefined();
     expect(conifers?.castShadow).toBe(true);
-    expect(renderer.group.getObjectByName("far-forest-lod")).toBeDefined();
+    expect(spruces?.geometry.getAttribute("position").count).toBeGreaterThan(100);
+    expect(spruces?.castShadow).toBe(true);
+    expect(renderer.group.getObjectByName("far-conifer-forest-lod")).toBeDefined();
+    expect(renderer.group.getObjectByName("far-broadleaf-forest-lod")).toBeDefined();
     const rocks = renderer.group.getObjectByName("scattered-rocks") as
       | THREE.InstancedMesh
       | undefined;
@@ -195,7 +206,7 @@ describe("procedural scenery renderer", () => {
     expect(water?.receiveShadow).toBe(false);
     expect(water?.position.y).toBeGreaterThan(0.1);
     expect(water?.material.customProgramCacheKey()).toBe(
-      "stable-water-depth-spectrum-v11",
+      "stable-water-depth-spectrum-v12",
     );
 
     const reflectionTexture = new THREE.DataTexture(
@@ -228,6 +239,9 @@ describe("procedural scenery renderer", () => {
     expect(shader.fragmentShader).toContain("broadSample");
     expect(shader.fragmentShader).toContain("middleSample");
     expect(shader.fragmentShader).toContain("fineSample");
+    expect(shader.fragmentShader).toContain("middleSample.br");
+    expect(shader.fragmentShader).not.toContain("middleSample.ba");
+    expect(shader.fragmentShader).not.toMatch(/fract\(\s*(broad|middle|fine)Point/);
     expect(
       shader.fragmentShader.match(/texture2D\(\s*waterSurfaceDetailMap/g),
     ).toHaveLength(3);

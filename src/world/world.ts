@@ -1,7 +1,8 @@
 import { DEFAULT_AIRPORT } from "./airport";
-import { findGeneratedAirportSite } from "./airportSite";
+import { resolveGuaranteedAirportRegion } from "./airportSite";
 import { unitFloatFromHash, hashSeed, mixSeed, normalizeSeed } from "./seed";
 import { sampleNaturalTerrainHeight } from "./terrain";
+import type { AirportFootprint, GeneratedAirportSite } from "./airportSite";
 import type { AirportDefinition, WorldDefinition, WorldOptions, WorldSeed } from "./types";
 
 export const DEFAULT_WORLD_SEED = "open-skies";
@@ -17,13 +18,10 @@ function positiveOrThrow(value: number, label: string): number {
   return value;
 }
 
-function createAirport(
-  seedHash: number,
-  seaLevel: number,
-  preferredHeading: number,
+function createAirportFootprint(
   overrides: Partial<AirportDefinition> | undefined,
-): Readonly<AirportDefinition> | null {
-  const footprint = {
+): Readonly<AirportFootprint> {
+  return Object.freeze({
     runwayLength: positiveOrThrow(overrides?.runwayLength ?? DEFAULT_AIRPORT.runwayLength, "airport.runwayLength"),
     runwayWidth: positiveOrThrow(overrides?.runwayWidth ?? DEFAULT_AIRPORT.runwayWidth, "airport.runwayWidth"),
     endSafetyArea: positiveOrThrow(overrides?.endSafetyArea ?? DEFAULT_AIRPORT.endSafetyArea, "airport.endSafetyArea"),
@@ -32,18 +30,28 @@ function createAirport(
       overrides?.terrainBlendDistance ?? DEFAULT_AIRPORT.terrainBlendDistance,
       "airport.terrainBlendDistance",
     ),
-  };
-  const hasManualSite =
+  });
+}
+
+function hasManualAirportSite(overrides: Partial<AirportDefinition> | undefined): boolean {
+  return (
     overrides?.centerX !== undefined ||
     overrides?.centerZ !== undefined ||
-    overrides?.headingRadians !== undefined;
-  const generatedSite = hasManualSite
-    ? null
-    : findGeneratedAirportSite(seedHash, seaLevel, footprint, preferredHeading);
-  // Never turn the search's airport-less safety fallback back into the old
-  // origin runway, and never accept a future selector regression that returns
-  // a scored-but-unsafe candidate.
-  if (!hasManualSite && (!generatedSite || !generatedSite.assessment.suitable)) return null;
+    overrides?.headingRadians !== undefined
+  );
+}
+
+function buildAirport(
+  seedHash: number,
+  seaLevel: number,
+  footprint: Readonly<AirportFootprint>,
+  overrides: Partial<AirportDefinition> | undefined,
+  generatedSite: GeneratedAirportSite | null,
+): Readonly<AirportDefinition> | null {
+  const hasManualSite = hasManualAirportSite(overrides);
+  if (!hasManualSite && (!generatedSite || !generatedSite.assessment.suitable)) {
+    throw new Error("Generated airport construction requires a validated site");
+  }
   const centerX = finiteOrThrow(
     overrides?.centerX ?? generatedSite?.centerX ?? DEFAULT_AIRPORT.centerX,
     "airport.centerX",
@@ -75,18 +83,30 @@ export function createWorld(
   options: WorldOptions = {},
 ): WorldDefinition {
   const normalizedSeed = normalizeSeed(seed);
-  const seedHash = hashSeed(normalizedSeed);
+  const sourceSeedHash = hashSeed(normalizedSeed);
   const seaLevel = finiteOrThrow(options.seaLevel ?? 0, "seaLevel");
+  let seedHash = sourceSeedHash;
+  let airport: Readonly<AirportDefinition> | null = null;
+
+  if (options.airport !== false) {
+    const overrides = options.airport;
+    const footprint = createAirportFootprint(overrides);
+    if (hasManualAirportSite(overrides)) {
+      airport = buildAirport(seedHash, seaLevel, footprint, overrides, null);
+    } else {
+      const region = resolveGuaranteedAirportRegion(sourceSeedHash, seaLevel, footprint);
+      seedHash = region.seedHash;
+      airport = buildAirport(seedHash, seaLevel, footprint, overrides, region.site);
+    }
+  }
+
   const directionHash = mixSeed(seedHash, 301);
   const speedHash = mixSeed(seedHash, 302);
   const prevailingWindRadians = unitFloatFromHash(directionHash) * Math.PI * 2;
-  const airport =
-    options.airport === false
-      ? null
-      : createAirport(seedHash, seaLevel, prevailingWindRadians, options.airport);
 
   return Object.freeze({
     seed: normalizedSeed,
+    sourceSeedHash,
     seedHash,
     seaLevel,
     airport,

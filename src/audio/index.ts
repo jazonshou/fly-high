@@ -29,6 +29,8 @@ export class FlightAudio {
   private levels: AudioLevels;
   private readonly aircraft: AircraftKind;
   private enabled = false;
+  private desiredEnabled = false;
+  private activationGeneration = 0;
   private disposed = false;
   private lastTouchdown = 0;
   private lastFlapSoundPosition = 0;
@@ -40,10 +42,24 @@ export class FlightAudio {
 
   async unlock(): Promise<void> {
     if (this.disposed) return;
+    this.desiredEnabled = true;
+    const generation = ++this.activationGeneration;
     if (!this.context) this.createGraph();
-    if (!this.context) return;
-    if (this.context.state === "suspended") await this.context.resume();
-    this.enabled = true;
+    const context = this.context;
+    if (!context) {
+      if (generation === this.activationGeneration) this.desiredEnabled = false;
+      return;
+    }
+    try {
+      if (context.state === "suspended") await context.resume();
+    } catch (error) {
+      if (generation === this.activationGeneration) {
+        this.desiredEnabled = false;
+        this.enabled = false;
+      }
+      throw error;
+    }
+    this.finishResume(context, generation);
   }
 
   setLevels(levels: AudioLevels): void {
@@ -90,11 +106,18 @@ export class FlightAudio {
   }
 
   suspend(): void {
+    this.desiredEnabled = false;
+    const generation = ++this.activationGeneration;
     this.enabled = false;
-    if (this.context?.state === "running") void this.context.suspend();
+    if (this.context?.state === "running") {
+      this.requestSuspend(this.context, generation);
+    }
   }
 
   dispose(): void {
+    this.desiredEnabled = false;
+    this.activationGeneration += 1;
+    this.enabled = false;
     this.disposed = true;
     for (const oscillator of this.engineOscillators) oscillator.stop();
     this.stallOscillator?.stop();
@@ -104,6 +127,38 @@ export class FlightAudio {
     this.windSource = null;
     if (this.context) void this.context.close();
     this.context = null;
+  }
+
+  /** Commits only the newest resume and reverses a stale resume after End. */
+  private finishResume(context: AudioContext, generation: number): void {
+    if (this.disposed) return;
+    if (generation !== this.activationGeneration || !this.desiredEnabled) {
+      if (!this.desiredEnabled && context.state === "running") {
+        this.requestSuspend(context, this.activationGeneration);
+      }
+      return;
+    }
+    this.enabled = true;
+  }
+
+  /**
+   * If a newer unlock arrives while suspend() is still pending, resume again
+   * after that old suspension settles. The generation passed here identifies
+   * the request that owned the suspension, not whichever action is current.
+   */
+  private requestSuspend(context: AudioContext, generation: number): void {
+    void context.suspend().then(() => {
+      if (this.disposed || !this.desiredEnabled) return;
+      if (generation === this.activationGeneration || context.state !== "suspended") return;
+      const resumeGeneration = this.activationGeneration;
+      void context.resume().then(() => {
+        this.finishResume(context, resumeGeneration);
+      }).catch(() => {
+        if (resumeGeneration === this.activationGeneration) this.enabled = false;
+      });
+    }).catch(() => {
+      // Muting is best-effort; a browser audio failure must not affect flight.
+    });
   }
 
   private createGraph(): void {

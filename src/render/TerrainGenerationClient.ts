@@ -58,8 +58,8 @@ export class TerrainGenerationClient {
   private fallbackScheduled = false;
   private disposed = false;
 
-  constructor(seed: WorldSeed, options: TerrainGenerationClientOptions = {}) {
-    this.world = createWorld(seed);
+  constructor(worldOrSeed: WorldDefinition | WorldSeed, options: TerrainGenerationClientOptions = {}) {
+    this.world = typeof worldOrSeed === "object" ? worldOrSeed : createWorld(worldOrSeed);
     this.queue = new BoundedTerrainQueue(options.maxQueued ?? 64);
     this.fallbackScheduler = options.fallbackScheduler ?? defaultFallbackScheduler;
     try {
@@ -67,7 +67,7 @@ export class TerrainGenerationClient {
       this.worker.addEventListener("message", this.handleMessage);
       this.worker.addEventListener("error", this.handleWorkerFailure);
       this.worker.addEventListener("messageerror", this.handleMessageFailure);
-      this.post({ type: "initialize", seed });
+      this.post({ type: "initialize", world: this.world });
     } catch {
       this.activateFallback();
     }

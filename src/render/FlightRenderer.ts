@@ -9,6 +9,7 @@ import type {
 } from "@/src/game/types";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import type { WorldDefinition } from "@/src/world";
 import { createAircraft, type AircraftVisual } from "./createAircraft";
 import { CascadedShadowController } from "./CascadedShadowController";
 import {
@@ -371,6 +372,8 @@ export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
   aircraft?: AircraftKind;
   terrainSample: TerrainSampleFunction;
+  /** Main-thread resolved world; workers must not repeat airport selection. */
+  world: WorldDefinition;
   seed: number;
   quality: QualityLevel;
   renderingMode: RenderingMode;
@@ -487,6 +490,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       1_600,
       options.quality,
       options.runway,
+      options.world,
     );
     this.sky = new SkySystem(options.seed);
     this.sky.setQuality(options.quality);

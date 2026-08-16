@@ -4,6 +4,8 @@ import { clamp } from "./math";
 export interface LandingGearDefinition {
   /** Position of the tyre contact point in aircraft body coordinates. */
   position: Vec3;
+  /** Stowed wheel position for retractable gear. Omitted for fixed gear. */
+  retractedPosition?: Vec3;
   springRate: number;
   dampingRate: number;
   /** Maximum nose-wheel steering angle. Omit for a free-rolling wheel. */
@@ -36,6 +38,14 @@ export interface AircraftDefinition {
   inducedDrag: number;
   stallDrag: number;
   flapDrag: number;
+  /** Additional parasite-drag coefficient at full gear extension. */
+  gearDrag: number;
+  /** Additional drag coefficient at full speed-brake deployment. */
+  speedBrakeDrag: number;
+  /** Whether the undercarriage can be retracted by the pilot. */
+  retractableGear: boolean;
+  /** Full normalized gear travel per second. */
+  gearCycleRate: number;
   sideForceBeta: number;
   sideForceRudder: number;
   pitchMomentZero: number;
@@ -78,6 +88,10 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   inducedDrag: 0.047,
   stallDrag: 0.92,
   flapDrag: 0.064,
+  gearDrag: 0,
+  speedBrakeDrag: 0,
+  retractableGear: false,
+  gearCycleRate: 0,
   sideForceBeta: 0.68,
   sideForceRudder: 0.12,
   pitchMomentZero: 0.009,
@@ -153,6 +167,10 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   inducedDrag: 0.041,
   stallDrag: 0.74,
   flapDrag: 0.085,
+  gearDrag: 0.042,
+  speedBrakeDrag: 0.16,
+  retractableGear: true,
+  gearCycleRate: 0.42,
   sideForceBeta: 0.78,
   sideForceRudder: 0.14,
   pitchMomentZero: 0.004,
@@ -168,16 +186,19 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   gear: Object.freeze([
     Object.freeze({
       position: Object.freeze({ x: -0.72, y: -1.46, z: -1.72 }),
+      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: -0.62 }),
       springRate: 285_000,
       dampingRate: 31_000,
     }),
     Object.freeze({
       position: Object.freeze({ x: -0.72, y: -1.46, z: 1.72 }),
+      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: 0.62 }),
       springRate: 285_000,
       dampingRate: 31_000,
     }),
     Object.freeze({
       position: Object.freeze({ x: 3.72, y: -1.32, z: 0 }),
+      retractedPosition: Object.freeze({ x: 3.35, y: -0.42, z: 0 }),
       springRate: 190_000,
       dampingRate: 23_000,
       maxSteeringAngle: (18 * Math.PI) / 180,
@@ -280,6 +301,8 @@ export function calculateDragCoefficient(
   liftCoefficient: number,
   flaps = 0,
   aircraft: AircraftDefinition = LIGHT_TRAINER,
+  gear = aircraft.retractableGear ? 0 : 1,
+  speedBrake = 0,
 ): number {
   const positiveExcess = Math.max(0, angleOfAttack - aircraft.positiveStallAngle);
   const negativeExcess = Math.max(0, aircraft.negativeStallAngle - angleOfAttack);
@@ -292,6 +315,8 @@ export function calculateDragCoefficient(
     aircraft.cdZero +
     aircraft.inducedDrag * liftCoefficient * liftCoefficient +
     aircraft.flapDrag * clamp(flaps, 0, 1) ** 2 +
+    aircraft.gearDrag * clamp(gear, 0, 1) ** 1.35 +
+    aircraft.speedBrakeDrag * clamp(speedBrake, 0, 1) ** 1.2 +
     aircraft.stallDrag * stallProgress * stallProgress
   );
 }

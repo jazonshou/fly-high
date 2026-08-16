@@ -29,18 +29,21 @@ describe("flight interface visual system", () => {
     for (const selector of [
       ".aircraft-picker",
       ".seed-action",
+      ".settings-action",
       ".primary-action",
       ".metric-tape",
       ".instrument-strip",
       ".control-status",
       ".diagnostics",
       ".pause-panel",
+      ".settings-panel",
       ".setting-field select",
     ]) {
       expect(rule(selector)).toMatch(/border-radius:\s*(?:var\(--radius-|1[4-9]px|2\dpx)/);
     }
 
     expect(rule(".pause-panel")).toContain("backdrop-filter: blur(28px)");
+    expect(rule(".settings-panel")).toContain("backdrop-filter: blur(30px)");
     expect(rule(".aircraft-picker")).toContain("backdrop-filter: blur(22px)");
     expect(rule(".aircraft-picker")).toMatch(/background:\s*rgba\([^)]*,\s*0\.22\)/);
     expect(rule(".instrument-strip")).toContain("backdrop-filter: blur(16px)");
@@ -61,6 +64,12 @@ describe("flight interface visual system", () => {
     );
     expect(flightStyles).toMatch(
       /@media \(max-width: 820px\)[\s\S]*?\.aircraft-picker label\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*border-radius:\s*16px;/,
+    );
+    expect(flightStyles).toMatch(
+      /@media \(max-width: 820px\)[\s\S]*?\.settings-panel\s*\{[^}]*max-height:\s*calc\(100svh - 20px\);[^}]*border-radius:\s*25px;/,
+    );
+    expect(flightStyles).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.settings-action\s*\{[^}]*grid-column:\s*1 \/ -1;/,
     );
   });
 });

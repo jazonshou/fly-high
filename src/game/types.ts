@@ -47,6 +47,8 @@ export interface FlightVisualState {
   brake: number;
   trim: number;
   flaps: number;
+  /** 0 is retracted and 1 is down-and-locked. Fixed gear always reports 1. */
+  gear: number;
   loadFactor: number;
   onGround: boolean;
   stalled: boolean;
@@ -63,6 +65,8 @@ export interface ControlState {
   trim: number;
   flaps: number;
   brake: number;
+  /** Requested landing-gear extension, 0..1. */
+  gear: number;
 }
 
 export interface RenderDiagnostics {
@@ -103,6 +107,7 @@ export const INITIAL_VISUAL_STATE: FlightVisualState = {
   brake: 0,
   trim: 0,
   flaps: 0,
+  gear: 1,
   loadFactor: 1,
   onGround: false,
   stalled: false,

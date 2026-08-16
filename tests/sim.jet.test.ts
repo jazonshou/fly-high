@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFlightAssistance,
+  calculateDragCoefficient,
   calculateEngineThrust,
   DEFAULT_CONTROLS,
   DirectPitchRetention,
@@ -58,6 +59,7 @@ function expectFiniteState(state: FlightState): void {
 }
 
 function runSustainedFlight(aircraft: AircraftDefinition, airspeed: number): FlightSimulator {
+  const cruiseGear = aircraft.retractableGear ? 0 : 1;
   const simulator = new FlightSimulator({
     aircraft,
     spawn: {
@@ -65,15 +67,15 @@ function runSustainedFlight(aircraft: AircraftDefinition, airspeed: number): Fli
       heading: Math.PI / 2,
       pitch: (2.4 * Math.PI) / 180,
       airspeed,
-      controls: { ...DEFAULT_CONTROLS, throttle: 0.72 },
+      controls: { ...DEFAULT_CONTROLS, throttle: 0.72, gear: cruiseGear },
     },
-    controls: { ...DEFAULT_CONTROLS, throttle: 0.72 },
+    controls: { ...DEFAULT_CONTROLS, throttle: 0.72, gear: cruiseGear },
     environment: { wind: { x: 0, y: 0, z: 0 } },
   });
   advance(simulator, 30, (current) => applyFlightAssistance(
     { ...DEFAULT_CONTROLS },
     "scenic",
-    { ...DEFAULT_CONTROLS, throttle: 0.9 },
+    { ...DEFAULT_CONTROLS, throttle: 0.9, gear: cruiseGear },
     current.state,
     current.telemetry(),
   ));
@@ -96,6 +98,83 @@ describe("fast jet flight model", () => {
     expect(simulator.state.onGround).toBe(false);
     expect(simulator.telemetry().airspeed).toBeCloseTo(155, 8);
     expect(simulator.state.actuators.throttle).toBeCloseTo(0.17, 8);
+    expect(simulator.state.actuators.gear).toBe(0);
+  });
+
+  it("cycles retractable gear through a timed transit and accounts for gear and speed-brake drag", () => {
+    const cleanDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 0, 0);
+    const gearDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 1, 0);
+    const brakeDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 0, 1);
+    expect(gearDrag).toBeGreaterThan(cleanDrag + 0.04);
+    expect(brakeDrag).toBeGreaterThan(cleanDrag + 0.15);
+
+    const simulator = new FlightSimulator({
+      aircraft: FAST_JET,
+      spawn: {
+        position: { x: 0, y: 2_000, z: 0 },
+        airspeed: 120,
+        controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      },
+      controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      environment: { gravity: 0, wind: { x: 0, y: 0, z: 0 } },
+    });
+    advance(simulator, 1, () => ({ ...DEFAULT_CONTROLS, gear: 1, throttle: 0 }));
+    expect(simulator.state.actuators.gear).toBeCloseTo(FAST_JET.gearCycleRate, 2);
+    advance(simulator, 2, () => ({ ...DEFAULT_CONTROLS, gear: 1, throttle: 0 }));
+    expect(simulator.state.actuators.gear).toBe(1);
+    advance(simulator, 2.5, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0 }));
+    expect(simulator.state.actuators.gear).toBe(0);
+
+    const parked = new FlightSimulator({
+      aircraft: FAST_JET,
+      spawn: { onGround: true, terrainHeight: 0, controls: { ...DEFAULT_CONTROLS, throttle: 0 } },
+      controls: { ...DEFAULT_CONTROLS, throttle: 0 },
+      environment: { terrain: FLAT_RUNWAY, wind: { x: 0, y: 0, z: 0 } },
+    });
+    advance(parked, 3, () => ({ ...DEFAULT_CONTROLS, throttle: 0, brake: 1, gear: 0 }));
+    expect(parked.state.actuators.gear).toBe(1);
+    expect(parked.state.crashed).toBe(false);
+  });
+
+  it("treats a gear-up runway contact as airframe damage", () => {
+    const simulator = new FlightSimulator({
+      aircraft: FAST_JET,
+      spawn: {
+        position: { x: 0, y: 0.68, z: 0 },
+        velocity: { x: 0, y: -1.2, z: 68 },
+        pitch: 0,
+        controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      },
+      controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      environment: { terrain: FLAT_RUNWAY, wind: { x: 0, y: 0, z: 0 } },
+    });
+
+    advance(simulator, 0.25, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0 }));
+    expect(simulator.state.crashed).toBe(true);
+    expect(simulator.state.onGround).toBe(true);
+    expect(simulator.state.actuators.gear).toBe(0);
+  });
+
+  it("uses the brake command as an aerodynamic speed brake away from wheel contact", () => {
+    const createCruise = () => new FlightSimulator({
+      aircraft: FAST_JET,
+      spawn: {
+        position: { x: 0, y: 2_000, z: 0 },
+        airspeed: 145,
+        pitch: 0,
+        controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      },
+      controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
+      environment: { gravity: 0, airDensity: 1.225, wind: { x: 0, y: 0, z: 0 } },
+    });
+    const clean = createCruise();
+    const braking = createCruise();
+    advance(clean, 2, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0, brake: 0 }));
+    advance(braking, 2, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0, brake: 1 }));
+
+    expect(braking.state.onGround).toBe(false);
+    expect(braking.state.actuators.brake).toBe(1);
+    expect(braking.telemetry().airspeed).toBeLessThan(clean.telemetry().airspeed - 12);
   });
 
   it("has linear throttle response, density lapse, and bounded inlet loss", () => {
@@ -256,6 +335,71 @@ describe("fast jet flight model", () => {
     expect(simulator.telemetry().altitudeAgl).toBeGreaterThan(5);
     expect(simulator.telemetry().airspeed).toBeGreaterThan(50);
     expect(Math.abs(simulator.telemetry().pitch)).toBeLessThan((18 * Math.PI) / 180);
+  });
+
+  it("supports a gentle gear-down landing, combined braking, and a second takeoff", () => {
+    const simulator = new FlightSimulator({
+      aircraft: FAST_JET,
+      spawn: {
+        position: { x: 0, y: 1.54, z: -30 },
+        velocity: { x: 0, y: -1.15, z: 78 },
+        pitch: (3 * Math.PI) / 180,
+        controls: { ...DEFAULT_CONTROLS, throttle: 0.08, flaps: 1, gear: 1 },
+      },
+      controls: { ...DEFAULT_CONTROLS, throttle: 0.08, flaps: 1, gear: 1 },
+      environment: { terrain: FLAT_RUNWAY, wind: { x: 0, y: 0, z: 0 } },
+    });
+    let touchdownTime: number | null = null;
+    let stoppedTime: number | null = null;
+    let secondLiftoffTime: number | null = null;
+
+    for (let index = 0; index < Math.round(45 / FIXED_TIME_STEP); index += 1) {
+      const telemetry = simulator.telemetry();
+      let controls: FlightControls;
+      if (touchdownTime === null) {
+        controls = { ...DEFAULT_CONTROLS, throttle: 0.06, flaps: 1, gear: 1, pitch: 0.04 };
+      } else if (stoppedTime === null) {
+        controls = { ...DEFAULT_CONTROLS, throttle: 0, flaps: 1, gear: 1, brake: 1 };
+      } else {
+        controls = {
+          ...DEFAULT_CONTROLS,
+          throttle: 1,
+          flaps: 0.5,
+          gear: 1,
+          pitch: telemetry.groundSpeed > 75 ? 0.2 : 0,
+        };
+      }
+      simulator.step(FIXED_TIME_STEP, controls);
+
+      if (touchdownTime === null && simulator.state.onGround) {
+        touchdownTime = simulator.state.time;
+      }
+      if (
+        touchdownTime !== null &&
+        stoppedTime === null &&
+        simulator.state.onGround &&
+        simulator.telemetry().groundSpeed < 1
+      ) {
+        stoppedTime = simulator.state.time;
+      }
+      if (
+        stoppedTime !== null &&
+        !simulator.state.onGround &&
+        simulator.telemetry().altitudeAgl > 1
+      ) {
+        secondLiftoffTime = simulator.state.time;
+        break;
+      }
+      if (simulator.state.crashed) break;
+    }
+
+    expect(touchdownTime).not.toBeNull();
+    expect(stoppedTime).not.toBeNull();
+    expect(secondLiftoffTime).not.toBeNull();
+    expect(simulator.state.crashed).toBe(false);
+    expect(simulator.state.onGround).toBe(false);
+    expect(simulator.state.peakImpactSpeed).toBeLessThan(3);
+    expect(simulator.state.actuators.gear).toBeGreaterThanOrEqual(0.98);
   });
 
   it("detects the jet nose striking before its gear or centre of gravity", () => {

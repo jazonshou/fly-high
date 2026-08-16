@@ -13,6 +13,7 @@ function renderHud(
   cameraMode: CameraMode,
   crashed = false,
   aircraft: AircraftKind = "trainer",
+  stateOverrides: Partial<typeof INITIAL_VISUAL_STATE> = {},
 ): string {
   return renderToStaticMarkup(createElement(Hud, {
     state: {
@@ -22,6 +23,7 @@ function renderHud(
       stalled: crashed,
       bank: crashed ? 82 : 0,
       engineRpm: aircraft === "jet" ? 80 : INITIAL_VISUAL_STATE.engineRpm,
+      ...stateOverrides,
     },
     aircraft,
     mode: "full",
@@ -71,6 +73,19 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(jet).toContain("<strong>80</strong>");
     expect(jet).toContain("<em>%</em>");
     expect(jet).not.toContain("<em>PROP</em>");
+  });
+
+  it("shows jet gear state and context-aware braking controls", () => {
+    const airborne = renderHud("chase", false, "jet", { gear: 0.45, brake: 1, onGround: false });
+    expect(airborne).toContain("GEAR");
+    expect(airborne).toContain("TRANSIT");
+    expect(airborne).toContain("45%");
+    expect(airborne).toContain("SPEED BRAKE");
+    expect(airborne).toContain("G gear · Space speed / wheel brake");
+
+    const rollout = renderHud("chase", false, "jet", { gear: 1, brake: 1, onGround: true });
+    expect(rollout).toContain("DOWN");
+    expect(rollout).toContain("SPEED + WHEEL BRAKE");
   });
 
   it("reports the requested mode separately from the effective backend and technique", () => {

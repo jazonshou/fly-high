@@ -4,6 +4,7 @@ import {
   generateTerrainGridIndices,
   worldToTerrainTile,
   type TerrainTileData,
+  type WorldDefinition,
 } from "@/src/world";
 import { GroundCoverRenderer, type GroundCoverSurface } from "./GroundCoverRenderer";
 import {
@@ -16,6 +17,24 @@ import {
   type TerrainMorphEdges,
 } from "./TerrainLodMorph";
 import { TerrainGenerationClient } from "./TerrainGenerationClient";
+import {
+  createAspenCanopyGeometry,
+  createDetailedTreeTrunkGeometry,
+  createFarBroadleafGeometry,
+  createFarConiferGeometry,
+  createOakCanopyGeometry,
+  createPineCanopyGeometry,
+  createSpruceCanopyGeometry,
+  FAR_FOREST_RADIUS,
+  includesFarTreeLod,
+  includesNearTreeLod,
+  orderForestLodCandidates,
+  selectTreeSpecies,
+  snapForestLodCenter,
+  TREE_SPECIES_PROFILES,
+  treeRenderBudget,
+  type ForestLodPriorityCandidate,
+} from "./ForestSystem";
 
 export interface RenderTerrainSample {
   height: number;
@@ -57,6 +76,15 @@ interface TerrainChunk {
   hasSourceData: boolean;
   sourceRevision: number;
   appliedMorphSignature: string;
+}
+
+interface FarForestCandidate extends ForestLodPriorityCandidate {
+  readonly cellX: number;
+  readonly cellZ: number;
+  readonly forestPatch: number;
+  readonly height: number;
+  readonly x: number;
+  readonly z: number;
 }
 
 const FAR_TILE_SCALE = 8;
@@ -330,18 +358,6 @@ function createHorizonGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-function createFarTreeGeometry(): THREE.BufferGeometry {
-  // Three overlapping whorls read as a tree line instead of a field of
-  // identical geometric spikes. This is still only 18 triangles per instance.
-  const lower = new THREE.ConeGeometry(1, 0.62, 6, 1, false);
-  lower.translate(0, 0.32, 0);
-  const middle = new THREE.ConeGeometry(0.76, 0.58, 6, 1, false);
-  middle.translate(0, 0.6, 0);
-  const crown = new THREE.ConeGeometry(0.5, 0.54, 6, 1, false);
-  crown.translate(0, 0.86, 0);
-  return mergeGeometryParts([lower, middle, crown]);
-}
-
 function mergeGeometryParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const unpacked = parts.map((part) => (part.index ? part.toNonIndexed() : part.clone()));
   const vertexCount = unpacked.reduce(
@@ -366,36 +382,6 @@ function mergeGeometryParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry
   for (const geometry of unpacked) geometry.dispose();
   for (const geometry of parts) geometry.dispose();
   return merged;
-}
-
-function createBroadleafCanopyGeometry(): THREE.BufferGeometry {
-  // A few overlapping low-poly lobes give a leafy, irregular crown while
-  // retaining one material and one instanced draw call for the whole canopy.
-  const lobes: Array<readonly [number, number, number, number, number, number]> = [
-    [0, 0.3, 0, 5.3, 5.7, 5.1],
-    [-3.2, -0.1, 0.7, 3.7, 4.1, 3.5],
-    [3.1, 0.25, -0.6, 3.9, 4.3, 3.6],
-    [-0.7, 1.9, -2.7, 3.8, 3.9, 3.5],
-    [1.1, 1.25, 2.8, 3.6, 4.2, 3.7],
-  ];
-  const parts = lobes.map(([x, y, z, sx, sy, sz], index) => {
-    const geometry = new THREE.IcosahedronGeometry(1, 0);
-    geometry.scale(sx, sy, sz);
-    geometry.rotateY(index * 1.17);
-    geometry.translate(x, y, z);
-    return geometry;
-  });
-  return mergeGeometryParts(parts);
-}
-
-function createConiferCanopyGeometry(): THREE.BufferGeometry {
-  const lower = new THREE.ConeGeometry(5.9, 10.5, 8, 1, false);
-  lower.translate(0, -2.3, 0);
-  const middle = new THREE.ConeGeometry(4.7, 10, 8, 1, false);
-  middle.translate(0, 2.4, 0);
-  const crown = new THREE.ConeGeometry(3.4, 9.2, 8, 1, false);
-  crown.translate(0, 6.4, 0);
-  return mergeGeometryParts([lower, middle, crown]);
 }
 
 function createRockOutcropGeometry(): THREE.BufferGeometry {
@@ -577,8 +563,11 @@ export class TerrainRenderer {
   private readonly runwayGroup = new THREE.Group();
   private readonly treeTrunks: THREE.InstancedMesh;
   private readonly treeCanopies: THREE.InstancedMesh;
+  private readonly aspenCanopies: THREE.InstancedMesh;
   private readonly coniferCanopies: THREE.InstancedMesh;
+  private readonly spruceCanopies: THREE.InstancedMesh;
   private readonly farForest: THREE.InstancedMesh;
+  private readonly farBroadleafForest: THREE.InstancedMesh;
   private readonly rocks: THREE.InstancedMesh;
   private readonly groundCover: GroundCoverRenderer;
   private readonly terrainGeneration: TerrainGenerationClient;
@@ -630,6 +619,8 @@ export class TerrainRenderer {
   private nextTreeRefreshTime = 0;
   private horizonCenterX = Number.NaN;
   private horizonCenterZ = Number.NaN;
+  private forestCenterX = Number.NaN;
+  private forestCenterZ = Number.NaN;
 
   constructor(
     private readonly sample: TerrainSampleFunction,
@@ -637,12 +628,13 @@ export class TerrainRenderer {
     private readonly tileSize = 1_600,
     quality: "low" | "medium" | "high" = "medium",
     private readonly runway?: RenderRunwayDefinition,
+    resolvedWorld?: WorldDefinition,
   ) {
     this.quality = quality;
     this.resolution = terrainVertexResolution(quality, "near") - 1;
     this.farResolution = terrainVertexResolution(quality, "far");
     this.radius = quality === "low" ? 2 : 3;
-    this.terrainGeneration = new TerrainGenerationClient(seed);
+    this.terrainGeneration = new TerrainGenerationClient(resolvedWorld ?? seed);
     this.terrainDetailMap = { value: createTerrainDetailTexture(seed) };
     // Reuse the deterministic, mipmapped four-channel terrain detail field as
     // the water normal source. Sampling it at independent scales/directions
@@ -713,9 +705,21 @@ export class TerrainRenderer {
       flatShading: true,
       dithering: true,
     });
+    const aspenMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.88,
+      flatShading: true,
+      dithering: true,
+    });
     const coniferMaterial = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.94,
+      flatShading: true,
+      dithering: true,
+    });
+    const spruceMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.97,
       flatShading: true,
       dithering: true,
     });
@@ -730,23 +734,38 @@ export class TerrainRenderer {
       flatShading: true,
     });
     this.treeTrunks = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.48, 0.92, 11, 7),
+      createDetailedTreeTrunkGeometry(),
       trunkMaterial,
       MAX_NEAR_TREES,
     );
     this.treeCanopies = new THREE.InstancedMesh(
-      createBroadleafCanopyGeometry(),
+      createOakCanopyGeometry(),
       canopyMaterial,
       MAX_NEAR_TREES,
     );
+    this.aspenCanopies = new THREE.InstancedMesh(
+      createAspenCanopyGeometry(),
+      aspenMaterial,
+      MAX_NEAR_TREES,
+    );
     this.coniferCanopies = new THREE.InstancedMesh(
-      createConiferCanopyGeometry(),
+      createPineCanopyGeometry(),
       coniferMaterial,
       MAX_NEAR_TREES,
     );
+    this.spruceCanopies = new THREE.InstancedMesh(
+      createSpruceCanopyGeometry(),
+      spruceMaterial,
+      MAX_NEAR_TREES,
+    );
     this.farForest = new THREE.InstancedMesh(
-      createFarTreeGeometry(),
+      createFarConiferGeometry(),
       farTreeMaterial,
+      MAX_FAR_TREES,
+    );
+    this.farBroadleafForest = new THREE.InstancedMesh(
+      createFarBroadleafGeometry(),
+      farTreeMaterial.clone(),
       MAX_FAR_TREES,
     );
     this.rocks = new THREE.InstancedMesh(
@@ -756,19 +775,28 @@ export class TerrainRenderer {
     );
     this.treeTrunks.castShadow = quality !== "low";
     this.treeCanopies.castShadow = quality !== "low";
+    this.aspenCanopies.castShadow = quality !== "low";
     this.coniferCanopies.castShadow = quality !== "low";
+    this.spruceCanopies.castShadow = quality !== "low";
     this.treeTrunks.receiveShadow = true;
     this.treeCanopies.receiveShadow = true;
+    this.aspenCanopies.receiveShadow = true;
     this.coniferCanopies.receiveShadow = true;
+    this.spruceCanopies.receiveShadow = true;
     this.farForest.castShadow = false;
     this.farForest.receiveShadow = false;
+    this.farBroadleafForest.castShadow = false;
+    this.farBroadleafForest.receiveShadow = false;
     this.rocks.castShadow = quality === "high";
     this.rocks.receiveShadow = true;
     for (const instances of [
       this.treeTrunks,
       this.treeCanopies,
+      this.aspenCanopies,
       this.coniferCanopies,
+      this.spruceCanopies,
       this.farForest,
+      this.farBroadleafForest,
       this.rocks,
     ]) {
       instances.count = 0;
@@ -776,15 +804,21 @@ export class TerrainRenderer {
       instances.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     }
     this.treeTrunks.name = "near-tree-trunks";
-    this.treeCanopies.name = "near-tree-canopies";
-    this.coniferCanopies.name = "near-conifer-canopies";
-    this.farForest.name = "far-forest-lod";
+    this.treeCanopies.name = "near-oak-canopies";
+    this.aspenCanopies.name = "near-aspen-canopies";
+    this.coniferCanopies.name = "near-pine-canopies";
+    this.spruceCanopies.name = "near-spruce-canopies";
+    this.farForest.name = "far-conifer-forest-lod";
+    this.farBroadleafForest.name = "far-broadleaf-forest-lod";
     this.rocks.name = "scattered-rocks";
     this.group.add(
       this.farForest,
+      this.farBroadleafForest,
       this.treeTrunks,
       this.treeCanopies,
+      this.aspenCanopies,
       this.coniferCanopies,
+      this.spruceCanopies,
       this.rocks,
       this.groundCover.group,
     );
@@ -875,6 +909,12 @@ export class TerrainRenderer {
     const nextTileX = worldToTerrainTile(worldX, this.tileSize);
     const nextTileZ = worldToTerrainTile(worldZ, this.tileSize);
     const centerChanged = nextTileX !== this.centerTileX || nextTileZ !== this.centerTileZ;
+    const nextForestCenterX = snapForestLodCenter(worldX);
+    const nextForestCenterZ = snapForestLodCenter(worldZ);
+    const forestCenterChanged =
+      nextForestCenterX !== this.forestCenterX || nextForestCenterZ !== this.forestCenterZ;
+    this.forestCenterX = nextForestCenterX;
+    this.forestCenterZ = nextForestCenterZ;
     if (centerChanged) {
       this.centerTileX = nextTileX;
       this.centerTileZ = nextTileZ;
@@ -894,7 +934,11 @@ export class TerrainRenderer {
     );
     this.waterBathymetryValid.value = this.bathymetry.isValid() ? 1 : 0;
     if (originChanged) this.treesDirty = true;
-    if (this.treesDirty && (originChanged || centerChanged || now >= this.nextTreeRefreshTime)) {
+    if (forestCenterChanged) this.treesDirty = true;
+    if (
+      this.treesDirty &&
+      (originChanged || centerChanged || forestCenterChanged || now >= this.nextTreeRefreshTime)
+    ) {
       this.refreshTrees();
       // Worker results can arrive one at a time. Batch their visual-object
       // rebuilds so streaming remains smooth instead of rebuilding thousands
@@ -958,7 +1002,9 @@ export class TerrainRenderer {
     const castNearVegetationShadows = quality !== "low";
     this.treeTrunks.castShadow = castNearVegetationShadows;
     this.treeCanopies.castShadow = castNearVegetationShadows;
+    this.aspenCanopies.castShadow = castNearVegetationShadows;
     this.coniferCanopies.castShadow = castNearVegetationShadows;
+    this.spruceCanopies.castShadow = castNearVegetationShadows;
     this.rocks.castShadow = quality === "high";
     this.groundCover.setQuality(quality);
     this.water.material.roughness = quality === "low" ? 0.22 : quality === "medium" ? 0.14 : 0.095;
@@ -1637,18 +1683,18 @@ export class TerrainRenderer {
             );
             vec4 broadSample = texture2D(
               waterSurfaceDetailMap,
-              fract(broadPoint * 0.000244140625 + vec2(time * 0.000041, -time * 0.000027))
+              broadPoint * 0.000244140625 + vec2(time * 0.000041, -time * 0.000027)
             );
             vec4 middleSample = texture2D(
               waterSurfaceDetailMap,
-              fract(middlePoint * 0.0009765625 + vec2(-time * 0.00023, time * 0.00017))
+              middlePoint * 0.0009765625 + vec2(-time * 0.00023, time * 0.00017)
             );
             vec4 fineSample = texture2D(
               waterSurfaceDetailMap,
-              fract(finePoint * 0.00390625 + vec2(time * 0.0011, time * 0.00073))
+              finePoint * 0.00390625 + vec2(time * 0.0011, time * 0.00073)
             );
             vec2 broadNormal = broadSample.rg * 2.0 - 1.0;
-            vec2 middleNormal = middleSample.ba * 2.0 - 1.0;
+            vec2 middleNormal = middleSample.br * 2.0 - 1.0;
             vec2 fineNormal = fineSample.gr * 2.0 - 1.0;
             float broadFade = 1.0 - smoothstep(90.0, 480.0, pixelFootprint);
             float middleFade = 1.0 - smoothstep(12.0, 100.0, pixelFootprint);
@@ -1929,7 +1975,7 @@ export class TerrainRenderer {
           gl_FragColor.a = 0.0;`,
         );
     };
-    material.customProgramCacheKey = () => "stable-water-depth-spectrum-v11";
+    material.customProgramCacheKey = () => "stable-water-depth-spectrum-v12";
   }
 
   private configureFarTerrainCutout(): void {
@@ -2341,15 +2387,23 @@ export class TerrainRenderer {
     const matrix = this.tempMatrix;
     let trunkCount = 0;
     let broadleafCount = 0;
+    let aspenCount = 0;
     let coniferCount = 0;
-    let farCount = 0;
+    let spruceCount = 0;
+    let farConiferCount = 0;
+    let farBroadleafCount = 0;
     let rockCount = 0;
-    const nearLimit = this.quality === "high" ? MAX_NEAR_TREES : this.quality === "medium" ? 1_500 : 820;
-    const farLimit = this.quality === "high" ? MAX_FAR_TREES : this.quality === "medium" ? 2_650 : 1_350;
-    const rockLimit = this.quality === "high" ? MAX_ROCKS : this.quality === "medium" ? 620 : 180;
-    const nearRadius = this.quality === "high" ? 5_100 : this.quality === "medium" ? 4_200 : 3_000;
-    const worldCenterX = (this.centerTileX + 0.5) * this.tileSize;
-    const worldCenterZ = (this.centerTileZ + 0.5) * this.tileSize;
+    const forestBudget = treeRenderBudget(this.quality);
+    const nearLimit = forestBudget.nearInstances;
+    const farLimit = forestBudget.farInstances;
+    const rockLimit = forestBudget.rockInstances;
+    const nearRadius = forestBudget.nearRadius;
+    const worldCenterX = Number.isFinite(this.forestCenterX)
+      ? this.forestCenterX
+      : (this.centerTileX + 0.5) * this.tileSize;
+    const worldCenterZ = Number.isFinite(this.forestCenterZ)
+      ? this.forestCenterZ
+      : (this.centerTileZ + 0.5) * this.tileSize;
     const visibleNearByKey = new Map<string, TerrainChunk>();
     const visibleFarByKey = new Map<string, TerrainChunk>();
     for (const [key, chunk] of this.retiredChunks) {
@@ -2386,7 +2440,15 @@ export class TerrainRenderer {
             continue;
           }
           const distanceSquared = (x - worldCenterX) ** 2 + (z - worldCenterZ) ** 2;
-          if (distanceSquared > nearRadius * nearRadius) continue;
+          if (
+            !includesNearTreeLod(
+              distanceSquared,
+              nearRadius,
+              hash01(cellX, cellZ, this.seed ^ 0x2f31),
+            )
+          ) {
+            continue;
+          }
           const localX = x - chunkStartX;
           const localZ = z - chunkStartZ;
           const height = this.sampleChunkHeight(chunk, localX, localZ);
@@ -2427,33 +2489,85 @@ export class TerrainRenderer {
           if (density > densityThreshold) continue;
 
           {
+            // Reuse the continuous density field as a local moisture proxy and
+            // add a much broader climate field.  This keeps species changes
+            // gradual (no elevation rings), deterministic, and cheap enough to
+            // rebuild while terrain workers stream in.
+            const moisture = THREE.MathUtils.clamp(
+              0.12 + forestPatch * 0.72 +
+                smoothHashField(cellX, cellZ, 19, this.seed ^ 0x79b1) * 0.16,
+              0,
+              1,
+            );
+            const temperature = THREE.MathUtils.clamp(
+              0.91 - height / 1_620 +
+                (smoothHashField(cellX, cellZ, 31, this.seed ^ 0x18e7) - 0.5) * 0.2,
+              0,
+              1,
+            );
+            const species = selectTreeSpecies({
+              height,
+              slope,
+              moisture,
+              temperature,
+              selector: hash01(cellZ, cellX, this.seed ^ 0xa619),
+            });
+            const profile = TREE_SPECIES_PROFILES[species];
             const scale = 0.62 + hash01(cellX, cellZ, this.seed ^ 991) * 0.72;
+            const breadth = 0.88 + hash01(cellZ, cellX, this.seed ^ 0x519) * 0.24;
+            const crownWidth = scale * profile.widthScale;
+            const crownHeight = scale * profile.heightScale;
+            const trunkWidth = scale * Math.sqrt(profile.widthScale) * 0.9;
             this.tempQuaternion.setFromAxisAngle(
               this.upAxis,
               hash01(cellZ, cellX, this.seed ^ 31) * Math.PI * 2,
             );
-            const breadth = 0.88 + hash01(cellZ, cellX, this.seed ^ 0x519) * 0.24;
-            this.tempScale.set(scale * breadth, scale, scale / breadth);
-            this.tempPosition.set(x - this.originX, height + 5.5 * scale, z - this.originZ);
+
+            // Every scale component remains positive. Besides correct normal
+            // orientation, this prevents reflected/CSM passes from receiving
+            // inverted winding that looked like upside-down foliage.
+            this.tempScale.set(
+              trunkWidth * breadth,
+              crownHeight,
+              trunkWidth / breadth,
+            );
+            this.tempPosition.set(
+              x - this.originX,
+              height + 5.5 * crownHeight,
+              z - this.originZ,
+            );
             matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
             this.treeTrunks.setMatrixAt(trunkCount, matrix);
-            this.tempColor.setHSL(
-              0.075 + hash01(cellX, cellZ, this.seed ^ 0x713) * 0.025,
-              0.32,
-              0.19 + hash01(cellZ, cellX, this.seed ^ 0x317) * 0.08,
-            );
+            const barkTone = hash01(cellZ, cellX, this.seed ^ 0x317);
+            if (species === "aspen") {
+              this.tempColor.setHSL(0.105, 0.1, 0.52 + barkTone * 0.14);
+            } else if (species === "pine") {
+              this.tempColor.setHSL(0.065, 0.35, 0.17 + barkTone * 0.08);
+            } else if (species === "spruce") {
+              this.tempColor.setHSL(0.085, 0.22, 0.15 + barkTone * 0.07);
+            } else {
+              this.tempColor.setHSL(0.075, 0.32, 0.19 + barkTone * 0.08);
+            }
             this.treeTrunks.setColorAt(trunkCount, this.tempColor);
 
             const tone = hash01(cellX, cellZ, this.seed ^ 0xc412);
-            const coniferProbability = THREE.MathUtils.clamp(
-              0.3 + height / 1_500 + (0.5 - forestPatch) * 0.22,
-              0.22,
-              0.82,
+            this.tempScale.set(
+              crownWidth * breadth,
+              crownHeight,
+              crownWidth / breadth,
             );
-            const isConifer = hash01(cellZ, cellX, this.seed ^ 0xa619) < coniferProbability;
-            if (isConifer) {
-              this.tempPosition.y = height + 7.7 * scale;
-              matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+            this.tempPosition.y = height + profile.crownCenterHeight * crownHeight;
+            matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+            if (species === "aspen") {
+              this.aspenCanopies.setMatrixAt(aspenCount, matrix);
+              this.tempColor.setHSL(
+                0.18 + tone * 0.09,
+                0.3 + tone * 0.18,
+                0.31 + tone * 0.12,
+              );
+              this.aspenCanopies.setColorAt(aspenCount, this.tempColor);
+              aspenCount += 1;
+            } else if (species === "pine") {
               this.coniferCanopies.setMatrixAt(coniferCount, matrix);
               this.tempColor.setHSL(
                 0.32 + tone * 0.035,
@@ -2462,9 +2576,16 @@ export class TerrainRenderer {
               );
               this.coniferCanopies.setColorAt(coniferCount, this.tempColor);
               coniferCount += 1;
+            } else if (species === "spruce") {
+              this.spruceCanopies.setMatrixAt(spruceCount, matrix);
+              this.tempColor.setHSL(
+                0.39 + tone * 0.04,
+                0.28 + tone * 0.14,
+                0.15 + tone * 0.065,
+              );
+              this.spruceCanopies.setColorAt(spruceCount, this.tempColor);
+              spruceCount += 1;
             } else {
-              this.tempPosition.y = height + 15.2 * scale;
-              matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
               this.treeCanopies.setMatrixAt(broadleafCount, matrix);
               this.tempColor.setHSL(
                 0.255 + tone * 0.085,
@@ -2483,8 +2604,8 @@ export class TerrainRenderer {
     const visibleFar = [...visibleFarByKey.values()].sort(
       (first, second) => first.tileZ - second.tileZ || first.tileX - second.tileX,
     );
-    const farMinimumSquared = (nearRadius * 0.72) ** 2;
-    const farMaximumSquared = 18_000 ** 2;
+    const farMaximumSquared = FAR_FOREST_RADIUS ** 2;
+    const farCandidates: FarForestCandidate[] = [];
     for (const chunk of visibleFar) {
       const chunkStartX = chunk.tileX * chunk.size;
       const chunkStartZ = chunk.tileZ * chunk.size;
@@ -2492,8 +2613,8 @@ export class TerrainRenderer {
       const maxCellX = Math.ceil((chunkStartX + chunk.size) / FAR_TREE_CELL_SIZE);
       const minCellZ = Math.floor(chunkStartZ / FAR_TREE_CELL_SIZE);
       const maxCellZ = Math.ceil((chunkStartZ + chunk.size) / FAR_TREE_CELL_SIZE);
-      for (let cellZ = minCellZ; cellZ < maxCellZ && farCount < farLimit; cellZ += 1) {
-        for (let cellX = minCellX; cellX < maxCellX && farCount < farLimit; cellX += 1) {
+      for (let cellZ = minCellZ; cellZ < maxCellZ; cellZ += 1) {
+        for (let cellX = minCellX; cellX < maxCellX; cellX += 1) {
           const forestPatch = smoothHashField(cellX, cellZ, 5.5, this.seed ^ 0xf075);
           if (hash01(cellX, cellZ, this.seed ^ 0x7f05) > 0.22 + forestPatch * 0.5) continue;
           const x = (cellX + 0.1 + hash01(cellX, cellZ, this.seed ^ 0x8ad1) * 0.8) * FAR_TREE_CELL_SIZE;
@@ -2507,49 +2628,123 @@ export class TerrainRenderer {
             continue;
           }
           const distanceSquared = (x - worldCenterX) ** 2 + (z - worldCenterZ) ** 2;
-          if (distanceSquared < farMinimumSquared || distanceSquared > farMaximumSquared) continue;
+          if (
+            distanceSquared > farMaximumSquared ||
+            !includesFarTreeLod(
+              distanceSquared,
+              nearRadius,
+              hash01(cellX, cellZ, this.seed ^ 0x713d),
+            )
+          ) {
+            continue;
+          }
           if (this.isInsideRunwayClearance(x, z)) continue;
           const localX = x - chunkStartX;
           const localZ = z - chunkStartZ;
           const height = this.sampleChunkHeight(chunk, localX, localZ);
           if (height < 5 || height > 1_320) continue;
-          const scale = 0.72 + hash01(cellX, cellZ, this.seed ^ 0x21d3) * 0.88;
-          this.tempPosition.set(
-            x - this.originX,
+          farCandidates.push({
+            cellX,
+            cellZ,
+            deltaX: x - worldCenterX,
+            deltaZ: z - worldCenterZ,
+            distanceSquared,
+            forestPatch,
             height,
-            z - this.originZ,
-          );
-          this.tempQuaternion.setFromAxisAngle(
-            this.upAxis,
-            hash01(cellZ, cellX, this.seed ^ 0xc501) * Math.PI * 2,
-          );
-          const widthVariation = 0.82 + hash01(cellZ, cellX, this.seed ^ 0x237) * 0.34;
-          this.tempScale.set(7.4 * scale * widthVariation, 28 * scale, 7.4 * scale / widthVariation);
-          matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
-          this.farForest.setMatrixAt(farCount, matrix);
-          const tone = hash01(cellX, cellZ, this.seed ^ 0x11b3);
-          this.tempColor.setHSL(0.29 + tone * 0.04, 0.32 + tone * 0.1, 0.18 + tone * 0.09);
-          this.farForest.setColorAt(farCount, this.tempColor);
-          farCount += 1;
+            stableX: cellX,
+            stableZ: cellZ,
+            tieBreaker: hash01(cellX, cellZ, this.seed ^ 0x5d73),
+            x,
+            z,
+          });
         }
       }
-      if (farCount >= farLimit) break;
+    }
+
+    const orderedFarCandidates = orderForestLodCandidates(farCandidates);
+    for (
+      let candidateIndex = 0;
+      candidateIndex < Math.min(farLimit, orderedFarCandidates.length);
+      candidateIndex += 1
+    ) {
+      const candidate = orderedFarCandidates[candidateIndex]!;
+      const { cellX, cellZ, forestPatch, height, x, z } = candidate;
+      const scale = 0.72 + hash01(cellX, cellZ, this.seed ^ 0x21d3) * 0.88;
+      this.tempPosition.set(
+        x - this.originX,
+        height,
+        z - this.originZ,
+      );
+      this.tempQuaternion.setFromAxisAngle(
+        this.upAxis,
+        hash01(cellZ, cellX, this.seed ^ 0xc501) * Math.PI * 2,
+      );
+      const widthVariation = 0.82 + hash01(cellZ, cellX, this.seed ^ 0x237) * 0.34;
+      const tone = hash01(cellX, cellZ, this.seed ^ 0x11b3);
+      const coniferProbability = THREE.MathUtils.clamp(
+        0.2 + height / 1_430 + (0.5 - forestPatch) * 0.3,
+        0.16,
+        0.93,
+      );
+      const isConifer = hash01(cellZ, cellX, this.seed ^ 0x391d) < coniferProbability;
+      if (isConifer) {
+        this.tempScale.set(
+          7.4 * scale * widthVariation,
+          28 * scale,
+          7.4 * scale / widthVariation,
+        );
+        matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+        this.farForest.setMatrixAt(farConiferCount, matrix);
+        this.tempColor.setHSL(
+          0.3 + tone * 0.055,
+          0.31 + tone * 0.12,
+          0.16 + tone * 0.085,
+        );
+        this.farForest.setColorAt(farConiferCount, this.tempColor);
+        farConiferCount += 1;
+      } else {
+        this.tempScale.set(
+          11.2 * scale * widthVariation,
+          20 * scale,
+          10.1 * scale / widthVariation,
+        );
+        matrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+        this.farBroadleafForest.setMatrixAt(farBroadleafCount, matrix);
+        this.tempColor.setHSL(
+          0.245 + tone * 0.095,
+          0.3 + tone * 0.17,
+          0.2 + tone * 0.105,
+        );
+        this.farBroadleafForest.setColorAt(farBroadleafCount, this.tempColor);
+        farBroadleafCount += 1;
+      }
     }
 
     this.treeTrunks.count = trunkCount;
     this.treeCanopies.count = broadleafCount;
+    this.aspenCanopies.count = aspenCount;
     this.coniferCanopies.count = coniferCount;
-    this.farForest.count = farCount;
+    this.spruceCanopies.count = spruceCount;
+    this.farForest.count = farConiferCount;
+    this.farBroadleafForest.count = farBroadleafCount;
     this.rocks.count = rockCount;
     this.treeTrunks.instanceMatrix.needsUpdate = true;
     this.treeCanopies.instanceMatrix.needsUpdate = true;
+    this.aspenCanopies.instanceMatrix.needsUpdate = true;
     this.coniferCanopies.instanceMatrix.needsUpdate = true;
+    this.spruceCanopies.instanceMatrix.needsUpdate = true;
     this.farForest.instanceMatrix.needsUpdate = true;
+    this.farBroadleafForest.instanceMatrix.needsUpdate = true;
     this.rocks.instanceMatrix.needsUpdate = true;
     if (this.treeTrunks.instanceColor) this.treeTrunks.instanceColor.needsUpdate = true;
     if (this.treeCanopies.instanceColor) this.treeCanopies.instanceColor.needsUpdate = true;
+    if (this.aspenCanopies.instanceColor) this.aspenCanopies.instanceColor.needsUpdate = true;
     if (this.coniferCanopies.instanceColor) this.coniferCanopies.instanceColor.needsUpdate = true;
+    if (this.spruceCanopies.instanceColor) this.spruceCanopies.instanceColor.needsUpdate = true;
     if (this.farForest.instanceColor) this.farForest.instanceColor.needsUpdate = true;
+    if (this.farBroadleafForest.instanceColor) {
+      this.farBroadleafForest.instanceColor.needsUpdate = true;
+    }
     if (this.rocks.instanceColor) this.rocks.instanceColor.needsUpdate = true;
   }
 
@@ -2872,13 +3067,19 @@ export class TerrainRenderer {
     (this.water.material as THREE.Material).dispose();
     this.treeTrunks.geometry.dispose();
     this.treeCanopies.geometry.dispose();
+    this.aspenCanopies.geometry.dispose();
     this.coniferCanopies.geometry.dispose();
+    this.spruceCanopies.geometry.dispose();
     this.farForest.geometry.dispose();
+    this.farBroadleafForest.geometry.dispose();
     this.rocks.geometry.dispose();
     (this.treeTrunks.material as THREE.Material).dispose();
     (this.treeCanopies.material as THREE.Material).dispose();
+    (this.aspenCanopies.material as THREE.Material).dispose();
     (this.coniferCanopies.material as THREE.Material).dispose();
+    (this.spruceCanopies.material as THREE.Material).dispose();
     (this.farForest.material as THREE.Material).dispose();
+    (this.farBroadleafForest.material as THREE.Material).dispose();
     (this.rocks.material as THREE.Material).dispose();
     this.runwayGroup.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;

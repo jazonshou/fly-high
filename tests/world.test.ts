@@ -19,15 +19,146 @@ import {
   sampleTerrainHeight,
   sampleWind,
   worldToRunway,
+  type AirportDefinition,
+  type WorldDefinition,
 } from "../src/world";
 
-const SAFE_TEST_AIRPORT = Object.freeze({
-  centerX: -3_109.8434911464765,
-  centerZ: -7_702.165069913508,
-  elevation: 35.25,
-  headingRadians: 0.6698306877107214,
-});
-const SAFE_TEST_AIRPORT_SEED = "airport-safety-1-535203442";
+const SAFE_TEST_AIRPORT_SEED = "certified-airport-fixture";
+
+interface DenseAirportOracle {
+  readonly minimumPlatformClearance: number;
+  readonly platformRelief: number;
+  readonly longitudinalGrade: number;
+  readonly crossGrade: number;
+  readonly minimumBlendClearance: number;
+  readonly blendRelief: number;
+  readonly minimumApproachClearance: number;
+  readonly approachObstruction: number;
+}
+
+function independentAxis(minimum: number, maximum: number, maximumSpacing: number): number[] {
+  const intervals = Math.max(1, Math.ceil((maximum - minimum) / maximumSpacing));
+  return Array.from(
+    { length: intervals + 1 },
+    (_, index) => minimum + ((maximum - minimum) * index) / intervals,
+  );
+}
+
+function independentRoundedDistance(
+  along: number,
+  across: number,
+  halfLength: number,
+  halfWidth: number,
+): number {
+  const qAlong = Math.abs(along) - halfLength;
+  const qAcross = Math.abs(across) - halfWidth;
+  return (
+    Math.hypot(Math.max(qAlong, 0), Math.max(qAcross, 0)) +
+    Math.min(Math.max(qAlong, qAcross), 0)
+  );
+}
+
+/**
+ * Test-only dense oracle. Its independent 11/13/17 m lattices deliberately do
+ * not call assessAirportSite or share any of the production certificate grids.
+ */
+function independentlyAuditAirport(
+  world: Readonly<WorldDefinition>,
+  airport: Readonly<AirportDefinition>,
+): DenseAirportOracle {
+  const halfLength = airport.runwayLength * 0.5 + airport.endSafetyArea;
+  const halfWidth = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+  const sinHeading = Math.sin(airport.headingRadians);
+  const cosHeading = Math.cos(airport.headingRadians);
+  const naturalHeight = (along: number, across: number): number =>
+    sampleNaturalTerrainHeight(
+      world.seedHash,
+      airport.centerX + along * sinHeading + across * cosHeading,
+      airport.centerZ + along * cosHeading - across * sinHeading,
+    );
+
+  const alongSamples = independentAxis(-halfLength, halfLength, 11);
+  const acrossSamples = independentAxis(-halfWidth, halfWidth, 9);
+  const platformRows: number[][] = [];
+  let platformMinimum = Number.POSITIVE_INFINITY;
+  let platformMaximum = Number.NEGATIVE_INFINITY;
+  let crossGrade = 0;
+  for (const along of alongSamples) {
+    const row = acrossSamples.map((across) => naturalHeight(along, across));
+    platformRows.push(row);
+    platformMinimum = Math.min(platformMinimum, ...row);
+    platformMaximum = Math.max(platformMaximum, ...row);
+    crossGrade = Math.max(
+      crossGrade,
+      Math.abs((row.at(-1) ?? 0) - (row[0] ?? 0)) / (halfWidth * 2),
+    );
+  }
+
+  const alongSpacing = (halfLength * 2) / Math.max(1, alongSamples.length - 1);
+  const gradeLag = Math.max(1, Math.ceil(160 / alongSpacing));
+  const gradeDistance = gradeLag * alongSpacing;
+  let longitudinalGrade = 0;
+  for (let rowIndex = gradeLag; rowIndex < platformRows.length; rowIndex += 1) {
+    const row = platformRows[rowIndex]!;
+    const previous = platformRows[rowIndex - gradeLag]!;
+    for (let acrossIndex = 0; acrossIndex < row.length; acrossIndex += 1) {
+      longitudinalGrade = Math.max(
+        longitudinalGrade,
+        Math.abs((row[acrossIndex] ?? 0) - (previous[acrossIndex] ?? 0)) /
+          gradeDistance,
+      );
+    }
+  }
+
+  const blendDistance = airport.terrainBlendDistance;
+  let blendMinimum = platformMinimum;
+  let blendMaximum = platformMaximum;
+  for (const along of independentAxis(
+    -halfLength - blendDistance,
+    halfLength + blendDistance,
+    13,
+  )) {
+    for (const across of independentAxis(
+      -halfWidth - blendDistance,
+      halfWidth + blendDistance,
+      13,
+    )) {
+      if (
+        independentRoundedDistance(along, across, halfLength, halfWidth) > blendDistance
+      ) {
+        continue;
+      }
+      const height = naturalHeight(along, across);
+      blendMinimum = Math.min(blendMinimum, height);
+      blendMaximum = Math.max(blendMaximum, height);
+    }
+  }
+
+  let approachMinimum = Number.POSITIVE_INFINITY;
+  let approachObstruction = Number.NEGATIVE_INFINITY;
+  for (const end of [-1, 1]) {
+    for (const distance of independentAxis(0, 4_200, 17)) {
+      const corridorHalfWidth = 70 + distance * 0.095;
+      const permittedHeight = airport.elevation + 18 + distance * 0.0524;
+      for (const across of independentAxis(-corridorHalfWidth, corridorHalfWidth, 17)) {
+        const height = naturalHeight(end * (halfLength + distance), across);
+        if (distance <= 520) approachMinimum = Math.min(approachMinimum, height);
+        approachObstruction = Math.max(approachObstruction, height - permittedHeight);
+      }
+    }
+  }
+
+  return {
+    minimumPlatformClearance: platformMinimum - world.seaLevel,
+    platformRelief: platformMaximum - platformMinimum,
+    longitudinalGrade,
+    crossGrade,
+    minimumBlendClearance: blendMinimum - world.seaLevel,
+    blendRelief: blendMaximum - blendMinimum,
+    minimumApproachClearance: approachMinimum - world.seaLevel,
+    approachObstruction,
+  };
+}
 
 describe("world seeds", () => {
   it("hashes text, numbers, and signed coordinates deterministically", () => {
@@ -45,6 +176,15 @@ describe("world seeds", () => {
   it("rejects non-finite numeric seeds", () => {
     expect(() => createWorld(Number.NaN)).toThrow(RangeError);
     expect(() => createWorld(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it("keeps the public seed identity stable while resolving a deterministic flight region", () => {
+    const first = createWorld("shareable-region-contract");
+    const repeated = createWorld("shareable-region-contract");
+    expect(first.seed).toBe("shareable-region-contract");
+    expect(first.sourceSeedHash).toBe(hashSeed("shareable-region-contract"));
+    expect(repeated).toEqual(first);
+    expect(first.airport).not.toBeNull();
   });
 });
 
@@ -67,7 +207,7 @@ describe("terrain kernel", () => {
   });
 
   it("keeps collision height, normals, runway, and friction identical to visual semantics", () => {
-    const runwayWorld = createWorld(SAFE_TEST_AIRPORT_SEED, { airport: SAFE_TEST_AIRPORT });
+    const runwayWorld = createWorld(SAFE_TEST_AIRPORT_SEED);
     const airport = runwayWorld.airport!;
     const runwayPoint = runwayToWorld(airport, airport.runwayLength * 0.25, 0);
     const coordinates: Array<readonly [number, number]> = [
@@ -195,10 +335,10 @@ describe("terrain kernel", () => {
 });
 
 describe("starter airport terrain", () => {
-  const world = createWorld(SAFE_TEST_AIRPORT_SEED, { airport: SAFE_TEST_AIRPORT });
+  const world = createWorld(SAFE_TEST_AIRPORT_SEED);
   const airport = world.airport!;
 
-  it("keeps the explicit runway fixture on a naturally buildable site", () => {
+  it("keeps the generated runway fixture on a naturally buildable site", () => {
     expect(
       assessAirportSite(
         world.seedHash,
@@ -262,42 +402,45 @@ describe("starter airport terrain", () => {
     );
   });
 
-  it("selects dry, low-earthwork runways with clear approaches across many seeds", () => {
+  it("guarantees independently audited runways across dense varied seeds", () => {
     let availableAirportCount = 0;
-    for (let index = 0; index < 192; index += 1) {
+    const seedCount = 384;
+    const selectionTimes: number[] = [];
+    const resolvedRegionHashes = new Set<number>();
+    for (let index = 0; index < seedCount; index += 1) {
       const variedSeed = `airport-safety-${index}-${Math.imul(index + 17, 2_654_435_761) >>> 0}`;
+      const selectionStarted = performance.now();
       const seededWorld = createWorld(variedSeed);
+      selectionTimes.push(performance.now() - selectionStarted);
+      resolvedRegionHashes.add(seededWorld.seedHash);
       const seededAirport = seededWorld.airport;
-      if (!seededAirport) continue;
+      expect(seededWorld.seed).toBe(variedSeed);
+      expect(seededWorld.sourceSeedHash).toBe(hashSeed(variedSeed));
+      expect(seededAirport, `${variedSeed} should resolve a safe flight region`).not.toBeNull();
+      if (!seededAirport) throw new Error(`${variedSeed} has no airport`);
       availableAirportCount += 1;
-      const assessment = assessAirportSite(
-        seededWorld.seedHash,
-        seededWorld.seaLevel,
-        seededAirport.centerX,
-        seededAirport.centerZ,
-        seededAirport.headingRadians,
-        seededAirport,
-      );
-
+      const audit = independentlyAuditAirport(seededWorld, seededAirport);
+      const detail = `${variedSeed} dense audit ${JSON.stringify(audit)}`;
+      expect(audit.minimumPlatformClearance, `${detail} runway dryness`).toBeGreaterThanOrEqual(8);
+      expect(audit.platformRelief, `${detail} platform relief`).toBeLessThanOrEqual(24);
+      expect(audit.longitudinalGrade, `${detail} runway grade`).toBeLessThanOrEqual(0.065);
+      expect(audit.crossGrade, `${detail} runway cross-grade`).toBeLessThanOrEqual(0.12);
+      expect(audit.minimumBlendClearance, `${detail} blend dryness`).toBeGreaterThanOrEqual(2);
+      expect(audit.blendRelief, `${detail} construction blend relief`).toBeLessThanOrEqual(50);
+      expect(audit.minimumApproachClearance, `${detail} approach dryness`).toBeGreaterThanOrEqual(2);
+      expect(audit.approachObstruction, `${detail} approach clearance`).toBeLessThanOrEqual(0);
+      expect(seededAirport.elevation, `${variedSeed} airport elevation`).toBeLessThanOrEqual(260);
       expect(
-        assessment.suitable,
-        `${variedSeed} airport assessment ${JSON.stringify(assessment)}`,
-      ).toBe(true);
-      expect(assessment.minimumPlatformClearance, `${variedSeed} runway dryness`).toBeGreaterThanOrEqual(8);
-      expect(assessment.platformRelief, `${variedSeed} platform relief`).toBeLessThanOrEqual(24);
-      expect(assessment.longitudinalGrade, `${variedSeed} runway grade`).toBeLessThanOrEqual(0.065);
-      expect(assessment.crossGrade, `${variedSeed} runway cross-grade`).toBeLessThanOrEqual(0.12);
-      expect(assessment.blendRelief, `${variedSeed} construction blend relief`).toBeLessThanOrEqual(50);
-      expect(assessment.elevation, `${variedSeed} airport elevation`).toBeLessThanOrEqual(260);
-      expect(assessment.minimumApproachClearance, `${variedSeed} approach dryness`).toBeGreaterThanOrEqual(2);
-      expect(assessment.approachObstruction, `${variedSeed} approach clearance`).toBeLessThanOrEqual(0);
-      expect(Math.abs(seededAirport.elevation - assessment.elevation)).toBeLessThanOrEqual(0.125);
+        Math.hypot(seededAirport.centerX, seededAirport.centerZ),
+        `${variedSeed} flight-region radius`,
+      ).toBeLessThan(45_000);
     }
-    // The selector intentionally refuses unsafe seeds, but the bounded search
-    // must still expose the runway start often enough to catch search collapse.
-    expect(availableAirportCount).toBeGreaterThanOrEqual(8);
-    expect(availableAirportCount).toBeLessThan(192);
-  }, 30_000);
+    expect(availableAirportCount).toBe(seedCount);
+    expect(resolvedRegionHashes.size).toBeGreaterThan(112);
+    const sortedTimes = selectionTimes.sort((left, right) => left - right);
+    const p95SelectionTime = sortedTimes[Math.floor(sortedTimes.length * 0.95)] ?? Infinity;
+    expect(p95SelectionTime).toBeLessThan(150);
+  }, 120_000);
 
   it("keeps explicit custom airport sites exact instead of silently relocating them", () => {
     const custom = createWorld("manual-airport", {

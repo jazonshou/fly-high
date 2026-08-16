@@ -1,7 +1,7 @@
-import type { TerrainTileData, TerrainTileOptions, WorldSeed } from "@/src/world";
+import type { TerrainTileData, TerrainTileOptions, WorldDefinition } from "@/src/world";
 
 export type TerrainWorkerCommand =
-  | { type: "initialize"; seed: WorldSeed }
+  | { type: "initialize"; world: WorldDefinition }
   | {
       type: "generate";
       requestId: number;

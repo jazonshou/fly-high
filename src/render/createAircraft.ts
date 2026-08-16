@@ -598,6 +598,32 @@ function createJetAircraft(): AircraftVisual {
   noseSteer.add(noseWheel);
   landingGear.add(noseSteer);
 
+  const gearDoors = new THREE.Group();
+  gearDoors.name = "landing-gear-doors";
+  for (const side of [-1, 1]) {
+    const door = mesh(new THREE.BoxGeometry(1.28, 0.035, 0.34), undersideMaterial);
+    door.name = side < 0 ? "starboard-main-gear-door" : "port-main-gear-door";
+    door.position.set(-0.62, -0.6, side * 0.54);
+    gearDoors.add(door);
+  }
+  const noseDoor = mesh(new THREE.BoxGeometry(1.22, 0.03, 0.3), undersideMaterial);
+  noseDoor.name = "nose-gear-door";
+  noseDoor.position.set(3.26, -0.61, 0);
+  gearDoors.add(noseDoor);
+  group.add(gearDoors);
+
+  const speedBrakes: THREE.Group[] = [];
+  for (const side of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.name = side < 0 ? "starboard-speed-brake" : "port-speed-brake";
+    pivot.position.set(-0.42, 0.16, side * 1.28);
+    const panel = mesh(new THREE.BoxGeometry(1.18, 0.045, 0.72), undersideMaterial);
+    panel.position.x = -0.42;
+    pivot.add(panel);
+    group.add(pivot);
+    speedBrakes.push(pivot);
+  }
+
   const leftLight = mesh(new THREE.SphereGeometry(0.085, 8, 5), lampRed, false);
   leftLight.position.set(-0.2, 0.07, 4.82);
   const rightLight = mesh(new THREE.SphereGeometry(0.085, 8, 5), lampGreen, false);
@@ -624,8 +650,23 @@ function createJetAircraft(): AircraftVisual {
       elevator.rotation.z = -state.elevator * 0.26;
       rudder.rotation.y = -state.rudder * 0.28;
       noseSteer.rotation.y = state.onGround ? -state.rudder * 0.2 : 0;
-      landingGear.visible = state.onGround || state.altitudeAgl < 4;
-      if (state.onGround || state.altitudeAgl < 0.35) {
+      const gearTravel = THREE.MathUtils.clamp(state.gear, 0, 1);
+      const easedGear = gearTravel * gearTravel * (3 - 2 * gearTravel);
+      landingGear.visible = gearTravel > 0.012;
+      landingGear.scale.set(
+        0.9 + easedGear * 0.1,
+        0.08 + easedGear * 0.92,
+        0.36 + easedGear * 0.64,
+      );
+      landingGear.position.y = -0.24 * (1 - easedGear);
+      const doorTravel = Math.sin(Math.PI * gearTravel);
+      gearDoors.children.forEach((door, index) => {
+        door.rotation.x = (index === 1 ? -1 : 1) * doorTravel * 1.05;
+      });
+      for (const speedBrake of speedBrakes) {
+        speedBrake.rotation.z = -state.brake * 0.68;
+      }
+      if (state.onGround && state.gear >= 0.98) {
         const groundSpeed = Math.hypot(state.velocity.x, state.velocity.z);
         for (const wheel of mainWheelPivots) {
           wheel.rotation.z -= (groundSpeed * deltaSeconds) / 0.3;

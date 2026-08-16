@@ -6,10 +6,14 @@ import {
   buildHybridPassOrder,
 } from "../src/render/hybrid/HybridRenderPipeline";
 import {
+  ANALYTIC_WATER_MAX_DISTANCE_FACTOR,
+  ANALYTIC_WATER_RAY_EPSILON,
   HYBRID_COMPOSITE_FRAGMENT_SHADER,
+  HYBRID_ANALYTIC_WATER_POSITION_GLSL,
   HYBRID_EFFECT_FRAGMENT_SHADER,
   HYBRID_SURFACE_HISTORY_FRAGMENT_SHADER,
   HYBRID_TEMPORAL_FRAGMENT_SHADER,
+  analyticWaterRayDistance,
 } from "../src/render/hybrid/HybridShaders";
 import {
   PlanarWaterReflectionPass,
@@ -470,6 +474,35 @@ describe("planar reflection math and state", () => {
 });
 
 describe("hybrid frame graph", () => {
+  it("uses one finite analytic water intersection policy in every pass", () => {
+    const distance = analyticWaterRayDistance(1_200, 0.14, -0.25, 32_000);
+    expect(distance).not.toBeNull();
+    expect(1_200 + (distance ?? 0) * -0.25).toBeCloseTo(0.14, 8);
+    expect(analyticWaterRayDistance(1_200, 0.14, 0.25, 32_000)).toBeNull();
+    expect(
+      analyticWaterRayDistance(1_200, 0.14, ANALYTIC_WATER_RAY_EPSILON * 0.5, 32_000),
+    ).toBeNull();
+    expect(
+      analyticWaterRayDistance(
+        10_000,
+        0.14,
+        -0.1,
+        32_000,
+      ),
+    ).toBeNull();
+    expect(ANALYTIC_WATER_MAX_DISTANCE_FACTOR).toBe(1.5);
+
+    for (const shader of [
+      HYBRID_EFFECT_FRAGMENT_SHADER,
+      HYBRID_TEMPORAL_FRAGMENT_SHADER,
+      HYBRID_COMPOSITE_FRAGMENT_SHADER,
+    ]) {
+      expect(shader).toContain(HYBRID_ANALYTIC_WATER_POSITION_GLSL);
+      expect(shader).toContain("uniform float cameraFar;");
+      expect(shader.match(/vec3 analyticWaterViewPosition/g)).toHaveLength(1);
+    }
+  });
+
   it("runs the declared order, accumulates history, and restores renderer state", () => {
     const savedTarget = new THREE.WebGLRenderTarget(8, 8);
     const { renderer, state } = fakeRenderer(savedTarget);
@@ -477,7 +510,7 @@ describe("hybrid frame graph", () => {
       { renderingMode: "hybrid", quality: "medium", outputWidth: 640, outputHeight: 360 },
       CAPABILITIES,
     );
-    const camera = new THREE.PerspectiveCamera(62, 16 / 9, 0.08, 32_000);
+    const camera = new THREE.PerspectiveCamera(62, 16 / 9, 0.08, 19_123);
     camera.position.set(-13, 6, 0);
     camera.lookAt(10, 0, 0);
     const pipeline = new HybridRenderPipeline({
@@ -501,9 +534,14 @@ describe("hybrid frame graph", () => {
     expect(diagnostics.hardwareRayTracing).toBe(false);
     expect(state.renderCalls).toBe(5);
     const internals = pipeline as unknown as {
+      effectMaterial: THREE.ShaderMaterial;
       temporalMaterial: THREE.ShaderMaterial;
+      compositeMaterial: THREE.ShaderMaterial;
       targets: { surfaceHistory: THREE.WebGLRenderTarget };
     };
+    expect(internals.effectMaterial.uniforms.cameraFar!.value).toBe(19_123);
+    expect(internals.temporalMaterial.uniforms.cameraFar!.value).toBe(19_123);
+    expect(internals.compositeMaterial.uniforms.cameraFar!.value).toBe(19_123);
     expect(internals.temporalMaterial.uniforms.previousSurfaceMap!.value).toBe(
       internals.targets.surfaceHistory.texture,
     );
@@ -812,6 +850,10 @@ describe("hybrid frame graph", () => {
     expect(HYBRID_SURFACE_HISTORY_FRAGMENT_SHADER).toContain("waterTag");
     expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain("neighborhoodMinimum");
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("proceduralWaterViewNormal");
+    expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("analyticWaterViewPosition");
+    expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain(
+      "waterMask > 0.001\n      ? analyticWaterViewPosition",
+    );
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("viewMatrixValue");
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("waterMaterialMask");
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("beautySample.a");
@@ -820,8 +862,13 @@ describe("hybrid frame graph", () => {
     expect(
       HYBRID_EFFECT_FRAGMENT_SHADER.match(/texture2D\(\s*waterSurfaceDetailMap/g),
     ).toHaveLength(3);
+    expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("middleSample.br");
+    expect(HYBRID_EFFECT_FRAGMENT_SHADER).not.toContain("middleSample.ba");
+    expect(HYBRID_EFFECT_FRAGMENT_SHADER).not.toMatch(
+      /fract\(\s*(broad|middle|fine)Point/,
+    );
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain(
-      "visibility = mix(visibility, 1.0, waterMask)",
+      "visibility = ambientVisibility(vUv, viewPosition, geometricViewNormal)",
     );
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("crossedSurface");
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("previousSeparation");
@@ -835,11 +882,19 @@ describe("hybrid frame graph", () => {
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("index < 16");
     expect(HYBRID_EFFECT_FRAGMENT_SHADER).toContain("index < 32");
     expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain("waterHistoryWeight");
+    expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain("analyticWaterViewPosition");
+    expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain(
+      "currentWaterTag > 0.001\n      ? analyticWaterViewPosition",
+    );
     expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain("resolvedHistoryWeight");
     expect(HYBRID_TEMPORAL_FRAGMENT_SHADER).toContain(
       "texture2D(beautyMap, vUv).a",
     );
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("waterWorldOrigin");
+    expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("analyticWaterViewPosition");
+    expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain(
+      "waterMask > 0.001\n      ? analyticWaterViewPosition",
+    );
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("hybridWaterSlope");
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("hybridWaterSurfaceField");
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("waterSurfaceDetailMap");
@@ -847,6 +902,9 @@ describe("hybrid frame graph", () => {
     expect(
       HYBRID_COMPOSITE_FRAGMENT_SHADER.match(/texture2D\(\s*waterSurfaceDetailMap/g),
     ).toHaveLength(3);
+    expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).not.toMatch(
+      /fract\(\s*(broad|middle|fine)Point/,
+    );
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("dFdx(worldPosition.xz)");
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("waterFresnel");
     expect(HYBRID_COMPOSITE_FRAGMENT_SHADER).toContain("ssrFresnelWeight");

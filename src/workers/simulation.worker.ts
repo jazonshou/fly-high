@@ -9,9 +9,9 @@ import {
   FlightSimulator,
   type FlightControls,
   type AircraftKind,
+  type SpawnOptions,
 } from "@/src/sim";
 import {
-  createWorld,
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
   sampleWind,
@@ -19,7 +19,10 @@ import {
   type WindSample,
   type WorldDefinition,
 } from "@/src/world";
-import { createSimulationSpawn } from "@/src/game/spawn";
+import {
+  createCrashRecoverySpawn,
+  createSimulationSpawn,
+} from "@/src/game/spawn";
 import type {
   ControlState,
   FlightMode,
@@ -80,11 +83,8 @@ function terrainHeightSample(x: number, z: number): number {
   return world ? sampleTerrainCollisionHeight(world, x, z) : 0;
 }
 
-function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
-  if (!world) return;
-  airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
+function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
   const aircraft = aircraftDefinition(aircraftKind);
-  const spawn = createSimulationSpawn(world, kind, airborneStartAgl, aircraftKind);
   groundHeadingTarget = kind === "runway" ? (spawn.heading ?? 0) : null;
   controls = { ...DEFAULT_CONTROLS, ...spawn.controls };
   simulator = new FlightSimulator({
@@ -102,6 +102,39 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
   lastTime = performance.now();
   lastSnapshotTime = 0;
   post({ type: "ready", state: visualState() });
+}
+
+function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
+  if (!world) return;
+  airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
+  installSimulation(
+    kind,
+    createSimulationSpawn(world, kind, airborneStartAgl, aircraftKind),
+  );
+}
+
+/**
+ * Crash recovery deliberately snapshots the simulator's absolute world-space
+ * position before replacing it. FlightRenderer's 4 km floating origin exists
+ * only on the main thread and is therefore neither needed nor accepted here.
+ */
+function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
+  if (!world || !simulator || !simulator.state.crashed) return;
+  const crashWorldX = simulator.state.position.x;
+  const crashWorldZ = simulator.state.position.z;
+  const crashHeading = simulator.telemetry().heading;
+  airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
+  installSimulation(
+    "airborne",
+    createCrashRecoverySpawn(
+      world,
+      crashWorldX,
+      crashWorldZ,
+      crashHeading,
+      airborneStartAgl,
+      aircraftKind,
+    ),
+  );
 }
 
 function assistedControls(): FlightControls {
@@ -148,6 +181,7 @@ function visualState(): FlightVisualState {
     brake: snapshot.actuators.brake,
     trim: snapshot.actuators.trim,
     flaps: snapshot.actuators.flaps,
+    gear: snapshot.actuators.gear,
     loadFactor: telemetry.loadFactor,
     onGround: snapshot.onGround,
     stalled: telemetry.isStalled,
@@ -202,7 +236,10 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
   try {
     const command = event.data;
     if (command.type === "initialize") {
-      world = createWorld(command.seed);
+      // The main thread already resolved and certified the public seed. Reuse
+      // that structured-cloneable world so worker startup cannot repeat the
+      // synchronous airport search or select a different fallback region.
+      world = command.world;
       aircraftKind = command.aircraft;
       mode = command.mode;
       weather = command.weather;
@@ -241,6 +278,9 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     } else if (command.type === "reset") {
       attractMode = false;
       reset(command.spawn, command.airborneStartAgl);
+    } else if (command.type === "restartAfterCrash") {
+      attractMode = false;
+      restartAfterCrash(command.airborneStartAgl);
     }
   } catch (error) {
     post({ type: "error", message: error instanceof Error ? error.message : "Simulation error" });

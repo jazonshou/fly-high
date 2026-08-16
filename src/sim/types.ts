@@ -46,8 +46,10 @@ export interface FlightControls {
   trim: number;
   /** 0..1 flap extension. */
   flaps: number;
-  /** 0..1 wheel braking. */
+  /** 0..1 brake command: speed brake in flight, plus wheel brakes on contact. */
   brake: number;
+  /** 0..1 landing-gear command. Fixed-gear aircraft force this to 1. */
+  gear: number;
 }
 
 export interface TerrainSample {

@@ -7,6 +7,7 @@ export type InputAction =
   | "hud"
   | "flapsUp"
   | "flapsDown"
+  | "gearToggle"
   | "trimUp"
   | "trimDown";
 
@@ -62,6 +63,14 @@ export function keyboardThrottleDirection(pressed: ReadonlySet<string>): -1 | 0 
   return increase === decrease ? 0 : increase ? 1 : -1;
 }
 
+export function keyboardBrakeCommand(pressed: ReadonlySet<string>): 0 | 1 {
+  return pressed.has("Space") ? 1 : 0;
+}
+
+export function toggledGearPosition(current: number): 0 | 1 {
+  return current >= 0.5 ? 0 : 1;
+}
+
 /**
  * Rate-limited axis motion for digital controls.  A keyboard key is a button,
  * but a flight control is not: moving progressively toward the requested
@@ -91,6 +100,7 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
   KeyH: "hud",
   KeyF: "flapsDown",
   KeyV: "flapsUp",
+  KeyG: "gearToggle",
   ArrowUp: "trimUp",
   ArrowDown: "trimDown",
 };
@@ -101,12 +111,66 @@ const HELD_CONTROL_KEYS = new Set([
   "Space",
 ]);
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    target.isContentEditable;
+const INTERACTIVE_SELECTOR = [
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "summary",
+  "a[href]",
+  "area[href]",
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="textbox"]',
+  '[role="combobox"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="switch"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+].join(",");
+
+interface InteractiveTargetLike {
+  tagName?: unknown;
+  isContentEditable?: unknown;
+  getAttribute?: (name: string) => string | null;
+  closest?: (selector: string) => unknown;
+}
+
+/**
+ * Flight keys must not steal native keyboard activation from focused controls.
+ * This is structural rather than instanceof-based so it also behaves in
+ * alternate realms (embedded documents) and is directly unit-testable.
+ */
+export function isFlightShortcutTargetInteractive(target: EventTarget | null): boolean {
+  if (!target || typeof target !== "object") return false;
+  const candidate = target as InteractiveTargetLike;
+  const tagName = typeof candidate.tagName === "string"
+    ? candidate.tagName.toUpperCase()
+    : "";
+  if (["BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY"].includes(tagName)) return true;
+  if (
+    (tagName === "A" || tagName === "AREA") &&
+    candidate.getAttribute?.("href") != null
+  ) return true;
+  if (candidate.isContentEditable === true) return true;
+  const role = candidate.getAttribute?.("role")?.toLowerCase() ?? "";
+  if (
+    [
+      "button",
+      "link",
+      "textbox",
+      "combobox",
+      "slider",
+      "spinbutton",
+      "switch",
+      "checkbox",
+      "radio",
+    ].includes(role)
+  ) return true;
+  return typeof candidate.closest === "function" &&
+    candidate.closest(INTERACTIVE_SELECTOR) != null;
 }
 
 export class InputManager {
@@ -119,6 +183,7 @@ export class InputManager {
   private throttle = 0.68;
   private trim = 0;
   private flaps = 0;
+  private gear = 1;
   private mouseRoll = 0;
   private mousePitch = 0;
   private rollTapDirection = 0;
@@ -216,7 +281,8 @@ export class InputManager {
       throttle: this.throttle,
       trim: this.trim,
       flaps: this.flaps,
-      brake: this.pressed.has("Space") ? 1 : gamepad.brake,
+      brake: Math.max(keyboardBrakeCommand(this.pressed), gamepad.brake),
+      gear: this.gear,
     };
   }
 
@@ -226,6 +292,7 @@ export class InputManager {
     for (const action of result) {
       if (action === "flapsDown") this.flaps = Math.min(1, this.flaps + 0.5);
       if (action === "flapsUp") this.flaps = Math.max(0, this.flaps - 0.5);
+      if (action === "gearToggle") this.gear = toggledGearPosition(this.gear);
       if (action === "trimUp") this.trim = Math.min(1, this.trim + 0.04);
       if (action === "trimDown") this.trim = Math.max(-1, this.trim - 0.04);
     }
@@ -240,6 +307,7 @@ export class InputManager {
     spawn: "airborne" | "runway",
     airborneThrottle = 0.68,
     runwayTrim = 0.04,
+    airborneGear = 1,
   ): void {
     this.pressed.clear();
     this.actions.clear();
@@ -256,6 +324,7 @@ export class InputManager {
       : Math.min(1, Math.max(0, airborneThrottle));
     this.trim = spawn === "runway" ? runwayTrim : 0;
     this.flaps = 0;
+    this.gear = spawn === "runway" ? 1 : Math.min(1, Math.max(0, airborneGear));
   }
 
   dispose(): void {
@@ -270,7 +339,7 @@ export class InputManager {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (isEditableTarget(event.target)) return;
+    if (isFlightShortcutTargetInteractive(event.target)) return;
     if (event.repeat) return;
     if (event.code === "KeyD" || event.code === "KeyA") {
       this.rollTapDirection = keyboardRollDirection(event.code);

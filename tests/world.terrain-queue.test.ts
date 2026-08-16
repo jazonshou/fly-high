@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TerrainGenerationClient } from "../src/render/TerrainGenerationClient";
 import { isTerrainWorkerEvent } from "../src/workers/terrainProtocol";
 import { BoundedTerrainQueue } from "../src/workers/terrainQueue";
+import { createWorld } from "../src/world";
 
 class FakeTerrainWorker {
   readonly posted: unknown[] = [];
@@ -107,9 +108,12 @@ describe("terrain worker protocol guard", () => {
 
   it("ignores an active result canceled by a quality epoch before starting queued work", () => {
     const worker = new FakeTerrainWorker();
-    const client = new TerrainGenerationClient("stale-quality-result", {
+    const world = createWorld("stale-quality-result");
+    const client = new TerrainGenerationClient(world, {
       workerFactory: () => worker as unknown as Worker,
     });
+    expect((worker.posted[0] as { world?: unknown }).world).toBe(world);
+    expect(worker.posted[0]).toEqual({ type: "initialize", world });
     let staleResults = 0;
     let currentResults = 0;
     const tileOptions = {

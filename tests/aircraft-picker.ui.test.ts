@@ -41,7 +41,7 @@ describe("aircraft picker", () => {
     expect(inputs.find((input) => input.includes('value="jet"'))).toContain('checked=""');
   });
 
-  it("stays integrated with the minimal menu's start and seed controls", () => {
+  it("stays integrated with the minimal menu's start, seed, and settings controls", () => {
     const source = readFileSync(
       new URL("../src/game/FlightGame.tsx", import.meta.url),
       "utf8",
@@ -52,9 +52,11 @@ describe("aircraft picker", () => {
     expect(menu).toContain("<AircraftPicker");
     expect(menu).toContain('className="primary-action start-screen__start"');
     expect(menu).toContain('className="seed-action"');
+    expect(menu).toContain('className="settings-action"');
     expect(menu).toContain("<span>Start</span>");
     expect(menu).toContain("<small>Seed</small>");
     expect(menu).toContain("Generate a new world. Current seed");
+    expect(menu).toContain('aria-controls="settings-dialog"');
     expect(menu?.match(/<AircraftPicker/g)).toHaveLength(1);
   });
 });

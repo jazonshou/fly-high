@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { CanvasFlightRenderer } from "@/src/render/CanvasFlightRenderer";
@@ -18,9 +25,16 @@ import {
 } from "@/src/settings";
 import { AircraftPicker } from "@/src/ui/AircraftPicker";
 import { Hud } from "@/src/ui/Hud";
+import { modalTabTarget } from "@/src/ui/modalFocus";
+import { SettingsDialog } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain } from "@/src/world";
+import { DisposableScope } from "./DisposableScope";
 import { SimulationClient } from "./SimulationClient";
-import { airborneThrottleForAircraft, runwayTrimForAircraft } from "./spawn";
+import {
+  airborneGearForAircraft,
+  airborneThrottleForAircraft,
+  runwayTrimForAircraft,
+} from "./spawn";
 import {
   INITIAL_VISUAL_STATE,
   type CameraMode,
@@ -28,6 +42,12 @@ import {
   type RenderDiagnostics,
 } from "./types";
 import type { SpawnKind } from "@/src/workers/protocol";
+import {
+  beginTransition,
+  createTransitionGate,
+  invalidateTransitions,
+  isCurrentTransition,
+} from "./transitionGate";
 import "./flight.css";
 
 type GamePhase = "menu" | "flying" | "paused";
@@ -48,6 +68,14 @@ const CONTROL_MODE_LABELS: Record<GameSettings["flightMode"], string> = {
   scenic: "Scenic assist",
 };
 
+const PAUSE_FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "select:not([disabled])",
+  "input:not([disabled])",
+  "[href]",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
 function cycleHud(settings: GameSettings): GameSettings {
   const next = settings.hud === "full" ? "minimal" : settings.hud === "minimal" ? "off" : "full";
   return { ...settings, hud: next };
@@ -55,6 +83,8 @@ function cycleHud(settings: GameSettings): GameSettings {
 
 export function FlightGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pausePanelRef = useRef<HTMLDivElement>(null);
+  const resumeButtonRef = useRef<HTMLButtonElement>(null);
   const rendererRef = useRef<FlightRenderingSystem | null>(null);
   const simulationRef = useRef<SimulationClient | null>(null);
   const inputRef = useRef<InputManager | null>(null);
@@ -62,6 +92,8 @@ export function FlightGame() {
   const latestStateRef = useRef<FlightVisualState>(INITIAL_VISUAL_STATE);
   const phaseRef = useRef<GamePhase>("menu");
   const settingsRef = useRef<GameSettings>(DEFAULT_SETTINGS);
+  const settingsOpenRef = useRef(false);
+  const transitionGateRef = useRef(createTransitionGate());
   const cameraModeRef = useRef<CameraMode>("chase");
   const spawnRef = useRef<SpawnKind>("airborne");
   const lastUiUpdateRef = useRef(0);
@@ -69,6 +101,7 @@ export function FlightGame() {
   const readyRef = useRef(false);
   const [phase, setPhase] = useState<GamePhase>("menu");
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [seed, setSeed] = useState(0x51a7e);
   const [visualState, setVisualState] = useState<FlightVisualState>(INITIAL_VISUAL_STATE);
   const [diagnostics, setDiagnostics] = useState<RenderDiagnostics | null>(null);
@@ -83,7 +116,20 @@ export function FlightGame() {
     setPhase(nextPhase);
   }, []);
 
+  const invalidatePendingTransitions = useCallback(() => {
+    invalidateTransitions(transitionGateRef.current);
+  }, []);
+
+  const unlockAudio = useCallback(async (): Promise<void> => {
+    try {
+      await audioRef.current?.unlock();
+    } catch {
+      // Audio is optional. A blocked/failed AudioContext must not block flight.
+    }
+  }, []);
+
   const applySettings = useCallback((next: GameSettings) => {
+    if (next.aircraft !== settingsRef.current.aircraft) invalidatePendingTransitions();
     settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
@@ -104,7 +150,7 @@ export function FlightGame() {
     });
     simulationRef.current?.setMode(next.flightMode);
     simulationRef.current?.setWeather(next.weather);
-  }, []);
+  }, [invalidatePendingTransitions]);
 
   const changeCamera = useCallback(() => {
     const currentIndex = CAMERA_MODES.indexOf(cameraModeRef.current);
@@ -114,32 +160,58 @@ export function FlightGame() {
     rendererRef.current?.setCameraMode(next);
   }, []);
 
+  const openSettings = useCallback(() => {
+    invalidatePendingTransitions();
+    settingsOpenRef.current = true;
+    setSettingsOpen(true);
+    if (document.pointerLockElement) document.exitPointerLock();
+  }, [invalidatePendingTransitions]);
+
+  const closeSettings = useCallback(() => {
+    settingsOpenRef.current = false;
+    setSettingsOpen(false);
+  }, []);
+
   /** Hands the already-running menu flight to the pilot without a reset. */
   const takeControl = useCallback(async () => {
+    const transition = beginTransition(transitionGateRef.current);
+    await unlockAudio();
+    if (
+      !isCurrentTransition(transitionGateRef.current, transition) ||
+      phaseRef.current !== "menu" ||
+      settingsOpenRef.current
+    ) return;
     setError(null);
-    await audioRef.current?.unlock();
     inputRef.current?.resetForSpawn(
       "airborne",
       airborneThrottleForAircraft(settingsRef.current.aircraft),
       runwayTrimForAircraft(settingsRef.current.aircraft),
+      airborneGearForAircraft(settingsRef.current.aircraft),
     );
     inputRef.current?.setThrottle(latestStateRef.current.throttle);
     spawnRef.current = "airborne";
     simulationRef.current?.handoff(settingsRef.current.flightMode);
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
-  }, [updatePhase]);
+  }, [unlockAudio, updatePhase]);
 
   /** Starts a deliberate new flight at the chosen spawn. */
   const startNewFlight = useCallback(
     async (spawn: SpawnKind) => {
+      const transition = beginTransition(transitionGateRef.current);
+      await unlockAudio();
+      if (
+        !isCurrentTransition(transitionGateRef.current, transition) ||
+        phaseRef.current === "menu" ||
+        settingsOpenRef.current
+      ) return;
       setError(null);
-      await audioRef.current?.unlock();
       spawnRef.current = spawn;
       inputRef.current?.resetForSpawn(
         spawn,
         airborneThrottleForAircraft(settingsRef.current.aircraft),
         runwayTrimForAircraft(settingsRef.current.aircraft),
+        airborneGearForAircraft(settingsRef.current.aircraft),
       );
       simulationRef.current?.setMode(settingsRef.current.flightMode);
       simulationRef.current?.setAttractMode(false);
@@ -147,57 +219,118 @@ export function FlightGame() {
       simulationRef.current?.setPaused(false);
       updatePhase("flying");
     },
-    [updatePhase],
+    [unlockAudio, updatePhase],
   );
 
   const pauseFlight = useCallback(() => {
+    invalidatePendingTransitions();
     simulationRef.current?.setPaused(true);
     audioRef.current?.suspend();
     updatePhase("paused");
     if (document.pointerLockElement) document.exitPointerLock();
-  }, [updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase]);
 
   const resumeFlight = useCallback(async () => {
-    await audioRef.current?.unlock();
+    const transition = beginTransition(transitionGateRef.current);
+    await unlockAudio();
+    if (
+      !isCurrentTransition(transitionGateRef.current, transition) ||
+      phaseRef.current !== "paused" ||
+      settingsOpenRef.current
+    ) return;
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
-  }, [updatePhase]);
+  }, [unlockAudio, updatePhase]);
 
-  /** Restarts the current session with the same spawn contract it began with. */
+  const handlePauseKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (settingsOpenRef.current) return;
+      // Pause owns the keyboard while modal, including Escape and native Space
+      // activation on its buttons. No flight action reaches InputManager.
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void resumeFlight();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        pausePanelRef.current?.querySelectorAll<HTMLElement>(PAUSE_FOCUSABLE_SELECTOR) ?? [],
+      ).filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) {
+        event.preventDefault();
+        pausePanelRef.current?.focus();
+        return;
+      }
+      const target = modalTabTarget(
+        focusable,
+        document.activeElement instanceof HTMLElement ? document.activeElement : null,
+        event.shiftKey,
+      );
+      if (target) {
+        event.preventDefault();
+        target.focus();
+      }
+    },
+    [resumeFlight],
+  );
+
+  /**
+   * A crash recovers above its authoritative Worker world position. Every
+   * ordinary restart retains the exact runway/airborne contract that began
+   * the session, including after an earlier crash recovery.
+   */
   const restartFlight = useCallback(async () => {
-    await startNewFlight(spawnRef.current);
-  }, [startNewFlight]);
+    if (!latestStateRef.current.crashed) {
+      await startNewFlight(spawnRef.current);
+      return;
+    }
+
+    const transition = beginTransition(transitionGateRef.current);
+    await unlockAudio();
+    if (
+      !isCurrentTransition(transitionGateRef.current, transition) ||
+      phaseRef.current === "menu" ||
+      settingsOpenRef.current
+    ) return;
+    setError(null);
+    inputRef.current?.resetForSpawn(
+      "airborne",
+      airborneThrottleForAircraft(settingsRef.current.aircraft),
+      runwayTrimForAircraft(settingsRef.current.aircraft),
+      airborneGearForAircraft(settingsRef.current.aircraft),
+    );
+    simulationRef.current?.setMode(settingsRef.current.flightMode);
+    simulationRef.current?.setAttractMode(false);
+    simulationRef.current?.restartAfterCrash(settingsRef.current.airborneStartAgl);
+    simulationRef.current?.setPaused(false);
+    updatePhase("flying");
+  }, [startNewFlight, unlockAudio, updatePhase]);
 
   /** Returns to the live start view without silently replacing the current world. */
   const endFlight = useCallback(() => {
+    invalidatePendingTransitions();
     audioRef.current?.suspend();
     inputRef.current?.resetForSpawn(
       "airborne",
       airborneThrottleForAircraft(settingsRef.current.aircraft),
       runwayTrimForAircraft(settingsRef.current.aircraft),
+      airborneGearForAircraft(settingsRef.current.aircraft),
     );
     spawnRef.current = "airborne";
     simulationRef.current?.setMode(settingsRef.current.flightMode);
     simulationRef.current?.returnToAttract(settingsRef.current.airborneStartAgl);
     simulationRef.current?.setPaused(false);
     updatePhase("menu");
-  }, [updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase]);
 
   const handleActions = useCallback(
     (actions: InputAction[]) => {
       for (const action of actions) {
+        if (settingsOpenRef.current) continue;
         if (action === "camera" && phaseRef.current === "flying") changeCamera();
         if (action === "reset" && phaseRef.current !== "menu") {
-          const spawn = spawnRef.current;
-          inputRef.current?.resetForSpawn(
-            spawn,
-            airborneThrottleForAircraft(settingsRef.current.aircraft),
-            runwayTrimForAircraft(settingsRef.current.aircraft),
-          );
-          simulationRef.current?.setMode(settingsRef.current.flightMode);
-          simulationRef.current?.reset(spawn, settingsRef.current.airborneStartAgl);
-          simulationRef.current?.setPaused(false);
-          updatePhase("flying");
+          void restartFlight();
         }
         if (action === "pause") {
           if (phaseRef.current === "flying") pauseFlight();
@@ -206,7 +339,7 @@ export function FlightGame() {
         if (action === "hud") applySettings(cycleHud(settingsRef.current));
       }
     },
-    [applySettings, changeCamera, pauseFlight, resumeFlight, updatePhase],
+    [applySettings, changeCamera, pauseFlight, restartFlight, resumeFlight],
   );
 
   useEffect(() => {
@@ -230,12 +363,24 @@ export function FlightGame() {
   }, [phase]);
 
   useEffect(() => {
+    if (phase !== "paused") return;
+    const previouslyFocused = document.activeElement;
+    resumeButtonRef.current?.focus();
+    return () => {
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
+  }, [phase]);
+
+  useEffect(() => {
     if (!bootstrapped) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     let animationFrame = 0;
     let disposed = false;
     let lastFrame = performance.now();
+    const startupResources = new DisposableScope();
     readyRef.current = false;
     queueMicrotask(() => {
       if (!disposed) {
@@ -250,12 +395,14 @@ export function FlightGame() {
         canvas,
         aircraft: activeSettings.aircraft,
         terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
+        world,
         seed,
         quality: activeSettings.quality,
         renderingMode: activeSettings.renderingMode,
         reducedMotion: activeSettings.reducedMotion,
         onContextLost: () => {
           if (disposed) return;
+          invalidatePendingTransitions();
           simulationRef.current?.setPaused(true);
           setError(GRAPHICS_CONTEXT_LOST_MESSAGE);
         },
@@ -267,10 +414,11 @@ export function FlightGame() {
         ...(world.airport ? { runway: world.airport } : {}),
       };
       let renderer: FlightRenderingSystem;
+      let rendererMode: "webgl2" | "canvas2d";
       if (supportsFlightWebGL()) {
         try {
           renderer = new FlightRenderer(rendererOptions);
-          renderer.domElement.dataset.rendererMode = "webgl2";
+          rendererMode = "webgl2";
         } catch (rendererError) {
           canvas.dataset.webglFailure =
             rendererError instanceof Error ? rendererError.message : "Unknown WebGL startup failure";
@@ -278,39 +426,49 @@ export function FlightGame() {
             rendererOptions,
             "WebGL 2 renderer startup failed; Canvas 2D compatibility renderer active.",
           );
-          renderer.domElement.dataset.rendererMode = "canvas2d";
+          rendererMode = "canvas2d";
         }
       } else {
         renderer = new CanvasFlightRenderer(rendererOptions);
-        renderer.domElement.dataset.rendererMode = "canvas2d";
+        rendererMode = "canvas2d";
       }
-      const input = new InputManager(renderer.domElement, {
+      startupResources.own(renderer);
+      renderer.domElement.dataset.rendererMode = rendererMode;
+      const input = startupResources.own(new InputManager(renderer.domElement, {
         sensitivity: activeSettings.sensitivity,
         deadZone: activeSettings.gamepadDeadZone,
         invertPitch: activeSettings.invertPitch,
         mouseFlight: activeSettings.mouseFlight,
-      });
-      const audio = new FlightAudio({
+      }));
+      const audio = startupResources.own(new FlightAudio({
         aircraft: activeSettings.aircraft,
         master: activeSettings.masterVolume,
         engine: activeSettings.engineVolume,
         wind: activeSettings.windVolume,
-      });
-      const simulation = new SimulationClient(
-        seed,
+      }));
+      // Renderer/Worker replacement must preserve who owns the flight. Menu
+      // rebuilds are Scenic airborne demonstrations; paused/flying rebuilds
+      // retain the session's original spawn contract and pilot authority.
+      const initialPhase = phaseRef.current;
+      const initialAttractMode = initialPhase === "menu";
+      const initialSpawn = initialAttractMode ? "airborne" : spawnRef.current;
+      input.resetForSpawn(
+        initialSpawn,
+        airborneThrottleForAircraft(activeSettings.aircraft),
+        runwayTrimForAircraft(activeSettings.aircraft),
+        airborneGearForAircraft(activeSettings.aircraft),
+      );
+      const simulation = startupResources.own(new SimulationClient(
+        world,
         activeSettings.flightMode,
-        "airborne",
+        initialSpawn,
         activeSettings.weather,
         activeSettings.airborneStartAgl,
-        true,
+        initialAttractMode,
         activeSettings.aircraft,
-      );
+      ));
       renderer.setCameraMode(cameraModeRef.current);
       renderer.setAtmosphere(activeSettings.timeOfDay, activeSettings.weather);
-      rendererRef.current = renderer;
-      inputRef.current = input;
-      audioRef.current = audio;
-      simulationRef.current = simulation;
 
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {
@@ -320,7 +478,7 @@ export function FlightGame() {
           setReady(true);
           // The start screen is a live attract flight. Its worker-only Scenic
           // controller is removed at handoff; the selected pilot mode is not.
-          if (phaseRef.current === "menu") simulation.setPaused(false);
+          if (phaseRef.current !== "paused") simulation.setPaused(false);
         }
         const now = performance.now();
         if (now - lastUiUpdateRef.current > 75) {
@@ -347,6 +505,7 @@ export function FlightGame() {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";
           canvas.dataset.renderFailure = reason;
+          invalidatePendingTransitions();
           simulation.setPaused(true);
           setError(`The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`);
           return;
@@ -357,7 +516,20 @@ export function FlightGame() {
         animationFrame = requestAnimationFrame(renderLoop);
       };
       animationFrame = requestAnimationFrame(renderLoop);
+
+      // All construction, callback wiring, and frame-loop setup succeeded.
+      // Transfer ownership to the effect refs in one non-throwing block;
+      // partial startup remains owned and is unwound by the catch below.
+      rendererRef.current = renderer;
+      inputRef.current = input;
+      audioRef.current = audio;
+      simulationRef.current = simulation;
+      startupResources.release(renderer);
+      startupResources.release(input);
+      startupResources.release(audio);
+      startupResources.release(simulation);
     } catch (caught) {
+      startupResources.dispose();
       const message = caught instanceof Error ? caught.message : "This browser could not start the 3D renderer.";
       queueMicrotask(() => {
         if (!disposed) setError(message);
@@ -374,21 +546,33 @@ export function FlightGame() {
     };
     document.addEventListener("visibilitychange", handleVisibility);
     return () => {
+      invalidatePendingTransitions();
       disposed = true;
       cancelAnimationFrame(animationFrame);
       document.removeEventListener("visibilitychange", handleVisibility);
-      rendererRef.current?.dispose();
-      simulationRef.current?.dispose();
-      inputRef.current?.dispose();
-      audioRef.current?.dispose();
+      const cleanupResources = new DisposableScope();
+      if (rendererRef.current) cleanupResources.own(rendererRef.current);
+      if (inputRef.current) cleanupResources.own(inputRef.current);
+      if (audioRef.current) cleanupResources.own(audioRef.current);
+      if (simulationRef.current) cleanupResources.own(simulationRef.current);
       rendererRef.current = null;
       simulationRef.current = null;
       inputRef.current = null;
       audioRef.current = null;
+      cleanupResources.dispose();
     };
-  }, [bootstrapped, handleActions, pauseFlight, seed, settings.aircraft, world]);
+  }, [
+    bootstrapped,
+    handleActions,
+    invalidatePendingTransitions,
+    pauseFlight,
+    seed,
+    settings.aircraft,
+    world,
+  ]);
 
   const chooseNewWorld = useCallback(() => {
+    invalidatePendingTransitions();
     audioRef.current?.suspend();
     const nextSeed = createRandomSeed();
     spawnRef.current = "airborne";
@@ -401,7 +585,7 @@ export function FlightGame() {
     } catch {
       // URL sharing is optional in restricted embeds.
     }
-  }, [updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase]);
 
   return (
     <main className="flight-shell">
@@ -409,7 +593,9 @@ export function FlightGame() {
         ref={canvasRef}
         className="flight-canvas"
         aria-label="Aerolith flight simulator 3D view"
-        tabIndex={0}
+        tabIndex={settingsOpen || phase === "paused" ? -1 : 0}
+        inert={settingsOpen || phase === "paused"}
+        aria-hidden={settingsOpen || phase === "paused" || undefined}
       />
       <div className="flight-vignette" aria-hidden="true" />
 
@@ -437,7 +623,11 @@ export function FlightGame() {
       ) : null}
 
       {phase === "menu" && ready ? (
-        <section className="start-screen" aria-label="Aerolith start">
+        <section
+          className={`start-screen${settingsOpen ? " is-settings-covered" : ""}`}
+          aria-label="Aerolith start"
+          aria-hidden={settingsOpen || undefined}
+        >
           <div className="start-screen__minimal">
             <AircraftPicker
               value={settings.aircraft}
@@ -452,25 +642,70 @@ export function FlightGame() {
               <strong>{seedToString(seed)}</strong>
               <span aria-hidden="true">↻</span>
             </button>
+            <button
+              className="settings-action"
+              type="button"
+              onClick={openSettings}
+              aria-haspopup="dialog"
+              aria-controls="settings-dialog"
+            >
+              <small>Settings</small>
+              <span aria-hidden="true">⚙</span>
+            </button>
           </div>
         </section>
       ) : null}
 
       {phase === "paused" ? (
-        <section className="pause-screen" aria-labelledby="pause-title" role="dialog" aria-modal="true">
-          <div className="pause-panel">
+        <section
+          className={`pause-screen${settingsOpen ? " is-settings-covered" : ""}`}
+          aria-labelledby="pause-title"
+          role="dialog"
+          aria-modal={settingsOpen ? undefined : "true"}
+          aria-hidden={settingsOpen || undefined}
+          onKeyDown={handlePauseKeyDown}
+        >
+          <div className="pause-panel" ref={pausePanelRef} tabIndex={-1}>
             <p className="pause-panel__eyebrow">FLIGHT SUSPENDED</p>
             <h2 id="pause-title">Paused above {seedToString(seed)}</h2>
             <div className="pause-panel__actions">
-              <button className="primary-action primary-action--compact" onClick={() => void resumeFlight()}>
+              <button
+                ref={resumeButtonRef}
+                className="primary-action primary-action--compact"
+                onClick={() => void resumeFlight()}
+              >
                 <span>Resume flight</span>
                 <small>Esc</small>
               </button>
-              <button onClick={() => void restartFlight()}>Restart flight</button>
+              <button
+                onClick={() => void restartFlight()}
+                aria-label={visualState.crashed
+                  ? "Restart airborne above the crash location"
+                  : "Restart flight from the original start"}
+              >
+                Restart flight
+              </button>
               <button onClick={endFlight}>End flight</button>
             </div>
+            <button
+              className="pause-panel__settings"
+              type="button"
+              onClick={openSettings}
+              aria-haspopup="dialog"
+              aria-controls="settings-dialog"
+            >
+              Settings
+            </button>
           </div>
         </section>
+      ) : null}
+
+      {settingsOpen ? (
+        <SettingsDialog
+          settings={settings}
+          onChange={applySettings}
+          onClose={closeSettings}
+        />
       ) : null}
 
       {error ? (

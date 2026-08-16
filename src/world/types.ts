@@ -34,6 +34,9 @@ export interface WorldOptions {
 
 export interface WorldDefinition {
   readonly seed: string;
+  /** Stable hash of the public/shareable seed string. */
+  readonly sourceSeedHash: number;
+  /** Terrain-region hash resolved from the public seed. */
   readonly seedHash: number;
   readonly seaLevel: number;
   readonly airport: Readonly<AirportDefinition> | null;

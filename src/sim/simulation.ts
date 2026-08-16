@@ -47,6 +47,7 @@ const BODY_UP: Readonly<Vec3> = WORLD_UP;
 const BODY_FORWARD: Readonly<Vec3> = Object.freeze({ x: 1, y: 0, z: 0 });
 const ZERO_VECTOR: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: 0 });
 const MAX_GEAR_COMPRESSION = 0.22;
+const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
 // The coefficient model remains valid through a stall, but at very high true
@@ -74,6 +75,7 @@ export const DEFAULT_CONTROLS: Readonly<FlightControls> = Object.freeze({
   trim: 0,
   flaps: 0,
   brake: 0,
+  gear: 1,
 });
 
 export const DEFAULT_ENVIRONMENT: Readonly<EnvironmentInput> = Object.freeze({
@@ -96,6 +98,8 @@ interface Scratch {
   tempC: Vec3;
   tempD: Vec3;
   maximumGroundPenetration: number;
+  airframeContact: boolean;
+  gearBody: Vec3;
 }
 
 function createScratch(): Scratch {
@@ -114,6 +118,8 @@ function createScratch(): Scratch {
     tempC: vec3(),
     tempD: vec3(),
     maximumGroundPenetration: 0,
+    airframeContact: false,
+    gearBody: vec3(),
   };
 }
 
@@ -128,6 +134,42 @@ function normalizeControlsInto(
   out.trim = clamp(finiteOr(controls?.trim, DEFAULT_CONTROLS.trim), -1, 1);
   out.flaps = clamp(finiteOr(controls?.flaps, DEFAULT_CONTROLS.flaps), 0, 1);
   out.brake = clamp(finiteOr(controls?.brake, DEFAULT_CONTROLS.brake), 0, 1);
+  out.gear = clamp(finiteOr(controls?.gear, DEFAULT_CONTROLS.gear), 0, 1);
+  return out;
+}
+
+function gearExtensionForAircraft(
+  aircraft: AircraftDefinition,
+  requestedExtension: number,
+): number {
+  return aircraft.retractableGear ? clamp(requestedExtension, 0, 1) : 1;
+}
+
+function gearDownAndLocked(
+  aircraft: AircraftDefinition,
+  extension: number,
+): boolean {
+  return !aircraft.retractableGear || extension >= GEAR_DOWN_LOCK_THRESHOLD;
+}
+
+function landingGearPositionInto(
+  out: Vec3,
+  gear: AircraftDefinition["gear"][number],
+  aircraft: AircraftDefinition,
+  extension: number,
+): Vec3 {
+  const stowed = gear.retractedPosition;
+  if (!aircraft.retractableGear || !stowed) {
+    out.x = gear.position.x;
+    out.y = gear.position.y;
+    out.z = gear.position.z;
+    return out;
+  }
+  const travel = clamp(extension, 0, 1);
+  const eased = travel * travel * (3 - 2 * travel);
+  out.x = stowed.x + (gear.position.x - stowed.x) * eased;
+  out.y = stowed.y + (gear.position.y - stowed.y) * eased;
+  out.z = stowed.z + (gear.position.z - stowed.z) * eased;
   return out;
 }
 
@@ -258,6 +300,12 @@ function couldReachTerrain(
       Math.hypot(gear.position.x, gear.position.y, gear.position.z),
     );
   }
+  for (const point of aircraft.airframeContactPoints) {
+    maximumGearRadius = Math.max(
+      maximumGearRadius,
+      Math.hypot(point.x, point.y, point.z),
+    );
+  }
   // The margin covers one maximum-speed substep and terrain variation between
   // the CG and wheels. It is intentionally conservative; the valuable reject
   // is the normal airborne case hundreds of metres above the surface.
@@ -274,6 +322,7 @@ function gearClearanceAboveTerrain(
 ): number {
   let minimumClearance = Number.POSITIVE_INFINITY;
   const offset = vec3();
+  const physicalPoint = vec3();
   const centreHeight = terrainHeightAt(
     environment,
     state.position.x,
@@ -281,8 +330,8 @@ function gearClearanceAboveTerrain(
   );
   const useCentreHeight =
     centreHeight !== undefined && state.position.y - centreHeight > 20;
-  for (const gear of aircraft.gear) {
-    rotateVectorInto(offset, state.orientation, gear.position);
+  const includePoint = (point: Readonly<Vec3>): void => {
+    rotateVectorInto(offset, state.orientation, point);
     const pointX = state.position.x + offset.x;
     const pointZ = state.position.z + offset.z;
     const surfaceHeight = useCentreHeight
@@ -292,6 +341,13 @@ function gearClearanceAboveTerrain(
       minimumClearance,
       state.position.y + offset.y - surfaceHeight,
     );
+  };
+  for (const point of aircraft.airframeContactPoints) includePoint(point);
+  if (!aircraft.retractableGear || state.actuators.gear > 0.015) {
+    for (const gear of aircraft.gear) {
+      landingGearPositionInto(physicalPoint, gear, aircraft, state.actuators.gear);
+      includePoint(physicalPoint);
+    }
   }
   if (!Number.isFinite(minimumClearance)) {
     minimumClearance = state.position.y - (centreHeight ?? 0);
@@ -314,15 +370,31 @@ export function createFlightState(
   const orientation = quaternionFromFlightAngles(heading, pitch, bank);
   const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, 180);
   const actuators = normalizedControls(spawn.controls);
+  actuators.gear = onGround
+    ? 1
+    : gearExtensionForAircraft(
+        aircraft,
+        aircraft.retractableGear && spawn.controls?.gear === undefined
+          ? 0
+          : actuators.gear,
+      );
   let gearClearance = groundPose.cgHeight;
   if (!onGround || spawn.pitch !== undefined || bank !== 0) {
-    gearClearance = -Math.min(
-      ...aircraft.gear.map((gear) => {
-        const rotated = vec3();
-        rotateVectorInto(rotated, orientation, gear.position);
-        return rotated.y;
-      }),
-    );
+    let lowestOffset = Number.POSITIVE_INFINITY;
+    const rotated = vec3();
+    const physicalPoint = vec3();
+    for (const point of aircraft.airframeContactPoints) {
+      rotateVectorInto(rotated, orientation, point);
+      lowestOffset = Math.min(lowestOffset, rotated.y);
+    }
+    if (!aircraft.retractableGear || actuators.gear > 0.015) {
+      for (const gear of aircraft.gear) {
+        landingGearPositionInto(physicalPoint, gear, aircraft, actuators.gear);
+        rotateVectorInto(rotated, orientation, physicalPoint);
+        lowestOffset = Math.min(lowestOffset, rotated.y);
+      }
+    }
+    gearClearance = -Math.min(0, lowestOffset);
   }
   const defaultPosition = {
     x: 0,
@@ -390,6 +462,8 @@ export function createFlightState(
         initialLiftCoefficient,
         actuators.flaps,
         aircraft,
+        actuators.gear,
+        actuators.brake,
       ),
       liftForce: 0,
       dragForce: 0,
@@ -407,6 +481,8 @@ export const spawnFlight = createFlightState;
 function updateActuators(
   actuators: ActuatorState,
   controls: FlightControls,
+  aircraft: AircraftDefinition,
+  weightOnWheels: boolean,
   dt: number,
 ): void {
   actuators.throttle = moveToward(actuators.throttle, controls.throttle, dt * 1.5);
@@ -416,6 +492,13 @@ function updateActuators(
   actuators.trim = moveToward(actuators.trim, controls.trim, dt * 0.45);
   actuators.flaps = moveToward(actuators.flaps, controls.flaps, dt * 0.28);
   actuators.brake = moveToward(actuators.brake, controls.brake, dt * 5);
+  actuators.gear = aircraft.retractableGear
+    ? moveToward(
+        actuators.gear,
+        weightOnWheels ? 1 : controls.gear,
+        dt * aircraft.gearCycleRate,
+      )
+    : 1;
 }
 
 function sanitizeState(state: FlightState): void {
@@ -451,6 +534,7 @@ function applyGroundForces(
   scratch: Scratch,
 ): number {
   if (!environment.terrain) return 0;
+  if (!gearDownAndLocked(aircraft, state.actuators.gear)) return 0;
 
   let contacts = 0;
   scratch.maximumGroundPenetration = 0;
@@ -463,7 +547,8 @@ function applyGroundForces(
 
   for (const gear of aircraft.gear) {
     const radiusWorld = scratch.tempA;
-    rotateVectorInto(radiusWorld, state.orientation, gear.position);
+    landingGearPositionInto(scratch.gearBody, gear, aircraft, state.actuators.gear);
+    rotateVectorInto(radiusWorld, state.orientation, scratch.gearBody);
     const pointX = state.position.x + radiusWorld.x;
     const pointY = state.position.y + radiusWorld.y;
     const pointZ = state.position.z + radiusWorld.z;
@@ -499,7 +584,7 @@ function applyGroundForces(
     contacts += 1;
 
     // Point velocity: v_cg + R * (omega_body x radius_body).
-    crossInto(scratch.relativeBody, state.angularVelocity, gear.position);
+    crossInto(scratch.relativeBody, state.angularVelocity, scratch.gearBody);
     rotateVectorInto(scratch.relativeWorld, state.orientation, scratch.relativeBody);
     const pointVelocityX = state.velocity.x + scratch.relativeWorld.x;
     const pointVelocityY = state.velocity.y + scratch.relativeWorld.y;
@@ -583,7 +668,7 @@ function applyGroundForces(
     scratch.tempB.y = forceY;
     scratch.tempB.z = forceZ;
     inverseRotateVectorInto(scratch.tempB, state.orientation, scratch.tempB);
-    crossInto(scratch.tempA, gear.position, scratch.tempB);
+    crossInto(scratch.tempA, scratch.gearBody, scratch.tempB);
     scratch.torqueBody.x += scratch.tempA.x;
     scratch.torqueBody.y += scratch.tempA.y;
     scratch.torqueBody.z += scratch.tempA.z;
@@ -599,13 +684,15 @@ function projectOutOfTerrain(
   scratch: Scratch,
 ): void {
   if (!environment.terrain) return;
+  if (!gearDownAndLocked(aircraft, state.actuators.gear)) return;
   let maximumPenetration = 0;
   let projectionNormalX = 0;
   let projectionNormalY = 1;
   let projectionNormalZ = 0;
 
   for (const gear of aircraft.gear) {
-    rotateVectorInto(scratch.tempA, state.orientation, gear.position);
+    landingGearPositionInto(scratch.gearBody, gear, aircraft, state.actuators.gear);
+    rotateVectorInto(scratch.tempA, state.orientation, scratch.gearBody);
     const pointX = state.position.x + scratch.tempA.x;
     const pointY = state.position.y + scratch.tempA.y;
     const pointZ = state.position.z + scratch.tempA.z;
@@ -663,6 +750,7 @@ function airframeImpactSpeed(
   scratch: Scratch,
 ): number {
   if (!environment.terrain) return 0;
+  scratch.airframeContact = false;
   let maximumImpactSpeed = 0;
   const referenceX = state.position.x;
   const referenceZ = state.position.z;
@@ -692,6 +780,7 @@ function airframeImpactSpeed(
             scratch.tempB.z * (pointZ - referenceZ)) /
             scratch.tempB.y;
     if (surfaceHeight - pointY <= 0) continue;
+    scratch.airframeContact = true;
 
     crossInto(scratch.relativeBody, state.angularVelocity, point);
     rotateVectorInto(scratch.relativeWorld, state.orientation, scratch.relativeBody);
@@ -741,7 +830,12 @@ function placeCrashedAirframeOnTerrain(
     );
   };
 
-  for (const gear of aircraft.gear) includePoint(gear.position);
+  if (!aircraft.retractableGear || state.actuators.gear > 0.015) {
+    for (const gear of aircraft.gear) {
+      landingGearPositionInto(scratch.gearBody, gear, aircraft, state.actuators.gear);
+      includePoint(scratch.gearBody);
+    }
+  }
   for (const point of aircraft.airframeContactPoints) includePoint(point);
   if (Number.isFinite(requiredCgHeight)) state.position.y = requiredCgHeight;
 }
@@ -810,7 +904,7 @@ function integrateSubstep(
     settleCrashedState(state, environment, aircraft, scratch, dt, false);
     return;
   }
-  updateActuators(state.actuators, controls, dt);
+  updateActuators(state.actuators, controls, aircraft, state.onGround, dt);
 
   const gravity = clamp(finiteOr(environment.gravity, STANDARD_GRAVITY), 0, 30);
   scratch.relativeWorld.x = state.velocity.x - finiteOr(environment.wind?.x, 0);
@@ -844,16 +938,25 @@ function integrateSubstep(
     1.5,
   );
   const dynamicPressure = 0.5 * airDensity * airspeed * airspeed;
-  const liftCoefficient = calculateLiftCoefficient(
+  const baseLiftCoefficient = calculateLiftCoefficient(
     angleOfAttack,
     state.actuators.flaps,
     aircraft,
   );
+  // The jet's brake command drives its speed-brake panels in flight and its
+  // lift-dump/spoiler function once weight is on the wheels. Wheel braking is
+  // still applied exclusively by loaded gear contacts below.
+  const speedBrakeLiftDump = aircraft.speedBrakeDrag > 0
+    ? state.actuators.brake * (state.onGround ? 0.62 : 0.12)
+    : 0;
+  const liftCoefficient = baseLiftCoefficient * (1 - speedBrakeLiftDump);
   const dragCoefficient = calculateDragCoefficient(
     angleOfAttack,
     liftCoefficient,
     state.actuators.flaps,
     aircraft,
+    state.actuators.gear,
+    state.actuators.brake,
   );
   const liftForce = dynamicPressure * aircraft.wingArea * liftCoefficient;
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;
@@ -941,11 +1044,18 @@ function integrateSubstep(
   const wasOnGround = state.onGround;
   const contactPossible = couldReachTerrain(state, environment, aircraft);
   if (contactPossible) {
-    state.peakImpactSpeed = Math.max(
-      state.peakImpactSpeed,
-      airframeImpactSpeed(state, environment, aircraft, scratch),
+    const currentAirframeImpact = airframeImpactSpeed(
+      state,
+      environment,
+      aircraft,
+      scratch,
     );
-    if (state.peakImpactSpeed > CRASH_IMPACT_SPEED) {
+    state.peakImpactSpeed = Math.max(state.peakImpactSpeed, currentAirframeImpact);
+    const unsupportedRetractableGearContact =
+      aircraft.retractableGear &&
+      !gearDownAndLocked(aircraft, state.actuators.gear) &&
+      scratch.airframeContact;
+    if (unsupportedRetractableGearContact || state.peakImpactSpeed > CRASH_IMPACT_SPEED) {
       settleCrashedState(state, environment, aircraft, scratch, dt, true);
       return;
     }
@@ -1176,7 +1286,15 @@ export class FlightSimulator {
 
   constructor(options: FlightSimulatorOptions = {}) {
     this.aircraft = options.aircraft ?? LIGHT_TRAINER;
-    this.controls = normalizedControls(options.controls ?? options.spawn?.controls);
+    const initialControls = options.controls ?? options.spawn?.controls;
+    this.controls = normalizedControls(initialControls);
+    if (
+      this.aircraft.retractableGear &&
+      options.spawn?.onGround !== true &&
+      initialControls?.gear === undefined
+    ) {
+      this.controls.gear = 0;
+    }
     this.environment = options.environment ?? DEFAULT_ENVIRONMENT;
     this.state = createFlightState(
       { ...options.spawn, controls: this.controls },

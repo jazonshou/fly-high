@@ -5,6 +5,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
+import type { WorldDefinition } from "@/src/world";
 
 export type SpawnKind = "airborne" | "runway";
 
@@ -21,7 +22,7 @@ export function normalizeAirborneStartAgl(value: unknown): number {
 export type SimulationCommand =
   | {
       type: "initialize";
-      seed: number;
+      world: WorldDefinition;
       aircraft: AircraftKind;
       mode: FlightMode;
       spawn: SpawnKind;
@@ -36,7 +37,8 @@ export type SimulationCommand =
   | { type: "handoff"; mode: FlightMode }
   | { type: "returnToAttract"; airborneStartAgl: number }
   | { type: "pause"; paused: boolean }
-  | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number };
+  | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number }
+  | { type: "restartAfterCrash"; airborneStartAgl: number };
 
 export type SimulationEvent =
   | { type: "ready"; state: FlightVisualState }

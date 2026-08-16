@@ -90,6 +90,11 @@ export function Hud({
       : flightMode === "pilot"
         ? "PILOT DAMPING"
         : "SCENIC ASSIST";
+  const gearLabel = state.gear >= 0.98
+    ? "DOWN"
+    : state.gear <= 0.02
+      ? "UP"
+      : "TRANSIT";
 
   return (
     <div className={`flight-hud flight-hud--${mode}`} aria-live="off">
@@ -142,6 +147,13 @@ export function Hud({
         <div className="flight-alert flight-alert--warning">BANK ANGLE</div>
       ) : null}
       {state.crashed ? <div className="flight-alert flight-alert--danger">AIRCRAFT DAMAGED · PRESS R</div> : null}
+      {!state.crashed && state.brake > 0.08 ? (
+        <div className="flight-alert flight-alert--warning flight-alert--brake">
+          {aircraft === "jet"
+            ? state.onGround ? "SPEED + WHEEL BRAKE" : "SPEED BRAKE"
+            : state.onGround ? "WHEEL BRAKE" : "BRAKE ARMED"}
+        </div>
+      ) : null}
 
       <div className="flight-hud__bottom">
         {mode === "full" ? (
@@ -170,6 +182,13 @@ export function Hud({
               <strong>{state.loadFactor.toFixed(1)}G</strong>
               <em>{state.onGround ? "GROUND" : "FLIGHT"}</em>
             </div>
+            {aircraft === "jet" ? (
+              <div className="instrument-readout" aria-label={`Landing gear ${gearLabel.toLowerCase()}`}>
+                <small>GEAR</small>
+                <strong>{gearLabel}</strong>
+                <em>{gearLabel === "TRANSIT" ? `${Math.round(state.gear * 100)}%` : "G TOGGLE"}</em>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -214,6 +233,7 @@ export function Hud({
         <span>A left · D right</span>
         <span>Q left rudder · E right</span>
         <span>Shift power · Ctrl reduce</span>
+        {aircraft === "jet" ? <span>G gear · Space speed / wheel brake</span> : <span>Space wheel brake</span>}
         <span>C view</span>
         <span>Esc pause</span>
         {mouseFlight ? <span className="hud-help__active">Click view for mouse yoke</span> : null}

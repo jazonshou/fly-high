@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { normalizedEngineSpeed } from "../src/audio";
 import {
   applyDeadZone,
+  keyboardBrakeCommand,
   keyboardRollCommand,
   keyboardRollDirection,
   keyboardThrottleDirection,
   responseCurve,
   slewAxis,
   smoothAxis,
+  toggledGearPosition,
 } from "../src/input";
 import { interpolateFlightState } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE } from "../src/game/types";
@@ -21,26 +23,22 @@ import {
   urlWithSeed,
   validateSettings,
 } from "../src/settings";
-import { createSimulationSpawn } from "../src/game/spawn";
+import {
+  createCrashRecoverySpawn,
+  createSimulationSpawn,
+} from "../src/game/spawn";
 import { FlightSimulator } from "../src/sim";
 import {
   createWorld,
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
+  worldToRunway,
 } from "../src/world";
 import {
   DEFAULT_AIRBORNE_START_AGL,
   MAX_AIRBORNE_START_AGL,
   MIN_AIRBORNE_START_AGL,
 } from "../src/workers/protocol";
-
-const SAFE_RUNWAY_FIXTURE_SEED = "airport-safety-1-535203442";
-const SAFE_RUNWAY_FIXTURE = Object.freeze({
-  centerX: -3_109.8434911464765,
-  centerZ: -7_702.165069913508,
-  elevation: 35.25,
-  headingRadians: 0.6698306877107214,
-});
 
 describe("input shaping", () => {
   it("normalizes piston RPM and jet N2 on their own engine scales", () => {
@@ -69,6 +67,15 @@ describe("input shaping", () => {
     expect(keyboardThrottleDirection(new Set(["Minus"]))).toBe(0);
     expect(keyboardThrottleDirection(new Set(["NumpadAdd"]))).toBe(0);
     expect(keyboardThrottleDirection(new Set(["NumpadSubtract"]))).toBe(0);
+  });
+
+  it("uses Space for contextual braking and G-style binary gear commands", () => {
+    expect(keyboardBrakeCommand(new Set(["Space"]))).toBe(1);
+    expect(keyboardBrakeCommand(new Set(["KeyB"]))).toBe(0);
+    expect(toggledGearPosition(0)).toBe(1);
+    expect(toggledGearPosition(0.49)).toBe(1);
+    expect(toggledGearPosition(0.5)).toBe(0);
+    expect(toggledGearPosition(1)).toBe(0);
   });
 
   it("removes small controller noise and rescales the remainder", () => {
@@ -223,12 +230,15 @@ describe("flight spawn contract", () => {
 
     expect(simulator.telemetry().altitudeAgl).toBeCloseTo(975, 8);
     expect(simulator.state.onGround).toBe(false);
+    expect(world.airport).not.toBeNull();
+    if (!world.airport || !spawn.position) throw new Error("missing generated flight region");
+    const local = worldToRunway(world.airport, spawn.position.x ?? 0, spawn.position.z ?? 0);
+    expect(local.along).toBeCloseTo(-world.airport.runwayLength * 0.22, 8);
+    expect(local.across).toBeCloseTo(0, 8);
   });
 
   it("keeps runway starts on their landing gear and clamps airborne height", () => {
-    const world = createWorld(SAFE_RUNWAY_FIXTURE_SEED, {
-      airport: SAFE_RUNWAY_FIXTURE,
-    });
+    const world = createWorld(0x51a7e);
     const runway = new FlightSimulator({
       spawn: createSimulationSpawn(world, "runway", 975),
       environment: {
@@ -252,12 +262,113 @@ describe("flight spawn contract", () => {
     );
   });
 
-  it("rejects a runway spawn explicitly when a world has no safe airport", () => {
+  it("keeps both spawn modes inside the resolved airport region across varied seeds", () => {
+    for (let index = 0; index < 32; index += 1) {
+      const world = createWorld(`spawn-region-${index}-${Math.imul(index + 7, 2_246_822_519) >>> 0}`);
+      const airport = world.airport;
+      expect(airport).not.toBeNull();
+      if (!airport) throw new Error(`spawn-region-${index} has no airport`);
+      const runwaySpawn = createSimulationSpawn(world, "runway", 650);
+      const airborneSpawn = createSimulationSpawn(world, "airborne", 650);
+      expect(runwaySpawn.onGround).toBe(true);
+      expect(runwaySpawn.heading).toBe(airport.headingRadians);
+      expect(airborneSpawn.heading).toBe(airport.headingRadians);
+      expect(runwaySpawn.position).toBeDefined();
+      expect(airborneSpawn.position).toBeDefined();
+      const runwayLocal = worldToRunway(
+        airport,
+        runwaySpawn.position?.x ?? Infinity,
+        runwaySpawn.position?.z ?? Infinity,
+      );
+      const airborneLocal = worldToRunway(
+        airport,
+        airborneSpawn.position?.x ?? Infinity,
+        airborneSpawn.position?.z ?? Infinity,
+      );
+      expect(runwayLocal.along).toBeCloseTo(-airport.runwayLength * 0.36, 8);
+      expect(runwayLocal.across).toBeCloseTo(0, 8);
+      expect(airborneLocal.along).toBeCloseTo(-airport.runwayLength * 0.22, 8);
+      expect(airborneLocal.across).toBeCloseTo(0, 8);
+    }
+  }, 5_000);
+
+  it("keeps an explicit airport-disabled developer world unavailable for runway spawn", () => {
     const airportless = createWorld("airportless-spawn", { airport: false });
     expect(() => createSimulationSpawn(airportless, "runway", 450)).toThrow(
       "Runway start unavailable: this world has no safe airport site",
     );
     expect(() => createSimulationSpawn(airportless, "airborne", 450)).not.toThrow();
+  });
+
+  it("recovers at the exact absolute crash X/Z above the local visible surface", () => {
+    const world = createWorld(0x51a7e);
+    // Both axes cross multiple 4 km renderer-origin cells. They remain absolute
+    // here because Worker simulation and world sampling never use render-local coordinates.
+    const crashX = 12_345.25;
+    const crashZ = -8_765.5;
+    const recoveryHeight = 640;
+    const heading = 1.234;
+    const spawn = createCrashRecoverySpawn(
+      world,
+      crashX,
+      crashZ,
+      heading,
+      recoveryHeight,
+      "trainer",
+    );
+    // Recovery scans this deterministic envelope so an impact in a valley or
+    // beside a steep face cannot respawn into the surrounding relief.
+    let visibleSurface = Math.max(
+      world.seaLevel,
+      sampleTerrainCollisionHeight(world, crashX, crashZ),
+    );
+    for (const radius of [180, 420, 720]) {
+      for (let direction = 0; direction < 8; direction += 1) {
+        const angle = (direction * Math.PI) / 4;
+        visibleSurface = Math.max(
+          visibleSurface,
+          sampleTerrainCollisionHeight(
+            world,
+            crashX + Math.cos(angle) * radius,
+            crashZ + Math.sin(angle) * radius,
+          ),
+        );
+      }
+    }
+    const simulator = new FlightSimulator({
+      spawn,
+      environment: {
+        terrain: { height: visibleSurface },
+        terrainHeight: () => visibleSurface,
+      },
+    });
+
+    expect(spawn.position?.x).toBe(crashX);
+    expect(spawn.position?.z).toBe(crashZ);
+    expect(spawn.heading).toBe(heading);
+    expect(spawn.onGround).not.toBe(true);
+    expect(spawn.controls?.throttle).toBe(0.68);
+    expect(spawn.controls?.gear).toBe(1);
+    expect(simulator.telemetry().altitudeAgl).toBeCloseTo(recoveryHeight, 8);
+  });
+
+  it("uses the selected aircraft's airborne configuration and rejects invalid coordinates", () => {
+    const world = createWorld(0x51a7e);
+    const jetRecovery = createCrashRecoverySpawn(world, 8_100, -4_200, 0.7, 510, "jet");
+    const fallback = createSimulationSpawn(world, "airborne", 510, "jet");
+    const invalidRecovery = createCrashRecoverySpawn(
+      world,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      510,
+      "jet",
+    );
+
+    expect(jetRecovery.airspeed).toBe(155);
+    expect(jetRecovery.controls?.throttle).toBe(0.17);
+    expect(jetRecovery.controls?.gear).toBe(0);
+    expect(invalidRecovery).toEqual(fallback);
   });
 });
 

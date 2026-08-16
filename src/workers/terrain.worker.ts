@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
 
 import {
-  createWorld,
   generateTerrainTile,
   getTerrainTileTransferables,
   type WorldDefinition,
@@ -18,7 +17,9 @@ function post(event: TerrainWorkerEvent, transferables: Transferable[] = []): vo
 workerScope.addEventListener("message", (event: MessageEvent<TerrainWorkerCommand>) => {
   const command = event.data;
   if (command.type === "initialize") {
-    world = createWorld(command.seed);
+    // Airport resolution belongs to the main thread. The worker receives the
+    // exact resolved terrain hash and airport instead of repeating that work.
+    world = command.world;
     return;
   }
 

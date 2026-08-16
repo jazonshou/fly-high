@@ -1,5 +1,6 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
+import type { WorldDefinition } from "@/src/world";
 import {
   DEFAULT_AIRBORNE_START_AGL,
   type SimulationCommand,
@@ -20,7 +21,7 @@ export class SimulationClient {
   private renderState: FlightVisualState | null = null;
 
   constructor(
-    seed: number,
+    world: WorldDefinition,
     mode: FlightMode,
     spawn: SpawnKind = "airborne",
     weather: WeatherPreset = "breezy",
@@ -36,7 +37,7 @@ export class SimulationClient {
     this.worker.addEventListener("error", this.handleWorkerError);
     this.send({
       type: "initialize",
-      seed,
+      world,
       aircraft,
       mode,
       spawn,
@@ -87,6 +88,11 @@ export class SimulationClient {
 
   reset(spawn: SpawnKind, airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
     this.send({ type: "reset", spawn, airborneStartAgl });
+  }
+
+  /** Recovers over the Worker's authoritative crash X/Z, never renderer-local coordinates. */
+  restartAfterCrash(airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
+    this.send({ type: "restartAfterCrash", airborneStartAgl });
   }
 
   getRenderState(timestamp = performance.now()): FlightVisualState | null {
@@ -219,6 +225,7 @@ export function interpolateFlightState(
   result.brake = lerp(first.brake, second.brake, alpha);
   result.trim = lerp(first.trim, second.trim, alpha);
   result.flaps = lerp(first.flaps, second.flaps, alpha);
+  result.gear = lerp(first.gear, second.gear, alpha);
   result.loadFactor = lerp(first.loadFactor, second.loadFactor, alpha);
   result.touchdown = lerp(first.touchdown, second.touchdown, alpha);
   result.simulationTime = lerp(first.simulationTime, second.simulationTime, alpha);

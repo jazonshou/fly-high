@@ -248,7 +248,7 @@ function shaderMaterial(
     blending: THREE.NoBlending,
     toneMapped,
   });
-  material.customProgramCacheKey = () => `${name}-v1`;
+  material.customProgramCacheKey = () => `${name}-v2`;
   return material;
 }
 
@@ -361,6 +361,7 @@ export class HybridRenderPipeline {
         inverseProjectionMatrix: { value: new THREE.Matrix4() },
         cameraWorldMatrix: { value: new THREE.Matrix4() },
         previousViewProjectionMatrix: { value: new THREE.Matrix4() },
+        cameraFar: { value: 32_000 },
         waterLevel: { value: options.waterReflection?.waterLevel ?? 0 },
         historyWeight: { value: 0 },
         waterHistoryWeight: { value: 0 },
@@ -387,6 +388,7 @@ export class HybridRenderPipeline {
         inverseProjectionMatrix: { value: new THREE.Matrix4() },
         cameraWorldMatrix: { value: new THREE.Matrix4() },
         cameraNear: { value: 0.08 },
+        cameraFar: { value: 32_000 },
         waterLevel: { value: options.waterReflection?.waterLevel ?? 0 },
         waterTime: { value: 0 },
         waterWorldOrigin: { value: new THREE.Vector2() },
@@ -846,6 +848,7 @@ export class HybridRenderPipeline {
     (uniforms.previousViewProjectionMatrix!.value as THREE.Matrix4).copy(
       this.previousViewProjection,
     );
+    uniforms.cameraFar!.value = camera.far;
     uniforms.waterLevel!.value = this.options.waterReflection?.waterLevel ?? 0;
     uniforms.historyWeight!.value = this.historyValid ? motionWeight : 0;
     uniforms.waterHistoryWeight!.value = bathymetryChanged
@@ -882,6 +885,7 @@ export class HybridRenderPipeline {
     );
     (uniforms.cameraWorldMatrix!.value as THREE.Matrix4).copy(camera.matrixWorld);
     uniforms.cameraNear!.value = camera.near;
+    uniforms.cameraFar!.value = camera.far;
     uniforms.waterLevel!.value = this.options.waterReflection?.waterLevel ?? 0;
     uniforms.waterTime!.value = this.waterTimeSeconds;
     (uniforms.waterWorldOrigin!.value as THREE.Vector2).copy(this.waterWorldOrigin);

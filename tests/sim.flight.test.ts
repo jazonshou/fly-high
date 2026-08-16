@@ -13,14 +13,6 @@ import {
 import { createWorld, runwayToWorld, sampleTerrain, sampleWind } from "../src/world";
 import { keyboardRollDirection } from "../src/input";
 
-const SAFE_RUNWAY_FIXTURE_SEED = "airport-safety-1-535203442";
-const SAFE_RUNWAY_FIXTURE = Object.freeze({
-  centerX: -3_109.8434911464765,
-  centerZ: -7_702.165069913508,
-  elevation: 35.25,
-  headingRadians: 0.6698306877107214,
-});
-
 function flyFor(simulator: FlightSimulator, seconds: number): void {
   const count = Math.round(seconds / FIXED_TIME_STEP);
   for (let index = 0; index < count; index += 1) simulator.step();
@@ -402,9 +394,7 @@ describe("flight simulation", () => {
   });
 
   it("stays parked with the procedural runway and gust field", () => {
-    const world = createWorld(SAFE_RUNWAY_FIXTURE_SEED, {
-      airport: SAFE_RUNWAY_FIXTURE,
-    });
+    const world = createWorld(Number.parseInt("1ycj96c", 36));
     const airport = world.airport;
     expect(airport).not.toBeNull();
     if (!airport) return;

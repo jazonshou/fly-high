@@ -61,6 +61,7 @@ describe("rebuilt light-trainer handling", () => {
       trim: -0.24,
       flaps: 0.5,
       brake: 0.37,
+      gear: 0.63,
     };
 
     const direct = assisted(simulator, "unassisted", requested);

@@ -273,6 +273,9 @@ describe("aircraft control-surface presentation", () => {
       "starboard-engine-intake",
       "port-engine-intake",
       "swept-vertical-stabilizer",
+      "landing-gear-doors",
+      "starboard-speed-brake",
+      "port-speed-brake",
     ]) {
       expect(aircraft.group.getObjectByName(detail), detail).toBeDefined();
     }
@@ -283,6 +286,8 @@ describe("aircraft control-surface presentation", () => {
       aileron: 0.7,
       elevator: -0.5,
       rudder: 0.4,
+      gear: 0,
+      brake: 0,
     }, 1 / 30);
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
     expect(aircraft.group.getObjectByName("starboard-aileron")?.rotation.z).toBeLessThan(0);
@@ -290,13 +295,20 @@ describe("aircraft control-surface presentation", () => {
     expect(aircraft.group.getObjectByName("elevator")?.rotation.z).toBeGreaterThan(0);
     expect(aircraft.group.getObjectByName("rudder")?.rotation.y).toBeLessThan(0);
     expect(aircraft.group.getObjectByName("retractable-landing-gear")?.visible).toBe(false);
-    aircraft.update({ ...INITIAL_VISUAL_STATE, onGround: true, altitudeAgl: 0 }, 1 / 30);
+    aircraft.update({ ...INITIAL_VISUAL_STATE, onGround: false, gear: 0.5, brake: 1 }, 1 / 30);
+    const transitioningGear = aircraft.group.getObjectByName("retractable-landing-gear");
+    expect(transitioningGear?.visible).toBe(true);
+    expect(transitioningGear?.scale.y).toBeGreaterThan(0.08);
+    expect(transitioningGear?.scale.y).toBeLessThan(1);
+    expect(aircraft.group.getObjectByName("starboard-speed-brake")?.rotation.z).toBeLessThan(-0.6);
+    aircraft.update({ ...INITIAL_VISUAL_STATE, onGround: true, altitudeAgl: 0, gear: 1 }, 1 / 30);
     expect(aircraft.group.getObjectByName("retractable-landing-gear")?.visible).toBe(true);
+    expect(aircraft.group.getObjectByName("retractable-landing-gear")?.scale.y).toBe(1);
     let meshCount = 0;
     aircraft.group.traverse((child) => {
       if (child instanceof THREE.Mesh) meshCount += 1;
     });
-    expect(meshCount).toBeLessThanOrEqual(32);
+    expect(meshCount).toBeLessThanOrEqual(38);
     aircraft.dispose();
   });
 });

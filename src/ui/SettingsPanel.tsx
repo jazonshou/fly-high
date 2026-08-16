@@ -1,3 +1,8 @@
+import {
+  useEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import type { GameSettings } from "@/src/settings";
 import {
   MAX_AIRBORNE_START_AGL,
@@ -7,6 +12,96 @@ import {
 interface SettingsPanelProps {
   settings: GameSettings;
   onChange: (settings: GameSettings) => void;
+}
+
+interface SettingsDialogProps extends SettingsPanelProps {
+  onClose: () => void;
+}
+
+const FOCUSABLE_SETTINGS_SELECTOR = [
+  "button:not([disabled])",
+  "select:not([disabled])",
+  "input:not([disabled])",
+  "[href]",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+/**
+ * Modal wrapper shared by the start and pause surfaces. It owns focus while
+ * mounted and restores it to the invoking Settings button on close.
+ */
+export function SettingsDialog({ settings, onChange, onClose }: SettingsDialogProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
+  }, []);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Do not let flight shortcuts leak through the modal to InputManager's
+    // window listener. Native select/range keyboard behaviour is unaffected.
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = Array.from(
+      panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SETTINGS_SELECTOR) ?? [],
+    ).filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
+    if (focusable.length === 0) {
+      event.preventDefault();
+      panelRef.current?.focus();
+      return;
+    }
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <section className="settings-screen" onKeyDown={handleKeyDown}>
+      <div
+        id="settings-dialog"
+        ref={panelRef}
+        className="settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        aria-describedby="settings-description"
+        tabIndex={-1}
+      >
+        <header className="settings-panel__header">
+          <div>
+            <p>FLIGHT CONFIGURATION</p>
+            <h2 id="settings-title">Settings</h2>
+            <span id="settings-description">
+              Changes apply immediately and stay with this aircraft and world.
+            </span>
+          </div>
+          <button ref={closeRef} type="button" onClick={onClose} aria-label="Close settings">
+            <span aria-hidden="true">×</span>
+          </button>
+        </header>
+        <SettingsPanel settings={settings} onChange={onChange} />
+      </div>
+    </section>
+  );
 }
 
 export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
@@ -114,7 +209,7 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
           onChange={(event) => patch("airborneStartAgl", Number(event.target.value))}
         />
         <small className="setting-field__hint">
-          Used by Restart airborne and the next generated world.
+          Minimum clearance for airborne starts and safe recovery above a crash location.
         </small>
       </label>
       <label className="setting-field setting-field--range">
