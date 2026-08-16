@@ -13,14 +13,10 @@ export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
 export type TimeOfDayPreset = "dawn" | "day" | "golden";
 export type WeatherPreset = "clear" | "breezy" | "cloudy";
-/** Persisted rendering preference. `ray-traced` is a legacy storage key, not a backend claim. */
-export type RequestedRenderingMode = "balanced" | "hybrid" | "ray-traced";
-export type RenderBackend = "webgl2" | "canvas2d";
-export type RenderTechnique =
-  | "forward"
-  | "planar-screen-space"
-  | "ray-marched-screen-space"
-  | "canvas2d";
+/** WebGPU feature intent. Quality controls asset density; this controls expensive GPU techniques. */
+export type RequestedRenderingMode = "performance" | "balanced" | "ultra";
+export type RenderBackend = "webgpu";
+export type RenderTechnique = "forward-spectral-volumetric";
 
 export interface FlightVisualState {
   position: Vec3State;
@@ -81,7 +77,22 @@ export interface RenderDiagnostics {
   requestedRenderingMode: RequestedRenderingMode;
   renderBackend: RenderBackend;
   renderTechnique: RenderTechnique;
-  hardwareRayTracing: boolean;
+  /** Main render scale before display upsampling. */
+  renderScale: number;
+  /** CPU time spent encoding the most recent frame. */
+  cpuFrameTime: number;
+  /** GPU frame duration when timestamp-query is available. */
+  gpuFrameTime: number | null;
+  visibleInstances: number;
+  activeAnimals: number;
+  riverCount: number;
+  lakeCount: number;
+  residentTerrainPages: number;
+  cloudResolutionScale: number;
+  cloudRaySteps: number;
+  oceanFftCascades: number;
+  oceanFftResolution: number;
+  adapter: string;
   renderingFallbackReason: string | null;
 }
 

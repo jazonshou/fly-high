@@ -116,7 +116,7 @@ describe("settings", () => {
   it("defaults to direct pilot authority and validates airborne start height", () => {
     expect(DEFAULT_SETTINGS.aircraft).toBe("trainer");
     expect(DEFAULT_SETTINGS.flightMode).toBe("unassisted");
-    expect(DEFAULT_SETTINGS.renderingMode).toBe("hybrid");
+    expect(DEFAULT_SETTINGS.renderingMode).toBe("balanced");
     expect(validateSettings({ airborneStartAgl: -10 }).airborneStartAgl).toBe(
       MIN_AIRBORNE_START_AGL,
     );
@@ -149,7 +149,7 @@ describe("settings", () => {
     expect(result.aircraft).toBe("trainer");
   });
 
-  it("persists explicit flight and rendering selections in v2 storage", () => {
+  it("persists explicit flight and WebGPU quality selections in v3 storage", () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -159,7 +159,7 @@ describe("settings", () => {
       {
         ...DEFAULT_SETTINGS,
         flightMode: "scenic",
-        renderingMode: "ray-traced",
+        renderingMode: "ultra",
         aircraft: "jet",
         airborneStartAgl: 975,
       },
@@ -169,7 +169,7 @@ describe("settings", () => {
     expect(values.has(SETTINGS_STORAGE_KEY)).toBe(true);
     expect(loadSettings(storage)).toMatchObject({
       flightMode: "scenic",
-      renderingMode: "ray-traced",
+      renderingMode: "ultra",
       airborneStartAgl: 975,
       aircraft: "jet",
     });
@@ -186,12 +186,12 @@ describe("settings", () => {
     expect(loadSettings(storage)).toMatchObject({
       quality: "high",
       flightMode: "unassisted",
-      renderingMode: "hybrid",
+      renderingMode: "balanced",
       airborneStartAgl: DEFAULT_AIRBORNE_START_AGL,
     });
   });
 
-  it("migrates an existing v2 payload without a rendering mode to Hybrid", () => {
+  it("defaults a payload without a rendering mode and migrates legacy modes", () => {
     const storage = {
       getItem: (key: string) =>
         key === SETTINGS_STORAGE_KEY
@@ -202,10 +202,11 @@ describe("settings", () => {
     expect(loadSettings(storage)).toMatchObject({
       quality: "high",
       flightMode: "pilot",
-      renderingMode: "hybrid",
+      renderingMode: "balanced",
     });
     expect(validateSettings({ renderingMode: "balanced" }).renderingMode).toBe("balanced");
-    expect(validateSettings({ renderingMode: "ray-traced" }).renderingMode).toBe("ray-traced");
+    expect(validateSettings({ renderingMode: "hybrid" }).renderingMode).toBe("balanced");
+    expect(validateSettings({ renderingMode: "ray-traced" }).renderingMode).toBe("ultra");
   });
 
   it("creates portable seed labels and URLs", () => {

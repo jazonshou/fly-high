@@ -88,7 +88,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(rollout).toContain("SPEED + WHEEL BRAKE");
   });
 
-  it("reports the requested mode separately from the effective backend and technique", () => {
+  it("reports the active WebGPU profile and compute workloads", () => {
     const diagnostics: RenderDiagnostics = {
       fps: 58,
       frameTime: 17.2,
@@ -97,12 +97,23 @@ describe("flight HUD camera and terminal-state presentation", () => {
       geometries: 18,
       textures: 14,
       terrainTiles: 36,
-      requestedRenderingMode: "ray-traced",
-      renderBackend: "webgl2",
-      renderTechnique: "ray-marched-screen-space",
-      hardwareRayTracing: false,
-      renderingFallbackReason:
-        "No WebGPU ray-query backend is active; using half-resolution screen-space ray marching.",
+      requestedRenderingMode: "ultra",
+      renderBackend: "webgpu",
+      renderTechnique: "forward-spectral-volumetric",
+      renderScale: 0.86,
+      cpuFrameTime: 4.2,
+      gpuFrameTime: 11.8,
+      visibleInstances: 24_500,
+      activeAnimals: 48,
+      riverCount: 9,
+      lakeCount: 3,
+      residentTerrainPages: 42,
+      cloudResolutionScale: 0.5,
+      cloudRaySteps: 72,
+      oceanFftCascades: 4,
+      oceanFftResolution: 256,
+      adapter: "Test GPU",
+      renderingFallbackReason: null,
     };
     const markup = renderToStaticMarkup(createElement(Hud, {
       state: INITIAL_VISUAL_STATE,
@@ -118,10 +129,10 @@ describe("flight HUD camera and terminal-state presentation", () => {
       mouseFlight: false,
     }));
 
-    expect(markup).toContain("WEBGL2 · SCREEN-SPACE RAY MARCH");
-    expect(markup).toContain("Requested: screen-space ray march · Hardware RT: OFF");
-    expect(markup).not.toContain("Requested: ray-traced");
-    expect(markup).toContain("No WebGPU ray-query backend is active");
-    expect(markup).not.toContain("hardware ray tracing enabled");
+    expect(markup).toContain("WEBGPU · WEBGPU FORWARD / SPECTRAL / VOLUMETRIC");
+    expect(markup).toContain("ULTRA · 4×256² FFT · 72 cloud steps");
+    expect(markup).toContain("24,500 detail instances · 48 animals · 9 rivers / 3 lakes");
+    expect(markup).toContain("Test GPU");
+    expect(markup).toContain("11.8 ms GPU");
   });
 });

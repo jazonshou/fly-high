@@ -147,13 +147,13 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
             event.target.value as GameSettings["renderingMode"],
           )}
         >
-          <option value="balanced">Balanced</option>
-          <option value="hybrid">Hybrid (recommended)</option>
-          <option value="ray-traced">Screen-space ray marching (experimental)</option>
+          <option value="performance">WebGPU Performance</option>
+          <option value="balanced">WebGPU Balanced (recommended)</option>
+          <option value="ultra">WebGPU Ultra</option>
         </select>
         <small className="setting-field__hint">
-          Higher-detail half-resolution screen-space ray marching. Browser WebGPU has no
-          ray-query path in this app today, so this is not hardware ray tracing.
+          Controls compute simulation resolution, volumetric sampling, water shading, shadows,
+          and streamed world-detail density.
         </small>
       </label>
       <label className="setting-field">

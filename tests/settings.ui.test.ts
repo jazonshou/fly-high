@@ -6,21 +6,20 @@ import { DEFAULT_SETTINGS } from "../src/settings";
 import { SettingsDialog, SettingsPanel } from "../src/ui/SettingsPanel";
 
 describe("settings panel rendering preference", () => {
-  it("presents all rendering modes and the browser fallback disclosure", () => {
+  it("presents the WebGPU compute-quality profiles", () => {
     const markup = renderToStaticMarkup(createElement(SettingsPanel, {
       settings: DEFAULT_SETTINGS,
       onChange: () => undefined,
     }));
 
     expect(markup).toContain("Rendering");
-    expect(markup).toContain("Balanced");
-    expect(markup).toContain("Hybrid (recommended)");
-    expect(markup).toContain("Screen-space ray marching (experimental)");
-    expect(markup).toContain("half-resolution screen-space ray marching");
-    expect(markup).toContain("Browser WebGPU has no ray-query path");
-    expect(markup).toContain("not hardware ray tracing");
-    expect(markup).not.toContain(">Ray tracing (experimental)<");
-    expect(markup).toContain('option value="hybrid" selected=""');
+    expect(markup).toContain("WebGPU Performance");
+    expect(markup).toContain("WebGPU Balanced (recommended)");
+    expect(markup).toContain("WebGPU Ultra");
+    expect(markup).toContain("compute simulation resolution");
+    expect(markup).toContain("volumetric sampling");
+    expect(markup).not.toContain("WebGL");
+    expect(markup).toContain('option value="balanced" selected=""');
   });
 
   it("wraps settings in a labelled modal with an explicit close control", () => {

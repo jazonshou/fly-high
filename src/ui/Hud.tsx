@@ -27,16 +27,13 @@ function formatHeading(heading: number): string {
 }
 
 function renderTechniqueLabel(diagnostics: RenderDiagnostics): string {
-  if (diagnostics.renderTechnique === "ray-marched-screen-space") return "SCREEN-SPACE RAY MARCH";
-  if (diagnostics.renderTechnique === "planar-screen-space") return "PLANAR + SCREEN-SPACE";
-  if (diagnostics.renderTechnique === "canvas2d") return "CANVAS 2D";
-  return "FORWARD";
+  return diagnostics.renderTechnique === "forward-spectral-volumetric"
+    ? "WEBGPU FORWARD / SPECTRAL / VOLUMETRIC"
+    : diagnostics.renderTechnique;
 }
 
 function requestedRenderingLabel(diagnostics: RenderDiagnostics): string {
-  return diagnostics.requestedRenderingMode === "ray-traced"
-    ? "screen-space ray march"
-    : diagnostics.requestedRenderingMode;
+  return diagnostics.requestedRenderingMode;
 }
 
 function MetricTape({
@@ -245,12 +242,20 @@ export function Hud({
           <span>{diagnostics.frameTime.toFixed(1)} ms</span>
           <span>{diagnostics.drawCalls} calls</span>
           <span>{Math.round(diagnostics.triangles / 1_000)}k tris</span>
-          <span>{diagnostics.terrainTiles} tiles</span>
+          <span>{diagnostics.residentTerrainPages} pages</span>
+          <span>{diagnostics.renderScale.toFixed(2)}x scale</span>
+          <span>{diagnostics.gpuFrameTime === null ? "GPU timing n/a" : `${diagnostics.gpuFrameTime.toFixed(1)} ms GPU`}</span>
           <span className="diagnostics__wide">
             {diagnostics.renderBackend.toUpperCase()} · {renderTechniqueLabel(diagnostics)}
           </span>
           <span className="diagnostics__wide">
-            Requested: {requestedRenderingLabel(diagnostics)} · Hardware RT: OFF
+            {requestedRenderingLabel(diagnostics).toUpperCase()} · {diagnostics.oceanFftCascades}×{diagnostics.oceanFftResolution}² FFT · {diagnostics.cloudRaySteps} cloud steps
+          </span>
+          <span className="diagnostics__wide">
+            {diagnostics.visibleInstances.toLocaleString()} detail instances · {diagnostics.activeAnimals} animals · {diagnostics.riverCount} rivers / {diagnostics.lakeCount} lakes
+          </span>
+          <span className="diagnostics__wide">
+            {diagnostics.adapter}
           </span>
           {diagnostics.renderingFallbackReason ? (
             <span className="diagnostics__wide diagnostics__fallback">

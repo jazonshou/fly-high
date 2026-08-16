@@ -1,17 +1,23 @@
 # Aerolith
 
-Aerolith is an original, endless-flight browser simulator inspired by the calm, procedural rhythm of *slow roads*. It combines a deterministic terrain world, a fixed-step six-degree-of-freedom light-aircraft model, generated audio, and a deliberately lightweight Three.js renderer. There are no remote services or downloaded game assets at runtime.
+Aerolith is an original, endless-flight browser simulator inspired by the calm, procedural rhythm of *slow roads*. It combines a deterministic world, a fixed-step six-degree-of-freedom light-aircraft model, synthesized audio, and a Babylon.js renderer built exclusively on WebGPU. The aircraft, terrain, vegetation, buildings, wildlife, water, atmosphere, and clouds are generated at runtime; no downloaded game-asset pipeline or remote service is required.
 
 ## Run locally
 
-Requirements: Node.js 22.13 or newer and a current desktop browser with WebGL 2 and Web Workers.
+Requirements:
+
+- Node.js 22.13 or newer.
+- A current desktop browser that exposes WebGPU and Web Workers in a secure context (`localhost` is accepted for local development).
+- A hardware WebGPU adapter. Software/fallback adapters are rejected.
 
 ```bash
 npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). A world seed is placed in the URL; copying that URL reproduces the same terrain, runway, and wind field.
+Open [http://localhost:3000](http://localhost:3000). A world seed is placed in the URL; copying that URL reproduces the same terrain, runway, scenery, wildlife population, and wind field.
+
+> **WebGPU is a hard requirement.** The game has no WebGL or Canvas compatibility renderer. If a hardware WebGPU device cannot be created, startup stops with an explanatory error. A lost device also stops rendering and requires a reload so the adapter, device, and GPU resources can be recreated.
 
 For a production-like check:
 
@@ -32,7 +38,7 @@ npm run verify
 | `F` / `V` | Extend / retract flaps |
 | `↑` / `↓` | Elevator trim |
 | `Space` | Wheel brakes |
-| `C` | Cycle chase, cockpit, and orbit cameras |
+| `C` | Cycle chase, cockpit, and cinematic cameras |
 | `H` | Cycle full, minimal, and hidden HUD |
 | `R` | Restart the current runway or airborne start |
 | `Esc` or `P` | Pause / resume |
@@ -44,17 +50,23 @@ Keyboard, optional pointer-lock mouse yoke, standard gamepads, and non-standard 
 - Fixed 120 Hz simulation in a dedicated Web Worker, decoupled from render FPS, with a 60 Hz state stream interpolated for smooth presentation.
 - Six-degree-of-freedom rigid-body integration with lift, induced/parasitic drag, sideslip, control-surface authority, propeller thrust, gravity, angular damping, load factor, and ground interaction.
 - Nonlinear angle-of-attack response, gradual stall onset, buffet warning, flap/trim effects, runway takeoff and landing, wheel braking, and crash/reset handling.
-- Direct/unassisted control is the default and imposes no attitude or altitude hold. Pilot damping and Scenic attitude control are explicit opt-in modes layered around the same aircraft model.
+- Direct/unassisted control by default, with explicit opt-in pilot damping and Scenic attitude control layered around the same aircraft model.
+- A Babylon.js `WebGPUEngine` scene using a right-handed coordinate system, reversed-Z depth, cascaded shadows, adaptive internal resolution, an explicit half-float image-processing pass for ACES tone mapping, and a final FXAA pass. There is no active prepass, TAA, bloom, or sharpening pipeline. The renderer reports the `forward-spectral-volumetric` technique and never selects another backend.
+- A small explicit frame graph that orders simulation presentation, world visibility, spectral-ocean compute, volumetric-cloud integration, and final color presentation. Babylon owns command encoding and resource transitions; the game graph owns dependency order, update cadence, timings, and system invalidation hooks.
+- Worker-generated terrain rendered as velocity-aware, camera-relative geometry-clipmap rings. Eight total levels keep terrain beyond the 120 km view horizon on every quality tier, while near-page sample density scales with quality. Coarse page indices are hole-punched against the exact union of resident finer pages, and 80 m edge skirts conceal unequal-density T-junctions. This removes streaming overlap without opening cracks during partial loads/profile transitions. A PBR material plugin adds camera-stable macro geology, slope strata, and near-field triplanar micro-normal detail. A bounded request queue is continuously refilled, stale results are rejected, and floating-origin shifts keep GPU coordinates stable on long flights.
+- A WebGPU-native spectral ocean: seeded, band-limited JONSWAP-style spectra, time evolution, Stockham 2D inverse FFT, displacement/Jacobian derivation, normal generation, and cadence-correct decayed foam across several wavelength cascades. A crack-free 120 km camera-centered radial grid concentrates geometric samples near the aircraft, while fine cascade normals/foam are combined per pixel for dielectric Fresnel, GGX sun glint, sky/cloud response, breaking-wave detail, and a low-resolution scene reflection over the analytic environment fallback. Direct glint and sunlit scatter reuse the shared cascaded-shadow depth array as well as the cloud-transmittance map; no water-only shadow pass is added. FFT resources swap atomically when the live quality tier changes.
+- Deterministic rivers and lakes generated from terrain samples in velocity-ahead, overlapping world regions. A cancellable hydrology Worker streams replacement regions while the current region remains visible; a no-hole two-phase crossfade hides handoff latency. Each page traces globally owned upstream sources from a bounded max-length halo before clipping stable river geometry, so a downstream reach cannot disappear merely because its headwater left the page. Flow-aligned meshes use a separate WGSL water material with ripples, Fresnel response, sun highlights, shared sky/cloud lighting, and the same cascaded sun-shadow receiver as the ocean. One visually significant nearby lake can share the bounded scene-reflection capture; rivers and all other water retain their stable analytic reflection.
+- Camera-centered volumetric clouds ray-marched in WGSL from animated 3D procedural density. Coverage, humidity, layered shape noise, erosion, wind advection, height profile, Beer extinction, anisotropic phase functions, sun transmittance, and stochastic per-frame sampling produce varying forms and lighting without per-cloud meshes or sprite cards. Low-resolution integration is temporally resolved and composited at full resolution, while a bounded transmittance map supplies height-aware cloud shadows to terrain, water, and opaque PBR scenery; transparent glass and emissive lights remain optically independent.
+- An analytic HDR atmosphere with Rayleigh/Mie-style sky scattering, a directional sun, ambient/fog response, dawn/daylight/golden-hour presets, and clear/breezy/gusty-cloudy weather shared by sky, clouds, and water.
+- Deterministic 512 m detail pages selected ahead of aircraft velocity and generated inside a small per-update CPU time slice. Biome, slope, and moisture drive pine, cedar, oak, and birch placement, rocks, sparse villages, roads, roof forms, doors, and window detail. Babylon thin instances provide near/mid LOD, deterministic far thinning, per-instance color, and per-vertex tree sway. Fixed spatial presentation chunks let the main camera frustum-cull offscreen resident detail without changing deterministic page ownership.
+- Deterministic wildlife pages containing gulls, hawks, deer, and boar. A bounded 30 Hz CPU simulation uses distance-based AI rates and a spatial hash for bird flocking; render-time interpolation then presents smooth procedural near/far animal motion without tying AI cost to frame rate.
+- Seeded multi-octave terrain and biome sampling with runway flattening, continuous borders, carved valleys and ravines, ridged/craggy mountain relief, geology-aware coloring, and spatially varying gusts.
+- Procedural aircraft, runway, apron, hangars, runway markings, villages, trees, rocks, wildlife, and water surfaces. Shadow casters are registered with the shared cascaded-shadow system.
 - The minimal title screen keeps the live Scenic attract flight visible behind only **Start** and seed controls. **Start** atomically hands that exact in-progress state to the selected pilot mode; runway and configurable-AGL airborne restarts remain available from pause.
-- Deterministic multi-octave terrain and biome sampling with runway flattening, continuous borders, carved valleys, ridged/craggy mountain relief, geology-aware coloring, close-range grass/herb ground cover, mixed clustered forests, and spatially varying gusts.
-- A second Worker generates transferable terrain tiles through a bounded nearest-first queue. Near terrain is pooled at the selected quality while a coarse far LOD keeps the horizon filled.
-- Floating-origin rendering, stale-work rejection, geometry/material reuse, instanced mixed-species trees and volumetric cloud clusters, capped device pixel ratio, dynamic resolution scaling, and three quality presets.
-- Procedural aircraft, runway, anisotropically filtered terrain microtexture, instanced ground plants, depth-stable dielectric Fresnel water with filtered ripples, atmospheric sky, textured cloud volumes, real medium/high-quality shadows, a low-altitude contact shadow, engine, wind, ground rumble, flap servo, stall, and touchdown presentation—no asset download pipeline is required.
-- Dawn, daylight, and golden-hour lighting plus clear, breezy, and gusty/cloudy weather presets that affect both presentation and the physical wind field.
-- Chase, cockpit, and orbit cameras; responsive flight instruments; accessibility and performance settings; synthesized Web Audio; URL-shareable seeds.
-- Unit tests for world determinism/continuity, runway safety, flight dynamics, stall behavior, controls, URL seeds, and settings validation.
+- Synthesized Web Audio for engine, wind, ground rumble, flap servo, stall, and touchdown; URL-shareable seeds; responsive flight instruments; accessibility and performance settings.
+- Unit tests for world determinism and continuity, terrain-page contracts, ecology and wildlife generation, runway safety, flight dynamics, stall behavior, controls, URL seeds, and settings validation.
 
-## Architecture
+## Rendering architecture
 
 ```text
 React UI / input / audio
@@ -64,33 +76,47 @@ SimulationClient ─────► simulation.worker.ts ─────► 120 
           ▲                       │                         │
           │ interpolated snapshots └─── terrain + wind ────┘
           │
-FlightRenderer ───────► Three.js scene + floating origin + pooled tiles
-          │
-          └──► TerrainGenerationClient ──► terrain.worker.ts
-                          bounded queue       transferable tile buffers
+          └──────► FlightRenderer (Babylon.js WebGPUEngine, WebGPU only)
+                              │
+                              ├──► WebGpuFrameGraph
+                              │      presentation → visibility → planar reflection
+                              │      → ocean compute → cloud integration → ACES/FXAA
+                              │
+                              ├──► terrain clipmaps ──► TerrainGenerationClient
+                              │                            │
+                              │                            └──► terrain.worker.ts
+                              │
+                              └──► atmosphere / ocean / hydrology / detail / wildlife
 ```
 
-The simulation and renderer exchange plain immutable snapshots. Neither the physics model nor world generation imports Three.js, which keeps the deterministic core testable in Node and makes future rendering changes independent of flight behavior.
+The simulation and renderer exchange plain immutable snapshots. The flight model and deterministic world sampling do not import Babylon.js, so they remain testable in Node and independent of presentation. The active renderer is `src/render/FlightRenderer.ts`; its WebGPU systems live below `src/render/webgpu/`.
 
 Important source areas:
 
 - `src/sim/` — aircraft constants, aerodynamics, rigid-body state, telemetry, and fixed-step integration.
 - `src/world/` — seeded noise, terrain/biome/runway sampling, wind, and typed tile generation.
-- `src/workers/` — independent simulation and terrain workers, protocols, and the bounded terrain scheduler.
-- `src/render/` — aircraft, sky, terrain pooling, cameras, adaptive resolution, and diagnostics.
-- `src/input/`, `src/audio/`, `src/settings/`, `src/ui/` — browser-facing systems.
+- `src/workers/` — independent simulation, terrain, and hydrology workers, protocols, and bounded schedulers.
+- `src/render/webgpu/core/` — hardware capability gate, resolved quality profiles, and frame ordering.
+- `src/render/webgpu/terrain/` and `src/render/webgpu/world/` — active clipmap terrain plus canonical page keys, quantized payload contracts, validation, lifecycle states, cache metadata, and streaming priorities.
+- `src/render/webgpu/water/`, `clouds/`, and `atmosphere/` — FFT ocean, paged hydrology, volumetric clouds, sky, lighting, fog, and cascaded shadows.
+- `src/render/webgpu/detail/` and `wildlife/` — paged ecology/settlements and bounded animal generation/simulation.
+- `src/input/`, `src/audio/`, `src/settings/`, and `src/ui/` — browser-facing systems.
 
 Implementation notes and measured acceptance bands are documented in `docs/FLIGHT_MODEL.md`, `docs/CALIBRATION.md`, and `docs/PERFORMANCE.md`.
 
-## Performance targets
+## Quality and performance
 
-The medium preset is the baseline: a bounded near grid and coarse far grid around the aircraft, instanced detail, one in-flight terrain job, a 60 Hz state stream, and a renderer that lowers its internal pixel ratio after sustained slow frames. The performance overlay can be enabled in Flight Setup to inspect FPS, frame time, draw calls, triangles, and resident terrain tiles.
+Two settings resolve the GPU budget: scenery quality (`low`, `medium`, or `high`) and rendering intent (`performance`, `balanced`, or `ultra`). Together they select one of three bounded profiles. The balanced medium combination is the baseline; higher profiles increase near-terrain sampling density, vegetation, animals, cloud samples, ocean cascades, and shadow coverage, while all profiles retain inexpensive horizon terrain.
 
-Suggested QA devices:
+The renderer monitors rolling 120-frame CPU and, when available, full-frame GPU p95 timings and adjusts internal resolution slowly between the profile ceiling and a 0.62 floor. It caps device pixel ratio at 2, disables MSAA, and applies FXAA after half-float ACES color processing. Diagnostics expose FPS, CPU/GPU frame time, draw calls, triangles, resident pages, visible instances, animals, rivers/lakes, render scale, cloud steps, ocean FFT topology, and adapter name.
 
-- Desktop integrated GPU at 1920×1080: target 60 FPS on medium.
-- Older/lower-power laptop: target at least 30 FPS on low.
-- High-DPI display: verify adaptive pixel ratio prevents fill-rate collapse.
+Suggested QA targets, not guaranteed minimums:
+
+- Modern discrete desktop GPU at 1920×1080: target 60 FPS on balanced/medium or above.
+- Modern integrated GPU: target 60 FPS on performance/low or at least 30 FPS on balanced/medium.
+- High-DPI display: confirm adaptive render scale prevents sustained fill-rate collapse.
+
+See `docs/PERFORMANCE.md` for exact tier budgets, subsystem ownership, streaming limits, measurement guidance, and current implementation boundaries.
 
 ## Development commands
 

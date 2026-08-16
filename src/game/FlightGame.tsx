@@ -10,9 +10,8 @@ import {
 } from "react";
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
-import { CanvasFlightRenderer } from "@/src/render/CanvasFlightRenderer";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
-import { supportsFlightWebGL, type FlightRenderingSystem } from "@/src/render/types";
+import { type FlightRenderingSystem } from "@/src/render/types";
 import {
   createRandomSeed,
   DEFAULT_SETTINGS,
@@ -52,8 +51,8 @@ import "./flight.css";
 
 type GamePhase = "menu" | "flying" | "paused";
 
-const GRAPHICS_CONTEXT_LOST_MESSAGE =
-  "The graphics device reset. Waiting for the browser to rebuild the 3D scene safely.";
+const GRAPHICS_DEVICE_LOST_MESSAGE =
+  "The WebGPU device was lost. Reload to recreate the adapter, device, and all GPU resources.";
 
 const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "cinematic"];
 const CAMERA_LABELS: Record<CameraMode, string> = {
@@ -379,7 +378,9 @@ export function FlightGame() {
     if (!canvas) return;
     let animationFrame = 0;
     let disposed = false;
+    let rendererTerminal = false;
     let lastFrame = performance.now();
+    const startupAbortController = new AbortController();
     const startupResources = new DisposableScope();
     readyRef.current = false;
     queueMicrotask(() => {
@@ -389,7 +390,8 @@ export function FlightGame() {
       }
     });
 
-    try {
+    const initialize = async (): Promise<void> => {
+      try {
       const activeSettings = settingsRef.current;
       const rendererOptions = {
         canvas,
@@ -400,40 +402,23 @@ export function FlightGame() {
         quality: activeSettings.quality,
         renderingMode: activeSettings.renderingMode,
         reducedMotion: activeSettings.reducedMotion,
-        onContextLost: () => {
+        signal: startupAbortController.signal,
+        onDeviceLost: () => {
           if (disposed) return;
+          rendererTerminal = true;
+          cancelAnimationFrame(animationFrame);
           invalidatePendingTransitions();
           simulationRef.current?.setPaused(true);
-          setError(GRAPHICS_CONTEXT_LOST_MESSAGE);
-        },
-        onContextRestored: () => {
-          if (disposed) return;
-          setError((current) => current === GRAPHICS_CONTEXT_LOST_MESSAGE ? null : current);
-          simulationRef.current?.setPaused(phaseRef.current === "paused");
+          setError(GRAPHICS_DEVICE_LOST_MESSAGE);
         },
         ...(world.airport ? { runway: world.airport } : {}),
       };
-      let renderer: FlightRenderingSystem;
-      let rendererMode: "webgl2" | "canvas2d";
-      if (supportsFlightWebGL()) {
-        try {
-          renderer = new FlightRenderer(rendererOptions);
-          rendererMode = "webgl2";
-        } catch (rendererError) {
-          canvas.dataset.webglFailure =
-            rendererError instanceof Error ? rendererError.message : "Unknown WebGL startup failure";
-          renderer = new CanvasFlightRenderer(
-            rendererOptions,
-            "WebGL 2 renderer startup failed; Canvas 2D compatibility renderer active.",
-          );
-          rendererMode = "canvas2d";
-        }
-      } else {
-        renderer = new CanvasFlightRenderer(rendererOptions);
-        rendererMode = "canvas2d";
+      const renderer: FlightRenderingSystem = await FlightRenderer.create(rendererOptions);
+      if (disposed) {
+        renderer.dispose();
+        return;
       }
       startupResources.own(renderer);
-      renderer.domElement.dataset.rendererMode = rendererMode;
       const input = startupResources.own(new InputManager(renderer.domElement, {
         sensitivity: activeSettings.sensitivity,
         deadZone: activeSettings.gamepadDeadZone,
@@ -492,7 +477,7 @@ export function FlightGame() {
       });
 
       const renderLoop = (now: number) => {
-        if (disposed) return;
+        if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
         lastFrame = now;
         if (phaseRef.current === "flying") {
@@ -505,6 +490,7 @@ export function FlightGame() {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";
           canvas.dataset.renderFailure = reason;
+          rendererTerminal = true;
           invalidatePendingTransitions();
           simulation.setPaused(true);
           setError(`The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`);
@@ -513,6 +499,7 @@ export function FlightGame() {
         if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {
           setDiagnostics(renderer.getDiagnostics());
         }
+        if (rendererTerminal) return;
         animationFrame = requestAnimationFrame(renderLoop);
       };
       animationFrame = requestAnimationFrame(renderLoop);
@@ -528,13 +515,17 @@ export function FlightGame() {
       startupResources.release(input);
       startupResources.release(audio);
       startupResources.release(simulation);
-    } catch (caught) {
-      startupResources.dispose();
-      const message = caught instanceof Error ? caught.message : "This browser could not start the 3D renderer.";
-      queueMicrotask(() => {
-        if (!disposed) setError(message);
-      });
-    }
+      } catch (caught) {
+        startupResources.dispose();
+        const message = caught instanceof Error
+          ? caught.message
+          : "This browser could not create a hardware WebGPU device.";
+        queueMicrotask(() => {
+          if (!disposed) setError(message);
+        });
+      }
+    };
+    void initialize();
 
     const handleVisibility = () => {
       if (document.hidden) {
@@ -548,8 +539,10 @@ export function FlightGame() {
     return () => {
       invalidatePendingTransitions();
       disposed = true;
+      startupAbortController.abort();
       cancelAnimationFrame(animationFrame);
       document.removeEventListener("visibilitychange", handleVisibility);
+      startupResources.dispose();
       const cleanupResources = new DisposableScope();
       if (rendererRef.current) cleanupResources.own(rendererRef.current);
       if (inputRef.current) cleanupResources.own(inputRef.current);

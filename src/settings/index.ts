@@ -39,13 +39,14 @@ export interface GameSettings {
   weather: WeatherPreset;
 }
 
-export const SETTINGS_STORAGE_KEY = "aerolith.settings.v2";
+export const SETTINGS_STORAGE_KEY = "aerolith.settings.v3";
+export const PREVIOUS_SETTINGS_STORAGE_KEY = "aerolith.settings.v2";
 export const LEGACY_SETTINGS_STORAGE_KEY = "aerolith.settings.v1";
 
 export const DEFAULT_SETTINGS: GameSettings = {
   aircraft: "trainer",
   quality: "medium",
-  renderingMode: "hybrid",
+  renderingMode: "balanced",
   // Full pilot authority is the default. Assistance is an explicit selection.
   flightMode: "unassisted",
   airborneStartAgl: DEFAULT_AIRBORNE_START_AGL,
@@ -74,16 +75,20 @@ function oneOf<T extends string>(value: unknown, values: readonly T[], fallback:
   return typeof value === "string" && values.includes(value as T) ? (value as T) : fallback;
 }
 
+function renderingMode(value: unknown): RenderingMode {
+  if (value === "performance" || value === "balanced" || value === "ultra") return value;
+  // Migrate renderer-v1 preferences to the nearest WebGPU resource intent.
+  if (value === "ray-traced") return "ultra";
+  if (value === "hybrid") return "balanced";
+  return DEFAULT_SETTINGS.renderingMode;
+}
+
 export function validateSettings(value: unknown): GameSettings {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   return {
     aircraft: oneOf(source.aircraft, ["trainer", "jet"] as const, DEFAULT_SETTINGS.aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
-    renderingMode: oneOf(
-      source.renderingMode,
-      ["balanced", "hybrid", "ray-traced"] as const,
-      DEFAULT_SETTINGS.renderingMode,
-    ),
+    renderingMode: renderingMode(source.renderingMode),
     flightMode: oneOf(
       source.flightMode,
       ["scenic", "pilot", "unassisted"] as const,
@@ -135,6 +140,9 @@ export function loadSettings(storage?: Pick<Storage, "getItem">): GameSettings {
   try {
     const serialized = target.getItem(SETTINGS_STORAGE_KEY);
     if (serialized) return validateSettings(JSON.parse(serialized));
+
+    const previousSerialized = target.getItem(PREVIOUS_SETTINGS_STORAGE_KEY);
+    if (previousSerialized) return validateSettings(JSON.parse(previousSerialized));
 
     const legacySerialized = target.getItem(LEGACY_SETTINGS_STORAGE_KEY);
     if (!legacySerialized) return { ...DEFAULT_SETTINGS };

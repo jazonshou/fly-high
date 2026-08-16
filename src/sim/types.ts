@@ -4,7 +4,7 @@
  * World space is a right-handed, Y-up frame:
  *   +X east/right, +Y up, +Z north/forward at heading zero.
  *
- * Aircraft body space is right-handed and matches Three.js' rotation math:
+ * Aircraft body space is right-handed and matches the renderer's quaternion convention:
  *   +X through the nose, +Y up, +Z port (left wing).
  *
  * Using +Z for the right wing would make the body basis left-handed. That was
