@@ -26,8 +26,11 @@ import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
 import { WebGpuFrameGraph } from "./webgpu/core/FrameGraph";
 import {
+  freshFrameTiming,
+  isUsableFrameTiming,
   nextDynamicRenderScale,
   resolveWebGpuQualityProfile,
+  worstFrameTimingPercentile95,
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
@@ -42,11 +45,16 @@ import {
 } from "./webgpu/water/PlanarWaterReflectionSystem";
 import { SpectralOceanSystem } from "./webgpu/water/SpectralOceanSystem";
 import type { FlightRenderingSystem } from "./types";
+import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
+const DYNAMIC_RESOLUTION_SAMPLE_COUNT = 120;
+const DYNAMIC_RESOLUTION_COOLDOWN_FRAMES = 120;
+const MIN_GPU_TIMING_SAMPLES = 8;
+const GPU_TIMING_STALE_AFTER_FRAMES = 30;
 
 function rendererAbortError(): Error {
   const error = new Error("WebGPU renderer startup was cancelled");
@@ -204,8 +212,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly up = Vector3.Up();
   private readonly cameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
+  private readonly desiredCameraUp = Vector3.Up();
   private readonly cameraWorld = Vector3.Zero();
-  private readonly frameDurations: number[] = [];
+  private readonly frameIntervalDurations: number[] = [];
+  private readonly cpuFrameDurations: number[] = [];
   private readonly gpuFrameDurations: number[] = [];
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
@@ -224,7 +234,14 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
+  private previousFrameStartedAt: number | null = null;
+  private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
+  private lastDrawCalls = 0;
+  private lastGpuCounterSampleCount = 0;
+  private lastGpuFrameMilliseconds: number | null = null;
+  private lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
+  private lastRenderScaleChangeFrameIndex = Number.NEGATIVE_INFINITY;
   private deviceLost = false;
   private disposed = false;
 
@@ -277,6 +294,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.resizeObserver = new ResizeObserver(() => {
       if (this.disposed) return;
       this.engine.resize(true);
+      this.resetTimingWindow();
       this.graph.invalidateHistory("display resize");
     });
     this.resizeObserver.observe(this.domElement);
@@ -536,10 +554,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     if (!finiteState(state)) throw new Error("The simulation produced a non-finite render state");
     const started = performance.now();
+    this.captureFrameInterval(started);
     this.currentState = state;
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
     this.originShifted = this.updateFloatingOrigin(state);
+    // Babylon increments this counter for every submitted draw but does not
+    // advance it unless instrumentation is installed. Reset it explicitly so
+    // diagnostics represent this frame instead of the renderer's lifetime.
+    this.engine._drawCalls.fetchNewFrame();
     this.engine.beginFrame();
     try {
       this.graph.execute({
@@ -554,29 +577,32 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     this.cameraCut = false;
     this.lastCpuFrameMilliseconds = performance.now() - started;
-    this.frameDurations.push(this.lastCpuFrameMilliseconds);
-    if (this.engine.enableGPUTimingMeasurements) {
-      const gpuMilliseconds = this.engine.getGPUFrameTimeCounter().current / 1_000_000;
-      if (Number.isFinite(gpuMilliseconds) && gpuMilliseconds > 0) {
-        this.gpuFrameDurations.push(gpuMilliseconds);
-      }
+    this.lastDrawCalls = Math.max(0, Math.round(this.engine._drawCalls.current));
+    if (isUsableFrameTiming(this.lastCpuFrameMilliseconds)) {
+      this.cpuFrameDurations.push(this.lastCpuFrameMilliseconds);
     }
-    if (this.frameDurations.length >= 120) this.updateDynamicResolution();
+    this.captureGpuFrameTiming();
+    if (this.frameIntervalDurations.length >= DYNAMIC_RESOLUTION_SAMPLE_COUNT) {
+      this.updateDynamicResolution();
+    }
   }
 
   getDiagnostics(): RenderDiagnostics {
     const terrain = this.terrain.statistics;
     const wildlife = this.wildlife.statistics;
     const hydrology = this.hydrology.getStatistics();
-    const gpuCounter = this.engine.enableGPUTimingMeasurements
-      ? this.engine.getGPUFrameTimeCounter().current
-      : undefined;
+    const gpuFrameTime = freshFrameTiming(
+      this.lastGpuFrameMilliseconds,
+      this.lastGpuTimingFrameIndex,
+      this.frameIndex,
+      GPU_TIMING_STALE_AFTER_FRAMES,
+    );
     return {
       fps: this.engine.getFps(),
-      frameTime: this.engine.getDeltaTime(),
+      frameTime: this.lastFrameIntervalMilliseconds,
       cpuFrameTime: this.lastCpuFrameMilliseconds,
-      gpuFrameTime: gpuCounter === undefined ? null : gpuCounter / 1_000_000,
-      drawCalls: this.engine._drawCalls.current,
+      gpuFrameTime,
+      drawCalls: this.lastDrawCalls,
       triangles: Math.round(this.scene.getActiveIndices() / 3),
       geometries: this.scene.geometries.length,
       textures: this.scene.textures.length,
@@ -766,7 +792,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       ? 1
       : 1 - Math.exp(-this.currentDeltaSeconds * (this.reducedMotion ? 12 : 7));
     Vector3.LerpToRef(this.camera.position, this.desiredCamera, response, this.camera.position);
-    this.camera.upVector.copyFrom(this.up);
+    if (shouldStabilizeCameraHorizon(this.cameraMode, this.reducedMotion)) {
+      this.desiredCameraUp.copyFromFloats(0, 1, 0);
+      Vector3.LerpToRef(
+        this.camera.upVector,
+        this.desiredCameraUp,
+        response,
+        this.camera.upVector,
+      );
+      this.camera.upVector.normalize();
+    } else {
+      // Cockpit and non-stabilized views retain the aircraft's physical roll.
+      this.camera.upVector.copyFrom(this.up);
+    }
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
   }
@@ -857,6 +895,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
+    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
+    this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
   }
@@ -868,23 +908,84 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   private updateDynamicResolution(): void {
-    const percentile95 = (samples: readonly number[]): number => {
-      if (samples.length === 0) return 0;
-      const sorted = [...samples].sort((a, b) => a - b);
-      const index = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
-      return sorted[index] ?? 0;
-    };
-    const cpuP95 = percentile95(this.frameDurations);
-    const gpuP95 = this.gpuFrameDurations.length >= 8
-      ? percentile95(this.gpuFrameDurations)
-      : 0;
-    const p95 = Math.max(cpuP95, gpuP95);
-    this.frameDurations.length = 0;
-    this.gpuFrameDurations.length = 0;
+    const timingGroups: Array<readonly number[]> = [
+      this.frameIntervalDurations,
+      this.cpuFrameDurations,
+    ];
+    const gpuTimingIsFresh = freshFrameTiming(
+      this.lastGpuFrameMilliseconds,
+      this.lastGpuTimingFrameIndex,
+      this.frameIndex,
+      GPU_TIMING_STALE_AFTER_FRAMES,
+    ) !== null;
+    if (gpuTimingIsFresh && this.gpuFrameDurations.length >= MIN_GPU_TIMING_SAMPLES) {
+      timingGroups.push(this.gpuFrameDurations);
+    }
+    const p95 = worstFrameTimingPercentile95(timingGroups);
+    this.resetTimingSamples();
+    if (p95 === null) return;
+    if (
+      this.frameIndex - this.lastRenderScaleChangeFrameIndex
+      < DYNAMIC_RESOLUTION_COOLDOWN_FRAMES
+    ) return;
     const next = nextDynamicRenderScale(this.renderScale, p95, this.profile);
     if (Math.abs(next - this.renderScale) < 0.005) return;
     this.renderScale = next;
+    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
     this.applyRenderScale();
     this.graph.invalidateHistory("dynamic resolution changed");
+  }
+
+  private captureFrameInterval(started: number): void {
+    const previous = this.previousFrameStartedAt;
+    this.previousFrameStartedAt = started;
+    if (previous === null) return;
+    const interval = started - previous;
+    if (!isUsableFrameTiming(interval)) {
+      // A suspended/background tab must not poison a later active-window p95.
+      this.lastFrameIntervalMilliseconds = 0;
+      this.resetTimingSamples();
+      return;
+    }
+    this.lastFrameIntervalMilliseconds = interval;
+    this.frameIntervalDurations.push(interval);
+  }
+
+  private captureGpuFrameTiming(): void {
+    if (!this.engine.enableGPUTimingMeasurements) {
+      this.lastGpuFrameMilliseconds = null;
+      return;
+    }
+    const counter = this.engine.getGPUFrameTimeCounter();
+    // WebGPU timestamp readback is asynchronous. `current` remains unchanged
+    // until another query resolves, so consume each counter result only once.
+    if (counter.count === this.lastGpuCounterSampleCount) return;
+    this.lastGpuCounterSampleCount = counter.count;
+    const milliseconds = counter.current / 1_000_000;
+    if (!isUsableFrameTiming(milliseconds)) {
+      this.lastGpuFrameMilliseconds = null;
+      return;
+    }
+    this.lastGpuFrameMilliseconds = milliseconds;
+    this.lastGpuTimingFrameIndex = this.frameIndex;
+    this.gpuFrameDurations.push(milliseconds);
+  }
+
+  private resetTimingSamples(): void {
+    this.frameIntervalDurations.length = 0;
+    this.cpuFrameDurations.length = 0;
+    this.gpuFrameDurations.length = 0;
+  }
+
+  private resetTimingWindow(): void {
+    this.resetTimingSamples();
+    this.previousFrameStartedAt = null;
+    this.lastFrameIntervalMilliseconds = 0;
+    this.lastCpuFrameMilliseconds = 0;
+    this.lastGpuFrameMilliseconds = null;
+    this.lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
+    this.lastGpuCounterSampleCount = this.engine.enableGPUTimingMeasurements
+      ? this.engine.getGPUFrameTimeCounter().count
+      : 0;
   }
 }

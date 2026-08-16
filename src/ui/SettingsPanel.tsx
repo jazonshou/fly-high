@@ -1,6 +1,9 @@
 import {
   useEffect,
+  useId,
   useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { GameSettings } from "@/src/settings";
@@ -18,13 +21,242 @@ interface SettingsDialogProps extends SettingsPanelProps {
   onClose: () => void;
 }
 
+interface SelectOption<Value extends string> {
+  value: Value;
+  label: string;
+}
+
+interface ThemedSelectProps<Value extends string> {
+  labelId: string;
+  value: Value;
+  options: readonly SelectOption<Value>[];
+  onChange: (value: Value) => void;
+}
+
+const FLIGHT_MODE_OPTIONS = [
+  { value: "unassisted", label: "Direct controls (default)" },
+  { value: "pilot", label: "Pilot damping" },
+  { value: "scenic", label: "Scenic attitude assist" },
+] as const;
+
+const QUALITY_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+] as const;
+
+const RENDERING_MODE_OPTIONS = [
+  { value: "performance", label: "WebGPU Performance" },
+  { value: "balanced", label: "WebGPU Balanced (recommended)" },
+  { value: "ultra", label: "WebGPU Ultra" },
+] as const;
+
+const HUD_OPTIONS = [
+  { value: "full", label: "Full" },
+  { value: "minimal", label: "Minimal" },
+  { value: "off", label: "Hidden" },
+] as const;
+
+const UNIT_OPTIONS = [
+  { value: "aviation", label: "Knots / feet" },
+  { value: "metric", label: "Metric" },
+] as const;
+
+const TIME_OF_DAY_OPTIONS = [
+  { value: "dawn", label: "Dawn" },
+  { value: "day", label: "Clear day" },
+  { value: "golden", label: "Golden hour" },
+] as const;
+
+const WEATHER_OPTIONS = [
+  { value: "clear", label: "Clear / calm" },
+  { value: "breezy", label: "Scattered / breezy" },
+  { value: "cloudy", label: "Cloudy / gusty" },
+] as const;
+
 const FOCUSABLE_SETTINGS_SELECTOR = [
   "button:not([disabled])",
-  "select:not([disabled])",
   "input:not([disabled])",
   "[href]",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
+
+/**
+ * A compact listbox-style selector that stays visually consistent across
+ * browsers. Focus remains on the trigger while aria-activedescendant exposes
+ * keyboard navigation to assistive technology.
+ */
+function ThemedSelect<Value extends string>({
+  labelId,
+  value,
+  options,
+  onChange,
+}: ThemedSelectProps<Value>) {
+  const generatedId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const typeaheadRef = useRef("");
+  const typeaheadResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(() =>
+    Math.max(0, options.findIndex((option) => option.value === value)),
+  );
+  const [placement, setPlacement] = useState<"above" | "below">("below");
+  const listboxId = `${generatedId}-listbox`;
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const selectedLabel = options[selectedIndex]?.label ?? value;
+
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnViewportResize = () => setOpen(false);
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("resize", closeOnViewportResize);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("resize", closeOnViewportResize);
+    };
+  }, [open]);
+
+  useEffect(() => () => {
+    if (typeaheadResetRef.current !== null) clearTimeout(typeaheadResetRef.current);
+  }, []);
+
+  const openMenu = (nextActiveIndex = selectedIndex) => {
+    const triggerBounds = triggerRef.current?.getBoundingClientRect();
+    const estimatedMenuHeight = Math.min(240, options.length * 40 + 12);
+    if (triggerBounds) {
+      const roomBelow = window.innerHeight - triggerBounds.bottom;
+      setPlacement(roomBelow < estimatedMenuHeight && triggerBounds.top > roomBelow ? "above" : "below");
+    }
+    setActiveIndex(nextActiveIndex);
+    setOpen(true);
+  };
+
+  const choose = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    if (option.value !== value) onChange(option.value);
+    setActiveIndex(index);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      return;
+    }
+    if (event.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (open) choose(activeIndex);
+      else openMenu();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) {
+        openMenu();
+      } else {
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        setActiveIndex((current) =>
+          (current + direction + options.length) % options.length,
+        );
+      }
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const edgeIndex = event.key === "Home" ? 0 : options.length - 1;
+      if (!open) openMenu(edgeIndex);
+      else setActiveIndex(edgeIndex);
+      return;
+    }
+    if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
+
+    typeaheadRef.current += event.key.toLocaleLowerCase();
+    if (typeaheadResetRef.current !== null) clearTimeout(typeaheadResetRef.current);
+    typeaheadResetRef.current = setTimeout(() => {
+      typeaheadRef.current = "";
+    }, 650);
+    const matchIndex = options.findIndex((option) =>
+      option.label.toLocaleLowerCase().startsWith(typeaheadRef.current),
+    );
+    if (matchIndex >= 0) {
+      event.preventDefault();
+      if (open) setActiveIndex(matchIndex);
+      else choose(matchIndex);
+    }
+  };
+
+  const handleBlur = (event: ReactFocusEvent<HTMLButtonElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (!(nextTarget instanceof Node) || !rootRef.current?.contains(nextTarget)) {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={rootRef} className="setting-select">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="setting-select__trigger"
+        role="combobox"
+        aria-labelledby={labelId}
+        aria-controls={listboxId}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-activedescendant={open ? `${listboxId}-option-${activeIndex}` : undefined}
+        onBlur={handleBlur}
+        onClick={() => {
+          if (open) setOpen(false);
+          else openMenu();
+        }}
+        onKeyDown={handleKeyDown}
+      >
+        <span className="setting-select__value">{selectedLabel}</span>
+        <span className="setting-select__chevron" aria-hidden="true">⌄</span>
+      </button>
+      <ul
+        id={listboxId}
+        className={`setting-select__menu setting-select__menu--${placement}`}
+        role="listbox"
+        aria-labelledby={labelId}
+        hidden={!open}
+      >
+        {options.map((option, index) => (
+          <li
+            key={option.value}
+            id={`${listboxId}-option-${index}`}
+            className={`setting-select__option${index === activeIndex ? " is-active" : ""}${option.value === value ? " is-selected" : ""}`}
+            role="option"
+            data-value={option.value}
+            aria-selected={option.value === value}
+            onMouseDown={(event) => event.preventDefault()}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => choose(index)}
+          >
+            <span>{option.label}</span>
+            <span className="setting-select__check" aria-hidden="true">✓</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /**
  * Modal wrapper shared by the start and pause surfaces. It owns focus while
@@ -121,72 +353,74 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
 
   return (
     <div className="settings-grid">
-      <label className="setting-field setting-field--described">
-        <span>Control assistance</span>
-        <select value={settings.flightMode} onChange={(event) => patch("flightMode", event.target.value as GameSettings["flightMode"])}>
-          <option value="unassisted">Direct controls (default)</option>
-          <option value="pilot">Pilot damping</option>
-          <option value="scenic">Scenic attitude assist</option>
-        </select>
+      <div className="setting-field setting-field--described">
+        <span id="settings-flight-mode-label">Control assistance</span>
+        <ThemedSelect
+          labelId="settings-flight-mode-label"
+          value={settings.flightMode}
+          options={FLIGHT_MODE_OPTIONS}
+          onChange={(value) => patch("flightMode", value)}
+        />
         <small className="setting-field__hint">{assistanceDescription}</small>
-      </label>
-      <label className="setting-field">
-        <span>Graphics</span>
-        <select value={settings.quality} onChange={(event) => patch("quality", event.target.value as GameSettings["quality"])}>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </label>
-      <label className="setting-field setting-field--described">
-        <span>Rendering</span>
-        <select
+      </div>
+      <div className="setting-field">
+        <span id="settings-quality-label">Graphics</span>
+        <ThemedSelect
+          labelId="settings-quality-label"
+          value={settings.quality}
+          options={QUALITY_OPTIONS}
+          onChange={(value) => patch("quality", value)}
+        />
+      </div>
+      <div className="setting-field setting-field--described">
+        <span id="settings-rendering-mode-label">Rendering</span>
+        <ThemedSelect
+          labelId="settings-rendering-mode-label"
           value={settings.renderingMode}
-          onChange={(event) => patch(
-            "renderingMode",
-            event.target.value as GameSettings["renderingMode"],
-          )}
-        >
-          <option value="performance">WebGPU Performance</option>
-          <option value="balanced">WebGPU Balanced (recommended)</option>
-          <option value="ultra">WebGPU Ultra</option>
-        </select>
+          options={RENDERING_MODE_OPTIONS}
+          onChange={(value) => patch("renderingMode", value)}
+        />
         <small className="setting-field__hint">
           Controls compute simulation resolution, volumetric sampling, water shading, shadows,
           and streamed world-detail density.
         </small>
-      </label>
-      <label className="setting-field">
-        <span>Instruments</span>
-        <select value={settings.hud} onChange={(event) => patch("hud", event.target.value as GameSettings["hud"])}>
-          <option value="full">Full</option>
-          <option value="minimal">Minimal</option>
-          <option value="off">Hidden</option>
-        </select>
-      </label>
-      <label className="setting-field">
-        <span>Units</span>
-        <select value={settings.units} onChange={(event) => patch("units", event.target.value as GameSettings["units"])}>
-          <option value="aviation">Knots / feet</option>
-          <option value="metric">Metric</option>
-        </select>
-      </label>
-      <label className="setting-field">
-        <span>Time of day</span>
-        <select value={settings.timeOfDay} onChange={(event) => patch("timeOfDay", event.target.value as GameSettings["timeOfDay"])}>
-          <option value="dawn">Dawn</option>
-          <option value="day">Clear day</option>
-          <option value="golden">Golden hour</option>
-        </select>
-      </label>
-      <label className="setting-field">
-        <span>Weather</span>
-        <select value={settings.weather} onChange={(event) => patch("weather", event.target.value as GameSettings["weather"])}>
-          <option value="clear">Clear / calm</option>
-          <option value="breezy">Scattered / breezy</option>
-          <option value="cloudy">Cloudy / gusty</option>
-        </select>
-      </label>
+      </div>
+      <div className="setting-field">
+        <span id="settings-hud-label">Instruments</span>
+        <ThemedSelect
+          labelId="settings-hud-label"
+          value={settings.hud}
+          options={HUD_OPTIONS}
+          onChange={(value) => patch("hud", value)}
+        />
+      </div>
+      <div className="setting-field">
+        <span id="settings-units-label">Units</span>
+        <ThemedSelect
+          labelId="settings-units-label"
+          value={settings.units}
+          options={UNIT_OPTIONS}
+          onChange={(value) => patch("units", value)}
+        />
+      </div>
+      <div className="setting-field">
+        <span id="settings-time-label">Time of day</span>
+        <ThemedSelect
+          labelId="settings-time-label"
+          value={settings.timeOfDay}
+          options={TIME_OF_DAY_OPTIONS}
+          onChange={(value) => patch("timeOfDay", value)}
+        />
+      </div>
+      <div className="setting-field">
+        <span id="settings-weather-label">Weather</span>
+        <ThemedSelect
+          labelId="settings-weather-label"
+          value={settings.weather}
+          options={WEATHER_OPTIONS}
+          onChange={(value) => patch("weather", value)}
+        />
+      </div>
       <label className="setting-field setting-field--range">
         <span>Control sensitivity <b>{settings.sensitivity.toFixed(1)}</b></span>
         <input

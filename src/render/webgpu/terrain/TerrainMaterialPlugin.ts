@@ -51,8 +51,12 @@ let terrainAbsolutePosition = vec3f(
 let terrainSlope = 1.0 - clamp(abs(normalW.y), 0.0, 1.0);
 let terrainMacro = terrainFbm(terrainAbsolutePosition.xz * 0.0025);
 let terrainDetail = terrainNoise(terrainAbsolutePosition.xz * 0.14 + vec2f(19.7, 4.2));
-let terrainStrata = 0.5 + 0.5 * sin(
-  terrainAbsolutePosition.y * 0.075 + terrainMacro * 6.0
+// Rock colour follows a warped triplanar mineral field.  The former
+// sin(worldY) term painted equal-elevation contour bands across every hill;
+// at the medium clipmap range those bands aliased into horizontal scan lines.
+let terrainRockMottle = terrainTriplanarNoise(
+  terrainAbsolutePosition * 0.018 + vec3f(terrainMacro * 3.7),
+  normalW,
 );
 let terrainVariation = mix(0.82, 1.16, terrainMacro)
   * mix(0.92, 1.08, terrainDetail);
@@ -60,7 +64,7 @@ surfaceAlbedo *= terrainVariation;
 let terrainRockTint = surfaceAlbedo * mix(
   vec3f(0.82, 0.78, 0.71),
   vec3f(1.08, 1.03, 0.94),
-  terrainStrata,
+  terrainRockMottle,
 );
 surfaceAlbedo = mix(
   surfaceAlbedo,
@@ -145,13 +149,18 @@ vec3 terrainAbsolutePosition = vec3(
 float terrainSlope = 1.0 - clamp(abs(normalW.y), 0.0, 1.0);
 float terrainMacro = terrainFbm(terrainAbsolutePosition.xz * 0.0025);
 float terrainDetail = terrainNoise(terrainAbsolutePosition.xz * 0.14 + vec2(19.7, 4.2));
-float terrainStrata = 0.5 + 0.5 * sin(terrainAbsolutePosition.y * 0.075 + terrainMacro * 6.0);
+// Avoid world-height contour bands: they become long horizontal stripes at
+// medium-distance terrain LODs.  Triplanar mottle stays attached to the rock.
+float terrainRockMottle = terrainTriplanarNoise(
+  terrainAbsolutePosition * 0.018 + vec3(terrainMacro * 3.7),
+  normalW
+);
 float terrainVariation = mix(0.82, 1.16, terrainMacro) * mix(0.92, 1.08, terrainDetail);
 surfaceAlbedo *= terrainVariation;
 vec3 terrainRockTint = surfaceAlbedo * mix(
   vec3(0.82, 0.78, 0.71),
   vec3(1.08, 1.03, 0.94),
-  terrainStrata
+  terrainRockMottle
 );
 surfaceAlbedo = mix(
   surfaceAlbedo,

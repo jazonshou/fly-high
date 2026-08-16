@@ -79,7 +79,10 @@ export interface TerrainClipmapStatistics {
 const BASE_PAGE_EXTENT = 512;
 const RING_RADIUS = 2;
 const EVICTION_GRACE_FRAMES = 90;
-const TERRAIN_SKIRT_DEPTH_METERS = 80;
+// Page boundaries sample the same global height function, so skirts only need
+// to cover transient fine/coarse gaps.  Deep 80 m two-sided walls were visible
+// as a regular line grid at medium quality, especially on ridge silhouettes.
+const TERRAIN_SKIRT_DEPTH_METERS = 24;
 
 function assertBounds(bounds: TerrainClipmapBounds, label: string): void {
   if (
@@ -251,6 +254,8 @@ export class TerrainClipmapSystem {
   private frameIndex = 0;
   private originX = 0;
   private originZ = 0;
+  private observerX = 0;
+  private observerZ = 0;
   private cloudShadowProjection: CloudShadowProjection | null = null;
   private lastAnchor = "";
   private disposed = false;
@@ -265,11 +270,14 @@ export class TerrainClipmapSystem {
     this.generator = options.generator ?? new TerrainGenerationClient(world, { maxQueued: 128 });
     this.material = new PBRMaterial("terrain-pbr", scene);
     this.material.metallic = 0;
-    this.material.roughness = 0.88;
+    // Soil, grass, and exposed rock should retain broad diffuse highlights.
+    // The previous environment/specular balance made every biome look like the
+    // same polished plastic sheet, especially after rain or at low sun angles.
+    this.material.roughness = 0.93;
     this.material.albedoColor = Color3.White();
-    this.material.environmentIntensity = 0.72;
-    this.material.directIntensity = 1.05;
-    this.material.specularIntensity = 0.34;
+    this.material.environmentIntensity = 0.64;
+    this.material.directIntensity = 1.03;
+    this.material.specularIntensity = 0.22;
     this.materialDetail = new TerrainMaterialPlugin(this.material);
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;
@@ -322,6 +330,8 @@ export class TerrainClipmapSystem {
   update(observer: TerrainObserver, frameIndex: number): void {
     if (this.disposed) return;
     this.frameIndex = frameIndex;
+    this.observerX = observer.x;
+    this.observerZ = observer.z;
     const fineX = Math.floor(observer.x / BASE_PAGE_EXTENT);
     const fineZ = Math.floor(observer.z / BASE_PAGE_EXTENT);
     const speed = Math.hypot(observer.velocityX, observer.velocityZ);
@@ -345,7 +355,10 @@ export class TerrainClipmapSystem {
 
     for (const key of this.desired.keys()) {
       const page = this.pages.get(key);
-      if (page) page.lastRequiredFrame = frameIndex;
+      if (page) {
+        page.mesh.setEnabled(true);
+        page.lastRequiredFrame = frameIndex;
+      }
     }
     let evicted = false;
     for (const [key, page] of this.pages) {
@@ -363,7 +376,25 @@ export class TerrainClipmapSystem {
   }
 
   addShadowCasters(add: (mesh: Mesh) => void): void {
-    for (const page of this.pages.values()) add(page.mesh);
+    for (const page of this.pages.values()) {
+      if (!page.mesh.isEnabled()) continue;
+      // Hollow coarse-ring meshes retain page-sized bounding boxes, so relying
+      // on cascade frustum culling alone submits distant rings repeatedly.
+      // Filter against the configured shadow reach before registering casters.
+      const bounds = pageBounds(page.tileX, page.tileZ, page.extent);
+      const distanceX = Math.max(
+        bounds.minX - this.observerX,
+        0,
+        this.observerX - bounds.maxX,
+      );
+      const distanceZ = Math.max(
+        bounds.minZ - this.observerZ,
+        0,
+        this.observerZ - bounds.maxZ,
+      );
+      if (Math.hypot(distanceX, distanceZ) > this.profile.shadowDistance) continue;
+      add(page.mesh);
+    }
   }
 
   dispose(): void {
@@ -424,6 +455,11 @@ export class TerrainClipmapSystem {
       innerBounds = { minX: levelMinX, minZ: levelMinZ, maxX: levelMaxX, maxZ: levelMaxZ };
     }
     this.desired = desired;
+    // Grace-period pages remain allocated for quick reuse, but rendering them
+    // over the new clipmap anchor causes coplanar LOD z-fighting and submits
+    // them again to shadow/reflection passes.  Visibility follows desired state
+    // immediately; allocation lifetime remains governed by the frame grace.
+    for (const [key, page] of this.pages) page.mesh.setEnabled(desired.has(key));
     this.refreshPageTopologies();
     this.pumpDesiredRequests();
   }
@@ -517,9 +553,33 @@ export class TerrainClipmapSystem {
       positions[destinationPosition + 1] = (positions[sourcePosition + 1] ?? 0)
         - TERRAIN_SKIRT_DEPTH_METERS;
       positions[destinationPosition + 2] = positions[sourcePosition + 2] ?? 0;
-      normals[destinationPosition] = normals[sourcePosition] ?? 0;
-      normals[destinationPosition + 1] = normals[sourcePosition + 1] ?? 1;
-      normals[destinationPosition + 2] = normals[sourcePosition + 2] ?? 0;
+      const localX = positions[sourcePosition] ?? 0;
+      const localZ = positions[sourcePosition + 2] ?? 0;
+      const edgeDistance = Math.min(
+        localX,
+        desired.extent - localX,
+        localZ,
+        desired.extent - localZ,
+      );
+      // Give the vertical crack guard a side-facing normal.  Copying the top
+      // normal made the wall receive ground lighting and read as a bright seam.
+      if (edgeDistance === localX) {
+        normals[destinationPosition] = -1;
+        normals[destinationPosition + 1] = 0;
+        normals[destinationPosition + 2] = 0;
+      } else if (edgeDistance === desired.extent - localX) {
+        normals[destinationPosition] = 1;
+        normals[destinationPosition + 1] = 0;
+        normals[destinationPosition + 2] = 0;
+      } else if (edgeDistance === localZ) {
+        normals[destinationPosition] = 0;
+        normals[destinationPosition + 1] = 0;
+        normals[destinationPosition + 2] = -1;
+      } else {
+        normals[destinationPosition] = 0;
+        normals[destinationPosition + 1] = 0;
+        normals[destinationPosition + 2] = 1;
+      }
       const sourceColor = sourceVertex * 4;
       const destinationColor = destinationVertex * 4;
       colors[destinationColor] = colors[sourceColor] ?? 0.5;
@@ -573,6 +633,7 @@ export class TerrainClipmapSystem {
     const coverage: TerrainClipmapBounds[] = [];
     for (const page of this.pages.values()) {
       if (page.level >= desired.level) continue;
+      if (!page.mesh.isEnabled() || !this.desired.has(page.key)) continue;
       const bounds = pageBounds(page.tileX, page.tileZ, page.extent);
       if (
         bounds.maxX <= target.minX

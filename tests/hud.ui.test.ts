@@ -133,6 +133,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("ULTRA · 4×256² FFT · 72 cloud steps");
     expect(markup).toContain("24,500 detail instances · 48 animals · 9 rivers / 3 lakes");
     expect(markup).toContain("Test GPU");
+    expect(markup).toContain("17.2 ms frame");
+    expect(markup).toContain("4.2 ms CPU");
     expect(markup).toContain("11.8 ms GPU");
   });
 });

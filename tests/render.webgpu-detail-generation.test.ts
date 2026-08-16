@@ -76,6 +76,7 @@ describe("WebGPU paged world-detail generation", () => {
         terrainSample: constantTerrain(biome, 0.7, 0),
       });
       expect(cell.trees).toEqual([]);
+      expect(cell.shrubs).toEqual([]);
       expect(cell.rocks).toEqual([]);
       expect(cell.buildings).toEqual([]);
       expect(cell.village).toBeNull();
@@ -91,6 +92,7 @@ describe("WebGPU paged world-detail generation", () => {
       terrainSample: constantTerrain(TerrainBiome.FOREST, 0.78),
     });
     expect(cell.trees.length).toBeGreaterThan(20);
+    expect(cell.shrubs.length).toBeGreaterThan(0);
     for (const tree of cell.trees) {
       expect(tree.x).toBeGreaterThanOrEqual(cell.minX);
       expect(tree.x).toBeLessThan(cell.maxX);
@@ -102,6 +104,46 @@ describe("WebGPU paged world-detail generation", () => {
       expect(tree.windPhaseRadians).toBeLessThan(Math.PI * 2);
       expect(tree.windResponse).toBeGreaterThan(0);
       expect(tree.color.every(Number.isFinite)).toBe(true);
+    }
+    for (const shrub of cell.shrubs) {
+      expect(shrub.x).toBeGreaterThanOrEqual(cell.minX);
+      expect(shrub.x).toBeLessThan(cell.maxX);
+      expect(shrub.z).toBeGreaterThanOrEqual(cell.minZ);
+      expect(shrub.z).toBeLessThan(cell.maxZ);
+      expect(shrub.heightMeters).toBeGreaterThan(0);
+      expect(shrub.radiusMeters).toBeGreaterThan(0);
+    }
+  });
+
+  it("forms mixed-age clustered stands with page-edge Poisson separation", () => {
+    const terrainSample = constantTerrain(TerrainBiome.FOREST, 0.7, 0.04);
+    const left = generateDetailCell({
+      worldSeed: "clustered-community",
+      cellX: 0,
+      cellZ: 0,
+      terrainSample,
+    });
+    const right = generateDetailCell({
+      worldSeed: "clustered-community",
+      cellX: 1,
+      cellZ: 0,
+      terrainSample,
+    });
+    const trees = [...left.trees, ...right.trees];
+    const heights = trees.map((tree) => tree.heightMeters);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(14);
+    expect(new Set(trees.map((tree) => tree.species)).size).toBeGreaterThanOrEqual(5);
+    expect(left.shrubs.length + right.shrubs.length).toBeGreaterThan(8);
+    expect(new Set([...left.shrubs, ...right.shrubs].map((shrub) => shrub.species)).size)
+      .toBeGreaterThanOrEqual(2);
+
+    const nearBoundary = trees.filter((tree) => Math.abs(tree.x - left.maxX) < 16);
+    for (let first = 0; first < nearBoundary.length; first += 1) {
+      for (let second = first + 1; second < nearBoundary.length; second += 1) {
+        const a = nearBoundary[first]!;
+        const b = nearBoundary[second]!;
+        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(3.49);
+      }
     }
   });
 

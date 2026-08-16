@@ -583,6 +583,12 @@ function buildRiver(
   terrainSample: HydrologyTerrainSampler,
 ): HydrologyRiver {
   const smoothed = smoothTrace(tracePoints);
+  const channelHash = hashText(id);
+  // Stable source-owned channel character differentiates narrow creeks from
+  // broad rivers even when their traces have a similar number of steps.
+  const headwaterScale = 0.58 + unitHash(channelHash, 0x51f15e) * 0.62;
+  const catchmentScale = 0.62 + unitHash(channelHash, 0x7a11ce) * 0.82;
+  const hydraulicRoughness = 0.82 + unitHash(channelHash, 0x6b4d23) * 0.34;
   const provisional: Array<{
     x: number;
     y: number;
@@ -603,11 +609,12 @@ function buildRiver(
       ? terrainSurface
       : Math.min(terrainSurface, previousY - distance * 0.0002);
     const catchmentFactor = Math.sqrt(
-      1 + position.downstreamSteps * (0.45 + terrain.moisture),
+      1 + position.downstreamSteps * (0.32 + terrain.moisture * 1.14),
     );
     const width = clamp(
-      config.baseRiverWidthMeters + catchmentFactor * config.riverWidthGrowthMeters,
-      config.baseRiverWidthMeters,
+      config.baseRiverWidthMeters * headwaterScale
+        + catchmentFactor * config.riverWidthGrowthMeters * catchmentScale,
+      config.baseRiverWidthMeters * 0.52,
       config.maximumRiverWidthMeters,
     );
     provisional.push({ x: position.x, y, z: position.z, width, moisture: terrain.moisture });
@@ -625,7 +632,11 @@ function buildRiver(
       : 1;
     const grade = next && previous ? Math.max((previous.y - next.y) / segmentDistance, 0.0002) : 0.0002;
     const depth = 0.22 + point.width * 0.075;
-    const speed = clamp(Math.sqrt(9.80665 * depth * grade) + point.moisture * 0.35, 0.28, 6.5);
+    const speed = clamp(
+      (Math.sqrt(9.80665 * depth * grade) + point.moisture * 0.35) / hydraulicRoughness,
+      0.22,
+      6.5,
+    );
     const discharge = point.width * depth * speed * 0.62;
     if (index > 0) {
       const prior = provisional[index - 1];

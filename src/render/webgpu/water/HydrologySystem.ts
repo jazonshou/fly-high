@@ -169,39 +169,18 @@ fn geometrySchlickGgx(nDotDirection: f32, roughness: f32) -> f32 {
   return nDotDirection / max(nDotDirection * (1.0 - k) + k, 0.0001);
 }
 
-fn hash21(point: vec2f) -> f32 {
-  var p = fract(point * vec2f(123.34, 345.45));
-  p += dot(p, p + 34.345);
-  return fract(p.x * p.y);
-}
-
-fn cloudNoise(point: vec2f) -> f32 {
-  let cell = floor(point);
-  let fraction = fract(point);
-  let blend = fraction * fraction * (3.0 - 2.0 * fraction);
-  return mix(
-    mix(hash21(cell), hash21(cell + vec2f(1.0, 0.0)), blend.x),
-    mix(hash21(cell + vec2f(0.0, 1.0)), hash21(cell + vec2f(1.0)), blend.x),
-    blend.y
-  );
-}
-
 fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
   let horizonAmount = pow(1.0 - clamp(direction.y, 0.0, 1.0), 2.3);
   var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizonAmount);
-  if (direction.y > 0.015 && uniforms.cloudCoverage > 0.01) {
-    let cloudDistance = 2600.0 / direction.y;
-    let wind = normalize(uniforms.windDirection + vec2f(0.00001, 0.0));
-    let advected = worldXZ + direction.xz * cloudDistance
-      + wind * uniforms.windSpeed * uniforms.time;
-    let broad = cloudNoise(advected * 0.000085);
-    let structure = cloudNoise(advected * 0.00031 + vec2f(17.2, 9.4));
-    let threshold = 0.86 - uniforms.cloudCoverage * 0.58;
-    let opacity = smoothstep(threshold, threshold + 0.22, broad * 0.68 + structure * 0.34);
-    sky = mix(sky, vec3f(0.56, 0.61, 0.65), opacity * 0.76);
-  }
+  // Match the ocean fallback: cloud coverage changes reflected energy, but an
+  // unrelated procedural cloud pattern must not masquerade as a reflection of
+  // the volumetric sky.
+  let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
+  let overcastSky = mix(vec3f(0.31, 0.36, 0.41), vec3f(0.56, 0.61, 0.65), horizonAmount);
+  sky = mix(sky, overcastSky, overcast * 0.52);
   let solarGlare = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), 1800.0);
-  return sky + uniforms.sunColor * solarGlare * 14.0 * directSunVisibility;
+  return sky + uniforms.sunColor * solarGlare * 11.0 * directSunVisibility
+    * (1.0 - overcast * 0.88);
 }
 
 @fragment
@@ -215,9 +194,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let lakeFactor = clamp(input.waterInfo.y, 0.0, 1.0);
   let depth = max(input.waterInfo.x, 0.04);
   let roughness = clamp(
-    mix(0.105, 0.052, lakeFactor) + input.flowSpeed * 0.006 + uniforms.windSpeed * 0.0012,
-    0.045,
-    0.19,
+    mix(0.14, 0.09, lakeFactor) + input.flowSpeed * 0.008 + uniforms.windSpeed * 0.0016,
+    0.075,
+    0.28,
   );
   let f0 = vec3f(0.0204);
   let fresnel = fresnelSchlick(nDotV, f0);
@@ -272,7 +251,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let rapidFoam = clamp(input.whitewater * (0.4 + flowCrest * 0.85), 0.0, 1.0);
   let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0);
   color = mix(color, vec3f(0.78, 0.84, 0.82), foam);
-  let alpha = clamp(mix(0.76, 0.96, 1.0 - exp(-depth * 0.72)) + foam * 0.025, 0.72, 0.985);
+  // Alpha now represents shallow transmission and region crossfade, not a
+  // constant translucent plastic sheet. Even shallow water retains enough
+  // optical density to read as a surface from flight altitude.
+  let alpha = clamp(mix(0.88, 0.995, 1.0 - exp(-depth * 0.82)) + foam * 0.01, 0.86, 0.995);
   fragmentOutputs.color = vec4f(
     max(color, vec3f(0.0)),
     alpha * clamp(uniforms.regionOpacity, 0.0, 1.0),

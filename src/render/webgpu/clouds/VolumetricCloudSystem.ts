@@ -54,9 +54,10 @@ uniform worldViewProjection: mat4x4f;
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.position = uniforms.worldViewProjection * vec4f(vertexInputs.position, 1.0);
-  // Babylon's reversed-Z target clears to zero. The composite fragment writes
-  // the projected depth of its representative cloud scattering point.
-  vertexOutputs.position.z = 0.0;
+  // Babylon's reversed-Z target clears to zero. A tiny positive NDC depth
+  // passes even on strict-greater pipelines, while remaining behind every
+  // practical terrain/aircraft depth so the composite stays in sky pixels.
+  vertexOutputs.position.z = vertexOutputs.position.w * 0.0000001;
 }
 `;
 
@@ -99,8 +100,12 @@ fn baseFbm(point: vec3f) -> f32 {
 }
 
 fn cloudDensity(worldPoint: vec3f) -> f32 {
+  let baseUndulation = (
+    valueNoise(vec3f(worldPoint.x * 0.000035, 4.7, worldPoint.z * 0.000035)) - 0.5
+  ) * 760.0;
+  let localBaseAltitude = uniforms.baseAltitude + baseUndulation;
   let height = clamp(
-    (worldPoint.y - uniforms.baseAltitude) / max(uniforms.topAltitude - uniforms.baseAltitude, 1.0),
+    (worldPoint.y - localBaseAltitude) / max(uniforms.topAltitude - localBaseAltitude, 1.0),
     0.0,
     1.0,
   );
@@ -115,7 +120,7 @@ fn cloudDensity(worldPoint: vec3f) -> f32 {
     advected.z / uniforms.baseNoiseScale,
   );
   let weather = baseFbm(weatherPoint);
-  let threshold = 1.02 - uniforms.coverage * 0.68 - uniforms.humidity * 0.12;
+  let threshold = 1.04 - uniforms.coverage * 0.78 - uniforms.humidity * 0.1;
   if (weather < threshold - 0.24) { return 0.0; }
 
   let shape = baseFbm(advected / (uniforms.baseNoiseScale * 0.38) + vec3f(7.1, 0.0, 13.7));
@@ -129,9 +134,12 @@ fn cloudDensity(worldPoint: vec3f) -> f32 {
 
 export const CLOUD_INTEGRATION_FRAGMENT_WGSL = /* wgsl */ `
 varying vUV: vec2f;
-uniform inverseViewProjection: mat4x4f;
 uniform cameraLocal: vec3f;
 uniform cameraWorld: vec3f;
+uniform cameraForward: vec3f;
+uniform cameraRight: vec3f;
+uniform cameraUp: vec3f;
+uniform viewScale: vec2f;
 uniform sunDirection: vec3f;
 uniform wind: vec3f;
 uniform time: f32;
@@ -152,10 +160,14 @@ uniform extinctionPerMeter: f32;
 ${CLOUD_RUNTIME_DENSITY_WGSL}
 
 fn viewRay(uv: vec2f) -> vec3f {
-  // Reversed-Z WebGPU far depth is zero. vUV is bottom-left based, matching NDC.
-  let clip = vec4f(uv * 2.0 - 1.0, 0.0, 1.0);
-  let farPoint = uniforms.inverseViewProjection * clip;
-  return normalize(farPoint.xyz / max(farPoint.w, 0.000001) - uniforms.cameraLocal);
+  // Build the ray from the camera basis. This avoids projection-matrix Y and
+  // half-Z conventions leaking into an offscreen ProceduralTexture pass.
+  let ndc = uv * 2.0 - 1.0;
+  return normalize(
+    uniforms.cameraForward
+      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
+      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
+  );
 }
 
 fn layerInterval(direction: vec3f) -> vec2f {
@@ -222,7 +234,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       let powder = 1.0 - exp(-density * stepLength * uniforms.extinctionPerMeter * 1.65);
       directCoefficient += segmentWeight * sunlight
         * (0.48 + phase * 5.5) * (0.7 + powder * 0.5);
-      ambientCoefficient += segmentWeight * (0.44 + point.y / 9000.0);
+      // Sky illumination and unresolved multiple scattering keep cloud bodies
+      // readable under overcast lighting instead of turning into black slabs.
+      ambientCoefficient += segmentWeight * (1.02 + point.y / 11000.0);
       weightedDistance += distance * segmentWeight;
       distanceWeight += segmentWeight;
       transmittance *= segmentTransmittance;
@@ -254,9 +268,12 @@ var currentSamplerSampler: sampler;
 var currentSampler: texture_2d<f32>;
 var historySamplerSampler: sampler;
 var historySampler: texture_2d<f32>;
-uniform inverseViewProjection: mat4x4f;
 uniform previousViewProjection: mat4x4f;
 uniform cameraLocal: vec3f;
+uniform cameraForward: vec3f;
+uniform cameraRight: vec3f;
+uniform cameraUp: vec3f;
+uniform viewScale: vec2f;
 uniform inverseOutputSize: vec2f;
 uniform maximumTraceDistance: f32;
 uniform historyDepthSigma: f32;
@@ -264,14 +281,24 @@ uniform historyWeight: f32;
 uniform historyValid: f32;
 
 fn temporalViewRay(uv: vec2f) -> vec3f {
-  let clip = vec4f(uv * 2.0 - 1.0, 0.0, 1.0);
-  let farPoint = uniforms.inverseViewProjection * clip;
-  return normalize(farPoint.xyz / max(farPoint.w, 0.000001) - uniforms.cameraLocal);
+  let ndc = uv * 2.0 - 1.0;
+  return normalize(
+    uniforms.cameraForward
+      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
+      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
+  );
+}
+
+fn renderTargetUv(screenUv: vec2f) -> vec2f {
+  // ProceduralTexture's interpolated vUV is bottom-left based, while WebGPU
+  // texture coordinates address render targets from the top-left.
+  return vec2f(screenUv.x, 1.0 - screenUv.y);
 }
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
-  let current = textureSampleLevel(currentSampler, currentSamplerSampler, input.vUV, 0.0);
+  let currentUv = renderTargetUv(input.vUV);
+  let current = textureSampleLevel(currentSampler, currentSamplerSampler, currentUv, 0.0);
   if (uniforms.historyValid < 0.5 || current.b < 0.001 || current.a <= 0.0) {
     fragmentOutputs.color = current;
     return fragmentOutputs;
@@ -287,7 +314,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     return fragmentOutputs;
   }
 
-  let history = textureSampleLevel(historySampler, historySamplerSampler, previousUv, 0.0);
+  let history = textureSampleLevel(
+    historySampler,
+    historySamplerSampler,
+    renderTargetUv(previousUv),
+    0.0,
+  );
   var neighborhoodMinimum = current;
   var neighborhoodMaximum = current;
   for (var y = -1; y <= 1; y += 1) {
@@ -296,7 +328,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       let sampleValue = textureSampleLevel(
         currentSampler,
         currentSamplerSampler,
-        input.vUV + offset,
+        currentUv + vec2f(offset.x, -offset.y),
         0.0,
       );
       neighborhoodMinimum = min(neighborhoodMinimum, sampleValue);
@@ -327,41 +359,26 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
 export const CLOUD_COMPOSITE_FRAGMENT_WGSL = /* wgsl */ `
 var cloudSamplerSampler: sampler;
 var cloudSampler: texture_2d<f32>;
-uniform inverseViewProjection: mat4x4f;
-uniform viewProjection: mat4x4f;
-uniform cameraLocal: vec3f;
 uniform fullResolution: vec2f;
-uniform maximumTraceDistance: f32;
 uniform sunColor: vec3f;
 uniform ambientColor: vec3f;
-
-fn compositeViewRay(uv: vec2f) -> vec3f {
-  let clip = vec4f(uv * 2.0 - 1.0, 0.0, 1.0);
-  let farPoint = uniforms.inverseViewProjection * clip;
-  return normalize(farPoint.xyz / max(farPoint.w, 0.000001) - uniforms.cameraLocal);
-}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let uv = vec2f(
     input.position.x / uniforms.fullResolution.x,
-    1.0 - input.position.y / uniforms.fullResolution.y,
+    input.position.y / uniforms.fullResolution.y,
   );
   let cloud = textureSampleLevel(cloudSampler, cloudSamplerSampler, uv, 0.0);
   if (cloud.b < 0.001 || cloud.a <= 0.0) { discard; }
 
-  let direction = compositeViewRay(uv);
-  let representativeDistance = max(0.2, cloud.a * uniforms.maximumTraceDistance);
-  let localCloudPoint = uniforms.cameraLocal + direction * representativeDistance;
-  let projectedCloudPoint = uniforms.viewProjection * vec4f(localCloudPoint, 1.0);
-  // Use the real reversed-Z projection of the representative scattering depth.
-  // Opaque scene geometry closer than the cloud therefore wins the hardware test.
-  fragmentOutputs.fragDepth = clamp(
-    projectedCloudPoint.z / max(projectedCloudPoint.w, 0.000001),
-    0.0,
-    1.0,
-  );
-  let radiance = uniforms.sunColor * cloud.r + uniforms.ambientColor * cloud.g;
+  // The shell vertex is fixed at reversed-Z far depth. Opaque terrain and the
+  // aircraft therefore win naturally, while clouds remain confined to sky
+  // pixels. A single representative scattering depth cannot describe a whole
+  // volume ray; writing it here caused entire cloud columns to alternately pass
+  // and fail against distant terrain, creating horizontal bands at the horizon.
+  let radiance = uniforms.sunColor * cloud.r
+    + uniforms.ambientColor * (cloud.g + cloud.b * 0.55);
   fragmentOutputs.color = vec4f(max(radiance, vec3f(0.0)), cloud.b);
 }
 `;
@@ -493,9 +510,13 @@ export class VolumetricCloudSystem {
   private readonly historyTextures: readonly [ProceduralTexture, ProceduralTexture];
   private readonly shadowTextureValue: ProceduralTexture;
   private readonly currentViewProjection = Matrix.Identity();
-  private readonly inverseViewProjection = Matrix.Identity();
   private readonly previousViewProjection = Matrix.Identity();
   private readonly cameraWorld = Vector3.Zero();
+  private readonly cameraForward = Vector3.Forward();
+  private readonly cameraRight = Vector3.Right();
+  private readonly cameraUp = Vector3.Up();
+  private readonly cameraLocalForward: Vector3;
+  private readonly viewScale = Vector2.One();
   private readonly shadowCenter = Vector2.Zero();
   private readonly inverseOutputSize = Vector2.One();
   private readonly fullResolution = Vector2.One();
@@ -527,6 +548,7 @@ export class VolumetricCloudSystem {
     atmosphere: AtmosphereSnapshot,
   ) {
     registerShaders();
+    this.cameraLocalForward = Vector3.Forward(scene.useRightHandedSystem);
     const engine = scene.getEngine();
     this.cloudRenderSize = resolveCloudRenderSize(
       engine.getRenderWidth(),
@@ -577,8 +599,7 @@ export class VolumetricCloudSystem {
       {
         attributes: ["position"],
         uniforms: [
-          "worldViewProjection", "inverseViewProjection", "viewProjection", "cameraLocal",
-          "fullResolution", "maximumTraceDistance", "sunColor", "ambientColor",
+          "worldViewProjection", "fullResolution", "sunColor", "ambientColor",
         ],
         samplers: ["cloudSampler"],
         needAlphaBlending: true,
@@ -586,6 +607,7 @@ export class VolumetricCloudSystem {
       },
     );
     configurePremultipliedMaterial(this.material);
+    this.material.depthFunction = Constants.GEQUAL;
     this.material.setTexture("cloudSampler", this.integrationTexture);
     this.shell.material = this.material;
     this.shell.setEnabled(false);
@@ -866,7 +888,6 @@ export class VolumetricCloudSystem {
     this.cameraWorld.copyFrom(cameraWorld);
     this.ensureCloudResolution();
     this.currentViewProjection.copyFrom(this.camera.getTransformationMatrix());
-    this.currentViewProjection.invertToRef(this.inverseViewProjection);
     if (!this.historyValid) this.previousViewProjection.copyFrom(this.currentViewProjection);
 
     const engine = this.scene.getEngine();
@@ -884,9 +905,8 @@ export class VolumetricCloudSystem {
       const writeIndex: 0 | 1 = this.historyReadIndex === 0 ? 1 : 0;
       const historyWrite = this.historyTextures[writeIndex];
       historyWrite.setFloat("historyValid", this.historyValid ? 1 : 0);
-      historyWrite.setMatrix("inverseViewProjection", this.inverseViewProjection);
       historyWrite.setMatrix("previousViewProjection", this.previousViewProjection);
-      historyWrite.setVector3("cameraLocal", this.camera.position);
+      this.updateCameraRayUniforms(historyWrite);
       historyWrite.setVector2("inverseOutputSize", this.inverseOutputSize);
       if (historyWrite.isReady()) {
         historyWrite.render();
@@ -925,7 +945,6 @@ export class VolumetricCloudSystem {
 
   private prepareStartupUniforms(): void {
     this.currentViewProjection.copyFrom(this.camera.getTransformationMatrix());
-    this.currentViewProjection.invertToRef(this.inverseViewProjection);
     this.cameraWorld.copyFrom(this.camera.position);
     const engine = this.scene.getEngine();
     this.fullResolution.set(engine.getRenderWidth(), engine.getRenderHeight());
@@ -934,9 +953,8 @@ export class VolumetricCloudSystem {
     this.updateIntegrationUniforms(0);
     for (const history of this.historyTextures) {
       history.setFloat("historyValid", 0);
-      history.setMatrix("inverseViewProjection", this.inverseViewProjection);
       history.setMatrix("previousViewProjection", this.currentViewProjection);
-      history.setVector3("cameraLocal", this.camera.position);
+      this.updateCameraRayUniforms(history);
       history.setVector2("inverseOutputSize", this.inverseOutputSize);
     }
     this.shadowTextureValue.setVector2("shadowCenter", this.shadowCenter);
@@ -970,7 +988,6 @@ export class VolumetricCloudSystem {
     this.shadowTextureValue.setFloat("detailErosion", config.detailErosion);
     this.shadowTextureValue.setFloat("densityMultiplier", config.densityMultiplier);
     this.shadowTextureValue.setFloat("extinctionPerMeter", config.extinctionPerMeter);
-    this.material.setFloat("maximumTraceDistance", config.maximumTraceDistanceMeters);
     this.material.setColor3("ambientColor", CLOUD_AMBIENT_COLOR);
   }
 
@@ -1017,18 +1034,30 @@ export class VolumetricCloudSystem {
   }
 
   private updateViewUniforms(): void {
-    this.material.setMatrix("inverseViewProjection", this.inverseViewProjection);
-    this.material.setMatrix("viewProjection", this.currentViewProjection);
-    this.material.setVector3("cameraLocal", this.camera.position);
     this.material.setVector2("fullResolution", this.fullResolution);
   }
 
   private updateIntegrationUniforms(timeSeconds: number): void {
-    this.integrationTexture.setMatrix("inverseViewProjection", this.inverseViewProjection);
-    this.integrationTexture.setVector3("cameraLocal", this.camera.position);
+    this.updateCameraRayUniforms(this.integrationTexture);
     this.integrationTexture.setVector3("cameraWorld", this.cameraWorld);
     this.integrationTexture.setFloat("time", timeSeconds);
     this.integrationTexture.setFloat("frameIndex", this.frameIndex % 4096);
+  }
+
+  private updateCameraRayUniforms(target: ProceduralTexture): void {
+    this.camera.getDirectionToRef(this.cameraLocalForward, this.cameraForward);
+    this.camera.getDirectionToRef(Vector3.Right(), this.cameraRight);
+    this.camera.getDirectionToRef(Vector3.Up(), this.cameraUp);
+    const tanHalfFov = Math.tan(this.camera.fov * 0.5);
+    this.viewScale.set(
+      tanHalfFov * this.scene.getEngine().getAspectRatio(this.camera),
+      tanHalfFov,
+    );
+    target.setVector3("cameraLocal", this.camera.position);
+    target.setVector3("cameraForward", this.cameraForward);
+    target.setVector3("cameraRight", this.cameraRight);
+    target.setVector3("cameraUp", this.cameraUp);
+    target.setVector2("viewScale", this.viewScale);
   }
 
   private updateShadowPass(timeSeconds: number): void {

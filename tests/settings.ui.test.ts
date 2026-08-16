@@ -19,7 +19,11 @@ describe("settings panel rendering preference", () => {
     expect(markup).toContain("compute simulation resolution");
     expect(markup).toContain("volumetric sampling");
     expect(markup).not.toContain("WebGL");
-    expect(markup).toContain('option value="balanced" selected=""');
+    expect(markup).toContain('role="combobox"');
+    expect(markup).toContain('role="listbox"');
+    expect(markup).toMatch(/data-value="balanced"[^>]*aria-selected="true"/);
+    expect(markup).not.toContain("<select");
+    expect(markup).not.toContain("<option");
   });
 
   it("wraps settings in a labelled modal with an explicit close control", () => {
@@ -51,5 +55,20 @@ describe("settings panel rendering preference", () => {
     expect(source).toContain("event.stopPropagation()");
     expect(source).toContain("last.focus()");
     expect(source).toContain("first.focus()");
+  });
+
+  it("provides themed listboxes with keyboard and dismissal behavior", () => {
+    const source = readFileSync(
+      new URL("../src/ui/SettingsPanel.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('role="combobox"');
+    expect(source).toContain('role="listbox"');
+    expect(source).toContain("aria-activedescendant");
+    expect(source).toContain('event.key === "ArrowDown"');
+    expect(source).toContain('event.key === "Home"');
+    expect(source).toContain('event.key === "Escape" && open');
+    expect(source).toContain('document.addEventListener("pointerdown"');
+    expect(source).toContain("event.stopPropagation()");
   });
 });

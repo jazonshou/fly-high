@@ -347,38 +347,19 @@ fn ggxSpecular(normal: vec3f, view: vec3f, light: vec3f, roughness: f32) -> f32 
   return distribution * geometryV * geometryL / max(4.0 * nDotV * nDotL, 0.001) * (0.02 + 0.98 * pow(1.0 - vDotH, 5.0));
 }
 
-fn hash21(point: vec2f) -> f32 {
-  var p = fract(point * vec2f(123.34, 345.45));
-  p += dot(p, p + 34.345);
-  return fract(p.x * p.y);
-}
-
-fn cloudNoise(point: vec2f) -> f32 {
-  let cell = floor(point);
-  let fraction = fract(point);
-  let blend = fraction * fraction * (3.0 - 2.0 * fraction);
-  return mix(
-    mix(hash21(cell), hash21(cell + vec2f(1.0, 0.0)), blend.x),
-    mix(hash21(cell + vec2f(0.0, 1.0)), hash21(cell + vec2f(1.0)), blend.x),
-    blend.y
-  );
-}
-
 fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
   let horizon = pow(1.0 - clamp(direction.y, 0.0, 1.0), 2.5);
   var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizon);
-  if (direction.y > 0.015 && uniforms.cloudCoverage > 0.01) {
-    let cloudDistance = 2600.0 / direction.y;
-    let advected = worldXZ + direction.xz * cloudDistance + uniforms.cloudWind * uniforms.time;
-    let broad = cloudNoise(advected * 0.000085);
-    let structure = cloudNoise(advected * 0.00031 + vec2f(17.2, 9.4));
-    let threshold = 0.86 - uniforms.cloudCoverage * 0.58;
-    let opacity = smoothstep(threshold, threshold + 0.22, broad * 0.68 + structure * 0.34);
-    let cloudLight = 0.56 + 0.34 * max(dot(direction, normalize(uniforms.sunDirection)), 0.0);
-    sky = mix(sky, vec3f(0.64, 0.68, 0.71) * cloudLight, opacity * 0.82);
-  }
+  // The former fallback invented a second, unrelated 2D cloud field. It could
+  // never line up with the volumetric sky and made the surface look painted.
+  // Preserve the shared atmosphere hue and use coverage only as broad overcast
+  // energy until the real volumetric radiance is available as a reflection LUT.
+  let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
+  let overcastSky = mix(vec3f(0.34, 0.39, 0.45), vec3f(0.58, 0.63, 0.68), horizon);
+  sky = mix(sky, overcastSky, overcast * 0.52);
   let sun = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), 3200.0);
-  return sky + uniforms.sunColor * sun * 22.0 * directSunVisibility;
+  return sky + uniforms.sunColor * sun * 16.0 * directSunVisibility
+    * (1.0 - overcast * 0.88);
 }
 
 fn sampleNormalFoam(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
@@ -388,17 +369,22 @@ fn sampleNormalFoam(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, s
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let baseSample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.x, normalFoam0, normalFoam0Sampler);
-  var slopeSum = baseSample.xz / max(baseSample.y, 0.08);
+  var slopeWeight = 0.62;
+  var slopeSum = baseSample.xz / max(baseSample.y, 0.08) * slopeWeight;
   var foamAmount = baseSample.w;
-  if (uniforms.cascadeCount > 1.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.y, normalFoam1, normalFoam1Sampler); slopeSum += sample.xz / max(sample.y, 0.08); foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 2.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.z, normalFoam2, normalFoam2Sampler); slopeSum += sample.xz / max(sample.y, 0.08); foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 3.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.w, normalFoam3, normalFoam3Sampler); slopeSum += sample.xz / max(sample.y, 0.08); foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 4.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLength4, normalFoam4, normalFoam4Sampler); slopeSum += sample.xz / max(sample.y, 0.08); foamAmount = max(foamAmount, sample.w); }
-  let normal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
+  if (uniforms.cascadeCount > 1.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.y, normalFoam1, normalFoam1Sampler); let weight = 0.82; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
+  if (uniforms.cascadeCount > 2.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.z, normalFoam2, normalFoam2Sampler); let weight = 0.74; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
+  if (uniforms.cascadeCount > 3.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.w, normalFoam3, normalFoam3Sampler); let weight = 0.52; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
+  if (uniforms.cascadeCount > 4.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLength4, normalFoam4, normalFoam4Sampler); let weight = 0.36; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
+  let filteredSlope = slopeSum / max(slopeWeight, 0.001);
+  let normal = normalize(vec3f(filteredSlope.x, 1.0, filteredSlope.y));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let light = normalize(uniforms.sunDirection);
+  let nDotV = max(dot(normal, view), 0.0);
+  let nDotL = max(dot(normal, light), 0.0);
+  let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
-  let fresnel = fresnelSchlick(max(dot(normal, view), 0.0), vec3f(0.0204));
+  let fresnel = fresnelSchlick(nDotV, vec3f(0.0204));
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
     input.sunShadowClip0,
@@ -419,15 +405,20 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     atmosphereReflection,
   );
-  let depthColor = vec3f(0.003, 0.075, 0.105);
-  let shallowScatter = vec3f(0.018, 0.22, 0.20)
-    * max(dot(normal, light), 0.0) * 0.22 * directSunVisibility;
-  let sunGlitter = ggxSpecular(normal, view, light, 0.055)
-    * uniforms.sunColor * 4.5 * directSunVisibility;
-  var water = mix(depthColor + shallowScatter, reflected, fresnel);
+  let distanceRoughness = smoothstep(1200.0, 36000.0, cameraDistance) * 0.075;
+  let roughness = clamp(0.075 + distanceRoughness + foamAmount * 0.2, 0.065, 0.34);
+  let deepAbsorption = vec3f(0.002, 0.032, 0.052);
+  let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
+    * nDotL * (0.1 + 0.12 * directSunVisibility);
+  let horizonScatter = vec3f(0.008, 0.055, 0.064) * pow(1.0 - nDotV, 2.0);
+  let bodyColor = deepAbsorption + subsurfaceScatter + horizonScatter;
+  let sunGlitter = ggxSpecular(normal, view, light, roughness)
+    * uniforms.sunColor * 2.6 * directSunVisibility;
+  var water = mix(bodyColor, reflected, fresnel);
   water += sunGlitter;
-  water = mix(water, vec3f(0.72, 0.79, 0.78), clamp(foamAmount * 1.35, 0.0, 1.0));
-  fragmentOutputs.color = vec4f(water, 0.965);
+  let foam = clamp(foamAmount * 1.18, 0.0, 1.0);
+  water = mix(water, vec3f(0.69, 0.75, 0.73), foam);
+  fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), 1.0);
 }
 `;
 
@@ -872,13 +863,12 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           PLANAR_REFLECTION_SAMPLER,
           SUN_SHADOW_SAMPLER,
         ],
-        needAlphaBlending: true,
+        needAlphaBlending: false,
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
     this.material.backFaceCulling = false;
-    this.material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    this.material.alphaMode = Constants.ALPHA_COMBINE;
+    this.material.transparencyMode = Material.MATERIAL_OPAQUE;
     this.material.disableDepthWrite = false;
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
     this.material.setFloat("planarReflectionPlaneHeight", seaLevel);
@@ -1084,8 +1074,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private configureMesh(mesh: Mesh): void {
     mesh.isPickable = false;
     mesh.receiveShadows = true;
-    // Transparent water is sorted after opaque meshes inside group zero. Keep
-    // the opaque depth buffer so the ocean cannot composite across terrain.
+    // The ocean is an optically deep, opaque depth-writing surface. Shallow
+    // transmission belongs to inland water, where an estimated bed depth is
+    // available; constant alpha here made coastlines and reflections look like
+    // a translucent plastic sheet.
     mesh.renderingGroupId = 0;
     mesh.metadata = {
       ...(mesh.metadata as Record<string, unknown> | null),

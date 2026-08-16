@@ -67,6 +67,7 @@ export interface ControlState {
 
 export interface RenderDiagnostics {
   fps: number;
+  /** Wall-clock interval between the two most recent presented frames. */
   frameTime: number;
   drawCalls: number;
   triangles: number;
@@ -79,7 +80,7 @@ export interface RenderDiagnostics {
   renderTechnique: RenderTechnique;
   /** Main render scale before display upsampling. */
   renderScale: number;
-  /** CPU time spent encoding the most recent frame. */
+  /** CPU time spent updating and submitting the most recent frame. */
   cpuFrameTime: number;
   /** GPU frame duration when timestamp-query is available. */
   gpuFrameTime: number | null;

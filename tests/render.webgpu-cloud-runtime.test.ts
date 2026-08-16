@@ -134,7 +134,7 @@ describe("volumetric cloud runtime policy", () => {
 });
 
 describe("volumetric cloud runtime shaders", () => {
-  it("keeps reversed-Z depth, temporal rejection, and shadow optical depth explicit", () => {
+  it("keeps reversed-Z rays, render-target UVs, and shadow optical depth explicit", () => {
     for (const shader of [
       CLOUD_INTEGRATION_FRAGMENT_WGSL,
       CLOUD_TEMPORAL_FRAGMENT_WGSL,
@@ -150,10 +150,13 @@ describe("volumetric cloud runtime shaders", () => {
       expect(braceDepth).toBe(0);
       expect(shader).not.toContain("TODO");
     }
-    expect(CLOUD_INTEGRATION_FRAGMENT_WGSL).toContain("vec4f(uv * 2.0 - 1.0, 0.0, 1.0)");
+    expect(CLOUD_INTEGRATION_FRAGMENT_WGSL).toContain("uniform cameraForward: vec3f");
+    expect(CLOUD_INTEGRATION_FRAGMENT_WGSL).toContain("uniforms.cameraUp * ndc.y");
     expect(CLOUD_INTEGRATION_FRAGMENT_WGSL).toContain("representativeDistance");
-    expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).toContain("fragmentOutputs.fragDepth");
-    expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).toContain("projectedCloudPoint.z");
+    expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).not.toContain("fragmentOutputs.fragDepth");
+    expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).toContain("input.position.y");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("renderTargetUv(input.vUV)");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("renderTargetUv(previousUv)");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousViewProjection");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("depthConfidence");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("opticalDepth");

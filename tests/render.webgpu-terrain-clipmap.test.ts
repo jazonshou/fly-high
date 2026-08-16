@@ -218,4 +218,43 @@ describe("terrain clipmap seam topology", () => {
     scene.dispose();
     engine.dispose();
   });
+
+  it("hides grace-period pages immediately and excludes them from shadow submission", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const generator = new ControlledTerrainGenerator();
+    const profile = {
+      ...resolveWebGpuQualityProfile("medium", "balanced"),
+      terrainRings: 2,
+      shadowDistance: 600,
+    };
+    const system = new TerrainClipmapSystem(
+      scene,
+      createWorld("clipmap-visibility-grace-test"),
+      profile,
+      { generator },
+    );
+
+    system.update({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }, 1);
+    generator.flushAll();
+    const oldCorner = scene.getMeshByName("terrain-page-0:-2:-2") as Mesh | null;
+    expect(oldCorner?.isEnabled()).toBe(true);
+
+    system.update({ x: 5_120, z: 0, velocityX: 0, velocityZ: 0 }, 2);
+    expect(oldCorner?.isDisposed()).toBe(false);
+    expect(oldCorner?.isEnabled()).toBe(false);
+    const shadowCasters: Mesh[] = [];
+    system.addShadowCasters((mesh) => shadowCasters.push(mesh));
+    expect(shadowCasters).not.toContain(oldCorner);
+
+    system.update({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }, 3);
+    expect(oldCorner?.isEnabled()).toBe(true);
+    const nearbyShadowCasters: Mesh[] = [];
+    system.addShadowCasters((mesh) => nearbyShadowCasters.push(mesh));
+    expect(nearbyShadowCasters.length).toBeGreaterThan(0);
+    expect(nearbyShadowCasters).not.toContain(oldCorner);
+    system.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
 });

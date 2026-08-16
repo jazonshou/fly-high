@@ -239,7 +239,8 @@ export function Hud({
       {showDiagnostics && diagnostics ? (
         <div className="diagnostics" aria-label="Performance diagnostics">
           <strong>{diagnostics.fps.toFixed(0)} FPS</strong>
-          <span>{diagnostics.frameTime.toFixed(1)} ms</span>
+          <span>{diagnostics.frameTime.toFixed(1)} ms frame</span>
+          <span>{diagnostics.cpuFrameTime.toFixed(1)} ms CPU</span>
           <span>{diagnostics.drawCalls} calls</span>
           <span>{Math.round(diagnostics.triangles / 1_000)}k tris</span>
           <span>{diagnostics.residentTerrainPages} pages</span>

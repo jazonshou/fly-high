@@ -26,6 +26,7 @@ import {
   type DetailTerrainSampler,
   type GeneratedDetailCell,
   type RockVariant,
+  type ShrubSpecies,
   type TreeSpecies,
   type WorldDetailObserver,
   type WorldDetailStatistics,
@@ -56,6 +57,7 @@ interface DetailChunkStatistics {
   readonly nearCells: number;
   readonly midCells: number;
   readonly treeInstances: number;
+  readonly shrubInstances: number;
   readonly rockInstances: number;
   readonly buildingInstances: number;
 }
@@ -72,6 +74,7 @@ interface MutableDetailChunkStatistics {
   nearCells: number;
   midCells: number;
   treeInstances: number;
+  shrubInstances: number;
   rockInstances: number;
   buildingInstances: number;
 }
@@ -103,7 +106,16 @@ export interface WorldDetailRuntimeOptions {
   readonly cellSizeMeters?: number;
 }
 
-const TREE_SPECIES: readonly TreeSpecies[] = ["pine", "cedar", "oak", "birch"];
+const TREE_SPECIES: readonly TreeSpecies[] = [
+  "pine",
+  "cedar",
+  "spruce",
+  "oak",
+  "maple",
+  "birch",
+  "willow",
+];
+const SHRUB_SPECIES: readonly ShrubSpecies[] = ["juniper", "hazel", "sage"];
 const ROCK_VARIANTS: readonly RockVariant[] = ["granite", "limestone", "dark"];
 const BUILDING_STYLES: readonly BuildingStyle[] = ["cottage", "barn", "tower"];
 
@@ -113,6 +125,7 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   midCells: 0,
   generatedCells: 0,
   treeInstances: 0,
+  shrubInstances: 0,
   rockInstances: 0,
   buildingInstances: 0,
   renderedThinInstances: 0,
@@ -465,6 +478,7 @@ export class WorldDetailRuntime {
       nearCells: 0,
       midCells: 0,
       treeInstances: 0,
+      shrubInstances: 0,
       rockInstances: 0,
       buildingInstances: 0,
     };
@@ -489,6 +503,7 @@ export class WorldDetailRuntime {
             nearCells: 0,
             midCells: 0,
             treeInstances: 0,
+            shrubInstances: 0,
             rockInstances: 0,
             buildingInstances: 0,
           },
@@ -507,6 +522,7 @@ export class WorldDetailRuntime {
       totals.nearCells += chunk.statistics.nearCells;
       totals.midCells += chunk.statistics.midCells;
       totals.treeInstances += chunk.statistics.treeInstances;
+      totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
       totals.buildingInstances += chunk.statistics.buildingInstances;
     }
@@ -517,6 +533,7 @@ export class WorldDetailRuntime {
       midCells: totals.midCells,
       generatedCells: this.cumulativeGeneratedCells,
       treeInstances: totals.treeInstances,
+      shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
       buildingInstances: totals.buildingInstances,
       renderedThinInstances: 0,
@@ -537,6 +554,7 @@ export class WorldDetailRuntime {
       nearCells: 0,
       midCells: 0,
       treeInstances: 0,
+      shrubInstances: 0,
       rockInstances: 0,
       buildingInstances: 0,
     };
@@ -596,6 +614,28 @@ export class WorldDetailRuntime {
           );
           statistics.treeInstances += 1;
         }
+      }
+
+      for (const shrub of resident.cell.shrubs) {
+        if (resident.lod === "mid" && shrub.selection > 0.2) continue;
+        this.appendInstance(
+          this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys),
+          shrub.x - floatingOrigin.x,
+          shrub.y - floatingOrigin.y,
+          shrub.z - floatingOrigin.z,
+          shrub.radiusMeters,
+          shrub.heightMeters,
+          shrub.radiusMeters * (0.84 + shrub.selection * 0.24),
+          shrub.yawRadians,
+          shrub.color,
+          [
+            shrub.windPhaseRadians,
+            shrub.windResponse,
+            shrub.heightMeters,
+            shrub.selection,
+          ],
+        );
+        statistics.shrubInstances += 1;
       }
 
       for (const rock of resident.cell.rocks) {
@@ -879,8 +919,11 @@ export class WorldDetailRuntime {
     const foliageColors: Readonly<Record<TreeSpecies, Color3>> = {
       pine: new Color3(0.09, 0.28, 0.14),
       cedar: new Color3(0.16, 0.3, 0.12),
+      spruce: new Color3(0.075, 0.235, 0.16),
       oak: new Color3(0.24, 0.42, 0.12),
+      maple: new Color3(0.3, 0.46, 0.13),
       birch: new Color3(0.29, 0.5, 0.16),
+      willow: new Color3(0.31, 0.48, 0.19),
     };
     for (const species of TREE_SPECIES) {
       const material = this.createMaterial(
@@ -900,6 +943,40 @@ export class WorldDetailRuntime {
       this.registerBatch(
         `tree-${species}-mid`,
         this.createTreeCrown(species, "mid"),
+        material,
+        false,
+      );
+    }
+
+    const shrubColors: Readonly<Record<ShrubSpecies, Color3>> = {
+      juniper: new Color3(0.16, 0.31, 0.19),
+      hazel: new Color3(0.31, 0.46, 0.14),
+      sage: new Color3(0.35, 0.41, 0.31),
+    };
+    for (const species of SHRUB_SPECIES) {
+      const material = this.createMaterial(
+        `detail-shrub-${species}-material`,
+        shrubColors[species],
+        0.91,
+        true,
+      );
+      material.backFaceCulling = false;
+      const mesh = CreateIcoSphere(
+        `detail-shrub-${species}`,
+        {
+          radius: 1,
+          radiusX: species === "sage" ? 1.18 : species === "hazel" ? 0.92 : 1.05,
+          radiusY: species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62,
+          radiusZ: species === "sage" ? 0.88 : 1,
+          subdivisions: 1,
+          flat: true,
+        },
+        this.scene,
+      );
+      const verticalRadius = species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62;
+      this.registerBatch(
+        `shrub-${species}`,
+        bakePrototype(mesh, verticalRadius),
         material,
         false,
       );
@@ -986,33 +1063,33 @@ export class WorldDetailRuntime {
 
   private createTreeCrown(species: TreeSpecies, lod: DetailLod): Mesh {
     const suffix = `${species}-${lod}`;
-    if (species === "pine" || species === "cedar") {
-      const height = species === "pine" ? 0.78 : 0.84;
+    if (species === "pine" || species === "cedar" || species === "spruce") {
+      const height = species === "cedar" ? 0.84 : species === "spruce" ? 0.9 : 0.78;
       const mesh = CreateCylinder(
         `detail-tree-${suffix}`,
         {
           height,
-          diameterTop: species === "pine" ? 0 : 0.12,
-          diameterBottom: 2,
+          diameterTop: species === "cedar" ? 0.12 : 0,
+          diameterBottom: species === "spruce" ? 1.68 : 2,
           tessellation: lod === "near" ? 9 : 5,
         },
         this.scene,
       );
-      return bakePrototype(mesh, species === "pine" ? 0.59 : 0.57);
+      return bakePrototype(mesh, species === "pine" ? 0.59 : species === "spruce" ? 0.55 : 0.57);
     }
     const mesh = CreateIcoSphere(
       `detail-tree-${suffix}`,
       {
         radius: 1,
-        radiusX: species === "birch" ? 0.72 : 1,
-        radiusY: species === "birch" ? 0.3 : 0.34,
-        radiusZ: species === "birch" ? 0.72 : 0.95,
+        radiusX: species === "birch" ? 0.72 : species === "willow" ? 1.12 : 1,
+        radiusY: species === "birch" ? 0.3 : species === "willow" ? 0.25 : 0.34,
+        radiusZ: species === "birch" ? 0.72 : species === "willow" ? 1.08 : 0.95,
         subdivisions: lod === "near" ? 2 : 1,
         flat: lod === "mid",
       },
       this.scene,
     );
-    return bakePrototype(mesh, species === "birch" ? 0.72 : 0.67);
+    return bakePrototype(mesh, species === "birch" ? 0.72 : species === "willow" ? 0.7 : 0.67);
   }
 
   private createMaterial(

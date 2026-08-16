@@ -185,7 +185,14 @@ export function sampleTerrainCollision(
 export function sampleTerrainMoisture(world: WorldDefinition, x: number, z: number): number {
   const broad = fbm2D(mixSeed(world.seedHash, 201), x / 5_200, z / 5_200, 4, 2, 0.52);
   const local = valueNoise2D(mixSeed(world.seedHash, 202), x / 850, z / 850);
-  return saturate(0.5 + broad * 0.42 + local * 0.12);
+  // Elongated rain-shadow provinces break the old near-uniform moisture field
+  // into wet watersheds, dry uplands, and transitional ecological corridors.
+  const rainShadow = valueNoise2D(
+    mixSeed(world.seedHash, 203),
+    (x + z * 0.42) / 18_000,
+    (z - x * 0.42) / 9_500,
+  );
+  return saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
 }
 
 export function sampleTerrainTemperature(
@@ -237,7 +244,6 @@ function writeTerrainColor(
   biome: TerrainBiomeId,
   moisture: number,
   slope: number,
-  height: number,
   target: TerrainColor,
 ): TerrainColor {
   const palette = PALETTES[biome];
@@ -249,11 +255,20 @@ function writeTerrainColor(
     (moisture - 0.5) * (biome === TerrainBiome.GRASSLAND ? -0.06 : -0.025) -
     slope * 0.06;
   const rockBiome = biome === TerrainBiome.HIGHLAND || biome === TerrainBiome.ALPINE;
-  const strata = rockBiome ? Math.sin(height * 0.071 + broadVariation * 5.4) * slope * 0.055 : 0;
+  // Mineral variation is world-horizontal noise rather than a function of
+  // elevation.  Equal-height sine strata produced visible contour/scan lines
+  // over medium-distance hills.
+  const rockMottle = rockBiome
+    ? valueNoise2D(
+      mixSeed(world.seedHash, 232),
+      x / 118 + broadVariation * 1.7,
+      z / 154 - broadVariation * 1.3,
+    ) * slope * 0.05
+    : 0;
   const warmVariation = broadVariation * (rockBiome ? 0.026 : 0.012);
-  target.r = saturate(palette[0] + variation + strata + warmVariation);
-  target.g = saturate(palette[1] + variation + strata * 0.64);
-  target.b = saturate(palette[2] + variation - strata * 0.18 - warmVariation);
+  target.r = saturate(palette[0] + variation + rockMottle + warmVariation);
+  target.g = saturate(palette[1] + variation + rockMottle * 0.64);
+  target.b = saturate(palette[2] + variation - rockMottle * 0.18 - warmVariation);
   return target;
 }
 
@@ -295,6 +310,6 @@ export function sampleTerrain(
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
   target.isRunway = runway;
-  writeTerrainColor(world, x, z, biome, moisture, slope, height, target.color);
+  writeTerrainColor(world, x, z, biome, moisture, slope, target.color);
   return target;
 }

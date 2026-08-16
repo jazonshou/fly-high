@@ -10,11 +10,12 @@ import {
 } from "../src/render/webgpu/terrain/TerrainMaterialPlugin";
 
 describe("terrain PBR procedural material detail", () => {
-  it("uses absolute coordinates, slope strata, and near triplanar micro normals", () => {
+  it("uses absolute coordinates, non-banded rock mottle, and near triplanar micro normals", () => {
     const code = TERRAIN_MATERIAL_FRAGMENT_WGSL.CUSTOM_FRAGMENT_BEFORE_LIGHTS;
     expect(code).toContain("terrainWorldOrigin");
     expect(code).toContain("terrainSlope");
-    expect(code).toContain("terrainStrata");
+    expect(code).toContain("terrainRockMottle");
+    expect(code).not.toContain("sin(terrainAbsolutePosition.y");
     expect(code).toContain("terrainTriplanarNoise");
     expect(code).toContain("normalW = normalize");
     expect(code).toContain("smoothstep(1200.0, 4200.0");

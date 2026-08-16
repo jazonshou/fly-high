@@ -37,7 +37,7 @@ describe("flight interface visual system", () => {
       ".diagnostics",
       ".pause-panel",
       ".settings-panel",
-      ".setting-field select",
+      ".setting-select__trigger",
     ]) {
       expect(rule(selector)).toMatch(/border-radius:\s*(?:var\(--radius-|1[4-9]px|2\dpx)/);
     }
@@ -47,13 +47,13 @@ describe("flight interface visual system", () => {
     expect(rule(".aircraft-picker")).toContain("backdrop-filter: blur(22px)");
     expect(rule(".aircraft-picker")).toMatch(/background:\s*rgba\([^)]*,\s*0\.22\)/);
     expect(rule(".instrument-strip")).toContain("backdrop-filter: blur(16px)");
-    expect(rule(".setting-field select")).not.toMatch(/background:\s*(?:#|rgb\([^)]*\)|rgba\([^)]*,\s*(?:0\.9|1)\))/);
+    expect(rule(".setting-select__trigger")).not.toMatch(/background:\s*(?:#|rgb\([^)]*\)|rgba\([^)]*,\s*(?:0\.9|1)\))/);
   });
 
   it("retains visible keyboard focus and non-blur/high-contrast fallbacks", () => {
     expect(flightStyles).toContain(".aircraft-picker label:focus-within");
     expect(flightStyles).toContain(".primary-action:focus-visible");
-    expect(flightStyles).toContain(".setting-field select:focus-visible");
+    expect(flightStyles).toContain(".settings-panel button:focus-visible");
     expect(flightStyles).toContain("@supports not");
     expect(flightStyles).toContain("@media (prefers-contrast: more)");
   });

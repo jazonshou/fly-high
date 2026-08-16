@@ -3,7 +3,15 @@ import type { TerrainBiomeId, WorldSeed } from "@/src/world";
 export const DEFAULT_DETAIL_CELL_SIZE_METERS = 512;
 
 export type DetailLod = "near" | "mid";
-export type TreeSpecies = "pine" | "cedar" | "oak" | "birch";
+export type TreeSpecies =
+  | "pine"
+  | "cedar"
+  | "spruce"
+  | "oak"
+  | "maple"
+  | "birch"
+  | "willow";
+export type ShrubSpecies = "juniper" | "hazel" | "sage";
 export type RockVariant = "granite" | "limestone" | "dark";
 export type BuildingStyle = "cottage" | "barn" | "tower";
 
@@ -41,6 +49,22 @@ export interface DetailTreePlacement {
   readonly windResponse: number;
   readonly color: readonly [number, number, number, number];
   /** Stable random value used for deterministic distance thinning. */
+  readonly selection: number;
+}
+
+export interface DetailShrubPlacement {
+  readonly kind: "shrub";
+  readonly id: string;
+  readonly species: ShrubSpecies;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly yawRadians: number;
+  readonly heightMeters: number;
+  readonly radiusMeters: number;
+  readonly windPhaseRadians: number;
+  readonly windResponse: number;
+  readonly color: readonly [number, number, number, number];
   readonly selection: number;
 }
 
@@ -90,6 +114,7 @@ export interface GeneratedDetailCell {
   readonly maxX: number;
   readonly maxZ: number;
   readonly trees: readonly DetailTreePlacement[];
+  readonly shrubs: readonly DetailShrubPlacement[];
   readonly rocks: readonly DetailRockPlacement[];
   readonly buildings: readonly DetailBuildingPlacement[];
   readonly village: DetailVillage | null;
@@ -116,6 +141,7 @@ export interface WorldDetailStatistics {
   readonly midCells: number;
   readonly generatedCells: number;
   readonly treeInstances: number;
+  readonly shrubInstances: number;
   readonly rockInstances: number;
   readonly buildingInstances: number;
   /** Main-camera-frustum instances, including separate trunks/crowns and walls/roofs. */

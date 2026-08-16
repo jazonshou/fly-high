@@ -358,12 +358,20 @@
 .seed-action:focus-visible,
 .settings-action:focus-visible,
 .pause-panel button:focus-visible,
-.settings-panel button:focus-visible,
-.settings-panel select:focus-visible,
-.settings-panel input:focus-visible,
 .error-banner button:focus-visible {
   outline: 3px solid rgba(225, 254, 118, 0.88);
   outline-offset: 3px;
+}
+
+.settings-panel button:focus-visible,
+.settings-panel input:focus-visible {
+  outline: 2px solid rgba(217, 239, 243, 0.9);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(116, 178, 191, 0.16);
+}
+
+.settings-panel :focus:not(:focus-visible) {
+  outline: none;
 }
 
 .text-action,
@@ -507,42 +515,143 @@
   font-size: 11px;
 }
 
-.setting-field span,
-.setting-toggle span {
+.setting-field > span,
+.setting-toggle > span {
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.setting-field span b {
+.setting-field > span b {
   float: right;
   color: var(--accent);
   font-weight: 500;
 }
 
-.setting-field select {
+.setting-select {
+  position: relative;
+  min-width: 0;
+}
+
+.setting-select__trigger {
+  appearance: none;
+  display: grid;
   width: 100%;
+  min-height: 38px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
   padding: 9px 10px;
   border: 1px solid var(--glass-border);
   border-radius: 14px;
   background: rgba(12, 35, 43, 0.56);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   color: rgba(247, 252, 251, 0.96);
+  font-family: var(--font-ui);
   font-size: 12px;
-  color-scheme: dark;
   cursor: pointer;
+  text-align: left;
   backdrop-filter: blur(12px) saturate(1.15);
   -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
 }
 
-.setting-field select:hover {
+.setting-select__trigger:hover,
+.setting-select__trigger[aria-expanded="true"] {
   border-color: var(--glass-border-strong);
   background: rgba(16, 43, 50, 0.68);
 }
 
-.setting-field select:focus-visible {
-  border-color: rgba(225, 254, 118, 0.72);
+.setting-select__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting-select__chevron {
+  color: rgba(220, 238, 239, 0.68);
+  font-family: var(--font-ui);
+  font-size: 17px;
+  line-height: 0.7;
+  transform: translateY(-1px);
+  transition: transform 150ms ease, color 150ms ease;
+}
+
+.setting-select__trigger[aria-expanded="true"] .setting-select__chevron {
+  color: rgba(247, 252, 251, 0.94);
+  transform: translateY(1px) rotate(180deg);
+}
+
+.setting-select__menu {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 40;
+  display: grid;
+  max-height: min(240px, 40svh);
+  gap: 3px;
+  margin: 0;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid rgba(226, 241, 242, 0.26);
+  border-radius: 15px;
+  background: linear-gradient(145deg, rgba(17, 45, 52, 0.98), rgba(5, 24, 31, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 42px rgba(0, 6, 10, 0.42);
+  list-style: none;
+  scrollbar-color: rgba(211, 232, 235, 0.34) transparent;
+  scrollbar-width: thin;
+  backdrop-filter: blur(24px) saturate(1.18);
+  -webkit-backdrop-filter: blur(24px) saturate(1.18);
+}
+
+.setting-select__menu[hidden] {
+  display: none;
+}
+
+.setting-select__menu--below {
+  top: calc(100% + 6px);
+}
+
+.setting-select__menu--above {
+  bottom: calc(100% + 6px);
+}
+
+.setting-select__option {
+  display: grid;
+  min-height: 34px;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: rgba(231, 242, 242, 0.76);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.setting-select__option.is-active {
+  border-color: rgba(211, 232, 235, 0.14);
+  background: rgba(151, 194, 202, 0.13);
+  color: rgba(249, 253, 253, 0.96);
+}
+
+.setting-select__option.is-selected {
+  color: rgba(249, 253, 253, 0.98);
+}
+
+.setting-select__check {
+  color: rgba(219, 238, 241, 0.9);
+  font-size: 12px;
+  opacity: 0;
+  text-align: center;
+}
+
+.setting-select__option.is-selected .setting-select__check {
+  opacity: 1;
 }
 
 .setting-field input[type="range"] {
@@ -592,10 +701,41 @@
 }
 
 .setting-toggle input {
+  appearance: none;
+  position: relative;
   width: 16px;
   height: 16px;
   margin: 0;
-  accent-color: var(--accent);
+  flex: 0 0 auto;
+  border: 1px solid rgba(222, 239, 241, 0.42);
+  border-radius: 5px;
+  background: rgba(5, 23, 29, 0.5);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.setting-toggle input::after {
+  position: absolute;
+  top: 0;
+  left: 3px;
+  color: rgba(247, 252, 251, 0.96);
+  content: "✓";
+  font-size: 11px;
+  line-height: 14px;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.setting-toggle input:checked {
+  border-color: rgba(216, 237, 240, 0.64);
+  background: rgba(124, 175, 185, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.setting-toggle input:checked::after {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .flight-hud {
@@ -1210,7 +1350,7 @@
     background: rgba(4, 20, 27, 0.94);
   }
 
-  .setting-field select {
+  .setting-select__trigger {
     background: rgba(8, 28, 35, 0.94);
   }
 }
@@ -1320,7 +1460,8 @@
   .seed-action,
   .settings-action,
   .primary-action,
-  .setting-field select {
+  .setting-select__trigger,
+  .setting-select__menu {
     background: rgba(3, 17, 23, 0.94);
   }
 
