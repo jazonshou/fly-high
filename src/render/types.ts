@@ -6,11 +6,25 @@ import type {
   TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { RenderingMode } from "@/src/settings";
+
+export type RequestedRenderingTelemetryKey =
+  | "balanced"
+  | "hybrid"
+  | "screen-space-ray-marching";
+
+/** Translate the legacy persisted key into truthful user-facing telemetry. */
+export function requestedRenderingTelemetryKey(
+  mode: RenderingMode,
+): RequestedRenderingTelemetryKey {
+  return mode === "ray-traced" ? "screen-space-ray-marching" : mode;
+}
 
 export interface FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   setCameraMode(mode: CameraMode): void;
   setQuality(quality: QualityLevel): void;
+  setRenderingMode(mode: RenderingMode): void;
   setReducedMotion(reducedMotion: boolean): void;
   setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void;
   render(state: FlightVisualState, deltaSeconds: number): void;

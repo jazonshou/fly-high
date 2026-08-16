@@ -8,6 +8,8 @@ export {
   runwayToWorld,
   worldToRunway,
 } from "./airport";
+export { assessAirportSite, findGeneratedAirportSite } from "./airportSite";
+export type { AirportSiteAssessment, GeneratedAirportSite } from "./airportSite";
 export { hashCoordinates, hashSeed, mixSeed, normalizeSeed, unitFloatFromHash } from "./seed";
 export {
   MAX_TERRAIN_HEIGHT,

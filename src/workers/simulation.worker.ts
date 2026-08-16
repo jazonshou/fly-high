@@ -2,10 +2,13 @@
 
 import {
   applyFlightAssistance,
+  aircraftDefinition,
   DEFAULT_CONTROLS,
+  DirectPitchRetention,
   FIXED_TIME_STEP,
   FlightSimulator,
   type FlightControls,
+  type AircraftKind,
 } from "@/src/sim";
 import {
   createWorld,
@@ -35,6 +38,7 @@ const workerScope = self as unknown as DedicatedWorkerGlobalScope;
 
 let world: WorldDefinition | null = null;
 let simulator: FlightSimulator | null = null;
+let aircraftKind: AircraftKind = "trainer";
 let mode: FlightMode = "unassisted";
 let weather: WeatherPreset = "breezy";
 let attractMode = false;
@@ -53,6 +57,7 @@ const collisionTarget: TerrainCollisionSample = {
   friction: 0.86,
 };
 const assistedTarget: FlightControls = { ...DEFAULT_CONTROLS };
+const directPitchRetention = new DirectPitchRetention();
 
 function post(event: SimulationEvent): void {
   workerScope.postMessage(event);
@@ -78,10 +83,12 @@ function terrainHeightSample(x: number, z: number): number {
 function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
   if (!world) return;
   airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
-  const spawn = createSimulationSpawn(world, kind, airborneStartAgl);
+  const aircraft = aircraftDefinition(aircraftKind);
+  const spawn = createSimulationSpawn(world, kind, airborneStartAgl, aircraftKind);
   groundHeadingTarget = kind === "runway" ? (spawn.heading ?? 0) : null;
   controls = { ...DEFAULT_CONTROLS, ...spawn.controls };
   simulator = new FlightSimulator({
+    aircraft,
     spawn,
     controls,
     environment: {
@@ -90,6 +97,7 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
       wind: { x: 0, y: 0, z: 0 },
     },
   });
+  directPitchRetention.reset();
   accumulator = 0;
   lastTime = performance.now();
   lastSnapshotTime = 0;
@@ -99,14 +107,19 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
 function assistedControls(): FlightControls {
   const sim = simulator;
   if (!sim) return controls;
-  return applyFlightAssistance(
+  const telemetry = sim.telemetry();
+  const selectedMode = attractMode ? "scenic" : mode;
+  const selectedControls = applyFlightAssistance(
     assistedTarget,
-    attractMode ? "scenic" : mode,
+    selectedMode,
     controls,
     sim.state,
-    sim.telemetry(),
+    telemetry,
     groundHeadingTarget ?? undefined,
   );
+  return selectedMode === "unassisted"
+    ? directPitchRetention.apply(selectedControls, controls, sim.state, telemetry)
+    : selectedControls;
 }
 
 function visualState(): FlightVisualState {
@@ -190,6 +203,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     const command = event.data;
     if (command.type === "initialize") {
       world = createWorld(command.seed);
+      aircraftKind = command.aircraft;
       mode = command.mode;
       weather = command.weather;
       attractMode = command.attractMode;
@@ -198,14 +212,28 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       return;
     }
     if (command.type === "controls") controls = { ...command.controls };
-    else if (command.type === "mode") mode = command.mode;
+    else if (command.type === "mode") {
+      // Applying an unrelated settings change re-sends the selected mode. Keep
+      // an armed pilot-selected target unless the assistance mode truly changes.
+      if (command.mode !== mode) directPitchRetention.reset();
+      mode = command.mode;
+    }
     else if (command.type === "weather") weather = command.weather;
-    else if (command.type === "attract") attractMode = command.enabled;
+    else if (command.type === "attract") {
+      attractMode = command.enabled;
+      directPitchRetention.reset();
+    }
     else if (command.type === "handoff") {
       // Atomic handoff: no timer tick can observe the selected mode while demo
       // automation is still enabled, and the existing flight state is untouched.
       mode = command.mode;
       attractMode = false;
+      directPitchRetention.reset();
+    } else if (command.type === "returnToAttract") {
+      // End-flight is one state transition: no timer tick can observe a new
+      // airborne state without the menu controller that is meant to own it.
+      attractMode = true;
+      reset("airborne", command.airborneStartAgl);
     } else if (command.type === "pause") {
       paused = command.paused;
       lastTime = performance.now();

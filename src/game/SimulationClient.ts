@@ -1,4 +1,5 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
+import type { AircraftKind } from "@/src/sim";
 import {
   DEFAULT_AIRBORNE_START_AGL,
   type SimulationCommand,
@@ -25,6 +26,7 @@ export class SimulationClient {
     weather: WeatherPreset = "breezy",
     airborneStartAgl = DEFAULT_AIRBORNE_START_AGL,
     attractMode = false,
+    aircraft: AircraftKind = "trainer",
   ) {
     this.worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -35,6 +37,7 @@ export class SimulationClient {
     this.send({
       type: "initialize",
       seed,
+      aircraft,
       mode,
       spawn,
       weather,
@@ -71,6 +74,11 @@ export class SimulationClient {
   /** Stops demo automation and selects pilot authority as one Worker command. */
   handoff(mode: FlightMode): void {
     this.send({ type: "handoff", mode });
+  }
+
+  /** Atomically rebuilds the live menu flight with demo assistance enabled. */
+  returnToAttract(airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
+    this.send({ type: "returnToAttract", airborneStartAgl });
   }
 
   setPaused(paused: boolean): void {

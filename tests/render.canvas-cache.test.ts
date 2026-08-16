@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { shouldRefreshCanvasRidgeProfiles } from "../src/render/CanvasFlightRenderer";
+import { keyboardRollDirection } from "../src/input";
+import {
+  canvasAircraftScreenPose,
+  shouldRefreshCanvasRidgeProfiles,
+} from "../src/render/CanvasFlightRenderer";
+import { requestedRenderingTelemetryKey } from "../src/render/types";
 
 describe("Canvas scenery sampling cadence", () => {
   const stable = {
@@ -47,5 +52,38 @@ describe("Canvas scenery sampling cadence", () => {
         simulationTime: 10.4,
       }),
     ).toBe(true);
+  });
+
+  it("centres chase flight on the HUD and presents A/D with pilot-facing bank signs", () => {
+    const left = canvasAircraftScreenPose(
+      1_600,
+      900,
+      keyboardRollDirection("KeyA") * 20,
+      false,
+    );
+    const right = canvasAircraftScreenPose(
+      1_600,
+      900,
+      keyboardRollDirection("KeyD") * 20,
+      false,
+    );
+
+    expect(left.centerX).toBe(800);
+    expect(left.centerY).toBe(450);
+    expect(left.rotation).toBeLessThan(0);
+    expect(right.rotation).toBeGreaterThan(0);
+
+    // Orbit composition stays intentionally offset because Hud removes its
+    // fixed aircraft reticle in cinematic mode.
+    expect(canvasAircraftScreenPose(1_600, 900, 0, true)).toMatchObject({
+      centerX: 688,
+      centerY: 513,
+    });
+  });
+
+  it("does not expose the legacy ray-traced storage key as an effective request claim", () => {
+    expect(requestedRenderingTelemetryKey("ray-traced")).toBe("screen-space-ray-marching");
+    expect(requestedRenderingTelemetryKey("hybrid")).toBe("hybrid");
+    expect(requestedRenderingTelemetryKey("balanced")).toBe("balanced");
   });
 });

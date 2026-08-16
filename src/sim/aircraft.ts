@@ -10,8 +10,13 @@ export interface LandingGearDefinition {
   maxSteeringAngle?: number;
 }
 
+export type AircraftKind = "trainer" | "jet";
+export type PropulsionKind = "propeller" | "jet";
+
 export interface AircraftDefinition {
+  kind: AircraftKind;
   name: string;
+  propulsion: PropulsionKind;
   mass: number;
   wingArea: number;
   wingSpan: number;
@@ -44,11 +49,15 @@ export interface AircraftDefinition {
   yawMomentBeta: number;
   yawDamping: number;
   gear: readonly LandingGearDefinition[];
+  /** Visible airframe extremities used for terrain strikes and wreck clearance. */
+  airframeContactPoints: readonly Readonly<Vec3>[];
 }
 
 /** A fictional, deliberately unlicensed four-seat piston trainer. */
 export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
+  kind: "trainer",
   name: "Aster T-20",
+  propulsion: "propeller",
   mass: 980,
   wingArea: 16.2,
   wingSpan: 10.8,
@@ -101,7 +110,126 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
       maxSteeringAngle: (22 * Math.PI) / 180,
     }),
   ]),
+  airframeContactPoints: Object.freeze([
+    Object.freeze({ x: 4.35, y: 0.22, z: 0 }),
+    Object.freeze({ x: 4.35, y: -0.22, z: 0 }),
+    Object.freeze({ x: 0.58, y: 1.08, z: 0 }),
+    Object.freeze({ x: 0.28, y: -0.56, z: 0 }),
+    Object.freeze({ x: 0.2, y: 0.2, z: 5.45 }),
+    Object.freeze({ x: 0.2, y: 0.2, z: -5.45 }),
+    Object.freeze({ x: -3.25, y: 1.78, z: 0 }),
+    Object.freeze({ x: -3.48, y: 0.36, z: 0 }),
+  ]),
 });
+
+/**
+ * A fictional single-engine sport jet. Its dimensions and wing loading are in
+ * the class of a compact advanced trainer, while the intentionally generous
+ * dry thrust makes the speed difference immediately legible in a browser game.
+ */
+export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
+  kind: "jet",
+  name: "Vesper J-45",
+  propulsion: "jet",
+  mass: 5_850,
+  wingArea: 25.8,
+  wingSpan: 9.6,
+  meanChord: 2.7,
+  inertia: Object.freeze({ x: 11_900, y: 54_000, z: 47_500 }),
+  // Shaft power/efficiency are not used by the jet thrust branch. Keeping the
+  // fields explicit avoids optional values in the hot simulation loop.
+  maxEnginePower: 0,
+  maxStaticThrust: 42_000,
+  propellerEfficiency: 0,
+  // Jet engine telemetry is percent N2 rather than literal crankshaft RPM.
+  idleRpm: 35,
+  maxRpm: 100,
+  clZero: 0.2,
+  clAlpha: 4.55,
+  positiveStallAngle: (17 * Math.PI) / 180,
+  negativeStallAngle: (-15 * Math.PI) / 180,
+  flapLift: 0.72,
+  cdZero: 0.0185,
+  inducedDrag: 0.041,
+  stallDrag: 0.74,
+  flapDrag: 0.085,
+  sideForceBeta: 0.78,
+  sideForceRudder: 0.14,
+  pitchMomentZero: 0.004,
+  pitchMomentAlpha: -0.61,
+  pitchMomentElevator: 0.46,
+  pitchDamping: -15.2,
+  rollMomentAileron: 0.088,
+  rollMomentBeta: 0.052,
+  rollDamping: -0.74,
+  yawMomentRudder: 0.082,
+  yawMomentBeta: 0.13,
+  yawDamping: -0.38,
+  gear: Object.freeze([
+    Object.freeze({
+      position: Object.freeze({ x: -0.72, y: -1.46, z: -1.72 }),
+      springRate: 285_000,
+      dampingRate: 31_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: -0.72, y: -1.46, z: 1.72 }),
+      springRate: 285_000,
+      dampingRate: 31_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: 3.72, y: -1.32, z: 0 }),
+      springRate: 190_000,
+      dampingRate: 23_000,
+      maxSteeringAngle: (18 * Math.PI) / 180,
+    }),
+  ]),
+  airframeContactPoints: Object.freeze([
+    Object.freeze({ x: 5.86, y: 0.25, z: 0 }),
+    Object.freeze({ x: 5.86, y: -0.25, z: 0 }),
+    Object.freeze({ x: 1.15, y: 1.2, z: 0 }),
+    Object.freeze({ x: 0, y: -0.64, z: 0 }),
+    Object.freeze({ x: -0.3, y: 0.05, z: 4.83 }),
+    Object.freeze({ x: -0.3, y: 0.05, z: -4.83 }),
+    Object.freeze({ x: -4.74, y: 2.21, z: 0 }),
+    Object.freeze({ x: -5.33, y: 0, z: 0 }),
+  ]),
+});
+
+export function aircraftDefinition(kind: AircraftKind): Readonly<AircraftDefinition> {
+  return kind === "jet" ? FAST_JET : LIGHT_TRAINER;
+}
+
+/**
+ * Returns installed thrust without conflating propeller shaft power and jet
+ * thrust. Propeller output remains power-limited at speed; a jet instead uses
+ * a smooth density lapse and mild inlet recovery loss at very high speed.
+ */
+export function calculateEngineThrust(
+  aircraft: AircraftDefinition,
+  throttle: number,
+  airDensity: number,
+  forwardAirspeed: number,
+): number {
+  const commandedThrottle = clamp(throttle, 0, 1);
+  if (aircraft.propulsion === "jet") {
+    // A turbine cannot produce thrust without mass flow. Unlike the legacy
+    // propeller branch, do not retain the low-density numerical floor as the
+    // atmosphere approaches vacuum.
+    const densityRatio = clamp(airDensity / 1.225, 0, 1.2);
+    const densityLapse = densityRatio ** 0.72;
+    const inletRecovery = 1 - 0.12 * clamp((forwardAirspeed - 220) / 180, 0, 1);
+    return commandedThrottle * aircraft.maxStaticThrust * densityLapse * inletRecovery;
+  }
+
+  const densityRatio = clamp(airDensity / 1.225, 0.1, 1.2);
+  const availablePower = aircraft.maxEnginePower * densityRatio ** 0.85;
+  const powerLimitedThrust =
+    (availablePower * aircraft.propellerEfficiency) / Math.max(forwardAirspeed, 30);
+  return (
+    commandedThrottle *
+    Math.min(aircraft.maxStaticThrust * densityRatio, powerLimitedThrust)
+  );
+}
 
 /**
  * Smoothly loses lift beyond the critical angle rather than hard-clamping it.

@@ -15,7 +15,7 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   };
   const assistanceDescription =
     settings.flightMode === "unassisted"
-      ? "Raw control-surface authority with no auto-level or artificial pitch and bank limits."
+      ? "Full pitch authority with no angle limits; releasing the stick retains the pitch you selected instead of targeting level flight."
       : settings.flightMode === "pilot"
         ? "Direct control surfaces with light rate damping and turn coordination."
         : "Bounded attitude commands that auto-level when the controls are released.";
@@ -42,6 +42,24 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
           <option value="medium">Medium</option>
           <option value="high">High</option>
         </select>
+      </label>
+      <label className="setting-field setting-field--described">
+        <span>Rendering</span>
+        <select
+          value={settings.renderingMode}
+          onChange={(event) => patch(
+            "renderingMode",
+            event.target.value as GameSettings["renderingMode"],
+          )}
+        >
+          <option value="balanced">Balanced</option>
+          <option value="hybrid">Hybrid (recommended)</option>
+          <option value="ray-traced">Screen-space ray marching (experimental)</option>
+        </select>
+        <small className="setting-field__hint">
+          Higher-detail half-resolution screen-space ray marching. Browser WebGPU has no
+          ray-query path in this app today, so this is not hardware ray tracing.
+        </small>
       </label>
       <label className="setting-field">
         <span>Instruments</span>
@@ -154,10 +172,6 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       <label className="setting-toggle">
         <input type="checkbox" checked={settings.reducedMotion} onChange={(event) => patch("reducedMotion", event.target.checked)} />
         <span>Stabilized camera</span>
-      </label>
-      <label className="setting-toggle">
-        <input type="checkbox" checked={settings.cameraShake} onChange={(event) => patch("cameraShake", event.target.checked)} />
-        <span>Stall / load buffet</span>
       </label>
       <label className="setting-toggle">
         <input type="checkbox" checked={settings.showDiagnostics} onChange={(event) => patch("showDiagnostics", event.target.checked)} />

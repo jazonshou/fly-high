@@ -1,10 +1,20 @@
 import * as THREE from "three";
+import type { TimeOfDayPreset, WeatherPreset } from "@/src/game/types";
 import {
   generateTerrainGridIndices,
   worldToTerrainTile,
   type TerrainTileData,
 } from "@/src/world";
 import { GroundCoverRenderer, type GroundCoverSurface } from "./GroundCoverRenderer";
+import {
+  BathymetryField,
+  type WaterBathymetrySource,
+} from "./BathymetryField";
+import {
+  applyTerrainBoundaryMorph,
+  terrainMorphCoarseStride,
+  type TerrainMorphEdges,
+} from "./TerrainLodMorph";
 import { TerrainGenerationClient } from "./TerrainGenerationClient";
 
 export interface RenderTerrainSample {
@@ -42,6 +52,11 @@ interface TerrainChunk {
   size: number;
   vertexResolution: number;
   isFar: boolean;
+  readonly sourceHeights: Float32Array;
+  readonly sourceNormals: Float32Array;
+  hasSourceData: boolean;
+  sourceRevision: number;
+  appliedMorphSignature: string;
 }
 
 const FAR_TILE_SCALE = 8;
@@ -49,22 +64,70 @@ const FAR_TILE_RADIUS = 1;
 // The horizon mesh is tiny compared with the streamed tile grids; spending a
 // few hundred extra vertices here removes the faceted mountain silhouette that
 // was visible against the sky at medium quality.
-const HORIZON_SEGMENTS = 192;
+// The streamed far grid carries the actual lighting and depth, while this
+// inexpensive ring only supplies the last silhouette against the atmosphere.
+// 256 angular samples keep a 30--40 km ridge below roughly a two-pixel chord at
+// common browser resolutions without adding another draw call.
+const HORIZON_SEGMENTS = 256;
 const HORIZON_RADII = [7_200, 11_500, 18_000, 27_000, 39_000] as const;
 const MAX_NEAR_TREES = 2_200;
 const MAX_FAR_TREES = 4_200;
-const MAX_ROCKS = 420;
+const MAX_ROCKS = 900;
 const TREE_CELL_SIZE = 145;
 const FAR_TREE_CELL_SIZE = 380;
-const WATER_SIZE = 120_000;
-const WATER_CENTER_SNAP = 2_048;
+const WATER_RADIUS = 42_000;
+const WATER_RADIAL_SEGMENTS = 128;
+const WATER_RING_RADII = [96, 192, 384, 768, 1_536, 3_072, 6_144, 12_288, 24_576, WATER_RADIUS] as const;
+const WATER_CENTER_SNAP = 512;
 // Keep the rendered surface and the terrain cutout separated deliberately.
 // At kilometre-scale view distances a 24-bit perspective depth buffer cannot
 // reliably distinguish the old 6 cm water/sea-floor gap.  Removing submerged
 // terrain fragments is what guarantees that the two surfaces never z-fight;
 // the small offset only gives the shoreline a clean wet edge at close range.
-const WATER_RENDER_LEVEL = 0.14;
-const TERRAIN_WATER_CUTOUT_LEVEL = 0.11;
+export const WATER_RENDER_LEVEL = 0.14;
+// Discard every terrain fragment that could quantize onto the opaque ocean.
+// Keeping this just above the rendered plane removes the old submerged overlap
+// without visibly moving the shoreline up otherwise dry ground.
+export const TERRAIN_WATER_CUTOUT_LEVEL = WATER_RENDER_LEVEL + 0.01;
+
+const NEAR_TERRAIN_VERTEX_RESOLUTION = {
+  low: 25,
+  // 33 m and 25 m samples respectively preserve much more of the 60--100 m
+  // geological residual while keeping the default worker/sample budget below
+  // 270k visible terrain triangles. The former 40 m grid sat at the Nyquist
+  // limit, so worker-generated gullies collapsed into smooth interpolation.
+  medium: 49,
+  high: 65,
+} as const;
+const FAR_TERRAIN_VERTEX_RESOLUTION = {
+  low: 25,
+  // Each 12.8 km far tile spans eight near tiles. Matching segment counts
+  // makes every eighth fine edge vertex land on the coarse grid exactly.
+  medium: 49,
+  high: 65,
+} as const;
+
+export function terrainVertexResolution(
+  quality: "low" | "medium" | "high",
+  lod: "near" | "far",
+): number {
+  return lod === "near"
+    ? NEAR_TERRAIN_VERTEX_RESOLUTION[quality]
+    : FAR_TERRAIN_VERTEX_RESOLUTION[quality];
+}
+
+function matchingFarVertexResolution(nearVertexResolution: number): number {
+  if (nearVertexResolution === NEAR_TERRAIN_VERTEX_RESOLUTION.low) {
+    return FAR_TERRAIN_VERTEX_RESOLUTION.low;
+  }
+  if (nearVertexResolution === NEAR_TERRAIN_VERTEX_RESOLUTION.medium) {
+    return FAR_TERRAIN_VERTEX_RESOLUTION.medium;
+  }
+  if (nearVertexResolution === NEAR_TERRAIN_VERTEX_RESOLUTION.high) {
+    return FAR_TERRAIN_VERTEX_RESOLUTION.high;
+  }
+  throw new RangeError(`Unsupported near terrain resolution: ${nearVertexResolution}`);
+}
 
 function hash01(x: number, z: number, seed: number): number {
   let value = Math.imul(x ^ seed, 0x45d9f3b) ^ Math.imul(z, 0x27d4eb2d);
@@ -124,9 +187,23 @@ function createTerrainDetailTexture(seed: number): THREE.DataTexture {
       const detail =
         periodicNoise01(normalizedX * 17, normalizedZ * 17, 17, seed ^ 0x293f) * 0.68 +
         periodicNoise01(normalizedX * 37, normalizedZ * 37, 37, seed ^ 0x61c7) * 0.32;
-      const grain =
+      const smoothGrain =
         periodicNoise01(normalizedX * 41, normalizedZ * 41, 41, seed ^ 0x3341) * 0.6 +
         periodicNoise01(normalizedX * 61, normalizedZ * 61, 61, seed ^ 0x7259) * 0.4;
+      // Value-noise alone is intentionally smooth and was surviving as a soft
+      // colour wash even at the highest mip. A bounded cellular/high-pass term
+      // supplies gravel, soil pores, and short grass tips. Mipmapping still
+      // integrates it at distance, so this sharpness does not turn into crawl.
+      const texelHash = hash01(column, row, seed ^ 0x4e2d);
+      const fractured = Math.abs(
+        periodicNoise01(normalizedX * 73, normalizedZ * 73, 73, seed ^ 0x58a7) * 2 - 1,
+      );
+      const hardGrain = THREE.MathUtils.smoothstep(fractured, 0.52, 0.91);
+      const grain = THREE.MathUtils.clamp(
+        smoothGrain * 0.58 + hardGrain * 0.29 + texelHash * 0.13,
+        0,
+        1,
+      );
       data[offset] = Math.round(macro * 255);
       data[offset + 1] = Math.round(detail * 255);
       data[offset + 2] = Math.round(grain * 255);
@@ -141,7 +218,7 @@ function createTerrainDetailTexture(seed: number): THREE.DataTexture {
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   // Three clamps this request to the device capability at upload time. It is
   // especially important for the long grazing-angle views seen while taxiing.
-  texture.anisotropy = 8;
+  texture.anisotropy = 16;
   texture.generateMipmaps = true;
   texture.colorSpace = THREE.NoColorSpace;
   texture.needsUpdate = true;
@@ -321,6 +398,97 @@ function createConiferCanopyGeometry(): THREE.BufferGeometry {
   return mergeGeometryParts([lower, middle, crown]);
 }
 
+function createRockOutcropGeometry(): THREE.BufferGeometry {
+  // Overlapping, asymmetrically scaled low-poly stones produce fractured
+  // outcrops while retaining one instanced draw call for the whole field.
+  const core = new THREE.DodecahedronGeometry(1, 0);
+  core.scale(1, 0.68, 0.82);
+  core.rotateY(0.31);
+  const shoulder = new THREE.DodecahedronGeometry(0.72, 0);
+  shoulder.scale(1.05, 0.58, 0.76);
+  shoulder.rotateY(-0.47);
+  shoulder.translate(0.72, -0.18, 0.18);
+  const shard = new THREE.DodecahedronGeometry(0.54, 0);
+  shard.scale(0.72, 0.92, 0.58);
+  shard.rotateZ(0.24);
+  shard.translate(-0.62, 0.02, -0.28);
+  return mergeGeometryParts([core, shoulder, shard]);
+}
+
+/**
+ * A camera-centred radial grid avoids rasterising the ocean as two enormous
+ * 120 km triangles.  Those triangles repeatedly crossed the near plane and
+ * lost interpolation precision as the chase camera banked.  Concentric rings
+ * keep primitives compact close to the camera, then grow toward the fogged
+ * horizon for a fixed browser-friendly triangle budget.
+ */
+export function createConcentricWaterGeometry(): THREE.BufferGeometry {
+  const ringCount = WATER_RING_RADII.length;
+  const vertexCount = 1 + ringCount * WATER_RADIAL_SEGMENTS;
+  const positions = new Float32Array(vertexCount * 3);
+  const normals = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
+  const triangleCount = WATER_RADIAL_SEGMENTS +
+    (ringCount - 1) * WATER_RADIAL_SEGMENTS * 2;
+  const indices = new Uint16Array(triangleCount * 3);
+
+  normals[1] = 1;
+  uvs[0] = 0.5;
+  uvs[1] = 0.5;
+  for (let ring = 0; ring < ringCount; ring += 1) {
+    const radius = WATER_RING_RADII[ring]!;
+    for (let segment = 0; segment < WATER_RADIAL_SEGMENTS; segment += 1) {
+      const angle = (segment / WATER_RADIAL_SEGMENTS) * Math.PI * 2;
+      const vertex = 1 + ring * WATER_RADIAL_SEGMENTS + segment;
+      const positionOffset = vertex * 3;
+      positions[positionOffset] = Math.cos(angle) * radius;
+      positions[positionOffset + 2] = Math.sin(angle) * radius;
+      normals[positionOffset + 1] = 1;
+      const uvOffset = vertex * 2;
+      uvs[uvOffset] = 0.5 + positions[positionOffset]! / (WATER_RADIUS * 2);
+      uvs[uvOffset + 1] = 0.5 + positions[positionOffset + 2]! / (WATER_RADIUS * 2);
+    }
+  }
+
+  let indexOffset = 0;
+  for (let segment = 0; segment < WATER_RADIAL_SEGMENTS; segment += 1) {
+    const current = 1 + segment;
+    const next = 1 + (segment + 1) % WATER_RADIAL_SEGMENTS;
+    // Counter-clockwise when viewed from above, so the primary face is +Y.
+    indices[indexOffset] = 0;
+    indices[indexOffset + 1] = next;
+    indices[indexOffset + 2] = current;
+    indexOffset += 3;
+  }
+  for (let ring = 0; ring < ringCount - 1; ring += 1) {
+    const innerStart = 1 + ring * WATER_RADIAL_SEGMENTS;
+    const outerStart = innerStart + WATER_RADIAL_SEGMENTS;
+    for (let segment = 0; segment < WATER_RADIAL_SEGMENTS; segment += 1) {
+      const nextSegment = (segment + 1) % WATER_RADIAL_SEGMENTS;
+      const innerCurrent = innerStart + segment;
+      const innerNext = innerStart + nextSegment;
+      const outerCurrent = outerStart + segment;
+      const outerNext = outerStart + nextSegment;
+      indices[indexOffset] = innerCurrent;
+      indices[indexOffset + 1] = outerNext;
+      indices[indexOffset + 2] = outerCurrent;
+      indices[indexOffset + 3] = innerCurrent;
+      indices[indexOffset + 4] = innerNext;
+      indices[indexOffset + 5] = outerNext;
+      indexOffset += 6;
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 /** Snapping keeps the ocean's remote edges stable without changing coverage. */
 export function snapWaterCenter(value: number): number {
   return Math.round(value / WATER_CENTER_SNAP) * WATER_CENTER_SNAP;
@@ -400,9 +568,12 @@ export class TerrainRenderer {
     fog: false,
     side: THREE.DoubleSide,
     dithering: true,
+    // The horizon is a color-only backdrop. It must not write coarse ring
+    // depths in front of the streamed terrain that supersedes it.
+    depthWrite: false,
   });
   private readonly horizonTerrain: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>;
-  private readonly water: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshPhysicalMaterial>;
+  private readonly water: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
   private readonly runwayGroup = new THREE.Group();
   private readonly treeTrunks: THREE.InstancedMesh;
   private readonly treeCanopies: THREE.InstancedMesh;
@@ -420,6 +591,22 @@ export class TerrainRenderer {
   private readonly terrainDetailMap: { value: THREE.DataTexture };
   private readonly waterTime = { value: 0 };
   private readonly waterWorldOrigin = { value: new THREE.Vector2() };
+  private readonly waterSunDirection = {
+    value: new THREE.Vector3(4_300, 5_900, -7_800).normalize(),
+  };
+  // These are incident-radiance tints, not literal sky albedo. Keeping the
+  // reflected horizon below the scene-background value prevents foggy weather
+  // from bleaching the ocean into a flat cyan card.
+  private readonly waterHorizonReflection = { value: new THREE.Color(0x78989b) };
+  private readonly waterZenithReflection = { value: new THREE.Color(0x245f7e) };
+  private readonly waterSunReflection = { value: new THREE.Color(0xffdda0) };
+  private readonly waterSunGlintStrength = { value: 0.82 };
+  private readonly waterPlanarReflectionMap = { value: null as THREE.Texture | null };
+  private readonly waterPlanarReflectionMatrix = { value: new THREE.Matrix4() };
+  private readonly waterPlanarReflectionStrength = { value: 0 };
+  private readonly waterHybridCompositeStrength = { value: 0 };
+  private readonly bathymetry: BathymetryField;
+  private readonly waterBathymetryValid = { value: 0 };
   private readonly tempMatrix = new THREE.Matrix4();
   private readonly tempPosition = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
@@ -437,6 +624,8 @@ export class TerrainRenderer {
   private quality: "low" | "medium" | "high";
   private generationEpoch = 0;
   private disposed = false;
+  private sceneRevisionValue = 0;
+  private bathymetrySourceRevision = 0;
   private treesDirty = true;
   private nextTreeRefreshTime = 0;
   private horizonCenterX = Number.NaN;
@@ -450,11 +639,18 @@ export class TerrainRenderer {
     private readonly runway?: RenderRunwayDefinition,
   ) {
     this.quality = quality;
-    this.resolution = quality === "high" ? 28 : quality === "medium" ? 22 : 16;
-    this.farResolution = quality === "high" ? 23 : quality === "medium" ? 19 : 14;
+    this.resolution = terrainVertexResolution(quality, "near") - 1;
+    this.farResolution = terrainVertexResolution(quality, "far");
     this.radius = quality === "low" ? 2 : 3;
     this.terrainGeneration = new TerrainGenerationClient(seed);
     this.terrainDetailMap = { value: createTerrainDetailTexture(seed) };
+    // Reuse the deterministic, mipmapped four-channel terrain detail field as
+    // the water normal source. Sampling it at independent scales/directions
+    // gives the ocean real texture for no additional texture allocation.
+    this.bathymetry = new BathymetryField(
+      WATER_RENDER_LEVEL,
+      this.terrainDetailMap.value,
+    );
     this.groundCover = new GroundCoverRenderer(
       seed,
       quality,
@@ -471,20 +667,20 @@ export class TerrainRenderer {
     this.horizonTerrain.receiveShadow = false;
     this.horizonTerrain.castShadow = false;
     this.horizonTerrain.frustumCulled = false;
+    this.configureHorizonWaterCutout();
     this.group.add(this.horizonTerrain);
 
-    const waterGeometry = new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE, 1, 1);
-    waterGeometry.rotateX(-Math.PI / 2);
+    const waterGeometry = createConcentricWaterGeometry();
     const waterMaterial = new THREE.MeshPhysicalMaterial({
       color: 0x0c465d,
       // Water is a smooth dielectric, not a metal.  Most of the apparent
       // roughness comes from the animated normal field below.
-      roughness: quality === "low" ? 0.14 : quality === "medium" ? 0.075 : 0.045,
+      roughness: quality === "low" ? 0.22 : quality === "medium" ? 0.14 : 0.095,
       metalness: 0,
       ior: 1.333,
       specularIntensity: 1,
       clearcoat: quality === "low" ? 0.82 : 1,
-      clearcoatRoughness: quality === "low" ? 0.1 : 0.035,
+      clearcoatRoughness: quality === "low" ? 0.18 : quality === "medium" ? 0.1 : 0.07,
       transparent: false,
       depthWrite: true,
       depthTest: true,
@@ -554,7 +750,7 @@ export class TerrainRenderer {
       MAX_FAR_TREES,
     );
     this.rocks = new THREE.InstancedMesh(
-      new THREE.DodecahedronGeometry(1, 0),
+      createRockOutcropGeometry(),
       rockMaterial,
       MAX_ROCKS,
     );
@@ -593,16 +789,72 @@ export class TerrainRenderer {
       this.groundCover.group,
     );
 
-    this.createRunway();
-    this.group.add(this.runwayGroup);
+    if (this.runway) {
+      this.createRunway(this.runway);
+      this.group.add(this.runwayGroup);
+    }
   }
 
   get tileCount(): number {
     return this.chunks.size;
   }
 
+  /** Changes when streamed mesh membership or render visibility changes. */
+  get sceneRevision(): number {
+    return this.sceneRevisionValue;
+  }
+
+  /** Read-only integration seam used to exclude the ocean from reflection passes. */
+  get waterSurface(): THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial> {
+    return this.water;
+  }
+
+  /** Absolute-world underwater depth field shared by forward and hybrid water. */
+  get waterBathymetry(): WaterBathymetrySource {
+    return this.bathymetry;
+  }
+
+  /**
+   * Supplies a projected planar reflection without changing the stable opaque
+   * fallback. `textureMatrix` maps scene-local water positions to homogeneous
+   * reflection UVs, matching Three's Reflector-style projection convention.
+   * The render target remains owned by the caller.
+   */
+  setWaterReflection(
+    texture: THREE.Texture | null,
+    textureMatrix?: THREE.Matrix4,
+    strength = 1,
+  ): void {
+    this.waterPlanarReflectionMap.value = texture;
+    if (textureMatrix) this.waterPlanarReflectionMatrix.value.copy(textureMatrix);
+    this.waterPlanarReflectionStrength.value = texture
+      ? THREE.MathUtils.clamp(Number.isFinite(strength) ? strength : 0, 0, 1)
+      : 0;
+  }
+
+  /**
+   * Selects one owner for depth absorption. Balanced/forward rendering applies
+   * it in this material; hybrid rendering supplies a neutral dark base here and
+   * applies Beer-Lambert once in the depth-aware composite.
+   */
+  setHybridWaterCompositeActive(active: boolean): void {
+    this.waterHybridCompositeStrength.value = active ? 1 : 0;
+  }
+
+  /** Prevent recursive water rendering while guaranteeing visibility restoration. */
+  withWaterSurfaceHidden<T>(renderReflection: () => T): T {
+    const wasVisible = this.water.visible;
+    this.water.visible = false;
+    try {
+      return renderReflection();
+    } finally {
+      this.water.visible = wasVisible;
+    }
+  }
+
   update(worldX: number, worldZ: number, originX: number, originZ: number): void {
     if (this.disposed) return;
+    const now = performance.now();
     const originChanged = originX !== this.originX || originZ !== this.originZ;
     this.originX = originX;
     this.originZ = originZ;
@@ -631,8 +883,17 @@ export class TerrainRenderer {
     } else {
       this.positionChunks();
     }
+    this.bathymetry.update(
+      {
+        worldX,
+        worldZ,
+        sourceRevision: this.bathymetrySourceRevision,
+        nowMs: now,
+      },
+      (sampleX, sampleZ) => this.sampleLoadedBathymetryHeight(sampleX, sampleZ),
+    );
+    this.waterBathymetryValid.value = this.bathymetry.isValid() ? 1 : 0;
     if (originChanged) this.treesDirty = true;
-    const now = performance.now();
     if (this.treesDirty && (originChanged || centerChanged || now >= this.nextTreeRefreshTime)) {
       this.refreshTrees();
       // Worker results can arrive one at a time. Batch their visual-object
@@ -651,9 +912,40 @@ export class TerrainRenderer {
     );
   }
 
+  /** Keep the analytic ocean reflection synchronized with the visible sky. */
+  setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void {
+    if (timeOfDay === "dawn") {
+      this.waterSunDirection.value.set(6_700, 2_100, -6_100).normalize();
+      this.waterHorizonReflection.value.set(0x8e655f);
+      this.waterZenithReflection.value.set(0x1d405f);
+      this.waterSunReflection.value.set(0xffb27d);
+    } else if (timeOfDay === "golden") {
+      this.waterSunDirection.value.set(6_200, 3_100, -7_200).normalize();
+      this.waterHorizonReflection.value.set(0x96745f);
+      this.waterZenithReflection.value.set(0x2c5f78);
+      this.waterSunReflection.value.set(0xffcf88);
+    } else {
+      this.waterSunDirection.value.set(4_300, 5_900, -7_800).normalize();
+      this.waterHorizonReflection.value.set(0x78989b);
+      this.waterZenithReflection.value.set(0x245f7e);
+      this.waterSunReflection.value.set(0xffdda0);
+    }
+
+    // Clouds brighten the reflected horizon and desaturate the zenith while
+    // suppressing the tight solar glint. These are infrequent settings changes,
+    // so temporary colors avoid permanent mutable palette state in the renderer.
+    const cloudMix = weather === "cloudy" ? 0.48 : weather === "breezy" ? 0.1 : 0;
+    if (cloudMix > 0) {
+      this.waterHorizonReflection.value.lerp(new THREE.Color(0x718082), cloudMix * 0.58);
+      this.waterZenithReflection.value.lerp(new THREE.Color(0x536c78), cloudMix);
+    }
+    this.waterSunGlintStrength.value =
+      weather === "cloudy" ? 0.26 : weather === "clear" ? 1.08 : 0.82;
+  }
+
   setQuality(quality: "low" | "medium" | "high"): void {
-    const nextResolution = quality === "high" ? 28 : quality === "medium" ? 22 : 16;
-    const nextFarResolution = quality === "high" ? 23 : quality === "medium" ? 19 : 14;
+    const nextResolution = terrainVertexResolution(quality, "near") - 1;
+    const nextFarResolution = terrainVertexResolution(quality, "far");
     const nextRadius = quality === "low" ? 2 : 3;
     if (
       nextResolution === this.resolution &&
@@ -669,16 +961,16 @@ export class TerrainRenderer {
     this.coniferCanopies.castShadow = castNearVegetationShadows;
     this.rocks.castShadow = quality === "high";
     this.groundCover.setQuality(quality);
-    this.water.material.roughness = quality === "low" ? 0.14 : quality === "medium" ? 0.075 : 0.045;
+    this.water.material.roughness = quality === "low" ? 0.22 : quality === "medium" ? 0.14 : 0.095;
     this.water.material.clearcoat = quality === "low" ? 0.82 : 1;
-    this.water.material.clearcoatRoughness = quality === "low" ? 0.1 : 0.035;
+    this.water.material.clearcoatRoughness = quality === "low" ? 0.18 : quality === "medium" ? 0.1 : 0.07;
     this.generationEpoch += 1;
     this.terrainGeneration.cancelAll();
 
     // If a previous quality transition is still loading, retain its complete
     // older terrain set instead of stacking an unbounded third generation.
     if (this.retiredChunks.size > 0) {
-      for (const chunk of this.retiredChunks.values()) chunk.mesh.visible = true;
+      for (const chunk of this.retiredChunks.values()) this.setChunkVisible(chunk, true);
       for (const chunk of this.chunks.values()) this.disposeChunk(chunk);
     } else {
       for (const [key, chunk] of this.chunks) {
@@ -762,7 +1054,7 @@ export class TerrainRenderer {
       if (chunk.requestId !== null) this.terrainGeneration.cancel(chunk.requestId);
       chunk.requestId = null;
       chunk.generation += 1;
-      chunk.mesh.visible = false;
+      this.setChunkVisible(chunk, false);
       this.available.push(chunk);
     }
 
@@ -786,11 +1078,15 @@ export class TerrainRenderer {
       chunk.isFar = isFar;
       chunk.ready = false;
       this.resetChunkPlaceholder(chunk);
-      chunk.mesh.visible = !this.retiredChunks.has(key);
+      // A quality change replaces one nested grid topology with another. Do
+      // not reveal even non-overlapping edge tiles early: one mixed-resolution
+      // frame is enough to expose cracks and invalid far/near morph roles.
+      this.setChunkVisible(chunk, this.retiredChunks.size === 0);
       this.chunks.set(key, chunk);
       this.requestChunk(chunk, priority);
     }
     this.positionChunks();
+    this.refreshNearTerrainMorphs();
   }
 
   private positionChunks(): void {
@@ -811,9 +1107,102 @@ export class TerrainRenderer {
     this.updateFarCutoutBounds();
   }
 
+  /**
+   * The streamed grids meet at the outer near-tile edge, but their vertex
+   * spacing differs by 8–10×. Morphing only a ten-row exterior band makes the
+   * fine edge exactly equal to the nested far edge and removes open cracks,
+   * while every interior chunk retains its collision-consistent source shape.
+   */
+  private refreshNearTerrainMorphs(): void {
+    const visibleNearChunks = [...this.chunks.values(), ...this.retiredChunks.values()].filter(
+      (chunk) => !chunk.isFar && chunk.mesh.visible,
+    );
+    if (visibleNearChunks.length === 0) return;
+    let minimumTileX = Number.POSITIVE_INFINITY;
+    let maximumTileX = Number.NEGATIVE_INFINITY;
+    let minimumTileZ = Number.POSITIVE_INFINITY;
+    let maximumTileZ = Number.NEGATIVE_INFINITY;
+    for (const chunk of visibleNearChunks) {
+      minimumTileX = Math.min(minimumTileX, chunk.tileX);
+      maximumTileX = Math.max(maximumTileX, chunk.tileX);
+      minimumTileZ = Math.min(minimumTileZ, chunk.tileZ);
+      maximumTileZ = Math.max(maximumTileZ, chunk.tileZ);
+    }
+
+    for (const chunk of visibleNearChunks) {
+      if (!chunk.hasSourceData) continue;
+      const geometry = chunk.mesh.geometry;
+      const positionAttribute = geometry.getAttribute("position") as THREE.BufferAttribute;
+      const normalAttribute = geometry.getAttribute("normal") as THREE.BufferAttribute;
+      const positions = positionAttribute.array as Float32Array;
+      const normals = normalAttribute.array as Float32Array;
+      const farResolution = matchingFarVertexResolution(chunk.vertexResolution);
+      const coarseStride = terrainMorphCoarseStride(
+        chunk.vertexResolution,
+        farResolution,
+        FAR_TILE_SCALE,
+      );
+      const edges: TerrainMorphEdges = {
+        west: chunk.tileX === minimumTileX,
+        east: chunk.tileX === maximumTileX,
+        north: chunk.tileZ === minimumTileZ,
+        south: chunk.tileZ === maximumTileZ,
+      };
+      const edgeMask =
+        (edges.west ? 1 : 0) |
+        (edges.east ? 2 : 0) |
+        (edges.north ? 4 : 0) |
+        (edges.south ? 8 : 0);
+      const morphSignature = `${chunk.sourceRevision}:${edgeMask}`;
+      if (morphSignature === chunk.appliedMorphSignature) continue;
+      normals.set(chunk.sourceNormals);
+      const result = applyTerrainBoundaryMorph(
+        positions,
+        chunk.sourceHeights,
+        chunk.vertexResolution,
+        coarseStride,
+        edges,
+        10,
+      );
+      positionAttribute.needsUpdate = true;
+      if (result.changed) geometry.computeVertexNormals();
+      normalAttribute.needsUpdate = true;
+      setTerrainBounds(geometry, chunk.size, result.minHeight, result.maxHeight);
+      chunk.appliedMorphSignature = morphSignature;
+    }
+  }
+
   private configureNearTerrainSurface(): void {
     this.material.onBeforeCompile = (shader) => this.enhanceTerrainShader(shader);
-    this.material.customProgramCacheKey = () => "near-terrain-surface-v2";
+    this.material.customProgramCacheKey = () => "near-terrain-geology-v7";
+  }
+
+  private configureHorizonWaterCutout(): void {
+    this.horizonMaterial.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vHorizonSceneHeight;",
+        )
+        .replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>
+          vHorizonSceneHeight = (modelMatrix * vec4(transformed, 1.0)).y;`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+          varying float vHorizonSceneHeight;
+          const float horizonWaterCutoutLevel = ${TERRAIN_WATER_CUTOUT_LEVEL.toFixed(2)};`,
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>
+          if (vHorizonSceneHeight <= horizonWaterCutoutLevel) discard;`,
+        );
+    };
+    this.horizonMaterial.customProgramCacheKey = () => "horizon-water-cutout-v2";
   }
 
   private enhanceTerrainShader(shader: THREE.WebGLProgramParametersWithUniforms): void {
@@ -824,6 +1213,7 @@ export class TerrainRenderer {
         "#include <common>",
         `#include <common>
         varying vec3 vTerrainWorldPosition;
+        varying vec3 vTerrainWorldNormal;
         varying float vTerrainWorldSlope;
         uniform vec2 terrainWorldOrigin;`,
       )
@@ -833,13 +1223,15 @@ export class TerrainRenderer {
         vec4 terrainScenePosition = modelMatrix * vec4(transformed, 1.0);
         vTerrainWorldPosition = terrainScenePosition.xyz;
         vTerrainWorldPosition.xz += terrainWorldOrigin;
-        vTerrainWorldSlope = 1.0 - clamp(normalize(mat3(modelMatrix) * objectNormal).y, 0.0, 1.0);`,
+        vTerrainWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+        vTerrainWorldSlope = 1.0 - clamp(vTerrainWorldNormal.y, 0.0, 1.0);`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
         `#include <common>
         varying vec3 vTerrainWorldPosition;
+        varying vec3 vTerrainWorldNormal;
         varying float vTerrainWorldSlope;
         uniform sampler2D terrainDetailMap;
         const float terrainWaterCutoutLevel = ${TERRAIN_WATER_CUTOUT_LEVEL.toFixed(2)};`,
@@ -863,6 +1255,42 @@ export class TerrainRenderer {
         vec2 terrainMicroUv = terrainRotatedPosition / 28.0 +
           (terrainPatchTexture.rg - 0.5) * 0.13;
         vec3 terrainMicroTexture = texture2D(terrainDetailMap, terrainMicroUv).rgb;
+        // Slope-aware triplanar rock projection follows the surface instead of
+        // stretching a top-down texture down cliffs. Blend all three axes over
+        // a narrow band (rather than switching at one threshold) so geology
+        // remains continuous while banking past a ridge.
+        vec3 terrainProjectionWeight = pow(
+          max(abs(normalize(vTerrainWorldNormal)), vec3(0.0001)),
+          vec3(6.0)
+        );
+        terrainProjectionWeight /= max(
+          terrainProjectionWeight.x + terrainProjectionWeight.y + terrainProjectionWeight.z,
+          0.0001
+        );
+        vec2 terrainRockCoordinates = vTerrainWorldPosition.xz;
+        if (terrainProjectionWeight.y < max(terrainProjectionWeight.x, terrainProjectionWeight.z)) {
+          terrainRockCoordinates = terrainProjectionWeight.x > terrainProjectionWeight.z
+            ? vTerrainWorldPosition.zy
+            : vTerrainWorldPosition.xy;
+        }
+        vec2 terrainRockWarp = (terrainTextureDetail.rg - 0.5) * 0.19;
+        vec2 terrainRockUv = terrainRockCoordinates / 74.0 + terrainRockWarp;
+        vec3 terrainRockTextureX = texture2D(
+          terrainDetailMap,
+          vTerrainWorldPosition.zy / 74.0 + terrainRockWarp
+        ).rgb;
+        vec3 terrainRockTextureY = texture2D(
+          terrainDetailMap,
+          vTerrainWorldPosition.xz / 74.0 + terrainRockWarp
+        ).rgb;
+        vec3 terrainRockTextureZ = texture2D(
+          terrainDetailMap,
+          vTerrainWorldPosition.xy / 74.0 + terrainRockWarp
+        ).rgb;
+        vec3 terrainRockTexture =
+          terrainRockTextureX * terrainProjectionWeight.x +
+          terrainRockTextureY * terrainProjectionWeight.y +
+          terrainRockTextureZ * terrainProjectionWeight.z;
         float terrainMacro = terrainTextureDetail.r;
         float terrainDetail = terrainTextureDetail.g;
         float terrainGrain = terrainTextureDetail.b;
@@ -870,10 +1298,18 @@ export class TerrainRenderer {
           length(dFdx(vTerrainWorldPosition.xz)),
           length(dFdy(vTerrainWorldPosition.xz))
         );
-        float terrainDetailFade = 1.0 - smoothstep(7.0, 42.0, terrainPixelFootprint);
-        float terrainGrainFade = 1.0 - smoothstep(1.5, 14.0, terrainPixelFootprint);
-        float terrainPatchFade = 1.0 - smoothstep(15.0, 86.0, terrainPixelFootprint);
-        float terrainMicroFade = 1.0 - smoothstep(0.55, 8.0, terrainPixelFootprint);
+        float terrainRockPixelFootprint = max(
+          length(dFdx(terrainRockCoordinates)),
+          length(dFdy(terrainRockCoordinates))
+        );
+        float terrainDetailFade = 1.0 - smoothstep(7.0, 64.0, terrainPixelFootprint);
+        float terrainGrainFade = 1.0 - smoothstep(1.5, 20.0, terrainPixelFootprint);
+        float terrainPatchFade = 1.0 - smoothstep(15.0, 96.0, terrainPixelFootprint);
+        // The texture itself has mipmaps and anisotropic filtering; keep its
+        // high-frequency band visible through normal low-altitude flight, then
+        // remove it only when the projected footprint becomes genuinely broad.
+        float terrainMicroFade = 1.0 - smoothstep(1.2, 14.0, terrainPixelFootprint);
+        float terrainRockDetailFade = 1.0 - smoothstep(12.0, 92.0, terrainRockPixelFootprint);
         float terrainAltitudeRock = smoothstep(520.0, 1450.0, vTerrainWorldPosition.y);
         float terrainRockMask = clamp(
           smoothstep(0.08, 0.52, vTerrainWorldSlope) * 0.76 + terrainAltitudeRock * 0.48,
@@ -881,13 +1317,19 @@ export class TerrainRenderer {
           0.9
         );
         float terrainSnowMask = smoothstep(0.68, 0.86, max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)));
-        float terrainStrata = 0.5 + 0.5 * sin(
-          vTerrainWorldPosition.y * 0.072 + terrainMacro * 6.0
+        float terrainLayerPhase =
+          vTerrainWorldPosition.y * 0.092 +
+          terrainRockTexture.r * 4.2 +
+          dot(vTerrainWorldPosition.xz, vec2(0.0017, -0.0011));
+        float terrainStrata = mix(
+          0.5,
+          0.5 + 0.5 * sin(terrainLayerPhase),
+          terrainRockDetailFade
         );
         float terrainBreakup =
-          (terrainMacro - 0.5) * 0.16 +
-          (terrainDetail - 0.5) * 0.105 * terrainDetailFade +
-          (terrainGrain - 0.5) * 0.045 * terrainGrainFade;
+          (terrainMacro - 0.5) * 0.11 +
+          (terrainDetail - 0.5) * 0.1 * terrainDetailFade +
+          (terrainGrain - 0.5) * 0.08 * terrainGrainFade;
         diffuseColor.rgb *= 1.0 + terrainBreakup * (1.0 - terrainSnowMask * 0.5);
         float terrainGreenAffinity = smoothstep(
           0.018,
@@ -897,10 +1339,20 @@ export class TerrainRenderer {
         float terrainVegetationMask = terrainGreenAffinity *
           (1.0 - terrainRockMask) * (1.0 - terrainSnowMask);
         float terrainMeadowMottle =
-          (terrainPatchTexture.r - 0.5) * 0.2 +
-          (terrainPatchTexture.g - 0.5) * 0.11;
+          (terrainPatchTexture.r - 0.5) * 0.1 +
+          (terrainPatchTexture.g - 0.5) * 0.055;
         diffuseColor.rgb *= 1.0 +
           terrainMeadowMottle * terrainPatchFade * terrainVegetationMask;
+        // A zero-fetch high-pass combination of the existing micro channels
+        // reads as blades, soil pores, and mineral grit instead of another
+        // smooth colour cloud. It is derivative-gated and mip-filtered, so the
+        // signal integrates away rather than crawling at the horizon.
+        float terrainMicroHighPass =
+          (terrainMicroTexture.b - 0.44) * 0.28 +
+          (terrainMicroTexture.g - terrainMicroTexture.r) * 0.2;
+        float terrainSurfaceDetailMask = terrainMicroFade *
+          (1.0 - terrainSnowMask * 0.72);
+        diffuseColor.rgb *= 1.0 + terrainMicroHighPass * terrainSurfaceDetailMask;
         float terrainGrassClusters = smoothstep(
           0.38,
           0.78,
@@ -927,7 +1379,111 @@ export class TerrainRenderer {
           diffuseColor.rgb,
           terrainStone * (0.82 + terrainMacro * 0.3),
           terrainRockMask * (0.26 + terrainStrata * 0.24) * (1.0 - terrainSnowMask)
+        );
+        float terrainScree = mix(
+          0.5,
+          smoothstep(
+            0.54,
+            0.86,
+            terrainRockTexture.g * 0.62 + terrainRockTexture.b * 0.38
+          ),
+          terrainRockDetailFade
+        );
+        float terrainStrataLip = smoothstep(0.78, 0.98, abs(sin(terrainLayerPhase))) *
+          terrainRockDetailFade;
+        vec3 terrainScreeColor = mix(
+          vec3(0.205, 0.19, 0.165),
+          vec3(0.49, 0.465, 0.405),
+          terrainScree
+        );
+        diffuseColor.rgb = mix(
+          diffuseColor.rgb,
+          terrainScreeColor,
+          terrainRockMask * (0.08 + terrainScree * 0.2 + terrainStrataLip * 0.11) *
+            (1.0 - terrainSnowMask * 0.82)
+        );
+        float terrainCrevice = smoothstep(
+          0.43,
+          0.79,
+          (1.0 - terrainRockTexture.b) * 0.66 + terrainRockTexture.r * 0.34
+        ) * terrainRockDetailFade;
+        float terrainFractureEdge = smoothstep(
+          0.11,
+          0.34,
+          abs(terrainRockTexture.r - terrainRockTexture.g)
+        ) * terrainRockDetailFade;
+        diffuseColor.rgb *= 1.0 - terrainRockMask * (1.0 - terrainSnowMask * 0.72) *
+          (terrainCrevice * 0.13 + terrainFractureEdge * 0.055);
+
+        // Snow is not a flat white layer. Reuse the existing world-anchored
+        // texture bands so caps retain broad wind slabs, dirty accumulation,
+        // and exposed strata without adding another sampler. Derivative fades
+        // remove only the frequencies that would shimmer below a pixel.
+        float terrainSnowDetailFade = min(terrainPatchFade, terrainRockDetailFade);
+        float terrainSnowMottle =
+          (terrainMacro - 0.5) * 0.34 +
+          (terrainPatchTexture.b - 0.5) * 0.32 * terrainDetailFade +
+          (terrainRockTexture.r - 0.5) * 0.42 * terrainSnowDetailFade;
+        diffuseColor.rgb *= 1.0 + terrainSnowMottle * terrainSnowMask *
+          (0.32 + terrainSnowDetailFade * 0.28);
+        float terrainSnowDeposit = clamp(
+          0.5 +
+          (terrainMacro - 0.5) * 0.58 +
+          (terrainRockTexture.b - 0.5) * 0.62 * terrainSnowDetailFade,
+          0.0,
+          1.0
+        );
+        vec3 terrainSnowTint = mix(
+          vec3(0.72, 0.78, 0.81),
+          vec3(1.025, 1.0, 0.94),
+          terrainSnowDeposit
+        );
+        diffuseColor.rgb = mix(
+          diffuseColor.rgb,
+          diffuseColor.rgb * terrainSnowTint,
+          terrainSnowMask * (0.14 + terrainSnowDetailFade * 0.2)
+        );
+
+        // Steep snowy faces expose coherent dark ribs even after fine texture
+        // has filtered out. Closer views add scree and fractured strata from the
+        // same 92 m world projection, avoiding camera-facing texture swimming.
+        float terrainSnowSlopeExposure = smoothstep(0.12, 0.5, vTerrainWorldSlope);
+        float terrainSnowFracture = smoothstep(
+          0.5,
+          0.84,
+          terrainRockTexture.r * 0.52 + terrainRockTexture.g * 0.48
+        );
+        float terrainSnowRockExposure = clamp(
+          terrainSnowMask * (
+            terrainSnowSlopeExposure * (
+              0.16 +
+              (terrainScree * 0.42 + terrainSnowFracture * 0.24) * terrainSnowDetailFade
+            ) +
+            terrainStrataLip * terrainRockMask * terrainSnowDetailFade * 0.16
+          ),
+          0.0,
+          0.68
+        );
+        diffuseColor.rgb = mix(
+          diffuseColor.rgb,
+          terrainScreeColor * (0.7 + terrainStrata * 0.2),
+          terrainSnowRockExposure
         );`,
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>
+        // Material-scale roughness variation gives dry soil and fractured rock
+        // distinct highlights without making terrain glossy. It reuses the
+        // derivative-filtered maps above and costs no additional texture fetch.
+        float terrainRockRoughness = mix(0.72, 0.97, terrainRockTexture.b);
+        float terrainSoilRoughness = mix(0.84, 1.0, terrainMicroTexture.g);
+        float terrainResolvedRoughness = mix(
+          terrainSoilRoughness,
+          terrainRockRoughness,
+          terrainRockMask * terrainRockDetailFade
+        );
+        roughnessFactor *= mix(1.0, terrainResolvedRoughness, terrainDetailFade);`,
       )
       .replace(
         "#include <normal_fragment_maps>",
@@ -960,8 +1516,26 @@ export class TerrainRenderer {
           terrainMicroBumpU * 0.806 - terrainMicroBumpV * 0.592,
           terrainMicroBumpU * 0.592 + terrainMicroBumpV * 0.806
         );
-        const float terrainBroadNormalStrength = 0.36;
-        const float terrainMicroNormalStrength = 0.9;
+        float terrainRockBumpCenter = texture2D(terrainDetailMap, terrainRockUv).g;
+        float terrainRockBumpU = texture2D(
+          terrainDetailMap,
+          terrainRockUv + vec2(terrainDetailTexel, 0.0)
+        ).g - terrainRockBumpCenter;
+        float terrainRockBumpV = texture2D(
+          terrainDetailMap,
+          terrainRockUv + vec2(0.0, terrainDetailTexel)
+        ).g - terrainRockBumpCenter;
+        vec3 terrainRockGradientWorld;
+        if (terrainProjectionWeight.x > max(terrainProjectionWeight.y, terrainProjectionWeight.z)) {
+          terrainRockGradientWorld = vec3(0.0, -terrainRockBumpV, -terrainRockBumpU);
+        } else if (terrainProjectionWeight.y > terrainProjectionWeight.z) {
+          terrainRockGradientWorld = vec3(-terrainRockBumpU, 0.0, -terrainRockBumpV);
+        } else {
+          terrainRockGradientWorld = vec3(-terrainRockBumpU, -terrainRockBumpV, 0.0);
+        }
+        const float terrainBroadNormalStrength = 1.05;
+        const float terrainMicroNormalStrength = 2.15;
+        const float terrainRockNormalStrength = 1.9;
         normal = normalize(normal + mat3(viewMatrix) * vec3(
           -terrainBumpX * terrainBroadNormalStrength * terrainBumpFade -
             terrainMicroGradient.x * terrainMicroNormalStrength * terrainMicroFade *
@@ -970,7 +1544,8 @@ export class TerrainRenderer {
           -terrainBumpZ * terrainBroadNormalStrength * terrainBumpFade -
             terrainMicroGradient.y * terrainMicroNormalStrength * terrainMicroFade *
               terrainVegetationMask
-        ));`,
+        ) + mat3(viewMatrix) * terrainRockGradientWorld *
+          terrainRockNormalStrength * terrainRockMask * terrainRockDetailFade);`,
       );
   }
 
@@ -978,92 +1553,149 @@ export class TerrainRenderer {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.waterTime = this.waterTime;
       shader.uniforms.waterWorldOrigin = this.waterWorldOrigin;
+      shader.uniforms.waterSunDirection = this.waterSunDirection;
+      shader.uniforms.waterHorizonReflection = this.waterHorizonReflection;
+      shader.uniforms.waterZenithReflection = this.waterZenithReflection;
+      shader.uniforms.waterSunReflection = this.waterSunReflection;
+      shader.uniforms.waterSunGlintStrength = this.waterSunGlintStrength;
+      shader.uniforms.waterPlanarReflectionMap = this.waterPlanarReflectionMap;
+      shader.uniforms.waterPlanarReflectionMatrix = this.waterPlanarReflectionMatrix;
+      shader.uniforms.waterPlanarReflectionStrength = this.waterPlanarReflectionStrength;
+      shader.uniforms.waterHybridCompositeStrength = this.waterHybridCompositeStrength;
+      shader.uniforms.waterBathymetryMap = { value: this.bathymetry.texture };
+      shader.uniforms.waterSurfaceDetailMap = this.terrainDetailMap;
+      shader.uniforms.waterBathymetryBounds = { value: this.bathymetry.bounds };
+      shader.uniforms.waterBathymetryMaxDepth = { value: this.bathymetry.maxDepth };
+      shader.uniforms.waterBathymetryTexel = { value: 1 / this.bathymetry.resolution };
+      shader.uniforms.waterBathymetryValid = this.waterBathymetryValid;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
           `#include <common>
+          varying vec3 vWaterScenePosition;
           varying vec3 vWaterWorldPosition;
           uniform vec2 waterWorldOrigin;`,
         )
         .replace(
           "#include <begin_vertex>",
           `#include <begin_vertex>
-          vWaterWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vWaterScenePosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vWaterWorldPosition = vWaterScenePosition;
           vWaterWorldPosition.xz += waterWorldOrigin;`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
           `#include <common>
+          varying vec3 vWaterScenePosition;
           varying vec3 vWaterWorldPosition;
           uniform float waterTime;
           uniform vec2 waterWorldOrigin;
-          const vec2 WATER_DIRECTION_A = vec2(0.91, 0.414);
-          const vec2 WATER_DIRECTION_B = vec2(-0.545, 0.839);
-          const vec2 WATER_DIRECTION_C = vec2(0.276, -0.961);
-          const vec2 WATER_DIRECTION_D = vec2(-0.936, -0.352);
-          const vec3 WATER_SUN_DIRECTION = vec3(0.401, 0.550, -0.728);
+          uniform vec3 waterSunDirection;
+          uniform vec3 waterHorizonReflection;
+          uniform vec3 waterZenithReflection;
+          uniform vec3 waterSunReflection;
+          uniform float waterSunGlintStrength;
+          uniform sampler2D waterPlanarReflectionMap;
+          uniform mat4 waterPlanarReflectionMatrix;
+          uniform float waterPlanarReflectionStrength;
+          uniform float waterHybridCompositeStrength;
+          uniform sampler2D waterBathymetryMap;
+          uniform sampler2D waterSurfaceDetailMap;
+          uniform vec4 waterBathymetryBounds;
+          uniform float waterBathymetryMaxDepth;
+          uniform float waterBathymetryTexel;
+          uniform float waterBathymetryValid;
           vec2 waterDomainWarp(vec2 point, float time) {
             return vec2(
-              sin(dot(point, vec2(-0.423, 0.906)) * 0.0051 + time * 0.16),
-              sin(dot(point, vec2(0.719, 0.695)) * 0.0073 - time * 0.12)
+              sin(dot(point, vec2(-0.423, 0.906)) * 0.0017 + time * 0.055),
+              sin(dot(point, vec2(0.719, 0.695)) * 0.0023 - time * 0.041)
             );
           }
-          vec2 waterWaveGradient(
-            float first,
-            float second,
-            float third,
-            float fourth,
+          vec4 waterSurfaceField(
+            vec2 point,
+            vec2 warpSignal,
+            float time,
             float pixelFootprint
           ) {
-            // Analytic filtering keeps sub-pixel ripples from aliasing as the
-            // camera moves. The two balanced, crossed broad waves remain at
-            // altitude; only the smaller surface detail fades. Cross-phase
-            // modulation keeps either broad component from reading as a set
-            // of perfectly parallel bands.
-            float mediumWaveFade = 1.0 - smoothstep(4.0, 24.0, pixelFootprint);
-            float fineWaveFade = 1.0 - smoothstep(1.0, 8.0, pixelFootprint);
-            float capillaryWaveFade = 1.0 - smoothstep(0.35, 3.2, pixelFootprint);
-            float broadWaveA = cos(first + sin(second * 0.47) * 0.24);
-            float broadWaveB = cos(second + sin(first * 0.43) * 0.22);
-            return
-              WATER_DIRECTION_A * broadWaveA * 0.03 +
-              WATER_DIRECTION_B * broadWaveB * 0.028 +
-              WATER_DIRECTION_C * cos(third) * 0.016 * mediumWaveFade +
-              WATER_DIRECTION_D * cos(fourth) * 0.007 * fineWaveFade * capillaryWaveFade;
+            // Three independently oriented, UV-animated normal-map layers are
+            // the browser-budget version of an ocean spectrum. Unlike a few
+            // coherent sinusoids they do not stamp parallel bands across the
+            // surface. World coordinates keep the field fixed while the render
+            // grid and floating origin recenter around the aircraft.
+            vec2 broadPoint = point + vec2(
+              warpSignal.x * 31.0 + warpSignal.y * 11.0,
+              warpSignal.y * 37.0 - warpSignal.x * 9.0
+            );
+            vec2 middlePoint = vec2(
+              point.x * 0.819152 - point.y * 0.573576,
+              point.x * 0.573576 + point.y * 0.819152
+            );
+            vec2 finePoint = vec2(
+              point.x * 0.438371 + point.y * 0.898794,
+              -point.x * 0.898794 + point.y * 0.438371
+            );
+            vec4 broadSample = texture2D(
+              waterSurfaceDetailMap,
+              fract(broadPoint * 0.000244140625 + vec2(time * 0.000041, -time * 0.000027))
+            );
+            vec4 middleSample = texture2D(
+              waterSurfaceDetailMap,
+              fract(middlePoint * 0.0009765625 + vec2(-time * 0.00023, time * 0.00017))
+            );
+            vec4 fineSample = texture2D(
+              waterSurfaceDetailMap,
+              fract(finePoint * 0.00390625 + vec2(time * 0.0011, time * 0.00073))
+            );
+            vec2 broadNormal = broadSample.rg * 2.0 - 1.0;
+            vec2 middleNormal = middleSample.ba * 2.0 - 1.0;
+            vec2 fineNormal = fineSample.gr * 2.0 - 1.0;
+            float broadFade = 1.0 - smoothstep(90.0, 480.0, pixelFootprint);
+            float middleFade = 1.0 - smoothstep(12.0, 100.0, pixelFootprint);
+            float fineFade = 1.0 - smoothstep(1.5, 20.0, pixelFootprint);
+            vec2 slope =
+              broadNormal * 0.082 * broadFade +
+              middleNormal * 0.047 * middleFade +
+              fineNormal * 0.021 * fineFade;
+            float surfaceTone = clamp(
+              0.5 + dot(broadNormal, vec2(0.28, -0.2)) +
+                dot(middleNormal, vec2(-0.09, 0.11)),
+              0.0,
+              1.0
+            );
+            float microEnergy = clamp(
+              length(middleNormal) * 0.52 + length(fineNormal) * 0.28,
+              0.0,
+              1.0
+            );
+            return vec4(slope, surfaceTone, microEnergy);
+          }
+          vec2 waterWaveGradient(
+            vec2 point,
+            vec2 warpSignal,
+            float time,
+            float pixelFootprint
+          ) {
+            return waterSurfaceField(point, warpSignal, time, pixelFootprint).xy;
           }`,
         )
         .replace(
           "#include <color_fragment>",
           `#include <color_fragment>
           vec2 waterWarpSignal = waterDomainWarp(vWaterWorldPosition.xz, waterTime);
-          vec2 waterWarpedPosition = vWaterWorldPosition.xz + vec2(
-            waterWarpSignal.x * 15.0 + waterWarpSignal.y * 6.0,
-            waterWarpSignal.y * 17.0 - waterWarpSignal.x * 5.0
-          );
-          float waterPhaseA =
-            dot(waterWarpedPosition, WATER_DIRECTION_A) * 0.024 +
-            waterTime * 0.32 + waterWarpSignal.y * 0.31;
-          float waterPhaseB =
-            dot(waterWarpedPosition, WATER_DIRECTION_B) * 0.028 -
-            waterTime * 0.37 + waterWarpSignal.x * 0.27;
-          float waterPhaseC =
-            dot(waterWarpedPosition, WATER_DIRECTION_C) * 0.091 +
-            waterTime * 0.68 + (waterWarpSignal.x + waterWarpSignal.y) * 0.16;
-          float waterPhaseD =
-            dot(waterWarpedPosition, WATER_DIRECTION_D) * 0.24 -
-            waterTime * 0.93 + waterWarpSignal.y * 0.12;
           float waterPixelFootprint = max(
             length(dFdx(vWaterWorldPosition.xz)),
             length(dFdy(vWaterWorldPosition.xz))
           );
-          vec2 waterSlope = waterWaveGradient(
-            waterPhaseA,
-            waterPhaseB,
-            waterPhaseC,
-            waterPhaseD,
+          vec4 waterSurface = waterSurfaceField(
+            vWaterWorldPosition.xz,
+            waterWarpSignal,
+            waterTime,
             waterPixelFootprint
           );
+          vec2 waterSlope = waterSurface.xy;
+          float waterSurfaceTone = waterSurface.z;
+          float waterRippleEnergy = waterSurface.w;
           float waterFaceDirection = gl_FrontFacing ? 1.0 : -1.0;
           vec3 waterNormalWorld = normalize(
             vec3(-waterSlope.x, 1.0, -waterSlope.y) * waterFaceDirection
@@ -1076,50 +1708,193 @@ export class TerrainRenderer {
           );
 
           // Schlick Fresnel (F0 = 2.04% for an air/water interface) controls
-          // an analytic reflection of the same sky palette as the scene. This
-          // supplies a stable mirror image without a second scene render.
+          // an analytic reflection of the same sky palette as the scene. The
+          // planar target below contributes low-frequency scene radiance only;
+          // neither path is allowed to turn normal-incidence water into glass.
           float waterCosTheta = clamp(dot(waterViewToCamera, waterNormalWorld), 0.0, 1.0);
           float waterFresnel = 0.0204 + 0.9796 * pow(1.0 - waterCosTheta, 5.0);
           vec3 waterReflectionRay = normalize(
             reflect(-waterViewToCamera, waterNormalWorld)
           );
           float waterReflectionHeight = clamp(waterReflectionRay.y, 0.0, 1.0);
-          vec3 waterHorizonReflection = vec3(0.56, 0.68, 0.70);
-          vec3 waterZenithReflection = vec3(0.035, 0.27, 0.48);
           vec3 waterSkyReflection = mix(
             waterHorizonReflection,
             waterZenithReflection,
-            pow(waterReflectionHeight, 0.48)
+            pow(waterReflectionHeight, 0.56)
+          );
+          float waterHorizonBand = exp(-waterReflectionHeight * 6.5);
+          float waterAtmosphereField =
+            sin(dot(waterReflectionRay.xz, vec2(7.1, -5.7)) + waterWarpSignal.x * 0.18) * 0.58 +
+            sin(dot(waterReflectionRay.xz, vec2(-13.7, 9.3)) + waterWarpSignal.y * 0.14) * 0.42;
+          // Rough-surface sky radiance is deliberately energy-bounded. The old
+          // nearly-white horizon palette plus a constant reflection floor made
+          // every viewing angle read as the same bright blue sheet.
+          waterSkyReflection *=
+            0.72 + waterSurfaceTone * 0.07 + waterAtmosphereField * 0.025;
+          waterSkyReflection = mix(
+            waterSkyReflection,
+            waterHorizonReflection * 1.055,
+            waterHorizonBand * 0.13
           );
           float waterSunAlignment = max(
-            dot(waterReflectionRay, WATER_SUN_DIRECTION),
+            dot(waterReflectionRay, waterSunDirection),
             0.0
           );
-          float waterSunGlint = pow(waterSunAlignment, 420.0);
-          float waterSunHalo = pow(waterSunAlignment, 42.0) * 0.12;
-          waterSkyReflection += vec3(1.0, 0.86, 0.62) * (waterSunGlint * 1.4 + waterSunHalo);
+          float waterSunGlintExponent = mix(260.0, 105.0, waterRippleEnergy);
+          float waterSunGlint = pow(waterSunAlignment, waterSunGlintExponent);
+          float waterSunHalo = pow(waterSunAlignment, 22.0) * 0.045;
+          float waterSunFresnel = mix(0.34, 0.92, sqrt(waterFresnel));
+          waterSkyReflection += waterSunReflection *
+            (waterSunGlint * 0.58 + waterSunHalo) *
+            waterSunGlintStrength * waterSunFresnel;
+
+          // Optional hybrid-renderer hook. The default strength is zero, so no
+          // reflection target is sampled until the caller supplies one. Small
+          // Three bounded taps treat the planar target as low-frequency
+          // radiance. A crossed-wave displacement and anisotropic rough sample
+          // break up reflected terrain/cloud silhouettes without allocating a
+          // blur target or exposing the reflection as a perfect flat mirror.
+          if (waterPlanarReflectionStrength > 0.0001) {
+            vec4 waterPlanarProjection = waterPlanarReflectionMatrix *
+              vec4(vWaterScenePosition, 1.0);
+            if (waterPlanarProjection.w > 0.0001) {
+              vec2 waterPlanarUv = waterPlanarProjection.xy / waterPlanarProjection.w;
+              float waterPlanarDetailFade = 1.0 - smoothstep(
+                5.0,
+                36.0,
+                waterPixelFootprint
+              );
+              waterPlanarUv += waterSlope *
+                mix(0.024, 0.054, waterPlanarDetailFade);
+              float waterPlanarBounds =
+                smoothstep(0.0, 0.018, waterPlanarUv.x) *
+                smoothstep(0.0, 0.018, waterPlanarUv.y) *
+                smoothstep(0.0, 0.018, 1.0 - waterPlanarUv.x) *
+                smoothstep(0.0, 0.018, 1.0 - waterPlanarUv.y);
+              vec2 waterPlanarRoughAxis = normalize(
+                vec2(0.73, 0.68) +
+                vec2(waterSlope.y, -waterSlope.x) * 8.0
+              );
+              float waterPlanarRoughRadius = mix(
+                0.0012,
+                0.0042,
+                clamp(waterRippleEnergy * 0.72 + waterPlanarDetailFade * 0.28, 0.0, 1.0)
+              );
+              vec2 waterPlanarRoughOffset =
+                waterPlanarRoughAxis * waterPlanarRoughRadius;
+              vec3 waterPlanarReflection = texture2D(
+                waterPlanarReflectionMap,
+                clamp(waterPlanarUv, vec2(0.001), vec2(0.999))
+              ).rgb * 0.5;
+              waterPlanarReflection += texture2D(
+                waterPlanarReflectionMap,
+                clamp(
+                  waterPlanarUv + waterPlanarRoughOffset,
+                  vec2(0.001),
+                  vec2(0.999)
+                )
+              ).rgb * 0.25;
+              waterPlanarReflection += texture2D(
+                waterPlanarReflectionMap,
+                clamp(
+                  waterPlanarUv - waterPlanarRoughOffset,
+                  vec2(0.001),
+                  vec2(0.999)
+                )
+              ).rgb * 0.25;
+              float waterPlanarFresnelWeight = mix(
+                0.035,
+                0.46,
+                sqrt(waterFresnel)
+              );
+              float waterPlanarMix = waterPlanarReflectionStrength *
+                waterPlanarBounds * waterPlanarFresnelWeight *
+                (1.0 - waterRippleEnergy * 0.32);
+              waterSkyReflection = mix(
+                waterSkyReflection,
+                waterPlanarReflection,
+                waterPlanarMix
+              );
+            }
+          }
 
           float waterLongWave = clamp(
-            0.5 + waterWarpSignal.x * 0.1 + waterWarpSignal.y * 0.075,
+            waterSurfaceTone * 0.72 +
+              (0.5 + waterWarpSignal.x * 0.12 + waterWarpSignal.y * 0.08) * 0.28,
             0.0,
             1.0
           );
-          vec3 waterDeep = vec3(0.006, 0.07, 0.105) * (0.92 + waterLongWave * 0.12);
-          float waterReflectionAmount = clamp(0.36 + waterFresnel * 0.64, 0.0, 1.0);
-          diffuseColor.rgb = mix(
-            waterDeep,
-            waterSkyReflection,
-            waterReflectionAmount
-          );`,
+          vec3 waterDeepFallback = vec3(0.0045, 0.034, 0.052) *
+            mix(0.88, 1.08, waterLongWave);
+          vec2 waterBathymetryExtent = max(
+            waterBathymetryBounds.zw - waterBathymetryBounds.xy,
+            vec2(1.0)
+          );
+          vec2 waterBathymetryUv =
+            (vWaterWorldPosition.xz - waterBathymetryBounds.xy) /
+            waterBathymetryExtent;
+          float waterBathymetryEdge = min(
+            min(waterBathymetryUv.x, waterBathymetryUv.y),
+            min(1.0 - waterBathymetryUv.x, 1.0 - waterBathymetryUv.y)
+          );
+          float waterBathymetryCoverage = waterBathymetryValid *
+            smoothstep(0.0, waterBathymetryTexel * 2.0, waterBathymetryEdge);
+          float waterBathymetryDepth = texture2D(
+            waterBathymetryMap,
+            clamp(
+              waterBathymetryUv,
+              vec2(waterBathymetryTexel * 0.5),
+              vec2(1.0 - waterBathymetryTexel * 0.5)
+            )
+          ).r * waterBathymetryMaxDepth;
+          float waterDepthBodyMix = smoothstep(2.0, 68.0, waterBathymetryDepth);
+          vec3 waterShoreSediment = mix(
+            vec3(0.065, 0.102, 0.064),
+            vec3(0.16, 0.175, 0.105),
+            waterSurfaceTone
+          );
+          // Beer-Lambert transmission reveals a terrain-like sediment tint in
+          // the shallows, then smoothly yields to dark in-scattered deep water.
+          // The surface remains opaque/depth-writing; only its radiance changes,
+          // so there is no order-dependent shoreline flicker.
+          vec3 waterForwardTransmittance = exp(
+            -vec3(0.16, 0.075, 0.045) * max(waterBathymetryDepth, 0.0)
+          );
+          vec3 waterBathymetryBody = mix(
+            waterDeepFallback,
+            waterShoreSediment,
+            waterForwardTransmittance
+          );
+          waterBathymetryBody *= mix(
+            mix(0.92, 1.06, waterSurfaceTone),
+            1.0,
+            waterDepthBodyMix
+          );
+          vec3 waterForwardDepthBody = mix(
+            waterDeepFallback,
+            waterBathymetryBody,
+            waterBathymetryCoverage
+          );
+          vec3 waterDeep = mix(
+            waterForwardDepthBody,
+            waterDeepFallback,
+            waterHybridCompositeStrength
+          );
+          float waterReflectionAmount = clamp(
+            waterFresnel * mix(0.74, 0.64, waterRippleEnergy) +
+              waterHorizonBand * 0.022,
+            0.022,
+            0.78
+          );
+          diffuseColor.rgb = waterDeep;`,
         )
         .replace(
           "#include <roughnessmap_fragment>",
           `#include <roughnessmap_fragment>
-          // Broader swells are glassy; crossed ripple crests spread the glint
-          // slightly instead of producing hard, sparkling aliasing.
-          float waterRippleCrossing = abs(cos(waterPhaseB) * cos(waterPhaseC));
+          // Ripple energy broadens highlights continuously instead of stamping
+          // coherent dark/light stripes into the material.
           roughnessFactor = clamp(
-            roughnessFactor + waterRippleCrossing * 0.018,
+            roughnessFactor + waterRippleEnergy * 0.024,
             0.035,
             0.14
           );`,
@@ -1136,9 +1911,25 @@ export class TerrainRenderer {
           #ifdef USE_CLEARCOAT
             clearcoatNormal = waterNormalView;
           #endif`,
+        )
+        .replace(
+          "#include <opaque_fragment>",
+          `// Apply the analytic sky after direct PBR lighting. Treating a sky
+          // reflection as diffuse albedo made the ocean unnaturally black.
+          vec3 waterLitBody = mix(
+            waterDeep,
+            max(outgoingLight, waterDeep),
+            0.24
+          );
+          outgoingLight = mix(waterLitBody, waterSkyReflection, waterReflectionAmount);
+          #include <opaque_fragment>
+          // Exact material classification for post-processing. The canvas is
+          // opaque and the final composite restores alpha to one; this channel
+          // is free metadata inside the offscreen beauty target.
+          gl_FragColor.a = 0.0;`,
         );
     };
-    material.customProgramCacheKey = () => "stable-water-mirror-ripples-v5";
+    material.customProgramCacheKey = () => "stable-water-depth-spectrum-v11";
   }
 
   private configureFarTerrainCutout(): void {
@@ -1170,7 +1961,7 @@ export class TerrainRenderer {
           ) discard;`,
         );
     };
-    this.farMaterial.customProgramCacheKey = () => "far-terrain-near-grid-cutout-v2";
+    this.farMaterial.customProgramCacheKey = () => "far-terrain-geology-cutout-v7";
   }
 
   private updateFarCutoutBounds(): void {
@@ -1227,12 +2018,25 @@ export class TerrainRenderer {
       size,
       vertexResolution,
       isFar,
+      sourceHeights: isFar
+        ? new Float32Array(0)
+        : new Float32Array(vertexResolution * vertexResolution),
+      sourceNormals: isFar
+        ? new Float32Array(0)
+        : new Float32Array(vertexResolution * vertexResolution * 3),
+      hasSourceData: false,
+      sourceRevision: 0,
+      appliedMorphSignature: "",
     };
+    // New chunks begin hidden so a CSM traverse can never register a mesh
+    // during the brief setup window before its transition role is known.
+    chunk.mesh.visible = false;
     chunk.mesh.receiveShadow = true;
     chunk.mesh.castShadow = false;
     chunk.mesh.renderOrder = isFar ? -20 : -10;
     chunk.mesh.name = isFar ? "far-terrain-chunk" : "near-terrain-chunk";
     this.group.add(chunk.mesh);
+    this.sceneRevisionValue += 1;
     return chunk;
   }
 
@@ -1249,37 +2053,96 @@ export class TerrainRenderer {
   }
 
   private resetChunkPlaceholder(chunk: TerrainChunk): void {
-    const centerX = (chunk.tileX + 0.5) * chunk.size;
-    const centerZ = (chunk.tileZ + 0.5) * chunk.size;
-    // A sampled placeholder is available synchronously and is dramatically
-    // less distracting than the old perfectly flat far-grid slab while its
-    // worker job is in flight.
-    const terrain = this.sample(centerX, centerZ);
-    terrainColor(terrain, this.tempColor);
-
+    chunk.hasSourceData = false;
     const positionAttribute = chunk.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
     const normalAttribute = chunk.mesh.geometry.getAttribute("normal") as THREE.BufferAttribute;
     const colorAttribute = chunk.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const positions = positionAttribute.array as Float32Array;
-    const normals = normalAttribute.array as Float32Array;
     const colors = colorAttribute.array as Uint8Array;
-    const red = Math.round(this.tempColor.r * 255);
-    const green = Math.round(this.tempColor.g * 255);
-    const blue = Math.round(this.tempColor.b * 255);
+    // A one-sample flat placeholder made a whole 1.6–12.8 km tile inherit the
+    // centre's land/water classification. As tiles streamed, those slabs
+    // repeatedly covered and uncovered the ocean. A tiny synchronous anchor
+    // grid preserves coarse coastline topology until the worker result lands.
+    const anchorResolution = chunk.isFar ? 5 : 3;
+    const anchorHeights = new Float32Array(anchorResolution * anchorResolution);
+    const anchorColors = new Float32Array(anchorResolution * anchorResolution * 3);
+    const chunkWorldX = chunk.tileX * chunk.size;
+    const chunkWorldZ = chunk.tileZ * chunk.size;
+    let minHeight = Number.POSITIVE_INFINITY;
+    let maxHeight = Number.NEGATIVE_INFINITY;
+    for (let row = 0; row < anchorResolution; row += 1) {
+      const fractionZ = row / (anchorResolution - 1);
+      for (let column = 0; column < anchorResolution; column += 1) {
+        const fractionX = column / (anchorResolution - 1);
+        const sample = this.sample(
+          chunkWorldX + fractionX * chunk.size,
+          chunkWorldZ + fractionZ * chunk.size,
+        );
+        const anchor = row * anchorResolution + column;
+        anchorHeights[anchor] = sample.height;
+        minHeight = Math.min(minHeight, sample.height);
+        maxHeight = Math.max(maxHeight, sample.height);
+        terrainColor(sample, this.tempColor);
+        anchorColors[anchor * 3] = this.tempColor.r;
+        anchorColors[anchor * 3 + 1] = this.tempColor.g;
+        anchorColors[anchor * 3 + 2] = this.tempColor.b;
+      }
+    }
 
-    for (let offset = 0; offset < positions.length; offset += 3) {
-      positions[offset + 1] = terrain.height;
-      normals[offset] = 0;
-      normals[offset + 1] = 1;
-      normals[offset + 2] = 0;
-      colors[offset] = red;
-      colors[offset + 1] = green;
-      colors[offset + 2] = blue;
+    const segments = chunk.vertexResolution - 1;
+    const anchorSegments = anchorResolution - 1;
+    const interpolateAnchor = (
+      values: Float32Array,
+      stride: number,
+      component: number,
+      gridX: number,
+      gridZ: number,
+    ): number => {
+      const anchorX = (gridX / segments) * anchorSegments;
+      const anchorZ = (gridZ / segments) * anchorSegments;
+      const x0 = Math.min(anchorSegments - 1, Math.floor(anchorX));
+      const z0 = Math.min(anchorSegments - 1, Math.floor(anchorZ));
+      const x1 = x0 + 1;
+      const z1 = z0 + 1;
+      const tx = anchorX - x0;
+      const tz = anchorZ - z0;
+      const valueAt = (x: number, z: number) =>
+        values[(z * anchorResolution + x) * stride + component] ?? 0;
+      return THREE.MathUtils.lerp(
+        THREE.MathUtils.lerp(valueAt(x0, z0), valueAt(x1, z0), tx),
+        THREE.MathUtils.lerp(valueAt(x0, z1), valueAt(x1, z1), tx),
+        tz,
+      );
+    };
+
+    for (let row = 0; row < chunk.vertexResolution; row += 1) {
+      for (let column = 0; column < chunk.vertexResolution; column += 1) {
+        const vertex = row * chunk.vertexResolution + column;
+        const offset = vertex * 3;
+        positions[offset + 1] = interpolateAnchor(anchorHeights, 1, 0, column, row);
+        colors[offset] = Math.round(interpolateAnchor(anchorColors, 3, 0, column, row) * 255);
+        colors[offset + 1] = Math.round(
+          interpolateAnchor(anchorColors, 3, 1, column, row) * 255,
+        );
+        colors[offset + 2] = Math.round(
+          interpolateAnchor(anchorColors, 3, 2, column, row) * 255,
+        );
+      }
     }
     positionAttribute.needsUpdate = true;
-    normalAttribute.needsUpdate = true;
     colorAttribute.needsUpdate = true;
-    setTerrainBounds(chunk.mesh.geometry, chunk.size, terrain.height, terrain.height);
+    chunk.mesh.geometry.computeVertexNormals();
+    normalAttribute.needsUpdate = true;
+    if (!chunk.isFar) {
+      for (let vertex = 0; vertex < chunk.vertexResolution * chunk.vertexResolution; vertex += 1) {
+        chunk.sourceHeights[vertex] = positions[vertex * 3 + 1] ?? 0;
+      }
+      chunk.sourceNormals.set(normalAttribute.array as Float32Array);
+      chunk.hasSourceData = true;
+      chunk.sourceRevision += 1;
+    }
+    setTerrainBounds(chunk.mesh.geometry, chunk.size, minHeight, maxHeight);
+    this.bathymetrySourceRevision += 1;
   }
 
   private requestChunk(chunk: TerrainChunk, priority: number): void {
@@ -1316,11 +2179,14 @@ export class TerrainRenderer {
         chunk.requestId = null;
         if (!this.applyTile(chunk, tile)) return;
         chunk.ready = true;
-        chunk.mesh.visible = true;
-        const retired = this.retiredChunks.get(key);
-        if (retired) retired.mesh.visible = false;
-        this.treesDirty = true;
-        if (!chunk.isFar) this.groundCover.invalidate();
+        if (this.retiredChunks.size === 0) {
+          this.setChunkVisible(chunk, true);
+          this.treesDirty = true;
+        }
+        if (!chunk.isFar && chunk.mesh.visible) {
+          this.refreshNearTerrainMorphs();
+          this.groundCover.invalidate();
+        }
         this.finishQualityTransitionWhenReady();
       },
       () => {
@@ -1371,14 +2237,22 @@ export class TerrainRenderer {
     }
 
     for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-      positions[vertex * 3 + 1] = tile.heights[vertex] ?? 0;
+      const height = tile.heights[vertex] ?? 0;
+      positions[vertex * 3 + 1] = height;
+      if (!chunk.isFar) chunk.sourceHeights[vertex] = height;
     }
     normals.set(tile.normals.subarray(0, vertexCount * 3));
+    if (!chunk.isFar) {
+      chunk.sourceNormals.set(tile.normals.subarray(0, vertexCount * 3));
+      chunk.hasSourceData = true;
+      chunk.sourceRevision += 1;
+    }
     colors.set(tile.colors.subarray(0, vertexCount * 3));
     positionAttribute.needsUpdate = true;
     normalAttribute.needsUpdate = true;
     colorAttribute.needsUpdate = true;
     setTerrainBounds(geometry, chunk.size, tile.minHeight, tile.maxHeight);
+    this.bathymetrySourceRevision += 1;
     return true;
   }
 
@@ -1389,8 +2263,22 @@ export class TerrainRenderer {
     for (const chunk of this.chunks.values()) {
       if (!chunk.ready) return;
     }
+    // Swap complete terrain sets atomically. Visibility changes increment the
+    // scene revision because CSM registration deliberately traverses visible
+    // meshes only; the next render must register this formerly hidden set.
+    for (const chunk of this.chunks.values()) this.setChunkVisible(chunk, true);
     for (const chunk of this.retiredChunks.values()) this.disposeChunk(chunk);
     this.retiredChunks.clear();
+    this.treesDirty = true;
+    this.groundCover.invalidate();
+    this.updateFarCutoutBounds();
+    this.refreshNearTerrainMorphs();
+  }
+
+  private setChunkVisible(chunk: TerrainChunk, visible: boolean): void {
+    if (chunk.mesh.visible === visible) return;
+    chunk.mesh.visible = visible;
+    this.sceneRevisionValue += 1;
   }
 
   private disposeChunk(chunk: TerrainChunk): void {
@@ -1399,6 +2287,7 @@ export class TerrainRenderer {
     chunk.generation += 1;
     chunk.mesh.geometry.dispose();
     chunk.mesh.removeFromParent();
+    this.sceneRevisionValue += 1;
   }
 
   private refreshHorizon(): void {
@@ -1457,7 +2346,7 @@ export class TerrainRenderer {
     let rockCount = 0;
     const nearLimit = this.quality === "high" ? MAX_NEAR_TREES : this.quality === "medium" ? 1_500 : 820;
     const farLimit = this.quality === "high" ? MAX_FAR_TREES : this.quality === "medium" ? 2_650 : 1_350;
-    const rockLimit = this.quality === "high" ? MAX_ROCKS : this.quality === "medium" ? 260 : 120;
+    const rockLimit = this.quality === "high" ? MAX_ROCKS : this.quality === "medium" ? 620 : 180;
     const nearRadius = this.quality === "high" ? 5_100 : this.quality === "medium" ? 4_200 : 3_000;
     const worldCenterX = (this.centerTileX + 0.5) * this.tileSize;
     const worldCenterZ = (this.centerTileZ + 0.5) * this.tileSize;
@@ -1468,7 +2357,7 @@ export class TerrainRenderer {
       (chunk.isFar ? visibleFarByKey : visibleNearByKey).set(key, chunk);
     }
     for (const [key, chunk] of this.chunks) {
-      if (!chunk.ready) continue;
+      if (!chunk.mesh.visible || !chunk.ready) continue;
       (chunk.isFar ? visibleFarByKey : visibleNearByKey).set(key, chunk);
     }
     const visibleNear = [...visibleNearByKey.values()].sort(
@@ -1507,8 +2396,8 @@ export class TerrainRenderer {
           // Exposed stone follows elevation and slope rather than appearing
           // only where a tree happened to pass its density test.
           const rockChance = hash01(cellZ, cellX, this.seed ^ 0xb09d);
-          const rockThreshold = 0.975 - Math.min(0.065, slope * 0.12) -
-            THREE.MathUtils.smoothstep(height, 380, 1_300) * 0.035;
+          const rockThreshold = 0.955 - Math.min(0.11, slope * 0.2) -
+            THREE.MathUtils.smoothstep(height, 300, 1_300) * 0.06;
           if (rockCount < rockLimit && rockChance > rockThreshold) {
             const rockScale = 1.5 + hash01(cellX, cellZ, this.seed ^ 0x7a91) * 5.2;
             this.tempPosition.set(x - this.originX, height + rockScale * 0.34, z - this.originZ);
@@ -1677,9 +2566,16 @@ export class TerrainRenderer {
     const z1 = z0 + 1;
     const tx = gridX - x0;
     const tz = gridZ - z0;
-    const heightAt = (column: number, row: number) => positions[(row * side + column) * 3 + 1] ?? 0;
-    const top = THREE.MathUtils.lerp(heightAt(x0, z0), heightAt(x1, z0), tx);
-    const bottom = THREE.MathUtils.lerp(heightAt(x0, z1), heightAt(x1, z1), tx);
+    const top = THREE.MathUtils.lerp(
+      positions[(z0 * side + x0) * 3 + 1] ?? 0,
+      positions[(z0 * side + x1) * 3 + 1] ?? 0,
+      tx,
+    );
+    const bottom = THREE.MathUtils.lerp(
+      positions[(z1 * side + x0) * 3 + 1] ?? 0,
+      positions[(z1 * side + x1) * 3 + 1] ?? 0,
+      tx,
+    );
     return THREE.MathUtils.lerp(top, bottom, tz);
   }
 
@@ -1692,6 +2588,58 @@ export class TerrainRenderer {
     const gradientX = (right - left) / Math.max(1, spacing * 2);
     const gradientZ = (front - back) / Math.max(1, spacing * 2);
     return 1 - 1 / Math.hypot(gradientX, 1, gradientZ);
+  }
+
+  /**
+   * Samples the exact render-height grids, including synchronous placeholders,
+   * so bathymetry rebuilds never re-run the full climate/normal terrain kernel.
+   */
+  private sampleLoadedBathymetryHeight(worldX: number, worldZ: number): number | undefined {
+    const nearHeight = this.sampleLoadedChunkGridHeight(
+      "near",
+      this.tileSize,
+      worldX,
+      worldZ,
+    );
+    if (nearHeight !== undefined && Number.isFinite(nearHeight)) return nearHeight;
+    const farHeight = this.sampleLoadedChunkGridHeight(
+      "far",
+      this.tileSize * FAR_TILE_SCALE,
+      worldX,
+      worldZ,
+    );
+    if (farHeight !== undefined && Number.isFinite(farHeight)) return farHeight;
+    // Missing coverage decodes as saturated deep water. Never run thousands of
+    // full climate/normal terrain samples on the main thread as a fallback.
+    return undefined;
+  }
+
+  private sampleLoadedChunkGridHeight(
+    prefix: "near" | "far",
+    size: number,
+    worldX: number,
+    worldZ: number,
+  ): number | undefined {
+    const tileX = worldToTerrainTile(worldX, size);
+    const tileZ = worldToTerrainTile(worldZ, size);
+    const key = `${prefix}:${tileX}:${tileZ}`;
+    const current = this.chunks.get(key);
+    const retired = this.retiredChunks.get(key);
+    const chunk = current?.ready && current.mesh.visible
+      ? current
+      : retired?.ready && retired.mesh.visible
+        ? retired
+        : current?.mesh.visible
+          ? current
+          : retired?.mesh.visible
+            ? retired
+            : undefined;
+    if (!chunk) return undefined;
+    return this.sampleChunkHeight(
+      chunk,
+      worldX - tileX * size,
+      worldZ - tileZ * size,
+    );
   }
 
   /**
@@ -1724,16 +2672,14 @@ export class TerrainRenderer {
     return isInsideAirportSceneryClearance(this.runway, x, z);
   }
 
-  private createRunway(): void {
-    const centerX = this.runway?.centerX ?? 0;
-    const centerZ = this.runway?.centerZ ?? 0;
+  private createRunway(definition: RenderRunwayDefinition): void {
     // The surface tracks the same elevation used by ground collision. A tiny
     // 25 mm render bias plus polygon offset prevents z-fighting without making
     // the aircraft look as though it hovers above an invisible runway.
-    const terrainElevation = this.runway?.elevation ?? this.sample(centerX, centerZ).height;
+    const terrainElevation = definition.elevation;
     const runwayHeight = terrainElevation + 0.025;
-    const runwayLength = this.runway?.runwayLength ?? 1_700;
-    const runwayWidth = this.runway?.runwayWidth ?? 48;
+    const runwayLength = definition.runwayLength;
+    const runwayWidth = definition.runwayWidth;
     const asphalt = new THREE.MeshStandardMaterial({
       color: 0x2e3333,
       roughness: 0.98,
@@ -1742,7 +2688,7 @@ export class TerrainRenderer {
       // elevation. Airport pavement is an ordered ground decal: it renders
       // after terrain, writes its real planar depth, then aircraft/objects draw
       // normally on top.
-      depthFunc: THREE.AlwaysDepth,
+      depthFunc: THREE.LessEqualDepth,
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
@@ -1750,7 +2696,7 @@ export class TerrainRenderer {
     const shoulderMaterial = new THREE.MeshStandardMaterial({
       color: 0x6b6556,
       roughness: 1,
-      depthFunc: THREE.AlwaysDepth,
+      depthFunc: THREE.LessEqualDepth,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -1758,17 +2704,17 @@ export class TerrainRenderer {
     const taxiMaterial = new THREE.MeshStandardMaterial({
       color: 0x454a48,
       roughness: 0.98,
-      depthFunc: THREE.AlwaysDepth,
+      depthFunc: THREE.LessEqualDepth,
       polygonOffset: true,
       polygonOffsetFactor: -1.5,
       polygonOffsetUnits: -1.5,
     });
     const paint = new THREE.MeshBasicMaterial({
       color: 0xece9d8,
-      depthFunc: THREE.AlwaysDepth,
+      depthFunc: THREE.LessEqualDepth,
       polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
     });
 
     const shoulder = new THREE.Mesh(
@@ -1900,7 +2846,7 @@ export class TerrainRenderer {
     runwayLights.frustumCulled = false;
     this.runwayGroup.add(runwayLights);
 
-    this.runwayGroup.rotation.y = this.runway?.headingRadians ?? Math.PI / 2;
+    this.runwayGroup.rotation.y = definition.headingRadians;
   }
 
   dispose(): void {
@@ -1918,6 +2864,7 @@ export class TerrainRenderer {
     this.material.dispose();
     this.farMaterial.dispose();
     this.terrainDetailMap.value.dispose();
+    this.bathymetry.dispose();
     this.horizonTerrain.geometry.dispose();
     this.horizonMaterial.dispose();
     this.groundCover.dispose();

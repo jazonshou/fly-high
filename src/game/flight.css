@@ -1,4 +1,13 @@
 .flight-shell {
+  --glass-surface: rgba(7, 25, 33, 0.42);
+  --glass-surface-raised: rgba(7, 25, 33, 0.58);
+  --glass-surface-soft: rgba(11, 34, 42, 0.28);
+  --glass-border: rgba(229, 245, 242, 0.24);
+  --glass-border-strong: rgba(239, 250, 248, 0.36);
+  --glass-highlight: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 22px 60px rgba(0, 8, 12, 0.28);
+  --radius-panel: 30px;
+  --radius-control: 18px;
   position: relative;
   width: 100vw;
   height: 100svh;
@@ -6,6 +15,7 @@
   overflow: hidden;
   isolation: isolate;
   background: #07141c;
+  font-family: var(--font-ui);
 }
 
 .flight-canvas {
@@ -36,16 +46,104 @@
   justify-content: center;
   padding: clamp(22px, 4vw, 52px);
   pointer-events: none;
-  background: linear-gradient(0deg, rgba(2, 10, 14, 0.42), transparent 32%);
+  background: linear-gradient(0deg, rgba(2, 10, 14, 0.28), transparent 34%);
   animation: interface-in 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 .start-screen__minimal {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(178px, 0.85fr);
   align-items: stretch;
-  gap: 10px;
+  gap: 12px;
   pointer-events: auto;
-  filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
+  filter: drop-shadow(0 16px 38px rgba(0, 7, 10, 0.26));
+}
+
+.aircraft-picker {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0;
+  padding: 5px;
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  background: rgba(7, 25, 33, 0.22);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+
+.aircraft-picker legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.aircraft-picker label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  min-width: 0;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  color: rgba(239, 248, 246, 0.7);
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.aircraft-picker label:hover {
+  color: rgba(249, 253, 252, 0.94);
+  background: rgba(24, 54, 61, 0.32);
+}
+
+.aircraft-picker label.is-selected {
+  border-color: rgba(225, 254, 118, 0.42);
+  color: rgba(249, 253, 252, 0.98);
+  background: linear-gradient(145deg, rgba(41, 71, 53, 0.54), rgba(10, 31, 37, 0.34));
+}
+
+.aircraft-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.aircraft-picker label:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.aircraft-picker span {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 560;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aircraft-picker small {
+  align-self: center;
+  color: rgba(229, 240, 238, 0.58);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .start-screen__start {
@@ -58,19 +156,21 @@
   grid-template-columns: 1fr auto;
   min-width: 178px;
   padding: 11px 14px;
-  border: 1px solid rgba(238, 247, 245, 0.28);
-  border-radius: 2px;
-  background: rgba(4, 18, 24, 0.68);
-  color: rgba(238, 247, 245, 0.9);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(21, 48, 57, 0.48), rgba(4, 18, 24, 0.26));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 12px 30px rgba(0, 8, 12, 0.16);
+  color: rgba(247, 252, 251, 0.96);
   cursor: pointer;
   text-align: left;
-  backdrop-filter: blur(14px);
-  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+  backdrop-filter: blur(22px) saturate(1.28);
+  -webkit-backdrop-filter: blur(22px) saturate(1.28);
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .seed-action small {
   grid-column: 1;
-  color: rgba(238, 247, 245, 0.5);
+  color: rgba(238, 247, 245, 0.68);
   font-family: var(--font-mono);
   font-size: 8px;
   letter-spacing: 0.14em;
@@ -84,6 +184,7 @@
   font-size: 14px;
   font-weight: 540;
   letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 
 .seed-action span {
@@ -97,7 +198,8 @@
 .seed-action:hover {
   transform: translateY(-2px);
   border-color: rgba(225, 254, 118, 0.72);
-  background: rgba(8, 27, 33, 0.82);
+  background: linear-gradient(145deg, rgba(26, 59, 63, 0.62), rgba(5, 23, 28, 0.42));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 12px 30px rgba(0, 0, 0, 0.18);
 }
 
 .flight-hud__topline,
@@ -119,6 +221,7 @@
   height: 32px;
   place-items: center;
   border: 1px solid rgba(225, 254, 118, 0.62);
+  border-radius: 9px;
   color: var(--accent);
   font-family: var(--font-ui);
   font-size: 14px;
@@ -143,9 +246,8 @@
 .pause-panel__actions > button,
 .error-banner button {
   appearance: none;
-  border: 0;
   cursor: pointer;
-  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 
 .primary-action {
@@ -155,27 +257,35 @@
   justify-content: space-between;
   gap: 26px;
   padding: 15px 18px 14px 20px;
-  border-radius: 2px;
-  background: var(--accent);
-  color: #0a160f;
+  border: 1px solid rgba(225, 254, 118, 0.58);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(39, 66, 49, 0.5), rgba(5, 22, 27, 0.27));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 12px 30px rgba(0, 8, 12, 0.16);
+  color: rgba(248, 253, 247, 0.98);
   text-align: left;
+  backdrop-filter: blur(22px) saturate(1.28);
+  -webkit-backdrop-filter: blur(22px) saturate(1.28);
 }
 
 .primary-action::after {
   content: "↗";
+  color: var(--accent);
   font-size: 22px;
 }
 
 .primary-action span {
   display: block;
+  font-family: var(--font-display);
   font-size: 16px;
-  font-weight: 720;
+  font-stretch: condensed;
+  font-weight: 700;
+  letter-spacing: 0.015em;
 }
 
 .primary-action small {
   display: block;
   margin-top: 3px;
-  color: rgba(10, 22, 15, 0.62);
+  color: rgba(238, 247, 245, 0.68);
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.06em;
@@ -188,12 +298,33 @@
   transform: translateY(-2px);
 }
 
+.primary-action:hover {
+  border-color: rgba(225, 254, 118, 0.82);
+  background: linear-gradient(145deg, rgba(46, 79, 54, 0.64), rgba(7, 28, 31, 0.43));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 14px 32px rgba(0, 0, 0, 0.2);
+}
+
+.primary-action:active,
+.seed-action:active,
+.pause-panel__actions > button:active {
+  transform: translateY(0) scale(0.985);
+}
+
+.primary-action:focus-visible,
+.seed-action:focus-visible,
+.pause-panel button:focus-visible,
+.error-banner button:focus-visible {
+  outline: 3px solid rgba(225, 254, 118, 0.88);
+  outline-offset: 3px;
+}
+
 .text-action,
 .pause-panel__footer button {
   appearance: none;
   padding: 9px 11px;
-  border: 0;
-  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(4, 18, 24, 0.18);
   color: rgba(238, 247, 245, 0.66);
   cursor: pointer;
   font-family: var(--font-mono);
@@ -251,16 +382,54 @@
 .setting-field select {
   width: 100%;
   padding: 9px 10px;
-  border: 1px solid rgba(238, 247, 245, 0.18);
-  border-radius: 0;
-  background: rgba(10, 30, 37, 0.92);
-  color: rgba(238, 247, 245, 0.9);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  background: rgba(12, 35, 43, 0.56);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: rgba(247, 252, 251, 0.96);
   font-size: 12px;
+  color-scheme: dark;
+  cursor: pointer;
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+
+.setting-field select:hover {
+  border-color: var(--glass-border-strong);
+  background: rgba(16, 43, 50, 0.68);
+}
+
+.setting-field select:focus-visible {
+  border-color: rgba(225, 254, 118, 0.72);
 }
 
 .setting-field input[type="range"] {
+  appearance: none;
   width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(238, 247, 245, 0.2);
   accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.setting-field input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(7, 22, 27, 0.8);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(225, 254, 118, 0.16), 0 4px 12px rgba(0, 7, 10, 0.22);
+}
+
+.setting-field input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(7, 22, 27, 0.8);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(225, 254, 118, 0.16), 0 4px 12px rgba(0, 7, 10, 0.22);
 }
 
 .setting-field__hint {
@@ -274,7 +443,10 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 9px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(238, 247, 245, 0.1);
+  border-radius: 14px;
+  background: var(--glass-surface-soft);
 }
 
 .setting-toggle input {
@@ -291,6 +463,7 @@
   pointer-events: none;
   color: rgba(238, 247, 245, 0.92);
   text-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 
 .flight-hud__topline {
@@ -328,12 +501,15 @@
   grid-template-columns: 1fr auto;
   grid-template-rows: auto 1fr auto;
   padding: 13px 14px;
-  border-top: 1px solid rgba(238, 247, 245, 0.33);
-  border-bottom: 1px solid rgba(238, 247, 245, 0.33);
-  background: linear-gradient(90deg, rgba(5, 18, 24, 0.48), rgba(5, 18, 24, 0.08));
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: linear-gradient(105deg, rgba(6, 24, 31, 0.56), rgba(11, 35, 42, 0.2));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 14px 36px rgba(0, 7, 10, 0.15);
   font-family: var(--font-mono);
   transform: translateY(-50%);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
 }
 
 .metric-tape--left {
@@ -342,7 +518,7 @@
 
 .metric-tape--right {
   right: 28px;
-  background: linear-gradient(-90deg, rgba(5, 18, 24, 0.48), rgba(5, 18, 24, 0.08));
+  background: linear-gradient(-105deg, rgba(6, 24, 31, 0.56), rgba(11, 35, 42, 0.2));
   text-align: right;
 }
 
@@ -356,7 +532,8 @@
   grid-column: 1 / -1;
   align-self: center;
   font-size: 29px;
-  font-weight: 510;
+  font-family: var(--font-display);
+  font-weight: 540;
   letter-spacing: -0.04em;
 }
 
@@ -472,7 +649,9 @@
   gap: 7px;
   padding: 5px 9px;
   border: 1px solid rgba(238, 247, 245, 0.18);
-  background: rgba(4, 16, 21, 0.3);
+  border-radius: 999px;
+  background: rgba(7, 25, 32, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   font-family: var(--font-mono);
   transform: translateX(-50%);
 }
@@ -493,12 +672,16 @@
   left: 50%;
   padding: 8px 12px;
   border: 1px solid currentColor;
-  background: rgba(7, 17, 21, 0.52);
+  border-radius: 999px;
+  background: rgba(7, 24, 30, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 12px 30px rgba(0, 7, 10, 0.18);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
   transform: translateX(-50%);
   animation: alert-pulse 700ms ease-in-out infinite alternate;
+  backdrop-filter: blur(12px) saturate(1.14);
+  -webkit-backdrop-filter: blur(12px) saturate(1.14);
 }
 
 .flight-alert--warning { color: var(--warning); }
@@ -517,10 +700,15 @@
 
 .instrument-strip {
   display: flex;
-  gap: 1px;
-  border: 1px solid rgba(238, 247, 245, 0.14);
-  background: rgba(4, 16, 22, 0.34);
-  backdrop-filter: blur(6px);
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: var(--glass-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 16px 40px rgba(0, 7, 10, 0.16);
+  backdrop-filter: blur(16px) saturate(1.16);
+  -webkit-backdrop-filter: blur(16px) saturate(1.16);
 }
 
 .instrument-readout {
@@ -528,11 +716,12 @@
   min-width: 78px;
   gap: 3px;
   padding: 9px 11px;
-  border-right: 1px solid rgba(238, 247, 245, 0.12);
+  border: 1px solid rgba(238, 247, 245, 0.06);
+  border-radius: 16px;
+  background: rgba(238, 247, 245, 0.035);
   font-family: var(--font-mono);
 }
 
-.instrument-readout:last-child { border-right: 0; }
 .instrument-readout small { color: rgba(238, 247, 245, 0.42); font-size: 7px; }
 .instrument-readout strong { font-size: 13px; font-weight: 500; }
 .instrument-readout em { color: var(--accent); font-size: 7px; font-style: normal; }
@@ -543,9 +732,12 @@
   width: 290px;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(238, 247, 245, 0.14);
-  background: rgba(4, 16, 22, 0.36);
-  backdrop-filter: blur(6px);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: var(--glass-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 16px 40px rgba(0, 7, 10, 0.16);
+  backdrop-filter: blur(16px) saturate(1.16);
+  -webkit-backdrop-filter: blur(16px) saturate(1.16);
 }
 
 .control-status__axes {
@@ -565,7 +757,8 @@
   position: relative;
   border: 1px solid rgba(238, 247, 245, 0.16);
   border-radius: 50%;
-  background: rgba(2, 13, 18, 0.28);
+  background: rgba(2, 13, 18, 0.2);
+  box-shadow: inset 0 0 18px rgba(0, 7, 10, 0.18);
 }
 
 .control-status__axis {
@@ -637,8 +830,8 @@
 
 .control-status__meter > span { color: rgba(238, 247, 245, 0.46); }
 .control-status__meter > strong { text-align: right; font-size: 8px; font-weight: 500; }
-.control-status__meter > i { height: 2px; background: rgba(238, 247, 245, 0.18); }
-.control-status__meter > i b { display: block; height: 100%; background: var(--accent); }
+.control-status__meter > i { height: 3px; overflow: hidden; border-radius: 999px; background: rgba(238, 247, 245, 0.18); }
+.control-status__meter > i b { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 
 .hud-help {
   position: absolute;
@@ -661,13 +854,23 @@
   grid-template-columns: repeat(2, auto);
   gap: 4px 12px;
   padding: 9px 11px;
-  border: 1px solid rgba(225, 254, 118, 0.3);
-  background: rgba(3, 14, 19, 0.7);
+  border: 1px solid rgba(225, 254, 118, 0.34);
+  border-radius: 18px;
+  background: var(--glass-surface-raised);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 14px 36px rgba(0, 7, 10, 0.18);
   font-family: var(--font-mono);
   font-size: 8px;
+  backdrop-filter: blur(16px) saturate(1.12);
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
 }
 
 .diagnostics strong { color: var(--accent); }
+.diagnostics__wide { grid-column: 1 / -1; }
+.diagnostics__fallback {
+  max-width: 260px;
+  color: rgba(255, 220, 166, 0.9);
+  line-height: 1.35;
+}
 
 .pause-screen {
   position: absolute;
@@ -676,8 +879,11 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(3, 13, 18, 0.46);
-  backdrop-filter: blur(13px) saturate(0.72);
+  background:
+    radial-gradient(circle at 50% 45%, rgba(18, 43, 49, 0.1), transparent 44%),
+    rgba(3, 13, 18, 0.24);
+  backdrop-filter: blur(15px) saturate(0.82);
+  -webkit-backdrop-filter: blur(15px) saturate(0.82);
   animation: interface-in 250ms ease-out both;
 }
 
@@ -686,14 +892,21 @@
   max-height: calc(100svh - 48px);
   overflow: auto;
   padding: clamp(24px, 4vw, 42px);
-  border: 1px solid rgba(238, 247, 245, 0.18);
-  background: rgba(4, 18, 24, 0.9);
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.34);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-panel);
+  background: linear-gradient(145deg, rgba(11, 35, 42, 0.66), rgba(3, 16, 22, 0.46));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(28px) saturate(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.18);
+  scrollbar-color: rgba(225, 254, 118, 0.42) transparent;
+  scrollbar-width: thin;
 }
 
 .pause-panel h2 {
   margin: 0 0 25px;
   font-size: clamp(27px, 4vw, 46px);
+  font-family: var(--font-display);
+  font-stretch: condensed;
   font-weight: 470;
   letter-spacing: -0.035em;
 }
@@ -708,16 +921,27 @@
   min-height: 48px;
   padding: 12px 14px;
   border: 1px solid rgba(238, 247, 245, 0.16);
-  background: rgba(14, 38, 45, 0.7);
+  border-radius: var(--radius-control);
+  background: rgba(16, 43, 51, 0.36);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  color: rgba(247, 252, 251, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   text-align: left;
   font-size: 12px;
 }
 
+.pause-panel__actions > button:hover {
+  border-color: var(--glass-border-strong);
+  background: rgba(21, 52, 58, 0.52);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 12px 28px rgba(0, 7, 10, 0.14);
+}
+
 .pause-panel__actions > .primary-action {
   grid-column: 1 / -1;
-  border: 0;
-  background: var(--accent);
-  color: #0a160f;
+  border: 1px solid rgba(225, 254, 118, 0.56);
+  background: linear-gradient(145deg, rgba(39, 70, 50, 0.58), rgba(5, 22, 27, 0.34));
+  color: rgba(248, 253, 247, 0.98);
 }
 
 .primary-action--compact small { margin: 0; }
@@ -742,11 +966,14 @@
   place-items: center;
   gap: 14px;
   padding: 23px;
-  border: 1px solid rgba(238, 247, 245, 0.15);
-  background: rgba(4, 18, 24, 0.8);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: var(--glass-surface-raised);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), var(--glass-shadow);
   font-family: var(--font-mono);
   transform: translate(-50%, -50%);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(18px) saturate(1.14);
+  -webkit-backdrop-filter: blur(18px) saturate(1.14);
 }
 
 .loading-card p {
@@ -775,14 +1002,47 @@
   max-width: 440px;
   gap: 6px;
   padding: 16px;
-  border: 1px solid rgba(255, 118, 111, 0.52);
-  background: rgba(31, 12, 14, 0.94);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 151, 145, 0.56);
+  border-radius: 22px;
+  background: rgba(42, 16, 19, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 60px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
 }
 
 .error-banner strong { color: #ffaba6; }
 .error-banner span { color: rgba(255, 235, 233, 0.72); font-size: 12px; line-height: 1.5; }
-.error-banner button { justify-self: start; margin-top: 5px; padding: 8px 10px; background: #ff766f; color: #210808; }
+.error-banner button {
+  justify-self: start;
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: #ff766f;
+  color: #210808;
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .aircraft-picker,
+  .seed-action,
+  .primary-action,
+  .metric-tape,
+  .flight-alert,
+  .instrument-strip,
+  .control-status,
+  .diagnostics,
+  .loading-card {
+    background-color: rgba(5, 22, 29, 0.82);
+  }
+
+  .pause-panel {
+    background: rgba(4, 20, 27, 0.92);
+  }
+
+  .setting-field select {
+    background: rgba(8, 28, 35, 0.94);
+  }
+}
 
 @keyframes interface-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -800,10 +1060,26 @@
 
 @media (max-width: 820px) {
   .flight-shell { min-height: 480px; }
-  .start-screen { padding: 18px; background: linear-gradient(0deg, rgba(2, 10, 14, 0.48), transparent 36%); }
-  .start-screen__minimal { width: min(100%, 430px); }
-  .start-screen__start { min-width: 0; flex: 1.15; }
-  .seed-action { min-width: 0; flex: 0.85; }
+  .start-screen { padding: 18px; background: linear-gradient(0deg, rgba(2, 10, 14, 0.34), transparent 38%); }
+  .start-screen__minimal {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    width: min(100%, 430px);
+  }
+  .start-screen__start { min-width: 0; }
+  .seed-action { min-width: 0; }
+  .aircraft-picker {
+    gap: 4px;
+    padding: 4px;
+    border-radius: 20px;
+    background: rgba(7, 25, 33, 0.28);
+  }
+  .aircraft-picker label {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    min-height: 54px;
+    padding: 9px 10px;
+    border-radius: 16px;
+  }
   .primary-action { min-height: 50px; width: 100%; }
   .metric-tape { width: 78px; height: 132px; padding: 9px; }
   .metric-tape--left { left: 12px; }
@@ -817,6 +1093,7 @@
   .hud-help { right: 10px; bottom: 12px; left: 10px; gap: 9px; }
   .hud-help span:nth-child(-n + 4) { display: none; }
   .settings-grid { grid-template-columns: 1fr; }
+  .pause-panel { border-radius: 24px; }
 }
 
 @media (max-height: 650px) {
@@ -830,5 +1107,30 @@
   .flight-alert,
   .loading-card__radar {
     animation: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .flight-shell {
+    --glass-surface: rgba(3, 17, 23, 0.84);
+    --glass-surface-raised: rgba(3, 17, 23, 0.92);
+    --glass-surface-soft: rgba(3, 17, 23, 0.72);
+    --glass-border: rgba(247, 252, 251, 0.54);
+    --glass-border-strong: rgba(247, 252, 251, 0.74);
+  }
+
+  .pause-panel,
+  .aircraft-picker,
+  .seed-action,
+  .primary-action,
+  .setting-field select {
+    background: rgba(3, 17, 23, 0.94);
+  }
+
+  .flight-hud,
+  .setting-field,
+  .setting-toggle {
+    color: #f7fcfb;
+    text-shadow: 0 1px 3px #000;
   }
 }

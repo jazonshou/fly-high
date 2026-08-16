@@ -16,10 +16,11 @@ import {
   urlWithSeed,
   type GameSettings,
 } from "@/src/settings";
+import { AircraftPicker } from "@/src/ui/AircraftPicker";
 import { Hud } from "@/src/ui/Hud";
-import { SettingsPanel } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain } from "@/src/world";
 import { SimulationClient } from "./SimulationClient";
+import { airborneThrottleForAircraft, runwayTrimForAircraft } from "./spawn";
 import {
   INITIAL_VISUAL_STATE,
   type CameraMode,
@@ -30,6 +31,9 @@ import type { SpawnKind } from "@/src/workers/protocol";
 import "./flight.css";
 
 type GamePhase = "menu" | "flying" | "paused";
+
+const GRAPHICS_CONTEXT_LOST_MESSAGE =
+  "The graphics device reset. Waiting for the browser to rebuild the 3D scene safely.";
 
 const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "cinematic"];
 const CAMERA_LABELS: Record<CameraMode, string> = {
@@ -43,12 +47,6 @@ const CONTROL_MODE_LABELS: Record<GameSettings["flightMode"], string> = {
   pilot: "Pilot damping",
   scenic: "Scenic assist",
 };
-
-function formatAirborneStartHeight(settings: GameSettings): string {
-  return settings.units === "aviation"
-    ? `${Math.round(settings.airborneStartAgl * 3.28084).toLocaleString()} ft AGL`
-    : `${Math.round(settings.airborneStartAgl).toLocaleString()} m AGL`;
-}
 
 function cycleHud(settings: GameSettings): GameSettings {
   const next = settings.hud === "full" ? "minimal" : settings.hud === "minimal" ? "off" : "full";
@@ -75,7 +73,6 @@ export function FlightGame() {
   const [visualState, setVisualState] = useState<FlightVisualState>(INITIAL_VISUAL_STATE);
   const [diagnostics, setDiagnostics] = useState<RenderDiagnostics | null>(null);
   const [cameraMode, setCameraMode] = useState<CameraMode>("chase");
-  const [showPauseSettings, setShowPauseSettings] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +88,8 @@ export function FlightGame() {
     setSettings(next);
     saveSettings(next);
     rendererRef.current?.setQuality(next.quality);
-    rendererRef.current?.setReducedMotion(next.reducedMotion || !next.cameraShake);
+    rendererRef.current?.setRenderingMode(next.renderingMode);
+    rendererRef.current?.setReducedMotion(next.reducedMotion);
     rendererRef.current?.setAtmosphere(next.timeOfDay, next.weather);
     inputRef.current?.updateOptions({
       sensitivity: next.sensitivity,
@@ -120,7 +118,11 @@ export function FlightGame() {
   const takeControl = useCallback(async () => {
     setError(null);
     await audioRef.current?.unlock();
-    inputRef.current?.resetForSpawn("airborne");
+    inputRef.current?.resetForSpawn(
+      "airborne",
+      airborneThrottleForAircraft(settingsRef.current.aircraft),
+      runwayTrimForAircraft(settingsRef.current.aircraft),
+    );
     inputRef.current?.setThrottle(latestStateRef.current.throttle);
     spawnRef.current = "airborne";
     simulationRef.current?.handoff(settingsRef.current.flightMode);
@@ -134,7 +136,11 @@ export function FlightGame() {
       setError(null);
       await audioRef.current?.unlock();
       spawnRef.current = spawn;
-      inputRef.current?.resetForSpawn(spawn);
+      inputRef.current?.resetForSpawn(
+        spawn,
+        airborneThrottleForAircraft(settingsRef.current.aircraft),
+        runwayTrimForAircraft(settingsRef.current.aircraft),
+      );
       simulationRef.current?.setMode(settingsRef.current.flightMode);
       simulationRef.current?.setAttractMode(false);
       simulationRef.current?.reset(spawn, settingsRef.current.airborneStartAgl);
@@ -157,13 +163,37 @@ export function FlightGame() {
     updatePhase("flying");
   }, [updatePhase]);
 
+  /** Restarts the current session with the same spawn contract it began with. */
+  const restartFlight = useCallback(async () => {
+    await startNewFlight(spawnRef.current);
+  }, [startNewFlight]);
+
+  /** Returns to the live start view without silently replacing the current world. */
+  const endFlight = useCallback(() => {
+    audioRef.current?.suspend();
+    inputRef.current?.resetForSpawn(
+      "airborne",
+      airborneThrottleForAircraft(settingsRef.current.aircraft),
+      runwayTrimForAircraft(settingsRef.current.aircraft),
+    );
+    spawnRef.current = "airborne";
+    simulationRef.current?.setMode(settingsRef.current.flightMode);
+    simulationRef.current?.returnToAttract(settingsRef.current.airborneStartAgl);
+    simulationRef.current?.setPaused(false);
+    updatePhase("menu");
+  }, [updatePhase]);
+
   const handleActions = useCallback(
     (actions: InputAction[]) => {
       for (const action of actions) {
         if (action === "camera" && phaseRef.current === "flying") changeCamera();
         if (action === "reset" && phaseRef.current !== "menu") {
           const spawn = spawnRef.current;
-          inputRef.current?.resetForSpawn(spawn);
+          inputRef.current?.resetForSpawn(
+            spawn,
+            airborneThrottleForAircraft(settingsRef.current.aircraft),
+            runwayTrimForAircraft(settingsRef.current.aircraft),
+          );
           simulationRef.current?.setMode(settingsRef.current.flightMode);
           simulationRef.current?.reset(spawn, settingsRef.current.airborneStartAgl);
           simulationRef.current?.setPaused(false);
@@ -218,14 +248,21 @@ export function FlightGame() {
       const activeSettings = settingsRef.current;
       const rendererOptions = {
         canvas,
+        aircraft: activeSettings.aircraft,
         terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
         seed,
         quality: activeSettings.quality,
-        reducedMotion: activeSettings.reducedMotion || !activeSettings.cameraShake,
+        renderingMode: activeSettings.renderingMode,
+        reducedMotion: activeSettings.reducedMotion,
         onContextLost: () => {
           if (disposed) return;
           simulationRef.current?.setPaused(true);
-          setError("The graphics device reset. Reload the simulator to rebuild the 3D scene safely.");
+          setError(GRAPHICS_CONTEXT_LOST_MESSAGE);
+        },
+        onContextRestored: () => {
+          if (disposed) return;
+          setError((current) => current === GRAPHICS_CONTEXT_LOST_MESSAGE ? null : current);
+          simulationRef.current?.setPaused(phaseRef.current === "paused");
         },
         ...(world.airport ? { runway: world.airport } : {}),
       };
@@ -237,7 +274,10 @@ export function FlightGame() {
         } catch (rendererError) {
           canvas.dataset.webglFailure =
             rendererError instanceof Error ? rendererError.message : "Unknown WebGL startup failure";
-          renderer = new CanvasFlightRenderer(rendererOptions);
+          renderer = new CanvasFlightRenderer(
+            rendererOptions,
+            "WebGL 2 renderer startup failed; Canvas 2D compatibility renderer active.",
+          );
           renderer.domElement.dataset.rendererMode = "canvas2d";
         }
       } else {
@@ -251,6 +291,7 @@ export function FlightGame() {
         mouseFlight: activeSettings.mouseFlight,
       });
       const audio = new FlightAudio({
+        aircraft: activeSettings.aircraft,
         master: activeSettings.masterVolume,
         engine: activeSettings.engineVolume,
         wind: activeSettings.windVolume,
@@ -262,6 +303,7 @@ export function FlightGame() {
         activeSettings.weather,
         activeSettings.airborneStartAgl,
         true,
+        activeSettings.aircraft,
       );
       renderer.setCameraMode(cameraModeRef.current);
       renderer.setAtmosphere(activeSettings.timeOfDay, activeSettings.weather);
@@ -302,6 +344,7 @@ export function FlightGame() {
         try {
           renderer.render(simulation.getRenderState(now) ?? latestStateRef.current, deltaSeconds);
         } catch (renderError) {
+          console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";
           canvas.dataset.renderFailure = reason;
           simulation.setPaused(true);
@@ -343,7 +386,7 @@ export function FlightGame() {
       inputRef.current = null;
       audioRef.current = null;
     };
-  }, [bootstrapped, handleActions, pauseFlight, seed, world]);
+  }, [bootstrapped, handleActions, pauseFlight, seed, settings.aircraft, world]);
 
   const chooseNewWorld = useCallback(() => {
     audioRef.current?.suspend();
@@ -362,17 +405,24 @@ export function FlightGame() {
 
   return (
     <main className="flight-shell">
-      <canvas ref={canvasRef} className="flight-canvas" aria-label="Aerolith flight simulator 3D view" />
+      <canvas
+        ref={canvasRef}
+        className="flight-canvas"
+        aria-label="Aerolith flight simulator 3D view"
+        tabIndex={0}
+      />
       <div className="flight-vignette" aria-hidden="true" />
 
       {phase !== "menu" ? (
         <Hud
           state={visualState}
+          aircraft={settings.aircraft}
           mode={settings.hud}
           flightMode={settings.flightMode}
           units={settings.units}
           diagnostics={diagnostics}
           showDiagnostics={settings.showDiagnostics}
+          cameraMode={cameraMode}
           cameraLabel={CAMERA_LABELS[cameraMode]}
           seedLabel={seedToString(seed)}
           mouseFlight={settings.mouseFlight}
@@ -389,6 +439,10 @@ export function FlightGame() {
       {phase === "menu" && ready ? (
         <section className="start-screen" aria-label="Aerolith start">
           <div className="start-screen__minimal">
+            <AircraftPicker
+              value={settings.aircraft}
+              onChange={(aircraft) => applySettings({ ...settingsRef.current, aircraft })}
+            />
             <button className="primary-action start-screen__start" onClick={() => void takeControl()}>
               <span>Start</span>
               <small>{CONTROL_MODE_LABELS[settings.flightMode]}</small>
@@ -412,18 +466,8 @@ export function FlightGame() {
                 <span>Resume flight</span>
                 <small>Esc</small>
               </button>
-              <button onClick={() => void startNewFlight("airborne")}>
-                Restart airborne · {formatAirborneStartHeight(settings)}
-              </button>
-              <button onClick={() => void startNewFlight("runway")}>Restart on runway</button>
-              <button onClick={changeCamera}>Change camera</button>
-            </div>
-            <button className="text-action" onClick={() => setShowPauseSettings((current) => !current)}>
-              {showPauseSettings ? "Hide settings" : "Settings & controls"}
-            </button>
-            {showPauseSettings ? <SettingsPanel settings={settings} onChange={applySettings} /> : null}
-            <div className="pause-panel__footer">
-              <button onClick={chooseNewWorld}>Leave flight / new world</button>
+              <button onClick={() => void restartFlight()}>Restart flight</button>
+              <button onClick={endFlight}>End flight</button>
             </div>
           </div>
         </section>

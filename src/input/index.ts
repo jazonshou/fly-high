@@ -55,6 +55,13 @@ export function keyboardRollCommand(pressed: ReadonlySet<string>): -1 | 0 | 1 {
   return direction < 0 ? -1 : direction > 0 ? 1 : 0;
 }
 
+/** Conventional game-style throttle pair: Shift adds power, Ctrl removes it. */
+export function keyboardThrottleDirection(pressed: ReadonlySet<string>): -1 | 0 | 1 {
+  const increase = pressed.has("ShiftLeft") || pressed.has("ShiftRight");
+  const decrease = pressed.has("ControlLeft") || pressed.has("ControlRight");
+  return increase === decrease ? 0 : increase ? 1 : -1;
+}
+
 /**
  * Rate-limited axis motion for digital controls.  A keyboard key is a button,
  * but a flight control is not: moving progressively toward the requested
@@ -91,7 +98,7 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
 const HELD_CONTROL_KEYS = new Set([
   "KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE",
   "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
-  "Equal", "Minus", "NumpadAdd", "NumpadSubtract", "Space",
+  "Space",
 ]);
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -198,17 +205,7 @@ export class InputManager {
       this.yaw = slewAxis(this.yaw, keyboardYaw, 1.55 * sensitivityScale, 2.5, deltaSeconds);
     }
 
-    const throttleUp =
-      this.pressed.has("ShiftLeft") ||
-      this.pressed.has("ShiftRight") ||
-      this.pressed.has("Equal") ||
-      this.pressed.has("NumpadAdd");
-    const throttleDown =
-      this.pressed.has("ControlLeft") ||
-      this.pressed.has("ControlRight") ||
-      this.pressed.has("Minus") ||
-      this.pressed.has("NumpadSubtract");
-    const throttleDirection = (throttleUp ? 1 : 0) - (throttleDown ? 1 : 0) + gamepad.throttleStep;
+    const throttleDirection = keyboardThrottleDirection(this.pressed) + gamepad.throttleStep;
     if (gamepad.throttle !== null) this.throttle = smoothAxis(this.throttle, gamepad.throttle, 4, deltaSeconds);
     else this.throttle = Math.min(1, Math.max(0, this.throttle + throttleDirection * deltaSeconds * 0.6));
 
@@ -239,7 +236,11 @@ export class InputManager {
     this.throttle = Math.min(1, Math.max(0, value));
   }
 
-  resetForSpawn(spawn: "airborne" | "runway"): void {
+  resetForSpawn(
+    spawn: "airborne" | "runway",
+    airborneThrottle = 0.68,
+    runwayTrim = 0.04,
+  ): void {
     this.pressed.clear();
     this.actions.clear();
     this.roll = 0;
@@ -250,8 +251,10 @@ export class InputManager {
     this.rollTapRemaining = 0;
     this.pitchTapRemaining = 0;
     this.yawTapRemaining = 0;
-    this.throttle = spawn === "runway" ? 0 : 0.68;
-    this.trim = spawn === "runway" ? 0.04 : 0.065;
+    this.throttle = spawn === "runway"
+      ? 0
+      : Math.min(1, Math.max(0, airborneThrottle));
+    this.trim = spawn === "runway" ? runwayTrim : 0;
     this.flaps = 0;
   }
 
@@ -278,11 +281,6 @@ export class InputManager {
     } else if (event.code === "KeyE" || event.code === "KeyQ") {
       this.yawTapDirection = event.code === "KeyE" ? 1 : -1;
       this.yawTapRemaining = 0.14;
-    }
-    if (event.code === "Equal" || event.code === "NumpadAdd") {
-      this.throttle = Math.min(1, this.throttle + 0.05);
-    } else if (event.code === "Minus" || event.code === "NumpadSubtract") {
-      this.throttle = Math.max(0, this.throttle - 0.05);
     }
     const action = ACTION_KEYS[event.code];
     if (action) {

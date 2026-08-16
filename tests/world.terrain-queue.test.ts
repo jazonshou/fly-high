@@ -1,6 +1,35 @@
 import { describe, expect, it } from "vitest";
+import { TerrainGenerationClient } from "../src/render/TerrainGenerationClient";
 import { isTerrainWorkerEvent } from "../src/workers/terrainProtocol";
 import { BoundedTerrainQueue } from "../src/workers/terrainQueue";
+
+class FakeTerrainWorker {
+  readonly posted: unknown[] = [];
+  private readonly listeners = new Map<string, Set<EventListener>>();
+
+  postMessage(message: unknown): void {
+    this.posted.push(message);
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  terminate(): void {}
+
+  emitMessage(data: unknown): void {
+    const event = { data } as MessageEvent<unknown>;
+    for (const listener of this.listeners.get("message") ?? []) {
+      listener(event as unknown as Event);
+    }
+  }
+}
 
 describe("bounded terrain priority queue", () => {
   it("takes nearest work first and preserves FIFO ordering for ties", () => {
@@ -74,5 +103,59 @@ describe("terrain worker protocol guard", () => {
     ).toBe(true);
     expect(isTerrainWorkerEvent({ type: "tile", requestId: "7", tile: {} })).toBe(false);
     expect(isTerrainWorkerEvent(null)).toBe(false);
+  });
+
+  it("ignores an active result canceled by a quality epoch before starting queued work", () => {
+    const worker = new FakeTerrainWorker();
+    const client = new TerrainGenerationClient("stale-quality-result", {
+      workerFactory: () => worker as unknown as Worker,
+    });
+    let staleResults = 0;
+    let currentResults = 0;
+    const tileOptions = {
+      tileX: 0,
+      tileZ: 0,
+      size: 1_600,
+      resolution: 25,
+      includeNormals: true,
+      includeColors: true,
+      includeClimate: false,
+    } as const;
+    const staleId = client.request(
+      { key: "near:0:0", generation: 1, priority: 0, options: tileOptions },
+      () => { staleResults += 1; },
+    );
+    client.cancelAll();
+    const currentId = client.request(
+      { key: "near:0:0", generation: 2, priority: 0, options: tileOptions },
+      () => { currentResults += 1; },
+    );
+    expect(worker.posted.filter(
+      (message) => (message as { type?: string }).type === "generate",
+    )).toHaveLength(1);
+
+    worker.emitMessage({
+      type: "tile",
+      requestId: staleId,
+      generation: 1,
+      key: "near:0:0",
+      tile: {},
+    });
+    expect(staleResults).toBe(0);
+    const generates = worker.posted.filter(
+      (message) => (message as { type?: string }).type === "generate",
+    ) as Array<{ requestId: number }>;
+    expect(generates).toHaveLength(2);
+    expect(generates[1]?.requestId).toBe(currentId);
+
+    worker.emitMessage({
+      type: "tile",
+      requestId: currentId,
+      generation: 2,
+      key: "near:0:0",
+      tile: {},
+    });
+    expect(currentResults).toBe(1);
+    client.dispose();
   });
 });

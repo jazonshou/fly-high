@@ -7,27 +7,236 @@ import type {
   TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { RenderingMode } from "@/src/settings";
+import type { AircraftKind } from "@/src/sim";
 import { createAircraft, type AircraftVisual } from "./createAircraft";
+import { CascadedShadowController } from "./CascadedShadowController";
+import {
+  detectRenderCapabilities,
+  HybridRenderPipeline,
+  resolveRenderProfile,
+} from "./hybrid";
+import { preserveDestinationAlpha } from "./PreserveDestinationAlpha";
 import { SkySystem } from "./SkySystem";
 import {
   TerrainRenderer,
+  WATER_RENDER_LEVEL,
   type RenderRunwayDefinition,
   type TerrainSampleFunction,
 } from "./TerrainRenderer";
-import type { FlightRenderingSystem } from "./types";
+import { requestedRenderingTelemetryKey, type FlightRenderingSystem } from "./types";
 
 const CAMERA_VIEW_CORRECTION = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(0, 1, 0),
   -Math.PI / 2,
 );
 
-function qualityPixelRatio(quality: QualityLevel): number {
+export function qualityPixelRatio(quality: QualityLevel): number {
   if (quality === "low") return 0.85;
-  if (quality === "high") return 1.5;
-  return 1.1;
+  // Most modern laptops expose a 2x backing store. Rendering medium at 1.1x
+  // threw away almost half the linear display resolution before terrain
+  // shading even ran, so no amount of material detail could look crisp.
+  // Hybrid target caps and the adaptive governor still bound pixel cost.
+  if (quality === "high") return 1.75;
+  return 1.2;
 }
 
-function createContactShadow(): THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial> {
+/** One bounded adaptive-resolution decision after a complete timing window. */
+export function adaptiveResolutionScale(
+  currentScale: number,
+  averageFrameMilliseconds: number,
+): number {
+  const scale = THREE.MathUtils.clamp(
+    Number.isFinite(currentScale) ? currentScale : 1,
+    0.68,
+    1,
+  );
+  if (!Number.isFinite(averageFrameMilliseconds)) return scale;
+  if (averageFrameMilliseconds > 18.5 && scale > 0.68) {
+    return Math.max(0.68, scale - 0.08);
+  }
+  if (averageFrameMilliseconds < 14 && scale < 1) {
+    return Math.min(1, scale + 0.04);
+  }
+  return scale;
+}
+
+export interface ChaseCameraProfile {
+  distance: number;
+  height: number;
+  fieldOfView: number;
+}
+
+/** Stable aircraft-relative composition; speed never turns the jet into a speck. */
+export function chaseCameraProfile(
+  aircraft: AircraftKind,
+  airspeed: number,
+  out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0 },
+): ChaseCameraProfile {
+  const jet = aircraft === "jet";
+  const baseDistance = jet ? 14.3 : 13.5;
+  const speedThreshold = jet ? 145 : 45;
+  const speedPush = THREE.MathUtils.clamp(
+    (airspeed - speedThreshold) * 0.012,
+    0,
+    2.2,
+  );
+  out.distance = baseDistance + speedPush;
+  out.height = jet ? 5 : 5.1;
+  out.fieldOfView =
+    62 + THREE.MathUtils.clamp((airspeed - (jet ? 140 : 38)) * 0.035, 0, 3);
+  return out;
+}
+
+/** Fog begins beyond the detailed mid-field so terrain texture survives. */
+export function atmosphereFogNear(weather: WeatherPreset): number {
+  if (weather === "cloudy") return 2_200;
+  if (weather === "clear") return 4_500;
+  return 3_800;
+}
+
+/** Suppresses duplicate atmosphere applications from resetting temporal state. */
+export class AtmosphereChangeTracker {
+  private timeOfDay: TimeOfDayPreset | null = null;
+  private weather: WeatherPreset | null = null;
+
+  update(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): boolean {
+    if (timeOfDay === this.timeOfDay && weather === this.weather) return false;
+    this.timeOfDay = timeOfDay;
+    this.weather = weather;
+    return true;
+  }
+}
+
+/**
+ * Releases Three.js-owned GPU resources while keeping the canvas context
+ * reusable. World/seed changes construct the replacement renderer on the same
+ * canvas immediately; forcing a context loss here races that replacement and
+ * leaves the new world on an intentionally destroyed graphics device.
+ */
+export function disposeReusableWebGLRenderer(
+  renderer: Pick<THREE.WebGLRenderer, "dispose">,
+): void {
+  renderer.dispose();
+}
+
+interface WebGLContextEventTarget {
+  addEventListener(type: string, listener: EventListener): void;
+  removeEventListener(type: string, listener: EventListener): void;
+}
+
+/**
+ * Owns the loss/restoration listeners and keeps rendering paused until the
+ * caller confirms that its context-bound resources were rebuilt successfully.
+ */
+export class WebGLContextLifecycle {
+  private paused = false;
+  private disposed = false;
+
+  constructor(
+    private readonly target: WebGLContextEventTarget,
+    private readonly onLost: () => void,
+    private readonly onRestored: () => boolean,
+  ) {
+    target.addEventListener("webglcontextlost", this.handleContextLost);
+    target.addEventListener("webglcontextrestored", this.handleContextRestored);
+  }
+
+  get renderingPaused(): boolean {
+    return this.paused;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.target.removeEventListener("webglcontextlost", this.handleContextLost);
+    this.target.removeEventListener("webglcontextrestored", this.handleContextRestored);
+  }
+
+  private readonly handleContextLost: EventListener = (event): void => {
+    event.preventDefault();
+    if (this.disposed || this.paused) return;
+    this.paused = true;
+    this.onLost();
+  };
+
+  private readonly handleContextRestored: EventListener = (): void => {
+    if (this.disposed || !this.paused) return;
+    try {
+      this.paused = !this.onRestored();
+    } catch {
+      // A failed rebuild must never let the next animation frame touch invalid
+      // GPU resources. A later restored event or reload can retry safely.
+      this.paused = true;
+    }
+  };
+}
+
+/**
+ * Projects a preferred camera-up vector onto the plane perpendicular to the
+ * view direction. A body-axis fallback prevents Three.js `lookAt` from choosing
+ * an arbitrary roll when world-up becomes parallel to a steep-dive view.
+ */
+export function setOrthogonalCameraUp(
+  out: THREE.Vector3,
+  preferredUp: THREE.Vector3,
+  viewDirection: THREE.Vector3,
+  fallbackUp: THREE.Vector3,
+): THREE.Vector3 {
+  const viewLengthSquared = viewDirection.lengthSq();
+  if (!Number.isFinite(viewLengthSquared) || viewLengthSquared < 1e-12) {
+    const fallbackLengthSquared = fallbackUp.lengthSq();
+    return Number.isFinite(fallbackLengthSquared) && fallbackLengthSquared > 1e-12
+      ? out.copy(fallbackUp).normalize()
+      : out.set(0, 1, 0);
+  }
+
+  const inverseViewLength = 1 / Math.sqrt(viewLengthSquared);
+  const viewX = viewDirection.x * inverseViewLength;
+  const viewY = viewDirection.y * inverseViewLength;
+  const viewZ = viewDirection.z * inverseViewLength;
+  const preferredX = preferredUp.x;
+  const preferredY = preferredUp.y;
+  const preferredZ = preferredUp.z;
+  let projection = preferredX * viewX + preferredY * viewY + preferredZ * viewZ;
+  out.set(
+    preferredX - viewX * projection,
+    preferredY - viewY * projection,
+    preferredZ - viewZ * projection,
+  );
+
+  let upLengthSquared = out.lengthSq();
+  if (!Number.isFinite(upLengthSquared) || upLengthSquared < 1e-8) {
+    const fallbackX = fallbackUp.x;
+    const fallbackY = fallbackUp.y;
+    const fallbackZ = fallbackUp.z;
+    projection = fallbackX * viewX + fallbackY * viewY + fallbackZ * viewZ;
+    out.set(
+      fallbackX - viewX * projection,
+      fallbackY - viewY * projection,
+      fallbackZ - viewZ * projection,
+    );
+    upLengthSquared = out.lengthSq();
+  }
+
+  if (!Number.isFinite(upLengthSquared) || upLengthSquared < 1e-8) {
+    // Pick the world cardinal axis least aligned with the view. This final
+    // fallback is deterministic even for malformed or exactly vertical poses.
+    const useWorldUp = Math.abs(viewY) < 0.8;
+    const axisX = useWorldUp ? 0 : 1;
+    const axisY = useWorldUp ? 1 : 0;
+    projection = axisX * viewX + axisY * viewY;
+    out.set(
+      axisX - viewX * projection,
+      axisY - viewY * projection,
+      -viewZ * projection,
+    );
+  }
+
+  return out.normalize();
+}
+
+export function createContactShadow(): THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial> {
   const geometry = new THREE.CircleGeometry(1, 40);
   // CircleGeometry faces +Z. Put it on the local X/Z plane so its normal is +Y.
   geometry.rotateX(-Math.PI / 2);
@@ -61,6 +270,7 @@ function createContactShadow(): THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMat
       }
     `,
   });
+  preserveDestinationAlpha(material);
   const shadow = new THREE.Mesh(geometry, material);
   shadow.name = "aircraft-contact-shadow";
   shadow.renderOrder = 8;
@@ -159,12 +369,15 @@ function createFlightWebGLContext(
 
 export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
+  aircraft?: AircraftKind;
   terrainSample: TerrainSampleFunction;
   seed: number;
   quality: QualityLevel;
+  renderingMode: RenderingMode;
   reducedMotion: boolean;
   runway?: RenderRunwayDefinition;
   onContextLost?: () => void;
+  onContextRestored?: () => void;
 }
 
 export class FlightRenderer implements FlightRenderingSystem {
@@ -175,21 +388,35 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly aircraft: AircraftVisual;
   private readonly terrain: TerrainRenderer;
   private readonly sky: SkySystem;
+  private readonly cascadedShadows: CascadedShadowController;
+  private readonly hybridPipeline: HybridRenderPipeline;
   private readonly terrainSample: TerrainSampleFunction;
+  private readonly aircraftKind: AircraftKind;
   private readonly contactShadow = createContactShadow();
   private readonly contactNormal = new THREE.Vector3(0, 1, 0);
   private readonly worldUp = new THREE.Vector3(0, 1, 0);
   private readonly resizeObserver: ResizeObserver;
+  private readonly contextLifecycle: WebGLContextLifecycle;
+  private readonly atmosphereChanges = new AtmosphereChangeTracker();
   private readonly aircraftQuaternion = new THREE.Quaternion();
   private readonly aircraftPosition = new THREE.Vector3();
   private readonly desiredCameraPosition = new THREE.Vector3();
   private readonly desiredLookTarget = new THREE.Vector3();
   private readonly smoothedLookTarget = new THREE.Vector3();
   private readonly cameraOffset = new THREE.Vector3();
+  private readonly chaseProfile: ChaseCameraProfile = {
+    distance: 13.5,
+    height: 5.1,
+    fieldOfView: 62,
+  };
   private readonly forward = new THREE.Vector3(1, 0, 0);
   private readonly localUp = new THREE.Vector3(0, 1, 0);
+  private readonly localSide = new THREE.Vector3(0, 0, 1);
+  private readonly cameraViewDirection = new THREE.Vector3(1, 0, 0);
   private readonly desiredCameraUp = new THREE.Vector3(0, 1, 0);
   private readonly smoothedCameraUp = new THREE.Vector3(0, 1, 0);
+  private readonly drawingBufferSize = new THREE.Vector2();
+  private readonly renderWorldOrigin = { x: 0, z: 0 };
   private readonly frameSamples = new Float32Array(120);
   private frameSampleIndex = 0;
   private frameSampleCount = 0;
@@ -197,7 +424,11 @@ export class FlightRenderer implements FlightRenderingSystem {
   private originZ = 0;
   private cameraMode: CameraMode = "chase";
   private cameraTrackingInitialized = false;
+  private cameraCutPending = true;
+  private terrainSceneRevision = -1;
   private quality: QualityLevel;
+  private requestedRenderingMode: RenderingMode;
+  private renderingMode: RenderingMode;
   private reducedMotion: boolean;
   private dynamicScale = 1;
   private diagnostics: RenderDiagnostics = {
@@ -208,12 +439,20 @@ export class FlightRenderer implements FlightRenderingSystem {
     geometries: 0,
     textures: 0,
     terrainTiles: 0,
+    requestedRenderingMode: "hybrid",
+    renderBackend: "webgl2",
+    renderTechnique: "planar-screen-space",
+    hardwareRayTracing: false,
+    renderingFallbackReason: null,
   };
 
   constructor(options: FlightRendererOptions) {
     this.domElement = options.canvas;
     this.quality = options.quality;
+    this.requestedRenderingMode = options.renderingMode;
+    this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
+    this.aircraftKind = options.aircraft ?? "trainer";
     this.terrainSample = options.terrainSample;
     const context = createFlightWebGLContext(options.canvas, options.quality !== "low");
     this.renderer = new THREE.WebGLRenderer({
@@ -228,6 +467,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
+    // Hybrid rendering performs several renderer.render() calls per displayed
+    // frame. Accumulate their diagnostics and reset explicitly at frame start.
+    this.renderer.info.autoReset = false;
     // Medium is the default preset. Disabling both the renderer and the sun at
     // medium meant most players could never see a shadow, so only low opts out.
     this.renderer.shadowMap.enabled = options.quality !== "low";
@@ -235,13 +477,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Select the supported filtered shadow implementation explicitly.
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.setClearColor(0x9db4bd, 1);
-    options.canvas.addEventListener("webglcontextlost", this.handleContextLost);
-    this.contextLostListener = options.onContextLost ?? null;
-
     this.scene.background = new THREE.Color(0x94b4c1);
     this.scene.fog = new THREE.Fog(0x91a9ac, 2_900, options.quality === "low" ? 8_200 : 11_800);
 
-    this.aircraft = createAircraft();
+    this.aircraft = createAircraft(this.aircraftKind);
     this.terrain = new TerrainRenderer(
       options.terrainSample,
       options.seed,
@@ -264,13 +503,93 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.smoothedLookTarget.set(10, 0, 0);
     this.scene.add(this.camera);
 
-    this.resizeObserver = new ResizeObserver(() => this.resize());
-    this.resizeObserver.observe(options.canvas);
     this.resize();
     this.applyPixelRatio();
+
+    this.cascadedShadows = new CascadedShadowController({
+      scene: this.scene,
+      camera: this.camera,
+      sunSource: this.sky.sunLight,
+      quality: this.quality,
+      renderingMode: this.renderingMode,
+      shadowCastingEnabled: this.quality !== "low",
+      autoRegisterScene: false,
+    });
+    this.cascadedShadows.register(this.terrain.group);
+    this.cascadedShadows.register(this.aircraft.group);
+    this.cascadedShadows.register(this.sky.group);
+    this.terrainSceneRevision = this.terrain.sceneRevision;
+
+    this.renderer.getDrawingBufferSize(this.drawingBufferSize);
+    const capabilities = detectRenderCapabilities(context);
+    const profile = resolveRenderProfile(
+      {
+        renderingMode: this.renderingMode,
+        quality: this.quality,
+        outputWidth: this.drawingBufferSize.x,
+        outputHeight: this.drawingBufferSize.y,
+      },
+      capabilities,
+    );
+    this.hybridPipeline = new HybridRenderPipeline({
+      renderer: this.renderer,
+      scene: this.scene,
+      camera: this.camera,
+      capabilities,
+      profile,
+      waterReflection: {
+        waterLevel: WATER_RENDER_LEVEL,
+        withWaterHidden: (renderReflection) =>
+          this.terrain.withWaterSurfaceHidden(renderReflection),
+        setReflection: (texture, textureMatrix, strength) =>
+          this.terrain.setWaterReflection(texture, textureMatrix, strength),
+      },
+      waterBathymetry: this.terrain.waterBathymetry,
+      prepareReflectionCamera: (reflectionCamera) =>
+        this.cascadedShadows.enableLayer(reflectionCamera),
+      releaseReflectionCamera: (reflectionCamera) =>
+        this.cascadedShadows.restoreCameraLayers(reflectionCamera),
+    });
+    this.terrain.setHybridWaterCompositeActive(
+      this.hybridPipeline.usesHybridComposite(),
+    );
+    // Register observation only after fallible pipeline construction. A
+    // constructor that throws cannot be disposed by its caller, so it must not
+    // leave a live observer retaining the half-built renderer.
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(options.canvas);
+    this.updateRenderingDataset();
+    // Three registered its own restoration hook in WebGLRenderer's constructor,
+    // so it restores renderer internals before this later listener rebuilds the
+    // simulator-owned targets and permits another frame.
+    this.contextLifecycle = new WebGLContextLifecycle(
+      options.canvas,
+      () => {
+        this.hybridPipeline.invalidateHistory("webgl-context-lost");
+        options.onContextLost?.();
+      },
+      () => {
+        const rebuilt = this.hybridPipeline.rebuildAfterContextRestore();
+        if (rebuilt) {
+          this.terrain.setHybridWaterCompositeActive(
+            this.hybridPipeline.usesHybridComposite(),
+          );
+          this.cameraCutPending = true;
+          this.renderer.info.reset();
+          this.resetFrameTimingHistory();
+        }
+        this.updateRenderingDataset();
+        if (rebuilt) options.onContextRestored?.();
+        return rebuilt;
+      },
+    );
   }
 
   setCameraMode(mode: CameraMode): void {
+    if (mode !== this.cameraMode) {
+      this.cameraTrackingInitialized = false;
+      this.cameraCutPending = true;
+    }
     this.cameraMode = mode;
     this.aircraft.setCockpitView(mode === "cockpit");
     this.camera.fov = mode === "cockpit" ? 69 : mode === "cinematic" ? 54 : 62;
@@ -281,13 +600,46 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (quality === this.quality) return;
     this.quality = quality;
     this.dynamicScale = 1;
+    this.resetFrameTimingHistory();
     this.renderer.shadowMap.enabled = quality !== "low";
     this.sky.setQuality(quality);
     this.terrain.setQuality(quality);
+    this.cascadedShadows.configure(quality, this.renderingMode);
+    this.cascadedShadows.setShadowCastingEnabled(quality !== "low");
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.far = quality === "low" ? 8_200 : quality === "high" ? 13_500 : 11_800;
     }
     this.applyPixelRatio();
+    this.updateRenderingDataset();
+  }
+
+  setRenderingMode(mode: RenderingMode): void {
+    this.requestedRenderingMode = mode;
+    const modeChanged = mode !== this.renderingMode;
+    this.renderer.getDrawingBufferSize(this.drawingBufferSize);
+    const applied = this.hybridPipeline.setProfileRequest({
+      renderingMode: mode,
+      quality: this.quality,
+      outputWidth: this.drawingBufferSize.x,
+      outputHeight: this.drawingBufferSize.y,
+    });
+    if (!applied) {
+      // The pipeline retained its known-good profile/resources and exposes the
+      // failure in diagnostics. Keep future resizes on that same working mode.
+      this.updateRenderingDataset();
+      return;
+    }
+    this.renderingMode = mode;
+    this.terrain.setHybridWaterCompositeActive(
+      this.hybridPipeline.usesHybridComposite(),
+    );
+    if (modeChanged) {
+      this.resetFrameTimingHistory();
+      this.cascadedShadows.configure(this.quality, mode);
+      this.cascadedShadows.setShadowCastingEnabled(this.quality !== "low");
+      this.cameraCutPending = true;
+    }
+    this.updateRenderingDataset();
   }
 
   setReducedMotion(reducedMotion: boolean): void {
@@ -296,22 +648,33 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void {
     this.sky.setAtmosphere(timeOfDay, weather);
+    this.terrain.setAtmosphere(timeOfDay, weather);
     if (this.scene.fog instanceof THREE.Fog) {
       const qualityFar = this.quality === "low" ? 8_200 : this.quality === "high" ? 13_500 : 11_800;
       const weatherScale = weather === "cloudy" ? 0.68 : weather === "clear" ? 1.12 : 1;
       this.scene.fog.far = qualityFar * weatherScale;
-      this.scene.fog.near = weather === "cloudy" ? 1_800 : 2_900;
+      // Keep nearby and mid-distance geology out of the fog blend. The old
+      // 2.9 km start bleached rock/snow variation long before a ridge reached
+      // the atmospheric horizon, leaving otherwise detailed mountains pale.
+      this.scene.fog.near = atmosphereFogNear(weather);
       this.scene.fog.color.set(
         timeOfDay === "dawn" ? 0x8b9298 : timeOfDay === "golden" ? 0xb5a389 : 0x91a9ac,
       );
     }
     this.renderer.toneMappingExposure =
       timeOfDay === "dawn" ? 0.88 : timeOfDay === "golden" ? 1 : 1.08;
+    if (this.atmosphereChanges.update(timeOfDay, weather)) {
+      // Sky/fog/color changes invalidate both temporal color reuse and the
+      // cached planar reflection, but repeated React/settings echoes do not.
+      this.hybridPipeline.invalidateHistory("atmosphere-change");
+    }
   }
 
   render(state: FlightVisualState, deltaSeconds: number): void {
+    if (this.contextLifecycle.renderingPaused) return;
     const safeDelta = THREE.MathUtils.clamp(deltaSeconds, 1 / 240, 0.1);
-    this.updateOrigin(state);
+    this.renderer.info.reset();
+    const originShifted = this.updateOrigin(state);
 
     this.aircraftPosition.set(
       state.position.x - this.originX,
@@ -329,10 +692,20 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.aircraft.update(state, safeDelta);
 
     this.terrain.update(state.position.x, state.position.z, this.originX, this.originZ);
+    if (this.terrain.sceneRevision !== this.terrainSceneRevision) {
+      this.terrainSceneRevision = this.terrain.sceneRevision;
+      this.cascadedShadows.refresh(this.terrain.group);
+    }
     this.updateContactShadow(state);
     this.updateCamera(state, safeDelta);
     this.sky.update(this.camera.position, safeDelta, this.originX, this.originZ);
-    this.renderer.render(this.scene, this.camera);
+    this.cascadedShadows.update();
+    this.hybridPipeline.render({
+      cameraCut: this.cameraCutPending,
+      originShifted,
+      worldOrigin: this.renderWorldOrigin,
+    });
+    this.cameraCutPending = false;
     this.updateDiagnostics(safeDelta);
   }
 
@@ -342,27 +715,21 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   dispose(): void {
     this.resizeObserver.disconnect();
-    this.renderer.domElement.removeEventListener("webglcontextlost", this.handleContextLost);
+    this.contextLifecycle.dispose();
+    this.hybridPipeline.dispose();
+    this.cascadedShadows.dispose();
     this.aircraft.dispose();
     this.contactShadow.geometry.dispose();
     this.contactShadow.material.dispose();
     this.terrain.dispose();
     this.sky.dispose();
-    this.renderer.dispose();
-    this.renderer.forceContextLoss();
+    disposeReusableWebGLRenderer(this.renderer);
   }
 
-  private contextLostListener: (() => void) | null = null;
-
-  private readonly handleContextLost = (event: Event): void => {
-    event.preventDefault();
-    this.contextLostListener?.();
-  };
-
-  private updateOrigin(state: FlightVisualState): void {
+  private updateOrigin(state: FlightVisualState): boolean {
     const nextOriginX = Math.round(state.position.x / 4_000) * 4_000;
     const nextOriginZ = Math.round(state.position.z / 4_000) * 4_000;
-    if (nextOriginX === this.originX && nextOriginZ === this.originZ) return;
+    if (nextOriginX === this.originX && nextOriginZ === this.originZ) return false;
     const shiftX = nextOriginX - this.originX;
     const shiftZ = nextOriginZ - this.originZ;
     this.camera.position.x -= shiftX;
@@ -371,6 +738,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.smoothedLookTarget.z -= shiftZ;
     this.originX = nextOriginX;
     this.originZ = nextOriginZ;
+    this.renderWorldOrigin.x = nextOriginX;
+    this.renderWorldOrigin.z = nextOriginZ;
+    return true;
   }
 
   private updateCamera(state: FlightVisualState, deltaSeconds: number): void {
@@ -382,30 +752,38 @@ export class FlightRenderer implements FlightRenderingSystem {
       return;
     }
 
+    const chaseProfile = this.cameraMode === "cinematic"
+      ? null
+      : chaseCameraProfile(this.aircraftKind, state.airspeed, this.chaseProfile);
     if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
       this.cameraOffset
         .set(Math.cos(angle) * 15 - 3, 5.2 + Math.sin(angle * 0.7) * 2, Math.sin(angle) * 15)
         .applyQuaternion(this.aircraftQuaternion);
     } else {
-      const speedPush = THREE.MathUtils.clamp((state.airspeed - 45) * 0.035, 0, 4.5);
+      // A jet should not become a distant speck simply because its normal IAS
+      // is several times the trainer's. Keep a stable airframe-relative chase
+      // distance; the moving terrain and subtle FOV change still convey speed.
       this.cameraOffset
-        .set(-13.5 - speedPush, 5.1, 0)
+        .set(-(chaseProfile?.distance ?? 13.5), chaseProfile?.height ?? 5.1, 0)
         .applyQuaternion(this.aircraftQuaternion);
     }
 
     const targetFov = this.cameraMode === "cinematic"
       ? 54
-      : 62 + THREE.MathUtils.clamp((state.airspeed - 38) * 0.075, 0, 6);
+      : (chaseProfile?.fieldOfView ?? 62);
     this.updateCameraFov(targetFov, deltaSeconds);
 
     this.desiredCameraPosition.copy(this.aircraftPosition).add(this.cameraOffset);
     this.forward.set(1, 0, 0).applyQuaternion(this.aircraftQuaternion);
     this.localUp.set(0, 1, 0).applyQuaternion(this.aircraftQuaternion);
-    this.desiredLookTarget
-      .copy(this.aircraftPosition)
-      .addScaledVector(this.forward, this.cameraMode === "cinematic" ? 4 : 13)
-      .addScaledVector(this.localUp, 0.4);
+    this.localSide.set(0, 0, 1).applyQuaternion(this.aircraftQuaternion);
+    this.desiredLookTarget.copy(this.aircraftPosition);
+    if (this.cameraMode === "cinematic") {
+      this.desiredLookTarget
+        .addScaledVector(this.forward, 4)
+        .addScaledVector(this.localUp, 0.4);
+    }
 
     // Spawn changes and resets teleport the simulation state. Smoothing from
     // the previous airborne camera down to a runway spawn makes the aircraft
@@ -415,11 +793,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       !this.cameraTrackingInitialized ||
       this.camera.position.distanceToSquared(this.desiredCameraPosition) > 140 * 140;
     if (cameraDiscontinuity) {
+      this.cameraCutPending = true;
       const bankFollow = this.reducedMotion ? 0 : this.cameraMode === "cinematic" ? 0.3 : 0.18;
       this.desiredCameraUp.set(0, 1, 0).lerp(this.localUp, bankFollow).normalize();
-      this.smoothedCameraUp.copy(this.desiredCameraUp);
       this.camera.position.copy(this.desiredCameraPosition);
       this.smoothedLookTarget.copy(this.desiredLookTarget);
+      this.cameraViewDirection.subVectors(this.smoothedLookTarget, this.camera.position);
+      setOrthogonalCameraUp(
+        this.smoothedCameraUp,
+        this.desiredCameraUp,
+        this.cameraViewDirection,
+        this.localUp.lengthSq() > 1e-8 ? this.localUp : this.localSide,
+      );
       this.camera.up.copy(this.smoothedCameraUp);
       this.camera.lookAt(this.smoothedLookTarget);
       this.cameraTrackingInitialized = true;
@@ -431,20 +816,30 @@ export class FlightRenderer implements FlightRenderingSystem {
     const positionAlpha = 1 - Math.exp(-positionRate * deltaSeconds);
     const lookAlpha = 1 - Math.exp(-lookRate * deltaSeconds);
     this.camera.position.lerp(this.desiredCameraPosition, positionAlpha);
-    this.smoothedLookTarget.lerp(this.desiredLookTarget, lookAlpha);
-
-    const airborneStall = state.stalled && !state.onGround;
-    if (!this.reducedMotion && (airborneStall || Math.abs(state.loadFactor - 1) > 1.15)) {
-      const buffet = airborneStall ? 0.075 : 0.025;
-      this.camera.position.y += Math.sin(state.simulationTime * 41) * buffet;
-      this.camera.position.z += Math.sin(state.simulationTime * 37) * buffet * 0.6;
+    if (this.cameraMode === "chase") {
+      // The central HUD reticle represents the aircraft flight path. Pointing
+      // the camera thirteen metres ahead placed the actual model below it and
+      // made control response look disconnected. Chase view now keeps the
+      // aircraft origin on the optical centre every frame; cinematic view keeps
+      // its deliberately led composition.
+      this.smoothedLookTarget.copy(this.desiredLookTarget);
+    } else {
+      this.smoothedLookTarget.lerp(this.desiredLookTarget, lookAlpha);
     }
+
     // Follow a small fraction of aircraft bank. A fully stabilized horizon
     // hides control response, while full roll is disorienting in a chase view.
     // This blend keeps terrain readable but makes turns immediately visible.
     const bankFollow = this.reducedMotion ? 0 : this.cameraMode === "cinematic" ? 0.3 : 0.18;
     this.desiredCameraUp.set(0, 1, 0).lerp(this.localUp, bankFollow).normalize();
-    this.smoothedCameraUp.lerp(this.desiredCameraUp, lookAlpha).normalize();
+    this.smoothedCameraUp.lerp(this.desiredCameraUp, lookAlpha);
+    this.cameraViewDirection.subVectors(this.smoothedLookTarget, this.camera.position);
+    setOrthogonalCameraUp(
+      this.smoothedCameraUp,
+      this.smoothedCameraUp,
+      this.cameraViewDirection,
+      this.localUp.lengthSq() > 1e-8 ? this.localUp : this.localSide,
+    );
     this.camera.up.copy(this.smoothedCameraUp);
     this.camera.lookAt(this.smoothedLookTarget);
   }
@@ -521,6 +916,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     const average = total / Math.max(this.frameSampleCount, 1);
     this.diagnostics = {
+      ...this.diagnostics,
       fps: average > 0 ? 1_000 / average : 0,
       frameTime: average,
       drawCalls: this.renderer.info.render.calls,
@@ -531,13 +927,22 @@ export class FlightRenderer implements FlightRenderingSystem {
     };
 
     if (this.frameSampleCount < this.frameSamples.length) return;
-    if (average > 23 && this.dynamicScale > 0.68) {
-      this.dynamicScale = Math.max(0.68, this.dynamicScale - 0.08);
-      this.applyPixelRatio();
-    } else if (average < 14.8 && this.dynamicScale < 1) {
-      this.dynamicScale = Math.min(1, this.dynamicScale + 0.04);
+    const nextScale = adaptiveResolutionScale(this.dynamicScale, average);
+    if (nextScale !== this.dynamicScale) {
+      this.dynamicScale = nextScale;
+      // A resize changes every render attachment and its workload. Reusing the
+      // old 120-frame average immediately scheduled three or four more resizes,
+      // producing a visible periodic pulse. Warm a fresh window before another
+      // bounded decision.
+      this.resetFrameTimingHistory();
       this.applyPixelRatio();
     }
+  }
+
+  private resetFrameTimingHistory(): void {
+    this.frameSamples.fill(0);
+    this.frameSampleIndex = 0;
+    this.frameSampleCount = 0;
   }
 
   private applyPixelRatio(): void {
@@ -553,5 +958,58 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    if (this.hybridPipeline) {
+      this.renderer.getDrawingBufferSize(this.drawingBufferSize);
+      const previousProfileRevision = this.hybridPipeline.getProfileRevision();
+      // Resolve from FlightRenderer's current settings. Using the pipeline's
+      // previous profile here left AO/SSR/reflection budgets stuck at the old
+      // quality tier after a live Graphics change.
+      const applied = this.hybridPipeline.setProfileRequest({
+        renderingMode: this.renderingMode,
+        quality: this.quality,
+        outputWidth: this.drawingBufferSize.x,
+        outputHeight: this.drawingBufferSize.y,
+      });
+      if (applied) {
+        this.terrain.setHybridWaterCompositeActive(
+          this.hybridPipeline.usesHybridComposite(),
+        );
+      }
+      if (
+        applied &&
+        this.hybridPipeline.getProfileRevision() !== previousProfileRevision
+      ) {
+        this.cameraCutPending = true;
+      }
+      this.updateRenderingDataset();
+    }
+  }
+
+  private updateRenderingDataset(): void {
+    if (!this.hybridPipeline) return;
+    const rendering = this.hybridPipeline.getDiagnostics();
+    const fallbackReason = rendering.downgradeReasons.join(" ") || null;
+    this.diagnostics = {
+      ...this.diagnostics,
+      requestedRenderingMode: this.requestedRenderingMode,
+      renderBackend: "webgl2",
+      renderTechnique: rendering.technique,
+      hardwareRayTracing: false,
+      renderingFallbackReason: fallbackReason,
+    };
+
+    // The legacy setting value is a request, not evidence of the technique or
+    // backend that is actually running. Keep each axis explicit for automated
+    // QA and never publish the ambiguous `data-rendering-mode` attribute.
+    delete this.domElement.dataset.renderingMode;
+    delete this.domElement.dataset.renderingTechnique;
+    this.domElement.dataset.requestedRenderingMode = requestedRenderingTelemetryKey(
+      this.requestedRenderingMode,
+    );
+    this.domElement.dataset.persistedRenderingModeKey = this.requestedRenderingMode;
+    this.domElement.dataset.renderingBackend = "webgl2";
+    this.domElement.dataset.effectiveRenderingTechnique = rendering.technique;
+    this.domElement.dataset.hardwareRayTracing = "false";
+    this.domElement.dataset.renderingFallback = fallbackReason ?? "none";
   }
 }

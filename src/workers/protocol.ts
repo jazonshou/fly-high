@@ -4,6 +4,7 @@ import type {
   FlightVisualState,
   WeatherPreset,
 } from "@/src/game/types";
+import type { AircraftKind } from "@/src/sim";
 
 export type SpawnKind = "airborne" | "runway";
 
@@ -21,6 +22,7 @@ export type SimulationCommand =
   | {
       type: "initialize";
       seed: number;
+      aircraft: AircraftKind;
       mode: FlightMode;
       spawn: SpawnKind;
       airborneStartAgl: number;
@@ -32,6 +34,7 @@ export type SimulationCommand =
   | { type: "weather"; weather: WeatherPreset }
   | { type: "attract"; enabled: boolean }
   | { type: "handoff"; mode: FlightMode }
+  | { type: "returnToAttract"; airborneStartAgl: number }
   | { type: "pause"; paused: boolean }
   | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number };
 

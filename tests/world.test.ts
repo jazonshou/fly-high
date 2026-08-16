@@ -4,6 +4,7 @@ import {
   MAX_WIND_SPEED,
   MIN_TERRAIN_HEIGHT,
   TerrainBiome,
+  assessAirportSite,
   createWorld,
   flattenHeightForAirport,
   getAirportInfluence,
@@ -19,6 +20,14 @@ import {
   sampleWind,
   worldToRunway,
 } from "../src/world";
+
+const SAFE_TEST_AIRPORT = Object.freeze({
+  centerX: -3_109.8434911464765,
+  centerZ: -7_702.165069913508,
+  elevation: 35.25,
+  headingRadians: 0.6698306877107214,
+});
+const SAFE_TEST_AIRPORT_SEED = "airport-safety-1-535203442";
 
 describe("world seeds", () => {
   it("hashes text, numbers, and signed coordinates deterministically", () => {
@@ -40,7 +49,7 @@ describe("world seeds", () => {
 });
 
 describe("terrain kernel", () => {
-  const world = createWorld("world-kernel-tests");
+  const world = createWorld("world-kernel-tests", { airport: false });
 
   it("returns identical samples for repeated positive and negative coordinates", () => {
     const coordinates = [
@@ -58,7 +67,8 @@ describe("terrain kernel", () => {
   });
 
   it("keeps collision height, normals, runway, and friction identical to visual semantics", () => {
-    const airport = world.airport!;
+    const runwayWorld = createWorld(SAFE_TEST_AIRPORT_SEED, { airport: SAFE_TEST_AIRPORT });
+    const airport = runwayWorld.airport!;
     const runwayPoint = runwayToWorld(airport, airport.runwayLength * 0.25, 0);
     const coordinates: Array<readonly [number, number]> = [
       [runwayPoint.x, runwayPoint.z],
@@ -75,11 +85,11 @@ describe("terrain kernel", () => {
     };
 
     for (const [x, z] of coordinates) {
-      const full = sampleTerrain(world, x, z);
-      const collision = sampleTerrainCollision(world, x, z, target);
+      const full = sampleTerrain(runwayWorld, x, z);
+      const collision = sampleTerrainCollision(runwayWorld, x, z, target);
       expect(collision).toBe(target);
       expect(collision.height).toBe(full.height);
-      expect(sampleTerrainCollisionHeight(world, x, z)).toBeCloseTo(full.height, 12);
+      expect(sampleTerrainCollisionHeight(runwayWorld, x, z)).toBeCloseTo(full.height, 12);
       expect(collision.normal.x).toBeCloseTo(full.normal.x, 12);
       expect(collision.normal.y).toBeCloseTo(full.normal.y, 12);
       expect(collision.normal.z).toBeCloseTo(full.normal.z, 12);
@@ -185,8 +195,21 @@ describe("terrain kernel", () => {
 });
 
 describe("starter airport terrain", () => {
-  const world = createWorld("runway-tests");
+  const world = createWorld(SAFE_TEST_AIRPORT_SEED, { airport: SAFE_TEST_AIRPORT });
   const airport = world.airport!;
+
+  it("keeps the explicit runway fixture on a naturally buildable site", () => {
+    expect(
+      assessAirportSite(
+        world.seedHash,
+        world.seaLevel,
+        airport.centerX,
+        airport.centerZ,
+        airport.headingRadians,
+        airport,
+      ).suitable,
+    ).toBe(true);
+  });
 
   it("flattens the entire paved rectangle to the configured elevation", () => {
     const positions = [
@@ -237,6 +260,55 @@ describe("starter airport terrain", () => {
     expect(sampleTerrainHeight(noAirport, 0, 0)).toBe(
       sampleNaturalTerrainHeight(noAirport.seedHash, 0, 0),
     );
+  });
+
+  it("selects dry, low-earthwork runways with clear approaches across many seeds", () => {
+    let availableAirportCount = 0;
+    for (let index = 0; index < 192; index += 1) {
+      const variedSeed = `airport-safety-${index}-${Math.imul(index + 17, 2_654_435_761) >>> 0}`;
+      const seededWorld = createWorld(variedSeed);
+      const seededAirport = seededWorld.airport;
+      if (!seededAirport) continue;
+      availableAirportCount += 1;
+      const assessment = assessAirportSite(
+        seededWorld.seedHash,
+        seededWorld.seaLevel,
+        seededAirport.centerX,
+        seededAirport.centerZ,
+        seededAirport.headingRadians,
+        seededAirport,
+      );
+
+      expect(
+        assessment.suitable,
+        `${variedSeed} airport assessment ${JSON.stringify(assessment)}`,
+      ).toBe(true);
+      expect(assessment.minimumPlatformClearance, `${variedSeed} runway dryness`).toBeGreaterThanOrEqual(8);
+      expect(assessment.platformRelief, `${variedSeed} platform relief`).toBeLessThanOrEqual(24);
+      expect(assessment.longitudinalGrade, `${variedSeed} runway grade`).toBeLessThanOrEqual(0.065);
+      expect(assessment.crossGrade, `${variedSeed} runway cross-grade`).toBeLessThanOrEqual(0.12);
+      expect(assessment.blendRelief, `${variedSeed} construction blend relief`).toBeLessThanOrEqual(50);
+      expect(assessment.elevation, `${variedSeed} airport elevation`).toBeLessThanOrEqual(260);
+      expect(assessment.minimumApproachClearance, `${variedSeed} approach dryness`).toBeGreaterThanOrEqual(2);
+      expect(assessment.approachObstruction, `${variedSeed} approach clearance`).toBeLessThanOrEqual(0);
+      expect(Math.abs(seededAirport.elevation - assessment.elevation)).toBeLessThanOrEqual(0.125);
+    }
+    // The selector intentionally refuses unsafe seeds, but the bounded search
+    // must still expose the runway start often enough to catch search collapse.
+    expect(availableAirportCount).toBeGreaterThanOrEqual(8);
+    expect(availableAirportCount).toBeLessThan(192);
+  }, 30_000);
+
+  it("keeps explicit custom airport sites exact instead of silently relocating them", () => {
+    const custom = createWorld("manual-airport", {
+      airport: { centerX: 12_345, centerZ: -6_789, headingRadians: 1.17, elevation: 88 },
+    }).airport!;
+    expect(custom).toMatchObject({
+      centerX: 12_345,
+      centerZ: -6_789,
+      headingRadians: 1.17,
+      elevation: 88,
+    });
   });
 });
 

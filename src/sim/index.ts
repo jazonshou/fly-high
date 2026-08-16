@@ -1,11 +1,17 @@
 export {
+  aircraftDefinition,
   calculateDragCoefficient,
+  calculateEngineThrust,
   calculateLiftCoefficient,
+  FAST_JET,
   LIGHT_TRAINER,
+  type AircraftKind,
   type AircraftDefinition,
   type LandingGearDefinition,
+  type PropulsionKind,
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
+export { DirectPitchRetention } from "./pitchRetention";
 export {
   DEFAULT_CONTROLS,
   DEFAULT_ENVIRONMENT,

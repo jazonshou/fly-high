@@ -1,6 +1,7 @@
 import type {
   FlightMode,
   QualityLevel,
+  RequestedRenderingMode,
   TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
@@ -8,12 +9,16 @@ import {
   DEFAULT_AIRBORNE_START_AGL,
   normalizeAirborneStartAgl,
 } from "@/src/workers/protocol";
+import type { AircraftKind } from "@/src/sim";
 
 export type UnitSystem = "aviation" | "metric";
 export type HudMode = "minimal" | "full" | "off";
+export type RenderingMode = RequestedRenderingMode;
 
 export interface GameSettings {
+  aircraft: AircraftKind;
   quality: QualityLevel;
+  renderingMode: RenderingMode;
   flightMode: FlightMode;
   /** Height above local terrain for explicit airborne starts, in metres. */
   airborneStartAgl: number;
@@ -27,6 +32,7 @@ export interface GameSettings {
   invertPitch: boolean;
   mouseFlight: boolean;
   reducedMotion: boolean;
+  /** @deprecated Retained only to migrate older stored preferences. */
   cameraShake: boolean;
   showDiagnostics: boolean;
   timeOfDay: TimeOfDayPreset;
@@ -37,7 +43,9 @@ export const SETTINGS_STORAGE_KEY = "aerolith.settings.v2";
 export const LEGACY_SETTINGS_STORAGE_KEY = "aerolith.settings.v1";
 
 export const DEFAULT_SETTINGS: GameSettings = {
+  aircraft: "trainer",
   quality: "medium",
+  renderingMode: "hybrid",
   // Full pilot authority is the default. Assistance is an explicit selection.
   flightMode: "unassisted",
   airborneStartAgl: DEFAULT_AIRBORNE_START_AGL,
@@ -51,7 +59,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   invertPitch: false,
   mouseFlight: false,
   reducedMotion: false,
-  cameraShake: true,
+  cameraShake: false,
   showDiagnostics: false,
   timeOfDay: "day",
   weather: "breezy",
@@ -69,7 +77,13 @@ function oneOf<T extends string>(value: unknown, values: readonly T[], fallback:
 export function validateSettings(value: unknown): GameSettings {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   return {
+    aircraft: oneOf(source.aircraft, ["trainer", "jet"] as const, DEFAULT_SETTINGS.aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
+    renderingMode: oneOf(
+      source.renderingMode,
+      ["balanced", "hybrid", "ray-traced"] as const,
+      DEFAULT_SETTINGS.renderingMode,
+    ),
     flightMode: oneOf(
       source.flightMode,
       ["scenic", "pilot", "unassisted"] as const,

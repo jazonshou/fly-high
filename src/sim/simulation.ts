@@ -1,5 +1,6 @@
 import {
   calculateDragCoefficient,
+  calculateEngineThrust,
   calculateLiftCoefficient,
   LIGHT_TRAINER,
   type AircraftDefinition,
@@ -46,13 +47,31 @@ const BODY_UP: Readonly<Vec3> = WORLD_UP;
 const BODY_FORWARD: Readonly<Vec3> = Object.freeze({ x: 1, y: 0, z: 0 });
 const ZERO_VECTOR: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: 0 });
 const MAX_GEAR_COMPRESSION = 0.22;
+const CRASH_IMPACT_SPEED = 8.5;
+const CRASH_SURFACE_CLEARANCE = 0.006;
+// The coefficient model remains valid through a stall, but at very high true
+// airspeed in thin air it can otherwise request non-structural frame-to-frame
+// accelerations and reach the old numerical safety clamp of 20 rad/s. These
+// deliberately generous envelopes limit rate and acceleration only; they never
+// target an attitude, so a stalled or tilted aircraft remains fully free to
+// depart and must still be recovered by the pilot.
+const MAX_AERO_ANGULAR_ACCELERATION: Readonly<Vec3> = Object.freeze({
+  x: 4,
+  y: 2.4,
+  z: 3.1,
+});
+const MAX_BODY_ANGULAR_RATE: Readonly<Vec3> = Object.freeze({
+  x: 4.25,
+  y: 2.35,
+  z: 3.1,
+});
 
 export const DEFAULT_CONTROLS: Readonly<FlightControls> = Object.freeze({
   throttle: 0.46,
   pitch: 0,
   roll: 0,
   yaw: 0,
-  trim: 0.065,
+  trim: 0,
   flaps: 0,
   brake: 0,
 });
@@ -407,9 +426,21 @@ function sanitizeState(state: FlightState): void {
   state.velocity.x = clamp(finiteOr(state.velocity.x, 0), -350, 350);
   state.velocity.y = clamp(finiteOr(state.velocity.y, 0), -350, 350);
   state.velocity.z = clamp(finiteOr(state.velocity.z, 0), -350, 350);
-  state.angularVelocity.x = clamp(finiteOr(state.angularVelocity.x, 0), -20, 20);
-  state.angularVelocity.y = clamp(finiteOr(state.angularVelocity.y, 0), -20, 20);
-  state.angularVelocity.z = clamp(finiteOr(state.angularVelocity.z, 0), -20, 20);
+  state.angularVelocity.x = clamp(
+    finiteOr(state.angularVelocity.x, 0),
+    -MAX_BODY_ANGULAR_RATE.x,
+    MAX_BODY_ANGULAR_RATE.x,
+  );
+  state.angularVelocity.y = clamp(
+    finiteOr(state.angularVelocity.y, 0),
+    -MAX_BODY_ANGULAR_RATE.y,
+    MAX_BODY_ANGULAR_RATE.y,
+  );
+  state.angularVelocity.z = clamp(
+    finiteOr(state.angularVelocity.z, 0),
+    -MAX_BODY_ANGULAR_RATE.z,
+    MAX_BODY_ANGULAR_RATE.z,
+  );
   normalizeQuaternionInto(state.orientation, state.orientation);
 }
 
@@ -625,6 +656,147 @@ function projectOutOfTerrain(
   }
 }
 
+function airframeImpactSpeed(
+  state: FlightState,
+  environment: EnvironmentInput,
+  aircraft: AircraftDefinition,
+  scratch: Scratch,
+): number {
+  if (!environment.terrain) return 0;
+  let maximumImpactSpeed = 0;
+  const referenceX = state.position.x;
+  const referenceZ = state.position.z;
+
+  for (const point of aircraft.airframeContactPoints) {
+    rotateVectorInto(scratch.tempA, state.orientation, point);
+    const pointX = referenceX + scratch.tempA.x;
+    const pointY = state.position.y + scratch.tempA.y;
+    const pointZ = referenceZ + scratch.tempA.z;
+    const sample = terrainAt(environment, pointX, pointZ);
+    if (!sample) continue;
+
+    scratch.tempB.x = finiteOr(sample.normal?.x, 0);
+    scratch.tempB.y = finiteOr(sample.normal?.y, 1);
+    scratch.tempB.z = finiteOr(sample.normal?.z, 0);
+    normalizeInto(scratch.tempB, scratch.tempB, WORLD_UP);
+    if (scratch.tempB.y < 0.05) {
+      scratch.tempB.x = 0;
+      scratch.tempB.y = 1;
+      scratch.tempB.z = 0;
+    }
+    const surfaceHeight =
+      typeof environment.terrain === "function"
+        ? sample.height
+        : sample.height -
+          (scratch.tempB.x * (pointX - referenceX) +
+            scratch.tempB.z * (pointZ - referenceZ)) /
+            scratch.tempB.y;
+    if (surfaceHeight - pointY <= 0) continue;
+
+    crossInto(scratch.relativeBody, state.angularVelocity, point);
+    rotateVectorInto(scratch.relativeWorld, state.orientation, scratch.relativeBody);
+    const normalVelocity =
+      (state.velocity.x + scratch.relativeWorld.x) * scratch.tempB.x +
+      (state.velocity.y + scratch.relativeWorld.y) * scratch.tempB.y +
+      (state.velocity.z + scratch.relativeWorld.z) * scratch.tempB.z;
+    maximumImpactSpeed = Math.max(maximumImpactSpeed, Math.max(0, -normalVelocity));
+  }
+
+  return maximumImpactSpeed;
+}
+
+function placeCrashedAirframeOnTerrain(
+  state: FlightState,
+  environment: EnvironmentInput,
+  aircraft: AircraftDefinition,
+  scratch: Scratch,
+): void {
+  if (!environment.terrain) return;
+  let requiredCgHeight = Number.NEGATIVE_INFINITY;
+
+  const includePoint = (point: Readonly<Vec3>): void => {
+    rotateVectorInto(scratch.tempA, state.orientation, point);
+    const pointX = state.position.x + scratch.tempA.x;
+    const pointZ = state.position.z + scratch.tempA.z;
+    const sample = terrainAt(environment, pointX, pointZ);
+    if (!sample) return;
+    let surfaceHeight = sample.height;
+    if (typeof environment.terrain !== "function") {
+      scratch.tempB.x = finiteOr(sample.normal?.x, 0);
+      scratch.tempB.y = finiteOr(sample.normal?.y, 1);
+      scratch.tempB.z = finiteOr(sample.normal?.z, 0);
+      normalizeInto(scratch.tempB, scratch.tempB, WORLD_UP);
+      if (scratch.tempB.y < 0.05) {
+        scratch.tempB.x = 0;
+        scratch.tempB.y = 1;
+        scratch.tempB.z = 0;
+      }
+      surfaceHeight -=
+        (scratch.tempB.x * scratch.tempA.x + scratch.tempB.z * scratch.tempA.z) /
+        scratch.tempB.y;
+    }
+    requiredCgHeight = Math.max(
+      requiredCgHeight,
+      surfaceHeight - scratch.tempA.y + CRASH_SURFACE_CLEARANCE,
+    );
+  };
+
+  for (const gear of aircraft.gear) includePoint(gear.position);
+  for (const point of aircraft.airframeContactPoints) includePoint(point);
+  if (Number.isFinite(requiredCgHeight)) state.position.y = requiredCgHeight;
+}
+
+/**
+ * A damaging impact is terminal until reset. The ordinary suspension solver is
+ * intentionally bypassed so its stored compression cannot launch the wreck
+ * back into the air. Orientation and X/Z remain at the impact pose while the
+ * lowest visible gear/airframe proxy is placed on sampled terrain once.
+ */
+function settleCrashedState(
+  state: FlightState,
+  environment: EnvironmentInput,
+  aircraft: AircraftDefinition,
+  scratch: Scratch,
+  dt: number,
+  placeOnTerrain: boolean,
+): void {
+  if (placeOnTerrain) {
+    placeCrashedAirframeOnTerrain(state, environment, aircraft, scratch);
+  }
+  state.velocity.x = 0;
+  state.velocity.y = 0;
+  state.velocity.z = 0;
+  state.angularVelocity.x = 0;
+  state.angularVelocity.y = 0;
+  state.angularVelocity.z = 0;
+  state.actuators.throttle = 0;
+  state.actuators.pitch = 0;
+  state.actuators.roll = 0;
+  state.actuators.yaw = 0;
+  state.actuators.trim = 0;
+  state.actuators.brake = 1;
+  state.engineRpm = 0;
+  state.onGround = true;
+  state.crashed = true;
+  state.dynamics.angleOfAttack = 0;
+  state.dynamics.sideslip = 0;
+  state.dynamics.airspeed = 0;
+  state.dynamics.airDensity = standardAirDensity(state.position.y);
+  state.dynamics.liftCoefficient = 0;
+  state.dynamics.dragCoefficient = 0;
+  state.dynamics.liftForce = 0;
+  state.dynamics.dragForce = 0;
+  state.dynamics.thrustForce = 0;
+  state.dynamics.sideForce = 0;
+  state.dynamics.loadFactor = 0;
+  state.dynamics.contactCount = aircraft.gear.length;
+  state.dynamics.totalForceWorld.x = 0;
+  state.dynamics.totalForceWorld.y = 0;
+  state.dynamics.totalForceWorld.z = 0;
+  state.time += dt;
+  sanitizeState(state);
+}
+
 function integrateSubstep(
   state: FlightState,
   controls: FlightControls,
@@ -634,6 +806,10 @@ function integrateSubstep(
   scratch: Scratch,
 ): void {
   sanitizeState(state);
+  if (state.crashed) {
+    settleCrashedState(state, environment, aircraft, scratch, dt, false);
+    return;
+  }
   updateActuators(state.actuators, controls, dt);
 
   const gravity = clamp(finiteOr(environment.gravity, STANDARD_GRAVITY), 0, 30);
@@ -705,14 +881,13 @@ function integrateSubstep(
     scratch.liftDirectionBody.z * liftForce +
     BODY_RIGHT.z * sideForce;
 
-  const densityRatio = clamp(airDensity / SEA_LEVEL_DENSITY, 0.1, 1.2);
-  const availablePower = aircraft.maxEnginePower * densityRatio ** 0.85;
   const forwardAirspeed = Math.max(0, scratch.relativeBody.x);
-  const powerLimitedThrust =
-    (availablePower * aircraft.propellerEfficiency) / Math.max(forwardAirspeed, 30);
-  const thrustForce =
-    state.actuators.throttle *
-    Math.min(aircraft.maxStaticThrust * densityRatio, powerLimitedThrust);
+  const thrustForce = calculateEngineThrust(
+    aircraft,
+    state.actuators.throttle,
+    airDensity,
+    forwardAirspeed,
+  );
   scratch.forceBody.x = scratch.aeroForceBody.x + thrustForce;
   scratch.forceBody.y = scratch.aeroForceBody.y;
   scratch.forceBody.z = scratch.aeroForceBody.z;
@@ -747,12 +922,34 @@ function integrateSubstep(
   const pitchMoment = dynamicPressure * aircraft.wingArea * aircraft.meanChord * pitchCoefficient;
   const rollMoment = dynamicPressure * aircraft.wingArea * aircraft.wingSpan * rollCoefficient;
   const yawMoment = dynamicPressure * aircraft.wingArea * aircraft.wingSpan * yawCoefficient;
-  scratch.torqueBody.x = rollMoment;
-  scratch.torqueBody.y = yawMoment;
-  scratch.torqueBody.z = pitchMoment;
+  scratch.torqueBody.x = clamp(
+    rollMoment,
+    -aircraft.inertia.x * MAX_AERO_ANGULAR_ACCELERATION.x,
+    aircraft.inertia.x * MAX_AERO_ANGULAR_ACCELERATION.x,
+  );
+  scratch.torqueBody.y = clamp(
+    yawMoment,
+    -aircraft.inertia.y * MAX_AERO_ANGULAR_ACCELERATION.y,
+    aircraft.inertia.y * MAX_AERO_ANGULAR_ACCELERATION.y,
+  );
+  scratch.torqueBody.z = clamp(
+    pitchMoment,
+    -aircraft.inertia.z * MAX_AERO_ANGULAR_ACCELERATION.z,
+    aircraft.inertia.z * MAX_AERO_ANGULAR_ACCELERATION.z,
+  );
 
   const wasOnGround = state.onGround;
   const contactPossible = couldReachTerrain(state, environment, aircraft);
+  if (contactPossible) {
+    state.peakImpactSpeed = Math.max(
+      state.peakImpactSpeed,
+      airframeImpactSpeed(state, environment, aircraft, scratch),
+    );
+    if (state.peakImpactSpeed > CRASH_IMPACT_SPEED) {
+      settleCrashedState(state, environment, aircraft, scratch, dt, true);
+      return;
+    }
+  }
   const contactCount = contactPossible
     ? applyGroundForces(state, environment, aircraft, scratch)
     : 0;
@@ -794,7 +991,10 @@ function integrateSubstep(
     scratch.torqueBody.y = 0;
     scratch.torqueBody.z = 0;
   }
-  if (state.peakImpactSpeed > 8.5) state.crashed = true;
+  if (state.peakImpactSpeed > CRASH_IMPACT_SPEED) {
+    settleCrashedState(state, environment, aircraft, scratch, dt, true);
+    return;
+  }
 
   const inverseMass = 1 / aircraft.mass;
   state.velocity.x += scratch.forceWorld.x * inverseMass * dt;
@@ -902,7 +1102,9 @@ export function getFlightTelemetry(
   rotateVectorInto(forward, state.orientation, BODY_FORWARD);
   rotateVectorInto(right, state.orientation, BODY_RIGHT);
   rotateVectorInto(up, state.orientation, BODY_UP);
-  const altitudeAgl = gearClearanceAboveTerrain(state, environment, aircraft);
+  const altitudeAgl = state.crashed
+    ? 0
+    : gearClearanceAboveTerrain(state, environment, aircraft);
   const airDensity = Math.max(0.001, state.dynamics.airDensity);
   const equivalentAirspeed = state.dynamics.airspeed * Math.sqrt(airDensity / SEA_LEVEL_DENSITY);
   // Angle of attack and sideslip are undefined when the relative airflow is

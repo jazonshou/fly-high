@@ -1,13 +1,21 @@
-import type { FlightMode, FlightVisualState, RenderDiagnostics } from "@/src/game/types";
+import type {
+  CameraMode,
+  FlightMode,
+  FlightVisualState,
+  RenderDiagnostics,
+} from "@/src/game/types";
 import type { HudMode, UnitSystem } from "@/src/settings";
+import type { AircraftKind } from "@/src/sim";
 
 interface HudProps {
   state: FlightVisualState;
+  aircraft: AircraftKind;
   mode: HudMode;
   flightMode: FlightMode;
   units: UnitSystem;
   diagnostics: RenderDiagnostics | null;
   showDiagnostics: boolean;
+  cameraMode: CameraMode;
   cameraLabel: string;
   seedLabel: string;
   mouseFlight: boolean;
@@ -16,6 +24,19 @@ interface HudProps {
 function formatHeading(heading: number): string {
   const normalized = ((heading % 360) + 360) % 360;
   return Math.round(normalized).toString().padStart(3, "0");
+}
+
+function renderTechniqueLabel(diagnostics: RenderDiagnostics): string {
+  if (diagnostics.renderTechnique === "ray-marched-screen-space") return "SCREEN-SPACE RAY MARCH";
+  if (diagnostics.renderTechnique === "planar-screen-space") return "PLANAR + SCREEN-SPACE";
+  if (diagnostics.renderTechnique === "canvas2d") return "CANVAS 2D";
+  return "FORWARD";
+}
+
+function requestedRenderingLabel(diagnostics: RenderDiagnostics): string {
+  return diagnostics.requestedRenderingMode === "ray-traced"
+    ? "screen-space ray march"
+    : diagnostics.requestedRenderingMode;
 }
 
 function MetricTape({
@@ -43,11 +64,13 @@ function MetricTape({
 
 export function Hud({
   state,
+  aircraft,
   mode,
   flightMode,
   units,
   diagnostics,
   showDiagnostics,
+  cameraMode,
   cameraLabel,
   seedLabel,
   mouseFlight,
@@ -71,10 +94,6 @@ export function Hud({
   return (
     <div className={`flight-hud flight-hud--${mode}`} aria-live="off">
       <div className="flight-hud__topline">
-        <div className="hud-brand">
-          <span className="hud-brand__mark">A</span>
-          <span>AEROLITH</span>
-        </div>
         <div className="hud-session">
           <span>{controlModeLabel}</span>
           <span>{cameraLabel}</span>
@@ -105,19 +124,21 @@ export function Hud({
           <span className="attitude__line attitude__line--down-one" />
           <span className="attitude__line attitude__line--down-two" />
         </div>
-        <div className="attitude__aircraft">
-          <span />
-          <i />
-          <span />
-        </div>
+        {cameraMode !== "cinematic" ? (
+          <div className="attitude__aircraft">
+            <span />
+            <i />
+            <span />
+          </div>
+        ) : null}
         <div className="attitude__heading">
           <small>HDG</small>
           <strong>{formatHeading(state.heading)}</strong>
         </div>
       </div>
 
-      {state.stalled && !state.onGround ? <div className="flight-alert flight-alert--danger">STALL · LOWER NOSE</div> : null}
-      {(!state.stalled || state.onGround) && Math.abs(state.bank) > 70 ? (
+      {!state.crashed && state.stalled && !state.onGround ? <div className="flight-alert flight-alert--danger">STALL · LOWER NOSE</div> : null}
+      {!state.crashed && (!state.stalled || state.onGround) && Math.abs(state.bank) > 70 ? (
         <div className="flight-alert flight-alert--warning">BANK ANGLE</div>
       ) : null}
       {state.crashed ? <div className="flight-alert flight-alert--danger">AIRCRAFT DAMAGED · PRESS R</div> : null}
@@ -131,9 +152,13 @@ export function Hud({
               <em>{verticalUnit}</em>
             </div>
             <div className="instrument-readout">
-              <small>RPM</small>
-              <strong>{Math.round(state.engineRpm / 10) * 10}</strong>
-              <em>PROP</em>
+              <small>{aircraft === "jet" ? "N2" : "RPM"}</small>
+              <strong>
+                {aircraft === "jet"
+                  ? Math.round(state.engineRpm)
+                  : Math.round(state.engineRpm / 10) * 10}
+              </strong>
+              <em>{aircraft === "jet" ? "%" : "PROP"}</em>
             </div>
             <div className="instrument-readout">
               <small>AOA</small>
@@ -180,16 +205,6 @@ export function Hud({
               <i><b style={{ width: `${(state.trim * 0.5 + 0.5) * 100}%` }} /></i>
               <strong>{state.trim > 0 ? "+" : ""}{Math.round(state.trim * 100)}</strong>
             </div>
-            <div className="control-status__meter">
-              <span>FLAP</span>
-              <i><b style={{ width: `${state.flaps * 100}%` }} /></i>
-              <strong>{Math.round(state.flaps * 30)}°</strong>
-            </div>
-            <div className="control-status__meter">
-              <span>BRK</span>
-              <i><b style={{ width: `${state.brake * 100}%` }} /></i>
-              <strong>{Math.round(state.brake * 100)}</strong>
-            </div>
           </div>
         </div>
       </div>
@@ -198,7 +213,7 @@ export function Hud({
         <span>W nose down · S nose up</span>
         <span>A left · D right</span>
         <span>Q left rudder · E right</span>
-        <span>+ power · − reduce</span>
+        <span>Shift power · Ctrl reduce</span>
         <span>C view</span>
         <span>Esc pause</span>
         {mouseFlight ? <span className="hud-help__active">Click view for mouse yoke</span> : null}
@@ -211,6 +226,17 @@ export function Hud({
           <span>{diagnostics.drawCalls} calls</span>
           <span>{Math.round(diagnostics.triangles / 1_000)}k tris</span>
           <span>{diagnostics.terrainTiles} tiles</span>
+          <span className="diagnostics__wide">
+            {diagnostics.renderBackend.toUpperCase()} · {renderTechniqueLabel(diagnostics)}
+          </span>
+          <span className="diagnostics__wide">
+            Requested: {requestedRenderingLabel(diagnostics)} · Hardware RT: OFF
+          </span>
+          {diagnostics.renderingFallbackReason ? (
+            <span className="diagnostics__wide diagnostics__fallback">
+              {diagnostics.renderingFallbackReason}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -7,8 +7,9 @@
   --accent: #e1fe76;
   --warning: #ffbd63;
   --danger: #ff766f;
-  --font-ui: "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-ui: "Avenir Next", "Segoe UI Variable", "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-display: "DIN Alternate", "Bahnschrift SemiCondensed", "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Mono", "Roboto Mono", Consolas, "Liberation Mono", monospace;
 }
 
 * {

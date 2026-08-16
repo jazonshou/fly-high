@@ -13,6 +13,14 @@ export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
 export type TimeOfDayPreset = "dawn" | "day" | "golden";
 export type WeatherPreset = "clear" | "breezy" | "cloudy";
+/** Persisted rendering preference. `ray-traced` is a legacy storage key, not a backend claim. */
+export type RequestedRenderingMode = "balanced" | "hybrid" | "ray-traced";
+export type RenderBackend = "webgl2" | "canvas2d";
+export type RenderTechnique =
+  | "forward"
+  | "planar-screen-space"
+  | "ray-marched-screen-space"
+  | "canvas2d";
 
 export interface FlightVisualState {
   position: Vec3State;
@@ -65,6 +73,12 @@ export interface RenderDiagnostics {
   geometries: number;
   textures: number;
   terrainTiles: number;
+  /** What the user selected; reported separately from what is actually running. */
+  requestedRenderingMode: RequestedRenderingMode;
+  renderBackend: RenderBackend;
+  renderTechnique: RenderTechnique;
+  hardwareRayTracing: boolean;
+  renderingFallbackReason: string | null;
 }
 
 export const INITIAL_VISUAL_STATE: FlightVisualState = {

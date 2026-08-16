@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { normalizedEngineSpeed } from "../src/audio";
 import {
   applyDeadZone,
   keyboardRollCommand,
   keyboardRollDirection,
+  keyboardThrottleDirection,
   responseCurve,
   slewAxis,
   smoothAxis,
@@ -32,7 +34,21 @@ import {
   MIN_AIRBORNE_START_AGL,
 } from "../src/workers/protocol";
 
+const SAFE_RUNWAY_FIXTURE_SEED = "airport-safety-1-535203442";
+const SAFE_RUNWAY_FIXTURE = Object.freeze({
+  centerX: -3_109.8434911464765,
+  centerZ: -7_702.165069913508,
+  elevation: 35.25,
+  headingRadians: 0.6698306877107214,
+});
+
 describe("input shaping", () => {
+  it("normalizes piston RPM and jet N2 on their own engine scales", () => {
+    expect(normalizedEngineSpeed("trainer", 2_600)).toBe(1);
+    expect(normalizedEngineSpeed("jet", 100)).toBe(1);
+    expect(normalizedEngineSpeed("jet", 80)).toBeCloseTo(0.8, 8);
+  });
+
   it("maps A to left bank and D to right bank for taps and held keys", () => {
     // Compatibility sign for the current rendered aircraft/body basis.
     expect(keyboardRollDirection("KeyA")).toBe(1);
@@ -41,6 +57,18 @@ describe("input shaping", () => {
     expect(keyboardRollCommand(new Set(["KeyA"]))).toBe(1);
     expect(keyboardRollCommand(new Set(["KeyD"]))).toBe(-1);
     expect(keyboardRollCommand(new Set(["KeyA", "KeyD"]))).toBe(0);
+  });
+
+  it("uses Shift/Ctrl as the sole keyboard power pair", () => {
+    expect(keyboardThrottleDirection(new Set(["ShiftLeft"]))).toBe(1);
+    expect(keyboardThrottleDirection(new Set(["ShiftRight"]))).toBe(1);
+    expect(keyboardThrottleDirection(new Set(["ControlLeft"]))).toBe(-1);
+    expect(keyboardThrottleDirection(new Set(["ControlRight"]))).toBe(-1);
+    expect(keyboardThrottleDirection(new Set(["ShiftLeft", "ControlLeft"]))).toBe(0);
+    expect(keyboardThrottleDirection(new Set(["Equal"]))).toBe(0);
+    expect(keyboardThrottleDirection(new Set(["Minus"]))).toBe(0);
+    expect(keyboardThrottleDirection(new Set(["NumpadAdd"]))).toBe(0);
+    expect(keyboardThrottleDirection(new Set(["NumpadSubtract"]))).toBe(0);
   });
 
   it("removes small controller noise and rescales the remainder", () => {
@@ -79,7 +107,9 @@ describe("input shaping", () => {
 
 describe("settings", () => {
   it("defaults to direct pilot authority and validates airborne start height", () => {
+    expect(DEFAULT_SETTINGS.aircraft).toBe("trainer");
     expect(DEFAULT_SETTINGS.flightMode).toBe("unassisted");
+    expect(DEFAULT_SETTINGS.renderingMode).toBe("hybrid");
     expect(validateSettings({ airborneStartAgl: -10 }).airborneStartAgl).toBe(
       MIN_AIRBORNE_START_AGL,
     );
@@ -94,35 +124,47 @@ describe("settings", () => {
   it("clamps persisted values and ignores invalid enum members", () => {
     const result = validateSettings({
       quality: "impossible",
+      renderingMode: "cinematic",
       masterVolume: 8,
       sensitivity: -100,
       mouseFlight: true,
       timeOfDay: "midnight",
       weather: "hurricane",
+      aircraft: "airliner",
     });
     expect(result.quality).toBe(DEFAULT_SETTINGS.quality);
+    expect(result.renderingMode).toBe(DEFAULT_SETTINGS.renderingMode);
     expect(result.masterVolume).toBe(1);
     expect(result.sensitivity).toBe(0.35);
     expect(result.mouseFlight).toBe(true);
     expect(result.timeOfDay).toBe(DEFAULT_SETTINGS.timeOfDay);
     expect(result.weather).toBe(DEFAULT_SETTINGS.weather);
+    expect(result.aircraft).toBe("trainer");
   });
 
-  it("persists an explicit Scenic selection in v2 storage", () => {
+  it("persists explicit flight and rendering selections in v2 storage", () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => values.set(key, value),
     };
     saveSettings(
-      { ...DEFAULT_SETTINGS, flightMode: "scenic", airborneStartAgl: 975 },
+      {
+        ...DEFAULT_SETTINGS,
+        flightMode: "scenic",
+        renderingMode: "ray-traced",
+        aircraft: "jet",
+        airborneStartAgl: 975,
+      },
       storage,
     );
 
     expect(values.has(SETTINGS_STORAGE_KEY)).toBe(true);
     expect(loadSettings(storage)).toMatchObject({
       flightMode: "scenic",
+      renderingMode: "ray-traced",
       airborneStartAgl: 975,
+      aircraft: "jet",
     });
   });
 
@@ -137,8 +179,26 @@ describe("settings", () => {
     expect(loadSettings(storage)).toMatchObject({
       quality: "high",
       flightMode: "unassisted",
+      renderingMode: "hybrid",
       airborneStartAgl: DEFAULT_AIRBORNE_START_AGL,
     });
+  });
+
+  it("migrates an existing v2 payload without a rendering mode to Hybrid", () => {
+    const storage = {
+      getItem: (key: string) =>
+        key === SETTINGS_STORAGE_KEY
+          ? JSON.stringify({ quality: "high", flightMode: "pilot" })
+          : null,
+    };
+
+    expect(loadSettings(storage)).toMatchObject({
+      quality: "high",
+      flightMode: "pilot",
+      renderingMode: "hybrid",
+    });
+    expect(validateSettings({ renderingMode: "balanced" }).renderingMode).toBe("balanced");
+    expect(validateSettings({ renderingMode: "ray-traced" }).renderingMode).toBe("ray-traced");
   });
 
   it("creates portable seed labels and URLs", () => {
@@ -166,7 +226,9 @@ describe("flight spawn contract", () => {
   });
 
   it("keeps runway starts on their landing gear and clamps airborne height", () => {
-    const world = createWorld(0x51a7e);
+    const world = createWorld(SAFE_RUNWAY_FIXTURE_SEED, {
+      airport: SAFE_RUNWAY_FIXTURE,
+    });
     const runway = new FlightSimulator({
       spawn: createSimulationSpawn(world, "runway", 975),
       environment: {
@@ -188,6 +250,14 @@ describe("flight spawn contract", () => {
       MIN_AIRBORNE_START_AGL,
       8,
     );
+  });
+
+  it("rejects a runway spawn explicitly when a world has no safe airport", () => {
+    const airportless = createWorld("airportless-spawn", { airport: false });
+    expect(() => createSimulationSpawn(airportless, "runway", 450)).toThrow(
+      "Runway start unavailable: this world has no safe airport site",
+    );
+    expect(() => createSimulationSpawn(airportless, "airborne", 450)).not.toThrow();
   });
 });
 

@@ -7,8 +7,9 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { FlightRendererOptions } from "./FlightRenderer";
+import type { RenderingMode } from "@/src/settings";
 import { isInsideAirportSceneryClearance } from "./TerrainRenderer";
-import type { FlightRenderingSystem } from "./types";
+import { requestedRenderingTelemetryKey, type FlightRenderingSystem } from "./types";
 
 function sceneryHash01(x: number, z: number, seed: number): number {
   let value = Math.imul(x ^ seed, 0x45d9f3b) ^ Math.imul(z, 0x27d4eb2d);
@@ -25,6 +26,9 @@ interface CachedScenerySample {
   height: number;
   isRunway: boolean;
 }
+
+const DEFAULT_CANVAS_FALLBACK_REASON =
+  "WebGL 2 is unavailable or disabled; Canvas 2D compatibility renderer active.";
 
 interface CanvasRidgeRefreshInput {
   hasProfiles: boolean;
@@ -58,6 +62,25 @@ export function shouldRefreshCanvasRidgeProfiles(input: CanvasRidgeRefreshInput)
 }
 
 /**
+ * Keeps the compatibility renderer on the same screen-space contract as the
+ * WebGL chase camera: the aircraft origin sits under the fixed HUD reticle and
+ * a positive simulator bank is presented as a visual left bank. Cinematic mode
+ * retains its intentionally offset composition because its reticle is hidden.
+ */
+export function canvasAircraftScreenPose(
+  width: number,
+  height: number,
+  bankDegrees: number,
+  cinematic: boolean,
+): { centerX: number; centerY: number; rotation: number } {
+  return {
+    centerX: width * (cinematic ? 0.43 : 0.5),
+    centerY: height * (cinematic ? 0.57 : 0.5),
+    rotation: (-bankDegrees * Math.PI) / 900,
+  };
+}
+
+/**
  * A dependency-free compatibility view for browsers where WebGL 2 is blocked
  * (remote desktops, virtualized previews, locked-down enterprise machines).
  * The flight model and all controls remain identical; only presentation changes.
@@ -66,6 +89,7 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
   private readonly options: FlightRendererOptions;
+  private readonly fallbackReason: string;
   private readonly replacedCanvas: HTMLCanvasElement | null;
   private readonly resizeObserver: ResizeObserver;
   private cameraMode: CameraMode = "chase";
@@ -73,6 +97,7 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
   private reducedMotion: boolean;
   private timeOfDay: TimeOfDayPreset = "day";
   private weather: WeatherPreset = "breezy";
+  private requestedRenderingMode: RenderingMode = "hybrid";
   private width = 1;
   private height = 1;
   private pixelRatio = 1;
@@ -91,9 +116,17 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     geometries: 0,
     textures: 0,
     terrainTiles: 0,
+    requestedRenderingMode: "hybrid",
+    renderBackend: "canvas2d",
+    renderTechnique: "canvas2d",
+    hardwareRayTracing: false,
+    renderingFallbackReason: DEFAULT_CANVAS_FALLBACK_REASON,
   };
 
-  constructor(options: FlightRendererOptions) {
+  constructor(
+    options: FlightRendererOptions,
+    fallbackReason = DEFAULT_CANVAS_FALLBACK_REASON,
+  ) {
     let canvas = options.canvas;
     let context = canvas.getContext("2d", { alpha: false });
     if (!context) {
@@ -110,11 +143,14 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     this.domElement = canvas;
     this.context = context;
     this.options = { ...options, canvas };
+    this.fallbackReason = fallbackReason;
     this.quality = options.quality;
+    this.requestedRenderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
     this.resize();
+    this.updateRenderingTelemetry();
   }
 
   setCameraMode(mode: CameraMode): void {
@@ -126,6 +162,14 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     this.ridgeProfiles = [];
     this.scenerySampleCache.clear();
     this.resize();
+  }
+
+  setRenderingMode(mode: RenderingMode): void {
+    // The dependency-free compatibility renderer is intentionally the
+    // balanced fallback. The preference is retained by settings and takes
+    // effect automatically when WebGL 2 becomes available again.
+    this.requestedRenderingMode = mode;
+    this.updateRenderingTelemetry();
   }
 
   setReducedMotion(reducedMotion: boolean): void {
@@ -143,17 +187,13 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     const height = this.height;
     const bank = (-state.bank * Math.PI) / 180;
     const pitchOffset = state.pitch * Math.min(4.4, height / 170);
-    const buffet = !this.reducedMotion && state.stalled && !state.onGround
-      ? Math.sin(state.simulationTime * 39) * 3
-      : 0;
-
     context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
     context.clearRect(0, 0, width, height);
     this.drawSky(context, width, height, state.simulationTime);
     this.ensureRidgeProfiles(state);
 
     context.save();
-    context.translate(width * 0.5 + buffet, height * 0.49 + pitchOffset - buffet * 0.45);
+    context.translate(width * 0.5, height * 0.49 + pitchOffset);
     context.rotate(bank);
     this.drawWorld(context, width, height, state);
     context.restore();
@@ -545,27 +585,39 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     state: FlightVisualState,
     cinematic: boolean,
   ): void {
+    const isJet = this.options.aircraft === "jet";
     const scale = Math.min(width, height) / (cinematic ? 42 : 31);
-    const centerX = width * (cinematic ? 0.43 : 0.5);
-    const centerY = height * (cinematic ? 0.57 : 0.67);
+    const pose = canvasAircraftScreenPose(width, height, state.bank, cinematic);
     context.save();
-    context.translate(centerX, centerY);
-    context.rotate((state.bank * Math.PI) / 900);
+    context.translate(pose.centerX, pose.centerY);
+    context.rotate(pose.rotation);
     context.shadowColor = "rgba(0, 0, 0, .45)";
     context.shadowBlur = scale * 0.45;
-    context.fillStyle = "#e5e1d3";
+    context.fillStyle = isJet ? "#c9d2d2" : "#e5e1d3";
     context.beginPath();
-    context.moveTo(0, -scale * 1.8);
-    context.lineTo(scale * 0.46, scale * 1.25);
-    context.lineTo(scale * 0.26, scale * 1.85);
-    context.lineTo(-scale * 0.26, scale * 1.85);
-    context.lineTo(-scale * 0.46, scale * 1.25);
+    context.moveTo(0, -scale * (isJet ? 2.45 : 1.8));
+    context.lineTo(scale * (isJet ? 0.5 : 0.46), scale * 1.25);
+    context.lineTo(scale * (isJet ? 0.34 : 0.26), scale * (isJet ? 2.15 : 1.85));
+    context.lineTo(-scale * (isJet ? 0.34 : 0.26), scale * (isJet ? 2.15 : 1.85));
+    context.lineTo(-scale * (isJet ? 0.5 : 0.46), scale * 1.25);
     context.closePath();
     context.fill();
-    context.fillStyle = "#d7d1c1";
-    context.fillRect(-scale * 4.6, scale * 0.18, scale * 9.2, scale * 0.5);
+    context.fillStyle = isJet ? "#aebbbb" : "#d7d1c1";
+    if (isJet) {
+      context.beginPath();
+      context.moveTo(-scale * 4.5, scale * 0.38);
+      context.lineTo(-scale * 0.52, -scale * 0.15);
+      context.lineTo(scale * 0.52, -scale * 0.15);
+      context.lineTo(scale * 4.5, scale * 0.38);
+      context.lineTo(scale * 3.55, scale * 0.78);
+      context.lineTo(-scale * 3.55, scale * 0.78);
+      context.closePath();
+      context.fill();
+    } else {
+      context.fillRect(-scale * 4.6, scale * 0.18, scale * 9.2, scale * 0.5);
+    }
     context.fillRect(-scale * 1.85, scale * 1.35, scale * 3.7, scale * 0.32);
-    context.fillStyle = "#b64631";
+    context.fillStyle = isJet ? "#e55b3f" : "#b64631";
     context.fillRect(-scale * 4.6, scale * 0.18, scale * 1.25, scale * 0.5);
     context.fillRect(scale * 3.35, scale * 0.18, scale * 1.25, scale * 0.5);
     context.fillRect(-scale * 0.3, -scale * 1.65, scale * 0.6, scale * 0.72);
@@ -599,7 +651,13 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
     context.fillStyle = "#cfd4c2";
     context.font = `600 ${Math.max(10, width * 0.011)}px ui-monospace, monospace`;
     context.textAlign = "center";
-    context.fillText(`${Math.round(state.engineRpm)} RPM`, width * 0.5, height * 0.87);
+    context.fillText(
+      this.options.aircraft === "jet"
+        ? `${Math.round(state.engineRpm)}% N2`
+        : `${Math.round(state.engineRpm)} RPM`,
+      width * 0.5,
+      height * 0.87,
+    );
   }
 
   private drawCompatibilityBadge(
@@ -625,5 +683,24 @@ export class CanvasFlightRenderer implements FlightRenderingSystem {
       fps: 1_000 / this.frameTime,
       frameTime: this.frameTime,
     };
+  }
+
+  private updateRenderingTelemetry(): void {
+    this.diagnostics = {
+      ...this.diagnostics,
+      requestedRenderingMode: this.requestedRenderingMode,
+      renderBackend: "canvas2d",
+      renderTechnique: "canvas2d",
+      hardwareRayTracing: false,
+      renderingFallbackReason: this.fallbackReason,
+    };
+    this.domElement.dataset.requestedRenderingMode = requestedRenderingTelemetryKey(
+      this.requestedRenderingMode,
+    );
+    this.domElement.dataset.persistedRenderingModeKey = this.requestedRenderingMode;
+    this.domElement.dataset.renderingBackend = "canvas2d";
+    this.domElement.dataset.effectiveRenderingTechnique = "canvas2d";
+    this.domElement.dataset.hardwareRayTracing = "false";
+    this.domElement.dataset.renderingFallback = this.fallbackReason;
   }
 }

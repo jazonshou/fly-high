@@ -1,4 +1,5 @@
 import { flattenHeightForAirport, getAirportInfluence, isPointOnRunway } from "./airport";
+import { sampleGeologicalRelief } from "./geology";
 import { clamp, fbm2D, lerp, ridgedFbm2D, saturate, smoothstep, valueNoise2D } from "./noise";
 import { mixSeed } from "./seed";
 import {
@@ -77,6 +78,14 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
     360;
   const valleyCarve =
     land * foothillRegion * Math.pow(1 - ridges, 3.1) * (55 + mountainRegion * 105);
+  const geologicalRelief = sampleGeologicalRelief(
+    seedHash,
+    warpedX,
+    warpedZ,
+    land,
+    foothillRegion,
+    mountainRegion,
+  );
 
   // Plains occur naturally where mountainRegion is low; hills become stronger
   // inland while coastlines retain gentler slopes.
@@ -89,7 +98,8 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
     foothillHeight +
     mountainHeight +
     cragDetail -
-    valleyCarve;
+    valleyCarve +
+    geologicalRelief;
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
 }
 
@@ -234,9 +244,9 @@ function writeTerrainColor(
   const fineVariation = valueNoise2D(mixSeed(world.seedHash, 230), x / 76, z / 76);
   const broadVariation = valueNoise2D(mixSeed(world.seedHash, 231), x / 680, z / 680);
   const variation =
-    fineVariation * 0.052 +
-    broadVariation * 0.065 +
-    (moisture - 0.5) * (biome === TerrainBiome.GRASSLAND ? -0.1 : -0.035) -
+    fineVariation * 0.035 +
+    broadVariation * 0.035 +
+    (moisture - 0.5) * (biome === TerrainBiome.GRASSLAND ? -0.06 : -0.025) -
     slope * 0.06;
   const rockBiome = biome === TerrainBiome.HIGHLAND || biome === TerrainBiome.ALPINE;
   const strata = rockBiome ? Math.sin(height * 0.071 + broadVariation * 5.4) * slope * 0.055 : 0;

@@ -13,6 +13,14 @@ import {
 import { createWorld, runwayToWorld, sampleTerrain, sampleWind } from "../src/world";
 import { keyboardRollDirection } from "../src/input";
 
+const SAFE_RUNWAY_FIXTURE_SEED = "airport-safety-1-535203442";
+const SAFE_RUNWAY_FIXTURE = Object.freeze({
+  centerX: -3_109.8434911464765,
+  centerZ: -7_702.165069913508,
+  elevation: 35.25,
+  headingRadians: 0.6698306877107214,
+});
+
 function flyFor(simulator: FlightSimulator, seconds: number): void {
   const count = Math.round(seconds / FIXED_TIME_STEP);
   for (let index = 0; index < count; index += 1) simulator.step();
@@ -260,6 +268,98 @@ describe("flight simulation", () => {
     expect(getFlightTelemetry(simulator.state, simulator.environment).altitudeAgl).toBe(0);
   });
 
+  it("turns a high-energy ground strike into a terminal terrain-resting wreck", () => {
+    const flatTerrain = {
+      height: 0,
+      normal: { x: 0, y: 1, z: 0 },
+      friction: 1.15,
+    } as const;
+    const simulator = new FlightSimulator({
+      spawn: {
+        position: { x: 0, y: 48, z: 0 },
+        pitch: (-49 * Math.PI) / 180,
+        airspeed: 70,
+        controls: { ...DEFAULT_CONTROLS, throttle: 1, pitch: -0.8 },
+      },
+      controls: { ...DEFAULT_CONTROLS, throttle: 1, pitch: -0.8 },
+      environment: { terrain: flatTerrain, wind: { x: 0, y: 0, z: 0 } },
+    });
+
+    for (let index = 0; index < Math.round(3 / FIXED_TIME_STEP); index += 1) {
+      simulator.step(FIXED_TIME_STEP);
+      if (simulator.state.crashed) break;
+    }
+    expect(simulator.state.crashed).toBe(true);
+    expect(simulator.state.peakImpactSpeed).toBeGreaterThan(8.5);
+    const restPosition = { ...simulator.state.position };
+    const restOrientation = { ...simulator.state.orientation };
+
+    // Full controls after impact must not re-launch or rotate the wreck.
+    for (let index = 0; index < Math.round(5 / FIXED_TIME_STEP); index += 1) {
+      simulator.step(FIXED_TIME_STEP, {
+        ...DEFAULT_CONTROLS,
+        throttle: 1,
+        pitch: 1,
+        roll: 1,
+        yaw: 1,
+      });
+    }
+    const telemetry = simulator.telemetry();
+    expectFiniteState(simulator.state);
+    expect(simulator.state.onGround).toBe(true);
+    expect(telemetry.crashed).toBe(true);
+    expect(telemetry.altitudeAgl).toBe(0);
+    expect(telemetry.airspeed).toBe(0);
+    expect(telemetry.groundSpeed).toBe(0);
+    expect(telemetry.verticalSpeed).toBe(0);
+    expect(telemetry.isStalled).toBe(false);
+    expect(simulator.state.position).toEqual(restPosition);
+    expect(simulator.state.orientation).toEqual(restOrientation);
+    expect(simulator.state.position.y).toBeGreaterThan(0);
+    expect(simulator.state.position.y).toBeLessThan(10);
+    expect(simulator.state.velocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(simulator.state.angularVelocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(simulator.state.actuators.throttle).toBe(0);
+    expect(simulator.state.engineRpm).toBe(0);
+
+    simulator.reset({
+      position: { x: 0, y: 900, z: 0 },
+      pitch: 0,
+      airspeed: 50,
+      controls: { ...DEFAULT_CONTROLS, throttle: 0.5 },
+    });
+    expect(simulator.state.crashed).toBe(false);
+    expect(simulator.state.onGround).toBe(false);
+    expect(simulator.telemetry().airspeed).toBeGreaterThan(40);
+  });
+
+  it("keeps a gentle touchdown on the ordinary suspension path", () => {
+    const simulator = new FlightSimulator({
+      spawn: {
+        position: { x: 0, y: 1.55, z: 0 },
+        velocity: { x: 0, y: -0.8, z: 4 },
+        heading: 0,
+        pitch: 0,
+        controls: { ...DEFAULT_CONTROLS, throttle: 0, brake: 1 },
+      },
+      controls: { ...DEFAULT_CONTROLS, throttle: 0, brake: 1 },
+      environment: {
+        terrain: { height: 0, normal: { x: 0, y: 1, z: 0 }, friction: 1.15 },
+        wind: { x: 0, y: 0, z: 0 },
+      },
+    });
+
+    flyFor(simulator, 5);
+    const telemetry = simulator.telemetry();
+    expectFiniteState(simulator.state);
+    expect(simulator.state.peakImpactSpeed).toBeGreaterThan(0.5);
+    expect(simulator.state.peakImpactSpeed).toBeLessThanOrEqual(8.5);
+    expect(simulator.state.crashed).toBe(false);
+    expect(simulator.state.onGround).toBe(true);
+    expect(telemetry.altitudeAgl).toBe(0);
+    expect(Math.abs(telemetry.verticalSpeed)).toBeLessThan(1);
+  });
+
   it("keeps a parked aircraft directionally stable in a crosswind", () => {
     const initialHeading = Math.PI * 0.14;
     const simulator = new FlightSimulator({
@@ -302,7 +402,9 @@ describe("flight simulation", () => {
   });
 
   it("stays parked with the procedural runway and gust field", () => {
-    const world = createWorld(Number.parseInt("1ycj96c", 36));
+    const world = createWorld(SAFE_RUNWAY_FIXTURE_SEED, {
+      airport: SAFE_RUNWAY_FIXTURE,
+    });
     const airport = world.airport;
     expect(airport).not.toBeNull();
     if (!airport) return;

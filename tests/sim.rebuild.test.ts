@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   applyFlightAssistance,
   DEFAULT_CONTROLS,
+  DirectPitchRetention,
   FIXED_TIME_STEP,
   FlightSimulator,
+  quaternionFromFlightAngles,
   type FlightControls,
   type StabilityAssistMode,
 } from "../src/sim";
@@ -71,6 +73,160 @@ describe("rebuilt light-trainer handling", () => {
     expect(scenic.roll).not.toBe(direct.roll);
   });
 
+  it("leaves neutral Direct flight raw until the pilot commands and releases pitch", () => {
+    const simulator = new FlightSimulator({
+      spawn: {
+        position: { x: 0, y: 1_500, z: 0 },
+        pitch: 18 * DEG_TO_RAD,
+        airspeed: 54,
+        angularVelocity: { x: 0.2, y: -0.1, z: 0.65 },
+      },
+    });
+    const retention = new DirectPitchRetention();
+    const neutral = { ...DEFAULT_CONTROLS, throttle: 0.58 };
+
+    expect(retention.apply(
+      { ...neutral },
+      neutral,
+      simulator.state,
+      simulator.telemetry(),
+    )).toEqual(neutral);
+    expect(retention.isArmed).toBe(false);
+
+    const active = {
+      ...neutral,
+      pitch: -1,
+      roll: 0.72,
+      yaw: -0.43,
+      trim: -0.2,
+      flaps: 0.5,
+      brake: 0.25,
+    };
+    expect(retention.apply(
+      assisted(simulator, "unassisted", active),
+      active,
+      simulator.state,
+      simulator.telemetry(),
+    )).toEqual(active);
+    expect(retention.isArmed).toBe(false);
+
+    retention.apply({ ...neutral }, neutral, simulator.state, simulator.telemetry());
+    expect(retention.isArmed).toBe(true);
+    retention.reset();
+    expect(retention.isArmed).toBe(false);
+    expect(retention.apply(
+      { ...neutral },
+      neutral,
+      simulator.state,
+      simulator.telemetry(),
+    )).toEqual(neutral);
+  });
+
+  it("allocates retained pitch with the correct sign upright and inverted", () => {
+    const retainedCommand = (bank: number): number => {
+      const simulator = new FlightSimulator({
+        spawn: {
+          position: { x: 0, y: 2_500, z: 0 },
+          pitch: -20 * DEG_TO_RAD,
+          bank,
+          airspeed: 56,
+          controls: { ...DEFAULT_CONTROLS, throttle: 0.58 },
+        },
+      });
+      const retention = new DirectPitchRetention();
+      const neutral = { ...DEFAULT_CONTROLS, throttle: 0.58 };
+      const active = { ...neutral, pitch: -0.4 };
+      retention.apply({ ...active }, active, simulator.state, simulator.telemetry());
+      retention.apply({ ...neutral }, neutral, simulator.state, simulator.telemetry());
+      simulator.state.orientation = quaternionFromFlightAngles(
+        0,
+        -10 * DEG_TO_RAD,
+        bank,
+      );
+      simulator.state.angularVelocity.x = 0;
+      simulator.state.angularVelocity.y = 0;
+      simulator.state.angularVelocity.z = 0;
+      return retention.apply(
+        { ...neutral },
+        neutral,
+        simulator.state,
+        simulator.telemetry(),
+      ).pitch;
+    };
+
+    // The same world-pitch error needs opposite elevator across inversion.
+    expect(retainedCommand(0)).toBeLessThan(0);
+    expect(retainedCommand(Math.PI)).toBeGreaterThan(0);
+  });
+
+  it("stays finite at knife-edge and through the vertical Euler singularity", () => {
+    for (const bank of [89.999 * DEG_TO_RAD, -89.999 * DEG_TO_RAD, Math.PI]) {
+      for (const pitch of [-90, -89.999, 89.999, 90].map((value) => value * DEG_TO_RAD)) {
+        const simulator = new FlightSimulator({
+          spawn: {
+            position: { x: 0, y: 3_000, z: 0 },
+            pitch,
+            bank,
+            airspeed: 58,
+          },
+        });
+        const retention = new DirectPitchRetention();
+        const neutral = { ...DEFAULT_CONTROLS, throttle: 0.6 };
+        const active = { ...neutral, pitch: 0.5 };
+        retention.apply({ ...active }, active, simulator.state, simulator.telemetry());
+        retention.apply({ ...neutral }, neutral, simulator.state, simulator.telemetry());
+        simulator.state.angularVelocity.z = 1.4;
+        const result = retention.apply(
+          { ...neutral },
+          neutral,
+          simulator.state,
+          simulator.telemetry(),
+        );
+        expect(Number.isFinite(result.pitch)).toBe(true);
+        expect(Math.abs(result.pitch)).toBeLessThanOrEqual(0.72);
+        expect(result.pitch).toBeLessThan(0);
+      }
+    }
+  });
+
+  it("moves the retained target with trim in the physically signed direction", () => {
+    const trimmedTarget = (bank: number): { before: number; after: number; pitch: number } => {
+      const simulator = new FlightSimulator({
+        spawn: {
+          position: { x: 0, y: 2_000, z: 0 },
+          pitch: 0,
+          bank,
+          airspeed: 55,
+        },
+      });
+      const retention = new DirectPitchRetention();
+      const neutral = { ...DEFAULT_CONTROLS, throttle: 0.56, trim: 0 };
+      const active = { ...neutral, pitch: 0.35 };
+      retention.apply({ ...active }, active, simulator.state, simulator.telemetry());
+      retention.apply({ ...neutral }, neutral, simulator.state, simulator.telemetry());
+      const before = retention.noseVerticalTarget ?? Number.NaN;
+      const trimmed = { ...neutral, trim: 0.04 };
+      const result = retention.apply(
+        { ...trimmed },
+        trimmed,
+        simulator.state,
+        simulator.telemetry(),
+      );
+      return {
+        before,
+        after: retention.noseVerticalTarget ?? Number.NaN,
+        pitch: result.pitch,
+      };
+    };
+
+    const upright = trimmedTarget(0);
+    const inverted = trimmedTarget(Math.PI);
+    expect(upright.after).toBeGreaterThan(upright.before);
+    expect(inverted.after).toBeLessThan(inverted.before);
+    expect(upright.pitch).toBeGreaterThan(0);
+    expect(inverted.pitch).toBeGreaterThan(0);
+  });
+
   it("lets direct pitch authority drive well past the Scenic attitude envelope", () => {
     const simulator = new FlightSimulator({
       spawn: {
@@ -93,6 +249,79 @@ describe("rebuilt light-trainer handling", () => {
     // surface command, not an attitude command, and can push through a steep
     // dive with no controller-imposed pitch stop.
     expect(mostNoseDown * RAD_TO_DEG).toBeLessThan(-45);
+  });
+
+  it("retains the exact nose-down attitude selected in Direct controls", () => {
+    const simulator = new FlightSimulator({
+      spawn: {
+        position: { x: 0, y: 3_000, z: 0 },
+        pitch: 2 * DEG_TO_RAD,
+        airspeed: 56,
+        controls: { ...DEFAULT_CONTROLS, throttle: 0.58, trim: 0 },
+      },
+      controls: { ...DEFAULT_CONTROLS, throttle: 0.58, trim: 0 },
+    });
+    const retention = new DirectPitchRetention();
+    const requested = { ...DEFAULT_CONTROLS, throttle: 0.58, trim: 0 };
+
+    advance(simulator, 1.1, (current) => {
+      const command = { ...requested, pitch: -0.72 };
+      return retention.apply(
+        assisted(current, "unassisted", command),
+        command,
+        current.state,
+        current.telemetry(),
+      );
+    });
+    const selectedPitch = simulator.telemetry().pitch;
+    expect(selectedPitch * RAD_TO_DEG).toBeLessThan(-12);
+
+    advance(simulator, 5, (current) => retention.apply(
+      assisted(current, "unassisted", requested),
+      requested,
+      current.state,
+      current.telemetry(),
+    ));
+    const retainedPitch = simulator.telemetry().pitch;
+
+    expect(retention.target).not.toBeNull();
+    expect((retention.target ?? 0) * RAD_TO_DEG).toBeLessThan(-12);
+    expect(retainedPitch * RAD_TO_DEG).toBeLessThan(-10);
+    expect(Math.abs(retainedPitch - selectedPitch) * RAD_TO_DEG).toBeLessThan(3.5);
+  });
+
+  it("retains a pilot-selected nose-up attitude without a preset climb target", () => {
+    const simulator = new FlightSimulator({
+      spawn: {
+        position: { x: 0, y: 3_000, z: 0 },
+        pitch: 0,
+        airspeed: 58,
+        controls: { ...DEFAULT_CONTROLS, throttle: 0.62 },
+      },
+    });
+    const retention = new DirectPitchRetention();
+    const neutral = { ...DEFAULT_CONTROLS, throttle: 0.62 };
+    advance(simulator, 0.75, (current) => {
+      const command = { ...neutral, pitch: 0.5 };
+      return retention.apply(
+        assisted(current, "unassisted", command),
+        command,
+        current.state,
+        current.telemetry(),
+      );
+    });
+    const selectedPitch = simulator.telemetry().pitch;
+    expect(selectedPitch * RAD_TO_DEG).toBeGreaterThan(6);
+    advance(simulator, 4, (current) => retention.apply(
+      assisted(current, "unassisted", neutral),
+      neutral,
+      current.state,
+      current.telemetry(),
+    ));
+    expect(simulator.telemetry().pitch * RAD_TO_DEG).toBeGreaterThan(4);
+    expect(
+      Math.abs(simulator.telemetry().pitch - selectedPitch) * RAD_TO_DEG,
+    ).toBeLessThan(4);
   });
 
   it("snaps a runway spawn onto preloaded tricycle gear and stays parked", () => {
@@ -253,7 +482,10 @@ describe("rebuilt light-trainer handling", () => {
         pitch: 2 * DEG_TO_RAD,
       },
     });
-    advance(simulator, 60, () => ({ ...DEFAULT_CONTROLS }));
+    // This test deliberately measures the trainer's known cruise trim. The
+    // application/default control contract remains zero-trim and never hides
+    // this preset from the pilot.
+    advance(simulator, 60, () => ({ ...DEFAULT_CONTROLS, trim: 0.065 }));
 
     const telemetry = simulator.telemetry();
     expect(simulator.state.position.y - 1_000).toBeGreaterThan(-30);
