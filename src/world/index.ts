@@ -64,4 +64,14 @@ export type {
   WorldVector3,
 } from "./types";
 export { MAX_WIND_SPEED, sampleWind } from "./wind";
-export { DEFAULT_WORLD_SEED, createWorld } from "./world";
+export {
+  createEnvironmentClock,
+  DAYS_PER_YEAR,
+  dayLengthHours,
+  HOURS_PER_DAY,
+  isEnvironmentClock,
+  solarDeclinationRadians,
+  wrapEnvironmentClock,
+  type EnvironmentClock,
+} from "./environmentClock";
+export { DEFAULT_WORLD_LATITUDE_DEGREES, DEFAULT_WORLD_SEED, createWorld } from "./world";

@@ -26,17 +26,54 @@ function latticeValue(seedHash: number, x: number, z: number): number {
   return unitFloatFromHash(hashCoordinates(seedHash, x, z)) * 2 - 1;
 }
 
+/**
+ * Per-octave domain-wrap period, in lattice cells (0-4).
+ *
+ * Every noise lattice is periodic with this period: coordinates are reduced by
+ * an integer multiple of it, in f64, before any floor. The reduction is an
+ * exact no-op for |coordinate| < 65,536 cells, and outputs are bit-identical
+ * to the unwrapped kernel below 65,535 cells — 2.8×10⁶ m at the finest 43 m
+ * octave, farther for every coarser one — so near-origin worlds are
+ * unchanged. (In the final cell before the seam, the upper lattice neighbour
+ * is rehashed as -period/2 for seam continuity.) Beyond that, f32 loses the lattice-cell fraction (~1.6×10⁻²
+ * of a cell at 5×10⁶ m / 43 m), so a WGSL port could never agree with the CPU
+ * about which cell a boundary point falls in. Wrapping bounds every
+ * coordinate the GPU sees: 4-1 hoists the f64 multiple into the page-origin
+ * uniform, and both wrapped lattice indices (|i| ≤ 2^16) and residuals are
+ * exactly representable on both sides.
+ */
+export const NOISE_LATTICE_WRAP_PERIOD_CELLS = 131_072;
+const HALF_WRAP_PERIOD = NOISE_LATTICE_WRAP_PERIOD_CELLS / 2;
+
+/** Centered reduction into [-period/2, period/2), computed in f64. */
+function wrapLatticeCoordinate(value: number): number {
+  const periods = Math.round(value / NOISE_LATTICE_WRAP_PERIOD_CELLS);
+  return periods === 0 ? value : value - periods * NOISE_LATTICE_WRAP_PERIOD_CELLS;
+}
+
+/**
+ * The upper lattice neighbour of the last wrapped cell is the first cell of
+ * the next period; hashing it as -period/2 is what makes the seam continuous.
+ */
+function wrapLatticeIndex(index: number): number {
+  return index >= HALF_WRAP_PERIOD ? index - NOISE_LATTICE_WRAP_PERIOD_CELLS : index;
+}
+
 /** Continuous deterministic 2D value noise in approximately [-1, 1]. */
 export function valueNoise2D(seedHash: number, x: number, z: number): number {
-  const x0 = Math.floor(x);
-  const z0 = Math.floor(z);
-  const tx = fade(x - x0);
-  const tz = fade(z - z0);
+  const wrappedX = wrapLatticeCoordinate(x);
+  const wrappedZ = wrapLatticeCoordinate(z);
+  const x0 = Math.floor(wrappedX);
+  const z0 = Math.floor(wrappedZ);
+  const tx = fade(wrappedX - x0);
+  const tz = fade(wrappedZ - z0);
+  const x1 = wrapLatticeIndex(x0 + 1);
+  const z1 = wrapLatticeIndex(z0 + 1);
 
-  const a = lerp(latticeValue(seedHash, x0, z0), latticeValue(seedHash, x0 + 1, z0), tx);
+  const a = lerp(latticeValue(seedHash, x0, z0), latticeValue(seedHash, x1, z0), tx);
   const b = lerp(
-    latticeValue(seedHash, x0, z0 + 1),
-    latticeValue(seedHash, x0 + 1, z0 + 1),
+    latticeValue(seedHash, x0, z1),
+    latticeValue(seedHash, x1, z1),
     tx,
   );
   return lerp(a, b, tz);

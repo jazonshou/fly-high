@@ -173,7 +173,15 @@ Phase 1 consumes these and must not re-derive them. The boundary test from `0-1`
 | `EnvironmentClock`, `WorldDefinition.latitudeDegrees`, settings persistence + migration | `0-6` | `1C-1`, `1C-9` |
 | `SharedReceiverRegistry` | `0-7` | `1C-4`, `1C-6` |
 | `vitest.gpu.config.ts`, `npm run test:gpu` | `0-8` | `1C-4`'s shader compile assertions |
-| The `ShadowDepthWrapper` incantation, recorded verbatim | `0-9` | Phase 3 `3-2`, Phase 4 `4-4` |
+| The `ShadowDepthWrapper` incantation, recorded verbatim | `0-9` | Phase 2 `2-12`, Phase 3 `3-2`, Phase 4 `4-4` |
+
+**Phase 0 outcomes (2026-08-17) that amend this table:**
+
+- **`SharedReceiverRegistry` shipped with three type parameters** — `SharedReceiverRegistry<TProjection, TBinding, TPlugin>` — because the extracted cloud pattern resolves the projection into one floating-origin-local *binding* per update and exposes it (`currentBinding`). §4.3's `AerialPerspectiveRegistry` sketch is corrected below; `1C-4`/`1C-6` supply their own binding types.
+- **`0-9`'s validated incantation carries an ordering constraint:** the wrapper must be created and assigned *before the material's first effect compiles* (it observes `onEffectCreatedObservable`; attached later it silently falls back to the undisplaced depth pass), and no `remappedVariables` are needed for `PBRMaterial`+plugins in WGSL. See `ARCHITECTURE.md` and `tests/gpu/shadow-depth-wrapper.test.ts`.
+- **`TerrainGenerationClient.request` rejection contract changed (review fix):** a request the bounded queue rejects is signalled by the `-1` return **alone** — `onError` is no longer invoked re-entrantly for the request being submitted. `onError` still fires (synchronously) for a previously-queued request evicted in favour of a better newcomer. `1B-4`'s slot-map widening must preserve this; `tests/render.webgpu-terrain-clipmap.test.ts`'s real-client saturation test is the guard.
+- **`0-6` also exports `TIME_OF_DAY_PRESET_CLOCKS`** (label → `{dayOfYear, solarTimeHours}`) from `src/settings` — `1C-9`'s preset buttons write these exact pairs.
+- **`0-1`'s boundary test grandfathers three `profile.tier` readers** (`TerrainClipmapSystem`, `PlanarWaterReflectionSystem`, `SpectralOceanSystem`); the items that touch them (`1B-3`, Phase 2 water work) must shrink that list, not extend it.
 
 ### 4.2 New files created by Phase 1
 
@@ -218,8 +226,15 @@ export declare function evaluateAerialPerspective(
   state: EnvironmentState, fromAltitude: number, toAltitude: number,
   distanceMeters: number, viewDotSun: number,
 ): { transmittance: [number, number, number]; inScatter: [number, number, number] };
-export declare class AerialPerspectiveRegistry
-  extends SharedReceiverRegistry<AerialPerspectiveUniforms, AerialPerspectivePlugin> {}
+// Phase 0 outcome: the shipped base class is three-generic —
+// SharedReceiverRegistry<TProjection, TBinding, TPlugin> — with abstract
+// pluginName/isEligibleMaterial/createPlugin/resolveBinding/applyProjection/
+// clearPlugin hooks. 1C-4 defines the projection and binding shapes.
+export declare class AerialPerspectiveRegistry extends SharedReceiverRegistry<
+  AerialPerspectiveProjection,
+  AerialPerspectiveBinding,
+  AerialPerspectivePlugin
+> {}
 ```
 
 **Environment director — the clock type already exists.**
@@ -347,6 +362,8 @@ Also create `RenderInvariants.ts` here with its first two startup assertions (`1
 
 **CI test (Node, no GPU).** A CPU-bound trace (`cpuP95` 22 ms, `gpuP95` 6 ms) leaves `renderScale` unchanged over 50 windows and moves `cpuWorkLevel`; a GPU-bound trace lowers resolution and stops after two ineffective steps. **This is the permanent guard against the ratchet returning.**
 
+**Phase 0 outcome (2026-08-17).** `1A-6a` placed the absolute pixel cap inside `applyRenderScale`, which now **returns whether the effective hardware scaling level changed** and gates `invalidateHistory` on it. Use that signal here: when the cap is the binding constraint, `renderScale` steps are no-ops on the effective scale — feed the `resolutionInsensitive` latch from the return value instead of waiting for two ineffective-step p95 measurements. Current per-tier values (three-tier mapping): `maxRenderPixels` 1.0/1.5/2.4 Mpx, `maxDevicePixelRatio` 1/1.5/2; this item introduces the four-tier table with Ultra's 4.0 Mpx.
+
 ---
 
 ### `1A-5` — Depth-only shadow RTT (0.5 d) · Class T→P · week 2
@@ -393,6 +410,8 @@ Widen `activeRequestId: number | null` to `Map<workerIndex, requestId>`, hold `c
 
 **Note.** Page requests now flow through `WorldPageLifecycle` epochs from `0-3`, so the hand-rolled staleness check is already gone. The slot map only widens concurrency.
 
+**Phase 0 outcome (2026-08-17).** The `request()` rejection contract changed during `0-3`'s review: rejection of the submitted request is signalled by `-1` alone (no re-entrant `onError`), while synchronous `onError` for an *evicted older* queued request remains. Keep both behaviours through the slot-map widening — `tests/render.webgpu-terrain-clipmap.test.ts`'s "real-client queue saturation" test locks the integration and must stay green unmodified.
+
 ---
 
 ### `1B-2` — Band-limiting, behaviour only (2.0 d) · Class K · week 3
@@ -423,6 +442,8 @@ Widen `activeRequestId: number | null` to `Map<workerIndex, requestId>`, hold `c
 **Class T — the ladder.** Replace `tileResolution(profile, level)` (`:231-235`) with a `terrainTileResolution` field on `WebGpuQualityProfile`: 33 at tier 0, 65 at tiers 1–2, at every level. This kills the 4:1 T-junction at L2/L3, where the audit measured 28.1 m RMS / 192.4 m max skirt gaps against a 24 m skirt depth, and 8.4 → 41.0 m RMS chord-error jolts on every boundary crossing. Per A5, measure and consider constant 33.
 
 **Do not** touch `TERRAIN_SKIRT_DEPTH_METERS`, `buildTerrainIndicesWithSkirt`, or `backFaceCulling` — the skirt perimeter loop emits one winding, so flipping culling makes half the walls disappear. That whole sequence is `4-5`.
+
+**Phase 0 outcome (2026-08-17).** `TerrainClipmapSystem` is one of three grandfathered `profile.tier` readers in `0-1`'s boundary test, solely because of `tileResolution()`. Replacing it with the `terrainTileResolution` profile field is exactly what removes the file from that allowlist — do so in this item's commit, shrinking the grandfather list in `tests/architecture.boundaries.test.ts`.
 
 ---
 
@@ -515,6 +536,8 @@ Pure-TS round-trip test in `CloudReprojection.ts` (ray → reproject → same uv
 Two continuous sliders plus named preset buttons that write them. `SettingsPanel.tsx:407-422` already has the Time-of-day and Weather selects; the time select becomes preset buttons over sliders. Weather stays a three-value select driving coverage, turbidity and wind; precipitation is explicitly not in scope.
 
 **The schema, validation and `localStorage` migration are already done in `0-6`** — that is the 0.75 d saving. What remains is the UI and its wiring.
+
+**Phase 0 outcome (2026-08-17).** `0-6` also shipped `TIME_OF_DAY_PRESET_CLOCKS` from `src/settings` — the exact `(dayOfYear, solarTimeHours)` pair per legacy label (all three on midsummer day 171 at the default 45°N). The preset buttons write these pairs verbatim; do not invent new ones.
 
 `TimeOfDayPreset` survives as a **label**, not a rendering input. Nothing under `src/render/` may reference it afterwards; `0-1`'s boundary test enforces it.
 

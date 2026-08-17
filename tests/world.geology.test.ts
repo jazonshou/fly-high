@@ -9,10 +9,10 @@ import {
 describe("short-wavelength geological relief", () => {
   it("is deterministic, continuous, finite, and absent off land", () => {
     const seed = 0x8a1f27;
-    expect(sampleGeologicalRelief(seed, 120, -830, 0, 1, 1)).toBe(0);
-    const first = sampleGeologicalRelief(seed, 1_234.5, -8_765.25, 1, 0.8, 0.65);
-    const repeated = sampleGeologicalRelief(seed, 1_234.5, -8_765.25, 1, 0.8, 0.65);
-    const adjacent = sampleGeologicalRelief(seed, 1_234.501, -8_765.25, 1, 0.8, 0.65);
+    expect(sampleGeologicalRelief(seed, 120, -830, 0, 0, 1, 1)).toBe(0);
+    const first = sampleGeologicalRelief(seed, 1_234.5, -8_765.25, 0, 1, 0.8, 0.65);
+    const repeated = sampleGeologicalRelief(seed, 1_234.5, -8_765.25, 0, 1, 0.8, 0.65);
+    const adjacent = sampleGeologicalRelief(seed, 1_234.501, -8_765.25, 0, 1, 0.8, 0.65);
     expect(Number.isFinite(first)).toBe(true);
     expect(repeated).toBe(first);
     expect(Math.abs(adjacent - first)).toBeLessThan(0.02);
@@ -22,7 +22,7 @@ describe("short-wavelength geological relief", () => {
     const heights: number[] = [];
     for (let z = -2_400; z <= 2_400; z += 80) {
       for (let x = -2_400; x <= 2_400; x += 80) {
-        heights.push(sampleGeologicalRelief(9_812_771, x, z, 1, 1, 0.82));
+        heights.push(sampleGeologicalRelief(9_812_771, x, z, 0, 1, 1, 0.82));
       }
     }
     const minimum = Math.min(...heights);

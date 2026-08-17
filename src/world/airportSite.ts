@@ -393,7 +393,7 @@ function sampleCertifiedFootprint(
     const row: number[] = [];
     for (const across of platformAcross) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z);
+      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
       row.push(height);
       platformHeights.push(height);
       platformMinimum = Math.min(platformMinimum, height);
@@ -458,7 +458,7 @@ function sampleCertifiedFootprint(
         continue;
       }
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z);
+      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
       blendMinimum = Math.min(blendMinimum, height);
       blendMaximum = Math.max(blendMaximum, height);
       if (
@@ -486,7 +486,7 @@ function sampleCertifiedFootprint(
       for (const across of acrossSamples) {
         const along = end * (halfPlatformLength + distance);
         const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-        const height = sampleNaturalTerrainHeight(seedHash, x, z);
+        const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
         if (distance <= 520) {
           minimumApproachHeight = Math.min(minimumApproachHeight, height);
           if (
@@ -563,7 +563,7 @@ function samplePlatform(
     const row: number[] = [];
     for (const across of [-halfPlatformWidth, 0, halfPlatformWidth]) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z);
+      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
       if (rejectEarly && height < seaLevel + DRY_PLATFORM_CLEARANCE) return null;
       row.push(height);
       platformHeights.push(height);
@@ -620,7 +620,7 @@ function sampleBlend(
   for (const along of [-blendLength, -blendLength * 0.5, 0, blendLength * 0.5, blendLength]) {
     for (const across of [-blendWidth, 0, blendWidth]) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z);
+      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
       minimum = Math.min(minimum, height);
       maximum = Math.max(maximum, height);
       if (
@@ -655,7 +655,7 @@ function sampleApproaches(
       for (const across of [-corridorHalfWidth, 0, corridorHalfWidth]) {
         const along = end * (halfPlatformLength + distance);
         const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-        const height = sampleNaturalTerrainHeight(seedHash, x, z);
+        const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
         if (distance <= 520) {
           minimumHeight = Math.min(minimumHeight, height);
           if (rejectEarly && minimumHeight < seaLevel + 2) return null;
@@ -822,11 +822,11 @@ function createCoarseCandidates(
     const centerX = Math.cos(angle) * radius;
     const centerZ = Math.sin(angle) * radius;
     const probeDistance = 820;
-    const center = sampleNaturalTerrainHeight(seedHash, centerX, centerZ);
-    const west = sampleNaturalTerrainHeight(seedHash, centerX - probeDistance, centerZ);
-    const east = sampleNaturalTerrainHeight(seedHash, centerX + probeDistance, centerZ);
-    const south = sampleNaturalTerrainHeight(seedHash, centerX, centerZ - probeDistance);
-    const north = sampleNaturalTerrainHeight(seedHash, centerX, centerZ + probeDistance);
+    const center = sampleNaturalTerrainHeight(seedHash, centerX, centerZ, 0);
+    const west = sampleNaturalTerrainHeight(seedHash, centerX - probeDistance, centerZ, 0);
+    const east = sampleNaturalTerrainHeight(seedHash, centerX + probeDistance, centerZ, 0);
+    const south = sampleNaturalTerrainHeight(seedHash, centerX, centerZ - probeDistance, 0);
+    const north = sampleNaturalTerrainHeight(seedHash, centerX, centerZ + probeDistance, 0);
     const minimum = Math.min(center, west, east, south, north);
     const maximum = Math.max(center, west, east, south, north);
     const relief = maximum - minimum;

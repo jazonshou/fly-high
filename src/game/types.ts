@@ -89,6 +89,12 @@ export interface RenderDiagnostics {
   riverCount: number;
   lakeCount: number;
   residentTerrainPages: number;
+  /**
+   * Physics collision samples served by the coarse analytic fallback instead
+   * of the authoritative terrain grid (§1.3). Hard-wired 0 until 5-2's
+   * readback lands; any non-zero value below 500 m AGL is a bug.
+   */
+  collisionSamplesServedByFallback: number;
   cloudResolutionScale: number;
   cloudRaySteps: number;
   oceanFftCascades: number;

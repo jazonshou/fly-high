@@ -75,6 +75,7 @@ function independentlyAuditAirport(
       world.seedHash,
       airport.centerX + along * sinHeading + across * cosHeading,
       airport.centerZ + along * cosHeading - across * sinHeading,
+      0,
     );
 
   const alongSamples = independentAxis(-halfLength, halfLength, 11);
@@ -383,13 +384,13 @@ describe("starter airport terrain", () => {
     expect(influence).toBeLessThan(1);
     expect(getAirportInfluence(airport, outsideBlend.x, outsideBlend.z)).toBe(0);
 
-    const natural = sampleNaturalTerrainHeight(world.seedHash, withinBlend.x, withinBlend.z);
+    const natural = sampleNaturalTerrainHeight(world.seedHash, withinBlend.x, withinBlend.z, 0);
     expect(sampleTerrainHeight(world, withinBlend.x, withinBlend.z)).toBeCloseTo(
       flattenHeightForAirport(natural, airport, withinBlend.x, withinBlend.z),
       10,
     );
     expect(sampleTerrainHeight(world, outsideBlend.x, outsideBlend.z)).toBeCloseTo(
-      sampleNaturalTerrainHeight(world.seedHash, outsideBlend.x, outsideBlend.z),
+      sampleNaturalTerrainHeight(world.seedHash, outsideBlend.x, outsideBlend.z, 0),
       10,
     );
   });
@@ -398,7 +399,7 @@ describe("starter airport terrain", () => {
     const noAirport = createWorld("runway-tests", { airport: false });
     expect(noAirport.airport).toBeNull();
     expect(sampleTerrainHeight(noAirport, 0, 0)).toBe(
-      sampleNaturalTerrainHeight(noAirport.seedHash, 0, 0),
+      sampleNaturalTerrainHeight(noAirport.seedHash, 0, 0, 0),
     );
   });
 

@@ -10,6 +10,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // The browser-mode WebGPU project (vitest.gpu.config.ts) owns tests/gpu/.
+    exclude: ["tests/gpu/**", "**/node_modules/**"],
     passWithNoTests: false,
     reporters: ["default"],
   },

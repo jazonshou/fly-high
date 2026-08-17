@@ -5,15 +5,23 @@ import { mixSeed } from "./seed";
  * Adds the short-wavelength relief that broad continental and mountain fields
  * cannot provide on their own. Inputs are the already-computed land/uplift
  * masks, keeping this addition bounded and preserving open lowland.
+ *
+ * `filterWidthMeters` follows the coordinates by the shared kernel convention
+ * (see sampleNaturalTerrainHeight). It is a required no-op until 1B-2 lands
+ * band-limiting; 0 means the full-bandwidth field.
  */
 export function sampleGeologicalRelief(
   seedHash: number,
   x: number,
   z: number,
+  filterWidthMeters: number,
   land: number,
   foothillRegion: number,
   mountainRegion: number,
 ): number {
+  if (!Number.isFinite(filterWidthMeters) || filterWidthMeters < 0) {
+    throw new RangeError("filterWidthMeters must be finite and non-negative");
+  }
   if (land <= 0.0001) return 0;
 
   // Subtle metre-scale undulation prevents plains from becoming mathematically

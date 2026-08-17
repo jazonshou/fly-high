@@ -12,8 +12,6 @@ import {
   type SpawnOptions,
 } from "@/src/sim";
 import {
-  sampleTerrainCollision,
-  sampleTerrainCollisionHeight,
   sampleWind,
   type TerrainCollisionSample,
   type WindSample,
@@ -23,6 +21,7 @@ import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "@/src/game/spawn";
+import { sampleGroundContact, sampleGroundHeight } from "@/src/sim/terrainGrid";
 import type {
   ControlState,
   FlightMode,
@@ -76,11 +75,11 @@ function terrainSample(x: number, z: number) {
     collisionTarget.friction = 1;
     return collisionTarget;
   }
-  return sampleTerrainCollision(world, x, z, collisionTarget);
+  return sampleGroundContact(world, x, z, collisionTarget);
 }
 
 function terrainHeightSample(x: number, z: number): number {
-  return world ? sampleTerrainCollisionHeight(world, x, z) : 0;
+  return world ? sampleGroundHeight(world, x, z) : 0;
 }
 
 function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
