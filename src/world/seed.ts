@@ -1,6 +1,6 @@
 import type { WorldSeed } from "./types";
 
-const UINT32_SCALE = 1 / 4_294_967_296;
+const UNIT_24BIT_SCALE = 1 / 16_777_216;
 
 function avalanche(value: number): number {
   let hash = value >>> 0;
@@ -52,7 +52,14 @@ export function hashCoordinates(
   return avalanche(hash ^ Math.imul(z | 0, 0xd816_3841));
 }
 
-/** Convert a uint32 hash to a reproducible value in the half-open range [0, 1). */
+/**
+ * Convert a uint32 hash to a reproducible value in the half-open range [0, 1).
+ *
+ * The quotient keeps 24 bits (0-4): `(hash >>> 8) / 2^24` is exactly
+ * representable in f32, so the WGSL port (4-1) reproduces it bit-for-bit,
+ * where the previous 32-bit quotient could never be matched above 2^24.
+ * 24 bits is 16× more entropy than a noise lattice consumes.
+ */
 export function unitFloatFromHash(hash: number): number {
-  return (hash >>> 0) * UINT32_SCALE;
+  return (hash >>> 8) * UNIT_24BIT_SCALE;
 }

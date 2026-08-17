@@ -21,6 +21,7 @@ import {
   seedToString,
   SETTINGS_STORAGE_KEY,
   urlWithSeed,
+  TIME_OF_DAY_PRESET_CLOCKS,
   validateSettings,
 } from "../src/settings";
 import {
@@ -173,6 +174,52 @@ describe("settings", () => {
       airborneStartAgl: 975,
       aircraft: "jet",
     });
+  });
+
+  it("loads a pre-Phase-0 settings blob and derives a plausible environment clock", () => {
+    // Exactly what a v3 blob looked like before 0-6 added the clock scalars:
+    // a time-of-day label and no dayOfYear/solarTimeHours anywhere.
+    const prePhase0 = JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      timeOfDay: "golden",
+      dayOfYear: undefined,
+      solarTimeHours: undefined,
+    });
+    const storage = {
+      getItem: (key: string) => (key === SETTINGS_STORAGE_KEY ? prePhase0 : null),
+    };
+    const loaded = loadSettings(storage);
+    expect(loaded.timeOfDay).toBe("golden");
+    expect(loaded).toMatchObject(TIME_OF_DAY_PRESET_CLOCKS.golden);
+  });
+
+  it("persists, wraps, and validates the environment clock scalars", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    saveSettings({ ...DEFAULT_SETTINGS, dayOfYear: 300.5, solarTimeHours: 6.25 }, storage);
+    expect(loadSettings(storage)).toMatchObject({ dayOfYear: 300.5, solarTimeHours: 6.25 });
+
+    // Cyclic quantities wrap instead of clamping; garbage falls back to the
+    // label's migration pair.
+    expect(validateSettings({ dayOfYear: 365.25, solarTimeHours: -0.5 })).toMatchObject({
+      dayOfYear: 0.25,
+      solarTimeHours: 23.5,
+    });
+    expect(validateSettings({ timeOfDay: "dawn", dayOfYear: "yesterday" })).toMatchObject({
+      dayOfYear: TIME_OF_DAY_PRESET_CLOCKS.dawn.dayOfYear,
+      solarTimeHours: TIME_OF_DAY_PRESET_CLOCKS.dawn.solarTimeHours,
+    });
+
+    // Float edge: a tiny negative must wrap to 0, not round to exactly the
+    // period and escape the half-open range.
+    const tiny = validateSettings({ dayOfYear: -1e-15, solarTimeHours: -1e-15 });
+    expect(tiny.dayOfYear).toBeGreaterThanOrEqual(0);
+    expect(tiny.dayOfYear).toBeLessThan(365);
+    expect(tiny.solarTimeHours).toBeGreaterThanOrEqual(0);
+    expect(tiny.solarTimeHours).toBeLessThan(24);
   });
 
   it("does not migrate the old implicit Scenic default", () => {

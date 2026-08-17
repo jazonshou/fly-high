@@ -7,6 +7,12 @@ import type { AirportDefinition, WorldDefinition, WorldOptions, WorldSeed } from
 
 export const DEFAULT_WORLD_SEED = "open-skies";
 
+/**
+ * Mid-latitude default (0-6): temperate seasons and sun paths that match the
+ * biome mix the generator already produces. Existing worlds inherit it.
+ */
+export const DEFAULT_WORLD_LATITUDE_DEGREES = 45;
+
 function finiteOrThrow(value: number, label: string): number {
   if (!Number.isFinite(value)) throw new RangeError(`${label} must be finite`);
   return value;
@@ -64,7 +70,7 @@ function buildAirport(
     overrides?.headingRadians ?? generatedSite?.headingRadians ?? DEFAULT_AIRPORT.headingRadians,
     "airport.headingRadians",
   );
-  const naturalElevation = sampleNaturalTerrainHeight(seedHash, centerX, centerZ);
+  const naturalElevation = sampleNaturalTerrainHeight(seedHash, centerX, centerZ, 0);
   const generatedElevation = generatedSite
     ? Math.max(seaLevel + 10, Math.round(generatedSite.assessment.elevation * 4) / 4)
     : Math.max(seaLevel + 14, Math.min(naturalElevation, seaLevel + 135));
@@ -85,6 +91,13 @@ export function createWorld(
   const normalizedSeed = normalizeSeed(seed);
   const sourceSeedHash = hashSeed(normalizedSeed);
   const seaLevel = finiteOrThrow(options.seaLevel ?? 0, "seaLevel");
+  const latitudeDegrees = finiteOrThrow(
+    options.latitudeDegrees ?? DEFAULT_WORLD_LATITUDE_DEGREES,
+    "latitudeDegrees",
+  );
+  if (latitudeDegrees < -90 || latitudeDegrees > 90) {
+    throw new RangeError("latitudeDegrees must be in [-90, 90]");
+  }
   let seedHash = sourceSeedHash;
   let airport: Readonly<AirportDefinition> | null = null;
 
@@ -112,5 +125,6 @@ export function createWorld(
     airport,
     prevailingWindRadians,
     prevailingWindSpeed: 3.5 + unitFloatFromHash(speedHash) * 7.5,
+    latitudeDegrees,
   });
 }

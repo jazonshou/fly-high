@@ -23,14 +23,42 @@ function assertFiniteCoordinate(value: number, label: string): void {
   }
 }
 
+function assertFilterWidth(filterWidthMeters: number): void {
+  if (!Number.isFinite(filterWidthMeters) || filterWidthMeters < 0) {
+    throw new RangeError("filterWidthMeters must be finite and non-negative");
+  }
+}
+
 /**
  * The natural (pre-airport) terrain kernel. It deliberately operates only on
  * global coordinates and a uint32 seed, so workers and collision code can share
  * it without any renderer state.
+ *
+ * SOLE HEIGHT AUTHORITY (§1.3). Until 5-2, this function is the one producer
+ * of terrain shape for both physics (through src/sim/terrainGrid.ts) and
+ * rendering (through tile generation), so the surfaces agree by construction.
+ * At 5-2 the eroded GPU grid becomes the authority and this kernel survives
+ * only as (a) the tectonic uplift input to erosion and (b) the above-500 m-AGL
+ * collision fallback. Do not add other height producers.
+ *
+ * `filterWidthMeters` is the half-width of the sampling footprint. Phase 0
+ * threads it as a required positional parameter and ignores it — a behavioural
+ * no-op — so that 1B-2's band-limiting is a diff inside two functions instead
+ * of a simultaneous signature-and-behaviour change across every call site.
+ * Positional and required on purpose: this kernel runs ~181 times per vertex,
+ * so an options object would allocate in the hottest loop in the codebase, and
+ * a defaulted parameter would let a call site silently reintroduce the horizon
+ * crawl. Collision keeps 0 (the full-bandwidth kernel) forever.
  */
-export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: number): number {
+export function sampleNaturalTerrainHeight(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
   assertFiniteCoordinate(x, "x");
   assertFiniteCoordinate(z, "z");
+  assertFilterWidth(filterWidthMeters);
 
   const warpScale = 1 / 18_000;
   const warpX = valueNoise2D(mixSeed(seedHash, 101), x * warpScale, z * warpScale) * 2_400;
@@ -59,8 +87,8 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
   const mountainRegion = smoothstep(0.47, 0.76, mountainField);
   const ridges = ridgedFbm2D(mixSeed(seedHash, 131), warpedX / 2_550, warpedZ / 2_550, 5);
   const localRidges = ridgedFbm2D(mixSeed(seedHash, 132), warpedX / 1_050, warpedZ / 1_050, 4);
-  const foothillHeight = land * foothillRegion * Math.pow(ridges, 2.12) * 285;
-  const mountainHeight = land * mountainRegion * Math.pow(ridges, 1.58) * 1_390;
+  const foothillHeight = land * foothillRegion * Math.pow(Math.max(0, ridges), 2.12) * 285;
+  const mountainHeight = land * mountainRegion * Math.pow(Math.max(0, ridges), 1.58) * 1_390;
 
   // Mid-scale relief stops broad mountain masks from becoming smooth domes.
   // It is strongest around existing uplift, preserving recognizable plains
@@ -68,7 +96,7 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
   const rockyKnolls =
     land *
     (0.34 + foothillRegion * 0.66) *
-    Math.pow(smoothstep(0.3, 0.86, localRidges), 2.25) *
+    Math.pow(Math.max(0, smoothstep(0.3, 0.86, localRidges)), 2.25) *
     (72 + foothillRegion * 115);
   const cragDetail =
     land *
@@ -77,11 +105,12 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
     (localRidges - 0.48) *
     360;
   const valleyCarve =
-    land * foothillRegion * Math.pow(1 - ridges, 3.1) * (55 + mountainRegion * 105);
+    land * foothillRegion * Math.pow(Math.max(0, 1 - ridges), 3.1) * (55 + mountainRegion * 105);
   const geologicalRelief = sampleGeologicalRelief(
     seedHash,
     warpedX,
     warpedZ,
+    filterWidthMeters,
     land,
     foothillRegion,
     mountainRegion,
@@ -105,7 +134,8 @@ export function sampleNaturalTerrainHeight(seedHash: number, x: number, z: numbe
 
 /** Fast collision-query path: only computes terrain elevation. */
 export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
-  const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z);
+  // Physics and collision always sample the full-bandwidth kernel (width 0).
+  const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
   return flattenHeightForAirport(naturalHeight, world.airport, x, z);
 }
 
@@ -182,7 +212,13 @@ export function sampleTerrainCollision(
   return target;
 }
 
-export function sampleTerrainMoisture(world: WorldDefinition, x: number, z: number): number {
+export function sampleTerrainMoisture(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  assertFilterWidth(filterWidthMeters);
   const broad = fbm2D(mixSeed(world.seedHash, 201), x / 5_200, z / 5_200, 4, 2, 0.52);
   const local = valueNoise2D(mixSeed(world.seedHash, 202), x / 850, z / 850);
   // Elongated rain-shadow provinces break the old near-uniform moisture field
@@ -199,8 +235,10 @@ export function sampleTerrainTemperature(
   world: WorldDefinition,
   x: number,
   z: number,
+  filterWidthMeters: number,
   height = sampleTerrainHeight(world, x, z),
 ): number {
+  assertFilterWidth(filterWidthMeters);
   const climate = fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
   const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
   return saturate(0.66 + climate * 0.2 - elevationCooling);
@@ -297,8 +335,8 @@ export function sampleTerrain(
   const height = sampleTerrainHeight(world, x, z);
   sampleTerrainNormal(world, x, z, target.normal);
   const slope = saturate(1 - target.normal.y);
-  const moisture = sampleTerrainMoisture(world, x, z);
-  const temperature = sampleTerrainTemperature(world, x, z, height);
+  const moisture = sampleTerrainMoisture(world, x, z, 0);
+  const temperature = sampleTerrainTemperature(world, x, z, 0, height);
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
   const biome = classifyBiome(world, height, slope, moisture, temperature, runway);
 

@@ -10,6 +10,32 @@ import {
 import { CloudShadowMaterialPlugin } from "@/src/render/webgpu/clouds/CloudShadowMaterialPlugin";
 import type { CloudShadowProjection } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  compareWorldPageCacheEvictionOrder,
+  touchWorldPageCacheMetadata,
+  WORLD_PAGE_CACHE_METADATA_VERSION,
+  type WorldPageCacheMetadata,
+} from "@/src/render/webgpu/world/cache";
+import {
+  WorldPageLifecycle,
+  type WorldPageOperationToken,
+} from "@/src/render/webgpu/world/lifecycle";
+import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
+import {
+  createWorldPageAddress,
+  createWorldPageKey,
+  worldPageBounds,
+  worldPageExtentMeters,
+  type WorldPageAddress,
+  type WorldPageBounds,
+  type WorldPageKey,
+} from "@/src/render/webgpu/world/pageKey";
+import { WORLD_PAGE_SCHEMA_VERSION } from "@/src/render/webgpu/world/payload";
+import {
+  rankWorldPageStreamingCandidates,
+  type WorldPageStreamingObserver,
+  type WorldPageStreamingPriorityOptions,
+} from "@/src/render/webgpu/world/streamingPriority";
 import type { TerrainTileData, WorldDefinition } from "@/src/world";
 import { TerrainMaterialPlugin } from "./TerrainMaterialPlugin";
 
@@ -36,30 +62,25 @@ export interface TerrainClipmapSystemOptions {
 }
 
 interface TerrainPage {
-  readonly key: string;
-  readonly level: number;
-  readonly tileX: number;
-  readonly tileZ: number;
-  readonly extent: number;
+  readonly key: WorldPageKey;
+  readonly address: WorldPageAddress;
+  readonly bounds: WorldPageBounds;
   readonly resolution: number;
-  readonly generation: number;
   readonly mesh: Mesh;
+  readonly metadata: WorldPageCacheMetadata;
   topologyKey: string;
   lastRequiredFrame: number;
 }
 
 interface PendingPage {
   readonly requestId: number;
-  readonly generation: number;
+  readonly token: WorldPageOperationToken;
 }
 
 interface DesiredPage {
-  readonly key: string;
-  readonly level: number;
-  readonly tileX: number;
-  readonly tileZ: number;
-  readonly extent: number;
-  readonly priority: number;
+  readonly key: WorldPageKey;
+  readonly address: WorldPageAddress;
+  readonly bounds: WorldPageBounds;
   readonly hole: TerrainClipmapBounds | null;
 }
 
@@ -76,13 +97,29 @@ export interface TerrainClipmapStatistics {
   readonly triangles: number;
 }
 
-const BASE_PAGE_EXTENT = 512;
 const RING_RADIUS = 2;
+/**
+ * Pages that leave the desired set stay allocated this many frames for quick
+ * reuse. The grace admits pages to eviction; the order among the admitted is
+ * compareWorldPageCacheEvictionOrder's.
+ */
 const EVICTION_GRACE_FRAMES = 90;
 // Page boundaries sample the same global height function, so skirts only need
 // to cover transient fine/coarse gaps.  Deep 80 m two-sided walls were visible
 // as a regular line grid at medium quality, especially on ridge silhouettes.
 const TERRAIN_SKIRT_DEPTH_METERS = 24;
+
+/**
+ * Tuning of the shared flight-corridor streaming priority for the CPU tile
+ * path (0-3). The module defaults carry no level penalty because Phase 4's
+ * atlas biases parents explicitly; this path has no parent bias yet, so the
+ * penalty preserves the pre-adoption fine-before-coarse ordering at equal
+ * corridor cost (the deleted local formula was `distance + level * 400`).
+ */
+const TERRAIN_STREAMING_PRIORITY_OPTIONS: Partial<WorldPageStreamingPriorityOptions> = {
+  basePageExtentMeters: WORLD_PAGE_BASE_EXTENT_METERS,
+  levelPenaltyMeters: 400,
+};
 
 function assertBounds(bounds: TerrainClipmapBounds, label: string): void {
   if (
@@ -103,15 +140,6 @@ function boundsKey(bounds: readonly TerrainClipmapBounds[]): string {
       `${entry.minX}:${entry.minZ}:${entry.maxX}:${entry.maxZ}`
     )).sort().join("|")
     : "full";
-}
-
-function pageBounds(tileX: number, tileZ: number, extent: number): TerrainClipmapBounds {
-  return {
-    minX: tileX * extent,
-    minZ: tileZ * extent,
-    maxX: (tileX + 1) * extent,
-    maxZ: (tileZ + 1) * extent,
-  };
 }
 
 /**
@@ -224,10 +252,6 @@ function buildTerrainIndicesWithSkirt(
   return indices;
 }
 
-function pageKey(level: number, tileX: number, tileZ: number): string {
-  return `${level}:${tileX}:${tileZ}`;
-}
-
 function tileResolution(profile: WebGpuQualityProfile, level: number): number {
   if (profile.tier === 0) return level === 0 ? 33 : 17;
   if (profile.tier === 1) return level < 2 ? 65 : 33;
@@ -240,22 +264,35 @@ function tileResolution(profile: WebGpuQualityProfile, level: number): number {
  * Each level doubles its world extent while retaining a regular GPU mesh. The
  * coarser levels are hollowed beneath the finer coverage, producing geometry-
  * clipmap style rings without keeping a world-sized mesh or world-sized batch.
+ *
+ * Page identity, streaming order, residency, and eviction ordering come from
+ * `src/render/webgpu/world/` (0-3): canonical `WorldPageKey`s, the swept
+ * flight-corridor priority, one `WorldPageLifecycle` per page with epoch-based
+ * rejection of stale worker results, and `compareWorldPageCacheEvictionOrder`.
+ * This class is the thin CPU-tile adapter over those modules; Phase 4's page
+ * atlas (4-2) reuses them and deletes this path's mesh building.
  */
 export class TerrainClipmapSystem {
   private readonly material: PBRMaterial;
   private readonly materialDetail: TerrainMaterialPlugin;
   private readonly cloudShadowPlugin: CloudShadowMaterialPlugin;
   private readonly generator: TerrainClipmapPageGenerator;
-  private readonly pages = new Map<string, TerrainPage>();
-  private readonly pending = new Map<string, PendingPage>();
-  private desired = new Map<string, DesiredPage>();
+  private readonly pages = new Map<WorldPageKey, TerrainPage>();
+  private readonly pending = new Map<WorldPageKey, PendingPage>();
+  /** One lifecycle per known page; entries leave when the page fully unloads. */
+  private readonly lifecycles = new Map<WorldPageKey, WorldPageLifecycle>();
+  private readonly worldRevision: string;
+  private desired = new Map<WorldPageKey, DesiredPage>();
   private profile: WebGpuQualityProfile;
-  private generation = 1;
   private frameIndex = 0;
   private originX = 0;
   private originZ = 0;
-  private observerX = 0;
-  private observerZ = 0;
+  private streamingObserver: WorldPageStreamingObserver = {
+    positionX: 0,
+    positionZ: 0,
+    velocityX: 0,
+    velocityZ: 0,
+  };
   private cloudShadowProjection: CloudShadowProjection | null = null;
   private lastAnchor = "";
   private disposed = false;
@@ -267,6 +304,7 @@ export class TerrainClipmapSystem {
     options: TerrainClipmapSystemOptions = {},
   ) {
     this.profile = profile;
+    this.worldRevision = `terrain-cpu-tile/${world.seed}`;
     this.generator = options.generator ?? new TerrainGenerationClient(world, { maxQueued: 128 });
     this.material = new PBRMaterial("terrain-pbr", scene);
     this.material.metallic = 0;
@@ -300,14 +338,22 @@ export class TerrainClipmapSystem {
       || profile.terrainRings !== this.profile.terrainRings;
     this.profile = profile;
     if (!topologyChanged) return;
-    this.generation += 1;
     this.lastAnchor = "";
-    for (const pending of this.pending.values()) this.generator.cancel(pending.requestId);
+    // Cancel every in-flight request. Cancelling bumps the lifecycle epoch, so
+    // a worker result that was already on its way back is rejected as stale
+    // instead of creating a mesh for the retired profile.
+    for (const [key, pendingPage] of this.pending) {
+      this.generator.cancel(pendingPage.requestId);
+      const lifecycle = this.lifecycles.get(key);
+      if (lifecycle?.isCurrent(pendingPage.token)) {
+        lifecycle.cancelOperation(pendingPage.token);
+      }
+      this.lifecycles.delete(key);
+    }
     this.pending.clear();
     for (const [key, page] of this.pages) {
-      if (page.level < profile.terrainRings) continue;
-      page.mesh.dispose(false, false);
-      this.pages.delete(key);
+      if (page.address.level < profile.terrainRings) continue;
+      this.disposePage(key, page);
     }
   }
 
@@ -330,16 +376,20 @@ export class TerrainClipmapSystem {
   update(observer: TerrainObserver, frameIndex: number): void {
     if (this.disposed) return;
     this.frameIndex = frameIndex;
-    this.observerX = observer.x;
-    this.observerZ = observer.z;
-    const fineX = Math.floor(observer.x / BASE_PAGE_EXTENT);
-    const fineZ = Math.floor(observer.z / BASE_PAGE_EXTENT);
+    this.streamingObserver = {
+      positionX: observer.x,
+      positionZ: observer.z,
+      velocityX: observer.velocityX,
+      velocityZ: observer.velocityZ,
+    };
+    const fineX = Math.floor(observer.x / WORLD_PAGE_BASE_EXTENT_METERS);
+    const fineZ = Math.floor(observer.z / WORLD_PAGE_BASE_EXTENT_METERS);
     const speed = Math.hypot(observer.velocityX, observer.velocityZ);
     const lookAhead = Math.min(8, 1_800 / Math.max(speed, 1));
     const predictionX = observer.x + observer.velocityX * lookAhead;
     const predictionZ = observer.z + observer.velocityZ * lookAhead;
-    const predictedFineX = Math.floor(predictionX / BASE_PAGE_EXTENT);
-    const predictedFineZ = Math.floor(predictionZ / BASE_PAGE_EXTENT);
+    const predictedFineX = Math.floor(predictionX / WORLD_PAGE_BASE_EXTENT_METERS);
+    const predictedFineZ = Math.floor(predictionZ / WORLD_PAGE_BASE_EXTENT_METERS);
     const anchor = [
       fineX,
       fineZ,
@@ -360,15 +410,7 @@ export class TerrainClipmapSystem {
         page.lastRequiredFrame = frameIndex;
       }
     }
-    let evicted = false;
-    for (const [key, page] of this.pages) {
-      if (this.desired.has(key)) continue;
-      if (frameIndex - page.lastRequiredFrame < EVICTION_GRACE_FRAMES) continue;
-      page.mesh.dispose(false, false);
-      this.pages.delete(key);
-      evicted = true;
-    }
-    if (evicted) this.refreshPageTopologies();
+    this.evictExpiredPages(frameIndex);
     // The worker queue is deliberately bounded. Keep feeding any desired pages
     // that did not fit during the anchor rebuild as earlier requests complete;
     // otherwise the cheapest far-horizon rings could remain permanently absent.
@@ -381,16 +423,15 @@ export class TerrainClipmapSystem {
       // Hollow coarse-ring meshes retain page-sized bounding boxes, so relying
       // on cascade frustum culling alone submits distant rings repeatedly.
       // Filter against the configured shadow reach before registering casters.
-      const bounds = pageBounds(page.tileX, page.tileZ, page.extent);
       const distanceX = Math.max(
-        bounds.minX - this.observerX,
+        page.bounds.minX - this.streamingObserver.positionX,
         0,
-        this.observerX - bounds.maxX,
+        this.streamingObserver.positionX - page.bounds.maxX,
       );
       const distanceZ = Math.max(
-        bounds.minZ - this.observerZ,
+        page.bounds.minZ - this.streamingObserver.positionZ,
         0,
-        this.observerZ - bounds.maxZ,
+        this.streamingObserver.positionZ - page.bounds.maxZ,
       );
       if (Math.hypot(distanceX, distanceZ) > this.profile.shadowDistance) continue;
       add(page.mesh);
@@ -404,6 +445,7 @@ export class TerrainClipmapSystem {
     for (const page of this.pages.values()) page.mesh.dispose(false, false);
     this.pages.clear();
     this.pending.clear();
+    this.lifecycles.clear();
     // Cloud transmittance is owned by VolumetricCloudSystem.
     this.material.dispose(true, false);
   }
@@ -413,11 +455,11 @@ export class TerrainClipmapSystem {
     predictionX: number,
     predictionZ: number,
   ): void {
-    const desired = new Map<string, DesiredPage>();
+    const desired = new Map<WorldPageKey, DesiredPage>();
     let innerBounds: TerrainClipmapBounds | null = null;
 
     for (let level = 0; level < this.profile.terrainRings; level += 1) {
-      const extent = BASE_PAGE_EXTENT * 2 ** level;
+      const extent = worldPageExtentMeters(level, WORLD_PAGE_BASE_EXTENT_METERS);
       const centerX = Math.floor((level === 0 ? predictionX : observer.x) / extent);
       const centerZ = Math.floor((level === 0 ? predictionZ : observer.z) / extent);
       const levelMinX = (centerX - RING_RADIUS) * extent;
@@ -427,29 +469,16 @@ export class TerrainClipmapSystem {
 
       for (let dz = -RING_RADIUS; dz <= RING_RADIUS; dz += 1) {
         for (let dx = -RING_RADIUS; dx <= RING_RADIUS; dx += 1) {
-          const tileX = centerX + dx;
-          const tileZ = centerZ + dz;
-          const bounds = pageBounds(tileX, tileZ, extent);
+          const address = createWorldPageAddress(level, centerX + dx, centerZ + dz);
+          const bounds = worldPageBounds(address, WORLD_PAGE_BASE_EXTENT_METERS);
           const hiddenByFineLevel = innerBounds !== null
             && bounds.minX >= innerBounds.minX
             && bounds.minZ >= innerBounds.minZ
             && bounds.maxX <= innerBounds.maxX
             && bounds.maxZ <= innerBounds.maxZ;
           if (hiddenByFineLevel) continue;
-          const key = pageKey(level, tileX, tileZ);
-          const distance = Math.hypot(
-            bounds.minX + extent * 0.5 - predictionX,
-            bounds.minZ + extent * 0.5 - predictionZ,
-          );
-          desired.set(key, {
-            key,
-            level,
-            tileX,
-            tileZ,
-            extent,
-            priority: distance + level * 400,
-            hole: innerBounds,
-          });
+          const key = createWorldPageKey(address);
+          desired.set(key, { key, address, bounds, hole: innerBounds });
         }
       }
       innerBounds = { minX: levelMinX, minZ: levelMinZ, maxX: levelMaxX, maxZ: levelMaxZ };
@@ -465,63 +494,124 @@ export class TerrainClipmapSystem {
   }
 
   private pumpDesiredRequests(): void {
-    const missing = [...this.desired.values()].filter((candidate) => {
-      const page = this.pages.get(candidate.key);
-      const requiredResolution = tileResolution(this.profile, candidate.level);
-      return (page === undefined
-        || page.generation !== this.generation
-        || page.resolution !== requiredResolution)
-        && !this.pending.has(candidate.key);
-    }).sort((left, right) => left.priority - right.priority);
-    for (const candidate of missing) {
-      if (!this.requestPage(candidate)) break;
+    const missing: Array<{ address: WorldPageAddress; desired: DesiredPage }> = [];
+    for (const desired of this.desired.values()) {
+      if (this.pending.has(desired.key)) continue;
+      const page = this.pages.get(desired.key);
+      const requiredResolution = tileResolution(this.profile, desired.address.level);
+      if (page !== undefined && page.resolution === requiredResolution) continue;
+      missing.push({ address: desired.address, desired });
+    }
+    if (missing.length === 0) return;
+    const ranked = rankWorldPageStreamingCandidates(
+      missing,
+      this.streamingObserver,
+      TERRAIN_STREAMING_PRIORITY_OPTIONS,
+    );
+    for (const entry of ranked) {
+      if (!this.requestPage(entry.candidate.desired, entry.priority.score)) break;
     }
   }
 
-  private requestPage(candidate: DesiredPage): boolean {
-    const generation = this.generation;
+  private lifecycleFor(key: WorldPageKey): WorldPageLifecycle {
+    const existing = this.lifecycles.get(key);
+    if (existing) return existing;
+    const lifecycle = new WorldPageLifecycle(key, () => this.frameIndex);
+    this.lifecycles.set(key, lifecycle);
+    return lifecycle;
+  }
+
+  private requestPage(desired: DesiredPage, priorityScore: number): boolean {
+    const lifecycle = this.lifecycleFor(desired.key);
+    if (lifecycle.state === "resident") {
+      // A resident page needs different content (the profile's resolution
+      // changed). Its replacement is a fresh load of the same key: retire the
+      // resident content in the state machine while the stale mesh keeps
+      // rendering until the new tile arrives.
+      lifecycle.finishEviction(lifecycle.beginEviction(), false);
+    }
+    const token = lifecycle.queue();
     const requestId = this.generator.request(
       {
-        key: candidate.key,
-        generation,
-        priority: candidate.priority,
+        key: desired.key,
+        generation: token.epoch,
+        priority: priorityScore,
         options: {
-          tileX: candidate.tileX,
-          tileZ: candidate.tileZ,
-          size: candidate.extent,
-          resolution: tileResolution(this.profile, candidate.level),
+          tileX: desired.address.x,
+          tileZ: desired.address.z,
+          size: desired.bounds.extentMeters,
+          resolution: tileResolution(this.profile, desired.address.level),
           includeNormals: true,
           includeColors: true,
           includeClimate: true,
         },
       },
-      (tile) => {
-        const pending = this.pending.get(candidate.key);
-        this.pending.delete(candidate.key);
-        const desired = this.desired.get(candidate.key);
-        if (
-          this.disposed
-          || pending?.generation !== generation
-          || generation !== this.generation
-          || desired === undefined
-        ) return;
-        this.uploadPage(desired, generation, tile);
-      },
-      () => {
-        this.pending.delete(candidate.key);
-        this.lastAnchor = "";
-      },
+      (tile) => this.onPageGenerated(desired.key, token, tile),
+      (error) => this.onPageFailed(desired.key, token, error),
     );
-    if (requestId < 0) return false;
-    this.pending.set(candidate.key, { requestId, generation });
+    if (requestId < 0) {
+      // The bounded queue is full; roll the lifecycle back so the next pump
+      // can queue it again. Guarded, because a generator is allowed to have
+      // failed the request synchronously (state "failed" retries via queue()).
+      if (lifecycle.isCurrent(token) && lifecycle.state === "queued") {
+        lifecycle.cancelOperation(token);
+      }
+      if (!this.pages.has(desired.key) && lifecycle.state === "unloaded") {
+        this.lifecycles.delete(desired.key);
+      }
+      return false;
+    }
+    lifecycle.beginLoading(token);
+    this.pending.set(desired.key, { requestId, token });
     return true;
   }
 
-  private uploadPage(
-    desired: DesiredPage,
-    generation: number,
+  private onPageGenerated(
+    key: WorldPageKey,
+    token: WorldPageOperationToken,
     tile: TerrainTileData,
   ): void {
+    this.pending.delete(key);
+    if (this.disposed) return;
+    const lifecycle = this.lifecycles.get(key);
+    // A stale epoch (profile change, cancellation) is rejected here without a
+    // mesh ever being created. This is the check the old `generation` counter
+    // hand-rolled.
+    if (!lifecycle || !lifecycle.markCpuReady(token)) return;
+    const desired = this.desired.get(key);
+    if (!desired) {
+      lifecycle.dropCpuPayload();
+      if (!this.pages.has(key)) this.lifecycles.delete(key);
+      return;
+    }
+    const uploadToken = lifecycle.beginUpload();
+    this.uploadPage(desired, tile);
+    lifecycle.markResident(uploadToken);
+  }
+
+  private onPageFailed(
+    key: WorldPageKey,
+    token: WorldPageOperationToken,
+    error: Error,
+  ): void {
+    this.pending.delete(key);
+    if (this.disposed) return;
+    const lifecycle = this.lifecycles.get(key);
+    if (!lifecycle || !lifecycle.isCurrent(token)) return;
+    lifecycle.markFailed(token, error.message.trim() || "terrain generation failed");
+    // A failure for a page nobody wants anymore (evicted from the generator
+    // queue after the desired set moved on) would otherwise pin its failed
+    // lifecycle forever — pumpDesiredRequests only revisits desired keys.
+    if (!this.desired.has(key) && !this.pages.has(key)) {
+      this.lifecycles.delete(key);
+      return;
+    }
+    // Force the next update to rebuild and re-pump; queue() accepts a retry
+    // directly from the failed state.
+    this.lastAnchor = "";
+  }
+
+  private uploadPage(desired: DesiredPage, tile: TerrainTileData): void {
     const surfaceVertexCount = tile.resolution * tile.resolution;
     const boundary = terrainBoundaryVertexIndices(tile.resolution);
     const vertexCount = surfaceVertexCount + boundary.length;
@@ -544,6 +634,7 @@ export class TerrainClipmapSystem {
       }
     }
     normals.set(tile.normals, 0);
+    const extentMeters = desired.bounds.extentMeters;
     for (let index = 0; index < boundary.length; index += 1) {
       const sourceVertex = boundary[index] ?? 0;
       const destinationVertex = surfaceVertexCount + index;
@@ -557,9 +648,9 @@ export class TerrainClipmapSystem {
       const localZ = positions[sourcePosition + 2] ?? 0;
       const edgeDistance = Math.min(
         localX,
-        desired.extent - localX,
+        extentMeters - localX,
         localZ,
-        desired.extent - localZ,
+        extentMeters - localZ,
       );
       // Give the vertical crack guard a side-facing normal.  Copying the top
       // normal made the wall receive ground lighting and read as a bright seam.
@@ -567,7 +658,7 @@ export class TerrainClipmapSystem {
         normals[destinationPosition] = -1;
         normals[destinationPosition + 1] = 0;
         normals[destinationPosition + 2] = 0;
-      } else if (edgeDistance === desired.extent - localX) {
+      } else if (edgeDistance === extentMeters - localX) {
         normals[destinationPosition] = 1;
         normals[destinationPosition + 1] = 0;
         normals[destinationPosition + 2] = 0;
@@ -591,7 +682,7 @@ export class TerrainClipmapSystem {
     const effectiveCoverage = this.effectiveCoverage(desired);
     const indices = buildTerrainIndicesWithSkirt(
       tile.resolution,
-      pageBounds(desired.tileX, desired.tileZ, desired.extent),
+      desired.bounds,
       effectiveCoverage,
     );
 
@@ -606,16 +697,36 @@ export class TerrainClipmapSystem {
     mesh.useVertexColors = true;
     mesh.receiveShadows = true;
     mesh.isPickable = false;
-    mesh.alwaysSelectAsActiveMesh = desired.level === 0;
+    mesh.alwaysSelectAsActiveMesh = desired.address.level === 0;
     const page: TerrainPage = {
       key: desired.key,
-      level: desired.level,
-      tileX: desired.tileX,
-      tileZ: desired.tileZ,
-      extent: desired.extent,
+      address: desired.address,
+      bounds: desired.bounds,
       resolution: tile.resolution,
-      generation,
       mesh,
+      // Cache metadata timestamps use the frame index as the clock; eviction
+      // ordering only needs monotonicity, not wall time.
+      metadata: {
+        metadataVersion: WORLD_PAGE_CACHE_METADATA_VERSION,
+        pageSchemaVersion: WORLD_PAGE_SCHEMA_VERSION,
+        key: desired.key,
+        worldRevision: this.worldRevision,
+        contentRevision: `cpu-tile-r${tile.resolution}`,
+        cpuByteLength: tile.heights.byteLength
+          + tile.normals.byteLength
+          + tile.colors.byteLength
+          + tile.moisture.byteLength
+          + tile.biomes.byteLength,
+        gpuByteLengthEstimate: positions.byteLength
+          + normals.byteLength
+          + colors.byteLength
+          + indices.byteLength,
+        createdAtMs: this.frameIndex,
+        lastAccessedAtMs: this.frameIndex,
+        lastVisibleAtMs: this.frameIndex,
+        accessCount: 0,
+        pinned: false,
+      },
       topologyKey: boundsKey(effectiveCoverage),
       lastRequiredFrame: this.frameIndex,
     };
@@ -626,22 +737,57 @@ export class TerrainClipmapSystem {
     this.refreshPageTopologies();
   }
 
+  private evictExpiredPages(frameIndex: number): void {
+    let expired: TerrainPage[] | null = null;
+    for (const page of this.pages.values()) {
+      if (this.desired.has(page.key)) continue;
+      if (frameIndex - page.lastRequiredFrame < EVICTION_GRACE_FRAMES) continue;
+      (expired ??= []).push(page);
+    }
+    if (!expired) return;
+    // All grace-expired pages release this frame; the shared comparator fixes
+    // the order so the release sequence matches what a byte-budgeted cache
+    // (4-2) would choose first. Recency is refreshed from lastRequiredFrame —
+    // the hot path tracks frames on the page record instead of re-allocating
+    // metadata every frame.
+    const candidates = expired.map((page) => ({
+      page,
+      metadata: touchWorldPageCacheMetadata(page.metadata, page.lastRequiredFrame, true),
+    }));
+    candidates.sort((first, second) => compareWorldPageCacheEvictionOrder(
+      first.metadata,
+      second.metadata,
+    ));
+    for (const candidate of candidates) this.disposePage(candidate.page.key, candidate.page);
+    this.refreshPageTopologies();
+  }
+
+  private disposePage(key: WorldPageKey, page: TerrainPage): void {
+    const lifecycle = this.lifecycles.get(key);
+    if (lifecycle?.state === "resident") {
+      lifecycle.finishEviction(lifecycle.beginEviction(), false);
+    }
+    // A pending replacement keeps its lifecycle: it describes the in-flight
+    // load, not the mesh being released here.
+    if (!this.pending.has(key)) this.lifecycles.delete(key);
+    page.mesh.dispose(false, false);
+    this.pages.delete(key);
+  }
+
   /** Remove only cells already covered by resident finer geometry. */
   private effectiveCoverage(desired: DesiredPage): readonly TerrainClipmapBounds[] {
     if (!desired.hole) return [];
-    const target = pageBounds(desired.tileX, desired.tileZ, desired.extent);
     const coverage: TerrainClipmapBounds[] = [];
     for (const page of this.pages.values()) {
-      if (page.level >= desired.level) continue;
+      if (page.address.level >= desired.address.level) continue;
       if (!page.mesh.isEnabled() || !this.desired.has(page.key)) continue;
-      const bounds = pageBounds(page.tileX, page.tileZ, page.extent);
       if (
-        bounds.maxX <= target.minX
-        || bounds.minX >= target.maxX
-        || bounds.maxZ <= target.minZ
-        || bounds.minZ >= target.maxZ
+        page.bounds.maxX <= desired.bounds.minX
+        || page.bounds.minX >= desired.bounds.maxX
+        || page.bounds.maxZ <= desired.bounds.minZ
+        || page.bounds.minZ >= desired.bounds.maxZ
       ) continue;
-      coverage.push(bounds);
+      coverage.push(page.bounds);
     }
     return coverage;
   }
@@ -654,11 +800,7 @@ export class TerrainClipmapSystem {
       const topologyKey = boundsKey(coverage);
       if (topologyKey === page.topologyKey) continue;
       page.mesh.setIndices(
-        buildTerrainIndicesWithSkirt(
-          page.resolution,
-          pageBounds(page.tileX, page.tileZ, page.extent),
-          coverage,
-        ),
+        buildTerrainIndicesWithSkirt(page.resolution, page.bounds, coverage),
         terrainVertexCountWithSkirt(page.resolution),
         false,
       );
@@ -668,9 +810,9 @@ export class TerrainClipmapSystem {
 
   private positionPage(page: TerrainPage): void {
     page.mesh.position.set(
-      page.tileX * page.extent - this.originX,
+      page.bounds.minX - this.originX,
       0,
-      page.tileZ * page.extent - this.originZ,
+      page.bounds.minZ - this.originZ,
     );
   }
 }

@@ -1,6 +1,6 @@
 # Flight model
 
-Aerolith models a fictional four-seat piston trainer as a deterministic six-degree-of-freedom rigid body. The goal is a coherent, light-trainer-like response—not certification fidelity to a named aircraft.
+fly high models a fictional four-seat piston trainer as a deterministic six-degree-of-freedom rigid body. The goal is a coherent, light-trainer-like response—not certification fidelity to a named aircraft.
 
 ## Coordinate and sign conventions
 

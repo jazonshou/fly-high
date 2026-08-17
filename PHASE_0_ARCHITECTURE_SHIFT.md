@@ -457,16 +457,43 @@ Phase 0 is done when every line is true.
 
 ---
 
+### 5.1 Execution outcome (2026-08-17)
+
+Phase 0 shipped in full on branch `jazonshou/Architecture-Shift`; every §5 line
+holds, with three deviations recorded here and in `ARCHITECTURE.md`:
+
+1. **`1A-4` step 3's premise was refuted by measurement.** The camera-centered
+   composite shell blends once per pixel (GPU test with an idempotent alpha-1
+   control), so "cloud edges are translucent, not a grey wall" is *not*
+   delivered by the cull change — the counter-rotation fix and the stale-matrix
+   fix shipped as specified, culling is on defensively, and any remaining edge
+   greyness belongs to `2-4 cloud-lighting`. See RENDERING_PLAN §4.2's outcome
+   note.
+2. **The per-octave wrap-continuity test uses exact seam-straddle and
+   bit-exact periodicity assertions** instead of §2's 4×-median transect rule,
+   which raw value noise violates without any seam (slope max/median ≈ 8×).
+   The composed-kernel transect kept the plan's form, centered on a computed
+   real seam so it can actually fail.
+3. **`0-4`'s "re-baseline once" turned out to be a re-verify:** the hash churn
+   is sub-millimeter and no threshold moved, so no constants were touched.
+
+One post-review contract change: `TerrainGenerationClient.request` no longer
+invokes `onError` re-entrantly for the request being rejected (the `-1` return
+is the signal); a first-frame queue-saturation crash in the lifecycle adapter
+was fixed and is guarded by a real-client integration test.
+
+---
+
 ## 6. Decision log
 
 | Date | Item | Decision | Rationale to record |
 |---|---|---|---|
-| — | `0-9` | Plugin vertex participation: pass, or fall back to `ShaderMaterial` | **The working incantation, verbatim**, or the re-plan |
-| — | `0-8` | Vitest browser + Playwright, or the manual shader-check page | Which, and why |
-| — | `0-3` | `DEFAULT_WORLD_PAGE_STREAMING_PRIORITY_OPTIONS` tuning | The values, and the observed change in what is resident |
-| — | `0-3` | Which lifecycle states the CPU path exercises | So `4-2` knows which half is untested |
-| — | `0-6` | `timeOfDay` label → `(dayOfYear, solarTimeHours)` migration mapping | The three pairs |
-| — | `0-4` | Golden values re-baselined | The commit, and confirmation `sim.flight.test.ts` was checked separately |
+| 2026-08-17 | `0-9` | **Pass** — plugin vertex participation composes with `ShadowDepthWrapper`; no `ShaderMaterial` re-plan | Incantation verbatim in `ARCHITECTURE.md`: attach plugins, then create+assign the wrapper **before the material's first effect compiles** (it observes `onEffectCreatedObservable`); no `remappedVariables` for PBR+plugins in WGSL. Automated in `tests/gpu/shadow-depth-wrapper.test.ts`. |
+| 2026-08-17 | `0-8` | Vitest browser mode + Playwright (full Chromium, `channel: "chromium"` — the headless shell has no GPU) | Adapter + Babylon `ComputeShader` round-trip in ~2 s; manual page not needed. Harness gotcha: manual `scene.render()` needs `engine.beginFrame()/endFrame()`, and canvas snapshots must be synchronous with the submit. |
+| 2026-08-17 | `0-3` | Module defaults + `levelPenaltyMeters: 400` (`TERRAIN_STREAMING_PRIORITY_OPTIONS`) | The default 0 assumes explicit parent biasing (Phase 4); 400 preserves fine-before-coarse at equal corridor cost. Observed: ahead-of-aircraft pages rank first (test-pinned); ring-count-only profile changes no longer regenerate identical pages. |
+| 2026-08-17 | `0-3` | CPU path exercises `unloaded→queued→loading→cpu-ready→uploading→resident`, `resident→evicting→unloaded`, `loading→failed→queued` | Untested until `4-2`: asynchronous `uploading` with real GPU latency, and `evicting→resident` cancellation. |
+| 2026-08-17 | `0-6` | `dawn → (171, 5.5)` · `day → (171, 12.5)` · `golden → (171, 19)` | One midsummer day at the default 45°N; exported as `TIME_OF_DAY_PRESET_CLOCKS` for `1C-9`'s preset buttons. |
+| 2026-08-17 | `0-4` | Golden values **re-verified, not re-baselined** | 24-bit truncation moves lattice values < 1.2×10⁻⁷ (≲0.2 mm of terrain); wrap is exact no-op inside ±2.8×10⁶ m. All thresholds, the 384-seed audit, and `sim.flight.test.ts` passed unchanged — the latter checked in isolation per R-0E. |
 
 ---
 

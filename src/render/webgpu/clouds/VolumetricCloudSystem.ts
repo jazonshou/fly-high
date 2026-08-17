@@ -289,15 +289,17 @@ fn temporalViewRay(uv: vec2f) -> vec3f {
   );
 }
 
-fn renderTargetUv(screenUv: vec2f) -> vec2f {
-  // ProceduralTexture's interpolated vUV is bottom-left based, while WebGPU
-  // texture coordinates address render targets from the top-left.
-  return vec2f(screenUv.x, 1.0 - screenUv.y);
-}
+// No vertical flip belongs here. Babylon already compensates for WebGPU's
+// top-left render-target convention: every non-pure WGSL vertex shader is
+// patched with a yFactor multiply, and yFactor is -1 for every render target,
+// so a ProceduralTexture's interpolated vUV.y already equals the texture v it
+// will be sampled back with. The old flip helper re-flipped on top of that
+// compensation, mirroring the temporal output vertically — which is what made
+// clouds counter-rotate against the aircraft (1A-4).
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
-  let currentUv = renderTargetUv(input.vUV);
+  let currentUv = input.vUV;
   let current = textureSampleLevel(currentSampler, currentSamplerSampler, currentUv, 0.0);
   if (uniforms.historyValid < 0.5 || current.b < 0.001 || current.a <= 0.0) {
     fragmentOutputs.color = current;
@@ -317,7 +319,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let history = textureSampleLevel(
     historySampler,
     historySamplerSampler,
-    renderTargetUv(previousUv),
+    previousUv,
     0.0,
   );
   var neighborhoodMinimum = current;
@@ -328,7 +330,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       let sampleValue = textureSampleLevel(
         currentSampler,
         currentSamplerSampler,
-        currentUv + vec2f(offset.x, -offset.y),
+        currentUv + offset,
         0.0,
       );
       neighborhoodMinimum = min(neighborhoodMinimum, sampleValue);
@@ -365,6 +367,11 @@ uniform ambientColor: vec3f;
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
+  // LATENT FRAGILITY (recorded by 1A-4, removed by composite-postprocess): this
+  // fragCoord-derived uv is only correct because the beauty pass renders into an
+  // offscreen target (the tone-map/FXAA post-process chain forces one), where
+  // Babylon's yFactor geometry flip cancels the top-left fragCoord convention.
+  // Detach every post-process and this composite inverts vertically.
   let uv = vec2f(
     input.position.x / uniforms.fullResolution.x,
     input.position.y / uniforms.fullResolution.y,
@@ -478,7 +485,16 @@ function createProceduralTexture(
 }
 
 function configurePremultipliedMaterial(material: ShaderMaterial): void {
-  material.backFaceCulling = false;
+  // 1A-4 step 3, resolved by measurement (tests/gpu/cloud-shell-culling.test.ts):
+  // the camera-centered BACKSIDE shell rasterises exactly once per pixel, so
+  // the hypothesised per-pixel double blend does not occur on this stack.
+  // Culling is enabled anyway — it is visually a no-op today (the GPU test
+  // pins that a culled BACKSIDE shell stays fully visible in the offscreen
+  // pass) and it protects the premultiplied blend from ever double-covering
+  // if the shell stops being camera-centered. Babylon's render-target winding
+  // flip and frontFace inversion cancel, so no sideOrientation change is
+  // needed. Keep the warmed pipeline descriptor in whenReadyAsync in step.
+  material.backFaceCulling = true;
   material.disableDepthWrite = true;
   material.transparencyMode = Material.MATERIAL_ALPHABLEND;
   material.alphaMode = Constants.ALPHA_PREMULTIPLIED_PORTERDUFF;
@@ -781,7 +797,12 @@ export class VolumetricCloudSystem {
                 depthWrite: false,
                 depthTest: true,
                 depthCompare: Constants.GEQUAL,
-                cullEnabled: false,
+                cullEnabled: true,
+                // The shell draws with reverseSide in this right-handed scene
+                // into a Y-flipped offscreen target, so the runtime pipeline
+                // keys frontFace 1 — Babylon's warm default of 2 would compile
+                // a pipeline the composite never uses.
+                frontFace: 1,
               });
             // Native WebGPU pipeline validation is asynchronous. Keep the same
             // abort/dispose/timeout barrier alive until it completes; NullEngine
@@ -887,6 +908,11 @@ export class VolumetricCloudSystem {
     this.frameIndex += 1;
     this.cameraWorld.copyFrom(cameraWorld);
     this.ensureCloudResolution();
+    // This pass runs in the frame graph's volumetrics phase, before
+    // scene.render() recomputes camera matrices — and the renderer lerps FOV
+    // every frame, so the cached transformation matrix is guaranteed stale.
+    // Force a view-matrix refresh before reading the view-projection (1A-4).
+    this.camera.getViewMatrix(true);
     this.currentViewProjection.copyFrom(this.camera.getTransformationMatrix());
     if (!this.historyValid) this.previousViewProjection.copyFrom(this.currentViewProjection);
 

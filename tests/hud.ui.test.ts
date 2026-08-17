@@ -108,6 +108,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       riverCount: 9,
       lakeCount: 3,
       residentTerrainPages: 42,
+    collisionSamplesServedByFallback: 0,
       cloudResolutionScale: 0.5,
       cloudRaySteps: 72,
       oceanFftCascades: 4,

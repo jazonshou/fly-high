@@ -95,7 +95,14 @@ export class TerrainGenerationClient {
 
     if (queued.dropped) {
       this.pending.delete(queued.dropped.id);
-      queued.dropped.value.onError(new Error("Terrain request queue reached its capacity"));
+      // A previously-queued request evicted in favour of a better newcomer is
+      // told it failed. The newcomer's own rejection is signalled by the -1
+      // return alone — invoking its onError before request() has even
+      // returned would hand callers a re-entrant failure for a request they
+      // do not know exists yet.
+      if (queued.dropped.id !== requestId) {
+        queued.dropped.value.onError(new Error("Terrain request queue reached its capacity"));
+      }
     }
     if (!queued.accepted) return -1;
     this.pump();

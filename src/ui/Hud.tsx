@@ -244,6 +244,7 @@ export function Hud({
           <span>{diagnostics.drawCalls} calls</span>
           <span>{Math.round(diagnostics.triangles / 1_000)}k tris</span>
           <span>{diagnostics.residentTerrainPages} pages</span>
+          <span>{diagnostics.collisionSamplesServedByFallback} collision fallback</span>
           <span>{diagnostics.renderScale.toFixed(2)}x scale</span>
           <span>{diagnostics.gpuFrameTime === null ? "GPU timing n/a" : `${diagnostics.gpuFrameTime.toFixed(1)} ms GPU`}</span>
           <span className="diagnostics__wide">

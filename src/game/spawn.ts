@@ -7,9 +7,9 @@ import {
 } from "@/src/sim";
 import {
   runwayToWorld,
-  sampleTerrainCollisionHeight,
   type WorldDefinition,
 } from "@/src/world";
+import { sampleGroundHeight } from "@/src/sim/terrainGrid";
 import {
   normalizeAirborneStartAgl,
   type SpawnKind,
@@ -82,14 +82,14 @@ function crashRecoverySurfaceHeight(
 ): number {
   let maximum = Math.max(
     world.seaLevel,
-    sampleTerrainCollisionHeight(world, worldX, worldZ),
+    sampleGroundHeight(world, worldX, worldZ),
   );
   for (const radius of RECOVERY_TERRAIN_RADII) {
     for (let direction = 0; direction < 8; direction += 1) {
       const angle = (direction * Math.PI) / 4;
       maximum = Math.max(
         maximum,
-        sampleTerrainCollisionHeight(
+        sampleGroundHeight(
           world,
           worldX + Math.cos(angle) * radius,
           worldZ + Math.sin(angle) * radius,
@@ -125,7 +125,7 @@ export function createSimulationSpawn(
     }
     const x = 0;
     const z = -500;
-    const terrainHeight = sampleTerrainCollisionHeight(world, x, z);
+    const terrainHeight = sampleGroundHeight(world, x, z);
     return {
       position: {
         x,

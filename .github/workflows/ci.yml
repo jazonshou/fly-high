@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One in-flight run per branch/PR; superseded runs are cancelled. Deploys to
+# main are excluded from cancellation so a queued release always finishes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 (LTS) ships npm 11.x. Node 22 ships npm 10.9.x, which crashes
+      # with "Exit handler never called!" resolving the 38 libc-gated optional
+      # binaries in package-lock.json (sharp, rolldown, lightningcss, swc,
+      # unrs-resolver). That path is Linux-only, so it never fires on macOS.
+      # The lockfile is authored by npm 11; keep CI on npm 11 to match.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # npm's generic crash message hides the real error, which only ever lands
+      # in the debug log. Surface it instead of losing it with the runner.
+      - name: Show npm debug log
+        if: failure()
+        run: cat "$(npm config get cache)"/_logs/*-debug-0.log || true
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The Node project: the numerical core, world generation, and the
+      # headless-Babylon render contracts. The WebGPU project (tests/gpu) needs a
+      # real adapter and runs in gpu-tests.yml instead.
+      - name: Test
+        run: npm test
+
+      - name: Build (Cloudflare Worker)
+        run: npm run build
+
+      - name: Build (static site for GitHub Pages)
+        env:
+          PAGES_BASE: /${{ github.event.repository.name }}/
+        run: npm run build:pages
+
+      # Uploaded on every run so the artifact is build-verified on PRs too; only
+      # the deploy job below (main pushes) publishes it.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pages
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -3,12 +3,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Aerolith — Endless Flight",
-    template: "%s · Aerolith",
+    default: "fly high — Endless Flight",
+    template: "%s · fly high",
   },
   description:
     "A calm, procedural browser flight simulator with a believable light-aircraft model.",
-  applicationName: "Aerolith",
+  applicationName: "fly high",
 };
 
 export const viewport: Viewport = {

@@ -30,6 +30,8 @@ export interface WorldOptions {
   seaLevel?: number;
   /** Pass false to generate a world without the starter airport. */
   airport?: false | Partial<AirportDefinition>;
+  /** Geographic latitude of the world, in degrees. Defaults to 45°N. */
+  latitudeDegrees?: number;
 }
 
 export interface WorldDefinition {
@@ -44,6 +46,11 @@ export interface WorldDefinition {
   readonly prevailingWindRadians: number;
   /** Prevailing wind magnitude before local gusts, in metres per second. */
   readonly prevailingWindSpeed: number;
+  /**
+   * Geographic latitude in degrees, set at generation (0-6). Feeds solar
+   * declination, day length, and the seasonal fields (§1.6).
+   */
+  readonly latitudeDegrees: number;
 }
 
 export const TerrainBiome = {

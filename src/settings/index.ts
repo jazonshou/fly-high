@@ -35,13 +35,38 @@ export interface GameSettings {
   /** @deprecated Retained only to migrate older stored preferences. */
   cameraShake: boolean;
   showDiagnostics: boolean;
+  /**
+   * UI preset label only (§1.6). After 1C-1 the renderer never branches on
+   * this name; the two clock scalars below are the rendering inputs. The
+   * label survives so preset buttons can highlight and so older stored
+   * settings keep meaning.
+   */
   timeOfDay: TimeOfDayPreset;
   weather: WeatherPreset;
+  /** Environment clock (0-6): day of the year, [0, 365). */
+  dayOfYear: number;
+  /** Environment clock (0-6): local solar time in hours, [0, 24). */
+  solarTimeHours: number;
 }
 
 export const SETTINGS_STORAGE_KEY = "aerolith.settings.v3";
 export const PREVIOUS_SETTINGS_STORAGE_KEY = "aerolith.settings.v2";
 export const LEGACY_SETTINGS_STORAGE_KEY = "aerolith.settings.v1";
+
+/**
+ * Migration mapping from the persisted time-of-day labels to plausible
+ * environment-clock pairs (0-6). All three sit on the same midsummer day at
+ * the default 45°N latitude — the presets were three times of one pleasant
+ * flying day: just after sunrise, high midday sun, and evening golden hour.
+ * 1C-9's preset buttons write these same pairs.
+ */
+export const TIME_OF_DAY_PRESET_CLOCKS: Readonly<
+  Record<TimeOfDayPreset, { readonly dayOfYear: number; readonly solarTimeHours: number }>
+> = Object.freeze({
+  dawn: Object.freeze({ dayOfYear: 171, solarTimeHours: 5.5 }),
+  day: Object.freeze({ dayOfYear: 171, solarTimeHours: 12.5 }),
+  golden: Object.freeze({ dayOfYear: 171, solarTimeHours: 19 }),
+});
 
 export const DEFAULT_SETTINGS: GameSettings = {
   aircraft: "trainer",
@@ -64,11 +89,21 @@ export const DEFAULT_SETTINGS: GameSettings = {
   showDiagnostics: false,
   timeOfDay: "day",
   weather: "breezy",
+  dayOfYear: TIME_OF_DAY_PRESET_CLOCKS.day.dayOfYear,
+  solarTimeHours: TIME_OF_DAY_PRESET_CLOCKS.day.solarTimeHours,
 };
 
 function finiteNumber(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+
+/** Reduce a finite number onto a half-open cyclic range [0, period). */
+function cyclicNumber(value: unknown, fallback: number, period: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  // Double-mod: a tiny negative would otherwise round `wrapped + period` to
+  // exactly `period`, escaping the half-open range.
+  return ((value % period) + period) % period;
 }
 
 function oneOf<T extends string>(value: unknown, values: readonly T[], fallback: T): T {
@@ -85,6 +120,11 @@ function renderingMode(value: unknown): RenderingMode {
 
 export function validateSettings(value: unknown): GameSettings {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const timeOfDay = oneOf(
+    source.timeOfDay,
+    ["dawn", "day", "golden"] as const,
+    DEFAULT_SETTINGS.timeOfDay,
+  );
   return {
     aircraft: oneOf(source.aircraft, ["trainer", "jet"] as const, DEFAULT_SETTINGS.aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
@@ -121,15 +161,19 @@ export function validateSettings(value: unknown): GameSettings {
       typeof source.showDiagnostics === "boolean"
         ? source.showDiagnostics
         : DEFAULT_SETTINGS.showDiagnostics,
-    timeOfDay: oneOf(
-      source.timeOfDay,
-      ["dawn", "day", "golden"] as const,
-      DEFAULT_SETTINGS.timeOfDay,
-    ),
+    timeOfDay,
     weather: oneOf(
       source.weather,
       ["clear", "breezy", "cloudy"] as const,
       DEFAULT_SETTINGS.weather,
+    ),
+    // Pre-Phase-0 blobs carry only the label; their clock falls back to the
+    // label's migration pair rather than to one global default (0-6).
+    dayOfYear: cyclicNumber(source.dayOfYear, TIME_OF_DAY_PRESET_CLOCKS[timeOfDay].dayOfYear, 365),
+    solarTimeHours: cyclicNumber(
+      source.solarTimeHours,
+      TIME_OF_DAY_PRESET_CLOCKS[timeOfDay].solarTimeHours,
+      24,
     ),
   };
 }

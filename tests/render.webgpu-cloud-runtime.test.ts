@@ -155,8 +155,12 @@ describe("volumetric cloud runtime shaders", () => {
     expect(CLOUD_INTEGRATION_FRAGMENT_WGSL).toContain("representativeDistance");
     expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).not.toContain("fragmentOutputs.fragDepth");
     expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).toContain("input.position.y");
-    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("renderTargetUv(input.vUV)");
-    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("renderTargetUv(previousUv)");
+    // 1A-4: the temporal pass must sample in plain vUV space. Babylon's WebGPU
+    // yFactor compensation already aligns ProceduralTexture vUV with texture v,
+    // so any re-flip here would mirror the clouds against the aircraft again.
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("renderTargetUv");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("1.0 - screenUv.y");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("let currentUv = input.vUV;");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousViewProjection");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("depthConfidence");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("opticalDepth");
@@ -274,7 +278,8 @@ describe("volumetric cloud startup readiness", () => {
       sampleCount: 1,
       depthWrite: false,
       depthTest: true,
-      cullEnabled: false,
+      cullEnabled: true,
+      frontFace: 1,
     }));
     expect(completed).toBe(false);
     resolvePipeline({} as GPURenderPipeline);

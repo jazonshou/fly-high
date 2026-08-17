@@ -1,0 +1,35 @@
+name: GPU tests
+
+# The tests/gpu project compiles real shaders and checks CPU/GPU parity, so it
+# needs a working WebGPU adapter. vitest.gpu.config.ts launches Chromium with
+# `--use-angle=metal`, which means a macOS runner. Kept out of the required CI
+# path deliberately: it is slower, it depends on a Playwright browser download,
+# and adapter availability on hosted runners is not guaranteed. Run it at gate
+# boundaries and before merging renderer work.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gpu:
+    name: WebGPU suite (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 for npm 11; see the note in ci.yml.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run WebGPU tests
+        run: npm run test:gpu

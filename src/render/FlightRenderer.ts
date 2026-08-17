@@ -22,6 +22,7 @@ import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/wo
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
+import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMirror";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
 import { WebGpuFrameGraph } from "./webgpu/core/FrameGraph";
@@ -49,7 +50,6 @@ import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
-const MAX_DEVICE_PIXEL_RATIO = 2;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
 const DYNAMIC_RESOLUTION_SAMPLE_COUNT = 120;
 const DYNAMIC_RESOLUTION_COOLDOWN_FRAMES = 120;
@@ -114,10 +114,6 @@ function releaseRendererResources(
     }
   }
   cleanup.length = 0;
-}
-
-export function qualityPixelRatio(quality: QualityLevel): number {
-  return quality === "low" ? 0.85 : quality === "high" ? 1.75 : 1.2;
 }
 
 export interface ChaseCameraProfile {
@@ -234,6 +230,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
+  /** Null until 5-2: physics still samples the analytic kernel directly. */
+  private readonly collisionMirror = new NullTerrainCollisionMirror();
   private previousFrameStartedAt: number | null = null;
   private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
@@ -293,7 +291,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.installFrameGraph();
     this.resizeObserver = new ResizeObserver(() => {
       if (this.disposed) return;
-      this.engine.resize(true);
+      // Re-derive the capped scale: the pixel budget depends on the CSS size.
+      this.applyRenderScale();
       this.resetTimingWindow();
       this.graph.invalidateHistory("display resize");
     });
@@ -608,6 +607,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       textures: this.scene.textures.length,
       terrainTiles: terrain.residentPages,
       residentTerrainPages: terrain.residentPages,
+      collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       activeAnimals: wildlife.activeAnimals,
       riverCount: hydrology.riverCount,
@@ -901,10 +901,29 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.graph.invalidateHistory("quality profile changed");
   }
 
-  private applyRenderScale(): void {
-    const pixelRatio = Math.min(MAX_DEVICE_PIXEL_RATIO, window.devicePixelRatio || 1);
-    this.engine.setHardwareScalingLevel(1 / Math.max(0.1, pixelRatio * this.renderScale));
+  /** Applies the capped scale product; returns whether it actually changed. */
+  private applyRenderScale(): boolean {
+    // 1A-6a: the device pixel ratio is a per-tier ceiling, not a multiplier the
+    // display gets to raise for free, and the total scale product is clamped by
+    // an absolute pixel budget. The previous code multiplied DPR into the scale
+    // uncapped, so a Retina panel rendered 5.94 Mpx at tier 2 before any work.
+    const pixelRatio = Math.min(
+      this.profile.maxDevicePixelRatio,
+      window.devicePixelRatio || 1,
+    );
+    const requestedScale = Math.max(0.1, pixelRatio * this.renderScale);
+    const cssPixels = Math.max(
+      1,
+      this.domElement.clientWidth * this.domElement.clientHeight,
+    );
+    // Rendered pixels = cssPixels × totalScale², so the absolute cap on pixels
+    // is a cap of sqrt(maxRenderPixels / cssPixels) on the total scale product.
+    const pixelCapScale = Math.sqrt(this.profile.maxRenderPixels / cssPixels);
+    const level = 1 / Math.min(requestedScale, pixelCapScale);
+    const changed = Math.abs(level - this.engine.getHardwareScalingLevel()) > 1e-4;
+    if (changed) this.engine.setHardwareScalingLevel(level);
     this.engine.resize(true);
+    return changed;
   }
 
   private updateDynamicResolution(): void {
@@ -932,8 +951,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (Math.abs(next - this.renderScale) < 0.005) return;
     this.renderScale = next;
     this.lastRenderScaleChangeFrameIndex = this.frameIndex;
-    this.applyRenderScale();
-    this.graph.invalidateHistory("dynamic resolution changed");
+    // When the absolute pixel cap is the binding constraint, a governor step
+    // leaves the effective scale unchanged — resetting temporal history for
+    // that would trade a visible cloud hitch for nothing.
+    if (this.applyRenderScale()) {
+      this.graph.invalidateHistory("dynamic resolution changed");
+    }
   }
 
   private captureFrameInterval(started: number): void {

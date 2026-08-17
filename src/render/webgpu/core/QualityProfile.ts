@@ -6,6 +6,14 @@ export interface WebGpuQualityProfile {
   readonly quality: QualityLevel;
   readonly mode: RenderingMode;
   readonly renderScale: number;
+  /**
+   * Absolute ceiling on rendered pixels per frame (1A-6a). Applied as a
+   * hardware-scaling clamp after DPR and renderScale, so no display or
+   * governor state can push the render target past it.
+   */
+  readonly maxRenderPixels: number;
+  /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
+  readonly maxDevicePixelRatio: number;
   readonly terrainRings: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
@@ -51,6 +59,8 @@ export function resolveWebGpuQualityProfile(
       quality,
       mode,
       renderScale: 0.72,
+      maxRenderPixels: 1_000_000,
+      maxDevicePixelRatio: 1,
       terrainRings: 6,
       shadowMapSize: 1_024,
       shadowCascades: 2,
@@ -71,6 +81,8 @@ export function resolveWebGpuQualityProfile(
       quality,
       mode,
       renderScale: 0.86,
+      maxRenderPixels: 1_500_000,
+      maxDevicePixelRatio: 1.5,
       terrainRings: 7,
       shadowMapSize: 2_048,
       shadowCascades: 2,
@@ -90,6 +102,8 @@ export function resolveWebGpuQualityProfile(
     quality,
     mode,
     renderScale: 1,
+    maxRenderPixels: 2_400_000,
+    maxDevicePixelRatio: 2,
     terrainRings: 8,
     shadowMapSize: 4_096,
     shadowCascades: 4,

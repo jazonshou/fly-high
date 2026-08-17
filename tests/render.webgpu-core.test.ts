@@ -57,6 +57,34 @@ describe("WebGPU quality profiles", () => {
     });
   });
 
+  it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {
+    expect(resolveWebGpuQualityProfile("low", "performance")).toMatchObject({
+      maxRenderPixels: 1_000_000,
+      maxDevicePixelRatio: 1,
+    });
+    expect(resolveWebGpuQualityProfile("medium", "balanced")).toMatchObject({
+      maxRenderPixels: 1_500_000,
+      maxDevicePixelRatio: 1.5,
+    });
+    expect(resolveWebGpuQualityProfile("high", "ultra")).toMatchObject({
+      maxRenderPixels: 2_400_000,
+      maxDevicePixelRatio: 2,
+    });
+
+    // Exit criterion for the jumped 1A-6a item: on the reference 1512×982 CSS
+    // viewport at DPR 2, the default profile's cap keeps the render target at
+    // or below 1.5 Mpx (it was 5.94 Mpx when DPR multiplied in uncapped).
+    const defaults = resolveWebGpuQualityProfile("medium", "balanced");
+    const cssPixels = 1_512 * 982;
+    const requestedScale = Math.min(2, defaults.maxDevicePixelRatio) * defaults.renderScale;
+    const pixelCapScale = Math.sqrt(defaults.maxRenderPixels / cssPixels);
+    const effectiveScale = Math.min(requestedScale, pixelCapScale);
+    // The sqrt round-trip re-introduces one ulp of noise; allow it.
+    expect(cssPixels * effectiveScale * effectiveScale).toBeLessThanOrEqual(
+      1_500_000 * (1 + 1e-9),
+    );
+  });
+
   it("changes dynamic resolution gradually", () => {
     const profile = resolveWebGpuQualityProfile("high", "balanced");
     expect(nextDynamicRenderScale(1, 22, profile)).toBeCloseTo(0.96);
