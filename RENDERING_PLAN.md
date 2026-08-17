@@ -21,7 +21,8 @@ It closes the twelve root causes in `TERRAIN_AUDIT.md §2` in an order chosen so
 | TAA | No depth or velocity infrastructure exists anywhere in `src/`. It ghosts on 400k vegetation instances with no per-instance motion vectors, and it fights the cloud system's existing temporal resolve. 4× MSAA is genuinely cheap on Apple TBDR (resolve-only bandwidth) and is the right answer here. −4 days, −29 MiB, −one unowned prepass. |
 | Screen-space reflections on water | The sky environment cube covers ≥80% of every water reflection. SSR needs the same missing depth/velocity infrastructure. Deferred past this program. |
 | Hex-tiling de-tiler | Three-scale rotated de-tiling plus non-repeating splat modulation already removes the repeat. −2 days. |
-| Weather/season material variants | The user never asked for weather or seasons. −2 days. |
+| ~~Weather/season material variants~~ | **Reinstated.** The user has since asked for selectable seasons and times of day. See §1.6 — now a first-class input threaded through the environment director, the land-cover classifier and vegetation, not a late material variant. **+7.0 days** for seasons and the environment clock, plus **+3.0 days** for flyable (unlit) night. |
+| Precipitation, wind-driven rain, snowfall, lightning | Distinct from *seasons*. The three existing weather presets (`clear`/`breezy`/`cloudy`) keep working and drive coverage, turbidity and wind; no new precipitation simulation is in scope. |
 | A cirrus ray-march layer | Wind shear (3 lines, real payoff) is kept and folded into cloud shape; the separate cirrus slab is deferred. −1 day. |
 | A second shallow-water FFT cascade set | Shoaling and depth-limited breaking are kept; the extra cascade set is not. −1 day. |
 | A CPU land-cover classifier, and a separate CPU→GPU classifier port | Write the classifier in WGSL once, keep a TypeScript mirror only as a test oracle. −7 days and avoids implementing something the plan later deletes. |
@@ -32,9 +33,9 @@ It closes the twelve root causes in `TERRAIN_AUDIT.md §2` in an order chosen so
 
 ### 0.3 Effort and calendar, stated honestly
 
-**Total: ~228 effort-days across 6 phases.** For a solo developer at a realistic 4.5 productive days per week that is **~51 weeks, i.e. 11–12 months**. At 5 d/wk it is ~10 months. This is after removing ~58 days of cross-design duplication and ~15 days of scope cuts.
+**Total: ~278 effort-days across 7 phases.** For a solo developer at a realistic 4.5 productive days per week that is **~61 weeks, i.e. ~14 months**. At 5 d/wk it is ~12 months. This is after removing ~58 days of cross-design duplication and ~15 days of scope cuts, and after adding 8.5 days for seasons and the environment clock (§1.6) and 41.5 days for full night operations and airfield detail (Phase 7).
 
-There is a defensible **v1 cut line after Phase 4 at ~147 days (≈ 7.5 months)**, at which point eight of the nine user goals are served and the ninth (terrain *shape* and river/lake *geometry*) is not. Phases 5–6 are the terrain-shape and water-body payload and are the reason the program is long. Do not attempt to reorder them earlier — §2.0 explains why.
+There is a defensible **v1 cut line after Phase 4 at ~156 days (≈ 8 months)**, at which point nine of the ten user goals are served and the tenth (terrain *shape* and river/lake *geometry*) is not. Phases 5–6 are the terrain-shape and water-body payload and are the reason the program is long. Do not attempt to reorder them earlier — §2.0 explains why.
 
 The single most likely schedule slip is erosion parameter tuning. Budget 2× the stated days for Phase 5's erosion items; that risk is already reflected in the numbers below (the designs said 11 days for macro drainage plus page erosion; this plan carries 17 with a stated range of 15–25).
 
@@ -112,9 +113,62 @@ Review found five files claimed as `newFiles` by two or three designs and four i
 | Channel-graph extractor (previously unowned, on the critical path) | water | `ChannelNetwork.ts`, 2 days, Phase 5. |
 | `src/workers/detail.worker.ts` | vegetation | |
 
-### 1.5 Open user decision
+### 1.5 Resolved user decisions
 
-**The three airport hangars** (`AirportSystem.ts:71-83`) are the only remaining structures after `remove-buildings`, and they are the only scale reference on final approach. They are *airport furniture*, not houses. This plan keeps them behind `AirportSystemOptions.includeHangars`, defaulting `true`, so removing them is a one-line change. Confirm or override.
+**The airport hangars — kept and expanded.** They were the only structures surviving `remove-buildings`, and the only scale reference on final approach. Decision: keep them *and* give them real detail. Today they are three `CreateBox` calls at 46×14–18×34 m sharing one flat metal material (`AirportSystem.ts:72-83`) — genuine placeholder boxes. **Phase 7 Gate 7D** replaces them with a parametric generator (roof profiles, ribbed cladding, sliding doors, vents, gutters, interiors) plus airfield furniture — windsock, fuel tanks, fence, signage, GSE. `AirportSystemOptions.includeHangars` is dropped; hangars are no longer optional. `remove-buildings` (`1B-5`) still deletes the procedural village houses and never touched `AirportSystem.ts`.
+
+**Night — full night operations.** See §1.6 and Phase 7.
+
+### 1.6 Season and time of day
+
+**Requirement:** the user must be able to select between different seasons and times of day.
+
+**The governing decision: two continuous scalars, not presets.** Today `TimeOfDayPreset = "dawn" | "day" | "golden"` (`src/game/types.ts:14`) selects one of three hardcoded colour sets in `presetFor()` (`AtmosphereSystem.ts:93-125`). That enum is the trap — every added state multiplies the hand-tuned constants, and there is no way to sit *between* two of them. Phase 1 deletes `presetFor()` anyway (item `1C-1`), so the replacement is:
+
+```ts
+interface EnvironmentClock {
+  dayOfYear: number;      // [0, 365) — drives solar declination and the biosphere
+  solarTimeHours: number; // [0, 24)  — drives hour angle
+}
+// World-level, set at generation:
+interface WorldDefinition { latitudeDegrees: number; /* … */ }
+```
+
+The existing named presets survive **as UI sugar only** — "Dawn", "Golden hour", "Midsummer", "Late autumn" are buttons that write these two scalars. The renderer never branches on a name. `TimeOfDayPreset` stays in `src/settings` as a preset *label*; it stops being a rendering input.
+
+**Why this is cheap here and expensive later.** Item `1C-1` already specifies solar position "from a NOAA formula". That formula's inputs are latitude, longitude, day-of-year and time — **seasonal sun path is already in its signature.** Declination swings ±23.44°, which changes maximum sun elevation, day length, sunrise/sunset azimuth and the length and direction of every shadow. Taking `dayOfYear` at `1C-1` costs ~0.5 day. Retrofitting it after Phase 4 means re-threading a uniform through the WGSL include chain, its TypeScript mirror, the classifier signature and the page-atlas cache key — several days and a churned screenshot baseline.
+
+**The threading rule, which is the whole point of writing this down now:**
+
+> `dayOfYear` is a parameter of the land-cover classifier's signature from the moment the classifier is first written (Phase 4, item `4-6`), not an addition to it. Same for the vegetation density and appearance fields (`1B-7`, `2-18`) and the surface plugin's palette (`3-10`).
+
+**What actually responds to season** — four systems, deliberately bounded:
+
+| System | Seasonal response | Item | Days |
+|---|---|---|---|
+| Sun and sky | Declination → elevation, day length, shadow direction/length, twilight duration. Falls out of the NOAA formula. | `1C-1` | +0.5 |
+| Vegetation | Deciduous species tint and shed (crown alpha and colour on a leaf-out/leaf-fall curve); conifers hold. Winter adds slope-weighted snow on canopy and rock. Species *mix* is climatic and does **not** change with season. | `2-18` | 2.0 |
+| Ground cover | Grass and shrub albedo/roughness ride a spring-green → summer → autumn-gold → dormant-brown curve; spring adds wetness darkening. A **palette modulation of existing splat weights**, not new texture arrays. | `3-10` | 2.0 |
+| Snowline | Snow suitability shifts with a seasonal temperature lapse, so the snowline migrates down in winter and retreats to peaks in summer. Not a binary — one more term in the softmax, with the same jitter that keeps the treeline ragged. Plus the season-bucket cache key below. | `4-6` | +1.0 |
+
+**Total: 5.5 days for seasons**, plus `1C-9` (1.5 d) for the clock and UI that time-of-day needs regardless — **7.0 days**. Night is costed separately below.
+
+**Explicitly not responding:** terrain geometry (erosion runs on geological time, not annual), river courses, lake extents, and the FFT ocean spectrum. Lake and river *ice* is deferred — it needs a separate material and a frozen-surface physics answer, and the user did not ask for it.
+
+**Cache-key consequence, decided now.** Splat pages baked in Phase 4 become a function of `dayOfYear`. The atlas keys on a quantised season bucket (24 buckets ≈ 15-day resolution) and the existing `WorldPageLifecycle` epoch invalidates on bucket change. Continuous scrubbing then cross-fades between two adjacent buckets in the shader rather than re-baking every frame. This costs one extra channel-atlas slot and must be designed into `TerrainPageAtlas.ts` in Phase 4 — it is roughly free there and a re-architecture afterwards.
+
+**Night — decided: full night operations.** Making time of day continuous means night exists, and the user has chosen the complete version: moon, stars, aircraft lighting, runway and hangar lighting. This is a substantial body of work and it gets its own phase (**Phase 7**, §2, 41.5 days). Phase 1 carries only `1C-10 night-sky-basic` (1.5 d) so that scrubbing into the small hours during Phases 1–6 looks *unfinished* rather than *broken*.
+
+**The finding that makes this affordable.** My earlier estimate assumed this stack had no path to many simultaneous lights. It does. Babylon 9.21.2 ships `Lights/Clustered/clusteredLightContainer.pure.ts` — a forward+ / clustered light system that extends `Light`, so it plugs into the **existing** PBR forward path with no deferred-rendering rewrite, no G-buffer, and no conflict with MSAA. On WebGPU it clusters via atomic writes into storage buffers (`:43-44`), with configurable `horizontalTiles`/`verticalTiles` and depth slices, and `ClusteredLightContainer.IsLightSupported()` gates point and spot lights. Babylon also ships `Lights/IES/iesLoader.ts` for real photometric profiles — which is precisely what airfield lighting demands, because a PAPI is *defined* by its vertical angular cutoffs and runway edge lights are sharply directional.
+
+**The architectural split that keeps it cheap.** A full airfield is 150–300 light sources, and clustering all of them as illuminating lights would be wasteful. Separate the two roles:
+
+| Role | Examples | Implementation | Count |
+|---|---|---|---|
+| **Lights you *see*** | Runway edge, threshold, centreline, TDZ, PAPI, approach system, taxiway edge, aircraft nav/strobe/beacon, obstruction lights | Instanced emissive billboards with HDR intensity, IES-driven directional visibility, atmospheric extinction and bloom coupling. They illuminate **nothing**. | 150–300, one draw |
+| **Lights that *illuminate*** | Landing and taxi lights, hangar and apron floods, interior spill through open doors | Real clustered spot/point lights through `ClusteredLightContainer` | 4–20 active |
+
+Nearly every light on an airfield is in the first category — you look *at* it, it does not meaningfully light the ground. Getting this split right is the difference between night costing ~40 days and being infeasible.
 
 ---
 
@@ -179,7 +233,7 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 | ID | Item | Days | Depends on | Notes |
 |---|---|---|---|---|
-| 1C-1 | `env-director` — one continuous `EnvironmentState`; solar position from a NOAA formula; turbidity expressed once | 2.0 | — | `EnvironmentState.ts:88-101` already carries Rayleigh/Mie/ozone coefficients, 120,000 lux and a 0.004675 rad sun radius as **dead code** referenced only by a test. Make it the single source of truth; delete `presetFor()`. |
+| 1C-1 | `env-director` — one continuous `EnvironmentState`; solar position from a NOAA formula **taking `dayOfYear` + `latitudeDegrees`**; turbidity expressed once | 2.5 | — | `EnvironmentState.ts:88-101` already carries Rayleigh/Mie/ozone coefficients, 120,000 lux and a 0.004675 rad sun radius as **dead code** referenced only by a test. Make it the single source of truth; delete `presetFor()`. The NOAA formula already needs day-of-year — take it now (§1.6). +0.5 d over the pre-season estimate. |
 | 1C-2 | `single-exposure` — one relative-EV100 | 1.5 | 1C-1 | Verified triple exposure: `AtmosphereSystem.ts:73` + `FlightRenderer.ts:443` + `SpectralOceanSystem.ts:967-968`/`HydrologySystem.ts:676-677` + `VolumetricCloudSystem.ts:878`. Use `exposure = 1.08 × 2^(EV100_ref − EV100)` so today's day+clear look is preserved exactly. Replace the magic `/5.2` normalisers with a named `sunIlluminanceNormalized`. |
 | 1C-3 | `atmosphere-luts` — transmittance 256×64 and multiple-scattering 32×32, rgba16f, on env change only | 2.0 | 1C-1 | Bruneton/Hillaire. Plus a TypeScript mirror `evaluateTransmittance()` with a 1% agreement test — the CPU path is needed by exposure and by the IBL spherical harmonics. 138 KiB total. |
 | 1C-4 | **`aerial-include`** — the shared analytic aerial-perspective WGSL include | 5.0 | 1C-2, 1C-3 | See §3.6. The single biggest change in the plan. |
@@ -187,11 +241,13 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 1C-6 | `ibl` — SH irradiance + a 128 px specular cube → `scene.environmentTexture`; retire `HemisphericLight`; `specularIntensity` 0.22 → 1.0 everywhere | 3.0 | 1C-5 | See §3.6. `specularIntensity` lives in three files (`TerrainClipmapSystem.ts:280`, `WorldDetailRuntime.ts:1107`, `AirportSystem.ts:111`) and they **must move together**. |
 | 1C-7 | Water consumes AP + earth curvature; ocean radius 120 km → 40 km | 1.0 | 1C-4 | `displaced.y -= dot(localXZ, localXZ) / (2 × 6371000)` before the world transform. Without curvature the flat disk's vanishing line sits at eye level. **Reconcile with `camera.maxZ` = 45 km** — a 60 km disk inside a 45 km far plane is clipped and the horizon vanishes. |
 | 1C-8 | Clouds `radiometry-and-haze` | 1.5 | 1C-4 | |
+| 1C-9 | `environment-clock` — `EnvironmentClock` scalars, `WorldDefinition.latitudeDegrees`, settings plumbing, and the UI: two continuous sliders plus named preset buttons that write them | 1.5 | 1C-1 | §1.6. `SettingsPanel.tsx:407-422` already has the Time-of-day and Weather selects — the selects become preset *buttons* over sliders. `TimeOfDayPreset` survives as a label, not a rendering input. |
+| 1C-10 | `night-sky-basic` — sun below horizon handled without breaking, twilight-through-night exposure range, placeholder moon disc and star dome | 1.5 | 1C-5, 1C-9 | **Deliberately minimal.** Full night is Phase 7. This item exists only so that scrubbing the clock past dusk during Phases 1–6 looks unfinished rather than broken. Do not gold-plate it — Phase 7 replaces the moon and stars outright. |
 
 **Exit criteria.** `scene.environmentTexture` is non-null; `REFLECTION` is defined on the terrain effect. Startup assertion: `imageProcessingConfiguration.applyByPostProcess === true` (the PBR hook's correctness depends on it) and `scene.fogMode === FOGMODE_NONE` (otherwise fog and AP both apply). No shader source in `src/` contains an exposure multiply. `camera.maxZ` = 45,000; `terrainRings` reduced by one per tier. Aerial-perspective opacity at the outermost ring ≥ 95%.
-**Demo state.** *"Distance reads as distance."* Audit root causes #5 and #6 both closed.
+**Demo state.** *"Distance reads as distance — and I can scrub the time of day and the season, and the sun moves correctly for both."* Audit root causes #5 and #6 both closed.
 
-**Phase 1 total: 45.1 days.**
+**Phase 1 total: 48.6 days.** (45.1 before seasons; +0.5 on `1C-1`, +1.5 `1C-9`, +1.5 `1C-10`.)
 
 ---
 
@@ -220,10 +276,11 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 2-15 | `procedural-rocks` — displaced icospheres, flat vs smooth normals per lithology, terrain-normal-aligned instances | 2.0 | 1B-9 | Do the full-rotation instance matrix in the same commit as the compact instance format so the layout changes once. |
 | 2-16 | `grass-ground-cover` — patches not blades, `1/d` density ramp, 32 B compact instances, ferns/heather/reeds | 2.5 | 2-13, 1B-9 | Closes the audit's "single most damaging failure mode": no scale reference below 7 m on approach. Grass radius is the **first** tier knob. |
 | 2-17 | `octahedral-impostors` — hemi-octahedral 4×4 bake, **three-view barycentric blend** | 6.0 | 2-12, 2-14 | Corrected from the design's 3 days. View snapping is what makes cheap impostors flicker when the aircraft banks. |
+| 2-18 | `seasonal-foliage` — deciduous leaf-out/leaf-fall curve driving crown tint and alpha; slope-weighted canopy and rock snow | 2.0 | 2-17, 1C-9 | §1.6. Species *mix* stays climatic and does not change with season. **Bake the impostor atlas per season bucket** (4 buckets × the existing atlas) or winter trees impostor as summer ones at range — check the added slots against the §5.2 ceiling. |
 
 **Exit criteria.** Cloud pass ≤ 2.5 ms at Balanced. No repeated cloud group over a 200 km straight leg (visual gate). Ocean pass ≤ 1.8 ms. Foliage mip coverage test passes. Grass at Balanced ≤ 0.9 M triangles. Impostor/LOD1 average colour matches within a few percent across a full sun sweep.
 **Demo state.** *"The sky and the trees look real."* G3 and G4 served.
-**Phase 2 total: 41.0 days.**
+**Phase 2 total: 43.0 days.** (41.0 + 2.0 for `2-18` seasonal foliage.)
 
 ---
 
@@ -244,10 +301,11 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 3-7 | `per-material-brdf` — per-material roughness/F0, Oren-Nayar diffuse roughness, wetness response | 2.0 | 3-6, 1C-6 | **Hard gate on IBL.** Babylon 9 already computes `diffuseRoughness` on the same line as `roughness` (`pbr.fragment.js:240`) and has full `BASE_DIFFUSE_ROUGHNESS` support — snow 0.7, sand 0.55, grass 0.4, rock 0.35 gives the retroreflective brightening that makes those surfaces look real at low sun, for near-zero cost. |
 | 3-8 | `runway-earthworks` — three-zone cut/fill profile, 0.35 m crown, noise-modulated blend distance, median site elevation | 2.5 | — | CPU kernel now, ported to WGSL in Phase 4. **Must keep `getAirportInfluence` exactly 1.0 inside the apron** (§1.3). |
 | 3-9 | `runway-surface` — asphalt/concrete/paint material layers, ragged SDF-driven edge, skid lobes, worn markings; delete the box meshes | 5.0 | 3-8, 3-1 | Driven by the **analytic airport SDF** evaluated in the fragment shader (`airport.ts:76-81` `sdRoundedRect`), *not* by splat weights — which is what decouples it from Phase 4 and lets it ship here. Deletes `AirportSystem.ts:23-70`. |
+| 3-10 | `seasonal-palette` — `dayOfYear`-driven albedo/roughness modulation of the land-cover materials in the surface plugin | 2.0 | 3-7, 1C-9 | §1.6. A per-material seasonal tint/roughness curve sampled in `TerrainSurfacePlugin`, **not** new texture arrays — the arrays stay season-independent and only their weighting changes. Keep the runway and rock materials season-invariant. |
 
 **Exit criteria.** Top-down `|natural − final|` debug render: the 0.5 m contour around the airport is **not** a closed convex curve. Babylon regex-injection compile test passes (fails CI on a Babylon bump instead of silently reverting roughness to 0.93). Terrain raster ≤ 2.6 ms at Balanced including surface, de-tile and triplanar. Material arrays 512² at Low/Balanced/High, 1024² at Ultra only.
 **Demo state.** *"The ground has a surface, and the runway looks like a runway."* Audit root cause #1 closed.
-**Phase 3 total: 27.5 days.**
+**Phase 3 total: 29.5 days.** (27.5 + 2.0 for `3-10` seasonal palette.)
 
 ---
 
@@ -266,14 +324,14 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 4-3 | `gpu-height-generate` — compute generation with 2×2 rotated-grid supersampling | 3.0 | 4-2 | 8×8 workgroups. Create `ComputeShader` objects **once** and rebind uniforms per page. Second dispatch: parallel min/max reduction for the CDLOD AABB. |
 | 4-4 | `vertex-displacement` — vertex-texture displacement + fragment-computed normals; retire the terrain worker | 4.0 | 4-3, 1A-7 | +1 day over the design for `ShadowDepthWrapper` (§7 R1). Manual bilinear via 4 `textureLoad`s (r32float is not filterable in core WebGPU). Deletes `TerrainGenerationClient`, `terrain.worker.ts`, `terrainProtocol.ts`, `terrainQueue.ts`. |
 | 4-5 | `cdlod-quadtree` — screen-space error + geomorphing, one draw call | 5.0 | 4-4 | `maxDeviationFromParent × pixelsPerMeter(distance3D) > τ`. Delete `TERRAIN_SKIRT_DEPTH_METERS`, `buildTerrainIndicesWithSkirt` and friends, then set `backFaceCulling = true`. Supply a **per-cascade thin-instance subset** — Babylon's WebGPU `objectRenderer` has no `isInFrustum` on the render-list path (`objectRenderer.js:713`) and re-prepares the list per cascade (`:626`). |
-| 4-6 | `wgsl-classifier` + `page-splat-atlas` — continuous softmaxed land-cover classifier and splat page rasterisation, merged, WGSL-first | 6.0 | 4-3, 3-6 | See §3.2. TypeScript mirror kept only as a golden-value test oracle. |
+| 4-6 | `wgsl-classifier` + `page-splat-atlas` — continuous softmaxed land-cover classifier and splat page rasterisation, merged, WGSL-first, **`dayOfYear` in the signature** | 7.0 | 4-3, 3-6, 1C-9 | See §3.2. TypeScript mirror kept only as a golden-value test oracle. +1.0 d for the seasonal snow-pack term and the **24-bucket season cache key** on the splat atlas, with a two-bucket shader cross-fade so scrubbing the season never re-bakes per frame (§1.6). Designing the key in here is roughly free; adding it later is a re-architecture. |
 | 4-7 | `page-occlusion-bake` — sky visibility (GTAO horizon-arc form), bent normal, 8-azimuth horizon map, merged into one owner and one format | 5.0 | 4-3, 1C-6 | Four designs baked this four ways at three resolutions. One bake, 136² channel pages, 16 azimuths × 24 steps, marching a **coarse global height pyramid** beyond the page (512 m/texel over 128 km, 256² r32float = 256 KiB) so there is no shadow discontinuity at page edges. |
 | 4-8 | `csm-nearfield` — 3×1536, 1.8 km, PCSS, per-cascade `getCustomRenderList` frustum culling | 2.0 | 4-7 | **Now** it is safe to shorten the distance: the horizon map covers everything beyond. Doing it earlier leaves distant mountains unshadowed for months. |
 | 4-9 | `retire-cpu-terrain-path` + runway earthworks ported to WGSL | 1.0 | 4-5, 3-8 | |
 
 **Exit criteria.** Kernel parity: `|h_GPU − h_CPU| < 0.05 m` over 4,096 Halton points at five filter widths *and* at |x| = 5×10⁶ m. Terrain draw calls ≤ 12. Terrain vertex/index buffers ≤ 3 MiB. `sim.flight.test.ts` ground clearance never negative. Shadow render list contains zero terrain nodes. Cross-level consistency: a level-N page's splat weights equal the box average of the four level-(N−1) pages beneath it to within quantisation.
 **Demo state.** *"2 m ground detail, no popping, and mountains shadow each other to the horizon."*
-**Phase 4 total: 33.5 days.**
+**Phase 4 total: 34.5 days.** (33.5 + 1.0 for the season term and cache key in `4-6`.)
 
 **— v1 cut line: Phases 1–4, ~147 days ≈ 7.5 months. Eight of nine user goals served. G1's *generation* half and G2's rivers/lakes are what remains. —**
 
@@ -331,7 +389,69 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 **Demo state.** *"Everything the user asked for, at a frame rate that is a number and not a hope."*
 **Phase 6 total: 29.5 days.**
 
-**Program total: 228.1 days.**
+---
+
+### Phase 7 — Night operations and airfield identity
+
+**Goal.** Deliver the complete night experience — moon, stars, night vision, and real airfield and aircraft lighting — and replace the three placeholder hangar boxes with an airfield that has a recognisable identity.
+
+**What you will see.** A night approach: the rotating beacon picks out the field from ten miles, the approach lights sequence you in, the PAPI shows two red and two white and changes as you drift off the glideslope, the runway edge lights resolve from a smear into individual sources, your landing light throws a cone through the haze onto asphalt, and the hangar apron floods pick out corrugated metal with rust streaking down from the bolt lines. In daylight the same hangars have ribbed cladding, sliding doors you can see the tracks on, roof vents, gutters, a windsock that actually reads the wind, and a perimeter fence.
+
+**Why it is its own phase.** It depends on the whole atmosphere spine (Phase 1), the material synthesis infrastructure (Phase 3) and the runway surface (`3-9`). It is also cleanly separable — the sim is complete and shippable without it, which makes it the right place to put 40 days of scope.
+
+#### Gate 7A — Night sky and human night vision (7.5 d)
+
+| ID | Item | Days | Depends on | Notes |
+|---|---|---|---|---|
+| 7-1 | `moon` — ephemeris position, phase from `dayOfYear`, disc with an albedo/normal map, moonlight as a second directional light, earthshine on the dark limb | 3.0 | 1C-10 | Full-moon ground illuminance is ~0.25 lux against the sun's ~120,000 — a factor of ~5×10⁵, which is why `1C-2`'s single-exposure work is a hard prerequisite. Moonlight is reflected sunlight, so it is only slightly reddened (~4100 K), **not** the blue that films use; the blue you perceive is the Purkinje shift in `7-2`, and faking it in the light colour instead is the classic mistake. |
+| 7-2 | `scotopic-vision` — rod/cone blend by adapted luminance, Purkinje shift, desaturation, acuity loss, adaptation hysteresis | 2.5 | 7-1 | The single largest "it actually feels like night" item, and it is a post-process, not a lighting change. Below ~0.03 cd/m² human vision is rod-only: colour discrimination collapses, blues brighten relative to reds, and acuity drops. Without this, night is just dim daylight. Bound the adaptation rate (light→dark is much slower than dark→light) or flying past a floodlight strobes the whole image. |
+| 7-3 | `star-field` — Yale Bright Star catalogue (~9,100 stars, ~120 KB), sidereal rotation from `dayOfYear` + `solarTimeHours` + latitude, magnitude→luminance, atmospheric extinction near the horizon, Milky Way band | 2.0 | 7-1 | Real catalogue data is small enough to embed and makes constellations correct, which is worth more than procedural noise. Extinction matters: stars must *fade out* toward the horizon, not run into the ground. Point sprites with a magnitude-driven PSF, resolution-independent. |
+
+**Exit criteria.** Adapted luminance spans day→full-moon→starlight without clipping or crushing. Star field rotates correctly for the selected date, time and latitude and is extinguished below ~10° elevation. Moon phase matches `dayOfYear`.
+**Demo state.** *"Night looks like night, not like someone turned the brightness down."*
+
+#### Gate 7B — The lighting engine (11.0 d)
+
+| ID | Item | Days | Depends on | Notes |
+|---|---|---|---|---|
+| 7-4 | `clustered-lighting` — stand up `ClusteredLightContainer`, tune tiles and depth slices, integrate with `TerrainSurfacePlugin` and the aerial-perspective include, per-tier light budget | 4.0 | 3-2, 1C-4 | §1.6. Verify `IsLightSupported()` against this engine configuration **on day one of the gate** — it gates everything downstream. Tile count trades clustering cost against shading cost; start 16×8 and measure. Confirm clustered lights compose with the material plugin's injected code rather than fighting it. |
+| 7-5 | `light-points` — instanced emissive billboards for the ~200 lights you *see*: HDR intensity, IES-driven directional visibility, atmospheric extinction, bloom coupling, distance-based PSF growth | 4.0 | 7-4, 7-2 | The other half of the §1.6 split, and the reason this phase is 40 days rather than infeasible. One instanced draw. Feed `Lights/IES/iesLoader.ts` profiles so a PAPI is invisible off-axis and edge lights dim correctly off-centreline. Each point needs a smooth **near→far transition from a lit quad to a pure glow** or lights pop as you approach. |
+| 7-6 | `light-volumetrics` — cone shafts for landing lights and floods through haze | 3.0 | 7-5, 1C-4 | Reuse the aerial-perspective include's participating-media terms rather than inventing a second fog model. Billboard cones with a soft depth intersection are enough; a full march is not warranted. Highest cut candidate in the phase if the budget bites. |
+
+**Exit criteria.** 200+ light points and 16 clustered illuminating lights hold the tier frame budget. No light-count-dependent shader recompilation during flight.
+**Demo state.** *"The airfield reads from ten miles out."*
+
+#### Gate 7C — Airfield and aircraft lighting (9.0 d)
+
+| ID | Item | Days | Depends on | Notes |
+|---|---|---|---|---|
+| 7-7 | `airfield-lighting` — runway edge (white, amber final 600 m), threshold (green/red bidirectional), centreline, TDZ, **PAPI** with correct angular transition, approach lighting system, taxiway blue edge and green centreline, rotating beacon (alternating white/green for a civil field), lit wind cone | 4.0 | 7-5, 3-9 | Generated from `AirportDefinition` (`src/world/airport.ts`), not hand-placed, so it survives a seed change. The PAPI is the one piece that must be *numerically* right — it is a flyable instrument, and its red/white transition near 3° is the whole point. Bidirectional threshold lights show green to arrivals and red to departures from the same fixture. |
+| 7-8 | `aircraft-lighting` — nav lights with correct split angles (red port 110°, green starboard 110°, white tail 140°), red anti-collision beacon ~45 fpm, white strobes ~60 fpm at wingtips and tail, landing and taxi lights as clustered spots, cockpit instrument glow | 3.0 | 7-4, 7-5 | The split angles are what make traffic readable at night — you infer heading from which colours you can see. Beacon and strobes are on separate timers and must not be in phase. Landing lights are the main *illuminating* lights in the sim. |
+| 7-9 | `night-perf-tiers` — light budget per tier, cluster resolution scaling, light-point LOD and culling, night shadow policy | 2.0 | 7-6, 7-8 | Night is a different workload from day: fewer shadow casters, far more lights. It needs its own tier row, not a scaled daytime one. |
+
+**Exit criteria.** A full night circuit is flyable on Balanced within budget. PAPI indication matches the geometric glideslope to within 0.1°. Nav-light colours correctly identify another aircraft's heading.
+**Demo state.** *"I flew a night approach and the PAPI talked me down."*
+
+#### Gate 7D — Hangars and airfield identity (14.0 d)
+
+| ID | Item | Days | Depends on | Notes |
+|---|---|---|---|---|
+| 7-10 | `parametric-hangar` — a generator replacing the three boxes: gabled and arched roof profiles, ribbed corrugated cladding, sliding door tracks and panels with open/closed states, clerestory window strips, ridge vents, gutters and downspouts, service doors, pilasters, concrete skirt | 5.0 | 3-1 | Replaces `AirportSystem.ts:72-83` — currently three `CreateBox` calls at 46×14–18×34 m with one flat metal material. Corrugation is **geometry on the silhouette and a normal map inboard**; doing it all in the normal map leaves a straight edge that gives the box away. Parameterise on bay count, so hangars vary without new code. |
+| 7-11 | `hangar-materials` — procedural corrugated metal (normal + roughness), vertical rust and streak weathering, oxidation biased by aspect, concrete with form-tie marks | 2.5 | 7-10, 3-1 | Reuses the Phase 3 synthesis infrastructure — no new pipeline. Weathering driven by a downward-flow accumulation term from bolt lines, gutter mouths and roof edges is what stops it reading as clean CAD. |
+| 7-12 | `hangar-interior` — interior shell visible through open doors, dark PBR interior, emissive strip lighting at night, a parked aircraft silhouette | 2.0 | 7-10, 7-4 | An open door onto a black void is worse than a closed door. Interior spill through open doors is one of the better night set-pieces and costs one clustered light. |
+| 7-13 | `airfield-furniture` — wind-driven animated windsock, fuel tanks, perimeter fence, runway/taxiway signage with emissive faces, tie-down anchors, ground support equipment, apron markings | 3.5 | 7-10, 3-9 | The windsock reads from `src/world/wind.ts`, which already exists — a genuinely cheap authenticity win, and a usable instrument on approach. Signage doubles as night light points via `7-5`. |
+| 7-14 | `obstruction-lighting` — red obstruction lights on hangar roofs and masts, apron floodlighting | 1.0 | 7-13, 7-5 | |
+
+**Exit criteria.** No `CreateBox` primitive remains in `AirportSystem.ts`. Hangars are visually distinct from one another under the same seed. The windsock tracks the simulated wind vector.
+**Demo state.** *"It looks like an airfield somebody actually operates."*
+
+**Phase 7 total: 41.5 days.**
+
+**Internal cut line.** If the budget bites, `7-6` (volumetrics, 3.0), `7-12` (interior, 2.0) and half of `7-13` (furniture, ~1.5) can defer without breaking anything else — a **35.0-day** Phase 7 that still delivers a flyable, lit night approach and detailed hangars.
+
+---
+
+**Program total: 278.1 days.**
 
 ---
 
@@ -370,12 +490,12 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
   Two recipe details carry disproportionate weight. **Rock:** two directional fracture families as half-plane bands at ±dip with per-block random phase — this is what makes rock read as bedding and jointing rather than crumple — plus roughness 0.45–0.72 **with ±0.08 variance per block**. Adjacent blocks having visibly different gloss is by itself most of the difference between rock and plastic. **The mip reducer:** average the normal *vector*, renormalise, and fold the lost length back into roughness with a Toksvig term, `rough' = sqrt(rough² + k·(1 − |avgN|))`. Five lines, and the single most important anti-plastic measure at distance — without it, distant terrain gets a false sharp highlight from a normal map that has been averaged into flatness.
 - **The plugin (3-2).** `TerrainSurfacePlugin extends MaterialPluginBase`, constructed with `enable = false` (as `CloudShadowMaterialPlugin.ts:87-94` does) so a shader is never compiled with unbound samplers. Roughness and AO cannot be set from any standard hook — `CUSTOM_FRAGMENT_BEFORE_LIGHTS` runs before they exist — so use the `!regex` injection form against `pbr.fragment.js:240` and `:245`. **Note the shipped WGSL is minified with no spaces around `=` and three declarations on one line at `:240`**; anchor the regexes tightly and keep the compile-time assertion test, which is the only thing that will catch a Babylon bump. A texture needed in both stages must be declared in **both** `CUSTOM_VERTEX_DEFINITIONS` and `CUSTOM_FRAGMENT_DEFINITIONS` — `getSamplers` has no shaderType parameter; visibility is derived from where the declaration is emitted.
   Per-page addressing costs zero net memory: `TerrainClipmapSystem.ts:530-543` already allocates a `Float32Array(vertexCount*4)` colour buffer whose alpha is a constant 1. Repurpose it 1:1 as `terrainPageAddress = (pageU, pageV, atlasSlot, spare)` and set `mesh.useVertexColors = false`.
-- **The classifier (4-6).** Replace `classifyBiome`'s threshold cascade with ten smooth suitability functions, softmaxed, top-4 renormalised. Drivers: elevation with a **real 0.0065 K/m lapse rate** (replacing the ad-hoc `/2450` at `terrain.ts:205`); slope measured **at the page's own texel spacing** from the page's own gutter-bearing grid — a 40 km mountain face must be classified by the visible face, not by 4 m microslope; aspect against sun azimuth and prevailing wind (`src/world/wind.ts` already exists); moisture with an orographic term; a topographic wetness index (real `ln((1+A)/(tan S + ε))` once erosion lands, a curvature-convergence proxy before then, swappable in one line); soil depth `exp(-slope/0.35)·(0.4 + 0.6·saturate(0.5 − k·curvature))`; and a snow-pack logistic that bares off cliffs and sticks on lee flats.
+- **The classifier (4-6).** Replace `classifyBiome`'s threshold cascade with ten smooth suitability functions, softmaxed, top-4 renormalised. Drivers: elevation with a **real 0.0065 K/m lapse rate** (replacing the ad-hoc `/2450` at `terrain.ts:205`); slope measured **at the page's own texel spacing** from the page's own gutter-bearing grid — a 40 km mountain face must be classified by the visible face, not by 4 m microslope; aspect against sun azimuth and prevailing wind (`src/world/wind.ts` already exists); moisture with an orographic term; a topographic wetness index (real `ln((1+A)/(tan S + ε))` once erosion lands, a curvature-convergence proxy before then, swappable in one line); soil depth `exp(-slope/0.35)·(0.4 + 0.6·saturate(0.5 − k·curvature))`; and a snow-pack logistic that bares off cliffs and sticks on lee flats, **offset by the seasonal temperature lapse from `dayOfYear`** so the snowline migrates rather than switching (§1.6).
   **The specific fix for iso-contour boundaries:** perturb the *drivers*, not the outputs — `elev += fbm(x/430)·38 + fbm(x/95)·9`, `moisture += fbm(x/210)·0.12`, `T += fbm(x/310)·0.9 K` — and jitter the softmax temperature itself, `τ = 0.09·(1 + 0.6·fbm(x/70))`, so ecotone *sharpness* varies. Uniform-sharpness boundaries are as much a tell as straight ones.
   **Supersample 2×2 per texel and average the weight vectors, not the argmax.** This is the prefiltering that per-vertex point classification structurally cannot do, and it is the albedo analogue of band-limiting: it is what makes a coarse page a *filtered* version of the fine page rather than a different one.
 - **Sampling (3-4, 3-5, 3-6).** Three decorrelated rotated world scales (macro ~2048 m, patch ~176 m at 13.7°, micro ~28 m at 61.2°) with `uv_{n+1} += (rgb_n.rg − 0.5)·warpAmount`, footprint-faded with the deleted build's tuned bands. True triplanar **texture** projection above `1 − |n.y| > 0.22`, with sign-flipped per-plane UVs (untreated, this produces a visible reflection seam down every ridge), `textureSampleGrad` with explicit gradients (implicit derivatives under branchy weights produce hard mip bands across slopes), and RNM normal blending in world space (never lerp tangent-space normals). N-way height blend `k_i = h_i + w_i; b_i = max(k_i − (max k − d), 0)` with `d = mix(0.06, 0.5, saturate(fp/3))`.
 
-**Cut:** hex-tiling, weather/season variants, the CPU classifier, the separate GPU classifier port.
+**Cut:** hex-tiling, the CPU classifier, the separate GPU classifier port. *(Seasonal variation is no longer cut — see §1.6.)*
 
 ### 3.3 Water
 
@@ -754,7 +874,7 @@ Two platform notes that will otherwise cost a day each:
 | 1B-11 | msaa + FOV fix | 1B | 1.5 | 1A-5 |
 | 1B-12 | basis-reprojection | 1B | 1.5 | 1A-4 |
 | 1B-13 | ocean-fft-halfprecision | 1B | 1.0 | — |
-| 1C-1 | env-director | 1C | 2.0 | — |
+| 1C-1 | env-director (NOAA solar, dayOfYear) | 1C | 2.5 | — |
 | 1C-2 | single-exposure | 1C | 1.5 | 1C-1 |
 | 1C-3 | atmosphere-luts | 1C | 2.0 | 1C-1 |
 | 1C-4 | **aerial-include** | 1C | 5.0 | 1C-2, 1C-3 |
@@ -762,6 +882,8 @@ Two platform notes that will otherwise cost a day each:
 | 1C-6 | **ibl** (+ specularIntensity 1.0, retire HemisphericLight) | 1C | 3.0 | 1C-5 |
 | 1C-7 | water AP + earth curvature + 40 km ocean radius | 1C | 1.0 | 1C-4 |
 | 1C-8 | clouds radiometry-and-haze | 1C | 1.5 | 1C-4 |
+| 1C-9 | environment-clock (season + time UI) | 1C | 1.5 | 1C-1 |
+| 1C-10 | night-sky-basic (placeholder) | 1C | 1.5 | 1C-5, 1C-9 |
 | 2-1 | cloud noise-bake | 2 | 2.0 | — |
 | 2-2 | cloud-shape + wind shear | 2 | 2.5 | 2-1 |
 | 2-3 | cloud anti-tiling | 2 | 1.5 | 2-2 |
@@ -779,6 +901,7 @@ Two platform notes that will otherwise cost a day each:
 | 2-15 | procedural-rocks | 2 | 2.0 | 1B-9 |
 | 2-16 | grass-ground-cover | 2 | 2.5 | 2-13, 1B-9 |
 | 2-17 | octahedral-impostors | 2 | 6.0 | 2-12, 2-14 |
+| 2-18 | seasonal-foliage | 2 | 2.0 | 2-17, 1C-9 |
 | 3-1 | material-array-gpu | 3 | 8.0 | — |
 | 3-2 | surface-plugin | 3 | 4.0 | 3-1, 1A-7 |
 | 3-3 | microdetail-fix | 3 | 1.0 | 3-2 |
@@ -788,12 +911,13 @@ Two platform notes that will otherwise cost a day each:
 | 3-7 | per-material-brdf | 3 | 2.0 | 3-6, 1C-6 |
 | 3-8 | runway-earthworks | 3 | 2.5 | — |
 | 3-9 | runway-surface | 3 | 5.0 | 3-8, 3-1 |
+| 3-10 | seasonal-palette | 3 | 2.0 | 3-7, 1C-9 |
 | 4-1 | wgsl-kernel (+ domain wrap) | 4 | 3.5 | 1B-2, 1A-3 |
 | 4-2 | page-atlas | 4 | 4.0 | 4-1 |
 | 4-3 | gpu-height-generate | 4 | 3.0 | 4-2 |
 | 4-4 | vertex-displacement (+ ShadowDepthWrapper) | 4 | 4.0 | 4-3, 1A-7 |
 | 4-5 | cdlod-quadtree | 4 | 5.0 | 4-4 |
-| 4-6 | wgsl-classifier + page-splat-atlas | 4 | 6.0 | 4-3, 3-6 |
+| 4-6 | wgsl-classifier + page-splat-atlas | 4 | 7.0 | 4-3, 3-6, 1C-9 |
 | 4-7 | page-occlusion-bake (skyVis + bent normal + horizon) | 4 | 5.0 | 4-3, 1C-6 |
 | 4-8 | csm-nearfield | 4 | 2.0 | 4-7 |
 | 4-9 | retire-cpu-terrain-path + earthworks → WGSL | 4 | 1.0 | 4-5, 3-8 |
@@ -822,16 +946,32 @@ Two platform notes that will otherwise cost a day each:
 | 6-11 | quality-tiers-v2 | 6 | 3.0 | all |
 | 6-12 | documentation truth pass | 6 | 1.0 | 6-11 |
 
+| 7-1 | moon (ephemeris, phase, moonlight) | 7 | 3.0 | 1C-10 |
+| 7-2 | scotopic-vision (Purkinje, adaptation) | 7 | 2.5 | 7-1 |
+| 7-3 | star-field (BSC catalogue, sidereal) | 7 | 2.0 | 7-1 |
+| 7-4 | clustered-lighting | 7 | 4.0 | 3-2, 1C-4 |
+| 7-5 | light-points (instanced emissive + IES) | 7 | 4.0 | 7-4, 7-2 |
+| 7-6 | light-volumetrics | 7 | 3.0 | 7-5, 1C-4 |
+| 7-7 | airfield-lighting (PAPI, edge, approach) | 7 | 4.0 | 7-5, 3-9 |
+| 7-8 | aircraft-lighting (nav, beacon, strobe, landing) | 7 | 3.0 | 7-4, 7-5 |
+| 7-9 | night-perf-tiers | 7 | 2.0 | 7-6, 7-8 |
+| 7-10 | parametric-hangar | 7 | 5.0 | 3-1 |
+| 7-11 | hangar-materials (corrugated, weathering) | 7 | 2.5 | 7-10, 3-1 |
+| 7-12 | hangar-interior | 7 | 2.0 | 7-10, 7-4 |
+| 7-13 | airfield-furniture (windsock, fence, signage) | 7 | 3.5 | 7-10, 3-9 |
+| 7-14 | obstruction-lighting | 7 | 1.0 | 7-13, 7-5 |
+
 ### Phase totals
 
 | Phase | Days | Cumulative | Calendar (4.5 d/wk) |
 |---|---|---|---|
-| 1 — Foundation, correctness, atmosphere | 45.1 | 45.1 | ~10 weeks |
-| 2 — Sky, sea surface, living ground | 41.0 | 86.1 | ~19 weeks |
-| 3 — Terrain surface and the runway | 27.5 | 113.6 | ~25 weeks |
-| 4 — The terrain GPU spine | 33.5 | **147.1** ← *v1 cut line* | ~33 weeks |
-| 5 — Landscape evolution | 51.5 | 198.6 | ~44 weeks |
-| 6 — Water in motion, ecology, final tiers | 29.5 | **228.1** | **~51 weeks** |
+| 1 — Foundation, correctness, atmosphere | 48.6 | 48.6 | ~11 weeks |
+| 2 — Sky, sea surface, living ground | 43.0 | 91.6 | ~20 weeks |
+| 3 — Terrain surface and the runway | 29.5 | 121.1 | ~27 weeks |
+| 4 — The terrain GPU spine | 34.5 | **155.6** ← *v1 cut line* | ~35 weeks |
+| 5 — Landscape evolution | 51.5 | 207.1 | ~46 weeks |
+| 6 — Water in motion, ecology, final tiers | 29.5 | 236.6 | ~53 weeks |
+| 7 — Night operations and airfield identity | 41.5 | **278.1** | **~62 weeks** |
 
 ### First week, in order
 
