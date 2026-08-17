@@ -141,11 +141,19 @@ Two build targets exist on purpose. `npm run build` produces the canonical Cloud
 `PAGES_BASE` sets the URL prefix for the static build and must match where the site is served (`/<repo>/` for a GitHub project page). To preview it locally:
 
 ```bash
-PAGES_BASE=/flight-simulator/ npm run build:pages
-PAGES_BASE=/flight-simulator/ npx vite preview --config vite.static.config.ts
+PAGES_BASE=/fly-high/ npm run build:pages
+PAGES_BASE=/fly-high/ npx vite preview --config vite.static.config.ts
 ```
 
+CI derives `PAGES_BASE` from the repository name, so renaming the repo moves the site without a workflow edit.
+
 The WebGPU suite (`tests/gpu`) is not in the required CI path: it needs a real adapter. `.github/workflows/gpu-tests.yml` runs it on a macOS runner on manual dispatch.
+
+### The lockfile must resolve to the public npm registry
+
+CI runs `npm ci` with no route to any internal mirror. If you install from behind a proxying registry, npm rewrites `resolved` in `package-lock.json` to that internal host; npm then substitutes your local registry on the way back in, so the breakage is invisible locally and fatal in CI. `tests/lockfile-registry.test.ts` fails the build when that happens. Repair it by rewriting the hosts back to `registry.npmjs.org` — versions and `integrity` hashes must stay untouched, and `integrity` is what makes the rewrite safe.
+
+CI also pins Node 24 rather than the `engines` floor of 22, because Node 22 ships npm 10.9.x, which crashes on this lockfile's `libc`-gated optional binaries.
 
 ## Current scope
 

@@ -20,12 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 for npm 11; see the note in ci.yml.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

@@ -6,7 +6,7 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": [
         "-c",
-        "PAGES_BASE=/flight-simulator/ npx vite preview --config vite.static.config.ts --port 4173"
+        "PAGES_BASE=/fly-high/ npx vite preview --config vite.static.config.ts --port 4173"
       ],
       "port": 4173
     }

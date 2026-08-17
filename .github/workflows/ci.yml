@@ -23,12 +23,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 (LTS) ships npm 11.x. Node 22 ships npm 10.9.x, which crashes
+      # with "Exit handler never called!" resolving the 38 libc-gated optional
+      # binaries in package-lock.json (sharp, rolldown, lightningcss, swc,
+      # unrs-resolver). That path is Linux-only, so it never fires on macOS.
+      # The lockfile is authored by npm 11; keep CI on npm 11 to match.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
-      - run: npm ci
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # npm's generic crash message hides the real error, which only ever lands
+      # in the debug log. Surface it instead of losing it with the runner.
+      - name: Show npm debug log
+        if: failure()
+        run: cat "$(npm config get cache)"/_logs/*-debug-0.log || true
 
       - name: Lint
         run: npm run lint
