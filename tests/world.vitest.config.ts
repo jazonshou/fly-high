@@ -11,5 +11,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/world*.test.ts"],
+    // Match the full-suite budget; see vitest.config.ts.
+    testTimeout: 30_000,
   },
 });

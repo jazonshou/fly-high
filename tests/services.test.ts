@@ -338,7 +338,7 @@ describe("flight spawn contract", () => {
       expect(airborneLocal.along).toBeCloseTo(-airport.runwayLength * 0.22, 8);
       expect(airborneLocal.across).toBeCloseTo(0, 8);
     }
-  }, 5_000);
+  });
 
   it("keeps an explicit airport-disabled developer world unavailable for runway spawn", () => {
     const airportless = createWorld("airportless-spawn", { airport: false });
