@@ -1,4 +1,4 @@
-# Aerolith — Architecture Reference
+# fly high — Architecture Reference
 
 **Status: normative.** This file is the live architectural contract, enforced by
 [`src/render/webgpu/owners.ts`](src/render/webgpu/owners.ts) and

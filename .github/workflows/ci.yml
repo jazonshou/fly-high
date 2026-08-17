@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One in-flight run per branch/PR; superseded runs are cancelled. Deploys to
+# main are excluded from cancellation so a queued release always finishes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The Node project: the numerical core, world generation, and the
+      # headless-Babylon render contracts. The WebGPU project (tests/gpu) needs a
+      # real adapter and runs in gpu-tests.yml instead.
+      - name: Test
+        run: npm test
+
+      - name: Build (Cloudflare Worker)
+        run: npm run build
+
+      - name: Build (static site for GitHub Pages)
+        env:
+          PAGES_BASE: /${{ github.event.repository.name }}/
+        run: npm run build:pages
+
+      # Uploaded on every run so the artifact is build-verified on PRs too; only
+      # the deploy job below (main pushes) publishes it.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pages
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pages-preview",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "PAGES_BASE=/flight-simulator/ npx vite preview --config vite.static.config.ts --port 4173"
+      ],
+      "port": 4173
+    }
+  ]
+}

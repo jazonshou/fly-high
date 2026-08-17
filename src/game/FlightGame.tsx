@@ -585,7 +585,7 @@ export function FlightGame() {
       <canvas
         ref={canvasRef}
         className="flight-canvas"
-        aria-label="Aerolith flight simulator 3D view"
+        aria-label="fly high flight simulator 3D view"
         tabIndex={settingsOpen || phase === "paused" ? -1 : 0}
         inert={settingsOpen || phase === "paused"}
         aria-hidden={settingsOpen || phase === "paused" || undefined}
@@ -618,7 +618,7 @@ export function FlightGame() {
       {phase === "menu" && ready ? (
         <section
           className={`start-screen${settingsOpen ? " is-settings-covered" : ""}`}
-          aria-label="Aerolith start"
+          aria-label="fly high start"
           aria-hidden={settingsOpen || undefined}
         >
           <div className="start-screen__minimal">

@@ -1,4 +1,4 @@
-# Aerolith Rendering Overhaul — Implementation Plan
+# fly high Rendering Overhaul — Implementation Plan
 
 **Status:** definitive. Supersedes the seven subsystem designs and the two reviews as the working reference.
 **Basis:** `TERRAIN_AUDIT.md` (root-cause analysis, treated as established fact), seven subsystem designs (~105 work items), a feasibility review by a staff graphics engineer (binding corrections), and a coherence/sequencing review by a program lead (binding merges, cuts and ordering).

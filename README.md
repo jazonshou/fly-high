@@ -1,6 +1,6 @@
-# Aerolith
+# fly high
 
-Aerolith is an original, endless-flight browser simulator inspired by the calm, procedural rhythm of *slow roads*. It combines a deterministic world, a fixed-step six-degree-of-freedom light-aircraft model, synthesized audio, and a Babylon.js renderer built exclusively on WebGPU. The aircraft, terrain, vegetation, buildings, wildlife, water, atmosphere, and clouds are generated at runtime; no downloaded game-asset pipeline or remote service is required.
+fly high is an original, endless-flight browser simulator inspired by the calm, procedural rhythm of *slow roads*. It combines a deterministic world, a fixed-step six-degree-of-freedom light-aircraft model, synthesized audio, and a Babylon.js renderer built exclusively on WebGPU. The aircraft, terrain, vegetation, buildings, wildlife, water, atmosphere, and clouds are generated at runtime; no downloaded game-asset pipeline or remote service is required.
 
 ## Run locally
 
@@ -127,8 +127,25 @@ npm test           # all Vitest suites
 npm run test:sim   # flight-model suite
 npm run test:world # world-generation suite
 npm run benchmark  # deterministic flight scenarios
-npm run build      # production bundle
+npm run test:gpu   # WebGPU suite; needs a hardware adapter
+npm run build      # production bundle (Cloudflare Worker)
+npm run build:pages # static bundle for GitHub Pages
 ```
+
+## Continuous integration and deployment
+
+`.github/workflows/ci.yml` runs lint, typecheck, the deterministic Vitest suites, and both production builds on every push to `main` and every pull request. Pushes to `main` that pass then publish the static bundle to GitHub Pages.
+
+Two build targets exist on purpose. `npm run build` produces the canonical Cloudflare Worker via vinext and server-renders `app/`. GitHub Pages serves static files only, so `npm run build:pages` bundles the same `src/` tree through `static/main.tsx`, which mounts the identical `FlightGame` client root. Everything below that root is shared; only the document shell is duplicated.
+
+`PAGES_BASE` sets the URL prefix for the static build and must match where the site is served (`/<repo>/` for a GitHub project page). To preview it locally:
+
+```bash
+PAGES_BASE=/flight-simulator/ npm run build:pages
+PAGES_BASE=/flight-simulator/ npx vite preview --config vite.static.config.ts
+```
+
+The WebGPU suite (`tests/gpu`) is not in the required CI path: it needs a real adapter. `.github/workflows/gpu-tests.yml` runs it on a macOS runner on manual dispatch.
 
 ## Current scope
 

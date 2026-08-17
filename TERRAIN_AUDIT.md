@@ -1,4 +1,4 @@
-# Why Aerolith's Terrain Doesn't Look Real
+# Why fly high's Terrain Doesn't Look Real
 
 **A root-cause analysis.** All claims below were verified against the working tree at `58d5d15` and adversarially re-measured; where two measurements disagreed I give the range.
 
