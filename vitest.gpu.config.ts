@@ -28,6 +28,11 @@ export default defineConfig({
     reporters: ["default"],
     testTimeout: 60_000,
     hookTimeout: 60_000,
+    // Every file creates its own WebGPUEngine; eight concurrent devices on
+    // one adapter made screenshot- and timing-sensitive tests fail at random
+    // (observed once the 2-8 file landed). The whole suite is seconds long —
+    // determinism beats parallelism here.
+    fileParallelism: false,
     browser: {
       enabled: true,
       headless: true,

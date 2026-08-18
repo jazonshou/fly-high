@@ -1,4 +1,4 @@
-import type { Camera } from "@babylonjs/core/Cameras/camera";
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import { Constants } from "@babylonjs/core/Engines/constants";
@@ -30,6 +30,7 @@ import {
   resolveCloudShadowReceiverBinding,
   type CloudShadowProjection,
 } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
+import { viewScaleFromFov } from "@/src/render/webgpu/clouds/CloudReprojection";
 import {
   buildOceanFftDispatches,
   resolveSpectralOceanConfig,
@@ -185,9 +186,6 @@ function createOceanPresentationMesh(
   const topology = oceanPresentationTopology(profile);
   const vertexCount = 1 + topology.radialRings * topology.angularSegments;
   const positions = new Float32Array(vertexCount * 3);
-  const uvs = new Float32Array(vertexCount * 2);
-  uvs[0] = 0.5;
-  uvs[1] = 0.5;
 
   let vertex = 1;
   const curvedRadius = Math.max(
@@ -204,11 +202,8 @@ function createOceanPresentationMesh(
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
       const positionOffset = vertex * 3;
-      const uvOffset = vertex * 2;
       positions[positionOffset] = x;
       positions[positionOffset + 2] = z;
-      uvs[uvOffset] = x / (OCEAN_PRESENTATION_RADIUS_METERS * 2) + 0.5;
-      uvs[uvOffset + 1] = z / (OCEAN_PRESENTATION_RADIUS_METERS * 2) + 0.5;
       vertex += 1;
     }
   }
@@ -240,8 +235,10 @@ function createOceanPresentationMesh(
 
   const mesh = new Mesh("spectral-ocean", scene);
   const data = new VertexData();
+  // 2-8: the dead uv lane is gone — the per-vertex cascade fades the plan
+  // earmarked it for are a pure function of ring radius on this
+  // camera-centred disk, so the vertex shader computes them from position.
   data.positions = positions;
-  data.uvs = uvs;
   data.indices = indices;
   data.applyToMesh(mesh, false);
   mesh.alwaysSelectAsActiveMesh = true;
@@ -273,13 +270,15 @@ export function resolveProfileSpectralOceanConfig(
 
 export const WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
-attribute uv: vec2f;
 uniform world: mat4x4f;
 uniform viewProjection: mat4x4f;
 uniform oceanWorldOrigin: vec2f;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
 uniform cascadeCount: f32;
+uniform cascadeFadeRadii0: vec4f;
+uniform cascadeFadeRadius4: f32;
+uniform cascadeFadeCameraHeight: f32;
 uniform planarReflectionViewProjection: mat4x4f;
 var displacement0Sampler: sampler; var displacement0: texture_2d<f32>;
 var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
@@ -288,6 +287,8 @@ var displacement3Sampler: sampler; var displacement3: texture_2d<f32>;
 var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
+varying cascadeFades: vec4f;
+varying cascadeFade4: f32;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
@@ -296,15 +297,38 @@ fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: tex
   return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
 }
 
+// 2-8: each cascade fades out where its band's longest wavelength falls
+// below two rendered pixels (the distance is computed by the CPU from the
+// camera's fovMode-aware pixel angle). This replaces the hardcoded
+// 0.62/0.82/0.74/0.52/0.36 blend weights, and fading the DISPLACEMENT too
+// removes the vertex-level shimmer where ring spacing exceeds the band's
+// wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
+// xz only, and from altitude the sea straight below is already distant.
+fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
+  return 1.0 - smoothstep(fadeEndDistance * 0.3, fadeEndDistance, slantRange);
+}
+
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
   let worldXZ = uniforms.oceanWorldOrigin + vertexInputs.position.xz;
+  let vertexRadius = length(vertexInputs.position.xz);
+  let slantRange = sqrt(
+    vertexRadius * vertexRadius
+      + uniforms.cascadeFadeCameraHeight * uniforms.cascadeFadeCameraHeight,
+  );
+  let fades = vec4f(
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.y),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.z),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
+  );
+  let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
   var displacement = vec3f(0.0);
-  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler);
-  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler); }
-  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler); }
-  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler); }
-  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler); }
+  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * fades.x;
+  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * fades.y; }
+  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * fades.z; }
+  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * fades.w; }
+  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * fade4; }
   var displaced = vec4f(vertexInputs.position + displacement, 1.0);
   // 1C-7: drop the surface with the Earth's curvature (camera-centred local
   // frame, R = 6371 km). Without this the flat disk's vanishing line sits at
@@ -314,6 +338,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.position = uniforms.viewProjection * world;
   vertexOutputs.worldPosition = world.xyz;
   vertexOutputs.oceanCoordinate = worldXZ + displacement.xz;
+  vertexOutputs.cascadeFades = fades;
+  vertexOutputs.cascadeFade4 = fade4;
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * world;
 ${sunShadowVertexAssignmentWgsl("world")}
 }
@@ -336,6 +362,8 @@ const OCEAN_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
 export const WATER_FRAGMENT_WGSL = /* wgsl */ `
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
+varying cascadeFades: vec4f;
+varying cascadeFade4: f32;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -348,11 +376,16 @@ uniform time: f32;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
 uniform cascadeCount: f32;
-var normalFoam0Sampler: sampler; var normalFoam0: texture_2d<f32>;
-var normalFoam1Sampler: sampler; var normalFoam1: texture_2d<f32>;
-var normalFoam2Sampler: sampler; var normalFoam2: texture_2d<f32>;
-var normalFoam3Sampler: sampler; var normalFoam3: texture_2d<f32>;
-var normalFoam4Sampler: sampler; var normalFoam4: texture_2d<f32>;
+var slopeFoam0Sampler: sampler; var slopeFoam0: texture_2d<f32>;
+var slopeFoam1Sampler: sampler; var slopeFoam1: texture_2d<f32>;
+var slopeFoam2Sampler: sampler; var slopeFoam2: texture_2d<f32>;
+var slopeFoam3Sampler: sampler; var slopeFoam3: texture_2d<f32>;
+var slopeFoam4Sampler: sampler; var slopeFoam4: texture_2d<f32>;
+var slopeMoment0Sampler: sampler; var slopeMoment0: texture_2d<f32>;
+var slopeMoment1Sampler: sampler; var slopeMoment1: texture_2d<f32>;
+var slopeMoment2Sampler: sampler; var slopeMoment2: texture_2d<f32>;
+var slopeMoment3Sampler: sampler; var slopeMoment3: texture_2d<f32>;
+var slopeMoment4Sampler: sampler; var slopeMoment4: texture_2d<f32>;
 
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
@@ -367,22 +400,42 @@ ${WATER_GGX_COMBINED_SPECULAR_WGSL}
 
 ${waterReflectedSkyWgsl(OCEAN_REFLECTED_SKY_PARAMETERS)}
 
-fn sampleNormalFoam(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
-  return textureSample(source, sourceSampler, fract(worldXZ / patchLength));
+// 2-8: derivatives come from the UNWRAPPED coordinate — fract() has a
+// derivative discontinuity at every patch seam that would spike the
+// selected mip there. Slopes filter linearly, so the mip chain is correct
+// by construction (a box-filtered normal is not).
+fn sampleSlopeTexture(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
+  let unwrapped = worldXZ / patchLength;
+  return textureSampleGrad(source, sourceSampler, fract(unwrapped), dpdx(unwrapped), dpdy(unwrapped));
+}
+
+// 2-8: the variance folded into roughness is the band's MISSING energy —
+// what the true sea carries (the moment mips' E[s²]) minus what the rendered
+// surface keeps (the fade-scaled mean, squared). At fade 1 this is the
+// classic Toksvig footprint variance; at fade 0 it is the band's whole
+// mean-square slope, so a faded-out cascade lives on as roughness instead of
+// vanishing from the BRDF (multiplying Var(s) by fade² deleted exactly the
+// energy this term exists to preserve).
+fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
+  return max(moment.x - fade * fade * sample.x * sample.x, 0.0)
+    + max(moment.y - fade * fade * sample.y * sample.y, 0.0);
 }
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
-  let baseSample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.x, normalFoam0, normalFoam0Sampler);
-  var slopeWeight = 0.62;
-  var slopeSum = baseSample.xz / max(baseSample.y, 0.08) * slopeWeight;
-  var foamAmount = baseSample.w;
-  if (uniforms.cascadeCount > 1.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.y, normalFoam1, normalFoam1Sampler); let weight = 0.82; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 2.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.z, normalFoam2, normalFoam2Sampler); let weight = 0.74; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 3.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLengths0.w, normalFoam3, normalFoam3Sampler); let weight = 0.52; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
-  if (uniforms.cascadeCount > 4.5) { let sample = sampleNormalFoam(input.oceanCoordinate, uniforms.patchLength4, normalFoam4, normalFoam4Sampler); let weight = 0.36; slopeSum += sample.xz / max(sample.y, 0.08) * weight; slopeWeight += weight; foamAmount = max(foamAmount, sample.w); }
-  let filteredSlope = slopeSum / max(slopeWeight, 0.001);
-  let normal = normalize(vec3f(filteredSlope.x, 1.0, filteredSlope.y));
+  // 2-8: heights add across cascades, so slopes add — the fade-weighted SUM
+  // replaces the old weighted average of normal-recovered slopes and its
+  // clamped-denominator recovery.
+  let baseSample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.x, slopeFoam0, slopeFoam0Sampler);
+  let baseMoment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.x, slopeMoment0, slopeMoment0Sampler);
+  var slopeSum = baseSample.xy * input.cascadeFades.x;
+  var foamAmount = baseSample.z * input.cascadeFades.x;
+  var slopeVariance = cascadeSlopeVariance(baseSample, baseMoment, input.cascadeFades.x);
+  if (uniforms.cascadeCount > 1.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeMoment1, slopeMoment1Sampler); slopeSum += sample.xy * input.cascadeFades.y; foamAmount = max(foamAmount, sample.z * input.cascadeFades.y); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.y); }
+  if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); }
+  if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); }
+  if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); }
+  let normal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.0);
@@ -410,8 +463,18 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     atmosphereReflection,
   );
-  let distanceRoughness = smoothstep(1200.0, 36000.0, cameraDistance) * 0.075;
-  let roughness = clamp(0.075 + distanceRoughness + foamAmount * 0.2, 0.065, 0.34);
+  // 2-8 Toksvig: the slope detail a mip footprint filtered away comes back
+  // as microfacet roughness (variance from the moment mips). This is the
+  // mechanism that stops the distant sea boiling — it replaces the old
+  // ad-hoc smoothstep(1200, 36000) distance term with the actual measured
+  // sub-pixel wave energy. The fold happens in GGX ALPHA (= roughness²)
+  // space, where slope variance is commensurate: α′² = α² + σ², so the
+  // perceptual roughness is the fourth root — adding σ² to roughness²
+  // instead under-roughens the whole mid-distance band.
+  let baseRoughness = 0.075 + foamAmount * 0.2;
+  let alpha = baseRoughness * baseRoughness;
+  let alphaSquared = alpha * alpha + min(slopeVariance, 0.25);
+  let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.34);
   let deepAbsorption = vec3f(0.002, 0.032, 0.052);
   let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
     * nDotL * (0.1 + 0.12 * directSunVisibility);
@@ -441,13 +504,18 @@ function rgbaStorage(
   type: number,
   name: string,
   samplingMode?: number,
+  generateMipMaps = false,
 ): RawTexture {
   const texture = RawTexture.CreateRGBAStorageTexture(
     null,
     resolution,
     resolution,
     scene,
-    false,
+    // 2-8: mipped outputs get real mip storage. Babylon's WebGPU texture
+    // manager force-adds RENDER_ATTACHMENT usage for every non-compressed 2D
+    // format (rgba16float is renderable), which is exactly what the
+    // render-based mip generator needs.
+    generateMipMaps,
     false,
     samplingMode ?? (type === Constants.TEXTURETYPE_HALF_FLOAT
       ? Texture.BILINEAR_SAMPLINGMODE
@@ -458,6 +526,31 @@ function rgbaStorage(
   texture.wrapU = Texture.WRAP_ADDRESSMODE;
   texture.wrapV = Texture.WRAP_ADDRESSMODE;
   return texture;
+}
+
+/**
+ * 2-8: the private Babylon surface that regenerates a storage texture's mip
+ * chain. Storage textures can only be written at mip 0 (`webgpuHardwareTexture`
+ * creates the write view with `mipLevelCount = 1` and `setStorageTexture`
+ * takes no mip index), so a compute reduce is not expressible — the
+ * render-based generator is the only path. `engine._generateMipmaps` defaults
+ * to the engine's `_renderEncoder`, so the blit passes record into the SAME
+ * command encoder as the derivation's compute pass, after it — no stale-mip
+ * frame — and it closes any open render pass first. `RenderInvariants`
+ * asserts this shape at startup so a Babylon bump fails loudly, not silently
+ * unfiltered.
+ */
+export function resolveOceanMipGenerator(
+  engine: AbstractEngine,
+): ((texture: RawTexture) => void) | null {
+  const candidate = engine as unknown as {
+    _generateMipmaps?: (texture: unknown, commandEncoder?: unknown) => void;
+  };
+  if (typeof candidate._generateMipmaps !== "function") return null;
+  return (texture) => {
+    const internal = texture.getInternalTexture();
+    if (internal) candidate._generateMipmaps!(internal);
+  };
 }
 
 function createCompute(
@@ -579,7 +672,8 @@ interface OceanCascadeRuntime {
   readonly transformA: readonly [RawTexture, RawTexture];
   readonly transformB: readonly [RawTexture, RawTexture];
   readonly displacement: RawTexture;
-  readonly normalFoam: readonly [RawTexture, RawTexture];
+  readonly slopeFoam: readonly [RawTexture, RawTexture];
+  readonly slopeMoment: RawTexture;
   readonly initialization: ComputeShader;
   readonly initializationUniform: UniformBuffer;
   readonly evolution: ComputeShader;
@@ -596,6 +690,7 @@ interface OceanCascadeRuntime {
 class SpectralOceanCompute {
   readonly config: SpectralOceanConfig;
   readonly cascades: readonly OceanCascadeRuntime[];
+  private readonly generateMips: ((texture: RawTexture) => void) | null;
   private frameIndex = 0;
 
   constructor(
@@ -612,6 +707,7 @@ class SpectralOceanCompute {
       windSpeedMetersPerSecond,
     );
     const engine = scene.getEngine();
+    this.generateMips = resolveOceanMipGenerator(engine);
     this.cascades = this.config.cascades.map((_, cascadeIndex) => {
       const resolution = this.config.resolution;
       const initialSpectrum = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_FLOAT, `ocean-h0-${cascadeIndex}`);
@@ -623,7 +719,11 @@ class SpectralOceanCompute {
       const transformA = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-a${index}-${cascadeIndex}`, Texture.NEAREST_SAMPLINGMODE)) as [RawTexture, RawTexture];
       const transformB = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-b${index}-${cascadeIndex}`, Texture.NEAREST_SAMPLINGMODE)) as [RawTexture, RawTexture];
       const displacement = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-displacement-${cascadeIndex}`);
-      const normalFoam = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-normal-foam${index}-${cascadeIndex}`)) as [RawTexture, RawTexture];
+      // 2-8: slope + second-moment outputs carry mip chains (trilinear) so the
+      // fragment's textureSampleGrad picks a correctly filtered footprint and
+      // the moment mips recover slope variance for Toksvig roughness.
+      const slopeFoam = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-slope-foam${index}-${cascadeIndex}`, Texture.TRILINEAR_SAMPLINGMODE, true)) as [RawTexture, RawTexture];
+      const slopeMoment = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-slope-moment-${cascadeIndex}`, Texture.TRILINEAR_SAMPLINGMODE, true);
 
       const initializationUniform = createInitializationUniforms(engine, this.config, cascadeIndex);
       const initialization = createCompute(
@@ -679,14 +779,15 @@ class SpectralOceanCompute {
           engine,
           OCEAN_SPATIAL_DERIVATION_WGSL,
           "deriveOceanSurface",
-          ["params", "spatial_height_displacement_x", "spatial_displacement_z_aux", "previous_normal_foam", "displacement_jacobian", "normal_foam"],
+          ["params", "spatial_height_displacement_x", "spatial_displacement_z_aux", "previous_slope_foam", "displacement_jacobian", "slope_foam", "slope_moment"],
         );
         shader.setUniformBuffer("params", derivationUniform);
         shader.setTexture("spatial_height_displacement_x", transformA[sourceIndex], false);
         shader.setTexture("spatial_displacement_z_aux", transformB[sourceIndex], false);
-        shader.setTexture("previous_normal_foam", normalFoam[previousIndex], false);
+        shader.setTexture("previous_slope_foam", slopeFoam[previousIndex], false);
         shader.setStorageTexture("displacement_jacobian", displacement);
-        shader.setStorageTexture("normal_foam", normalFoam[outputIndex]);
+        shader.setStorageTexture("slope_foam", slopeFoam[outputIndex]);
+        shader.setStorageTexture("slope_moment", slopeMoment);
         return shader;
       }) as [ComputeShader, ComputeShader];
 
@@ -696,7 +797,8 @@ class SpectralOceanCompute {
         transformA,
         transformB,
         displacement,
-        normalFoam,
+        slopeFoam,
+        slopeMoment,
         initialization,
         initializationUniform,
         evolution,
@@ -777,7 +879,8 @@ class SpectralOceanCompute {
       cascade.transformA.forEach((texture) => texture.dispose());
       cascade.transformB.forEach((texture) => texture.dispose());
       cascade.displacement.dispose();
-      cascade.normalFoam.forEach((texture) => texture.dispose());
+      cascade.slopeFoam.forEach((texture) => texture.dispose());
+      cascade.slopeMoment.dispose();
     }
   }
 
@@ -798,6 +901,13 @@ class SpectralOceanCompute {
     cascade.derivationUniform.updateFloat("foamDecay", foamDecay);
     cascade.derivationUniform.update();
     if (!cascade.derivation[cascade.normalIndex].dispatch(groups, groups, 1)) return false;
+    // 2-8: the derivation wrote mip 0; rebuild the chains so the fragment's
+    // gradient sampling filters correctly. The generator records into the
+    // same command encoder as the compute pass, after it.
+    if (this.generateMips) {
+      this.generateMips(cascade.slopeFoam[nextNormal]);
+      this.generateMips(cascade.slopeMoment);
+    }
     cascade.normalIndex = nextNormal;
     cascade.elapsedSecondsSinceDerivation = 0;
     return true;
@@ -847,7 +957,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       scene,
       WATER_SHADER_NAME,
       {
-        attributes: ["position", "uv"],
+        attributes: ["position"],
         uniforms: [
           "world",
           "viewProjection",
@@ -855,6 +965,9 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "patchLengths0",
           "patchLength4",
           "cascadeCount",
+          "cascadeFadeRadii0",
+          "cascadeFadeRadius4",
+          "cascadeFadeCameraHeight",
           "cameraPosition",
           "sunDirection",
           "sunColor",
@@ -871,7 +984,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
         samplers: [
           ...Array.from({ length: MAX_RENDER_CASCADES }, (_, index) => [
             `displacement${index}`,
-            `normalFoam${index}`,
+            `slopeFoam${index}`,
+            `slopeMoment${index}`,
           ]).flat(),
           CLOUD_SHADOW_RECEIVER_SAMPLER,
           PLANAR_REFLECTION_SAMPLER,
@@ -1069,6 +1183,46 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     );
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", this.camera.position);
+    this.updateCascadeFadeRadii();
+  }
+
+  /**
+   * 2-8: per-cascade fade-end distances — the range at which a cascade's
+   * longest wavelength spans two rendered pixels. Beyond it the whole band is
+   * sub-Nyquist and its energy lives on in the Toksvig roughness instead.
+   * Uses the shared fovMode-aware helper (1B-11: `camera.fov` is HORIZONTAL
+   * under the renderer's pinned FOVMODE_HORIZONTAL_FIXED — the vertical-fixed
+   * formula shrinks every radius by the aspect ratio). The shader fades on
+   * slant range (√(ringRadius² + cameraHeight²)), not ring radius, so a high
+   * camera correctly fades bands that are sub-pixel straight down.
+   */
+  private updateCascadeFadeRadii(): void {
+    const engine = this.scene.getEngine();
+    const renderWidth = Math.max(1, engine.getRenderWidth(true));
+    const renderHeight = Math.max(1, engine.getRenderHeight(true));
+    const viewScale = viewScaleFromFov(
+      this.camera.fov,
+      renderWidth / renderHeight,
+      this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED,
+    );
+    const pixelAngleRadians = (2 * viewScale.x) / renderWidth;
+    const fadeEnd = (cascadeIndex: number): number => {
+      const cascade = this.compute.config.cascades[cascadeIndex]
+        ?? this.compute.config.cascades[this.compute.config.cascades.length - 1];
+      if (!cascade) return OCEAN_PRESENTATION_RADIUS_METERS;
+      return cascade.maximumWavelengthMeters / (2 * Math.max(pixelAngleRadians, 1e-6));
+    };
+    this.material.setVector4("cascadeFadeRadii0", new Vector4(
+      fadeEnd(0),
+      fadeEnd(1),
+      fadeEnd(2),
+      fadeEnd(3),
+    ));
+    this.material.setFloat("cascadeFadeRadius4", fadeEnd(4));
+    this.material.setFloat(
+      "cascadeFadeCameraHeight",
+      Math.max(0, this.camera.globalPosition.y - this.seaLevel),
+    );
   }
 
   dispose(): void {
@@ -1091,7 +1245,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     for (let index = 0; index < MAX_RENDER_CASCADES; index += 1) {
       const cascade = this.compute.cascades[index] ?? fallback;
       this.material.setTexture(`displacement${index}`, cascade.displacement);
-      this.material.setTexture(`normalFoam${index}`, cascade.normalFoam[cascade.normalIndex]);
+      this.material.setTexture(`slopeFoam${index}`, cascade.slopeFoam[cascade.normalIndex]);
+      this.material.setTexture(`slopeMoment${index}`, cascade.slopeMoment);
     }
   }
 
@@ -1149,5 +1304,6 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     });
     this.material.setFloat("patchLength4", lengths[4] ?? lengths.at(-1) ?? 64);
     this.material.setFloat("cascadeCount", this.compute.cascades.length);
+    this.updateCascadeFadeRadii();
   }
 }

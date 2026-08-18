@@ -141,10 +141,13 @@ const SHADOW_DEPTH_BYTES = 5;
 /**
  * Ocean FFT bytes per texel per cascade: h0 spectrum (rgba32float, 16 B) +
  * wave data (16 B) + two ping-pong pairs (4 × rgba16float since 1B-13) +
- * displacement (rgba16float, 8 B) + two normal/foam targets (2 × 8 B).
+ * displacement (rgba16float, 8 B) + two slope/foam targets and one
+ * second-moment target (2-8: each rgba16float with a full mip chain, ×4/3).
  */
 const OCEAN_FFT_PING_PONG_BYTES = 8;
-const OCEAN_BYTES_PER_TEXEL = 16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 2 * 8;
+const OCEAN_MIP_CHAIN_FACTOR = 4 / 3;
+const OCEAN_BYTES_PER_TEXEL =
+  16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 3 * 8 * OCEAN_MIP_CHAIN_FACTOR;
 /** Integration + two temporal history targets, rgba16float. */
 const CLOUD_TARGET_COUNT = 3;
 /** Vertex layout of a CPU terrain tile: position + normal (f32x3) + colour (f32x4). */

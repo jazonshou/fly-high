@@ -71,7 +71,10 @@ import {
   selectPlanarReflectionPlane,
   type PlanarReflectionPlaneSelection,
 } from "./webgpu/water/PlanarWaterReflectionSystem";
-import { SpectralOceanSystem } from "./webgpu/water/SpectralOceanSystem";
+import {
+  resolveOceanMipGenerator,
+  SpectralOceanSystem,
+} from "./webgpu/water/SpectralOceanSystem";
 import type { FlightRenderingSystem } from "./types";
 import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 
@@ -638,6 +641,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         imageProcessingAppliedByPostProcess:
           scene.imageProcessingConfiguration.applyByPostProcess,
         sceneFogMode: scene.fogMode,
+        // 2-8: the ocean's storage-texture mip chain rides Babylon's private
+        // render-based generator — a Babylon bump that removes it must fail
+        // here, not as silently unfiltered distant water.
+        oceanMipGenerationAvailable: resolveOceanMipGenerator(engine) !== null,
       });
 
       await awaitRendererStartup(

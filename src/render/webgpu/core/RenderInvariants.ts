@@ -32,6 +32,14 @@ export interface StartupInvariantInput {
    * every PBR fragment. Omit before the scene exists.
    */
   readonly sceneFogMode?: number;
+  /**
+   * 2-8: whether `engine._generateMipmaps` exists (Babylon private API). The
+   * ocean's slope/moment cascades are storage textures, which can only be
+   * written at mip 0 — the render-based generator is the only mip path, and
+   * losing it in a Babylon bump would silently un-filter distant water.
+   * Omit on engines that never run the ocean compute (NullEngine tests).
+   */
+  readonly oceanMipGenerationAvailable?: boolean;
 }
 
 /** Babylon's Scene.FOGMODE_NONE, restated as data so this file stays Class P. */
@@ -81,6 +89,17 @@ export function collectStartupInvariantFailures(
     failures.push(
       `scene.fogMode is ${input.sceneFogMode} but must be FOGMODE_NONE (${FOG_MODE_NONE}); `
       + "Babylon fog and the aerial-perspective include would both apply",
+    );
+  }
+
+  if (
+    input.oceanMipGenerationAvailable !== undefined
+    && !input.oceanMipGenerationAvailable
+  ) {
+    failures.push(
+      "engine._generateMipmaps is missing (Babylon private API changed); the ocean's "
+      + "slope cascades cannot be mipped and distant water would silently un-filter — "
+      + "re-verify the 2-8 mip path against the new Babylon version",
     );
   }
 

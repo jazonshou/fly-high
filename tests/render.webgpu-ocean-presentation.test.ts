@@ -8,10 +8,19 @@ import {
 } from "../src/render/webgpu/water/SpectralOceanSystem";
 
 describe("spectral ocean presentation topology", () => {
-  it("uses an opaque, distance-filtered physical surface without a duplicate cloud field", () => {
-    expect(WATER_FRAGMENT_WGSL).toContain("distanceRoughness");
+  it("uses an opaque, variance-filtered physical surface without a duplicate cloud field", () => {
+    // 2-8: distance filtering is Toksvig — the moment mips' slope variance
+    // becomes roughness; the old ad-hoc smoothstep distance term is gone.
+    expect(WATER_FRAGMENT_WGSL).toContain("slopeVariance");
+    expect(WATER_FRAGMENT_WGSL).not.toContain("distanceRoughness");
     expect(WATER_FRAGMENT_WGSL).toContain("deepAbsorption");
-    expect(WATER_FRAGMENT_WGSL).toContain("slopeWeight");
+    // Slopes are stored and summed directly (fade-weighted) — the clamped
+    // normal-recovery denominator must stay deleted.
+    expect(WATER_FRAGMENT_WGSL).toContain("cascadeFades");
+    expect(WATER_FRAGMENT_WGSL).not.toContain("max(baseSample.y, 0.08)");
+    // Mip selection needs derivatives of the UNWRAPPED coordinate.
+    expect(WATER_FRAGMENT_WGSL).toContain("textureSampleGrad");
+    expect(WATER_FRAGMENT_WGSL).toContain("dpdx(unwrapped)");
     expect(WATER_FRAGMENT_WGSL).toContain("vec4f(max(water, vec3f(0.0)), 1.0)");
     expect(WATER_FRAGMENT_WGSL).not.toContain("fn cloudNoise");
   });
