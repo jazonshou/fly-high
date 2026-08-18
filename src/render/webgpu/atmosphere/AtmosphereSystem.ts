@@ -12,11 +12,12 @@ import { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTa
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
-import type {
-  TimeOfDayPreset,
-  WeatherPreset,
-} from "@/src/game/types";
+import type { WeatherPreset } from "@/src/game/types";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  type EnvironmentState,
+} from "@/src/render/webgpu/nature/EnvironmentState";
 
 const SKY_SHADER_NAME = "aerolithPhysicalSky";
 
@@ -125,8 +126,7 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
   }
 }
 
-interface AtmospherePreset {
-  readonly sunDirection: Vector3;
+interface AtmospherePalette {
   readonly sunColor: Color3;
   readonly zenith: Color3;
   readonly horizon: Color3;
@@ -135,38 +135,87 @@ interface AtmospherePreset {
   readonly exposure: number;
 }
 
-function presetFor(time: TimeOfDayPreset): AtmospherePreset {
-  if (time === "dawn") {
-    return {
-      sunDirection: new Vector3(-0.66, 0.13, 0.74).normalize(),
-      sunColor: new Color3(1, 0.48, 0.22),
-      zenith: new Color3(0.055, 0.13, 0.32),
-      horizon: new Color3(0.94, 0.30, 0.13),
-      ground: new Color3(0.055, 0.065, 0.09),
-      intensity: 3.1,
-      exposure: 0.82,
-    };
-  }
-  if (time === "golden") {
-    return {
-      sunDirection: new Vector3(0.72, 0.29, 0.63).normalize(),
-      sunColor: new Color3(1, 0.66, 0.33),
-      zenith: new Color3(0.10, 0.27, 0.56),
-      horizon: new Color3(0.91, 0.44, 0.19),
-      ground: new Color3(0.08, 0.07, 0.07),
-      intensity: 4.1,
-      exposure: 0.94,
-    };
-  }
-  return {
-    sunDirection: new Vector3(-0.36, 0.82, 0.44).normalize(),
+/**
+ * The look anchors, continuous in sun elevation (1C-1). The three deleted
+ * presets survive as anchor rows at the elevations their hand-tuned sun
+ * vectors actually had (dawn ≈ 7.5°, golden ≈ 17°, day ≈ 55°), plus a dim
+ * pre-1C-10 floor below the horizon, so scrubbing the clock moves through
+ * the same art direction the presets carried — with every angle in between.
+ */
+const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees: number })[] = [
+  {
+    elevationDegrees: -12,
+    sunColor: new Color3(0.9, 0.4, 0.25),
+    zenith: new Color3(0.012, 0.03, 0.085),
+    horizon: new Color3(0.08, 0.075, 0.14),
+    ground: new Color3(0.02, 0.024, 0.035),
+    intensity: 0.0,
+    exposure: 0.55,
+  },
+  {
+    elevationDegrees: 0,
+    sunColor: new Color3(1, 0.42, 0.18),
+    zenith: new Color3(0.03, 0.08, 0.22),
+    horizon: new Color3(0.7, 0.24, 0.12),
+    ground: new Color3(0.04, 0.05, 0.07),
+    intensity: 1.1,
+    exposure: 0.72,
+  },
+  {
+    elevationDegrees: 7.5,
+    sunColor: new Color3(1, 0.48, 0.22),
+    zenith: new Color3(0.055, 0.13, 0.32),
+    horizon: new Color3(0.94, 0.3, 0.13),
+    ground: new Color3(0.055, 0.065, 0.09),
+    intensity: 3.1,
+    exposure: 0.82,
+  },
+  {
+    elevationDegrees: 17,
+    sunColor: new Color3(1, 0.66, 0.33),
+    zenith: new Color3(0.1, 0.27, 0.56),
+    horizon: new Color3(0.91, 0.44, 0.19),
+    ground: new Color3(0.08, 0.07, 0.07),
+    intensity: 4.1,
+    exposure: 0.94,
+  },
+  {
+    elevationDegrees: 55,
     sunColor: new Color3(1, 0.96, 0.88),
-    zenith: new Color3(0.10, 0.36, 0.78),
+    zenith: new Color3(0.1, 0.36, 0.78),
     horizon: new Color3(0.58, 0.77, 0.96),
     ground: new Color3(0.11, 0.15, 0.18),
     intensity: 5.2,
     exposure: 1.02,
-  };
+  },
+];
+
+function lerpColor(a: Color3, b: Color3, t: number): Color3 {
+  return Color3.Lerp(a, b, t);
+}
+
+function paletteForElevation(elevationDegrees: number): AtmospherePalette {
+  const anchors = PALETTE_ANCHORS;
+  if (elevationDegrees <= anchors[0]!.elevationDegrees) return anchors[0]!;
+  const last = anchors[anchors.length - 1]!;
+  if (elevationDegrees >= last.elevationDegrees) return last;
+  for (let index = 1; index < anchors.length; index += 1) {
+    const upper = anchors[index]!;
+    if (elevationDegrees > upper.elevationDegrees) continue;
+    const lower = anchors[index - 1]!;
+    const t =
+      (elevationDegrees - lower.elevationDegrees)
+      / (upper.elevationDegrees - lower.elevationDegrees);
+    return {
+      sunColor: lerpColor(lower.sunColor, upper.sunColor, t),
+      zenith: lerpColor(lower.zenith, upper.zenith, t),
+      horizon: lerpColor(lower.horizon, upper.horizon, t),
+      ground: lerpColor(lower.ground, upper.ground, t),
+      intensity: lower.intensity + (upper.intensity - lower.intensity) * t,
+      exposure: lower.exposure + (upper.exposure - lower.exposure) * t,
+    };
+  }
+  return last;
 }
 
 export interface AtmosphereSnapshot {
@@ -260,15 +309,15 @@ export class AtmosphereSystem {
     this.shadows.filter = ShadowGenerator.FILTER_PCF;
     this.shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 
-    const initial = presetFor("day");
+    const initialPalette = paletteForElevation(46);
     this.snapshotValue = {
-      sunDirection: initial.sunDirection,
-      sunColor: initial.sunColor,
-      sunIntensity: initial.intensity,
-      skyZenith: initial.zenith,
-      skyHorizon: initial.horizon,
-      ambientColor: initial.zenith.scale(0.58),
-      exposure: initial.exposure,
+      sunDirection: new Vector3(0.35, 0.72, 0.6).normalize(),
+      sunColor: initialPalette.sunColor,
+      sunIntensity: initialPalette.intensity,
+      skyZenith: initialPalette.zenith,
+      skyHorizon: initialPalette.horizon,
+      ambientColor: initialPalette.zenith.scale(0.58),
+      exposure: initialPalette.exposure,
       cloudCoverage: 0.18,
       humidity: 0.5,
       windSpeed: 8,
@@ -277,7 +326,7 @@ export class AtmosphereSystem {
         Math.cos(windDirectionRadians),
       ).normalize(),
     };
-    this.setPreset("day", "clear");
+    this.applyEnvironment(DEFAULT_ENVIRONMENT_STATE, "clear");
   }
 
   get snapshot(): AtmosphereSnapshot {
@@ -288,44 +337,61 @@ export class AtmosphereSystem {
     this.shadows.addShadowCaster(mesh, includeDescendants);
   }
 
-  setPreset(time: TimeOfDayPreset, weather: WeatherPreset): void {
-    const preset = presetFor(time);
-    const cloudCoverage = weather === "cloudy" ? 0.74 : weather === "breezy" ? 0.38 : 0.16;
-    const humidity = weather === "cloudy" ? 0.86 : weather === "breezy" ? 0.62 : 0.45;
-    const windSpeed = weather === "breezy" ? 17 : weather === "cloudy" ? 10 : 6;
+  /**
+   * Applies one continuous environment instant (1C-1). The sun direction is
+   * the NOAA solar position resolved by the EnvironmentDirector; the look
+   * interpolates the palette anchors by real sun elevation. Weather keeps
+   * the previous preset semantics (coverage dimming, humidity haze) — 1C-2
+   * unifies the exposure curves, so this deliberately does not touch how
+   * exposure and sun.intensity split the light budget.
+   */
+  applyEnvironment(state: EnvironmentState, weather: WeatherPreset): void {
+    const sunDirection = new Vector3(
+      state.sun.direction[0],
+      state.sun.direction[1],
+      state.sun.direction[2],
+    ).normalize();
+    const elevationDegrees = Math.asin(Math.min(1, Math.max(-1, sunDirection.y))) * 180 / Math.PI;
+    const palette = paletteForElevation(elevationDegrees);
+    const cloudCoverage = state.weather.cloudCoverage;
+    const humidity = state.weather.relativeHumidity;
+    const windSpeed = Math.hypot(
+      state.windLayers[0]?.velocityMetersPerSecond[0] ?? 6,
+      state.windLayers[0]?.velocityMetersPerSecond[1] ?? 0,
+    ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
-    const sunIntensity = preset.intensity * overcastDimming;
+    const sunIntensity = palette.intensity * overcastDimming;
     const ambientIntensity = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
-      preset.zenith,
+      palette.zenith,
       new Color3(0.20, 0.24, 0.29),
       cloudCoverage * 0.5,
     );
     const skyHorizon = Color3.Lerp(
-      preset.horizon,
+      palette.horizon,
       new Color3(0.52, 0.56, 0.60),
       humidity * 0.42,
     );
-    const exposure = preset.exposure * overcastDimming;
-    this.sun.direction.copyFrom(preset.sunDirection).scaleInPlace(-1);
-    this.sun.diffuse = preset.sunColor;
+    const exposure = palette.exposure * overcastDimming;
+    this.sun.direction.copyFrom(sunDirection).scaleInPlace(-1);
+    this.sun.diffuse = palette.sunColor;
     this.sun.intensity = sunIntensity;
     this.ambient.diffuse = skyZenith;
-    this.ambient.groundColor = preset.ground;
+    this.ambient.groundColor = palette.ground;
     this.ambient.intensity = ambientIntensity;
     this.scene.fogMode = Scene.FOGMODE_EXP2;
     this.scene.fogDensity = weather === "cloudy" ? 0.00008 : weather === "breezy" ? 0.000045 : 0.000028;
-    this.scene.fogColor = Color3.Lerp(preset.horizon, new Color3(0.48, 0.52, 0.56), humidity * 0.32);
-    this.skyMaterial.setVector3("sunDirection", preset.sunDirection);
-    this.skyMaterial.setColor3("sunColor", preset.sunColor);
+    this.scene.fogColor = Color3.Lerp(palette.horizon, new Color3(0.48, 0.52, 0.56), humidity * 0.32);
+    this.skyMaterial.setVector3("sunDirection", sunDirection);
+    this.skyMaterial.setColor3("sunColor", palette.sunColor);
     this.skyMaterial.setColor3("zenithColor", skyZenith);
     this.skyMaterial.setColor3("horizonColor", skyHorizon);
-    this.skyMaterial.setColor3("groundColor", preset.ground);
+    this.skyMaterial.setColor3("groundColor", palette.ground);
     this.skyMaterial.setFloat("turbidity", humidity);
     this.skyMaterial.setFloat("exposure", exposure);
     this.snapshotValue = {
-      sunDirection: preset.sunDirection.clone(),
-      sunColor: preset.sunColor.clone(),
+      sunDirection: sunDirection.clone(),
+      sunColor: palette.sunColor.clone(),
       sunIntensity,
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),

@@ -135,7 +135,10 @@ export function FlightGame() {
     rendererRef.current?.setQuality(next.quality);
     rendererRef.current?.setRenderingMode(next.renderingMode);
     rendererRef.current?.setReducedMotion(next.reducedMotion);
-    rendererRef.current?.setAtmosphere(next.timeOfDay, next.weather);
+    rendererRef.current?.setAtmosphere(
+      { dayOfYear: next.dayOfYear, solarTimeHours: next.solarTimeHours },
+      next.weather,
+    );
     inputRef.current?.updateOptions({
       sensitivity: next.sensitivity,
       deadZone: next.gamepadDeadZone,
@@ -453,7 +456,13 @@ export function FlightGame() {
         activeSettings.aircraft,
       ));
       renderer.setCameraMode(cameraModeRef.current);
-      renderer.setAtmosphere(activeSettings.timeOfDay, activeSettings.weather);
+      renderer.setAtmosphere(
+        {
+          dayOfYear: activeSettings.dayOfYear,
+          solarTimeHours: activeSettings.solarTimeHours,
+        },
+        activeSettings.weather,
+      );
 
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {

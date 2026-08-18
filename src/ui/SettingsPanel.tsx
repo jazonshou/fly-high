@@ -6,7 +6,7 @@ import {
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import type { GameSettings } from "@/src/settings";
+import { TIME_OF_DAY_PRESET_CLOCKS, type GameSettings } from "@/src/settings";
 import {
   MAX_AIRBORNE_START_AGL,
   MIN_AIRBORNE_START_AGL,
@@ -67,6 +67,25 @@ const TIME_OF_DAY_OPTIONS = [
   { value: "day", label: "Clear day" },
   { value: "golden", label: "Golden hour" },
 ] as const;
+
+const MONTH_STARTS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+const MONTH_LABELS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+function formatSolarTime(solarTimeHours: number): string {
+  const hours = Math.floor(solarTimeHours);
+  const minutes = Math.round((solarTimeHours - hours) * 60);
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+}
+
+function formatDayOfYear(dayOfYear: number): string {
+  const day = Math.floor(dayOfYear);
+  let month = MONTH_STARTS.length - 1;
+  while (month > 0 && MONTH_STARTS[month]! > day) month -= 1;
+  return `${MONTH_LABELS[month]} ${day - MONTH_STARTS[month]! + 1}`;
+}
 
 const WEATHER_OPTIONS = [
   { value: "clear", label: "Clear / calm" },
@@ -403,15 +422,54 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
           onChange={(value) => patch("units", value)}
         />
       </div>
-      <div className="setting-field">
+      <div className="setting-field setting-field--presets">
         <span id="settings-time-label">Time of day</span>
-        <ThemedSelect
-          labelId="settings-time-label"
-          value={settings.timeOfDay}
-          options={TIME_OF_DAY_OPTIONS}
-          onChange={(value) => patch("timeOfDay", value)}
-        />
+        <div className="setting-presets" role="group" aria-labelledby="settings-time-label">
+          {TIME_OF_DAY_OPTIONS.map((option) => {
+            const preset = TIME_OF_DAY_PRESET_CLOCKS[option.value];
+            const active = settings.dayOfYear === preset.dayOfYear
+              && settings.solarTimeHours === preset.solarTimeHours;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`setting-presets__button${active ? " setting-presets__button--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => onChange({
+                  ...settings,
+                  timeOfDay: option.value,
+                  dayOfYear: preset.dayOfYear,
+                  solarTimeHours: preset.solarTimeHours,
+                })}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
+      <label className="setting-field setting-field--range">
+        <span>Solar time <b>{formatSolarTime(settings.solarTimeHours)}</b></span>
+        <input
+          type="range"
+          min="0"
+          max="23.75"
+          step="0.25"
+          value={settings.solarTimeHours}
+          onChange={(event) => patch("solarTimeHours", Number(event.target.value))}
+        />
+      </label>
+      <label className="setting-field setting-field--range">
+        <span>Day of year <b>{formatDayOfYear(settings.dayOfYear)}</b></span>
+        <input
+          type="range"
+          min="0"
+          max="364"
+          step="1"
+          value={Math.floor(settings.dayOfYear)}
+          onChange={(event) => patch("dayOfYear", Number(event.target.value))}
+        />
+      </label>
       <div className="setting-field">
         <span id="settings-weather-label">Weather</span>
         <ThemedSelect

@@ -14,9 +14,10 @@ import type {
   FlightVisualState,
   QualityLevel,
   RenderDiagnostics,
-  TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
+import { resolveEnvironmentState } from "./webgpu/nature/EnvironmentDirector";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
@@ -158,12 +159,18 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
 }
 
 export class AtmosphereChangeTracker {
-  private timeOfDay: TimeOfDayPreset | null = null;
+  private dayOfYear = Number.NaN;
+  private solarTimeHours = Number.NaN;
   private weather: WeatherPreset | null = null;
 
-  update(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): boolean {
-    if (timeOfDay === this.timeOfDay && weather === this.weather) return false;
-    this.timeOfDay = timeOfDay;
+  update(clock: EnvironmentClock, weather: WeatherPreset): boolean {
+    if (
+      clock.dayOfYear === this.dayOfYear
+      && clock.solarTimeHours === this.solarTimeHours
+      && weather === this.weather
+    ) return false;
+    this.dayOfYear = clock.dayOfYear;
+    this.solarTimeHours = clock.solarTimeHours;
     this.weather = weather;
     return true;
   }
@@ -233,6 +240,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
+  private readonly latitudeDegrees: number;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -307,6 +315,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
+    this.latitudeDegrees = options.world.latitudeDegrees;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
@@ -586,9 +595,16 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = reducedMotion;
   }
 
-  setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void {
-    if (!this.atmosphereTracker.update(timeOfDay, weather)) return;
-    this.atmosphere.setPreset(timeOfDay, weather);
+  setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
+    if (!this.atmosphereTracker.update(clock, weather)) return;
+    this.atmosphere.applyEnvironment(
+      resolveEnvironmentState({
+        clock,
+        latitudeDegrees: this.latitudeDegrees,
+        weather,
+      }),
+      weather,
+    );
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);

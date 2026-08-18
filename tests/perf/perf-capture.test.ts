@@ -93,7 +93,7 @@ describe("perf capture (1A-1c)", () => {
       reducedMotion: false,
       ...(world.airport ? { runway: world.airport } : {}),
     });
-    renderer.setAtmosphere("day", "clear");
+    renderer.setAtmosphere({ dayOfYear: 171, solarTimeHours: 12.5 }, "clear");
 
     // Page-generation cost at the plan's reference resolution (65).
     const generationRuns = 5;

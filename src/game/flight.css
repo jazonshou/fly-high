@@ -1160,6 +1160,25 @@
   cursor: pointer;
 }
 .diagnostics__probe:disabled { opacity: 0.55; cursor: default; }
+
+.setting-presets {
+  display: flex;
+  gap: 6px;
+}
+.setting-presets__button {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid rgba(225, 254, 118, 0.24);
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.setting-presets__button--active {
+  border-color: rgba(225, 254, 118, 0.7);
+  background: rgba(225, 254, 118, 0.12);
+}
 .diagnostics__fallback {
   max-width: 260px;
   color: rgba(255, 220, 166, 0.9);
