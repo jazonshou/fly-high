@@ -64,8 +64,29 @@ import {
   sunShadowVertexAssignmentWgsl,
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
+import {
+  WATER_FRESNEL_SCHLICK_WGSL,
+  WATER_GGX_SPLIT_WGSL,
+  WATER_SHADING_CONSTANTS_WGSL,
+  waterReflectedSkyWgsl,
+  type WaterReflectedSkyParameters,
+} from "./WaterShaders";
 
 const HYDROLOGY_SHADER_NAME = "aerolithHydrologyWater";
+
+/**
+ * 2-8a — the inland-water analytic-sky constants, named at the call site.
+ * Softer sun disc (1800/11 against the open sea's 3200/16) and a slightly
+ * darker overcast palette than the ocean's; the divergence is deliberate
+ * until `2-9` re-judges it against the Karis lobe.
+ */
+const HYDROLOGY_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
+  horizonFalloffExponent: 2.3,
+  overcastZenithColor: [0.31, 0.36, 0.41],
+  overcastHorizonColor: [0.56, 0.61, 0.65],
+  sunDiscExponent: 1_800,
+  sunDiscGain: 11,
+};
 
 export const HYDROLOGY_WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -157,38 +178,13 @@ ${PLANAR_REFLECTION_FRAGMENT_WGSL}
 ${SUN_SHADOW_FRAGMENT_WGSL}
 ${AERIAL_PERSPECTIVE_WGSL}
 
-const PI: f32 = 3.14159265359;
+${WATER_SHADING_CONSTANTS_WGSL}
 
-fn fresnelSchlick(cosine: f32, f0: vec3f) -> vec3f {
-  return f0 + (vec3f(1.0) - f0) * pow(1.0 - cosine, 5.0);
-}
+${WATER_FRESNEL_SCHLICK_WGSL}
 
-fn distributionGgx(normal: vec3f, halfVector: vec3f, roughness: f32) -> f32 {
-  let alpha = roughness * roughness;
-  let alpha2 = alpha * alpha;
-  let nDotH = max(dot(normal, halfVector), 0.0);
-  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
-  return alpha2 / max(PI * denominator * denominator, 0.000001);
-}
+${WATER_GGX_SPLIT_WGSL}
 
-fn geometrySchlickGgx(nDotDirection: f32, roughness: f32) -> f32 {
-  let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
-  return nDotDirection / max(nDotDirection * (1.0 - k) + k, 0.0001);
-}
-
-fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
-  let horizonAmount = pow(1.0 - clamp(direction.y, 0.0, 1.0), 2.3);
-  var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizonAmount);
-  // Match the ocean fallback: cloud coverage changes reflected energy, but an
-  // unrelated procedural cloud pattern must not masquerade as a reflection of
-  // the volumetric sky.
-  let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
-  let overcastSky = mix(vec3f(0.31, 0.36, 0.41), vec3f(0.56, 0.61, 0.65), horizonAmount);
-  sky = mix(sky, overcastSky, overcast * 0.52);
-  let solarGlare = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), 1800.0);
-  return sky + uniforms.sunColor * solarGlare * 11.0 * directSunVisibility
-    * (1.0 - overcast * 0.88);
-}
+${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {

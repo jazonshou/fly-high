@@ -156,6 +156,25 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "raymarch/temporal/shadow definition fails the boundary test.",
   },
   {
+    // 2-8a: the §3.6 drift closed. One definition of fresnel/GGX/reflectedSky
+    // for every water surface; the genuinely divergent constants are named
+    // WaterReflectedSkyParameters at the two call sites.
+    artifact: "water-shared-shading",
+    owner: "water",
+    definitionSites: ["src/render/webgpu/water/WaterShaders.ts"],
+    consumers: ["water"],
+    ownedSymbols: [
+      "WATER_SHADING_CONSTANTS_WGSL",
+      "WATER_FRESNEL_SCHLICK_WGSL",
+      "WATER_GGX_COMBINED_SPECULAR_WGSL",
+      "WATER_GGX_SPLIT_WGSL",
+      "waterReflectedSkyWgsl",
+    ],
+    notes:
+      "A second textual fresnelSchlick/distributionGgx/reflectedSky in a water "
+      + "material is the drift 2-8a exists to prevent.",
+  },
+  {
     artifact: "max-terrain-height",
     owner: "terrain-geometry",
     definitionSites: ["src/world/terrain.ts"],

@@ -57,6 +57,13 @@ import {
   sunShadowVertexAssignmentWgsl,
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
+import {
+  WATER_FRESNEL_SCHLICK_WGSL,
+  WATER_GGX_COMBINED_SPECULAR_WGSL,
+  WATER_SHADING_CONSTANTS_WGSL,
+  waterReflectedSkyWgsl,
+  type WaterReflectedSkyParameters,
+} from "./WaterShaders";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
@@ -312,6 +319,20 @@ ${sunShadowVertexAssignmentWgsl("world")}
 }
 `;
 
+/**
+ * 2-8a — the ocean's analytic-sky constants, named at the call site. The
+ * hydrology surface deliberately runs a softer sun disc (1800/11 against the
+ * open sea's 3200/16) and a slightly darker overcast palette; whether that
+ * difference survives is `2-9`'s call, made against the Karis lobe.
+ */
+const OCEAN_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
+  horizonFalloffExponent: 2.5,
+  overcastZenithColor: [0.34, 0.39, 0.45],
+  overcastHorizonColor: [0.58, 0.63, 0.68],
+  sunDiscExponent: 3_200,
+  sunDiscGain: 16,
+};
+
 export const WATER_FRAGMENT_WGSL = /* wgsl */ `
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
@@ -338,42 +359,13 @@ ${PLANAR_REFLECTION_FRAGMENT_WGSL}
 ${SUN_SHADOW_FRAGMENT_WGSL}
 ${AERIAL_PERSPECTIVE_WGSL}
 
-const PI: f32 = 3.14159265359;
+${WATER_SHADING_CONSTANTS_WGSL}
 
-fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
-  return f0 + (vec3f(1.0) - f0) * pow(1.0 - cosTheta, 5.0);
-}
+${WATER_FRESNEL_SCHLICK_WGSL}
 
-fn ggxSpecular(normal: vec3f, view: vec3f, light: vec3f, roughness: f32) -> f32 {
-  let halfVector = normalize(view + light);
-  let nDotH = max(dot(normal, halfVector), 0.0);
-  let nDotV = max(dot(normal, view), 0.001);
-  let nDotL = max(dot(normal, light), 0.001);
-  let vDotH = max(dot(view, halfVector), 0.001);
-  let alpha = roughness * roughness;
-  let alpha2 = alpha * alpha;
-  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
-  let distribution = alpha2 / max(PI * denominator * denominator, 0.00001);
-  let k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-  let geometryV = nDotV / (nDotV * (1.0 - k) + k);
-  let geometryL = nDotL / (nDotL * (1.0 - k) + k);
-  return distribution * geometryV * geometryL / max(4.0 * nDotV * nDotL, 0.001) * (0.02 + 0.98 * pow(1.0 - vDotH, 5.0));
-}
+${WATER_GGX_COMBINED_SPECULAR_WGSL}
 
-fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
-  let horizon = pow(1.0 - clamp(direction.y, 0.0, 1.0), 2.5);
-  var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizon);
-  // The former fallback invented a second, unrelated 2D cloud field. It could
-  // never line up with the volumetric sky and made the surface look painted.
-  // Preserve the shared atmosphere hue and use coverage only as broad overcast
-  // energy until the real volumetric radiance is available as a reflection LUT.
-  let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
-  let overcastSky = mix(vec3f(0.34, 0.39, 0.45), vec3f(0.58, 0.63, 0.68), horizon);
-  sky = mix(sky, overcastSky, overcast * 0.52);
-  let sun = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), 3200.0);
-  return sky + uniforms.sunColor * sun * 16.0 * directSunVisibility
-    * (1.0 - overcast * 0.88);
-}
+${waterReflectedSkyWgsl(OCEAN_REFLECTED_SKY_PARAMETERS)}
 
 fn sampleNormalFoam(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
   return textureSample(source, sourceSampler, fract(worldXZ / patchLength));
