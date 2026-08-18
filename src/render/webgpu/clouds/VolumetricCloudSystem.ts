@@ -790,7 +790,9 @@ export class VolumetricCloudSystem {
                 effect,
                 mesh: this.shell,
                 fillMode: Constants.MATERIAL_TriangleFillMode,
-                sampleCount: 1,
+                // The shell draws into the main offscreen chain, which is
+                // multisampled per the profile since 1B-11.
+                sampleCount: this.profile.msaaSamples,
                 colorFormat: "rgba16float",
                 depthStencilFormat: engine.isStencilEnable
                   ? "depth24plus-stencil8"

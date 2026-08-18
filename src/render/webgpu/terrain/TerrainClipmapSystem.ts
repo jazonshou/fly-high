@@ -319,6 +319,10 @@ export class TerrainClipmapSystem {
     this.material.environmentIntensity = 0.64;
     this.material.directIntensity = 1.03;
     this.material.specularIntensity = 0.22;
+    // 1B-11: kill specular shimmer on ridge lines under motion. (The plan's
+    // anisotropicFilteringLevel = 16 is a per-texture setting; terrain has no
+    // textures until 3-2 — it applies there.)
+    this.material.enableSpecularAntiAliasing = true;
     this.materialDetail = new TerrainMaterialPlugin(this.material);
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;

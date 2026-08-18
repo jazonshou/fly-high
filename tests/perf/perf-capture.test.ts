@@ -159,7 +159,7 @@ describe("perf capture (1A-1c)", () => {
           lastVisibleInstances = diagnostics.visibleInstances;
         }
       }
-      for (let settle = 0; settle < 90; settle += 1) {
+      for (let settle = 0; settle < 150; settle += 1) {
         simulationTime += 1 / 60;
         renderer.render({ ...state, simulationTime }, 1 / 60);
         if (settle % 4 === 3) await new Promise((resolve) => setTimeout(resolve, 0));

@@ -276,6 +276,7 @@ describe("volumetric cloud startup readiness", () => {
 
     expect(createRenderPipelineAsync).toHaveBeenCalledWith(expect.objectContaining({
       colorFormat: "rgba16float",
+      // Follows the fixture's tier-0 profile (msaaSamples 1) since 1B-11.
       sampleCount: 1,
       depthWrite: false,
       depthTest: true,

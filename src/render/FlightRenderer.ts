@@ -1,3 +1,4 @@
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
@@ -346,6 +347,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     const requiredFeatures: GPUFeatureName[] = timestampQueries ? ["timestamp-query"] : [];
     const engine = await awaitRendererStartup(
       WebGPUEngine.CreateAsync(options.canvas, {
+        // 1B-11: the hand-built post chain forces an offscreen target, so
+        // MSAA is requested on the first post-process below; the context
+        // itself stays single-sampled.
         antialias: false,
         adaptToDeviceRatio: false,
         premultipliedAlpha: false,
@@ -380,7 +384,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       const camera = new UniversalCamera("flight-camera", new Vector3(0, 8, -18), scene);
       camera.minZ = 0.08;
       camera.maxZ = 120_000;
-      camera.fov = 64 * Math.PI / 180;
+      // 1B-11: the old 64° VERTICAL fov was ≈96° horizontal at 16:9 — a
+      // wide-angle lens that shrank every mountain. Horizontal-fixed ~62°
+      // is a natural perspective, and tightens the shadow cascades free.
+      camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+      camera.fov = 62 * Math.PI / 180;
       camera.inertia = 0;
       camera.inputs.clear();
       scene.activeCamera = camera;
@@ -487,6 +495,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         Constants.TEXTURETYPE_HALF_FLOAT,
         scene.imageProcessingConfiguration,
       );
+      // 1B-11: the first post-process owns the offscreen scene target (and
+      // its depth buffer), so this is where MSAA lives. 4× is genuinely
+      // cheap on Apple TBDR — the cost is the resolve, not 4× bandwidth.
+      toneMap.samples = profile.msaaSamples;
       cleanup.push(() => toneMap.dispose(camera));
       const fxaa = new FxaaPostProcess(
         "final-fxaa",
@@ -498,6 +510,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         Constants.TEXTURETYPE_UNSIGNED_BYTE,
       );
       cleanup.push(() => fxaa.dispose(camera));
+      // FXAA is the no-MSAA fallback only; running both softens the image.
+      if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
 
       await awaitRendererStartup(
         scene.whenReadyAsync(),
@@ -859,13 +873,15 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
-    let fieldOfView = 64;
+    let fieldOfView = 62;
     if (this.cameraMode === "cockpit") {
       this.desiredCamera.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(1.15))
         .addInPlace(this.up.scale(1.12));
       this.cameraTarget.copyFrom(this.desiredCamera).addInPlace(this.forward.scale(400));
-      fieldOfView = 72;
+      // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
+      // was the widest view in the game, which is backwards.
+      fieldOfView = 56;
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
@@ -999,6 +1015,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
+    if (this.toneMap.samples !== this.profile.msaaSamples) {
+      this.toneMap.samples = this.profile.msaaSamples;
+      this.camera.detachPostProcess(this.fxaa);
+      if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
+    }
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
