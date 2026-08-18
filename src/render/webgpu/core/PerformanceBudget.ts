@@ -151,15 +151,49 @@ const CLOUD_TARGET_COUNT = 3;
 const TERRAIN_VERTEX_BYTES = (3 + 3 + 4) * 4;
 
 /**
- * Detail/wildlife thin-instance buffers, hydrology tiles, planar-reflection
- * mirror target. Coarse per-tier allowance; revisited when the 1A-1 numeric
- * report shows the real numbers.
+ * Z-4: the movable allocations (PRE_PHASE_4_REALIGNMENT.md §3, R-22). The
+ * old flat `DETAIL_ALLOWANCE_MIB` made assertion 47 and the `2-18`
+ * bucket-count arbitration vacuous — vegetation memory was a hand-written
+ * constant that no Phase-2 allocation could move. These inputs are the
+ * declared sources of truth: the item that changes an allocation changes the
+ * input here, and the budget rows follow. The `Z-4` "row moves when the
+ * input moves" test pins that property.
  */
-const DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
-  0: 12,
-  1: 20,
-  2: 28,
-  3: 32,
+export interface DynamicAllocationInputs {
+  /** Bytes per rendered detail instance. 96 today; `2-11a` re-pins to 32. */
+  readonly detailInstanceBytes: number;
+  /** Ceiling on simultaneously resident detail instances, per tier. */
+  readonly detailInstanceBudget: Readonly<Record<PerformanceTier, number>>;
+  /** Foliage card atlas (`2-11`); 0 until it exists. */
+  readonly foliageAtlasMiB: number;
+  /** Octahedral impostor atlas (`2-17`); 0 until it exists. */
+  readonly impostorAtlasMiB: number;
+  /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
+  readonly cloudVolumesMiB: number;
+  /** Terrain material arrays (`3-1`); 0 until Phase 3. */
+  readonly materialArraysMiB: number;
+}
+
+export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
+  detailInstanceBytes: 96,
+  detailInstanceBudget: Object.freeze({
+    0: 60_000,
+    1: 120_000,
+    2: 200_000,
+    3: 240_000,
+  }),
+  foliageAtlasMiB: 0,
+  impostorAtlasMiB: 0,
+  cloudVolumesMiB: 0,
+  materialArraysMiB: 0,
+});
+
+/** Hydrology tiles, wildlife thin instances, planar-reflection mirror. */
+const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
+  0: 8,
+  1: 10,
+  2: 12,
+  3: 14,
 });
 
 /** Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs. */
@@ -179,9 +213,15 @@ export interface GpuMemoryEstimateMiB {
   readonly framebuffersMiB: number;
   readonly shadowsMiB: number;
   readonly oceanMiB: number;
+  /** Includes the `2-1` cloud volumes once their input is non-zero. */
   readonly cloudsMiB: number;
   readonly terrainGeometryMiB: number;
-  readonly detailMiB: number;
+  /** Z-4: the split vegetation rows (replacing the flat detail allowance). */
+  readonly detailInstancesMiB: number;
+  readonly foliageAtlasMiB: number;
+  readonly impostorAtlasMiB: number;
+  readonly otherDetailMiB: number;
+  readonly materialArraysMiB: number;
   readonly miscMiB: number;
   readonly totalMiB: number;
 }
@@ -238,6 +278,7 @@ function terrainPageBytes(resolution: number): number {
 export function estimateGpuMemoryBreakdown(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): GpuMemoryEstimateMiB {
   const renderPixels = estimateRenderPixels(profile, viewport);
 
@@ -275,12 +316,19 @@ export function estimateGpuMemoryBreakdown(
   const framebuffersMiB = framebufferBytes / MIB;
   const shadowsMiB = shadowBytes / MIB;
   const oceanMiB = oceanBytes / MIB;
-  const cloudsMiB = cloudBytes / MIB;
+  const cloudsMiB = cloudBytes / MIB + inputs.cloudVolumesMiB;
   const terrainGeometryMiB = terrainBytes / MIB;
-  const detailMiB = DETAIL_ALLOWANCE_MIB[tier];
+  const detailInstancesMiB =
+    (inputs.detailInstanceBudget[tier] * inputs.detailInstanceBytes) / MIB;
+  const foliageAtlasMiB = inputs.foliageAtlasMiB;
+  const impostorAtlasMiB = inputs.impostorAtlasMiB;
+  const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
+  const materialArraysMiB = inputs.materialArraysMiB;
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
-    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB + detailMiB + miscMiB)
+    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB
+      + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
+      + materialArraysMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
 
   return Object.freeze({
@@ -290,7 +338,11 @@ export function estimateGpuMemoryBreakdown(
     oceanMiB,
     cloudsMiB,
     terrainGeometryMiB,
-    detailMiB,
+    detailInstancesMiB,
+    foliageAtlasMiB,
+    impostorAtlasMiB,
+    otherDetailMiB,
+    materialArraysMiB,
     miscMiB,
     totalMiB,
   });
@@ -299,16 +351,18 @@ export function estimateGpuMemoryBreakdown(
 export function estimateGpuMemoryMiB(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): number {
-  return estimateGpuMemoryBreakdown(profile, viewport).totalMiB;
+  return estimateGpuMemoryBreakdown(profile, viewport, inputs).totalMiB;
 }
 
 /** Fails loudly (with the full breakdown) when a profile overspends its tier ceiling. */
 export function assertWithinBudget(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): void {
-  const breakdown = estimateGpuMemoryBreakdown(profile, viewport);
+  const breakdown = estimateGpuMemoryBreakdown(profile, viewport, inputs);
   const ceiling = MEMORY_CEILING_MIB[profile.tier as PerformanceTier];
   if (breakdown.totalMiB <= ceiling) return;
   const rows = [
@@ -317,7 +371,11 @@ export function assertWithinBudget(
     `ocean ${breakdown.oceanMiB.toFixed(1)}`,
     `clouds ${breakdown.cloudsMiB.toFixed(1)}`,
     `terrain ${breakdown.terrainGeometryMiB.toFixed(1)}`,
-    `detail ${breakdown.detailMiB.toFixed(1)}`,
+    `detail-instances ${breakdown.detailInstancesMiB.toFixed(1)}`,
+    `foliage-atlas ${breakdown.foliageAtlasMiB.toFixed(1)}`,
+    `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,
+    `other-detail ${breakdown.otherDetailMiB.toFixed(1)}`,
+    `material-arrays ${breakdown.materialArraysMiB.toFixed(1)}`,
     `misc ${breakdown.miscMiB.toFixed(1)}`,
   ].join(", ");
   throw new Error(

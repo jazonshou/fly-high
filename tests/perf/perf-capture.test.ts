@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { afterAll, describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
+import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
 import {
   createWorld,
@@ -372,6 +373,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         viewportWidth,
         viewportHeight,
         estimatedGpuMemoryMiB: Math.round(diagnostics.estimatedGpuMemoryMiB * 10) / 10,
+        inventoriedGpuMemoryMiB: Math.round(diagnostics.inventoriedGpuMemoryMiB * 10) / 10,
         ...(temporal ? { temporal } : {}),
       });
     }
@@ -443,9 +445,15 @@ describe("perf capture (1A-1c / 2Z)", () => {
     }
 
     // Z-1: the renderer must not have logged a single error during the run.
+    // Babylon's Logger may hold its own console reference, so its error
+    // counter is checked as well as the console.error interception.
     expect(
       consoleErrors,
       "The renderer logged console errors during the capture (Z-1 gate)",
     ).toEqual([]);
+    expect(
+      Logger.errorsCount,
+      "Babylon logged errors during the capture (Z-1 gate)",
+    ).toBe(0);
   }, 1_500_000);
 });

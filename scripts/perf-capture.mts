@@ -464,6 +464,8 @@ export interface PerfCaptureShotReport {
   readonly viewportWidth: number;
   readonly viewportHeight: number;
   readonly estimatedGpuMemoryMiB: number;
+  /** Z-4: the renderer's actual-allocation floor reading. */
+  readonly inventoriedGpuMemoryMiB: number;
   /** Z-3: present only for motion shots. */
   readonly temporal?: TemporalStability;
 }

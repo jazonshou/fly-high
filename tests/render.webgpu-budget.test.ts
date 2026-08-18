@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DYNAMIC_ALLOCATIONS,
   FRAME_BUDGET_MS,
   FRAME_TARGET_MS,
   MEMORY_CEILING_MIB,
@@ -125,10 +126,55 @@ describe("performance budget (1A-2)", () => {
       + breakdown.oceanMiB
       + breakdown.cloudsMiB
       + breakdown.terrainGeometryMiB
-      + breakdown.detailMiB
+      + breakdown.detailInstancesMiB
+      + breakdown.foliageAtlasMiB
+      + breakdown.impostorAtlasMiB
+      + breakdown.otherDetailMiB
+      + breakdown.materialArraysMiB
       + breakdown.miscMiB;
     expect(breakdown.totalMiB).toBeGreaterThan(parts);
     expect(breakdown.totalMiB).toBeLessThan(parts * 1.25);
+  });
+
+  it("moves each budget row when its declared input moves (Z-4, R-22)", () => {
+    // The whole point of the split rows: a Phase-2 allocation must be able
+    // to move the assertion. A vacuous row would let assertion 47 and the
+    // 2-18 bucket arbitration pass no matter what the code allocates.
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const viewport = VIEWPORTS[1]!;
+    const base = estimateGpuMemoryBreakdown(profile, viewport, DYNAMIC_ALLOCATIONS);
+
+    const withCompactInstances = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      detailInstanceBytes: 32,
+    });
+    expect(withCompactInstances.detailInstancesMiB).toBeCloseTo(
+      base.detailInstancesMiB * (32 / 96),
+      5,
+    );
+    expect(withCompactInstances.totalMiB).toBeLessThan(base.totalMiB);
+
+    const withAtlases = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      foliageAtlasMiB: 9,
+      impostorAtlasMiB: 12.2,
+    });
+    expect(withAtlases.foliageAtlasMiB).toBe(9);
+    expect(withAtlases.impostorAtlasMiB).toBe(12.2);
+    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 20);
+
+    const withCloudVolumes = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      cloudVolumesMiB: 2.4,
+    });
+    expect(withCloudVolumes.cloudsMiB).toBeCloseTo(base.cloudsMiB + 2.4, 5);
+
+    const withMaterialArrays = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      materialArraysMiB: 48,
+    });
+    expect(withMaterialArrays.materialArraysMiB).toBe(48);
+    expect(withMaterialArrays.totalMiB).toBeGreaterThan(base.totalMiB + 48);
   });
 
   it("rejects degenerate viewports", () => {

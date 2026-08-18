@@ -150,6 +150,11 @@ export interface RenderDiagnostics {
   /** Terrain generation workers currently busy (1B-4). */
   terrainWorkersBusy: number;
   estimatedGpuMemoryMiB: number;
+  /**
+   * Z-4: best-effort walk of actual texture/geometry allocations — a floor
+   * reading the estimate's fudge factor is sanity-checked against.
+   */
+  inventoriedGpuMemoryMiB: number;
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;
 }

@@ -133,6 +133,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       pendingTerrainPages: 5,
       terrainWorkersBusy: 4,
       estimatedGpuMemoryMiB: 402.4,
+      inventoriedGpuMemoryMiB: 312.9,
       budgetProbeActive: false,
       budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
     };

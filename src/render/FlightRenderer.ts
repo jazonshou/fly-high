@@ -828,6 +828,57 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.resetTimingWindow();
   }
 
+  /**
+   * Z-4: a best-effort inventory of what is actually allocated — textures by
+   * size×format, geometry by vertex stride and indices. It cannot see MSAA
+   * resolve targets, pipelines or driver overhead, so it is a FLOOR, used to
+   * sanity-check `estimateGpuMemoryMiB`'s arithmetic (whose fudge factor had
+   * never been compared against a real reading).
+   */
+  private inventoryGpuMemoryMiB(): number {
+    let bytes = 0;
+    const seenTextures = new Set<unknown>();
+    for (const texture of this.scene.textures) {
+      const internal = (texture as unknown as {
+        _texture?: {
+          width?: number;
+          height?: number;
+          depth?: number;
+          type?: number;
+          generateMipMaps?: boolean;
+        } | null;
+      })._texture;
+      if (!internal || seenTextures.has(internal)) continue;
+      seenTextures.add(internal);
+      const width = internal.width ?? 0;
+      const height = internal.height ?? 0;
+      const depth = Math.max(1, internal.depth ?? 1);
+      const bytesPerTexel = internal.type === Constants.TEXTURETYPE_HALF_FLOAT
+        ? 8
+        : internal.type === Constants.TEXTURETYPE_FLOAT
+          ? 16
+          : 4;
+      const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
+      bytes += width * height * depth * bytesPerTexel * mipFactor;
+    }
+    const seenGeometries = new Set<unknown>();
+    for (const mesh of this.scene.meshes) {
+      const geometry = (mesh as Mesh).geometry;
+      if (!geometry || seenGeometries.has(geometry)) continue;
+      seenGeometries.add(geometry);
+      let strideBytes = 0;
+      const buffers = geometry.getVertexBuffers();
+      if (buffers) {
+        for (const kind of Object.keys(buffers)) {
+          strideBytes += buffers[kind]?.byteStride ?? 0;
+        }
+      }
+      bytes += geometry.getTotalVertices() * strideBytes;
+      bytes += geometry.getTotalIndices() * 4;
+    }
+    return bytes / 1_048_576;
+  }
+
   getDiagnostics(): RenderDiagnostics {
     const terrain = this.terrain.statistics;
     const wildlife = this.wildlife.statistics;
@@ -901,6 +952,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         cssHeight: Math.max(1, this.domElement.clientHeight),
         devicePixelRatio: window.devicePixelRatio || 1,
       }),
+      inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
     };
