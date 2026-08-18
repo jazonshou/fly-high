@@ -125,7 +125,9 @@ describe("vegetation scatter spectrum (1B-8, assertion 27)", () => {
         }
       }
     }
-  });
+    // Spectral sweeps are CPU-heavy by design (~3-4 s locally); shared CI
+    // runners need the same explicit headroom as world.test.ts's audits.
+  }, 120_000);
 
   it("concentrates no lattice-line power between 10 and 200 m", () => {
     // A phase-coherent lattice concentrates projected power proportional to
@@ -149,5 +151,7 @@ describe("vegetation scatter spectrum (1B-8, assertion 27)", () => {
       const bound = period > 110 ? 24 : 8;
       expect(sum / directionCount, `period ${period}`).toBeLessThan(bound);
     }
-  });
+    // ~12 s locally: the next test in line to breach the 30 s default on a
+    // 2-3x slower CI runner, so it carries the explicit timeout too.
+  }, 120_000);
 });

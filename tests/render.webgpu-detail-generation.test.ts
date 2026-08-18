@@ -187,7 +187,10 @@ describe("WebGPU paged world-detail generation", () => {
         ]);
       }
     }
-  });
+    // Exhaustive 400-cell scan: ~14 s on an M-series laptop, over 30 s on
+    // shared CI runners — the generous explicit timeout is the same
+    // convention world.test.ts uses for its long deterministic audits.
+  }, 120_000);
 
   it("fades woody plants and rocks out multiplicatively over the graded apron (1B-6)", () => {
     const base = constantTerrain(TerrainBiome.GRASSLAND, 0.6, 0.04);
