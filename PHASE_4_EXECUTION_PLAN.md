@@ -4,7 +4,7 @@
 **Runs after:** `PHASE_3_EXECUTION_PLAN.md` and Gate A (the aircraft and wildlife, `PRE_PHASE_4_REALIGNMENT.md` §1). Phase 3's exit criteria are this plan's preconditions.
 **Basis:** `TERRAIN_AUDIT.md` §2 root causes #2/#7/#8, `RENDERING_PLAN.md` §2 Phase 4 / §3.1 / §3.2 / §5.2–§5.4 / §6 / §7, `ARCHITECTURE.md` (normative), and `PRE_PHASE_4_REALIGNMENT.md` §8 (binding).
 **Verified against:** the merged Phase 1 tree at `989cdac`, `@babylonjs/core` 9.21.2 as installed, and a live WebGPU adapter on the reference machine. Every file, line, Babylon-internal and adapter-limit claim below was re-checked in the current tree; **four refute the source plans outright and two refute `PRE_PHASE_4_REALIGNMENT.md`** (recorded in its §8b).
-**Effort:** **46.0 days**, ~10.2 calendar weeks at 4.5 productive days/week. (34.5 in `RENDERING_PLAN.md`; ~38.5 after the realignment. See the ledger in §4.)
+**Effort:** **46.5 days**, ~10.3 calendar weeks at 4.5 productive days/week. (34.5 in `RENDERING_PLAN.md`; ~38.5 after the realignment. See the ledger in §4.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
 
 ---
@@ -280,8 +280,8 @@ It also carries **`R-27`'s consumers contract**, which `D5` would otherwise leav
 | 4A — The kernel and the atlas | `4-0` `4-0b` `4-8a` `4-1` `4-2` `4-3` | 10.5 | **17.50** |
 | 4B — The light that describes shape | `4-7` `4-8b` | 7.0 | **6.50** |
 | 4C — The quadtree | `4-4` `4-5` | 9.0 | **9.00** |
-| 4D — Identity and retirement | `4-6` `4-6b` `4-9` `4-10` | 8.0 | **13.00** |
-| **Phase 4** | | **34.5** | **46.0 d ≈ 10.2 weeks** |
+| 4D — Identity and retirement | `4-6` `4-6b` `4-9` `4-10` | 8.0 | **13.50** |
+| **Phase 4** | | **34.5** | **46.5 d ≈ 10.3 weeks** |
 
 Net **+11.5 d**, of which 2.0 is `6-10` relocated (programme-neutral) and 2.0 is the climate chain relocated from a Phase 4 item that would otherwise port it twice. The genuinely new cost is **~7.5 d**: the contract (2.0), the CSM split (0.5), `4-1`'s re-price (2.0), `4-2`'s slot-lane ownership (0.5), `4-6b` (1.5), `4-9`'s parity test (0.5) and the tier re-measure (1.0).
 
@@ -445,7 +445,7 @@ The plan flags Phase 4 as its biggest incrementality risk and mandates a debug o
 | 8 | 31.5 → 36.0 | `4-5` finish (1.5) → **Gate 4C closes, d33.0** · `4-6` start (3.0) | 36.00 |
 | 9 | 36.0 → 40.5 | `4-6` classifier + splat atlas (4.5; 7.5 of 9.0 done) | 40.50 |
 | 10 | 40.5 → 45.0 | `4-6` finish (1.5) · `4-6b` consumers + density field (1.5) · `4-9` retire CPU path (1.5) | 45.00 |
-| 11 | 45.0 → 46.0 | `4-10` tier re-measure (1.0) → **Gate 4D / Phase 4 closes, d46.0** | 46.00 |
+| 11 | 45.0 → 46.5 | `4-6b` finish (0.5) · `4-10` tier re-measure (1.0) → **Gate 4D / Phase 4 closes, d46.5** | 46.50 |
 
 `4-6` is the largest item at 9.0 days and it sits last, where a slip has nowhere to propagate. That is deliberate — see §12 R-4E for its cut line, which `4-6b` (D12) makes meaningful by keeping the consumers contract out of it.
 
@@ -578,7 +578,7 @@ Deletes `TERRAIN_SKIRT_DEPTH_METERS`, `buildTerrainIndicesWithSkirt`, `terrainRi
 
 ---
 
-## 10. Gate 4D — Identity and retirement (13.0 d)
+## 10. Gate 4D — Identity and retirement (13.5 d)
 
 **Branch:** `phase4/gate-4d`.
 
@@ -596,9 +596,11 @@ Now also carries **the climate chain port** (D5): `sampleTerrainMoisture`, `samp
 
 `R-27`'s consumers contract and the `densityField` port are **`4-6b`** (D12), not this item — `4-6` at 9.0 d already carries the classifier, the splat atlas and the climate chain, and burying a fourth deliverable in the phase's largest item is how it slips.
 
-### `4-6b` — Classification consumers + filtered density field (1.5 d) · Class P
+### `4-6b` — Classification consumers + filtered density field (2.0 d) · Class P
 
 D12. Threads `filterWidthMeters` through `densityField`, ports it as one shared WGSL include with an `owners.ts` row, and rewires `chooseTreeSpecies`, `chooseShrubSpecies` and the wildlife habitat rules onto the classifier's weight vector. After this commit one authority classifies the ground, the trees on it and the animals in them.
+
+**Also here (+0.5 d, 1.5 → 2.0):** `densityField` returns a **ground-cover archetype weight vector** — grass / fern / heather / reed / clutter — alongside its stem densities, computed from terms the field already carries (moisture, slope, shade, exposure). `2-16` consumes it instead of a flat 15% roll, so a wet hollow and a wind-scoured ridge read as different places rather than the same ground at different densities. This is the field half of `PHASE_2_EXECUTION_PLAN.md` §4 B8 amendment 7.
 
 ### `4-9` — Retire the CPU terrain path + earthworks in WGSL (1.5 d) · Class K
 

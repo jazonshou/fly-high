@@ -394,17 +394,17 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 6-3 | `shallow-water-dispersion` — shoaling + depth-limited breaking (options a+b only) | 2.0 | 5-10 | Gate to depth < 60 m, always inside the finely-tessellated inner rings. |
 | 6-4 | `caustics` — Jacobian-driven, gated to shallow pixels | 2.0 | 5-11, 2-8 | Very high perceived quality per day. |
 | 6-5 | `terrain-wetness` — implemented in the terrain surface plugin from the water-side field definition | 1.5 | 3-7, 6-2 | `roughness = mix(r, r*0.35 + 0.02, wet)`, `albedo *= mix(1.0, 0.62, wet)`. Two instructions; makes riverbanks, tidal flats and wet rock read correctly. |
-| 6-6 | `ecology-channels` — riparian corridors, shelter and soil depth from the page channels | 2.0 | 5-5, 1B-7 | |
+| 6-6 | `ecology-channels` — riparian corridors, shelter and soil depth from the page channels | 2.5 | 5-5, 1B-7 | Three channels, each with a **named ground-layer consumer**, or the item produces data nothing reads. **Riparian** → reed/fern archetype weight and a wet-litter darkening in the forest-floor splat. **Shelter** → moss weight (moss lives where wind does not reach) and deadfall accumulation. **Soil depth** → litter depth and clutter density. +0.5 d also drops `densityField`'s glade floor (0.3 today, so openings never actually open) toward 0 with a sharper transition, adds one hard-edged disturbance class (windthrow/burn/cut) so some forest edges are genuinely hard, and adds a margin term — shorter, bushier stems where closure gradient is high — so a forest has an edge profile. Net stem count *falls*. |
 | 6-7 | `talus-scree-placement` | 1.5 | 5-5, 2-15 | |
-| 6-8 | `canopy-terrain-handoff` — canopy closure and grass cover as splat channels; canopy height added to terrain height at LOD ≥ 3 | 2.5 | 6-6, 2-17 | Single owner (vegetation) for the density function; both designs admit duplicating it is the failure mode. Lets the impostor radius **drop** from 4 km to ~2.5 km, saving ~110,000 instances. |
-| 6-9 | `gpu-scatter` — compute scatter and cull, CPU-readback count as the **default** | 5.0 | 6-8, 4-6 | See §7 R4. Indirect draw is an optimisation behind a loud startup capability assertion, not the primary path. |
+| 6-8 | `canopy-terrain-handoff` — canopy closure and grass cover as splat channels; canopy height added to terrain height at LOD ≥ 3 | 2.5 | 6-6, 2-17 | Single owner (vegetation) for the density function; both designs admit duplicating it is the failure mode. Lets the impostor radius **drop** from 4 km to ~2.5 km, saving ~110,000 instances. **The recovered instance and frame budget is spent on the card-tree LOD radius and on impostor texels per view — not on raising `vegetationDistance` or `vegetationDensity`** (§5.3's vegetation trade-off rule). |
+| 6-9 | `gpu-scatter` — compute scatter and cull, CPU-readback count as the **default** | 5.0 | 6-8, 4-6 | See §7 R4. Indirect draw is an optimisation behind a loud startup capability assertion, not the primary path. **Cheaper scatter does not authorise more plants:** any surplus is booked against §5.3's fidelity list, and `6-11` may not raise a count row without a fidelity row moving in the same commit. |
 | 6-10 | `compute-scheduler` — shared amortised-compute budget with a per-frame millisecond meter | 2.0 | 1A-1 | Slices erosion's 30–80 iterations across frames using the epoch machinery in `world/lifecycle.ts` that already models exactly this and is dead code. Governor B gains lever 0: shrink the compute budget before touching anything visual. |
 | 6-11 | `quality-tiers-v2` — four tiers on measured numbers, asserted in CI | 3.0 | all | See §5.3. Expect the first real capture to move several rows by 30–50%. |
 | 6-12 | Documentation truth pass — `README.md:54-60`, `docs/PERFORMANCE.md:41,61-76`, pinned by a test that reads the profile table | 1.0 | 6-11 | These currently misreport terrain rings, cascade counts, ocean resolution, cloud scale and skirt depth, and claim "Rayleigh/Mie-style scattering" for a three-colour `mix()`. **This is why the regressions went unnoticed.** |
 
 **Exit criteria.** All four tiers pass `assertWithinBudget()` at three viewport sizes. Balanced holds 60 fps on the reference M2 Pro with erosion, textured terrain, flowing rivers and 3 km of vegetation, measured by `perf:capture`, not by impression. README and PERFORMANCE.md assertions pass.
 **Demo state.** *"Everything the user asked for, at a frame rate that is a number and not a hope."*
-**Phase 6 total: 29.5 days.**
+**Phase 6 total: 30.0 days.** (29.5 + 0.5 for `6-6`'s glade floor, disturbance class and forest-edge profile, added 2026-08-18 with the vegetation-quality amendments. `PRE_PHASE_4_REALIGNMENT.md` moves `6-10` out to Phase 4, so the net is ~28.0.)
 
 ---
 
@@ -547,7 +547,7 @@ Cloud shadows get a sun-space orthographic footprint (removing the `1/sunDirecti
 - **Placement (1B-7, 1B-9).** One continuous density function, never a switch: lapse-rate elevation, moisture as a smoothstep, slope as a soil-retention proxy falling to zero by ~38° (the angle of repose), **aspect** (`dot(normalize(n.xz), sunwardXZ)`) giving conifers on cool north faces and open grass on warm south faces at ±25% density plus a strong species shift, a ragged treeline `base + aspect·120 + shelter·80 + fbm(p/2400)·90` with tree *height* scaled by the same factor so trees become 2 m krummholz before disappearing, and multiplicative glade and disturbance fields. **Clumping expressed as a field has no centre and no radius, therefore nothing circular to see** — this is the precise answer to "NO artificial clusters of trees."
   Scatter: a jitter grid whose cell size is a *continuous function of local density*, `clamp(sqrt(1/density), 3, 90)` m — because the period varies continuously with a continuous field, **no constant period exists anywhere in the image**. Plus a domain warp `p += 0.6·cell·vec2(noise(p/37), noise(p/37+91))` and O(n) rank-order thinning replacing the O(n²) filter. Placement stays a pure function of world position, so page boundaries can never be visible and floating-origin rebases can never make anything slide.
   Guarded by a spectral regression test that lands **first**: no peak outside DC and the intended 220 m/380 m ecological bands above 1.15× the local radial mean; a 16-bin phase histogram within [0.92, 1.08] of uniform for any candidate period 3–200 m (today's code measures 0.83–1.17 and would correctly fail).
-- **Appearance (2-11 … 2-17).** Alpha-tested foliage cards on species-specific branch skeletons, hemispherically distributed and tilted outward so the crown reads as volume from every angle; three crown variants per species so neighbours are not clones; generated tangents (which do not exist anywhere in this codebase, and without which Babylon's `NORMALMAP` path is unreachable); `subSurface.isTranslucencyEnabled` with intensity ~0.8 — **backlit foliage glowing instead of crushing to black is the strongest single not-plastic cue for vegetation**. Grass as patches (12–16 crossed tapered blades, ~48 tris, 2.5 m²) with a `1/d` density ramp so *screen-space* blade density is roughly constant, plus ferns/heather/reeds at ~15% of the budget so the world is not one uniform green fuzz. Rocks as displaced icospheres with per-lithology flat-vs-smooth normals (the shading-model difference reads as lithology more than colour does), aligned ~60% toward the terrain normal, sunk by `radius·(0.12 + 0.25·hash)`.
+- **Appearance (2-11 … 2-17).** Alpha-tested foliage cards on species-specific branch skeletons, hemispherically distributed and tilted outward so the crown reads as volume from every angle; **rendered trunks with per-species taper, root flare, a primary fork on broadleaves and a per-instance lean**; three to five crown variants per species so neighbours are not clones, plus per-instance character modifiers (lean, broken top, thinned crown) from the spare bits of the variant byte; **per-instance tint with real hue and saturation variance, stand-correlated, not a brightness multiplier**; **baked crown occlusion so interiors are darker than sunlit tips**; generated tangents (which do not exist anywhere in this codebase, and without which Babylon's `NORMALMAP` path is unreachable); `subSurface.isTranslucencyEnabled` with intensity ~0.8 — **backlit foliage glowing instead of crushing to black is the strongest single not-plastic cue for vegetation**. Grass as patches (12–16 crossed tapered blades, ~48 tris, 2.5 m²) with a `1/d` density ramp so *screen-space* blade density is roughly constant, plus ferns/heather/reeds at ~15% of the budget, habitat-weighted rather than sprinkled uniformly, so the world is not one uniform green fuzz. **Ground clutter — fallen logs, stumps, branch litter and moss cushions — rides the rock instancing path, denser under canopy and in hollows.** Shrubs are card geometry on the same terms as trees, not smooth blobs beside them. Rocks as displaced icospheres with per-lithology flat-vs-smooth normals (the shading-model difference reads as lithology more than colour does), aligned ~60% toward the terrain normal, sunk by `radius·(0.12 + 0.25·hash)`.
 - **Handoff (6-8).** Beyond the impostor radius, canopy closure becomes a terrain splat channel: albedo mixes toward a dark desaturated canopy texture, roughness toward 0.96, `ao *= 1 − 0.35·closure`, and canopy height is added to terrain height at LOD ≥ 3 only (128 m+ spacing, canopy scale far below Nyquist) so a forested ridgeline silhouette is right. The ramp is exactly complementary to the impostor dither fade, so coverage is conserved and there is no seam.
 
 ### 3.6 Lighting, atmosphere and post
@@ -697,12 +697,34 @@ Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in or
 | Ocean cascades / N | 3 @ 128 | 4 @ 256 | 5 @ 256 | 6 @ 256 (+ capillary) |
 | Cloud integration scale / pixel cap | 0.30 / 0.35 M | 0.45 / 0.70 M | 0.55 / 1.00 M | 0.70 / 1.60 M |
 | Grass radius / patches | 90 m / 6 k | 150 m / 18 k | 220 m / 33 k | 320 m / 52 k |
+| Card-tree LOD radius (near + mid) | 700 m | 1,100 m | 1,500 m | 2,000 m |
 | Impostor radius | 2.0 km | 3.0 km | 4.0 km | 6.0 km |
+| `vegetationDistance` (= impostor radius) | 2.0 km | 3.0 km | 4.0 km | 6.0 km |
+| `vegetationDensity` (rendered stems/ha multiplier) | 0.45 | 0.75 | 1.00 | 1.00 |
 | Terrain workers | 3 | 6 | 6 | 6 |
 | `camera.maxZ` | 45 km | 45 km | 45 km | 45 km |
 | Ocean presentation radius | 40 km | 40 km | 40 km | 40 km |
 
 Three tier rules learned from the review's overshoot analysis: **triplanar's 2-axis fast path is mandatory from Balanced up**, not a High-only optimisation; **grass radius is the first knob the tier scales**, because grass is the largest single triangle consumer; **bloom is High+ only**.
+
+**Three vegetation rows were missing from this table until 2026-08-18 and are now here because they are the rows that actually decide how many plants exist.** `vegetationDistance` and `vegetationDensity` shipped in `QualityProfile.ts` from Phase 1 and appeared in no plan table, so they sat outside every cut ladder — and the shipped tier-2 values (8 km, 1.00) bought roughly 95% more rendered stems than Balanced for a 5.6% increase in the vegetation frame row. `vegetationDistance` is now **defined equal to the tier's impostor radius**: beyond it, `6-8`'s canopy splat is the only vegetation representation, so a value larger than the impostor radius describes plants that are not drawn.
+
+### The vegetation trade-off rule
+
+**When the vegetation frame or memory budget binds, reduce the *number* of plants before the *fidelity* of any plant.**
+
+This is a user decision, recorded 2026-08-18 after flight testing: *"I'm okay with having fewer trees/forests if it means that the trees we do get or the foliage we do get actually look like real foliage/plants."* Three places in this programme already happened to cut count first; none of them said so as a rule, and none of them bound the two rows above. It is a rule now.
+
+**The ordered levers, when the budget binds:**
+
+1. Rendered stems/ha, and grass patch density.
+2. Card-tree LOD radius, then grass radius, then impostor radius (and `vegetationDistance` with it).
+3. The instance cap.
+4. Impostor texels per view — **at Low only**.
+
+**Not budget knobs, at any tier:** foliage quads per crown (`2-12`), crown variants per species (`2-12`), the trunk profile (`2-12`), blades per grass patch (`2-16`), the non-grass ground-cover share (`2-16`), foliage atlas resolution, alpha dilation, coverage-preserving mips (`2-11`), subsurface translucency (`2-12`), baked crown occlusion (`2-12`), or per-instance tint/scale/orientation variance (`2-11a`). These are what make a plant read as a plant. **A world with half as many correct trees is closer to the goal than a world full of cones.**
+
+**The ratchet:** `4-10` and `6-11` may not raise a count row without a fidelity row moving in the same commit, and any surplus that later work frees — `6-8`'s recovered instances, `6-9`'s cheaper scatter — is booked against the fidelity list, not against count.
 
 ### 5.4 GPU frame budget at Balanced (1.5 Mpx, 60 fps)
 

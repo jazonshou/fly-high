@@ -164,16 +164,19 @@ Three separate Phase 2 items collide with this:
 
 **Design change:** a dedicated `2-11a` item, landing between the atlas and the trees, that replaces Babylon's built-in `matrix` attribute with a compact custom attribute set and builds the world matrix in the vertex shader. Concretely, 32 bytes:
 
+**One correction to the obvious layout, made 2026-08-18.** A single uniform `scale` would silently *delete* variance that already ships: the runtime instances trees with a non-uniform `(crownRadius, crownHeight, crownRadius)` scale, so crown slenderness and trunk thickness vary per tree today. Splitting the field into `heightScale` and a `radialScale` byte — taken from one of the two reserved bytes, so the record stays exactly 32 — preserves it at zero memory cost. Losing it would have made every tree of a variant a uniformly-scaled copy, which is precisely the "little variance" the user reported.
+
 | Offset | Field | Type | Purpose |
 |---|---|---|---|
 | 0 | `position` | 3 × f32 | cell-local metres |
 | 12 | `orientation` | 4 × snorm16 | full rotation quaternion (`2-15`) |
-| 20 | `scale` | f16 | uniform |
+| 20 | `heightScale` | f16 | vertical scale |
 | 22 | `fade` | unorm8 | LOD crossfade / cull fade (`2-14`, `2-17`) |
 | 23 | `variant` | u8 | crown/rock variant index |
 | 24 | `tint` | 4 × unorm8 | per-instance colour |
 | 28 | `windPhase`, `windResponse` | 2 × unorm8 | absorbs `instanceWind` (`2-13`) |
-| 30 | `spare` | 2 × u8 | reserved |
+| 30 | `radialScale` | unorm8 | crown/trunk radius as a fraction of height, decoded over [0.50, 1.60] |
+| 31 | `spare` | u8 | reserved |
 
 **This is feasible on this stack and the risk is already retired.** The codebase already ships a custom thin-instance attribute (`instanceWind`) consumed by a `MaterialPluginBase` (`DetailWindMaterialPlugin`), and Phase 0 `0-9` proved that plugin vertex participation composes with `ShadowDepthWrapper` — with the incantation recorded verbatim in `ARCHITECTURE.md`. Building the matrix in the vertex shader is the same mechanism, one step further.
 
@@ -251,14 +254,34 @@ The divergent constants (§3.6) become named parameters with the difference made
 
 **Why.** `2-10 retire-planar-reflection` frees 0.5–1.0 ms of amortised frame time. Gate 2C's alpha-tested foliage, grass and impostors are the largest new per-frame cost in the phase and they defeat TBDR hidden-surface removal. Doing water first means the budget those draws need is already on the table when `assertWithinBudget()` starts failing. **Cost: 0.0.**
 
+### B8 — Vegetation quality: nine amendments from flight testing (2026-08-18)
+
+The user flew the sim and reported *"a whole forest of trees made of relatively primitive shapes with little detail — leaves, branches, variance in size, depth in color, variance in color, variance in distinguishable features"*, the same of the ground layer — *"leaves/grass blades, overgrown areas, moss, twigs, mess"* — and a suspicion: *"we might be currently prioritizing quantity over quality. I'm okay with having fewer trees/forests if it means that the trees we do get actually look like real foliage/plants."*
+
+Auditing the vegetation chain against that complaint found the leaves genuinely answered and size variance already better than the complaint implies, and seven things missing. **`RENDERING_PLAN.md` §5.3 now carries the vegetation trade-off rule** that makes the user's offer binding: count is a budget knob, per-plant fidelity is not.
+
+| # | Amendment | Item | Days |
+|---|---|---|---|
+| 1 | The atlas serves every card, not just trees — grass, fern, heather, reed, shrub and litter layers | `2-11` | +0.5 |
+| 2 | `scale` splits into `heightScale` + `radialScale`; a uniform scale would have *deleted* variance that ships today | `2-11a` | 0 |
+| 3 | Stand identity from a continuous field, killing the 32 m species/age lattice; plus an appearance-domain spectral test | `2-11b` new | +1.25 |
+| 4 | Trunks are specified and rendered; tint distribution given hue variance; baked crown occlusion; 4–5 variants for common species; character modifiers | `2-12` | +2.0 |
+| 5 | Shrubs become cards — the word "shrub" appeared zero times in this document | `2-12b` new | +1.0 |
+| 6 | Ground clutter: logs, stumps, branch litter, moss cushions on the rock instancing path | `2-15` | +0.75 |
+| 7 | Ground-cover archetypes are habitat-driven, not a flat 15% roll | `2-16` | 0 |
+| 8 | Per-instance impostor silhouette variety; and the impostor atlas budget, which does not currently close | `2-17` | +0.5 |
+| 9 | Two capture scenes — one at 2 m eye height, one at 1,200 ft — plus measurable variety criteria on the Gate 2C checklist | `2-0`, §10.2, §12 | +0.5 |
+
+Phase 3's `3-1` gains a **forest-floor recipe** in the same pass (0 days — it was already one of ten layers, with no recipe written); Phase 4's `4-6b` gains ground-cover archetype weights; Phase 6's `6-6` gains named ground-layer consumers and a glade floor that actually opens.
+
 ### Amended ledger
 
 | Gate | `RENDERING_PLAN.md` | Amendments | This plan |
 |---|---|---|---|
-| 2A — Clouds | 13.5 | +2.5 `2-0`, −2.5 across `2-2`/`2-4`/`2-5`/`2-7` | **13.5** |
+| 2A — Clouds | 13.5 | +2.5 `2-0`, −2.5 across `2-2`/`2-4`/`2-5`/`2-7`; +0.5 `2-0` for the two vegetation capture scenes (§10.2) | **14.0** |
 | 2B — Water surface | 8.5 | +0.75 `2-8a`, −0.75 `2-9` | **8.5** |
-| 2C — Living ground | 21.0 | +1.5 `2-11a`, +0.5 `2-14`, −1.0 across `2-15`/`2-16` | **22.0** |
-| **Phase 2** | **43.0** | **+1.0** | **44.0 d ≈ 9.8 weeks** |
+| 2C — Living ground | 21.0 | +1.5 `2-11a`, +0.5 `2-14`, −1.0 across `2-15`/`2-16`; **vegetation-quality amendments 2026-08-18: +0.5 `2-11`, +1.25 `2-11b`, +2.0 `2-12`, +1.0 `2-12b`, +0.75 `2-15`, +0.5 `2-17`** | **28.0** |
+| **Phase 2** | **43.0** | **+7.5** | **50.5 d ≈ 11.2 weeks** |
 
 ---
 
@@ -305,18 +328,20 @@ Gate 2C   2-11 ──→ 2-11a ──→ 2-12 ─┬─→ 2-13 ──→ 2-16
 
 | Week | Days | Work | Cumulative |
 |---|---|---|---|
-| 1 | 0 → 4.5 | `2-0` cloud-shader adoption (2.5) · `2-1` noise + weather bake (2.0) | 4.5 |
-| 2 | 4.5 → 9.0 | `2-2` shape + wind shear (1.5) · `2-3` anti-tiling (1.5) · `2-4` lighting (1.5) | 9.0 |
-| 3 | 9.0 → 13.5 | `2-5` adaptive march (1.5) · `2-6` cloud pixel cap (1.0) · `2-7` shadow rework (2.0) → **Gate 2A closes, d13.5** | 13.5 |
-| 4 | 13.5 → 18.0 | `2-8a` water-shader extraction (0.75) · `2-8` slope + mips (3.75 of 4.0) | 18.0 |
-| 5 | 18.0 → 22.5 | `2-8` finish · `2-9` sun + foam (2.25) · `2-10` retire planar reflection (1.5) → **Gate 2B closes, d22.0** · `2-11` start | 22.5 |
-| 6 | 22.5 → 27.0 | `2-11` foliage atlas finish · `2-11a` instance format (1.5) · `2-12` card trees (1.5 of 4.0) | 27.0 |
-| 7 | 27.0 → 31.5 | `2-12` finish (2.5) · `2-13` wind three-band (1.0) · `2-14` LOD crossfade (1.0 of 2.0) | 31.5 |
-| 8 | 31.5 → 36.0 | `2-14` finish (1.0) · `2-15` procedural rocks (1.5) · `2-16` grass and ground cover (2.0) | 36.0 |
-| 9 | 36.0 → 40.5 | `2-17` octahedral impostors (4.5 of 6.0) | 40.5 |
-| 10 | 40.5 → 44.0 | `2-17` finish (1.5) · `2-18` seasonal foliage (2.0) → **Gate 2C / Phase 2 closes, d44.0** | 44.0 |
+| 1 | 0 → 4.5 | `2-0` cloud-shader adoption (3.0, incl. the two vegetation capture scenes) · `2-1` noise + weather bake (1.5 of 2.0) | 4.5 |
+| 2 | 4.5 → 9.0 | `2-1` finish (0.5) · `2-2` shape + wind shear (1.5) · `2-3` anti-tiling (1.5) · `2-4` lighting (1.0 of 1.5) | 9.0 |
+| 3 | 9.0 → 13.5 | `2-4` finish (0.5) · `2-5` adaptive march (1.5) · `2-6` cloud pixel cap (1.0) · `2-7` shadow rework (1.5 of 2.0) | 13.5 |
+| 4 | 13.5 → 18.0 | `2-7` finish (0.5) → **Gate 2A closes, d14.0** · `2-8a` water-shader extraction (0.75) · `2-8` slope + mips (3.25 of 4.0) | 18.0 |
+| 5 | 18.0 → 22.5 | `2-8` finish (0.75) · `2-9` sun + foam (2.25) · `2-10` retire planar reflection (1.5) → **Gate 2B closes, d22.5** | 22.5 |
+| 6 | 22.5 → 27.0 | `2-11` foliage atlas (2.5) · `2-11a` instance format (1.5) · `2-11b` stand field + spectrum (0.5 of 1.25) | 27.0 |
+| 7 | 27.0 → 31.5 | `2-11b` finish (0.75) · `2-12` card trees (3.75 of 6.0) | 31.5 |
+| 8 | 31.5 → 36.0 | `2-12` finish (2.25) · `2-12b` card shrubs (1.0) · `2-13` wind three-band (1.0) · `2-14` start (0.25) | 36.0 |
+| 9 | 36.0 → 40.5 | `2-14` LOD crossfade finish (1.75) · `2-15` rocks and ground clutter (2.25) · `2-16` start (0.5) | 40.5 |
+| 10 | 40.5 → 45.0 | `2-16` grass and ground cover finish (1.5) · `2-17` octahedral impostors (3.0 of 6.5) | 45.0 |
+| 11 | 45.0 → 49.5 | `2-17` finish (3.5) · `2-18` seasonal foliage (1.0 of 2.0) | 49.5 |
+| 12 | 49.5 → 50.5 | `2-18` finish (1.0) → **Gate 2C / Phase 2 closes, d50.5** | 50.5 |
 
-`2-17` is the single largest item in the phase at 6.0 days and it sits at the end, where a slip has nowhere to propagate. That is deliberate — see §11 R-2G for its cut line.
+`2-17` is the single largest item in the phase at 6.5 days and it sits at the end, where a slip has nowhere to propagate. That is deliberate — see §11 R-2G for its cut line, which after the 2026-08-18 amendments must name the count reduction that pays for it rather than absorbing the cost in fidelity.
 
 ---
 
@@ -477,9 +502,11 @@ Retire Governor B's planar-reflection cadence rung (`1A-6b` lever 3) in the same
 
 ---
 
-### `2-11` — Foliage texture atlas (2.0 d) · Class P
+### `2-11` — Foliage texture atlas (2.5 d) · Class P
 
-Procedurally synthesised leaf, needle and bark textures into one atlas. Two techniques are non-negotiable and both are the usual reason procedural foliage fails:
+Procedurally synthesised leaf, needle and bark textures into one atlas.
+
+**The layer list is everything that gets drawn as a card, not just trees** (+0.5 d over the source estimate). `2-16` adds ferns, heather and reeds and `2-12b` adds shrubs; if the atlas ships with only leaf/needle/bark, those arrive as untextured geometry, which is the exact plastic failure this item exists to prevent. Layers: broadleaf (three leaf shapes), needle (two), bark (three species groups), **grass blade, fern frond, heather, reed, hazel leaf, juniper scale, sage leaf**, and one **litter/twig** layer for `2-15`'s clutter. Every one gets the same alpha dilation and coverage preservation as the tree layers. Two techniques are non-negotiable and both are the usual reason procedural foliage fails:
 
 - **Alpha dilation.** Push colour outward into the transparent region before mipping. Without it, filtered texels blend toward the transparent border colour and every leaf gains a dark halo at range.
 - **Castano coverage preservation.** Rescale each mip's alpha so its coverage at the alpha-test threshold matches mip 0. Without it, foliage evaporates with distance — the canopy thins to nothing and the tree becomes a bare skeleton.
@@ -512,9 +539,31 @@ Per §3.5 and §4 B4. Replace the 96-byte `matrix` + `color` + `instanceWind` tr
 
 ---
 
-### `2-12` — Card trees (4.0 d) · Class P
+### `2-11b` — Stand field and appearance spectrum (1.25 d) · Class P
 
-Species-specific branch skeletons carrying 40–70 alpha-tested foliage quads, hemispherically distributed and tilted outward so the crown reads as volume from every angle. Three crown variants per species so neighbours are not clones — the `variant` byte in the instance format selects them.
+Two halves of one problem: **every anti-repetition guard in the programme is positional, and the appearance domain — which `2-12` is about to make visible — is both untested and currently laid out on a hard lattice.**
+
+**The stand lattice.** `generation.ts` draws one `{ standAge, dominantChoice }` per 32 m scatter block and selects species from it, so species identity, stand age and tree height all change on a 32 m grid. Assertion 27's spectral test collects only `{x, z}`, so it structurally cannot see this — and it is invisible today because every tree is a cone. It will not be invisible after `2-12`. Derive stand identity — dominant species mix, stand age, and the tint centre `2-12` needs — from a low-frequency fbm evaluated at **the stem's own world position**, with no block lattice, exactly as `RENDERING_PLAN.md` §3.5 already requires of density: *"Clumping expressed as a field has no centre and no radius, therefore nothing circular to see."*
+
+**The appearance spectrum test.** Reuse `render.webgpu-detail-scatter.test.ts`'s existing machinery unchanged, but run the 3–200 m sweep over four *attribute* channels rather than position: species index, stand age, height, and tint hue. Same acceptance: no peak above 1.15× the local radial mean outside DC and the intended ecological bands, and a 16-bin phase histogram within [0.92, 1.08]. Today's generator would correctly fail it at 32 m.
+
+---
+
+### `2-12` — Card trees (6.0 d) · Class P
+
+Species-specific branch skeletons carrying 40–60 alpha-tested foliage quads, hemispherically distributed and tilted outward so the crown reads as volume from every angle.
+
+**Five deliverables were added on 2026-08-18 after flight testing.** The user reported a forest of primitive shapes with "little detail — leaves, branches, variance in size, depth in color, variance in color, variance in distinguishable features". Leaves and size variance were already answered; the other four were not, and three of the five fixes below cost nothing in memory or frame time. Together they take this item from 4.0 to 6.0 days. Per §5.3's vegetation trade-off rule, they are funded by count, not by each other.
+
+**1. The trunk is rendered geometry, and it is specified here.** Nothing in the source plan says the branch skeleton is *drawn* — it is described only as a carrier for foliage quads — so today's shared `CreateCylinder({ tessellation: 7 })` prototype, with one hardcoded trunk colour for all seven species, would survive this gate by omission. It does not. Trunks are swept generalised cylinders (8 sides near, 5 mid, 4–6 rings) with a per-species radius profile `r(t) = r0·(1−t)^k`, a root flare `r(0)·(1 + f·exp(−t/0.06))`, one primary fork above 0.55 h for the broadleaf species, and a per-instance lean of 2–8° carried by the `orientation` quaternion the format already has. Bark comes from the `2-11` atlas through this item's generated tangents, and the trunk takes its tint from the same per-instance bytes as the crown. **A trunk prototype exists at the `mid` tier as well as `near`** — today mid-LOD trees are floating crowns. Keep the trunk as its own batch so bark stays back-face-culled while foliage stays two-sided: zero new draw calls.
+
+**2. Tint distribution, not just tint storage.** `2-11a` allocates four bytes for per-instance colour and no item says what goes in them; today's generator multiplies all three channels by one scalar, which is pure brightness jitter with **zero hue variance** — a forest of one green at different exposures. Per-instance tint is sampled in a perceptual space: within a species, hue σ ≈ 6–9° (broadleaf wider than conifer), saturation σ ≈ 0.10 relative, value σ ≈ 0.12. The mean is **stand-correlated** — drawn from the continuous stand field `2-11b` introduces — with an individual residual on top, so neighbouring stands differ as well as neighbouring trees, and the result is not confetti. Correlate value weakly with the individual's age so young stems read lighter.
+
+**3. Baked crown occlusion — this is what "depth in color" means.** The programme's only occlusion item is `4-7` and it is scoped to terrain, so a card crown under `1C-6`'s full-strength IBL is uniformly lit and reads as a flat green blob. At prototype-build time, compute a per-vertex sky-visibility scalar for every foliage quad and trunk vertex — a 16-direction cosine-weighted hemisphere test against the crown's own quad set, once per variant on the CPU, microseconds — and fold it into the vertex colour. Interior leaves go dark, sunlit tips stay bright, and the crown gains the interior depth the complaint names. ~67 KB of vertex data across every prototype.
+
+**4. Four to five crown variants for the three commonest species, three for the rest.** Three per species is 21 distinct trees for a whole forest, and the ceiling was never a budget — the `variant` byte holds 256 and a variant is ~1.2 MiB of geometry across the whole set. Make the variant count a `WebGpuQualityProfile` field per `ARCHITECTURE.md`'s tier rule rather than a constant; Low keeps three.
+
+**5. Character modifiers, from the spare bits of the `variant` byte.** Only 3–5 of the byte's 256 values index geometry. The high three bits select a per-instance modifier applied in the vertex shader against the same prototype: intact; lean 6–12°; broken/dead top; a thinned crown; a double leader. No new prototypes, no new memory — real stands are not all intact symmetric specimens, and this is the cheapest variance in the item.
 
 **Generated tangents**, which do not exist anywhere in this codebase today and without which Babylon's `NORMALMAP` path is structurally unreachable.
 
@@ -525,6 +574,14 @@ Species-specific branch skeletons carrying 40–70 alpha-tested foliage quads, h
 **Two performance facts to design around, both from §7 R11.** Alpha test defeats TBDR hidden-surface removal, so foliage goes in a separate render group *after* opaque terrain. And alpha-to-coverage is off, so foliage gets **no** MSAA benefit — the silhouette quality comes from the atlas and the coverage-preserved mips, not from `1B-11`.
 
 This replaces `createTreeCrown`'s 9-sided opaque cones and icospheres.
+
+---
+
+### `2-12b` — Card shrubs (1.0 d) · Class P
+
+**The word "shrub" appeared zero times in this document before 2026-08-18.** Juniper, hazel and sage are placed by the density field, drawn by the runtime as flat-shaded icospheres, and have no appearance item anywhere in the programme. After `2-12` they would sit next to card trees as smooth blobs — the contrast makes them *more* visible, not less, and they are the understory layer the user's "foliage" complaint is largely about.
+
+Shrubs are card geometry too: 12–18 alpha-tested foliage quads on a short multi-stem skeleton, drawn from the `2-11` atlas layers this amendment adds (hazel broadleaf, juniper scale, sage small-leaf grey), with the same tint distribution, baked occlusion and translucency as `2-12`. Two variants per species. They ride the same instance format and the same batches; no new draw calls.
 
 ---
 
@@ -546,15 +603,26 @@ Bayer dither plus a per-instance hash, applied at **every LOD switch and at the 
 
 ---
 
-### `2-15` — Procedural rocks (1.5 d) · Class P
+### `2-15` — Procedural rocks and ground clutter (2.25 d) · Class P
 
 Displaced icospheres with **per-lithology flat versus smooth normals** — `RENDERING_PLAN.md` §3.5 notes the shading-model difference reads as lithology more strongly than colour does. Instances aligned ~60% toward the terrain normal, using the quaternion the instance format now carries, and sunk by `radius · (0.12 + 0.25 · hash)` so they sit *in* the ground rather than on it.
+
+**Ground clutter rides the same path (+0.75 d).** Searching the whole plan set for *log, stump, deadfall, fallen, twig, branch-as-debris, root plate* returns nothing: the programme puts no three-dimensional debris on the ground anywhere, which is half of the user's "twigs, mess". Four archetypes, same instanced path, same 32-byte format, same sinking and terrain-normal alignment:
+
+- **Fallen log** — tapered displaced cylinder, ~60 tris, laid flat by the orientation quaternion, moss-weighted on its upper surface.
+- **Stump** — short flared cylinder with a splintered top, ~40 tris.
+- **Branch litter** — two or three crossed alpha-tested cards from `2-11`'s litter/twig layer, ~8 tris.
+- **Moss cushion** — a low displaced dome, ~24 tris, that also sits on rocks.
+
+Density comes from the ecology channels (`6-6`) once they exist and from canopy closure and soil depth before then — clutter belongs under trees and in hollows, not scattered evenly. Budget ~2,000 clutter instances at Balanced (~80 k triangles) against §5.4's vegetation row, funded per §5.3's trade-off rule from stems/ha, not from any fidelity row.
 
 ---
 
 ### `2-16` — Grass and ground cover (2.0 d) · Class P
 
 Grass as **patches, not blades**: 12–16 crossed tapered blades, ~48 triangles, covering ~2.5 m². A `1/d` density ramp so *screen-space* blade density is roughly constant rather than exploding at the camera. Plus ferns, heather and reeds at ~15% of the budget so the ground is not one uniform green fuzz.
+
+**The archetype mix is habitat-driven, not a flat roll.** A share alone gives the ground layer variable *amount* but uniform *character* — the same 15% sprinkle everywhere. Archetype weights come from the terms the density field already carries: reeds gated on high moisture and near-zero slope, heather on low fertility and exposure, fern on shade and shelter, grass elsewhere. This is what makes a wet hollow and a wind-scoured ridge read as different places rather than the same ground at different densities, and it is the ground-layer half of "overgrown areas".
 
 This closes what the audit calls the single most damaging failure mode: **no scale reference below 7 m on approach**, which collapses speed and height perception on final — the one thing a flight simulator is judged on.
 
@@ -568,7 +636,11 @@ Hemi-octahedral 4×4 bake per species with a **three-view barycentric blend**. `
 
 Bake albedo, normal and depth per view. The impostor tier plugs into the third LOD slot that `2-14` created and fades in through the same dither.
 
-**Exit criterion:** impostor and LOD1 average colour match within a few percent across a full sun sweep — otherwise the LOD transition reads as a brightness pop even when the geometry match is good.
+**Per-instance silhouette variety, at zero atlas cost (+0.5 d, 6.0 → 6.5).** The bake is per *species*, not per variant — so beyond the card radius, which is where 90% of a forest is seen, `2-12`'s variants disappear and every tree of a species is a clone again. Baking per variant is not affordable (see the budget note below), so the variety comes from the instance instead: the `variant` byte selects a small octahedral view-phase offset and a horizontal mirror of the sampled view, and the billboard quad is scaled anisotropically from `heightScale`/`radialScale` within ±15%.
+
+**Budget note, and it does not currently close.** A 4×4 hemi-octahedral bake over 7 species at 128² with albedo + normal + depth is ~12.2 MiB; `2-18`'s two season buckets double it to ~24.5 MiB, against roughly 15.8 MiB of atlas headroom once `2-11a`'s 12.2 MiB of instances come out of the 28 MiB Balanced vegetation row. Settle it here rather than discovering it at `2-18`: reduce tile resolution before anything else (impostor texels per view is the one fidelity row §5.3's trade-off rule permits cutting, and only at Low — so at Balanced the alternative is fewer species baked with the rest falling back to card LOD, or a smaller impostor radius). Record the measurement in the decision log.
+
+**Exit criteria:** impostor and LOD1 average colour match within a few percent across a full sun sweep — otherwise the LOD transition reads as a brightness pop even when the geometry match is good. And no two impostors of the same species within one screen share both silhouette aspect and view phase.
 
 ---
 
@@ -613,11 +685,13 @@ Phase 0 contributed 18 and Phase 1 sixteen more. Phase 2 adds:
 
 Three of this phase's exit criteria are irreducibly visual: no repeated cloud group over a 200 km leg, cumulus reading as cumulus, and forest reading as forest. There is no test for these.
 
-What replaces a test is a **named flight and a committed screenshot**. Add three fixed captures to `perf:capture` in `2-0`, and treat them exactly as the terrain baselines are treated: a change is a regression until argued otherwise.
+What replaces a test is a **named flight and a committed screenshot**. Add five fixed captures to `perf:capture` in `2-0` (+0.5 d for the last two, which were added 2026-08-18), and treat them exactly as the terrain baselines are treated: a change is a regression until argued otherwise.
 
 1. **Cruise, sun at 30° off-axis** — cloud shape, silver lining, shadowed sides.
 2. **500 ft AGL over closed forest, sun behind** — foliage translucency, grass scale reference, LOD transition band.
 3. **Coastline at 10 km slant, low sun** — sun glitter path, foam, aerial perspective across the water/land boundary.
+4. **On the ground at the airfield boundary, camera at 2 m, low sun raking across** — grass blade separation, ground-cover archetype mix, clutter bedding, forest-floor litter and moss at 1–5 m, trunk and bark at the range a pilot sees them on rollout. **This is the only capture in the programme taken from the height a person stands at**, and it is the one that would have caught what flight testing caught.
+5. **Forest canopy at 1,200 ft, 45° down, mid-morning** — the 1–3 km band where a forest reads as a textured surface rather than individuals, and where clumping, clearings, edge profile and species patchwork either exist or do not.
 
 The 200 km anti-tiling gate is flown, not captured, and its outcome is recorded in the decision log.
 
@@ -639,7 +713,7 @@ Phase 2's three subsystems have rows in `PerformanceBudget.ts` from `1A-2`, so o
 | **R-2D** | **The `fract` seam grid appears as a consequence of the mip fix** and is misdiagnosed as a mip-chain bug. | `2-8`, immediately after mips land. | Specified up front (§3.4) and guarded by assertion 43. If a grid appears anyway, check the *weather* texture sampler in the cloud shader, which has the same pattern. |
 | **R-2E** | **Alpha-tested foliage blows the frame budget.** It defeats TBDR hidden-surface removal and gets no MSAA benefit. | `2-12` or `2-16`, budget assertion fails. | Separate render group after opaque terrain, mandatory. Then grass radius, then impostor radius. Do not reach for alpha blending — it needs sorting this renderer does not do. |
 | **R-2F** | **The compact instance format breaks culling or shadow bounds.** | `2-11a`, instances vanish at frustum edges or shadows are missing. | Generator-computed AABB with an explicit wind-extent term (§9 `2-11a` point 2). The `0-9` GPU test is the guard for the shadow half; extend it to a thin-instanced mesh in the same commit. |
-| **R-2G** | **`2-17` slips.** It is the largest item in the phase at 6.0 days, it is last, and view-blend correctness is the hard part. | End of week 9 with impostors flickering under bank. | **The phase's designated cut.** Ship LOD1 cards to the full vegetation radius and defer impostors to Phase 6, accepting the triangle cost — `6-8`'s canopy handoff drops the impostor radius from 4 km to ~2.5 km anyway, which makes the deferred version cheaper to build. Second cut: `2-18` (2.0 d), whose absence is a missing feature rather than a broken one. |
+| **R-2G** | **`2-17` slips.** It is the largest item in the phase at 6.0 days, it is last, and view-blend correctness is the hard part. | End of week 9 with impostors flickering under bank. | **The phase's designated cut, and it must name the count reduction that pays for it.** Ship LOD1 cards only, **and reduce the vegetation radius and rendered stems/ha in the same commit** so the LOD1 triangle total stays inside §5.4's vegetation row — per §5.3's vegetation trade-off rule, the count moves and the card does not. (Shipping cards to the full 4.5 km radius as originally written is ~84,000 trees at card fidelity, which does not fit and would be paid for in fidelity by whoever executed it.) Record the resulting radius and stems/ha in the decision log. `6-8`'s canopy handoff drops the impostor radius to ~2.5 km anyway, which makes the deferred version cheaper to build. Second cut: `2-18` (2.0 d), whose absence is a missing feature rather than a broken one. |
 | **R-2H** | **`2-10` leaves inland water with no reflection source.** | `2-10`, lakes go flat. | The IBL probe from `1C-6` is the replacement and must be verified on the hydrology material *before* the planar system is removed, not after. Keep `acceptsInlandPlanarReflection` and the hysteresis regardless — `5-12` needs them. |
 | **R-2I** | **`1C-8`'s Phase 1 cloud work is partly redone at `2-0`.** | Known and accepted. | ~0.25 d, priced into `2-0`. The alternative — moving `1C-8` into Phase 2 — leaves clouds unhazed through all of Phase 1 and breaks that phase's demo state in the most visible part of the frame. |
 
@@ -674,11 +748,18 @@ Phase 2's three subsystems have rows in `PerformanceBudget.ts` from `1A-2`, so o
 - [ ] Foliage mip-N alpha coverage within 3% of mip-0 at the shipping threshold.
 - [ ] Instances are 32 bytes; the world matrix is built in the vertex shader; bounds come from the generator.
 - [ ] Plugin-displaced foliage casts a matching shadow (GPU test).
-- [ ] Trees have leaves, three crown variants per species, and generated tangents; backlit crowns glow.
+- [ ] Trees have leaves, generated tangents and rendered trunks with taper, flare and lean; backlit crowns glow; crown interiors are darker than sunlit tips.
+- [ ] **Silhouette variety:** across 200 randomly sampled near-LOD trees against sky, no two share both a variant index and a crown width-to-height ratio within 5%.
+- [ ] **Colour variety:** per-species hue standard deviation ≥ 4°; neighbouring stands differ in mean hue, not only individuals.
+- [ ] **Canopy closure:** over a 2 km × 2 km closed-forest window the rendered instance set reaches ≥ 0.55 mean crown cover, and glades genuinely open rather than thinning.
+- [ ] Shrubs are cards, not icospheres, and use the same tint and occlusion treatment as trees.
+- [ ] Ground clutter — logs, stumps, branch litter, moss — is present, bedded into the ground, and denser under canopy than in the open.
+- [ ] Attribute spectra (species, stand age, height, tint hue) show no peak at 32 m or any other constant period.
+- [ ] **Flown:** a 40 km straight leg at 1,500 ft over continuous forest shows no recognisable repeat in canopy pattern, species patchwork or crown colour (recorded in the decision log).
 - [ ] Wind moves trunk, branch and leaf on three bands.
 - [ ] LOD switches and the cull radius both crossfade; no pop, no crawling dither.
 - [ ] Rocks are tilted into the slope, sunk, and shaded flat or smooth by lithology.
-- [ ] Grass is present, screen-space density is roughly constant, ≤ 0.9 M triangles at Balanced.
+- [ ] Grass is present, non-grass ground cover is ≥ 12% of ground-cover instances, screen-space density is roughly constant, ≤ 0.9 M triangles at Balanced.
 - [ ] Impostors do not flicker under a full 60° bank; impostor and LOD1 mean colour match across a sun sweep.
 - [ ] Deciduous foliage responds to `dayOfYear`; conifers hold; winter snow is slope-weighted.
 - [ ] Vegetation pass ≤ 1.8 ms and ≤ 28 MiB at Balanced.
@@ -687,7 +768,7 @@ Phase 2's three subsystems have rows in `PerformanceBudget.ts` from `1A-2`, so o
 - [ ] User goals **G3** (clouds) and **G4** (vegetation) served; the surface half of **G2** served.
 - [ ] `npm run verify` green; `npm run test:gpu` green.
 - [ ] Five ownership rows added to `ARCHITECTURE.md`; the boundary test passes.
-- [ ] Three new `perf:capture` scenes committed; baseline churned at no more than the four sanctioned points (§10.2 plus `2-8`, `2-12`, `2-17`).
+- [ ] Five new `perf:capture` scenes committed, including the 2 m eye-height and 1,200 ft canopy views; baseline churned at no more than the four sanctioned points (§10.2 plus `2-8`, `2-12`, `2-17`).
 - [ ] Decision log complete.
 
 ---
