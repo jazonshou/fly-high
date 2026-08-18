@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CPU_WORK_MAX_LEVEL,
+  GPU_WORK_MAX_LEVEL,
   cpuWorkLeverName,
-  cpuWorkSettingsForLevel,
+  gpuWorkLeverName,
   createGovernorState,
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
+  workLeverSettingsFor,
   type GovernorSignals,
   type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
@@ -16,6 +18,9 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * 1A-6b, assertion 21 — the permanent guard against the ratchet returning.
  * A CPU-bound trace must never move resolution; a GPU-bound trace that does
  * not improve must stop after two ineffective steps and restore the scale.
+ * R-11 extends the contract: no work step is ever recovered while the frame
+ * is GPU-bound, and a GPU-bound frame whose resolution lever is dead (latched
+ * or floored) sheds GPU-cost work levers instead.
  */
 
 const config = governorConfigForProfile(resolveWebGpuQualityProfile("high", "balanced"));
@@ -153,8 +158,8 @@ describe("adaptive governor (1A-6b)", () => {
     expect(config.scaleFloor).toBeCloseTo(0.75, 5);
   });
 
-  it("orders the work ladder cheapest-looking damage first and caps only downward", () => {
-    expect(cpuWorkSettingsForLevel(0)).toMatchObject({
+  it("splits the ladders by cost and keeps each ordered cheapest-looking first (R-11)", () => {
+    expect(workLeverSettingsFor(0, 0)).toMatchObject({
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
       detailCellBudgetMs: 2,
       detailCellCap: 24,
@@ -162,26 +167,95 @@ describe("adaptive governor (1A-6b)", () => {
       cloudShadowIntervalFrames: null,
       vegetationDistanceScale: 1,
     });
-    expect(cpuWorkSettingsForLevel(1).terrainPageRequestsPerUpdate).toBe(8);
-    expect(cpuWorkSettingsForLevel(3).terrainPageRequestsPerUpdate).toBe(2);
-    expect(cpuWorkSettingsForLevel(4)).toMatchObject({
+    // The CPU ladder touches only CPU-side fields.
+    expect(workLeverSettingsFor(1, 0).terrainPageRequestsPerUpdate).toBe(8);
+    expect(workLeverSettingsFor(3, 0).terrainPageRequestsPerUpdate).toBe(2);
+    expect(workLeverSettingsFor(4, 0)).toMatchObject({
       detailCellBudgetMs: 1.25,
       detailCellCap: 16,
     });
-    expect(cpuWorkSettingsForLevel(CPU_WORK_MAX_LEVEL)).toMatchObject({
+    expect(workLeverSettingsFor(CPU_WORK_MAX_LEVEL, 0)).toMatchObject({
       terrainPageRequestsPerUpdate: 2,
       detailCellBudgetMs: 0.75,
       detailCellCap: 8,
+      activeAnimalBudgetCap: 16,
+      // GPU-cost levers stay untouched at any CPU level.
+      planarReflectionIntervalFrames: null,
+      cloudShadowIntervalFrames: null,
+      shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+      vegetationDistanceScale: 1,
+    });
+    // The GPU ladder touches only render-side fields.
+    expect(workLeverSettingsFor(0, 1).planarReflectionIntervalFrames).toBe(5);
+    expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
       planarReflectionIntervalFrames: 8,
       cloudShadowIntervalFrames: 4,
-      activeAnimalBudgetCap: 16,
       shadowCasterDistanceMeters: 1_200,
       vegetationDistanceScale: 0.75,
+      terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
+      detailCellBudgetMs: 2,
+      activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
     });
     expect(cpuWorkLeverName(0)).toBeNull();
     expect(cpuWorkLeverName(1)).toBe("terrain-page-requests");
-    expect(cpuWorkLeverName(CPU_WORK_MAX_LEVEL)).toBe("vegetation-distance");
-    expect(() => cpuWorkSettingsForLevel(CPU_WORK_MAX_LEVEL + 1)).toThrow(RangeError);
+    expect(cpuWorkLeverName(CPU_WORK_MAX_LEVEL)).toBe("animal-budget");
+    expect(gpuWorkLeverName(1)).toBe("planar-reflection-cadence");
+    expect(gpuWorkLeverName(GPU_WORK_MAX_LEVEL)).toBe("vegetation-distance");
+    expect(() => workLeverSettingsFor(CPU_WORK_MAX_LEVEL + 1, 0)).toThrow(RangeError);
+    expect(() => workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL + 1)).toThrow(RangeError);
+  });
+
+  it("R-11 trace: gpu-bound + latched sheds GPU-cost levers and never recovers work", () => {
+    // The reference-machine state (R-6): pixel cap binds, so the first down
+    // step is absorbed and the latch fires immediately.
+    const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
+    let state = createGovernorState(config);
+    // Load one CPU work level first so there is something to wrongly recover.
+    state = Object.freeze({ ...state, cpuWorkLevel: 3 }) as GovernorState;
+    state = nextGovernorDecision(state, gpuBound, config);
+    state = observeRenderScaleApplication(state, false, config);
+    expect(state.resolutionInsensitive).toBe(true);
+
+    // GPU-bound with a calm CPU used to fall through to the balanced branch
+    // and RECOVER cpu work (R-5). It must never do that again — and the GPU
+    // ladder must engage instead.
+    const before = state.cpuWorkLevel;
+    let sawGpuWork = false;
+    for (let window = 0; window < 12; window += 1) {
+      state = nextGovernorDecision(state, gpuBound, config);
+      expect(state.cpuWorkLevel).toBe(before);
+      if (state.mode === "gpu-work") sawGpuWork = true;
+      expect(state.renderScale).toBe(createGovernorState(config).renderScale);
+    }
+    expect(sawGpuWork).toBe(true);
+    expect(state.gpuWorkLevel).toBeGreaterThan(0);
+    expect(state.lastLever).toBe(gpuWorkLeverName(state.gpuWorkLevel));
+  });
+
+  it("R-11 trace: GPU levers recover only from a calm, non-GPU-bound state", () => {
+    const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
+    let state = createGovernorState(config);
+    state = nextGovernorDecision(state, gpuBound, config);
+    state = observeRenderScaleApplication(state, false, config);
+    for (let window = 0; window < 6; window += 1) {
+      state = nextGovernorDecision(state, gpuBound, config);
+    }
+    const shedLevel = state.gpuWorkLevel;
+    expect(shedLevel).toBeGreaterThan(0);
+
+    // Still GPU-bound but now under target: hold, never recover.
+    const gpuBoundCalm: GovernorSignals = { gpuP95Ms: 9, cpuP95Ms: 4, intervalP95Ms: 10 };
+    for (let window = 0; window < 8; window += 1) {
+      state = nextGovernorDecision(state, gpuBoundCalm, config);
+      expect(state.gpuWorkLevel).toBe(shedLevel);
+    }
+
+    // Balanced and genuinely calm: one GPU lever recovers per calm streak.
+    const calm: GovernorSignals = { gpuP95Ms: 5, cpuP95Ms: 5, intervalP95Ms: 6 };
+    for (let window = 0; window < 4; window += 1) {
+      state = nextGovernorDecision(state, calm, config);
+    }
+    expect(state.gpuWorkLevel).toBe(shedLevel - 1);
   });
 
   it("uses the 30 ms target on the Ultra tier", () => {

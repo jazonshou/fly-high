@@ -6,8 +6,19 @@
  *
  * INVARIANT THIS FILE OWNS: resolution moves only for GPU-bound frames, CPU
  * work is shed only for CPU-bound frames, exactly one governor actuates per
- * window, and a resolution step that does not buy frame time is undone and
- * latched against instead of repeated.
+ * window, a resolution step that does not buy frame time is undone and
+ * latched against instead of repeated, and — R-11 — no work step is ever
+ * recovered while the frame is classified GPU-bound.
+ *
+ * R-11 (PRE_PHASE_4_REALIGNMENT.md §3) split the old single work ladder into
+ * CPU-cost and GPU-cost levers. Four of the old rungs (planar-reflection and
+ * cloud-shadow cadence, shadow-caster distance, vegetation distance) are GPU
+ * costs that the *CPU* governor used to walk — so on a GPU-bound frame with a
+ * calm CPU the governor recovered GPU work. Worse, on the reference machine at
+ * tier 1 the pixel cap binds, `resolutionInsensitive` latches immediately, and
+ * Governor A had no lever at all (R-6). The GPU-cost ladder is that missing
+ * actuator: it is shed while GPU-bound-and-latched (or pinned at the scale
+ * floor) and recovered only from a calm, non-GPU-bound state.
  *
  * Class P: pure functions over numbers. No Babylon import, Node-testable.
  */
@@ -15,6 +26,7 @@
 export type GovernorMode =
   | "gpu-resolution"
   | "cpu-work"
+  | "gpu-work"
   | "balanced"
   | "holding"
   | "no-gpu-timing";
@@ -55,11 +67,12 @@ export function governorConfigForProfile(profile: {
 }
 
 /**
- * Governor B's output: every CPU work lever at its current notch. Values are
- * caps and overrides; the renderer combines them with the profile via
- * min/max so a lever can only reduce work below the profile's own setting.
+ * The work levers at their current notches. Values are caps and overrides;
+ * the renderer combines them with the profile via min/max so a lever can only
+ * reduce work below the profile's own setting. R-11 renamed this from
+ * `CpuWorkSettings`: it now aggregates two ladders with disjoint fields.
  */
-export interface CpuWorkSettings {
+export interface WorkLeverSettings {
   readonly terrainPageRequestsPerUpdate: number;
   readonly detailCellBudgetMs: number;
   readonly detailCellCap: number;
@@ -71,12 +84,12 @@ export interface CpuWorkSettings {
   readonly vegetationDistanceScale: number;
 }
 
-interface CpuWorkStep {
+interface WorkStep {
   readonly lever: string;
-  readonly apply: (settings: CpuWorkSettings) => CpuWorkSettings;
+  readonly apply: (settings: WorkLeverSettings) => WorkLeverSettings;
 }
 
-const FULL_QUALITY_SETTINGS: CpuWorkSettings = Object.freeze({
+const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   // Unbounded at level 0: the streaming pump's own queue bound applies. The
   // lever's notches (8 → 4 → 2 per §5.5) engage only under CPU pressure so a
   // calm renderer keeps its pinned fill-in-one-update streaming behaviour.
@@ -91,44 +104,70 @@ const FULL_QUALITY_SETTINGS: CpuWorkSettings = Object.freeze({
 });
 
 /**
- * The ordered ladder, cheapest-looking damage first; each lever is exhausted
- * before the next is touched (a second notch of streaming latency still looks
- * cheaper than the first notch of the next lever's visible change).
+ * Governor B's ladder — genuinely CPU-side costs only (streaming pump work,
+ * worker scheduling, per-instance generation, wildlife simulation). Ordered
+ * cheapest-looking damage first; each lever is exhausted before the next.
  */
-const CPU_WORK_LADDER: readonly CpuWorkStep[] = Object.freeze([
+const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 8 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 4 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 2 }) },
   { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailCellBudgetMs: 1.25, detailCellCap: 16 }) },
   { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailCellBudgetMs: 0.75, detailCellCap: 8 }) },
+  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 48 }) },
+  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 16 }) },
+]);
+
+/**
+ * The GPU-cost ladder (R-11): render passes and draw volume. Shed when the
+ * frame is GPU-bound and Governor A has no resolution lever left (latched
+ * resolution-insensitive, or pinned at the scale floor).
+ */
+const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "planar-reflection-cadence", apply: (s) => ({ ...s, planarReflectionIntervalFrames: 5 }) },
   { lever: "planar-reflection-cadence", apply: (s) => ({ ...s, planarReflectionIntervalFrames: 8 }) },
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 3 }) },
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 4 }) },
-  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 48 }) },
-  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 16 }) },
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_800 }) },
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_200 }) },
   { lever: "vegetation-distance", apply: (s) => ({ ...s, vegetationDistanceScale: 0.75 }) },
 ]);
 
 export const CPU_WORK_MAX_LEVEL = CPU_WORK_LADDER.length;
+export const GPU_WORK_MAX_LEVEL = GPU_WORK_LADDER.length;
 
-export function cpuWorkSettingsForLevel(level: number): CpuWorkSettings {
-  if (!Number.isInteger(level) || level < 0 || level > CPU_WORK_MAX_LEVEL) {
-    throw new RangeError(`CPU work level must be an integer in [0, ${CPU_WORK_MAX_LEVEL}]`);
+function settingsForLadder(
+  ladder: readonly WorkStep[],
+  level: number,
+  base: WorkLeverSettings,
+  label: string,
+): WorkLeverSettings {
+  if (!Number.isInteger(level) || level < 0 || level > ladder.length) {
+    throw new RangeError(`${label} work level must be an integer in [0, ${ladder.length}]`);
   }
-  let settings = FULL_QUALITY_SETTINGS;
+  let settings = base;
   for (let step = 0; step < level; step += 1) {
-    settings = CPU_WORK_LADDER[step]!.apply(settings);
+    settings = ladder[step]!.apply(settings);
   }
-  return Object.freeze(settings);
+  return settings;
 }
 
-/** The lever that moved when the ladder reached `level` (null at level 0). */
+/** The combined lever settings for the two ladder positions (fields are disjoint). */
+export function workLeverSettingsFor(cpuLevel: number, gpuLevel: number): WorkLeverSettings {
+  const cpuApplied = settingsForLadder(CPU_WORK_LADDER, cpuLevel, FULL_QUALITY_SETTINGS, "CPU");
+  return Object.freeze(settingsForLadder(GPU_WORK_LADDER, gpuLevel, cpuApplied, "GPU"));
+}
+
+/** The lever that moved when the CPU ladder reached `level` (null at level 0). */
 export function cpuWorkLeverName(level: number): string | null {
   if (level <= 0) return null;
   return CPU_WORK_LADDER[Math.min(level, CPU_WORK_MAX_LEVEL) - 1]?.lever ?? null;
+}
+
+/** The lever that moved when the GPU ladder reached `level` (null at level 0). */
+export function gpuWorkLeverName(level: number): string | null {
+  if (level <= 0) return null;
+  return GPU_WORK_LADDER[Math.min(level, GPU_WORK_MAX_LEVEL) - 1]?.lever ?? null;
 }
 
 interface PendingScaleProbe {
@@ -139,6 +178,8 @@ interface PendingScaleProbe {
 export interface GovernorState {
   readonly renderScale: number;
   readonly cpuWorkLevel: number;
+  /** R-11: the GPU-cost ladder position. */
+  readonly gpuWorkLevel: number;
   readonly mode: GovernorMode;
   readonly resolutionInsensitive: boolean;
   readonly lastLever: string | null;
@@ -151,12 +192,15 @@ export interface GovernorState {
   readonly insensitiveWindowsRemaining: number;
   readonly cpuHotWindows: number;
   readonly cpuCalmWindows: number;
+  readonly gpuHotWindows: number;
+  readonly gpuCalmWindows: number;
 }
 
 export function createGovernorState(config: GovernorConfig): GovernorState {
   return Object.freeze({
     renderScale: config.scaleCeiling,
     cpuWorkLevel: 0,
+    gpuWorkLevel: 0,
     mode: "balanced" as GovernorMode,
     resolutionInsensitive: false,
     lastLever: null,
@@ -168,6 +212,8 @@ export function createGovernorState(config: GovernorConfig): GovernorState {
     insensitiveWindowsRemaining: 0,
     cpuHotWindows: 0,
     cpuCalmWindows: 0,
+    gpuHotWindows: 0,
+    gpuCalmWindows: 0,
   });
 }
 
@@ -183,6 +229,8 @@ const MIN_GPU_PROXY_MS = 2;
 const CPU_CALM_MS = 6;
 const CPU_HOT_WINDOWS_REQUIRED = 2;
 const CPU_CALM_WINDOWS_REQUIRED = 4;
+const GPU_HOT_WINDOWS_REQUIRED = 2;
+const GPU_CALM_WINDOWS_REQUIRED = 4;
 
 type Classification = "gpu-bound" | "cpu-bound" | "balanced" | "unknown";
 
@@ -220,8 +268,8 @@ function resolveSignals(signals: GovernorSignals): ResolvedSignals {
 
 /**
  * One decision per completed sample window. Returns the next state; the
- * caller applies `renderScale`/`cpuWorkLevel` differences to the engine and
- * reports downward-step effectiveness through
+ * caller applies `renderScale`/`cpuWorkLevel`/`gpuWorkLevel` differences to
+ * the engine and reports downward-step effectiveness through
  * `observeRenderScaleApplication`.
  */
 export function nextGovernorDecision(
@@ -261,7 +309,8 @@ export function nextGovernorDecision(
       const restoreScale = next.restoreScale ?? probe.preStepScale;
       if (ineffective >= 2) {
         // The workload is resolution-insensitive: undo the useless steps,
-        // latch, and leave only Governor B in play until the latch re-arms.
+        // latch, and leave only the work ladders in play until the latch
+        // re-arms.
         next = {
           ...next,
           renderScale: restoreScale,
@@ -283,26 +332,58 @@ export function nextGovernorDecision(
     return Object.freeze({ ...next, mode: "no-gpu-timing" });
   }
 
-  if (resolved.classification === "gpu-bound" && !next.resolutionInsensitive) {
+  if (resolved.classification === "gpu-bound") {
+    // R-11 invariant: while GPU-bound, no ladder ever recovers. The only
+    // question is which lever, if any, sheds.
     const gpu = resolved.gpuMs!;
-    if (
-      gpu > config.gpuTargetMs * DOWN_TRIGGER_RATIO
-      && next.framesSinceScaleChange >= config.downCooldownFrames
-      && next.renderScale > config.scaleFloor + 1e-6
-    ) {
-      const lowered = Math.max(config.scaleFloor, next.renderScale - DOWN_STEP);
+    const scaleCanMove =
+      !next.resolutionInsensitive && next.renderScale > config.scaleFloor + 1e-6;
+    if (scaleCanMove) {
+      if (
+        gpu > config.gpuTargetMs * DOWN_TRIGGER_RATIO
+        && next.framesSinceScaleChange >= config.downCooldownFrames
+      ) {
+        const lowered = Math.max(config.scaleFloor, next.renderScale - DOWN_STEP);
+        return Object.freeze({
+          ...next,
+          renderScale: lowered,
+          framesSinceScaleChange: 0,
+          pendingProbe: { preStepGpuP95Ms: gpu, preStepScale: next.renderScale },
+          mode: resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
+          cpuHotWindows: 0,
+          cpuCalmWindows: 0,
+          gpuHotWindows: 0,
+          gpuCalmWindows: 0,
+        });
+      }
+    } else if (gpu > config.gpuTargetMs) {
+      // Governor A has no lever (latched, or already at the floor): shed a
+      // GPU-cost work lever instead — the R-6 missing actuator.
+      const hot = next.gpuHotWindows + 1;
+      if (hot >= GPU_HOT_WINDOWS_REQUIRED && next.gpuWorkLevel < GPU_WORK_MAX_LEVEL) {
+        const level = next.gpuWorkLevel + 1;
+        return Object.freeze({
+          ...next,
+          gpuWorkLevel: level,
+          lastLever: gpuWorkLeverName(level),
+          gpuHotWindows: 0,
+          gpuCalmWindows: 0,
+          cpuHotWindows: 0,
+          cpuCalmWindows: 0,
+          mode: "gpu-work",
+        });
+      }
       return Object.freeze({
         ...next,
-        renderScale: lowered,
-        framesSinceScaleChange: 0,
-        pendingProbe: { preStepGpuP95Ms: gpu, preStepScale: next.renderScale },
-        mode: resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
+        gpuHotWindows: hot,
+        gpuCalmWindows: 0,
         cpuHotWindows: 0,
-        cpuCalmWindows: 0,
+        mode: "gpu-work",
       });
     }
     if (
-      gpu < config.gpuTargetMs * UP_TRIGGER_RATIO
+      !next.resolutionInsensitive
+      && gpu < config.gpuTargetMs * UP_TRIGGER_RATIO
       && next.framesSinceScaleChange >= config.upCooldownFrames
       && next.renderScale < config.scaleCeiling - 1e-6
     ) {
@@ -314,9 +395,11 @@ export function nextGovernorDecision(
         mode: resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
         cpuHotWindows: 0,
         cpuCalmWindows: 0,
+        gpuHotWindows: 0,
+        gpuCalmWindows: 0,
       });
     }
-    return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
+    return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuCalmWindows: 0 });
   }
 
   if (resolved.classification === "cpu-bound") {
@@ -354,8 +437,27 @@ export function nextGovernorDecision(
     return Object.freeze({ ...next, cpuHotWindows: 0, cpuCalmWindows: 0, mode: "holding" });
   }
 
-  // Balanced: recover CPU work slowly when genuinely calm, otherwise hold.
+  // Balanced — the only state that recovers work, and never while GPU-bound
+  // (R-11). GPU-cost levers recover first, and only when the GPU itself is
+  // genuinely calm; then the CPU ladder, on the CPU's own calm signal.
   const cpu = signals.cpuP95Ms;
+  const gpuCalm =
+    resolved.gpuMs !== null && resolved.gpuMs < config.gpuTargetMs * UP_TRIGGER_RATIO;
+  if (gpuCalm && next.gpuWorkLevel > 0) {
+    const calm = next.gpuCalmWindows + 1;
+    if (calm >= GPU_CALM_WINDOWS_REQUIRED) {
+      const level = next.gpuWorkLevel - 1;
+      return Object.freeze({
+        ...next,
+        gpuWorkLevel: level,
+        lastLever: gpuWorkLeverName(level + 1),
+        gpuHotWindows: 0,
+        gpuCalmWindows: 0,
+        mode: "gpu-work",
+      });
+    }
+    return Object.freeze({ ...next, gpuCalmWindows: calm, gpuHotWindows: 0, mode: "balanced" });
+  }
   if (cpu !== null && cpu < CPU_CALM_MS && next.cpuWorkLevel > 0) {
     const calm = next.cpuCalmWindows + 1;
     if (calm >= CPU_CALM_WINDOWS_REQUIRED) {

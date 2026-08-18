@@ -69,9 +69,11 @@ export interface ControlState {
 export type RenderGovernorMode =
   | "gpu-resolution"
   | "cpu-work"
+  | "gpu-work"
   | "balanced"
   | "holding"
-  | "no-gpu-timing";
+  | "no-gpu-timing"
+  | "pinned";
 
 /** One frame-graph pass's aggregated CPU cost (1A-1). */
 export interface PassCpuTiming {
@@ -125,9 +127,21 @@ export interface RenderDiagnostics {
   activeGovernor: RenderGovernorMode;
   gpuP95Ms: number | null;
   cpuP95Ms: number | null;
+  /**
+   * Z-2 hitch metrics over the rolling diagnostics window. The p95 streams
+   * deliberately ignore >250 ms samples (suspended tabs must not poison a
+   * governor decision); these three deliberately do not — a 400 ms stall is
+   * exactly what "no flicker, no lag" (G-C) is about.
+   */
+  maxFrameMs: number | null;
+  p999FrameMs: number | null;
+  /** Frames in the rolling window slower than 2× the tier's frame target. */
+  hitchCount: number;
   /** Governor B ladder index and the lever that moved most recently. */
   cpuWorkLevel: number;
   cpuWorkLever: string | null;
+  /** R-11: GPU-cost lever ladder index (shed when Governor A has no lever). */
+  gpuWorkLevel: number;
   resolutionInsensitive: boolean;
   /** Pixels actually rasterised after the DPR ceiling, scale, and pixel cap. */
   renderPixels: number;

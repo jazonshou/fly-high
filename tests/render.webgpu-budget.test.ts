@@ -67,6 +67,14 @@ describe("performance budget (1A-2)", () => {
     }
   });
 
+  it("mirrors FRAME_TARGET_MS into every profile's frameTargetMs datum (Z-2)", () => {
+    for (const profile of allProfiles()) {
+      expect(profile.frameTargetMs, `tier ${profile.tier}`).toBe(
+        FRAME_TARGET_MS[profile.tier as PerformanceTier],
+      );
+    }
+  });
+
   it("keeps the per-subsystem frame rows under each tier's frame target (assertion 20)", () => {
     for (const tier of [0, 1, 2, 3] as const) {
       expect(frameBudgetTotalMs(tier), `tier ${tier}`).toBeLessThanOrEqual(

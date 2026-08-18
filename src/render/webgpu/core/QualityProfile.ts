@@ -29,6 +29,12 @@ export interface WebGpuQualityProfile {
    * lines, runway edges and wing silhouettes, not tree canopies.
    */
   readonly msaaSamples: number;
+  /**
+   * The tier's controllable frame-time target (Z-2), mirrored from
+   * `FRAME_TARGET_MS` so consumers read a profile datum instead of a tier
+   * table. A hitch is a frame slower than twice this number.
+   */
+  readonly frameTargetMs: number;
   readonly terrainRings: number;
   /**
    * Vertices per tile edge at every level (1B-3). One constant per tier —
@@ -85,6 +91,7 @@ export function resolveWebGpuQualityProfile(
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
       msaaSamples: 1,
+      frameTargetMs: 13.7,
       terrainRings: 6,
       terrainTileResolution: 33,
       shadowMapSize: 1_024,
@@ -109,6 +116,7 @@ export function resolveWebGpuQualityProfile(
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
       msaaSamples: 4,
+      frameTargetMs: 13.7,
       terrainRings: 7,
       terrainTileResolution: 65,
       shadowMapSize: 2_048,
@@ -136,6 +144,7 @@ export function resolveWebGpuQualityProfile(
       // for 4× inside the 700 MiB ceiling (assertion 19); 4-8's near-field
       // shadow maps buy it back.
       msaaSamples: 2,
+      frameTargetMs: 13.7,
       // 1C-4: the 45 km far plane makes level 7 (the 131 km ring) pure
       // waste. Levels 0–6 still guarantee 65.5 km worst-case coverage —
       // the lower tiers keep their counts because cutting them would end
@@ -169,6 +178,7 @@ export function resolveWebGpuQualityProfile(
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
     msaaSamples: 4,
+    frameTargetMs: 30,
     // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
     terrainRings: 7,
     terrainTileResolution: 65,
@@ -215,6 +225,23 @@ export function frameTimingPercentile95(samples: readonly number[]): number | nu
   if (valid.length === 0) return null;
   const index = Math.max(0, Math.ceil(valid.length * 0.95) - 1);
   return valid[index] ?? null;
+}
+
+/**
+ * Nearest-rank percentile over every finite positive sample — deliberately
+ * *without* the 250 ms usability ceiling (Z-2). The governor's p95 must
+ * ignore suspended-tab gaps; the hitch metrics exist precisely to see them.
+ */
+export function frameTimingPercentile(
+  samples: readonly number[],
+  quantile: number,
+): number | null {
+  const valid = samples
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (valid.length === 0) return null;
+  const index = Math.max(0, Math.ceil(valid.length * quantile) - 1);
+  return valid[Math.min(index, valid.length - 1)] ?? null;
 }
 
 // worstFrameTimingPercentile95 and nextDynamicRenderScale are deleted (1A-6b):

@@ -255,9 +255,15 @@ export function Hud({
           <span>{diagnostics.gpuP95Ms === null ? "GPU p95 n/a" : `${diagnostics.gpuP95Ms.toFixed(1)} ms GPU p95`}</span>
           <span>{diagnostics.cpuP95Ms === null ? "CPU p95 n/a" : `${diagnostics.cpuP95Ms.toFixed(1)} ms CPU p95`}</span>
           <span className="diagnostics__wide">
+            {diagnostics.maxFrameMs === null ? "max n/a" : `${diagnostics.maxFrameMs.toFixed(0)} ms max`}
+            {" · "}
+            {diagnostics.p999FrameMs === null ? "p999 n/a" : `${diagnostics.p999FrameMs.toFixed(0)} ms p999`}
+            {" · "}{diagnostics.hitchCount} hitches
+          </span>
+          <span className="diagnostics__wide">
             GOV {diagnostics.activeGovernor.toUpperCase()}
             {diagnostics.resolutionInsensitive ? " · RES-INSENSITIVE" : ""}
-            {" · "}work L{diagnostics.cpuWorkLevel}
+            {" · "}cpu L{diagnostics.cpuWorkLevel} · gpu L{diagnostics.gpuWorkLevel}
             {diagnostics.cpuWorkLever ? ` (${diagnostics.cpuWorkLever})` : ""}
             {" · ~"}{Math.round(diagnostics.estimatedGpuMemoryMiB)} MiB est
           </span>
