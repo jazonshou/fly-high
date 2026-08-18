@@ -1149,6 +1149,17 @@
 
 .diagnostics strong { color: var(--accent); }
 .diagnostics__wide { grid-column: 1 / -1; }
+.diagnostics__probe {
+  grid-column: 1 / -1;
+  padding: 3px 8px;
+  border: 1px solid rgba(225, 254, 118, 0.34);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.diagnostics__probe:disabled { opacity: 0.55; cursor: default; }
 .diagnostics__fallback {
   max-width: 260px;
   color: rgba(255, 220, 166, 0.9);

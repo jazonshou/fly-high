@@ -605,6 +605,7 @@ export function FlightGame() {
           cameraLabel={CAMERA_LABELS[cameraMode]}
           seedLabel={seedToString(seed)}
           mouseFlight={settings.mouseFlight}
+          onRunBudgetProbe={() => rendererRef.current?.startBudgetProbe()}
         />
       ) : null}
 

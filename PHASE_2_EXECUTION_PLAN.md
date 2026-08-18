@@ -1,0 +1,714 @@
+# Phase 2 Execution Plan — Sky, Sea Surface and Living Ground
+
+**Status:** execution reference for Phase 2 of `RENDERING_PLAN.md`. It does not restate that plan; it decides everything that plan leaves to implementation time, against the codebase as it will actually exist when Phase 2 starts.
+**Runs after:** `PHASE_1_EXECUTION_PLAN.md`. Phase 1's exit criteria are this plan's preconditions.
+**Basis:** `TERRAIN_AUDIT.md`, `RENDERING_PLAN.md` §2 Phase 2 / §3.3 / §3.4 / §3.5 / §5.2–§5.4 / §6 / §7, and `ARCHITECTURE.md` (normative, from Phase 0).
+**Verified against:** working tree at `7b6f076` (Phase 0 merged). Every file, line, and dead-code claim below was re-checked in the current tree.
+**Effort:** **44.0 days**, ~9.8 calendar weeks at 4.5 productive days/week. (43.0 in `RENDERING_PLAN.md`; +1.0 net — see §4.)
+**Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
+
+---
+
+## 0. What this document adds
+
+Phase 2 is the first phase whose work is almost entirely *visible*. It has no measurement scaffolding to build and no architectural premise to validate — Phases 0 and 1 did that. What it has instead is three independent subsystem chains and one problem the source plan does not know about.
+
+1. **What the codebase actually is** (§3). Reading `nature/`, `water/` and `detail/` closely turns up a second instance of the exact institutional failure Phase 0 was built to stop, plus three design defects that make specific Phase 2 items unbuildable as written. This section is the substance of the plan and it is where most of the thinking went.
+2. **Seven amendments** (§4), each with a rationale and a cost. Two add items the source plan does not have; five re-cost items whose difficulty the source plan misjudged in either direction.
+3. **The ownership rows Phase 2 must add to `ARCHITECTURE.md`** (§5) so that the parallel-path failure cannot recur in the subsystems this phase touches.
+4. **A serial work order with a week ledger** (§6), and item-by-item execution detail (§7–§9).
+5. **Verification** (§10), a **risk register with triggers** (§11), and an **exit checklist** (§12).
+
+Read §3 and §4 before writing any code.
+
+---
+
+## 1. Preconditions
+
+Phase 1's exit criteria are this plan's preconditions. Phase 2 depends on five of them specifically, and every one is already scheduled:
+
+| Needed by | Precondition | From |
+|---|---|---|
+| `2-0`, `2-4` | The atmosphere LUTs exist and are bindable: transmittance 256×64 and multiple-scattering / sky-view 32×32, plus their TypeScript mirror | `1C-3` |
+| `2-0`, `2-7` | Clouds already consume the aerial-perspective include, and exposure is a single relative-EV100 curve | `1C-8`, `1C-2` |
+| `2-9` | `scene.environmentTexture` is non-null; `REFLECTION` is defined; `specularIntensity` is 1.0 | `1C-6` |
+| `2-12`, `2-11a` | The `ShadowDepthWrapper` incantation, recorded verbatim in `ARCHITECTURE.md` | `0-9` |
+| `2-15`, `2-16` | Scatter is a continuous density field with the spectral regression test passing | `1B-7`, `1B-8`, `1B-9` |
+| all | `PerformanceBudget.ts` asserts per-subsystem frame and memory budgets in CI; `perf:capture` has a committed baseline | `1A-1`, `1A-2` |
+
+Two standing conditions carry forward: **Babylon stays pinned at `9.21.2`** (Phase 2 leans on private mip-generation internals — §11 R-2C), and **one branch per gate** (`phase2/gate-2a`, `-2b`, `-2c`), so the screenshot baseline rebases at three known points.
+
+**A note on ordering that matters.** Every Phase 0 and Phase 1 dependency is satisfied before Phase 2 opens, so the three subsystem chains are genuinely independent and their order is a choice. §6.1 explains the one it makes and why.
+
+---
+
+## 2. The engineering standard, applied to Phase 2
+
+The lifetime classification from Phase 1 §2 carries forward unchanged: **P** permanent, **K** kernel, **T** transitional (deleted in a later phase), **D** disposable. What changes is the distribution. Phase 1 was mostly Class P infrastructure with a Class T terrain path. Phase 2 is the opposite — almost everything it builds is Class P, because clouds, water shading and vegetation are not rebuilt by any later phase.
+
+Three consequences worth stating before the work starts:
+
+- **Cloud and vegetation code written in Phase 2 is the code that ships.** There is no Phase 4 equivalent waiting to delete it. `2-17`'s impostor pipeline is still running in Phase 7. That justifies a higher standard than Phase 1's terrain tile path got.
+- **The two exceptions are explicitly transitional and must stay thin.** `2-10` retires the planar reflection but the plan keeps `acceptsInlandPlanarReflection` and its hysteresis "if the lake path survives" — that path is rebuilt at `5-12`, so do not invest in it. And the vegetation LOD radii are re-derived at `6-8` when canopy closure becomes a terrain splat channel, so tune them once and move on.
+- **Phase 2 is where "not plastic" is won or lost.** The audit's user-facing complaints about clouds and vegetation are aesthetic, and aesthetics are tuned, not proved. The discipline that replaces proof is: *fix the physical constants from the literature first, expose exactly two tuning knobs per subsystem, and pin everything else with a test.* Each gate below names its two knobs.
+
+---
+
+## 3. What the codebase actually is
+
+Four findings. The first is the important one.
+
+### 3.1 `nature/CloudShaders.ts` is a second `payload.ts`
+
+`src/render/webgpu/nature/CloudShaders.ts` is **596 lines of complete, structurally correct volumetric cloud code** — and it is imported by exactly one file, `nature/index.ts`, which is itself imported by **nothing**. A repo-wide search for consumers of the `nature/` barrel returns zero hits.
+
+Meanwhile `clouds/VolumetricCloudSystem.ts` imports precisely one symbol from `nature/` — `DEFAULT_VOLUMETRIC_CLOUD_CONFIG` — and hand-rolls its own WGSL inline.
+
+This is the same failure the audit named about `world/payload.ts`, and it is the reason Phase 0 exists:
+
+> **Your team specified the correct architecture and then shipped a parallel ad-hoc path with none of its properties.**
+
+**What the dead shader already has** (all verified by reading it):
+
+| Capability | Dead `CloudShaders.ts` | Live `VolumetricCloudSystem.ts` |
+|---|---|---|
+| Density source | `texture_3d<f32>` base + detail volume fetches | Analytic — **64 `hash31` calls per density sample** (8 for base undulation, 24 + 24 for two `baseFbm`, 8 for erosion) |
+| Weather | A sampled weather texture: coverage / cloud-type / precipitation channels | A third `baseFbm` used as a scalar threshold; no type, no precipitation |
+| Vertical profile | Per-type stratus / cumulus / storm profiles blended by `cloud_type` | One hardcoded `smoothstep(0,0.12) · (1−smoothstep(0.62,1))` |
+| Layer intersection | `cloudRaySphere` against planet-centred shells | Flat slabs — `(altitude − camera.y) / direction.y` |
+| Phase function | Dual-lobe HG driven by `params.phase_precipitation.xyz` — i.e. by config | Hardcoded `0.72·hg(θ,0.72) + 0.28·hg(θ,−0.22)` |
+| Multiple scattering | 3 octaves with `order_transmittance = sqrt(...)` decay | None. Config's `multipleScatteringFactor` is unread |
+| Ambient | `sampleSkyAmbient` from a sky-view LUT × `atmosphere_transmittance` | `segmentWeight · (1.02 + point.y / 11000)` — a linear altitude ramp times a hardcoded `Color3(0.18, 0.27, 0.42)` |
+| Step length | Density-adaptive: `mix(maxStep, minStep, saturate(density·3))` | Uniform across the whole interval |
+| Jitter | Blue-noise texture | `hash31(fragCoord, frameIndex)` |
+| Scene occlusion | Depth-buffer bound, ray clipped to scene distance | None |
+| Output | 2 MRTs: premultiplied radiance + transmittance, and distance + **motion vectors** + history confidence | 1 RT packing direct/ambient coefficients, opacity, distance |
+| Shadow pass | A `@compute @workgroup_size(8,8,1)` module with its own vertical profile | A fragment pass reusing the analytic density |
+| Declarative metadata | `NatureShaderModule` descriptors with binding kinds, view dimensions and workgroup sizes | None |
+
+**What it does not have**, and therefore what stays genuine Phase 2 work: nothing writes `base_noise_texture`, `detail_noise_texture` or `weather_texture` — there is no bake. There is no anti-tiling, no empty-space skipping, no coverage prepass, no wind shear, and its multiple-scattering octaves decay energy but not extinction or phase.
+
+**The consequence for the plan is structural, not cosmetic.** `RENDERING_PLAN.md` schedules `2-1`, `2-2`, `2-4` and `2-5` as five separate features added to the shader that exists. But four of those five features *already exist in the file next door*, written against the LUT architecture Phase 1 builds. Adding them one at a time to the analytic shader means writing them twice and deleting the better copy. §4 B1 replaces that with a single adoption commit.
+
+**And a second-order point:** there is no ownership row for cloud shaders in `ARCHITECTURE.md`, which is why Phase 0's boundary test did not catch this. §5 fixes that.
+
+### 3.2 The cloud config is a lie
+
+`nature/CloudConfig.ts` declares and *validates* `forwardPhaseG`, `backwardPhaseG`, `backwardPhaseBlend`, `multipleScatteringFactor`, `powderStrength`, `ambientStrength`, `minimumStepMeters` and `maximumStepMeters`. The live shader hardcodes the phase constants, ignores multiple scattering and ambient strength entirely, and derives one uniform step from `raySteps`.
+
+So the config asserts ranges on numbers that do not reach the GPU. A tier table that lies is worse than no tier table, because it makes tuning sessions unfalsifiable — you change a value, nothing happens, and you conclude the effect does not matter. This is the same failure mode the audit describes for `environmentIntensity` being a dead uniform, and the same one the plan warns about for AO-before-IBL.
+
+**Fix, and it is cheap:** after `2-0`, every field of `VolumetricCloudConfig` is bound to a uniform the shader reads, and a Node test asserts that every declared field name appears in the shader's uniform packing. That test is ~20 lines and it makes the whole cloud tier table trustworthy.
+
+### 3.3 The ocean stores normalised normals and divides them back into slopes
+
+`SpectralOceanSystem.ts` writes an `rgba16float` `normalFoam` texture per cascade holding `(n.x, n.y, n.z, foam)`. The fragment shader then recovers slope with:
+
+```wgsl
+slopeSum += sample.xz / max(sample.y, 0.08) * weight;
+```
+
+Three problems, and all three are exactly what `2-8` exists to fix:
+
+1. **The round trip is lossy and the clamp is a real clamp.** `max(n.y, 0.08)` caps recoverable slope at 12.5 — steep crest faces are silently flattened.
+2. **Normalised normals do not average linearly, so a box-filtered mip of this texture is wrong.** Averaging unit vectors shortens them, and the shortening is then divided into the slope, so a mipped normal reads as a *steeper* surface, not a flatter one. This is the mechanism behind the audit's "distant sea boils".
+3. **Slope is the quantity the Toksvig/LEAN variance term needs.** `2-8` wants `roughness' = f(var(slope))`; deriving variance from renormalised normals requires undoing the normalisation first.
+
+**Design change:** store slope directly. `RG = (∂h/∂x, ∂h/∂z)`, `B = foam`, `A = Jacobian` (which `6-4`'s caustics and `2-9`'s foam both want, and which the evolution shader already computes — the storage texture is named `displacement_jacobian` in the compute bindings). Same format, same size, one fewer shader line at the sampling site, and box-filtered mips become *correct* rather than merely cheaper.
+
+Today's five-cascade sampling is an unrolled `if (uniforms.cascadeCount > N.5)` chain with hardcoded weights `0.62 / 0.82 / 0.74 / 0.52 / 0.36`. Those weights are a hand-tuned band-blend; after `2-8` they become a Nyquist-driven per-vertex fade and the chain collapses.
+
+### 3.4 A `fract()` inside `textureSample` will produce a seam grid the moment mips exist
+
+```wgsl
+fn sampleNormalFoam(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, s: sampler) -> vec4f {
+  return textureSample(source, s, fract(worldXZ / patchLength));
+}
+```
+
+`textureSample` selects a mip level from the *implicit screen-space derivative of the coordinate it is handed*. Across the `fract` wrap that derivative jumps by a full texture width, so the hardware picks the coarsest mip for the pixels straddling every patch boundary.
+
+Today the cascades carry no mips, so the artefact is invisible. **The moment `2-8` adds them, the ocean gains a visible grid of blurred lines at every 64 m, 256 m, 1024 m, 4096 m and 16384 m boundary** — five nested grids, all animated with the camera.
+
+This is the kind of defect that costs a day of confusion because it appears *as a consequence of the fix*, and the natural instinct is to blame the mip chain. **Specify the answer up front:** compute the derivative from the unwrapped coordinate and sample with `textureSampleGrad`.
+
+```wgsl
+let uv = worldXZ / patchLength;
+return textureSampleGrad(source, s, fract(uv), dpdx(uv), dpdy(uv));
+```
+
+`2-8` carries a GPU test that samples a horizontal span crossing a patch boundary and asserts the selected LOD is continuous.
+
+### 3.5 The vegetation instance format is 96 bytes and cannot express what Phase 2 needs
+
+`WorldDetailRuntime.uploadBatch` uploads three thin-instance buffers per batch: `matrix` (16 floats), `color` (4 floats), `instanceWind` (4 floats) — **96 bytes per instance**, built by `Float32Array.from(batch.matrices)` from a plain JS `number[]`.
+
+Three separate Phase 2 items collide with this:
+
+- **`2-16` explicitly calls for "32 B compact instances."** At 96 B, 400,000 instances are 38.4 MB — the entire §5.2 vegetation budget at Balanced is **28 MiB** including the foliage and impostor atlases. The current format does not fit, and no amount of tuning makes it fit.
+- **`2-15` needs full orientation.** `DetailRockPlacement` and `DetailTreePlacement` carry `yawRadians` only. Rocks "aligned ~60% toward the terrain normal" cannot be expressed.
+- **`2-14` and `2-17` need a per-instance fade scalar.** There is nowhere to put it.
+
+`RENDERING_PLAN.md` notices half of this — `2-15`'s note says "do the full-rotation instance matrix in the same commit as the compact instance format so the layout changes once" — but schedules it at `2-15`, which is *after* `2-12` builds card trees against the old layout. The layout would change twice.
+
+**Design change:** a dedicated `2-11a` item, landing between the atlas and the trees, that replaces Babylon's built-in `matrix` attribute with a compact custom attribute set and builds the world matrix in the vertex shader. Concretely, 32 bytes:
+
+| Offset | Field | Type | Purpose |
+|---|---|---|---|
+| 0 | `position` | 3 × f32 | cell-local metres |
+| 12 | `orientation` | 4 × snorm16 | full rotation quaternion (`2-15`) |
+| 20 | `scale` | f16 | uniform |
+| 22 | `fade` | unorm8 | LOD crossfade / cull fade (`2-14`, `2-17`) |
+| 23 | `variant` | u8 | crown/rock variant index |
+| 24 | `tint` | 4 × unorm8 | per-instance colour |
+| 28 | `windPhase`, `windResponse` | 2 × unorm8 | absorbs `instanceWind` (`2-13`) |
+| 30 | `spare` | 2 × u8 | reserved |
+
+**This is feasible on this stack and the risk is already retired.** The codebase already ships a custom thin-instance attribute (`instanceWind`) consumed by a `MaterialPluginBase` (`DetailWindMaterialPlugin`), and Phase 0 `0-9` proved that plugin vertex participation composes with `ShadowDepthWrapper` — with the incantation recorded verbatim in `ARCHITECTURE.md`. Building the matrix in the vertex shader is the same mechanism, one step further.
+
+**One cost that must be named:** with no CPU-side `matrix` buffer, Babylon's `thinInstanceRefreshBoundingInfo` cannot compute bounds, so frustum culling and shadow-caster registration lose their input. The answer is to compute the AABB in the generator, which already knows every position and radius, and call `mesh.setBoundingInfo` directly. That is *cheaper* than today — the current path walks all 400k matrices on every upload and then applies a `scale(1.01)` fudge for wind.
+
+### 3.6 Two smaller findings
+
+**Only two LOD tiers exist.** `DetailLod = "near" | "mid"`, and a `ResidentCell` holds exactly one. `2-14`'s crossfade requires a cell to render *two* LODs simultaneously for the duration of a fade, and `2-17` adds a third tier. Both the type and the resident model change — priced into `2-14` in §4 B5.
+
+**Ocean and inland water have already drifted, exactly as the plan says.** `fresnelSchlick`, `distributionGgx`, `geometrySchlickGgx` and `reflectedSky` are duplicated between `SpectralOceanSystem.ts` and `HydrologySystem.ts`, and the copies disagree: the sun disc is `pow(·, 3200)` in one and `pow(·, 1800)` in the other; the specular gain is `× 2.6` versus `× 4.0`; foam is `(0.69, 0.75, 0.73)` versus `(0.78, 0.84, 0.82)`. Same sun, same water, two answers.
+
+---
+
+## 4. Amendments to `RENDERING_PLAN.md` Phase 2
+
+Seven. Net **+1.0 day**.
+
+### B1 — New item `2-0 cloud-shader-adoption` (2.5 d), and four cloud items shrink
+
+**Change.** Before any cloud feature work, adopt `nature/CloudShaders.ts` as the live cloud shader in one structural commit, and delete the inline WGSL in `VolumetricCloudSystem.ts`. This is Phase 0 `0-3` applied to the second instance of the same problem.
+
+**What adoption delivers on day one** (§3.1): volume-fetch density, the weather-map contract with type and precipitation channels, per-type vertical profiles, sphere-based layer intersection, config-driven dual-lobe HG, three-octave multiple scattering, sky-view-LUT ambient, atmosphere transmittance, blue-noise jitter, density-adaptive step length, scene-depth occlusion, and a two-MRT output carrying motion vectors.
+
+**What it does not deliver**, and therefore what the feature items still own: the noise bake (`2-1`), the weather-map generator and wind shear (`2-2`), anti-tiling (`2-3`), extinction- and phase-decaying MS octaves (`2-4`), empty-space skipping and the coverage prepass (`2-5`), the pixel cap (`2-6`), and the sun-space shadow footprint (`2-7`).
+
+**Adoption is not a straight copy.** Budget within the 2.5 days for: binding the volumes to a temporary procedural stand-in so the shader runs before `2-1` exists; re-applying `1C-8`'s three Phase 1 changes to the adopted shader (aerial-perspective consumption, removal of the private exposure normaliser, transmittance-coupled shadow strength — see the note below); wiring the two-MRT output through the existing temporal-resolve and composite passes; and deleting `nature/index.ts`, which has no importers.
+
+**On the cross-phase cost.** `1C-8` (1.5 d) modifies the shader that `2-0` replaces. Moving `1C-8` into Phase 2 would avoid the rework, but it would leave clouds unhazed for all of Phase 1 — breaking that phase's demo state ("distance reads as distance") in the most visible part of the frame. The judgement is to keep `1C-8` in Phase 1 and pay ~0.25 d re-applying its substance here. That cost is real, it is priced, and it is the cheaper of the two options.
+
+**Cost:** `2-0` +2.5; `2-2` 2.5 → 1.5; `2-4` 2.0 → 1.5; `2-5` 2.0 → 1.5; `2-7` 2.5 → 2.0. **Net 0.0** — the adoption pays for itself out of the items it de-risks, and Gate 2A stays at 13.5 days.
+
+### B2 — `2-8` stores slope, not normals, and mandates `textureSampleGrad`
+
+**Change.** Two specifications added to `2-8`, both from §3.3 and §3.4: the cascade output becomes `RG = slope, B = foam, A = Jacobian`, and every cascade sample uses `textureSampleGrad` with derivatives taken from the unwrapped coordinate.
+
+**Why it must be specified rather than discovered.** Storing slope is what makes a box-filtered mip *correct*; without it, `2-8` ships mips that make distant water look rougher instead of smoother, which is the opposite of the item's entire purpose. And the `fract` derivative trap surfaces only after the mips land, disguised as a mip-chain bug.
+
+**Cost:** 0.0. Both are within `2-8`'s existing 4.0 days; they are the difference between the item working and not.
+
+### B3 — `2-8a water-shader-extraction` (0.75 d) moves out of `2-9` and lands *first*
+
+**Change.** `RENDERING_PLAN.md` folds the `WaterShaders.ts` extraction into `2-9`. Pull it out and run it before `2-8`.
+
+**Why.** `2-8` rewrites the ocean fragment shader's sampling and roughness path. Extracting the shared helpers afterwards means the extraction has to reconcile a freshly-diverged copy; extracting first means `2-8` edits one shared file and hydrology inherits the improvement. The extraction is also mechanically verifiable in a way the rest of `2-9` is not: the ocean's output must be **byte-identical** before and after, which the screenshot harness can assert directly.
+
+The divergent constants (§3.6) become named parameters with the difference made explicit and deliberate — not two literals that drifted.
+
+**Cost:** `2-9` 3.0 → 2.25, `2-8a` +0.75. **Net 0.0.**
+
+### B4 — New item `2-11a instance-format` (1.5 d), and three items shrink
+
+**Change.** Per §3.5, land the compact 32-byte instance format and vertex-shader matrix construction as its own item between `2-11` and `2-12`, rather than as a side effect of `2-15`.
+
+**Why.** `2-12`, `2-14`, `2-15`, `2-16` and `2-17` all write instance data. Changing the layout at `2-15` means `2-12`'s card trees ship against the 96-byte format and are then rewritten. Landing it before the first consumer means the layout changes once, which is what `2-15`'s own note asks for — just at the right point in the order.
+
+**Cost:** `2-11a` +1.5; `2-15` 2.0 → 1.5; `2-16` 2.5 → 2.0. **Net +0.5.**
+
+### B5 — `2-14` grows to 2.0 d for the two-LOD resident model
+
+**Change.** `2-14` must also change `DetailLod` to three tiers and let a resident cell hold two LODs during a fade (§3.6).
+
+**Why.** A dither crossfade between LODs is not a shader change alone — both meshes must be resident and drawn for the fade window. Today `ResidentCell` carries a single `lod` and switching disposes the outgoing batch. The source plan prices `2-14` as a shader item.
+
+**Cost:** `2-14` 1.5 → 2.0. **Net +0.5.**
+
+### B6 — Five ownership rows are added to `ARCHITECTURE.md` as their items land
+
+**Change.** Phase 2 creates or promotes five artifacts that Phase 3 and beyond will be tempted to fork. Each gets a row and therefore a single-definition-site test (§5).
+
+**Why.** Phase 0's boundary test did not catch the `CloudShaders.ts` duplication because there was no cloud row. The machinery works; it just was not pointed at this subsystem. **Cost: 0.0** — folded into the item that creates each artifact.
+
+### B7 — Gate ordering is water-before-vegetation, deliberately
+
+**Change.** Run Gate 2B (water surface) before Gate 2C (living ground), rather than in the plan's item-number order.
+
+**Why.** `2-10 retire-planar-reflection` frees 0.5–1.0 ms of amortised frame time. Gate 2C's alpha-tested foliage, grass and impostors are the largest new per-frame cost in the phase and they defeat TBDR hidden-surface removal. Doing water first means the budget those draws need is already on the table when `assertWithinBudget()` starts failing. **Cost: 0.0.**
+
+### Amended ledger
+
+| Gate | `RENDERING_PLAN.md` | Amendments | This plan |
+|---|---|---|---|
+| 2A — Clouds | 13.5 | +2.5 `2-0`, −2.5 across `2-2`/`2-4`/`2-5`/`2-7` | **13.5** |
+| 2B — Water surface | 8.5 | +0.75 `2-8a`, −0.75 `2-9` | **8.5** |
+| 2C — Living ground | 21.0 | +1.5 `2-11a`, +0.5 `2-14`, −1.0 across `2-15`/`2-16` | **22.0** |
+| **Phase 2** | **43.0** | **+1.0** | **44.0 d ≈ 9.8 weeks** |
+
+---
+
+## 5. Ownership rows Phase 2 adds
+
+`ARCHITECTURE.md` §1 is enforced by `src/render/webgpu/owners.ts` and `tests/architecture.boundaries.test.ts`: a second definition of an owned artifact fails `npm test` with a message naming the owner. Phase 2 adds five rows, each in the commit that creates its artifact.
+
+| Artifact | Owner | Definition site | Lands at |
+|---|---|---|---|
+| Volumetric cloud shader modules | clouds | `src/render/webgpu/nature/CloudShaders.ts` | `2-0` |
+| Cloud noise + weather bake | clouds | `src/render/webgpu/clouds/CloudVolumeBake.ts` | `2-1` |
+| Shared water shading helpers | water | `src/render/webgpu/water/WaterShaders.ts` | `2-8a` |
+| Detail instance format | vegetation | `src/render/webgpu/detail/instanceFormat.ts` | `2-11a` |
+| Foliage and impostor atlases | vegetation | `src/render/webgpu/detail/FoliageAtlas.ts` | `2-11`, extended `2-17` |
+
+**On where the cloud shader lives.** After adoption the WGSL modules stay in `nature/CloudShaders.ts` and `clouds/VolumetricCloudSystem.ts` consumes them. That is not a preference — it mirrors the arrangement that already works in this codebase, where `water/SpectralOceanSystem.ts` consumes `nature/OceanShaders.ts` and `nature/OceanConfig.ts`. `nature/` is the shader library; the system directories are the runtimes. Consistency with the working pattern beats relocating files.
+
+**On `nature/index.ts`.** The barrel has zero importers. After `2-0` and `2-8a`, every module beneath it is live. Delete the barrel rather than leaving an unreferenced re-export surface — dead-but-compiling code is the habit this whole programme is correcting.
+
+---
+
+## 6. Work order
+
+### 6.1 Gate order and dependencies
+
+All Phase 0/1 dependencies are satisfied at Phase 2 start, so the three chains are independent. The order is **2A clouds → 2B water → 2C living ground**, for three reasons: clouds fill the upper hemisphere and give the largest visible delta per day; water's `2-10` frees the frame budget that vegetation immediately consumes (B7); and 2C is the longest chain and the most likely to overrun, so it sits last where an overrun eats phase slack instead of blocking two other subsystems.
+
+```
+Gate 2A   2-0 ──→ 2-1 ──→ 2-2 ─┬─→ 2-3 ─┐
+                               └─→ 2-4 ─┴─→ 2-5 ──→ 2-6
+          2-7 (independent; needs 1C-4, done in Phase 1)
+
+Gate 2B   2-8a ──→ 2-8 ──→ 2-9 ──→ 2-10
+
+Gate 2C   2-11 ──→ 2-11a ──→ 2-12 ─┬─→ 2-13 ──→ 2-16
+                                   └─→ 2-14 ──→ 2-17 ──→ 2-18
+          2-15 (needs 2-11a only)
+```
+
+**Slack, for when something blocks.** `2-3` and `2-4` are siblings; `2-13` and `2-14` are siblings; `2-15` needs only the instance format and can be pulled forward from anywhere in Gate 2C. `2-7` needs nothing inside Phase 2 and can move to any point in Gate 2A. Everything else is a hard chain.
+
+### 6.2 Week ledger — 4.5 productive days per week
+
+| Week | Days | Work | Cumulative |
+|---|---|---|---|
+| 1 | 0 → 4.5 | `2-0` cloud-shader adoption (2.5) · `2-1` noise + weather bake (2.0) | 4.5 |
+| 2 | 4.5 → 9.0 | `2-2` shape + wind shear (1.5) · `2-3` anti-tiling (1.5) · `2-4` lighting (1.5) | 9.0 |
+| 3 | 9.0 → 13.5 | `2-5` adaptive march (1.5) · `2-6` cloud pixel cap (1.0) · `2-7` shadow rework (2.0) → **Gate 2A closes, d13.5** | 13.5 |
+| 4 | 13.5 → 18.0 | `2-8a` water-shader extraction (0.75) · `2-8` slope + mips (3.75 of 4.0) | 18.0 |
+| 5 | 18.0 → 22.5 | `2-8` finish · `2-9` sun + foam (2.25) · `2-10` retire planar reflection (1.5) → **Gate 2B closes, d22.0** · `2-11` start | 22.5 |
+| 6 | 22.5 → 27.0 | `2-11` foliage atlas finish · `2-11a` instance format (1.5) · `2-12` card trees (1.5 of 4.0) | 27.0 |
+| 7 | 27.0 → 31.5 | `2-12` finish (2.5) · `2-13` wind three-band (1.0) · `2-14` LOD crossfade (1.0 of 2.0) | 31.5 |
+| 8 | 31.5 → 36.0 | `2-14` finish (1.0) · `2-15` procedural rocks (1.5) · `2-16` grass and ground cover (2.0) | 36.0 |
+| 9 | 36.0 → 40.5 | `2-17` octahedral impostors (4.5 of 6.0) | 40.5 |
+| 10 | 40.5 → 44.0 | `2-17` finish (1.5) · `2-18` seasonal foliage (2.0) → **Gate 2C / Phase 2 closes, d44.0** | 44.0 |
+
+`2-17` is the single largest item in the phase at 6.0 days and it sits at the end, where a slip has nowhere to propagate. That is deliberate — see §11 R-2G for its cut line.
+
+---
+
+## 7. Gate 2A — Clouds (13.5 d)
+
+**Goal.** G3. Cumulus with flat bases, cauliflower tops and ragged translucent edges; genuinely varied sizes and opacities; no repeat over a 200 km leg; interior depth, a real silver lining, and shaded sides that hold blue skylight. Individual cloud shadows with recognisable shapes sweeping the ground.
+
+**The two tuning knobs for this gate are `densityMultiplier` and `extinctionPerMeter`.** Every other constant comes from the literature and is pinned by a test. The plan is explicit that this subsystem is easy to over-tune into milk.
+
+---
+
+### `2-0` — Cloud shader adoption (2.5 d) · Class P
+
+**Intent.** Make `nature/CloudShaders.ts` the live cloud shader and delete the parallel path. §3.1 and §4 B1.
+
+**Steps.**
+
+1. **Bind the volumes to a stand-in.** The adopted shader requires `base_noise_texture` and `detail_noise_texture` as `texture_3d<f32>`, and `2-1` does not exist yet. Create both as small procedurally-filled 3D textures written once from the CPU (`RawTexture3D`), so the shader compiles and runs from the first commit. `2-1` replaces the fill with a GPU bake and nothing else changes. **This ordering is what makes the adoption a single reviewable commit** rather than a two-week branch.
+2. **Bind the weather texture** the same way — a CPU-filled `rgba8` stand-in with plausible coverage/type channels; `2-2` replaces it with the generator.
+3. **Wire the two-MRT output** through the existing temporal-resolve and composite passes. The adopted raymarch emits premultiplied radiance + transmittance in target 0 and distance + motion + confidence in target 1; the current temporal pass expects one RGBA. The adopted `CLOUD_TEMPORAL_RESOLVE_WGSL` compute module already consumes the new layout — prefer it over adapting the old fragment pass.
+4. **Re-apply `1C-8`'s three changes** to the adopted shader: consumption of the aerial-perspective include, removal of any private exposure normaliser, and shadow strength multiplied by the fragment's transmittance.
+5. **Bind every config field** (§3.2) and add the Node test asserting that each declared `VolumetricCloudConfig` key reaches a uniform.
+6. **Delete** the inline `CLOUD_RUNTIME_DENSITY_WGSL`, `CLOUD_INTEGRATION_FRAGMENT_WGSL`, `CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL` and `nature/index.ts`. Add the ownership row.
+
+**Two things that will bite.** The adopted shader uses `cloudRaySphere` against planet-centred shells while the live system uses flat slabs and a 118 km camera-centred composite shell — check the shell radius still encloses the sphere intersection at the new `camera.maxZ` of 45 km. And `sampleCloudWeather` applies `fract()` to a world-space UV, which carries the same derivative trap as §3.4; it is harmless at mip 0 but must be `textureSampleGrad` if the weather texture ever gains mips.
+
+**Done when.** The screenshot pair renders through the adopted shader with no inline cloud WGSL remaining; `npm run test:gpu` compiles all three `CLOUD_SHADER_MODULES`; the config-binding test passes; the boundary test names `clouds` as the owner.
+
+---
+
+### `2-1` — Noise and weather bake (2.0 d) · Class P
+
+**Intent.** Replace 64 hash calls per density sample with one or two texture fetches — the budget that pays for everything else in this gate.
+
+Bake once at startup on the GPU, following the `SpectralOceanSystem` compute pattern (`createCompute`, explicit `bindingsMapping`, 3D storage textures, `fastMode = true` after a compile barrier): a **tileable Perlin-Worley base volume** (128³, r8unorm), a **detail volume** (32³, r8unorm) and a **curl volume** (32³, rgba8unorm). `RENDERING_PLAN.md` §6 rows 14–16 and §7's platform note confirm 3D storage textures are WebGPU core and Babylon's WGSL processor maps 3D texture functions — ship them as 3D, not as a `texture_storage_2d_array` workaround.
+
+**Tileability is the whole point and it is easy to get wrong.** Every noise primitive must wrap on the volume's own cell grid — wrap cell indices modulo the octave frequency, exactly as Phase 3's material synthesis will need for its periodic noise. A volume that does not tile produces a visible seam every 128 texels of world space, which is worse than the analytic field it replaces. **Test:** sample the volume at `u` and `u + 1.0` for 4,096 random coordinates and assert bit-equality.
+
+**Also here:** the weather-map generator that `2-0` stubbed. Coverage, cloud type and precipitation as three channels of one `rgba8` texture, driven by the environment state's weather scalars.
+
+---
+
+### `2-2` — Shape and wind shear (1.5 d) · Class P
+
+Coverage-driven remap, per-type vertical profiles and detail erosion arrive with `2-0`; what remains is tuning them against the real baked volumes and adding **wind shear** — a horizontal offset applied to the sample position proportional to height fraction, so cumulus lean downwind instead of standing as vertical pillars. Three lines, and one of the strongest cheap cues that the sky is a fluid.
+
+`RENDERING_PLAN.md` cuts the separate cirrus ray-march slab; wind shear is what survives of it.
+
+---
+
+### `2-3` — Anti-tiling (1.5 d) · Class P
+
+A toroidal weather clipmap plus dual-scale shape sampling, so a 200 km straight leg never shows the same cloud group twice. The toroidal update is the same pattern `5-10`'s bathymetry clipmap will use — write it so that the addressing helper is reusable.
+
+**Exit gate is visual and must be flown**, not asserted: a 200 km straight leg at cruise with no recognisable repeat.
+
+---
+
+### `2-4` — Lighting (1.5 d) · Class P
+
+The adopted shader brings dual-lobe HG, powder and three-octave multiple scattering. Two corrections remain:
+
+- **The MS octaves must decay extinction and phase, not only energy.** The adopted loop decays `order_weight` and takes `sqrt` of transmittance per order, which is the energy half only. Wojciech Jarosz's / Schneider's formulation decays all three per octave (`a^n`, `b^n`, `c^n`). Without the extinction decay the octaves brighten the cloud uniformly instead of filling shadowed interiors, which reads as milk.
+- **Powder should be directional.** It is a backscatter approximation and must fall off as the view aligns with the sun.
+
+**Fix the constants from the literature first, then tune only the two knobs.** Pin the phase function with a Node test: the dual-lobe HG integrated over the sphere must equal 1 within 1%.
+
+---
+
+### `2-5` — Adaptive march (1.5 d) · Class P
+
+Density-adaptive step length arrives with `2-0`. What remains is the expensive half: **empty-space skipping** — on a zero-density sample, advance by the long step and keep advancing until density reappears, then step back one and resume fine — and a **low-resolution coverage prepass** that establishes per-tile entry and exit distances so the fine march never traverses empty sky.
+
+Target: 2–4× fewer density samples at equal quality, measured by a counter in the numeric report, not by impression.
+
+---
+
+### `2-6` — Cloud pixel cap (1.0 d) · Class P
+
+`resolveCloudRenderSize` scales the cloud target off the live back-buffer size, so it inherits whatever the main resolution is. Add an **absolute** cloud pixel cap per tier (§5.3: 0.35 / 0.70 / 1.00 / 1.60 M) clamped alongside the existing scale, and register the cloud pass rows in `PerformanceBudget.ts`.
+
+This is the same argument as `1A-6a`: a multiply is not a cap.
+
+---
+
+### `2-7` — Cloud shadow rework (2.0 d) · Class P
+
+**Today is worse than the audit describes.** The shadow pass marches from `nearDistance = (baseAltitude − surface.y) / sunDirection.y`. At the guard value `sunDirection.y = 0.001` that is 1.5 × 10⁶ m, and the marched span `(top − base)/sunDirection.y` is 5.7 × 10⁶ m over 20 steps — 285 km per step. The map is 512² over `shadowWorldSizeMeters: 90_000`, i.e. **176 m/texel**, and each texel runs 20 analytic density samples at 64 hash calls each: **≈ 335 million hash evaluations per update, every two frames.**
+
+Replace with a **sun-space orthographic footprint**: 512² over 24 km = 47 m/texel (3.7× sharper), and a **single-altitude coverage approximation** instead of a vertical march. Per `RENDERING_PLAN.md` that is 0.26 M density evaluations per update against 3.7 M for a naive march — *cheaper than today while 7.5× sharper*, and the `1/sunDirection.y` degeneracy disappears because the footprint is built in sun space rather than projected through it.
+
+Shadow strength multiplies the fragment's aerial-perspective transmittance (from `1C-4`), so distant terrain is not double-darkened by shadows it should be too hazy to show.
+
+**Watch the contract:** `CloudShadowProjection` carries `sunDirectionY` to consumers via `CloudShadowReceiverRegistry` — which Phase 0 rebuilt on `SharedReceiverRegistry`. Changing the projection basis changes that struct; update the registry's projection type in the same commit, and let the existing `tests/render.webgpu-cloud-shadow-receivers.test.ts` catch consumers that were not updated.
+
+---
+
+## 8. Gate 2B — Water surface (8.5 d)
+
+**Goal.** The surface half of G2. The distant sea stops boiling and becomes smooth, matte and correctly hazed; sun glitter concentrates into one coherent moving path; wave crests glow translucent teal when backlit.
+
+**The two tuning knobs for this gate are `foamThreshold` and the wave-crest SSS intensity.** Everything else — the BRDF, the sun's solid angle, the absorption coefficients — is physical and pinned.
+
+---
+
+### `2-8a` — Water shader extraction (0.75 d) · Class P
+
+Extract `fresnelSchlick`, `distributionGgx`, `geometrySchlickGgx`, the GGX assembly and `reflectedSky` into `src/render/webgpu/water/WaterShaders.ts`, consumed by both `SpectralOceanSystem` and `HydrologySystem`. Add the ownership row so the drift in §3.6 cannot recur.
+
+**The divergent constants become named, explicit parameters** rather than two literals: the sun-disc exponent, the specular gain and the foam albedo are passed in, and the ocean/hydrology difference — if any survives `2-9` — is a value at the call site with a comment, not an accident.
+
+**Verification is unusually strong for a refactor:** the ocean's rendered output must be **byte-identical** before and after. Run `perf:capture` on both sides of the commit and diff. If it is not identical, the extraction changed something and the diff says what.
+
+---
+
+### `2-8` — Ocean slope and mips (4.0 d) · Class P
+
+**Four changes, in order.**
+
+1. **Store slope, not normals** (§3.3). The cascade output becomes `RG = (∂h/∂x, ∂h/∂z)`, `B = foam`, `A = Jacobian`. Delete the `sample.xz / max(sample.y, 0.08)` recovery and its 12.5 slope clamp at the sampling site.
+2. **Mip the cascades.** With slopes stored, a plain box filter is correct. Per `RENDERING_PLAN.md` §7 R6, storage textures can only be written at mip 0 — `webgpuHardwareTexture.js` always creates the write view with `mipLevelCount = 1`, and `ComputeShader.setStorageTexture` takes no mip index — so a compute mip-reduce kernel is not expressible. Call `engine._textureHelper.generateMipmaps(...)` directly. **Private API: add a startup capability assertion in `RenderInvariants.ts` so a Babylon bump fails loudly.** Verify the texture carries `RENDER_ATTACHMENT` usage; `rgbaStorage` currently passes `generateMipMaps = false` and a STORAGE-only texture cannot be mipmapped by Babylon's render-based generator. **Fallback:** a chain of `ProceduralTexture` passes into a mipped RTT.
+3. **`textureSampleGrad` everywhere** (§3.4), with derivatives from the unwrapped coordinate. GPU test: sample a span crossing a patch boundary; assert the selected LOD is continuous.
+4. **Toksvig/LEAN variance → roughness.** Track slope variance through the mip reduction and fold the lost detail back into roughness. This is what replaces today's `smoothstep(1200, 36000, cameraDistance) * 0.075` ad-hoc distance term, and it is the actual mechanism that stops the distant sea boiling: the sub-pixel wave detail becomes roughness instead of aliasing.
+
+Per-vertex cascade fade below Nyquist replaces the hardcoded `0.62 / 0.82 / 0.74 / 0.52 / 0.36` blend weights.
+
+**Demo state for this item alone:** *"Now it looks like the ocean."*
+
+---
+
+### `2-9` — Sun and foam (2.25 d) · Class P
+
+One **solid-angle-correct GGX lobe** via Karis's representative-point method: `alpha' = clamp(alpha + sunAngularRadius / (2 · distanceToHorizon), alpha, 1)`, energy renormalised by `(alpha/alpha')²`. This deletes `pow(·, 3200)`, `pow(·, 1800)`, `× 2.6` and `× 4.0` — four magic numbers replaced by one physical quantity, the sun's 0.004675 rad angular radius, which `EnvironmentState` already carries and `1C-1` made live.
+
+**Lit textured foam** with an advected Worley break-up mask, replacing the flat `mix(water, vec3f(0.69, 0.75, 0.73), foam)` — foam is a Lambertian surface and must respond to the sun.
+
+**Wave-crest subsurface scattering** driven by the summed displacement's `y`, which the vertex shader already computes and currently discards. This is what makes crests glow translucent teal when backlit and it is the cheapest large win in the gate.
+
+Environment reflections come from the shared IBL probe (`1C-6`), with `roughnessToMip` calibrated so α = 0.075 lands at mip 0 and α = 0.34 at mip 2 — water roughness never exceeds ~0.34, so a box mip chain suffices and no GGX convolution is needed.
+
+---
+
+### `2-10` — Retire the planar reflection (1.5 d) · Class T
+
+`resolvePlanarReflectionBudget` gives tier 2 a 480×270 target on a 3-frame cadence. With the IBL probe live and water roughness capped at 0.34, the sky environment cube covers ≥ 80% of every water reflection. Retire the system: −0.5 to −1.0 ms/frame amortised, and one fewer camera that `1C-4`'s aerial perspective has to serve.
+
+**Keep `acceptsInlandPlanarReflection` and the lake hysteresis logic** — `RENDERING_PLAN.md` is explicit that it is correct and non-obvious. Treat it as Class T: preserve it, do not improve it, and expect `5-12` to rebuild the lake path around it.
+
+Retire Governor B's planar-reflection cadence rung (`1A-6b` lever 3) in the same commit and reconcile the budget contract, or the governor will be pulling a lever attached to nothing.
+
+---
+
+## 9. Gate 2C — Living ground (22.0 d)
+
+**Goal.** G4. Trees have leaves; silhouettes break up against the sky; backlit crowns glow. Grass returns. Rocks have varied silhouettes and sit tilted into the slope. Forest extends to the horizon.
+
+**The two tuning knobs for this gate are the alpha-test threshold and the grass density ramp constant.** Species mixes, crown geometry and LOD radii are structural.
+
+---
+
+### `2-11` — Foliage texture atlas (2.0 d) · Class P
+
+Procedurally synthesised leaf, needle and bark textures into one atlas. Two techniques are non-negotiable and both are the usual reason procedural foliage fails:
+
+- **Alpha dilation.** Push colour outward into the transparent region before mipping. Without it, filtered texels blend toward the transparent border colour and every leaf gains a dark halo at range.
+- **Castano coverage preservation.** Rescale each mip's alpha so its coverage at the alpha-test threshold matches mip 0. Without it, foliage evaporates with distance — the canopy thins to nothing and the tree becomes a bare skeleton.
+
+**Test:** mip-N alpha coverage within 3% of mip-0, at the shipping alpha-test threshold, for every atlas layer.
+
+---
+
+### `2-11a` — Compact instance format (1.5 d) · Class P
+
+Per §3.5 and §4 B4. Replace the 96-byte `matrix` + `color` + `instanceWind` triple with the 32-byte layout, and build the world matrix in the vertex shader inside a `DetailInstanceMaterialPlugin` that absorbs `DetailWindMaterialPlugin`.
+
+**Four things this commit must get right.**
+
+1. **Follow the `0-9` incantation exactly.** Attach every vertex-participating plugin to the `PBRMaterial`, *then* assign `material.shadowDepthWrapper = new ShadowDepthWrapper(material, scene)` **before the material's first effect compiles** — the wrapper learns about base-material effects through `onEffectCreatedObservable` and silently falls back to the undisplaced depth pass if attached later. No `remappedVariables`. This is recorded verbatim in `ARCHITECTURE.md` and proven in `tests/gpu/shadow-depth-wrapper.test.ts`.
+2. **Compute bounds in the generator.** With no CPU-side matrix buffer, `thinInstanceRefreshBoundingInfo` has no input. The generator already knows every position and radius; emit an AABB with the batch and call `mesh.setBoundingInfo` directly. This is strictly cheaper than today's walk over 400k matrices plus a `scale(1.01)` wind fudge — the wind extent becomes an explicit term.
+3. **Build into a pooled buffer.** Today `uploadBatch` calls `Float32Array.from(batch.matrices)` on a JS `number[]`. Write the packed bytes into a pooled `ArrayBuffer` during generation and upload it directly.
+4. **Delete the dead GLSL branch** in `DetailWindMaterialPlugin`. The renderer is WebGPU-only; the GLSL path has never executed.
+
+**Memory result to check against `assertWithinBudget()`:** 400,000 instances fall from 38.4 MB to 12.8 MB, inside the §5.2 Balanced vegetation row of 28 MiB with room for the atlases.
+
+---
+
+### `2-12` — Card trees (4.0 d) · Class P
+
+Species-specific branch skeletons carrying 40–70 alpha-tested foliage quads, hemispherically distributed and tilted outward so the crown reads as volume from every angle. Three crown variants per species so neighbours are not clones — the `variant` byte in the instance format selects them.
+
+**Generated tangents**, which do not exist anywhere in this codebase today and without which Babylon's `NORMALMAP` path is structurally unreachable.
+
+**`subSurface.isTranslucencyEnabled` at intensity ~0.8.** `RENDERING_PLAN.md` §3.5 is unambiguous that backlit foliage glowing instead of crushing to black is the strongest single not-plastic cue for vegetation.
+
+**Alpha test, not alpha blend. No stochastic alpha** — there is no TAA to resolve it.
+
+**Two performance facts to design around, both from §7 R11.** Alpha test defeats TBDR hidden-surface removal, so foliage goes in a separate render group *after* opaque terrain. And alpha-to-coverage is off, so foliage gets **no** MSAA benefit — the silhouette quality comes from the atlas and the coverage-preserved mips, not from `1B-11`.
+
+This replaces `createTreeCrown`'s 9-sided opaque cones and icospheres.
+
+---
+
+### `2-13` — Three-band wind (1.0 d) · Class P
+
+Three superposed frequency bands — trunk sway, branch flex, leaf flutter — driven by the instance's `windPhase` and `windResponse` bytes and the shared wind field in `src/world/wind.ts`. The existing single-band plugin becomes the middle band.
+
+---
+
+### `2-14` — LOD crossfade (2.0 d) · Class P + T
+
+Bayer dither plus a per-instance hash, applied at **every LOD switch and at the cull radius**. Per §3.6 and §4 B5 this also changes the resident model:
+
+- `DetailLod` becomes three tiers (`near`, `mid`, `impostor`).
+- A `ResidentCell` holds two LODs for the duration of a fade, with the outgoing batch disposed only when the fade completes.
+- The `fade` byte in the instance format drives the dither threshold.
+
+**Pin the dither to output resolution.** Governor A's floor is 0.75 after `1A-6b`, so the pattern will not crawl — but the dither must be evaluated against the render target, not the CSS viewport, or a governor step makes it swim.
+
+---
+
+### `2-15` — Procedural rocks (1.5 d) · Class P
+
+Displaced icospheres with **per-lithology flat versus smooth normals** — `RENDERING_PLAN.md` §3.5 notes the shading-model difference reads as lithology more strongly than colour does. Instances aligned ~60% toward the terrain normal, using the quaternion the instance format now carries, and sunk by `radius · (0.12 + 0.25 · hash)` so they sit *in* the ground rather than on it.
+
+---
+
+### `2-16` — Grass and ground cover (2.0 d) · Class P
+
+Grass as **patches, not blades**: 12–16 crossed tapered blades, ~48 triangles, covering ~2.5 m². A `1/d` density ramp so *screen-space* blade density is roughly constant rather than exploding at the camera. Plus ferns, heather and reeds at ~15% of the budget so the ground is not one uniform green fuzz.
+
+This closes what the audit calls the single most damaging failure mode: **no scale reference below 7 m on approach**, which collapses speed and height perception on final — the one thing a flight simulator is judged on.
+
+**Grass radius is the first tier knob**, per §5.3 (90 / 150 / 220 / 320 m), because grass is the largest single triangle consumer in the renderer. Exit budget: ≤ 0.9 M triangles at Balanced.
+
+---
+
+### `2-17` — Octahedral impostors (6.0 d) · Class P
+
+Hemi-octahedral 4×4 bake per species with a **three-view barycentric blend**. `RENDERING_PLAN.md` corrected this item from 3 days to 6 for exactly one reason, and it is the reason the item is hard: **view snapping is what makes cheap impostors flicker when the aircraft banks.** A nearest-view impostor is a two-day item that looks wrong in the manoeuvre a flight simulator performs most.
+
+Bake albedo, normal and depth per view. The impostor tier plugs into the third LOD slot that `2-14` created and fades in through the same dither.
+
+**Exit criterion:** impostor and LOD1 average colour match within a few percent across a full sun sweep — otherwise the LOD transition reads as a brightness pop even when the geometry match is good.
+
+---
+
+### `2-18` — Seasonal foliage (2.0 d) · Class P
+
+A deciduous leaf-out / leaf-fall curve driving crown tint and alpha; conifers hold. Winter adds slope-weighted snow on canopy and rock. **Species mix stays climatic and does not change with season** — that is a `4-6` classifier concern, not an appearance concern.
+
+Per `ARCHITECTURE.md` §4's threading rule, `dayOfYear` is part of the appearance field's signature from the first line, and the boundary test checks for the environment-clock reference.
+
+**One open decision, to be settled by measurement.** `RENDERING_PLAN.md` asks for the impostor atlas baked per season bucket — 4 buckets × the existing atlas — and flags that the added slots must be checked against the §5.2 ceiling. With `2-11a`'s compact instances there is room, but 4× the impostor atlas is the largest single texture allocation in the vegetation budget. **Recommendation: bake 2 buckets (leafed and bare) and cross-fade between them, and only go to 4 if `assertWithinBudget()` shows headroom at High.** Record the measurement in the decision log.
+
+---
+
+## 10. Verification
+
+### 10.1 Assertions Phase 2 adds
+
+Phase 0 contributed 18 and Phase 1 sixteen more. Phase 2 adds:
+
+| # | Assertion | By | Guards against |
+|---|---|---|---|
+| 35 | Every `VolumetricCloudConfig` field reaches a shader uniform | `2-0` | §3.2 — a tier table that lies |
+| 36 | All three `CLOUD_SHADER_MODULES` compile (GPU) | `2-0` | A Babylon bump silently breaking clouds |
+| 37 | Noise volumes are bit-exactly tileable at `u` and `u + 1` | `2-1` | A seam every 128 texels of world space |
+| 38 | Dual-lobe HG integrates to 1 over the sphere within 1% | `2-4` | Phase-function energy drift during tuning |
+| 39 | Density samples per frame ≤ 40% of the `2-4` baseline | `2-5` | The adaptive march not actually adapting |
+| 40 | Cloud target ≤ `maxCloudPixels[tier]` at three viewports | `2-6` | The `1A-6a` failure repeating in the cloud pass |
+| 41 | Ocean output byte-identical across the `2-8a` extraction | `2-8a` | A refactor that silently changes shading |
+| 42 | Cascade mip N equals the box average of mip N−1 | `2-8` | Storing normals instead of slopes |
+| 43 | Selected LOD is continuous across a patch boundary (GPU) | `2-8` | §3.4 — the `fract` seam grid |
+| 44 | Mip-generation capability assertion at startup | `2-8` | A Babylon bump breaking the private mip path |
+| 45 | Foliage mip-N alpha coverage within 3% of mip-0 | `2-11` | Distant foliage evaporating |
+| 46 | Packed instance round-trips through the 32-byte layout | `2-11a` | Silent precision loss in orientation or tint |
+| 47 | Instance bytes × instance cap ≤ the §5.2 vegetation row | `2-11a` | Blowing the memory budget with instances alone |
+| 48 | Plugin-displaced foliage casts a matching shadow (GPU) | `2-12` | The `0-9` incantation being applied wrongly |
+| 49 | Grass triangles ≤ 0.9 M at Balanced | `2-16` | The largest triangle consumer going unbounded |
+| 50 | Impostor and LOD1 mean colour within a few % across a sun sweep | `2-17` | A brightness pop at the LOD transition |
+| 51 | Every seasonal appearance field takes `dayOfYear` | `2-18` | The `ARCHITECTURE.md` §4 threading rule |
+
+### 10.2 What cannot be asserted, and what replaces assertions
+
+Three of this phase's exit criteria are irreducibly visual: no repeated cloud group over a 200 km leg, cumulus reading as cumulus, and forest reading as forest. There is no test for these.
+
+What replaces a test is a **named flight and a committed screenshot**. Add three fixed captures to `perf:capture` in `2-0`, and treat them exactly as the terrain baselines are treated: a change is a regression until argued otherwise.
+
+1. **Cruise, sun at 30° off-axis** — cloud shape, silver lining, shadowed sides.
+2. **500 ft AGL over closed forest, sun behind** — foliage translucency, grass scale reference, LOD transition band.
+3. **Coastline at 10 km slant, low sun** — sun glitter path, foam, aerial perspective across the water/land boundary.
+
+The 200 km anti-tiling gate is flown, not captured, and its outcome is recorded in the decision log.
+
+### 10.3 Budget rows
+
+Phase 2's three subsystems have rows in `PerformanceBudget.ts` from `1A-2`, so overspend fails `npm test`. Targets at Balanced from §5.4: **clouds 2.2 ms** (phase exit criterion ≤ 2.5), **water 1.6 ms** (ocean pass ≤ 1.8), **vegetation 1.8 ms**. Memory from §5.2: clouds 16 MiB, vegetation 28 MiB.
+
+`2-10` returns 0.5–1.0 ms to the pool before Gate 2C spends it (§4 B7). If the budget still fails at `2-16` or `2-17`, the first knob is grass radius and the second is impostor radius — in that order, per §5.3's tier rules.
+
+---
+
+## 11. Risk register
+
+| ID | Risk | Trigger | Response |
+|---|---|---|---|
+| **R-2A** | **`2-0` adoption surfaces bugs in never-run code.** 596 lines of `CloudShaders.ts` have only ever been type-checked. | Week 1. | This is the mirror of Phase 0 R-0D, and the same answer applies: it is a benefit, and it is why adoption is scheduled first. Unlike Phase 0, a screenshot baseline now exists, so regressions are visible immediately. Keep the inline shader behind a flag for exactly one commit; delete it once the capture pair passes. If adoption overruns by more than a day, ship the volume-fetch density path alone (the `2-1` payer) and defer the MRT/temporal rework to `2-5`. |
+| **R-2B** | **Cloud lighting over-tunes into milk.** `RENDERING_PLAN.md` warns about this explicitly. | Any tuning session in `2-2`/`2-4`. | Fix all phase and MS constants from the literature *first*; expose exactly two knobs (`densityMultiplier`, `extinctionPerMeter`); pin the phase function with assertion 38. If the sky looks flat, the cause is the missing extinction decay in the MS octaves, not the knobs. |
+| **R-2C** | **`2-8`'s mip generation depends on Babylon private state.** `engine._textureHelper.generateMipmaps` is not public API, and the storage textures must carry `RENDER_ATTACHMENT` usage. | `2-8`, week 4. | Startup capability assertion in `RenderInvariants.ts` so a Babylon bump fails loudly rather than silently un-mipping the ocean. Documented fallback: a chain of `ProceduralTexture` passes into a mipped RTT. Keep `@babylonjs/core` pinned. |
+| **R-2D** | **The `fract` seam grid appears as a consequence of the mip fix** and is misdiagnosed as a mip-chain bug. | `2-8`, immediately after mips land. | Specified up front (§3.4) and guarded by assertion 43. If a grid appears anyway, check the *weather* texture sampler in the cloud shader, which has the same pattern. |
+| **R-2E** | **Alpha-tested foliage blows the frame budget.** It defeats TBDR hidden-surface removal and gets no MSAA benefit. | `2-12` or `2-16`, budget assertion fails. | Separate render group after opaque terrain, mandatory. Then grass radius, then impostor radius. Do not reach for alpha blending — it needs sorting this renderer does not do. |
+| **R-2F** | **The compact instance format breaks culling or shadow bounds.** | `2-11a`, instances vanish at frustum edges or shadows are missing. | Generator-computed AABB with an explicit wind-extent term (§9 `2-11a` point 2). The `0-9` GPU test is the guard for the shadow half; extend it to a thin-instanced mesh in the same commit. |
+| **R-2G** | **`2-17` slips.** It is the largest item in the phase at 6.0 days, it is last, and view-blend correctness is the hard part. | End of week 9 with impostors flickering under bank. | **The phase's designated cut.** Ship LOD1 cards to the full vegetation radius and defer impostors to Phase 6, accepting the triangle cost — `6-8`'s canopy handoff drops the impostor radius from 4 km to ~2.5 km anyway, which makes the deferred version cheaper to build. Second cut: `2-18` (2.0 d), whose absence is a missing feature rather than a broken one. |
+| **R-2H** | **`2-10` leaves inland water with no reflection source.** | `2-10`, lakes go flat. | The IBL probe from `1C-6` is the replacement and must be verified on the hydrology material *before* the planar system is removed, not after. Keep `acceptsInlandPlanarReflection` and the hysteresis regardless — `5-12` needs them. |
+| **R-2I** | **`1C-8`'s Phase 1 cloud work is partly redone at `2-0`.** | Known and accepted. | ~0.25 d, priced into `2-0`. The alternative — moving `1C-8` into Phase 2 — leaves clouds unhazed through all of Phase 1 and breaks that phase's demo state in the most visible part of the frame. |
+
+---
+
+## 12. Exit checklist
+
+**Gate 2A — Clouds**
+- [ ] No inline cloud WGSL remains in `VolumetricCloudSystem.ts`; `nature/CloudShaders.ts` is the single owner and `nature/index.ts` is deleted.
+- [ ] Every `VolumetricCloudConfig` field reaches a shader uniform.
+- [ ] Noise volumes are baked on the GPU at startup and are bit-exactly tileable.
+- [ ] Cumulus have flat bases and cauliflower tops; stratus reads as a sheet; type varies across the weather map.
+- [ ] A 200 km straight leg at cruise shows no recognisable repeat (flown, recorded).
+- [ ] Cloud interiors hold blue skylight; a silver lining appears at the sun-facing edge.
+- [ ] Density samples per frame ≤ 40% of the pre-`2-5` baseline.
+- [ ] Cloud target respects the per-tier absolute pixel cap.
+- [ ] Cloud shadows are 47 m/texel and stay correct at sun elevations below 5°.
+- [ ] Cloud pass ≤ 2.5 ms at Balanced, measured by `perf:capture`.
+
+**Gate 2B — Water surface**
+- [ ] Ocean output byte-identical across the `2-8a` extraction.
+- [ ] `WaterShaders.ts` is the single owner; ocean and hydrology share one BRDF and one sun disc.
+- [ ] Cascades store slope; mip N equals the box average of mip N−1.
+- [ ] No seam grid at any patch boundary; LOD selection is continuous.
+- [ ] The distant sea is smooth and matte; roughness comes from slope variance, not a distance smoothstep.
+- [ ] Sun glitter is one coherent path from a solid-angle-correct lobe; no `pow(·, 3200)` or `pow(·, 1800)` remains.
+- [ ] Wave crests glow translucent when backlit.
+- [ ] The planar reflection system is retired and Governor B's cadence rung with it.
+- [ ] Ocean pass ≤ 1.8 ms at Balanced.
+
+**Gate 2C — Living ground**
+- [ ] Foliage mip-N alpha coverage within 3% of mip-0 at the shipping threshold.
+- [ ] Instances are 32 bytes; the world matrix is built in the vertex shader; bounds come from the generator.
+- [ ] Plugin-displaced foliage casts a matching shadow (GPU test).
+- [ ] Trees have leaves, three crown variants per species, and generated tangents; backlit crowns glow.
+- [ ] Wind moves trunk, branch and leaf on three bands.
+- [ ] LOD switches and the cull radius both crossfade; no pop, no crawling dither.
+- [ ] Rocks are tilted into the slope, sunk, and shaded flat or smooth by lithology.
+- [ ] Grass is present, screen-space density is roughly constant, ≤ 0.9 M triangles at Balanced.
+- [ ] Impostors do not flicker under a full 60° bank; impostor and LOD1 mean colour match across a sun sweep.
+- [ ] Deciduous foliage responds to `dayOfYear`; conifers hold; winter snow is slope-weighted.
+- [ ] Vegetation pass ≤ 1.8 ms and ≤ 28 MiB at Balanced.
+
+**Phase**
+- [ ] User goals **G3** (clouds) and **G4** (vegetation) served; the surface half of **G2** served.
+- [ ] `npm run verify` green; `npm run test:gpu` green.
+- [ ] Five ownership rows added to `ARCHITECTURE.md`; the boundary test passes.
+- [ ] Three new `perf:capture` scenes committed; baseline churned at no more than the four sanctioned points (§10.2 plus `2-8`, `2-12`, `2-17`).
+- [ ] Decision log complete.
+
+---
+
+## 13. Decision log
+
+| Date | Item | Decision | Measurement / rationale |
+|---|---|---|---|
+| — | `2-0` | Adopt `CloudShaders.ts` wholesale, or port feature-by-feature | *record the outcome and any module found unusable* |
+| — | `2-1` | Base volume resolution (128³ assumed) and channel packing | *record the tileability test result and the bake time* |
+| — | `2-4` | Final MS octave constants (energy, extinction, phase decay) | *record the literature source and the two knob values* |
+| — | `2-5` | Density samples per frame, before and after | *the item's whole justification* |
+| — | `2-8` | Mip path: private `generateMipmaps` or `ProceduralTexture` fallback | *record which, and the capability assertion added* |
+| — | `2-11a` | Final 32-byte layout, and the orientation quantisation error | *record max angular error from the snorm16 quaternion* |
+| — | `2-17` | Three-view barycentric blend, or the deferred cut | *record the flicker test under a 60° bank* |
+| — | `2-18` | Season buckets: 2 with cross-fade, or 4 | *record the `assertWithinBudget()` headroom at High* |
+
+---
+
+## Appendix A — File manifest
+
+**New (7)**
+`src/render/webgpu/clouds/CloudVolumeBake.ts` · `src/render/webgpu/clouds/CloudWeatherMap.ts` · `src/render/webgpu/water/WaterShaders.ts` · `src/render/webgpu/detail/instanceFormat.ts` · `src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts` · `src/render/webgpu/detail/FoliageAtlas.ts` · `src/render/webgpu/detail/ImpostorAtlas.ts`
+
+**Promoted from dead to live (1)**
+`src/render/webgpu/nature/CloudShaders.ts` — 596 lines, previously imported only by an unimported barrel
+
+**Substantially modified (8)**
+`clouds/VolumetricCloudSystem.ts` (inline WGSL deleted, adopted modules wired, MRT path, shadow rework) · `clouds/CloudShadowReceiver.ts` (projection basis) · `nature/CloudConfig.ts` (every field bound) · `water/SpectralOceanSystem.ts` (slope storage, mips, `textureSampleGrad`, shared helpers) · `water/HydrologySystem.ts` (shared helpers, constants reconciled) · `detail/WorldDetailRuntime.ts` (instance format, three LOD tiers, two-LOD residency, card trees, grass, rocks, impostors) · `detail/types.ts` (orientation, LOD tiers, fade) · `detail/DetailWindMaterialPlugin.ts` (absorbed into the instance plugin; GLSL branch deleted)
+
+**Deleted**
+`nature/index.ts` (zero importers) · `CLOUD_RUNTIME_DENSITY_WGSL`, `CLOUD_INTEGRATION_FRAGMENT_WGSL`, `CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL` (inline, superseded) · `PlanarWaterReflectionSystem` render path (`acceptsInlandPlanarReflection` and hysteresis retained) · `createTreeCrown`'s cone/icosphere prototypes · the `DetailWindMaterialPlugin` GLSL branch
+
+**Explicitly untouched in Phase 2**
+Terrain geometry, LOD and material (Phases 3–5) · bathymetry, river geometry and water depth optics (Phase 5) · `world/payload.ts` and the page atlas (Phase 4) · the canopy/terrain splat handoff (`6-8`) · night lighting and the airfield (Phase 7)
+
+## Appendix B — Where Phase 2 sits against the audit
+
+| Audit finding | Phase 2's contribution |
+|---|---|
+| §3.4 clouds — analytic density, no weather map, no vertical profile, no MS | Closed by `2-0` … `2-5` |
+| §2.5 water and clouds receive no aerial perspective | Closed in Phase 1 (`1C-4`, `1C-7`, `1C-8`); Phase 2 preserves it through the shader adoption |
+| §3.3 distant sea boils; sun glitter is a sparkle field | Closed by `2-8`, `2-9` |
+| §3.5 vegetation is opaque cones; no ground cover; 176 m lattice | Placement closed in Phase 1 (`1B-7` … `1B-9`); appearance closed by `2-11` … `2-18` |
+| §1 "no scale reference below 7 m on approach" | Closed by `2-16` |
+| The institutional finding — a specified architecture shipped alongside an ad-hoc path | **Second instance found and closed** (`2-0`), and the ownership rows that would have caught it are added (§5) |

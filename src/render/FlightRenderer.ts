@@ -25,13 +25,29 @@ import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiver
 import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMirror";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
-import { WebGpuFrameGraph } from "./webgpu/core/FrameGraph";
 import {
+  FrameGraphBudgetProbe,
+  PassTimingHistory,
+  WebGpuFrameGraph,
+} from "./webgpu/core/FrameGraph";
+import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
+import {
+  cpuWorkSettingsForLevel,
+  createGovernorState,
+  governorConfigForProfile,
+  nextGovernorDecision,
+  observeRenderScaleApplication,
+  type CpuWorkSettings,
+  type GovernorConfig,
+  type GovernorSignals,
+  type GovernorState,
+} from "./webgpu/core/AdaptiveGovernor";
+import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
+import {
+  frameTimingPercentile95,
   freshFrameTiming,
   isUsableFrameTiming,
-  nextDynamicRenderScale,
   resolveWebGpuQualityProfile,
-  worstFrameTimingPercentile95,
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
@@ -51,10 +67,10 @@ import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
-const DYNAMIC_RESOLUTION_SAMPLE_COUNT = 120;
-const DYNAMIC_RESOLUTION_COOLDOWN_FRAMES = 120;
 const MIN_GPU_TIMING_SAMPLES = 8;
 const GPU_TIMING_STALE_AFTER_FRAMES = 30;
+/** The present pass cannot be probed off — cutting it blacks the frame. */
+const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
 
 function rendererAbortError(): Error {
   const error = new Error("WebGPU renderer startup was cancelled");
@@ -232,6 +248,15 @@ export class FlightRenderer implements FlightRenderingSystem {
   private renderScale: number;
   /** Null until 5-2: physics still samples the analytic kernel directly. */
   private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private readonly passTimingHistory = new PassTimingHistory();
+  private governorConfig: GovernorConfig;
+  private governorState: GovernorState;
+  private cpuWorkSettings: CpuWorkSettings = cpuWorkSettingsForLevel(0);
+  private governedProfileCache: WebGpuQualityProfile;
+  private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
+  private budgetProbe: FrameGraphBudgetProbe | null = null;
+  private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
+  private probeDisabledPass: string | null = null;
   private previousFrameStartedAt: number | null = null;
   private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
@@ -239,7 +264,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
   private lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
-  private lastRenderScaleChangeFrameIndex = Number.NEGATIVE_INFINITY;
   private deviceLost = false;
   private disposed = false;
 
@@ -286,7 +310,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
-    this.renderScale = this.profile.renderScale;
+    this.governorConfig = governorConfigForProfile(this.profile);
+    this.governorState = createGovernorState(this.governorConfig);
+    this.governedProfileCache = this.profile;
+    this.renderScale = this.governorState.renderScale;
     this.applyRenderScale();
     this.installFrameGraph();
     this.resizeObserver = new ResizeObserver(() => {
@@ -339,6 +366,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = timestampQueries;
+      assertStartupInvariants({
+        timestampQuerySupported: timestampQueries,
+        gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        requestedFeatures: requiredFeatures,
+        grantedFeatures: engine.enabledExtensions,
+      });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
       scene.useRightHandedSystem = true;
@@ -575,14 +608,57 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.engine.endFrame();
     }
     this.cameraCut = false;
+    this.passTimingHistory.record(this.graph.passTimings);
     this.lastCpuFrameMilliseconds = performance.now() - started;
     this.lastDrawCalls = Math.max(0, Math.round(this.engine._drawCalls.current));
     if (isUsableFrameTiming(this.lastCpuFrameMilliseconds)) {
       this.cpuFrameDurations.push(this.lastCpuFrameMilliseconds);
     }
-    this.captureGpuFrameTiming();
-    if (this.frameIntervalDurations.length >= DYNAMIC_RESOLUTION_SAMPLE_COUNT) {
-      this.updateDynamicResolution();
+    const freshGpuSample = this.captureGpuFrameTiming();
+    if (this.budgetProbe !== null) {
+      // Probe stages deliberately perturb the frame; the governor sits out.
+      this.updateBudgetProbe(freshGpuSample);
+    } else if (this.frameIntervalDurations.length >= this.governorConfig.windowFrames) {
+      this.updateGovernor();
+    }
+  }
+
+  /**
+   * Kick off the budget-probe sweep (1A-1): cycles each frame-graph pass off
+   * for a stage of frames and attributes the whole-frame GPU p95 delta.
+   * HUD-triggered; refuses to start while one is already running.
+   */
+  startBudgetProbe(): boolean {
+    if (this.disposed || this.deviceLost || this.budgetProbe !== null) return false;
+    const passes = this.graph.passNames.filter(
+      (name) => !BUDGET_PROBE_EXCLUDED_PASSES.has(name),
+    );
+    if (passes.length === 0) return false;
+    this.budgetProbe = new FrameGraphBudgetProbe(passes);
+    this.budgetProbeReport = null;
+    this.resetTimingWindow();
+    return true;
+  }
+
+  private updateBudgetProbe(freshGpuSample: number | null): void {
+    const probe = this.budgetProbe;
+    if (!probe) return;
+    probe.recordFrame(freshGpuSample);
+    const desired = probe.running ? probe.currentlyDisabled : null;
+    if (desired !== this.probeDisabledPass) {
+      if (this.probeDisabledPass !== null) {
+        this.graph.setPassDisabled(this.probeDisabledPass, false);
+      }
+      if (desired !== null) this.graph.setPassDisabled(desired, true);
+      this.probeDisabledPass = desired;
+      // Re-enabled passes must not composite month-old history.
+      this.graph.invalidateHistory("budget probe stage");
+    }
+    if (!probe.running) {
+      this.budgetProbeReport = probe.report;
+      this.budgetProbe = null;
+      this.graph.clearDisabledPasses();
+      this.resetTimingWindow();
     }
   }
 
@@ -622,6 +698,24 @@ export class FlightRenderer implements FlightRenderingSystem {
       oceanFftResolution: this.ocean.fftResolution,
       adapter: this.adapterLabel,
       renderingFallbackReason: null,
+      activeGovernor: this.governorState.mode,
+      gpuP95Ms: this.lastSignals.gpuP95Ms,
+      cpuP95Ms: this.lastSignals.cpuP95Ms,
+      cpuWorkLevel: this.governorState.cpuWorkLevel,
+      cpuWorkLever: this.governorState.lastLever,
+      resolutionInsensitive: this.governorState.resolutionInsensitive,
+      renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
+      topPassesByCpuMs: this.passTimingHistory
+        .topByP95(4)
+        .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
+      pendingTerrainPages: terrain.pendingPages,
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
+        cssWidth: Math.max(1, this.domElement.clientWidth),
+        cssHeight: Math.max(1, this.domElement.clientHeight),
+        devicePixelRatio: window.devicePixelRatio || 1,
+      }),
+      budgetProbeActive: this.budgetProbe !== null,
+      budgetProbeReport: this.budgetProbeReport,
     };
   }
 
@@ -827,7 +921,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         velocityZ: state.velocity.z,
       },
       { x: this.originX, y: 0, z: this.originZ },
-      this.profile,
+      this.governedProfileCache,
     );
     this.wildlife.update(
       {
@@ -839,7 +933,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         velocityZ: state.velocity.z,
       },
       { x: this.originX, y: 0, z: this.originZ },
-      this.profile,
+      this.governedProfileCache,
       this.currentDeltaSeconds,
     );
     this.syncDynamicShadowCasters();
@@ -848,7 +942,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private syncDynamicShadowCasters(): void {
     const active = new Map<number, Mesh>();
     const collect = (mesh: Mesh) => active.set(mesh.uniqueId, mesh);
-    this.terrain.addShadowCasters(collect);
+    // Governor B lever 6 shortens caster registration reach under CPU load.
+    this.terrain.addShadowCasters(collect, this.cpuWorkSettings.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
@@ -887,7 +982,12 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   private applyProfile(): void {
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
-    this.renderScale = this.profile.renderScale;
+    // A profile change resets the governor entirely — including any
+    // resolution-insensitive latch, per its re-arm contract.
+    this.governorConfig = governorConfigForProfile(this.profile);
+    this.governorState = createGovernorState(this.governorConfig);
+    this.renderScale = this.governorState.renderScale;
+    this.applyCpuWorkLevel(0);
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
@@ -895,7 +995,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
@@ -926,37 +1025,87 @@ export class FlightRenderer implements FlightRenderingSystem {
     return changed;
   }
 
-  private updateDynamicResolution(): void {
-    const timingGroups: Array<readonly number[]> = [
-      this.frameIntervalDurations,
-      this.cpuFrameDurations,
-    ];
+  /**
+   * One governor decision per completed sample window (1A-6b). Resolution
+   * moves only for GPU-bound frames; CPU-bound frames move the work ladder;
+   * a resolution step that buys nothing is undone and latched against.
+   */
+  private updateGovernor(): void {
     const gpuTimingIsFresh = freshFrameTiming(
       this.lastGpuFrameMilliseconds,
       this.lastGpuTimingFrameIndex,
       this.frameIndex,
       GPU_TIMING_STALE_AFTER_FRAMES,
     ) !== null;
-    if (gpuTimingIsFresh && this.gpuFrameDurations.length >= MIN_GPU_TIMING_SAMPLES) {
-      timingGroups.push(this.gpuFrameDurations);
-    }
-    const p95 = worstFrameTimingPercentile95(timingGroups);
+    const gpuP95Ms = gpuTimingIsFresh && this.gpuFrameDurations.length >= MIN_GPU_TIMING_SAMPLES
+      ? frameTimingPercentile95(this.gpuFrameDurations)
+      : null;
+    const cpuP95Ms = frameTimingPercentile95(this.cpuFrameDurations);
+    const intervalP95Ms = frameTimingPercentile95(this.frameIntervalDurations);
     this.resetTimingSamples();
-    if (p95 === null) return;
-    if (
-      this.frameIndex - this.lastRenderScaleChangeFrameIndex
-      < DYNAMIC_RESOLUTION_COOLDOWN_FRAMES
-    ) return;
-    const next = nextDynamicRenderScale(this.renderScale, p95, this.profile);
-    if (Math.abs(next - this.renderScale) < 0.005) return;
-    this.renderScale = next;
-    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
-    // When the absolute pixel cap is the binding constraint, a governor step
-    // leaves the effective scale unchanged — resetting temporal history for
-    // that would trade a visible cloud hitch for nothing.
-    if (this.applyRenderScale()) {
-      this.graph.invalidateHistory("dynamic resolution changed");
+    this.lastSignals = { gpuP95Ms, cpuP95Ms, intervalP95Ms };
+
+    const previous = this.governorState;
+    let state = nextGovernorDecision(previous, this.lastSignals, this.governorConfig);
+    if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
+      const lowered = state.renderScale < this.renderScale;
+      this.renderScale = state.renderScale;
+      // When the absolute pixel cap is the binding constraint, a governor
+      // step leaves the effective scale unchanged — no history reset, and the
+      // anti-ratchet latch learns about it immediately.
+      const changed = this.applyRenderScale();
+      if (changed) this.graph.invalidateHistory("dynamic resolution changed");
+      if (lowered) {
+        state = observeRenderScaleApplication(state, changed, this.governorConfig);
+        if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
+          this.renderScale = state.renderScale;
+          if (this.applyRenderScale()) {
+            this.graph.invalidateHistory("dynamic resolution changed");
+          }
+        }
+      }
     }
+    if (state.cpuWorkLevel !== previous.cpuWorkLevel) {
+      this.applyCpuWorkLevel(state.cpuWorkLevel);
+    }
+    this.governorState = state;
+  }
+
+  /** Push Governor B's ladder notch into every lever's subsystem seam. */
+  private applyCpuWorkLevel(level: number): void {
+    const settings = cpuWorkSettingsForLevel(level);
+    this.cpuWorkSettings = settings;
+    this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    this.detail.setGenerationBudgetCap(
+      settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
+        ? null
+        : {
+            maximumCells: settings.detailCellCap,
+            maximumMilliseconds: settings.detailCellBudgetMs,
+          },
+    );
+    this.waterReflection.setUpdateIntervalFloor(settings.planarReflectionIntervalFrames);
+    this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
+    this.governedProfileCache = this.resolveGovernedProfile();
+  }
+
+  /** The profile with Governor B's animal and vegetation caps applied. */
+  private resolveGovernedProfile(): WebGpuQualityProfile {
+    const settings = this.cpuWorkSettings;
+    if (
+      settings.activeAnimalBudgetCap === Number.POSITIVE_INFINITY
+      && settings.vegetationDistanceScale === 1
+    ) {
+      return this.profile;
+    }
+    return {
+      ...this.profile,
+      activeAnimalBudget: Math.min(
+        this.profile.activeAnimalBudget,
+        settings.activeAnimalBudgetCap,
+      ),
+      vegetationDistance: this.profile.vegetationDistance * settings.vegetationDistanceScale,
+    };
   }
 
   private captureFrameInterval(started: number): void {
@@ -974,24 +1123,26 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.frameIntervalDurations.push(interval);
   }
 
-  private captureGpuFrameTiming(): void {
+  /** Returns this frame's freshly resolved GPU sample, or null. */
+  private captureGpuFrameTiming(): number | null {
     if (!this.engine.enableGPUTimingMeasurements) {
       this.lastGpuFrameMilliseconds = null;
-      return;
+      return null;
     }
     const counter = this.engine.getGPUFrameTimeCounter();
     // WebGPU timestamp readback is asynchronous. `current` remains unchanged
     // until another query resolves, so consume each counter result only once.
-    if (counter.count === this.lastGpuCounterSampleCount) return;
+    if (counter.count === this.lastGpuCounterSampleCount) return null;
     this.lastGpuCounterSampleCount = counter.count;
     const milliseconds = counter.current / 1_000_000;
     if (!isUsableFrameTiming(milliseconds)) {
       this.lastGpuFrameMilliseconds = null;
-      return;
+      return null;
     }
     this.lastGpuFrameMilliseconds = milliseconds;
     this.lastGpuTimingFrameIndex = this.frameIndex;
     this.gpuFrameDurations.push(milliseconds);
+    return milliseconds;
   }
 
   private resetTimingSamples(): void {

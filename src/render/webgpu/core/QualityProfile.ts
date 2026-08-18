@@ -2,7 +2,7 @@ import type { QualityLevel } from "@/src/game/types";
 import type { RenderingMode } from "@/src/settings";
 
 export interface WebGpuQualityProfile {
-  readonly tier: 0 | 1 | 2;
+  readonly tier: 0 | 1 | 2 | 3;
   readonly quality: QualityLevel;
   readonly mode: RenderingMode;
   readonly renderScale: number;
@@ -14,6 +14,11 @@ export interface WebGpuQualityProfile {
   readonly maxRenderPixels: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
+  /**
+   * MSAA sample count for the offscreen beauty target. Data field consumed by
+   * the memory budget (1A-2); the renderer starts honouring it at 1B-11.
+   */
+  readonly msaaSamples: number;
   readonly terrainRings: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
@@ -43,8 +48,9 @@ const MODE_WEIGHT: Readonly<Record<RenderingMode, number>> = {
 const MIN_TIMING_MILLISECONDS = 0.01;
 const MAX_TIMING_MILLISECONDS = 250;
 
-function clampTier(value: number): 0 | 1 | 2 {
-  return Math.max(0, Math.min(2, value)) as 0 | 1 | 2;
+/** Four tiers since 1A-6b: high+ultra reaches tier 3 (Ultra, 4.0 Mpx, 30 fps). */
+function clampTier(value: number): 0 | 1 | 2 | 3 {
+  return Math.max(0, Math.min(3, value)) as 0 | 1 | 2 | 3;
 }
 
 /** Resolve one bounded profile instead of scattering quality branches across systems. */
@@ -61,6 +67,7 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.72,
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
+      msaaSamples: 1,
       terrainRings: 6,
       shadowMapSize: 1_024,
       shadowCascades: 2,
@@ -83,6 +90,7 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
+      msaaSamples: 1,
       terrainRings: 7,
       shadowMapSize: 2_048,
       shadowCascades: 2,
@@ -97,46 +105,56 @@ export function resolveWebGpuQualityProfile(
       activeAnimalBudget: 48,
     };
   }
+  if (tier === 2) {
+    return {
+      tier,
+      quality,
+      mode,
+      renderScale: 1,
+      maxRenderPixels: 2_400_000,
+      maxDevicePixelRatio: 2,
+      msaaSamples: 1,
+      terrainRings: 8,
+      shadowMapSize: 4_096,
+      shadowCascades: 4,
+      shadowDistance: 16_000,
+      oceanResolution: 256,
+      oceanCascades: 5,
+      // Temporal reconstruction provides the stability return at this tier. Keep
+      // the fully integrated per-frame ray march below a brute-force cost cliff.
+      cloudResolutionScale: 0.6,
+      cloudPrimarySteps: 96,
+      cloudLightSteps: 6,
+      vegetationDistance: 8_000,
+      vegetationDensity: 1,
+      activeAnimalBudget: 128,
+    };
+  }
+  // Tier 3 (Ultra, high+ultra): a 30 fps tier that spends its frame on
+  // pixels. Beyond the pixel cap and cloud integration scale it matches tier
+  // 2 — the remaining §5.3 Ultra rows (ocean cascade 6, PCSS, capillary)
+  // belong to the phases that build those features.
   return {
     tier,
     quality,
     mode,
     renderScale: 1,
-    maxRenderPixels: 2_400_000,
+    maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
+    msaaSamples: 1,
     terrainRings: 8,
     shadowMapSize: 4_096,
     shadowCascades: 4,
     shadowDistance: 16_000,
     oceanResolution: 256,
     oceanCascades: 5,
-    // Temporal reconstruction provides the stability return at this tier. Keep
-    // the fully integrated per-frame ray march below a brute-force cost cliff.
-    cloudResolutionScale: 0.6,
+    cloudResolutionScale: 0.7,
     cloudPrimarySteps: 96,
     cloudLightSteps: 6,
     vegetationDistance: 8_000,
     vegetationDensity: 1,
     activeAnimalBudget: 128,
   };
-}
-
-/** Slow changes avoid a visible resolution feedback loop during transient frames. */
-export function nextDynamicRenderScale(
-  current: number,
-  p95FrameMilliseconds: number,
-  profile: WebGpuQualityProfile,
-): number {
-  const adaptiveFloor = profile.tier === 2 ? 0.62 : profile.tier === 1 ? 0.54 : 0.5;
-  const lowerBound = Math.min(adaptiveFloor, profile.renderScale);
-  const value = Math.max(
-    lowerBound,
-    Math.min(profile.renderScale, Number.isFinite(current) ? current : profile.renderScale),
-  );
-  if (!isUsableFrameTiming(p95FrameMilliseconds)) return value;
-  if (p95FrameMilliseconds > 18) return Math.max(lowerBound, value - 0.04);
-  if (p95FrameMilliseconds < 13.5) return Math.min(profile.renderScale, value + 0.02);
-  return value;
 }
 
 /**
@@ -170,20 +188,7 @@ export function frameTimingPercentile95(samples: readonly number[]): number | nu
   return valid[index] ?? null;
 }
 
-/**
- * Dynamic resolution must react to the actual presentation cadence even when
- * timestamp queries are unsupported. CPU and GPU work can independently be the
- * bottleneck, so use the worst valid p95 across every available timing stream.
- */
-export function worstFrameTimingPercentile95(
-  sampleGroups: readonly (readonly number[])[],
-): number | null {
-  let worst: number | null = null;
-  for (const samples of sampleGroups) {
-    const percentile = frameTimingPercentile95(samples);
-    if (percentile !== null && (worst === null || percentile > worst)) {
-      worst = percentile;
-    }
-  }
-  return worst;
-}
+// worstFrameTimingPercentile95 and nextDynamicRenderScale are deleted (1A-6b):
+// feeding the worst p95 across CPU/GPU/interval streams into a resolution step
+// was, mechanically, the one-way ratchet. The AdaptiveGovernor module owns the
+// replacement and its arbiter.

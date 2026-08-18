@@ -115,6 +115,21 @@ describe("flight HUD camera and terminal-state presentation", () => {
       oceanFftResolution: 256,
       adapter: "Test GPU",
       renderingFallbackReason: null,
+      activeGovernor: "cpu-work",
+      gpuP95Ms: 9.4,
+      cpuP95Ms: 15.6,
+      cpuWorkLevel: 3,
+      cpuWorkLever: "terrain-page-requests",
+      resolutionInsensitive: true,
+      renderPixels: 1_480_000,
+      topPassesByCpuMs: [
+        { name: "world-page-visibility", p95Ms: 3.7 },
+        { name: "volumetric-cloud-integration", p95Ms: 1.2 },
+      ],
+      pendingTerrainPages: 5,
+      estimatedGpuMemoryMiB: 402.4,
+      budgetProbeActive: false,
+      budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
     };
     const markup = renderToStaticMarkup(createElement(Hud, {
       state: INITIAL_VISUAL_STATE,
@@ -128,6 +143,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       cameraLabel: "CHASE CAM",
       seedLabel: "AUD1T0",
       mouseFlight: false,
+      onRunBudgetProbe: () => undefined,
     }));
 
     expect(markup).toContain("WEBGPU · WEBGPU FORWARD / SPECTRAL / VOLUMETRIC");
@@ -137,5 +153,17 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("17.2 ms frame");
     expect(markup).toContain("4.2 ms CPU");
     expect(markup).toContain("11.8 ms GPU");
+    // 1A-6b: the user must be able to see why the picture changed.
+    expect(markup).toContain("GOV CPU-WORK");
+    expect(markup).toContain("RES-INSENSITIVE");
+    expect(markup).toContain("work L3 (terrain-page-requests)");
+    expect(markup).toContain("9.4 ms GPU p95");
+    expect(markup).toContain("15.6 ms CPU p95");
+    expect(markup).toContain("1.48 Mpx");
+    expect(markup).toContain("5 pending pages");
+    expect(markup).toContain("~402 MiB est");
+    expect(markup).toContain("world-page-visibility 3.7 · volumetric-cloud-integration 1.2 ms CPU p95");
+    expect(markup).toContain("RUN GPU BUDGET PROBE");
+    expect(markup).toContain("world-page-visibility 0.6 ms GPU");
   });
 });

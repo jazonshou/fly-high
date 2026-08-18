@@ -8,6 +8,7 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
+import { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
@@ -78,6 +79,50 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
 function registerShaders(): void {
   ShaderStore.ShadersStoreWGSL[`${SKY_SHADER_NAME}VertexShader`] = SKY_VERTEX_WGSL;
   ShaderStore.ShadersStoreWGSL[`${SKY_SHADER_NAME}PixelShader`] = SKY_FRAGMENT_WGSL;
+}
+
+/**
+ * Depth-only cascaded shadow map (1A-5). PCF binds and samples only the depth
+ * texture and Babylon disables colour writes for the whole shadow pass, yet
+ * the stock generator still allocates a full colour attachment per cascade —
+ * memory that is cleared every frame and never sampled. Overriding the target
+ * creation to pass `noColorAttachment` reclaims it (~128 MiB at 4096² × 4 with
+ * the R16F default). Keep `filter = FILTER_PCF`: a colour-sampling filter
+ * (ESM/blur variants) would need the attachment back.
+ */
+export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
+  protected override _createTargetRenderTexture(): void {
+    const engine = this._scene.getEngine();
+    this._shadowMap?.dispose();
+    const size = { width: this._mapSize, height: this._mapSize, layers: this.numCascades };
+    this._shadowMap = new RenderTargetTexture(
+      `${this._light.name}_CSMShadowMap`,
+      size,
+      this._scene,
+      false,
+      true,
+      this._textureType,
+      false,
+      undefined,
+      false,
+      false,
+      undefined,
+      this._useRedTextureType ? 6 : 5,
+      false,
+      undefined,
+      undefined,
+      /* noColorAttachment */ true,
+    );
+    this._shadowMap.createDepthStencilTexture(
+      engine.useReverseDepthBuffer ? 516 : 513,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      `DepthStencilForCSMShadowGenerator-${this._light.name}`,
+    );
+    this._shadowMap.noPrePassRenderer = true;
+  }
 }
 
 interface AtmospherePreset {
@@ -193,11 +238,17 @@ export class AtmosphereSystem {
     this.ambient.intensity = 0.58;
     this.ambient.groundColor = new Color3(0.08, 0.09, 0.07);
 
-    this.shadows = new CascadedShadowGenerator(
+    // 1A-5: depth-only RTT. `usefulFloatFirst` false — with only depth bound
+    // there is no colour precision to trade, and the previous `true` silently
+    // fell through to half-float anyway because float32-filterable is never
+    // requested. `useRedTextureType` true is the 9.21.2 CSM default, pinned
+    // explicitly because the memory estimate depends on it.
+    this.shadows = new DepthOnlyCascadedShadowGenerator(
       profile.shadowMapSize,
       this.sun,
-      true,
+      false,
       camera,
+      true,
     );
     this.shadows.numCascades = profile.shadowCascades;
     this.shadows.stabilizeCascades = true;

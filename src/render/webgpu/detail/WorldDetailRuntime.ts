@@ -13,6 +13,7 @@ import { detailCellKey, generateDetailCell } from "./generation";
 import {
   canGenerateNextDetailCell,
   resolveDetailGenerationBudget,
+  type DetailGenerationBudget,
 } from "./generationBudget";
 import {
   detailPresentationChunkCoordinates,
@@ -239,6 +240,8 @@ export class WorldDetailRuntime {
   private batchesDirty = true;
   private windTimeSeconds = 0;
   private updateSequence = 0;
+  /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
+  private generationBudgetCap: DetailGenerationBudget | null = null;
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -256,6 +259,14 @@ export class WorldDetailRuntime {
       throw new RangeError("Detail runtime cell size must be between 64 and 4096 metres");
     }
     this.createBatches();
+  }
+
+  /**
+   * Governor B lever 2: cap the per-frame generation slice below the
+   * profile's own budget. Null restores the profile default.
+   */
+  setGenerationBudgetCap(cap: DetailGenerationBudget | null): void {
+    this.generationBudgetCap = cap;
   }
 
   get statistics(): WorldDetailStatistics {
@@ -333,7 +344,13 @@ export class WorldDetailRuntime {
       }
     }
 
-    const generationBudget = resolveDetailGenerationBudget(profile);
+    const resolvedBudget = resolveDetailGenerationBudget(profile);
+    const cap = this.generationBudgetCap;
+    // The governor cap can only shrink the profile's own slice, never grow it.
+    const generationBudget = cap === null ? resolvedBudget : {
+      maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
+      maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
+    };
     const generationStartedAt = this.nowMilliseconds();
     let generated = 0;
     for (const desired of this.desiredCells) {

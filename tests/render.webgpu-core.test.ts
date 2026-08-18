@@ -4,9 +4,7 @@ import {
   frameTimingPercentile95,
   freshFrameTiming,
   isUsableFrameTiming,
-  nextDynamicRenderScale,
   resolveWebGpuQualityProfile,
-  worstFrameTimingPercentile95,
 } from "../src/render/webgpu/core/QualityProfile";
 
 describe("WebGPU frame graph", () => {
@@ -38,11 +36,13 @@ describe("WebGPU quality profiles", () => {
     expect(resolveWebGpuQualityProfile("low", "performance").tier).toBe(0);
     expect(resolveWebGpuQualityProfile("low", "ultra").tier).toBe(1);
     expect(resolveWebGpuQualityProfile("medium", "balanced").tier).toBe(1);
-    const high = resolveWebGpuQualityProfile("high", "ultra");
-    expect(high.tier).toBe(2);
-    expect(high.oceanCascades).toBe(5);
-    expect(high).toMatchObject({
-      cloudResolutionScale: 0.6,
+    expect(resolveWebGpuQualityProfile("high", "balanced").tier).toBe(2);
+    // Four tiers since 1A-6b: high+ultra reaches the Ultra tier.
+    const ultra = resolveWebGpuQualityProfile("high", "ultra");
+    expect(ultra.tier).toBe(3);
+    expect(ultra.oceanCascades).toBe(5);
+    expect(ultra).toMatchObject({
+      cloudResolutionScale: 0.7,
       cloudPrimarySteps: 96,
       cloudLightSteps: 6,
     });
@@ -66,8 +66,12 @@ describe("WebGPU quality profiles", () => {
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
     });
-    expect(resolveWebGpuQualityProfile("high", "ultra")).toMatchObject({
+    expect(resolveWebGpuQualityProfile("high", "balanced")).toMatchObject({
       maxRenderPixels: 2_400_000,
+      maxDevicePixelRatio: 2,
+    });
+    expect(resolveWebGpuQualityProfile("high", "ultra")).toMatchObject({
+      maxRenderPixels: 4_000_000,
       maxDevicePixelRatio: 2,
     });
 
@@ -85,24 +89,12 @@ describe("WebGPU quality profiles", () => {
     );
   });
 
-  it("changes dynamic resolution gradually", () => {
-    const profile = resolveWebGpuQualityProfile("high", "balanced");
-    expect(nextDynamicRenderScale(1, 22, profile)).toBeCloseTo(0.96);
-    expect(nextDynamicRenderScale(0.8, 10, profile)).toBeCloseTo(0.82);
-    expect(nextDynamicRenderScale(0.8, 16.7, profile)).toBeCloseTo(0.8);
-  });
-
-  it("selects the worst valid p95 timing stream", () => {
+  // nextDynamicRenderScale and worstFrameTimingPercentile95 are gone (1A-6b):
+  // the worst-stream p95 feeding a resolution step was the one-way ratchet.
+  // Their replacement lives in AdaptiveGovernor and is tested there.
+  it("computes the nearest-rank p95 over usable samples", () => {
     const frameIntervals = Array.from({ length: 100 }, (_, index) => 15 + index / 100);
-    const cpuSubmissions = Array.from({ length: 100 }, () => 5);
-    const gpuDurations = Array.from({ length: 100 }, () => 21);
-
     expect(frameTimingPercentile95([0, Number.NaN, ...frameIntervals])).toBeCloseTo(15.94);
-    expect(worstFrameTimingPercentile95([
-      frameIntervals,
-      cpuSubmissions,
-      gpuDurations,
-    ])).toBe(21);
   });
 
   it("rejects unavailable and suspended-tab timing values", () => {

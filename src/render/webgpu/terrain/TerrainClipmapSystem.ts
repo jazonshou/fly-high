@@ -294,6 +294,8 @@ export class TerrainClipmapSystem {
     velocityZ: 0,
   };
   private cloudShadowProjection: CloudShadowProjection | null = null;
+  /** Governor B lever 1 (1A-6b): page requests admitted per pump. */
+  private requestBudgetPerPump = Number.POSITIVE_INFINITY;
   private lastAnchor = "";
   private disposed = false;
 
@@ -357,6 +359,17 @@ export class TerrainClipmapSystem {
     }
   }
 
+  /**
+   * Caps how many missing pages one pump may hand the generator. Infinity
+   * restores the default (bounded only by the generator queue); Governor B
+   * lowers it to 8/4/2 when frames are CPU-bound.
+   */
+  setRequestBudgetPerUpdate(count: number): void {
+    this.requestBudgetPerPump = count >= Number.POSITIVE_INFINITY
+      ? Number.POSITIVE_INFINITY
+      : Math.max(1, Math.floor(count));
+  }
+
   setFloatingOrigin(x: number, z: number): void {
     if (x === this.originX && z === this.originZ) return;
     this.originX = x;
@@ -417,7 +430,11 @@ export class TerrainClipmapSystem {
     this.pumpDesiredRequests();
   }
 
-  addShadowCasters(add: (mesh: Mesh) => void): void {
+  addShadowCasters(
+    add: (mesh: Mesh) => void,
+    maxDistanceMeters = this.profile.shadowDistance,
+  ): void {
+    const reach = Math.min(this.profile.shadowDistance, maxDistanceMeters);
     for (const page of this.pages.values()) {
       if (!page.mesh.isEnabled()) continue;
       // Hollow coarse-ring meshes retain page-sized bounding boxes, so relying
@@ -433,7 +450,7 @@ export class TerrainClipmapSystem {
         0,
         this.streamingObserver.positionZ - page.bounds.maxZ,
       );
-      if (Math.hypot(distanceX, distanceZ) > this.profile.shadowDistance) continue;
+      if (Math.hypot(distanceX, distanceZ) > reach) continue;
       add(page.mesh);
     }
   }
@@ -508,8 +525,11 @@ export class TerrainClipmapSystem {
       this.streamingObserver,
       TERRAIN_STREAMING_PRIORITY_OPTIONS,
     );
+    let admitted = 0;
     for (const entry of ranked) {
+      if (admitted >= this.requestBudgetPerPump) break;
       if (!this.requestPage(entry.candidate.desired, entry.priority.score)) break;
+      admitted += 1;
     }
   }
 
