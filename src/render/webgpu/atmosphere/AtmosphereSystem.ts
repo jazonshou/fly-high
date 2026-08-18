@@ -18,8 +18,12 @@ import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
 } from "@/src/render/webgpu/nature/EnvironmentState";
+import { exposureForState } from "@/src/render/webgpu/nature/EnvironmentDirector";
 
 const SKY_SHADER_NAME = "aerolithPhysicalSky";
+
+/** The clear-noon palette peak; sunIlluminanceNormalized is relative to it. */
+const PEAK_SUN_INTENSITY = 5.2;
 
 const SKY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -45,7 +49,6 @@ uniform zenithColor: vec3f;
 uniform horizonColor: vec3f;
 uniform groundColor: vec3f;
 uniform turbidity: f32;
-uniform exposure: f32;
 
 const PI: f32 = 3.14159265359;
 
@@ -72,7 +75,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let sunHalo = pow(max(mu, 0.0), 512.0) * 0.32;
   color += uniforms.sunColor * (sunDisc * 18.0 + sunHalo);
   color = select(uniforms.groundColor, color, up >= -0.015);
-  color *= uniforms.exposure;
+  // 1C-2: the sky writes linear HDR; the one exposure curve lives on the
+  // image-processing chain. No shader multiplies its own exposure again.
   fragmentOutputs.color = vec4f(max(color, vec3f(0.0)), 1.0);
 }
 `;
@@ -132,7 +136,6 @@ interface AtmospherePalette {
   readonly horizon: Color3;
   readonly ground: Color3;
   readonly intensity: number;
-  readonly exposure: number;
 }
 
 /**
@@ -150,7 +153,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     horizon: new Color3(0.08, 0.075, 0.14),
     ground: new Color3(0.02, 0.024, 0.035),
     intensity: 0.0,
-    exposure: 0.55,
   },
   {
     elevationDegrees: 0,
@@ -159,7 +161,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     horizon: new Color3(0.7, 0.24, 0.12),
     ground: new Color3(0.04, 0.05, 0.07),
     intensity: 1.1,
-    exposure: 0.72,
   },
   {
     elevationDegrees: 7.5,
@@ -168,7 +169,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     horizon: new Color3(0.94, 0.3, 0.13),
     ground: new Color3(0.055, 0.065, 0.09),
     intensity: 3.1,
-    exposure: 0.82,
   },
   {
     elevationDegrees: 17,
@@ -177,7 +177,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     horizon: new Color3(0.91, 0.44, 0.19),
     ground: new Color3(0.08, 0.07, 0.07),
     intensity: 4.1,
-    exposure: 0.94,
   },
   {
     elevationDegrees: 55,
@@ -186,7 +185,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     horizon: new Color3(0.58, 0.77, 0.96),
     ground: new Color3(0.11, 0.15, 0.18),
     intensity: 5.2,
-    exposure: 1.02,
   },
 ];
 
@@ -212,7 +210,6 @@ function paletteForElevation(elevationDegrees: number): AtmospherePalette {
       horizon: lerpColor(lower.horizon, upper.horizon, t),
       ground: lerpColor(lower.ground, upper.ground, t),
       intensity: lower.intensity + (upper.intensity - lower.intensity) * t,
-      exposure: lower.exposure + (upper.exposure - lower.exposure) * t,
     };
   }
   return last;
@@ -225,7 +222,12 @@ export interface AtmosphereSnapshot {
   readonly skyZenith: Color3;
   readonly skyHorizon: Color3;
   readonly ambientColor: Color3;
-  readonly exposure: number;
+  /**
+   * sunIntensity over the clear-noon peak (1C-2): the named replacement for
+   * the /5.2 normalisers that lived in three shaders. Multiply sunColor by
+   * this; never re-derive the constant.
+   */
+  readonly sunIlluminanceNormalized: number;
   readonly cloudCoverage: number;
   readonly humidity: number;
   readonly windSpeed: number;
@@ -270,7 +272,6 @@ export class AtmosphereSystem {
           "horizonColor",
           "groundColor",
           "turbidity",
-          "exposure",
         ],
         shaderLanguage: ShaderLanguage.WGSL,
       },
@@ -317,7 +318,7 @@ export class AtmosphereSystem {
       skyZenith: initialPalette.zenith,
       skyHorizon: initialPalette.horizon,
       ambientColor: initialPalette.zenith.scale(0.58),
-      exposure: initialPalette.exposure,
+      sunIlluminanceNormalized: initialPalette.intensity / PEAK_SUN_INTENSITY,
       cloudCoverage: 0.18,
       humidity: 0.5,
       windSpeed: 8,
@@ -361,6 +362,9 @@ export class AtmosphereSystem {
     ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
     const sunIntensity = palette.intensity * overcastDimming;
+    // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
+    // day+clear look exactly; every private shader exposure is deleted.
+    this.scene.imageProcessingConfiguration.exposure = exposureForState(state);
     const ambientIntensity = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
       palette.zenith,
@@ -372,7 +376,6 @@ export class AtmosphereSystem {
       new Color3(0.52, 0.56, 0.60),
       humidity * 0.42,
     );
-    const exposure = palette.exposure * overcastDimming;
     this.sun.direction.copyFrom(sunDirection).scaleInPlace(-1);
     this.sun.diffuse = palette.sunColor;
     this.sun.intensity = sunIntensity;
@@ -388,7 +391,6 @@ export class AtmosphereSystem {
     this.skyMaterial.setColor3("horizonColor", skyHorizon);
     this.skyMaterial.setColor3("groundColor", palette.ground);
     this.skyMaterial.setFloat("turbidity", humidity);
-    this.skyMaterial.setFloat("exposure", exposure);
     this.snapshotValue = {
       sunDirection: sunDirection.clone(),
       sunColor: palette.sunColor.clone(),
@@ -396,7 +398,7 @@ export class AtmosphereSystem {
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
       ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(ambientIntensity),
-      exposure,
+      sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
       cloudCoverage,
       humidity,
       windSpeed,

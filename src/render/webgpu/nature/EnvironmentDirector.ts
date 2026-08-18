@@ -1,5 +1,6 @@
 import type { WeatherPreset } from "@/src/game/types";
 import { DAYS_PER_YEAR, type EnvironmentClock } from "@/src/world/environmentClock";
+import { evaluateTransmittance } from "@/src/render/webgpu/atmosphere/AtmosphereLuts";
 import { createEnvironmentState, type EnvironmentState } from "./EnvironmentState";
 
 /**
@@ -170,4 +171,64 @@ export function resolveEnvironmentState(input: EnvironmentDirectorInput): Enviro
       },
     ],
   });
+}
+
+/**
+ * The single exposure curve (1C-2). One relative EV100 replaces the three-
+ * or-four independent curves the audit found (sky exposure uniform, the
+ * 1.08 image-processing constant, water's per-shader scales, the clouds'
+ * /5.2): `exposure = 1.08 × (E_ref / E)^k` with E the physical horizontal
+ * illuminance from the shared transmittance model. At the day+clear
+ * reference the ratio is exactly 1, so today's look is preserved EXACTLY —
+ * any change this refactor causes is a detected bug. Adaptation is
+ * deliberately weak (k = 0.12): dawn should still look dim; the scene's
+ * own light does the storytelling, the camera only takes the edge off.
+ */
+export const BASE_EXPOSURE = 1.08;
+const ADAPTATION_STRENGTH = 0.12;
+/** The old "day" preset's sun elevation (sin 0.82) anchors the reference. */
+const REFERENCE_SUN_Y = 0.82;
+
+function smoothstepValue(low: number, high: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - low) / (high - low)));
+  return t * t * (3 - 2 * t);
+}
+
+function horizontalIlluminanceLux(state: EnvironmentState): number {
+  const sunY = state.sun.direction[1];
+  const transmittance = evaluateTransmittance(
+    state.atmosphere,
+    0,
+    Math.max(sunY, -0.2),
+    12,
+  );
+  const luminous =
+    0.2126 * transmittance[0] + 0.7152 * transmittance[1] + 0.0722 * transmittance[2];
+  const direct = state.sun.illuminanceLux * Math.max(sunY, 0) * luminous;
+  // Diffuse skylight proxy with a twilight tail; 1C-10 owns the night floor.
+  const sky = 14_000 * smoothstepValue(-0.1, 0.35, sunY) + 40;
+  return direct + sky;
+}
+
+const REFERENCE_ILLUMINANCE_LUX = ((): number => {
+  const reference = createEnvironmentState({
+    sun: {
+      direction: [
+        Math.sqrt(Math.max(0, 1 - REFERENCE_SUN_Y * REFERENCE_SUN_Y)),
+        REFERENCE_SUN_Y,
+        0,
+      ],
+    },
+  });
+  return horizontalIlluminanceLux(reference);
+})();
+
+/** EV100 of the reference key, recorded for the decision log. */
+export const REFERENCE_EV100 = Math.log2(REFERENCE_ILLUMINANCE_LUX / 2.5);
+
+export function exposureForState(state: EnvironmentState): number {
+  const overcast = 1 - state.weather.cloudCoverage * 0.42;
+  const illuminance = Math.max(horizontalIlluminanceLux(state) * overcast, 1);
+  const ratio = REFERENCE_ILLUMINANCE_LUX / illuminance;
+  return Math.min(2.6, Math.max(0.3, BASE_EXPOSURE * Math.pow(ratio, ADAPTATION_STRENGTH)));
 }

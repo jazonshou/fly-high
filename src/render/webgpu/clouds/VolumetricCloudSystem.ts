@@ -927,11 +927,11 @@ export class VolumetricCloudSystem {
     this.shadowTextureValue.setFloat("humidity", this.humidity);
     this.material.setColor3(
       "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIntensity / 5.2),
+      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
     this.material.setColor3(
       "ambientColor",
-      atmosphere.ambientColor.scale(atmosphere.exposure),
+      atmosphere.ambientColor,
     );
     this.shadowDirty = true;
     this.shadowReady = false;

@@ -671,10 +671,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
       "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIntensity / 5.2),
+      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
-    this.material.setColor3("skyZenith", atmosphere.skyZenith.scale(atmosphere.exposure));
-    this.material.setColor3("skyHorizon", atmosphere.skyHorizon.scale(atmosphere.exposure));
+    this.material.setColor3("skyZenith", atmosphere.skyZenith);
+    this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
     this.material.setFloat("windSpeed", atmosphere.windSpeed);
   }
