@@ -302,6 +302,21 @@ export function sampleTerrainMoisture(
   return saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
 }
 
+/** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
+export function sampleTerrainClimate(world: WorldDefinition, x: number, z: number): number {
+  return fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
+}
+
+/** Temperature from a precomputed climate value plus exact per-point cooling. */
+export function terrainTemperatureFromClimate(
+  world: WorldDefinition,
+  climate: number,
+  height: number,
+): number {
+  const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
+  return saturate(0.66 + climate * 0.2 - elevationCooling);
+}
+
 export function sampleTerrainTemperature(
   world: WorldDefinition,
   x: number,
@@ -310,9 +325,7 @@ export function sampleTerrainTemperature(
   height = sampleTerrainHeight(world, x, z),
 ): number {
   assertFilterWidth(filterWidthMeters);
-  const climate = fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
-  const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
-  return saturate(0.66 + climate * 0.2 - elevationCooling);
+  return terrainTemperatureFromClimate(world, sampleTerrainClimate(world, x, z), height);
 }
 
 function classifyBiome(
@@ -402,6 +415,11 @@ function createTerrainSampleTarget(): TerrainSample {
  * normal — at the tile's spacing — and must classify from that same slope,
  * or rock and scree colour at 40 km is assigned by 4 m microslope. Fills
  * everything on the target except `normal`.
+ *
+ * `moisture` and `temperature` may be supplied precomputed: their finest
+ * wavelength is 850 m, so the tile generator samples them on a coarse
+ * subgrid and interpolates instead of paying nine noise evaluations per
+ * 8 m vertex.
  */
 export function sampleTerrainSurface(
   world: WorldDefinition,
@@ -410,9 +428,9 @@ export function sampleTerrainSurface(
   height: number,
   slope: number,
   target: TerrainSample,
+  moisture = sampleTerrainMoisture(world, x, z, 0),
+  temperature = sampleTerrainTemperature(world, x, z, 0, height),
 ): TerrainSample {
-  const moisture = sampleTerrainMoisture(world, x, z, 0);
-  const temperature = sampleTerrainTemperature(world, x, z, 0, height);
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
   const biome = classifyBiome(world, height, slope, moisture, temperature, runway);
 

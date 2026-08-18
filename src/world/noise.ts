@@ -1,4 +1,4 @@
-import { hashCoordinates, mixSeed, unitFloatFromHash } from "./seed";
+import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "./seed";
 
 export function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
@@ -22,8 +22,9 @@ function fade(value: number): number {
   return value * value * value * (value * (value * 6 - 15) + 10);
 }
 
-function latticeValue(seedHash: number, x: number, z: number): number {
-  return unitFloatFromHash(hashCoordinates(seedHash, x, z)) * 2 - 1;
+/** Takes the channel-mixed hash so the four corners share one mixSeed. */
+function latticeValue(mixedHash: number, x: number, z: number): number {
+  return unitFloatFromHash(hashLatticeCoordinates(mixedHash, x, z)) * 2 - 1;
 }
 
 /**
@@ -70,10 +71,13 @@ export function valueNoise2D(seedHash: number, x: number, z: number): number {
   const x1 = wrapLatticeIndex(x0 + 1);
   const z1 = wrapLatticeIndex(z0 + 1);
 
-  const a = lerp(latticeValue(seedHash, x0, z0), latticeValue(seedHash, x1, z0), tx);
+  // One channel mix serves all four corners: this is the hottest arithmetic
+  // in the codebase, and hashCoordinates re-derived the same mix per corner.
+  const mixedHash = mixSeed(seedHash, 0);
+  const a = lerp(latticeValue(mixedHash, x0, z0), latticeValue(mixedHash, x1, z0), tx);
   const b = lerp(
-    latticeValue(seedHash, x0, z1),
-    latticeValue(seedHash, x1, z1),
+    latticeValue(mixedHash, x0, z1),
+    latticeValue(mixedHash, x1, z1),
     tx,
   );
   return lerp(a, b, tz);

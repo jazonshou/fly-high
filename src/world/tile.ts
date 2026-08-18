@@ -1,5 +1,11 @@
 import { coreToStoredIndex, storedEdge } from "@/src/render/webgpu/world/pageGeometry";
-import { sampleFilteredTerrainHeight, sampleTerrainSurface } from "./terrain";
+import {
+  sampleFilteredTerrainHeight,
+  sampleTerrainClimate,
+  sampleTerrainMoisture,
+  sampleTerrainSurface,
+  terrainTemperatureFromClimate,
+} from "./terrain";
 import { TerrainBiome, type TerrainSample, type TerrainTileBuffers, type TerrainTileData, type TerrainTileOptions, type WorldDefinition } from "./types";
 
 export const DEFAULT_TERRAIN_TILE_SIZE = 1_024;
@@ -229,6 +235,40 @@ export function generateTerrainTile(
   const spacing = size / (resolution - 1);
   const needsSurface = includeColors || includeClimate;
   const sampleTarget = needsSurface ? makeSampleTarget() : null;
+
+  // Climate fields (finest wavelength 850 m) on a 9×9 subgrid, bilinearly
+  // interpolated per vertex — nine noise evaluations per vertex otherwise.
+  // Subgrid nodes sit on shared tile-edge vertices, so interpolated edge
+  // values stay bit-identical across tiles. Resolutions that do not divide
+  // into eight cells fall back to exact per-vertex sampling.
+  const climateStep = resolution > 8 && (resolution - 1) % 8 === 0 ? (resolution - 1) / 8 : 0;
+  let moistureGrid: Float32Array | null = null;
+  let climateGrid: Float32Array | null = null;
+  if (needsSurface && climateStep > 0) {
+    moistureGrid = new Float32Array(81);
+    climateGrid = new Float32Array(81);
+    for (let subRow = 0; subRow < 9; subRow += 1) {
+      const z = terrainTileVertexCoordinate(tileZ, size, subRow * climateStep, resolution);
+      for (let subColumn = 0; subColumn < 9; subColumn += 1) {
+        const x = terrainTileVertexCoordinate(tileX, size, subColumn * climateStep, resolution);
+        moistureGrid[subRow * 9 + subColumn] = sampleTerrainMoisture(world, x, z, 0);
+        climateGrid[subRow * 9 + subColumn] = sampleTerrainClimate(world, x, z);
+      }
+    }
+  }
+  const interpolateSubgrid = (grid: Float32Array, row: number, column: number): number => {
+    const gridRow = row / climateStep;
+    const gridColumn = column / climateStep;
+    const row0 = Math.min(7, Math.floor(gridRow));
+    const column0 = Math.min(7, Math.floor(gridColumn));
+    const fr = gridRow - row0;
+    const fc = gridColumn - column0;
+    const top = grid[row0 * 9 + column0]! * (1 - fc) + grid[row0 * 9 + column0 + 1]! * fc;
+    const bottom =
+      grid[(row0 + 1) * 9 + column0]! * (1 - fc) + grid[(row0 + 1) * 9 + column0 + 1]! * fc;
+    return top * (1 - fr) + bottom * fr;
+  };
+
   if (includeNormals || needsSurface) {
     const inverseDoubleSpacing = 1 / (2 * spacing);
     for (let row = 0; row < resolution; row += 1) {
@@ -255,7 +295,24 @@ export function generateTerrainTile(
           const x = terrainTileVertexCoordinate(tileX, size, column, resolution);
           const height = scratch[scratchRow + column]!;
           const slope = Math.min(1, Math.max(0, 1 - normalY));
-          sampleTerrainSurface(world, x, z, height, slope, sampleTarget);
+          if (moistureGrid && climateGrid) {
+            sampleTerrainSurface(
+              world,
+              x,
+              z,
+              height,
+              slope,
+              sampleTarget,
+              interpolateSubgrid(moistureGrid, row, column),
+              terrainTemperatureFromClimate(
+                world,
+                interpolateSubgrid(climateGrid, row, column),
+                height,
+              ),
+            );
+          } else {
+            sampleTerrainSurface(world, x, z, height, slope, sampleTarget);
+          }
           if (includeColors) {
             const colorOffset = vertexIndex * 3;
             colors[colorOffset] = Math.round(sampleTarget.color.r * 255);
