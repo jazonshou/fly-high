@@ -159,6 +159,13 @@ describe("perf capture (1A-1c)", () => {
           lastVisibleInstances = diagnostics.visibleInstances;
         }
       }
+      // Pin the temporal phase before the settle: the streaming loop above
+      // exits after a RUN-DEPENDENT number of frames, so accumulated time
+      // would put waves and cloud advection at a different phase every run.
+      // The old uniform fog flattened enough contrast to hide that; the
+      // aerial perspective does not. The settle then rebuilds all temporal
+      // state (cloud history, foam decay) at these exact instants.
+      simulationTime = 500 + shotReports.length * 120;
       for (let settle = 0; settle < 150; settle += 1) {
         simulationTime += 1 / 60;
         renderer.render({ ...state, simulationTime }, 1 / 60);

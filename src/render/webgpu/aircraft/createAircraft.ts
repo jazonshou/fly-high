@@ -350,7 +350,11 @@ function createTrainer(scene: Scene): AircraftVisual {
       if (disposed) return;
       const delta = safeAircraftAnimationDelta(deltaSeconds);
       const pose = resolveAircraftAnimationPose("trainer", state);
-      propeller.rotation.x += pose.rotorRadiansPerSecond * delta;
+      // Phase-anchored to simulation time, not accumulated per rendered
+      // frame: at 10+ rad/s the prop is a blur either way, and anchoring
+      // makes every frame a pure function of (state, frame sequence) — the
+      // perf capture diffs identically-timed frames across runs.
+      propeller.rotation.x = pose.rotorRadiansPerSecond * state.simulationTime;
       const normalizedRpm = Math.min(1.2, Math.max(0, state.engineRpm / 2_600));
       propeller.setEnabled(
         normalizedRpm < 0.12 || Math.sin(propeller.rotation.x * 0.27) > -0.82,
@@ -649,7 +653,8 @@ function createJet(scene: Scene): AircraftVisual {
       if (disposed) return;
       const delta = safeAircraftAnimationDelta(deltaSeconds);
       const pose = resolveAircraftAnimationPose("jet", state);
-      propeller.rotation.x += pose.rotorRadiansPerSecond * delta;
+      // Phase-anchored to simulation time — see the trainer note.
+      propeller.rotation.x = pose.rotorRadiansPerSecond * state.simulationTime;
       applyCommonPose(rig, pose, delta);
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
