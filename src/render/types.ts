@@ -17,6 +17,8 @@ export interface FlightRenderingSystem {
   setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
+  /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */
+  startBudgetProbe(): boolean;
   dispose(): void;
 }
 

@@ -546,6 +546,8 @@ export class VolumetricCloudSystem {
   private atmosphereInitialized = false;
   private shadowDirty = true;
   private shadowReady = false;
+  /** Governor B lever 4 (1A-6b): a floor on frames between shadow renders. */
+  private shadowIntervalFloor: number | null = null;
   private frameIndex = 0;
   private lastShadowFrame = -1;
   private integrationRenderCount = 0;
@@ -838,6 +840,16 @@ export class VolumetricCloudSystem {
     });
   }
 
+  /**
+   * Governor B lever 4: lengthen the cloud-shadow cadence under CPU
+   * pressure. Applied as max() against the tier schedule so it only slows.
+   */
+  setShadowIntervalFloor(intervalFrames: number | null): void {
+    this.shadowIntervalFloor = intervalFrames === null
+      ? null
+      : Math.max(1, Math.floor(intervalFrames));
+  }
+
   setProfile(profile: WebGpuQualityProfile): void {
     const nextSchedule = resolveCloudShadowSchedule(profile);
     resolveCloudRenderSize(
@@ -1103,7 +1115,7 @@ export class VolumetricCloudSystem {
     if (!shouldRenderCloudShadow(
       this.frameIndex,
       this.lastShadowFrame,
-      this.shadowSchedule.updateEveryNFrames,
+      Math.max(this.shadowSchedule.updateEveryNFrames, this.shadowIntervalFloor ?? 1),
       this.shadowDirty,
     )) return;
     if (!this.shadowTextureValue.isReady()) return;

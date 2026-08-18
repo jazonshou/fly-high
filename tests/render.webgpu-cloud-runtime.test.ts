@@ -202,11 +202,12 @@ describe("volumetric cloud runtime shaders", () => {
     clouds.update(new Vector3(1_234, 800, -4_321), 1);
     expect(clouds.statistics.frameIndex).toBe(1);
     const generation = clouds.statistics.historyGeneration;
+    // high+ultra is tier 3 since 1A-6b, carrying the 0.7 integration scale.
     clouds.setProfile(resolveWebGpuQualityProfile("high", "ultra"));
     expect(clouds.statistics).toMatchObject({
-      renderWidth: 480,
-      renderHeight: 360,
-      resolutionScale: 0.6,
+      renderWidth: 560,
+      renderHeight: 424,
+      resolutionScale: 0.7,
       shadowResolution: 256,
       shadowUpdateEveryNFrames: 2,
     });
