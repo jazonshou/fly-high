@@ -1,6 +1,6 @@
 import { TerrainBiome } from "@/src/world";
-import { clamp as kernelClamp, valueNoise2D } from "@/src/world/noise";
-import { hashSeed, mixSeed } from "@/src/world/seed";
+import { clamp as kernelClamp } from "@/src/world/noise";
+import { hashSeed } from "@/src/world/seed";
 import { densityField, type VegetationDensitySample } from "./densityField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
