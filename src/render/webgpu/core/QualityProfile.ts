@@ -20,6 +20,13 @@ export interface WebGpuQualityProfile {
    */
   readonly msaaSamples: number;
   readonly terrainRings: number;
+  /**
+   * Vertices per tile edge at every level (1B-3). One constant per tier —
+   * constant ground-sample-distance ratios between adjacent levels (2:1)
+   * kill the 4:1 T-junction the audit measured at L2/L3. A datum, not a
+   * policy: 4-5's CDLOD deletes it (plan A5).
+   */
+  readonly terrainTileResolution: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -69,6 +76,7 @@ export function resolveWebGpuQualityProfile(
       maxDevicePixelRatio: 1,
       msaaSamples: 1,
       terrainRings: 6,
+      terrainTileResolution: 33,
       shadowMapSize: 1_024,
       shadowCascades: 2,
       shadowDistance: 4_500,
@@ -92,6 +100,7 @@ export function resolveWebGpuQualityProfile(
       maxDevicePixelRatio: 1.5,
       msaaSamples: 1,
       terrainRings: 7,
+      terrainTileResolution: 65,
       shadowMapSize: 2_048,
       shadowCascades: 2,
       shadowDistance: 7_000,
@@ -115,6 +124,7 @@ export function resolveWebGpuQualityProfile(
       maxDevicePixelRatio: 2,
       msaaSamples: 1,
       terrainRings: 8,
+      terrainTileResolution: 65,
       shadowMapSize: 4_096,
       shadowCascades: 4,
       shadowDistance: 16_000,
@@ -143,6 +153,7 @@ export function resolveWebGpuQualityProfile(
     maxDevicePixelRatio: 2,
     msaaSamples: 1,
     terrainRings: 8,
+    terrainTileResolution: 65,
     shadowMapSize: 4_096,
     shadowCascades: 4,
     shadowDistance: 16_000,

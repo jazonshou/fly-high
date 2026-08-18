@@ -61,6 +61,37 @@ describe("WebGPU velocity-aware world streaming", () => {
     expect(ranked.map((entry) => entry.candidate.label)).toHaveLength(3);
   });
 
+  it("folds observer altitude into 3D page distance (1B-3)", () => {
+    const address = createWorldPageAddress(0, 4, 0);
+    const atGround = calculateWorldPageStreamingPriority(address, {
+      positionX: 0,
+      positionZ: 256,
+      velocityX: 0,
+      velocityZ: 0,
+    });
+    const atAltitude = calculateWorldPageStreamingPriority(address, {
+      positionX: 0,
+      positionY: 3_000,
+      positionZ: 256,
+      velocityX: 0,
+      velocityZ: 0,
+    });
+    // 1,536 m horizontal to the page edge; altitude lengthens it in quadrature.
+    expect(atGround.currentDistanceMeters).toBeCloseTo(1_536, 5);
+    expect(atAltitude.currentDistanceMeters).toBeCloseTo(Math.hypot(1_536, 3_000), 5);
+    expect(atAltitude.score).toBeGreaterThan(atGround.score);
+    // Omitted altitude stays the pre-1B-3 horizontal behaviour.
+    expect(atGround.currentDistanceMeters).toBe(
+      calculateWorldPageStreamingPriority(address, {
+        positionX: 0,
+        positionY: 0,
+        positionZ: 256,
+        velocityX: 0,
+        velocityZ: 0,
+      }).currentDistanceMeters,
+    );
+  });
+
   it("maps negative world coordinates to seam-consistent page bounds", () => {
     const address = worldPositionToPageAddress(-0.01, -512.01, 0, 512);
     expect(address).toEqual({ level: 0, x: -1, z: -2 });

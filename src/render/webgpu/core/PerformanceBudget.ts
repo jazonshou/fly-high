@@ -221,13 +221,6 @@ function terrainPagesAtLevel(level: number): number {
   return level === 0 ? 25 : 21;
 }
 
-/** Matches TerrainClipmapSystem's interim ladder until 1B-3's profile field. */
-function terrainResolutionAtLevel(profile: WebGpuQualityProfile, level: number): number {
-  if (profile.tier === 0) return level === 0 ? 33 : 17;
-  if (profile.tier === 1) return level < 2 ? 65 : 33;
-  return level < 3 ? 65 : 33;
-}
-
 function terrainPageBytes(resolution: number): number {
   const skirtVertices = 4 * (resolution - 1);
   const vertexCount = resolution * resolution + skirtVertices;
@@ -276,7 +269,7 @@ export function estimateGpuMemoryBreakdown(
   let terrainBytes = 0;
   for (let level = 0; level < profile.terrainRings; level += 1) {
     terrainBytes +=
-      terrainPagesAtLevel(level) * terrainPageBytes(terrainResolutionAtLevel(profile, level));
+      terrainPagesAtLevel(level) * terrainPageBytes(profile.terrainTileResolution);
   }
 
   const tier = profile.tier as PerformanceTier;

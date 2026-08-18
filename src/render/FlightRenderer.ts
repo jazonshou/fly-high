@@ -909,6 +909,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!state) return;
     this.terrain.update({
       x: state.position.x,
+      y: state.position.y,
       z: state.position.z,
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,

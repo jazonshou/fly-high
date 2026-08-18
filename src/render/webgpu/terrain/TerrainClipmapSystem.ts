@@ -88,6 +88,8 @@ interface DesiredPage {
 
 export interface TerrainObserver {
   readonly x: number;
+  /** Altitude above sea level (1B-3): page priority uses 3D distance. Optional so headless callers stay valid; omitted means 0. */
+  readonly y?: number;
   readonly z: number;
   readonly velocityX: number;
   readonly velocityZ: number;
@@ -256,12 +258,6 @@ function buildTerrainIndicesWithSkirt(
   return indices;
 }
 
-function tileResolution(profile: WebGpuQualityProfile, level: number): number {
-  if (profile.tier === 0) return level === 0 ? 33 : 17;
-  if (profile.tier === 1) return level < 2 ? 65 : 33;
-  return level < 3 ? 65 : 33;
-}
-
 /**
  * Worker-fed, camera-relative terrain page renderer.
  *
@@ -293,6 +289,7 @@ export class TerrainClipmapSystem {
   private originZ = 0;
   private streamingObserver: WorldPageStreamingObserver = {
     positionX: 0,
+    positionY: 0,
     positionZ: 0,
     velocityX: 0,
     velocityZ: 0,
@@ -341,7 +338,11 @@ export class TerrainClipmapSystem {
 
   setProfile(profile: WebGpuQualityProfile): void {
     if (profile === this.profile) return;
-    const topologyChanged = profile.tier !== this.profile.tier
+    // 1B-3: the resolution ladder is a profile datum, so the topology-change
+    // question is exactly "did the datum or the ring count change" — the last
+    // tier read left this file, shrinking the boundary test's grandfather
+    // allowlist.
+    const topologyChanged = profile.terrainTileResolution !== this.profile.terrainTileResolution
       || profile.terrainRings !== this.profile.terrainRings;
     this.profile = profile;
     if (!topologyChanged) return;
@@ -396,6 +397,7 @@ export class TerrainClipmapSystem {
     this.frameIndex = frameIndex;
     this.streamingObserver = {
       positionX: observer.x,
+      positionY: observer.y ?? 0,
       positionZ: observer.z,
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
@@ -414,7 +416,7 @@ export class TerrainClipmapSystem {
       predictedFineX,
       predictedFineZ,
       this.profile.terrainRings,
-      this.profile.tier,
+      this.profile.terrainTileResolution,
     ].join(":");
     if (anchor !== this.lastAnchor) {
       this.lastAnchor = anchor;
@@ -520,8 +522,7 @@ export class TerrainClipmapSystem {
     for (const desired of this.desired.values()) {
       if (this.pending.has(desired.key)) continue;
       const page = this.pages.get(desired.key);
-      const requiredResolution = tileResolution(this.profile, desired.address.level);
-      if (page !== undefined && page.resolution === requiredResolution) continue;
+      if (page !== undefined && page.resolution === this.profile.terrainTileResolution) continue;
       missing.push({ address: desired.address, desired });
     }
     if (missing.length === 0) return;
@@ -565,7 +566,7 @@ export class TerrainClipmapSystem {
           tileX: desired.address.x,
           tileZ: desired.address.z,
           size: desired.bounds.extentMeters,
-          resolution: tileResolution(this.profile, desired.address.level),
+          resolution: this.profile.terrainTileResolution,
           includeNormals: true,
           includeColors: true,
           // 1B-1: no clipmap path reads moisture or biomes. Colours stay —
