@@ -132,20 +132,32 @@ describe("perf capture (1A-1c)", () => {
       };
       renderer.setCameraMode(shot.cameraMode);
 
-      // Stream until the desired page set is fully resident (bounded), then a
-      // fixed settle for temporal state — otherwise reruns diff on whichever
-      // far-ring pages happened to arrive before the capture.
-      const maxStreamingFrames = 3_000;
+      // Stream until the desired terrain pages are fully resident AND the
+      // detail instance population stops changing (the 1B-10 worker streams
+      // cells asynchronously), then a fixed settle for temporal state —
+      // otherwise reruns diff on whichever pages or cells happened to arrive
+      // before the capture.
+      const maxStreamingFrames = 6_000;
+      let stableChecks = 0;
+      let lastVisibleInstances = -1;
       for (let frame = 0; frame < maxStreamingFrames; frame += 1) {
         simulationTime += 1 / 60;
         renderer.render({ ...state, simulationTime }, 1 / 60);
-        // Yield regularly so terrain/hydrology worker results can land.
+        // Yield regularly so terrain/hydrology/detail worker results land.
         if (frame % 2 === 1) await new Promise((resolve) => setTimeout(resolve, 0));
-        if (
-          frame >= PERF_CAPTURE_WARMUP_FRAMES
-          && frame % 10 === 9
-          && renderer.getDiagnostics().pendingTerrainPages === 0
-        ) break;
+        if (frame >= PERF_CAPTURE_WARMUP_FRAMES && frame % 30 === 29) {
+          const diagnostics = renderer.getDiagnostics();
+          if (
+            diagnostics.pendingTerrainPages === 0
+            && diagnostics.visibleInstances === lastVisibleInstances
+          ) {
+            stableChecks += 1;
+            if (stableChecks >= 3) break;
+          } else {
+            stableChecks = 0;
+          }
+          lastVisibleInstances = diagnostics.visibleInstances;
+        }
       }
       for (let settle = 0; settle < 90; settle += 1) {
         simulationTime += 1 / 60;

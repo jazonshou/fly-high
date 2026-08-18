@@ -6,6 +6,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import { DetailGenerationClient } from "./DetailGenerationClient";
 import { DetailWindMaterialPlugin } from "./DetailWindMaterialPlugin";
 import { detailCellKey, generateDetailCell } from "./generation";
 import {
@@ -102,6 +103,12 @@ export interface WorldDetailRuntimeOptions {
   readonly cellSizeMeters?: number;
   /** Sea level anchoring the density field's shoreline/treeline (1B-7). */
   readonly seaLevelMeters?: number;
+  /**
+   * Enables off-main-thread generation (1B-10): the worker rebuilds the same
+   * world from this seed and streams cells back. Omit it (tests, headless
+   * tools) and generation stays inline and synchronous.
+   */
+  readonly workerWorldSeed?: string | number;
 }
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
@@ -210,6 +217,12 @@ export class WorldDetailRuntime {
   private updateSequence = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
+  /** Null when generation is inline; the 1B-10 worker client otherwise. */
+  private client: DetailGenerationClient | null = null;
+  /** Desired keys with a request in flight, mapped to their request ids. */
+  private readonly pendingCells = new Map<string, number>();
+  /** Bumped whenever resident cells reset; stale worker results are dropped. */
+  private cellEpoch = 0;
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -227,6 +240,20 @@ export class WorldDetailRuntime {
       throw new RangeError("Detail runtime cell size must be between 64 and 4096 metres");
     }
     this.createBatches();
+    if (options.workerWorldSeed !== undefined) {
+      this.client = new DetailGenerationClient(
+        {
+          worldSeed: options.workerWorldSeed,
+          cellSizeMeters: this.cellSizeMeters,
+          seaLevelMeters: options.seaLevelMeters ?? 0,
+        },
+        () => {
+          // Worker died: fall back to inline generation on the next update.
+          this.client = null;
+          this.pendingCells.clear();
+        },
+      );
+    }
   }
 
   /**
@@ -293,6 +320,9 @@ export class WorldDetailRuntime {
     if (profile.vegetationDensity !== this.density) {
       this.density = profile.vegetationDensity;
       this.cells.clear();
+      this.cellEpoch += 1;
+      this.pendingCells.clear();
+      this.client?.cancelAll();
       this.batchesDirty = true;
     }
     if (nextSignature !== this.signature) {
@@ -312,34 +342,64 @@ export class WorldDetailRuntime {
       }
     }
 
-    const resolvedBudget = resolveDetailGenerationBudget(profile);
-    const cap = this.generationBudgetCap;
-    // The governor cap can only shrink the profile's own slice, never grow it.
-    const generationBudget = cap === null ? resolvedBudget : {
-      maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
-      maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
-    };
-    const generationStartedAt = this.nowMilliseconds();
-    let generated = 0;
-    for (const desired of this.desiredCells) {
-      if (this.cells.has(desired.key)) continue;
-      const elapsedMilliseconds = generated === 0
-        ? 0
-        : Math.max(0, this.nowMilliseconds() - generationStartedAt);
-      if (!canGenerateNextDetailCell(generated, elapsedMilliseconds, generationBudget)) break;
-      const cell = generateDetailCell({
-        worldSeed: this.options.worldSeed,
-        cellX: desired.cellX,
-        cellZ: desired.cellZ,
-        cellSizeMeters: this.cellSizeMeters,
-        densityMultiplier: profile.vegetationDensity,
-        terrainSample: this.options.terrainSample,
-        seaLevelMeters: this.options.seaLevelMeters ?? 0,
-      });
-      this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
-      this.cumulativeGeneratedCells += 1;
-      generated += 1;
-      this.batchesDirty = true;
+    if (this.client !== null) {
+      // 1B-10: generation happens on the worker; the main thread only files
+      // requests (streaming-priority ordered by the bounded queue) and
+      // applies results as they arrive. The Governor B budget cap survives
+      // as the request-admission bound.
+      const requestCap = this.generationBudgetCap?.maximumCells ?? Number.POSITIVE_INFINITY;
+      let admitted = 0;
+      for (const desired of this.desiredCells) {
+        if (admitted >= requestCap) break;
+        if (this.cells.has(desired.key) || this.pendingCells.has(desired.key)) continue;
+        const epoch = this.cellEpoch;
+        const requestId = this.client.request(
+          {
+            key: desired.key,
+            generation: epoch,
+            priority: desired.priority,
+            cellX: desired.cellX,
+            cellZ: desired.cellZ,
+            densityMultiplier: profile.vegetationDensity,
+            dayOfYear: 0,
+          },
+          (cell) => this.onCellGenerated(desired.key, epoch, cell),
+          () => this.pendingCells.delete(desired.key),
+        );
+        if (requestId < 0) break;
+        this.pendingCells.set(desired.key, requestId);
+        admitted += 1;
+      }
+    } else {
+      const resolvedBudget = resolveDetailGenerationBudget(profile);
+      const cap = this.generationBudgetCap;
+      // The governor cap can only shrink the profile's own slice, never grow it.
+      const generationBudget = cap === null ? resolvedBudget : {
+        maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
+        maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
+      };
+      const generationStartedAt = this.nowMilliseconds();
+      let generated = 0;
+      for (const desired of this.desiredCells) {
+        if (this.cells.has(desired.key)) continue;
+        const elapsedMilliseconds = generated === 0
+          ? 0
+          : Math.max(0, this.nowMilliseconds() - generationStartedAt);
+        if (!canGenerateNextDetailCell(generated, elapsedMilliseconds, generationBudget)) break;
+        const cell = generateDetailCell({
+          worldSeed: this.options.worldSeed,
+          cellX: desired.cellX,
+          cellZ: desired.cellZ,
+          cellSizeMeters: this.cellSizeMeters,
+          densityMultiplier: profile.vegetationDensity,
+          terrainSample: this.options.terrainSample,
+          seaLevelMeters: this.options.seaLevelMeters ?? 0,
+        });
+        this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
+        this.cumulativeGeneratedCells += 1;
+        generated += 1;
+        this.batchesDirty = true;
+      }
     }
 
     if (this.batchesDirty) {
@@ -371,6 +431,9 @@ export class WorldDetailRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.client?.dispose();
+    this.client = null;
+    this.pendingCells.clear();
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
@@ -435,6 +498,25 @@ export class WorldDetailRuntime {
     for (const key of this.cells.keys()) {
       if (!this.desiredKeys.has(key)) this.cells.delete(key);
     }
+    for (const [key, requestId] of this.pendingCells) {
+      if (this.desiredKeys.has(key)) continue;
+      this.client?.cancel(requestId);
+      this.pendingCells.delete(key);
+    }
+  }
+
+  /** Applies one worker-generated cell; stale epochs and keys are dropped. */
+  private onCellGenerated(key: string, epoch: number, cell: GeneratedDetailCell): void {
+    this.pendingCells.delete(key);
+    if (this.disposed || epoch !== this.cellEpoch || !this.desiredKeys.has(key)) return;
+    const desired = this.desiredCells.find((candidate) => candidate.key === key);
+    this.cells.set(key, {
+      cell,
+      lod: desired?.lod ?? "mid",
+      distance: desired?.distance ?? Number.POSITIVE_INFINITY,
+    });
+    this.cumulativeGeneratedCells += 1;
+    this.batchesDirty = true;
   }
 
   private rebuildBatches(

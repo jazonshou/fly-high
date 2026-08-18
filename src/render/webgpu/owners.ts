@@ -160,7 +160,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/workers/detail.worker.ts"],
     consumers: ["vegetation"],
-    plannedBy: "1B-10",
   },
   // ——— Phase 0 contracts, enforced with the same machinery ———
   {
