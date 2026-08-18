@@ -6,7 +6,7 @@ fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It kee
 
 - WebGPU, Web Workers, and a hardware-accelerated adapter are required. Startup requests a high-performance adapter and rejects a software/fallback adapter.
 - There is **no WebGL fallback and no Canvas fallback**. An unsupported device receives a startup error rather than a reduced renderer.
-- The engine runs with compatibility mode disabled, a right-handed scene, reversed-Z depth, no MSAA, a 0.08 m near plane, and a 120 km far plane.
+- The engine runs with compatibility mode disabled, a right-handed scene, reversed-Z depth, MSAA on the offscreen beauty target per tier, a 0.08 m near plane, and a 45 km far plane (1C-4: the shared aerial perspective is ≥95% opaque beyond it).
 - The optional `timestamp-query` feature enables GPU timing in diagnostics. It is not required for rendering.
 - Device loss is terminal for the current renderer instance. Simulation/rendering pause and the user must reload to recreate the adapter, device, and every GPU resource.
 - WebGPU normally requires a secure browser context; local development at `localhost` is accepted.
@@ -38,7 +38,7 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 | Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, normals, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and a bounded scene-reflection capture |
 | Rivers and lakes | Deterministic, velocity-ahead region generation in a cancellable Worker, with a scheduled CPU fallback | Crossfaded flow-aligned meshes with WGSL ripples, Fresnel, sun/sky/cloud response, and nearest-lake scene reflection |
 | Clouds | Procedural density is evaluated during the WGSL fragment ray march | Low-resolution integration, ping-pong temporal resolve, representative-depth composition, and a bounded transmittance map sampled by world-space receivers |
-| Atmosphere | Small CPU preset/state updates | Analytic HDR WGSL sky, Rayleigh/Mie-style scattering, sun, ambient, and fog |
+| Atmosphere | CPU solar position, transmittance LUT bake, and per-frame haze binding | Analytic HDR WGSL sky and aerial perspective from one shared closed-form Rayleigh/Mie/ozone integral; Babylon fog is permanently off |
 | Trees, rocks, villages | Deterministic CPU detail-cell generation and LOD selection | Spatially chunked Babylon thin instances with per-instance color and tree wind deformation |
 | Wildlife | Deterministic CPU population and bounded fixed-step AI | Interpolated current thin-instance transforms for procedural animals |
 
@@ -74,7 +74,7 @@ The effective tier resolves these bounded targets:
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 |
 
-These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5. All terrain tiers retain the inexpensive far levels needed to cover the 120 km view; quality changes near-page vertex density rather than exposing a finite terrain edge.
+These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge.
 
 Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. The ACES/FXAA post stack is the same across quality profiles.
 
@@ -98,7 +98,7 @@ The ocean is the renderer's native WebGPU compute workload:
 - Horizontal and vertical Stockham passes perform the 2D inverse FFT.
 - A derivation pass produces half-float displacement and normal/foam textures from float working textures. Jacobian compression drives breaking-wave foam, which decays temporally.
 - Tier 0 allocates 128² with three cascades; Tier 1 allocates 256² with four; Tier 2 allocates 256² with all five. The fifth cascade covers the largest 16,384 m patch and updates every eighth frame. Active cascades span different patch lengths and update cadences so farther, slower bands need not dispatch every frame.
-- The camera-centered ocean presentation surface is a single crack-free 120 km radial grid. Tier 0/1/2 use 96×128, 144×192, or 192×256 radial/angular topology; a fifth-power distribution concentrates sub-metre radial spacing near the aircraft and grows cells toward the fogged far plane.
+- The camera-centered ocean presentation surface is a single crack-free 40 km radial grid. Tier 0/1/2 use 96×128, 144×192, or 192×256 radial/angular topology; a fifth-power distribution concentrates sub-metre radial spacing near the aircraft and grows cells toward the hazed far plane.
 - The WGSL surface combines multi-cascade geometric displacement with per-fragment slope/normal and foam sampling, dielectric Fresnel, GGX sun glint, sky/cloud color, depth tint, and height-aware cloud transmittance on direct sunlight. Ocean and inland-water shaders also bind Babylon's existing cascaded-shadow depth array through its public matrices and comparison sampler; cascade splits/blends follow live quality changes, and only direct solar glare/scatter is attenuated. This reuses the terrain/scenery shadow render instead of scheduling a water-only pass. One shared planar capture adds nearby terrain, aircraft, and settlement geometry while its alpha mask and plane validity fall back to the analytic sky/cloud response wherever capture data is absent.
 - Lower-cadence far cascades accumulate elapsed time before applying foam decay, so their half-life is independent of update cadence. Live quality changes initialize replacement compute resources before swapping away the active ocean.
 

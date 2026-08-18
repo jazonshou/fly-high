@@ -5,7 +5,7 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
@@ -18,6 +18,12 @@ import {
   type EnvironmentState,
 } from "@/src/render/webgpu/nature/EnvironmentState";
 import { exposureForState } from "@/src/render/webgpu/nature/EnvironmentDirector";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "./AerialPerspective";
 
 const SKY_SHADER_NAME = "aerolithPhysicalSky";
 
@@ -40,40 +46,37 @@ fn main(input: VertexInputs) -> FragmentInputs {
 }
 `;
 
-const SKY_FRAGMENT_WGSL = /* wgsl */ `
+export const SKY_FRAGMENT_WGSL = /* wgsl */ `
 varying direction: vec3f;
-uniform sunDirection: vec3f;
-uniform sunColor: vec3f;
-uniform zenithColor: vec3f;
-uniform horizonColor: vec3f;
-uniform groundColor: vec3f;
-uniform turbidity: f32;
+${AERIAL_PERSPECTIVE_WGSL}
 
-const PI: f32 = 3.14159265359;
-
-fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 0.001), 1.5));
-}
+// The sun's true angular radius — must equal EnvironmentState's
+// sun.angularRadiusRadians; the agreement is pinned by test.
+const SUN_ANGULAR_RADIUS: f32 = 0.004675;
+const SUN_LIMB_DARKENING: f32 = 0.6;
+const SUN_DISC_RADIANCE: f32 = 40.0;
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let view = normalize(input.direction);
-  let up = clamp(view.y, -1.0, 1.0);
-  let horizon = pow(1.0 - max(up, 0.0), 3.2);
-  let airMass = 1.0 / max(0.09, up + 0.16);
-  let mu = clamp(dot(view, normalize(uniforms.sunDirection)), -1.0, 1.0);
-  let rayleighPhase = 3.0 * (1.0 + mu * mu) / (16.0 * PI);
-  let miePhase = henyeyGreenstein(mu, 0.78);
-  let rayleighTint = vec3f(0.24, 0.52, 1.0) * rayleighPhase * (0.26 + 0.55 / airMass);
-  let mieTint = uniforms.sunColor * miePhase * (0.014 + uniforms.turbidity * 0.014);
-  var color = mix(uniforms.zenithColor, uniforms.horizonColor, horizon);
-  color += rayleighTint * (0.18 + 0.26 * (1.0 - uniforms.turbidity));
-  color += mieTint;
-  let sunDisc = smoothstep(0.99982, 0.99994, mu);
-  let sunHalo = pow(max(mu, 0.0), 512.0) * 0.32;
-  color += uniforms.sunColor * (sunDisc * 18.0 + sunHalo);
-  color = select(uniforms.groundColor, color, up >= -0.015);
+  // 1C-5: the sky IS the shared aerial-perspective integral run to the top
+  // of the atmosphere — terrain haze and sky agree by construction, not by
+  // tuning, and the below-horizon clamp shows the haze limit instead of a
+  // painted ground colour.
+  var color = skyRadiance(view);
+  // The real sun: true angular size, limb-darkened, reddened by the same
+  // transmittance the haze uses — it sets red because the air says so.
+  let mu = clamp(dot(view, normalize(uniforms.aerialSunDirection)), -1.0, 1.0);
+  // Small-angle chord: acos(mu) loses f32 precision exactly where the disc is.
+  let theta = sqrt(max(2.0 * (1.0 - mu), 0.0));
+  let radius = theta / SUN_ANGULAR_RADIUS;
+  if (radius < 1.1) {
+    let limb = 1.0 - SUN_LIMB_DARKENING
+      * (1.0 - sqrt(max(1.0 - radius * radius, 0.0)));
+    let disc = smoothstep(1.1, 0.98, radius) * max(limb, 0.0);
+    color += uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance
+      * (disc * SUN_DISC_RADIANCE);
+  }
   // 1C-2: the sky writes linear HDR; the one exposure curve lives on the
   // image-processing chain. No shader multiplies its own exposure again.
   fragmentOutputs.color = vec4f(max(color, vec3f(0.0)), 1.0);
@@ -267,15 +270,7 @@ export class AtmosphereSystem {
       SKY_SHADER_NAME,
       {
         attributes: ["position"],
-        uniforms: [
-          "worldViewProjection",
-          "sunDirection",
-          "sunColor",
-          "zenithColor",
-          "horizonColor",
-          "groundColor",
-          "turbidity",
-        ],
+        uniforms: ["worldViewProjection", ...AERIAL_PERSPECTIVE_UNIFORMS],
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
@@ -337,6 +332,19 @@ export class AtmosphereSystem {
     return this.snapshotValue;
   }
 
+  /**
+   * Per-frame haze binding (1C-4/1C-5). The sky material consumes the same
+   * shared uniforms every other receiver does — one integral, one binding.
+   */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.skyMaterial,
+      binding,
+      (name, x, y, z) => this.skyMaterial.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.skyMaterial.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   addShadowCaster(mesh: Mesh, includeDescendants = true): void {
     this.shadows.addShadowCaster(mesh, includeDescendants);
   }
@@ -385,12 +393,6 @@ export class AtmosphereSystem {
     this.ambient.diffuse = skyZenith;
     this.ambient.groundColor = palette.ground;
     this.ambient.intensity = ambientIntensity;
-    this.skyMaterial.setVector3("sunDirection", sunDirection);
-    this.skyMaterial.setColor3("sunColor", palette.sunColor);
-    this.skyMaterial.setColor3("zenithColor", skyZenith);
-    this.skyMaterial.setColor3("horizonColor", skyHorizon);
-    this.skyMaterial.setColor3("groundColor", palette.ground);
-    this.skyMaterial.setFloat("turbidity", humidity);
     this.snapshotValue = {
       sunDirection: sunDirection.clone(),
       sunColor: palette.sunColor.clone(),

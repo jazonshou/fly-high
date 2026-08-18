@@ -524,6 +524,13 @@ export class FlightRenderer implements FlightRenderingSystem {
         ],
         sunIlluminanceNormalized: initialSnapshot.sunIlluminanceNormalized,
       }, 0, 0);
+      const initialAerialBinding = aerialReceivers.currentBinding;
+      if (initialAerialBinding) {
+        atmosphere.setAerialPerspective(initialAerialBinding);
+        ocean.setAerialPerspective(initialAerialBinding);
+        hydrology.setAerialPerspective(initialAerialBinding);
+        clouds.setAerialPerspective(initialAerialBinding);
+      }
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
@@ -966,6 +973,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     }, this.originX, this.originZ);
     const binding = this.aerialReceivers.currentBinding;
     if (!binding) return;
+    this.atmosphere.setAerialPerspective(binding);
     this.ocean.setAerialPerspective(binding);
     this.hydrology.setAerialPerspective(binding);
     this.clouds.setAerialPerspective(binding);

@@ -225,6 +225,38 @@ export function evaluateAerialPerspective(
   return { transmittance, inScatter };
 }
 
+/** Top of the useful atmosphere for the sky integral (both species ~0 past it). */
+export const AERIAL_SKY_SHELL_METERS = 60_000;
+
+/**
+ * The sky, as the same integral (1C-5) — the TS mirror of WGSL skyRadiance.
+ * Used by the IBL bake (1C-6) and the sky/haze agreement tests.
+ */
+export function evaluateSkyRadiance(
+  binding: AerialPerspectiveBinding,
+  direction: [number, number, number],
+): [number, number, number] {
+  const up = Math.max(direction[1], 0.0025);
+  const cameraAltitude = Math.min(
+    Math.max(binding.cameraAltitudeMeters, 0),
+    AERIAL_SKY_SHELL_METERS - 1,
+  );
+  const distanceToShell = (AERIAL_SKY_SHELL_METERS - cameraAltitude) / up;
+  const mu = direction[0] * binding.sunDirection[0]
+    + direction[1] * binding.sunDirection[1]
+    + direction[2] * binding.sunDirection[2];
+  return evaluateAerialPerspective(
+    binding.coefficients,
+    binding.cameraAltitudeMeters,
+    AERIAL_SKY_SHELL_METERS,
+    distanceToShell,
+    mu,
+    binding.sunRadiance,
+    binding.ambient,
+    binding.sunTransmittance,
+  ).inScatter;
+}
+
 /**
  * The shared WGSL — uniform declarations plus the functions, matching the
  * mirror line for line. Consumers (ShaderMaterial fragments and the PBR
@@ -328,6 +360,25 @@ fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f
   let mu = dot(viewDirection, uniforms.aerialSunDirection);
   let aerial = aerialPerspective(fragmentAltitude, distanceMeters, mu);
   return color * aerial.transmittance + aerial.inScatter;
+}
+
+const AERIAL_SKY_SHELL: f32 = 60000.0;
+
+fn skyRadiance(direction: vec3f) -> vec3f {
+  // 1C-5: the sky IS this same integral, run out to the top of the useful
+  // atmosphere (both species are negligible past 60 km). Plane-parallel:
+  // below-horizon rays clamp to the horizon path, so the sky sphere's lower
+  // half shows the haze limit — terrain and ocean draw over it, and where
+  // they end the sky already matches their fade by construction.
+  let up = max(direction.y, 0.0025);
+  let cameraAltitude = clamp(uniforms.aerialCameraAltitude, 0.0, AERIAL_SKY_SHELL - 1.0);
+  let distanceToShell = (AERIAL_SKY_SHELL - cameraAltitude) / up;
+  let aerial = aerialPerspective(
+    AERIAL_SKY_SHELL,
+    distanceToShell,
+    dot(direction, uniforms.aerialSunDirection),
+  );
+  return aerial.inScatter;
 }
 `;
 

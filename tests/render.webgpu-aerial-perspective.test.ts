@@ -6,11 +6,14 @@ import {
   aerialPerspectiveCoefficients,
   evaluateAerialPerspective,
   exponentialPathIntegral,
+  evaluateSkyRadiance,
   mieTurbidityMultiplier,
   ozonePathIntegral,
   ozoneTentIntegral,
   resolveAerialPerspectiveBinding,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
+import { SKY_FRAGMENT_WGSL } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
 import {
   FOG_MODE_NONE,
   collectStartupInvariantFailures,
@@ -269,6 +272,73 @@ describe("startup guards (assertion 32)", () => {
       sceneFogMode: FOG_MODE_NONE,
     })).toEqual([]);
     expect(collectStartupInvariantFailures(baseline)).toEqual([]);
+  });
+});
+
+describe("the physical sky (1C-5)", () => {
+  const binding = resolveAerialPerspectiveBinding(
+    CLEAR_NOON,
+    120,
+    [1, 0.96, 0.88],
+    [0.58, 0.77, 0.96],
+    1,
+  );
+  const luminance = (rgb: readonly [number, number, number]): number =>
+    0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+  it("meets the terrain haze at the horizon — same integral, same limit", () => {
+    // A horizontal sky ray and an extremely long horizontal haze path must
+    // converge on the same radiance: this is the coastline-tear fix made
+    // structural. Perpendicular to the sun so the comparison uses the same mu.
+    const sunDirection = binding.sunDirection;
+    const azimuth = [sunDirection[2], 0, -sunDirection[0]] as [number, number, number];
+    const horizontal = Math.hypot(azimuth[0], azimuth[2]);
+    const direction: [number, number, number] = [
+      azimuth[0] / horizontal,
+      0.0025,
+      azimuth[2] / horizontal,
+    ];
+    const sky = evaluateSkyRadiance(binding, direction);
+    const mu = direction[0] * sunDirection[0]
+      + direction[1] * sunDirection[1]
+      + direction[2] * sunDirection[2];
+    const haze = evaluateAerialPerspective(
+      binding.coefficients,
+      binding.cameraAltitudeMeters,
+      binding.cameraAltitudeMeters,
+      2_000_000,
+      mu,
+      binding.sunRadiance,
+      binding.ambient,
+      binding.sunTransmittance,
+    ).inScatter;
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(Math.abs(sky[channel]! - haze[channel]!)).toBeLessThan(0.02);
+    }
+  });
+
+  it("keeps the zenith darker and bluer than the horizon", () => {
+    const zenith = evaluateSkyRadiance(binding, [0, 1, 0]);
+    const horizon = evaluateSkyRadiance(binding, [1, 0.0025, 0]);
+    expect(luminance(zenith)).toBeLessThan(luminance(horizon) * 0.55);
+    expect(zenith[2]!).toBeGreaterThan(zenith[0]! * 1.5);
+  });
+
+  it("fills the below-horizon sphere with bright haze, not a ground colour", () => {
+    // Rays under the horizon read the clamped horizon integral, so the strip
+    // between the terrain edge and the geometric horizon is haze that the
+    // world's own fade already matches.
+    const below = evaluateSkyRadiance(binding, [0.92, -0.39, 0]);
+    const horizon = evaluateSkyRadiance(binding, [1, 0.0025, 0]);
+    expect(luminance(below)).toBeGreaterThan(luminance(horizon) * 0.5);
+  });
+
+  it("draws the sun disc at the state's true angular radius", () => {
+    expect(DEFAULT_ENVIRONMENT_STATE.sun.angularRadiusRadians).toBeCloseTo(0.004675, 9);
+    expect(SKY_FRAGMENT_WGSL).toContain("SUN_ANGULAR_RADIUS: f32 = 0.004675");
+    expect(SKY_FRAGMENT_WGSL).toContain("skyRadiance(view)");
+    // The disc reddens through the shared transmittance — no private tint.
+    expect(SKY_FRAGMENT_WGSL).toContain("uniforms.aerialSunTransmittance");
   });
 });
 
