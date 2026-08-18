@@ -132,6 +132,14 @@ export interface TerrainTileOptions {
   includeColors?: boolean;
   /** Generate moisture and biome classification arrays. Defaults to true. */
   includeClimate?: boolean;
+  /**
+   * Rows/columns generated outside each edge of the core grid, stored in the
+   * heights output (1B-1). Central differencing needs 1 (always generated
+   * internally); the Phase 4 page atlas uses 4. Addressing follows
+   * coreToStoredIndex() from render/webgpu/world/pageGeometry.ts — do not
+   * re-derive it. Defaults to 0 (core-only heights output).
+   */
+  halo?: number;
 }
 
 export interface TerrainTileData {
@@ -142,6 +150,11 @@ export interface TerrainTileData {
   readonly size: number;
   readonly resolution: number;
   readonly spacing: number;
+  /**
+   * Core-sized (resolution²) unless a halo was requested, in which case it is
+   * stored-edge sized ((resolution + 2·halo)²) and addressed through
+   * coreToStoredIndex(row, column, resolution, halo).
+   */
   readonly heights: Float32Array;
   /** xyz triples, or an empty typed array when normals were not requested. */
   readonly normals: Float32Array;

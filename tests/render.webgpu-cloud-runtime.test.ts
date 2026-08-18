@@ -161,7 +161,7 @@ describe("volumetric cloud runtime shaders", () => {
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("renderTargetUv");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("1.0 - screenUv.y");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("let currentUv = input.vUV;");
-    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousViewProjection");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousCameraForward");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("depthConfidence");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("opticalDepth");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("shadowSteps");
@@ -276,6 +276,7 @@ describe("volumetric cloud startup readiness", () => {
 
     expect(createRenderPipelineAsync).toHaveBeenCalledWith(expect.objectContaining({
       colorFormat: "rgba16float",
+      // Follows the fixture's tier-0 profile (msaaSamples 1) since 1B-11.
       sampleCount: 1,
       depthWrite: false,
       depthTest: true,

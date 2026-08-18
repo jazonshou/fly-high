@@ -156,9 +156,11 @@ describe("terrain clipmap seam topology", () => {
 
     const partial = scene.getMeshByName("terrain-page-world-page-v1/1/1/0") as Mesh | null;
     const touching = scene.getMeshByName("terrain-page-world-page-v1/1/-2/0") as Mesh | null;
-    const lowSkirtIndices = 4 * (17 - 1) * 6;
-    expect(partial?.getTotalIndices()).toBe(128 * 6 + lowSkirtIndices);
-    expect(touching?.getTotalIndices()).toBe(256 * 6 + lowSkirtIndices);
+    // 1B-3: the ladder is constant per tier (33 at tier 0), so L1 pages carry
+    // 32x32 cells — no 4:1 ground-sample-distance step against L0.
+    const lowSkirtIndices = 4 * (33 - 1) * 6;
+    expect(partial?.getTotalIndices()).toBe(512 * 6 + lowSkirtIndices);
+    expect(touching?.getTotalIndices()).toBe(1_024 * 6 + lowSkirtIndices);
 
     const lowTriangles = system.statistics.triangles;
     const requestsBeforeQuality = generator.totalRequests;

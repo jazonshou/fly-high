@@ -67,20 +67,32 @@ describe("WebGPU paged world-detail generation", () => {
     expect(new Set(forest.trees.map((tree) => tree.species)).size).toBeGreaterThanOrEqual(3);
   });
 
-  it("never places terrestrial detail on water or runway biomes", () => {
-    for (const biome of [TerrainBiome.WATER, TerrainBiome.RUNWAY] as const) {
-      const cell = generateDetailCell({
-        worldSeed: "excluded-biome",
-        cellX: 0,
-        cellZ: 0,
-        terrainSample: constantTerrain(biome, 0.7, 0),
-      });
-      expect(cell.trees).toEqual([]);
-      expect(cell.shrubs).toEqual([]);
-      expect(cell.rocks).toEqual([]);
-      expect(cell.buildings).toEqual([]);
-      expect(cell.village).toBeNull();
-    }
+  it("never places terrestrial detail on water or runway ground", () => {
+    // The density field is continuous, never a biome switch (1B-7): water is
+    // ground at or below sea level, and the runway sits inside the graded
+    // apron's full airport influence. Rocks still key off the biome id.
+    const water = generateDetailCell({
+      worldSeed: "excluded-biome",
+      cellX: 0,
+      cellZ: 0,
+      terrainSample: constantTerrain(TerrainBiome.WATER, 0.7, 0),
+      seaLevelMeters: 130,
+    });
+    expect(water.trees).toEqual([]);
+    expect(water.shrubs).toEqual([]);
+    expect(water.rocks).toEqual([]);
+    const runway = generateDetailCell({
+      worldSeed: "excluded-biome",
+      cellX: 0,
+      cellZ: 0,
+      terrainSample: (x, z) => ({
+        ...constantTerrain(TerrainBiome.RUNWAY, 0.7, 0)(x, z),
+        airportInfluence: 1,
+      }),
+    });
+    expect(runway.trees).toEqual([]);
+    expect(runway.shrubs).toEqual([]);
+    expect(runway.rocks).toEqual([]);
   });
 
   it("keeps placements finite, bounded to their owning cell, and wind-ready", () => {
@@ -142,42 +154,68 @@ describe("WebGPU paged world-detail generation", () => {
       for (let second = first + 1; second < nearBoundary.length; second += 1) {
         const a = nearBoundary[first]!;
         const b = nearBoundary[second]!;
-        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(3.49);
+        // 1B-9's thinning floor is 2 m (half a crown, clamped) — closed
+        // canopies overlap; the guarantee is no coincident pairs across the
+        // page edge, not park-like spacing.
+        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(1.99);
       }
     }
   });
 
-  it("owns sparse villages at macro-cell scale and lays buildings along a road", () => {
+  it("keeps a 100 km² scan free of settlement artefacts (1B-5, assertion 26)", () => {
+    // Villages and buildings are deleted outright, not flagged off. A wide
+    // scan across every cell in a 10.24 × 10.24 km region must produce only
+    // natural placements, and the runtime must register no built prototypes.
     const terrainSample = constantTerrain(TerrainBiome.GRASSLAND, 0.52, 0.03);
-    let settlement = null as ReturnType<typeof generateDetailCell> | null;
-    for (let z = -10; z <= 10 && !settlement; z += 1) {
-      for (let x = -10; x <= 10; x += 1) {
+    for (let z = -10; z < 10; z += 1) {
+      for (let x = -10; x < 10; x += 1) {
         const cell = generateDetailCell({
-          worldSeed: "settlement-search",
+          worldSeed: "settlement-scan",
           cellX: x,
           cellZ: z,
-          densityMultiplier: 0,
+          densityMultiplier: 0.2,
           terrainSample,
         });
-        if (cell.village) {
-          settlement = cell;
-          break;
+        const placements = [...cell.trees, ...cell.shrubs, ...cell.rocks];
+        for (const placement of placements) {
+          expect(["tree", "shrub", "rock"]).toContain(placement.kind);
         }
+        expect(Object.keys(cell).sort()).toEqual([
+          "cellSizeMeters", "cellX", "cellZ", "key",
+          "maxX", "maxZ", "minX", "minZ",
+          "rocks", "shrubs", "trees",
+        ]);
       }
     }
+  });
 
-    expect(settlement).not.toBeNull();
-    expect(settlement?.buildings.length).toBeGreaterThanOrEqual(3);
-    expect(new Set(settlement?.buildings.map((building) => building.id)).size).toBe(
-      settlement?.buildings.length,
-    );
-    for (const building of settlement?.buildings ?? []) {
-      expect(building.x).toBeGreaterThan(settlement?.minX ?? Number.POSITIVE_INFINITY);
-      expect(building.x).toBeLessThan(settlement?.maxX ?? Number.NEGATIVE_INFINITY);
-      expect(building.z).toBeGreaterThan(settlement?.minZ ?? Number.POSITIVE_INFINITY);
-      expect(building.z).toBeLessThan(settlement?.maxZ ?? Number.NEGATIVE_INFINITY);
-      expect(building.yawRadians).toBeCloseTo(settlement?.village?.roadHeadingRadians ?? 0, 0);
-    }
+  it("fades woody plants and rocks out multiplicatively over the graded apron (1B-6)", () => {
+    const base = constantTerrain(TerrainBiome.GRASSLAND, 0.6, 0.04);
+    const withInfluence = (influence: number) => (x: number, z: number) => ({
+      ...base(x, z),
+      airportInfluence: influence,
+    });
+    const shared = {
+      worldSeed: "airport-exclusion",
+      cellX: 2,
+      cellZ: -3,
+      densityMultiplier: 1,
+    } as const;
+    const open = generateDetailCell({ ...shared, terrainSample: withInfluence(0) });
+    const apron = generateDetailCell({ ...shared, terrainSample: withInfluence(1) });
+    const blend = generateDetailCell({ ...shared, terrainSample: withInfluence(0.6) });
+
+    // Zero influence is exactly a no-op against the plain sampler.
+    expect(open).toEqual(generateDetailCell({ ...shared, terrainSample: base }));
+    // Full influence clears trees, shrubs and rocks entirely.
+    expect(apron.trees).toEqual([]);
+    expect(apron.shrubs).toEqual([]);
+    expect(apron.rocks).toEqual([]);
+    // Partial influence thins multiplicatively rather than switching off.
+    const openCount = open.trees.length + open.shrubs.length + open.rocks.length;
+    const blendCount = blend.trees.length + blend.shrubs.length + blend.rocks.length;
+    expect(blendCount).toBeGreaterThan(0);
+    expect(blendCount).toBeLessThan(openCount);
   });
 
   it("validates paging inputs before sampling terrain", () => {

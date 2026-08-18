@@ -1,13 +1,12 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder.pure";
 import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
 import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import { DetailGenerationClient } from "./DetailGenerationClient";
 import { DetailWindMaterialPlugin } from "./DetailWindMaterialPlugin";
 import { detailCellKey, generateDetailCell } from "./generation";
 import {
@@ -21,7 +20,6 @@ import {
 } from "./spatialChunks";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
-  type BuildingStyle,
   type DetailFloatingOrigin,
   type DetailLod,
   type DetailTerrainSampler,
@@ -60,7 +58,6 @@ interface DetailChunkStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
-  readonly buildingInstances: number;
 }
 
 interface DetailPresentationChunk {
@@ -77,7 +74,6 @@ interface MutableDetailChunkStatistics {
   treeInstances: number;
   shrubInstances: number;
   rockInstances: number;
-  buildingInstances: number;
 }
 
 interface ThinInstanceMeshWithCache {
@@ -105,6 +101,14 @@ export interface WorldDetailRuntimeOptions {
   readonly worldSeed: string | number;
   readonly terrainSample: DetailTerrainSampler;
   readonly cellSizeMeters?: number;
+  /** Sea level anchoring the density field's shoreline/treeline (1B-7). */
+  readonly seaLevelMeters?: number;
+  /**
+   * Enables off-main-thread generation (1B-10): the worker rebuilds the same
+   * world from this seed and streams cells back. Omit it (tests, headless
+   * tools) and generation stays inline and synchronous.
+   */
+  readonly workerWorldSeed?: string | number;
 }
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
@@ -118,7 +122,6 @@ const TREE_SPECIES: readonly TreeSpecies[] = [
 ];
 const SHRUB_SPECIES: readonly ShrubSpecies[] = ["juniper", "hazel", "sage"];
 const ROCK_VARIANTS: readonly RockVariant[] = ["granite", "limestone", "dark"];
-const BUILDING_STYLES: readonly BuildingStyle[] = ["cottage", "barn", "tower"];
 
 const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   residentCells: 0,
@@ -128,7 +131,6 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   treeInstances: 0,
   shrubInstances: 0,
   rockInstances: 0,
-  buildingInstances: 0,
   renderedThinInstances: 0,
   activeBatches: 0,
 });
@@ -191,33 +193,6 @@ function appendYawMatrix(
   );
 }
 
-function createGabledRoof(name: string, scene: Scene): Mesh {
-  const positions = [
-    -0.5, 0, -0.5,
-    0.5, 0, -0.5,
-    0, 0.5, -0.5,
-    -0.5, 0, 0.5,
-    0.5, 0, 0.5,
-    0, 0.5, 0.5,
-  ];
-  const indices = [
-    0, 1, 2,
-    5, 4, 3,
-    0, 2, 5, 0, 5, 3,
-    1, 4, 5, 1, 5, 2,
-    0, 3, 4, 0, 4, 1,
-  ];
-  const normals: number[] = [];
-  VertexData.ComputeNormals(positions, indices, normals);
-  const data = new VertexData();
-  data.positions = positions;
-  data.indices = indices;
-  data.normals = normals;
-  const mesh = new Mesh(name, scene);
-  data.applyToMesh(mesh, false);
-  return mesh;
-}
-
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -242,6 +217,12 @@ export class WorldDetailRuntime {
   private updateSequence = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
+  /** Null when generation is inline; the 1B-10 worker client otherwise. */
+  private client: DetailGenerationClient | null = null;
+  /** Desired keys with a request in flight, mapped to their request ids. */
+  private readonly pendingCells = new Map<string, number>();
+  /** Bumped whenever resident cells reset; stale worker results are dropped. */
+  private cellEpoch = 0;
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -259,6 +240,20 @@ export class WorldDetailRuntime {
       throw new RangeError("Detail runtime cell size must be between 64 and 4096 metres");
     }
     this.createBatches();
+    if (options.workerWorldSeed !== undefined) {
+      this.client = new DetailGenerationClient(
+        {
+          worldSeed: options.workerWorldSeed,
+          cellSizeMeters: this.cellSizeMeters,
+          seaLevelMeters: options.seaLevelMeters ?? 0,
+        },
+        () => {
+          // Worker died: fall back to inline generation on the next update.
+          this.client = null;
+          this.pendingCells.clear();
+        },
+      );
+    }
   }
 
   /**
@@ -325,6 +320,9 @@ export class WorldDetailRuntime {
     if (profile.vegetationDensity !== this.density) {
       this.density = profile.vegetationDensity;
       this.cells.clear();
+      this.cellEpoch += 1;
+      this.pendingCells.clear();
+      this.client?.cancelAll();
       this.batchesDirty = true;
     }
     if (nextSignature !== this.signature) {
@@ -344,33 +342,64 @@ export class WorldDetailRuntime {
       }
     }
 
-    const resolvedBudget = resolveDetailGenerationBudget(profile);
-    const cap = this.generationBudgetCap;
-    // The governor cap can only shrink the profile's own slice, never grow it.
-    const generationBudget = cap === null ? resolvedBudget : {
-      maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
-      maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
-    };
-    const generationStartedAt = this.nowMilliseconds();
-    let generated = 0;
-    for (const desired of this.desiredCells) {
-      if (this.cells.has(desired.key)) continue;
-      const elapsedMilliseconds = generated === 0
-        ? 0
-        : Math.max(0, this.nowMilliseconds() - generationStartedAt);
-      if (!canGenerateNextDetailCell(generated, elapsedMilliseconds, generationBudget)) break;
-      const cell = generateDetailCell({
-        worldSeed: this.options.worldSeed,
-        cellX: desired.cellX,
-        cellZ: desired.cellZ,
-        cellSizeMeters: this.cellSizeMeters,
-        densityMultiplier: profile.vegetationDensity,
-        terrainSample: this.options.terrainSample,
-      });
-      this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
-      this.cumulativeGeneratedCells += 1;
-      generated += 1;
-      this.batchesDirty = true;
+    if (this.client !== null) {
+      // 1B-10: generation happens on the worker; the main thread only files
+      // requests (streaming-priority ordered by the bounded queue) and
+      // applies results as they arrive. The Governor B budget cap survives
+      // as the request-admission bound.
+      const requestCap = this.generationBudgetCap?.maximumCells ?? Number.POSITIVE_INFINITY;
+      let admitted = 0;
+      for (const desired of this.desiredCells) {
+        if (admitted >= requestCap) break;
+        if (this.cells.has(desired.key) || this.pendingCells.has(desired.key)) continue;
+        const epoch = this.cellEpoch;
+        const requestId = this.client.request(
+          {
+            key: desired.key,
+            generation: epoch,
+            priority: desired.priority,
+            cellX: desired.cellX,
+            cellZ: desired.cellZ,
+            densityMultiplier: profile.vegetationDensity,
+            dayOfYear: 0,
+          },
+          (cell) => this.onCellGenerated(desired.key, epoch, cell),
+          () => this.pendingCells.delete(desired.key),
+        );
+        if (requestId < 0) break;
+        this.pendingCells.set(desired.key, requestId);
+        admitted += 1;
+      }
+    } else {
+      const resolvedBudget = resolveDetailGenerationBudget(profile);
+      const cap = this.generationBudgetCap;
+      // The governor cap can only shrink the profile's own slice, never grow it.
+      const generationBudget = cap === null ? resolvedBudget : {
+        maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
+        maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
+      };
+      const generationStartedAt = this.nowMilliseconds();
+      let generated = 0;
+      for (const desired of this.desiredCells) {
+        if (this.cells.has(desired.key)) continue;
+        const elapsedMilliseconds = generated === 0
+          ? 0
+          : Math.max(0, this.nowMilliseconds() - generationStartedAt);
+        if (!canGenerateNextDetailCell(generated, elapsedMilliseconds, generationBudget)) break;
+        const cell = generateDetailCell({
+          worldSeed: this.options.worldSeed,
+          cellX: desired.cellX,
+          cellZ: desired.cellZ,
+          cellSizeMeters: this.cellSizeMeters,
+          densityMultiplier: profile.vegetationDensity,
+          terrainSample: this.options.terrainSample,
+          seaLevelMeters: this.options.seaLevelMeters ?? 0,
+        });
+        this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
+        this.cumulativeGeneratedCells += 1;
+        generated += 1;
+        this.batchesDirty = true;
+      }
     }
 
     if (this.batchesDirty) {
@@ -402,6 +431,9 @@ export class WorldDetailRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.client?.dispose();
+    this.client = null;
+    this.pendingCells.clear();
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
@@ -466,6 +498,25 @@ export class WorldDetailRuntime {
     for (const key of this.cells.keys()) {
       if (!this.desiredKeys.has(key)) this.cells.delete(key);
     }
+    for (const [key, requestId] of this.pendingCells) {
+      if (this.desiredKeys.has(key)) continue;
+      this.client?.cancel(requestId);
+      this.pendingCells.delete(key);
+    }
+  }
+
+  /** Applies one worker-generated cell; stale epochs and keys are dropped. */
+  private onCellGenerated(key: string, epoch: number, cell: GeneratedDetailCell): void {
+    this.pendingCells.delete(key);
+    if (this.disposed || epoch !== this.cellEpoch || !this.desiredKeys.has(key)) return;
+    const desired = this.desiredCells.find((candidate) => candidate.key === key);
+    this.cells.set(key, {
+      cell,
+      lod: desired?.lod ?? "mid",
+      distance: desired?.distance ?? Number.POSITIVE_INFINITY,
+    });
+    this.cumulativeGeneratedCells += 1;
+    this.batchesDirty = true;
   }
 
   private rebuildBatches(
@@ -490,15 +541,22 @@ export class WorldDetailRuntime {
       if (!grouped.has(chunkKey)) this.disposePresentationChunk(chunk);
     }
 
-    const midTreeRetention = clamp(0.2 + profile.vegetationDensity * 0.42, 0.2, 0.66);
+    // Rendered-share thinning (1B-9 interim): the density field and its
+    // acceptance tests carry the ECOLOGICAL stem density (300–800/ha closed
+    // forest); per-stem cone/sphere meshes cannot draw that — measured 39 M
+    // triangles and a sub-10 fps frame at the perf-capture viewpoints. Until
+    // Phase 2's impostors and grass (2-16/2-17) raise the renderable share,
+    // each cell renders a deterministic selection-keyed subset budgeted in
+    // stems/ha and falling off with distance. Selection is a stable per-stem
+    // uniform, so shares nest: raising the budget only ever ADDS stems.
+    const nearTreeBudgetPerHa = 40 + profile.vegetationDensity * 30;
     const totals: MutableDetailChunkStatistics = {
       nearCells: 0,
       midCells: 0,
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
-      buildingInstances: 0,
-    };
+        };
 
     for (const group of grouped.values()) {
       group.residents.sort((first, second) => first.cell.key.localeCompare(second.cell.key));
@@ -522,8 +580,7 @@ export class WorldDetailRuntime {
             treeInstances: 0,
             shrubInstances: 0,
             rockInstances: 0,
-            buildingInstances: 0,
-          },
+                    },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
       }
@@ -532,7 +589,7 @@ export class WorldDetailRuntime {
           chunk,
           group.residents,
           floatingOrigin,
-          midTreeRetention,
+          nearTreeBudgetPerHa,
         );
         chunk.signature = signature;
       }
@@ -541,7 +598,6 @@ export class WorldDetailRuntime {
       totals.treeInstances += chunk.statistics.treeInstances;
       totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
-      totals.buildingInstances += chunk.statistics.buildingInstances;
     }
 
     this.statisticsValue = {
@@ -552,7 +608,6 @@ export class WorldDetailRuntime {
       treeInstances: totals.treeInstances,
       shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
-      buildingInstances: totals.buildingInstances,
       renderedThinInstances: 0,
       activeBatches: 0,
     };
@@ -563,7 +618,7 @@ export class WorldDetailRuntime {
     chunk: DetailPresentationChunk,
     residents: readonly ResidentCell[],
     floatingOrigin: DetailFloatingOrigin,
-    midTreeRetention: number,
+    nearTreeBudgetPerHa: number,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -573,14 +628,29 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
-      buildingInstances: 0,
-    };
+        };
 
     for (const resident of residents) {
       if (resident.lod === "near") statistics.nearCells += 1;
       else statistics.midCells += 1;
 
+      const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
+      const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
+      const distanceFalloff = Math.min(
+        1,
+        (1_000 / Math.max(resident.distance, 1_000)) ** 2,
+      );
+      const treeBudgetPerHa = nearTreeBudgetPerHa
+        * (resident.lod === "near" ? 1 : Math.max(distanceFalloff, 0.04));
+      const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
+      const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
+      const shrubShare = Math.min(
+        1,
+        (resident.lod === "near" ? 60 : 6) / Math.max(shrubsPerHa, 1e-6),
+      );
+
       for (const tree of resident.cell.trees) {
+        if (tree.selection > treeShare) continue;
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
@@ -616,7 +686,7 @@ export class WorldDetailRuntime {
             wind,
           );
           statistics.treeInstances += 1;
-        } else if (tree.selection <= midTreeRetention) {
+        } else {
           this.appendInstance(
             this.getBatch(`tree-${tree.species}-mid`, chunk, nextBatchKeys),
             localX,
@@ -634,7 +704,7 @@ export class WorldDetailRuntime {
       }
 
       for (const shrub of resident.cell.shrubs) {
-        if (resident.lod === "mid" && shrub.selection > 0.2) continue;
+        if (shrub.selection > shrubShare) continue;
         this.appendInstance(
           this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys),
           shrub.x - floatingOrigin.x,
@@ -672,82 +742,6 @@ export class WorldDetailRuntime {
         statistics.rockInstances += 1;
       }
 
-      for (const building of resident.cell.buildings) {
-        const bodyHeight = building.heightMeters * 0.72;
-        const roofHeight = building.heightMeters - bodyHeight;
-        const localX = building.x - floatingOrigin.x;
-        const localY = building.y - floatingOrigin.y;
-        const localZ = building.z - floatingOrigin.z;
-        this.appendInstance(
-          this.getBatch(`building-${building.style}-wall`, chunk, nextBatchKeys),
-          localX,
-          localY,
-          localZ,
-          building.widthMeters,
-          bodyHeight,
-          building.depthMeters,
-          building.yawRadians,
-          building.color,
-          [0, 0, 0, 0],
-        );
-        this.appendInstance(
-          this.getBatch(`building-${building.style}-roof`, chunk, nextBatchKeys),
-          localX,
-          localY + bodyHeight,
-          localZ,
-          building.widthMeters * 1.12,
-          roofHeight * 2,
-          building.depthMeters * 1.16,
-          building.yawRadians,
-          [0.92, 0.82, 0.76, 1],
-          [0, 0, 0, 0],
-        );
-        if (resident.lod === "near") {
-          const facadeX = localX + Math.sin(building.yawRadians) * (building.depthMeters * 0.5 + 0.06);
-          const facadeZ = localZ + Math.cos(building.yawRadians) * (building.depthMeters * 0.5 + 0.06);
-          this.appendInstance(
-            this.getBatch("building-window", chunk, nextBatchKeys),
-            facadeX,
-            localY + bodyHeight * 0.58,
-            facadeZ,
-            building.widthMeters * 0.48,
-            Math.max(1.1, bodyHeight * 0.24),
-            0.08,
-            building.yawRadians,
-            [0.48, 0.58, 0.62, 1],
-            [0, 0, 0, 0],
-          );
-          this.appendInstance(
-            this.getBatch("building-door", chunk, nextBatchKeys),
-            facadeX,
-            localY + bodyHeight * 0.2,
-            facadeZ + 0.01,
-            Math.min(2.2, building.widthMeters * 0.18),
-            Math.min(3.2, bodyHeight * 0.42),
-            0.09,
-            building.yawRadians,
-            [0.62, 0.5, 0.38, 1],
-            [0, 0, 0, 0],
-          );
-        }
-        statistics.buildingInstances += 1;
-      }
-
-      const village = resident.cell.village;
-      if (village) {
-        this.appendInstance(
-          this.getBatch("village-road", chunk, nextBatchKeys),
-          village.centerX - floatingOrigin.x,
-          village.centerY - floatingOrigin.y + 0.035,
-          village.centerZ - floatingOrigin.z,
-          6.5,
-          0.07,
-          resident.cell.cellSizeMeters * 0.62,
-          village.roadHeadingRadians,
-          [0.84, 0.79, 0.68, 1],
-          [0, 0, 0, 0],
-        );
-      }
     }
 
     // Never replace thin-instance buffers in place. WebGPU render bundles can
@@ -1018,64 +1012,6 @@ export class WorldDetailRuntime {
       );
     }
 
-    const wallColors: Readonly<Record<BuildingStyle, Color3>> = {
-      cottage: new Color3(0.55, 0.42, 0.27),
-      barn: new Color3(0.38, 0.15, 0.09),
-      tower: new Color3(0.42, 0.42, 0.38),
-    };
-    const roofColors: Readonly<Record<BuildingStyle, Color3>> = {
-      cottage: new Color3(0.28, 0.13, 0.08),
-      barn: new Color3(0.18, 0.07, 0.045),
-      tower: new Color3(0.22, 0.23, 0.24),
-    };
-    for (const style of BUILDING_STYLES) {
-      const wall = bakePrototype(
-        CreateBox(`detail-building-${style}-wall`, { size: 1 }, this.scene),
-        0.5,
-      );
-      this.registerBatch(
-        `building-${style}-wall`,
-        wall,
-        this.createMaterial(`detail-building-${style}-wall-material`, wallColors[style], 0.82),
-        true,
-      );
-      this.registerBatch(
-        `building-${style}-roof`,
-        createGabledRoof(`detail-building-${style}-roof`, this.scene),
-        this.createMaterial(`detail-building-${style}-roof-material`, roofColors[style], 0.76),
-        true,
-      );
-    }
-    const facadePrototype = bakePrototype(
-      CreateBox("detail-building-facade-feature", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "building-window",
-      facadePrototype,
-      this.createMaterial("detail-building-window-material", new Color3(0.12, 0.2, 0.23), 0.18),
-      false,
-    );
-    const doorPrototype = bakePrototype(
-      CreateBox("detail-building-door", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "building-door",
-      doorPrototype,
-      this.createMaterial("detail-building-door-material", new Color3(0.24, 0.15, 0.08), 0.82),
-      false,
-    );
-    const roadPrototype = bakePrototype(
-      CreateBox("detail-village-road", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "village-road",
-      roadPrototype,
-      this.createMaterial("detail-village-road-material", new Color3(0.24, 0.2, 0.14), 1),
-      false,
-    );
   }
 
   private createTreeCrown(species: TreeSpecies, lod: DetailLod): Mesh {

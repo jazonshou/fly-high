@@ -54,6 +54,8 @@ export interface TerrainClipmapPageGenerator {
   ): number;
   cancel(requestId: number): void;
   dispose(): void;
+  /** Workers currently generating (1B-4); absent for synchronous fakes. */
+  readonly busyWorkerCount?: number;
 }
 
 export interface TerrainClipmapSystemOptions {
@@ -86,6 +88,8 @@ interface DesiredPage {
 
 export interface TerrainObserver {
   readonly x: number;
+  /** Altitude above sea level (1B-3): page priority uses 3D distance. Optional so headless callers stay valid; omitted means 0. */
+  readonly y?: number;
   readonly z: number;
   readonly velocityX: number;
   readonly velocityZ: number;
@@ -95,6 +99,8 @@ export interface TerrainClipmapStatistics {
   readonly residentPages: number;
   readonly pendingPages: number;
   readonly triangles: number;
+  /** Generation workers currently busy (1B-4); 0 for synchronous fakes. */
+  readonly workersBusy: number;
 }
 
 const RING_RADIUS = 2;
@@ -252,12 +258,6 @@ function buildTerrainIndicesWithSkirt(
   return indices;
 }
 
-function tileResolution(profile: WebGpuQualityProfile, level: number): number {
-  if (profile.tier === 0) return level === 0 ? 33 : 17;
-  if (profile.tier === 1) return level < 2 ? 65 : 33;
-  return level < 3 ? 65 : 33;
-}
-
 /**
  * Worker-fed, camera-relative terrain page renderer.
  *
@@ -289,6 +289,7 @@ export class TerrainClipmapSystem {
   private originZ = 0;
   private streamingObserver: WorldPageStreamingObserver = {
     positionX: 0,
+    positionY: 0,
     positionZ: 0,
     velocityX: 0,
     velocityZ: 0,
@@ -318,6 +319,10 @@ export class TerrainClipmapSystem {
     this.material.environmentIntensity = 0.64;
     this.material.directIntensity = 1.03;
     this.material.specularIntensity = 0.22;
+    // 1B-11: kill specular shimmer on ridge lines under motion. (The plan's
+    // anisotropicFilteringLevel = 16 is a per-texture setting; terrain has no
+    // textures until 3-2 — it applies there.)
+    this.material.enableSpecularAntiAliasing = true;
     this.materialDetail = new TerrainMaterialPlugin(this.material);
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;
@@ -331,12 +336,17 @@ export class TerrainClipmapSystem {
       residentPages: this.pages.size,
       pendingPages: this.pending.size,
       triangles,
+      workersBusy: this.generator.busyWorkerCount ?? 0,
     };
   }
 
   setProfile(profile: WebGpuQualityProfile): void {
     if (profile === this.profile) return;
-    const topologyChanged = profile.tier !== this.profile.tier
+    // 1B-3: the resolution ladder is a profile datum, so the topology-change
+    // question is exactly "did the datum or the ring count change" — the last
+    // tier read left this file, shrinking the boundary test's grandfather
+    // allowlist.
+    const topologyChanged = profile.terrainTileResolution !== this.profile.terrainTileResolution
       || profile.terrainRings !== this.profile.terrainRings;
     this.profile = profile;
     if (!topologyChanged) return;
@@ -391,6 +401,7 @@ export class TerrainClipmapSystem {
     this.frameIndex = frameIndex;
     this.streamingObserver = {
       positionX: observer.x,
+      positionY: observer.y ?? 0,
       positionZ: observer.z,
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
@@ -409,7 +420,7 @@ export class TerrainClipmapSystem {
       predictedFineX,
       predictedFineZ,
       this.profile.terrainRings,
-      this.profile.tier,
+      this.profile.terrainTileResolution,
     ].join(":");
     if (anchor !== this.lastAnchor) {
       this.lastAnchor = anchor;
@@ -515,8 +526,7 @@ export class TerrainClipmapSystem {
     for (const desired of this.desired.values()) {
       if (this.pending.has(desired.key)) continue;
       const page = this.pages.get(desired.key);
-      const requiredResolution = tileResolution(this.profile, desired.address.level);
-      if (page !== undefined && page.resolution === requiredResolution) continue;
+      if (page !== undefined && page.resolution === this.profile.terrainTileResolution) continue;
       missing.push({ address: desired.address, desired });
     }
     if (missing.length === 0) return;
@@ -560,10 +570,12 @@ export class TerrainClipmapSystem {
           tileX: desired.address.x,
           tileZ: desired.address.z,
           size: desired.bounds.extentMeters,
-          resolution: tileResolution(this.profile, desired.address.level),
+          resolution: this.profile.terrainTileResolution,
           includeNormals: true,
           includeColors: true,
-          includeClimate: true,
+          // 1B-1: no clipmap path reads moisture or biomes. Colours stay —
+          // vertex colour is the only surface appearance terrain has until 3-2.
+          includeClimate: false,
         },
       },
       (tile) => this.onPageGenerated(desired.key, token, tile),

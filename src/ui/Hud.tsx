@@ -251,7 +251,7 @@ export function Hud({
           <span>{diagnostics.renderScale.toFixed(2)}x scale</span>
           <span>{diagnostics.gpuFrameTime === null ? "GPU timing n/a" : `${diagnostics.gpuFrameTime.toFixed(1)} ms GPU`}</span>
           <span>{(diagnostics.renderPixels / 1_000_000).toFixed(2)} Mpx</span>
-          <span>{diagnostics.pendingTerrainPages} pending pages</span>
+          <span>{diagnostics.pendingTerrainPages} pending · {diagnostics.terrainWorkersBusy} workers</span>
           <span>{diagnostics.gpuP95Ms === null ? "GPU p95 n/a" : `${diagnostics.gpuP95Ms.toFixed(1)} ms GPU p95`}</span>
           <span>{diagnostics.cpuP95Ms === null ? "CPU p95 n/a" : `${diagnostics.cpuP95Ms.toFixed(1)} ms CPU p95`}</span>
           <span className="diagnostics__wide">

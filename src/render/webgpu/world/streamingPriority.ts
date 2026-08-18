@@ -8,6 +8,13 @@ import {
 
 export interface WorldPageStreamingObserver {
   readonly positionX: number;
+  /**
+   * Altitude above the page plane (1B-3). Optional so headless tools that
+   * only reason horizontally stay valid; omitted means 0. Priority uses 3D
+   * distance — at altitude, directly-underfoot pages stop outranking pages
+   * the aircraft is actually flying toward. 4-5's CDLOD needs exactly this.
+   */
+  readonly positionY?: number;
   readonly positionZ: number;
   readonly velocityX: number;
   readonly velocityZ: number;
@@ -118,10 +125,10 @@ export function calculateWorldPageStreamingPriority(
 
   const bounds = worldPageBounds(address, options.basePageExtentMeters);
   const key = createWorldPageKey(address);
-  const currentDistanceMeters = distanceToBounds(
-    observer.positionX,
-    observer.positionZ,
-    bounds,
+  const altitudeMeters = Math.abs(observer.positionY ?? 0);
+  const currentDistanceMeters = Math.hypot(
+    distanceToBounds(observer.positionX, observer.positionZ, bounds),
+    altitudeMeters,
   );
   const speed = Math.hypot(observer.velocityX, observer.velocityZ);
   const predictionUsed =
@@ -153,7 +160,10 @@ export function calculateWorldPageStreamingPriority(
     );
     const closestX = observer.positionX + observer.velocityX * timeToClosestSeconds;
     const closestZ = observer.positionZ + observer.velocityZ * timeToClosestSeconds;
-    closestApproachDistanceMeters = distanceToBounds(closestX, closestZ, bounds);
+    closestApproachDistanceMeters = Math.hypot(
+      distanceToBounds(closestX, closestZ, bounds),
+      altitudeMeters,
+    );
     corridorMissDistanceMeters = Math.max(
       0,
       closestApproachDistanceMeters - options.corridorRadiusMeters,

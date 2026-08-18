@@ -432,6 +432,7 @@ function rgbaStorage(
   resolution: number,
   type: number,
   name: string,
+  samplingMode?: number,
 ): RawTexture {
   const texture = RawTexture.CreateRGBAStorageTexture(
     null,
@@ -440,9 +441,9 @@ function rgbaStorage(
     scene,
     false,
     false,
-    type === Constants.TEXTURETYPE_HALF_FLOAT
+    samplingMode ?? (type === Constants.TEXTURETYPE_HALF_FLOAT
       ? Texture.BILINEAR_SAMPLINGMODE
-      : Texture.NEAREST_SAMPLINGMODE,
+      : Texture.NEAREST_SAMPLINGMODE),
     type,
   );
   texture.name = name;
@@ -607,8 +608,12 @@ class SpectralOceanCompute {
       const resolution = this.config.resolution;
       const initialSpectrum = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_FLOAT, `ocean-h0-${cascadeIndex}`);
       const waveData = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_FLOAT, `ocean-wave-${cascadeIndex}`);
-      const transformA = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_FLOAT, `ocean-a${index}-${cascadeIndex}`)) as [RawTexture, RawTexture];
-      const transformB = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_FLOAT, `ocean-b${index}-${cascadeIndex}`)) as [RawTexture, RawTexture];
+      // 1B-13: the FFT ping-pong works in rgba16float (half the bandwidth of
+      // the previous rgba32float); per-axis normalisation keeps the signal
+      // band inside fp16's normal range. NEAREST explicitly — these are
+      // textureLoad-only compute intermediates, not presentation textures.
+      const transformA = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-a${index}-${cascadeIndex}`, Texture.NEAREST_SAMPLINGMODE)) as [RawTexture, RawTexture];
+      const transformB = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-b${index}-${cascadeIndex}`, Texture.NEAREST_SAMPLINGMODE)) as [RawTexture, RawTexture];
       const displacement = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-displacement-${cascadeIndex}`);
       const normalFoam = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-normal-foam${index}-${cascadeIndex}`)) as [RawTexture, RawTexture];
 

@@ -124,11 +124,13 @@ describe("terrain authority contract (0-5)", () => {
   it("keeps render-path heights equal to physics-path heights at L0 spacing", () => {
     // The render path builds tiles through generateTerrainTile; the physics
     // path samples src/sim/terrainGrid.ts. Compare them vertex-for-vertex on
-    // four tiles (4,356 samples). Today they agree exactly because both reach
-    // the same kernel; at 5-2 this becomes the parity bound on the readback
-    // grid — and it is written against the real tile pipeline, not a private
-    // shortcut, so it fails loudly rather than vacuously if either side stops
-    // being the authority.
+    // four real L0 pages (512 m at resolution 65 — 8 m spacing, where 1B-2's
+    // band-limit fade is exactly a no-op because the finest kernel wavelength
+    // is 43 m ≥ 3.2 × 8 m). Coarser rings diverge from physics by design; the
+    // aircraft only ever touches ground inside L0 coverage. At 5-2 this
+    // becomes the parity bound on the readback grid — and it is written
+    // against the real tile pipeline, not a private shortcut, so it fails
+    // loudly rather than vacuously if either side stops being the authority.
     const world = createWorld("terrain-authority-fixture");
     for (const [tileX, tileZ] of [
       [0, 0],
@@ -140,7 +142,7 @@ describe("terrain authority contract (0-5)", () => {
         tileX,
         tileZ,
         size: 512,
-        resolution: 33,
+        resolution: 65,
         includeNormals: false,
         includeColors: false,
         includeClimate: false,

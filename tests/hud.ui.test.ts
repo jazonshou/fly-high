@@ -127,6 +127,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
         { name: "volumetric-cloud-integration", p95Ms: 1.2 },
       ],
       pendingTerrainPages: 5,
+      terrainWorkersBusy: 4,
       estimatedGpuMemoryMiB: 402.4,
       budgetProbeActive: false,
       budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
@@ -160,7 +161,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("9.4 ms GPU p95");
     expect(markup).toContain("15.6 ms CPU p95");
     expect(markup).toContain("1.48 Mpx");
-    expect(markup).toContain("5 pending pages");
+    expect(markup).toContain("5 pending · 4 workers");
     expect(markup).toContain("~402 MiB est");
     expect(markup).toContain("world-page-visibility 3.7 · volumetric-cloud-integration 1.2 ms CPU p95");
     expect(markup).toContain("RUN GPU BUDGET PROBE");

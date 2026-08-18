@@ -118,7 +118,7 @@ describe("cloud-shadow receiver WGSL", () => {
 });
 
 describe("opaque PBR cloud-shadow registry", () => {
-  it("covers shared airport, vegetation, building, and wildlife materials", () => {
+  it("covers shared airport, vegetation, and wildlife materials", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const registry = new CloudShadowReceiverRegistry();
@@ -154,10 +154,11 @@ describe("opaque PBR cloud-shadow registry", () => {
     registry.registerMeshes(airport.root.getChildMeshes(false));
     detail.addPbrMaterials((material) => registry.registerMaterial(material));
     wildlife.addPbrMaterials((material) => registry.registerMaterial(material));
+    // Building materials left with 1B-5's village deletion.
     for (const materialName of [
       "hangar-metal",
       "detail-foliage-pine",
-      "detail-building-cottage-wall-material",
+      "detail-trunk",
       "wildlife-deer",
     ]) {
       expect(

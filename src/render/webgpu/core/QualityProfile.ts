@@ -15,11 +15,20 @@ export interface WebGpuQualityProfile {
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
   /**
-   * MSAA sample count for the offscreen beauty target. Data field consumed by
-   * the memory budget (1A-2); the renderer starts honouring it at 1B-11.
+   * MSAA sample count for the offscreen beauty target (1B-11). 1 keeps the
+   * FXAA fallback; 4 is genuinely cheap on Apple TBDR. Alpha-to-coverage is
+   * off, so alpha-tested foliage gets no MSAA benefit — this fixes ridge
+   * lines, runway edges and wing silhouettes, not tree canopies.
    */
   readonly msaaSamples: number;
   readonly terrainRings: number;
+  /**
+   * Vertices per tile edge at every level (1B-3). One constant per tier —
+   * constant ground-sample-distance ratios between adjacent levels (2:1)
+   * kill the 4:1 T-junction the audit measured at L2/L3. A datum, not a
+   * policy: 4-5's CDLOD deletes it (plan A5).
+   */
+  readonly terrainTileResolution: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -69,6 +78,7 @@ export function resolveWebGpuQualityProfile(
       maxDevicePixelRatio: 1,
       msaaSamples: 1,
       terrainRings: 6,
+      terrainTileResolution: 33,
       shadowMapSize: 1_024,
       shadowCascades: 2,
       shadowDistance: 4_500,
@@ -90,8 +100,9 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
-      msaaSamples: 1,
+      msaaSamples: 4,
       terrainRings: 7,
+      terrainTileResolution: 65,
       shadowMapSize: 2_048,
       shadowCascades: 2,
       shadowDistance: 7_000,
@@ -113,8 +124,12 @@ export function resolveWebGpuQualityProfile(
       renderScale: 1,
       maxRenderPixels: 2_400_000,
       maxDevicePixelRatio: 2,
-      msaaSamples: 1,
+      // 2× at this tier: Phase 1's full-distance 4096² CSM leaves no room
+      // for 4× inside the 700 MiB ceiling (assertion 19); 4-8's near-field
+      // shadow maps buy it back.
+      msaaSamples: 2,
       terrainRings: 8,
+      terrainTileResolution: 65,
       shadowMapSize: 4_096,
       shadowCascades: 4,
       shadowDistance: 16_000,
@@ -141,8 +156,9 @@ export function resolveWebGpuQualityProfile(
     renderScale: 1,
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
-    msaaSamples: 1,
+    msaaSamples: 4,
     terrainRings: 8,
+    terrainTileResolution: 65,
     shadowMapSize: 4_096,
     shadowCascades: 4,
     shadowDistance: 16_000,
