@@ -4,8 +4,19 @@
 **Runs after:** `PHASE_1_EXECUTION_PLAN.md`. Phase 1's exit criteria are this plan's preconditions.
 **Basis:** `TERRAIN_AUDIT.md`, `RENDERING_PLAN.md` §2 Phase 2 / §3.3 / §3.4 / §3.5 / §5.2–§5.4 / §6 / §7, and `ARCHITECTURE.md` (normative, from Phase 0).
 **Verified against:** working tree at `7b6f076` (Phase 0 merged). Every file, line, and dead-code claim below was re-checked in the current tree.
-**Effort:** **44.0 days**, ~9.8 calendar weeks at 4.5 productive days/week. (43.0 in `RENDERING_PLAN.md`; +1.0 net — see §4.)
+**Effort:** **48.0 days** (was 44.0), ~10.7 calendar weeks at 4.5 productive days/week. (43.0 in `RENDERING_PLAN.md`; +1.0 net at §4, +4.0 at the amendments below.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
+
+> **Amended 2026-08-18 by [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) §6, which is binding over this file where they differ.** Read it before starting Gate 2A. In brief:
+>
+> - **Do not start pixel work against the current baselines.** The screenshot gate compares images that are 20.5% pure black at a governor-chosen resolution, and nothing in the repository asserts a performance number. **Gate 2Z (4.0 d) runs first.** §3 there.
+> - **`2-0`'s preconditions are false** — the adopted cloud shader needs a sky-view LUT, GPU LUT uploads, scene depth, blue noise and MRT, none of which exist in `src/`. New `2-0a` (+1.75 d). `R-18`.
+> - **`2-0` step 4 and `2-7` must drop the `shadow × transmittance` multiply** — deviation `D-7` deliberately did not implement it and applying it here double-fades distant shadows. `R-19`.
+> - **`2-11a` cannot be built through `thinInstance*`.** 0.5 d GPU spike first, re-price to 2.5 d. `R-20`.
+> - **`2-18` splits into `2-13a` (after `2-13`) and `2-17a`** so season stops being the last item and the designated second cut. `R-14`.
+> - **`assertWithinBudget()` cannot see anything Gate 2C allocates** — §10.3 and §0's claims about what CI enforces are wrong until `Z-4`. `R-22`.
+> - **`D-2` is not retired by this plan** and its rendered-share ceiling must be budgeted at the head of Gate 2C, not discovered at week 10. `R-21`.
+> - Gate **7A** (night, 7.5 d) now runs immediately after this phase, before Phase 3. `R-17`.
 
 ---
 
@@ -262,6 +273,7 @@ The divergent constants (§3.6) become named parameters with the difference made
 | Shared water shading helpers | water | `src/render/webgpu/water/WaterShaders.ts` | `2-8a` |
 | Detail instance format | vegetation | `src/render/webgpu/detail/instanceFormat.ts` | `2-11a` |
 | Foliage and impostor atlases | vegetation | `src/render/webgpu/detail/FoliageAtlas.ts` | `2-11`, extended `2-17` |
+| CPU array-mip reduction | performance | `src/render/webgpu/core/TextureArrayMips.ts` | `2-11`, reused by `3-1` |
 
 **On where the cloud shader lives.** After adoption the WGSL modules stay in `nature/CloudShaders.ts` and `clouds/VolumetricCloudSystem.ts` consumes them. That is not a preference — it mirrors the arrangement that already works in this codebase, where `water/SpectralOceanSystem.ts` consumes `nature/OceanShaders.ts` and `nature/OceanConfig.ts`. `nature/` is the shader library; the system directories are the runtimes. Consistency with the working pattern beats relocating files.
 
@@ -474,6 +486,15 @@ Procedurally synthesised leaf, needle and bark textures into one atlas. Two tech
 
 **Test:** mip-N alpha coverage within 3% of mip-0, at the shipping alpha-test threshold, for every atlas layer.
 
+**Babylon mips only layer 0 of a `Texture2DArray`, and this is verified, not suspected.** `Engines/WebGPU/webgpuTextureManager.js:716` signs `generateMipmaps(gpuOrHdwTexture, mipLevelCount, faceIndex = 0, commandEncoder)` and builds its render pass with `baseArrayLayer: faceIndex`; `Engines/thinWebGPUEngine.js:90` and `:93` both call it with a hardcoded `0`. So `engine._generateMipmaps` on an array texture leaves layers 1..N with a single level, and every foliage layer but the first samples at full resolution forever.
+
+That is not a problem for this item, because **coverage preservation is not a box filter** — rescaling alpha per level to hold coverage at the alpha-test threshold has to be computed, not blitted, so the reduction is CPU work regardless. Build it as a reusable module rather than inline:
+
+- **`src/render/webgpu/core/TextureArrayMips.ts`**, owner *performance*, added to `ARCHITECTURE.md` — a CPU array-mip reducer that walks every layer, applies a caller-supplied reduction kernel per level, and uploads with `RawTexture2DArray.updateMipLevel(data, level)`.
+- `2-11` supplies the **coverage-preserving** reducer. **Phase 3 `3-1` reuses the same module** with a **Toksvig** reducer for the terrain material arrays, which have exactly the same limitation and exactly the same shape.
+
+Sequencing this here rather than in Phase 3 costs nothing — the module is ~60 lines and `2-11` needs it first — and it means the terrain material arrays inherit a path that has already run against ten layers.
+
 ---
 
 ### `2-11a` — Compact instance format (1.5 d) · Class P
@@ -580,6 +601,7 @@ Phase 0 contributed 18 and Phase 1 sixteen more. Phase 2 adds:
 | 43 | Selected LOD is continuous across a patch boundary (GPU) | `2-8` | §3.4 — the `fract` seam grid |
 | 44 | Mip-generation capability assertion at startup | `2-8` | A Babylon bump breaking the private mip path |
 | 45 | Foliage mip-N alpha coverage within 3% of mip-0 | `2-11` | Distant foliage evaporating |
+| 45b | Every atlas array layer has a complete mip chain | `2-11` | Babylon mipping only layer 0 (verified, `webgpuTextureManager.js:716`) |
 | 46 | Packed instance round-trips through the 32-byte layout | `2-11a` | Silent precision loss in orientation or tint |
 | 47 | Instance bytes × instance cap ≤ the §5.2 vegetation row | `2-11a` | Blowing the memory budget with instances alone |
 | 48 | Plugin-displaced foliage casts a matching shadow (GPU) | `2-12` | The `0-9` incantation being applied wrongly |

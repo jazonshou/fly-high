@@ -5,6 +5,9 @@
 **Target hardware:** Apple M2 Pro MacBook Pro — 16-core GPU (~5.7 TFLOPS FP32), 10 CPU cores (6 performance + 4 efficiency), 16 GB unified memory, 3024×1964 display at DPR 2 (CSS ~1512×982 = 1.485 Mpx).
 **Engine:** Babylon `@babylonjs/core` 9.21.2 on the WebGPU backend. No engine or API migration is proposed, considered, or permitted.
 
+> **Amended 2026-08-18 by [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md), which is binding over this file where they differ.**
+> That review found one uncovered user goal (the aircraft's own appearance, §1 there), two shipped defects that are literally the performance bar (§2), a performance gate that measures idle time and compares images that are 20.5% black (§3), and a season that today is only the sun's declination (§4). Phases 4–7 below are still the pre-Phase-0 tables; §8 there lists what a Phase 4 plan must absorb before it is written. The corrected ledger is §9 there, not §0.3 here.
+
 ---
 
 ## 0. What this plan does and does not do
@@ -37,7 +40,19 @@ It closes the twelve root causes in `TERRAIN_AUDIT.md §2` in an order chosen so
 
 There is a defensible **v1 cut line after Phase 4 at ~156 days (≈ 8 months)**, at which point nine of the ten user goals are served and the tenth (terrain *shape* and river/lake *geometry*) is not. Phases 5–6 are the terrain-shape and water-body payload and are the reason the program is long. Do not attempt to reorder them earlier — §2.0 explains why.
 
+> **Superseded 2026-08-18.** Both figures in the paragraph above are wrong and they contradict §2's own cut-line note ("Eight of nine user goals … ~147 days"). Neither counts Phase 0 (16.8 d), both use the stale 48.6 d Phase 1 figure, and the coverage claim is measured against a `G1`–`G10` list that is **not defined anywhere in this repository** — which is how §0.4's G-A gap survived three planning documents. The corrected total is **≈316 days** with a **≈199-day cut line**: see [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) §9.
+
 The single most likely schedule slip is erosion parameter tuning. Budget 2× the stated days for Phase 5's erosion items; that risk is already reflected in the numbers below (the designs said 11 days for macro drainage plus page erosion; this plan carries 17 with a stated range of 15–25).
+
+### 0.4 The goals this program is measured against
+
+`G1`–`G10` are referenced throughout this file and defined nowhere. These three, in the user's own terms, are the coverage authority and supersede them. Every phase exit checklist certifies against these.
+
+| | Goal | The test |
+|---|---|---|
+| **G-A** | **Genuine, realistic graphics** — clouds, water, *where water is placed*, mountains, terrain surface, trees, *where trees are placed*, all other foliage, **and what the plane looks like**. | Every named element has a costed item with exit criteria. Until 2026-08-18 the aircraft had none; Gate A closes it. |
+| **G-B** | **Graphics align with season and time of day.** | Scrubbing the clock changes what the *world* looks like, not only where the sun is. Today it changes only the sun. |
+| **G-C** | **Medium settings run with no flicker, no lag, no inconsistency on a MacBook Pro.** | A measured number at the reference viewport, asserted in CI. "Medium" is **tier 1** (`quality: medium` + `mode: balanced`). |
 
 ---
 
@@ -968,15 +983,21 @@ Two platform notes that will otherwise cost a day each:
 
 ### Phase totals
 
+**Superseded 2026-08-18 — this table predates Phase 0 and both execution plans. Use [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) §9.** It has no Phase 0 row (16.8 d, shipped); Phase 1 shipped at 43.0 d, not 48.6; Phase 2 is 48.0 d after `B1`–`B7` and `R-18`–`R-24`; Phase 3 is 30.25 d after `C1`–`C7` and `R-26`. The corrected programme is **≈316 days** with the cut line at **≈199**.
+
 | Phase | Days | Cumulative | Calendar (4.5 d/wk) |
 |---|---|---|---|
-| 1 — Foundation, correctness, atmosphere | 48.6 | 48.6 | ~11 weeks |
-| 2 — Sky, sea surface, living ground | 43.0 | 91.6 | ~20 weeks |
-| 3 — Terrain surface and the runway | 29.5 | 121.1 | ~27 weeks |
-| 4 — The terrain GPU spine | 34.5 | **155.6** ← *v1 cut line* | ~35 weeks |
-| 5 — Landscape evolution | 51.5 | 207.1 | ~46 weeks |
-| 6 — Water in motion, ecology, final tiers | 29.5 | 236.6 | ~53 weeks |
-| 7 — Night operations and airfield identity | 41.5 | **278.1** | **~62 weeks** |
+| 0 — Architecture shift *(shipped)* | 16.8 | 16.8 | ~4 weeks |
+| 1 — Foundation, correctness, atmosphere *(shipped)* | 43.0 | 59.8 | ~13 weeks |
+| 2Z — Evaluation surface + governor + seasonal kernel | 6.0 | 65.8 | ~15 weeks |
+| 2 — Sky, sea surface, living ground | 48.0 | 113.8 | ~25 weeks |
+| 7A — Night sky and night vision *(moved out of Phase 7)* | 7.5 | 121.3 | ~27 weeks |
+| 3 — Terrain surface and the runway | 30.25 | 151.6 | ~34 weeks |
+| A — The things you look at (aircraft, wildlife) | 12.75 | 164.3 | ~37 weeks |
+| 4 — The terrain GPU spine | ~38.5 | **~202.8** ← *v1 cut line* | ~45 weeks |
+| 5 — Landscape evolution | 51.5 | 254.3 | ~57 weeks |
+| 6 — Water in motion, ecology, final tiers | ~28.0 | 282.3 | ~63 weeks |
+| 7 — Airfield lighting and identity (7B/7C/7D) | 34.0 | **~316** | **~70 weeks** |
 
 ### First week, in order
 
