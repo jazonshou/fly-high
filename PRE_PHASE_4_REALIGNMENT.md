@@ -570,6 +570,29 @@ That is a `5-1 erosion-hydrology-contract` question, i.e. ~40 days before `5-12`
 
 ---
 
+## 8b. Corrections to this document, from Phase 4 planning
+
+Recorded so the next reviewer does not re-litigate them. Both were found by reading the code
+that §8 reasons about.
+
+- **The `ridgedFbm2D` branch-cliff hazard in §8 is wrong.** §8 says a one-ULP difference in
+  `octaveBandWeight` flips the `weight >= 1` vs `weight > 0` branch and "moves height by
+  metres". Branch B is `MEAN + (ridge² − MEAN)·weight`, which at `weight == 1` evaluates to
+  exactly branch A and at `weight == 0` to exactly branch C
+  ([`noise.ts:231-245`](src/world/noise.ts:231)). The three-way switch is algebraically
+  continuous at both points; a flip moves height by ≲ 1e-4 m. The *recommendation* that
+  survives is different and better: pass `filterWidthMeters = 0.0` at L0 so no weight is
+  computed at all and the L0 page is bit-identical to the physics path by construction.
+- **The reorder's stated reason is wrong, and the reorder alone does not fix it.** §8 says
+  `assertWithinBudget()` "fails in CI from `4-2` until `4-8` at the upper tiers". Tier 1 —
+  the tier G-C names — never breaches at any point in Phase 4. Tier 3 breaches at Phase 3's
+  close; tier 2 has 3.5 MiB of margin there and breaches at `4-2`. And because `4-8` depends
+  on `4-7`, moving it earlier is not possible: it has to **split** into a dependency-free
+  cascade resize at the head of the phase and the near-field item after `4-7`.
+  See `PHASE_4_EXECUTION_PLAN.md` §3.2 and §4 D3.
+
+---
+
 ## 9. The corrected ledger
 
 | Phase | Was | Now | Change |

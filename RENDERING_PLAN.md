@@ -326,6 +326,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 ### Phase 4 — The terrain GPU spine
 
+> **Executed per [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md), which is binding over this table.** It re-prices the phase at 44.0 d, adds `4-0` (spine contract), `4-0b` (= `6-10` moved), `4-8a` and `4-10`, splits `4-8`, and corrects four items that are fatal as written: `thinInstanceSetBuffer(…, 8)` throws, PCSS cannot run on Phase 1's depth-only CSM, `getCustomRenderList` cannot cull CDLOD nodes, and `terrainQueue.ts` must not be deleted. §5.3's Ultra 1 m L0 row and the `|x| = 5×10⁶ m` parity criterion are struck.
+
 **Goal.** Replace 172 CPU-built meshes with one GPU-fed CDLOD quadtree over a page atlas, and bake the occlusion that makes lighting describe real shape. This is the enabling phase for everything in Phases 5–6 and it is the plan's biggest incrementality risk — several items promise no visible change by design.
 
 **What you will see.** L0 texel spacing goes from 8 m to 2 m, so the ground gains real shape on approach. LOD popping disappears completely — no jolt when crossing a boundary, no cracks, no skirt lines on ridge silhouettes. A mountain filling the screen at 20 km refines on its own merit while a flat plain at 3 km stays cheap. Ridges cast real shadows across valleys at 40 km, where the CSM has never reached. Material identity stops being a coin flip between distant vertices; treelines follow altitude and aspect with a ragged natural edge.

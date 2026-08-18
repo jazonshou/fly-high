@@ -15,6 +15,10 @@
 > - **Decide the classifier-consumers contract before Phase 4 starts.** `chooseTreeSpecies`, `chooseShrubSpecies` and the wildlife habitat rules all read `classifyBiome`; after `4-6` the ground and the forest on it would be classified by two disagreeing authorities. `R-27`.
 > - **The seasonal snowline is a kernel change, not a palette change** — `seasonalTemperatureOffsetK` threaded into `sampleTerrainTemperature`/`classifyBiome`, landed in Phase 2 so this phase inherits it free. `R-13`.
 > - **Gate A (12.75 d) runs immediately after this phase** — the aircraft and the wildlife, which have no appearance work anywhere in the programme, built on `3-1`'s synthesis pipeline. `R-1`.
+>
+> **Further amended 2026-08-18 by [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md) §4 D4 (zero days):**
+>
+> - **`3-2`'s fourth vertex lane is named `atlasSlot`, not `spare`,** and is written as `-1`. Phase 4 bakes occlusion into channel pages at `4-7` and its consumer is *this* plugin's fragment shader; without a slot index on the CPU tile mesh that consumer cannot exist until `4-4`, and `4-8b` may not shorten the shadow distance until the horizon map is actually being sampled. Reserving the lane here costs nothing and is load-bearing for Phase 4's gate order. See §7 `3-2`.
 
 ---
 
@@ -364,7 +368,7 @@ Ten layers each, `materialArrayEdge` per tier, full mip chain from `TextureArray
 
 **The provisional splat path, and what it actually is.** `TerrainClipmapSystem.ts:663` allocates `new Float32Array(vertexCount * 4)` and assigns it as `vertexData.colors` at `:736`, with `useVertexColors = true` at `:740`. Repurpose the buffer and set `useVertexColors = false`.
 
-Until `4-6` rasterises real splat pages there are no per-texel material IDs, so the provisional encoding is a **two-material vertex blend**: `(materialIdA, materialIdB, weightB, spare)`. That is not a compromise dressed up — §5.3 sets the height-blend cap to **2 at tier 0**, so the provisional path *is* the Low-tier path, and it ships unchanged. `4-6` upgrades tiers 1–3 to the 4-way page splat that `world/payload.ts` already specifies.
+Until `4-6` rasterises real splat pages there are no per-texel material IDs, so the provisional encoding is a **two-material vertex blend**: `(materialIdA, materialIdB, weightB, atlasSlot)`. **The fourth lane is `atlasSlot`, written as `-1` until `4-2` fills it** — not a spare (Phase 4 §4 D4). `4-7`'s occlusion bake is consumed by this plugin on these meshes, before the quadtree exists. That is not a compromise dressed up — §5.3 sets the height-blend cap to **2 at tier 0**, so the provisional path *is* the Low-tier path, and it ships unchanged. `4-6` upgrades tiers 1–3 to the 4-way page splat that `world/payload.ts` already specifies.
 
 **Delete** `TerrainMaterialPlugin.ts`, its test, and the dead GLSL branch.
 
