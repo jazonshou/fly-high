@@ -25,6 +25,14 @@ export interface VolumetricCloudConfig {
   readonly multipleScatteringFactor: number;
   readonly minimumStepMeters: number;
   readonly maximumStepMeters: number;
+  /**
+   * 2-5: distance at which the march strides have grown by one extra multiple
+   * of themselves (step ×2 at this distance, ×3 at twice it, linear growth).
+   * Bounds the sample count of horizon-grazing rays — the slab is 5.7 km
+   * thick and a level ray can otherwise spend all 96 steps at near-field
+   * resolution inside it.
+   */
+  readonly stepDoublingDistanceMeters: number;
   readonly maximumViewSteps: number;
   readonly lightSteps: number;
   readonly renderScale: number;
@@ -40,7 +48,11 @@ export interface VolumetricCloudConfig {
 export const DEFAULT_VOLUMETRIC_CLOUD_CONFIG: VolumetricCloudConfig = Object.freeze({
   baseAltitudeMeters: 1_500,
   topAltitudeMeters: 7_200,
-  maximumTraceDistanceMeters: 180_000,
+  // 2-5: the scene far plane is 45 km (1C-4) and aerial perspective is deep
+  // into haze well before 90 km — a longer trace buys invisible work. The
+  // adopted 180 km default made near-tangent below-base rays (slant-10km's
+  // geometry) march ~118 km of slab chord for content the haze swallows.
+  maximumTraceDistanceMeters: 90_000,
   weatherMapWorldSizeMeters: 160_000,
   baseNoiseScaleMeters: 18_000,
   detailNoiseScaleMeters: 2_400,
@@ -55,6 +67,12 @@ export const DEFAULT_VOLUMETRIC_CLOUD_CONFIG: VolumetricCloudConfig = Object.fre
   multipleScatteringFactor: 0.55,
   minimumStepMeters: 70,
   maximumStepMeters: 900,
+  // Measured on the 2A rebaseline: without distance growth the sky-heavy
+  // shots (slant-10km, ground-2m-lowsun, night) cost 20-32 ms GPU p95 —
+  // grazing rays marched the full step budget at near-field stride. 4 km
+  // doubling cuts a 60 km traverse from 96 steps to ~55 without touching
+  // the near field.
+  stepDoublingDistanceMeters: 4_000,
   maximumViewSteps: 96,
   lightSteps: 8,
   renderScale: 0.5,
@@ -62,7 +80,11 @@ export const DEFAULT_VOLUMETRIC_CLOUD_CONFIG: VolumetricCloudConfig = Object.fre
   historyDepthSigmaMeters: 700,
   historyLuminanceClamp: 1.35,
   shadowMapResolution: 512,
-  shadowWorldSizeMeters: 90_000,
+  // 2-7: 24 km sun-space footprint. 512² over 24 km = 47 m/texel — 3.7×
+  // sharper than the old 176 m/texel 90 km planar map, and cheaper: the
+  // adopted compute marches from the surface toward the sun, so the old
+  // 1/sunDirection.y near-horizon degeneracy does not exist.
+  shadowWorldSizeMeters: 24_000,
   shadowSteps: 20,
   shadowUpdateEveryNFrames: 2,
 });
@@ -99,6 +121,7 @@ export function assertVolumetricCloudConfig(config: VolumetricCloudConfig): void
   if (config.maximumStepMeters < config.minimumStepMeters) {
     throw new RangeError("cloud.maximumStepMeters must be at least minimumStepMeters");
   }
+  assertPositive(config.stepDoublingDistanceMeters, "cloud.stepDoublingDistanceMeters");
   assertIntegerRange(config.maximumViewSteps, 8, 192, "cloud.maximumViewSteps");
   assertIntegerRange(config.lightSteps, 2, 16, "cloud.lightSteps");
   assertRange(config.renderScale, 0.25, 1, "cloud.renderScale");
@@ -206,7 +229,8 @@ export function packCloudRaymarchUniforms(
   const values = new Float32Array(68);
   setVec4(values, 0, ...frame.cameraForward, frame.viewScale[0]);
   setVec4(values, 1, ...frame.cameraRight, frame.viewScale[1]);
-  setVec4(values, 2, ...frame.cameraUp, 0);
+  // camera_up.w carries the march's per-meter stride growth rate (2-5).
+  setVec4(values, 2, ...frame.cameraUp, 1 / config.stepDoublingDistanceMeters);
   setVec4(values, 3, ...frame.cameraPositionMeters, 0);
   setVec4(
     values,

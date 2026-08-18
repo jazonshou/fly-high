@@ -915,7 +915,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Z-2: aggregate over the rolling rings, not the governor's consumable
     // window (R-4 — the old path read null whenever the window had just been
     // consumed, which was every committed capture).
-    const hitchThresholdMs = this.profile.frameTargetMs * 2;
+    // 3× the frame target, not 2×: with the Phase-2 workload a typical
+    // headless frame sits near ~2× the target, so a 2× threshold counted
+    // scheduler jitter around the boundary (57–232 "hitches" per 240 frames
+    // on identical builds). At 3× a typical frame is invisible and a real
+    // stall (page stream, GC, compositor stall) still counts.
+    const hitchThresholdMs = this.profile.frameTargetMs * 3;
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {

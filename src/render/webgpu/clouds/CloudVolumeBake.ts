@@ -187,9 +187,38 @@ fn bakeDetailVolume(@builtin(global_invocation_id) id: vec3<u32>) {
 const WEATHER_BAKE_WGSL = /* wgsl */ `
 ${CLOUD_NOISE_WGSL}
 
+// 2-3: the weather field is a function of ABSOLUTE world position through
+// UNWRAPPED cell hashes — it never repeats. The map is a camera-following
+// window onto it (origin re-snapped and re-baked as the aircraft flies), so
+// a 200 km leg keeps discovering new weather instead of tiling old weather.
+fn worldValueNoise(p: vec2<f32>, seed: u32) -> f32 {
+  let cell = vec2<i32>(floor(p));
+  let fraction = p - floor(p);
+  let fade = fraction * fraction * (3.0 - 2.0 * fraction);
+  var value = 0.0;
+  for (var dy = 0; dy <= 1; dy += 1) {
+    for (var dx = 0; dx <= 1; dx += 1) {
+      let corner = cell + vec2<i32>(dx, dy);
+      let h = cloudBakeHash3(vec3<i32>(corner.x, corner.y, 733), seed);
+      let weight = select(1.0 - fade.x, fade.x, dx == 1)
+        * select(1.0 - fade.y, fade.y, dy == 1);
+      value += weight * cloudBakeUnitFloat(h);
+    }
+  }
+  return value;
+}
+
+fn worldFbm(p: vec2<f32>, seed: u32) -> f32 {
+  return 0.5333 * worldValueNoise(p, seed)
+    + 0.2667 * worldValueNoise(p * 2.0 + vec2<f32>(17.3, 9.1), seed + 101u)
+    + 0.1333 * worldValueNoise(p * 4.0 + vec2<f32>(41.7, 23.9), seed + 202u);
+}
+
 struct WeatherParams {
   /** x coverage, y cloud type, z convection, w seed. */
   weather: vec4<f32>,
+  /** xy world origin of the map (metres), z world size (metres), w unused. */
+  origin_size: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: WeatherParams;
@@ -202,10 +231,11 @@ fn bakeWeatherMap(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
   let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(size);
+  let world = params.origin_size.xy + uv * params.origin_size.z;
   let seed = u32(params.weather.w);
-  // 2D fields ride the 3D primitives at a fixed slice — still periodic.
-  let broad = periodicPerlinFbm(vec3<f32>(uv, 0.37), 5, seed + 11u);
-  let breakup = periodicWorley(vec3<f32>(uv, 0.61) * 9.0, 9, seed + 13u);
+  // ~26 km broad cells, ~7 km break-up cells of the endless world field.
+  let broad = worldFbm(world / 26000.0, seed + 11u);
+  let breakup = worldFbm(world / 7000.0, seed + 13u);
   // Coverage: the broad field biased so its mean tracks the environment's
   // coverage scalar; worley break-up keeps edges ragged rather than foggy.
   let coverage = clamp(
@@ -215,7 +245,7 @@ fn bakeWeatherMap(@builtin(global_invocation_id) id: vec3<u32>) {
   );
   // Cloud type drifts around the environment's type scalar; convection
   // pushes local maxima toward deeper forms.
-  let type_variation = periodicPerlinFbm(vec3<f32>(uv, 0.83), 3, seed + 17u);
+  let type_variation = worldFbm(world / 41000.0, seed + 17u);
   let cloud_type = clamp(
     params.weather.y + (type_variation - 0.5) * 0.6
       + params.weather.z * coverage * 0.35,
@@ -266,6 +296,8 @@ function storage3d(scene: Scene, name: string, size: number): RawTexture3D {
  * change.
  */
 export class CloudVolumeBake {
+  /** The window size the map covers; the system passes the config value. */
+  weatherWorldSizeMeters = 96_000;
   readonly baseVolume: RawTexture3D;
   readonly detailVolume: RawTexture3D;
   readonly weatherMap: RawTexture;
@@ -278,6 +310,9 @@ export class CloudVolumeBake {
   private weatherCoverage = Number.NaN;
   private weatherType = Number.NaN;
   private weatherConvection = Number.NaN;
+  private weatherOriginX = 0;
+  private weatherOriginZ = 0;
+  private weatherOriginInitialized = false;
   private disposed = false;
 
   constructor(private readonly scene: Scene) {
@@ -328,13 +363,53 @@ export class CloudVolumeBake {
         },
       },
     );
+    for (const [shader, label] of [
+      [this.baseCompute, "cloud-base-bake"],
+      [this.detailCompute, "cloud-detail-bake"],
+      [this.weatherCompute, "cloud-weather-bake"],
+    ] as const) {
+      shader.onError = (_effect, errors) => {
+        throw new Error(`${label} failed to compile: ${errors}`);
+      };
+    }
     this.weatherParams = new UniformBuffer(engine, undefined, true, "cloud-weather-params");
     this.weatherParams.addUniform("weather", 4);
+    this.weatherParams.addUniform("origin_size", 4);
     this.weatherParams.create();
     this.baseCompute.setStorageTexture("base_volume", this.baseVolume);
     this.detailCompute.setStorageTexture("detail_volume", this.detailVolume);
     this.weatherCompute.setUniformBuffer("params", this.weatherParams);
     this.weatherCompute.setStorageTexture("weather_map", this.weatherMap);
+  }
+
+  /**
+   * 2-3: keep the weather window centred on the flight (including wind
+   * advection). Re-snaps on a worldSize/8 grid so re-bakes are hysteretic —
+   * roughly one 512² dispatch per dozen kilometres flown.
+   */
+  followCamera(
+    centerXMeters: number,
+    centerZMeters: number,
+    worldSizeMeters: number,
+  ): void {
+    const snap = worldSizeMeters / 8;
+    const originX = Math.round((centerXMeters - worldSizeMeters / 2) / snap) * snap;
+    const originZ = Math.round((centerZMeters - worldSizeMeters / 2) / snap) * snap;
+    if (
+      this.weatherOriginInitialized
+      && originX === this.weatherOriginX
+      && originZ === this.weatherOriginZ
+    ) {
+      return;
+    }
+    this.weatherOriginX = originX;
+    this.weatherOriginZ = originZ;
+    this.weatherOriginInitialized = true;
+    this.weatherBaked = false;
+  }
+
+  get weatherOrigin(): readonly [number, number] {
+    return [this.weatherOriginX, this.weatherOriginZ];
   }
 
   /** New environment scalars: the weather map re-bakes on the next poll. */
@@ -357,6 +432,14 @@ export class CloudVolumeBake {
     return this.volumesBaked && this.weatherBaked;
   }
 
+  /** Startup diagnostics for the cloud barrier's timeout message. */
+  get diagnostics(): string {
+    return `volumesBaked=${this.volumesBaked} weatherBaked=${this.weatherBaked} `
+      + `baseReady=${this.baseCompute.isReady()} detailReady=${this.detailCompute.isReady()} `
+      + `weatherReady=${this.weatherCompute.isReady()} `
+      + `originInit=${this.weatherOriginInitialized} coverage=${this.weatherCoverage}`;
+  }
+
   /** Dispatches whatever is pending and possible. Cheap when settled. */
   bakeWhenReady(): boolean {
     if (this.disposed) return false;
@@ -372,6 +455,7 @@ export class CloudVolumeBake {
     }
     if (!this.weatherBaked
       && Number.isFinite(this.weatherCoverage)
+      && this.weatherOriginInitialized
       && this.weatherCompute.isReady()
     ) {
       this.weatherParams.updateFloat4(
@@ -380,6 +464,13 @@ export class CloudVolumeBake {
         this.weatherType,
         this.weatherConvection,
         211,
+      );
+      this.weatherParams.updateFloat4(
+        "origin_size",
+        this.weatherOriginX,
+        this.weatherOriginZ,
+        this.weatherWorldSizeMeters,
+        0,
       );
       this.weatherParams.update();
       const groups = CLOUD_WEATHER_MAP_SIZE / 8;

@@ -26,6 +26,7 @@ import {
   luminanceFromRgba,
   meanSsim,
   orientationFromYawPitchBank,
+  sustainedFpsFromFrameIntervals,
   temporalStability,
   tileStatistics,
   yawForSunBearing,
@@ -300,8 +301,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
       let motionYawDegrees = yawDegrees;
       let motionX = positionX;
       let motionZ = positionZ;
-      const measureStarted = performance.now();
-      let measuredFrames = 0;
+      let previousFrameEnd = performance.now();
+      const frameIntervalsMs: number[] = [];
       for (let frame = 0; frame < PERF_CAPTURE_MEASURE_FRAMES; frame += 1) {
         await nextAnimationFrame();
         simulationTime += 1 / 60;
@@ -327,7 +328,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
           };
         }
         renderer.render(frameState, 1 / 60);
-        measuredFrames += 1;
+        const frameEnd = performance.now();
+        frameIntervalsMs.push(frameEnd - previousFrameEnd);
+        previousFrameEnd = frameEnd;
         if (
           isMotion
           && frame >= PERF_CAPTURE_MEASURE_FRAMES - PERF_CAPTURE_TEMPORAL_FRAMES
@@ -338,8 +341,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
           temporalFrames.push(luminanceFromRgba(rgba, viewportWidth, viewportHeight));
         }
       }
-      const measuredSeconds = (performance.now() - measureStarted) / 1_000;
-      const measuredFps = measuredFrames / Math.max(1e-6, measuredSeconds);
+      // Sustained rate, robust to sparse stalls — spikes are gated separately
+      // by maxFrameMs / p999FrameMs / hitchCount.
+      const measuredFps = sustainedFpsFromFrameIntervals(frameIntervalsMs);
 
       // Final frame and readback must share one task: the presented WebGPU
       // buffer is cleared once the compositor consumes it.

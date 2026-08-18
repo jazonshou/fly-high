@@ -36,16 +36,28 @@ export function resolveCloudRenderSize(
   fullWidth: number,
   fullHeight: number,
   scale: number,
+  maxCloudPixels: number = Number.POSITIVE_INFINITY,
 ): CloudRenderSize {
   assertDimension(fullWidth, "fullWidth");
   assertDimension(fullHeight, "fullHeight");
   if (!Number.isFinite(scale) || scale <= 0 || scale > 1) {
     throw new RangeError("cloudResolutionScale must be finite and in (0, 1]");
   }
+  if (!(maxCloudPixels > 0)) {
+    throw new RangeError("maxCloudPixels must be positive");
+  }
+  // 2-6: a multiply is not a cap (the 1A-6a argument). The scale inherits
+  // whatever the main resolution is, so an ABSOLUTE per-tier pixel ceiling
+  // clamps the effective scale before alignment.
+  let effectiveScale = scale;
+  const requestedPixels = fullWidth * fullHeight * scale * scale;
+  if (requestedPixels > maxCloudPixels) {
+    effectiveScale = Math.sqrt(maxCloudPixels / (fullWidth * fullHeight));
+  }
   return Object.freeze({
-    width: alignScaledDimension(fullWidth, scale),
-    height: alignScaledDimension(fullHeight, scale),
-    scale,
+    width: alignScaledDimension(fullWidth, effectiveScale),
+    height: alignScaledDimension(fullHeight, effectiveScale),
+    scale: effectiveScale,
   });
 }
 
@@ -63,7 +75,7 @@ export function resolveCloudShadowSchedule(
   }
   if (scale <= 0.3) {
     return Object.freeze({
-      resolution: 128,
+      resolution: 256,
       steps: 8,
       updateEveryNFrames: 4,
       historyWeight: 0.78,
@@ -71,14 +83,14 @@ export function resolveCloudShadowSchedule(
   }
   if (scale <= 0.55) {
     return Object.freeze({
-      resolution: 256,
+      resolution: 512,
       steps: 10,
       updateEveryNFrames: 3,
       historyWeight: 0.86,
     });
   }
   return Object.freeze({
-    resolution: 256,
+    resolution: 512,
     steps: 14,
     updateEveryNFrames: 2,
     historyWeight: 0.9,

@@ -49,6 +49,12 @@ export interface WebGpuQualityProfile {
   readonly oceanResolution: 128 | 256;
   readonly oceanCascades: number;
   readonly cloudResolutionScale: number;
+  /**
+   * Absolute ceiling on cloud-integration pixels (2-6). Clamped alongside
+   * the resolution scale in resolveCloudRenderSize — a multiply is not a cap
+   * (the 1A-6a argument, applied to the cloud pass).
+   */
+  readonly maxCloudPixels: number;
   readonly cloudPrimarySteps: number;
   readonly cloudLightSteps: number;
   readonly vegetationDistance: number;
@@ -100,6 +106,7 @@ export function resolveWebGpuQualityProfile(
       oceanResolution: 128,
       oceanCascades: 3,
       cloudResolutionScale: 0.25,
+      maxCloudPixels: 350_000,
       cloudPrimarySteps: 40,
       cloudLightSteps: 4,
       vegetationDistance: 2_000,
@@ -129,6 +136,7 @@ export function resolveWebGpuQualityProfile(
       oceanResolution: 128,
       oceanCascades: 4,
       cloudResolutionScale: 0.45,
+      maxCloudPixels: 700_000,
       cloudPrimarySteps: 60,
       cloudLightSteps: 6,
       vegetationDistance: 4_500,
@@ -163,6 +171,7 @@ export function resolveWebGpuQualityProfile(
       // Temporal reconstruction provides the stability return at this tier. Keep
       // the fully integrated per-frame ray march below a brute-force cost cliff.
       cloudResolutionScale: 0.6,
+      maxCloudPixels: 1_000_000,
       cloudPrimarySteps: 96,
       cloudLightSteps: 6,
       vegetationDistance: 8_000,
@@ -192,6 +201,7 @@ export function resolveWebGpuQualityProfile(
     oceanResolution: 256,
     oceanCascades: 5,
     cloudResolutionScale: 0.7,
+    maxCloudPixels: 1_600_000,
     cloudPrimarySteps: 96,
     cloudLightSteps: 6,
     vegetationDistance: 8_000,

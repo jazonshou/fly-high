@@ -107,6 +107,17 @@ export interface PerfCaptureShotDefinition {
  * the 2 m eye-height and 1,200 ft canopy views. Positions are relative to the
  * world's airport so the definitions survive seed changes at sanctioned
  * rebaselines; forest/coast shots locate themselves from the terrain field.
+ *
+ * Floors/ceilings re-pinned 2026-08-18 at the sanctioned Gate 2A rebaseline
+ * (three clean quiet-machine runs with the volumetric sky live). Rule:
+ * `minFps = floor(min over clean runs) − 2`, never raised above the Z-2
+ * value; `hitchCount = max(Z-2 value, 1.5 × max over clean runs)`. The
+ * pre-cloud floors dated from a cloudless renderer; under the cloud
+ * composite, headless rAF pacing settles ~1–4 fps lower at identical GPU
+ * cost, and the >2× frame-target hitch definition saturates (a typical
+ * 720p frame now sits near the target, so most frames count). Every re-pinned
+ * floor still catches the one real regression observed while landing 2A
+ * (slant-10km at 26.4 fps before the adaptive-march work).
  */
 export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.freeze([
   {
@@ -124,7 +135,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 31 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 29 },
   },
   {
     name: "slant-10km",
@@ -141,7 +152,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 120, minFps: 32 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 155, minFps: 29 },
   },
   {
     name: "high-10000ft-down",
@@ -158,7 +169,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 115, minFps: 33 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 115, minFps: 32 },
   },
   {
     // Z-3: the only configuration where the tier-1 pixel cap binds — i.e.
@@ -182,7 +193,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 30 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 150, minFps: 29 },
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -202,7 +213,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 85, minFps: 36 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 95, minFps: 30 },
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -223,7 +234,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 130, minFps: 31 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 145, minFps: 29 },
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -244,7 +255,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 31 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 29 },
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -270,7 +281,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 155, minFps: 27 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 235, minFps: 25 },
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -290,7 +301,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 105, minFps: 32 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 160, minFps: 29 },
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -312,7 +323,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 145, minFps: 27 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 240, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -333,7 +344,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 120, minFps: 31 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 230, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -354,7 +365,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 27 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 215, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -375,7 +386,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 145, minFps: 29 },
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 210, minFps: 27 },
   },
 ]);
 
@@ -474,6 +485,38 @@ export interface TemporalStability {
   readonly meanConsecutiveSsim: number;
   /** Largest jump of whole-frame mean luminance between consecutive frames. */
   readonly maxMeanLuminanceDelta: number;
+}
+
+/**
+ * Sustained frame rate from per-frame intervals, robust to sparse stalls.
+ *
+ * Each Z-2 gate owns one failure mode: `maxFrameMs`/`p999FrameMs`/
+ * `hitchCount` own SPIKES, `minFps` owns the SUSTAINED rate. A wall-clock
+ * mean re-counts a handful of one-off stalls (page streaming, GC, headless
+ * compositor scheduling — measured ~1.5 s of stalls inside an 8 s window on
+ * an otherwise-fast run) as a sustained-rate failure, which made the floor
+ * bimodal on identical builds. Trimming the slowest 5% of intervals removes
+ * sparse stalls while a genuinely slow build stays slow in every interval:
+ * the 2A regression this gate must catch (every frame ~32 ms of GPU work)
+ * trims to the same failing rate.
+ */
+export function sustainedFpsFromFrameIntervals(
+  intervalsMs: readonly number[],
+  trimFraction = 0.05,
+): number {
+  if (intervalsMs.length === 0) {
+    throw new RangeError("Sustained fps needs at least one frame interval");
+  }
+  if (!Number.isFinite(trimFraction) || trimFraction < 0 || trimFraction >= 1) {
+    throw new RangeError("trimFraction must be in [0, 1)");
+  }
+  const sorted = [...intervalsMs].sort((a, b) => a - b);
+  const kept = sorted.slice(
+    0,
+    Math.max(1, sorted.length - Math.ceil(sorted.length * trimFraction)),
+  );
+  const keptMs = kept.reduce((sum, value) => sum + value, 0);
+  return kept.length / Math.max(1e-6, keptMs / 1_000);
 }
 
 export function temporalStability(

@@ -93,15 +93,49 @@ describe("cloud runtime policy (1A-6a)", () => {
     expect(() => resolveCloudRenderSize(1_920, 1_080, 0)).toThrow(RangeError);
   });
 
+  it("caps cloud pixels absolutely at three viewports (assertion 40, 2-6)", () => {
+    // A multiply is not a cap: at every viewport the aligned target must
+    // respect the tier ceiling regardless of the main resolution.
+    const tiers = [
+      resolveWebGpuQualityProfile("low", "balanced"),
+      resolveWebGpuQualityProfile("medium", "balanced"),
+      resolveWebGpuQualityProfile("high", "balanced"),
+      resolveWebGpuQualityProfile("high", "ultra"),
+    ];
+    const viewports: ReadonlyArray<readonly [number, number]> = [
+      [1_280, 720],
+      [2_268, 1_473],
+      [3_840, 2_160],
+    ];
+    for (const profile of tiers) {
+      for (const [width, height] of viewports) {
+        const size = resolveCloudRenderSize(
+          width,
+          height,
+          profile.cloudResolutionScale,
+          profile.maxCloudPixels,
+        );
+        // Alignment can round a dimension up by at most 4 texels each.
+        expect(size.width * size.height).toBeLessThanOrEqual(
+          profile.maxCloudPixels + (size.width + size.height) * 4 + 16,
+        );
+      }
+    }
+    // Small viewports come in under the cap — the scale must be untouched.
+    const small = resolveCloudRenderSize(1_280, 720, 0.45, 700_000);
+    expect(small.scale).toBe(0.45);
+  });
+
   it("schedules the shadow map by cloud resolution scale", () => {
+    // 2-7: the sun-space footprint is 24 km; 512² = 47 m/texel at tiers 1+.
     expect(resolveCloudShadowSchedule({ cloudResolutionScale: 0.25 })).toMatchObject({
-      resolution: 128, steps: 8, updateEveryNFrames: 4,
+      resolution: 256, steps: 8, updateEveryNFrames: 4,
     });
     expect(resolveCloudShadowSchedule({ cloudResolutionScale: 0.45 })).toMatchObject({
-      resolution: 256, steps: 10, updateEveryNFrames: 3,
+      resolution: 512, steps: 10, updateEveryNFrames: 3,
     });
     expect(resolveCloudShadowSchedule({ cloudResolutionScale: 0.7 })).toMatchObject({
-      resolution: 256, steps: 14, updateEveryNFrames: 2,
+      resolution: 512, steps: 14, updateEveryNFrames: 2,
     });
     expect(shouldRenderCloudShadow(10, -1, 3, false)).toBe(true);
     expect(shouldRenderCloudShadow(10, 9, 3, false)).toBe(false);
@@ -144,6 +178,34 @@ describe("adopted cloud shaders (2-0)", () => {
     expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).toContain("aerialPerspective(");
     // R-19/D-7: shadow-through-haze is structural; no strength × transmittance.
     expect(CLOUD_COMPOSITE_FRAGMENT_WGSL).not.toContain("cloudShadow");
+  });
+});
+
+describe("cloud phase function (assertion 38)", () => {
+  // TS mirror of cloudHenyeyGreenstein in nature/CloudShaders.ts.
+  function henyeyGreenstein(cosine: number, asymmetry: number): number {
+    const g2 = asymmetry * asymmetry;
+    const denominator = Math.max(1 + g2 - 2 * asymmetry * cosine, 1e-4);
+    return (1 - g2) / (4 * Math.PI * Math.pow(denominator, 1.5));
+  }
+
+  it("integrates the dual-lobe HG to 1 over the sphere within 1%", () => {
+    const config = DEFAULT_VOLUMETRIC_CLOUD_CONFIG;
+    const steps = 4_096;
+    let integral = 0;
+    for (let index = 0; index < steps; index += 1) {
+      const theta = ((index + 0.5) / steps) * Math.PI;
+      const cosine = Math.cos(theta);
+      const phase =
+        henyeyGreenstein(cosine, config.forwardPhaseG) * (1 - config.backwardPhaseBlend)
+        + henyeyGreenstein(cosine, config.backwardPhaseG) * config.backwardPhaseBlend;
+      integral += phase * 2 * Math.PI * Math.sin(theta) * (Math.PI / steps);
+    }
+    // Phase-function energy drift during tuning is how clouds turn to milk
+    // (R-2B); the phase constants are literature values pinned here, and the
+    // only tuning knobs are densityMultiplier and extinctionPerMeter.
+    expect(integral).toBeGreaterThan(0.99);
+    expect(integral).toBeLessThan(1.01);
   });
 });
 
@@ -249,7 +311,7 @@ describe("adopted cloud runtime lifecycle (2-0)", () => {
     expect(statistics.computeSupported).toBe(false);
     expect(statistics.raySteps).toBe(60); // medium/balanced cloudPrimarySteps
     expect(statistics.lightSteps).toBe(6);
-    expect(statistics.shadowResolution).toBe(256);
+    expect(statistics.shadowResolution).toBe(512);
     expect(statistics.shadowWorldSize).toBe(
       DEFAULT_VOLUMETRIC_CLOUD_CONFIG.shadowWorldSizeMeters,
     );
@@ -277,7 +339,7 @@ describe("adopted cloud runtime lifecycle (2-0)", () => {
     expect(projection.referenceAltitudeMeters).toBe(0);
     // No dispatch has run on NullEngine, so the map must not claim validity.
     expect(projection.valid).toBe(false);
-    const texelWorldSize = projection.worldSizeMeters / 256;
+    const texelWorldSize = projection.worldSizeMeters / 512;
     expect(projection.centerX % texelWorldSize).toBe(0);
     expect(projection.centerZ % texelWorldSize).toBe(0);
   });

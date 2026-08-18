@@ -165,7 +165,7 @@ describe("performance budget (1A-2)", () => {
 
     const withCloudVolumes = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
-      cloudVolumesMiB: 2.4,
+      cloudVolumesMiB: DYNAMIC_ALLOCATIONS.cloudVolumesMiB + 2.4,
     });
     expect(withCloudVolumes.cloudsMiB).toBeCloseTo(base.cloudsMiB + 2.4, 5);
 

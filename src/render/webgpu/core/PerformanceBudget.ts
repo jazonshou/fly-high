@@ -184,7 +184,8 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   }),
   foliageAtlasMiB: 0,
   impostorAtlasMiB: 0,
-  cloudVolumesMiB: 0,
+  // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
+  cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,
   materialArraysMiB: 0,
 });
 
