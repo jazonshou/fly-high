@@ -13,7 +13,6 @@ export type TreeSpecies =
   | "willow";
 export type ShrubSpecies = "juniper" | "hazel" | "sage";
 export type RockVariant = "granite" | "limestone" | "dark";
-export type BuildingStyle = "cottage" | "barn" | "tower";
 
 export interface DetailTerrainSample {
   readonly height: number;
@@ -21,6 +20,12 @@ export interface DetailTerrainSample {
   readonly slope: number;
   readonly moisture: number;
   readonly biome: TerrainBiomeId;
+  /**
+   * 0 outside the airport blend, 1 on its graded platform (1B-6). Optional so
+   * simple samplers stay valid; omitted means 0. The world-layer TerrainSample
+   * carries it, so the live sampler provides it for free.
+   */
+  readonly airportInfluence?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;
@@ -82,28 +87,6 @@ export interface DetailRockPlacement {
   readonly selection: number;
 }
 
-export interface DetailBuildingPlacement {
-  readonly kind: "building";
-  readonly id: string;
-  readonly style: BuildingStyle;
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-  readonly yawRadians: number;
-  readonly widthMeters: number;
-  readonly heightMeters: number;
-  readonly depthMeters: number;
-  readonly color: readonly [number, number, number, number];
-}
-
-export interface DetailVillage {
-  readonly id: string;
-  readonly centerX: number;
-  readonly centerY: number;
-  readonly centerZ: number;
-  readonly roadHeadingRadians: number;
-}
-
 export interface GeneratedDetailCell {
   readonly key: string;
   readonly cellX: number;
@@ -116,8 +99,6 @@ export interface GeneratedDetailCell {
   readonly trees: readonly DetailTreePlacement[];
   readonly shrubs: readonly DetailShrubPlacement[];
   readonly rocks: readonly DetailRockPlacement[];
-  readonly buildings: readonly DetailBuildingPlacement[];
-  readonly village: DetailVillage | null;
 }
 
 export interface WorldDetailObserver {
@@ -143,7 +124,6 @@ export interface WorldDetailStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
-  readonly buildingInstances: number;
   /** Main-camera-frustum instances, including separate trunks/crowns and walls/roofs. */
   readonly renderedThinInstances: number;
   /** Spatial prototype/chunk batches selected by the main-camera frustum. */

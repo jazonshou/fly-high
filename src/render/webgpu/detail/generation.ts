@@ -1,14 +1,11 @@
 import { TerrainBiome } from "@/src/world";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
-  type BuildingStyle,
-  type DetailBuildingPlacement,
   type DetailCellGenerationOptions,
   type DetailRockPlacement,
   type DetailShrubPlacement,
   type DetailTerrainSample,
   type DetailTreePlacement,
-  type DetailVillage,
   type GeneratedDetailCell,
   type RockVariant,
   type ShrubSpecies,
@@ -16,8 +13,6 @@ import {
 } from "./types";
 
 const TAU = Math.PI * 2;
-const VILLAGE_REGION_CELLS = 4;
-const VILLAGE_REGION_CHANCE = 0.42;
 
 type RandomSource = () => number;
 
@@ -66,6 +61,16 @@ function validSample(sample: DetailTerrainSample): boolean {
   );
 }
 
+/**
+ * Multiplicative suppression over the graded airport surrounds (1B-6).
+ * Airfields are mown grass: woody plants and rocks fade out with influence
+ * (never a boolean cutoff), while ground cover — when 2-16 adds it — keeps
+ * growing with its height capped at ~0.15 m. Zero influence is a no-op.
+ */
+function airportClearance(sample: DetailTerrainSample): number {
+  return 1 - clamp(sample.airportInfluence ?? 0, 0, 1);
+}
+
 function treeProbability(sample: DetailTerrainSample): number {
   const moisture = sample.moisture;
   let probability: number;
@@ -85,7 +90,7 @@ function treeProbability(sample: DetailTerrainSample): number {
     default:
       return 0;
   }
-  return probability * clamp(1 - sample.slope * 1.15, 0, 1);
+  return probability * clamp(1 - sample.slope * 1.15, 0, 1) * airportClearance(sample);
 }
 
 function rockProbability(sample: DetailTerrainSample): number {
@@ -112,7 +117,7 @@ function rockProbability(sample: DetailTerrainSample): number {
     default:
       return 0;
   }
-  return clamp(probability + sample.slope * 0.35, 0, 0.75);
+  return clamp(probability + sample.slope * 0.35, 0, 0.75) * airportClearance(sample);
 }
 
 function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
@@ -191,85 +196,6 @@ function treeColor(species: TreeSpecies, random: RandomSource): readonly [number
   }
 }
 
-function villageSuitability(sample: DetailTerrainSample): boolean {
-  return (
-    validSample(sample) &&
-    (sample.biome === TerrainBiome.GRASSLAND || sample.biome === TerrainBiome.HIGHLAND) &&
-    sample.slope <= 0.16 &&
-    sample.moisture >= 0.18 &&
-    sample.moisture <= 0.88
-  );
-}
-
-function createVillage(
-  seed: string,
-  cellX: number,
-  cellZ: number,
-  cellSize: number,
-  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-): { village: DetailVillage; buildings: readonly DetailBuildingPlacement[] } | null {
-  const regionX = Math.floor(cellX / VILLAGE_REGION_CELLS);
-  const regionZ = Math.floor(cellZ / VILLAGE_REGION_CELLS);
-  const ownerRandom = createRandom(`${seed}/village-region/${regionX}/${regionZ}`);
-  const ownerX = regionX * VILLAGE_REGION_CELLS + Math.floor(ownerRandom() * VILLAGE_REGION_CELLS);
-  const ownerZ = regionZ * VILLAGE_REGION_CELLS + Math.floor(ownerRandom() * VILLAGE_REGION_CELLS);
-  if (ownerX !== cellX || ownerZ !== cellZ || ownerRandom() >= VILLAGE_REGION_CHANCE) return null;
-
-  const random = createRandom(`${seed}/village/${cellX}/${cellZ}`);
-  const minX = cellX * cellSize;
-  const minZ = cellZ * cellSize;
-  const centerX = minX + cellSize * (0.34 + random() * 0.32);
-  const centerZ = minZ + cellSize * (0.34 + random() * 0.32);
-  const centerSample = sampleTerrain(centerX, centerZ);
-  if (!villageSuitability(centerSample)) return null;
-
-  const heading = random() * Math.PI;
-  const village: DetailVillage = {
-    id: `${cellX}:${cellZ}/village`,
-    centerX,
-    centerY: centerSample.height,
-    centerZ,
-    roadHeadingRadians: heading,
-  };
-  const forwardX = Math.sin(heading);
-  const forwardZ = Math.cos(heading);
-  const rightX = forwardZ;
-  const rightZ = -forwardX;
-  const requestedBuildings = 6 + Math.floor(random() * 7);
-  const buildings: DetailBuildingPlacement[] = [];
-  for (let index = 0; index < requestedBuildings; index += 1) {
-    const along = (index - (requestedBuildings - 1) * 0.5) * (20 + random() * 5);
-    const side = (index % 2 === 0 ? -1 : 1) * (17 + random() * 10);
-    const x = centerX + forwardX * along + rightX * side;
-    const z = centerZ + forwardZ * along + rightZ * side;
-    if (x < minX + 8 || x > minX + cellSize - 8 || z < minZ + 8 || z > minZ + cellSize - 8) {
-      continue;
-    }
-    const sample = sampleTerrain(x, z);
-    if (!villageSuitability(sample) || sample.slope > 0.2) continue;
-    const styleChoice = random();
-    const style: BuildingStyle = styleChoice < 0.7 ? "cottage" : styleChoice < 0.92 ? "barn" : "tower";
-    const width = style === "tower" ? 8 + random() * 4 : 10 + random() * 8;
-    const depth = style === "barn" ? 14 + random() * 8 : 8 + random() * 7;
-    const height = style === "tower" ? 14 + random() * 8 : 6 + random() * 4;
-    const colorVariation = 0.82 + random() * 0.28;
-    buildings.push({
-      kind: "building",
-      id: `${village.id}/building/${index}`,
-      style,
-      x,
-      y: sample.height,
-      z,
-      yawRadians: heading + (random() - 0.5) * 0.1,
-      widthMeters: width,
-      heightMeters: height,
-      depthMeters: depth,
-      color: [colorVariation, colorVariation * 0.96, colorVariation * 0.86, 1],
-    });
-  }
-  return buildings.length >= 3 ? { village, buildings } : null;
-}
-
 function generateTrees(
   seed: string,
   minX: number,
@@ -277,7 +203,6 @@ function generateTrees(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
 ): readonly DetailTreePlacement[] {
   if (density <= 0) return [];
   const clusterSpacing = 176;
@@ -345,7 +270,6 @@ function generateTrees(
           !validSample(sample)
           || ecologyAcceptance >= clamp(treeProbability(sample) * richness, 0, 0.97)
         ) continue;
-        if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 82) continue;
         const speciesChoice = random() < 0.62 ? dominantSpeciesChoice : random();
         const species = chooseTreeSpecies(sample, speciesChoice);
         const dimensions = treeDimensions(species, random, standAge);
@@ -420,7 +344,7 @@ function shrubProbability(sample: DetailTerrainSample): number {
     default:
       return 0;
   }
-  return probability * clamp(1 - sample.slope * 1.3, 0, 1);
+  return probability * clamp(1 - sample.slope * 1.3, 0, 1) * airportClearance(sample);
 }
 
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
@@ -452,7 +376,6 @@ function generateShrubs(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
 ): readonly DetailShrubPlacement[] {
   if (density <= 0) return [];
   const patchSpacing = 144;
@@ -491,7 +414,6 @@ function generateShrubs(
           !validSample(sample)
           || random() >= clamp(shrubProbability(sample) * richness, 0, 0.94)
         ) continue;
-        if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 68) continue;
         const species = chooseShrubSpecies(sample, random() < 0.7 ? dominantChoice : random());
         const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
         const height = species === "sage"
@@ -533,7 +455,6 @@ function generateRocks(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
 ): readonly DetailRockPlacement[] {
   if (density <= 0) return [];
   const random = createRandom(`${seed}/rocks/${key}`);
@@ -545,7 +466,6 @@ function generateRocks(
     const acceptance = random();
     const sample = sampleTerrain(x, z);
     if (!validSample(sample) || acceptance >= rockProbability(sample)) continue;
-    if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 45) continue;
     const variant = chooseRockVariant(sample, random);
     const radius = 0.5 + (0.25 + sample.slope * 0.75) * random() * 4.2;
     const tint = 0.78 + random() * 0.3;
@@ -583,14 +503,6 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
   const key = detailCellKey(cellX, cellZ);
   const minX = cellX * cellSizeMeters;
   const minZ = cellZ * cellSizeMeters;
-  const settlement = createVillage(
-    seed,
-    cellX,
-    cellZ,
-    cellSizeMeters,
-    options.terrainSample,
-  );
-  const village = settlement?.village ?? null;
   return {
     key,
     cellX,
@@ -607,7 +519,6 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
-      village,
     ),
     shrubs: generateShrubs(
       seed,
@@ -616,7 +527,6 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
-      village,
     ),
     rocks: generateRocks(
       seed,
@@ -626,10 +536,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
-      village,
     ),
-    buildings: settlement?.buildings ?? [],
-    village,
   };
 }
 

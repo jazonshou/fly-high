@@ -76,9 +76,9 @@ describe("WebGPU velocity-aware world streaming", () => {
       velocityX: 0,
       velocityZ: 0,
     });
-    // 1,536 m horizontal to the page edge; altitude lengthens it in quadrature.
-    expect(atGround.currentDistanceMeters).toBeCloseTo(1_536, 5);
-    expect(atAltitude.currentDistanceMeters).toBeCloseTo(Math.hypot(1_536, 3_000), 5);
+    // 2,048 m horizontal to the page edge; altitude lengthens it in quadrature.
+    expect(atGround.currentDistanceMeters).toBeCloseTo(2_048, 5);
+    expect(atAltitude.currentDistanceMeters).toBeCloseTo(Math.hypot(2_048, 3_000), 5);
     expect(atAltitude.score).toBeGreaterThan(atGround.score);
     // Omitted altitude stays the pre-1B-3 horizontal behaviour.
     expect(atGround.currentDistanceMeters).toBe(

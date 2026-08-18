@@ -1,10 +1,8 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder.pure";
 import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
 import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
@@ -21,7 +19,6 @@ import {
 } from "./spatialChunks";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
-  type BuildingStyle,
   type DetailFloatingOrigin,
   type DetailLod,
   type DetailTerrainSampler,
@@ -60,7 +57,6 @@ interface DetailChunkStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
-  readonly buildingInstances: number;
 }
 
 interface DetailPresentationChunk {
@@ -77,7 +73,6 @@ interface MutableDetailChunkStatistics {
   treeInstances: number;
   shrubInstances: number;
   rockInstances: number;
-  buildingInstances: number;
 }
 
 interface ThinInstanceMeshWithCache {
@@ -118,7 +113,6 @@ const TREE_SPECIES: readonly TreeSpecies[] = [
 ];
 const SHRUB_SPECIES: readonly ShrubSpecies[] = ["juniper", "hazel", "sage"];
 const ROCK_VARIANTS: readonly RockVariant[] = ["granite", "limestone", "dark"];
-const BUILDING_STYLES: readonly BuildingStyle[] = ["cottage", "barn", "tower"];
 
 const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   residentCells: 0,
@@ -128,7 +122,6 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   treeInstances: 0,
   shrubInstances: 0,
   rockInstances: 0,
-  buildingInstances: 0,
   renderedThinInstances: 0,
   activeBatches: 0,
 });
@@ -189,33 +182,6 @@ function appendYawMatrix(
     sine * scaleZ, 0, cosine * scaleZ, 0,
     x, y, z, 1,
   );
-}
-
-function createGabledRoof(name: string, scene: Scene): Mesh {
-  const positions = [
-    -0.5, 0, -0.5,
-    0.5, 0, -0.5,
-    0, 0.5, -0.5,
-    -0.5, 0, 0.5,
-    0.5, 0, 0.5,
-    0, 0.5, 0.5,
-  ];
-  const indices = [
-    0, 1, 2,
-    5, 4, 3,
-    0, 2, 5, 0, 5, 3,
-    1, 4, 5, 1, 5, 2,
-    0, 3, 4, 0, 4, 1,
-  ];
-  const normals: number[] = [];
-  VertexData.ComputeNormals(positions, indices, normals);
-  const data = new VertexData();
-  data.positions = positions;
-  data.indices = indices;
-  data.normals = normals;
-  const mesh = new Mesh(name, scene);
-  data.applyToMesh(mesh, false);
-  return mesh;
 }
 
 /**
@@ -497,8 +463,7 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
-      buildingInstances: 0,
-    };
+        };
 
     for (const group of grouped.values()) {
       group.residents.sort((first, second) => first.cell.key.localeCompare(second.cell.key));
@@ -522,8 +487,7 @@ export class WorldDetailRuntime {
             treeInstances: 0,
             shrubInstances: 0,
             rockInstances: 0,
-            buildingInstances: 0,
-          },
+                    },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
       }
@@ -541,7 +505,6 @@ export class WorldDetailRuntime {
       totals.treeInstances += chunk.statistics.treeInstances;
       totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
-      totals.buildingInstances += chunk.statistics.buildingInstances;
     }
 
     this.statisticsValue = {
@@ -552,7 +515,6 @@ export class WorldDetailRuntime {
       treeInstances: totals.treeInstances,
       shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
-      buildingInstances: totals.buildingInstances,
       renderedThinInstances: 0,
       activeBatches: 0,
     };
@@ -573,8 +535,7 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
-      buildingInstances: 0,
-    };
+        };
 
     for (const resident of residents) {
       if (resident.lod === "near") statistics.nearCells += 1;
@@ -672,82 +633,6 @@ export class WorldDetailRuntime {
         statistics.rockInstances += 1;
       }
 
-      for (const building of resident.cell.buildings) {
-        const bodyHeight = building.heightMeters * 0.72;
-        const roofHeight = building.heightMeters - bodyHeight;
-        const localX = building.x - floatingOrigin.x;
-        const localY = building.y - floatingOrigin.y;
-        const localZ = building.z - floatingOrigin.z;
-        this.appendInstance(
-          this.getBatch(`building-${building.style}-wall`, chunk, nextBatchKeys),
-          localX,
-          localY,
-          localZ,
-          building.widthMeters,
-          bodyHeight,
-          building.depthMeters,
-          building.yawRadians,
-          building.color,
-          [0, 0, 0, 0],
-        );
-        this.appendInstance(
-          this.getBatch(`building-${building.style}-roof`, chunk, nextBatchKeys),
-          localX,
-          localY + bodyHeight,
-          localZ,
-          building.widthMeters * 1.12,
-          roofHeight * 2,
-          building.depthMeters * 1.16,
-          building.yawRadians,
-          [0.92, 0.82, 0.76, 1],
-          [0, 0, 0, 0],
-        );
-        if (resident.lod === "near") {
-          const facadeX = localX + Math.sin(building.yawRadians) * (building.depthMeters * 0.5 + 0.06);
-          const facadeZ = localZ + Math.cos(building.yawRadians) * (building.depthMeters * 0.5 + 0.06);
-          this.appendInstance(
-            this.getBatch("building-window", chunk, nextBatchKeys),
-            facadeX,
-            localY + bodyHeight * 0.58,
-            facadeZ,
-            building.widthMeters * 0.48,
-            Math.max(1.1, bodyHeight * 0.24),
-            0.08,
-            building.yawRadians,
-            [0.48, 0.58, 0.62, 1],
-            [0, 0, 0, 0],
-          );
-          this.appendInstance(
-            this.getBatch("building-door", chunk, nextBatchKeys),
-            facadeX,
-            localY + bodyHeight * 0.2,
-            facadeZ + 0.01,
-            Math.min(2.2, building.widthMeters * 0.18),
-            Math.min(3.2, bodyHeight * 0.42),
-            0.09,
-            building.yawRadians,
-            [0.62, 0.5, 0.38, 1],
-            [0, 0, 0, 0],
-          );
-        }
-        statistics.buildingInstances += 1;
-      }
-
-      const village = resident.cell.village;
-      if (village) {
-        this.appendInstance(
-          this.getBatch("village-road", chunk, nextBatchKeys),
-          village.centerX - floatingOrigin.x,
-          village.centerY - floatingOrigin.y + 0.035,
-          village.centerZ - floatingOrigin.z,
-          6.5,
-          0.07,
-          resident.cell.cellSizeMeters * 0.62,
-          village.roadHeadingRadians,
-          [0.84, 0.79, 0.68, 1],
-          [0, 0, 0, 0],
-        );
-      }
     }
 
     // Never replace thin-instance buffers in place. WebGPU render bundles can
@@ -1018,64 +903,6 @@ export class WorldDetailRuntime {
       );
     }
 
-    const wallColors: Readonly<Record<BuildingStyle, Color3>> = {
-      cottage: new Color3(0.55, 0.42, 0.27),
-      barn: new Color3(0.38, 0.15, 0.09),
-      tower: new Color3(0.42, 0.42, 0.38),
-    };
-    const roofColors: Readonly<Record<BuildingStyle, Color3>> = {
-      cottage: new Color3(0.28, 0.13, 0.08),
-      barn: new Color3(0.18, 0.07, 0.045),
-      tower: new Color3(0.22, 0.23, 0.24),
-    };
-    for (const style of BUILDING_STYLES) {
-      const wall = bakePrototype(
-        CreateBox(`detail-building-${style}-wall`, { size: 1 }, this.scene),
-        0.5,
-      );
-      this.registerBatch(
-        `building-${style}-wall`,
-        wall,
-        this.createMaterial(`detail-building-${style}-wall-material`, wallColors[style], 0.82),
-        true,
-      );
-      this.registerBatch(
-        `building-${style}-roof`,
-        createGabledRoof(`detail-building-${style}-roof`, this.scene),
-        this.createMaterial(`detail-building-${style}-roof-material`, roofColors[style], 0.76),
-        true,
-      );
-    }
-    const facadePrototype = bakePrototype(
-      CreateBox("detail-building-facade-feature", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "building-window",
-      facadePrototype,
-      this.createMaterial("detail-building-window-material", new Color3(0.12, 0.2, 0.23), 0.18),
-      false,
-    );
-    const doorPrototype = bakePrototype(
-      CreateBox("detail-building-door", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "building-door",
-      doorPrototype,
-      this.createMaterial("detail-building-door-material", new Color3(0.24, 0.15, 0.08), 0.82),
-      false,
-    );
-    const roadPrototype = bakePrototype(
-      CreateBox("detail-village-road", { size: 1 }, this.scene),
-      0.5,
-    );
-    this.registerBatch(
-      "village-road",
-      roadPrototype,
-      this.createMaterial("detail-village-road-material", new Color3(0.24, 0.2, 0.14), 1),
-      false,
-    );
   }
 
   private createTreeCrown(species: TreeSpecies, lod: DetailLod): Mesh {
