@@ -140,11 +140,10 @@ const DEPTH_BYTES = 4;
 const SHADOW_DEPTH_BYTES = 5;
 /**
  * Ocean FFT bytes per texel per cascade: h0 spectrum (rgba32float, 16 B) +
- * wave data (16 B) + two ping-pong pairs (4 × rgba32float until 1B-13's fp16
- * conversion) + displacement (rgba16float, 8 B) + two normal/foam targets
- * (2 × 8 B).
+ * wave data (16 B) + two ping-pong pairs (4 × rgba16float since 1B-13) +
+ * displacement (rgba16float, 8 B) + two normal/foam targets (2 × 8 B).
  */
-const OCEAN_FFT_PING_PONG_BYTES = 16;
+const OCEAN_FFT_PING_PONG_BYTES = 8;
 const OCEAN_BYTES_PER_TEXEL = 16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 2 * 8;
 /** Integration + two temporal history targets, rgba16float. */
 const CLOUD_TARGET_COUNT = 3;

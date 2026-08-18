@@ -220,7 +220,11 @@ export function buildOceanFftDispatches(resolution: number): readonly OceanFftDi
         axis,
         stage,
         dispatch,
-        normalize: axis === "vertical" && stage === stages - 1,
+        // 1B-13: fold 1/N into the LAST STAGE OF EACH AXIS. Folding the
+        // full 1/N² anywhere earlier drops fp16 intermediates to
+        // 1.5e-6…1.5e-4 — straddling the smallest fp16 normal (6.1e-5) —
+        // and the small waves silently vanish into banding on cascade 0.
+        normalize: stage === stages - 1,
         sourceSlot,
         destinationSlot,
       }));
