@@ -29,6 +29,8 @@ creates the file — the ownership decision is already binding.
 | `MAX_TERRAIN_HEIGHT` (2,200 m until `5-8`) | terrain-geometry | `src/world/terrain.ts` | live |
 | Channel-graph extractor | water | `src/render/webgpu/water/ChannelNetwork.ts` | planned `5-5` |
 | `detail.worker.ts` | vegetation | `src/workers/detail.worker.ts` | planned `1B-10` |
+| Aircraft form and materials | aircraft | `src/render/webgpu/aircraft/` | planned Gate `A-1`/`A-2` |
+| Land-cover classification — the one authority for terrain splat, vegetation species and wildlife habitat | terrain-material | `src/render/webgpu/terrain/LandCoverClassifier.ts` | planned `4-6` |
 
 Phase 0 added four more contracts under the same enforcement: the environment
 clock (`src/world/environmentClock.ts`), the simulation terrain authority
@@ -89,6 +91,18 @@ signature *from the moment it is first written* — the vegetation density field
 (`1B-7`), the appearance field (`2-18`), the surface palette (`3-10`), the
 land-cover classifier (`4-6`). The boundary test checks each of these files
 for an environment-clock reference as it comes into existence.
+
+**Amended 2026-08-18 (`PRE_PHASE_4_REALIGNMENT.md` §4, `R-13`).** The rule has a
+hole: the check is *syntactic*, and the one file that most needs the clock is not
+in the family. `src/world/terrain.ts` carries `classifyBiome` — which decides snow
+today at `temperature < 0.2 || height > seaLevel + 1_520` — and §5 makes it the
+source `4-1` transliterates into WGSL, so `4-6`'s seasonal classifier would be
+transliterated from a kernel with no clock: exactly the retrofit this rule exists
+to prevent. Add `seasonalTemperatureOffsetK(dayOfYear, latitudeDegrees)` as a pure
+kernel function, thread it into `sampleTerrainTemperature`/`classifyBiome`, and add
+`src/world/terrain.ts` to `SEASONAL_FIELD_FAMILY` in the same commit. Also
+unowned: `snowCoverage`, `surfaceWetness` and `precipitation` are declared and
+GPU-packed but hardcoded to 0 by `EnvironmentDirector`, and no item owns them.
 
 ## 5. Kernel portability (0-4)
 
