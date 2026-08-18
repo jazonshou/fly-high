@@ -115,7 +115,11 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
-      msaaSamples: 4,
+      // 2Z free win (PRE_PHASE_4_REALIGNMENT.md §3): 2×, was 4×. At the
+      // reference viewport 4× MSAA is ~69 MiB of framebuffer, and the
+      // alpha-tested foliage Phase 2 makes dominant gets no MSAA benefit
+      // (alpha-to-coverage is off) — the cheapest ~34 MiB in the programme.
+      msaaSamples: 2,
       frameTargetMs: 13.7,
       terrainRings: 7,
       terrainTileResolution: 65,

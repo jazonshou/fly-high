@@ -4,6 +4,7 @@ import {
   sampleTerrainClimate,
   sampleTerrainMoisture,
   sampleTerrainSurface,
+  TERRAIN_REFERENCE_DAY_OF_YEAR,
   terrainTemperatureFromClimate,
 } from "./terrain";
 import { TerrainBiome, type TerrainSample, type TerrainTileBuffers, type TerrainTileData, type TerrainTileOptions, type WorldDefinition } from "./types";
@@ -44,6 +45,7 @@ function normalizeOptions(options: TerrainTileOptions): Required<TerrainTileOpti
     includeColors: options.includeColors ?? true,
     includeClimate: options.includeClimate ?? true,
     halo,
+    dayOfYear: options.dayOfYear ?? TERRAIN_REFERENCE_DAY_OF_YEAR,
   };
 }
 
@@ -159,7 +161,9 @@ export function generateTerrainTile(
   buffers: TerrainTileBuffers = { heights: new Float32Array(0) },
 ): TerrainTileData {
   const normalized = normalizeOptions(options);
-  const { tileX, tileZ, size, resolution, includeNormals, includeColors, includeClimate, halo } =
+  const {
+    tileX, tileZ, size, resolution, includeNormals, includeColors, includeClimate, halo, dayOfYear,
+  } =
     normalized;
   const vertexCount = resolution * resolution;
   const heightEdge = storedEdge(resolution, halo);
@@ -303,6 +307,7 @@ export function generateTerrainTile(
               height,
               slope,
               sampleTarget,
+              dayOfYear,
               interpolateSubgrid(moistureGrid, row, column),
               terrainTemperatureFromClimate(
                 world,
@@ -311,7 +316,7 @@ export function generateTerrainTile(
               ),
             );
           } else {
-            sampleTerrainSurface(world, x, z, height, slope, sampleTarget);
+            sampleTerrainSurface(world, x, z, height, slope, sampleTarget, dayOfYear);
           }
           if (includeColors) {
             const colorOffset = vertexIndex * 3;
@@ -336,6 +341,7 @@ export function generateTerrainTile(
     size,
     resolution,
     spacing,
+    dayOfYear,
     heights,
     normals,
     colors,

@@ -214,6 +214,14 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
   },
   {
+    // R-13: the climate kernel that decides snow is itself seasonal now —
+    // `seasonalTemperatureOffsetK` and the anchored snow blanket live here,
+    // and `4-1` transliterates this file, so the clock must be in its
+    // signatures from the first commit (ARCHITECTURE.md §4).
+    artifact: "terrain-climate-kernel",
+    definitionSites: ["src/world/terrain.ts"],
+  },
+  {
     artifact: "vegetation-appearance-field",
     definitionSites: ["src/render/webgpu/detail/appearanceField.ts"],
     plannedBy: "2-18",

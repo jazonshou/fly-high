@@ -702,6 +702,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       weather,
     });
     this.atmosphere.applyEnvironment(this.environmentState);
+    // R-13: the terrain's baked snow blanket and the detail generator follow
+    // the same clock the sky does.
+    this.terrain.setSeasonalDayOfYear(clock.dayOfYear);
+    this.detail.setDayOfYear(clock.dayOfYear);
     this.skyProbeStale = true;
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
@@ -812,6 +816,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.graph.clearDisabledPasses();
       this.resetTimingWindow();
     }
+  }
+
+  /**
+   * Z-2: clear every timing window (governor and diagnostics). The perf
+   * capture calls this at the start of its rAF-paced measurement phase so
+   * hitch metrics describe paced frames only — the tight-loop streaming
+   * phase renders as fast as the CPU allows and would read as a hitch storm.
+   */
+  resetPerformanceWindow(): void {
+    this.resetTimingWindow();
   }
 
   getDiagnostics(): RenderDiagnostics {

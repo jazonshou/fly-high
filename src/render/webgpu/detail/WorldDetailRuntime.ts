@@ -215,6 +215,8 @@ export class WorldDetailRuntime {
   private batchesDirty = true;
   private windTimeSeconds = 0;
   private updateSequence = 0;
+  /** R-13: the environment clock's day, forwarded to cell generation. */
+  private dayOfYear = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -262,6 +264,16 @@ export class WorldDetailRuntime {
    */
   setGenerationBudgetCap(cap: DetailGenerationBudget | null): void {
     this.generationBudgetCap = cap;
+  }
+
+  /**
+   * R-13: the environment clock's day, forwarded to cell generation. The
+   * density field is deliberately season-invariant today (stems do not move
+   * with the calendar), so a change does not invalidate resident cells —
+   * `2-13a`'s appearance field is the first consumer that reads it.
+   */
+  setDayOfYear(dayOfYear: number): void {
+    this.dayOfYear = dayOfYear;
   }
 
   get statistics(): WorldDetailStatistics {
@@ -361,7 +373,7 @@ export class WorldDetailRuntime {
             cellX: desired.cellX,
             cellZ: desired.cellZ,
             densityMultiplier: profile.vegetationDensity,
-            dayOfYear: 0,
+            dayOfYear: this.dayOfYear,
           },
           (cell) => this.onCellGenerated(desired.key, epoch, cell),
           () => this.pendingCells.delete(desired.key),
