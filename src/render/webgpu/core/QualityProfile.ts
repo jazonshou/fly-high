@@ -14,6 +14,11 @@ export interface WebGpuQualityProfile {
   readonly maxRenderPixels: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
+  /**
+   * MSAA sample count for the offscreen beauty target. Data field consumed by
+   * the memory budget (1A-2); the renderer starts honouring it at 1B-11.
+   */
+  readonly msaaSamples: number;
   readonly terrainRings: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
@@ -61,6 +66,7 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.72,
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
+      msaaSamples: 1,
       terrainRings: 6,
       shadowMapSize: 1_024,
       shadowCascades: 2,
@@ -83,6 +89,7 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
+      msaaSamples: 1,
       terrainRings: 7,
       shadowMapSize: 2_048,
       shadowCascades: 2,
@@ -104,6 +111,7 @@ export function resolveWebGpuQualityProfile(
     renderScale: 1,
     maxRenderPixels: 2_400_000,
     maxDevicePixelRatio: 2,
+    msaaSamples: 1,
     terrainRings: 8,
     shadowMapSize: 4_096,
     shadowCascades: 4,

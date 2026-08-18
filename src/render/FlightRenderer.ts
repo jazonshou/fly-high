@@ -26,6 +26,7 @@ import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMir
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
 import { WebGpuFrameGraph } from "./webgpu/core/FrameGraph";
+import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
 import {
   freshFrameTiming,
   isUsableFrameTiming,
@@ -339,6 +340,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = timestampQueries;
+      assertStartupInvariants({
+        timestampQuerySupported: timestampQueries,
+        gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        requestedFeatures: requiredFeatures,
+        grantedFeatures: engine.enabledExtensions,
+      });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
       scene.useRightHandedSystem = true;
