@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit",
     "benchmark": "vitest run --config vitest.config.ts tests/sim.flight.test.ts",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-pages --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-pages --ignore-pattern .next",
+    "perf:capture": "vitest run --config vitest.perf.config.ts",
+    "perf:capture:rebaseline": "VITE_PERF_REBASELINE=1 vitest run --config vitest.perf.config.ts"
   },
   "dependencies": {
     "@babylonjs/core": "9.21.2",
