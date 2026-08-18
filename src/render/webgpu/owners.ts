@@ -137,6 +137,25 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
   },
   {
+    // 2-0: the second instance of the payload.ts institutional failure,
+    // closed. The WGSL modules live here; clouds/VolumetricCloudSystem.ts is
+    // the runtime that consumes them (the nature/=shader-library,
+    // system-directory=runtime arrangement the ocean already uses).
+    artifact: "volumetric-cloud-shader-modules",
+    owner: "clouds",
+    definitionSites: ["src/render/webgpu/nature/CloudShaders.ts"],
+    consumers: ["clouds"],
+    ownedSymbols: [
+      "CLOUD_RAYMARCH_WGSL",
+      "CLOUD_TEMPORAL_RESOLVE_WGSL",
+      "CLOUD_SHADOW_WGSL",
+      "CLOUD_SHADER_MODULES",
+    ],
+    notes:
+      "No inline cloud WGSL outside this file and the composite shell. A second "
+      + "raymarch/temporal/shadow definition fails the boundary test.",
+  },
+  {
     artifact: "max-terrain-height",
     owner: "terrain-geometry",
     definitionSites: ["src/world/terrain.ts"],

@@ -23,6 +23,7 @@ import {
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
 import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
@@ -288,6 +289,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private renderScale: number;
   /** Null until 5-2: physics still samples the analytic kernel directly. */
   private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
@@ -328,8 +330,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
+    atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
+    this.atmosphereResources = atmosphereResources;
     this.domElement = options.canvas;
     this.engine = engine;
     this.scene = scene;
@@ -495,7 +499,24 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       cleanup.push(() => hydrology.dispose());
       hydrology.setFloatingOrigin(0, 0);
-      const clouds = new VolumetricCloudSystem(scene, camera, profile, atmosphere.snapshot);
+      // 2-0a: the atmosphere-owned GPU resources the adopted cloud pipeline
+      // binds (transmittance LUT, sky ambient LUT, blue noise, scene depth).
+      const atmosphereResources = new AtmosphereGpuResources(
+        scene,
+        camera,
+        (mesh) =>
+          mesh === atmosphere.skyMesh
+          || mesh.name === "volumetric-cloud-shell"
+          || mesh.material?.disableDepthWrite === true,
+      );
+      cleanup.push(() => atmosphereResources.dispose());
+      const clouds = new VolumetricCloudSystem(
+        scene,
+        camera,
+        profile,
+        atmosphere.snapshot,
+        atmosphereResources,
+      );
       cleanup.push(() => clouds.dispose());
       await clouds.whenReadyAsync(options.signal);
       const ocean = await SpectralOceanSystem.create(
@@ -657,6 +678,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         wildlife,
         toneMap,
         fxaa,
+        atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
       cleanup.length = 0;
@@ -707,6 +729,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.terrain.setSeasonalDayOfYear(clock.dayOfYear);
     this.detail.setDayOfYear(clock.dayOfYear);
     this.skyProbeStale = true;
+    this.clouds.setEnvironment(this.environmentState);
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -984,6 +1007,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.aerialReceivers.dispose(),
       () => this.skyProbe.dispose(),
       () => this.waterReflection.dispose(),
+      () => this.atmosphereResources.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
       () => this.graph.dispose(),
@@ -1130,6 +1154,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
     ) {
       this.skyProbe.update(binding);
+      // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
+      // same binding, so cloud ambient cannot drift from the sky/IBL pair.
+      this.atmosphereResources.update(binding);
       this.skyProbeStale = false;
       this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
     }

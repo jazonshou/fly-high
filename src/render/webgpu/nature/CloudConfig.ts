@@ -3,7 +3,6 @@ import {
   assertFiniteNumber,
   assertPositive,
   assertRange,
-  type Mat4,
   type Vec2,
   type Vec3,
 } from "./validation";
@@ -127,9 +126,16 @@ function assertIntegerRange(value: number, minimum: number, maximum: number, pat
 }
 
 export interface CloudFrameState {
-  /** Column-major matrices in WebGPU clip-space convention. */
-  readonly inverseViewProjection: Mat4;
-  readonly previousViewProjection: Mat4;
+  /**
+   * The shipped 1B-12 ray convention: unit camera basis + view scale
+   * (tan half-fov per axis). The raymarch, temporal reprojection and
+   * composite all rebuild rays from this one basis — no view-projection
+   * matrix exists anywhere in the cloud pipeline (the 1A-4 bug class).
+   */
+  readonly cameraForward: Vec3;
+  readonly cameraRight: Vec3;
+  readonly cameraUp: Vec3;
+  readonly viewScale: Vec2;
   /** Camera position relative to EnvironmentState.floatingOriginMeters. */
   readonly cameraPositionMeters: Vec3;
   readonly renderSize: readonly [number, number];
@@ -141,13 +147,19 @@ export interface CloudFrameState {
   readonly weatherMapOriginMeters: Vec2;
 }
 
-function assertMatrix(matrix: Mat4, path: string): void {
-  matrix.forEach((value, index) => assertFiniteNumber(value, `${path}[${index}]`));
-}
-
 export function assertCloudFrameState(frame: CloudFrameState): void {
-  assertMatrix(frame.inverseViewProjection, "cloudFrame.inverseViewProjection");
-  assertMatrix(frame.previousViewProjection, "cloudFrame.previousViewProjection");
+  for (const [vector, path] of [
+    [frame.cameraForward, "cameraForward"],
+    [frame.cameraRight, "cameraRight"],
+    [frame.cameraUp, "cameraUp"],
+  ] as const) {
+    vector.forEach((value, index) => {
+      assertFiniteNumber(value, `cloudFrame.${path}[${index}]`);
+    });
+  }
+  frame.viewScale.forEach((value, index) => {
+    assertFiniteNumber(value, `cloudFrame.viewScale[${index}]`);
+  });
   frame.cameraPositionMeters.forEach((value, index) => {
     assertFiniteNumber(value, `cloudFrame.cameraPositionMeters[${index}]`);
   });
@@ -191,22 +203,23 @@ export function packCloudRaymarchUniforms(
   assertVolumetricCloudConfig(config);
   assertEnvironmentState(environment);
   assertCloudFrameState(frame);
-  const values = new Float32Array(88);
-  values.set(frame.inverseViewProjection, 0);
-  values.set(frame.previousViewProjection, 16);
-  setVec4(values, 8, ...frame.cameraPositionMeters, 0);
+  const values = new Float32Array(68);
+  setVec4(values, 0, ...frame.cameraForward, frame.viewScale[0]);
+  setVec4(values, 1, ...frame.cameraRight, frame.viewScale[1]);
+  setVec4(values, 2, ...frame.cameraUp, 0);
+  setVec4(values, 3, ...frame.cameraPositionMeters, 0);
   setVec4(
     values,
-    9,
+    4,
     environment.atmosphere.planetCenterMeters[0] - environment.floatingOriginMeters[0],
     environment.atmosphere.planetCenterMeters[1] - environment.floatingOriginMeters[1],
     environment.atmosphere.planetCenterMeters[2] - environment.floatingOriginMeters[2],
     environment.atmosphere.planetRadiusMeters,
   );
-  setVec4(values, 10, ...environment.sun.direction, environment.sun.angularRadiusRadians);
+  setVec4(values, 5, ...environment.sun.direction, environment.sun.angularRadiusRadians);
   setVec4(
     values,
-    11,
+    6,
     environment.sun.color[0],
     environment.sun.color[1],
     environment.sun.color[2],
@@ -214,7 +227,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    12,
+    7,
     frame.renderSize[0],
     frame.renderSize[1],
     1 / frame.renderSize[0],
@@ -222,7 +235,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    13,
+    8,
     frame.fullResolutionSize[0],
     frame.fullResolutionSize[1],
     frame.frameIndex,
@@ -230,7 +243,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    14,
+    9,
     environment.atmosphere.planetRadiusMeters + config.baseAltitudeMeters,
     environment.atmosphere.planetRadiusMeters + config.topAltitudeMeters,
     config.maximumTraceDistanceMeters,
@@ -238,7 +251,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    15,
+    10,
     config.baseNoiseScaleMeters,
     config.detailNoiseScaleMeters,
     config.weatherMapWorldSizeMeters,
@@ -246,7 +259,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    16,
+    11,
     frame.windOffsetMeters[0],
     frame.windOffsetMeters[1],
     environment.timeSeconds,
@@ -254,7 +267,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    17,
+    12,
     config.minimumStepMeters,
     config.maximumStepMeters,
     config.maximumViewSteps,
@@ -262,7 +275,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    18,
+    13,
     config.extinctionPerMeter,
     config.powderStrength,
     config.multipleScatteringFactor,
@@ -270,7 +283,7 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    19,
+    14,
     config.forwardPhaseG,
     config.backwardPhaseG,
     config.backwardPhaseBlend,
@@ -278,36 +291,77 @@ export function packCloudRaymarchUniforms(
   );
   setVec4(
     values,
-    20,
+    15,
     frame.weatherMapOriginMeters[0],
     frame.weatherMapOriginMeters[1],
     config.weatherMapWorldSizeMeters,
     environment.weather.cloudType,
   );
-  setVec4(values, 21, ...environment.floatingOriginMeters, 0);
+  setVec4(values, 16, ...environment.floatingOriginMeters, 0);
   return values;
+}
+
+/**
+ * Camera ray bases for the temporal resolve's reprojection (1B-12: previous
+ * ray basis + absolute camera delta, never a cached view-projection matrix).
+ */
+export interface CloudTemporalFrameState {
+  readonly renderSize: readonly [number, number];
+  readonly cameraCut: boolean;
+  readonly currentForward: Vec3;
+  readonly currentRight: Vec3;
+  readonly currentUp: Vec3;
+  readonly currentViewScale: Vec2;
+  readonly previousForward: Vec3;
+  readonly previousRight: Vec3;
+  readonly previousUp: Vec3;
+  readonly previousViewScale: Vec2;
+  /** Current − previous camera position, ABSOLUTE metres. */
+  readonly cameraDeltaMeters: Vec3;
 }
 
 /** Binary layout matching `CloudTemporalParams` in CloudShaders.ts. */
 export function packCloudTemporalUniforms(
   config: VolumetricCloudConfig,
-  renderSize: readonly [number, number],
-  cameraCut: boolean,
+  frame: CloudTemporalFrameState,
 ): ArrayBuffer {
   assertVolumetricCloudConfig(config);
-  renderSize.forEach((value, index) => {
+  frame.renderSize.forEach((value, index) => {
     assertIntegerRange(value, 1, 32_768, `renderSize[${index}]`);
   });
-  const buffer = new ArrayBuffer(32);
+  for (const [vector, path] of [
+    [frame.currentForward, "currentForward"],
+    [frame.currentRight, "currentRight"],
+    [frame.currentUp, "currentUp"],
+    [frame.previousForward, "previousForward"],
+    [frame.previousRight, "previousRight"],
+    [frame.previousUp, "previousUp"],
+  ] as const) {
+    vector.forEach((value, index) => {
+      assertFiniteNumber(value, `cloudTemporalFrame.${path}[${index}]`);
+    });
+  }
+  frame.cameraDeltaMeters.forEach((value, index) => {
+    assertFiniteNumber(value, `cloudTemporalFrame.cameraDeltaMeters[${index}]`);
+  });
+  const buffer = new ArrayBuffer(144);
   const view = new DataView(buffer);
-  view.setUint32(0, renderSize[0], true);
-  view.setUint32(4, renderSize[1], true);
-  view.setUint32(8, cameraCut ? 1 : 0, true);
+  view.setUint32(0, frame.renderSize[0], true);
+  view.setUint32(4, frame.renderSize[1], true);
+  view.setUint32(8, frame.cameraCut ? 1 : 0, true);
   view.setUint32(12, 0, true);
   view.setFloat32(16, config.historyWeight, true);
   view.setFloat32(20, config.historyDepthSigmaMeters, true);
   view.setFloat32(24, config.historyLuminanceClamp, true);
   view.setFloat32(28, 0.02, true);
+  const values = new Float32Array(buffer);
+  setVec4(values, 2, ...frame.currentForward, config.maximumTraceDistanceMeters);
+  setVec4(values, 3, ...frame.currentRight, frame.currentViewScale[0]);
+  setVec4(values, 4, ...frame.currentUp, frame.currentViewScale[1]);
+  setVec4(values, 5, ...frame.previousForward, frame.previousViewScale[0]);
+  setVec4(values, 6, ...frame.previousRight, frame.previousViewScale[1]);
+  setVec4(values, 7, ...frame.previousUp, 0);
+  setVec4(values, 8, ...frame.cameraDeltaMeters, 0);
   return buffer;
 }
 
