@@ -563,7 +563,9 @@ export class TerrainClipmapSystem {
           resolution: tileResolution(this.profile, desired.address.level),
           includeNormals: true,
           includeColors: true,
-          includeClimate: true,
+          // 1B-1: no clipmap path reads moisture or biomes. Colours stay —
+          // vertex colour is the only surface appearance terrain has until 3-2.
+          includeClimate: false,
         },
       },
       (tile) => this.onPageGenerated(desired.key, token, tile),

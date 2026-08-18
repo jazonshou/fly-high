@@ -154,6 +154,14 @@ export function sampleTerrainCollisionHeight(
   return sampleTerrainHeight(world, x, z);
 }
 
+/**
+ * COLLISION ONLY (1B-1). The 2 m central difference is the right footprint
+ * for wheels and the crash solver, and the wrong one for every render LOD:
+ * uploaded at 128 m spacing it produced 24–35° mean shading error with 3.4%
+ * of normals pointing into the surface. Render normals come from the tile's
+ * own grid in src/world/tile.ts — do not reintroduce this into any render
+ * path. It reaches physics through src/sim/terrainGrid.ts.
+ */
 export function sampleTerrainNormal(
   world: WorldDefinition,
   x: number,
@@ -325,16 +333,21 @@ function createTerrainSampleTarget(): TerrainSample {
   };
 }
 
-/** Full visual/climate sample. Supply a reusable target to avoid allocations. */
-export function sampleTerrain(
+/**
+ * Classification and appearance for a point whose height and slope are
+ * already known (1B-1). The tile path computes slope from its own grid
+ * normal — at the tile's spacing — and must classify from that same slope,
+ * or rock and scree colour at 40 km is assigned by 4 m microslope. Fills
+ * everything on the target except `normal`.
+ */
+export function sampleTerrainSurface(
   world: WorldDefinition,
   x: number,
   z: number,
-  target: TerrainSample = createTerrainSampleTarget(),
+  height: number,
+  slope: number,
+  target: TerrainSample,
 ): TerrainSample {
-  const height = sampleTerrainHeight(world, x, z);
-  sampleTerrainNormal(world, x, z, target.normal);
-  const slope = saturate(1 - target.normal.y);
   const moisture = sampleTerrainMoisture(world, x, z, 0);
   const temperature = sampleTerrainTemperature(world, x, z, 0, height);
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
@@ -350,4 +363,17 @@ export function sampleTerrain(
   target.isRunway = runway;
   writeTerrainColor(world, x, z, biome, moisture, slope, target.color);
   return target;
+}
+
+/** Full visual/climate sample. Supply a reusable target to avoid allocations. */
+export function sampleTerrain(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: TerrainSample = createTerrainSampleTarget(),
+): TerrainSample {
+  const height = sampleTerrainHeight(world, x, z);
+  sampleTerrainNormal(world, x, z, target.normal);
+  const slope = saturate(1 - target.normal.y);
+  return sampleTerrainSurface(world, x, z, height, slope, target);
 }

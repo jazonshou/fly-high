@@ -1,9 +1,11 @@
-import { sampleTerrain, sampleTerrainHeight } from "./terrain";
+import { coreToStoredIndex, storedEdge } from "@/src/render/webgpu/world/pageGeometry";
+import { sampleTerrainHeight, sampleTerrainSurface } from "./terrain";
 import { TerrainBiome, type TerrainSample, type TerrainTileBuffers, type TerrainTileData, type TerrainTileOptions, type WorldDefinition } from "./types";
 
 export const DEFAULT_TERRAIN_TILE_SIZE = 1_024;
 export const DEFAULT_TERRAIN_TILE_RESOLUTION = 33;
 export const MAX_TERRAIN_TILE_RESOLUTION = 513;
+export const MAX_TERRAIN_TILE_HALO = 8;
 
 function requireInteger(value: number, label: string): number {
   if (!Number.isInteger(value)) throw new RangeError(`${label} must be an integer`);
@@ -15,12 +17,17 @@ function normalizeOptions(options: TerrainTileOptions): Required<TerrainTileOpti
   const tileZ = requireInteger(options.tileZ, "tileZ");
   const size = options.size ?? DEFAULT_TERRAIN_TILE_SIZE;
   const resolution = options.resolution ?? DEFAULT_TERRAIN_TILE_RESOLUTION;
+  const halo = options.halo ?? 0;
   if (!Number.isFinite(size) || size <= 0) {
     throw new RangeError("Terrain tile size must be finite and greater than zero");
   }
   requireInteger(resolution, "resolution");
   if (resolution < 2 || resolution > MAX_TERRAIN_TILE_RESOLUTION) {
     throw new RangeError(`resolution must be between 2 and ${MAX_TERRAIN_TILE_RESOLUTION}`);
+  }
+  requireInteger(halo, "halo");
+  if (halo < 0 || halo > MAX_TERRAIN_TILE_HALO) {
+    throw new RangeError(`halo must be between 0 and ${MAX_TERRAIN_TILE_HALO}`);
   }
   return {
     tileX,
@@ -30,6 +37,7 @@ function normalizeOptions(options: TerrainTileOptions): Required<TerrainTileOpti
     includeNormals: options.includeNormals ?? true,
     includeColors: options.includeColors ?? true,
     includeClimate: options.includeClimate ?? true,
+    halo,
   };
 }
 
@@ -76,6 +84,42 @@ function requireCapacity(array: ArrayLike<number>, length: number, label: string
   if (array.length < length) throw new RangeError(`${label} needs at least ${length} entries`);
 }
 
+/**
+ * Global grid coordinate for a vertex index that may lie outside [0,
+ * resolution) — the halo band. Out-of-range indices map to the neighbouring
+ * tile's interior index and reuse terrainTileVertexCoordinate's exact-edge
+ * arithmetic, so a halo sample is bit-identical to the height the adjacent
+ * tile computes for the same world vertex. That is what makes grid normals
+ * agree across tile seams exactly.
+ */
+function extendedVertexCoordinate(
+  tileIndex: number,
+  tileSize: number,
+  vertexIndex: number,
+  resolution: number,
+): number {
+  if (vertexIndex >= 0 && vertexIndex < resolution) {
+    return terrainTileVertexCoordinate(tileIndex, tileSize, vertexIndex, resolution);
+  }
+  const cells = resolution - 1;
+  const tileShift = Math.floor(vertexIndex / cells);
+  return terrainTileVertexCoordinate(
+    tileIndex + tileShift,
+    tileSize,
+    vertexIndex - tileShift * cells,
+    resolution,
+  );
+}
+
+/** Reused per-call scratch for the height grid; the worker is single-threaded. */
+let heightScratch = new Float32Array(0);
+
+function scratchGrid(edge: number): Float32Array {
+  const required = edge * edge;
+  if (heightScratch.length < required) heightScratch = new Float32Array(required);
+  return heightScratch;
+}
+
 function makeSampleTarget(): TerrainSample {
   return {
     height: 0,
@@ -94,6 +138,14 @@ function makeSampleTarget(): TerrainSample {
 /**
  * Generate a render-ready tile. Optional caller-owned buffers let a terrain
  * worker recycle memory rather than allocate for every streamed tile.
+ *
+ * 1B-1: normals come from central differences of the tile's own height grid
+ * at the tile's own spacing — band-limited to the mesh that is actually on
+ * screen — and slope for biome/colour classification comes from that same
+ * normal. The analytic 2 m kernel normal is collision-only. One internal
+ * halo ring supplies edge neighbours; its samples reuse the neighbouring
+ * tile's exact vertex arithmetic, so shared-edge normals stay bit-identical
+ * across tiles.
  */
 export function generateTerrainTile(
   world: WorldDefinition,
@@ -101,12 +153,18 @@ export function generateTerrainTile(
   buffers: TerrainTileBuffers = { heights: new Float32Array(0) },
 ): TerrainTileData {
   const normalized = normalizeOptions(options);
-  const { tileX, tileZ, size, resolution, includeNormals, includeColors, includeClimate } =
+  const { tileX, tileZ, size, resolution, includeNormals, includeColors, includeClimate, halo } =
     normalized;
   const vertexCount = resolution * resolution;
+  const heightEdge = storedEdge(resolution, halo);
+  const heightCount = heightEdge * heightEdge;
+  // Central differencing needs one ring beyond every height the output
+  // stores, whether that output is core-only or carries its own halo band.
+  const scratchHalo = includeNormals ? halo + 1 : halo;
+  const scratchEdge = resolution + 2 * scratchHalo;
 
   const heights =
-    buffers.heights.length >= vertexCount ? buffers.heights : new Float32Array(vertexCount);
+    buffers.heights.length >= heightCount ? buffers.heights : new Float32Array(heightCount);
   const normals = includeNormals
     ? (buffers.normals?.length ?? 0) >= vertexCount * 3
       ? buffers.normals!
@@ -130,7 +188,7 @@ export function generateTerrainTile(
 
   // Defensive checks also make mistakes clear if this function is later changed
   // to accept fixed-capacity transferable views.
-  requireCapacity(heights, vertexCount, "heights");
+  requireCapacity(heights, heightCount, "heights");
   if (includeNormals) requireCapacity(normals, vertexCount * 3, "normals");
   if (includeColors) requireCapacity(colors, vertexCount * 3, "colors");
   if (includeClimate) {
@@ -138,37 +196,73 @@ export function generateTerrainTile(
     requireCapacity(biomes, vertexCount, "biomes");
   }
 
+  const scratch = scratchGrid(scratchEdge);
+  for (let row = -scratchHalo; row < resolution + scratchHalo; row += 1) {
+    const z = extendedVertexCoordinate(tileZ, size, row, resolution);
+    const scratchRow = (row + scratchHalo) * scratchEdge + scratchHalo;
+    for (let column = -scratchHalo; column < resolution + scratchHalo; column += 1) {
+      const x = extendedVertexCoordinate(tileX, size, column, resolution);
+      scratch[scratchRow + column] = sampleTerrainHeight(world, x, z);
+    }
+  }
+
+  // The stored heights output: the core plus the requested halo band.
   let minHeight = Number.POSITIVE_INFINITY;
   let maxHeight = Number.NEGATIVE_INFINITY;
-  const needsFullSample = includeNormals || includeColors || includeClimate;
-  const sampleTarget = makeSampleTarget();
-
-  for (let row = 0; row < resolution; row += 1) {
-    const z = terrainTileVertexCoordinate(tileZ, size, row, resolution);
-    for (let column = 0; column < resolution; column += 1) {
-      const x = terrainTileVertexCoordinate(tileX, size, column, resolution);
-      const vertexIndex = row * resolution + column;
-      const sample = needsFullSample ? sampleTerrain(world, x, z, sampleTarget) : null;
-      const height = sample?.height ?? sampleTerrainHeight(world, x, z);
-      heights[vertexIndex] = height;
-      minHeight = Math.min(minHeight, height);
-      maxHeight = Math.max(maxHeight, height);
-
-      if (includeNormals && sample) {
-        const normalOffset = vertexIndex * 3;
-        normals[normalOffset] = sample.normal.x;
-        normals[normalOffset + 1] = sample.normal.y;
-        normals[normalOffset + 2] = sample.normal.z;
+  for (let row = -halo; row < resolution + halo; row += 1) {
+    const scratchRow = (row + scratchHalo) * scratchEdge + scratchHalo;
+    for (let column = -halo; column < resolution + halo; column += 1) {
+      const height = scratch[scratchRow + column]!;
+      heights[coreToStoredIndex(row, column, resolution, halo)] = height;
+      // Mesh bounds describe the renderable core, not the halo band.
+      if (row >= 0 && row < resolution && column >= 0 && column < resolution) {
+        minHeight = Math.min(minHeight, height);
+        maxHeight = Math.max(maxHeight, height);
       }
-      if (includeColors && sample) {
-        const colorOffset = vertexIndex * 3;
-        colors[colorOffset] = Math.round(sample.color.r * 255);
-        colors[colorOffset + 1] = Math.round(sample.color.g * 255);
-        colors[colorOffset + 2] = Math.round(sample.color.b * 255);
-      }
-      if (includeClimate && sample) {
-        moisture[vertexIndex] = Math.round(sample.moisture * 255);
-        biomes[vertexIndex] = sample.biome;
+    }
+  }
+
+  const spacing = size / (resolution - 1);
+  const needsSurface = includeColors || includeClimate;
+  const sampleTarget = needsSurface ? makeSampleTarget() : null;
+  if (includeNormals || needsSurface) {
+    const inverseDoubleSpacing = 1 / (2 * spacing);
+    for (let row = 0; row < resolution; row += 1) {
+      const z = terrainTileVertexCoordinate(tileZ, size, row, resolution);
+      const scratchRow = (row + scratchHalo) * scratchEdge + scratchHalo;
+      for (let column = 0; column < resolution; column += 1) {
+        const vertexIndex = row * resolution + column;
+        let normalY = 1;
+        if (includeNormals) {
+          const left = scratch[scratchRow + column - 1]!;
+          const right = scratch[scratchRow + column + 1]!;
+          const back = scratch[scratchRow + column - scratchEdge]!;
+          const front = scratch[scratchRow + column + scratchEdge]!;
+          const gradientX = (right - left) * inverseDoubleSpacing;
+          const gradientZ = (front - back) * inverseDoubleSpacing;
+          const inverseLength = 1 / Math.hypot(gradientX, 1, gradientZ);
+          const normalOffset = vertexIndex * 3;
+          normals[normalOffset] = -gradientX * inverseLength;
+          normals[normalOffset + 1] = inverseLength;
+          normals[normalOffset + 2] = -gradientZ * inverseLength;
+          normalY = inverseLength;
+        }
+        if (needsSurface && sampleTarget) {
+          const x = terrainTileVertexCoordinate(tileX, size, column, resolution);
+          const height = scratch[scratchRow + column]!;
+          const slope = Math.min(1, Math.max(0, 1 - normalY));
+          sampleTerrainSurface(world, x, z, height, slope, sampleTarget);
+          if (includeColors) {
+            const colorOffset = vertexIndex * 3;
+            colors[colorOffset] = Math.round(sampleTarget.color.r * 255);
+            colors[colorOffset + 1] = Math.round(sampleTarget.color.g * 255);
+            colors[colorOffset + 2] = Math.round(sampleTarget.color.b * 255);
+          }
+          if (includeClimate) {
+            moisture[vertexIndex] = Math.round(sampleTarget.moisture * 255);
+            biomes[vertexIndex] = sampleTarget.biome;
+          }
+        }
       }
     }
   }
@@ -180,7 +274,7 @@ export function generateTerrainTile(
     originZ: tileZ * size,
     size,
     resolution,
-    spacing: size / (resolution - 1),
+    spacing,
     heights,
     normals,
     colors,
