@@ -133,6 +133,8 @@ export interface RenderDiagnostics {
   renderPixels: number;
   topPassesByCpuMs: readonly PassCpuTiming[];
   pendingTerrainPages: number;
+  /** Terrain generation workers currently busy (1B-4). */
+  terrainWorkersBusy: number;
   estimatedGpuMemoryMiB: number;
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;

@@ -709,6 +709,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       pendingTerrainPages: terrain.pendingPages,
+      terrainWorkersBusy: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
         cssHeight: Math.max(1, this.domElement.clientHeight),

@@ -54,6 +54,8 @@ export interface TerrainClipmapPageGenerator {
   ): number;
   cancel(requestId: number): void;
   dispose(): void;
+  /** Workers currently generating (1B-4); absent for synchronous fakes. */
+  readonly busyWorkerCount?: number;
 }
 
 export interface TerrainClipmapSystemOptions {
@@ -95,6 +97,8 @@ export interface TerrainClipmapStatistics {
   readonly residentPages: number;
   readonly pendingPages: number;
   readonly triangles: number;
+  /** Generation workers currently busy (1B-4); 0 for synchronous fakes. */
+  readonly workersBusy: number;
 }
 
 const RING_RADIUS = 2;
@@ -331,6 +335,7 @@ export class TerrainClipmapSystem {
       residentPages: this.pages.size,
       pendingPages: this.pending.size,
       triangles,
+      workersBusy: this.generator.busyWorkerCount ?? 0,
     };
   }
 
