@@ -67,18 +67,32 @@ describe("WebGPU paged world-detail generation", () => {
     expect(new Set(forest.trees.map((tree) => tree.species)).size).toBeGreaterThanOrEqual(3);
   });
 
-  it("never places terrestrial detail on water or runway biomes", () => {
-    for (const biome of [TerrainBiome.WATER, TerrainBiome.RUNWAY] as const) {
-      const cell = generateDetailCell({
-        worldSeed: "excluded-biome",
-        cellX: 0,
-        cellZ: 0,
-        terrainSample: constantTerrain(biome, 0.7, 0),
-      });
-      expect(cell.trees).toEqual([]);
-      expect(cell.shrubs).toEqual([]);
-      expect(cell.rocks).toEqual([]);
-    }
+  it("never places terrestrial detail on water or runway ground", () => {
+    // The density field is continuous, never a biome switch (1B-7): water is
+    // ground at or below sea level, and the runway sits inside the graded
+    // apron's full airport influence. Rocks still key off the biome id.
+    const water = generateDetailCell({
+      worldSeed: "excluded-biome",
+      cellX: 0,
+      cellZ: 0,
+      terrainSample: constantTerrain(TerrainBiome.WATER, 0.7, 0),
+      seaLevelMeters: 130,
+    });
+    expect(water.trees).toEqual([]);
+    expect(water.shrubs).toEqual([]);
+    expect(water.rocks).toEqual([]);
+    const runway = generateDetailCell({
+      worldSeed: "excluded-biome",
+      cellX: 0,
+      cellZ: 0,
+      terrainSample: (x, z) => ({
+        ...constantTerrain(TerrainBiome.RUNWAY, 0.7, 0)(x, z),
+        airportInfluence: 1,
+      }),
+    });
+    expect(runway.trees).toEqual([]);
+    expect(runway.shrubs).toEqual([]);
+    expect(runway.rocks).toEqual([]);
   });
 
   it("keeps placements finite, bounded to their owning cell, and wind-ready", () => {
@@ -140,7 +154,10 @@ describe("WebGPU paged world-detail generation", () => {
       for (let second = first + 1; second < nearBoundary.length; second += 1) {
         const a = nearBoundary[first]!;
         const b = nearBoundary[second]!;
-        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(3.49);
+        // 1B-9's thinning floor is 2 m (half a crown, clamped) — closed
+        // canopies overlap; the guarantee is no coincident pairs across the
+        // page edge, not park-like spacing.
+        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(1.99);
       }
     }
   });

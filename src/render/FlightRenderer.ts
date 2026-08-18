@@ -411,6 +411,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: options.terrainSample,
+        seaLevelMeters: options.world.seaLevel,
       });
       cleanup.push(() => detail.dispose());
       const wildlife = new WildlifeSystem(scene, {

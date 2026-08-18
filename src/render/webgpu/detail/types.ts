@@ -26,6 +26,11 @@ export interface DetailTerrainSample {
    * carries it, so the live sampler provides it for free.
    */
   readonly airportInfluence?: number;
+  /**
+   * Surface normal for the density field's aspect term (1B-7). Optional; the
+   * world-layer TerrainSample carries it. Omitted reads as flat ground.
+   */
+  readonly normal?: { readonly x: number; readonly y: number; readonly z: number };
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;
@@ -37,6 +42,10 @@ export interface DetailCellGenerationOptions {
   readonly terrainSample: DetailTerrainSampler;
   readonly cellSizeMeters?: number;
   readonly densityMultiplier?: number;
+  /** Sea level in metres; anchors the density field's shoreline and treeline (1B-7). */
+  readonly seaLevelMeters?: number;
+  /** Environment clock day (§1.6), threaded to the density field. Default 0. */
+  readonly dayOfYear?: number;
 }
 
 export interface DetailTreePlacement {

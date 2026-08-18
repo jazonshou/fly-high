@@ -100,6 +100,8 @@ export interface WorldDetailRuntimeOptions {
   readonly worldSeed: string | number;
   readonly terrainSample: DetailTerrainSampler;
   readonly cellSizeMeters?: number;
+  /** Sea level anchoring the density field's shoreline/treeline (1B-7). */
+  readonly seaLevelMeters?: number;
 }
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
@@ -332,6 +334,7 @@ export class WorldDetailRuntime {
         cellSizeMeters: this.cellSizeMeters,
         densityMultiplier: profile.vegetationDensity,
         terrainSample: this.options.terrainSample,
+        seaLevelMeters: this.options.seaLevelMeters ?? 0,
       });
       this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
       this.cumulativeGeneratedCells += 1;
@@ -456,7 +459,15 @@ export class WorldDetailRuntime {
       if (!grouped.has(chunkKey)) this.disposePresentationChunk(chunk);
     }
 
-    const midTreeRetention = clamp(0.2 + profile.vegetationDensity * 0.42, 0.2, 0.66);
+    // Rendered-share thinning (1B-9 interim): the density field and its
+    // acceptance tests carry the ECOLOGICAL stem density (300–800/ha closed
+    // forest); per-stem cone/sphere meshes cannot draw that — measured 39 M
+    // triangles and a sub-10 fps frame at the perf-capture viewpoints. Until
+    // Phase 2's impostors and grass (2-16/2-17) raise the renderable share,
+    // each cell renders a deterministic selection-keyed subset budgeted in
+    // stems/ha and falling off with distance. Selection is a stable per-stem
+    // uniform, so shares nest: raising the budget only ever ADDS stems.
+    const nearTreeBudgetPerHa = 40 + profile.vegetationDensity * 30;
     const totals: MutableDetailChunkStatistics = {
       nearCells: 0,
       midCells: 0,
@@ -496,7 +507,7 @@ export class WorldDetailRuntime {
           chunk,
           group.residents,
           floatingOrigin,
-          midTreeRetention,
+          nearTreeBudgetPerHa,
         );
         chunk.signature = signature;
       }
@@ -525,7 +536,7 @@ export class WorldDetailRuntime {
     chunk: DetailPresentationChunk,
     residents: readonly ResidentCell[],
     floatingOrigin: DetailFloatingOrigin,
-    midTreeRetention: number,
+    nearTreeBudgetPerHa: number,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -541,7 +552,23 @@ export class WorldDetailRuntime {
       if (resident.lod === "near") statistics.nearCells += 1;
       else statistics.midCells += 1;
 
+      const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
+      const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
+      const distanceFalloff = Math.min(
+        1,
+        (1_000 / Math.max(resident.distance, 1_000)) ** 2,
+      );
+      const treeBudgetPerHa = nearTreeBudgetPerHa
+        * (resident.lod === "near" ? 1 : Math.max(distanceFalloff, 0.04));
+      const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
+      const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
+      const shrubShare = Math.min(
+        1,
+        (resident.lod === "near" ? 60 : 6) / Math.max(shrubsPerHa, 1e-6),
+      );
+
       for (const tree of resident.cell.trees) {
+        if (tree.selection > treeShare) continue;
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
@@ -577,7 +604,7 @@ export class WorldDetailRuntime {
             wind,
           );
           statistics.treeInstances += 1;
-        } else if (tree.selection <= midTreeRetention) {
+        } else {
           this.appendInstance(
             this.getBatch(`tree-${tree.species}-mid`, chunk, nextBatchKeys),
             localX,
@@ -595,7 +622,7 @@ export class WorldDetailRuntime {
       }
 
       for (const shrub of resident.cell.shrubs) {
-        if (resident.lod === "mid" && shrub.selection > 0.2) continue;
+        if (shrub.selection > shrubShare) continue;
         this.appendInstance(
           this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys),
           shrub.x - floatingOrigin.x,

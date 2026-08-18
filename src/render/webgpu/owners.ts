@@ -136,7 +136,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
     consumers: ["vegetation", "terrain-material"],
     ownedSymbols: ["densityField"],
-    plannedBy: "1B-7",
     notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
   },
   {
@@ -216,7 +215,6 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
   {
     artifact: "vegetation-density-field",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
-    plannedBy: "1B-7",
   },
   {
     artifact: "vegetation-appearance-field",
