@@ -342,6 +342,40 @@ describe("the physical sky (1C-5)", () => {
   });
 });
 
+describe("the placeholder night (1C-10)", () => {
+  it("keeps midnight inside the exposure clamp with the sun below the horizon", () => {
+    const midnight = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 0 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    expect(midnight.sun.direction[1]).toBeLessThan(0);
+    const binding = resolveAerialPerspectiveBinding(
+      midnight,
+      120,
+      [0.9, 0.4, 0.25],
+      [0.08, 0.075, 0.14],
+      0,
+    );
+    // The daylight gate takes the haze ambient to zero and the sun term is
+    // dark: the sky integral goes near-black without producing NaNs.
+    const zenith = evaluateSkyRadiance(binding, [0, 1, 0]);
+    for (const value of zenith) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeLessThan(0.02);
+      expect(value).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("carries the placeholder star dome and moon disc, gated to night", () => {
+    // Deliberately minimal (the phase's designated cut item): Phase 7
+    // replaces these with ephemeris positioning and the Yale catalogue.
+    expect(SKY_FRAGMENT_WGSL).toContain("let night = clamp(-uniforms.aerialSunDirection.y");
+    expect(SKY_FRAGMENT_WGSL).toContain("starMask");
+    expect(SKY_FRAGMENT_WGSL).toContain("moonDisc");
+  });
+});
+
 describe("the include's WGSL surface (1C-4)", () => {
   it("declares exactly the uniforms the binding fans out", () => {
     for (const name of AERIAL_PERSPECTIVE_UNIFORMS) {

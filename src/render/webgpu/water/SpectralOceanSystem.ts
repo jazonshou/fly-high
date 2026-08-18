@@ -264,7 +264,7 @@ export function resolveProfileSpectralOceanConfig(
   });
 }
 
-const WATER_VERTEX_WGSL = /* wgsl */ `
+export const WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
 attribute uv: vec2f;
 uniform world: mat4x4f;
@@ -298,7 +298,11 @@ fn main(input: VertexInputs) -> FragmentInputs {
   if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler); }
   if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler); }
   if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler); }
-  let displaced = vec4f(vertexInputs.position + displacement, 1.0);
+  var displaced = vec4f(vertexInputs.position + displacement, 1.0);
+  // 1C-7: drop the surface with the Earth's curvature (camera-centred local
+  // frame, R = 6371 km). Without this the flat disk's vanishing line sits at
+  // eye level and the sea reads as a plate instead of a horizon.
+  displaced.y -= dot(vertexInputs.position.xz, vertexInputs.position.xz) / (2.0 * 6371000.0);
   let world = uniforms.world * displaced;
   vertexOutputs.position = uniforms.viewProjection * world;
   vertexOutputs.worldPosition = world.xyz;

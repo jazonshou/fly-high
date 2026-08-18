@@ -77,6 +77,26 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     color += uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance
       * (disc * SUN_DISC_RADIANCE);
   }
+  // 1C-10: placeholder night — deliberately minimal, the phase's designated
+  // cut item. Phase 7 replaces this outright with ephemeris moon position,
+  // phase, moonlight as a second light, and the Yale Bright Star catalogue.
+  let night = clamp(-uniforms.aerialSunDirection.y * 6.0, 0.0, 1.0);
+  if (night > 0.0) {
+    let cell = floor(view * 160.0);
+    let starHash = fract(sin(dot(cell, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
+    let starMask = step(0.9985, starHash);
+    let twinkle = 0.55 + 0.45 * fract(starHash * 91.17);
+    color += vec3f(0.85, 0.9, 1.0)
+      * (starMask * twinkle * 0.5 * night * max(view.y + 0.1, 0.0));
+    let moonDirection = normalize(-uniforms.aerialSunDirection);
+    let moonMu = clamp(dot(view, moonDirection), -1.0, 1.0);
+    let moonTheta = sqrt(max(2.0 * (1.0 - moonMu), 0.0));
+    let moonRadius = moonTheta / 0.0045;
+    if (moonRadius < 1.1) {
+      let moonDisc = smoothstep(1.05, 0.95, moonRadius);
+      color += vec3f(0.52, 0.56, 0.62) * (moonDisc * 0.35 * night);
+    }
+  }
   // 1C-2: the sky writes linear HDR; the one exposure curve lives on the
   // image-processing chain. No shader multiplies its own exposure again.
   fragmentOutputs.color = vec4f(max(color, vec3f(0.0)), 1.0);
