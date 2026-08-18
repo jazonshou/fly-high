@@ -5,20 +5,30 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
-import type {
-  TimeOfDayPreset,
-  WeatherPreset,
-} from "@/src/game/types";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  type EnvironmentState,
+} from "@/src/render/webgpu/nature/EnvironmentState";
+import { exposureForState } from "@/src/render/webgpu/nature/EnvironmentDirector";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "./AerialPerspective";
 
 const SKY_SHADER_NAME = "aerolithPhysicalSky";
+
+/** The clear-noon palette peak; sunIlluminanceNormalized is relative to it. */
+const PEAK_SUN_INTENSITY = 5.2;
 
 const SKY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -36,42 +46,59 @@ fn main(input: VertexInputs) -> FragmentInputs {
 }
 `;
 
-const SKY_FRAGMENT_WGSL = /* wgsl */ `
+export const SKY_FRAGMENT_WGSL = /* wgsl */ `
 varying direction: vec3f;
-uniform sunDirection: vec3f;
-uniform sunColor: vec3f;
-uniform zenithColor: vec3f;
-uniform horizonColor: vec3f;
-uniform groundColor: vec3f;
-uniform turbidity: f32;
-uniform exposure: f32;
+${AERIAL_PERSPECTIVE_WGSL}
 
-const PI: f32 = 3.14159265359;
-
-fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 0.001), 1.5));
-}
+// The sun's true angular radius — must equal EnvironmentState's
+// sun.angularRadiusRadians; the agreement is pinned by test.
+const SUN_ANGULAR_RADIUS: f32 = 0.004675;
+const SUN_LIMB_DARKENING: f32 = 0.6;
+const SUN_DISC_RADIANCE: f32 = 40.0;
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let view = normalize(input.direction);
-  let up = clamp(view.y, -1.0, 1.0);
-  let horizon = pow(1.0 - max(up, 0.0), 3.2);
-  let airMass = 1.0 / max(0.09, up + 0.16);
-  let mu = clamp(dot(view, normalize(uniforms.sunDirection)), -1.0, 1.0);
-  let rayleighPhase = 3.0 * (1.0 + mu * mu) / (16.0 * PI);
-  let miePhase = henyeyGreenstein(mu, 0.78);
-  let rayleighTint = vec3f(0.24, 0.52, 1.0) * rayleighPhase * (0.26 + 0.55 / airMass);
-  let mieTint = uniforms.sunColor * miePhase * (0.014 + uniforms.turbidity * 0.014);
-  var color = mix(uniforms.zenithColor, uniforms.horizonColor, horizon);
-  color += rayleighTint * (0.18 + 0.26 * (1.0 - uniforms.turbidity));
-  color += mieTint;
-  let sunDisc = smoothstep(0.99982, 0.99994, mu);
-  let sunHalo = pow(max(mu, 0.0), 512.0) * 0.32;
-  color += uniforms.sunColor * (sunDisc * 18.0 + sunHalo);
-  color = select(uniforms.groundColor, color, up >= -0.015);
-  color *= uniforms.exposure;
+  // 1C-5: the sky IS the shared aerial-perspective integral run to the top
+  // of the atmosphere — terrain haze and sky agree by construction, not by
+  // tuning, and the below-horizon clamp shows the haze limit instead of a
+  // painted ground colour.
+  var color = skyRadiance(view);
+  // The real sun: true angular size, limb-darkened, reddened by the same
+  // transmittance the haze uses — it sets red because the air says so.
+  let mu = clamp(dot(view, normalize(uniforms.aerialSunDirection)), -1.0, 1.0);
+  // Small-angle chord: acos(mu) loses f32 precision exactly where the disc is.
+  let theta = sqrt(max(2.0 * (1.0 - mu), 0.0));
+  let radius = theta / SUN_ANGULAR_RADIUS;
+  if (radius < 1.1) {
+    let limb = 1.0 - SUN_LIMB_DARKENING
+      * (1.0 - sqrt(max(1.0 - radius * radius, 0.0)));
+    let disc = smoothstep(1.1, 0.98, radius) * max(limb, 0.0);
+    color += uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance
+      * (disc * SUN_DISC_RADIANCE);
+  }
+  // 1C-10: placeholder night — deliberately minimal, the phase's designated
+  // cut item. Phase 7 replaces this outright with ephemeris moon position,
+  // phase, moonlight as a second light, and the Yale Bright Star catalogue.
+  let night = clamp(-uniforms.aerialSunDirection.y * 6.0, 0.0, 1.0);
+  if (night > 0.0) {
+    let cell = floor(view * 160.0);
+    let starHash = fract(sin(dot(cell, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
+    let starMask = step(0.9985, starHash);
+    let twinkle = 0.55 + 0.45 * fract(starHash * 91.17);
+    color += vec3f(0.85, 0.9, 1.0)
+      * (starMask * twinkle * 0.5 * night * max(view.y + 0.1, 0.0));
+    let moonDirection = normalize(-uniforms.aerialSunDirection);
+    let moonMu = clamp(dot(view, moonDirection), -1.0, 1.0);
+    let moonTheta = sqrt(max(2.0 * (1.0 - moonMu), 0.0));
+    let moonRadius = moonTheta / 0.0045;
+    if (moonRadius < 1.1) {
+      let moonDisc = smoothstep(1.05, 0.95, moonRadius);
+      color += vec3f(0.52, 0.56, 0.62) * (moonDisc * 0.35 * night);
+    }
+  }
+  // 1C-2: the sky writes linear HDR; the one exposure curve lives on the
+  // image-processing chain. No shader multiplies its own exposure again.
   fragmentOutputs.color = vec4f(max(color, vec3f(0.0)), 1.0);
 }
 `;
@@ -125,48 +152,89 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
   }
 }
 
-interface AtmospherePreset {
-  readonly sunDirection: Vector3;
+interface AtmospherePalette {
   readonly sunColor: Color3;
   readonly zenith: Color3;
   readonly horizon: Color3;
   readonly ground: Color3;
   readonly intensity: number;
-  readonly exposure: number;
 }
 
-function presetFor(time: TimeOfDayPreset): AtmospherePreset {
-  if (time === "dawn") {
-    return {
-      sunDirection: new Vector3(-0.66, 0.13, 0.74).normalize(),
-      sunColor: new Color3(1, 0.48, 0.22),
-      zenith: new Color3(0.055, 0.13, 0.32),
-      horizon: new Color3(0.94, 0.30, 0.13),
-      ground: new Color3(0.055, 0.065, 0.09),
-      intensity: 3.1,
-      exposure: 0.82,
-    };
-  }
-  if (time === "golden") {
-    return {
-      sunDirection: new Vector3(0.72, 0.29, 0.63).normalize(),
-      sunColor: new Color3(1, 0.66, 0.33),
-      zenith: new Color3(0.10, 0.27, 0.56),
-      horizon: new Color3(0.91, 0.44, 0.19),
-      ground: new Color3(0.08, 0.07, 0.07),
-      intensity: 4.1,
-      exposure: 0.94,
-    };
-  }
-  return {
-    sunDirection: new Vector3(-0.36, 0.82, 0.44).normalize(),
+/**
+ * The look anchors, continuous in sun elevation (1C-1). The three deleted
+ * presets survive as anchor rows at the elevations their hand-tuned sun
+ * vectors actually had (dawn ≈ 7.5°, golden ≈ 17°, day ≈ 55°), plus a dim
+ * pre-1C-10 floor below the horizon, so scrubbing the clock moves through
+ * the same art direction the presets carried — with every angle in between.
+ */
+const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees: number })[] = [
+  {
+    elevationDegrees: -12,
+    sunColor: new Color3(0.9, 0.4, 0.25),
+    zenith: new Color3(0.012, 0.03, 0.085),
+    horizon: new Color3(0.08, 0.075, 0.14),
+    ground: new Color3(0.02, 0.024, 0.035),
+    intensity: 0.0,
+  },
+  {
+    elevationDegrees: 0,
+    sunColor: new Color3(1, 0.42, 0.18),
+    zenith: new Color3(0.03, 0.08, 0.22),
+    horizon: new Color3(0.7, 0.24, 0.12),
+    ground: new Color3(0.04, 0.05, 0.07),
+    intensity: 1.1,
+  },
+  {
+    elevationDegrees: 7.5,
+    sunColor: new Color3(1, 0.48, 0.22),
+    zenith: new Color3(0.055, 0.13, 0.32),
+    horizon: new Color3(0.94, 0.3, 0.13),
+    ground: new Color3(0.055, 0.065, 0.09),
+    intensity: 3.1,
+  },
+  {
+    elevationDegrees: 17,
+    sunColor: new Color3(1, 0.66, 0.33),
+    zenith: new Color3(0.1, 0.27, 0.56),
+    horizon: new Color3(0.91, 0.44, 0.19),
+    ground: new Color3(0.08, 0.07, 0.07),
+    intensity: 4.1,
+  },
+  {
+    elevationDegrees: 55,
     sunColor: new Color3(1, 0.96, 0.88),
-    zenith: new Color3(0.10, 0.36, 0.78),
+    zenith: new Color3(0.1, 0.36, 0.78),
     horizon: new Color3(0.58, 0.77, 0.96),
     ground: new Color3(0.11, 0.15, 0.18),
     intensity: 5.2,
-    exposure: 1.02,
-  };
+  },
+];
+
+function lerpColor(a: Color3, b: Color3, t: number): Color3 {
+  return Color3.Lerp(a, b, t);
+}
+
+function paletteForElevation(elevationDegrees: number): AtmospherePalette {
+  const anchors = PALETTE_ANCHORS;
+  if (elevationDegrees <= anchors[0]!.elevationDegrees) return anchors[0]!;
+  const last = anchors[anchors.length - 1]!;
+  if (elevationDegrees >= last.elevationDegrees) return last;
+  for (let index = 1; index < anchors.length; index += 1) {
+    const upper = anchors[index]!;
+    if (elevationDegrees > upper.elevationDegrees) continue;
+    const lower = anchors[index - 1]!;
+    const t =
+      (elevationDegrees - lower.elevationDegrees)
+      / (upper.elevationDegrees - lower.elevationDegrees);
+    return {
+      sunColor: lerpColor(lower.sunColor, upper.sunColor, t),
+      zenith: lerpColor(lower.zenith, upper.zenith, t),
+      horizon: lerpColor(lower.horizon, upper.horizon, t),
+      ground: lerpColor(lower.ground, upper.ground, t),
+      intensity: lower.intensity + (upper.intensity - lower.intensity) * t,
+    };
+  }
+  return last;
 }
 
 export interface AtmosphereSnapshot {
@@ -176,7 +244,12 @@ export interface AtmosphereSnapshot {
   readonly skyZenith: Color3;
   readonly skyHorizon: Color3;
   readonly ambientColor: Color3;
-  readonly exposure: number;
+  /**
+   * sunIntensity over the clear-noon peak (1C-2): the named replacement for
+   * the /5.2 normalisers that lived in three shaders. Multiply sunColor by
+   * this; never re-derive the constant.
+   */
+  readonly sunIlluminanceNormalized: number;
   readonly cloudCoverage: number;
   readonly humidity: number;
   readonly windSpeed: number;
@@ -207,22 +280,17 @@ export class AtmosphereSystem {
     this.sky.infiniteDistance = true;
     this.sky.isPickable = false;
     this.sky.applyFog = false;
+    // 1C-4: Babylon's fog is permanently off. The aerial-perspective include
+    // is the only atmospheric term; FOGMODE_NONE is asserted at startup so
+    // fog and haze can never double-apply through #include<fogFragment>.
+    scene.fogMode = Scene.FOGMODE_NONE;
     this.skyMaterial = new ShaderMaterial(
       "physical-atmosphere-material",
       scene,
       SKY_SHADER_NAME,
       {
         attributes: ["position"],
-        uniforms: [
-          "worldViewProjection",
-          "sunDirection",
-          "sunColor",
-          "zenithColor",
-          "horizonColor",
-          "groundColor",
-          "turbidity",
-          "exposure",
-        ],
+        uniforms: ["worldViewProjection", ...AERIAL_PERSPECTIVE_UNIFORMS],
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
@@ -235,7 +303,7 @@ export class AtmosphereSystem {
     this.sun.intensity = 5.2;
     this.sun.autoCalcShadowZBounds = false;
     this.ambient = new HemisphericLight("sky-ambient", Vector3.Up(), scene);
-    this.ambient.intensity = 0.58;
+    this.ambient.intensity = 0.05;
     this.ambient.groundColor = new Color3(0.08, 0.09, 0.07);
 
     // 1A-5: depth-only RTT. `usefulFloatFirst` false — with only depth bound
@@ -260,15 +328,15 @@ export class AtmosphereSystem {
     this.shadows.filter = ShadowGenerator.FILTER_PCF;
     this.shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 
-    const initial = presetFor("day");
+    const initialPalette = paletteForElevation(46);
     this.snapshotValue = {
-      sunDirection: initial.sunDirection,
-      sunColor: initial.sunColor,
-      sunIntensity: initial.intensity,
-      skyZenith: initial.zenith,
-      skyHorizon: initial.horizon,
-      ambientColor: initial.zenith.scale(0.58),
-      exposure: initial.exposure,
+      sunDirection: new Vector3(0.35, 0.72, 0.6).normalize(),
+      sunColor: initialPalette.sunColor,
+      sunIntensity: initialPalette.intensity,
+      skyZenith: initialPalette.zenith,
+      skyHorizon: initialPalette.horizon,
+      ambientColor: initialPalette.zenith.scale(0.58),
+      sunIlluminanceNormalized: initialPalette.intensity / PEAK_SUN_INTENSITY,
       cloudCoverage: 0.18,
       humidity: 0.5,
       windSpeed: 8,
@@ -277,60 +345,92 @@ export class AtmosphereSystem {
         Math.cos(windDirectionRadians),
       ).normalize(),
     };
-    this.setPreset("day", "clear");
+    this.applyEnvironment(DEFAULT_ENVIRONMENT_STATE);
   }
 
   get snapshot(): AtmosphereSnapshot {
     return this.snapshotValue;
   }
 
+  /** The sky dome, exposed so the environment probe (1C-6) can render it. */
+  get skyMesh(): Mesh {
+    return this.sky;
+  }
+
+  /**
+   * Per-frame haze binding (1C-4/1C-5). The sky material consumes the same
+   * shared uniforms every other receiver does — one integral, one binding.
+   */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.skyMaterial,
+      binding,
+      (name, x, y, z) => this.skyMaterial.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.skyMaterial.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   addShadowCaster(mesh: Mesh, includeDescendants = true): void {
     this.shadows.addShadowCaster(mesh, includeDescendants);
   }
 
-  setPreset(time: TimeOfDayPreset, weather: WeatherPreset): void {
-    const preset = presetFor(time);
-    const cloudCoverage = weather === "cloudy" ? 0.74 : weather === "breezy" ? 0.38 : 0.16;
-    const humidity = weather === "cloudy" ? 0.86 : weather === "breezy" ? 0.62 : 0.45;
-    const windSpeed = weather === "breezy" ? 17 : weather === "cloudy" ? 10 : 6;
+  /**
+   * Applies one continuous environment instant (1C-1). The sun direction is
+   * the NOAA solar position resolved by the EnvironmentDirector; the look
+   * interpolates the palette anchors by real sun elevation. Weather is read
+   * from the state's continuous fields (coverage dimming, humidity haze) —
+   * 1C-2 owns the single exposure curve, and 1C-4 owns all haze, so this
+   * touches neither fog nor any per-shader exposure.
+   */
+  applyEnvironment(state: EnvironmentState): void {
+    const sunDirection = new Vector3(
+      state.sun.direction[0],
+      state.sun.direction[1],
+      state.sun.direction[2],
+    ).normalize();
+    const elevationDegrees = Math.asin(Math.min(1, Math.max(-1, sunDirection.y))) * 180 / Math.PI;
+    const palette = paletteForElevation(elevationDegrees);
+    const cloudCoverage = state.weather.cloudCoverage;
+    const humidity = state.weather.relativeHumidity;
+    const windSpeed = Math.hypot(
+      state.windLayers[0]?.velocityMetersPerSecond[0] ?? 6,
+      state.windLayers[0]?.velocityMetersPerSecond[1] ?? 0,
+    ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
-    const sunIntensity = preset.intensity * overcastDimming;
-    const ambientIntensity = 0.48 + humidity * 0.22;
+    const sunIntensity = palette.intensity * overcastDimming;
+    // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
+    // day+clear look exactly; every private shader exposure is deleted.
+    this.scene.imageProcessingConfiguration.exposure = exposureForState(state);
+    // 1C-6: IBL now carries the skylight. The hemispheric light survives
+    // only as a small ground-bounce approximation, so skylight is not
+    // double-counted; the snapshot's ambientColor keeps the old scale — it
+    // describes sky-ambient radiance for shaders (clouds), not this light.
+    const ambientIntensity = 0.05;
+    const snapshotAmbientScale = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
-      preset.zenith,
+      palette.zenith,
       new Color3(0.20, 0.24, 0.29),
       cloudCoverage * 0.5,
     );
     const skyHorizon = Color3.Lerp(
-      preset.horizon,
+      palette.horizon,
       new Color3(0.52, 0.56, 0.60),
       humidity * 0.42,
     );
-    const exposure = preset.exposure * overcastDimming;
-    this.sun.direction.copyFrom(preset.sunDirection).scaleInPlace(-1);
-    this.sun.diffuse = preset.sunColor;
+    this.sun.direction.copyFrom(sunDirection).scaleInPlace(-1);
+    this.sun.diffuse = palette.sunColor;
     this.sun.intensity = sunIntensity;
     this.ambient.diffuse = skyZenith;
-    this.ambient.groundColor = preset.ground;
+    this.ambient.groundColor = palette.ground;
     this.ambient.intensity = ambientIntensity;
-    this.scene.fogMode = Scene.FOGMODE_EXP2;
-    this.scene.fogDensity = weather === "cloudy" ? 0.00008 : weather === "breezy" ? 0.000045 : 0.000028;
-    this.scene.fogColor = Color3.Lerp(preset.horizon, new Color3(0.48, 0.52, 0.56), humidity * 0.32);
-    this.skyMaterial.setVector3("sunDirection", preset.sunDirection);
-    this.skyMaterial.setColor3("sunColor", preset.sunColor);
-    this.skyMaterial.setColor3("zenithColor", skyZenith);
-    this.skyMaterial.setColor3("horizonColor", skyHorizon);
-    this.skyMaterial.setColor3("groundColor", preset.ground);
-    this.skyMaterial.setFloat("turbidity", humidity);
-    this.skyMaterial.setFloat("exposure", exposure);
     this.snapshotValue = {
-      sunDirection: preset.sunDirection.clone(),
-      sunColor: preset.sunColor.clone(),
+      sunDirection: sunDirection.clone(),
+      sunColor: palette.sunColor.clone(),
       sunIntensity,
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
-      ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(ambientIntensity),
-      exposure,
+      ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
+      sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
       cloudCoverage,
       humidity,
       windSpeed,

@@ -18,7 +18,24 @@ export interface StartupInvariantInput {
   readonly requestedFeatures: readonly string[];
   /** Features the device actually granted. */
   readonly grantedFeatures: readonly string[];
+  /**
+   * 1C-4: `imageProcessingConfiguration.applyByPostProcess` once the tone-map
+   * post-process exists. The aerial-perspective hook fires after
+   * pbrBlockImageProcessing, which must be a clamp-only pass — haze composed
+   * onto tone-mapped colour is wrong everywhere at once. Omit before the
+   * post-process chain exists.
+   */
+  readonly imageProcessingAppliedByPostProcess?: boolean;
+  /**
+   * 1C-4: `scene.fogMode`, which must be FOGMODE_NONE (0). `fogFragment`
+   * runs immediately before the aerial hook; any other mode double-fogs
+   * every PBR fragment. Omit before the scene exists.
+   */
+  readonly sceneFogMode?: number;
 }
+
+/** Babylon's Scene.FOGMODE_NONE, restated as data so this file stays Class P. */
+export const FOG_MODE_NONE = 0;
 
 /**
  * Returns every violated invariant as a human-readable failure. Empty means
@@ -48,6 +65,23 @@ export function collectStartupInvariantFailures(
         + "before device creation no longer hold",
       );
     }
+  }
+
+  if (
+    input.imageProcessingAppliedByPostProcess !== undefined
+    && !input.imageProcessingAppliedByPostProcess
+  ) {
+    failures.push(
+      "Image processing is not applied by post-process; the aerial-perspective hook "
+      + "would compose haze onto tone-mapped colour instead of linear HDR",
+    );
+  }
+
+  if (input.sceneFogMode !== undefined && input.sceneFogMode !== FOG_MODE_NONE) {
+    failures.push(
+      `scene.fogMode is ${input.sceneFogMode} but must be FOGMODE_NONE (${FOG_MODE_NONE}); `
+      + "Babylon fog and the aerial-perspective include would both apply",
+    );
   }
 
   return failures;

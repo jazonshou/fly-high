@@ -85,6 +85,9 @@ describe("Babylon WebGPU aircraft visual", () => {
         onGround: true,
         altitudeAgl: 0,
         velocity: { x: 25, y: 0, z: 0 },
+        // The propeller phase is anchored to simulation time (deterministic
+        // captures); a nonzero instant is what makes it spin.
+        simulationTime: 0.5,
       },
       1 / 60,
     );

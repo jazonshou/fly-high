@@ -5,7 +5,7 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
 import type { CascadedShadowGenerator } from "@babylonjs/core/Lights/Shadows/cascadedShadowGenerator";
-import { Matrix, Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Material } from "@babylonjs/core/Materials/material";
@@ -17,6 +17,12 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import {
   CLOUD_SHADOW_RECEIVER_SAMPLER,
   CLOUD_SHADOW_RECEIVER_UNIFORMS,
@@ -54,7 +60,7 @@ import {
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
-const OCEAN_PRESENTATION_RADIUS_METERS = 120_000;
+const OCEAN_PRESENTATION_RADIUS_METERS = 40_000;
 const COMPUTE_PIPELINE_TIMEOUT_MILLISECONDS = 30_000;
 
 function abortError(message: string): Error {
@@ -148,8 +154,10 @@ export interface OceanPresentationTopology {
 
 /**
  * A camera-centred radial grid spends vertices where wave displacement is
- * visible and lets cells grow smoothly toward the fogged horizon. This avoids
- * wasting a uniform 48 km grid while retaining one crack-free water surface.
+ * visible and lets cells grow smoothly toward the hazed horizon. This avoids
+ * wasting a uniform 80 km grid while retaining one crack-free water surface.
+ * The 40 km presentation radius is reconciled with the 45 km far plane
+ * (1C-4): a disk wider than the far plane is clipped and loses its horizon.
  */
 export function oceanPresentationTopology(
   profile: Pick<WebGpuQualityProfile, "tier">,
@@ -256,7 +264,7 @@ export function resolveProfileSpectralOceanConfig(
   });
 }
 
-const WATER_VERTEX_WGSL = /* wgsl */ `
+export const WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
 attribute uv: vec2f;
 uniform world: mat4x4f;
@@ -290,7 +298,11 @@ fn main(input: VertexInputs) -> FragmentInputs {
   if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler); }
   if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler); }
   if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler); }
-  let displaced = vec4f(vertexInputs.position + displacement, 1.0);
+  var displaced = vec4f(vertexInputs.position + displacement, 1.0);
+  // 1C-7: drop the surface with the Earth's curvature (camera-centred local
+  // frame, R = 6371 km). Without this the flat disk's vanishing line sits at
+  // eye level and the sea reads as a plate instead of a horizon.
+  displaced.y -= dot(vertexInputs.position.xz, vertexInputs.position.xz) / (2.0 * 6371000.0);
   let world = uniforms.world * displaced;
   vertexOutputs.position = uniforms.viewProjection * world;
   vertexOutputs.worldPosition = world.xyz;
@@ -324,6 +336,7 @@ var normalFoam4Sampler: sampler; var normalFoam4: texture_2d<f32>;
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
 ${SUN_SHADOW_FRAGMENT_WGSL}
+${AERIAL_PERSPECTIVE_WGSL}
 
 const PI: f32 = 3.14159265359;
 
@@ -418,6 +431,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   water += sunGlitter;
   let foam = clamp(foamAmount * 1.18, 0.0, 1.0);
   water = mix(water, vec3f(0.69, 0.75, 0.73), foam);
+  // 1C-4: the shared aerial perspective — the ocean fades on the same curve
+  // as terrain, closing the audit's hard tear at every distant coastline.
+  water = applyAerialPerspective(water, input.worldPosition.y, cameraDistance, -view);
   fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), 1.0);
 }
 `;
@@ -858,6 +874,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: [
           ...Array.from({ length: MAX_RENDER_CASCADES }, (_, index) => [
@@ -958,19 +975,29 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     );
   }
 
+  /** Per-frame haze binding, resolved once by the renderer for all consumers. */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.material,
+      binding,
+      (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
       "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIntensity / 5.2),
+      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
     this.material.setVector2(
       "cloudWind",
       atmosphere.windDirection.scale(atmosphere.windSpeed),
     );
-    this.material.setColor3("skyZenith", atmosphere.skyZenith.scale(atmosphere.exposure));
-    this.material.setColor3("skyHorizon", atmosphere.skyHorizon.scale(atmosphere.exposure));
+    this.material.setColor3("skyZenith", atmosphere.skyZenith);
+    this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
   }
 
   /**

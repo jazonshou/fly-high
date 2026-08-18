@@ -1055,9 +1055,10 @@ export class WorldDetailRuntime {
     material.albedoColor = albedo;
     material.metallic = 0;
     material.roughness = roughness;
-    material.environmentIntensity = 0.7;
+    // 1C-6: full-strength now that scene.environmentTexture exists.
+    material.environmentIntensity = 1;
     material.directIntensity = 1.05;
-    material.specularIntensity = 0.25;
+    material.specularIntensity = 1;
     if (windDeformation) {
       const plugin = new DetailWindMaterialPlugin(material);
       plugin.setTimeSeconds(this.windTimeSeconds);

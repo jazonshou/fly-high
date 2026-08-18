@@ -14,9 +14,16 @@ import type {
   FlightVisualState,
   QualityLevel,
   RenderDiagnostics,
-  TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
+import { resolveEnvironmentState } from "./webgpu/nature/EnvironmentDirector";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  type EnvironmentState,
+} from "./webgpu/nature/EnvironmentState";
+import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
@@ -45,6 +52,7 @@ import {
 } from "./webgpu/core/AdaptiveGovernor";
 import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
 import {
+  CAMERA_FAR_PLANE_METERS,
   frameTimingPercentile95,
   freshFrameTiming,
   isUsableFrameTiming,
@@ -158,12 +166,18 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
 }
 
 export class AtmosphereChangeTracker {
-  private timeOfDay: TimeOfDayPreset | null = null;
+  private dayOfYear = Number.NaN;
+  private solarTimeHours = Number.NaN;
   private weather: WeatherPreset | null = null;
 
-  update(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): boolean {
-    if (timeOfDay === this.timeOfDay && weather === this.weather) return false;
-    this.timeOfDay = timeOfDay;
+  update(clock: EnvironmentClock, weather: WeatherPreset): boolean {
+    if (
+      clock.dayOfYear === this.dayOfYear
+      && clock.solarTimeHours === this.solarTimeHours
+      && weather === this.weather
+    ) return false;
+    this.dayOfYear = clock.dayOfYear;
+    this.solarTimeHours = clock.solarTimeHours;
     this.weather = weather;
     return true;
   }
@@ -209,6 +223,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly atmosphere: AtmosphereSystem;
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
+  private readonly aerialReceivers: AerialPerspectiveRegistry;
+  private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
   private readonly waterReflection: PlanarWaterReflectionSystem;
@@ -233,6 +249,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
+  private readonly latitudeDegrees: number;
+  private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
+  private skyProbeStale = false;
+  private skyProbeAltitudeMeters = 0;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -278,6 +298,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     atmosphere: AtmosphereSystem,
     clouds: VolumetricCloudSystem,
     cloudShadowReceivers: CloudShadowReceiverRegistry,
+    aerialReceivers: AerialPerspectiveRegistry,
+    skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
     waterReflection: PlanarWaterReflectionSystem,
@@ -297,6 +319,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere = atmosphere;
     this.clouds = clouds;
     this.cloudShadowReceivers = cloudShadowReceivers;
+    this.aerialReceivers = aerialReceivers;
+    this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
     this.waterReflection = waterReflection;
@@ -307,6 +331,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
+    this.latitudeDegrees = options.world.latitudeDegrees;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
@@ -383,7 +408,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.performancePriority = ScenePerformancePriority.Intermediate;
       const camera = new UniversalCamera("flight-camera", new Vector3(0, 8, -18), scene);
       camera.minZ = 0.08;
-      camera.maxZ = 120_000;
+      // 1C-4: beyond 45 km the shared aerial perspective leaves under 5%
+      // luminance transmittance in clear weather — geometry past it is paint
+      // the haze already covered. 120 km existed to feed fog that no longer
+      // exists.
+      camera.maxZ = CAMERA_FAR_PLANE_METERS;
       // 1B-11: the old 64° VERTICAL fov was ≈96° horizontal at 16:9 — a
       // wide-angle lens that shrank every mountain. Horizontal-fixed ~62°
       // is a natural perspective, and tightens the shadow cascades free.
@@ -472,6 +501,49 @@ export class FlightRenderer implements FlightRenderingSystem {
       wildlife.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
+      // 1C-4: one haze registry over the small fixed PBR material set. The
+      // terrain material receives the same plugin through the same door.
+      const aerialReceivers = new AerialPerspectiveRegistry();
+      cleanup.push(() => aerialReceivers.dispose());
+      aerialReceivers.registerMaterial(terrain.pbrMaterial);
+      aerialReceivers.registerMeshes(aircraft.meshes);
+      if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
+      detail.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      wildlife.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      const initialSnapshot = atmosphere.snapshot;
+      aerialReceivers.setProjection({
+        state: DEFAULT_ENVIRONMENT_STATE,
+        cameraAltitudeMeters: camera.position.y,
+        sunColor: [
+          initialSnapshot.sunColor.r,
+          initialSnapshot.sunColor.g,
+          initialSnapshot.sunColor.b,
+        ],
+        skyHorizonColor: [
+          initialSnapshot.skyHorizon.r,
+          initialSnapshot.skyHorizon.g,
+          initialSnapshot.skyHorizon.b,
+        ],
+        sunIlluminanceNormalized: initialSnapshot.sunIlluminanceNormalized,
+      }, 0, 0);
+      const initialAerialBinding = aerialReceivers.currentBinding;
+      if (initialAerialBinding) {
+        atmosphere.setAerialPerspective(initialAerialBinding);
+        ocean.setAerialPerspective(initialAerialBinding);
+        hydrology.setAerialPerspective(initialAerialBinding);
+        clouds.setAerialPerspective(initialAerialBinding);
+      }
+      // 1C-6: image-based lighting from the one sky. Assigned BEFORE
+      // whenReadyAsync so every PBR material compiles its REFLECTION variant
+      // during startup instead of stalling the first frame.
+      const skyProbe = new SkyEnvironmentProbe(scene, atmosphere.skyMesh);
+      cleanup.push(() => skyProbe.dispose());
+      if (initialAerialBinding) skyProbe.update(initialAerialBinding);
+      scene.environmentTexture = skyProbe.texture;
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
@@ -513,6 +585,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       // FXAA is the no-MSAA fallback only; running both softens the image.
       if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
 
+      // 1C-4's two load-bearing guards, re-asserted now that the scene and
+      // the post-process chain exist: the aerial hook needs linear HDR at
+      // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
+      assertStartupInvariants({
+        timestampQuerySupported: timestampQueries,
+        gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        requestedFeatures: requiredFeatures,
+        grantedFeatures: engine.enabledExtensions,
+        imageProcessingAppliedByPostProcess:
+          scene.imageProcessingConfiguration.applyByPostProcess,
+        sceneFogMode: scene.fogMode,
+      });
+
       await awaitRendererStartup(
         scene.whenReadyAsync(),
         options.signal,
@@ -541,6 +626,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphere,
         clouds,
         cloudShadowReceivers,
+        aerialReceivers,
+        skyProbe,
         ocean,
         hydrology,
         waterReflection,
@@ -586,9 +673,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = reducedMotion;
   }
 
-  setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void {
-    if (!this.atmosphereTracker.update(timeOfDay, weather)) return;
-    this.atmosphere.setPreset(timeOfDay, weather);
+  setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
+    if (!this.atmosphereTracker.update(clock, weather)) return;
+    this.environmentState = resolveEnvironmentState({
+      clock,
+      latitudeDegrees: this.latitudeDegrees,
+      weather,
+    });
+    this.atmosphere.applyEnvironment(this.environmentState);
+    this.skyProbeStale = true;
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -759,6 +852,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
+      () => this.aerialReceivers.dispose(),
+      () => this.skyProbe.dispose(),
       () => this.waterReflection.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
@@ -874,6 +969,41 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.camera.position.z + this.originZ,
     );
     this.atmosphere.update(this.camera.position);
+    this.updateAerialPerspective();
+  }
+
+  /**
+   * 1C-4: resolve the one haze binding for this frame (absolute camera
+   * altitude, current environment) and fan it out — the PBR registry covers
+   * terrain, vegetation, wildlife, aircraft and airport; the three
+   * ShaderMaterial consumers receive the same binding by hand.
+   */
+  private updateAerialPerspective(): void {
+    const snapshot = this.atmosphere.snapshot;
+    this.aerialReceivers.setProjection({
+      state: this.environmentState,
+      cameraAltitudeMeters: this.cameraWorld.y,
+      sunColor: [snapshot.sunColor.r, snapshot.sunColor.g, snapshot.sunColor.b],
+      skyHorizonColor: [snapshot.skyHorizon.r, snapshot.skyHorizon.g, snapshot.skyHorizon.b],
+      sunIlluminanceNormalized: snapshot.sunIlluminanceNormalized,
+    }, this.originX, this.originZ);
+    const binding = this.aerialReceivers.currentBinding;
+    if (!binding) return;
+    this.atmosphere.setAerialPerspective(binding);
+    this.ocean.setAerialPerspective(binding);
+    this.hydrology.setAerialPerspective(binding);
+    this.clouds.setAerialPerspective(binding);
+    // The probe re-lights the world when the environment changes or when the
+    // camera's altitude has drifted enough to matter (the sky itself dims
+    // and clears with height); everything else leaves it untouched.
+    if (
+      this.skyProbeStale
+      || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
+    ) {
+      this.skyProbe.update(binding);
+      this.skyProbeStale = false;
+      this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
+    }
   }
 
   private updateCamera(state: FlightVisualState): void {

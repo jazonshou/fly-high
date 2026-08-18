@@ -108,7 +108,8 @@ export class AirportSystem {
     material.albedoColor = color;
     material.roughness = roughness;
     material.metallic = metallic;
-    material.environmentIntensity = 0.62;
+    // 1C-6: full-strength now that scene.environmentTexture exists.
+    material.environmentIntensity = 1;
     this.materials.push(material);
     return material;
   }

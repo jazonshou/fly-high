@@ -28,7 +28,7 @@ const ATMOSPHERE: AtmosphereSnapshot = {
   skyZenith: new Color3(0.1, 0.36, 0.78),
   skyHorizon: new Color3(0.58, 0.77, 0.96),
   ambientColor: new Color3(0.18, 0.27, 0.42),
-  exposure: 1,
+  sunIlluminanceNormalized: 0.92,
   cloudCoverage: 0.32,
   humidity: 0.62,
   windSpeed: 9,
