@@ -3,7 +3,7 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { Material } from "@babylonjs/core/Materials/material";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
@@ -13,6 +13,12 @@ import { viewScaleFromFov } from "./CloudReprojection";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import { DEFAULT_VOLUMETRIC_CLOUD_CONFIG } from "@/src/render/webgpu/nature/CloudConfig";
 import type { CloudShadowProjection } from "./CloudShadowReceiver";
@@ -379,6 +385,13 @@ var cloudSampler: texture_2d<f32>;
 uniform fullResolution: vec2f;
 uniform sunColor: vec3f;
 uniform ambientColor: vec3f;
+uniform cameraForward: vec3f;
+uniform cameraRight: vec3f;
+uniform cameraUp: vec3f;
+uniform viewScale: vec2f;
+uniform maximumTraceDistance: f32;
+
+${AERIAL_PERSPECTIVE_WGSL}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -399,8 +412,26 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // pixels. A single representative scattering depth cannot describe a whole
   // volume ray; writing it here caused entire cloud columns to alternately pass
   // and fail against distant terrain, creating horizontal bands at the horizon.
-  let radiance = uniforms.sunColor * cloud.r
+  var radiance = uniforms.sunColor * cloud.r
     + uniforms.ambientColor * (cloud.g + cloud.b * 0.55);
+  // 1C-4: haze the cloud at its representative scattering depth, on the same
+  // shared curve as everything else. The ray is rebuilt with the exact basis
+  // formula the integration pass used for this texel. Premultiplied blending:
+  // transmittance scales the cloud's own radiance, while in-scatter enters
+  // premultiplied by the cloud's coverage of the pixel.
+  let ndc = uv * 2.0 - 1.0;
+  let direction = normalize(
+    uniforms.cameraForward
+      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
+      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
+  );
+  let cloudDistance = cloud.a * uniforms.maximumTraceDistance;
+  let aerial = aerialPerspective(
+    uniforms.aerialCameraAltitude + direction.y * cloudDistance,
+    cloudDistance,
+    dot(direction, uniforms.aerialSunDirection),
+  );
+  radiance = radiance * aerial.transmittance + aerial.inScatter * cloud.b;
   fragmentOutputs.color = vec4f(max(radiance, vec3f(0.0)), cloud.b);
 }
 `;
@@ -639,6 +670,9 @@ export class VolumetricCloudSystem {
         attributes: ["position"],
         uniforms: [
           "worldViewProjection", "fullResolution", "sunColor", "ambientColor",
+          "cameraForward", "cameraRight", "cameraUp", "viewScale",
+          "maximumTraceDistance",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: ["cloudSampler"],
         needAlphaBlending: true,
@@ -902,6 +936,16 @@ export class VolumetricCloudSystem {
     if (samplingChanged && !resized) this.resetTemporalHistory();
   }
 
+  /** Per-frame haze binding, resolved once by the renderer for all consumers. */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.material,
+      binding,
+      (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     const nextWindX = atmosphere.windDirection.x * atmosphere.windSpeed;
     const nextWindZ = atmosphere.windDirection.y * atmosphere.windSpeed;
@@ -955,6 +999,7 @@ export class VolumetricCloudSystem {
     this.shell.position.copyFrom(this.camera.position);
     this.updateViewUniforms();
     this.updateIntegrationUniforms(timeSeconds);
+    this.updateCompositeRayUniforms();
 
     let cloudOutput: ProceduralTexture | null = null;
     if (this.integrationTexture.isReady()) {
@@ -1025,6 +1070,7 @@ export class VolumetricCloudSystem {
     this.inverseOutputSize.set(1 / this.cloudRenderSize.width, 1 / this.cloudRenderSize.height);
     this.updateViewUniforms();
     this.updateIntegrationUniforms(0);
+    this.updateCompositeRayUniforms();
     for (const history of this.historyTextures) {
       history.setFloat("historyValid", 0);
       this.updateCameraRayUniforms(history);
@@ -1069,6 +1115,10 @@ export class VolumetricCloudSystem {
     this.shadowTextureValue.setFloat("densityMultiplier", config.densityMultiplier);
     this.shadowTextureValue.setFloat("extinctionPerMeter", config.extinctionPerMeter);
     this.material.setColor3("ambientColor", CLOUD_AMBIENT_COLOR);
+    this.material.setFloat(
+      "maximumTraceDistance",
+      DEFAULT_VOLUMETRIC_CLOUD_CONFIG.maximumTraceDistanceMeters,
+    );
   }
 
   private configureTemporalBindings(): void {
@@ -1115,6 +1165,18 @@ export class VolumetricCloudSystem {
 
   private updateViewUniforms(): void {
     this.material.setVector2("fullResolution", this.fullResolution);
+  }
+
+  /**
+   * Publishes the ray basis the integration pass just used to the composite
+   * material, so 1C-4's per-texel haze rebuilds exactly the traced rays.
+   * Must run after updateCameraRayUniforms has refreshed the cached basis.
+   */
+  private updateCompositeRayUniforms(): void {
+    this.material.setVector3("cameraForward", this.cameraForward);
+    this.material.setVector3("cameraRight", this.cameraRight);
+    this.material.setVector3("cameraUp", this.cameraUp);
+    this.material.setVector2("viewScale", this.viewScale);
   }
 
   private updateIntegrationUniforms(timeSeconds: number): void {

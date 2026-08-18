@@ -96,7 +96,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/atmosphere/AerialPerspective.ts"],
     consumers: "any",
     ownedSymbols: ["AERIAL_PERSPECTIVE_WGSL", "aerialPerspective"],
-    plannedBy: "1C-4",
     notes: "Water, clouds, vegetation, aircraft, airport all consume. Nobody re-derives.",
   },
   {

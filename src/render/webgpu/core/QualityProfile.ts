@@ -1,6 +1,14 @@
 import type { QualityLevel } from "@/src/game/types";
 import type { RenderingMode } from "@/src/settings";
 
+/**
+ * The camera far plane (1C-4). Beyond this the shared aerial perspective
+ * leaves under 5% luminance transmittance in clear weather, so geometry is
+ * invisible; ring counts per tier are chosen against this number and the
+ * pairing is pinned by tests.
+ */
+export const CAMERA_FAR_PLANE_METERS = 45_000;
+
 export interface WebGpuQualityProfile {
   readonly tier: 0 | 1 | 2 | 3;
   readonly quality: QualityLevel;
@@ -128,7 +136,11 @@ export function resolveWebGpuQualityProfile(
       // for 4× inside the 700 MiB ceiling (assertion 19); 4-8's near-field
       // shadow maps buy it back.
       msaaSamples: 2,
-      terrainRings: 8,
+      // 1C-4: the 45 km far plane makes level 7 (the 131 km ring) pure
+      // waste. Levels 0–6 still guarantee 65.5 km worst-case coverage —
+      // the lower tiers keep their counts because cutting them would end
+      // terrain INSIDE the far plane (guaranteed coverage is 512·2^rings).
+      terrainRings: 7,
       terrainTileResolution: 65,
       shadowMapSize: 4_096,
       shadowCascades: 4,
@@ -157,7 +169,8 @@ export function resolveWebGpuQualityProfile(
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
     msaaSamples: 4,
-    terrainRings: 8,
+    // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
+    terrainRings: 7,
     terrainTileResolution: 65,
     shadowMapSize: 4_096,
     shadowCascades: 4,

@@ -329,6 +329,15 @@ export class TerrainClipmapSystem {
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
   }
 
+  /**
+   * The one shared terrain PBR material, exposed so the renderer can register
+   * it with shared receiver registries (1C-4's aerial perspective; cloud
+   * shadows install their plugin directly in the constructor above).
+   */
+  get pbrMaterial(): PBRMaterial {
+    return this.material;
+  }
+
   get statistics(): TerrainClipmapStatistics {
     let triangles = 0;
     for (const page of this.pages.values()) triangles += page.mesh.getTotalIndices() / 3;

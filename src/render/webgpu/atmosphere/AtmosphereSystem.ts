@@ -12,7 +12,6 @@ import { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTa
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
-import type { WeatherPreset } from "@/src/game/types";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   DEFAULT_ENVIRONMENT_STATE,
@@ -258,6 +257,10 @@ export class AtmosphereSystem {
     this.sky.infiniteDistance = true;
     this.sky.isPickable = false;
     this.sky.applyFog = false;
+    // 1C-4: Babylon's fog is permanently off. The aerial-perspective include
+    // is the only atmospheric term; FOGMODE_NONE is asserted at startup so
+    // fog and haze can never double-apply through #include<fogFragment>.
+    scene.fogMode = Scene.FOGMODE_NONE;
     this.skyMaterial = new ShaderMaterial(
       "physical-atmosphere-material",
       scene,
@@ -327,7 +330,7 @@ export class AtmosphereSystem {
         Math.cos(windDirectionRadians),
       ).normalize(),
     };
-    this.applyEnvironment(DEFAULT_ENVIRONMENT_STATE, "clear");
+    this.applyEnvironment(DEFAULT_ENVIRONMENT_STATE);
   }
 
   get snapshot(): AtmosphereSnapshot {
@@ -341,12 +344,12 @@ export class AtmosphereSystem {
   /**
    * Applies one continuous environment instant (1C-1). The sun direction is
    * the NOAA solar position resolved by the EnvironmentDirector; the look
-   * interpolates the palette anchors by real sun elevation. Weather keeps
-   * the previous preset semantics (coverage dimming, humidity haze) — 1C-2
-   * unifies the exposure curves, so this deliberately does not touch how
-   * exposure and sun.intensity split the light budget.
+   * interpolates the palette anchors by real sun elevation. Weather is read
+   * from the state's continuous fields (coverage dimming, humidity haze) —
+   * 1C-2 owns the single exposure curve, and 1C-4 owns all haze, so this
+   * touches neither fog nor any per-shader exposure.
    */
-  applyEnvironment(state: EnvironmentState, weather: WeatherPreset): void {
+  applyEnvironment(state: EnvironmentState): void {
     const sunDirection = new Vector3(
       state.sun.direction[0],
       state.sun.direction[1],
@@ -382,9 +385,6 @@ export class AtmosphereSystem {
     this.ambient.diffuse = skyZenith;
     this.ambient.groundColor = palette.ground;
     this.ambient.intensity = ambientIntensity;
-    this.scene.fogMode = Scene.FOGMODE_EXP2;
-    this.scene.fogDensity = weather === "cloudy" ? 0.00008 : weather === "breezy" ? 0.000045 : 0.000028;
-    this.scene.fogColor = Color3.Lerp(palette.horizon, new Color3(0.48, 0.52, 0.56), humidity * 0.32);
     this.skyMaterial.setVector3("sunDirection", sunDirection);
     this.skyMaterial.setColor3("sunColor", palette.sunColor);
     this.skyMaterial.setColor3("zenithColor", skyZenith);
