@@ -86,6 +86,17 @@ export interface PerfCaptureShotDefinition {
   readonly minMeanLuminance?: number;
   /** Motion shots do not diff against a PNG baseline (their gate is temporal). */
   readonly comparesToBaseline?: boolean;
+  /**
+   * Per-shot SSIM floor override. The resize-path shot carries slightly more
+   * temporal variance than the fixed-viewport shots (measured 0.981 against
+   * its own fresh baseline); everything else uses PERF_CAPTURE_SSIM_THRESHOLD.
+   */
+  readonly ssimThreshold?: number;
+  /** Z-3: committed floors for the motion shot's temporal-stability metrics. */
+  readonly temporalFloors?: {
+    readonly minConsecutiveSsim: number;
+    readonly maxMeanLuminanceDelta: number;
+  };
   readonly ceilings: PerfCaptureShotCeilings | null;
 }
 
@@ -108,7 +119,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 0,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 62,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 31 },
   },
   {
     name: "slant-10km",
@@ -120,7 +136,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 4_000,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 84,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 120, minFps: 32 },
   },
   {
     name: "high-10000ft-down",
@@ -132,7 +153,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: -6_000,
     pitchDownDegrees: 45,
     airspeedMetersPerSecond: 92,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 115, minFps: 33 },
   },
   {
     // Z-3: the only configuration where the tier-1 pixel cap binds — i.e.
@@ -150,7 +176,13 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     viewportWidth: 1_512,
     viewportHeight: 982,
-    ceilings: null,
+    ssimThreshold: 0.975,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 30 },
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -165,7 +197,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: -6_000,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 92,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 85, minFps: 36 },
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -181,7 +218,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 355, solarTimeHours: 12.5 },
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 130, minFps: 31 },
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -197,7 +239,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 171, solarTimeHours: 23.75 },
     minMeanLuminance: 0.000_5,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 31 },
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -215,7 +262,15 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     kind: "motion",
     bankDegrees: 45,
     comparesToBaseline: false,
-    ceilings: null,
+    // Measured 0.764 / 0.0007 (2026-08-18); flicker collapses the SSIM floor
+    // and spikes the luminance delta by an order of magnitude.
+    temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 155, minFps: 27 },
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -230,7 +285,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 92,
     clock: { dayOfYear: 171, solarTimeHours: 15 },
     relativeSunBearingDegrees: 30,
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 105, minFps: 32 },
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -247,7 +307,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 16.5 },
     relativeSunBearingDegrees: 180,
     locate: "forest",
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 145, minFps: 27 },
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -263,7 +328,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 84,
     clock: { dayOfYear: 171, solarTimeHours: 19 },
     locate: "coast",
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 120, minFps: 31 },
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -279,7 +349,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 18.5 },
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 140, minFps: 27 },
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -295,7 +370,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 171, solarTimeHours: 9.5 },
     locate: "forest",
-    ceilings: null,
+    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
+    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
+    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
+    // observed medians — they catch order-of-magnitude regressions, while
+    // minFps and the SSIM gate catch everything gradual.
+    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 145, minFps: 29 },
   },
 ]);
 

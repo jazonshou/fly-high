@@ -27,8 +27,10 @@ import {
 const FALLBACK_TEXTURES = new WeakMap<Scene, RawTexture>();
 
 function fallbackCloudShadowTexture(scene: Scene): RawTexture {
+  // The scene-dispose observer below clears the cache entry, so a cached
+  // texture is always live.
   const existing = FALLBACK_TEXTURES.get(scene);
-  if (existing && !existing.isDisposed()) return existing;
+  if (existing) return existing;
   const texture = new RawTexture(
     new Uint8Array([255, 255, 255, 255]),
     1,
@@ -133,6 +135,8 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
     // and the WGSL's `cloudShadowReceiverValid < 0.5` guard makes the
     // projection-less state an exact multiply-by-one.
     this.fallbackTexture = fallbackCloudShadowTexture(material.getScene());
+    // Z-1: binding happens in hardBindForSubMesh (which requires this flag).
+    this.registerForExtraEvents = true;
     this._enable(true);
   }
 
@@ -206,7 +210,16 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
     };
   }
 
-  override bindForSubMesh(uniformBuffer: UniformBuffer): void {
+  /**
+   * Z-1: bound through hardBindForSubMesh, not bindForSubMesh. The receiver
+   * materials are shared by many meshes; a plain bindForSubMesh is skipped
+   * for every mesh after the first under `mustRebind === false`, and on
+   * WebGPU each submesh draws through its OWN material context — the skipped
+   * binds left those contexts without the sampler and Babylon logged
+   * `Texture "cloudShadowSampler" not found` on their first frame. Babylon's
+   * decal plugin documents this exact hook for this exact reason.
+   */
+  override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
     const projection = this.projection;
     const binding = this.binding;
     if (!projection || !binding) {
