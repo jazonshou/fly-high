@@ -1,6 +1,17 @@
 import { flattenHeightForAirport, getAirportInfluence, isPointOnRunway } from "./airport";
 import { sampleGeologicalRelief } from "./geology";
-import { clamp, fbm2D, lerp, ridgedFbm2D, saturate, smoothstep, valueNoise2D } from "./noise";
+import {
+  blendTowardExpectation,
+  clamp,
+  fbm2D,
+  filteredValueNoise2D,
+  lerp,
+  ridgedChannelVarianceKept,
+  ridgedFbm2D,
+  saturate,
+  smoothstep,
+  valueNoise2D,
+} from "./noise";
 import { mixSeed } from "./seed";
 import {
   TERRAIN_BIOME_NAMES,
@@ -16,6 +27,21 @@ import {
 export const MIN_TERRAIN_HEIGHT = -180;
 export const MAX_TERRAIN_HEIGHT = 2_200;
 export const TERRAIN_NORMAL_SAMPLE_DISTANCE = 2;
+
+/**
+ * Full-bandwidth expectations of the kernel's nonlinear ridge composites,
+ * measured numerically over 250k samples spanning ~2000 lattice cells (2026-08-17). As a
+ * channel's texture fades under band-limiting, each composite blends toward
+ * its expectation (see blendTowardExpectation) so coarse pages keep the same
+ * mean height as fine ones — pow() and threshold smoothsteps otherwise lose
+ * several metres of mean uplift per LOD (the amplitudeSum trap's quieter
+ * sibling).
+ */
+const RIDGES_POW_212_MEAN = 0.2125;
+const RIDGES_POW_158_MEAN = 0.299;
+const RIDGES_INVERSE_POW_31_MEAN = 0.2072;
+const RIDGES_SMOOTH_42_82_MEAN = 0.1965;
+const LOCAL_RIDGES_KNOLL_MEAN = 0.1534;
 
 function assertFiniteCoordinate(value: number, label: string): void {
   if (!Number.isFinite(value)) {
@@ -61,23 +87,25 @@ export function sampleNaturalTerrainHeight(
   assertFilterWidth(filterWidthMeters);
 
   const warpScale = 1 / 18_000;
-  const warpX = valueNoise2D(mixSeed(seedHash, 101), x * warpScale, z * warpScale) * 2_400;
+  const warpX =
+    filteredValueNoise2D(mixSeed(seedHash, 101), x * warpScale, z * warpScale, 18_000, filterWidthMeters) * 2_400;
   const warpZ =
-    valueNoise2D(mixSeed(seedHash, 102), x * warpScale + 19.4, z * warpScale - 7.7) * 2_400;
+    filteredValueNoise2D(mixSeed(seedHash, 102), x * warpScale + 19.4, z * warpScale - 7.7, 18_000, filterWidthMeters) * 2_400;
   const warpedX = x + warpX;
   const warpedZ = z + warpZ;
 
   const continental =
-    fbm2D(mixSeed(seedHash, 110), warpedX / 8_600, warpedZ / 8_600, 4, 2.01, 0.52) * 0.5 +
+    fbm2D(mixSeed(seedHash, 110), warpedX / 8_600, warpedZ / 8_600, 4, 2.01, 0.52, 8_600, filterWidthMeters) * 0.5 +
     0.5;
   const land = smoothstep(0.38, 0.57, continental);
   const continentalShelf = lerp(-105, 135, smoothstep(0.2, 0.8, continental));
 
-  const rolling = fbm2D(mixSeed(seedHash, 120), warpedX / 1_650, warpedZ / 1_650, 5, 2, 0.48);
-  const fine = fbm2D(mixSeed(seedHash, 121), x / 310, z / 310, 3, 2.04, 0.46);
+  const rolling =
+    fbm2D(mixSeed(seedHash, 120), warpedX / 1_650, warpedZ / 1_650, 5, 2, 0.48, 1_650, filterWidthMeters);
+  const fine = fbm2D(mixSeed(seedHash, 121), x / 310, z / 310, 3, 2.04, 0.46, 310, filterWidthMeters);
 
   const mountainField =
-    fbm2D(mixSeed(seedHash, 130), warpedX / 13_500, warpedZ / 13_500, 3, 2, 0.55) * 0.5 +
+    fbm2D(mixSeed(seedHash, 130), warpedX / 13_500, warpedZ / 13_500, 3, 2, 0.55, 13_500, filterWidthMeters) * 0.5 +
     0.5;
   // A broad foothill mask precedes the rarer high-alpine mask. The old kernel
   // only emitted meaningful relief when the latter happened to cross a high
@@ -85,10 +113,18 @@ export function sampleNaturalTerrainHeight(
   // from a flat plane for tens of kilometres around the starter airport.
   const foothillRegion = smoothstep(0.34, 0.7, mountainField);
   const mountainRegion = smoothstep(0.47, 0.76, mountainField);
-  const ridges = ridgedFbm2D(mixSeed(seedHash, 131), warpedX / 2_550, warpedZ / 2_550, 5);
-  const localRidges = ridgedFbm2D(mixSeed(seedHash, 132), warpedX / 1_050, warpedZ / 1_050, 4);
-  const foothillHeight = land * foothillRegion * Math.pow(Math.max(0, ridges), 2.12) * 285;
-  const mountainHeight = land * mountainRegion * Math.pow(Math.max(0, ridges), 1.58) * 1_390;
+  const ridges =
+    ridgedFbm2D(mixSeed(seedHash, 131), warpedX / 2_550, warpedZ / 2_550, 5, 2_550, filterWidthMeters);
+  const localRidges =
+    ridgedFbm2D(mixSeed(seedHash, 132), warpedX / 1_050, warpedZ / 1_050, 4, 1_050, filterWidthMeters);
+  const ridgesKept = ridgedChannelVarianceKept(5, 2_550, filterWidthMeters);
+  const localRidgesKept = ridgedChannelVarianceKept(4, 1_050, filterWidthMeters);
+  const foothillHeight = land * foothillRegion
+    * blendTowardExpectation(Math.pow(Math.max(0, ridges), 2.12), RIDGES_POW_212_MEAN, ridgesKept)
+    * 285;
+  const mountainHeight = land * mountainRegion
+    * blendTowardExpectation(Math.pow(Math.max(0, ridges), 1.58), RIDGES_POW_158_MEAN, ridgesKept)
+    * 1_390;
 
   // Mid-scale relief stops broad mountain masks from becoming smooth domes.
   // It is strongest around existing uplift, preserving recognizable plains
@@ -96,16 +132,27 @@ export function sampleNaturalTerrainHeight(
   const rockyKnolls =
     land *
     (0.34 + foothillRegion * 0.66) *
-    Math.pow(Math.max(0, smoothstep(0.3, 0.86, localRidges)), 2.25) *
+    blendTowardExpectation(
+      Math.pow(Math.max(0, smoothstep(0.3, 0.86, localRidges)), 2.25),
+      LOCAL_RIDGES_KNOLL_MEAN,
+      localRidgesKept,
+    ) *
     (72 + foothillRegion * 115);
+  // (localRidges - 0.48) is linear in the channel, hence already unbiased.
   const cragDetail =
     land *
     mountainRegion *
-    smoothstep(0.42, 0.82, ridges) *
+    blendTowardExpectation(smoothstep(0.42, 0.82, ridges), RIDGES_SMOOTH_42_82_MEAN, ridgesKept) *
     (localRidges - 0.48) *
     360;
   const valleyCarve =
-    land * foothillRegion * Math.pow(Math.max(0, 1 - ridges), 3.1) * (55 + mountainRegion * 105);
+    land * foothillRegion
+    * blendTowardExpectation(
+      Math.pow(Math.max(0, 1 - ridges), 3.1),
+      RIDGES_INVERSE_POW_31_MEAN,
+      ridgesKept,
+    )
+    * (55 + mountainRegion * 105);
   const geologicalRelief = sampleGeologicalRelief(
     seedHash,
     warpedX,
@@ -136,6 +183,22 @@ export function sampleNaturalTerrainHeight(
 export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
+  return flattenHeightForAirport(naturalHeight, world.airport, x, z);
+}
+
+/**
+ * Render-path height with band-limiting (1B-2): the tile generator passes
+ * its grid spacing so a coarse mesh is a blurred version of the fine one,
+ * not a re-rolled point-sampling of sub-Nyquist octaves. Physics and
+ * collision never call this — they keep the width-0 kernel forever.
+ */
+export function sampleFilteredTerrainHeight(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, filterWidthMeters);
   return flattenHeightForAirport(naturalHeight, world.airport, x, z);
 }
 

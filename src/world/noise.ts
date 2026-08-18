@@ -79,7 +79,99 @@ export function valueNoise2D(seedHash: number, x: number, z: number): number {
   return lerp(a, b, tz);
 }
 
-/** Normalized fractal Brownian motion in approximately [-1, 1]. */
+/**
+ * Band-limiting (1B-2): an octave whose wavelength falls below twice the
+ * sampling footprint cannot be represented by the grid that will sample it —
+ * point-sampling it re-rolls an arbitrary phase per LOD ring, which is the
+ * horizon crawl. Octaves fade out over [2·fw, 3.2·fw] so the cutoff is
+ * C1-continuous in spacing — a hard cutoff pops when a page changes level.
+ * Width 0 (physics, collision — forever) evaluates the full-bandwidth kernel
+ * bit-identically.
+ */
+function octaveBandWeight(wavelengthMeters: number, filterWidthMeters: number): number {
+  return smoothstep(2 * filterWidthMeters, 3.2 * filterWidthMeters, wavelengthMeters);
+}
+
+/**
+ * A single value-noise channel with the shared band-limit fade, keyed on the
+ * channel's own wavelength. Zero-mean noise fades toward 0, which is its
+ * band-limited resting value.
+ */
+export function filteredValueNoise2D(
+  seedHash: number,
+  x: number,
+  z: number,
+  wavelengthMeters: number,
+  filterWidthMeters: number,
+): number {
+  if (filterWidthMeters <= 0) return valueNoise2D(seedHash, x, z);
+  const weight = octaveBandWeight(wavelengthMeters, filterWidthMeters);
+  if (weight <= 0) return 0;
+  return valueNoise2D(seedHash, x, z) * weight;
+}
+
+/**
+ * The value a fully faded ridged octave rests at: E[(1 − |v|)²] for one
+ * value-noise octave, measured numerically over 160k lattice samples
+ * (2026-08-17). Ridged noise is not zero-mean, so fading it toward 0 would
+ * make coarse terrain systematically lower (and, through the ravine and
+ * talus terms, differently shaped); it fades toward its expectation instead.
+ */
+export const RIDGED_OCTAVE_BAND_LIMIT_MEAN = 0.4491;
+
+/**
+ * Fraction of a ridged channel's variance that survives the band-limit fade
+ * at a filter width: Σ(aᵢwᵢ)² / Σaᵢ² over the channel's octaves. Nonlinear
+ * composites of a channel (pow, smoothstep thresholds) lose mean height as
+ * the channel's texture fades — Jensen's gap — so their call sites blend the
+ * computed composite toward its measured full-bandwidth expectation by this
+ * ratio, cancelling the bias to first order. Pure arithmetic; WGSL-portable.
+ */
+export function ridgedChannelVarianceKept(
+  octaves: number,
+  baseWavelengthMeters: number,
+  filterWidthMeters: number,
+): number {
+  if (filterWidthMeters <= 0 || baseWavelengthMeters <= 0) return 1;
+  let amplitude = 1;
+  let wavelength = baseWavelengthMeters;
+  let kept = 0;
+  let total = 0;
+  for (let octave = 0; octave < octaves; octave += 1) {
+    const weight = octaveBandWeight(wavelength, filterWidthMeters);
+    kept += amplitude * weight * (amplitude * weight);
+    total += amplitude * amplitude;
+    amplitude *= 0.52;
+    wavelength /= 2.03;
+  }
+  return total > 0 ? kept / total : 1;
+}
+
+/**
+ * Restores a nonlinear composite's coarse-scale mean as its driving channel
+ * fades: identity while the channel is fully alive (bit-identical below the
+ * cutoff), the measured expectation once its texture is gone.
+ */
+export function blendTowardExpectation(
+  value: number,
+  expectation: number,
+  varianceKept: number,
+): number {
+  if (varianceKept >= 1) return value;
+  if (varianceKept <= 0) return expectation;
+  return expectation + (value - expectation) * varianceKept;
+}
+
+/**
+ * Normalized fractal Brownian motion in approximately [-1, 1].
+ *
+ * `baseWavelengthMeters` is octave 0's wavelength in world metres; with
+ * `filterWidthMeters` it drives the band-limit fade. Zero for either keeps
+ * the full-bandwidth kernel, bit-identical to the pre-1B-2 result.
+ * Normalisation always divides by the UNTRUNCATED amplitude sum — dividing
+ * by a truncated sum would scale coarse terrain up, silently changing world
+ * scale.
+ */
 export function fbm2D(
   seedHash: number,
   x: number,
@@ -87,42 +179,70 @@ export function fbm2D(
   octaves: number,
   lacunarity = 2,
   persistence = 0.5,
+  baseWavelengthMeters = 0,
+  filterWidthMeters = 0,
 ): number {
+  const filtering = filterWidthMeters > 0 && baseWavelengthMeters > 0;
   let amplitude = 1;
   let frequency = 1;
+  let wavelength = baseWavelengthMeters;
   let sum = 0;
   let amplitudeSum = 0;
 
   for (let octave = 0; octave < octaves; octave += 1) {
-    const octaveSeed = mixSeed(seedHash, octave + 1);
-    sum += valueNoise2D(octaveSeed, x * frequency, z * frequency) * amplitude;
+    const weight = filtering ? octaveBandWeight(wavelength, filterWidthMeters) : 1;
+    if (weight > 0) {
+      const octaveSeed = mixSeed(seedHash, octave + 1);
+      sum += valueNoise2D(octaveSeed, x * frequency, z * frequency) * amplitude * weight;
+    }
     amplitudeSum += amplitude;
     amplitude *= persistence;
     frequency *= lacunarity;
+    if (filtering) wavelength /= lacunarity;
   }
 
   return amplitudeSum > 0 ? sum / amplitudeSum : 0;
 }
 
-/** Ridged multifractal noise in [0, 1], useful for mountain ranges. */
+/**
+ * Ridged multifractal noise in [0, 1], useful for mountain ranges. Faded
+ * octaves rest at RIDGED_OCTAVE_BAND_LIMIT_MEAN (see there), preserving the
+ * coarse-scale mean of every downstream nonlinearity's input.
+ */
 export function ridgedFbm2D(
   seedHash: number,
   x: number,
   z: number,
   octaves: number,
+  baseWavelengthMeters = 0,
+  filterWidthMeters = 0,
 ): number {
+  const filtering = filterWidthMeters > 0 && baseWavelengthMeters > 0;
   let amplitude = 1;
   let frequency = 1;
+  let wavelength = baseWavelengthMeters;
   let sum = 0;
   let amplitudeSum = 0;
 
   for (let octave = 0; octave < octaves; octave += 1) {
-    const octaveSeed = mixSeed(seedHash, 31 + octave);
-    const ridge = 1 - Math.abs(valueNoise2D(octaveSeed, x * frequency, z * frequency));
-    sum += ridge * ridge * amplitude;
+    const weight = filtering ? octaveBandWeight(wavelength, filterWidthMeters) : 1;
+    if (weight >= 1) {
+      const octaveSeed = mixSeed(seedHash, 31 + octave);
+      const ridge = 1 - Math.abs(valueNoise2D(octaveSeed, x * frequency, z * frequency));
+      sum += ridge * ridge * amplitude;
+    } else if (weight > 0) {
+      const octaveSeed = mixSeed(seedHash, 31 + octave);
+      const ridge = 1 - Math.abs(valueNoise2D(octaveSeed, x * frequency, z * frequency));
+      const banded = RIDGED_OCTAVE_BAND_LIMIT_MEAN
+        + (ridge * ridge - RIDGED_OCTAVE_BAND_LIMIT_MEAN) * weight;
+      sum += banded * amplitude;
+    } else {
+      sum += RIDGED_OCTAVE_BAND_LIMIT_MEAN * amplitude;
+    }
     amplitudeSum += amplitude;
     amplitude *= 0.52;
     frequency *= 2.03;
+    if (filtering) wavelength /= 2.03;
   }
 
   return amplitudeSum > 0 ? saturate(sum / amplitudeSum) : 0;

@@ -1,5 +1,5 @@
 import { coreToStoredIndex, storedEdge } from "@/src/render/webgpu/world/pageGeometry";
-import { sampleTerrainHeight, sampleTerrainSurface } from "./terrain";
+import { sampleFilteredTerrainHeight, sampleTerrainSurface } from "./terrain";
 import { TerrainBiome, type TerrainSample, type TerrainTileBuffers, type TerrainTileData, type TerrainTileOptions, type WorldDefinition } from "./types";
 
 export const DEFAULT_TERRAIN_TILE_SIZE = 1_024;
@@ -196,13 +196,17 @@ export function generateTerrainTile(
     requireCapacity(biomes, vertexCount, "biomes");
   }
 
+  // 1B-2: the tile's grid spacing is the sampling footprint. L0 (8 m) and L1
+  // (16 m) are unchanged or nearly so — the finest kernel wavelength is 43 m —
+  // and divergence from the physics kernel begins only at coarse render LODs.
+  const filterWidthMeters = size / (resolution - 1);
   const scratch = scratchGrid(scratchEdge);
   for (let row = -scratchHalo; row < resolution + scratchHalo; row += 1) {
     const z = extendedVertexCoordinate(tileZ, size, row, resolution);
     const scratchRow = (row + scratchHalo) * scratchEdge + scratchHalo;
     for (let column = -scratchHalo; column < resolution + scratchHalo; column += 1) {
       const x = extendedVertexCoordinate(tileX, size, column, resolution);
-      scratch[scratchRow + column] = sampleTerrainHeight(world, x, z);
+      scratch[scratchRow + column] = sampleFilteredTerrainHeight(world, x, z, filterWidthMeters);
     }
   }
 
