@@ -831,7 +831,12 @@ export class FlightRenderer implements FlightRenderingSystem {
           this.originZ,
         );
       },
-      invalidateHistory: () => this.clouds.invalidateHistory(),
+      invalidateHistory: (reason) => {
+        // 1B-12: cloud reprojection runs on absolute camera positions, so a
+        // floating-origin rebase is exactly a no-op for it — the history
+        // survives the frames it used to be thrown away on.
+        if (reason !== "floating origin shifted") this.clouds.invalidateHistory();
+      },
     });
     this.graph.register({
       name: "hdr-present",
