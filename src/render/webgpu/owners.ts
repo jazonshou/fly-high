@@ -104,7 +104,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/atmosphere/SkyEnvironmentProbe.ts"],
     consumers: "any",
     ownedSymbols: ["SkyEnvironmentProbe"],
-    plannedBy: "1C-6",
   },
   {
     artifact: "quality-tiers-and-governors",

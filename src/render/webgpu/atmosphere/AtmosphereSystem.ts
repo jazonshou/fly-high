@@ -283,7 +283,7 @@ export class AtmosphereSystem {
     this.sun.intensity = 5.2;
     this.sun.autoCalcShadowZBounds = false;
     this.ambient = new HemisphericLight("sky-ambient", Vector3.Up(), scene);
-    this.ambient.intensity = 0.58;
+    this.ambient.intensity = 0.05;
     this.ambient.groundColor = new Color3(0.08, 0.09, 0.07);
 
     // 1A-5: depth-only RTT. `usefulFloatFirst` false — with only depth bound
@@ -332,6 +332,11 @@ export class AtmosphereSystem {
     return this.snapshotValue;
   }
 
+  /** The sky dome, exposed so the environment probe (1C-6) can render it. */
+  get skyMesh(): Mesh {
+    return this.sky;
+  }
+
   /**
    * Per-frame haze binding (1C-4/1C-5). The sky material consumes the same
    * shared uniforms every other receiver does — one integral, one binding.
@@ -376,7 +381,12 @@ export class AtmosphereSystem {
     // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
     // day+clear look exactly; every private shader exposure is deleted.
     this.scene.imageProcessingConfiguration.exposure = exposureForState(state);
-    const ambientIntensity = 0.48 + humidity * 0.22;
+    // 1C-6: IBL now carries the skylight. The hemispheric light survives
+    // only as a small ground-bounce approximation, so skylight is not
+    // double-counted; the snapshot's ambientColor keeps the old scale — it
+    // describes sky-ambient radiance for shaders (clouds), not this light.
+    const ambientIntensity = 0.05;
+    const snapshotAmbientScale = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
       palette.zenith,
       new Color3(0.20, 0.24, 0.29),
@@ -399,7 +409,7 @@ export class AtmosphereSystem {
       sunIntensity,
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
-      ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(ambientIntensity),
+      ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
       sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
       cloudCoverage,
       humidity,

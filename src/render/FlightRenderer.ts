@@ -23,6 +23,7 @@ import {
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
 import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
@@ -223,6 +224,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
   private readonly aerialReceivers: AerialPerspectiveRegistry;
+  private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
   private readonly waterReflection: PlanarWaterReflectionSystem;
@@ -249,6 +251,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly seaLevel: number;
   private readonly latitudeDegrees: number;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
+  private skyProbeStale = false;
+  private skyProbeAltitudeMeters = 0;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -295,6 +299,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     clouds: VolumetricCloudSystem,
     cloudShadowReceivers: CloudShadowReceiverRegistry,
     aerialReceivers: AerialPerspectiveRegistry,
+    skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
     waterReflection: PlanarWaterReflectionSystem,
@@ -315,6 +320,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds = clouds;
     this.cloudShadowReceivers = cloudShadowReceivers;
     this.aerialReceivers = aerialReceivers;
+    this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
     this.waterReflection = waterReflection;
@@ -531,6 +537,13 @@ export class FlightRenderer implements FlightRenderingSystem {
         hydrology.setAerialPerspective(initialAerialBinding);
         clouds.setAerialPerspective(initialAerialBinding);
       }
+      // 1C-6: image-based lighting from the one sky. Assigned BEFORE
+      // whenReadyAsync so every PBR material compiles its REFLECTION variant
+      // during startup instead of stalling the first frame.
+      const skyProbe = new SkyEnvironmentProbe(scene, atmosphere.skyMesh);
+      cleanup.push(() => skyProbe.dispose());
+      if (initialAerialBinding) skyProbe.update(initialAerialBinding);
+      scene.environmentTexture = skyProbe.texture;
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
@@ -614,6 +627,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         clouds,
         cloudShadowReceivers,
         aerialReceivers,
+        skyProbe,
         ocean,
         hydrology,
         waterReflection,
@@ -667,6 +681,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       weather,
     });
     this.atmosphere.applyEnvironment(this.environmentState);
+    this.skyProbeStale = true;
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -838,6 +853,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
       () => this.aerialReceivers.dispose(),
+      () => this.skyProbe.dispose(),
       () => this.waterReflection.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
@@ -977,6 +993,17 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setAerialPerspective(binding);
     this.hydrology.setAerialPerspective(binding);
     this.clouds.setAerialPerspective(binding);
+    // The probe re-lights the world when the environment changes or when the
+    // camera's altitude has drifted enough to matter (the sky itself dims
+    // and clears with height); everything else leaves it untouched.
+    if (
+      this.skyProbeStale
+      || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
+    ) {
+      this.skyProbe.update(binding);
+      this.skyProbeStale = false;
+      this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
+    }
   }
 
   private updateCamera(state: FlightVisualState): void {

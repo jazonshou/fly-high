@@ -316,9 +316,11 @@ export class TerrainClipmapSystem {
     // same polished plastic sheet, especially after rain or at low sun angles.
     this.material.roughness = 0.93;
     this.material.albedoColor = Color3.White();
-    this.material.environmentIntensity = 0.64;
+    // 1C-6: full-strength now that scene.environmentTexture exists — the
+    // old 0.64/0.22 were compensating for IBL that did not exist.
+    this.material.environmentIntensity = 1;
     this.material.directIntensity = 1.03;
-    this.material.specularIntensity = 0.22;
+    this.material.specularIntensity = 1;
     // 1B-11: kill specular shimmer on ridge lines under motion. (The plan's
     // anisotropicFilteringLevel = 16 is a per-texture setting; terrain has no
     // textures until 3-2 — it applies there.)
