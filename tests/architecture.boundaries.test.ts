@@ -127,7 +127,9 @@ describe("architecture boundaries (0-1)", () => {
     // grandfathered until their items land (1B-3 and Phase 2 water work);
     // do not add to this list — extend WebGpuQualityProfile with data instead.
     const grandfathered = new Set([
-      "src/render/webgpu/terrain/TerrainClipmapSystem.ts",
+      // TerrainClipmapSystem left this list at 1B-3 (terrainTileResolution
+      // became a profile datum). The two water readers leave with Phase 2's
+      // water work. The list only shrinks.
       "src/render/webgpu/water/PlanarWaterReflectionSystem.ts",
       "src/render/webgpu/water/SpectralOceanSystem.ts",
     ]);

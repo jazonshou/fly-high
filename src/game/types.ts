@@ -65,6 +65,26 @@ export interface ControlState {
   gear: number;
 }
 
+/** Which governor acted (or held) in the most recent decision window (1A-6b). */
+export type RenderGovernorMode =
+  | "gpu-resolution"
+  | "cpu-work"
+  | "balanced"
+  | "holding"
+  | "no-gpu-timing";
+
+/** One frame-graph pass's aggregated CPU cost (1A-1). */
+export interface PassCpuTiming {
+  readonly name: string;
+  readonly p95Ms: number;
+}
+
+/** One budget-probe attribution row (1A-1). */
+export interface BudgetProbeResultRow {
+  readonly pass: string;
+  readonly gpuP95DeltaMs: number | null;
+}
+
 export interface RenderDiagnostics {
   fps: number;
   /** Wall-clock interval between the two most recent presented frames. */
@@ -101,6 +121,23 @@ export interface RenderDiagnostics {
   oceanFftResolution: number;
   adapter: string;
   renderingFallbackReason: string | null;
+  /** The user must be able to see why the picture changed (1A-6b). */
+  activeGovernor: RenderGovernorMode;
+  gpuP95Ms: number | null;
+  cpuP95Ms: number | null;
+  /** Governor B ladder index and the lever that moved most recently. */
+  cpuWorkLevel: number;
+  cpuWorkLever: string | null;
+  resolutionInsensitive: boolean;
+  /** Pixels actually rasterised after the DPR ceiling, scale, and pixel cap. */
+  renderPixels: number;
+  topPassesByCpuMs: readonly PassCpuTiming[];
+  pendingTerrainPages: number;
+  /** Terrain generation workers currently busy (1B-4). */
+  terrainWorkersBusy: number;
+  estimatedGpuMemoryMiB: number;
+  budgetProbeActive: boolean;
+  budgetProbeReport: readonly BudgetProbeResultRow[] | null;
 }
 
 export const INITIAL_VISUAL_STATE: FlightVisualState = {

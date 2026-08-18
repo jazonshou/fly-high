@@ -278,6 +278,8 @@ export class PlanarWaterReflectionSystem {
   private readonly captureViewProjection = Matrix.Identity();
   private readonly candidateViewProjection = Matrix.Identity();
   private budget: PlanarReflectionBudget;
+  /** Governor B lever 3 (1A-6b): a floor on frames between captures. */
+  private updateIntervalFloor: number | null = null;
   private planeHeight: number;
   private planeSource: "ocean" | "lake" = "ocean";
   private lastCaptureFrame = INVALID_CAPTURE_FRAME;
@@ -364,6 +366,16 @@ export class PlanarWaterReflectionSystem {
     this.invalidate();
   }
 
+  /**
+   * Governor B lever 3: lengthen the capture cadence under CPU pressure.
+   * Applied as max() against the tier budget so it can only slow captures.
+   */
+  setUpdateIntervalFloor(intervalFrames: number | null): void {
+    this.updateIntervalFloor = intervalFrames === null
+      ? null
+      : Math.max(1, Math.floor(intervalFrames));
+  }
+
   setPlaneHeight(height: number, source: "ocean" | "lake" = "ocean"): void {
     if (!Number.isFinite(height)) throw new RangeError("Planar-reflection height must be finite");
     if (Math.abs(height - this.planeHeight) < 0.01 && source === this.planeSource) return;
@@ -397,10 +409,11 @@ export class PlanarWaterReflectionSystem {
     }
     const sinceCapture = frame.frameIndex - this.lastCaptureFrame;
     const sinceAttempt = frame.frameIndex - this.lastAttemptFrame;
-    if (
-      sinceCapture < this.budget.updateEveryNFrames
-      || sinceAttempt < this.budget.updateEveryNFrames
-    ) {
+    const interval = Math.max(
+      this.budget.updateEveryNFrames,
+      this.updateIntervalFloor ?? 1,
+    );
+    if (sinceCapture < interval || sinceAttempt < interval) {
       return { captured: false, reason: "cadence" };
     }
     this.lastAttemptFrame = frame.frameIndex;

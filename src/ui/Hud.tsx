@@ -19,6 +19,8 @@ interface HudProps {
   cameraLabel: string;
   seedLabel: string;
   mouseFlight: boolean;
+  /** Starts the 1A-1 GPU budget-probe sweep from the diagnostics overlay. */
+  onRunBudgetProbe?: () => void;
 }
 
 function formatHeading(heading: number): string {
@@ -71,6 +73,7 @@ export function Hud({
   cameraLabel,
   seedLabel,
   mouseFlight,
+  onRunBudgetProbe,
 }: HudProps) {
   if (mode === "off") return null;
   const aviation = units === "aviation";
@@ -247,6 +250,24 @@ export function Hud({
           <span>{diagnostics.collisionSamplesServedByFallback} collision fallback</span>
           <span>{diagnostics.renderScale.toFixed(2)}x scale</span>
           <span>{diagnostics.gpuFrameTime === null ? "GPU timing n/a" : `${diagnostics.gpuFrameTime.toFixed(1)} ms GPU`}</span>
+          <span>{(diagnostics.renderPixels / 1_000_000).toFixed(2)} Mpx</span>
+          <span>{diagnostics.pendingTerrainPages} pending · {diagnostics.terrainWorkersBusy} workers</span>
+          <span>{diagnostics.gpuP95Ms === null ? "GPU p95 n/a" : `${diagnostics.gpuP95Ms.toFixed(1)} ms GPU p95`}</span>
+          <span>{diagnostics.cpuP95Ms === null ? "CPU p95 n/a" : `${diagnostics.cpuP95Ms.toFixed(1)} ms CPU p95`}</span>
+          <span className="diagnostics__wide">
+            GOV {diagnostics.activeGovernor.toUpperCase()}
+            {diagnostics.resolutionInsensitive ? " · RES-INSENSITIVE" : ""}
+            {" · "}work L{diagnostics.cpuWorkLevel}
+            {diagnostics.cpuWorkLever ? ` (${diagnostics.cpuWorkLever})` : ""}
+            {" · ~"}{Math.round(diagnostics.estimatedGpuMemoryMiB)} MiB est
+          </span>
+          {diagnostics.topPassesByCpuMs.length > 0 ? (
+            <span className="diagnostics__wide">
+              {diagnostics.topPassesByCpuMs
+                .map((pass) => `${pass.name} ${pass.p95Ms.toFixed(1)}`)
+                .join(" · ")} ms CPU p95
+            </span>
+          ) : null}
           <span className="diagnostics__wide">
             {diagnostics.renderBackend.toUpperCase()} · {renderTechniqueLabel(diagnostics)}
           </span>
@@ -262,6 +283,25 @@ export function Hud({
           {diagnostics.renderingFallbackReason ? (
             <span className="diagnostics__wide diagnostics__fallback">
               {diagnostics.renderingFallbackReason}
+            </span>
+          ) : null}
+          {onRunBudgetProbe ? (
+            <button
+              type="button"
+              className="diagnostics__probe"
+              onClick={onRunBudgetProbe}
+              disabled={diagnostics.budgetProbeActive}
+            >
+              {diagnostics.budgetProbeActive ? "PROBING GPU BUDGET…" : "RUN GPU BUDGET PROBE"}
+            </button>
+          ) : null}
+          {diagnostics.budgetProbeReport ? (
+            <span className="diagnostics__wide">
+              {diagnostics.budgetProbeReport
+                .map((row) => `${row.pass} ${
+                  row.gpuP95DeltaMs === null ? "n/a" : row.gpuP95DeltaMs.toFixed(1)
+                }`)
+                .join(" · ")} ms GPU
             </span>
           ) : null}
         </div>

@@ -2,7 +2,7 @@ import type { Camera } from "@babylonjs/core/Cameras/camera";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
 import type { CascadedShadowGenerator } from "@babylonjs/core/Lights/Shadows/cascadedShadowGenerator";
-import { Matrix, Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { Material } from "@babylonjs/core/Materials/material";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
@@ -19,6 +19,12 @@ import {
   resolveCloudShadowReceiverBinding,
   type CloudShadowProjection,
 } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import {
   generateHydrology,
   type HydrologyGenerationOptions,
@@ -149,6 +155,7 @@ uniform regionOpacity: f32;
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
 ${SUN_SHADOW_FRAGMENT_WGSL}
+${AERIAL_PERSPECTIVE_WGSL}
 
 const PI: f32 = 3.14159265359;
 
@@ -251,6 +258,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let rapidFoam = clamp(input.whitewater * (0.4 + flowCrest * 0.85), 0.0, 1.0);
   let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0);
   color = mix(color, vec3f(0.78, 0.84, 0.82), foam);
+  // 1C-4: rivers and lakes fade on the same shared curve as the terrain
+  // around them — inland water no longer punches through the haze.
+  color = applyAerialPerspective(
+    color,
+    input.worldPosition.y,
+    distance(uniforms.cameraPosition, input.worldPosition),
+    -view,
+  );
   // Alpha now represents shallow transmission and region crossfade, not a
   // constant translucent plastic sheet. Even shallow water retains enough
   // optical density to read as a surface from flight altitude.
@@ -559,6 +574,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: [
           CLOUD_SHADOW_RECEIVER_SAMPLER,
@@ -667,14 +683,24 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setFloat("planarReflectionValid", binding.valid ? 1 : 0);
   }
 
+  /** Per-frame haze binding, resolved once by the renderer for all consumers. */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.material,
+      binding,
+      (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
       "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIntensity / 5.2),
+      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
-    this.material.setColor3("skyZenith", atmosphere.skyZenith.scale(atmosphere.exposure));
-    this.material.setColor3("skyHorizon", atmosphere.skyHorizon.scale(atmosphere.exposure));
+    this.material.setColor3("skyZenith", atmosphere.skyZenith);
+    this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
     this.material.setFloat("windSpeed", atmosphere.windSpeed);
   }

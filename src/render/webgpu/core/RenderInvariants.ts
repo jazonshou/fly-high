@@ -1,0 +1,95 @@
+/**
+ * Startup render invariants (1A-2, extended by 1C-4).
+ *
+ * INVARIANT THIS FILE OWNS: configuration states the renderer silently
+ * depends on are asserted once at startup instead of being discovered as
+ * mysterious behaviour later. Each check is a pure predicate over plain data
+ * collected by the renderer; the renderer decides when to collect and assert.
+ *
+ * Class P: no Babylon import, Node-testable.
+ */
+
+export interface StartupInvariantInput {
+  /** Whether the adapter advertises `timestamp-query`. */
+  readonly timestampQuerySupported: boolean;
+  /** The engine's `enableGPUTimingMeasurements` state after startup. */
+  readonly gpuTimingEnabled: boolean;
+  /** Features the renderer asked the device for. */
+  readonly requestedFeatures: readonly string[];
+  /** Features the device actually granted. */
+  readonly grantedFeatures: readonly string[];
+  /**
+   * 1C-4: `imageProcessingConfiguration.applyByPostProcess` once the tone-map
+   * post-process exists. The aerial-perspective hook fires after
+   * pbrBlockImageProcessing, which must be a clamp-only pass — haze composed
+   * onto tone-mapped colour is wrong everywhere at once. Omit before the
+   * post-process chain exists.
+   */
+  readonly imageProcessingAppliedByPostProcess?: boolean;
+  /**
+   * 1C-4: `scene.fogMode`, which must be FOGMODE_NONE (0). `fogFragment`
+   * runs immediately before the aerial hook; any other mode double-fogs
+   * every PBR fragment. Omit before the scene exists.
+   */
+  readonly sceneFogMode?: number;
+}
+
+/** Babylon's Scene.FOGMODE_NONE, restated as data so this file stays Class P. */
+export const FOG_MODE_NONE = 0;
+
+/**
+ * Returns every violated invariant as a human-readable failure. Empty means
+ * the startup state is coherent.
+ */
+export function collectStartupInvariantFailures(
+  input: StartupInvariantInput,
+): readonly string[] {
+  const failures: string[] = [];
+
+  // The adaptive governor's GPU signal exists exactly when timestamp queries
+  // do. Enabled-without-support would silently report garbage; disabled-with-
+  // support silently blinds Governor A and every perf capture.
+  if (input.gpuTimingEnabled !== input.timestampQuerySupported) {
+    failures.push(
+      `GPU timing measurements are ${input.gpuTimingEnabled ? "enabled" : "disabled"} but `
+      + `timestamp-query is ${input.timestampQuerySupported ? "supported" : "unsupported"}; `
+      + "they must agree or the governor's GPU signal is wrong",
+    );
+  }
+
+  const granted = new Set(input.grantedFeatures);
+  for (const feature of input.requestedFeatures) {
+    if (!granted.has(feature)) {
+      failures.push(
+        `Requested device feature "${feature}" was not granted; capability decisions made `
+        + "before device creation no longer hold",
+      );
+    }
+  }
+
+  if (
+    input.imageProcessingAppliedByPostProcess !== undefined
+    && !input.imageProcessingAppliedByPostProcess
+  ) {
+    failures.push(
+      "Image processing is not applied by post-process; the aerial-perspective hook "
+      + "would compose haze onto tone-mapped colour instead of linear HDR",
+    );
+  }
+
+  if (input.sceneFogMode !== undefined && input.sceneFogMode !== FOG_MODE_NONE) {
+    failures.push(
+      `scene.fogMode is ${input.sceneFogMode} but must be FOGMODE_NONE (${FOG_MODE_NONE}); `
+      + "Babylon fog and the aerial-perspective include would both apply",
+    );
+  }
+
+  return failures;
+}
+
+/** Throws with every violated invariant listed, or returns silently. */
+export function assertStartupInvariants(input: StartupInvariantInput): void {
+  const failures = collectStartupInvariantFailures(input);
+  if (failures.length === 0) return;
+  throw new Error(`Render startup invariants violated:\n- ${failures.join("\n- ")}`);
+}

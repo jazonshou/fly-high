@@ -1,14 +1,14 @@
 import { TerrainBiome } from "@/src/world";
+import { clamp as kernelClamp } from "@/src/world/noise";
+import { hashSeed } from "@/src/world/seed";
+import { densityField, type VegetationDensitySample } from "./densityField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
-  type BuildingStyle,
-  type DetailBuildingPlacement,
   type DetailCellGenerationOptions,
   type DetailRockPlacement,
   type DetailShrubPlacement,
   type DetailTerrainSample,
   type DetailTreePlacement,
-  type DetailVillage,
   type GeneratedDetailCell,
   type RockVariant,
   type ShrubSpecies,
@@ -16,8 +16,6 @@ import {
 } from "./types";
 
 const TAU = Math.PI * 2;
-const VILLAGE_REGION_CELLS = 4;
-const VILLAGE_REGION_CHANCE = 0.42;
 
 type RandomSource = () => number;
 
@@ -66,26 +64,14 @@ function validSample(sample: DetailTerrainSample): boolean {
   );
 }
 
-function treeProbability(sample: DetailTerrainSample): number {
-  const moisture = sample.moisture;
-  let probability: number;
-  switch (sample.biome) {
-    case TerrainBiome.FOREST:
-      probability = 0.68 + moisture * 0.25;
-      break;
-    case TerrainBiome.GRASSLAND:
-      probability = 0.035 + moisture * 0.12;
-      break;
-    case TerrainBiome.HIGHLAND:
-      probability = 0.08 + moisture * 0.18;
-      break;
-    case TerrainBiome.ALPINE:
-      probability = 0.015 + moisture * 0.035;
-      break;
-    default:
-      return 0;
-  }
-  return probability * clamp(1 - sample.slope * 1.15, 0, 1);
+/**
+ * Multiplicative suppression over the graded airport surrounds (1B-6).
+ * Airfields are mown grass: woody plants and rocks fade out with influence
+ * (never a boolean cutoff), while ground cover — when 2-16 adds it — keeps
+ * growing with its height capped at ~0.15 m. Zero influence is a no-op.
+ */
+function airportClearance(sample: DetailTerrainSample): number {
+  return 1 - clamp(sample.airportInfluence ?? 0, 0, 1);
 }
 
 function rockProbability(sample: DetailTerrainSample): number {
@@ -112,7 +98,7 @@ function rockProbability(sample: DetailTerrainSample): number {
     default:
       return 0;
   }
-  return clamp(probability + sample.slope * 0.35, 0, 0.75);
+  return clamp(probability + sample.slope * 0.35, 0, 0.75) * airportClearance(sample);
 }
 
 function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
@@ -191,236 +177,356 @@ function treeColor(species: TreeSpecies, random: RandomSource): readonly [number
   }
 }
 
-function villageSuitability(sample: DetailTerrainSample): boolean {
-  return (
-    validSample(sample) &&
-    (sample.biome === TerrainBiome.GRASSLAND || sample.biome === TerrainBiome.HIGHLAND) &&
-    sample.slope <= 0.16 &&
-    sample.moisture >= 0.18 &&
-    sample.moisture <= 0.88
-  );
+/**
+ * The blue-noise scatter (1B-9), replacing the 176 m cluster lattice the
+ * audit could see from altitude. Candidates live on a stratified jitter grid
+ * whose subcell size is a continuous function of the local density —
+ * clamp(sqrt(1/density), 3, 90) m — plus a world-continuous domain warp of
+ * 0.6·cell, so no constant period exists anywhere in the image (4 m in
+ * closed forest is under one crown diameter). Placement is a pure function
+ * of world position: blocks sit on a global 32 m lattice with per-block and
+ * per-subcell seed streams, so neighbouring detail pages derive identical
+ * stems and the floating-origin rebase can never make anything slide.
+ */
+const SCATTER_BLOCK_METERS = 32;
+/** Covers the widest thinning radius so page-edge decisions agree. */
+const SCATTER_HALO_METERS = 8;
+/** Terrain sampled on a global 16 m grid; candidates interpolate heights. */
+const SCATTER_TERRAIN_GRID_METERS = 16;
+const MAX_SUBCELLS_PER_BLOCK_AXIS = 8;
+
+interface ScatterTerrainGrid {
+  readonly minNodeX: number;
+  readonly minNodeZ: number;
+  readonly nodesX: number;
+  readonly nodesZ: number;
+  readonly samples: DetailTerrainSample[];
 }
 
-function createVillage(
-  seed: string,
-  cellX: number,
-  cellZ: number,
-  cellSize: number,
-  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-): { village: DetailVillage; buildings: readonly DetailBuildingPlacement[] } | null {
-  const regionX = Math.floor(cellX / VILLAGE_REGION_CELLS);
-  const regionZ = Math.floor(cellZ / VILLAGE_REGION_CELLS);
-  const ownerRandom = createRandom(`${seed}/village-region/${regionX}/${regionZ}`);
-  const ownerX = regionX * VILLAGE_REGION_CELLS + Math.floor(ownerRandom() * VILLAGE_REGION_CELLS);
-  const ownerZ = regionZ * VILLAGE_REGION_CELLS + Math.floor(ownerRandom() * VILLAGE_REGION_CELLS);
-  if (ownerX !== cellX || ownerZ !== cellZ || ownerRandom() >= VILLAGE_REGION_CHANCE) return null;
-
-  const random = createRandom(`${seed}/village/${cellX}/${cellZ}`);
-  const minX = cellX * cellSize;
-  const minZ = cellZ * cellSize;
-  const centerX = minX + cellSize * (0.34 + random() * 0.32);
-  const centerZ = minZ + cellSize * (0.34 + random() * 0.32);
-  const centerSample = sampleTerrain(centerX, centerZ);
-  if (!villageSuitability(centerSample)) return null;
-
-  const heading = random() * Math.PI;
-  const village: DetailVillage = {
-    id: `${cellX}:${cellZ}/village`,
-    centerX,
-    centerY: centerSample.height,
-    centerZ,
-    roadHeadingRadians: heading,
-  };
-  const forwardX = Math.sin(heading);
-  const forwardZ = Math.cos(heading);
-  const rightX = forwardZ;
-  const rightZ = -forwardX;
-  const requestedBuildings = 6 + Math.floor(random() * 7);
-  const buildings: DetailBuildingPlacement[] = [];
-  for (let index = 0; index < requestedBuildings; index += 1) {
-    const along = (index - (requestedBuildings - 1) * 0.5) * (20 + random() * 5);
-    const side = (index % 2 === 0 ? -1 : 1) * (17 + random() * 10);
-    const x = centerX + forwardX * along + rightX * side;
-    const z = centerZ + forwardZ * along + rightZ * side;
-    if (x < minX + 8 || x > minX + cellSize - 8 || z < minZ + 8 || z > minZ + cellSize - 8) {
-      continue;
-    }
-    const sample = sampleTerrain(x, z);
-    if (!villageSuitability(sample) || sample.slope > 0.2) continue;
-    const styleChoice = random();
-    const style: BuildingStyle = styleChoice < 0.7 ? "cottage" : styleChoice < 0.92 ? "barn" : "tower";
-    const width = style === "tower" ? 8 + random() * 4 : 10 + random() * 8;
-    const depth = style === "barn" ? 14 + random() * 8 : 8 + random() * 7;
-    const height = style === "tower" ? 14 + random() * 8 : 6 + random() * 4;
-    const colorVariation = 0.82 + random() * 0.28;
-    buildings.push({
-      kind: "building",
-      id: `${village.id}/building/${index}`,
-      style,
-      x,
-      y: sample.height,
-      z,
-      yawRadians: heading + (random() - 0.5) * 0.1,
-      widthMeters: width,
-      heightMeters: height,
-      depthMeters: depth,
-      color: [colorVariation, colorVariation * 0.96, colorVariation * 0.86, 1],
-    });
-  }
-  return buildings.length >= 3 ? { village, buildings } : null;
-}
-
-function generateTrees(
-  seed: string,
+function buildScatterTerrainGrid(
   minX: number,
   minZ: number,
   cellSize: number,
-  density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
-): readonly DetailTreePlacement[] {
-  if (density <= 0) return [];
-  const clusterSpacing = 176;
-  const maximumClusterRadius = 132;
-  const maximumClusterReach = maximumClusterRadius * 1.5;
-  const poissonHalo = 14;
-  const minimumClusterX = Math.floor((minX - maximumClusterReach - poissonHalo) / clusterSpacing);
-  const maximumClusterX = Math.floor(
-    (minX + cellSize + maximumClusterReach + poissonHalo) / clusterSpacing,
-  );
-  const minimumClusterZ = Math.floor((minZ - maximumClusterReach - poissonHalo) / clusterSpacing);
-  const maximumClusterZ = Math.floor(
-    (minZ + cellSize + maximumClusterReach + poissonHalo) / clusterSpacing,
-  );
-  interface Candidate {
-    readonly tree: DetailTreePlacement;
-    readonly priority: number;
-    readonly spacing: number;
+): ScatterTerrainGrid {
+  const pitch = SCATTER_TERRAIN_GRID_METERS;
+  const minNodeX = Math.floor((minX - SCATTER_HALO_METERS - SCATTER_BLOCK_METERS) / pitch);
+  const minNodeZ = Math.floor((minZ - SCATTER_HALO_METERS - SCATTER_BLOCK_METERS) / pitch);
+  const maxNodeX = Math.ceil((minX + cellSize + SCATTER_HALO_METERS + SCATTER_BLOCK_METERS) / pitch);
+  const maxNodeZ = Math.ceil((minZ + cellSize + SCATTER_HALO_METERS + SCATTER_BLOCK_METERS) / pitch);
+  const nodesX = maxNodeX - minNodeX + 1;
+  const nodesZ = maxNodeZ - minNodeZ + 1;
+  const samples: DetailTerrainSample[] = new Array(nodesX * nodesZ);
+  for (let nodeZ = 0; nodeZ < nodesZ; nodeZ += 1) {
+    for (let nodeX = 0; nodeX < nodesX; nodeX += 1) {
+      samples[nodeZ * nodesX + nodeX] = sampleTerrain(
+        (minNodeX + nodeX) * pitch,
+        (minNodeZ + nodeZ) * pitch,
+      );
+    }
   }
-  const candidates: Candidate[] = [];
-  const densityThreshold = clamp(density * 0.78, 0, 1);
+  return { minNodeX, minNodeZ, nodesX, nodesZ, samples };
+}
 
-  // Clusters are owned by a global lattice, not by a detail page.  Neighboring
-  // pages therefore see the same stand centres and candidate identities.  A
-  // wide jitter plus lobed offspring distribution hides the underlying lattice
-  // while retaining deterministic, bounded work.
-  for (let clusterZ = minimumClusterZ; clusterZ <= maximumClusterZ; clusterZ += 1) {
-    for (let clusterX = minimumClusterX; clusterX <= maximumClusterX; clusterX += 1) {
-      const random = createRandom(`${seed}/tree-stand/${clusterX}/${clusterZ}`);
-      if (random() > 0.72) continue;
-      const centerX = (clusterX + 0.08 + random() * 0.84) * clusterSpacing;
-      const centerZ = (clusterZ + 0.08 + random() * 0.84) * clusterSpacing;
-      const radius = 58 + random() * (maximumClusterRadius - 58);
-      const richness = 0.72 + random() * 0.48;
-      const standAge = random();
-      const dominantSpeciesChoice = random();
-      const lobeCount = 1 + Math.floor(random() * 3);
-      const lobes: Array<readonly [number, number]> = [[centerX, centerZ]];
-      for (let lobe = 1; lobe < lobeCount; lobe += 1) {
-        const angle = random() * TAU;
-        const offset = radius * (0.18 + random() * 0.28);
-        lobes.push([
-          centerX + Math.cos(angle) * offset,
-          centerZ + Math.sin(angle) * offset,
-        ]);
+function gridNearest(grid: ScatterTerrainGrid, x: number, z: number): DetailTerrainSample {
+  const pitch = SCATTER_TERRAIN_GRID_METERS;
+  const nodeX = clamp(Math.round(x / pitch) - grid.minNodeX, 0, grid.nodesX - 1);
+  const nodeZ = clamp(Math.round(z / pitch) - grid.minNodeZ, 0, grid.nodesZ - 1);
+  return grid.samples[nodeZ * grid.nodesX + nodeX]!;
+}
+
+function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
+  const pitch = SCATTER_TERRAIN_GRID_METERS;
+  const gx = x / pitch - grid.minNodeX;
+  const gz = z / pitch - grid.minNodeZ;
+  const x0 = clamp(Math.floor(gx), 0, grid.nodesX - 2);
+  const z0 = clamp(Math.floor(gz), 0, grid.nodesZ - 2);
+  const fx = clamp(gx - x0, 0, 1);
+  const fz = clamp(gz - z0, 0, 1);
+  const row0 = z0 * grid.nodesX + x0;
+  const row1 = row0 + grid.nodesX;
+  const top = grid.samples[row0]!.height * (1 - fx) + grid.samples[row0 + 1]!.height * fx;
+  const bottom = grid.samples[row1]!.height * (1 - fx) + grid.samples[row1 + 1]!.height * fx;
+  return top * (1 - fz) + bottom * fz;
+}
+
+interface ScatterContext {
+  readonly seed: string;
+  readonly seedHash: number;
+  readonly minX: number;
+  readonly minZ: number;
+  readonly cellSize: number;
+  readonly density: number;
+  readonly seaLevelMeters: number;
+  readonly dayOfYear: number;
+  readonly grid: ScatterTerrainGrid;
+}
+
+function fieldAt(
+  context: ScatterContext,
+  sample: DetailTerrainSample,
+  x: number,
+  z: number,
+): VegetationDensitySample {
+  return densityField(context.seedHash, {
+    x,
+    z,
+    heightMeters: sample.height,
+    seaLevelMeters: context.seaLevelMeters,
+    slope: sample.slope,
+    moisture: sample.moisture,
+    ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
+    ...(sample.airportInfluence !== undefined
+      ? { airportInfluence: sample.airportInfluence }
+      : {}),
+    dayOfYear: context.dayOfYear,
+  });
+}
+
+interface ScatterCandidate {
+  readonly x: number;
+  readonly z: number;
+  readonly priority: number;
+  readonly spacing: number;
+  readonly build: () => DetailTreePlacement | DetailShrubPlacement;
+}
+
+/**
+ * O(n) rank-order thinning over an 8 m spatial hash: each candidate checks
+ * only its neighbouring buckets and yields to any strictly higher-priority
+ * candidate inside the pair's required spacing. The halo band lets
+ * candidates just across a page edge participate, so both pages reach the
+ * same verdicts.
+ */
+function thinCandidates(candidates: readonly ScatterCandidate[]): readonly ScatterCandidate[] {
+  const bucketSize = SCATTER_HALO_METERS;
+  const buckets = new Map<string, number[]>();
+  candidates.forEach((candidate, index) => {
+    const key = `${Math.floor(candidate.x / bucketSize)}:${Math.floor(candidate.z / bucketSize)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(index);
+    else buckets.set(key, [index]);
+  });
+  return candidates.filter((candidate, index) => {
+    const bucketX = Math.floor(candidate.x / bucketSize);
+    const bucketZ = Math.floor(candidate.z / bucketSize);
+    for (let dz = -1; dz <= 1; dz += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const bucket = buckets.get(`${bucketX + dx}:${bucketZ + dz}`);
+        if (!bucket) continue;
+        for (const otherIndex of bucket) {
+          if (otherIndex === index) continue;
+          const other = candidates[otherIndex]!;
+          if (
+            other.priority < candidate.priority
+            || (other.priority === candidate.priority && otherIndex > index)
+          ) continue;
+          const spacing = Math.max(candidate.spacing, other.spacing);
+          if (
+            Math.abs(other.x - candidate.x) < spacing
+            && Math.abs(other.z - candidate.z) < spacing
+            && Math.hypot(other.x - candidate.x, other.z - candidate.z) < spacing
+          ) return false;
+        }
       }
-      const potentialTrees = 14 + Math.floor(random() * 16);
-      for (let index = 0; index < potentialTrees; index += 1) {
-        const densitySelection = random();
-        const lobe = lobes[Math.floor(random() * lobes.length)] ?? lobes[0]!;
-        const angle = random() * TAU;
-        const radialDistance = radius * Math.pow(random(), 0.92);
-        const x = lobe[0] + Math.cos(angle) * radialDistance;
-        const z = lobe[1] + Math.sin(angle) * radialDistance;
-        if (
-          densitySelection > densityThreshold
-          || x < minX - poissonHalo
-          || x >= minX + cellSize + poissonHalo
-          || z < minZ - poissonHalo
-          || z >= minZ + cellSize + poissonHalo
-        ) continue;
-        const ecologyAcceptance = random();
-        const sample = sampleTerrain(x, z);
-        if (
-          !validSample(sample)
-          || ecologyAcceptance >= clamp(treeProbability(sample) * richness, 0, 0.97)
-        ) continue;
-        if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 82) continue;
-        const speciesChoice = random() < 0.62 ? dominantSpeciesChoice : random();
-        const species = chooseTreeSpecies(sample, speciesChoice);
-        const dimensions = treeDimensions(species, random, standAge);
-        const priority = random();
-        candidates.push({
-          tree: {
-            kind: "tree",
-            id: `stand:${clusterX}:${clusterZ}/tree/${index}`,
-            species,
-            x,
-            y: sample.height,
-            z,
-            yawRadians: random() * TAU,
-            heightMeters: dimensions.height,
-            crownRadiusMeters: dimensions.crown,
-            trunkRadiusMeters: dimensions.trunk,
-            windPhaseRadians: random() * TAU,
-            windResponse: dimensions.wind * (0.82 + random() * 0.28),
-            color: treeColor(species, random),
-            selection: random(),
-          },
-          priority,
-          spacing: clamp(dimensions.crown * 0.82, 3.5, poissonHalo),
-        });
+    }
+    return true;
+  });
+}
+
+function scatterLayer(
+  context: ScatterContext,
+  layer: "canopy" | "understory",
+  emit: (
+    x: number,
+    z: number,
+    y: number,
+    blockSample: DetailTerrainSample,
+    field: VegetationDensitySample,
+    random: RandomSource,
+    blockRandom: { standAge: number; dominantChoice: number },
+    push: (spacing: number, priority: number, build: () => DetailTreePlacement | DetailShrubPlacement) => void,
+  ) => void,
+): readonly (DetailTreePlacement | DetailShrubPlacement)[] {
+  const { minX, minZ, cellSize } = context;
+  const loX = minX - SCATTER_HALO_METERS;
+  const hiX = minX + cellSize + SCATTER_HALO_METERS;
+  const loZ = minZ - SCATTER_HALO_METERS;
+  const hiZ = minZ + cellSize + SCATTER_HALO_METERS;
+  const minBlockX = Math.floor(loX / SCATTER_BLOCK_METERS);
+  const maxBlockX = Math.floor((hiX - 1e-9) / SCATTER_BLOCK_METERS);
+  const minBlockZ = Math.floor(loZ / SCATTER_BLOCK_METERS);
+  const maxBlockZ = Math.floor((hiZ - 1e-9) / SCATTER_BLOCK_METERS);
+
+  // Per-block density lattice, one ring wider than the block sweep so every
+  // candidate can interpolate stems between the four surrounding block
+  // centres. Interpolated acceptance removes block-level density steps —
+  // the job a domain warp would otherwise do, without printing the warp
+  // noise's own wavelength into the stem spectrum.
+  const stemsAt = new Map<string, { stems: number; field: VegetationDensitySample; sample: DetailTerrainSample }>();
+  const blockInfo = (blockX: number, blockZ: number) => {
+    const key = `${blockX}:${blockZ}`;
+    const cached = stemsAt.get(key);
+    if (cached) return cached;
+    const centerX = blockX * SCATTER_BLOCK_METERS + SCATTER_BLOCK_METERS / 2;
+    const centerZ = blockZ * SCATTER_BLOCK_METERS + SCATTER_BLOCK_METERS / 2;
+    const sample = gridNearest(context.grid, centerX, centerZ);
+    const field = validSample(sample)
+      ? fieldAt(context, sample, centerX, centerZ)
+      : null;
+    const info = {
+      sample,
+      field: field ?? {
+        treeStemsPerSquareMeter: 0,
+        shrubStemsPerSquareMeter: 0,
+        heightFactor: 1,
+        aspect: 0,
+      },
+      stems: field === null ? 0 : (layer === "canopy"
+        ? field.treeStemsPerSquareMeter
+        : field.shrubStemsPerSquareMeter) * context.density,
+    };
+    stemsAt.set(key, info);
+    return info;
+  };
+  const stemsInterpolated = (x: number, z: number): number => {
+    const gx = (x - SCATTER_BLOCK_METERS / 2) / SCATTER_BLOCK_METERS;
+    const gz = (z - SCATTER_BLOCK_METERS / 2) / SCATTER_BLOCK_METERS;
+    const x0 = Math.floor(gx);
+    const z0 = Math.floor(gz);
+    const fx = gx - x0;
+    const fz = gz - z0;
+    const top = blockInfo(x0, z0).stems * (1 - fx) + blockInfo(x0 + 1, z0).stems * fx;
+    const bottom = blockInfo(x0, z0 + 1).stems * (1 - fx) + blockInfo(x0 + 1, z0 + 1).stems * fx;
+    return top * (1 - fz) + bottom * fz;
+  };
+
+  const candidates: ScatterCandidate[] = [];
+  for (let blockZ = minBlockZ; blockZ <= maxBlockZ; blockZ += 1) {
+    for (let blockX = minBlockX; blockX <= maxBlockX; blockX += 1) {
+      const info = blockInfo(blockX, blockZ);
+      if (!validSample(info.sample)) continue;
+      const stems = info.stems;
+      if (stems <= 1e-7) continue;
+      const jitterCell = kernelClamp(Math.sqrt(1 / stems), 3, 90);
+      // Ceil + acceptance keeps the expected count exactly stems·area: the
+      // subcell grid over-provisions and the acceptance roll trims it back.
+      const sub = Math.max(
+        1,
+        Math.min(MAX_SUBCELLS_PER_BLOCK_AXIS, Math.ceil(SCATTER_BLOCK_METERS / jitterCell)),
+      );
+      const subSize = SCATTER_BLOCK_METERS / sub;
+      const blockStream = createRandom(`${context.seed}/${layer}/${blockX}/${blockZ}`);
+      const blockRandom = { standAge: blockStream(), dominantChoice: blockStream() };
+
+      for (let subZ = 0; subZ < sub; subZ += 1) {
+        for (let subX = 0; subX < sub; subX += 1) {
+          // Every subcell owns an independent stream, so page-local culls
+          // cannot shift a neighbouring page's draws. Full-cell uniform
+          // jitter zeroes every stratification line exactly (the jitter
+          // pdf's transform has nulls at all grid harmonics).
+          const random = createRandom(
+            `${context.seed}/${layer}/${blockX}/${blockZ}/${subX}:${subZ}`,
+          );
+          const jitterX = random();
+          const jitterZ = random();
+          const acceptRoll = random();
+          const x = blockX * SCATTER_BLOCK_METERS + (subX + jitterX) * subSize;
+          const z = blockZ * SCATTER_BLOCK_METERS + (subZ + jitterZ) * subSize;
+          const acceptance = kernelClamp(
+            stemsInterpolated(x, z) * subSize * subSize,
+            0,
+            1,
+          );
+          if (acceptRoll >= acceptance) continue;
+          if (x < loX || x >= hiX || z < loZ || z >= hiZ) continue;
+          const y = gridHeight(context.grid, x, z);
+          emit(x, z, y, info.sample, info.field, random, blockRandom, (spacing, priority, build) => {
+            candidates.push({ x, z, priority, spacing, build });
+          });
+        }
       }
     }
   }
 
-  // Deterministic priority filtering is a bounded Poisson-like pass.  The halo
-  // lets candidates just across a page edge participate, preventing paired
-  // trees or density seams at paging boundaries.
-  return candidates.filter((candidate) => {
-    const { tree } = candidate;
-    if (
-      tree.x < minX
-      || tree.x >= minX + cellSize
-      || tree.z < minZ
-      || tree.z >= minZ + cellSize
-    ) return false;
-    return !candidates.some((other) => {
-      if (other === candidate) return false;
-      if (
-        other.priority < candidate.priority
-        || (other.priority === candidate.priority && other.tree.id >= candidate.tree.id)
-      ) return false;
-      const requiredSpacing = Math.max(candidate.spacing, other.spacing);
-      return Math.abs(other.tree.x - tree.x) < requiredSpacing
-        && Math.abs(other.tree.z - tree.z) < requiredSpacing
-        && Math.hypot(other.tree.x - tree.x, other.tree.z - tree.z) < requiredSpacing;
-    });
-  }).map((candidate) => candidate.tree);
+  return thinCandidates(candidates)
+    .filter((candidate) => (
+      candidate.x >= minX
+      && candidate.x < minX + cellSize
+      && candidate.z >= minZ
+      && candidate.z < minZ + cellSize
+    ))
+    .map((candidate) => candidate.build());
 }
 
-function shrubProbability(sample: DetailTerrainSample): number {
-  let probability: number;
-  switch (sample.biome) {
-    case TerrainBiome.FOREST:
-      probability = 0.52 + sample.moisture * 0.22;
-      break;
-    case TerrainBiome.GRASSLAND:
-      probability = 0.12 + sample.moisture * 0.16;
-      break;
-    case TerrainBiome.HIGHLAND:
-      probability = 0.2 + sample.moisture * 0.13;
-      break;
-    case TerrainBiome.ALPINE:
-      probability = 0.06;
-      break;
-    case TerrainBiome.BEACH:
-      probability = 0.025;
-      break;
-    default:
-      return 0;
-  }
-  return probability * clamp(1 - sample.slope * 1.3, 0, 1);
+function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
+  return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, block, push) => {
+    const priority = random();
+    const speciesRoll = random();
+    const dominantRoll = random();
+    const coniferRoll = random();
+    let species = chooseTreeSpecies(
+      blockSample,
+      dominantRoll < 0.62 ? block.dominantChoice : speciesRoll,
+    );
+    // Cool north faces carry a larger conifer share (the aspect species shift).
+    if (field.aspect < 0 && coniferRoll < -field.aspect * 0.3) {
+      species = coniferRoll < -field.aspect * 0.15 ? "spruce" : "pine";
+    }
+    const dimensions = treeDimensions(species, random, block.standAge);
+    // Krummholz: near the treeline trees shrink before they disappear.
+    const height = dimensions.height * field.heightFactor;
+    const crown = dimensions.crown * (0.55 + 0.45 * field.heightFactor);
+    // Half a crown: real closed-canopy forests overlap crowns; a full-crown
+    // exclusion zone thins the stand far below its ecological density.
+    push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
+      kind: "tree",
+      id: `canopy:${x.toFixed(2)}:${z.toFixed(2)}`,
+      species,
+      x,
+      y,
+      z,
+      yawRadians: random() * TAU,
+      heightMeters: height,
+      crownRadiusMeters: crown,
+      trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor),
+      windPhaseRadians: random() * TAU,
+      windResponse: dimensions.wind * (0.82 + random() * 0.28),
+      color: treeColor(species, random),
+      selection: random(),
+    }));
+  }) as readonly DetailTreePlacement[];
+}
+
+function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[] {
+  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, block, push) => {
+    const priority = random();
+    const speciesRoll = random();
+    const species = chooseShrubSpecies(
+      blockSample,
+      speciesRoll < 0.7 ? block.dominantChoice : random(),
+    );
+    const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
+    const height = (species === "sage"
+      ? 0.35 + maturity * 1.05
+      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * field.heightFactor;
+    const radius = height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3);
+    push(kernelClamp(radius * 1.3, 1, 5), priority, () => ({
+      kind: "shrub",
+      id: `understory:${x.toFixed(2)}:${z.toFixed(2)}`,
+      species,
+      x,
+      y,
+      z,
+      yawRadians: random() * TAU,
+      heightMeters: height,
+      radiusMeters: radius,
+      windPhaseRadians: random() * TAU,
+      windResponse: 0.78 + random() * 0.38,
+      color: shrubColor(species, random),
+      selection: random(),
+    }));
+  }) as readonly DetailShrubPlacement[];
 }
 
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
@@ -445,79 +551,6 @@ function shrubColor(
   }
 }
 
-function generateShrubs(
-  seed: string,
-  minX: number,
-  minZ: number,
-  cellSize: number,
-  density: number,
-  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
-): readonly DetailShrubPlacement[] {
-  if (density <= 0) return [];
-  const patchSpacing = 144;
-  const maximumRadius = 66;
-  const minimumPatchX = Math.floor((minX - maximumRadius) / patchSpacing);
-  const maximumPatchX = Math.floor((minX + cellSize + maximumRadius) / patchSpacing);
-  const minimumPatchZ = Math.floor((minZ - maximumRadius) / patchSpacing);
-  const maximumPatchZ = Math.floor((minZ + cellSize + maximumRadius) / patchSpacing);
-  const densityThreshold = clamp(density * 0.72, 0, 1);
-  const shrubs: DetailShrubPlacement[] = [];
-  for (let patchZ = minimumPatchZ; patchZ <= maximumPatchZ; patchZ += 1) {
-    for (let patchX = minimumPatchX; patchX <= maximumPatchX; patchX += 1) {
-      const random = createRandom(`${seed}/shrub-patch/${patchX}/${patchZ}`);
-      if (random() > 0.64) continue;
-      const centerX = (patchX + 0.1 + random() * 0.8) * patchSpacing;
-      const centerZ = (patchZ + 0.1 + random() * 0.8) * patchSpacing;
-      const radius = 20 + random() * (maximumRadius - 20);
-      const richness = 0.78 + random() * 0.35;
-      const dominantChoice = random();
-      const candidates = 7 + Math.floor(random() * 12);
-      for (let index = 0; index < candidates; index += 1) {
-        const selection = random();
-        const angle = random() * TAU;
-        const distance = radius * Math.pow(random(), 1.18);
-        const x = centerX + Math.cos(angle) * distance;
-        const z = centerZ + Math.sin(angle) * distance;
-        if (
-          selection > densityThreshold
-          || x < minX
-          || x >= minX + cellSize
-          || z < minZ
-          || z >= minZ + cellSize
-        ) continue;
-        const sample = sampleTerrain(x, z);
-        if (
-          !validSample(sample)
-          || random() >= clamp(shrubProbability(sample) * richness, 0, 0.94)
-        ) continue;
-        if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 68) continue;
-        const species = chooseShrubSpecies(sample, random() < 0.7 ? dominantChoice : random());
-        const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
-        const height = species === "sage"
-          ? 0.35 + maturity * 1.05
-          : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1);
-        shrubs.push({
-          kind: "shrub",
-          id: `shrub:${patchX}:${patchZ}/${index}`,
-          species,
-          x,
-          y: sample.height,
-          z,
-          yawRadians: random() * TAU,
-          heightMeters: height,
-          radiusMeters: height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3),
-          windPhaseRadians: random() * TAU,
-          windResponse: 0.78 + random() * 0.38,
-          color: shrubColor(species, random),
-          selection,
-        });
-      }
-    }
-  }
-  return shrubs;
-}
-
 function chooseRockVariant(sample: DetailTerrainSample, random: RandomSource): RockVariant {
   if (sample.biome === TerrainBiome.ALPINE || sample.biome === TerrainBiome.SNOW) {
     return random() < 0.72 ? "granite" : "dark";
@@ -533,7 +566,6 @@ function generateRocks(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
-  village: DetailVillage | null,
 ): readonly DetailRockPlacement[] {
   if (density <= 0) return [];
   const random = createRandom(`${seed}/rocks/${key}`);
@@ -545,7 +577,6 @@ function generateRocks(
     const acceptance = random();
     const sample = sampleTerrain(x, z);
     if (!validSample(sample) || acceptance >= rockProbability(sample)) continue;
-    if (village && Math.hypot(x - village.centerX, z - village.centerZ) < 45) continue;
     const variant = chooseRockVariant(sample, random);
     const radius = 0.5 + (0.25 + sample.slope * 0.75) * random() * 4.2;
     const tint = 0.78 + random() * 0.3;
@@ -580,17 +611,27 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
   }
 
   const seed = String(options.worldSeed);
+  const seedHash = hashSeed(seed);
   const key = detailCellKey(cellX, cellZ);
   const minX = cellX * cellSizeMeters;
   const minZ = cellZ * cellSizeMeters;
-  const settlement = createVillage(
+  const seaLevelMeters = options.seaLevelMeters ?? 0;
+  if (!Number.isFinite(seaLevelMeters)) {
+    throw new RangeError("Detail sea level must be finite");
+  }
+  const dayOfYear = options.dayOfYear ?? 0;
+  const grid = buildScatterTerrainGrid(minX, minZ, cellSizeMeters, options.terrainSample);
+  const context: ScatterContext = {
     seed,
-    cellX,
-    cellZ,
-    cellSizeMeters,
-    options.terrainSample,
-  );
-  const village = settlement?.village ?? null;
+    seedHash,
+    minX,
+    minZ,
+    cellSize: cellSizeMeters,
+    density: densityMultiplier,
+    seaLevelMeters,
+    dayOfYear,
+    grid,
+  };
   return {
     key,
     cellX,
@@ -600,24 +641,8 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     minZ,
     maxX: minX + cellSizeMeters,
     maxZ: minZ + cellSizeMeters,
-    trees: generateTrees(
-      seed,
-      minX,
-      minZ,
-      cellSizeMeters,
-      densityMultiplier,
-      options.terrainSample,
-      village,
-    ),
-    shrubs: generateShrubs(
-      seed,
-      minX,
-      minZ,
-      cellSizeMeters,
-      densityMultiplier,
-      options.terrainSample,
-      village,
-    ),
+    trees: densityMultiplier > 0 ? scatterTrees(context) : [],
+    shrubs: densityMultiplier > 0 ? scatterShrubs(context) : [],
     rocks: generateRocks(
       seed,
       key,
@@ -626,10 +651,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
-      village,
     ),
-    buildings: settlement?.buildings ?? [],
-    village,
   };
 }
 

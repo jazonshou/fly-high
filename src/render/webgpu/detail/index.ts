@@ -12,8 +12,6 @@ export { DEFAULT_DETAIL_CELL_SIZE_METERS } from "./types";
 export type { WorldDetailRuntimeOptions } from "./WorldDetailRuntime";
 export type { DetailGenerationBudget } from "./generationBudget";
 export type {
-  BuildingStyle,
-  DetailBuildingPlacement,
   DetailCellGenerationOptions,
   DetailFloatingOrigin,
   DetailLod,
@@ -22,7 +20,6 @@ export type {
   DetailTerrainSample,
   DetailTerrainSampler,
   DetailTreePlacement,
-  DetailVillage,
   GeneratedDetailCell,
   RockVariant,
   ShrubSpecies,

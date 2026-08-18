@@ -1,17 +1,24 @@
-import type { Camera } from "@babylonjs/core/Cameras/camera";
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { Matrix, Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { Material } from "@babylonjs/core/Materials/material";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { ProceduralTexture } from "@babylonjs/core/Materials/Textures/Procedurals/proceduralTexture.pure";
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
+import { viewScaleFromFov } from "./CloudReprojection";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import { DEFAULT_VOLUMETRIC_CLOUD_CONFIG } from "@/src/render/webgpu/nature/CloudConfig";
 import type { CloudShadowProjection } from "./CloudShadowReceiver";
@@ -268,8 +275,11 @@ var currentSamplerSampler: sampler;
 var currentSampler: texture_2d<f32>;
 var historySamplerSampler: sampler;
 var historySampler: texture_2d<f32>;
-uniform previousViewProjection: mat4x4f;
-uniform cameraLocal: vec3f;
+uniform previousCameraForward: vec3f;
+uniform previousCameraRight: vec3f;
+uniform previousCameraUp: vec3f;
+uniform previousViewScale: vec2f;
+uniform cameraDelta: vec3f;
 uniform cameraForward: vec3f;
 uniform cameraRight: vec3f;
 uniform cameraUp: vec3f;
@@ -306,10 +316,21 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     return fragmentOutputs;
   }
 
+  // 1B-12: camera-relative ray-basis reprojection. The sample point sits at
+  // ray·distance from the CURRENT camera; relative to the PREVIOUS camera it
+  // is that plus cameraDelta (absolute world positions, so a floating-origin
+  // rebase between the frames cancels exactly — no matrix to go stale).
   let distance = current.a * uniforms.maximumTraceDistance;
-  let localPoint = uniforms.cameraLocal + temporalViewRay(input.vUV) * distance;
-  let previousClip = uniforms.previousViewProjection * vec4f(localPoint, 1.0);
-  let previousNdc = previousClip.xy / max(previousClip.w, 0.000001);
+  let point = temporalViewRay(input.vUV) * distance + uniforms.cameraDelta;
+  let forwardDepth = dot(point, uniforms.previousCameraForward);
+  if (forwardDepth <= 0.000001) {
+    fragmentOutputs.color = current;
+    return fragmentOutputs;
+  }
+  let previousNdc = vec2f(
+    dot(point, uniforms.previousCameraRight) / (forwardDepth * uniforms.previousViewScale.x),
+    dot(point, uniforms.previousCameraUp) / (forwardDepth * uniforms.previousViewScale.y),
+  );
   let previousUv = previousNdc * 0.5 + 0.5;
   if (any(previousUv < vec2f(0.0)) || any(previousUv > vec2f(1.0))) {
     fragmentOutputs.color = current;
@@ -364,6 +385,13 @@ var cloudSampler: texture_2d<f32>;
 uniform fullResolution: vec2f;
 uniform sunColor: vec3f;
 uniform ambientColor: vec3f;
+uniform cameraForward: vec3f;
+uniform cameraRight: vec3f;
+uniform cameraUp: vec3f;
+uniform viewScale: vec2f;
+uniform maximumTraceDistance: f32;
+
+${AERIAL_PERSPECTIVE_WGSL}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -384,8 +412,26 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // pixels. A single representative scattering depth cannot describe a whole
   // volume ray; writing it here caused entire cloud columns to alternately pass
   // and fail against distant terrain, creating horizontal bands at the horizon.
-  let radiance = uniforms.sunColor * cloud.r
+  var radiance = uniforms.sunColor * cloud.r
     + uniforms.ambientColor * (cloud.g + cloud.b * 0.55);
+  // 1C-4: haze the cloud at its representative scattering depth, on the same
+  // shared curve as everything else. The ray is rebuilt with the exact basis
+  // formula the integration pass used for this texel. Premultiplied blending:
+  // transmittance scales the cloud's own radiance, while in-scatter enters
+  // premultiplied by the cloud's coverage of the pixel.
+  let ndc = uv * 2.0 - 1.0;
+  let direction = normalize(
+    uniforms.cameraForward
+      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
+      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
+  );
+  let cloudDistance = cloud.a * uniforms.maximumTraceDistance;
+  let aerial = aerialPerspective(
+    uniforms.aerialCameraAltitude + direction.y * cloudDistance,
+    cloudDistance,
+    dot(direction, uniforms.aerialSunDirection),
+  );
+  radiance = radiance * aerial.transmittance + aerial.inScatter * cloud.b;
   fragmentOutputs.color = vec4f(max(radiance, vec3f(0.0)), cloud.b);
 }
 `;
@@ -525,9 +571,15 @@ export class VolumetricCloudSystem {
   private readonly integrationTexture: ProceduralTexture;
   private readonly historyTextures: readonly [ProceduralTexture, ProceduralTexture];
   private readonly shadowTextureValue: ProceduralTexture;
-  private readonly currentViewProjection = Matrix.Identity();
-  private readonly previousViewProjection = Matrix.Identity();
   private readonly cameraWorld = Vector3.Zero();
+  /** Previous frame's ray basis + ABSOLUTE camera position (1B-12). */
+  private readonly previousCameraWorld = Vector3.Zero();
+  private readonly previousCameraForward = Vector3.Forward();
+  private readonly previousCameraRight = Vector3.Right();
+  private readonly previousCameraUp = Vector3.Up();
+  private readonly previousViewScale = new Vector2(1, 1);
+  private readonly cameraDelta = Vector3.Zero();
+  private previousStateValid = false;
   private readonly cameraForward = Vector3.Forward();
   private readonly cameraRight = Vector3.Right();
   private readonly cameraUp = Vector3.Up();
@@ -546,6 +598,8 @@ export class VolumetricCloudSystem {
   private atmosphereInitialized = false;
   private shadowDirty = true;
   private shadowReady = false;
+  /** Governor B lever 4 (1A-6b): a floor on frames between shadow renders. */
+  private shadowIntervalFloor: number | null = null;
   private frameIndex = 0;
   private lastShadowFrame = -1;
   private integrationRenderCount = 0;
@@ -616,6 +670,9 @@ export class VolumetricCloudSystem {
         attributes: ["position"],
         uniforms: [
           "worldViewProjection", "fullResolution", "sunColor", "ambientColor",
+          "cameraForward", "cameraRight", "cameraUp", "viewScale",
+          "maximumTraceDistance",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: ["cloudSampler"],
         needAlphaBlending: true,
@@ -788,7 +845,9 @@ export class VolumetricCloudSystem {
                 effect,
                 mesh: this.shell,
                 fillMode: Constants.MATERIAL_TriangleFillMode,
-                sampleCount: 1,
+                // The shell draws into the main offscreen chain, which is
+                // multisampled per the profile since 1B-11.
+                sampleCount: this.profile.msaaSamples,
                 colorFormat: "rgba16float",
                 depthStencilFormat: engine.isStencilEnable
                   ? "depth24plus-stencil8"
@@ -838,6 +897,16 @@ export class VolumetricCloudSystem {
     });
   }
 
+  /**
+   * Governor B lever 4: lengthen the cloud-shadow cadence under CPU
+   * pressure. Applied as max() against the tier schedule so it only slows.
+   */
+  setShadowIntervalFloor(intervalFrames: number | null): void {
+    this.shadowIntervalFloor = intervalFrames === null
+      ? null
+      : Math.max(1, Math.floor(intervalFrames));
+  }
+
   setProfile(profile: WebGpuQualityProfile): void {
     const nextSchedule = resolveCloudShadowSchedule(profile);
     resolveCloudRenderSize(
@@ -867,6 +936,16 @@ export class VolumetricCloudSystem {
     if (samplingChanged && !resized) this.resetTemporalHistory();
   }
 
+  /** Per-frame haze binding, resolved once by the renderer for all consumers. */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.material,
+      binding,
+      (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     const nextWindX = atmosphere.windDirection.x * atmosphere.windSpeed;
     const nextWindZ = atmosphere.windDirection.y * atmosphere.windSpeed;
@@ -892,11 +971,11 @@ export class VolumetricCloudSystem {
     this.shadowTextureValue.setFloat("humidity", this.humidity);
     this.material.setColor3(
       "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIntensity / 5.2),
+      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
     this.material.setColor3(
       "ambientColor",
-      atmosphere.ambientColor.scale(atmosphere.exposure),
+      atmosphere.ambientColor,
     );
     this.shadowDirty = true;
     this.shadowReady = false;
@@ -910,11 +989,9 @@ export class VolumetricCloudSystem {
     this.ensureCloudResolution();
     // This pass runs in the frame graph's volumetrics phase, before
     // scene.render() recomputes camera matrices — and the renderer lerps FOV
-    // every frame, so the cached transformation matrix is guaranteed stale.
-    // Force a view-matrix refresh before reading the view-projection (1A-4).
+    // every frame — so force a view-matrix refresh before reading camera
+    // directions (1A-4's fix, kept for the basis itself).
     this.camera.getViewMatrix(true);
-    this.currentViewProjection.copyFrom(this.camera.getTransformationMatrix());
-    if (!this.historyValid) this.previousViewProjection.copyFrom(this.currentViewProjection);
 
     const engine = this.scene.getEngine();
     this.fullResolution.set(engine.getRenderWidth(), engine.getRenderHeight());
@@ -922,6 +999,7 @@ export class VolumetricCloudSystem {
     this.shell.position.copyFrom(this.camera.position);
     this.updateViewUniforms();
     this.updateIntegrationUniforms(timeSeconds);
+    this.updateCompositeRayUniforms();
 
     let cloudOutput: ProceduralTexture | null = null;
     if (this.integrationTexture.isReady()) {
@@ -931,8 +1009,14 @@ export class VolumetricCloudSystem {
       const writeIndex: 0 | 1 = this.historyReadIndex === 0 ? 1 : 0;
       const historyWrite = this.historyTextures[writeIndex];
       historyWrite.setFloat("historyValid", this.historyValid ? 1 : 0);
-      historyWrite.setMatrix("previousViewProjection", this.previousViewProjection);
       this.updateCameraRayUniforms(historyWrite);
+      if (!this.previousStateValid) this.capturePreviousCameraState();
+      this.cameraDelta.copyFrom(this.cameraWorld).subtractInPlace(this.previousCameraWorld);
+      historyWrite.setVector3("previousCameraForward", this.previousCameraForward);
+      historyWrite.setVector3("previousCameraRight", this.previousCameraRight);
+      historyWrite.setVector3("previousCameraUp", this.previousCameraUp);
+      historyWrite.setVector2("previousViewScale", this.previousViewScale);
+      historyWrite.setVector3("cameraDelta", this.cameraDelta);
       historyWrite.setVector2("inverseOutputSize", this.inverseOutputSize);
       if (historyWrite.isReady()) {
         historyWrite.render();
@@ -946,8 +1030,18 @@ export class VolumetricCloudSystem {
       this.material.setTexture("cloudSampler", cloudOutput);
       this.shell.setEnabled(true);
     }
-    this.previousViewProjection.copyFrom(this.currentViewProjection);
+    this.capturePreviousCameraState();
     this.updateShadowPass(timeSeconds);
+  }
+
+  /** Cache this frame's basis and ABSOLUTE camera position for the next. */
+  private capturePreviousCameraState(): void {
+    this.previousCameraWorld.copyFrom(this.cameraWorld);
+    this.previousCameraForward.copyFrom(this.cameraForward);
+    this.previousCameraRight.copyFrom(this.cameraRight);
+    this.previousCameraUp.copyFrom(this.cameraUp);
+    this.previousViewScale.copyFrom(this.viewScale);
+    this.previousStateValid = true;
   }
 
   invalidateHistory(): void {
@@ -970,17 +1064,23 @@ export class VolumetricCloudSystem {
   }
 
   private prepareStartupUniforms(): void {
-    this.currentViewProjection.copyFrom(this.camera.getTransformationMatrix());
     this.cameraWorld.copyFrom(this.camera.position);
     const engine = this.scene.getEngine();
     this.fullResolution.set(engine.getRenderWidth(), engine.getRenderHeight());
     this.inverseOutputSize.set(1 / this.cloudRenderSize.width, 1 / this.cloudRenderSize.height);
     this.updateViewUniforms();
     this.updateIntegrationUniforms(0);
+    this.updateCompositeRayUniforms();
     for (const history of this.historyTextures) {
       history.setFloat("historyValid", 0);
-      history.setMatrix("previousViewProjection", this.currentViewProjection);
       this.updateCameraRayUniforms(history);
+      this.capturePreviousCameraState();
+      this.cameraDelta.set(0, 0, 0);
+      history.setVector3("previousCameraForward", this.previousCameraForward);
+      history.setVector3("previousCameraRight", this.previousCameraRight);
+      history.setVector3("previousCameraUp", this.previousCameraUp);
+      history.setVector2("previousViewScale", this.previousViewScale);
+      history.setVector3("cameraDelta", this.cameraDelta);
       history.setVector2("inverseOutputSize", this.inverseOutputSize);
     }
     this.shadowTextureValue.setVector2("shadowCenter", this.shadowCenter);
@@ -1015,6 +1115,10 @@ export class VolumetricCloudSystem {
     this.shadowTextureValue.setFloat("densityMultiplier", config.densityMultiplier);
     this.shadowTextureValue.setFloat("extinctionPerMeter", config.extinctionPerMeter);
     this.material.setColor3("ambientColor", CLOUD_AMBIENT_COLOR);
+    this.material.setFloat(
+      "maximumTraceDistance",
+      DEFAULT_VOLUMETRIC_CLOUD_CONFIG.maximumTraceDistanceMeters,
+    );
   }
 
   private configureTemporalBindings(): void {
@@ -1063,6 +1167,18 @@ export class VolumetricCloudSystem {
     this.material.setVector2("fullResolution", this.fullResolution);
   }
 
+  /**
+   * Publishes the ray basis the integration pass just used to the composite
+   * material, so 1C-4's per-texel haze rebuilds exactly the traced rays.
+   * Must run after updateCameraRayUniforms has refreshed the cached basis.
+   */
+  private updateCompositeRayUniforms(): void {
+    this.material.setVector3("cameraForward", this.cameraForward);
+    this.material.setVector3("cameraRight", this.cameraRight);
+    this.material.setVector3("cameraUp", this.cameraUp);
+    this.material.setVector2("viewScale", this.viewScale);
+  }
+
   private updateIntegrationUniforms(timeSeconds: number): void {
     this.updateCameraRayUniforms(this.integrationTexture);
     this.integrationTexture.setVector3("cameraWorld", this.cameraWorld);
@@ -1074,11 +1190,12 @@ export class VolumetricCloudSystem {
     this.camera.getDirectionToRef(this.cameraLocalForward, this.cameraForward);
     this.camera.getDirectionToRef(Vector3.Right(), this.cameraRight);
     this.camera.getDirectionToRef(Vector3.Up(), this.cameraUp);
-    const tanHalfFov = Math.tan(this.camera.fov * 0.5);
-    this.viewScale.set(
-      tanHalfFov * this.scene.getEngine().getAspectRatio(this.camera),
-      tanHalfFov,
+    const scale = viewScaleFromFov(
+      this.camera.fov,
+      this.scene.getEngine().getAspectRatio(this.camera),
+      this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED,
     );
+    this.viewScale.set(scale.x, scale.y);
     target.setVector3("cameraLocal", this.camera.position);
     target.setVector3("cameraForward", this.cameraForward);
     target.setVector3("cameraRight", this.cameraRight);
@@ -1103,7 +1220,7 @@ export class VolumetricCloudSystem {
     if (!shouldRenderCloudShadow(
       this.frameIndex,
       this.lastShadowFrame,
-      this.shadowSchedule.updateEveryNFrames,
+      Math.max(this.shadowSchedule.updateEveryNFrames, this.shadowIntervalFloor ?? 1),
       this.shadowDirty,
     )) return;
     if (!this.shadowTextureValue.isReady()) return;

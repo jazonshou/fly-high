@@ -169,8 +169,8 @@ struct OceanEvolutionParams {
 @group(0) @binding(0) var<uniform> params: OceanEvolutionParams;
 @group(0) @binding(1) var initial_spectrum: texture_2d<f32>;
 @group(0) @binding(2) var wave_data: texture_2d<f32>;
-@group(0) @binding(3) var height_displacement_x: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(4) var displacement_z_aux: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var height_displacement_x: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var displacement_z_aux: texture_storage_2d<rgba16float, write>;
 
 fn conjugate(value: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(value.x, -value.y);
@@ -231,8 +231,8 @@ struct OceanFftParams {
 @group(0) @binding(0) var<uniform> params: OceanFftParams;
 @group(0) @binding(1) var source_a: texture_2d<f32>;
 @group(0) @binding(2) var source_b: texture_2d<f32>;
-@group(0) @binding(3) var destination_a: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(4) var destination_b: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var destination_a: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var destination_b: texture_storage_2d<rgba16float, write>;
 
 fn textureCoordinate(axis: u32, transform_index: u32, line_index: u32) -> vec2<i32> {
   if (axis == 0u) {
@@ -266,9 +266,12 @@ fn stockhamInverseFft(@builtin(global_invocation_id) invocation: vec3<u32>) {
   let a1 = oceanRotateComplexPair(textureLoad(source_a, coordinate_1, 0), twiddle);
   let b0 = textureLoad(source_b, coordinate_0, 0);
   let b1 = oceanRotateComplexPair(textureLoad(source_b, coordinate_1, 0), twiddle);
+  // Per-axis normalisation (1B-13): 1/N at the last stage of each axis so
+  // fp16 ping-pong intermediates keep the signal band well above the
+  // smallest normal. The product across both axes is the same 1/N².
   let normalization = select(
     1.0,
-    1.0 / f32(params.resolution * params.resolution),
+    1.0 / f32(params.resolution),
     params.normalize_result != 0u,
   );
 

@@ -3,9 +3,9 @@ import type {
   FlightVisualState,
   QualityLevel,
   RenderDiagnostics,
-  TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
 import type { RenderingMode } from "@/src/settings";
 
 export interface FlightRenderingSystem {
@@ -14,9 +14,12 @@ export interface FlightRenderingSystem {
   setQuality(quality: QualityLevel): void;
   setRenderingMode(mode: RenderingMode): void;
   setReducedMotion(reducedMotion: boolean): void;
-  setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void;
+  /** §1.6: the rendering inputs are the two continuous clock scalars. */
+  setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
+  /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */
+  startBudgetProbe(): boolean;
   dispose(): void;
 }
 

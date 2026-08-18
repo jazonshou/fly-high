@@ -109,8 +109,11 @@ describe("terrain worker protocol guard", () => {
   it("ignores an active result canceled by a quality epoch before starting queued work", () => {
     const worker = new FakeTerrainWorker();
     const world = createWorld("stale-quality-result");
+    // workerCount 1: this test pins the stale-epoch protocol on a single
+    // slot; the 1B-4 pool has its own test below with distinct workers.
     const client = new TerrainGenerationClient(world, {
       workerFactory: () => worker as unknown as Worker,
+      workerCount: 1,
     });
     expect((worker.posted[0] as { world?: unknown }).world).toBe(world);
     expect(worker.posted[0]).toEqual({ type: "initialize", world });
@@ -161,5 +164,60 @@ describe("terrain worker protocol guard", () => {
     });
     expect(currentResults).toBe(1);
     client.dispose();
+  });
+
+  it("runs one request per worker slot concurrently (1B-4)", () => {
+    const workers: FakeTerrainWorker[] = [];
+    const world = createWorld("slot-map-pool");
+    const client = new TerrainGenerationClient(world, {
+      workerFactory: () => {
+        const worker = new FakeTerrainWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+      workerCount: 3,
+    });
+    expect(workers).toHaveLength(3);
+    expect(client.workerCount).toBe(3);
+    for (const worker of workers) {
+      expect(worker.posted[0]).toEqual({ type: "initialize", world });
+    }
+
+    const options = { tileX: 0, tileZ: 0, size: 512, resolution: 9 } as const;
+    const results: number[] = [];
+    const ids = [0, 1, 2, 3].map((index) => client.request(
+      { key: `page:${index}`, generation: 1, priority: index, options },
+      () => { results.push(index); },
+    ));
+    // Three slots fill immediately; the fourth request waits in the queue.
+    expect(client.busyWorkerCount).toBe(3);
+    expect(client.queuedCount).toBe(1);
+    const generatesOn = (worker: FakeTerrainWorker) => worker.posted.filter(
+      (message) => (message as { type?: string }).type === "generate",
+    ) as Array<{ requestId: number; key: string }>;
+    expect(generatesOn(workers[0]!)).toHaveLength(1);
+    expect(generatesOn(workers[1]!)).toHaveLength(1);
+    expect(generatesOn(workers[2]!)).toHaveLength(1);
+
+    // A finishing slot immediately picks up the queued request.
+    workers[1]!.emitMessage({
+      type: "tile", requestId: ids[1], generation: 1, key: "page:1", tile: {},
+    });
+    expect(results).toEqual([1]);
+    expect(client.busyWorkerCount).toBe(3);
+    expect(client.queuedCount).toBe(0);
+    expect(generatesOn(workers[1]!)).toHaveLength(2);
+    expect(generatesOn(workers[1]!)[1]?.requestId).toBe(ids[3]);
+    client.dispose();
+  });
+
+  it("clamps the worker pool to hardware concurrency minus four (1B-4)", async () => {
+    const { resolveTerrainWorkerCount } = await import("../src/render/TerrainGenerationClient");
+    expect(resolveTerrainWorkerCount(10)).toBe(6);
+    expect(resolveTerrainWorkerCount(8)).toBe(4);
+    expect(resolveTerrainWorkerCount(4)).toBe(2);
+    expect(resolveTerrainWorkerCount(2)).toBe(2);
+    expect(resolveTerrainWorkerCount(32)).toBe(6);
+    expect(resolveTerrainWorkerCount(Number.NaN)).toBe(2);
   });
 });

@@ -1,3 +1,4 @@
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
@@ -13,9 +14,16 @@ import type {
   FlightVisualState,
   QualityLevel,
   RenderDiagnostics,
-  TimeOfDayPreset,
   WeatherPreset,
 } from "@/src/game/types";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
+import { resolveEnvironmentState } from "./webgpu/nature/EnvironmentDirector";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  type EnvironmentState,
+} from "./webgpu/nature/EnvironmentState";
+import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
@@ -25,13 +33,30 @@ import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiver
 import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMirror";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
-import { WebGpuFrameGraph } from "./webgpu/core/FrameGraph";
 import {
+  FrameGraphBudgetProbe,
+  PassTimingHistory,
+  WebGpuFrameGraph,
+} from "./webgpu/core/FrameGraph";
+import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
+import {
+  cpuWorkSettingsForLevel,
+  createGovernorState,
+  governorConfigForProfile,
+  nextGovernorDecision,
+  observeRenderScaleApplication,
+  type CpuWorkSettings,
+  type GovernorConfig,
+  type GovernorSignals,
+  type GovernorState,
+} from "./webgpu/core/AdaptiveGovernor";
+import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
+import {
+  CAMERA_FAR_PLANE_METERS,
+  frameTimingPercentile95,
   freshFrameTiming,
   isUsableFrameTiming,
-  nextDynamicRenderScale,
   resolveWebGpuQualityProfile,
-  worstFrameTimingPercentile95,
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
@@ -51,10 +76,10 @@ import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
-const DYNAMIC_RESOLUTION_SAMPLE_COUNT = 120;
-const DYNAMIC_RESOLUTION_COOLDOWN_FRAMES = 120;
 const MIN_GPU_TIMING_SAMPLES = 8;
 const GPU_TIMING_STALE_AFTER_FRAMES = 30;
+/** The present pass cannot be probed off — cutting it blacks the frame. */
+const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
 
 function rendererAbortError(): Error {
   const error = new Error("WebGPU renderer startup was cancelled");
@@ -141,12 +166,18 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
 }
 
 export class AtmosphereChangeTracker {
-  private timeOfDay: TimeOfDayPreset | null = null;
+  private dayOfYear = Number.NaN;
+  private solarTimeHours = Number.NaN;
   private weather: WeatherPreset | null = null;
 
-  update(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): boolean {
-    if (timeOfDay === this.timeOfDay && weather === this.weather) return false;
-    this.timeOfDay = timeOfDay;
+  update(clock: EnvironmentClock, weather: WeatherPreset): boolean {
+    if (
+      clock.dayOfYear === this.dayOfYear
+      && clock.solarTimeHours === this.solarTimeHours
+      && weather === this.weather
+    ) return false;
+    this.dayOfYear = clock.dayOfYear;
+    this.solarTimeHours = clock.solarTimeHours;
     this.weather = weather;
     return true;
   }
@@ -192,6 +223,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly atmosphere: AtmosphereSystem;
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
+  private readonly aerialReceivers: AerialPerspectiveRegistry;
+  private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
   private readonly waterReflection: PlanarWaterReflectionSystem;
@@ -216,6 +249,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
+  private readonly latitudeDegrees: number;
+  private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
+  private skyProbeStale = false;
+  private skyProbeAltitudeMeters = 0;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -232,6 +269,15 @@ export class FlightRenderer implements FlightRenderingSystem {
   private renderScale: number;
   /** Null until 5-2: physics still samples the analytic kernel directly. */
   private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private readonly passTimingHistory = new PassTimingHistory();
+  private governorConfig: GovernorConfig;
+  private governorState: GovernorState;
+  private cpuWorkSettings: CpuWorkSettings = cpuWorkSettingsForLevel(0);
+  private governedProfileCache: WebGpuQualityProfile;
+  private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
+  private budgetProbe: FrameGraphBudgetProbe | null = null;
+  private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
+  private probeDisabledPass: string | null = null;
   private previousFrameStartedAt: number | null = null;
   private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
@@ -239,7 +285,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
   private lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
-  private lastRenderScaleChangeFrameIndex = Number.NEGATIVE_INFINITY;
   private deviceLost = false;
   private disposed = false;
 
@@ -253,6 +298,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     atmosphere: AtmosphereSystem,
     clouds: VolumetricCloudSystem,
     cloudShadowReceivers: CloudShadowReceiverRegistry,
+    aerialReceivers: AerialPerspectiveRegistry,
+    skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
     waterReflection: PlanarWaterReflectionSystem,
@@ -272,6 +319,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere = atmosphere;
     this.clouds = clouds;
     this.cloudShadowReceivers = cloudShadowReceivers;
+    this.aerialReceivers = aerialReceivers;
+    this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
     this.waterReflection = waterReflection;
@@ -282,11 +331,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
+    this.latitudeDegrees = options.world.latitudeDegrees;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
-    this.renderScale = this.profile.renderScale;
+    this.governorConfig = governorConfigForProfile(this.profile);
+    this.governorState = createGovernorState(this.governorConfig);
+    this.governedProfileCache = this.profile;
+    this.renderScale = this.governorState.renderScale;
     this.applyRenderScale();
     this.installFrameGraph();
     this.resizeObserver = new ResizeObserver(() => {
@@ -319,6 +372,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     const requiredFeatures: GPUFeatureName[] = timestampQueries ? ["timestamp-query"] : [];
     const engine = await awaitRendererStartup(
       WebGPUEngine.CreateAsync(options.canvas, {
+        // 1B-11: the hand-built post chain forces an offscreen target, so
+        // MSAA is requested on the first post-process below; the context
+        // itself stays single-sampled.
         antialias: false,
         adaptToDeviceRatio: false,
         premultipliedAlpha: false,
@@ -339,6 +395,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = timestampQueries;
+      assertStartupInvariants({
+        timestampQuerySupported: timestampQueries,
+        gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        requestedFeatures: requiredFeatures,
+        grantedFeatures: engine.enabledExtensions,
+      });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
       scene.useRightHandedSystem = true;
@@ -346,8 +408,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.performancePriority = ScenePerformancePriority.Intermediate;
       const camera = new UniversalCamera("flight-camera", new Vector3(0, 8, -18), scene);
       camera.minZ = 0.08;
-      camera.maxZ = 120_000;
-      camera.fov = 64 * Math.PI / 180;
+      // 1C-4: beyond 45 km the shared aerial perspective leaves under 5%
+      // luminance transmittance in clear weather — geometry past it is paint
+      // the haze already covered. 120 km existed to feed fog that no longer
+      // exists.
+      camera.maxZ = CAMERA_FAR_PLANE_METERS;
+      // 1B-11: the old 64° VERTICAL fov was ≈96° horizontal at 16:9 — a
+      // wide-angle lens that shrank every mountain. Horizontal-fixed ~62°
+      // is a natural perspective, and tightens the shadow cascades free.
+      camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+      camera.fov = 62 * Math.PI / 180;
       camera.inertia = 0;
       camera.inputs.clear();
       scene.activeCamera = camera;
@@ -378,6 +448,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: options.terrainSample,
+        seaLevelMeters: options.world.seaLevel,
+        workerWorldSeed: options.world.seed,
       });
       cleanup.push(() => detail.dispose());
       const wildlife = new WildlifeSystem(scene, {
@@ -429,6 +501,49 @@ export class FlightRenderer implements FlightRenderingSystem {
       wildlife.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
+      // 1C-4: one haze registry over the small fixed PBR material set. The
+      // terrain material receives the same plugin through the same door.
+      const aerialReceivers = new AerialPerspectiveRegistry();
+      cleanup.push(() => aerialReceivers.dispose());
+      aerialReceivers.registerMaterial(terrain.pbrMaterial);
+      aerialReceivers.registerMeshes(aircraft.meshes);
+      if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
+      detail.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      wildlife.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      const initialSnapshot = atmosphere.snapshot;
+      aerialReceivers.setProjection({
+        state: DEFAULT_ENVIRONMENT_STATE,
+        cameraAltitudeMeters: camera.position.y,
+        sunColor: [
+          initialSnapshot.sunColor.r,
+          initialSnapshot.sunColor.g,
+          initialSnapshot.sunColor.b,
+        ],
+        skyHorizonColor: [
+          initialSnapshot.skyHorizon.r,
+          initialSnapshot.skyHorizon.g,
+          initialSnapshot.skyHorizon.b,
+        ],
+        sunIlluminanceNormalized: initialSnapshot.sunIlluminanceNormalized,
+      }, 0, 0);
+      const initialAerialBinding = aerialReceivers.currentBinding;
+      if (initialAerialBinding) {
+        atmosphere.setAerialPerspective(initialAerialBinding);
+        ocean.setAerialPerspective(initialAerialBinding);
+        hydrology.setAerialPerspective(initialAerialBinding);
+        clouds.setAerialPerspective(initialAerialBinding);
+      }
+      // 1C-6: image-based lighting from the one sky. Assigned BEFORE
+      // whenReadyAsync so every PBR material compiles its REFLECTION variant
+      // during startup instead of stalling the first frame.
+      const skyProbe = new SkyEnvironmentProbe(scene, atmosphere.skyMesh);
+      cleanup.push(() => skyProbe.dispose());
+      if (initialAerialBinding) skyProbe.update(initialAerialBinding);
+      scene.environmentTexture = skyProbe.texture;
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
@@ -452,6 +567,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         Constants.TEXTURETYPE_HALF_FLOAT,
         scene.imageProcessingConfiguration,
       );
+      // 1B-11: the first post-process owns the offscreen scene target (and
+      // its depth buffer), so this is where MSAA lives. 4× is genuinely
+      // cheap on Apple TBDR — the cost is the resolve, not 4× bandwidth.
+      toneMap.samples = profile.msaaSamples;
       cleanup.push(() => toneMap.dispose(camera));
       const fxaa = new FxaaPostProcess(
         "final-fxaa",
@@ -463,6 +582,21 @@ export class FlightRenderer implements FlightRenderingSystem {
         Constants.TEXTURETYPE_UNSIGNED_BYTE,
       );
       cleanup.push(() => fxaa.dispose(camera));
+      // FXAA is the no-MSAA fallback only; running both softens the image.
+      if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
+
+      // 1C-4's two load-bearing guards, re-asserted now that the scene and
+      // the post-process chain exist: the aerial hook needs linear HDR at
+      // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
+      assertStartupInvariants({
+        timestampQuerySupported: timestampQueries,
+        gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        requestedFeatures: requiredFeatures,
+        grantedFeatures: engine.enabledExtensions,
+        imageProcessingAppliedByPostProcess:
+          scene.imageProcessingConfiguration.applyByPostProcess,
+        sceneFogMode: scene.fogMode,
+      });
 
       await awaitRendererStartup(
         scene.whenReadyAsync(),
@@ -492,6 +626,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphere,
         clouds,
         cloudShadowReceivers,
+        aerialReceivers,
+        skyProbe,
         ocean,
         hydrology,
         waterReflection,
@@ -537,9 +673,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = reducedMotion;
   }
 
-  setAtmosphere(timeOfDay: TimeOfDayPreset, weather: WeatherPreset): void {
-    if (!this.atmosphereTracker.update(timeOfDay, weather)) return;
-    this.atmosphere.setPreset(timeOfDay, weather);
+  setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
+    if (!this.atmosphereTracker.update(clock, weather)) return;
+    this.environmentState = resolveEnvironmentState({
+      clock,
+      latitudeDegrees: this.latitudeDegrees,
+      weather,
+    });
+    this.atmosphere.applyEnvironment(this.environmentState);
+    this.skyProbeStale = true;
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -575,14 +717,57 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.engine.endFrame();
     }
     this.cameraCut = false;
+    this.passTimingHistory.record(this.graph.passTimings);
     this.lastCpuFrameMilliseconds = performance.now() - started;
     this.lastDrawCalls = Math.max(0, Math.round(this.engine._drawCalls.current));
     if (isUsableFrameTiming(this.lastCpuFrameMilliseconds)) {
       this.cpuFrameDurations.push(this.lastCpuFrameMilliseconds);
     }
-    this.captureGpuFrameTiming();
-    if (this.frameIntervalDurations.length >= DYNAMIC_RESOLUTION_SAMPLE_COUNT) {
-      this.updateDynamicResolution();
+    const freshGpuSample = this.captureGpuFrameTiming();
+    if (this.budgetProbe !== null) {
+      // Probe stages deliberately perturb the frame; the governor sits out.
+      this.updateBudgetProbe(freshGpuSample);
+    } else if (this.frameIntervalDurations.length >= this.governorConfig.windowFrames) {
+      this.updateGovernor();
+    }
+  }
+
+  /**
+   * Kick off the budget-probe sweep (1A-1): cycles each frame-graph pass off
+   * for a stage of frames and attributes the whole-frame GPU p95 delta.
+   * HUD-triggered; refuses to start while one is already running.
+   */
+  startBudgetProbe(): boolean {
+    if (this.disposed || this.deviceLost || this.budgetProbe !== null) return false;
+    const passes = this.graph.passNames.filter(
+      (name) => !BUDGET_PROBE_EXCLUDED_PASSES.has(name),
+    );
+    if (passes.length === 0) return false;
+    this.budgetProbe = new FrameGraphBudgetProbe(passes);
+    this.budgetProbeReport = null;
+    this.resetTimingWindow();
+    return true;
+  }
+
+  private updateBudgetProbe(freshGpuSample: number | null): void {
+    const probe = this.budgetProbe;
+    if (!probe) return;
+    probe.recordFrame(freshGpuSample);
+    const desired = probe.running ? probe.currentlyDisabled : null;
+    if (desired !== this.probeDisabledPass) {
+      if (this.probeDisabledPass !== null) {
+        this.graph.setPassDisabled(this.probeDisabledPass, false);
+      }
+      if (desired !== null) this.graph.setPassDisabled(desired, true);
+      this.probeDisabledPass = desired;
+      // Re-enabled passes must not composite month-old history.
+      this.graph.invalidateHistory("budget probe stage");
+    }
+    if (!probe.running) {
+      this.budgetProbeReport = probe.report;
+      this.budgetProbe = null;
+      this.graph.clearDisabledPasses();
+      this.resetTimingWindow();
     }
   }
 
@@ -622,6 +807,25 @@ export class FlightRenderer implements FlightRenderingSystem {
       oceanFftResolution: this.ocean.fftResolution,
       adapter: this.adapterLabel,
       renderingFallbackReason: null,
+      activeGovernor: this.governorState.mode,
+      gpuP95Ms: this.lastSignals.gpuP95Ms,
+      cpuP95Ms: this.lastSignals.cpuP95Ms,
+      cpuWorkLevel: this.governorState.cpuWorkLevel,
+      cpuWorkLever: this.governorState.lastLever,
+      resolutionInsensitive: this.governorState.resolutionInsensitive,
+      renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
+      topPassesByCpuMs: this.passTimingHistory
+        .topByP95(4)
+        .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
+      pendingTerrainPages: terrain.pendingPages,
+      terrainWorkersBusy: terrain.workersBusy,
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
+        cssWidth: Math.max(1, this.domElement.clientWidth),
+        cssHeight: Math.max(1, this.domElement.clientHeight),
+        devicePixelRatio: window.devicePixelRatio || 1,
+      }),
+      budgetProbeActive: this.budgetProbe !== null,
+      budgetProbeReport: this.budgetProbeReport,
     };
   }
 
@@ -648,6 +852,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
+      () => this.aerialReceivers.dispose(),
+      () => this.skyProbe.dispose(),
       () => this.waterReflection.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
@@ -720,7 +926,12 @@ export class FlightRenderer implements FlightRenderingSystem {
           this.originZ,
         );
       },
-      invalidateHistory: () => this.clouds.invalidateHistory(),
+      invalidateHistory: (reason) => {
+        // 1B-12: cloud reprojection runs on absolute camera positions, so a
+        // floating-origin rebase is exactly a no-op for it — the history
+        // survives the frames it used to be thrown away on.
+        if (reason !== "floating origin shifted") this.clouds.invalidateHistory();
+      },
     });
     this.graph.register({
       name: "hdr-present",
@@ -758,17 +969,54 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.camera.position.z + this.originZ,
     );
     this.atmosphere.update(this.camera.position);
+    this.updateAerialPerspective();
+  }
+
+  /**
+   * 1C-4: resolve the one haze binding for this frame (absolute camera
+   * altitude, current environment) and fan it out — the PBR registry covers
+   * terrain, vegetation, wildlife, aircraft and airport; the three
+   * ShaderMaterial consumers receive the same binding by hand.
+   */
+  private updateAerialPerspective(): void {
+    const snapshot = this.atmosphere.snapshot;
+    this.aerialReceivers.setProjection({
+      state: this.environmentState,
+      cameraAltitudeMeters: this.cameraWorld.y,
+      sunColor: [snapshot.sunColor.r, snapshot.sunColor.g, snapshot.sunColor.b],
+      skyHorizonColor: [snapshot.skyHorizon.r, snapshot.skyHorizon.g, snapshot.skyHorizon.b],
+      sunIlluminanceNormalized: snapshot.sunIlluminanceNormalized,
+    }, this.originX, this.originZ);
+    const binding = this.aerialReceivers.currentBinding;
+    if (!binding) return;
+    this.atmosphere.setAerialPerspective(binding);
+    this.ocean.setAerialPerspective(binding);
+    this.hydrology.setAerialPerspective(binding);
+    this.clouds.setAerialPerspective(binding);
+    // The probe re-lights the world when the environment changes or when the
+    // camera's altitude has drifted enough to matter (the sky itself dims
+    // and clears with height); everything else leaves it untouched.
+    if (
+      this.skyProbeStale
+      || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
+    ) {
+      this.skyProbe.update(binding);
+      this.skyProbeStale = false;
+      this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
+    }
   }
 
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
-    let fieldOfView = 64;
+    let fieldOfView = 62;
     if (this.cameraMode === "cockpit") {
       this.desiredCamera.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(1.15))
         .addInPlace(this.up.scale(1.12));
       this.cameraTarget.copyFrom(this.desiredCamera).addInPlace(this.forward.scale(400));
-      fieldOfView = 72;
+      // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
+      // was the widest view in the game, which is backwards.
+      fieldOfView = 56;
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
@@ -814,6 +1062,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!state) return;
     this.terrain.update({
       x: state.position.x,
+      y: state.position.y,
       z: state.position.z,
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
@@ -827,7 +1076,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         velocityZ: state.velocity.z,
       },
       { x: this.originX, y: 0, z: this.originZ },
-      this.profile,
+      this.governedProfileCache,
     );
     this.wildlife.update(
       {
@@ -839,7 +1088,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         velocityZ: state.velocity.z,
       },
       { x: this.originX, y: 0, z: this.originZ },
-      this.profile,
+      this.governedProfileCache,
       this.currentDeltaSeconds,
     );
     this.syncDynamicShadowCasters();
@@ -848,7 +1097,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private syncDynamicShadowCasters(): void {
     const active = new Map<number, Mesh>();
     const collect = (mesh: Mesh) => active.set(mesh.uniqueId, mesh);
-    this.terrain.addShadowCasters(collect);
+    // Governor B lever 6 shortens caster registration reach under CPU load.
+    this.terrain.addShadowCasters(collect, this.cpuWorkSettings.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
@@ -887,7 +1137,12 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   private applyProfile(): void {
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
-    this.renderScale = this.profile.renderScale;
+    // A profile change resets the governor entirely — including any
+    // resolution-insensitive latch, per its re-arm contract.
+    this.governorConfig = governorConfigForProfile(this.profile);
+    this.governorState = createGovernorState(this.governorConfig);
+    this.renderScale = this.governorState.renderScale;
+    this.applyCpuWorkLevel(0);
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
@@ -895,7 +1150,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
+    if (this.toneMap.samples !== this.profile.msaaSamples) {
+      this.toneMap.samples = this.profile.msaaSamples;
+      this.camera.detachPostProcess(this.fxaa);
+      if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
+    }
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
@@ -926,37 +1185,87 @@ export class FlightRenderer implements FlightRenderingSystem {
     return changed;
   }
 
-  private updateDynamicResolution(): void {
-    const timingGroups: Array<readonly number[]> = [
-      this.frameIntervalDurations,
-      this.cpuFrameDurations,
-    ];
+  /**
+   * One governor decision per completed sample window (1A-6b). Resolution
+   * moves only for GPU-bound frames; CPU-bound frames move the work ladder;
+   * a resolution step that buys nothing is undone and latched against.
+   */
+  private updateGovernor(): void {
     const gpuTimingIsFresh = freshFrameTiming(
       this.lastGpuFrameMilliseconds,
       this.lastGpuTimingFrameIndex,
       this.frameIndex,
       GPU_TIMING_STALE_AFTER_FRAMES,
     ) !== null;
-    if (gpuTimingIsFresh && this.gpuFrameDurations.length >= MIN_GPU_TIMING_SAMPLES) {
-      timingGroups.push(this.gpuFrameDurations);
-    }
-    const p95 = worstFrameTimingPercentile95(timingGroups);
+    const gpuP95Ms = gpuTimingIsFresh && this.gpuFrameDurations.length >= MIN_GPU_TIMING_SAMPLES
+      ? frameTimingPercentile95(this.gpuFrameDurations)
+      : null;
+    const cpuP95Ms = frameTimingPercentile95(this.cpuFrameDurations);
+    const intervalP95Ms = frameTimingPercentile95(this.frameIntervalDurations);
     this.resetTimingSamples();
-    if (p95 === null) return;
-    if (
-      this.frameIndex - this.lastRenderScaleChangeFrameIndex
-      < DYNAMIC_RESOLUTION_COOLDOWN_FRAMES
-    ) return;
-    const next = nextDynamicRenderScale(this.renderScale, p95, this.profile);
-    if (Math.abs(next - this.renderScale) < 0.005) return;
-    this.renderScale = next;
-    this.lastRenderScaleChangeFrameIndex = this.frameIndex;
-    // When the absolute pixel cap is the binding constraint, a governor step
-    // leaves the effective scale unchanged — resetting temporal history for
-    // that would trade a visible cloud hitch for nothing.
-    if (this.applyRenderScale()) {
-      this.graph.invalidateHistory("dynamic resolution changed");
+    this.lastSignals = { gpuP95Ms, cpuP95Ms, intervalP95Ms };
+
+    const previous = this.governorState;
+    let state = nextGovernorDecision(previous, this.lastSignals, this.governorConfig);
+    if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
+      const lowered = state.renderScale < this.renderScale;
+      this.renderScale = state.renderScale;
+      // When the absolute pixel cap is the binding constraint, a governor
+      // step leaves the effective scale unchanged — no history reset, and the
+      // anti-ratchet latch learns about it immediately.
+      const changed = this.applyRenderScale();
+      if (changed) this.graph.invalidateHistory("dynamic resolution changed");
+      if (lowered) {
+        state = observeRenderScaleApplication(state, changed, this.governorConfig);
+        if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
+          this.renderScale = state.renderScale;
+          if (this.applyRenderScale()) {
+            this.graph.invalidateHistory("dynamic resolution changed");
+          }
+        }
+      }
     }
+    if (state.cpuWorkLevel !== previous.cpuWorkLevel) {
+      this.applyCpuWorkLevel(state.cpuWorkLevel);
+    }
+    this.governorState = state;
+  }
+
+  /** Push Governor B's ladder notch into every lever's subsystem seam. */
+  private applyCpuWorkLevel(level: number): void {
+    const settings = cpuWorkSettingsForLevel(level);
+    this.cpuWorkSettings = settings;
+    this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    this.detail.setGenerationBudgetCap(
+      settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
+        ? null
+        : {
+            maximumCells: settings.detailCellCap,
+            maximumMilliseconds: settings.detailCellBudgetMs,
+          },
+    );
+    this.waterReflection.setUpdateIntervalFloor(settings.planarReflectionIntervalFrames);
+    this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
+    this.governedProfileCache = this.resolveGovernedProfile();
+  }
+
+  /** The profile with Governor B's animal and vegetation caps applied. */
+  private resolveGovernedProfile(): WebGpuQualityProfile {
+    const settings = this.cpuWorkSettings;
+    if (
+      settings.activeAnimalBudgetCap === Number.POSITIVE_INFINITY
+      && settings.vegetationDistanceScale === 1
+    ) {
+      return this.profile;
+    }
+    return {
+      ...this.profile,
+      activeAnimalBudget: Math.min(
+        this.profile.activeAnimalBudget,
+        settings.activeAnimalBudgetCap,
+      ),
+      vegetationDistance: this.profile.vegetationDistance * settings.vegetationDistanceScale,
+    };
   }
 
   private captureFrameInterval(started: number): void {
@@ -974,24 +1283,26 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.frameIntervalDurations.push(interval);
   }
 
-  private captureGpuFrameTiming(): void {
+  /** Returns this frame's freshly resolved GPU sample, or null. */
+  private captureGpuFrameTiming(): number | null {
     if (!this.engine.enableGPUTimingMeasurements) {
       this.lastGpuFrameMilliseconds = null;
-      return;
+      return null;
     }
     const counter = this.engine.getGPUFrameTimeCounter();
     // WebGPU timestamp readback is asynchronous. `current` remains unchanged
     // until another query resolves, so consume each counter result only once.
-    if (counter.count === this.lastGpuCounterSampleCount) return;
+    if (counter.count === this.lastGpuCounterSampleCount) return null;
     this.lastGpuCounterSampleCount = counter.count;
     const milliseconds = counter.current / 1_000_000;
     if (!isUsableFrameTiming(milliseconds)) {
       this.lastGpuFrameMilliseconds = null;
-      return;
+      return null;
     }
     this.lastGpuFrameMilliseconds = milliseconds;
     this.lastGpuTimingFrameIndex = this.frameIndex;
     this.gpuFrameDurations.push(milliseconds);
+    return milliseconds;
   }
 
   private resetTimingSamples(): void {

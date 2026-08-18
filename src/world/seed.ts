@@ -45,10 +45,18 @@ export function hashCoordinates(
   z: number,
   channel = 0,
 ): number {
-  let hash = mixSeed(seedHash, channel);
+  return hashLatticeCoordinates(mixSeed(seedHash, channel), x, z);
+}
+
+/**
+ * The coordinate half of hashCoordinates, taking an already channel-mixed
+ * hash. valueNoise2D mixes once and hashes four corners — this is the
+ * hottest arithmetic in the codebase.
+ */
+export function hashLatticeCoordinates(mixedHash: number, x: number, z: number): number {
   // Avalanche each axis independently so swapped or jointly-negated coordinate
   // pairs cannot collapse through XOR symmetry.
-  hash = avalanche(hash ^ Math.imul(x | 0, 0x8da6_b343));
+  const hash = avalanche(mixedHash ^ Math.imul(x | 0, 0x8da6_b343));
   return avalanche(hash ^ Math.imul(z | 0, 0xd816_3841));
 }
 

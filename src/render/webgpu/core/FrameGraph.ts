@@ -69,6 +69,8 @@ function assertCadence(value: number | undefined, passName: string): number {
  */
 export class WebGpuFrameGraph {
   private readonly passes = new Map<string, FrameGraphPass>();
+  /** Diagnostic overrides (budget probe); a disabled pass never executes. */
+  private readonly disabledOverrides = new Set<string>();
   private ordered: FrameGraphPass[] = [];
   private dirty = false;
   private disposed = false;
@@ -103,13 +105,29 @@ export class WebGpuFrameGraph {
     return this.ordered.map((pass) => pass.name);
   }
 
+  /**
+   * Diagnostic pass toggle used by the budget probe (1A-1). Overrides the
+   * pass's own `enabled` predicate; never persisted, never used during
+   * normal play.
+   */
+  setPassDisabled(name: string, disabled: boolean): void {
+    if (disabled) this.disabledOverrides.add(name);
+    else this.disabledOverrides.delete(name);
+  }
+
+  clearDisabledPasses(): void {
+    this.disabledOverrides.clear();
+  }
+
   execute(frame: FrameGraphFrame): void {
     if (this.disposed) return;
     this.compileIfNeeded();
     const timings: FrameGraphPassTiming[] = [];
     for (const pass of this.ordered) {
       const cadence = assertCadence(pass.cadence, pass.name);
-      const shouldRun = (pass.enabled?.() ?? true) && frame.frameIndex % cadence === 0;
+      const shouldRun = !this.disabledOverrides.has(pass.name)
+        && (pass.enabled?.() ?? true)
+        && frame.frameIndex % cadence === 0;
       if (!shouldRun) {
         timings.push({ name: pass.name, phase: pass.phase, cpuMilliseconds: 0, ran: false });
         continue;
@@ -184,5 +202,165 @@ export class WebGpuFrameGraph {
     for (const pass of stable) visit(pass);
     this.ordered = result;
     this.dirty = false;
+  }
+}
+
+export interface PassTimingPercentiles {
+  readonly name: string;
+  readonly phase: FrameGraphPhase;
+  readonly p50Ms: number;
+  readonly p95Ms: number;
+  readonly lastMs: number;
+}
+
+/**
+ * Ring-buffered per-pass CPU timing percentiles (1A-1a). The frame graph has
+ * measured pass CPU time since it was written and thrown the numbers away
+ * every frame; this is the retention half. Skipped-cadence frames record 0 —
+ * the percentiles then describe the pass's amortised per-frame cost, which is
+ * what Governor B and the HUD need.
+ */
+export class PassTimingHistory {
+  private readonly samples = new Map<string, {
+    phase: FrameGraphPhase;
+    values: number[];
+    cursor: number;
+    lastMs: number;
+  }>();
+
+  constructor(private readonly windowSize = 240) {
+    if (!Number.isInteger(windowSize) || windowSize < 2) {
+      throw new RangeError("Pass timing window must be an integer of at least 2");
+    }
+  }
+
+  record(timings: readonly FrameGraphPassTiming[]): void {
+    for (const timing of timings) {
+      let entry = this.samples.get(timing.name);
+      if (!entry) {
+        entry = { phase: timing.phase, values: [], cursor: 0, lastMs: 0 };
+        this.samples.set(timing.name, entry);
+      }
+      if (entry.values.length < this.windowSize) {
+        entry.values.push(timing.cpuMilliseconds);
+      } else {
+        entry.values[entry.cursor] = timing.cpuMilliseconds;
+        entry.cursor = (entry.cursor + 1) % this.windowSize;
+      }
+      entry.lastMs = timing.cpuMilliseconds;
+    }
+  }
+
+  percentiles(): readonly PassTimingPercentiles[] {
+    const result: PassTimingPercentiles[] = [];
+    for (const [name, entry] of this.samples) {
+      if (entry.values.length === 0) continue;
+      const sorted = [...entry.values].sort((a, b) => a - b);
+      const rank = (fraction: number) =>
+        sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)] ?? 0;
+      result.push({
+        name,
+        phase: entry.phase,
+        p50Ms: rank(0.5),
+        p95Ms: rank(0.95),
+        lastMs: entry.lastMs,
+      });
+    }
+    return result;
+  }
+
+  /** Heaviest passes by p95, for the HUD's `topPassesByCpuMs` row. */
+  topByP95(count: number): readonly PassTimingPercentiles[] {
+    return [...this.percentiles()]
+      .sort((first, second) => second.p95Ms - first.p95Ms)
+      .slice(0, Math.max(0, count));
+  }
+
+  reset(): void {
+    this.samples.clear();
+  }
+}
+
+export interface BudgetProbeRow {
+  readonly pass: string;
+  /** Whole-frame GPU p95 with the pass enabled minus with it disabled. */
+  readonly gpuP95DeltaMs: number | null;
+}
+
+/**
+ * The budget probe (1A-1b). Babylon exposes only whole-frame GPU time, so
+ * per-pass GPU attribution cycles each pass off for a stage of frames and
+ * charges it the p95 delta against the all-on baseline. Pure state machine:
+ * the renderer feeds one GPU frame time per frame and applies
+ * `currentlyDisabled` to the frame graph. HUD-triggered, never during normal
+ * play.
+ */
+export class FrameGraphBudgetProbe {
+  private readonly gpuSamples: number[] = [];
+  private readonly deltas = new Map<string, number | null>();
+  private stage = -1;
+  private baselineP95: number | null = null;
+  private frames = 0;
+  private finished = false;
+
+  constructor(
+    private readonly probePasses: readonly string[],
+    private readonly framesPerStage = 120,
+  ) {
+    if (probePasses.length === 0) {
+      throw new RangeError("Budget probe needs at least one pass to cycle");
+    }
+    if (!Number.isInteger(framesPerStage) || framesPerStage < 8) {
+      throw new RangeError("Budget probe stages need at least 8 frames");
+    }
+  }
+
+  /** Pass to disable this frame; null during the baseline stage or when done. */
+  get currentlyDisabled(): string | null {
+    if (this.finished || this.stage < 0) return null;
+    return this.probePasses[this.stage] ?? null;
+  }
+
+  get running(): boolean {
+    return !this.finished;
+  }
+
+  get report(): readonly BudgetProbeRow[] | null {
+    if (!this.finished) return null;
+    return this.probePasses.map((pass) => ({
+      pass,
+      gpuP95DeltaMs: this.deltas.get(pass) ?? null,
+    }));
+  }
+
+  /** Record one frame's whole-frame GPU time and advance the stage clock. */
+  recordFrame(gpuFrameMs: number | null): void {
+    if (this.finished) return;
+    if (gpuFrameMs !== null && Number.isFinite(gpuFrameMs) && gpuFrameMs > 0) {
+      this.gpuSamples.push(gpuFrameMs);
+    }
+    this.frames += 1;
+    if (this.frames < this.framesPerStage) return;
+    this.completeStage();
+  }
+
+  private completeStage(): void {
+    const sorted = [...this.gpuSamples].sort((a, b) => a - b);
+    const p95 = sorted.length >= 8
+      ? sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? null
+      : null;
+    if (this.stage === -1) {
+      this.baselineP95 = p95;
+    } else {
+      const pass = this.probePasses[this.stage]!;
+      this.deltas.set(
+        pass,
+        this.baselineP95 !== null && p95 !== null ? this.baselineP95 - p95 : null,
+      );
+    }
+    this.gpuSamples.length = 0;
+    this.frames = 0;
+    this.stage += 1;
+    if (this.stage >= this.probePasses.length) this.finished = true;
   }
 }

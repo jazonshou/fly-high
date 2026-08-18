@@ -69,7 +69,7 @@ function createCloudFixture(): {
       skyZenith: new Color3(0.1, 0.36, 0.78),
       skyHorizon: new Color3(0.58, 0.77, 0.96),
       ambientColor: new Color3(0.18, 0.27, 0.42),
-      exposure: 1,
+      sunIlluminanceNormalized: 0.92,
       cloudCoverage: 0.2,
       humidity: 0.5,
       windSpeed: 8,
@@ -161,7 +161,7 @@ describe("volumetric cloud runtime shaders", () => {
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("renderTargetUv");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).not.toContain("1.0 - screenUv.y");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("let currentUv = input.vUV;");
-    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousViewProjection");
+    expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("previousCameraForward");
     expect(CLOUD_TEMPORAL_FRAGMENT_WGSL).toContain("depthConfidence");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("opticalDepth");
     expect(CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL).toContain("shadowSteps");
@@ -186,7 +186,7 @@ describe("volumetric cloud runtime shaders", () => {
       skyZenith: new Color3(0.1, 0.36, 0.78),
       skyHorizon: new Color3(0.58, 0.77, 0.96),
       ambientColor: new Color3(0.18, 0.27, 0.42),
-      exposure: 1,
+      sunIlluminanceNormalized: 0.92,
       cloudCoverage: 0.2,
       humidity: 0.5,
       windSpeed: 8,
@@ -202,11 +202,12 @@ describe("volumetric cloud runtime shaders", () => {
     clouds.update(new Vector3(1_234, 800, -4_321), 1);
     expect(clouds.statistics.frameIndex).toBe(1);
     const generation = clouds.statistics.historyGeneration;
+    // high+ultra is tier 3 since 1A-6b, carrying the 0.7 integration scale.
     clouds.setProfile(resolveWebGpuQualityProfile("high", "ultra"));
     expect(clouds.statistics).toMatchObject({
-      renderWidth: 480,
-      renderHeight: 360,
-      resolutionScale: 0.6,
+      renderWidth: 560,
+      renderHeight: 424,
+      resolutionScale: 0.7,
       shadowResolution: 256,
       shadowUpdateEveryNFrames: 2,
     });
@@ -275,6 +276,7 @@ describe("volumetric cloud startup readiness", () => {
 
     expect(createRenderPipelineAsync).toHaveBeenCalledWith(expect.objectContaining({
       colorFormat: "rgba16float",
+      // Follows the fixture's tier-0 profile (msaaSamples 1) since 1B-11.
       sampleCount: 1,
       depthWrite: false,
       depthTest: true,

@@ -679,44 +679,44 @@ Two risks from the previous edition — the plugin spike and the test harness �
 ## 11. Exit checklist
 
 **Gate 1A**
-- [ ] `npm test` fails on a synthetic budget overspend.
-- [ ] `npm run perf:capture` produces three committed baselines and a numeric report.
-- [ ] HUD reports `activeGovernor`, `gpuP95Ms`, `cpuP95Ms`, `cpuWorkLevel`, `renderPixels`, `resolutionInsensitive`.
-- [ ] A synthetic CPU-bound trace leaves `renderScale` unchanged over 50 windows.
-- [ ] Shadow RTT is depth-only; estimated GPU memory at tier 2 drops ~500 MiB.
+- [x] `npm test` fails on a synthetic budget overspend.
+- [x] `npm run perf:capture` produces three committed baselines and a numeric report.
+- [x] HUD reports `activeGovernor`, `gpuP95Ms`, `cpuP95Ms`, `cpuWorkLevel`, `renderPixels`, `resolutionInsensitive`.
+- [x] A synthetic CPU-bound trace leaves `renderScale` unchanged over 50 windows.
+- [x] Shadow RTT is depth-only; estimated GPU memory at tier 2 drops ~500 MiB.
 
 **Gate 1B**
-- [ ] Page generation ≤ 9 ms at resolution 65 (was 40.6 ms).
-- [ ] Vertex-normal angular error test passes at every spacing.
-- [ ] `|h(x,z,0) − h(x,z,8)| < 1 mm` over 4,096 points.
-- [ ] Band-limit RMS < 0.25 × spacing at 32/64/128/256/512 m.
-- [ ] Terrain generation runs on ≥ 2 workers with more than one request in flight.
-- [ ] No 4:1 ground-sample-distance step between adjacent levels; the observer carries altitude and priority uses 3D distance.
-- [ ] Zero building prototypes over a 100 km² scan; hangars still present.
-- [ ] No trees or rocks on the graded apron; grass present and capped at ~0.15 m.
-- [ ] Scatter spectrum, phase histogram and stems/ha assertions pass.
-- [ ] Main-thread detail generation ≤ 0.3 ms/frame.
-- [ ] MSAA active; FOV horizontal-fixed at ~62°; cockpit narrower than chase.
-- [ ] fp16 FFT bounds test passes on the largest cascade.
-- [ ] Cloud reprojection survives a synthetic 2048 m origin shift.
+- [x] Page generation ≤ 9 ms at resolution 65 (was 40.6 ms).
+- [x] Vertex-normal angular error test passes at every spacing.
+- [x] `|h(x,z,0) − h(x,z,8)| < 1 mm` over 4,096 points.
+- [x] Band-limit RMS < 0.25 × spacing at 32/64/128/256/512 m.
+- [x] Terrain generation runs on ≥ 2 workers with more than one request in flight.
+- [x] No 4:1 ground-sample-distance step between adjacent levels; the observer carries altitude and priority uses 3D distance.
+- [x] Zero building prototypes over a 100 km² scan; hangars still present.
+- [x] No trees or rocks on the graded apron; grass present and capped at ~0.15 m.
+- [x] Scatter spectrum, phase histogram and stems/ha assertions pass.
+- [x] Main-thread detail generation ≤ 0.3 ms/frame.
+- [x] MSAA active; FOV horizontal-fixed at ~62°; cockpit narrower than chase.
+- [x] fp16 FFT bounds test passes on the largest cascade.
+- [x] Cloud reprojection survives a synthetic 2048 m origin shift.
 
 **Gate 1C**
-- [ ] `presetFor()` deleted; nothing under `src/render/` references `TimeOfDayPreset`.
-- [ ] Two continuous sliders scrub time of day and day of year; the sun moves correctly for both.
-- [ ] No shader source under `src/` contains an exposure multiply.
-- [ ] TS/WGSL aerial-perspective agreement within 1%.
-- [ ] Terrain, ocean, rivers, vegetation, wildlife, aircraft, airport and the cloud composite all consume the same include, through the one registry. Nothing re-derives haze.
-- [ ] `camera.maxZ = 45_000`; ocean radius 40 km; one fewer terrain ring per tier; AP opacity ≥ 95% at the outermost ring.
-- [ ] Startup assertions pass: `applyByPostProcess` true, `fogMode` NONE.
-- [ ] `scene.environmentTexture` non-null; `REFLECTION` defined on the terrain effect; `HemisphericLight` retired; `specularIntensity` 1.0 in all three files.
-- [ ] SH irradiance for a uniform sky of radiance L equals πL.
-- [ ] Scrubbing past dusk does not break the image.
+- [x] `presetFor()` deleted; nothing under `src/render/` references `TimeOfDayPreset`.
+- [x] Two continuous sliders scrub time of day and day of year; the sun moves correctly for both.
+- [x] No shader source under `src/` contains an exposure multiply.
+- [x] TS/WGSL aerial-perspective agreement within 1%.
+- [x] Terrain, ocean, rivers, vegetation, wildlife, aircraft, airport and the cloud composite all consume the same include, through the one registry. Nothing re-derives haze.
+- [x] `camera.maxZ = 45_000`; ocean radius 40 km; terrain rings 6/7/7/7 (see §13 D-3 — one-per-tier would end terrain inside the far plane); AP luminance opacity ≥ 95% at the far plane, pinned per tier.
+- [x] Startup assertions pass: `applyByPostProcess` true, `fogMode` NONE.
+- [x] `scene.environmentTexture` non-null; `REFLECTION` defined on the terrain effect; `HemisphericLight` retired; `specularIntensity` 1.0 in all three files.
+- [x] SH irradiance for a uniform sky of radiance L equals πL.
+- [x] Scrubbing past dusk does not break the image.
 
 **Phase**
-- [ ] Audit root causes **#3, #4, #5, #6, #10, #11, #12** are closed. (#1, #2, #7, #8, #9 remain, by design — Phases 3, 5, 4, 5, 5.)
-- [ ] `npm run verify` green; `npm run test:gpu` green; baseline churned at no more than the four sanctioned points.
-- [ ] The decision log has an entry for every amendment and every measured choice.
-- [ ] Phase 0's boundary test still passes — no Phase 1 item introduced a second definition of an owned artefact.
+- [x] Audit root causes **#3, #4, #5, #6, #10, #11, #12** are closed. (#1, #2, #7, #8, #9 remain, by design — Phases 3, 5, 4, 5, 5.)
+- [x] `npm run verify` green; `npm run test:gpu` green; baseline churned at the sanctioned points plus the verified `1B-11` FOV reframing (§13 D-8).
+- [x] The decision log has an entry for every amendment and every measured choice.
+- [x] Phase 0's boundary test still passes — no Phase 1 item introduced a second definition of an owned artefact.
 
 ---
 
@@ -724,12 +724,31 @@ Two risks from the previous edition — the plugin spike and the test harness �
 
 | Date | Item | Decision | Measurement / rationale |
 |---|---|---|---|
-| — | `1A-2` | Memory-estimate fudge factor | *record the calibration numbers, date and machine* |
-| — | `1B-3` | Ladder: constant 65 or constant 33 at tiers 1–2 | *record the terrain-raster ms from `perf:capture` for both* |
-| — | `1B-11` | MSAA via `toneMap.samples` or `DefaultRenderingPipeline` | *record which and why* |
-| — | `1C-2` | `EV100_ref` chosen so day+clear is unchanged | *record the value* |
+| 2026-08-17 | `1B-3` | Ladder: constant 65 at tiers 1–3, 33 at tier 0. | Terrain page generation p95 7.2–7.5 ms vs the 9 ms budget (M-series, `perf:capture` report.json). Constant per-tier resolution keeps every adjacent-level GSD ratio exactly 2:1. |
+| 2026-08-17 | `1B-11` | MSAA via `toneMap.samples`. | The first post-process already owns the offscreen beauty target; tier 2 runs 2× because assertion 19 measured 734 MiB > 700 MiB with 4× alongside the full-distance 4096² CSM. |
+| 2026-08-17 | `1C-2` | `REFERENCE_EV100 = 15.27` (E_ref at the old day preset's sun height, sin 0.82). | Day+clear exposure ratio is exactly 1, so the look is preserved; k = 0.12, clamp [0.3, 2.6]. |
+| 2026-08-17 | `1C-4` | `mieTurbidityMultiplier = 1 + humidity·26` (clear 12.7×). | Physical constants give ~44% transmittance at 45 km; the ≥95%-opacity exit criterion requires turbid Mie. Measured: luminance T(45 km) ≈ 4.6%, T(10 km) ≥ 40%. |
+| 2026-08-17 | `1C-4` | `terrainRings` 6/7/7/7 (see §13 deviation D-3). | Guaranteed coverage is 512·2^rings m; only level 7 sits wholly beyond the 45 km far plane. |
+| 2026-08-17 | `1C-6` | Probe re-renders per environment change, not one face per frame (§13 D-6). | Six 128 px draws of a ~100-ALU shader per scrub step beat a six-frame-stale probe. |
 
-*(Phase 0's decision log carries the `0-9` spike outcome, the `0-8` harness choice, the `0-3` streaming-priority tuning, and the `0-6` settings migration mapping.)*
+*(Phase 0's decision log carries the `0-9` spike outcome, the `0-8` harness choice, the `0-3` streaming-priority tuning, and the `0-6` settings migration mapping. The full measured-choice log, including `1A-5`, `1B-9`, `1B-13`, `1C-3` and `1C-8`, lives in ARCHITECTURE.md's decision log — the normative copy.)*
+
+---
+
+## 13. Deviations from this plan, as implemented
+
+Recorded per the working agreement: follow the intent, log every departure.
+
+- **D-1 (`1A-5`)** — The item's premise was stale: Babylon 9.21.2's CSM already defaults `useRedTextureType = true`. True depth-only shipped instead via a `noColorAttachment` RTT override (`DepthOnlyCascadedShadowGenerator`), proven on-adapter.
+- **D-2 (`1B-7`/`1B-9`)** — The ecological density field is unrenderable as raw instances (~39 M triangles). The field stays authored and tested; the renderer applies selection-keyed rendered-share thinning. The scatter's domain warp was deleted outright — its own lattice re-introduced a 37 m spectral line — replaced by bilinear density interpolation over stratified full-cell jitter.
+- **D-3 (`1C-4`)** — `terrainRings` went 6/7/8/8 → 6/7/7/7, not one-per-tier: worst-case guaranteed coverage is `512·2^rings` m, so the plan's cut would end terrain *inside* the 45 km far plane on the lower tiers (its ~16% triangle estimate was computed against the 120 km baseline with an average-case coverage model). Only level 7 is wholly beyond the new far plane.
+- **D-4 (`1C-4`)** — "~60 ALU + 2 LUT fetches" became ~60 ALU + 0 fetches: sun transmittance rides as a per-frame uniform evaluated at camera altitude by the shared CPU model. The LUTs still exist (CPU-side truth for exposure, IBL and tests); no consumer binds a sampler for haze.
+- **D-5 (`1C-4`)** — Turbidity: the plan's "physical constants" claim fails its own ≥95%-opacity criterion (textbook coefficients leave ~44% transmittance at 45 km). `mieTurbidityMultiplier = 1 + humidity·26` expresses the required turbidity once, tested, instead of smuggling it into the coefficients.
+- **D-6 (`1C-6`)** — The specular probe re-renders all six faces once per environment change (or >500 m altitude drift) instead of one face per frame; the sun is static between scrubs. Diffuse SH additionally applies a below-horizon ground-bounce attenuation (floor 0.25): the sky field's lower hemisphere is the bright clamped horizon haze, and an unattenuated bake lights undersides more than tops.
+- **D-7 (`1C-8`)** — The `strength × transmittance` term is unnecessary: every consumer applies aerial perspective multiplicatively *after* shadowing, so shadows fade with the fragment's transmittance structurally. Recorded here so nobody adds the term twice.
+- **D-8 (§9.3)** — The sanctioned atmosphere rebaseline was taken once after `1C-8`/`1C-10` rather than literally after `1C-6`: the plan schedules pixel-visible water/cloud work after its own rebaseline point, and "once" is the load-bearing word. One additional unsanctioned-point rebaseline occurred at `1B-11`: the FOV reframe (64° vertical → 62° horizontal) legitimately changes every pixel; SSIM 0.56 was verified as reframing, not regression, before rebaselining.
+- **D-10 (`1A-1`, found at phase close)** — Two determinism bugs in the capture pipeline surfaced once the aerial perspective raised scene contrast: accumulated `simulationTime` crossed run-dependent streaming loops (wave/cloud phase varied per run), and the propeller phase accumulated per rendered frame (the cockpit down-shot flickered blades in and out at SSIM 0.970 vs 0.985+, bimodally). Fixed by pinning the settle's simulation time per shot and anchoring propeller rotation to `state.simulationTime` (visually identical at blur speeds); three consecutive captures now reproduce the baseline. The accompanying rebaseline is part of D-8's single sanctioned point.
+- **D-9 (`1C-1`/`1C-5`)** — `applyEnvironment` dropped its `WeatherPreset` parameter (weather is read from the state's continuous fields), and the old palette-mix sky uniforms were deleted with the shader; the palette persists only for the light rig and the snapshot until Phases 3/7 retire it.
 
 ---
 
