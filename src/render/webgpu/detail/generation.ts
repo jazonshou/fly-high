@@ -2,6 +2,7 @@ import { TerrainBiome } from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
 import { hashSeed } from "@/src/world/seed";
 import { densityField, type VegetationDensitySample } from "./densityField";
+import { sampleStandField, type StandSample } from "./standField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailCellGenerationOptions,
@@ -344,7 +345,7 @@ function scatterLayer(
     blockSample: DetailTerrainSample,
     field: VegetationDensitySample,
     random: RandomSource,
-    blockRandom: { standAge: number; dominantChoice: number },
+    stand: StandSample,
     push: (spacing: number, priority: number, build: () => DetailTreePlacement | DetailShrubPlacement) => void,
   ) => void,
 ): readonly (DetailTreePlacement | DetailShrubPlacement)[] {
@@ -416,8 +417,6 @@ function scatterLayer(
         Math.min(MAX_SUBCELLS_PER_BLOCK_AXIS, Math.ceil(SCATTER_BLOCK_METERS / jitterCell)),
       );
       const subSize = SCATTER_BLOCK_METERS / sub;
-      const blockStream = createRandom(`${context.seed}/${layer}/${blockX}/${blockZ}`);
-      const blockRandom = { standAge: blockStream(), dominantChoice: blockStream() };
 
       for (let subZ = 0; subZ < sub; subZ += 1) {
         for (let subX = 0; subX < sub; subX += 1) {
@@ -441,7 +440,10 @@ function scatterLayer(
           if (acceptRoll >= acceptance) continue;
           if (x < loX || x >= hiX || z < loZ || z >= hiZ) continue;
           const y = gridHeight(context.grid, x, z);
-          emit(x, z, y, info.sample, info.field, random, blockRandom, (spacing, priority, build) => {
+          // 2-11b: stand identity from the continuous field at the stem's
+          // own position — no 32 m appearance lattice.
+          const stand = sampleStandField(context.seedHash, x, z);
+          emit(x, z, y, info.sample, info.field, random, stand, (spacing, priority, build) => {
             candidates.push({ x, z, priority, spacing, build });
           });
         }
@@ -460,20 +462,20 @@ function scatterLayer(
 }
 
 function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
-  return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, block, push) => {
+  return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, stand, push) => {
     const priority = random();
     const speciesRoll = random();
     const dominantRoll = random();
     const coniferRoll = random();
     let species = chooseTreeSpecies(
       blockSample,
-      dominantRoll < 0.62 ? block.dominantChoice : speciesRoll,
+      dominantRoll < 0.62 ? stand.dominantChoice : speciesRoll,
     );
     // Cool north faces carry a larger conifer share (the aspect species shift).
     if (field.aspect < 0 && coniferRoll < -field.aspect * 0.3) {
       species = coniferRoll < -field.aspect * 0.15 ? "spruce" : "pine";
     }
-    const dimensions = treeDimensions(species, random, block.standAge);
+    const dimensions = treeDimensions(species, random, stand.standAge);
     // Krummholz: near the treeline trees shrink before they disappear.
     const height = dimensions.height * field.heightFactor;
     const crown = dimensions.crown * (0.55 + 0.45 * field.heightFactor);
@@ -493,18 +495,19 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
       color: treeColor(species, random),
+      standAge: stand.standAge,
       selection: random(),
     }));
   }) as readonly DetailTreePlacement[];
 }
 
 function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[] {
-  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, block, push) => {
+  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, stand, push) => {
     const priority = random();
     const speciesRoll = random();
     const species = chooseShrubSpecies(
       blockSample,
-      speciesRoll < 0.7 ? block.dominantChoice : random(),
+      speciesRoll < 0.7 ? stand.dominantChoice : random(),
     );
     const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
     const height = (species === "sage"

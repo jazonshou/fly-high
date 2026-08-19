@@ -213,6 +213,23 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
   },
   {
+    // 2-11b: stand identity is a continuous field at the stem's own world
+    // position — never a lattice. 2-12's tint centres and 2-13a's seasonal
+    // appearance read the same field.
+    artifact: "stand-field",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/standField.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "sampleStandField",
+      "STAND_FIELD_MINIMUM_WAVELENGTH_METERS",
+    ],
+    notes:
+      "A per-block appearance constant anywhere in generation is the 32 m "
+      + "lattice returning; the appearance-spectrum test's ANOVA control "
+      + "exists to catch exactly that.",
+  },
+  {
     // 2-11a: the ONE instance record every detail batch uploads and the ONE
     // decoder that turns it into a world transform.
     artifact: "detail-instance-format",

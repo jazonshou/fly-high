@@ -62,6 +62,8 @@ export interface DetailTreePlacement {
   readonly windPhaseRadians: number;
   readonly windResponse: number;
   readonly color: readonly [number, number, number, number];
+  /** 2-11b: continuous stand age at this stem (0..1) — 2-12/2-13a consume it. */
+  readonly standAge: number;
   /** Stable random value used for deterministic distance thinning. */
   readonly selection: number;
 }
