@@ -10,6 +10,7 @@ import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
+  RENDERED_DENSITY_LAWS,
   renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
@@ -27,6 +28,13 @@ import {
   type DetailInstanceRecord,
 } from "./instanceFormat";
 import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
+import {
+  createImpostorAtlas,
+  impostorBakeFrame,
+  impostorLayerIndex,
+  type ImpostorAtlas,
+} from "./ImpostorAtlas";
+import { seasonalWinterFraction } from "@/src/world";
 import {
   buildClutterPrototype,
   buildGrassPatchPrototype,
@@ -160,6 +168,20 @@ export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
  * inside the plan's ≤ 0.9 M Balanced exit budget.
  */
 export const GROUND_COVER_CANDIDATE_SPACING_METERS = 2;
+/**
+ * 2-17 close: chunk rebuilds amortized to ONE per update — a rebuild frame
+ * carries base render (~30 ms on the capture rig) plus the chunk's append
+ * and upload; at three chunks the spike crossed the 41 ms hitch line, at
+ * one it stays under. The sweep takes proportionally longer to converge,
+ * which the membership slack absorbs.
+ */
+export const DETAIL_CHUNK_REBUILDS_PER_UPDATE = 1;
+/**
+ * 2-17 close: how far the observer may travel before a stem's band
+ * memberships could be wrong — the observer signature quantum must stay
+ * below this. Fades themselves are fragment-computed and continuous.
+ */
+export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
 export const GROUND_COVER_EDGE_FADE_METERS = 30;
 export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
 
@@ -248,6 +270,13 @@ export class WorldDetailRuntime {
   private readonly shrubAspects = new Map<ShrubSpecies, number>();
   /** 2-12: the atlas (null under NullEngine — no raw 2D-array support). */
   private foliageAtlas: FoliageAtlas | null = null;
+  /** 2-17: the impostor atlas (same NullEngine guard). */
+  private impostorAtlas: ImpostorAtlas | null = null;
+  /** 2-17 close: plugins whose tree bands use fragment-computed fades. */
+  private readonly bandFadePlugins = new Set<DetailInstanceMaterialPlugin>();
+  /** 2-17 close: law/grass radii last used, for frontier classification. */
+  private lastDensityLaw: RenderedDensityLaw = RENDERED_DENSITY_LAWS[1]!;
+  private lastGrassRadius = 150;
   private readonly cells = new Map<string, ResidentCell>();
   private desiredCells: readonly DesiredCell[] = [];
   private desiredKeys = new Set<string>();
@@ -320,6 +349,21 @@ export class WorldDetailRuntime {
    */
   setDayOfYear(dayOfYear: number): void {
     this.dayOfYear = dayOfYear;
+    // 2-17a: the impostor buckets cross-fade on the same shed window as the
+    // card dissolve (applyFoliageSeason's 0.34–0.7 winterFraction ramp).
+    const winter = seasonalWinterFraction(dayOfYear, this.options.latitudeDegrees ?? 45);
+    const t = Math.min(1, Math.max(0, (winter - 0.34) / 0.36));
+    const mix = t * t * (3 - 2 * t);
+    for (const plugin of this.instancePlugins) plugin.setImpostorSeason(mix);
+  }
+
+  /** Marks a material's plugin as tree-band shader-faded (2-17 close). */
+  private registerBandFadeMaterial(material: PBRMaterial): void {
+    const plugin = this.materialPlugin(material);
+    if (!plugin) return;
+    this.bandFadePlugins.add(plugin);
+    // Placeholder radii until the first update supplies the profile's law.
+    plugin.setBandFades(400, 1_400, 8_000);
   }
 
   /** 2-13: the frame's wind snapshot, forwarded to every instance plugin. */
@@ -481,11 +525,18 @@ export class WorldDetailRuntime {
       }
     }
 
+    for (const plugin of this.bandFadePlugins) {
+      plugin.setBandFades(
+        profile.renderedDensityLaw.near.outerRadiusMeters,
+        profile.renderedDensityLaw.mid.outerRadiusMeters,
+        profile.renderedDensityLaw.far.outerRadiusMeters,
+      );
+    }
     if (this.batchesDirty) {
       this.observerX = observer.x;
       this.observerZ = observer.z;
-      this.rebuildBatches(floatingOrigin, profile);
-      this.batchesDirty = false;
+      // Stays dirty while the amortized sweep has a backlog.
+      this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
     } else {
       // Camera rotation does not affect paging signatures, but it does change
       // which spatial chunks Babylon submits to the main view.
@@ -610,7 +661,11 @@ export class WorldDetailRuntime {
   private rebuildBatches(
     floatingOrigin: DetailFloatingOrigin,
     profile: WebGpuQualityProfile,
-  ): void {
+  ): boolean {
+    let rebuildsThisUpdate = 0;
+    let rebuildBacklog = false;
+    this.lastDensityLaw = profile.renderedDensityLaw;
+    this.lastGrassRadius = profile.grassRadiusMeters;
     const grouped = new Map<
       string,
       { coordinates: DetailPresentationChunkCoordinates; residents: ResidentCell[] }
@@ -659,11 +714,14 @@ export class WorldDetailRuntime {
         densityLaw.near.outerRadiusMeters,
         profile.treeVariantCap,
         profile.grassRadiusMeters,
-        // 2-14/2-16: fades and the 1/d grass ramp are functions of the
-        // OBSERVER — quantized here so every 64 m of flight re-bakes them
-        // (without this a chunk with unchanged residents kept stale fades).
-        Math.round(this.observerX / 64),
-        Math.round(this.observerZ / 64),
+        // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
+        // those straddling a band or population edge, where memberships and
+        // single-edge baked fades actually change with camera range. An
+        // interior chunk (the bulk of the field) rebuilds only when its
+        // residents change, restoring the zero-steady-state-rebuild design;
+        // a naive global observer term rebuilt EVERY chunk each quantum and
+        // the capture measured it as a saturated hitch train.
+        this.chunkObserverTerm(group.coordinates),
         ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
       ].join(":");
       let chunk = this.presentationChunks.get(group.coordinates.key);
@@ -686,15 +744,26 @@ export class WorldDetailRuntime {
         this.presentationChunks.set(group.coordinates.key, chunk);
       }
       if (chunk.signature !== signature) {
-        chunk.statistics = this.rebuildPresentationChunk(
-          chunk,
-          group.residents,
-          floatingOrigin,
-          densityLaw,
-          profile.treeVariantCap,
-          profile.grassRadiusMeters,
-        );
-        chunk.signature = signature;
+        // Amortized: at most DETAIL_CHUNK_REBUILDS_PER_UPDATE chunks rebuild
+        // per frame — the 64 m observer quantum otherwise rebuilt every
+        // chunk in ONE update and the capture measured it as a hitch train
+        // (39-147 per 240 frames at approach speeds). Skipped chunks keep
+        // their stale signature and rebuild on the following updates;
+        // batchesDirty stays set so the sweep continues.
+        if (rebuildsThisUpdate >= DETAIL_CHUNK_REBUILDS_PER_UPDATE) {
+          rebuildBacklog = true;
+        } else {
+          rebuildsThisUpdate += 1;
+          chunk.statistics = this.rebuildPresentationChunk(
+            chunk,
+            group.residents,
+            floatingOrigin,
+            densityLaw,
+            profile.treeVariantCap,
+            profile.grassRadiusMeters,
+          );
+          chunk.signature = signature;
+        }
       }
       totals.nearCells += chunk.statistics.nearCells;
       totals.midCells += chunk.statistics.midCells;
@@ -719,6 +788,7 @@ export class WorldDetailRuntime {
       activeBatches: 0,
     };
     this.refreshVisibilityStatistics();
+    return rebuildBacklog;
   }
 
   private rebuildPresentationChunk(
@@ -834,18 +904,28 @@ export class WorldDetailRuntime {
             variantCount - 1,
             Math.floor(variantHash * variantCount),
           );
+          // Far band: geometry variants collapse to one mesh, so the
+          // variant byte is FREE — it carries a per-stem hash instead, which
+          // the impostor shader turns into a view-phase offset and a mirror
+          // (the 2-17 exit criterion: no two same-species impostors within
+          // a screen share both silhouette aspect and phase).
+          // The fade lane carries the BAND CODE (0 near / 1 mid / 2 far):
+          // the fragment computes the actual crossfade window from its own
+          // camera range (DETAIL_BAND_FADES).
+          const bandCode = membership.band === "near" ? 0 : membership.band === "mid" ? 1 : 2;
           const crown: DetailInstanceRecord = {
             ...crownBase,
-            fade: membership.fade,
-            fadeIncoming: membership.incoming,
-            variant: geometryVariant + modifierBits * 32,
+            fade: bandCode / 127,
+            fadeIncoming: false,
+            variant: membership.band === "far"
+              ? Math.floor(((tree.selection * 97.3) % 1) * 256)
+              : geometryVariant + modifierBits * 32,
           };
+          const crownBatchKey = membership.band === "far" && this.impostorAtlas
+            ? `tree-${tree.species}-impostor`
+            : `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`;
           this.appendInstance(
-            this.getBatch(
-              `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`,
-              chunk,
-              nextBatchKeys,
-            ),
+            this.getBatch(crownBatchKey, chunk, nextBatchKeys),
             crown,
           );
           // A trunk exists at near and mid — no floating crowns; the far
@@ -1040,12 +1120,28 @@ export class WorldDetailRuntime {
             const grassFade = patchDistance > grassRadius - GROUND_COVER_EDGE_FADE_METERS
               ? (grassRadius - patchDistance) / GROUND_COVER_EDGE_FADE_METERS
               : 1;
-            const terrain = this.options.terrainSample(x, z);
+            // Bilinear height from the habitat grid — a terrainSample call
+            // per candidate stalled whole frames on every 64 m rebuild.
+            const gridU = clamp((x - cell.minX) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
+            const gridV = clamp((z - cell.minZ) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
+            const u0 = Math.floor(gridU);
+            const v0 = Math.floor(gridV);
+            const u1 = Math.min(GROUND_COVER_GRID - 1, u0 + 1);
+            const v1 = Math.min(GROUND_COVER_GRID - 1, v0 + 1);
+            const fu = gridU - u0;
+            const fv = gridV - v0;
+            const heightAt = (row: number, column: number): number =>
+              cell.groundCover[row * GROUND_COVER_GRID + column]?.heightMeters ?? node.heightMeters;
+            const patchHeight =
+              heightAt(v0, u0) * (1 - fu) * (1 - fv)
+              + heightAt(v0, u1) * fu * (1 - fv)
+              + heightAt(v1, u0) * (1 - fu) * fv
+              + heightAt(v1, u1) * fu * fv;
             this.appendInstance(
               this.getBatch(`ground-${node.archetype}`, chunk, nextBatchKeys),
               {
                 x: x - floatingOrigin.x,
-                y: terrain.height - floatingOrigin.y,
+                y: patchHeight - floatingOrigin.y,
                 z: z - floatingOrigin.z,
                 quaternion: yawQuaternion(groundCoverHash(x, z, 4) * 2 * Math.PI),
                 heightScaleMeters: (0.75 + heightHash * 0.5)
@@ -1197,37 +1293,66 @@ export class WorldDetailRuntime {
   static fadeBandMemberships(
     distanceMeters: number,
     law: RenderedDensityLaw,
-  ): ReadonlyArray<{ band: "near" | "mid" | "far"; fade: number; incoming: boolean }> {
+  ): ReadonlyArray<{ band: "near" | "mid" | "far" }> {
     const nearEdge = law.near.outerRadiusMeters;
     const midEdge = law.mid.outerRadiusMeters;
     const cullEdge = law.far.outerRadiusMeters;
-    if (!Number.isFinite(distanceMeters) || distanceMeters < 0 || distanceMeters >= cullEdge) {
+    const slack = DETAIL_MEMBERSHIP_SLACK_METERS;
+    if (!Number.isFinite(distanceMeters) || distanceMeters < 0
+      || distanceMeters >= cullEdge + slack) {
       return [];
     }
-    if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS && distanceMeters <= nearEdge) {
-      const outgoing = (nearEdge - distanceMeters) / DETAIL_FADE_MARGIN_METERS;
-      return [
-        { band: "near", fade: outgoing, incoming: false },
-        { band: "mid", fade: 1 - outgoing, incoming: true },
-      ];
+    const memberships: Array<{ band: "near" | "mid" | "far" }> = [];
+    // Membership is generous by ±slack around each margin: the FADE itself
+    // is computed per fragment from the true camera range, so a stem merely
+    // needs to EXIST in every band whose window it could enter before the
+    // next amortized rebuild — out-of-window stems dither to nothing.
+    if (distanceMeters <= nearEdge + slack) memberships.push({ band: "near" });
+    if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS - slack
+      && distanceMeters <= midEdge + slack) {
+      memberships.push({ band: "mid" });
     }
-    if (distanceMeters <= nearEdge) return [{ band: "near", fade: 1, incoming: false }];
-    if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS && distanceMeters <= midEdge) {
-      const outgoing = (midEdge - distanceMeters) / DETAIL_FADE_MARGIN_METERS;
-      return [
-        { band: "mid", fade: outgoing, incoming: false },
-        { band: "far", fade: 1 - outgoing, incoming: true },
-      ];
+    if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS - slack) {
+      memberships.push({ band: "far" });
     }
-    if (distanceMeters <= midEdge) return [{ band: "mid", fade: 1, incoming: false }];
-    if (distanceMeters > cullEdge - DETAIL_CULL_FADE_MARGIN_METERS) {
-      return [{
-        band: "far",
-        fade: (cullEdge - distanceMeters) / DETAIL_CULL_FADE_MARGIN_METERS,
-        incoming: false,
-      }];
+    return memberships;
+  }
+
+  /**
+   * 2-17 close: the chunk's observer signature term. Frontier chunks (any
+   * band/population edge within the chunk's padded distance envelope) carry
+   * the 64 m-quantized observer so memberships and baked edge fades
+   * re-bake as the frontier sweeps; interior chunks carry a constant.
+   */
+  private chunkObserverTerm(coordinates: DetailPresentationChunkCoordinates): string {
+    const law = this.lastDensityLaw;
+    const minX = coordinates.minCellX * this.cellSizeMeters;
+    const minZ = coordinates.minCellZ * this.cellSizeMeters;
+    const maxX = (coordinates.maxCellX + 1) * this.cellSizeMeters;
+    const maxZ = (coordinates.maxCellZ + 1) * this.cellSizeMeters;
+    const nearestX = clamp(this.observerX, minX, maxX);
+    const nearestZ = clamp(this.observerZ, minZ, maxZ);
+    const minDistance = Math.hypot(nearestX - this.observerX, nearestZ - this.observerZ);
+    const cornerDistance = Math.max(
+      Math.hypot(minX - this.observerX, minZ - this.observerZ),
+      Math.hypot(maxX - this.observerX, minZ - this.observerZ),
+      Math.hypot(minX - this.observerX, maxZ - this.observerZ),
+      Math.hypot(maxX - this.observerX, maxZ - this.observerZ),
+    );
+    const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
+    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
+    const edges: readonly (readonly [number, number])[] = [
+      [law.near.outerRadiusMeters, pad],
+      [law.mid.outerRadiusMeters, pad],
+      [law.far.outerRadiusMeters, cullPad],
+      [this.lastGrassRadius, GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64],
+    ];
+    for (const [edge, padding] of edges) {
+      if (minDistance - padding <= edge && cornerDistance + padding >= edge) {
+        return `f${Math.round(this.observerX / 64)}:${Math.round(this.observerZ / 64)}`;
+      }
     }
-    return [{ band: "far", fade: 1, incoming: false }];
+    return "interior";
   }
 
   /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */
@@ -1271,7 +1396,12 @@ export class WorldDetailRuntime {
     mesh.material = prototype.material;
     mesh.isPickable = false;
     mesh.useVertexColors = true;
-    mesh.receiveShadows = true;
+    // INHERITED, never forced: the impostor prototype opts out — with
+    // front_facing and the three blend varyings, 4-cascade shadow inputs
+    // push its fragment past the 16-input limit (measured 17: nine CSM
+    // lanes + tint + A/B/C + a wasted fade lane), and one invalid pipeline
+    // poisons the whole render bundle to a black frame.
+    mesh.receiveShadows = prototype.mesh.receiveShadows;
     mesh.alwaysSelectAsActiveMesh = false;
     mesh.setEnabled(false);
     mesh.metadata = {
@@ -1339,6 +1469,9 @@ export class WorldDetailRuntime {
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
       this.foliageAtlas = createFoliageAtlas(this.scene, this.options.worldSeed);
+      // 2-17: the far band's octahedral impostors, baked on the CPU from
+      // the same seed (byte-deterministic; ~0.4 s once at startup).
+      this.impostorAtlas = createImpostorAtlas(this.scene, this.options.worldSeed);
     }
 
     // 2-12: card trees from the built prototypes — species-specific trunks
@@ -1362,6 +1495,7 @@ export class WorldDetailRuntime {
         1,
         true,
       );
+      this.registerBandFadeMaterial(crownMaterial);
       crownMaterial.backFaceCulling = false;
       crownMaterial.twoSidedLighting = true;
       // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
@@ -1378,6 +1512,7 @@ export class WorldDetailRuntime {
         1,
         true,
       );
+      this.registerBandFadeMaterial(barkMaterial);
       for (let variant = 0; variant < variantCount; variant += 1) {
         const prototype = buildTreePrototype(species, variant, prototypeSeed);
         const crownAspect = Math.max(prototype.crown.boundingRadius, 0.05);
@@ -1425,15 +1560,57 @@ export class WorldDetailRuntime {
           barkMaterial,
           false,
         );
-        this.registerBatch(
-          `tree-${species}-v${variant}-crown-far`,
-          this.buildPrototypeMesh(
-            `detail-tree-${species}-v${variant}-crown-far`,
-            farPrototype.crown,
-          ),
-          crownMaterial,
-          false,
-        );
+        if (variant === 0 && this.impostorAtlas) {
+          // 2-17: the far band is a billboard impostor — one quad, the
+          // three-view blend, the two season buckets. Its material carries
+          // the species' bake frame so the shader reconstructs the exact
+          // baked square; impostors neither cast nor receive shadows
+          // (which frees the cascade varyings the blend lanes consume).
+          const impostorMaterial = this.createMaterial(
+            `detail-impostor-${species}`,
+            new Color3(1, 1, 1),
+            0.95,
+            1,
+            false,
+          );
+          impostorMaterial.backFaceCulling = false;
+          impostorMaterial.twoSidedLighting = true;
+          impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+          const frame = impostorBakeFrame(species, prototypeSeed);
+          this.registerBandFadeMaterial(impostorMaterial);
+          this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
+            this.impostorAtlas.albedo,
+            frame.extentUnit,
+            frame.centerYUnit,
+            impostorLayerIndex(species, 0),
+            impostorLayerIndex(species, 1),
+          );
+          const quad = new Mesh(`detail-impostor-${species}`, this.scene);
+          const quadData = new VertexData();
+          quadData.positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+          quadData.normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+          quadData.uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+          quadData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+          quadData.applyToMesh(quad, false);
+          quad.setEnabled(false);
+          this.registerBatch(`tree-${species}-impostor`, quad, impostorMaterial, false);
+          // AFTER registerBatch (which forces receive on): impostors must
+          // NOT receive shadows — with front_facing (two-sided) and the
+          // three blend varyings, the 4-cascade CSM inputs push the
+          // fragment past the 16-input limit (17 measured), and one invalid
+          // pipeline poisons the whole render bundle to a black frame.
+          quad.receiveShadows = false;
+        } else if (variant === 0) {
+          this.registerBatch(
+            `tree-${species}-v${variant}-crown-far`,
+            this.buildPrototypeMesh(
+              `detail-tree-${species}-v${variant}-crown-far`,
+              farPrototype.crown,
+            ),
+            crownMaterial,
+            false,
+          );
+        }
       }
     }
 

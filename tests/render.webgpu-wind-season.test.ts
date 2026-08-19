@@ -95,10 +95,13 @@ describe("three-band wind plugin surface (2-13)", () => {
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("detailWind");
 
-      // The fragment lifts the alpha test from the seasonal leaf fraction.
+      // The fragment sheds leaves by uv-cell dissolve from the tint's alpha
+      // lane (a threshold lift cannot drop painted leaves — interiors carry
+      // alpha ≈ 1; the 2-17 bake measured 17.1% → 16.3%).
       const fragment = plugin.getCustomCode("fragment", ShaderLanguage.WGSL)!;
+      expect(fragment["CUSTOM_FRAGMENT_UPDATE_ALBEDO"]).toContain("detailLeafHash");
       expect(fragment["CUSTOM_FRAGMENT_UPDATE_ALBEDO"]).toContain(
-        "mix(0.86, 0.5, clamp(fragmentInputs.detailInstanceTint.a",
+        "clamp(fragmentInputs.detailInstanceTint.a, 0.0, 1.0)",
       );
 
       // setWind normalizes direction and clamps strength/gust into [0, 1].

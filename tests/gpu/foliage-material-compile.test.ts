@@ -20,8 +20,16 @@ import { CreateGround } from "@babylonjs/core/Meshes/Builders/groundBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Scene } from "@babylonjs/core/scene";
+import { CloudShadowMaterialPlugin } from "../../src/render/webgpu/clouds/CloudShadowMaterialPlugin";
+import { AerialPerspectiveMaterialPlugin } from "../../src/render/webgpu/atmosphere/AerialPerspective";
 import { DetailInstanceMaterialPlugin } from "../../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
+import { ReflectionProbe } from "@babylonjs/core/Probes/reflectionProbe";
 import { createFoliageAtlas } from "../../src/render/webgpu/detail/FoliageAtlas";
+import {
+  createImpostorAtlas,
+  impostorBakeFrame,
+  impostorLayerIndex,
+} from "../../src/render/webgpu/detail/ImpostorAtlas";
 import {
   DETAIL_INSTANCE_ATTRIBUTES,
   DETAIL_INSTANCE_STRIDE_BYTES,
@@ -29,6 +37,7 @@ import {
   yawQuaternion,
 } from "../../src/render/webgpu/detail/instanceFormat";
 import {
+  buildGrassPatchPrototype,
   buildShrubPrototype,
   buildTreePrototype,
   type PrototypeGeometry,
@@ -236,6 +245,12 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       shadows.filter = ShadowGenerator.FILTER_PCF;
       shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 
+      // Production parity: scene.environmentTexture is the sky probe's cube
+      // (1C-6) — its REFLECTION defines add fragment inputs on every PBR
+      // material, and the 16-input budget must be proven against them.
+      const probe = new ReflectionProbe("compile-probe", 16, scene, true, true);
+      scene.environmentTexture = probe.cubeTexture;
+
       const ground = CreateGround("compile-ground", { width: 120, height: 120 }, scene);
       const groundMaterial = new StandardMaterial("compile-ground-material", scene);
       groundMaterial.diffuseColor = new Color3(0.6, 0.6, 0.6);
@@ -246,7 +261,12 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       const prototype = buildTreePrototype("pine", 1, 7);
 
       // Mirrors WorldDetailRuntime.createMaterial, atlas path on the crown.
-      const buildMaterial = (name: string, samplesAtlas: boolean, radialAspect: number) => {
+      const buildMaterial = (
+        name: string,
+        samplesAtlas: boolean,
+        radialAspect: number,
+        bandFades = true,
+      ) => {
         const material = new PBRMaterial(name, scene);
         material.albedoColor = new Color3(0.4, 0.5, 0.35);
         material.metallic = 0;
@@ -254,6 +274,18 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         const plugin = new DetailInstanceMaterialPlugin(material);
         plugin.setTimeSeconds(1.5);
         plugin.setRadialAspect(radialAspect);
+        // Production parity: FlightRenderer registers every detail material
+        // with BOTH receiver registries — their plugins ride along here so
+        // the varying/input budget the rig proves is the shipping one.
+        new CloudShadowMaterialPlugin(material);
+        new AerialPerspectiveMaterialPlugin(material);
+        // Production parity: TREE materials run fragment-computed band
+        // fades (2-17 close) — the record's fade lane carries a band code.
+        // Shrubs/grass keep legacy baked fades, exactly as production wires
+        // them (the hardened per-region check caught the rig over-applying
+        // band fades to the shrub, whose legacy byte decoded as a nonsense
+        // band code and dithered it to nothing).
+        if (bandFades) plugin.setBandFades(400, 1_400, 8_000);
         if (samplesAtlas) {
           plugin.setFoliageAtlas(atlas.texture);
           // Production crown materials are double-sided and render in the
@@ -281,7 +313,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // 2-14: drawn mid-crossfade so the dither path proves pixels, not
       // just compilation — a quarter of the canopy dithers away and the
       // visibility floor must still clear.
-      uploadOneInstance(crown, scene, 0.75, false);
+      uploadOneInstance(crown, scene, 0 / 127, false);
 
       const trunk = buildPrototypeMesh("compile-trunk", prototype.trunk, scene);
       trunk.material = buildMaterial(
@@ -291,7 +323,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       );
       trunk.useVertexColors = true;
       trunk.receiveShadows = true;
-      uploadOneInstance(trunk, scene);
+      uploadOneInstance(trunk, scene, 0 / 127, false);
 
       // 2-12b: a card shrub rides the same stack (atlas define, alpha-test
       // bucket, double-sided) on its own mesh — drawn here so the shrub
@@ -301,12 +333,64 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         buildShrubPrototype("juniper", 0, 7),
         scene,
       );
-      shrub.material = buildMaterial("compile-shrub-material", true, 0.6);
+      shrub.material = buildMaterial("compile-shrub-material", true, 0.6, false);
       shrub.useVertexColors = true;
       shrub.receiveShadows = true;
       // 2-14: the INCOMING comparison path (survive bayer >= 1 - fade).
       uploadOneInstance(shrub, scene, 0.6, true);
       shrub.position.x = 14;
+
+      // 2-16: the ground-cover shape (two-sided atlas cards + receivers).
+      const grass = buildPrototypeMesh(
+        "compile-grass",
+        buildGrassPatchPrototype(7, "grass"),
+        scene,
+      );
+      grass.material = buildMaterial("compile-grass-material", true, 1, false);
+      grass.useVertexColors = true;
+      grass.receiveShadows = true;
+      uploadOneInstance(grass, scene, 1, false);
+      grass.position.x = 7;
+
+      // 2-17: a billboard impostor through its own pipeline permutation
+      // (DETAIL_IMPOSTOR define, three-view blend, season mix) — drawn
+      // mid-frame like everything else, per the pixels-not-just-compiles
+      // rule. Impostors neither cast nor receive shadows.
+      const impostorAtlas = createImpostorAtlas(scene, "foliage-compile-test");
+      const impostorMaterial = new PBRMaterial("compile-impostor-material", scene);
+      impostorMaterial.albedoColor = new Color3(1, 1, 1);
+      impostorMaterial.metallic = 0;
+      impostorMaterial.roughness = 0.95;
+      const impostorPlugin = new DetailInstanceMaterialPlugin(impostorMaterial);
+      new CloudShadowMaterialPlugin(impostorMaterial);
+      new AerialPerspectiveMaterialPlugin(impostorMaterial);
+      const impostorFrame = impostorBakeFrame("pine");
+      impostorPlugin.setImpostorAtlas(
+        impostorAtlas.albedo,
+        impostorFrame.extentUnit,
+        impostorFrame.centerYUnit,
+        impostorLayerIndex("pine", 0),
+        impostorLayerIndex("pine", 1),
+      );
+      impostorPlugin.setImpostorSeason(0.3);
+      impostorMaterial.backFaceCulling = false;
+      impostorMaterial.twoSidedLighting = true;
+      impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+      const impostor = new Mesh("compile-impostor", scene);
+      const impostorData = new VertexData();
+      impostorData.positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+      impostorData.normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+      impostorData.uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+      impostorData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+      impostorData.applyToMesh(impostor, false);
+      impostor.material = impostorMaterial;
+      // The production contract: registerBatch forces receive ON, and the
+      // impostor path must force it back OFF — with front_facing and the
+      // blend varyings, cascade inputs overflow the 16-fragment-input limit.
+      impostor.receiveShadows = true;
+      impostor.receiveShadows = false;
+      uploadOneInstance(impostor, scene, 1, false);
+      impostor.position.x = -14;
 
       shadows.addShadowCaster(crown);
       shadows.addShadowCaster(trunk);
@@ -357,18 +441,33 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       const context = copy.getContext("2d")!;
       context.drawImage(canvas, 0, 0);
       const image = context.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE).data;
-      let chromaticPixels = 0;
+      // Column-resolved: each population sits in its own screen third
+      // (impostor x=-14 left, tree centre, grass/shrub right), so a single
+      // invisible population cannot hide behind the others' pixels — the
+      // undeclared-define regression passed a whole-frame floor exactly
+      // that way.
+      const columnThird = (index: number) =>
+        Math.min(2, Math.floor(((index % CANVAS_SIZE) * 3) / CANVAS_SIZE));
+      const chromaticByThird: [number, number, number] = [0, 0, 0];
       for (let index = 0; index < CANVAS_SIZE * CANVAS_SIZE; index += 1) {
         const r = image[index * 4] ?? 0;
         const g = image[index * 4 + 1] ?? 0;
         const b = image[index * 4 + 2] ?? 0;
         const spread = Math.max(r, g, b) - Math.min(r, g, b);
-        if (spread > 24) chromaticPixels += 1;
+        if (spread > 24) chromaticByThird[columnThird(index)] = chromaticByThird[columnThird(index)]! + 1;
       }
       expect(
-        chromaticPixels,
-        "the tree compiled but rasterized no visible pixels",
-      ).toBeGreaterThan(200);
+        chromaticByThird[0]!,
+        "the impostor rasterized no visible pixels",
+      ).toBeGreaterThan(40);
+      expect(
+        chromaticByThird[1]!,
+        "the tree rasterized no visible pixels",
+      ).toBeGreaterThan(80);
+      expect(
+        chromaticByThird[2]!,
+        "the shrub/grass rasterized no visible pixels",
+      ).toBeGreaterThan(40);
     } finally {
       scene.dispose();
     }

@@ -862,7 +862,12 @@ function buildGroundCoverGrid(
       const jitter = random();
       const sample = sampleTerrain(x, z);
       if (!validSample(sample) || sample.height <= context.seaLevelMeters + 1) {
-        nodes.push({ coverage: 0, archetype: "grass", color: [0, 0, 0] });
+        nodes.push({
+          coverage: 0,
+          archetype: "grass",
+          color: [0, 0, 0],
+          heightMeters: Number.isFinite(sample.height) ? sample.height : 0,
+        });
         continue;
       }
       const field = densityField(context.seedHash, {
@@ -926,7 +931,12 @@ function buildGroundCoverGrid(
         sample.height,
         sample.slope,
       );
-      nodes.push({ coverage, archetype, color: [snowed[0], snowed[1], snowed[2]] });
+      nodes.push({
+        coverage,
+        archetype,
+        color: [snowed[0], snowed[1], snowed[2]],
+        heightMeters: sample.height,
+      });
     }
   }
   return nodes;

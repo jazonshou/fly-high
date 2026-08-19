@@ -118,6 +118,13 @@ export interface DetailGroundCoverNode {
   readonly coverage: number;
   readonly archetype: GroundCoverArchetype;
   readonly color: readonly [number, number, number];
+  /**
+   * Terrain height at the node, metres — the appender bilinearly
+   * interpolates patch heights from these instead of sampling terrain per
+   * candidate (measured: per-candidate sampling stalled whole frames on
+   * every 64 m rebuild).
+   */
+  readonly heightMeters: number;
 }
 
 /** 2-15: ground clutter — logs, stumps, branch litter, moss cushions. */

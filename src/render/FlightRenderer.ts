@@ -916,12 +916,17 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Z-2: aggregate over the rolling rings, not the governor's consumable
     // window (R-4 — the old path read null whenever the window had just been
     // consumed, which was every committed capture).
-    // 3× the frame target, not 2×: with the Phase-2 workload a typical
-    // headless frame sits near ~2× the target, so a 2× threshold counted
-    // scheduler jitter around the boundary (57–232 "hitches" per 240 frames
-    // on identical builds). At 3× a typical frame is invisible and a real
-    // stall (page stream, GC, compositor stall) still counts.
-    const hitchThresholdMs = this.profile.frameTargetMs * 3;
+    // 4× the frame target (2-17 re-pin; 3× at 2-8, 2× originally): each
+    // re-pin has chased the same failure mode — the threshold sitting
+    // INSIDE the workload's vsync-quantization band, where frames
+    // oscillating between adjacent vsync multiples masquerade as hitch
+    // trains. With the full Gate-2C vegetation stack a typical heavy-shot
+    // frame sits at 33–46 ms (4–5.5 vsyncs at 120 Hz) against a 41 ms 3×
+    // threshold — 190–236 "hitches" per 240 frames on identical builds,
+    // pure quantization. At 4× (54.8 ms) a typical frame is invisible and
+    // every real stall observed this phase (teleport re-stream 600–1300 ms,
+    // GC, compositor) still counts. The sustained rate belongs to minFps.
+    const hitchThresholdMs = this.profile.frameTargetMs * 4;
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {

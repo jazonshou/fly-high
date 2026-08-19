@@ -189,7 +189,11 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // 2-12: the atlas's first sampler went live — measured bytes across all
   // 16 layers and their coverage-preserving mip chains.
   foliageAtlasMiB: 5.33,
-  impostorAtlasMiB: 0,
+  // 2-17: 7 species × 2 season buckets × 2 arrays (albedo, normal+depth) of
+  // 256² rgba8 with full mip chains — measured from the CPU bake. 64² tiles
+  // are the recorded decision (the plan's 128² sketch did not close against
+  // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px).
+  impostorAtlasMiB: 9.33,
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
   cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,
   materialArraysMiB: 0,

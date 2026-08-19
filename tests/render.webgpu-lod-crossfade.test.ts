@@ -8,15 +8,18 @@ import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensi
 import {
   DETAIL_CULL_FADE_MARGIN_METERS,
   DETAIL_FADE_MARGIN_METERS,
+  DETAIL_MEMBERSHIP_SLACK_METERS,
   WorldDetailRuntime,
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
 
 /**
- * 2-14 — the LOD crossfade's pure surfaces: band memberships with EXACT
- * complementary fades inside the margins, the Bayer-8 construction, and the
- * end-to-end guarantee that a crossfading stem covers every dither level
- * exactly once (the reason the fade byte carries a direction bit — a
- * statistical complement double-draws the whole canopy at fade 0.5).
+ * 2-14 / 2-17-close — the LOD crossfade's pure surfaces. Fades are
+ * FRAGMENT-computed from the stem's true camera range (the baked form
+ * forced every chunk to rebuild on an observer quantum, measured as a
+ * hitch train at approach speeds): the three thresholds partition the
+ * dither square exactly — near owns [0, fNear), mid [fNear, fMid), far
+ * [fMid, fCull) — so complementarity is STRUCTURAL: no range, no dither
+ * level, can light two bands or none inside the vegetated field.
  */
 
 const LAW = RENDERED_DENSITY_LAWS[2]!;
@@ -32,70 +35,59 @@ function bayer8(x: number, y: number): number {
   return (index + 0.5) / 64;
 }
 
-/** TS mirror of the writer's fade-byte encoding. */
-function fadeByte(fade: number, incoming: boolean): number {
-  return Math.min(127, Math.round(Math.min(1, Math.max(0, fade)) * 127)) * 2
-    + (incoming ? 1 : 0);
+/** TS mirror of the WGSL `detailBandWindow` thresholds (margins inline in
+ * the shader as literals — pinned below against these constants). */
+function bandWindow(bandCode: 0 | 1 | 2, range: number): [number, number] {
+  const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+  const fNear = clamp01((LAW.near.outerRadiusMeters - range) / DETAIL_FADE_MARGIN_METERS);
+  const fMid = clamp01((LAW.mid.outerRadiusMeters - range) / DETAIL_FADE_MARGIN_METERS);
+  const fCull = clamp01((LAW.far.outerRadiusMeters - range) / DETAIL_CULL_FADE_MARGIN_METERS);
+  if (bandCode === 0) return [0, fNear];
+  if (bandCode === 1) return [fNear, fMid];
+  return [fMid, fCull];
 }
 
-/** TS mirror of the WGSL `detailDitherSurvives` (same hash elided — both
- * sides of a crossfade share it, so it cancels in complementarity). */
-function ditherSurvives(byte: number, threshold: number): boolean {
-  if (byte >= 254) return true;
-  if (byte <= 1) return false;
-  const incoming = byte % 2 === 1;
-  const fade = Math.floor(byte / 2) / 127;
-  if (incoming) return threshold >= 1 - fade;
-  return threshold < fade;
-}
-
-describe("fade band memberships (2-14)", () => {
-  it("gives interior stems one full band and boundary stems two complements", () => {
+describe("band memberships (2-17 close)", () => {
+  it("covers every band whose window a stem could enter within the slack", () => {
     const nearEdge = LAW.near.outerRadiusMeters;
-    const interior = WorldDetailRuntime.fadeBandMemberships(nearEdge * 0.5, LAW);
-    expect(interior).toEqual([{ band: "near", fade: 1, incoming: false }]);
+    // Pure-near membership holds only where the mid window cannot open
+    // within one slack of camera travel: nearEdge − margin − slack.
+    const interior = WorldDetailRuntime.fadeBandMemberships(
+      LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS - DETAIL_MEMBERSHIP_SLACK_METERS - 5,
+      LAW,
+    );
+    expect(interior.map((entry) => entry.band)).toEqual(["near"]);
 
     const inMargin = WorldDetailRuntime.fadeBandMemberships(
-      nearEdge - DETAIL_FADE_MARGIN_METERS * 0.25,
+      nearEdge - DETAIL_FADE_MARGIN_METERS * 0.5,
       LAW,
     );
-    expect(inMargin).toHaveLength(2);
-    expect(inMargin[0]!.band).toBe("near");
-    expect(inMargin[0]!.incoming).toBe(false);
-    expect(inMargin[1]!.band).toBe("mid");
-    expect(inMargin[1]!.incoming).toBe(true);
-    expect(inMargin[0]!.fade + inMargin[1]!.fade).toBeCloseTo(1, 9);
+    expect(inMargin.map((entry) => entry.band)).toEqual(["near", "mid"]);
 
-    const midInterior = WorldDetailRuntime.fadeBandMemberships(
-      (nearEdge + LAW.mid.outerRadiusMeters) / 2,
+    // Just outside the near edge the stem still belongs to near (slack):
+    // the window computes to zero there, so it draws nothing — but if the
+    // camera closes in before the next amortized rebuild, it fades back.
+    const justOutside = WorldDetailRuntime.fadeBandMemberships(
+      nearEdge + DETAIL_MEMBERSHIP_SLACK_METERS * 0.5,
       LAW,
     );
-    expect(midInterior).toEqual([{ band: "mid", fade: 1, incoming: false }]);
+    expect(justOutside.map((entry) => entry.band)).toContain("near");
+    expect(justOutside.map((entry) => entry.band)).toContain("mid");
 
-    const midMargin = WorldDetailRuntime.fadeBandMemberships(
-      LAW.mid.outerRadiusMeters - 1,
-      LAW,
-    );
-    expect(midMargin.map((entry) => entry.band)).toEqual(["mid", "far"]);
-  });
-
-  it("fades the far band to nothing at the cull radius", () => {
     const cullEdge = LAW.far.outerRadiusMeters;
-    const nearlyGone = WorldDetailRuntime.fadeBandMemberships(cullEdge - 1, LAW);
-    expect(nearlyGone).toHaveLength(1);
-    expect(nearlyGone[0]!.band).toBe("far");
-    expect(nearlyGone[0]!.fade).toBeLessThan(0.01);
-    expect(WorldDetailRuntime.fadeBandMemberships(cullEdge, LAW)).toEqual([]);
-    expect(WorldDetailRuntime.fadeBandMemberships(cullEdge + 500, LAW)).toEqual([]);
+    expect(
+      WorldDetailRuntime.fadeBandMemberships(cullEdge + DETAIL_MEMBERSHIP_SLACK_METERS + 1, LAW),
+    ).toEqual([]);
   });
 
-  it("keeps both margins wider than the generation cell", () => {
-    expect(DETAIL_FADE_MARGIN_METERS).toBeGreaterThan(128);
-    expect(DETAIL_CULL_FADE_MARGIN_METERS).toBeGreaterThan(128);
+  it("keeps membership slack above the observer signature quantum", () => {
+    // Frontier chunks re-bake on a 64 m observer quantum; memberships must
+    // stay valid across a full quantum of travel.
+    expect(DETAIL_MEMBERSHIP_SLACK_METERS).toBeGreaterThan(64);
   });
 });
 
-describe("dither crossfade math (2-14)", () => {
+describe("band-window fades (2-17 close)", () => {
   it("builds a bijective 8×8 Bayer matrix", () => {
     const seen = new Set<number>();
     for (let y = 0; y < 8; y += 1) {
@@ -104,38 +96,40 @@ describe("dither crossfade math (2-14)", () => {
       }
     }
     expect(seen.size).toBe(64);
-    expect(Math.min(...seen)).toBe(0);
-    expect(Math.max(...seen)).toBe(63);
   });
 
-  it("covers every dither level exactly once across a crossfade", () => {
-    // For every fade position, each of the 64 Bayer levels must light the
-    // outgoing OR the incoming side — never both, never neither. Fade-byte
-    // quantisation (127 levels vs 64 thresholds) is allowed at most one
-    // level of slack at exact coincidences.
-    for (let step = 1; step < 32; step += 1) {
-      const fade = step / 32;
-      const outgoing = fadeByte(fade, false);
-      const incoming = fadeByte(1 - fade, true);
-      let mismatches = 0;
+  it("partitions every dither level to exactly one band at every range", () => {
+    // The structural guarantee the baked complement approximated: at any
+    // camera range inside the vegetated field, the three band windows tile
+    // [0, 1) with no overlap and no gap — every pixel shows exactly one
+    // LOD, continuously, with no quantization slack at all.
+    for (let range = 5; range < LAW.far.outerRadiusMeters - DETAIL_CULL_FADE_MARGIN_METERS;
+      range += 7) {
       for (let level = 0; level < 64; level += 1) {
         const threshold = (level + 0.5) / 64;
-        const survivors = Number(ditherSurvives(outgoing, threshold))
-          + Number(ditherSurvives(incoming, threshold));
-        if (survivors !== 1) mismatches += 1;
+        let survivors = 0;
+        for (const band of [0, 1, 2] as const) {
+          const [lo, hi] = bandWindow(band, range);
+          if (threshold >= lo && threshold < hi) survivors += 1;
+        }
+        expect(survivors, `range ${range} level ${level}`).toBe(1);
       }
-      expect(mismatches, `fade ${fade}`).toBeLessThanOrEqual(1);
     }
   });
 
-  it("takes the fast paths at the extremes", () => {
-    expect(ditherSurvives(fadeByte(1, false), 0.999)).toBe(true);
-    expect(ditherSurvives(fadeByte(0, false), 0.001)).toBe(false);
+  it("fades the far band to nothing across the cull margin", () => {
+    const cullEdge = LAW.far.outerRadiusMeters;
+    const [loBefore, hiBefore] = bandWindow(2, cullEdge - DETAIL_CULL_FADE_MARGIN_METERS - 1);
+    expect(hiBefore - loBefore).toBeCloseTo(1, 5);
+    const [loAt, hiAt] = bandWindow(2, cullEdge - 1);
+    expect(hiAt - loAt).toBeLessThan(0.01);
+    const [loPast, hiPast] = bandWindow(2, cullEdge + 50);
+    expect(hiPast).toBeLessThanOrEqual(loPast);
   });
 });
 
-describe("crossfade shader surface (2-14)", () => {
-  it("carries the dither helpers and both fade decode paths", () => {
+describe("crossfade shader surface (2-17 close)", () => {
+  it("carries the band-window helper with margins matching the constants", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     try {
@@ -144,14 +138,17 @@ describe("crossfade shader surface (2-14)", () => {
       const fragment = plugin.getCustomCode("fragment", ShaderLanguage.WGSL)!;
       const definitions = fragment["CUSTOM_FRAGMENT_DEFINITIONS"]!;
       expect(definitions).toContain("fn detailBayer8");
-      expect(definitions).toContain("fn detailDitherSurvives");
+      expect(definitions).toContain("fn detailBandWindow");
+      // The WGSL inlines the margins as literals — they must mirror the
+      // runtime constants or the shader and appender disagree about where
+      // memberships are needed.
+      expect(definitions).toContain(`/ ${DETAIL_FADE_MARGIN_METERS.toFixed(1)}`);
+      expect(definitions).toContain(`/ ${DETAIL_CULL_FADE_MARGIN_METERS.toFixed(1)}`);
       const albedo = fragment["CUSTOM_FRAGMENT_UPDATE_ALBEDO"]!;
-      // Atlas path: fade byte hides in the atlas layer's fraction; bark
-      // path: its own varying. Both discard through the shared helper.
-      expect(albedo).toContain("fract(fragmentInputs.detailAtlasData.z) * 512.0");
-      expect(albedo).toContain("fragmentInputs.detailFadeByte");
+      expect(albedo).toContain("detailBandWindow");
+      // The single-edge baked path survives for rocks/shrubs/clutter/grass.
       expect(albedo).toContain("detailDitherSurvives");
-      // The layer decode strips the fade fraction (floor, not round).
+      expect(albedo).toContain("detailLeafHash");
       expect(albedo).toContain("i32(floor(max(fragmentInputs.detailAtlasData.z, 0.0)))");
     } finally {
       scene.dispose();

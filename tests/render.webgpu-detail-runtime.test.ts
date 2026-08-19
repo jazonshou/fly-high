@@ -162,11 +162,15 @@ describe("WebGPU world-detail spatial presentation", () => {
     const beforeRebase = firstInstanceLocal(retainedMesh);
     const retainedBatch = retainedMesh?.metadata.detailBatch as string;
     const retainedChunk = retainedMesh?.metadata.detailChunk as string;
-    runtime.update(
-      { x: 0, y: 120, z: 0 },
-      { x: 512, y: 30, z: -256 },
-      profile,
-    );
+    // The rebase dirties every chunk; the 2-17 amortized sweep rebuilds
+    // one per update, so drain it before asserting the rebased clone.
+    for (let sweep = 0; sweep < 12; sweep += 1) {
+      runtime.update(
+        { x: 0, y: 120, z: 0 },
+        { x: 512, y: 30, z: -256 },
+        profile,
+      );
+    }
     const rebasedMesh = chunkMeshes(scene).find((mesh) => (
       mesh.metadata.detailBatch === retainedBatch
       && mesh.metadata.detailChunk === retainedChunk
