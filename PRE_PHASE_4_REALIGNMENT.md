@@ -11,6 +11,11 @@ findings survived adversarial verification. Most confirm the programme is on
 track. Six change what gets built and in what order, and they are the reason this
 file is binding rather than advisory.
 
+> **Status (2026-08-19).** Phase 2 closed 2026-08-19. Gate 7A and the vegetation
+> perf-debt pass executed 2026-08-19 as Phase 2.5 (commit `46bc24a`).
+> `PHASE_4_EXECUTION_PLAN.md` has since been written (see §8b) and re-prices
+> Phase 4 at **46.5 d**.
+
 Amendments are numbered `R-n` and are quoted by the documents they amend.
 
 ---
@@ -427,7 +432,7 @@ a **winter-noon** shot and a **night** shot.
 
 ---
 
-## 5. Night is 7.5 independent days sitting at day ~270 of 278
+## 5. (was, until executed 2026-08-19:) Night is 7.5 independent days sitting at day ~270 of 278
 
 `7-1` depends on `1C-10` only; `7-2` on `7-1`; `7-3` on `7-1`
 (`RENDERING_PLAN.md:406-408`). `1C-10` shipped. Gate 7A has **no dependency on
@@ -508,7 +513,9 @@ exactly right, and `C6` is the template `Z-4` and `4-0` copy.
 
 ## 8. What Phase 4's plan must absorb
 
-Phases 4–7 are still the pre-Phase-0 tables. The subsystem specs in §3.1–§3.2 are
+Phases 4–7 are still the pre-Phase-0 tables. *(Amended 2026-08-19:
+`PHASE_4_EXECUTION_PLAN.md` now exists and absorbed this section, with the §8b
+corrections; Phases 5–7 remain pre-Phase-0 tables.)* The subsystem specs in §3.1–§3.2 are
 in better shape than the tables and already carry CDLOD, the atlas layout, the
 classifier and the occlusion bake in a form the current code can accept. What the
 tables do not know:
@@ -529,7 +536,9 @@ tables do not know:
   bound far from the origin, keeping the absolute 0.05 m within ±10⁵ m. Implement
   `smoothstep` manually in WGSL: `octaveBandWeight` gates a `weight >= 1` vs
   `weight > 0` branch in `ridgedFbm2D`, and a one-ULP difference flips the branch
-  and moves height by metres. Re-price `4-1` at 5.5–6.0 d.
+  and moves height by metres *(corrected 2026-08-19 — see §8b: the switch is
+  continuous at both points; a flip moves height by ≲ 1e-4 m)*. Re-price `4-1`
+  at 5.5–6.0 d.
 - **Three Phase 4 items each independently invalidate the §1.3 invariant test**
   (`4-3`'s 2×2 supersampling, `4-4`'s retirement of the CPU tile path, `4-9`).
   Phase 4's exit criteria never mention it. Make them gate conditions on `4-4`:
@@ -547,6 +556,8 @@ tables do not know:
   factory and add a GPU assertion against the real material, mirroring
   `tests/gpu/shadow-depth-wrapper.test.ts`.
 - **Reorder for memory: `4-0 → 4-1 → 4-2 → 4-3 → 4-7 → 4-8 → 4-4 → 4-5 → 4-6 → 4-9`.**
+  *(corrected 2026-08-19 — see §8b: the stated CI-failure reason is wrong, and
+  `4-8` cannot precede `4-7`; it splits instead.)*
   As written, Phase 4 spends the atlas allocations before `4-8` refunds the
   shadow map, so `assertWithinBudget()` fails in CI from `4-2` until `4-8` at the
   upper tiers. The reorder also moves the phase's most visible payoff —
@@ -623,6 +634,13 @@ that §8 reasons about.
 | 7 — Airfield lighting and identity | 41.5 | **34.0** | 7A moved out |
 | **Programme** | **278.1** *(stale)* | **≈316** | |
 | **v1 cut line** (through Phase 4) | *"147–156"* | **≈203** | now includes the aircraft, wildlife, night and a real G-C gate |
+
+*(Footnote 2026-08-19: the totals as printed don't sum — the "Now" rows give
+≈322.8 programme / ≈209.3 through Phase 4; the ≈316/≈203 predate the Phase 2
+row's 54.5. The Phase 4 row is also superseded by the binding
+`PHASE_4_EXECUTION_PLAN.md` at **46.5 d**, and Phase 6 by ~27.5 (`6-10` moved to
+Phase 4 per that plan's D2). Reconciled 2026-08-19: programme ≈330 d, v1 cut
+line ≈217 d, shipped through Phase 2.5 = 127.8 d.)*
 
 The old cut-line figure was never achievable: it omitted Phase 0 entirely, used a
 stale Phase 1 number, and counted a "nine of ten goals served" claim against a

@@ -3,7 +3,7 @@
 **Status:** execution reference for Phase 3 of `RENDERING_PLAN.md`. It does not restate that plan; it decides everything that plan leaves to implementation time, against the codebase as it will exist when Phase 3 starts.
 **Runs after:** `PHASE_2_EXECUTION_PLAN.md`. Phase 2's exit criteria are this plan's preconditions.
 **Basis:** `TERRAIN_AUDIT.md` §2.1 (root cause #1), `RENDERING_PLAN.md` §2 Phase 3 / §3.2 / §5.2–§5.4 / §6 / §7, and `ARCHITECTURE.md` (normative, from Phase 0).
-**Verified against:** the Phase 1 branch at `9e1e04d`, plus `@babylonjs/core` 9.21.2 as installed. Every file, line, shipped-shader and Babylon-internal claim below was re-checked in the current tree.
+**Verified against:** the Phase 1 branch at `9e1e04d`, plus `@babylonjs/core` 9.21.2 as installed. Every file, line, shipped-shader and Babylon-internal claim below was re-checked in the current tree. *(2026-08-19: Phases 2 and 2.5 have since landed, through `46bc24a`. Every cited line anchor must be re-derived against the implementation branch before Phase 3 work starts — this document's own rule for anchors that move: record the matched text, never trust the number.)*
 **Effort:** **30.25 days** (was 29.75), ~6.7 calendar weeks at 4.5 productive days/week. (29.5 in `RENDERING_PLAN.md`; +0.25 net at §4, +0.5 at `R-26`.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
 
@@ -49,7 +49,7 @@ Phase 2's exit criteria are this plan's preconditions. Phase 3 depends on six th
 | `3-10` | `EnvironmentClock` is a live rendering input; `presetFor()` deleted | `1C-1`, `1C-9` | **Landed** — `nature/EnvironmentDirector.ts` |
 | `3-1`, all | `PerformanceBudget.assertWithinBudget` fails CI on overspend; `perf:capture` baselines committed | `1A-2`, `1A-1` | **Landed** — `tests/perf/baseline/` |
 | `3-2`, `3-8` | Band-limited kernel with `filterWidthMeters` threaded; grid normals | `1B-1`, `1B-2` | **Landed** |
-| `3-1` | `TextureArrayMips.ts` — the CPU array-mip reducer | **Phase 2 `2-11`** | Planned |
+| `3-1` | `TextureArrayMips.ts` — the CPU array-mip reducer | **Phase 2 `2-11`** | **Landed** — `src/render/webgpu/core/TextureArrayMips.ts` *(verified on disk 2026-08-19)* |
 
 Two standing conditions carry forward: **Babylon stays pinned at `9.21.2`** — Phase 3 injects code by regex into its shipped WGSL, which is minified and unversioned — and **one branch per gate** (`phase3/gate-3a`, `-3b`, `-3c`).
 
@@ -213,7 +213,7 @@ Per §3.5. Build the tangent frame analytically from the planar XZ projection. *
 
 ### C5 — `3-8` is a Class K change to the physics authority, and the crown must reach collision
 
-Per §3.4. The earthworks profile becomes a shared function called by both the renderer and `sampleTerrainCollisionHeft`'s fast path; a fifth invariant test joins `tests/sim.terrain-authority.test.ts`; and because `4-9` transliterates the profile into WGSL, it is written to the `0-4` portability contract from the first line — `max(0, …)` under every `pow`, wrap-safe coordinates, f32-reproducible.
+Per §3.4. The earthworks profile becomes a shared function called by both the renderer and `sampleTerrainCollisionHeight`'s fast path; a fifth invariant test joins `tests/sim.terrain-authority.test.ts`; and because `4-9` transliterates the profile into WGSL, it is written to the `0-4` portability contract from the first line — `max(0, …)` under every `pow`, wrap-safe coordinates, f32-reproducible.
 
 **Merge discipline:** `3-8` does not share a commit with any rendering change, mirroring R-0E's rule for `sim.flight.test.ts`.
 **Cost:** `3-8` 2.5 → 3.0. **Net +0.5.**
@@ -238,6 +238,8 @@ Per §3.3 and §5. Ten material identities, their tiling periods and BRDF consta
 | 3B — Sampling and shading | `3-4` `3-5` `3-6` `3-7` | 7.0 | **7.00** |
 | 3C — The runway and the seasons | `3-8` `3-9` `3-10` | 9.5 | **10.00** |
 | **Phase 3** | | **29.5** | **29.75 d ≈ 6.6 weeks** |
+
+> **Annotated 2026-08-19.** Pre-amendment figures: this ledger carries only §4's seven amendments (net +0.25). The +0.5 d `R-26` item — retiring the light-rig palette, adjacent to `3-10`, per the 2026-08-18 realignment banner at the top of this file — is not in these rows; with it the phase totals **30.25 d**, matching the header.
 
 ---
 
@@ -288,6 +290,8 @@ Ten layers each, `materialArrayEdge` per tier, full mip chain from `TextureArray
 
 ## 6. Work order
 
+> **Superseded in part, 2026-08-19.** The §6.1 graph and the §6.3 week ledger still schedule `3-10` last (week 7). Per the binding 2026-08-18 realignment amendment at the top of this file (`R-14`), **`3-10` runs immediately after `3-2`**. The graph and ledger are left as originally drawn for traceability.
+
 ### 6.1 Dependencies
 
 ```
@@ -318,6 +322,8 @@ Ten layers each, `materialArrayEdge` per tier, full mip chain from `TextureArray
 | 5 | 18.0 → 22.5 | `3-7` per-material BRDF finish → **Gate 3B closes, d19.75** · `3-8` runway earthworks (2.75 of 3.0) | 22.50 |
 | 6 | 22.5 → 27.0 | `3-8` finish · `3-9` runway surface (4.25 of 5.0) | 27.00 |
 | 7 | 27.0 → 29.75 | `3-9` finish (0.75) · `3-10` seasonal palette (2.0) → **Gate 3C / Phase 3 closes, d29.75** | 29.75 |
+
+> **Annotated 2026-08-19.** Pre-amendment figures: the week rows do not carry the +0.5 d `R-26` item adjacent to `3-10` (2026-08-18 banner, top of file), which brings the phase to **30.25 d** as the header states.
 
 ---
 
@@ -438,7 +444,7 @@ Plus a **wetness response** — `roughness = mix(r, r·0.35 + 0.02, wet)`, `albe
 
 ## 9. Gate 3C — The runway and the seasons (10.0 d)
 
-**Goal.** G6 and G9. The runway sits *in* the ground with visible embankments, worn asphalt, ragged grass-invaded edges, faded scuffed markings and black rubber lobes at both touchdown zones — no circular plateau, no floating slab, no z-fighting stripes.
+**Goal.** G6 and G9 *(labels from the superseded `G1`–`G10` scheme, kept for traceability; per `RENDERING_PLAN.md` §0.4 they map to **G-A**, and `3-10`'s seasonal palette serves **G-B** — noted 2026-08-19)*. The runway sits *in* the ground with visible embankments, worn asphalt, ragged grass-invaded edges, faded scuffed markings and black rubber lobes at both touchdown zones — no circular plateau, no floating slab, no z-fighting stripes.
 
 ---
 
@@ -566,7 +572,7 @@ Ten material recipes are judged by eye. There is no test for "rock looks like ro
 
 **Phase**
 - [ ] **Audit root cause #1 is closed.** Material resolution is decoupled from mesh resolution.
-- [ ] User goals **G6** (runway) and **G9** (nothing looks like plastic) served.
+- [ ] User goals **G6** (runway) and **G9** (nothing looks like plastic) served *(superseded labels — G6/G9 → **G-A**, `3-10` → **G-B**, per `RENDERING_PLAN.md` §0.4; noted 2026-08-19)*.
 - [ ] `npm run verify` green; `npm run test:gpu` green.
 - [ ] Three ownership rows added to `ARCHITECTURE.md`; the boundary test passes.
 - [ ] Baseline churned at no more than the three sanctioned points (`3-2`, `3-5`, `3-9`); the runway-approach scene is committed.

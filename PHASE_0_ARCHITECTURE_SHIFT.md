@@ -1,6 +1,6 @@
 # Phase 0 Execution Plan — The Architectural Shift
 
-**Status:** execution reference for `RENDERING_PLAN.md` §1, scheduled **before** Phase 1.
+**Status:** execution reference for `RENDERING_PLAN.md` §1, scheduled **before** Phase 1. **COMPLETE — shipped in full 2026-08-17 (see §5.1).**
 **Basis:** `TERRAIN_AUDIT.md` (root causes, treated as established fact) and `RENDERING_PLAN.md` §1.1–§1.6 (today-vs-after, what moves to the GPU, the physics consistency contract, single owners, resolved user decisions, season and time of day).
 **Verified against:** working tree at `58d5d15`. Every file, line and dead-code claim below was re-checked in the current tree.
 **Effort:** **15.5 architecture days**, plus 1.3 days of Phase 1 work executed out of order on day one (§0.3). **16.8 days elapsed, ~3.7 weeks** at 4.5 productive days/week.
@@ -437,7 +437,9 @@ Phase 0 adds no visual assertions. Everything it produces is a Node test.
 
 Phase 0 is done when every line is true.
 
-- [ ] `1A-4` shipped: rolling the aircraft rolls the clouds in the correct direction; cloud edges are translucent, not a grey wall.
+**All criteria certified 2026-08-17 — see §5.1 execution outcome (three recorded deviations).**
+
+- [ ] `1A-4` shipped: rolling the aircraft rolls the clouds in the correct direction; cloud edges are translucent, not a grey wall. *(Amended 2026-08-19: the translucency clause was refuted for `1A-4` and reassigned to `2-4` — see §5.1 deviation 1; shipped with Phase 2.)*
 - [ ] `1A-6a` shipped: default render target ≤ 1.5 Mpx on a 1512×982 CSS viewport at DPR 2 (was 5.94 Mpx).
 - [ ] `0-9` resolved and recorded: `ShadowDepthWrapper` composes with plugin vertex participation — **or** the `ShaderMaterial` fallback is chosen, and Phases 3/4 are re-planned before Phase 1 starts.
 - [ ] `npm run test:gpu` acquires an adapter and compiles a WGSL compute shader through Babylon's `ComputeShader`.

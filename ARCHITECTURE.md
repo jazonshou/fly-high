@@ -21,17 +21,17 @@ creates the file — the ownership decision is already binding.
 | Page geometry — one number | terrain-geometry | `src/render/webgpu/world/pageGeometry.ts` | live |
 | `TerrainPageAtlas` | terrain-geometry | `src/render/webgpu/terrain/TerrainPageAtlas.ts` | planned `4-2` |
 | `TerrainErosionCompute` | terrain-geometry | `src/render/webgpu/terrain/TerrainErosionCompute.ts` | planned `5-1` |
-| Aerial-perspective WGSL include | lighting | `src/render/webgpu/atmosphere/AerialPerspective.ts` | planned `1C-4` |
+| Aerial-perspective WGSL include | lighting | `src/render/webgpu/atmosphere/AerialPerspective.ts` | live (`1C-4`) |
 | Volumetric cloud shader modules — raymarch, temporal resolve, shadow | clouds | `src/render/webgpu/nature/CloudShaders.ts` | live (`2-0`) |
 | Atmosphere GPU resources — transmittance LUT texture, sky-ambient LUT, blue noise, scene depth | lighting | `src/render/webgpu/atmosphere/AtmosphereGpuResources.ts` | live (`2-0a`) |
-| Sky environment probe / IBL | lighting | `src/render/webgpu/atmosphere/SkyEnvironmentProbe.ts` | planned `1C-6` |
+| Sky environment probe / IBL | lighting | `src/render/webgpu/atmosphere/SkyEnvironmentProbe.ts` | live (`1C-6`) |
 | Celestial ephemeris — solar right ascension, moon position/phase/illuminance, the clock's Julian date | lighting | `src/render/webgpu/atmosphere/Ephemeris.ts` | live (`7-1`) |
 | Star catalogue — every star drawn, the sidereal frame, star photometry | lighting | `src/render/webgpu/atmosphere/StarCatalogue.ts` | live (`7-3`) |
 | Star field renderer | lighting | `src/render/webgpu/atmosphere/StarField.ts` | live (`7-3`) |
 | Scotopic vision — rod/cone blend, Purkinje shift, acuity loss | lighting | `src/render/webgpu/atmosphere/ScotopicVision.ts` | live (`7-2`) |
 | Quality tiers + governors | performance | `src/render/webgpu/core/QualityProfile.ts` (+ `AdaptiveGovernor.ts` `1A-6b`, `PerformanceBudget.ts` `1A-2`) | live |
 | Runway earthworks profile | terrain-material | `src/render/webgpu/terrain/RunwayEarthworks.ts` | planned `3-8` |
-| Vegetation density function | vegetation | `src/render/webgpu/detail/densityField.ts` | planned `1B-7` |
+| Vegetation density function | vegetation | `src/render/webgpu/detail/densityField.ts` | live (`1B-7`) |
 | `MAX_TERRAIN_HEIGHT` (2,200 m until `5-8`) | terrain-geometry | `src/world/terrain.ts` | live |
 | Channel-graph extractor | water | `src/render/webgpu/water/ChannelNetwork.ts` | planned `5-5` |
 | Rendered-density law — stems/ha bands, falloff, woody triangle budgets | vegetation | `src/render/webgpu/detail/renderedDensity.ts` | live (`R-21`) |
@@ -40,7 +40,7 @@ creates the file — the ownership decision is already binding.
 | Stand field — dominant mix, stand age, tint centre as a continuous field | vegetation | `src/render/webgpu/detail/standField.ts` | live (`2-11b`) |
 | Foliage atlas — all 16 card layers + the layer-index map | vegetation | `src/render/webgpu/detail/FoliageAtlas.ts` | live (`2-11`; first sampler `2-12`) |
 | Shared water shading helpers — fresnel, GGX assemblies, reflected sky | water | `src/render/webgpu/water/WaterShaders.ts` | live (`2-8a`) |
-| `detail.worker.ts` | vegetation | `src/workers/detail.worker.ts` | planned `1B-10` |
+| `detail.worker.ts` | vegetation | `src/workers/detail.worker.ts` | live (`1B-10`) |
 | Aircraft form and materials | aircraft | `src/render/webgpu/aircraft/` | planned Gate `A-1`/`A-2` |
 | Land-cover classification — the one authority for terrain splat, vegetation species and wildlife habitat | terrain-material | `src/render/webgpu/terrain/LandCoverClassifier.ts` | planned `4-6` |
 
@@ -115,17 +115,22 @@ lighting consumer reads) and `Ephemeris` owns the equatorial position the
 sidereal frame needs. They are held to agreement by test — declination within
 0.4°, the low-precision series' own error — rather than by hope.
 
-**Amended 2026-08-18 (`PRE_PHASE_4_REALIGNMENT.md` §4, `R-13`).** The rule has a
-hole: the check is *syntactic*, and the one file that most needs the clock is not
+**Amended 2026-08-18 (`PRE_PHASE_4_REALIGNMENT.md` §4, `R-13`).** The rule had a
+hole: the check is *syntactic*, and the one file that most needed the clock was not
 in the family. `src/world/terrain.ts` carries `classifyBiome` — which decides snow
-today at `temperature < 0.2 || height > seaLevel + 1_520` — and §5 makes it the
-source `4-1` transliterates into WGSL, so `4-6`'s seasonal classifier would be
-transliterated from a kernel with no clock: exactly the retrofit this rule exists
-to prevent. Add `seasonalTemperatureOffsetK(dayOfYear, latitudeDegrees)` as a pure
-kernel function, thread it into `sampleTerrainTemperature`/`classifyBiome`, and add
-`src/world/terrain.ts` to `SEASONAL_FIELD_FAMILY` in the same commit. Also
-unowned: `snowCoverage`, `surfaceWetness` and `precipitation` are declared and
-GPU-packed but hardcoded to 0 by `EnvironmentDirector`, and no item owns them.
+at `temperature < 0.2 || height > seaLevel + 1_520` — and §5 makes it the
+source `4-1` transliterates into WGSL, so `4-6`'s seasonal classifier would have
+been transliterated from a kernel with no clock: exactly the retrofit this rule
+exists to prevent. **Landed per `R-13` (recorded 2026-08-19):**
+`seasonalTemperatureOffsetK(dayOfYear, latitudeDegrees)` is a pure kernel function
+in `src/world/terrain.ts`, and the file joined `SEASONAL_FIELD_FAMILY` in the same
+commit — deliberately *without* threading the offset into
+`sampleTerrainTemperature`/`classifyBiome`, which stay climatic (the `R-13`
+decision-log row below: snow is appearance, not classification).
+`EnvironmentDirector` fills `snowCoverage` from the same kernel; `surfaceWetness`
+and `precipitation` remain deliberately 0 until a precipitation model owns them
+(the R-16 recorded decision — nothing renders precipitation in Phases 2–5; the
+`2-1` weather bake carries the channel for that future consumer).
 
 ## 5. Kernel portability (0-4)
 

@@ -1,5 +1,7 @@
 # Why fly high's Terrain Doesn't Look Real
 
+*(Banner added 2026-08-19.)* **Snapshot of working tree `58d5d15` (pre-overhaul evidence baseline). Present-tense claims describe that tree; remediation status lives in the phase execution plans.**
+
 **A root-cause analysis.** All claims below were verified against the working tree at `58d5d15` and adversarially re-measured; where two measurements disagreed I give the range.
 
 ---
