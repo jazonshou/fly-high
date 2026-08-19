@@ -179,6 +179,40 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "lobe, foam, crest SSS and environment-mip helpers here.",
   },
   {
+    // 2-11: the CPU array-mip reducer (Babylon mips only layer 0 of a
+    // Texture2DArray — verified at webgpuTextureManager.js:716). Phase 3's
+    // 3-1 reuses it with a Toksvig reducer for the terrain material arrays.
+    artifact: "texture-array-mips",
+    owner: "performance",
+    definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts"],
+    consumers: ["performance", "vegetation", "terrain-material"],
+    ownedSymbols: [
+      "buildMipChain",
+      "alphaDilate",
+      "alphaCoverage",
+      "planMippedTextureArray",
+      "uploadMippedTextureArrayPlan",
+      "createMippedTextureArray",
+    ],
+  },
+  {
+    // 2-11: every card layer — trees, shrubs, grass, ground cover, litter —
+    // comes from this one atlas; the layer-index map lives here and
+    // prototypeGeometry aliases it.
+    artifact: "foliage-atlas",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/FoliageAtlas.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "FOLIAGE_LAYERS",
+      "FOLIAGE_ATLAS_EDGE",
+      "FOLIAGE_ALPHA_TEST_THRESHOLD",
+      "synthesizeFoliageLayers",
+      "planFoliageAtlas",
+      "createFoliageAtlas",
+    ],
+  },
+  {
     // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
     // thinning all read these bands; nothing re-derives a density ceiling.
     artifact: "rendered-density-law",
