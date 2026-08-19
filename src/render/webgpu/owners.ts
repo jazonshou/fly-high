@@ -213,6 +213,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
   },
   {
+    // 2-11a: the ONE instance record every detail batch uploads and the ONE
+    // decoder that turns it into a world transform.
+    artifact: "detail-instance-format",
+    owner: "vegetation",
+    definitionSites: [
+      "src/render/webgpu/detail/instanceFormat.ts",
+      "src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts",
+    ],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: [
+      "DETAIL_INSTANCE_STRIDE_BYTES",
+      "DETAIL_INSTANCE_ATTRIBUTES",
+      "DetailInstanceWriter",
+      "DetailInstanceBounds",
+      "DetailInstanceMaterialPlugin",
+    ],
+    notes:
+      "A second instance layout or a matrix-based batch path is the 96-byte "
+      + "format returning; 2-12..2-17 extend the RECORD, never fork it.",
+  },
+  {
     // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
     // thinning all read these bands; nothing re-derives a density ceiling.
     artifact: "rendered-density-law",
