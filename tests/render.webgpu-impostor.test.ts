@@ -12,6 +12,7 @@ import {
   planImpostorAtlas,
 } from "../src/render/webgpu/detail/ImpostorAtlas";
 import { planFoliageAtlas, FOLIAGE_LAYERS } from "../src/render/webgpu/detail/FoliageAtlas";
+import { DETAIL_IMPOSTOR_SPECIES_SLOTS } from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
 
 /**
  * 2-17 / 2-17a — the impostor bake's pure surfaces: the hemi-octahedral
@@ -125,20 +126,51 @@ describe("impostor bake (2-17)", () => {
   });
 
   it("gives instances distinct view phase and mirror from the hash byte", () => {
-    // The far-band variant byte is a per-stem hash; the shader reads
-    // mirror = bit 0 and phase = floor(byte/2) % 4. No two neighbours
-    // share both silhouette aspect (mirror + anisotropic record scales)
-    // and view phase unless the hash collides.
+    // The far-band variant byte carries SPECIES in its high three bits and
+    // 2-17's per-stem hash in the low five (perf-debt pass): the shader
+    // reads mirror = bit 0, phase = floor(byte/2) % 4, species =
+    // floor(byte/32). No two neighbours share both silhouette aspect
+    // (mirror + anisotropic record scales) and view phase unless the hash
+    // collides, and the species packing must not disturb either.
     const mirrors = new Set<number>();
     const phases = new Set<number>();
     for (let stem = 0; stem < 100; stem += 1) {
       const selection = (stem * 0.6180339887) % 1;
-      const byte = Math.floor(((selection * 97.3) % 1) * 256);
+      const speciesIndex = stem % IMPOSTOR_SPECIES.length;
+      const byte = speciesIndex * 32 + Math.floor(((selection * 97.3) % 1) * 32);
+      expect(byte).toBeLessThan(256);
+      expect(Math.floor(byte / 32)).toBe(speciesIndex);
       mirrors.add(byte % 2);
       phases.add(Math.floor(byte / 2) % 4);
     }
     expect(mirrors.size).toBe(2);
     expect(phases.size).toBe(4);
+  });
+
+  it("packs every species into the variant byte's three spare bits", () => {
+    // The table the plugin uploads is indexed by that field, so the species
+    // count and the bit budget have to agree. An eighth species is fine; a
+    // ninth is an instance-format decision, not an oversight.
+    expect(IMPOSTOR_SPECIES.length).toBeLessThanOrEqual(
+      DETAIL_IMPOSTOR_SPECIES_SLOTS,
+    );
+    expect(DETAIL_IMPOSTOR_SPECIES_SLOTS).toBe(8);
+    IMPOSTOR_SPECIES.forEach((species, index) => {
+      // unorm8 round-trip: the byte reaches the shader as state.y × 255.
+      const byte = index * 32 + 31;
+      // The shader's exact decode: floor(state.y × 255 + 0.5), then / 32.
+      const decoded = Math.floor(Math.floor((byte / 255) * 255 + 0.5) / 32);
+      expect(decoded, species).toBe(index);
+      expect(impostorLayerIndex(species, 0)).toBe(index * IMPOSTOR_SEASON_BUCKETS);
+      expect(impostorLayerIndex(species, 1)).toBe(index * IMPOSTOR_SEASON_BUCKETS + 1);
+      // The bake frame is per species and reaches the shader as a table row,
+      // so it must be finite and inside the unit prototype's extent.
+      const frame = impostorBakeFrame(species);
+      expect(frame.extentUnit).toBeGreaterThan(0.1);
+      expect(frame.extentUnit).toBeLessThan(1.5);
+      expect(frame.centerYUnit).toBeGreaterThan(0.1);
+      expect(frame.centerYUnit).toBeLessThan(1);
+    });
   });
 
   it("is deterministic and inside the memory headroom", () => {

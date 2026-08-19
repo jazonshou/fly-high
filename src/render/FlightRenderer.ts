@@ -17,7 +17,16 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
-import { resolveEnvironmentState } from "./webgpu/nature/EnvironmentDirector";
+import {
+  exposureForState,
+  resolveEnvironmentState,
+  SCENE_UNIT_TO_NITS,
+} from "./webgpu/nature/EnvironmentDirector";
+import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
+import {
+  rodFractionForAdaptedLuminance,
+  ScotopicVisionPass,
+} from "./webgpu/atmosphere/ScotopicVision";
 import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
@@ -227,6 +236,13 @@ function finiteState(state: FlightVisualState): boolean {
 }
 
 /** WebGPU-only flight renderer and owner of all device-bound presentation state. */
+/**
+ * 7-2: the display value a fully saturated rod response maps to, before the
+ * one exposure curve and ACES. 0.16 puts a well-adapted night scene at the
+ * bottom of the mid-tones — dim, readable, and unmistakably not daylight.
+ */
+const SCOTOPIC_MID_GREY_TARGET = 0.16;
+
 export class FlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly engine: WebGPUEngine;
@@ -249,6 +265,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   private readonly fxaa: FxaaPostProcess;
+  /** 7-3: the catalogue star field, one additive draw. */
+  private readonly stars: StarFieldSystem;
+  /** 7-2: rod vision, the first post-process (and therefore MSAA's owner). */
+  private readonly scotopic: ScotopicVisionPass;
   private readonly resizeObserver: ResizeObserver;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
@@ -328,6 +348,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
+    stars: StarFieldSystem,
+    scotopic: ScotopicVisionPass,
     atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
@@ -350,6 +372,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.wildlife = wildlife;
     this.toneMap = toneMap;
     this.fxaa = fxaa;
+    this.stars = stars;
+    this.scotopic = scotopic;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
@@ -599,6 +623,20 @@ export class FlightRenderer implements FlightRenderingSystem {
       hydrology.setSunShadows(atmosphere.shadows);
       cloudShadowReceivers.setProjection(initialCloudShadow, 0, 0);
 
+      // 7-3: the star field. Built before the post-process chain so its
+      // shader is compiled inside the whenReadyAsync gate with everything
+      // else, and drawn additively at the sky's own depth.
+      const stars = new StarFieldSystem(scene, 1);
+      cleanup.push(() => stars.dispose());
+
+      // 7-2: rod vision, FIRST in the chain — it must see scene-referred
+      // linear radiance, because the tone map is where exposure and ACES
+      // live and a perceptual model applied after them would be operating on
+      // display values. Being first also makes it the owner of the offscreen
+      // beauty target, so 1B-11's MSAA moves here with it.
+      const scotopic = new ScotopicVisionPass(camera, engine, profile.msaaSamples);
+      cleanup.push(() => scotopic.dispose(camera));
+
       scene.imageProcessingConfiguration.toneMappingEnabled = true;
       scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
       scene.imageProcessingConfiguration.exposure = 1.08;
@@ -614,10 +652,11 @@ export class FlightRenderer implements FlightRenderingSystem {
         Constants.TEXTURETYPE_HALF_FLOAT,
         scene.imageProcessingConfiguration,
       );
-      // 1B-11: the first post-process owns the offscreen scene target (and
-      // its depth buffer), so this is where MSAA lives. 4× is genuinely
-      // cheap on Apple TBDR — the cost is the resolve, not 4× bandwidth.
-      toneMap.samples = profile.msaaSamples;
+      // 1B-11: the FIRST post-process owns the offscreen scene target (and
+      // its depth buffer), so that is where MSAA lives — which is the
+      // scotopic pass since 7-2, above. Leaving it declared here too would
+      // request a second multisampled target for no benefit.
+      toneMap.samples = 1;
       cleanup.push(() => toneMap.dispose(camera));
       const fxaa = new FxaaPostProcess(
         "final-fxaa",
@@ -679,6 +718,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         wildlife,
         toneMap,
         fxaa,
+        stars,
+        scotopic,
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
@@ -724,7 +765,17 @@ export class FlightRenderer implements FlightRenderingSystem {
       latitudeDegrees: this.latitudeDegrees,
       weather,
     });
-    this.atmosphere.applyEnvironment(this.environmentState);
+    // Gate 7A: the moon's ephemeris and 7-2's adaptation ride the same clock
+    // the sun does. A scrub snaps the adaptation (deltaSeconds 0) — the
+    // 1C-6 probe's "the sun is static between scrubs" invariant, applied to
+    // the eye, and what keeps a captured shot a function of pinned inputs.
+    this.atmosphere.applyEnvironment(this.environmentState, clock, this.latitudeDegrees, 0);
+    // 7-3: the star field's frame, and the galactic frame the sky's Milky
+    // Way band reads — one sidereal matrix, two consumers.
+    this.stars.setClock(clock, this.latitudeDegrees, this.environmentState.sun.direction[1]);
+    const galactic = this.stars.galacticFrame(clock, this.latitudeDegrees);
+    this.atmosphere.setGalacticFrame(galactic.pole, galactic.center);
+    this.applyScotopicState();
     // R-13: the terrain's baked snow blanket and the detail generator follow
     // the same clock the sky does.
     this.terrain.setSeasonalDayOfYear(clock.dayOfYear);
@@ -952,6 +1003,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       residentTerrainPages: terrain.residentPages,
       collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
+      vegetationBatches: this.detail.statistics.activeBatches,
       activeAnimals: wildlife.activeAnimals,
       riverCount: hydrology.riverCount,
       lakeCount: hydrology.lakeCount,
@@ -1119,7 +1171,35 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.camera.position.z + this.originZ,
     );
     this.atmosphere.update(this.camera.position);
+    this.stars.update(this.camera.position);
+    this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
     this.updateAerialPerspective();
+  }
+
+  /**
+   * 7-2: the frame's rod/cone state. Every term is a pure function of the
+   * environment the clock resolved — no framebuffer readback, so a captured
+   * shot is reproducible (the 1A-4 rule that any animated state the capture
+   * gates must be a function of pinned inputs).
+   */
+  private applyScotopicState(): void {
+    const snapshot = this.atmosphere.snapshot;
+    const adapted = snapshot.adaptedLuminanceCdM2;
+    const rodFraction = rodFractionForAdaptedLuminance(adapted);
+    // The rod pathway's saturated response has to land somewhere sensible
+    // AFTER the one exposure curve, so its display gain is that curve's
+    // reciprocal times a mid-grey target. Computed here, on the CPU, so the
+    // shader never multiplies an exposure (assertion 29).
+    const exposure = exposureForState(this.environmentState, snapshot.moonIlluminanceLux);
+    this.scotopic.setState({
+      rodFraction,
+      // σ is the SCENE's key, not the physical adapted luminance — see
+      // ScotopicState. `adapted` still decides the rod FRACTION above, so
+      // the perceptual call stays physical.
+      adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2,
+      sceneToNits: SCENE_UNIT_TO_NITS,
+      displayGain: SCOTOPIC_MID_GREY_TARGET / Math.max(exposure, 1e-3),
+    });
   }
 
   /**
@@ -1235,6 +1315,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       wind.z,
       wind.speed / MAX_WIND_SPEED,
       Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
+    );
+    // 2-12's translucency term: the atmosphere system's own key light, on
+    // the same forward-the-snapshot pattern the wind field uses. The
+    // strength is the relative illuminance, so a backlit canopy glows in
+    // daylight, dims through dusk and goes out with the sun.
+    const keySnapshot = this.atmosphere.snapshot;
+    this.detail.setKeyLight(
+      keySnapshot.sunDirection.x,
+      keySnapshot.sunDirection.y,
+      keySnapshot.sunDirection.z,
+      [keySnapshot.sunColor.r, keySnapshot.sunColor.g, keySnapshot.sunColor.b],
+      keySnapshot.sunIlluminanceNormalized,
     );
     this.detail.update(
       {

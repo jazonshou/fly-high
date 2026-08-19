@@ -277,6 +277,16 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 171, solarTimeHours: 23.75 },
+    // Gate 7A made this shot the noisiest in the set, and the reason is
+    // structural rather than a defect: the scotopic pass's Naka-Rushton
+    // response half-saturates at the SCENE's key luminance, so it applies a
+    // large gain to a very dark image — and the cloud pass's own temporal
+    // jitter, which is invisible by day, is amplified along with everything
+    // else. Measured 0.972 between two runs of an identical build. 0.96
+    // still catches a real regression (a missing moon, a frozen sidereal
+    // frame and a broken rod blend all move it far further) while surviving
+    // the jitter; the same per-shot relaxation the resize-path shot uses.
+    ssimThreshold: 0.96,
     minMeanLuminance: 0.000_5,
     // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
     // M-series reference machine). Headless rAF pacing is noisy (hitch counts
@@ -608,6 +618,13 @@ export interface PerfCaptureShotReport {
   readonly p999FrameMs: number | null;
   readonly hitchCount: number;
   readonly drawCalls: number;
+  /**
+   * Vegetation batches surviving frustum culling — the vegetation frame
+   * row's real currency (2-12: ~26 µs per draw, `Δgpu` linear in `Δdraws`).
+   * Added by the vegetation perf-debt pass so the row can be measured
+   * rather than asserted.
+   */
+  readonly vegetationBatches: number;
   readonly triangles: number;
   readonly residentTerrainPages: number;
   readonly pendingTerrainPages: number;

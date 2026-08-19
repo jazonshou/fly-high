@@ -209,7 +209,29 @@ function smoothstepValue(low: number, high: number, value: number): number {
   return t * t * (3 - 2 * t);
 }
 
-function horizontalIlluminanceLux(state: EnvironmentState): number {
+/**
+ * `7-1`/`7-2`: airglow plus integrated starlight on a moonless, clear night.
+ * The accepted value for the darkest natural sky is ~0.0015 lux; `1C-10`
+ * floored the same term at 40 lux, which is a well-lit car park and is why
+ * "at 22:00 the ground is black" was the ONLY thing wrong with night that
+ * the realignment could see — the floor was so high that no moon could ever
+ * show above it.
+ */
+export const MOONLESS_NIGHT_ILLUMINANCE_LUX = 0.0015;
+
+/**
+ * Horizontal illuminance in lux — the PHYSICAL quantity everything about
+ * the look derives from: the exposure curve, `7-2`'s adapted luminance, and
+ * the star field's twilight suppression.
+ *
+ * `moonIlluminanceLux` is the moon's own contribution, supplied by the
+ * caller because the moon's position is `Ephemeris`'s to know and this
+ * module must not grow a second ephemeris.
+ */
+export function horizontalIlluminanceLux(
+  state: EnvironmentState,
+  moonIlluminanceLux = 0,
+): number {
   const sunY = state.sun.direction[1];
   const transmittance = evaluateTransmittance(
     state.atmosphere,
@@ -220,12 +242,14 @@ function horizontalIlluminanceLux(state: EnvironmentState): number {
   const luminous =
     0.2126 * transmittance[0] + 0.7152 * transmittance[1] + 0.0722 * transmittance[2];
   const direct = state.sun.illuminanceLux * Math.max(sunY, 0) * luminous;
-  // Diffuse skylight proxy with a twilight tail; 1C-10 owns the night floor.
-  const sky = 14_000 * smoothstepValue(-0.1, 0.35, sunY) + 40;
-  return direct + sky;
+  // Diffuse skylight proxy with a twilight tail. The tail runs to the real
+  // night floor now rather than stopping at a placeholder 40 lux.
+  const sky = 14_000 * smoothstepValue(-0.1, 0.35, sunY)
+    + 3.4 * smoothstepValue(-0.31, -0.02, sunY);
+  return direct + sky + moonIlluminanceLux + MOONLESS_NIGHT_ILLUMINANCE_LUX;
 }
 
-const REFERENCE_ILLUMINANCE_LUX = ((): number => {
+export const REFERENCE_ILLUMINANCE_LUX = ((): number => {
   const reference = createEnvironmentState({
     sun: {
       direction: [
@@ -241,9 +265,98 @@ const REFERENCE_ILLUMINANCE_LUX = ((): number => {
 /** EV100 of the reference key, recorded for the decision log. */
 export const REFERENCE_EV100 = Math.log2(REFERENCE_ILLUMINANCE_LUX / 2.5);
 
-export function exposureForState(state: EnvironmentState): number {
+/**
+ * Illuminance at which vision becomes rod-only: `7-2`'s 0.03 cd/m² scotopic
+ * threshold, converted through a Lambertian 0.2-albedo ground
+ * (`E = L·π/ρ`). Below it the rod pathway carries the image and the display
+ * exposure has nothing left to do, which is what makes this the natural
+ * ceiling for the curve.
+ */
+export const SCOTOPIC_FLOOR_ILLUMINANCE_LUX = (0.03 * Math.PI) / 0.2;
+
+/**
+ * The exposure ceiling — DERIVED, not a magic number.
+ *
+ * `PRE_PHASE_4_REALIGNMENT.md` §5 names the old hard clamp of 2.6 as one of
+ * the two constants `7-2` must reopen, on the grounds that "its ceiling is
+ * currently a magic number with no stated night rationale". This is the
+ * stated rationale: the curve keeps opening down to the illuminance at
+ * which human vision hands over to the rods, and stops there, because past
+ * that point brightening the cone image is not what a person's night vision
+ * does — `ScotopicVision`'s Naka–Rushton response is. It evaluates to ~4.66
+ * at the shipped constants; the number moves only if the curve or the
+ * scotopic threshold moves, which is the point.
+ */
+export const MAX_EXPOSURE = BASE_EXPOSURE
+  * Math.pow(REFERENCE_ILLUMINANCE_LUX / SCOTOPIC_FLOOR_ILLUMINANCE_LUX, ADAPTATION_STRENGTH);
+
+export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0): number {
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
-  const illuminance = Math.max(horizontalIlluminanceLux(state) * overcast, 1);
+  const illuminance = Math.max(
+    horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast,
+    SCOTOPIC_FLOOR_ILLUMINANCE_LUX * 0.05,
+  );
   const ratio = REFERENCE_ILLUMINANCE_LUX / illuminance;
-  return Math.min(2.6, Math.max(0.3, BASE_EXPOSURE * Math.pow(ratio, ADAPTATION_STRENGTH)));
+  return Math.min(
+    MAX_EXPOSURE,
+    Math.max(0.3, BASE_EXPOSURE * Math.pow(ratio, ADAPTATION_STRENGTH)),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 7-2 — adaptation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Scene-linear → cd/m². The renderer's linear unit is calibrated by the sun:
+ * `PEAK_SUN_INTENSITY` (5.2) is 120,000 lux of direct normal illuminance, so
+ * one scene unit is `120000 / (5.2·π)` cd/m² off a white Lambertian surface.
+ * `7-2` needs this to evaluate its rod response in real units.
+ */
+export const SCENE_UNIT_TO_NITS = 120_000 / (5.2 * Math.PI);
+
+/**
+ * Mean scene luminance a viewer is adapted to, cd/m². Lambertian ground at
+ * the world's mean albedo under the current illuminance — the standard
+ * approximation, and it needs no framebuffer readback, so the capture stays
+ * a function of pinned inputs (the `1A-4` stale-state rule).
+ */
+export function adaptedLuminanceCdM2(
+  state: EnvironmentState,
+  moonIlluminanceLux = 0,
+): number {
+  const albedo = state.atmosphere.groundAlbedo[1];
+  const overcast = 1 - state.weather.cloudCoverage * 0.42;
+  return (horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast * albedo) / Math.PI;
+}
+
+/**
+ * Bounded adaptation. Light→dark takes minutes (rhodopsin has to
+ * regenerate); dark→light takes seconds. The plan requires the rate to be
+ * bounded or "flying past a floodlight strobes the whole image" — there are
+ * no floodlights until `7-5`, but the clock scrubs, and an unbounded step
+ * would flash the whole frame on every scrub.
+ *
+ * Pure, so it is Node-testable and deterministic: the caller supplies the
+ * previous state and the elapsed simulation seconds.
+ */
+export const DARK_ADAPTATION_HALF_LIFE_SECONDS = 45;
+export const LIGHT_ADAPTATION_HALF_LIFE_SECONDS = 2.5;
+
+export function adaptLuminance(
+  previousCdM2: number,
+  targetCdM2: number,
+  deltaSeconds: number,
+): number {
+  if (!(previousCdM2 > 0) || !Number.isFinite(previousCdM2)) return targetCdM2;
+  if (!(deltaSeconds > 0)) return previousCdM2;
+  const halfLife = targetCdM2 < previousCdM2
+    ? DARK_ADAPTATION_HALF_LIFE_SECONDS
+    : LIGHT_ADAPTATION_HALF_LIFE_SECONDS;
+  const blend = 1 - Math.pow(0.5, deltaSeconds / halfLife);
+  // Interpolate in log space: adaptation is a multiplicative process, and a
+  // linear lerp from 10,000 to 0.01 spends its whole time above 1.
+  const logged = Math.log(previousCdM2)
+    + (Math.log(Math.max(targetCdM2, 1e-6)) - Math.log(previousCdM2)) * blend;
+  return Math.exp(logged);
 }

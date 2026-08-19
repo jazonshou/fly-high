@@ -17,7 +17,28 @@ import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
 } from "@/src/render/webgpu/nature/EnvironmentState";
-import { exposureForState } from "@/src/render/webgpu/nature/EnvironmentDirector";
+import {
+  adaptLuminance,
+  adaptedLuminanceCdM2,
+  exposureForState,
+  horizontalIlluminanceLux,
+  REFERENCE_ILLUMINANCE_LUX,
+  SCENE_UNIT_TO_NITS,
+} from "@/src/render/webgpu/nature/EnvironmentDirector";
+import {
+  equatorialToWorld,
+  equatorialToWorldRows,
+  equatorialUnitVector,
+  localSiderealTimeHours,
+} from "./StarCatalogue";
+import {
+  moonIlluminanceLux,
+  moonState,
+  FULL_MOON_ILLUMINANCE_LUX,
+  MOONLIGHT_TINT,
+  type MoonState,
+} from "./Ephemeris";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
   AERIAL_PERSPECTIVE_WGSL,
@@ -29,6 +50,53 @@ const SKY_SHADER_NAME = "aerolithPhysicalSky";
 
 /** The clear-noon palette peak; sunIlluminanceNormalized is relative to it. */
 const PEAK_SUN_INTENSITY = 5.2;
+
+/**
+ * `7-1` — the moon's directional-light intensity at full, zenith, mean
+ * distance, in the renderer's linear units.
+ *
+ * **This is the one art-directed night constant, and the reason is
+ * arithmetic, not taste.** A full moon delivers 0.25 lux against the sun's
+ * 120,000 — a ratio of 4.8 × 10⁵. The renderer's beauty target is fp16,
+ * whose smallest normal value is 6.1 × 10⁻⁵, so at the sun's own calibration
+ * (5.2 units = 120,000 lux) moonlit ground would land at 1.1 × 10⁻⁵ and be
+ * quantised to nothing before any post-process could see it. Representing
+ * night photometrically needs a scene PRE-EXPOSURE applied to every light
+ * AND every shader that writes radiance, which `1C-2` deliberately did not
+ * build (assertion 29 forbids a shader multiplying its own exposure, which
+ * is exactly what a pre-exposure is). `7-4`'s clustered lighting will meet
+ * the same 10⁵ range with light points and is where that decision belongs.
+ *
+ * So the ABSOLUTE level is chosen; everything RELATIVE is physical. Phase,
+ * the opposition surge, altitude and the perigee/apogee distance term all
+ * come from `Ephemeris.moonIlluminanceLux`, normalised to the full-moon
+ * value, and `7-2` reads the true lux for its rod response — so what the
+ * viewer perceives is driven by real photometry even though the buffer is
+ * not.
+ */
+export const MOON_PEAK_LIGHT_INTENSITY = 0.055;
+
+/**
+ * Scene-linear radiance of the moon's disc at full. The disc is far brighter
+ * than the ground it lights (albedo 0.12 at 0.25 lux still reads as a small
+ * bright object), and this is what makes it read as a light source rather
+ * than a grey sticker.
+ */
+export const MOON_DISC_RADIANCE = 2.1;
+
+/**
+ * `7-2` — floor on the sky-ambient scale.
+ *
+ * The realignment named `ambientIntensity = 0.05` as a constant to reopen,
+ * and reopening it PHYSICALLY takes the ground bounce to ~10⁻⁹ of its
+ * daylight value at midnight, which the fp16 beauty buffer cannot carry (see
+ * `MOON_PEAK_LIGHT_INTENSITY`). So the scale is real over the range the
+ * buffer can hold and floors at a fifth of the daylight value — a night sky
+ * really does bounce a little light off the ground, and this is the level at
+ * which the rod pathway has something to work with. The constant is now a
+ * night value with a reason, which is what the realignment asked for.
+ */
+export const NIGHT_AMBIENT_FLOOR_SCALE = 0.2;
 
 const SKY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -49,6 +117,19 @@ fn main(input: VertexInputs) -> FragmentInputs {
 export const SKY_FRAGMENT_WGSL = /* wgsl */ `
 varying direction: vec3f;
 uniform sunDiscVisibility: f32;
+// 7-1/7-3: the night sky's own inputs. moonFrame = (angularRadius,
+// illuminatedFraction, phaseAngle/180, earthshine); galacticPole/Center are
+// the galactic frame already rotated into world axes by the star field's own
+// matrix, so the Milky Way rides the same sidereal rotation the stars do.
+// The disc's TERMINATOR is not in there on purpose — it falls out of the
+// sky's own sun direction, so the drawn phase can never disagree with the
+// lighting.
+uniform moonDirection: vec3f;
+uniform moonFrame: vec4f;
+uniform moonRadiance: vec3f;
+uniform galacticPole: vec3f;
+uniform galacticCenter: vec3f;
+uniform nightSkyStrength: f32;
 ${AERIAL_PERSPECTIVE_WGSL}
 
 // The sun's true angular radius — must equal EnvironmentState's
@@ -83,25 +164,71 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     color += uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance
       * (disc * SUN_DISC_RADIANCE * uniforms.sunDiscVisibility);
   }
-  // 1C-10: placeholder night — deliberately minimal, the phase's designated
-  // cut item. Phase 7 replaces this outright with ephemeris moon position,
-  // phase, moonlight as a second light, and the Yale Bright Star catalogue.
-  let night = clamp(-uniforms.aerialSunDirection.y * 6.0, 0.0, 1.0);
-  if (night > 0.0) {
-    let cell = floor(view * 160.0);
-    let starHash = fract(sin(dot(cell, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
-    let starMask = step(0.9985, starHash);
-    let twinkle = 0.55 + 0.45 * fract(starHash * 91.17);
-    color += vec3f(0.85, 0.9, 1.0)
-      * (starMask * twinkle * 0.5 * night * max(view.y + 0.1, 0.0));
-    let moonDirection = normalize(-uniforms.aerialSunDirection);
-    let moonMu = clamp(dot(view, moonDirection), -1.0, 1.0);
-    let moonTheta = sqrt(max(2.0 * (1.0 - moonMu), 0.0));
-    let moonRadius = moonTheta / 0.0045;
-    if (moonRadius < 1.1) {
-      let moonDisc = smoothstep(1.05, 0.95, moonRadius);
-      color += vec3f(0.52, 0.56, 0.62) * (moonDisc * 0.35 * night);
-    }
+  // 7-3: the Milky Way. Surface brightness falls off with galactic latitude
+  // and is strongly brightest toward the galactic centre in Sagittarius —
+  // the two facts that make the band recognisable. The star field's own
+  // sidereal matrix rotated this frame into world axes, so the band and the
+  // constellations turn together by construction rather than by tuning.
+  // (The 1C-10 placeholder that hashed view directions into identical
+  // "stars" on a dome that never rotated is deleted with this item.)
+  if (uniforms.nightSkyStrength > 0.0) {
+    let galacticSine = clamp(dot(view, uniforms.galacticPole), -1.0, 1.0);
+    let band = exp(-abs(galacticSine) / 0.13);
+    // Toward the centre the bulge is several times brighter than the
+    // anticentre arm, and a dust lane splits it.
+    let towardCenter = clamp(dot(view, uniforms.galacticCenter), -1.0, 1.0);
+    let bulge = 1.0 + 2.4 * smoothstep(0.25, 0.95, towardCenter);
+    let lane = 1.0 - 0.45 * exp(-abs(galacticSine) / 0.035)
+      * smoothstep(-0.2, 0.6, towardCenter);
+    // Extinction: the band goes out at the horizon like everything else.
+    let horizon = smoothstep(-0.02, 0.16, view.y);
+    color += vec3f(0.72, 0.78, 1.0)
+      * (band * bulge * lane * horizon * 0.00055 * uniforms.nightSkyStrength);
+  }
+
+  // 7-1 — the moon: ephemeris direction, true angular size, a phase drawn
+  // from the real sun-moon geometry, maria, limb darkening and earthshine.
+  let moonMu = clamp(dot(view, uniforms.moonDirection), -1.0, 1.0);
+  let moonTheta = sqrt(max(2.0 * (1.0 - moonMu), 0.0));
+  let moonRadius = moonTheta / max(uniforms.moonFrame.x, 1e-5);
+  if (moonRadius < 1.02) {
+    // Reconstruct the surface point on the visible hemisphere. The disc is
+    // small enough that an orthographic reconstruction about the view axis
+    // is exact to well under a texel of the maria.
+    let moonUp = normalize(vec3f(0.0, 1.0, 0.0)
+      - uniforms.moonDirection * uniforms.moonDirection.y);
+    let moonRight = normalize(cross(moonUp, uniforms.moonDirection));
+    let offset = (view - uniforms.moonDirection * moonMu) / max(uniforms.moonFrame.x, 1e-5);
+    let discX = clamp(dot(offset, moonRight), -1.0, 1.0);
+    let discY = clamp(dot(offset, moonUp), -1.0, 1.0);
+    let discZ = sqrt(max(1.0 - discX * discX - discY * discY, 0.0));
+    // Surface normal in the moon's own frame, expressed in world axes.
+    let surfaceNormal = normalize(
+      moonRight * discX + moonUp * discY + uniforms.moonDirection * -discZ);
+    // PHASE: the moon's lit hemisphere faces the sun. The sun is far enough
+    // that its direction from the moon equals its direction from us, so the
+    // terminator falls out of one dot product — no phase parameter is
+    // needed and the phase can never disagree with the sky's own sun.
+    let lit = clamp(dot(surfaceNormal, uniforms.aerialSunDirection), 0.0, 1.0);
+    // Lommel-Seeliger-ish limb behaviour: the moon is famously FLAT, not
+    // Lambertian — a full moon is a uniform disc, not a bright centre.
+    let limb = lit / max(lit + max(discZ, 0.02), 0.05) * 1.9;
+    // Maria: three broad dark basins plus small-scale crater mottling, from
+    // the surface position so they rotate with the disc and never swim.
+    let mariaField =
+      exp(-12.0 * length(vec2f(discX + 0.22, discY - 0.28)))
+      + 0.8 * exp(-16.0 * length(vec2f(discX - 0.10, discY - 0.05)))
+      + 0.7 * exp(-20.0 * length(vec2f(discX + 0.05, discY + 0.34)));
+    let craters = 0.5 + 0.5 * sin(discX * 41.0) * sin(discY * 37.0);
+    let albedo = mix(0.135, 0.075, clamp(mariaField, 0.0, 1.0))
+      * (0.92 + 0.16 * craters);
+    // Earthshine: the dark limb is lit by a nearly FULL Earth whenever the
+    // moon is new, which is why the old moon is visible in the new moon's
+    // arms. Its strength is the complement of the moon's own phase.
+    let earthshine = uniforms.moonFrame.w * (1.0 - lit);
+    let disc = smoothstep(1.02, 0.985, moonRadius);
+    color += uniforms.moonRadiance
+      * (disc * albedo * (limb + earthshine) * 12.0);
   }
   // 1C-2: the sky writes linear HDR; the one exposure curve lives on the
   // image-processing chain. No shader multiplies its own exposure again.
@@ -266,11 +393,32 @@ export interface AtmosphereSnapshot {
   readonly humidity: number;
   readonly windSpeed: number;
   readonly windDirection: Vector2;
+  /** 7-1: unit vector toward the moon in world axes. */
+  readonly moonDirection: Vector3;
+  /** 7-1: the moon's contribution to horizontal illuminance, lux. */
+  readonly moonIlluminanceLux: number;
+  /** 7-1: illuminated fraction of the disc, 0…1. */
+  readonly moonIlluminatedFraction: number;
+  /**
+   * 7-2: the eye's adapted luminance in cd/m², after the bounded adaptation
+   * step. The scotopic pass's rod response reads it; it is a function of
+   * pinned inputs only, so the capture stays deterministic.
+   */
+  readonly adaptedLuminanceCdM2: number;
+  /**
+   * 7-2: the SCENE's key luminance in cd/m² — Lambertian ground under this
+   * frame's own lights. The rod response is half-saturated here, which is
+   * what puts a night image in the middle of its range whatever the buffer's
+   * absolute scale is.
+   */
+  readonly sceneKeyLuminanceCdM2: number;
 }
 
 /** Owns the single physical sun, ambient sky light, analytic HDR sky and CSM. */
 export class AtmosphereSystem {
   readonly sun: DirectionalLight;
+  /** 7-1: moonlight, reflected sunlight at ~4,100 K — warm, never blue. */
+  readonly moon: DirectionalLight;
   readonly ambient: HemisphericLight;
   readonly shadows: CascadedShadowGenerator;
   private readonly sky: Mesh;
@@ -302,7 +450,17 @@ export class AtmosphereSystem {
       SKY_SHADER_NAME,
       {
         attributes: ["position"],
-        uniforms: ["worldViewProjection", "sunDiscVisibility", ...AERIAL_PERSPECTIVE_UNIFORMS],
+        uniforms: [
+          "worldViewProjection",
+          "sunDiscVisibility",
+          "moonDirection",
+          "moonFrame",
+          "moonRadiance",
+          "galacticPole",
+          "galacticCenter",
+          "nightSkyStrength",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
+        ],
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
@@ -312,6 +470,13 @@ export class AtmosphereSystem {
     // 2-9: 1 for the visible sky; the environment probe zeroes it around its
     // cube captures so the reflection/IBL environment carries no baked sun.
     this.skyMaterial.setFloat("sunDiscVisibility", 1);
+    // 7-1/7-3 defaults: no moon, no night sky, until the first clock lands.
+    this.skyMaterial.setVector3("moonDirection", new Vector3(0, -1, 0));
+    this.skyMaterial.setVector4("moonFrame", new Vector4(0.00453, 0, 1, 0));
+    this.skyMaterial.setVector3("moonRadiance", new Vector3(0, 0, 0));
+    this.skyMaterial.setVector3("galacticPole", new Vector3(0, 1, 0));
+    this.skyMaterial.setVector3("galacticCenter", new Vector3(0, -1, 0));
+    this.skyMaterial.setFloat("nightSkyStrength", 0);
     this.sky.material = this.skyMaterial;
 
     this.sun = new DirectionalLight("sun", new Vector3(0.36, -0.82, -0.44), scene);
@@ -320,6 +485,15 @@ export class AtmosphereSystem {
     this.ambient = new HemisphericLight("sky-ambient", Vector3.Up(), scene);
     this.ambient.intensity = 0.05;
     this.ambient.groundColor = new Color3(0.08, 0.09, 0.07);
+    // 7-1: the moon as a SECOND directional light. Deliberately not a shadow
+    // caster — a second cascade set would double the shadow row for a light
+    // whose shadows are, at 0.25 lux, below the contrast a person can
+    // resolve, and 7-9's night tier is where that trade is measured.
+    this.moon = new DirectionalLight("moon", new Vector3(0, -1, 0), scene);
+    this.moon.intensity = 0;
+    this.moon.diffuse = new Color3(...MOONLIGHT_TINT);
+    this.moon.specular = new Color3(...MOONLIGHT_TINT);
+    this.moon.autoCalcShadowZBounds = false;
 
     // 1A-5: depth-only RTT. `usefulFloatFirst` false — with only depth bound
     // there is no colour precision to trade, and the previous `true` silently
@@ -360,6 +534,11 @@ export class AtmosphereSystem {
         Math.sin(windDirectionRadians),
         Math.cos(windDirectionRadians),
       ).normalize(),
+      moonDirection: new Vector3(0, -1, 0),
+      moonIlluminanceLux: 0,
+      moonIlluminatedFraction: 0,
+      adaptedLuminanceCdM2: adaptedLuminanceCdM2(DEFAULT_ENVIRONMENT_STATE),
+      sceneKeyLuminanceCdM2: 1_000,
     };
     this.applyEnvironment(DEFAULT_ENVIRONMENT_STATE);
   }
@@ -371,6 +550,19 @@ export class AtmosphereSystem {
   /** The sky dome, exposed so the environment probe (1C-6) can render it. */
   get skyMesh(): Mesh {
     return this.sky;
+  }
+
+  /**
+   * 7-3: the galactic frame in world axes, for the Milky Way band. It comes
+   * from the star field's own sidereal matrix — one frame definition, two
+   * consumers, so the band and the constellations cannot drift apart.
+   */
+  setGalacticFrame(
+    pole: readonly [number, number, number],
+    center: readonly [number, number, number],
+  ): void {
+    this.skyMaterial.setVector3("galacticPole", new Vector3(pole[0], pole[1], pole[2]));
+    this.skyMaterial.setVector3("galacticCenter", new Vector3(center[0], center[1], center[2]));
   }
 
   /**
@@ -398,7 +590,12 @@ export class AtmosphereSystem {
    * 1C-2 owns the single exposure curve, and 1C-4 owns all haze, so this
    * touches neither fog nor any per-shader exposure.
    */
-  applyEnvironment(state: EnvironmentState): void {
+  applyEnvironment(
+    state: EnvironmentState,
+    clock?: EnvironmentClock,
+    latitudeDegrees = 45,
+    deltaSeconds = 0,
+  ): void {
     const sunDirection = new Vector3(
       state.sun.direction[0],
       state.sun.direction[1],
@@ -414,14 +611,40 @@ export class AtmosphereSystem {
     ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
     const sunIntensity = palette.intensity * overcastDimming;
+
+    // 7-1: the moon, from the clock the environment director already
+    // resolved the sun from. Without a clock (the constructor's default
+    // state, and every Node test that predates Gate 7A) there is no moon.
+    const moon = clock ? moonState(clock) : null;
+    const moonDirection = moon
+      ? this.moonWorldDirection(moon, clock!, latitudeDegrees)
+      : new Vector3(0, -1, 0);
+    const moonLux = moon ? moonIlluminanceLux(moon, Math.max(moonDirection.y, 0)) : 0;
+    // Physical in every RELATIVE term — phase, opposition surge, altitude,
+    // perigee distance — and normalised to the full-moon value, so only the
+    // absolute level is art-directed (see MOON_PEAK_LIGHT_INTENSITY).
+    const moonIntensity = (moonLux / FULL_MOON_ILLUMINANCE_LUX)
+      * MOON_PEAK_LIGHT_INTENSITY * overcastDimming;
+    this.moon.direction.copyFrom(moonDirection).scaleInPlace(-1);
+    this.moon.intensity = moonIntensity;
+
     // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
-    // day+clear look exactly; every private shader exposure is deleted.
-    this.scene.imageProcessingConfiguration.exposure = exposureForState(state);
+    // day+clear look exactly; every private shader exposure is deleted. 7-2
+    // reopened its ceiling — a derived constant now, not a magic 2.6.
+    this.scene.imageProcessingConfiguration.exposure = exposureForState(state, moonLux);
     // 1C-6: IBL now carries the skylight. The hemispheric light survives
     // only as a small ground-bounce approximation, so skylight is not
     // double-counted; the snapshot's ambientColor keeps the old scale — it
     // describes sky-ambient radiance for shaders (clouds), not this light.
-    const ambientIntensity = 0.05;
+    //
+    // 7-2 reopened the other constant the realignment named: this was an
+    // unconditional 0.05 at every hour, so at 22:00 the ground bounce was
+    // still a twentieth of a noon sky's — the same lift on a black sky that
+    // it is on a blue one, which is precisely "night is dim daylight". It
+    // follows the sky's own light now, and is EXACTLY 0.05 at the reference
+    // day+clear key so daylight is unchanged.
+    const ambientIntensity =
+      0.05 * Math.max(this.skylightScale(state, moonLux), NIGHT_AMBIENT_FLOOR_SCALE);
     const snapshotAmbientScale = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
       palette.zenith,
@@ -439,6 +662,44 @@ export class AtmosphereSystem {
     this.ambient.diffuse = skyZenith;
     this.ambient.groundColor = palette.ground;
     this.ambient.intensity = ambientIntensity;
+
+    // 7-1/7-3: the sky's night inputs.
+    const nightStrength = Math.min(1, Math.max(0, (-sunDirection.y - 0.03) / 0.25));
+    this.skyMaterial.setVector3("moonDirection", moonDirection);
+    this.skyMaterial.setVector4("moonFrame", new Vector4(
+      moon?.angularRadiusRadians ?? 0.00453,
+      moon?.illuminatedFraction ?? 0,
+      (moon?.phaseAngleDegrees ?? 180) / 180,
+      // Earthshine is brightest at new moon, because the Earth the dark limb
+      // is lit by is then full — and the Earth is ~50× brighter in the
+      // moon's sky than the moon is in ours.
+      0.055 * (1 - (moon?.illuminatedFraction ?? 0)) ** 1.5,
+    ));
+    this.skyMaterial.setVector3(
+      "moonRadiance",
+      new Vector3(...MOONLIGHT_TINT).scaleInPlace(
+        MOON_DISC_RADIANCE * Math.min(1, Math.max(0, moonDirection.y * 6 + 0.2)),
+      ),
+    );
+    this.skyMaterial.setFloat("nightSkyStrength", nightStrength);
+
+    // 7-2: bounded adaptation on the pinned clock. A scrub past dusk snaps
+    // (deltaSeconds 0), which matches the 1C-6 probe's own "the sun is
+    // static between scrubs" invariant and keeps the capture deterministic.
+    // 7-2: the SCENE's own key luminance, in the same units the rod response
+    // will read pixels in. Lambertian ground under the frame's actual lights
+    // — this is what σ has to be, because the buffer is not photometrically
+    // scaled at night (see ScotopicState.adaptedLuminanceCdM2).
+    const sceneKeyLuminance = ((sunIntensity * Math.max(sunDirection.y, 0)
+      + moonIntensity * Math.max(moonDirection.y, 0)
+      + ambientIntensity)
+      * state.atmosphere.groundAlbedo[1]) / Math.PI;
+
+    const adaptationTarget = adaptedLuminanceCdM2(state, moonLux);
+    const adapted = deltaSeconds > 0
+      ? adaptLuminance(this.snapshotValue.adaptedLuminanceCdM2, adaptationTarget, deltaSeconds)
+      : adaptationTarget;
+
     this.snapshotValue = {
       sunDirection: sunDirection.clone(),
       sunColor: palette.sunColor.clone(),
@@ -452,7 +713,45 @@ export class AtmosphereSystem {
       humidity,
       windSpeed,
       windDirection: this.snapshotValue.windDirection.clone(),
+      moonDirection: moonDirection.clone(),
+      moonIlluminanceLux: moonLux,
+      moonIlluminatedFraction: moon?.illuminatedFraction ?? 0,
+      adaptedLuminanceCdM2: adapted,
+      sceneKeyLuminanceCdM2: Math.max(sceneKeyLuminance * SCENE_UNIT_TO_NITS, 1e-4),
     };
+  }
+
+  /**
+   * The moon's equatorial position, put into world axes by the SAME sidereal
+   * matrix the star field uses — so the moon sits among the constellations
+   * it is actually among, and one frame definition serves both.
+   */
+  private moonWorldDirection(
+    moon: MoonState,
+    clock: EnvironmentClock,
+    latitudeDegrees: number,
+  ): Vector3 {
+    const rows = equatorialToWorldRows(localSiderealTimeHours(clock), latitudeDegrees);
+    const equatorial = equatorialUnitVector(
+      moon.rightAscensionHours,
+      moon.declinationDegrees,
+    );
+    const world = equatorialToWorld(equatorial, rows);
+    return new Vector3(world[0], world[1], world[2]).normalize();
+  }
+
+  /**
+   * Skylight relative to the reference day+clear key — the factor the
+   * hemispheric ground bounce scales by. Exactly 1 at the reference, so the
+   * daylight look is bit-identical; at 22:00 with no moon it is ~10⁻⁵, which
+   * is the point.
+   */
+  private skylightScale(state: EnvironmentState, moonLux: number): number {
+    const overcast = 1 - state.weather.cloudCoverage * 0.42;
+    return Math.min(
+      1.6,
+      (horizontalIlluminanceLux(state, moonLux) * overcast) / REFERENCE_ILLUMINANCE_LUX,
+    );
   }
 
   update(cameraLocalPosition: Vector3): void {
@@ -462,6 +761,7 @@ export class AtmosphereSystem {
   dispose(): void {
     this.shadows.dispose();
     this.sun.dispose();
+    this.moon.dispose();
     this.ambient.dispose();
     this.sky.dispose(false, false);
     this.skyMaterial.dispose(true, true);

@@ -1,4 +1,5 @@
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
+import { Buffer } from "@babylonjs/core/Buffers/buffer";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -11,6 +12,7 @@ import {
   resolveDetailGenerationBudget,
   WorldDetailRuntime,
 } from "../src/render/webgpu/detail";
+import { DETAIL_INSTANCE_STRIDE_BYTES } from "../src/render/webgpu/detail/instanceFormat";
 import { TerrainBiome } from "../src/world";
 
 const forestTerrain = (x: number, z: number) => ({
@@ -176,26 +178,121 @@ describe("WebGPU world-detail spatial presentation", () => {
       && mesh.metadata.detailChunk === retainedChunk
     ));
     expect(rebasedMesh).toBeDefined();
-    expect(rebasedMesh).not.toBe(retainedMesh);
-    expect(retainedMesh?.isEnabled()).toBe(false);
+    // Perf-debt pass: a rebuild REUSES the batch. It used to publish a whole
+    // new mesh (clone + `makeGeometryUnique` + a fresh GPU instance buffer,
+    // per prototype per chunk, on every 64 m observer quantum) and retire
+    // the previous one; the batch, its unique geometry and its allocation
+    // now survive and take new bytes in place. A grown allocation is still
+    // retired through the grace window — only growth reallocates.
+    expect(rebasedMesh).toBe(retainedMesh);
+    expect(retainedMesh?.isEnabled()).toBe(true);
+    expect(retainedMesh?.getVertexBuffer("instancePosition")).toBe(retainedBuffer);
     const afterRebase = firstInstanceLocal(rebasedMesh);
     expect(afterRebase[0]).toBeCloseTo(beforeRebase[0] - 512, 3);
     expect(afterRebase[1]).toBeCloseTo(beforeRebase[1] - 30, 3);
     expect(afterRebase[2]).toBeCloseTo(beforeRebase[2] + 256, 3);
 
-    for (let pass = 0; pass < 4; pass += 1) {
+    // A batch a chunk stops populating is still retired, and the mesh
+    // leaves the scene after the conservative grace window.
+    const distantMeshCount = chunkMeshes(scene).length;
+    for (let pass = 0; pass < 12; pass += 1) {
       runtime.update(
-        { x: 0, y: 120, z: 0 },
+        { x: 40_000, y: 900, z: 40_000 },
         { x: 512, y: 30, z: -256 },
         profile,
       );
     }
-    expect(scene.meshes).not.toContain(retainedMesh);
+    expect(chunkMeshes(scene).length).toBeLessThan(distantMeshCount);
 
     runtime.dispose();
     runtime.dispose();
     expect(scene.meshes.some((mesh) => mesh.metadata?.detailChunk)).toBe(false);
     scene.dispose();
     engine.dispose();
+  });
+});
+
+/**
+ * The vegetation perf-debt pass's "instance-buffer reuse" rung, pinned by
+ * the property that actually bit: a GPU buffer destroyed while a submitted
+ * command buffer still references it is a WebGPU validation error, and the
+ * whole submit is rejected — one stale instance buffer renders the entire
+ * frame black. (Measured exactly that way: the first capture after the reuse
+ * change came back with a black `approach-500ft` and twenty
+ * `used in submit while destroyed` errors at frame 44.)
+ *
+ * Babylon 9.21.2 makes the trap easy to fall into. A `VertexBuffer` built
+ * over an existing `Buffer` does not own it, and `Buffer._increaseReferences`
+ * is never called from anywhere in the shipped source — so five typed views
+ * over one interleaved allocation leave its reference count at ONE, and a
+ * single `dispose()` destroys the GPU buffer immediately. The runtime
+ * therefore RECYCLES released allocations through a pool instead of
+ * destroying them; a write into a pooled buffer is queue-ordered after the
+ * previous submit and can never be a validation error.
+ */
+describe("detail instance-buffer lifetime (perf-debt pass)", () => {
+  it("never destroys an allocation while the runtime is live, and reuses them", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("buffers", new Vector3(0, 120, 0), scene);
+    camera.setTarget(new Vector3(0, 0, 1_000));
+    scene.activeCamera = camera;
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-buffer-pool",
+      terrainSample: forestTerrain,
+      seaLevelMeters: 0,
+    });
+    const originalDispose = Buffer.prototype.dispose;
+    let destroyedWhileLive = 0;
+    let created = 0;
+    const originalCreate = engine.createDynamicVertexBuffer.bind(engine);
+    engine.createDynamicVertexBuffer = ((data: never) => {
+      created += 1;
+      return originalCreate(data);
+    }) as typeof engine.createDynamicVertexBuffer;
+    Buffer.prototype.dispose = function patched(this: Buffer) {
+      // Only the 32-byte-stride INSTANCE allocations: a retired batch also
+      // disposes its own cloned prototype geometry, which is correct and
+      // has always been safe (the mesh is disabled four updates earlier).
+      if (this.byteStride === DETAIL_INSTANCE_STRIDE_BYTES) destroyedWhileLive += 1;
+      originalDispose.call(this);
+    };
+    try {
+      // A long traverse plus a teleport plus a return: chunks fill (growth),
+      // rebuild (reuse), retire (recycle) and are recreated (pool hit).
+      for (let step = 0; step < 20; step += 1) {
+        runtime.update(
+          { x: step * 140, y: 120, z: step * 140 },
+          { x: 0, y: 0, z: 0 },
+          profile,
+        );
+      }
+      const afterTraverse = created;
+      expect(afterTraverse).toBeGreaterThan(0);
+      for (let step = 0; step < 20; step += 1) {
+        runtime.update({ x: 90_000, y: 900, z: 90_000 }, { x: 0, y: 0, z: 0 }, profile);
+      }
+      const afterTeleport = created;
+      for (let step = 0; step < 20; step += 1) {
+        runtime.update(
+          { x: step * 140, y: 120, z: step * 140 },
+          { x: 0, y: 0, z: 0 },
+          profile,
+        );
+      }
+      // The pass's contract: nothing is destroyed in flight.
+      expect(destroyedWhileLive).toBe(0);
+      // ...and the identical return leg allocates far less than the first
+      // traverse did, because the teleport's retired allocations came back
+      // through the pool instead of being freed and remade.
+      const returnLegAllocations = created - afterTeleport;
+      expect(returnLegAllocations).toBeLessThan(afterTraverse * 0.75);
+    } finally {
+      Buffer.prototype.dispose = originalDispose;
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
   });
 });
