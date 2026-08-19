@@ -41,6 +41,8 @@ export interface WebGpuQualityProfile {
   readonly frameTargetMs: number;
   /** R-21: the tier's rendered-density law (the one vegetation authority). */
   readonly renderedDensityLaw: RenderedDensityLaw;
+  /** 2-12: cap on crown-geometry variants per species (Low keeps three). */
+  readonly treeVariantCap: number;
   readonly terrainRings: number;
   /**
    * Vertices per tile edge at every level (1B-3). One constant per tier —
@@ -105,6 +107,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
+      treeVariantCap: 3,
       terrainRings: 6,
       terrainTileResolution: 33,
       shadowMapSize: 1_024,
@@ -136,6 +139,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 2,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
+      treeVariantCap: 5,
       terrainRings: 7,
       terrainTileResolution: 65,
       shadowMapSize: 2_048,
@@ -166,6 +170,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 2,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
+      treeVariantCap: 5,
       // 1C-4: the 45 km far plane makes level 7 (the 131 km ring) pure
       // waste. Levels 0–6 still guarantee 65.5 km worst-case coverage —
       // the lower tiers keep their counts because cutting them would end
@@ -202,6 +207,7 @@ export function resolveWebGpuQualityProfile(
     msaaSamples: 4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
+    treeVariantCap: 5,
     // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
     terrainRings: 7,
     terrainTileResolution: 65,

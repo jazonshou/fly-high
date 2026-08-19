@@ -163,7 +163,9 @@ describe("performance budget (1A-2)", () => {
     });
     expect(withAtlases.foliageAtlasMiB).toBe(9);
     expect(withAtlases.impostorAtlasMiB).toBe(12.2);
-    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 20);
+    // 2-12 moved the foliage base to 5.33 MiB; the perturbation adds
+    // (9 − 5.33) + 12.2 ≈ 15.9 MiB before the estimate fudge.
+    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 14);
 
     const withCloudVolumes = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,

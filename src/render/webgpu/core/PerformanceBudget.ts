@@ -186,7 +186,9 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
     2: 200_000,
     3: 240_000,
   }),
-  foliageAtlasMiB: 0,
+  // 2-12: the atlas's first sampler went live — measured bytes across all
+  // 16 layers and their coverage-preserving mip chains.
+  foliageAtlasMiB: 5.33,
   impostorAtlasMiB: 0,
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
   cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,

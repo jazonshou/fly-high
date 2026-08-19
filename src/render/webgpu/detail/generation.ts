@@ -132,7 +132,7 @@ function treeDimensions(
   species: TreeSpecies,
   random: RandomSource,
   standAge: number,
-): { height: number; crown: number; trunk: number; wind: number } {
+): { height: number; crown: number; trunk: number; wind: number; individualAge: number } {
   // A stand has an age signature, but individual trees still follow a
   // strongly skewed distribution.  This creates saplings, mature canopy, and
   // occasional emergent trees instead of uniformly scaled copies.
@@ -152,6 +152,7 @@ function treeDimensions(
       crown: height * crownRatio * (0.88 + random() * 0.24),
       trunk: Math.max(0.055, height * trunkRatio * (0.86 + random() * 0.24)),
       wind: wind * (1.12 - individualAge * 0.22),
+      individualAge,
     };
   };
   switch (species) {
@@ -165,17 +166,80 @@ function treeDimensions(
   }
 }
 
-function treeColor(species: TreeSpecies, random: RandomSource): readonly [number, number, number, number] {
-  const variation = 0.84 + random() * 0.28;
-  switch (species) {
-    case "pine": return [0.72 * variation, 0.91 * variation, 0.74 * variation, 1];
-    case "cedar": return [0.78 * variation, 0.86 * variation, 0.67 * variation, 1];
-    case "spruce": return [0.67 * variation, 0.84 * variation, 0.78 * variation, 1];
-    case "oak": return [0.94 * variation, 0.9 * variation, 0.68 * variation, 1];
-    case "maple": return [0.98 * variation, 0.94 * variation, 0.63 * variation, 1];
-    case "birch": return [0.88 * variation, 1.02 * variation, 0.75 * variation, 1];
-    case "willow": return [0.88 * variation, 0.98 * variation, 0.7 * variation, 1];
+const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, number]>> = {
+  pine: [0.72, 0.91, 0.74],
+  cedar: [0.78, 0.86, 0.67],
+  spruce: [0.67, 0.84, 0.78],
+  oak: [0.94, 0.9, 0.68],
+  maple: [0.98, 0.94, 0.63],
+  birch: [0.88, 1.02, 0.75],
+  willow: [0.88, 0.98, 0.7],
+};
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let hue = 0;
+  if (d > 0) {
+    if (max === r) hue = ((g - b) / d) % 6;
+    else if (max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+    hue = ((hue / 6) + 1) % 1;
   }
+  return [hue, max === 0 ? 0 : d / max, max];
+}
+
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  const hue = ((h % 1) + 1) % 1;
+  const sector = hue * 6;
+  const c = v * s;
+  const x = c * (1 - Math.abs((sector % 2) - 1));
+  const m = v - c;
+  const [r, g, b] = sector < 1 ? [c, x, 0]
+    : sector < 2 ? [x, c, 0]
+    : sector < 3 ? [0, c, x]
+    : sector < 4 ? [0, x, c]
+    : sector < 5 ? [x, 0, c]
+    : [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+const CONIFER_SPECIES: ReadonlySet<TreeSpecies> = new Set(["pine", "cedar", "spruce"]);
+
+/**
+ * 2-12: tint DISTRIBUTION, not tint storage. Sampled in HSV: within a
+ * species, hue σ ≈ 6–9° (broadleaf wider than conifer), saturation σ ≈ 0.10
+ * relative, value σ ≈ 0.12. The mean is STAND-correlated — drawn from the
+ * 2-11b field — with an individual residual on top, so neighbouring stands
+ * differ as well as neighbouring trees and the result is not confetti.
+ * Value correlates weakly (negatively) with the individual's age so young
+ * stems read lighter. The old single-scalar multiply was pure brightness
+ * jitter with zero hue variance — a forest of one green at different
+ * exposures, the flight-test complaint verbatim.
+ */
+function treeColor(
+  species: TreeSpecies,
+  random: RandomSource,
+  tintCentre: number,
+  individualAge: number,
+): readonly [number, number, number, number] {
+  const base = TREE_TINT_BASE[species];
+  const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
+  const triangular = (): number => random() + random() - 1;
+  const hueSigmaTurns = (CONIFER_SPECIES.has(species) ? 6.5 : 8.5) / 360;
+  const standHueShift = (tintCentre - 0.5) * (14 / 360);
+  const hue = baseHue + standHueShift + triangular() * hueSigmaTurns * Math.sqrt(6) * 0.5;
+  const saturation = clamp(baseSat * (1 + triangular() * 0.10 * Math.sqrt(6) * 0.5), 0.05, 1);
+  const ageDarkening = (individualAge - 0.5) * 0.14;
+  const value = clamp(
+    baseVal * (1 + triangular() * 0.12 * Math.sqrt(6) * 0.5 - ageDarkening),
+    0.2,
+    1.1,
+  );
+  const [r, g, b] = hsvToRgb(hue, saturation, Math.min(value, 1));
+  const gain = value > 1 ? value : 1;
+  return [r * gain, g * gain, b * gain, 1];
 }
 
 /**
@@ -494,7 +558,7 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor),
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
-      color: treeColor(species, random),
+      color: treeColor(species, random, stand.tintCentre, dimensions.individualAge),
       standAge: stand.standAge,
       selection: random(),
     }));

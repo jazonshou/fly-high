@@ -1,8 +1,8 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
 import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -25,6 +25,12 @@ import {
   yawQuaternion,
   type DetailInstanceRecord,
 } from "./instanceFormat";
+import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
+import {
+  buildTreePrototype,
+  TREE_VARIANT_COUNTS,
+  type PrototypeGeometry,
+} from "./prototypeGeometry";
 import { detailCellKey, generateDetailCell } from "./generation";
 import {
   canGenerateNextDetailCell,
@@ -196,6 +202,12 @@ export class WorldDetailRuntime {
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   private readonly materials = new Set<PBRMaterial>();
   private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
+  private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
+  /** 2-12: crown/trunk radius-per-height per species, from the built prototypes. */
+  private readonly crownAspects = new Map<TreeSpecies, number>();
+  private readonly trunkAspects = new Map<TreeSpecies, number>();
+  /** 2-12: the atlas (null under NullEngine — no raw 2D-array support). */
+  private foliageAtlas: FoliageAtlas | null = null;
   private readonly cells = new Map<string, ResidentCell>();
   private desiredCells: readonly DesiredCell[] = [];
   private desiredKeys = new Set<string>();
@@ -448,6 +460,9 @@ export class WorldDetailRuntime {
     for (const prototype of this.prototypes.values()) prototype.mesh.dispose(false, false);
     this.prototypes.clear();
     this.instancePlugins.clear();
+    this.pluginByMaterial.clear();
+    this.foliageAtlas?.texture.dispose();
+    this.foliageAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
     this.statisticsValue = ZERO_STATISTICS;
@@ -574,6 +589,7 @@ export class WorldDetailRuntime {
         floatingOrigin.z,
         densityLaw.nearStemsPerHectare,
         densityLaw.near.outerRadiusMeters,
+        profile.treeVariantCap,
         ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
       ].join(":");
       let chunk = this.presentationChunks.get(group.coordinates.key);
@@ -599,6 +615,7 @@ export class WorldDetailRuntime {
           group.residents,
           floatingOrigin,
           densityLaw,
+          profile.treeVariantCap,
         );
         chunk.signature = signature;
       }
@@ -628,6 +645,7 @@ export class WorldDetailRuntime {
     residents: readonly ResidentCell[],
     floatingOrigin: DetailFloatingOrigin,
     densityLaw: RenderedDensityLaw,
+    treeVariantCap: number,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -663,8 +681,37 @@ export class WorldDetailRuntime {
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
-        const quaternion = yawQuaternion(tree.yawRadians);
+        // 2-12: geometry variant + character modifier from two stable
+        // hashes of the stem's selection value. Modifier mix: 55% intact,
+        // 15% lean, 12% thinned crown, 10% broken top, 8% dead top.
+        const variantCount = clamp(
+          Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap),
+          1,
+          32,
+        );
+        const variantHash = (tree.selection * 71.7) % 1;
+        const geometryVariant = Math.min(
+          variantCount - 1,
+          Math.floor(variantHash * variantCount),
+        );
+        const modifierHash = (tree.selection * 137.3) % 1;
+        const modifierBits = modifierHash < 0.55 ? 0
+          : modifierHash < 0.70 ? 1
+          : modifierHash < 0.82 ? 3
+          : modifierHash < 0.92 ? 2
+          : 4;
+        const variantByte = geometryVariant + modifierBits * 32;
+        // Per-instance lean of 2-8 degrees composed into the quaternion.
+        const leanRadians = (0.035 + ((tree.selection * 29.3) % 1) * 0.105);
+        const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
+        const quaternion = WorldDetailRuntime.yawLeanQuaternion(
+          tree.yawRadians,
+          leanRadians,
+          leanAzimuth,
+        );
         const windPhase = tree.windPhaseRadians / (2 * Math.PI);
+        const crownAspect = this.crownAspects.get(tree.species) ?? 0.3;
+        const trunkAspect = this.trunkAspects.get(tree.species) ?? 0.02;
         const crown: DetailInstanceRecord = {
           x: localX,
           y: localY,
@@ -674,37 +721,42 @@ export class WorldDetailRuntime {
           radialScale: WorldDetailRuntime.radialMultiplier(
             tree.crownRadiusMeters,
             tree.heightMeters,
-            0.3,
+            crownAspect,
           ),
           fade: 1,
-          variant: 0,
+          variant: variantByte,
           tint: tree.color,
           windPhase,
           windResponse: clamp(tree.windResponse, 0, 1),
         };
-        if (resident.lod === "near") {
-          this.appendInstance(this.getBatch("tree-trunk-near", chunk, nextBatchKeys), {
-            ...crown,
-            radialScale: WorldDetailRuntime.radialMultiplier(
-              tree.trunkRadiusMeters,
-              tree.heightMeters,
-              0.02,
-            ),
-            tint: [0.82, 0.74, 0.62, 1],
-            windResponse: 0.08,
-          });
-          this.appendInstance(
-            this.getBatch(`tree-${tree.species}-near`, chunk, nextBatchKeys),
-            crown,
-          );
-          statistics.treeInstances += 1;
-        } else {
-          this.appendInstance(
-            this.getBatch(`tree-${tree.species}-mid`, chunk, nextBatchKeys),
-            crown,
-          );
-          statistics.treeInstances += 1;
-        }
+        const trunk: DetailInstanceRecord = {
+          ...crown,
+          radialScale: WorldDetailRuntime.radialMultiplier(
+            tree.trunkRadiusMeters,
+            tree.heightMeters,
+            trunkAspect,
+          ),
+          windResponse: 0.08,
+        };
+        const tier = resident.lod === "near" ? "near" : "mid";
+        this.appendInstance(
+          this.getBatch(
+            `tree-${tree.species}-v${geometryVariant}-crown-${tier}`,
+            chunk,
+            nextBatchKeys,
+          ),
+          crown,
+        );
+        // A trunk exists at mid as well as near — no more floating crowns.
+        this.appendInstance(
+          this.getBatch(
+            `tree-${tree.species}-v${geometryVariant}-trunk-${tier}`,
+            chunk,
+            nextBatchKeys,
+          ),
+          trunk,
+        );
+        statistics.treeInstances += 1;
       }
 
       for (const shrub of resident.cell.shrubs) {
@@ -854,6 +906,27 @@ export class WorldDetailRuntime {
     batch.bounds.add(record, record.windResponse * record.heightScaleMeters * 0.11);
   }
 
+  /** Composes yaw with a small lean about a hashed azimuth (2-12). */
+  private static yawLeanQuaternion(
+    yawRadians: number,
+    leanRadians: number,
+    leanAzimuthRadians: number,
+  ): [number, number, number, number] {
+    const [, yy, , yw] = yawQuaternion(yawRadians);
+    const halfLean = leanRadians / 2;
+    const sinLean = Math.sin(halfLean);
+    const lx = Math.cos(leanAzimuthRadians) * sinLean;
+    const lz = Math.sin(leanAzimuthRadians) * sinLean;
+    const lw = Math.cos(halfLean);
+    // q = lean ∘ yaw (yaw = (0, yy, 0, yw)).
+    return [
+      lx * yw + lz * yy,
+      yy * lw,
+      lz * yw - lx * yy,
+      lw * yw,
+    ];
+  }
+
   /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */
   private static radialMultiplier(
     radiusMeters: number,
@@ -957,52 +1030,88 @@ export class WorldDetailRuntime {
   }
 
   private createBatches(): void {
-    // Aspect = the prototype's authored radius-per-height at multiplier 1;
-    // the appenders divide desired radii by it, so the quantised multiplier
-    // stays near 1 inside its [0.5, 1.6] band.
-    const trunkMaterial = this.createMaterial(
-      "detail-trunk",
-      new Color3(0.26, 0.14, 0.065),
-      0.93,
-      0.02,
-    );
-    const trunk = bakePrototype(CreateCylinder(
-      "detail-tree-trunk-near",
-      { height: 1, diameterTop: 1.3, diameterBottom: 2, tessellation: 7 },
-      this.scene,
-    ), 0.5);
-    this.registerBatch("tree-trunk-near", trunk, trunkMaterial, true);
+    // 2-12: the foliage atlas's FIRST sampler. Under NullEngine (no raw
+    // 2D-array support) the atlas is skipped and materials compile without
+    // the atlas define — geometry and instancing stay fully testable.
+    const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+    if (engineFlags.isWebGPU || engineFlags._gl) {
+      this.foliageAtlas = createFoliageAtlas(this.scene, this.options.worldSeed);
+    }
 
-    const foliageColors: Readonly<Record<TreeSpecies, Color3>> = {
-      pine: new Color3(0.09, 0.28, 0.14),
-      cedar: new Color3(0.16, 0.3, 0.12),
-      spruce: new Color3(0.075, 0.235, 0.16),
-      oak: new Color3(0.24, 0.42, 0.12),
-      maple: new Color3(0.3, 0.46, 0.13),
-      birch: new Color3(0.29, 0.5, 0.16),
-      willow: new Color3(0.31, 0.48, 0.19),
-    };
+    // 2-12: card trees from the built prototypes — species-specific trunks
+    // (swept generalised cylinders with root flare and forks) and 40-60
+    // tilted crown quads, with 16-direction baked sky occlusion in vertex
+    // alpha. Prototypes are unit-height with true proportions, so the
+    // per-material radial aspect is the prototype's own crown/trunk radius.
+    // Bark stays back-face-culled in its own batch while foliage is
+    // two-sided: zero extra draw calls per the plan.
+    const prototypeSeed = 7;
     for (const species of TREE_SPECIES) {
-      const material = this.createMaterial(
-        `detail-foliage-${species}`,
-        foliageColors[species],
-        0.87,
-        0.3,
+      const variantCount = clamp(
+        Math.round(TREE_VARIANT_COUNTS[species]),
+        1,
+        32,
       );
-      material.backFaceCulling = false;
-      material.twoSidedLighting = true;
-      this.registerBatch(
-        `tree-${species}-near`,
-        this.createTreeCrown(species, "near"),
-        material,
+      const crownMaterial = this.createMaterial(
+        `detail-foliage-${species}`,
+        new Color3(0.62, 0.66, 0.58),
+        0.87,
+        1,
         true,
       );
-      this.registerBatch(
-        `tree-${species}-mid`,
-        this.createTreeCrown(species, "mid"),
-        material,
-        false,
+      crownMaterial.backFaceCulling = false;
+      crownMaterial.twoSidedLighting = true;
+      const barkMaterial = this.createMaterial(
+        `detail-bark-${species}`,
+        new Color3(0.58, 0.52, 0.46),
+        0.93,
+        1,
+        true,
       );
+      for (let variant = 0; variant < variantCount; variant += 1) {
+        const prototype = buildTreePrototype(species, variant, prototypeSeed);
+        const crownAspect = Math.max(prototype.crown.boundingRadius, 0.05);
+        const trunkAspect = Math.max(prototype.trunk.boundingRadius, 0.005);
+        if (variant === 0) {
+          this.crownAspects.set(species, crownAspect);
+          this.trunkAspects.set(species, trunkAspect);
+          this.materialPlugin(crownMaterial)?.setRadialAspect(crownAspect);
+          this.materialPlugin(barkMaterial)?.setRadialAspect(trunkAspect);
+        }
+        this.registerBatch(
+          `tree-${species}-v${variant}-crown-near`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-crown`, prototype.crown),
+          crownMaterial,
+          true,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-trunk-near`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-trunk`, prototype.trunk),
+          barkMaterial,
+          true,
+        );
+        // Mid tier: same batches at reduced share — a trunk exists at mid
+        // too (no more floating crowns); 2-14 gives the tier its own
+        // reduced-quad card geometry.
+        this.registerBatch(
+          `tree-${species}-v${variant}-crown-mid`,
+          this.buildPrototypeMesh(
+            `detail-tree-${species}-v${variant}-crown-mid`,
+            prototype.crown,
+          ),
+          crownMaterial,
+          false,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-trunk-mid`,
+          this.buildPrototypeMesh(
+            `detail-tree-${species}-v${variant}-trunk-mid`,
+            prototype.trunk,
+          ),
+          barkMaterial,
+          false,
+        );
+      }
     }
 
     const shrubColors: Readonly<Record<ShrubSpecies, Color3>> = {
@@ -1060,35 +1169,31 @@ export class WorldDetailRuntime {
 
   }
 
-  private createTreeCrown(species: TreeSpecies, lod: DetailLod): Mesh {
-    const suffix = `${species}-${lod}`;
-    if (species === "pine" || species === "cedar" || species === "spruce") {
-      const height = species === "cedar" ? 0.84 : species === "spruce" ? 0.9 : 0.78;
-      const mesh = CreateCylinder(
-        `detail-tree-${suffix}`,
-        {
-          height,
-          diameterTop: species === "cedar" ? 0.12 : 0,
-          diameterBottom: species === "spruce" ? 1.68 : 2,
-          tessellation: lod === "near" ? 9 : 5,
-        },
-        this.scene,
-      );
-      return bakePrototype(mesh, species === "pine" ? 0.59 : species === "spruce" ? 0.55 : 0.57);
-    }
-    const mesh = CreateIcoSphere(
-      `detail-tree-${suffix}`,
-      {
-        radius: 1,
-        radiusX: species === "birch" ? 0.72 : species === "willow" ? 1.12 : 1,
-        radiusY: species === "birch" ? 0.3 : species === "willow" ? 0.25 : 0.34,
-        radiusZ: species === "birch" ? 0.72 : species === "willow" ? 1.08 : 0.95,
-        subdivisions: lod === "near" ? 2 : 1,
-        flat: lod === "mid",
-      },
-      this.scene,
-    );
-    return bakePrototype(mesh, species === "birch" ? 0.72 : species === "willow" ? 0.7 : 0.67);
+
+  private materialPlugin(material: PBRMaterial): DetailInstanceMaterialPlugin | null {
+    return this.pluginByMaterial.get(material) ?? null;
+  }
+
+  /** 2-12: a Babylon mesh from a pure PrototypeGeometry (typed arrays). */
+  private buildPrototypeMesh(name: string, geometry: PrototypeGeometry): Mesh {
+    const mesh = new Mesh(name, this.scene);
+    const data = new VertexData();
+    data.positions = geometry.positions;
+    data.normals = geometry.normals;
+    data.uvs = geometry.uvs;
+    data.tangents = geometry.tangents;
+    data.colors = geometry.colors;
+    data.indices = geometry.indices;
+    data.applyToMesh(mesh, false);
+    // The per-vertex atlas layer (−1 = untextured) rides its own buffer.
+    mesh.setVerticesBuffer(new VertexBuffer(
+      this.scene.getEngine(),
+      geometry.atlasLayer,
+      "atlasLayer",
+      { updatable: false, instanced: false, size: 1 },
+    ));
+    mesh.setEnabled(false);
+    return mesh;
   }
 
   private createMaterial(
@@ -1096,6 +1201,7 @@ export class WorldDetailRuntime {
     albedo: Color3,
     roughness: number,
     radialAspect: number,
+    samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
     material.albedoColor = albedo;
@@ -1110,7 +1216,11 @@ export class WorldDetailRuntime {
     const plugin = new DetailInstanceMaterialPlugin(material);
     plugin.setTimeSeconds(this.windTimeSeconds);
     plugin.setRadialAspect(radialAspect);
+    if (samplesFoliageAtlas && this.foliageAtlas) {
+      plugin.setFoliageAtlas(this.foliageAtlas.texture);
+    }
     this.instancePlugins.add(plugin);
+    this.pluginByMaterial.set(material, plugin);
     // 0-9 incantation, verbatim: the wrapper is assigned AFTER the vertex-
     // participating plugin attaches and BEFORE the material's first effect
     // compiles — attached later it silently falls back to the undisplaced
