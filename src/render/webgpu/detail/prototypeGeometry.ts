@@ -615,6 +615,7 @@ function buildCrownQuads(
   radialScale: number,
   heightScale: number,
   quadCount: number,
+  quadSizeMultiplier = 1,
 ): FoliageQuad[] {
   const drooping = species === "willow";
   const span = spec.crownTop - spec.crownBase;
@@ -654,13 +655,24 @@ function buildCrownQuads(
     px *= radialScale;
     pz *= radialScale;
     py = spec.crownBase + (py - spec.crownBase) * heightScale;
-    // Tilt outward: normal is the radial direction blended 60% with up.
+    // Orientation mix (2-12): shelves alone (normals blended 60% toward up)
+    // read as stacked wafers from the horizon-level views every capture shot
+    // uses — the crown all but vanished at grazing angles. 55% of cards now
+    // stand upright ("sails", normal horizontal-outward) to carry the side
+    // silhouette while the remaining shelves keep the top-down canopy solid.
     const outward = norm3(px, py - centerYScaled, pz);
-    const normal = norm3(
-      outward.x * 0.4 + (rng() - 0.5) * 0.2,
-      outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.2,
-      outward.z * 0.4 + (rng() - 0.5) * 0.2,
-    );
+    const sail = rng() < 0.55;
+    const normal = sail
+      ? norm3(
+          outward.x + (rng() - 0.5) * 0.35,
+          (rng() - 0.5) * 0.25,
+          outward.z + (rng() - 0.5) * 0.35,
+        )
+      : norm3(
+          outward.x * 0.4 + (rng() - 0.5) * 0.2,
+          outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.2,
+          outward.z * 0.4 + (rng() - 0.5) * 0.2,
+        );
     let tangent = cross3(UP, normal);
     const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
     tangent = tangentLength > 1e-4
@@ -668,8 +680,9 @@ function buildCrownQuads(
       : { x: 1, y: 0, z: 0 };
     const bitangent = cross3(normal, tangent);
     // Per-quad half-extent 0.18–0.34 of the crown radius: cards overlap
-    // heavily, which is what makes the interior occlusion bake read.
-    const size = (0.18 + rng() * 0.16) * spec.crownRadius;
+    // heavily, which is what makes the interior occlusion bake read. The
+    // multiplier lets the mid band trade card count for card area.
+    const size = (0.18 + rng() * 0.16) * spec.crownRadius * quadSizeMultiplier;
     quads.push({
       center: { x: px, y: py, z: pz },
       normal,
@@ -684,14 +697,31 @@ function buildCrownQuads(
 }
 
 /**
+ * R-21's per-plant triangle allowances, made geometry (2-12): the density
+ * law prices a near-band plant at 180 triangles, a mid-band plant at 48 and
+ * a far-band plant at 8 — and the first 2-12 capture proved the price list
+ * is not advisory (every band drawing near geometry integrated to 4.7× the
+ * budget and the frame went from 13 ms to 29 ms of GPU). Each band gets its
+ * own prototype; 2-14 replaces the mid standin with its authored card tier
+ * and 2-17 replaces the far standin with octahedral impostors.
+ */
+export type TreePrototypeBand = "near" | "mid" | "far";
+
+/**
  * Trunk (swept generalized cylinder, 8 sides, 5 rings, root flare, one
  * primary fork for oak/maple/willow) plus a crown of 40–60 outward-tilted
  * foliage quads, both with baked sky occlusion. Heights normalized to 1.0.
+ *
+ * `band` selects the density law's cost tier: "near" is the full prototype;
+ * "mid" decimates to a 12-quad crown over a 4-side fork-free trunk (≤48
+ * triangles); "far" is three crossed vertical cards (6 triangles, crown
+ * layer only — at 1.4 km a trunk subtends under a pixel).
  */
 export function buildTreePrototype(
   species: TreeSpecies,
   variant: number,
   seed: number,
+  band: TreePrototypeBand = "near",
 ): TreePrototype {
   const spec = TREE_SPECIES_SPECS[species];
   const variantCount = TREE_VARIANT_COUNTS[species];
@@ -708,7 +738,14 @@ export function buildTreePrototype(
     * (1 + (knobRng() - 0.5) * 0.01);
   const radialScale = aspect;
   const heightScale = 1 / Math.sqrt(aspect);
-  const quadCount = Math.round(clamp(spec.quadCount + (knobRng() - 0.5) * 12, 40, 60));
+  // Forked species cap at 45 quads and a 4-side fork: R-21 prices a near
+  // plant at 180 triangles, and the original 60-quad + 6-side-fork worst
+  // case integrated to 220.
+  const quadCount = Math.round(clamp(
+    spec.quadCount + (knobRng() - 0.5) * 12,
+    40,
+    spec.fork ? 45 : 60,
+  ));
   const leanAngle = (1 + knobRng() * 3) * DEG;
   const leanAzimuth = knobRng() * TWO_PI;
   const forkAngle = (20 + knobRng() * 15) * DEG;
@@ -719,16 +756,53 @@ export function buildTreePrototype(
   const leanX = Math.tan(leanAngle) * Math.cos(leanAzimuth);
   const leanZ = Math.tan(leanAngle) * Math.sin(leanAzimuth);
 
+  if (band === "far") {
+    // Three crossed vertical cards spanning the whole silhouette, crown
+    // layer only. The variant aspect knob still shapes the card, so far
+    // stands keep silhouette variety. Occlusion stays 1 — at this range the
+    // interior/tip contrast is beneath the tonal resolution of a few pixels.
+    const farAcc = createAccumulator();
+    const farOwners: number[] = [];
+    const cardTop = spec.crownTop * (1 / Math.sqrt(aspect));
+    const halfHeight = (cardTop - 0.02) / 2;
+    const centerVertical = 0.02 + halfHeight;
+    const halfWidth = spec.crownRadius * radialScale * 1.05;
+    for (let card = 0; card < 3; card += 1) {
+      const angle = (card / 3) * Math.PI + (knobRng() - 0.5) * 0.2;
+      const normal = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+      const tangent = { x: -Math.sin(angle), y: 0, z: Math.cos(angle) };
+      emitFoliageQuad(
+        farAcc,
+        {
+          center: { x: 0, y: centerVertical, z: 0 },
+          normal,
+          tangent,
+          bitangent: UP,
+          halfWidth,
+          halfHeight,
+          layer: spec.crownLayer,
+        },
+        farOwners,
+        card,
+      );
+    }
+    return { trunk: finalizeGeometry(createAccumulator()), crown: finalizeGeometry(farAcc) };
+  }
+
   const trunkAcc = createAccumulator();
-  const trunkRings: TubeRing[] = TRUNK_RING_TS.map((t) => ({
+  const midBand = band === "mid";
+  // Mid trunk: 3 rings, 4 sides, no fork — 16 triangles under the band's
+  // 48-triangle allowance, leaving 32 for the crown.
+  const ringTs = midBand ? [0, 0.3, 1] : TRUNK_RING_TS;
+  const trunkRings: TubeRing[] = ringTs.map((t) => ({
     center: { x: leanX * t * t, y: t, z: leanZ * t * t },
     axis: norm3(2 * leanX * t, 1, 2 * leanZ * t),
     radius: trunkRadiusAt(spec, t),
     v: t * 3,
   }));
-  sweepTube(trunkAcc, trunkRings, 8, 2, spec.barkLayer);
+  sweepTube(trunkAcc, trunkRings, midBand ? 4 : 8, 2, spec.barkLayer);
 
-  if (spec.fork) {
+  if (spec.fork && !midBand) {
     const direction = norm3(
       Math.sin(forkAngle) * Math.cos(forkAzimuth),
       Math.cos(forkAngle),
@@ -746,11 +820,19 @@ export function buildTreePrototype(
       radius: Math.max(forkRadius * Math.pow(1 - s, 0.8), 0.012),
       v: (forkT + s * forkLength) * 3,
     }));
-    sweepTube(trunkAcc, forkRings, 6, 2, spec.barkLayer);
+    sweepTube(trunkAcc, forkRings, 4, 2, spec.barkLayer);
   }
 
   const crownAcc = createAccumulator();
-  const quads = buildCrownQuads(spec, species, placementRng, radialScale, heightScale, quadCount);
+  // Mid crown: 12 quads (24 triangles) — with the 16-triangle trunk, 40 of
+  // the band's 48-triangle allowance.
+  const bandQuadCount = midBand ? 12 : quadCount;
+  // Mid cards are ~1.8× wider: a quarter of the cards at three times the
+  // area keeps the crown's visual mass while honoring the allowance.
+  const quads = buildCrownQuads(
+    spec, species, placementRng, radialScale, heightScale, bandQuadCount,
+    midBand ? 1.8 : 1,
+  );
   const owners: number[] = [];
   for (let i = 0; i < quads.length; i += 1) {
     emitFoliageQuad(crownAcc, quads[i]!, owners, i);

@@ -1220,6 +1220,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       },
       { x: this.originX, y: 0, z: this.originZ },
       this.governedProfileCache,
+      // Wind sway phase must be a function of the simulation clock (Z-1):
+      // the capture pins simulationTime so reruns are pixel-comparable.
+      state.simulationTime,
     );
     this.wildlife.update(
       {

@@ -36,12 +36,23 @@ describe("rendered-density law (R-21)", () => {
     });
   });
 
-  it("covers the real prototype triangle counts with the near allowance", () => {
+  it("fits every band prototype inside the law's per-plant allowance", () => {
+    // Strict, every variant, every band, NO fudge: the original form checked
+    // variant 0 against `near + 40`, and the drift it tolerated (a 220-
+    // triangle forked oak against a 180 allowance, mid/far bands drawing
+    // near geometry) integrated to 4.7× budget in the first 2-12 capture —
+    // 29 ms of GPU where the law promised 13.
     for (const species of Object.keys(TREE_VARIANT_COUNTS) as (keyof typeof TREE_VARIANT_COUNTS)[]) {
-      const prototype = buildTreePrototype(species, 0, 7);
-      const triangles = prototype.trunk.triangleCount + prototype.crown.triangleCount;
-      for (const law of RENDERED_DENSITY_LAWS) {
-        expect(triangles, String(species)).toBeLessThanOrEqual(law.near.trianglesPerPlant + 40);
+      for (let variant = 0; variant < TREE_VARIANT_COUNTS[species]; variant += 1) {
+        for (const band of ["near", "mid", "far"] as const) {
+          const prototype = buildTreePrototype(species, variant, 7, band);
+          const triangles = prototype.trunk.triangleCount + prototype.crown.triangleCount;
+          for (const law of RENDERED_DENSITY_LAWS) {
+            expect(triangles, `${species} v${variant} ${band}`).toBeLessThanOrEqual(
+              law[band].trianglesPerPlant,
+            );
+          }
+        }
       }
     }
   });

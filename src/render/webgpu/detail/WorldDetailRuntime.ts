@@ -1,3 +1,4 @@
+import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
@@ -287,14 +288,26 @@ export class WorldDetailRuntime {
     observer: WorldDetailObserver,
     floatingOrigin: DetailFloatingOrigin,
     profile: WebGpuQualityProfile,
+    simulationTimeSeconds?: number,
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
     this.disposeExpiredBatches();
-    const deltaMilliseconds = this.scene.getEngine().getDeltaTime();
-    if (Number.isFinite(deltaMilliseconds)) {
-      this.windTimeSeconds += clamp(deltaMilliseconds, 0, 100) / 1_000;
+    // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
+    // a wall-clock accumulator made every tree's sway phase depend on how
+    // long streaming took on that particular run — the perf capture pins
+    // simulationTime exactly so reruns are pixel-comparable, and the sway
+    // must be a function of it. The wall-clock fallback serves callers with
+    // no simulation clock (dev harnesses).
+    if (simulationTimeSeconds !== undefined && Number.isFinite(simulationTimeSeconds)) {
+      this.windTimeSeconds = Math.max(0, simulationTimeSeconds);
       for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+    } else {
+      const deltaMilliseconds = this.scene.getEngine().getDeltaTime();
+      if (Number.isFinite(deltaMilliseconds)) {
+        this.windTimeSeconds += clamp(deltaMilliseconds, 0, 100) / 1_000;
+        for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+      }
     }
     requireFinite(observer.x, "Detail observer x");
     requireFinite(observer.y, "Detail observer y");
@@ -670,22 +683,41 @@ export class WorldDetailRuntime {
       const treeBudgetPerHa = densityLaw.nearStemsPerHectare
         * renderedShareAtDistance(densityLaw, resident.distance);
       const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
+      // Shrubs are woody plants: they ride the SAME law falloff as trees
+      // (the pre-law 60-near/6-mid share admitted 137k icosphere shrubs to
+      // 8 km — 11M triangles of sub-pixel blobs, +6-15 ms GPU on every
+      // shot), plus a hard cutoff at the mid boundary: understory at 1.4 km
+      // subtends under half a pixel. 2-12b re-prices the geometry to cards.
       const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
-      const shrubShare = Math.min(
-        1,
-        (resident.lod === "near" ? 60 : 6) / Math.max(shrubsPerHa, 1e-6),
-      );
+      const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
+      const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
+        ? 0
+        : Math.min(1, shrubBudgetPerHa / Math.max(shrubsPerHa, 1e-6));
 
       for (const tree of resident.cell.trees) {
         if (tree.selection > treeShare) continue;
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
+        // R-21 banding by the LAW's radii (see below) — computed first
+        // because the band also caps GEOMETRY variants: every distinct
+        // (species, variant, band) mesh is a draw call per chunk, and the
+        // measured cost was ~26 µs of GPU per draw — the 2-12 batch topology
+        // added ~350-560 draws over the 2B baseline and the Δgpu tracked
+        // Δdraws on every shot. Far cards keep ONE variant per species
+        // (aspect differences are invisible past 1.4 km; per-instance
+        // height/radial scales and tint carry the variety), mid keeps three.
+        const band = resident.distance <= densityLaw.near.outerRadiusMeters
+          ? "near"
+          : resident.distance <= densityLaw.mid.outerRadiusMeters
+            ? "mid"
+            : "far";
+        const bandVariantCap = band === "far" ? 1 : band === "mid" ? 3 : treeVariantCap;
         // 2-12: geometry variant + character modifier from two stable
         // hashes of the stem's selection value. Modifier mix: 55% intact,
         // 15% lean, 12% thinned crown, 10% broken top, 8% dead top.
         const variantCount = clamp(
-          Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap),
+          Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap, bandVariantCap),
           1,
           32,
         );
@@ -738,29 +770,35 @@ export class WorldDetailRuntime {
           ),
           windResponse: 0.08,
         };
-        const tier = resident.lod === "near" ? "near" : "mid";
+        // Banding is the law's radii, not the residency lod: the law prices
+        // each band's geometry, so the band boundary must be the law's, and
+        // a far stem must never draw mid geometry (the first 2-12 capture
+        // integrated exactly that mistake to 4.7× budget).
         this.appendInstance(
           this.getBatch(
-            `tree-${tree.species}-v${geometryVariant}-crown-${tier}`,
+            `tree-${tree.species}-v${geometryVariant}-crown-${band}`,
             chunk,
             nextBatchKeys,
           ),
           crown,
         );
-        // A trunk exists at mid as well as near — no more floating crowns.
-        this.appendInstance(
-          this.getBatch(
-            `tree-${tree.species}-v${geometryVariant}-trunk-${tier}`,
-            chunk,
-            nextBatchKeys,
-          ),
-          trunk,
-        );
+        // A trunk exists at near and mid — no floating crowns; the far
+        // band's crossed cards carry the whole silhouette.
+        if (band !== "far") {
+          this.appendInstance(
+            this.getBatch(
+              `tree-${tree.species}-v${geometryVariant}-trunk-${band}`,
+              chunk,
+              nextBatchKeys,
+            ),
+            trunk,
+          );
+        }
         statistics.treeInstances += 1;
       }
 
       for (const shrub of resident.cell.shrubs) {
-        if (shrub.selection > shrubShare) continue;
+        if (shrubShare <= 0 || shrub.selection > shrubShare) continue;
         // 2-11a: the format carries ONE radial — the old elliptic XZ hack
         // (scaleZ = radius x (0.84 + selection x 0.24)) folds into the mean;
         // footprint variety returns as 2-12/2-15 variant geometry.
@@ -1061,6 +1099,13 @@ export class WorldDetailRuntime {
       );
       crownMaterial.backFaceCulling = false;
       crownMaterial.twoSidedLighting = true;
+      // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
+      // AFTER opaque terrain and trunks have filled the depth buffer, so
+      // early-Z kills every canopy fragment behind a ridge or a trunk before
+      // its two-sided PBR shading runs. The built-in test itself is a no-op
+      // here (no albedo texture, material alpha 1) — the plugin's atlas
+      // discard is the real test; this move is purely about draw order.
+      crownMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),
@@ -1090,14 +1135,18 @@ export class WorldDetailRuntime {
           barkMaterial,
           true,
         );
-        // Mid tier: same batches at reduced share — a trunk exists at mid
-        // too (no more floating crowns); 2-14 gives the tier its own
-        // reduced-quad card geometry.
+        // Mid and far bands draw the law-priced standins (≤48 and ≤8
+        // triangles per plant): a trunk exists at mid (no floating crowns);
+        // far is crossed cards, crown layer only. 2-14 replaces the mid
+        // standin with its authored card tier, 2-17 the far one with
+        // octahedral impostors.
+        const midPrototype = buildTreePrototype(species, variant, prototypeSeed, "mid");
+        const farPrototype = buildTreePrototype(species, variant, prototypeSeed, "far");
         this.registerBatch(
           `tree-${species}-v${variant}-crown-mid`,
           this.buildPrototypeMesh(
             `detail-tree-${species}-v${variant}-crown-mid`,
-            prototype.crown,
+            midPrototype.crown,
           ),
           crownMaterial,
           false,
@@ -1106,9 +1155,18 @@ export class WorldDetailRuntime {
           `tree-${species}-v${variant}-trunk-mid`,
           this.buildPrototypeMesh(
             `detail-tree-${species}-v${variant}-trunk-mid`,
-            prototype.trunk,
+            midPrototype.trunk,
           ),
           barkMaterial,
+          false,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-crown-far`,
+          this.buildPrototypeMesh(
+            `detail-tree-${species}-v${variant}-crown-far`,
+            farPrototype.crown,
+          ),
+          crownMaterial,
           false,
         );
       }
@@ -1225,10 +1283,20 @@ export class WorldDetailRuntime {
     // participating plugin attaches and BEFORE the material's first effect
     // compiles — attached later it silently falls back to the undisplaced
     // depth pass, which with no matrix buffer would collapse every shadow
-    // instance onto the batch origin. No remappedVariables.
+    // instance onto the batch origin.
+    //
+    // remappedVariables amendment (2-12): with the CSM's normalBias > 0 the
+    // wrapper injects `shadowMapVertexNormalBias`, whose WGSL references the
+    // varying by its bare GLSL name — unresolved after migration. The remap
+    // rewrites it inside the include only; `vertexOutputs.vNormalW` is
+    // already assigned by the injection anchor. The 0-9 spike missed this
+    // because its generator kept the default normalBias of 0, which compiles
+    // the include away (tests/gpu/foliage-material-compile.test.ts pins it).
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
-      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene);
+      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene, {
+        remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
+      });
     }
     this.materials.add(material);
     return material;

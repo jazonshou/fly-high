@@ -15,6 +15,9 @@ const MATERIAL_VISIBILITY_EPSILON = 1e-4;
 /**
  * Cloud shadows are inappropriate for transparent glass and self-lit surfaces:
  * both should remain optically/emissively independent from direct sunlight.
+ * Alpha-TESTED materials stay eligible (2-12): a surviving fragment is fully
+ * opaque — the mode only moves the draw after the opaque bucket (R-2E), and
+ * a canopy that failed to darken under a cloud bank would be glaring.
  */
 export function isOpaqueCloudShadowPbrReceiver(material: PBRMaterial): boolean {
   if (material.unlit) return false;
@@ -25,6 +28,7 @@ export function isOpaqueCloudShadowPbrReceiver(material: PBRMaterial): boolean {
   if (
     transparencyMode !== null
     && transparencyMode !== PBRMaterial.PBRMATERIAL_OPAQUE
+    && transparencyMode !== PBRMaterial.PBRMATERIAL_ALPHATEST
   ) {
     return false;
   }

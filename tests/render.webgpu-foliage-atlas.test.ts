@@ -184,4 +184,25 @@ describe("WebGPU foliage atlas and array mips", () => {
       expect(coverage, `${layerName} coverage ${coverage.toFixed(4)}`).toBeLessThan(0.95);
     }
   });
+
+  it("gives tree crown card layers card-scale coverage (2-12)", () => {
+    // A crown card's texture IS the tree's visual mass: at 10% coverage the
+    // 2-12 capture read as bare terrain with speckle while paying full GPU
+    // cost (the needle layers were authored as close-up sprigs with no
+    // consumer to judge them against). 0.05 "non-trivial" stays right for
+    // ground-cover sprigs; the five tree crown layers need card scale.
+    // 2-12b extends this list with the shrub crown layers it re-authors.
+    const crownLayers: readonly (keyof typeof FOLIAGE_LAYERS)[] = [
+      "broadleafOak",
+      "broadleafMaple",
+      "broadleafBirch",
+      "needlePine",
+      "needleSpruce",
+    ];
+    for (const layerName of crownLayers) {
+      const base = atlasPlan.layerChains[FOLIAGE_LAYERS[layerName]]![0]!;
+      const coverage = alphaCoverage(base, FOLIAGE_ALPHA_TEST_THRESHOLD);
+      expect(coverage, `${layerName} coverage ${coverage.toFixed(4)}`).toBeGreaterThan(0.3);
+    }
+  });
 });

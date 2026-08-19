@@ -390,7 +390,9 @@ function synthesizeBroadleafMaple(raster: FoliageRaster, random: RandomSource): 
 
 function synthesizeBroadleafBirch(raster: FoliageRaster, random: RandomSource): void {
   // Birch: small ovate leaves, finely serrated margin, light fresh greens.
-  for (let leaf = 0; leaf < 13; leaf += 1) {
+  // 16 leaves (2-12): 13 left card coverage under the 0.3 crown floor on
+  // some seeds — birch stays the airiest broadleaf, above the floor.
+  for (let leaf = 0; leaf < 16; leaf += 1) {
     const length = 76 + random() * 26;
     const style: LeafStyle = {
       lengthPx: length,
@@ -418,48 +420,65 @@ function synthesizeBroadleafBirch(raster: FoliageRaster, random: RandomSource): 
 }
 
 function synthesizeNeedlePine(raster: FoliageRaster, random: RandomSource): void {
-  // Pine: fascicles — long needles splayed from a common sheath point.
+  // Pine BOUGH, not pine sprig (2-12): this layer is a card crown's entire
+  // visual mass, and a card whose texture is 10% needles is 90% discard — the
+  // capture read as bare terrain with speckle. Fascicles now pack densely
+  // along arcing branch spines so the card reads as a solid bough with a
+  // ragged silhouette (mip-0 coverage ~0.5; the card-crown floor is pinned
+  // by the atlas test).
   const sheathColor = hsvToRgb(0.07, 0.5, 0.32);
-  for (let fascicle = 0; fascicle < 18; fascicle += 1) {
-    const baseX = 16 + random() * (raster.edge - 32);
-    const baseY = 16 + random() * (raster.edge - 32);
-    const heading = random() * Math.PI * 2;
-    const needles = 5 + Math.floor(random() * 3);
-    strokeTapered(
-      raster,
-      baseX,
-      baseY,
-      baseX + Math.cos(heading) * 4,
-      baseY + Math.sin(heading) * 4,
-      2.2,
-      1.5,
-      sheathColor,
-      235,
-    );
-    for (let needle = 0; needle < needles; needle += 1) {
-      const spread = (needle / (needles - 1) - 0.5) * (0.9 + random() * 0.35);
-      const angle = heading + spread;
-      const length = 38 + random() * 22;
-      const bend = (random() - 0.5) * 0.5;
-      const midX = baseX + Math.cos(angle) * length * 0.5;
-      const midY = baseY + Math.sin(angle) * length * 0.5;
-      const tipX = baseX + Math.cos(angle + bend * 0.4) * length;
-      const tipY = baseY + Math.sin(angle + bend * 0.4) * length;
-      const color = hsvToRgb(
-        0.36 + (random() - 0.5) * 0.05,
-        0.5 + (random() - 0.5) * 0.14,
-        0.3 + (random() - 0.5) * 0.1,
-      );
-      strokeTapered(raster, baseX, baseY, midX, midY, 1.3, 0.9, color);
-      strokeTapered(raster, midX, midY, tipX, tipY, 0.9, 0.35, color);
+  const edge = raster.edge;
+  for (let bough = 0; bough < 7; bough += 1) {
+    // Spines start near one card edge and arc across the middle, so needle
+    // mass concentrates centrally and the silhouette stays ragged.
+    let x = edge * (0.18 + random() * 0.64);
+    let y = edge * (0.18 + random() * 0.64);
+    let heading = random() * Math.PI * 2;
+    const spineSteps = 12;
+    const stepLength = edge * (0.045 + random() * 0.02);
+    for (let step = 0; step < spineSteps; step += 1) {
+      heading += (random() - 0.5) * 0.5;
+      // Steer back toward the card centre so boughs never walk off the edge.
+      heading += Math.atan2(edge / 2 - y, edge / 2 - x) > heading ? 0.08 : -0.08;
+      const nextX = x + Math.cos(heading) * stepLength;
+      const nextY = y + Math.sin(heading) * stepLength;
+      strokeTapered(raster, x, y, nextX, nextY, 2.4 - step * 0.1, 1.6 - step * 0.08, sheathColor, 235);
+      // Two fascicles per spine step, splayed to either side.
+      for (let cluster = 0; cluster < 2; cluster += 1) {
+        const baseX = x + (random() - 0.5) * stepLength;
+        const baseY = y + (random() - 0.5) * stepLength;
+        const clusterHeading = heading + (cluster === 0 ? 1 : -1) * (0.7 + random() * 0.7);
+        const needles = 6 + Math.floor(random() * 3);
+        for (let needle = 0; needle < needles; needle += 1) {
+          const spread = (needle / (needles - 1) - 0.5) * (1.1 + random() * 0.4);
+          const angle = clusterHeading + spread;
+          const length = 30 + random() * 20;
+          const bend = (random() - 0.5) * 0.5;
+          const midX = baseX + Math.cos(angle) * length * 0.5;
+          const midY = baseY + Math.sin(angle) * length * 0.5;
+          const tipX = baseX + Math.cos(angle + bend * 0.4) * length;
+          const tipY = baseY + Math.sin(angle + bend * 0.4) * length;
+          const color = hsvToRgb(
+            0.36 + (random() - 0.5) * 0.05,
+            0.5 + (random() - 0.5) * 0.14,
+            0.3 + (random() - 0.5) * 0.1,
+          );
+          strokeTapered(raster, baseX, baseY, midX, midY, 1.5, 1.0, color);
+          strokeTapered(raster, midX, midY, tipX, tipY, 1.0, 0.35, color);
+        }
+      }
+      x = nextX;
+      y = nextY;
     }
   }
 }
 
 function synthesizeNeedleSpruce(raster: FoliageRaster, random: RandomSource): void {
-  // Spruce: short stiff needles combed densely along brown twigs.
+  // Spruce BOUGH (2-12, same correction as pine): short stiff needles combed
+  // densely along brown twigs — but enough overlapping twigs that the card
+  // reads as branch mass rather than a scatter of combs.
   const twigColor = hsvToRgb(0.08, 0.45, 0.3);
-  for (let twig = 0; twig < 9; twig += 1) {
+  for (let twig = 0; twig < 42; twig += 1) {
     let x = 24 + random() * (raster.edge - 48);
     let y = 24 + random() * (raster.edge - 48);
     let heading = random() * Math.PI * 2;

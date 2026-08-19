@@ -30,10 +30,13 @@ attribute instanceTint: vec4f;
 attribute instanceState: vec4f;
 varying detailInstanceTint: vec4f;
 #ifdef DETAIL_FOLIAGE_ATLAS
+// The detail materials carry no PBR textures, so the base vertex shader
+// never declares uv or vMainUV1 — the plugin owns its own UV lane.
+attribute uv: vec2f;
 attribute atlasLayer: f32;
-varying detailAtlasLayer: f32;
-varying detailOcclusion: f32;
-varying detailModifier: f32;
+// One packed varying — PBR with 4-cascade shadows sits near the 16-location
+// vertex output limit: (uv.x, uv.y, atlasLayer, modifier + occlusion·0.5).
+varying detailAtlasData: vec4f;
 #endif
 
 fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
@@ -78,15 +81,18 @@ if (detailModifierBits == 2.0 || detailModifierBits == 4.0) {
   let detailBreak = detailHeight * 0.72;
   detailLocal.y = min(detailLocal.y, detailBreak + (detailLocal.y - detailBreak) * 0.06);
 }
-vertexOutputs.detailModifier = detailModifierBits;
-vertexOutputs.detailAtlasLayer = vertexInputs.atlasLayer;
 #endif
 positionUpdated = detailRotateByQuaternion(detailLocal, detailOrientation)
   + vertexInputs.instancePosition;
 #ifdef DETAIL_FOLIAGE_ATLAS
 // Baked crown occlusion rides the prototype's vertex-colour alpha; a dead
 // top bleaches upward.
-vertexOutputs.detailOcclusion = vertexInputs.color.a;
+vertexOutputs.detailAtlasData = vec4f(
+  vertexInputs.uv.x,
+  vertexInputs.uv.y,
+  vertexInputs.atlasLayer,
+  detailModifierBits + clamp(vertexInputs.color.a, 0.0, 1.0) * 0.5,
+);
 var detailTintOut = vertexInputs.instanceTint;
 if (detailModifierBits == 4.0) {
   let detailBleach = clamp((positionUpdated.y - vertexInputs.instancePosition.y)
@@ -103,12 +109,14 @@ vertexOutputs.detailInstanceTint = vertexInputs.instanceTint
 #endif
 `,
   CUSTOM_VERTEX_UPDATE_NORMAL: `
+#ifdef NORMAL
 let detailNormalRadial = (0.5 + vertexInputs.instanceScale.y * 1.1)
   * uniforms.detailRadialAspect;
 normalUpdated = detailRotateByQuaternion(
   normalize(normalUpdated * vec3f(1.0, detailNormalRadial, 1.0)),
   normalize(vertexInputs.instanceOrientation),
 );
+#endif
 `,
 });
 
@@ -116,32 +124,35 @@ const WGSL_FRAGMENT_CODE = Object.freeze({
   CUSTOM_FRAGMENT_DEFINITIONS: `
 varying detailInstanceTint: vec4f;
 #ifdef DETAIL_FOLIAGE_ATLAS
-varying detailAtlasLayer: f32;
-varying detailOcclusion: f32;
-varying detailModifier: f32;
+varying detailAtlasData: vec4f;
 var foliageAtlasSampler: sampler;
 var foliageAtlas: texture_2d_array<f32>;
 #endif
 `,
   CUSTOM_FRAGMENT_UPDATE_ALBEDO: `
 #ifdef DETAIL_FOLIAGE_ATLAS
-if (fragmentInputs.detailAtlasLayer >= 0.0) {
-  let detailCard = textureSample(
-    foliageAtlas,
-    foliageAtlasSampler,
-    fragmentInputs.vMainUV1,
-    i32(fragmentInputs.detailAtlasLayer + 0.5),
-  );
+let detailModifierDecoded = floor(fragmentInputs.detailAtlasData.w);
+let detailOcclusionDecoded = (fragmentInputs.detailAtlasData.w - detailModifierDecoded) * 2.0;
+// Sampled UNCONDITIONALLY: WGSL forbids implicit-derivative samples in
+// non-uniform control flow. Untextured vertices (layer −1) clamp to layer 0
+// and simply ignore the texel.
+let detailCard = textureSample(
+  foliageAtlas,
+  foliageAtlasSampler,
+  fragmentInputs.detailAtlasData.xy,
+  i32(max(fragmentInputs.detailAtlasData.z, 0.0) + 0.5),
+);
+if (fragmentInputs.detailAtlasData.z >= 0.0) {
   // 2-12: the shipping alpha test (Castano coverage preserved per mip in
   // the atlas bake); a thinned-crown modifier raises the threshold so the
   // canopy loses texels, not quads.
   var detailAlphaTest = 0.5;
-  if (fragmentInputs.detailModifier == 3.0) { detailAlphaTest = 0.72; }
+  if (detailModifierDecoded == 3.0) { detailAlphaTest = 0.72; }
   if (detailCard.a < detailAlphaTest) { discard; }
   surfaceAlbedo = surfaceAlbedo * detailCard.rgb;
 }
 // Baked crown occlusion — interior leaves go dark, sunlit tips stay bright.
-surfaceAlbedo = surfaceAlbedo * mix(0.42, 1.0, fragmentInputs.detailOcclusion);
+surfaceAlbedo = surfaceAlbedo * mix(0.42, 1.0, detailOcclusionDecoded);
 #endif
 surfaceAlbedo = surfaceAlbedo * fragmentInputs.detailInstanceTint.rgb;
 `,
@@ -154,11 +165,14 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private foliageAtlas: BaseTexture | null = null;
 
   constructor(material: PBRMaterial) {
-    super(material, "detail-instance-transform", 190, { DETAIL_FOLIAGE_ATLAS: false }, true, true);
+    // enable=false at super: registerForExtraEvents must be set BEFORE
+    // _enable or hardBindForSubMesh never registers (the cloud plugin's
+    // exact constructor sequence) — without it the atlas texture is never
+    // bound and the first foliage draw dies in createBindGroup.
+    super(material, "detail-instance-transform", 190, { DETAIL_FOLIAGE_ATLAS: false }, true, false);
     this.doNotSerialize = true;
-    // Binding happens in hardBindForSubMesh (which requires this flag) —
-    // the Z-1 per-submesh WebGPU material-context lesson.
     this.registerForExtraEvents = true;
+    this._enable(true);
   }
 
   /** The prototype's authored radius-per-height at multiplier 1. */
@@ -178,6 +192,18 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
 
   override prepareDefines(defines: MaterialDefines): void {
     defines["DETAIL_FOLIAGE_ATLAS"] = this.foliageAtlas !== null;
+    // forcedInstanceCount routes the draw through Babylon's thin-instance
+    // path, which compiles PBR with INSTANCES/THIN_INSTANCES and rebuilds
+    // finalWorld from world0..world3 instance attributes. No matrix buffer
+    // exists by design (the 32-byte record IS the transform), so Babylon
+    // binds its shared empty fallback buffer and every vertex collapses
+    // through a zero matrix — full vertex cost, nothing rasterized. R-20's
+    // spike missed this: it drove forcedInstanceCount through a
+    // ShaderMaterial, which has no INSTANCES semantics. With instancing off
+    // in the shader the mesh's own world matrix rides the classic uniform
+    // path and the decoded record supplies the per-instance transform.
+    defines["INSTANCES"] = false;
+    defines["THIN_INSTANCES"] = false;
   }
 
   override getSamplers(samplers: string[]): void {
@@ -207,6 +233,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       if (!attributes.includes(attribute.kind)) attributes.push(attribute.kind);
     }
     if (this.foliageAtlas) {
+      if (!attributes.includes("uv")) attributes.push("uv");
       if (!attributes.includes("atlasLayer")) attributes.push("atlasLayer");
       if (!attributes.includes("color")) attributes.push("color");
     }
