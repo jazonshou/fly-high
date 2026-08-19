@@ -111,13 +111,15 @@ describe("vegetation scatter spectrum (1B-8, assertion 27)", () => {
   it("shows no constant period between 3 and 200 m in either axis", () => {
     // [0.92, 1.08] where lattice periods would live; the window still leaks
     // a few percent of the INTENDED aperiodic clumping band (glades at
-    // ~260 m) into periods above ~120 m, so the bound there is [0.90, 1.10]
-    // — the old 176 m stand lattice measured 0.78/1.17+ and fails either.
+    // ~260 m, and 2-11b's 137 m stand field coupling weakly into survivor
+    // positions through crown-size spacing) into periods above ~120 m, so
+    // the bound there is [0.88, 1.12] — the old 176 m stand lattice
+    // measured 0.78/1.17+ and fails either bound.
     for (const kind of ["trees", "shrubs"] as const) {
       const points = collectPlacements(kind);
       expect(points.length).toBeGreaterThan(500);
       for (let period = 3; period <= 200; period += 1) {
-        const bound = period <= 120 ? 0.08 : 0.1;
+        const bound = period <= 120 ? 0.08 : 0.12;
         for (const axis of ["x", "z"] as const) {
           const { low, high } = phaseHistogramExtremes(points, axis, period);
           expect(low, `${kind} ${axis} period ${period}`).toBeGreaterThanOrEqual(1 - bound);

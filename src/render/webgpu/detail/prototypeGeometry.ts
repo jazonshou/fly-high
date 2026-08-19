@@ -1,0 +1,1363 @@
+import { clamp, lerp } from "@/src/world/noise";
+import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "@/src/world/seed";
+import { FOLIAGE_LAYERS } from "./FoliageAtlas";
+import type { ClutterKind, RockVariant, ShrubSpecies, TreeSpecies } from "./types";
+
+/**
+ * Vegetation prototype geometry builders (2-12, 2-12b, 2-15, 2-16).
+ *
+ * INVARIANT THIS FILE OWNS: every vegetation, rock, and clutter prototype is
+ * pure geometry — plain typed arrays, deterministic per (species, variant,
+ * seed), built with no Babylon import so the builders run in Node and in the
+ * worker byte-identically. The runtime turns these into meshes; nothing else
+ * generates prototype vertices, and per-instance appearance (tint hue, lean,
+ * character modifiers) is NOT baked here — vertex colors carry rgb = 1 and
+ * A = baked sky occlusion only.
+ *
+ * Class P: no Math.random, no Date.now.
+ */
+
+/**
+ * Foliage/bark atlas layer indices. `FoliageAtlas.ts` (2-11) owns the layer
+ * list; this alias exists so geometry call sites read as indices rather
+ * than layers, and so a rename there is a type error here, not drift.
+ */
+export const FOLIAGE_LAYER_INDEX = FOLIAGE_LAYERS;
+
+/** Untextured surfaces (rocks, moss) carry this sentinel in `atlasLayer`. */
+export const ATLAS_LAYER_UNTEXTURED = -1;
+
+/**
+ * Shared prototype output: parallel vertex streams the runtime uploads
+ * verbatim. `colors` rgb is a tint multiplier (always 1 here — the runtime
+ * applies per-instance tint) and A is baked sky occlusion in [0, 1]
+ * (1 = open sky). `atlasLayer` is one float per vertex: a foliage-atlas layer
+ * index, or -1 for untextured geometry.
+ */
+export interface PrototypeGeometry {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly tangents: Float32Array;
+  readonly colors: Float32Array;
+  readonly atlasLayer: Float32Array;
+  readonly indices: Uint16Array;
+  readonly triangleCount: number;
+  /** Furthest vertex from the +y axis. */
+  readonly boundingRadius: number;
+  /** Highest vertex y (prototype heights are normalized to ~1). */
+  readonly boundingHeight: number;
+}
+
+export interface TreePrototype {
+  readonly trunk: PrototypeGeometry;
+  readonly crown: PrototypeGeometry;
+}
+
+/** 5 variants for the three commonest species, 3 for the rest (2-12). */
+export const TREE_VARIANT_COUNTS: Readonly<Record<TreeSpecies, number>> = Object.freeze({
+  pine: 5,
+  cedar: 3,
+  spruce: 3,
+  oak: 5,
+  maple: 3,
+  birch: 5,
+  willow: 3,
+});
+
+/** Two variants per shrub species (2-12b). */
+export const SHRUB_VARIANT_COUNTS: Readonly<Record<ShrubSpecies, number>> = Object.freeze({
+  juniper: 2,
+  hazel: 2,
+  sage: 2,
+});
+
+export type { ClutterKind } from "./types";
+
+// ---------------------------------------------------------------------------
+// Deterministic streams. hashText/createRandom mirror generation.ts's private
+// helpers so both files draw from the same style of named seed stream; the
+// streams themselves are independent (different seed strings).
+// ---------------------------------------------------------------------------
+
+type RandomSource = () => number;
+
+function hashText(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x7feb352d);
+  hash ^= hash >>> 15;
+  hash = Math.imul(hash, 0x846ca68b);
+  return (hash ^ (hash >>> 16)) >>> 0;
+}
+
+function createRandom(seed: string): RandomSource {
+  let state = hashText(seed);
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+function wrapVariant(variant: number, count: number): number {
+  if (!Number.isFinite(variant)) throw new RangeError("variant must be finite");
+  const truncated = Math.trunc(variant);
+  return ((truncated % count) + count) % count;
+}
+
+// ---------------------------------------------------------------------------
+// Small vector helpers (plain objects; builder-time only).
+// ---------------------------------------------------------------------------
+
+interface Vec3 {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+const UP: Vec3 = { x: 0, y: 1, z: 0 };
+const TWO_PI = Math.PI * 2;
+const DEG = Math.PI / 180;
+
+function norm3(x: number, y: number, z: number): Vec3 {
+  const length = Math.hypot(x, y, z);
+  if (length < 1e-9) return UP;
+  return { x: x / length, y: y / length, z: z / length };
+}
+
+function cross3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic 3D value noise (rock/log/moss displacement).
+// ---------------------------------------------------------------------------
+
+function fade(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+function latticeValue3(mixedHash: number, ix: number, iy: number, iz: number): number {
+  return unitFloatFromHash(hashLatticeCoordinates(mixSeed(mixedHash, iy), ix, iz)) * 2 - 1;
+}
+
+function valueNoise3D(mixedHash: number, x: number, y: number, z: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const iz = Math.floor(z);
+  const sx = fade(x - ix);
+  const sy = fade(y - iy);
+  const sz = fade(z - iz);
+  const c000 = latticeValue3(mixedHash, ix, iy, iz);
+  const c100 = latticeValue3(mixedHash, ix + 1, iy, iz);
+  const c010 = latticeValue3(mixedHash, ix, iy + 1, iz);
+  const c110 = latticeValue3(mixedHash, ix + 1, iy + 1, iz);
+  const c001 = latticeValue3(mixedHash, ix, iy, iz + 1);
+  const c101 = latticeValue3(mixedHash, ix + 1, iy, iz + 1);
+  const c011 = latticeValue3(mixedHash, ix, iy + 1, iz + 1);
+  const c111 = latticeValue3(mixedHash, ix + 1, iy + 1, iz + 1);
+  const x00 = lerp(c000, c100, sx);
+  const x10 = lerp(c010, c110, sx);
+  const x01 = lerp(c001, c101, sx);
+  const x11 = lerp(c011, c111, sx);
+  return lerp(lerp(x00, x10, sy), lerp(x01, x11, sy), sz);
+}
+
+/** Three-octave fbm in roughly [-1, 1]. */
+function fbm3(mixedHash: number, x: number, y: number, z: number): number {
+  let total = 0;
+  let normalizer = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  for (let octave = 0; octave < 3; octave += 1) {
+    total += valueNoise3D(mixSeed(mixedHash, 90 + octave), x * frequency, y * frequency, z * frequency)
+      * amplitude;
+    normalizer += amplitude;
+    amplitude *= 0.5;
+    frequency *= 2.03;
+  }
+  return total / normalizer;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry accumulator.
+// ---------------------------------------------------------------------------
+
+interface GeometryAccumulator {
+  readonly positions: number[];
+  readonly normals: number[];
+  readonly uvs: number[];
+  readonly tangents: number[];
+  readonly colors: number[];
+  readonly atlasLayer: number[];
+  readonly indices: number[];
+}
+
+function createAccumulator(): GeometryAccumulator {
+  return { positions: [], normals: [], uvs: [], tangents: [], colors: [], atlasLayer: [], indices: [] };
+}
+
+function pushVertex(
+  acc: GeometryAccumulator,
+  px: number, py: number, pz: number,
+  nx: number, ny: number, nz: number,
+  u: number, v: number,
+  tx: number, ty: number, tz: number, tw: number,
+  layer: number,
+  alpha: number,
+): number {
+  const index = acc.positions.length / 3;
+  acc.positions.push(px, py, pz);
+  acc.normals.push(nx, ny, nz);
+  acc.uvs.push(u, v);
+  acc.tangents.push(tx, ty, tz, tw);
+  acc.colors.push(1, 1, 1, alpha);
+  acc.atlasLayer.push(layer);
+  return index;
+}
+
+function finalizeGeometry(acc: GeometryAccumulator): PrototypeGeometry {
+  const vertexCount = acc.positions.length / 3;
+  if (vertexCount > 65_535) {
+    throw new RangeError(`Prototype exceeds Uint16 indexing (${vertexCount} vertices)`);
+  }
+  let boundingRadius = 0;
+  let boundingHeight = 0;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const x = acc.positions[i * 3]!;
+    const y = acc.positions[i * 3 + 1]!;
+    const z = acc.positions[i * 3 + 2]!;
+    boundingRadius = Math.max(boundingRadius, Math.hypot(x, z));
+    boundingHeight = Math.max(boundingHeight, y);
+  }
+  return {
+    positions: Float32Array.from(acc.positions),
+    normals: Float32Array.from(acc.normals),
+    uvs: Float32Array.from(acc.uvs),
+    tangents: Float32Array.from(acc.tangents),
+    colors: Float32Array.from(acc.colors),
+    atlasLayer: Float32Array.from(acc.atlasLayer),
+    indices: Uint16Array.from(acc.indices),
+    triangleCount: acc.indices.length / 3,
+    boundingRadius,
+    boundingHeight,
+  };
+}
+
+/** Concatenate prototype parts into one geometry, offsetting indices. */
+export function mergePrototypeGeometry(parts: readonly PrototypeGeometry[]): PrototypeGeometry {
+  let vertexCount = 0;
+  let indexCount = 0;
+  let triangleCount = 0;
+  let boundingRadius = 0;
+  let boundingHeight = 0;
+  for (const part of parts) {
+    vertexCount += part.positions.length / 3;
+    indexCount += part.indices.length;
+    triangleCount += part.triangleCount;
+    boundingRadius = Math.max(boundingRadius, part.boundingRadius);
+    boundingHeight = Math.max(boundingHeight, part.boundingHeight);
+  }
+  if (vertexCount > 65_535) {
+    throw new RangeError(`Merged prototype exceeds Uint16 indexing (${vertexCount} vertices)`);
+  }
+  const positions = new Float32Array(vertexCount * 3);
+  const normals = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
+  const tangents = new Float32Array(vertexCount * 4);
+  const colors = new Float32Array(vertexCount * 4);
+  const atlasLayer = new Float32Array(vertexCount);
+  const indices = new Uint16Array(indexCount);
+  let vertexOffset = 0;
+  let indexOffset = 0;
+  for (const part of parts) {
+    const partVertices = part.positions.length / 3;
+    positions.set(part.positions, vertexOffset * 3);
+    normals.set(part.normals, vertexOffset * 3);
+    uvs.set(part.uvs, vertexOffset * 2);
+    tangents.set(part.tangents, vertexOffset * 4);
+    colors.set(part.colors, vertexOffset * 4);
+    atlasLayer.set(part.atlasLayer, vertexOffset);
+    for (let i = 0; i < part.indices.length; i += 1) {
+      indices[indexOffset + i] = part.indices[i]! + vertexOffset;
+    }
+    vertexOffset += partVertices;
+    indexOffset += part.indices.length;
+  }
+  return {
+    positions, normals, uvs, tangents, colors, atlasLayer, indices,
+    triangleCount, boundingRadius, boundingHeight,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Baked sky occlusion (2-12 deliverable 3).
+// ---------------------------------------------------------------------------
+
+/**
+ * 16 deterministic cosine-weighted hemisphere directions (golden-angle
+ * spiral; cos θ = √(1−u) gives the cosine weighting).
+ */
+const OCCLUSION_DIRECTIONS: readonly Vec3[] = (() => {
+  const directions: Vec3[] = [];
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < 16; i += 1) {
+    const u = (i + 0.5) / 16;
+    const cosTheta = Math.sqrt(1 - u);
+    const sinTheta = Math.sqrt(u);
+    const phi = i * goldenAngle;
+    directions.push({ x: Math.cos(phi) * sinTheta, y: cosTheta, z: Math.sin(phi) * sinTheta });
+  }
+  return directions;
+})();
+
+/** Foliage quads act as opaque disks of their half-diagonal radius. */
+interface OccluderDisk {
+  readonly cx: number;
+  readonly cy: number;
+  readonly cz: number;
+  readonly nx: number;
+  readonly ny: number;
+  readonly nz: number;
+  readonly radiusSq: number;
+}
+
+/**
+ * Writes A = fraction of the 16 hemisphere rays that escape the disk set.
+ * `ownerByVertex` maps each vertex to the disk it belongs to (skipped so a
+ * quad never occludes itself); omit for geometry outside the quad set.
+ */
+function bakeSkyOcclusion(
+  acc: GeometryAccumulator,
+  disks: readonly OccluderDisk[],
+  ownerByVertex?: readonly number[],
+): void {
+  const vertexCount = acc.positions.length / 3;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const px = acc.positions[i * 3]!;
+    const py = acc.positions[i * 3 + 1]!;
+    const pz = acc.positions[i * 3 + 2]!;
+    const owner = ownerByVertex ? ownerByVertex[i] ?? -1 : -1;
+    let unblocked = 0;
+    for (const direction of OCCLUSION_DIRECTIONS) {
+      let blocked = false;
+      for (let d = 0; d < disks.length; d += 1) {
+        if (d === owner) continue;
+        const disk = disks[d]!;
+        const denom = direction.x * disk.nx + direction.y * disk.ny + direction.z * disk.nz;
+        if (Math.abs(denom) < 1e-6) continue;
+        const t = ((disk.cx - px) * disk.nx + (disk.cy - py) * disk.ny + (disk.cz - pz) * disk.nz)
+          / denom;
+        if (t < 0.02) continue;
+        const hx = px + direction.x * t - disk.cx;
+        const hy = py + direction.y * t - disk.cy;
+        const hz = pz + direction.z * t - disk.cz;
+        if (hx * hx + hy * hy + hz * hz <= disk.radiusSq) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) unblocked += 1;
+    }
+    acc.colors[i * 4 + 3] = unblocked / OCCLUSION_DIRECTIONS.length;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quad emission.
+// ---------------------------------------------------------------------------
+
+interface FoliageQuad {
+  readonly center: Vec3;
+  readonly normal: Vec3;
+  readonly tangent: Vec3;
+  readonly bitangent: Vec3;
+  readonly halfWidth: number;
+  readonly halfHeight: number;
+  readonly layer: number;
+}
+
+function quadDisk(quad: FoliageQuad): OccluderDisk {
+  // Area-equivalent disk (πr² = 4·hw·hh): tighter than the half-diagonal
+  // bound, so elongated cards do not over-occlude the crown tips.
+  return {
+    cx: quad.center.x, cy: quad.center.y, cz: quad.center.z,
+    nx: quad.normal.x, ny: quad.normal.y, nz: quad.normal.z,
+    radiusSq: (4 * quad.halfWidth * quad.halfHeight) / Math.PI,
+  };
+}
+
+/** Full-tile uv quad; owners records the quad id for each emitted vertex. */
+function emitFoliageQuad(
+  acc: GeometryAccumulator,
+  quad: FoliageQuad,
+  owners: number[],
+  ownerId: number,
+): void {
+  const { center: c, normal: n, tangent: t, bitangent: b, halfWidth: hw, halfHeight: hh } = quad;
+  const corners: ReadonlyArray<readonly [number, number, number, number]> = [
+    [-hw, -hh, 0, 0],
+    [hw, -hh, 1, 0],
+    [hw, hh, 1, 1],
+    [-hw, hh, 0, 1],
+  ];
+  const base = acc.positions.length / 3;
+  for (const [du, dv, u, v] of corners) {
+    pushVertex(
+      acc,
+      c.x + t.x * du + b.x * dv, c.y + t.y * du + b.y * dv, c.z + t.z * du + b.z * dv,
+      n.x, n.y, n.z,
+      u, v,
+      t.x, t.y, t.z, 1,
+      quad.layer,
+      1,
+    );
+    owners.push(ownerId);
+  }
+  acc.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+
+// ---------------------------------------------------------------------------
+// Swept generalized cylinder (trunks, forks, logs, stumps).
+// ---------------------------------------------------------------------------
+
+interface TubeRing {
+  readonly center: Vec3;
+  /** Unit local axis direction at this ring. */
+  readonly axis: Vec3;
+  readonly radius: number;
+  /** uv v coordinate at this ring. */
+  readonly v: number;
+}
+
+/**
+ * Sweeps a tube along parallel-transported frames. Emits sides+1 vertices per
+ * ring (seam duplicated for the u wrap). Normals fold in the taper slope and
+ * stay exactly orthogonal to the circumferential tangents. Returns the first
+ * vertex index of each ring.
+ */
+function sweepTube(
+  acc: GeometryAccumulator,
+  rings: readonly TubeRing[],
+  sides: number,
+  uWrap: number,
+  layer: number,
+): number[] {
+  const frames: Array<{ u1: Vec3; u2: Vec3 }> = [];
+  for (let i = 0; i < rings.length; i += 1) {
+    const axis = rings[i]!.axis;
+    let u1: Vec3;
+    if (i === 0) {
+      const ref = Math.abs(axis.y) < 0.9 ? UP : { x: 1, y: 0, z: 0 };
+      const c = cross3(ref, axis);
+      u1 = norm3(c.x, c.y, c.z);
+    } else {
+      const previous = frames[i - 1]!.u1;
+      const d = dot3(previous, axis);
+      u1 = norm3(previous.x - axis.x * d, previous.y - axis.y * d, previous.z - axis.z * d);
+    }
+    frames.push({ u1, u2: cross3(axis, u1) });
+  }
+  const ringStarts: number[] = [];
+  for (let i = 0; i < rings.length; i += 1) {
+    const ring = rings[i]!;
+    const { u1, u2 } = frames[i]!;
+    const before = rings[Math.max(0, i - 1)]!;
+    const after = rings[Math.min(rings.length - 1, i + 1)]!;
+    const run = Math.hypot(
+      after.center.x - before.center.x,
+      after.center.y - before.center.y,
+      after.center.z - before.center.z,
+    );
+    const slope = run > 1e-9 ? (after.radius - before.radius) / run : 0;
+    ringStarts.push(acc.positions.length / 3);
+    for (let s = 0; s <= sides; s += 1) {
+      const theta = (s / sides) * TWO_PI;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const rx = u1.x * cosT + u2.x * sinT;
+      const ry = u1.y * cosT + u2.y * sinT;
+      const rz = u1.z * cosT + u2.z * sinT;
+      const n = norm3(rx - ring.axis.x * slope, ry - ring.axis.y * slope, rz - ring.axis.z * slope);
+      const t = norm3(
+        -u1.x * sinT + u2.x * cosT,
+        -u1.y * sinT + u2.y * cosT,
+        -u1.z * sinT + u2.z * cosT,
+      );
+      pushVertex(
+        acc,
+        ring.center.x + rx * ring.radius,
+        ring.center.y + ry * ring.radius,
+        ring.center.z + rz * ring.radius,
+        n.x, n.y, n.z,
+        (s / sides) * uWrap, ring.v,
+        t.x, t.y, t.z, 1,
+        layer,
+        1,
+      );
+    }
+  }
+  for (let i = 0; i < rings.length - 1; i += 1) {
+    const a = ringStarts[i]!;
+    const b = ringStarts[i + 1]!;
+    for (let s = 0; s < sides; s += 1) {
+      acc.indices.push(a + s, b + s, b + s + 1, a + s, b + s + 1, a + s + 1);
+    }
+  }
+  return ringStarts;
+}
+
+/** Radial displacement along existing normals; normals are kept approximate. */
+function displaceAlongNormals(
+  acc: GeometryAccumulator,
+  noiseSeed: number,
+  frequency: number,
+  amplitude: number,
+): void {
+  const vertexCount = acc.positions.length / 3;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const px = acc.positions[i * 3]!;
+    const py = acc.positions[i * 3 + 1]!;
+    const pz = acc.positions[i * 3 + 2]!;
+    const offset = fbm3(noiseSeed, px * frequency, py * frequency, pz * frequency) * amplitude;
+    acc.positions[i * 3] = px + acc.normals[i * 3]! * offset;
+    acc.positions[i * 3 + 1] = py + acc.normals[i * 3 + 1]! * offset;
+    acc.positions[i * 3 + 2] = pz + acc.normals[i * 3 + 2]! * offset;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trees (2-12).
+// ---------------------------------------------------------------------------
+
+interface TreeSpeciesSpec {
+  readonly conifer: boolean;
+  /** Trunk base radius r0 as a fraction of the unit height. */
+  readonly trunkRadius: number;
+  /** Taper exponent k in r(t) = r0·(1−t)^k. */
+  readonly taper: number;
+  readonly crownBase: number;
+  readonly crownTop: number;
+  readonly crownRadius: number;
+  readonly quadCount: number;
+  readonly crownLayer: number;
+  readonly barkLayer: number;
+  readonly fork: boolean;
+  readonly drooping: boolean;
+}
+
+/**
+ * Willow shares the birch narrow-leaf tile and cedar the pine needle tile —
+ * the 2-11 atlas carries three broadleaf and two needle shapes for seven
+ * species.
+ */
+const TREE_SPECIES_SPECS: Readonly<Record<TreeSpecies, TreeSpeciesSpec>> = Object.freeze({
+  pine: {
+    conifer: true, trunkRadius: 0.10, taper: 0.70, crownBase: 0.25, crownTop: 1,
+    crownRadius: 0.34, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+  },
+  cedar: {
+    conifer: true, trunkRadius: 0.12, taper: 0.74, crownBase: 0.25, crownTop: 1,
+    crownRadius: 0.38, quadCount: 50, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+  },
+  spruce: {
+    conifer: true, trunkRadius: 0.11, taper: 0.70, crownBase: 0.25, crownTop: 1,
+    crownRadius: 0.30, quadCount: 44, crownLayer: FOLIAGE_LAYER_INDEX.needleSpruce,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+  },
+  oak: {
+    conifer: false, trunkRadius: 0.20, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
+    crownRadius: 0.50, quadCount: 54, crownLayer: FOLIAGE_LAYER_INDEX.broadleafOak,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+  },
+  maple: {
+    conifer: false, trunkRadius: 0.18, taper: 1.05, crownBase: 0.45, crownTop: 1.05,
+    crownRadius: 0.48, quadCount: 52, crownLayer: FOLIAGE_LAYER_INDEX.broadleafMaple,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+  },
+  birch: {
+    conifer: false, trunkRadius: 0.10, taper: 0.95, crownBase: 0.45, crownTop: 1.05,
+    crownRadius: 0.36, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBirch, fork: false, drooping: false,
+  },
+  willow: {
+    conifer: false, trunkRadius: 0.22, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
+    crownRadius: 0.55, quadCount: 56, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+  },
+});
+
+const TRUNK_RING_TS: readonly number[] = [0, 0.08, 0.3, 0.62, 1];
+
+function trunkRadiusAt(spec: TreeSpeciesSpec, t: number): number {
+  const profile = spec.trunkRadius * Math.pow(Math.max(0, 1 - t), spec.taper);
+  const flare = 1 + 0.6 * Math.exp(-t / 0.06);
+  return Math.max(profile * flare, spec.trunkRadius * 0.05);
+}
+
+function buildCrownQuads(
+  spec: TreeSpeciesSpec,
+  species: TreeSpecies,
+  rng: RandomSource,
+  radialScale: number,
+  heightScale: number,
+  quadCount: number,
+  quadSizeMultiplier = 1,
+): FoliageQuad[] {
+  const drooping = species === "willow";
+  const span = spec.crownTop - spec.crownBase;
+  const centerY = spec.conifer
+    ? spec.crownBase + span * 0.45
+    : (spec.crownBase + spec.crownTop) / 2;
+  const centerYScaled = spec.crownBase + (centerY - spec.crownBase) * heightScale;
+  const quads: FoliageQuad[] = [];
+  for (let i = 0; i < quadCount; i += 1) {
+    let px: number;
+    let py: number;
+    let pz: number;
+    if (spec.conifer) {
+      // Cone envelope: wide at the crown base, closing to the leader.
+      const t = spec.crownBase + span * Math.pow(rng(), 0.75);
+      const envelope = spec.crownRadius
+        * Math.pow(1 - (t - spec.crownBase) / span, 0.85) + 0.02;
+      const phi = rng() * TWO_PI;
+      const radial = (0.4 + 0.6 * Math.sqrt(rng())) * envelope;
+      px = Math.cos(phi) * radial;
+      py = t;
+      pz = Math.sin(phi) * radial;
+    } else {
+      // Ellipsoid envelope; willow attaches on the upper shell and hangs.
+      const semiY = span / 2;
+      const phi = rng() * TWO_PI;
+      const yDir = drooping ? 0.15 + 0.85 * rng() : 1 - 1.9 * rng();
+      const horizontal = Math.sqrt(Math.max(0, 1 - yDir * yDir));
+      const shell = 0.4 + 0.6 * Math.sqrt(rng());
+      px = Math.cos(phi) * horizontal * shell * spec.crownRadius;
+      py = centerY + yDir * shell * semiY;
+      pz = Math.sin(phi) * horizontal * shell * spec.crownRadius;
+      if (drooping) py -= 0.1 + rng() * 0.25;
+    }
+    // The variant silhouette knob: envelope aspect via anisotropic scaling
+    // of the quad centres about the crown base.
+    px *= radialScale;
+    pz *= radialScale;
+    py = spec.crownBase + (py - spec.crownBase) * heightScale;
+    // Orientation mix (2-12): shelves alone (normals blended 60% toward up)
+    // read as stacked wafers from the horizon-level views every capture shot
+    // uses — the crown all but vanished at grazing angles. 55% of cards now
+    // stand upright ("sails", normal horizontal-outward) to carry the side
+    // silhouette while the remaining shelves keep the top-down canopy solid.
+    const outward = norm3(px, py - centerYScaled, pz);
+    const sail = rng() < 0.55;
+    const normal = sail
+      ? norm3(
+          outward.x + (rng() - 0.5) * 0.35,
+          (rng() - 0.5) * 0.25,
+          outward.z + (rng() - 0.5) * 0.35,
+        )
+      : norm3(
+          outward.x * 0.4 + (rng() - 0.5) * 0.2,
+          outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.2,
+          outward.z * 0.4 + (rng() - 0.5) * 0.2,
+        );
+    let tangent = cross3(UP, normal);
+    const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
+    tangent = tangentLength > 1e-4
+      ? norm3(tangent.x, tangent.y, tangent.z)
+      : { x: 1, y: 0, z: 0 };
+    const bitangent = cross3(normal, tangent);
+    // Per-quad half-extent 0.18–0.34 of the crown radius: cards overlap
+    // heavily, which is what makes the interior occlusion bake read. The
+    // multiplier lets the mid band trade card count for card area.
+    const size = (0.18 + rng() * 0.16) * spec.crownRadius * quadSizeMultiplier;
+    quads.push({
+      center: { x: px, y: py, z: pz },
+      normal,
+      tangent,
+      bitangent,
+      halfWidth: drooping ? size * 0.7 : size,
+      halfHeight: drooping ? size * 1.4 : size,
+      layer: spec.crownLayer,
+    });
+  }
+  return quads;
+}
+
+/**
+ * R-21's per-plant triangle allowances, made geometry (2-12): the density
+ * law prices a near-band plant at 180 triangles, a mid-band plant at 48 and
+ * a far-band plant at 8 — and the first 2-12 capture proved the price list
+ * is not advisory (every band drawing near geometry integrated to 4.7× the
+ * budget and the frame went from 13 ms to 29 ms of GPU). Each band gets its
+ * own prototype; 2-14 replaces the mid standin with its authored card tier
+ * and 2-17 replaces the far standin with octahedral impostors.
+ */
+export type TreePrototypeBand = "near" | "mid" | "far";
+
+/**
+ * Trunk (swept generalized cylinder, 8 sides, 5 rings, root flare, one
+ * primary fork for oak/maple/willow) plus a crown of 40–60 outward-tilted
+ * foliage quads, both with baked sky occlusion. Heights normalized to 1.0.
+ *
+ * `band` selects the density law's cost tier: "near" is the full prototype;
+ * "mid" decimates to a 12-quad crown over a 4-side fork-free trunk (≤48
+ * triangles); "far" is three crossed vertical cards (6 triangles, crown
+ * layer only — at 1.4 km a trunk subtends under a pixel).
+ */
+export function buildTreePrototype(
+  species: TreeSpecies,
+  variant: number,
+  seed: number,
+  band: TreePrototypeBand = "near",
+): TreePrototype {
+  const spec = TREE_SPECIES_SPECS[species];
+  const variantCount = TREE_VARIANT_COUNTS[species];
+  const variantIndex = wrapVariant(variant, variantCount);
+  // Two named streams: the variant index perturbs the KNOB stream (crown
+  // envelope aspect ±18%, quad count, fork angle, lean base) while quad
+  // placement draws from a per-(species, seed) stream shared across
+  // variants — so the aspect knob is a clean, measurable silhouette
+  // difference rather than resampling noise.
+  const knobRng = createRandom(`tree/${species}/variant/${variantIndex}/${seed}`);
+  const placementRng = createRandom(`tree/${species}/placement/${seed}`);
+
+  const aspect = lerp(0.82, 1.18, variantCount > 1 ? variantIndex / (variantCount - 1) : 0.5)
+    * (1 + (knobRng() - 0.5) * 0.01);
+  const radialScale = aspect;
+  const heightScale = 1 / Math.sqrt(aspect);
+  // Forked species cap at 45 quads and a 4-side fork: R-21 prices a near
+  // plant at 180 triangles, and the original 60-quad + 6-side-fork worst
+  // case integrated to 220.
+  const quadCount = Math.round(clamp(
+    spec.quadCount + (knobRng() - 0.5) * 12,
+    40,
+    spec.fork ? 45 : 60,
+  ));
+  const leanAngle = (1 + knobRng() * 3) * DEG;
+  const leanAzimuth = knobRng() * TWO_PI;
+  const forkAngle = (20 + knobRng() * 15) * DEG;
+  const forkAzimuth = knobRng() * TWO_PI;
+  const forkT = 0.55 + knobRng() * 0.1;
+  const forkLength = 0.45 * (0.9 + knobRng() * 0.2);
+
+  const leanX = Math.tan(leanAngle) * Math.cos(leanAzimuth);
+  const leanZ = Math.tan(leanAngle) * Math.sin(leanAzimuth);
+
+  if (band === "far") {
+    // Three crossed vertical cards spanning the whole silhouette, crown
+    // layer only. The variant aspect knob still shapes the card, so far
+    // stands keep silhouette variety. Occlusion stays 1 — at this range the
+    // interior/tip contrast is beneath the tonal resolution of a few pixels.
+    const farAcc = createAccumulator();
+    const farOwners: number[] = [];
+    const cardTop = spec.crownTop * (1 / Math.sqrt(aspect));
+    const halfHeight = (cardTop - 0.02) / 2;
+    const centerVertical = 0.02 + halfHeight;
+    const halfWidth = spec.crownRadius * radialScale * 1.05;
+    for (let card = 0; card < 3; card += 1) {
+      const angle = (card / 3) * Math.PI + (knobRng() - 0.5) * 0.2;
+      const normal = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+      const tangent = { x: -Math.sin(angle), y: 0, z: Math.cos(angle) };
+      emitFoliageQuad(
+        farAcc,
+        {
+          center: { x: 0, y: centerVertical, z: 0 },
+          normal,
+          tangent,
+          bitangent: UP,
+          halfWidth,
+          halfHeight,
+          layer: spec.crownLayer,
+        },
+        farOwners,
+        card,
+      );
+    }
+    return { trunk: finalizeGeometry(createAccumulator()), crown: finalizeGeometry(farAcc) };
+  }
+
+  const trunkAcc = createAccumulator();
+  const midBand = band === "mid";
+  // Mid trunk: 3 rings, 4 sides, no fork — 16 triangles under the band's
+  // 48-triangle allowance, leaving 32 for the crown.
+  const ringTs = midBand ? [0, 0.3, 1] : TRUNK_RING_TS;
+  const trunkRings: TubeRing[] = ringTs.map((t) => ({
+    center: { x: leanX * t * t, y: t, z: leanZ * t * t },
+    axis: norm3(2 * leanX * t, 1, 2 * leanZ * t),
+    radius: trunkRadiusAt(spec, t),
+    v: t * 3,
+  }));
+  sweepTube(trunkAcc, trunkRings, midBand ? 4 : 8, 2, spec.barkLayer);
+
+  if (spec.fork && !midBand) {
+    const direction = norm3(
+      Math.sin(forkAngle) * Math.cos(forkAzimuth),
+      Math.cos(forkAngle),
+      Math.sin(forkAngle) * Math.sin(forkAzimuth),
+    );
+    const start: Vec3 = { x: leanX * forkT * forkT, y: forkT, z: leanZ * forkT * forkT };
+    const forkRadius = 0.55 * trunkRadiusAt(spec, forkT);
+    const forkRings: TubeRing[] = [0, 0.33, 0.66, 1].map((s) => ({
+      center: {
+        x: start.x + direction.x * s * forkLength,
+        y: start.y + direction.y * s * forkLength,
+        z: start.z + direction.z * s * forkLength,
+      },
+      axis: direction,
+      radius: Math.max(forkRadius * Math.pow(1 - s, 0.8), 0.012),
+      v: (forkT + s * forkLength) * 3,
+    }));
+    sweepTube(trunkAcc, forkRings, 4, 2, spec.barkLayer);
+  }
+
+  const crownAcc = createAccumulator();
+  // Mid crown: 12 quads (24 triangles) — with the 16-triangle trunk, 40 of
+  // the band's 48-triangle allowance.
+  const bandQuadCount = midBand ? 12 : quadCount;
+  // Mid cards are ~1.8× wider: a quarter of the cards at three times the
+  // area keeps the crown's visual mass while honoring the allowance.
+  const quads = buildCrownQuads(
+    spec, species, placementRng, radialScale, heightScale, bandQuadCount,
+    midBand ? 1.8 : 1,
+  );
+  const owners: number[] = [];
+  for (let i = 0; i < quads.length; i += 1) {
+    emitFoliageQuad(crownAcc, quads[i]!, owners, i);
+  }
+
+  const disks = quads.map(quadDisk);
+  bakeSkyOcclusion(crownAcc, disks, owners);
+  bakeSkyOcclusion(trunkAcc, disks);
+
+  return { trunk: finalizeGeometry(trunkAcc), crown: finalizeGeometry(crownAcc) };
+}
+
+// ---------------------------------------------------------------------------
+// Shrubs (2-12b).
+// ---------------------------------------------------------------------------
+
+interface ShrubSpeciesSpec {
+  readonly layer: number;
+  readonly height: number;
+  readonly stemsMin: number;
+  readonly stemsMax: number;
+  readonly tiltMin: number;
+  readonly tiltMax: number;
+  readonly quadSize: number;
+}
+
+const SHRUB_SPECIES_SPECS: Readonly<Record<ShrubSpecies, ShrubSpeciesSpec>> = Object.freeze({
+  juniper: {
+    layer: FOLIAGE_LAYER_INDEX.juniperScale, height: 0.85,
+    stemsMin: 4, stemsMax: 5, tiltMin: 0.5, tiltMax: 0.95, quadSize: 0.30,
+  },
+  hazel: {
+    layer: FOLIAGE_LAYER_INDEX.hazelLeaf, height: 1.0,
+    stemsMin: 3, stemsMax: 4, tiltMin: 0.2, tiltMax: 0.5, quadSize: 0.34,
+  },
+  sage: {
+    layer: FOLIAGE_LAYER_INDEX.sageLeaf, height: 0.55,
+    stemsMin: 3, stemsMax: 5, tiltMin: 0.45, tiltMax: 0.9, quadSize: 0.26,
+  },
+});
+
+/**
+ * 12–18 foliage quads on a short multi-stem skeleton (3–5 stems), with the
+ * same baked sky occlusion as tree crowns.
+ */
+export function buildShrubPrototype(
+  species: ShrubSpecies,
+  variant: number,
+  seed: number,
+): PrototypeGeometry {
+  const spec = SHRUB_SPECIES_SPECS[species];
+  const variantIndex = wrapVariant(variant, SHRUB_VARIANT_COUNTS[species]);
+  const rng = createRandom(`shrub/${species}/${variantIndex}/${seed}`);
+
+  const stemCount = spec.stemsMin + Math.floor(rng() * (spec.stemsMax - spec.stemsMin + 1));
+  const quadTotal = 12 + Math.floor(rng() * 7);
+  const acc = createAccumulator();
+  const quads: FoliageQuad[] = [];
+  const owners: number[] = [];
+
+  for (let q = 0; q < quadTotal; q += 1) {
+    const stem = q % stemCount;
+    const azimuth = (stem / stemCount) * TWO_PI + (rng() - 0.5) * 0.8;
+    const tilt = spec.tiltMin + rng() * (spec.tiltMax - spec.tiltMin);
+    const direction = norm3(
+      Math.sin(tilt) * Math.cos(azimuth),
+      Math.cos(tilt),
+      Math.sin(tilt) * Math.sin(azimuth),
+    );
+    const baseX = (rng() - 0.5) * 0.12;
+    const baseZ = (rng() - 0.5) * 0.12;
+    const length = spec.height * (0.75 + rng() * 0.25);
+    const along = (0.3 + rng() * 0.65) * length;
+    const center: Vec3 = {
+      x: baseX + direction.x * along,
+      y: direction.y * along,
+      z: baseZ + direction.z * along,
+    };
+    const outward = norm3(center.x, center.y - spec.height * 0.35, center.z);
+    const normal = norm3(
+      outward.x * 0.4 + (rng() - 0.5) * 0.24,
+      outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.24,
+      outward.z * 0.4 + (rng() - 0.5) * 0.24,
+    );
+    let tangent = cross3(UP, normal);
+    const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
+    tangent = tangentLength > 1e-4
+      ? norm3(tangent.x, tangent.y, tangent.z)
+      : { x: 1, y: 0, z: 0 };
+    const bitangent = cross3(normal, tangent);
+    const size = spec.quadSize * (0.8 + rng() * 0.5);
+    quads.push({
+      center, normal, tangent, bitangent,
+      halfWidth: size * 0.5, halfHeight: size * 0.5,
+      layer: spec.layer,
+    });
+  }
+  for (let i = 0; i < quads.length; i += 1) {
+    emitFoliageQuad(acc, quads[i]!, owners, i);
+  }
+  bakeSkyOcclusion(acc, quads.map(quadDisk), owners);
+  return finalizeGeometry(acc);
+}
+
+// ---------------------------------------------------------------------------
+// Rocks (2-15): displaced icospheres; the shading model reads as lithology.
+// ---------------------------------------------------------------------------
+
+function buildIcosphere(subdivisions: number): { vertices: Vec3[]; faces: number[] } {
+  const t = (1 + Math.sqrt(5)) / 2;
+  const raw: ReadonlyArray<readonly [number, number, number]> = [
+    [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+    [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+    [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1],
+  ];
+  const vertices: Vec3[] = raw.map(([x, y, z]) => norm3(x, y, z));
+  let faces: number[] = [
+    0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11,
+    1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6, 7, 1, 8,
+    3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9,
+    4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9, 8, 1,
+  ];
+  for (let level = 0; level < subdivisions; level += 1) {
+    const midpoints = new Map<number, number>();
+    const midpoint = (a: number, b: number): number => {
+      const key = a < b ? a * 65_536 + b : b * 65_536 + a;
+      const existing = midpoints.get(key);
+      if (existing !== undefined) return existing;
+      const va = vertices[a]!;
+      const vb = vertices[b]!;
+      vertices.push(norm3(va.x + vb.x, va.y + vb.y, va.z + vb.z));
+      const index = vertices.length - 1;
+      midpoints.set(key, index);
+      return index;
+    };
+    const next: number[] = [];
+    for (let f = 0; f < faces.length; f += 3) {
+      const a = faces[f]!;
+      const b = faces[f + 1]!;
+      const c = faces[f + 2]!;
+      const ab = midpoint(a, b);
+      const bc = midpoint(b, c);
+      const ca = midpoint(c, a);
+      next.push(a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca);
+    }
+    faces = next;
+  }
+  return { vertices, faces };
+}
+
+function sphericalUv(direction: Vec3): readonly [number, number] {
+  return [
+    Math.atan2(direction.z, direction.x) / TWO_PI + 0.5,
+    Math.acos(clamp(direction.y, -1, 1)) / Math.PI,
+  ];
+}
+
+function sphericalTangent(direction: Vec3, normal: Vec3): Vec3 {
+  const east = Math.abs(direction.y) > 0.99
+    ? { x: 1, y: 0, z: 0 }
+    : norm3(-direction.z, 0, direction.x);
+  const d = dot3(east, normal);
+  return norm3(east.x - normal.x * d, east.y - normal.y * d, east.z - normal.z * d);
+}
+
+/**
+ * Icosphere (2 subdivisions, 320 triangles) displaced by 3-octave value
+ * noise (~0.25R). Granite and dark carry FLAT per-face normals (vertices
+ * duplicated per face); limestone carries SMOOTH shared normals — the
+ * shading-model difference reads as lithology (2-15). Untextured
+ * (atlasLayer −1), occlusion A = 1.
+ */
+export function buildRockPrototype(variant: RockVariant, seed: number): PrototypeGeometry {
+  const noiseSeed = hashText(`rock/${variant}/${seed}`);
+  const { vertices, faces } = buildIcosphere(2);
+  const displaced: Vec3[] = vertices.map((direction) => {
+    const radius = 1 + 0.25 * fbm3(
+      noiseSeed,
+      direction.x * 1.9 + 11.31,
+      direction.y * 1.9 - 7.77,
+      direction.z * 1.9 + 3.13,
+    );
+    return { x: direction.x * radius, y: direction.y * radius, z: direction.z * radius };
+  });
+  const acc = createAccumulator();
+
+  if (variant === "limestone") {
+    const normalSums = new Float64Array(vertices.length * 3);
+    for (let f = 0; f < faces.length; f += 3) {
+      const ia = faces[f]!;
+      const ib = faces[f + 1]!;
+      const ic = faces[f + 2]!;
+      const a = displaced[ia]!;
+      const b = displaced[ib]!;
+      const c = displaced[ic]!;
+      const faceNormal = cross3(
+        { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z },
+        { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z },
+      );
+      for (const index of [ia, ib, ic]) {
+        normalSums[index * 3] = normalSums[index * 3]! + faceNormal.x;
+        normalSums[index * 3 + 1] = normalSums[index * 3 + 1]! + faceNormal.y;
+        normalSums[index * 3 + 2] = normalSums[index * 3 + 2]! + faceNormal.z;
+      }
+    }
+    for (let i = 0; i < vertices.length; i += 1) {
+      const direction = vertices[i]!;
+      const position = displaced[i]!;
+      const normal = norm3(normalSums[i * 3]!, normalSums[i * 3 + 1]!, normalSums[i * 3 + 2]!);
+      const [u, v] = sphericalUv(direction);
+      const tangent = sphericalTangent(direction, normal);
+      pushVertex(
+        acc,
+        position.x, position.y, position.z,
+        normal.x, normal.y, normal.z,
+        u, v,
+        tangent.x, tangent.y, tangent.z, 1,
+        ATLAS_LAYER_UNTEXTURED,
+        1,
+      );
+    }
+    for (const index of faces) acc.indices.push(index);
+  } else {
+    for (let f = 0; f < faces.length; f += 3) {
+      const corners = [faces[f]!, faces[f + 1]!, faces[f + 2]!];
+      const a = displaced[corners[0]!]!;
+      const b = displaced[corners[1]!]!;
+      const c = displaced[corners[2]!]!;
+      const faceNormal = norm3(
+        (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y),
+        (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z),
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x),
+      );
+      const base = acc.positions.length / 3;
+      for (const cornerIndex of corners) {
+        const direction = vertices[cornerIndex]!;
+        const position = displaced[cornerIndex]!;
+        const [u, v] = sphericalUv(direction);
+        const tangent = sphericalTangent(direction, faceNormal);
+        pushVertex(
+          acc,
+          position.x, position.y, position.z,
+          faceNormal.x, faceNormal.y, faceNormal.z,
+          u, v,
+          tangent.x, tangent.y, tangent.z, 1,
+          ATLAS_LAYER_UNTEXTURED,
+          1,
+        );
+      }
+      acc.indices.push(base, base + 1, base + 2);
+    }
+  }
+  return finalizeGeometry(acc);
+}
+
+// ---------------------------------------------------------------------------
+// Ground clutter (2-15).
+// ---------------------------------------------------------------------------
+
+function buildLog(rng: RandomSource, noiseSeed: number, acc: GeometryAccumulator): void {
+  const rings: TubeRing[] = [];
+  for (let i = 0; i <= 4; i += 1) {
+    const s = i / 4;
+    rings.push({
+      center: { x: s - 0.5, y: 0.115, z: (rng() - 0.5) * 0.02 },
+      axis: { x: 1, y: 0, z: 0 },
+      radius: lerp(0.13, 0.085, s) * (0.95 + rng() * 0.1),
+      v: s * 3,
+    });
+  }
+  sweepTube(acc, rings, 8, 2, FOLIAGE_LAYER_INDEX.barkConifer);
+  displaceAlongNormals(acc, noiseSeed, 6, 0.018);
+}
+
+function buildStump(rng: RandomSource, acc: GeometryAccumulator): void {
+  const height = 0.32;
+  const rings: TubeRing[] = [0, 0.5, 1].map((t) => ({
+    center: { x: 0, y: t * height, z: 0 },
+    axis: UP,
+    radius: 0.17 * (1 + 0.9 * Math.exp(-(t * height) / 0.05)),
+    v: t,
+  }));
+  const ringStarts = sweepTube(acc, rings, 8, 2, FOLIAGE_LAYER_INDEX.barkConifer);
+  // Splintered top: jitter the top ring, then fan a jagged cap over it.
+  const topStart = ringStarts[ringStarts.length - 1]!;
+  const topCount = 9;
+  for (let s = 0; s < topCount; s += 1) {
+    const jag = (rng() - 0.5) * 0.09;
+    // Seam vertex (s === 8) must copy the s === 0 jag to stay welded; the
+    // stream still advances so draws stay positionally stable.
+    const applied = s === topCount - 1 ? acc.positions[topStart * 3 + 1]! - rings[2]!.center.y : jag;
+    acc.positions[(topStart + s) * 3 + 1] = rings[2]!.center.y + applied;
+  }
+  const capBase = acc.positions.length / 3;
+  for (let s = 0; s < topCount; s += 1) {
+    const px = acc.positions[(topStart + s) * 3]!;
+    const py = acc.positions[(topStart + s) * 3 + 1]!;
+    const pz = acc.positions[(topStart + s) * 3 + 2]!;
+    pushVertex(
+      acc, px, py, pz, 0, 1, 0,
+      px * 2 + 0.5, pz * 2 + 0.5,
+      1, 0, 0, 1,
+      FOLIAGE_LAYER_INDEX.barkConifer, 1,
+    );
+  }
+  const centerIndex = pushVertex(
+    acc, 0, height - 0.03, 0, 0, 1, 0, 0.5, 0.5, 1, 0, 0, 1,
+    FOLIAGE_LAYER_INDEX.barkConifer, 1,
+  );
+  for (let s = 0; s < topCount - 1; s += 1) {
+    acc.indices.push(centerIndex, capBase + s, capBase + s + 1);
+  }
+}
+
+function buildBranchLitter(rng: RandomSource, acc: GeometryAccumulator): void {
+  const owners: number[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const azimuth = i * (TWO_PI / 3) + (rng() - 0.5) * 0.5;
+    const tilt = 0.1 + rng() * 0.15;
+    const tangent = norm3(
+      Math.cos(azimuth) * Math.cos(tilt),
+      Math.sin(tilt),
+      Math.sin(azimuth) * Math.cos(tilt),
+    );
+    const bitangent = norm3(-Math.sin(azimuth), 0, Math.cos(azimuth));
+    const normal = cross3(bitangent, tangent);
+    emitFoliageQuad(acc, {
+      center: { x: (rng() - 0.5) * 0.15, y: 0.025 + i * 0.012, z: (rng() - 0.5) * 0.15 },
+      normal: normal.y < 0 ? norm3(-normal.x, -normal.y, -normal.z) : normal,
+      tangent,
+      bitangent,
+      halfWidth: 0.45,
+      halfHeight: 0.1,
+      layer: FOLIAGE_LAYER_INDEX.litterTwig,
+    }, owners, i);
+  }
+}
+
+function buildMossCushion(rng: RandomSource, noiseSeed: number, acc: GeometryAccumulator): void {
+  const flatten = 0.35;
+  const sides = 8;
+  const latitudes = [0, Math.PI / 4];
+  const ringStarts: number[] = [];
+  for (const latitude of latitudes) {
+    ringStarts.push(acc.positions.length / 3);
+    for (let s = 0; s < sides; s += 1) {
+      const theta = (s / sides) * TWO_PI;
+      const horizontal = Math.cos(latitude);
+      const jitter = 1 + 0.18 * fbm3(noiseSeed, Math.cos(theta) * 2.3, latitude, Math.sin(theta) * 2.3);
+      const px = Math.cos(theta) * horizontal * jitter;
+      const py = Math.sin(latitude) * flatten;
+      const pz = Math.sin(theta) * horizontal * jitter;
+      const normal = norm3(px, py / (flatten * flatten), pz);
+      const east = norm3(-pz, 0, px);
+      const d = dot3(east, normal);
+      const tangent = norm3(east.x - normal.x * d, east.y - normal.y * d, east.z - normal.z * d);
+      pushVertex(
+        acc, px, py, pz, normal.x, normal.y, normal.z,
+        px * 0.5 + 0.5, pz * 0.5 + 0.5,
+        tangent.x, tangent.y, tangent.z, 1,
+        ATLAS_LAYER_UNTEXTURED, 1,
+      );
+    }
+  }
+  const apex = pushVertex(
+    acc, 0, flatten * (1 + 0.1 * (rng() - 0.5)), 0, 0, 1, 0, 0.5, 0.5, 1, 0, 0, 1,
+    ATLAS_LAYER_UNTEXTURED, 1,
+  );
+  const ring0 = ringStarts[0]!;
+  const ring1 = ringStarts[1]!;
+  for (let s = 0; s < sides; s += 1) {
+    const next = (s + 1) % sides;
+    acc.indices.push(ring0 + s, ring1 + s, ring1 + next, ring0 + s, ring1 + next, ring0 + next);
+    acc.indices.push(ring1 + s, apex, ring1 + next);
+  }
+}
+
+/**
+ * Ground-clutter archetypes on the rock instancing path (2-15): fallen log
+ * (tapered displaced cylinder along +x), stump (flared cylinder, splintered
+ * top), branch litter (3 crossed alpha-tested twig cards), moss cushion (low
+ * displaced dome, untextured — the runtime tints it green).
+ */
+export function buildClutterPrototype(kind: ClutterKind, seed: number): PrototypeGeometry {
+  const rng = createRandom(`clutter/${kind}/${seed}`);
+  const noiseSeed = hashText(`clutter-noise/${kind}/${seed}`);
+  const acc = createAccumulator();
+  switch (kind) {
+    case "log":
+      buildLog(rng, noiseSeed, acc);
+      break;
+    case "stump":
+      buildStump(rng, acc);
+      break;
+    case "branchLitter":
+      buildBranchLitter(rng, acc);
+      break;
+    case "mossCushion":
+      buildMossCushion(rng, noiseSeed, acc);
+      break;
+  }
+  return finalizeGeometry(acc);
+}
+
+// ---------------------------------------------------------------------------
+// Grass patch (2-16).
+// ---------------------------------------------------------------------------
+
+/**
+ * 12–14 crossed tapered blades — each blade two quads bent outward, 48–56
+ * triangles per patch — over a ~1 unit radius footprint (the runtime scales
+ * to ~2.5 m²). Occlusion A ramps 0.75 at the base to 1 at the tip.
+ */
+export type GroundCoverArchetype = "grass" | "fern" | "heather" | "reed";
+
+/** 2-16: per-archetype blade proportions and atlas layer. */
+const GROUND_COVER_SPECS: Readonly<Record<GroundCoverArchetype, {
+  readonly layer: number;
+  readonly blades: number;
+  readonly lengthBase: number;
+  readonly lengthSpread: number;
+  readonly leanBase: number;
+  readonly widthMultiplier: number;
+}>> = Object.freeze({
+  grass: {
+    layer: FOLIAGE_LAYER_INDEX.grassBlade,
+    blades: 12, lengthBase: 0.5, lengthSpread: 0.3, leanBase: 0.12, widthMultiplier: 1,
+  },
+  // Fern: fewer, wider, more-arched fronds.
+  fern: {
+    layer: FOLIAGE_LAYER_INDEX.fernFrond,
+    blades: 8, lengthBase: 0.55, lengthSpread: 0.25, leanBase: 0.35, widthMultiplier: 3.2,
+  },
+  // Heather: a dense low cushion of short sprigs.
+  heather: {
+    layer: FOLIAGE_LAYER_INDEX.heather,
+    blades: 11, lengthBase: 0.3, lengthSpread: 0.15, leanBase: 0.3, widthMultiplier: 2.6,
+  },
+  // Reed: tall, straight, narrow.
+  reed: {
+    layer: FOLIAGE_LAYER_INDEX.reed,
+    blades: 10, lengthBase: 0.85, lengthSpread: 0.3, leanBase: 0.04, widthMultiplier: 0.9,
+  },
+});
+
+export function buildGrassPatchPrototype(
+  seed: number,
+  archetype: GroundCoverArchetype = "grass",
+): PrototypeGeometry {
+  const spec = GROUND_COVER_SPECS[archetype];
+  const rng = createRandom(`grass/${archetype}/${seed}`);
+  const acc = createAccumulator();
+  // Blades × 4 triangles ≤ the plan's ~48-triangle patch price.
+  const bladeCount = Math.min(12, spec.blades + Math.floor(rng() * 3));
+
+  const emitBladeQuad = (
+    lowMinus: Vec3, lowPlus: Vec3, highPlus: Vec3, highMinus: Vec3,
+    normal: Vec3, tangent: Vec3,
+    v0: number, v1: number,
+  ): void => {
+    const base = acc.positions.length / 3;
+    const alpha0 = 0.75 + 0.25 * v0;
+    const alpha1 = 0.75 + 0.25 * v1;
+    pushVertex(acc, lowMinus.x, lowMinus.y, lowMinus.z, normal.x, normal.y, normal.z,
+      0, v0, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha0);
+    pushVertex(acc, lowPlus.x, lowPlus.y, lowPlus.z, normal.x, normal.y, normal.z,
+      1, v0, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha0);
+    pushVertex(acc, highPlus.x, highPlus.y, highPlus.z, normal.x, normal.y, normal.z,
+      1, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
+    pushVertex(acc, highMinus.x, highMinus.y, highMinus.z, normal.x, normal.y, normal.z,
+      0, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
+    acc.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+
+  for (let i = 0; i < bladeCount; i += 1) {
+    const positionAzimuth = rng() * TWO_PI;
+    const baseRadius = Math.sqrt(rng()) * 0.7;
+    const baseX = Math.cos(positionAzimuth) * baseRadius;
+    const baseZ = Math.sin(positionAzimuth) * baseRadius;
+    // Blades lean outward from the patch centre, with per-blade jitter.
+    const leanAzimuth = (baseRadius > 0.05 ? Math.atan2(baseZ, baseX) : rng() * TWO_PI)
+      + (rng() - 0.5) * 1.2;
+    const lean = spec.leanBase + rng() * 0.33;
+    const length = spec.lengthBase + rng() * spec.lengthSpread;
+    const widthScale = (0.8 + rng() * 0.4) * spec.widthMultiplier;
+    const widths = [0.045 * widthScale, 0.028 * widthScale, 0.004 * widthScale] as const;
+
+    const widthAxis: Vec3 = { x: -Math.sin(leanAzimuth), y: 0, z: Math.cos(leanAzimuth) };
+    const lower = norm3(
+      Math.sin(lean) * Math.cos(leanAzimuth), Math.cos(lean), Math.sin(lean) * Math.sin(leanAzimuth),
+    );
+    const upperLean = Math.min(lean * 2.1, 1.25);
+    const upper = norm3(
+      Math.sin(upperLean) * Math.cos(leanAzimuth),
+      Math.cos(upperLean),
+      Math.sin(upperLean) * Math.sin(leanAzimuth),
+    );
+    const base: Vec3 = { x: baseX, y: 0, z: baseZ };
+    const mid: Vec3 = {
+      x: base.x + lower.x * length * 0.55,
+      y: base.y + lower.y * length * 0.55,
+      z: base.z + lower.z * length * 0.55,
+    };
+    const tip: Vec3 = {
+      x: mid.x + upper.x * length * 0.45,
+      y: mid.y + upper.y * length * 0.45,
+      z: mid.z + upper.z * length * 0.45,
+    };
+    const offset = (point: Vec3, width: number, sign: number): Vec3 => ({
+      x: point.x + widthAxis.x * width * sign,
+      y: point.y + widthAxis.y * width * sign,
+      z: point.z + widthAxis.z * width * sign,
+    });
+    const lowerNormal = cross3(widthAxis, lower);
+    const upperNormal = cross3(widthAxis, upper);
+    emitBladeQuad(
+      offset(base, widths[0], -1), offset(base, widths[0], 1),
+      offset(mid, widths[1], 1), offset(mid, widths[1], -1),
+      lowerNormal, widthAxis, 0, 0.55,
+    );
+    emitBladeQuad(
+      offset(mid, widths[1], -1), offset(mid, widths[1], 1),
+      offset(tip, widths[2], 1), offset(tip, widths[2], -1),
+      upperNormal, widthAxis, 0.55, 1,
+    );
+  }
+  return finalizeGeometry(acc);
+}

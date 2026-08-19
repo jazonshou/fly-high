@@ -48,6 +48,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 
 export const SKY_FRAGMENT_WGSL = /* wgsl */ `
 varying direction: vec3f;
+uniform sunDiscVisibility: f32;
 ${AERIAL_PERSPECTIVE_WGSL}
 
 // The sun's true angular radius — must equal EnvironmentState's
@@ -74,8 +75,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     let limb = 1.0 - SUN_LIMB_DARKENING
       * (1.0 - sqrt(max(1.0 - radius * radius, 0.0)));
     let disc = smoothstep(1.1, 0.98, radius) * max(limb, 0.0);
+    // 2-9: zeroed during environment-probe captures. The probe cube is the
+    // AMBIENT sky (reflections + IBL); direct sun everywhere is analytic —
+    // the CSM light on solids, the Karis lobe on water. A 40x-radiance disc
+    // baked into a 128 px cube is sub-texel: it double-counts the sun and
+    // renders as a blocky aliasing blob in mirror reflections.
     color += uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance
-      * (disc * SUN_DISC_RADIANCE);
+      * (disc * SUN_DISC_RADIANCE * uniforms.sunDiscVisibility);
   }
   // 1C-10: placeholder night — deliberately minimal, the phase's designated
   // cut item. Phase 7 replaces this outright with ephemeris moon position,
@@ -250,6 +256,12 @@ export interface AtmosphereSnapshot {
    * this; never re-derive the constant.
    */
   readonly sunIlluminanceNormalized: number;
+  /**
+   * 2-9: the sun's angular radius (1C-1 made it live in EnvironmentState).
+   * The water materials' Karis solid-angle specular lobe consumes it — the
+   * one physical quantity that replaced four magic sun-glint numbers.
+   */
+  readonly sunAngularRadiusRadians: number;
   readonly cloudCoverage: number;
   readonly humidity: number;
   readonly windSpeed: number;
@@ -290,13 +302,16 @@ export class AtmosphereSystem {
       SKY_SHADER_NAME,
       {
         attributes: ["position"],
-        uniforms: ["worldViewProjection", ...AERIAL_PERSPECTIVE_UNIFORMS],
+        uniforms: ["worldViewProjection", "sunDiscVisibility", ...AERIAL_PERSPECTIVE_UNIFORMS],
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
     this.skyMaterial.backFaceCulling = false;
     this.skyMaterial.disableDepthWrite = true;
     this.skyMaterial.disableColorWrite = false;
+    // 2-9: 1 for the visible sky; the environment probe zeroes it around its
+    // cube captures so the reflection/IBL environment carries no baked sun.
+    this.skyMaterial.setFloat("sunDiscVisibility", 1);
     this.sky.material = this.skyMaterial;
 
     this.sun = new DirectionalLight("sun", new Vector3(0.36, -0.82, -0.44), scene);
@@ -337,6 +352,7 @@ export class AtmosphereSystem {
       skyHorizon: initialPalette.horizon,
       ambientColor: initialPalette.zenith.scale(0.58),
       sunIlluminanceNormalized: initialPalette.intensity / PEAK_SUN_INTENSITY,
+      sunAngularRadiusRadians: DEFAULT_ENVIRONMENT_STATE.sun.angularRadiusRadians,
       cloudCoverage: 0.18,
       humidity: 0.5,
       windSpeed: 8,
@@ -431,6 +447,7 @@ export class AtmosphereSystem {
       skyHorizon: skyHorizon.clone(),
       ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
       sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
+      sunAngularRadiusRadians: state.sun.angularRadiusRadians,
       cloudCoverage,
       humidity,
       windSpeed,

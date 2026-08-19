@@ -1,10 +1,18 @@
-import { TerrainBiome } from "@/src/world";
+import {
+  TerrainBiome,
+  TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
+  seasonalSnowlineDescentMeters,
+  seasonalWinterFraction,
+} from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
 import { hashSeed } from "@/src/world/seed";
 import { densityField, type VegetationDensitySample } from "./densityField";
+import { sampleStandField, type StandSample } from "./standField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
+  type ClutterKind,
   type DetailCellGenerationOptions,
+  type DetailClutterPlacement,
   type DetailRockPlacement,
   type DetailShrubPlacement,
   type DetailTerrainSample,
@@ -131,7 +139,7 @@ function treeDimensions(
   species: TreeSpecies,
   random: RandomSource,
   standAge: number,
-): { height: number; crown: number; trunk: number; wind: number } {
+): { height: number; crown: number; trunk: number; wind: number; individualAge: number } {
   // A stand has an age signature, but individual trees still follow a
   // strongly skewed distribution.  This creates saplings, mature canopy, and
   // occasional emergent trees instead of uniformly scaled copies.
@@ -151,6 +159,7 @@ function treeDimensions(
       crown: height * crownRatio * (0.88 + random() * 0.24),
       trunk: Math.max(0.055, height * trunkRatio * (0.86 + random() * 0.24)),
       wind: wind * (1.12 - individualAge * 0.22),
+      individualAge,
     };
   };
   switch (species) {
@@ -164,17 +173,176 @@ function treeDimensions(
   }
 }
 
-function treeColor(species: TreeSpecies, random: RandomSource): readonly [number, number, number, number] {
-  const variation = 0.84 + random() * 0.28;
-  switch (species) {
-    case "pine": return [0.72 * variation, 0.91 * variation, 0.74 * variation, 1];
-    case "cedar": return [0.78 * variation, 0.86 * variation, 0.67 * variation, 1];
-    case "spruce": return [0.67 * variation, 0.84 * variation, 0.78 * variation, 1];
-    case "oak": return [0.94 * variation, 0.9 * variation, 0.68 * variation, 1];
-    case "maple": return [0.98 * variation, 0.94 * variation, 0.63 * variation, 1];
-    case "birch": return [0.88 * variation, 1.02 * variation, 0.75 * variation, 1];
-    case "willow": return [0.88 * variation, 0.98 * variation, 0.7 * variation, 1];
+const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, number]>> = {
+  pine: [0.72, 0.91, 0.74],
+  cedar: [0.78, 0.86, 0.67],
+  spruce: [0.67, 0.84, 0.78],
+  oak: [0.94, 0.9, 0.68],
+  maple: [0.98, 0.94, 0.63],
+  birch: [0.88, 1.02, 0.75],
+  willow: [0.88, 0.98, 0.7],
+};
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let hue = 0;
+  if (d > 0) {
+    if (max === r) hue = ((g - b) / d) % 6;
+    else if (max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+    hue = ((hue / 6) + 1) % 1;
   }
+  return [hue, max === 0 ? 0 : d / max, max];
+}
+
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  const hue = ((h % 1) + 1) % 1;
+  const sector = hue * 6;
+  const c = v * s;
+  const x = c * (1 - Math.abs((sector % 2) - 1));
+  const m = v - c;
+  const [r, g, b] = sector < 1 ? [c, x, 0]
+    : sector < 2 ? [x, c, 0]
+    : sector < 3 ? [0, c, x]
+    : sector < 4 ? [0, x, c]
+    : sector < 5 ? [x, 0, c]
+    : [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+const CONIFER_SPECIES: ReadonlySet<TreeSpecies> = new Set(["pine", "cedar", "spruce"]);
+
+/**
+ * 2-13a — autumn hue target (turns) and blend strength per DECIDUOUS
+ * species; evergreens are absent. Maple turns red-orange, birch clear
+ * yellow, oak russet, willow/hazel yellow-olive.
+ */
+const AUTUMN_HUE: Readonly<Partial<Record<TreeSpecies | ShrubSpecies, readonly [number, number]>>> = {
+  oak: [0.075, 0.75],
+  maple: [0.02, 0.85],
+  birch: [0.115, 0.9],
+  willow: [0.1, 0.7],
+  hazel: [0.09, 0.8],
+};
+
+function smootherStep(edge0: number, edge1: number, value: number): number {
+  const t = clamp((value - edge0) / Math.max(edge1 - edge0, 1e-9), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * 2-13a — the seasonal crown, R-13's kernel made visible. Deciduous species
+ * turn through their autumn hue (winterFraction 0.12-0.42), then shed: the
+ * tint's ALPHA lane carries the leaf fraction (1 = full crown) and the
+ * fragment stage lifts the alpha test as it falls, so the canopy loses
+ * texels progressively toward bare speckle. Conifers hold, dimming ~7% at
+ * the depth of winter. Above the descending snowline the crown whitens
+ * toward the unorm8 tint ceiling (slope-shedding weighted, matching
+ * seasonalSnowCover's ground rule) — full snow-white needs an albedo term
+ * beyond the tint lane, deferred to 2-17a with the impostor season buckets.
+ * Per-stem phenology jitter (±0.06 winterFraction) makes stands turn
+ * tree-by-tree rather than by calendar row.
+ */
+function applyFoliageSeason(
+  color: readonly [number, number, number, number],
+  species: TreeSpecies | ShrubSpecies,
+  season: FoliageSeason,
+  phenologyJitter: number,
+  terrainHeightMeters: number,
+  terrainSlope: number,
+): readonly [number, number, number, number] {
+  const winter = clamp(season.winterFraction + (phenologyJitter - 0.5) * 0.12, 0, 1);
+  let [r, g, b] = color;
+  let alpha = color[3];
+  const autumn = AUTUMN_HUE[species];
+  if (autumn) {
+    const [targetHue, strength] = autumn;
+    const autumnBlend = smootherStep(0.12, 0.42, winter) * strength;
+    if (autumnBlend > 0) {
+      const [hue, saturation, value] = rgbToHsv(r, g, b);
+      let hueDelta = targetHue - hue;
+      hueDelta -= Math.round(hueDelta);
+      const [ar, ag, ab] = hsvToRgb(
+        hue + hueDelta * autumnBlend,
+        clamp(saturation * (1 + 0.25 * autumnBlend), 0, 1),
+        clamp(value * (1 + 0.16 * autumnBlend), 0, 1),
+      );
+      r = ar; g = ag; b = ab;
+    }
+    alpha = alpha * (1 - smootherStep(0.34, 0.7, winter));
+  } else {
+    const winterDim = 1 - 0.07 * winter;
+    r *= winterDim; g *= winterDim; b *= winterDim;
+  }
+  const snowed = applySnowCover([r, g, b], season, winter, terrainHeightMeters, terrainSlope);
+  return [snowed[0], snowed[1], snowed[2], clamp(alpha, 0, 1)];
+}
+
+/**
+ * 2-13a/2-15 — the shared snow whitening, `seasonalSnowCover`'s ground rule
+ * applied to surface objects: band above the descending snowline, season
+ * gate, and slope shedding. The shedding term is vacuous for canopy (trees
+ * stop growing at slope ~0.2) and LIVE for rocks, which reach 0.9.
+ */
+function applySnowCover(
+  rgb: readonly [number, number, number],
+  season: FoliageSeason,
+  winterFraction: number,
+  terrainHeightMeters: number,
+  terrainSlope: number,
+): [number, number, number] {
+  const snowBand = smootherStep(
+    season.snowlineMeters - 140,
+    season.snowlineMeters + 40,
+    terrainHeightMeters,
+  );
+  const slopeShedding = 1 - clamp((terrainSlope - 0.55) * 2.2, 0, 1);
+  const seasonGate = smootherStep(0.15, 0.35, winterFraction);
+  const snowCover = snowBand * slopeShedding * seasonGate * 0.85;
+  let [r, g, b] = rgb;
+  if (snowCover > 0) {
+    r += (1 - r) * snowCover;
+    g += (1 - g) * snowCover;
+    b += (1 - b) * snowCover;
+  }
+  return [clamp(r, 0, 1), clamp(g, 0, 1), clamp(b, 0, 1)];
+}
+
+/**
+ * 2-12: tint DISTRIBUTION, not tint storage. Sampled in HSV: within a
+ * species, hue σ ≈ 6–9° (broadleaf wider than conifer), saturation σ ≈ 0.10
+ * relative, value σ ≈ 0.12. The mean is STAND-correlated — drawn from the
+ * 2-11b field — with an individual residual on top, so neighbouring stands
+ * differ as well as neighbouring trees and the result is not confetti.
+ * Value correlates weakly (negatively) with the individual's age so young
+ * stems read lighter. The old single-scalar multiply was pure brightness
+ * jitter with zero hue variance — a forest of one green at different
+ * exposures, the flight-test complaint verbatim.
+ */
+function treeColor(
+  species: TreeSpecies,
+  random: RandomSource,
+  tintCentre: number,
+  individualAge: number,
+): readonly [number, number, number, number] {
+  const base = TREE_TINT_BASE[species];
+  const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
+  const triangular = (): number => random() + random() - 1;
+  const hueSigmaTurns = (CONIFER_SPECIES.has(species) ? 6.5 : 8.5) / 360;
+  const standHueShift = (tintCentre - 0.5) * (14 / 360);
+  const hue = baseHue + standHueShift + triangular() * hueSigmaTurns * Math.sqrt(6) * 0.5;
+  const saturation = clamp(baseSat * (1 + triangular() * 0.10 * Math.sqrt(6) * 0.5), 0.05, 1);
+  const ageDarkening = (individualAge - 0.5) * 0.14;
+  const value = clamp(
+    baseVal * (1 + triangular() * 0.12 * Math.sqrt(6) * 0.5 - ageDarkening),
+    0.2,
+    1.1,
+  );
+  const [r, g, b] = hsvToRgb(hue, saturation, Math.min(value, 1));
+  const gain = value > 1 ? value : 1;
+  return [r * gain, g * gain, b * gain, 1];
 }
 
 /**
@@ -259,7 +427,19 @@ interface ScatterContext {
   readonly density: number;
   readonly seaLevelMeters: number;
   readonly dayOfYear: number;
+  readonly season: FoliageSeason;
   readonly grid: ScatterTerrainGrid;
+}
+
+/**
+ * 2-13a — the cell's seasonal state, computed once from R-13's anchored
+ * kernel. `winterFraction` is 0 at the reference midsummer day (the tuned
+ * world is untouched) and approaches 1 at the depth of winter;
+ * `snowlineMeters` is the canopy-snow altitude, descending with the season.
+ */
+export interface FoliageSeason {
+  readonly winterFraction: number;
+  readonly snowlineMeters: number;
 }
 
 function fieldAt(
@@ -344,7 +524,7 @@ function scatterLayer(
     blockSample: DetailTerrainSample,
     field: VegetationDensitySample,
     random: RandomSource,
-    blockRandom: { standAge: number; dominantChoice: number },
+    stand: StandSample,
     push: (spacing: number, priority: number, build: () => DetailTreePlacement | DetailShrubPlacement) => void,
   ) => void,
 ): readonly (DetailTreePlacement | DetailShrubPlacement)[] {
@@ -416,8 +596,6 @@ function scatterLayer(
         Math.min(MAX_SUBCELLS_PER_BLOCK_AXIS, Math.ceil(SCATTER_BLOCK_METERS / jitterCell)),
       );
       const subSize = SCATTER_BLOCK_METERS / sub;
-      const blockStream = createRandom(`${context.seed}/${layer}/${blockX}/${blockZ}`);
-      const blockRandom = { standAge: blockStream(), dominantChoice: blockStream() };
 
       for (let subZ = 0; subZ < sub; subZ += 1) {
         for (let subX = 0; subX < sub; subX += 1) {
@@ -441,7 +619,10 @@ function scatterLayer(
           if (acceptRoll >= acceptance) continue;
           if (x < loX || x >= hiX || z < loZ || z >= hiZ) continue;
           const y = gridHeight(context.grid, x, z);
-          emit(x, z, y, info.sample, info.field, random, blockRandom, (spacing, priority, build) => {
+          // 2-11b: stand identity from the continuous field at the stem's
+          // own position — no 32 m appearance lattice.
+          const stand = sampleStandField(context.seedHash, x, z);
+          emit(x, z, y, info.sample, info.field, random, stand, (spacing, priority, build) => {
             candidates.push({ x, z, priority, spacing, build });
           });
         }
@@ -460,20 +641,20 @@ function scatterLayer(
 }
 
 function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
-  return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, block, push) => {
+  return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, stand, push) => {
     const priority = random();
     const speciesRoll = random();
     const dominantRoll = random();
     const coniferRoll = random();
     let species = chooseTreeSpecies(
       blockSample,
-      dominantRoll < 0.62 ? block.dominantChoice : speciesRoll,
+      dominantRoll < 0.62 ? stand.dominantChoice : speciesRoll,
     );
     // Cool north faces carry a larger conifer share (the aspect species shift).
     if (field.aspect < 0 && coniferRoll < -field.aspect * 0.3) {
       species = coniferRoll < -field.aspect * 0.15 ? "spruce" : "pine";
     }
-    const dimensions = treeDimensions(species, random, block.standAge);
+    const dimensions = treeDimensions(species, random, stand.standAge);
     // Krummholz: near the treeline trees shrink before they disappear.
     const height = dimensions.height * field.heightFactor;
     const crown = dimensions.crown * (0.55 + 0.45 * field.heightFactor);
@@ -492,19 +673,27 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor),
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
-      color: treeColor(species, random),
+      color: applyFoliageSeason(
+        treeColor(species, random, stand.tintCentre, dimensions.individualAge),
+        species,
+        context.season,
+        random(),
+        y,
+        blockSample.slope,
+      ),
+      standAge: stand.standAge,
       selection: random(),
     }));
   }) as readonly DetailTreePlacement[];
 }
 
 function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[] {
-  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, block, push) => {
+  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, stand, push) => {
     const priority = random();
     const speciesRoll = random();
     const species = chooseShrubSpecies(
       blockSample,
-      speciesRoll < 0.7 ? block.dominantChoice : random(),
+      speciesRoll < 0.7 ? stand.dominantChoice : random(),
     );
     const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
     const height = (species === "sage"
@@ -523,7 +712,14 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       radiusMeters: radius,
       windPhaseRadians: random() * TAU,
       windResponse: 0.78 + random() * 0.38,
-      color: shrubColor(species, random),
+      color: applyFoliageSeason(
+        shrubColor(species, random, stand.tintCentre, maturity),
+        species,
+        context.season,
+        random(),
+        y,
+        blockSample.slope,
+      ),
       selection: random(),
     }));
   }) as readonly DetailShrubPlacement[];
@@ -539,16 +735,43 @@ function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubS
   return "sage";
 }
 
+const SHRUB_TINT_BASE: Readonly<Record<ShrubSpecies, readonly [number, number, number]>> = {
+  juniper: [0.67, 0.84, 0.7],
+  hazel: [0.88, 0.96, 0.62],
+  sage: [0.78, 0.84, 0.74],
+};
+
+/**
+ * 2-12b — the 2-12 tint treatment applied to the understory: the old single
+ * scalar was brightness jitter with zero hue variance (the exact flight-test
+ * complaint the tree distribution fixed). Real hue variance per species,
+ * stand-correlated means through the same tint centre, and young shrubs
+ * lighter through maturity. Understory hue spreads wider than canopy
+ * (σ 9.5° — mixed-age scrub is less uniform than a closed stand's crowns);
+ * juniper/sage keep muted saturation through their base colours.
+ */
 function shrubColor(
   species: ShrubSpecies,
   random: RandomSource,
+  tintCentre: number,
+  maturity: number,
 ): readonly [number, number, number, number] {
-  const variation = 0.82 + random() * 0.3;
-  switch (species) {
-    case "juniper": return [0.67 * variation, 0.84 * variation, 0.7 * variation, 1];
-    case "hazel": return [0.88 * variation, 0.96 * variation, 0.62 * variation, 1];
-    case "sage": return [0.78 * variation, 0.84 * variation, 0.74 * variation, 1];
-  }
+  const base = SHRUB_TINT_BASE[species];
+  const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
+  const triangular = (): number => random() + random() - 1;
+  const hueSigmaTurns = 9.5 / 360;
+  const standHueShift = (tintCentre - 0.5) * (14 / 360);
+  const hue = baseHue + standHueShift + triangular() * hueSigmaTurns * Math.sqrt(6) * 0.5;
+  const saturation = clamp(baseSat * (1 + triangular() * 0.11 * Math.sqrt(6) * 0.5), 0.05, 1);
+  const maturityDarkening = (maturity - 0.5) * 0.16;
+  const value = clamp(
+    baseVal * (1 + triangular() * 0.12 * Math.sqrt(6) * 0.5 - maturityDarkening),
+    0.2,
+    1.1,
+  );
+  const [r, g, b] = hsvToRgb(hue, saturation, Math.min(value, 1));
+  const gain = value > 1 ? value : 1;
+  return [r * gain, g * gain, b * gain, 1];
 }
 
 function chooseRockVariant(sample: DetailTerrainSample, random: RandomSource): RockVariant {
@@ -566,6 +789,7 @@ function generateRocks(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+  season: FoliageSeason,
 ): readonly DetailRockPlacement[] {
   if (density <= 0) return [];
   const random = createRandom(`${seed}/rocks/${key}`);
@@ -580,21 +804,224 @@ function generateRocks(
     const variant = chooseRockVariant(sample, random);
     const radius = 0.5 + (0.25 + sample.slope * 0.75) * random() * 4.2;
     const tint = 0.78 + random() * 0.3;
+    const flattening = 0.45 + random() * 0.45;
+    const winter = clamp(season.winterFraction + (random() - 0.5) * 0.04, 0, 1);
+    const snowed = applySnowCover(
+      [tint, tint * (variant === "limestone" ? 1.03 : 0.92), tint * 0.86],
+      season,
+      winter,
+      sample.height,
+      sample.slope,
+    );
     rocks.push({
       kind: "rock",
       id: `${key}/rock/${index}`,
       variant,
       x,
-      y: sample.height - radius * 0.12,
+      // 2-15: sunk by radius·(0.12 + 0.25·hash) so rocks sit IN the ground.
+      y: sample.height - radius * flattening * (0.12 + 0.25 * random()),
       z,
       yawRadians: random() * TAU,
       radiusMeters: radius,
-      flattening: 0.45 + random() * 0.45,
-      color: [tint, tint * (variant === "limestone" ? 1.03 : 0.92), tint * 0.86, 1],
+      flattening,
+      color: [snowed[0], snowed[1], snowed[2], 1],
       selection: random(),
+      normal: sample.normal ?? { x: 0, y: 1, z: 0 },
     });
   }
   return rocks;
+}
+
+const CLUTTER_KINDS: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
+
+export const GROUND_COVER_GRID = 8;
+
+/**
+ * 2-16 — the ground-cover habitat grid: WHAT grows at each 16 m node, so
+ * the ground layer has variable CHARACTER, not just variable amount. The
+ * archetype comes from the terms the field already carries: reeds gated on
+ * high moisture and near-zero slope, heather on low fertility and exposure
+ * (thin canopy + steep or high ground), fern on shade and shelter (closed
+ * canopy + moisture), grass elsewhere. Coverage rides the shoreline and
+ * airport clearances (mown grass keeps growing, woody cover does not —
+ * ground cover is only SUPPRESSED toward the graded platform, never cut).
+ * Season: grass yellows toward straw as winterFraction rises, everything
+ * whitens under the snowline through the shared applySnowCover.
+ */
+function buildGroundCoverGrid(
+  context: ScatterContext,
+  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+): readonly import("./types").DetailGroundCoverNode[] {
+  const random = createRandom(`${context.seed}/ground-cover/${context.minX}/${context.minZ}`);
+  const spacing = context.cellSize / GROUND_COVER_GRID;
+  const nodes: import("./types").DetailGroundCoverNode[] = [];
+  for (let row = 0; row < GROUND_COVER_GRID; row += 1) {
+    for (let column = 0; column < GROUND_COVER_GRID; column += 1) {
+      const x = context.minX + (column + 0.5) * spacing;
+      const z = context.minZ + (row + 0.5) * spacing;
+      const jitter = random();
+      const sample = sampleTerrain(x, z);
+      if (!validSample(sample) || sample.height <= context.seaLevelMeters + 1) {
+        nodes.push({
+          coverage: 0,
+          archetype: "grass",
+          color: [0, 0, 0],
+          heightMeters: Number.isFinite(sample.height) ? sample.height : 0,
+        });
+        continue;
+      }
+      const field = densityField(context.seedHash, {
+        x,
+        z,
+        heightMeters: sample.height,
+        seaLevelMeters: context.seaLevelMeters,
+        slope: sample.slope,
+        moisture: sample.moisture,
+        dayOfYear: context.dayOfYear,
+        ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
+        ...(sample.airportInfluence !== undefined
+          ? { airportInfluence: sample.airportInfluence }
+          : {}),
+      });
+      const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
+      const rocky = sample.biome === TerrainBiome.ALPINE || sample.biome === TerrainBiome.SNOW;
+      const beach = sample.biome === TerrainBiome.BEACH;
+      const coverage = rocky || beach
+        ? 0
+        : clamp(0.35 + sample.moisture * 0.5 + closure * 0.15, 0, 1)
+          // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
+          * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1));
+      const exposure = clamp(
+        (sample.height - context.seaLevelMeters) / 900 + sample.slope * 1.6,
+        0,
+        1,
+      );
+      const archetype: import("./types").GroundCoverArchetype =
+        sample.moisture > 0.72 && sample.slope < 0.06 ? "reed"
+        : closure > 0.45 && sample.moisture > 0.5 ? "fern"
+        : closure < 0.2 && exposure > 0.55 ? "heather"
+        : "grass";
+      // Habitat tint: wet ground deepens green, dry ground bleaches; grass
+      // yellows toward straw with the season; snow whitens everything.
+      const straw = archetype === "grass" || archetype === "reed"
+        ? smootherStep(0.25, 0.7, context.season.winterFraction)
+        : smootherStep(0.45, 0.85, context.season.winterFraction) * 0.5;
+      const wet = clamp(sample.moisture, 0, 1);
+      const baseColor: [number, number, number] = archetype === "fern"
+        ? [0.34, 0.5, 0.3]
+        : archetype === "heather"
+          ? [0.5, 0.44, 0.5]
+          : archetype === "reed"
+            ? [0.55, 0.58, 0.38]
+            : [0.42 + (1 - wet) * 0.18, 0.56 + wet * 0.1, 0.3];
+      const jittered: [number, number, number] = [
+        clamp(baseColor[0] * (0.9 + jitter * 0.2), 0, 1),
+        clamp(baseColor[1] * (0.9 + jitter * 0.2), 0, 1),
+        clamp(baseColor[2] * (0.9 + jitter * 0.2), 0, 1),
+      ];
+      const strawed: [number, number, number] = [
+        jittered[0] + (0.72 - jittered[0]) * straw,
+        jittered[1] + (0.62 - jittered[1]) * straw,
+        jittered[2] + (0.34 - jittered[2]) * straw,
+      ];
+      const snowed = applySnowCover(
+        strawed,
+        context.season,
+        context.season.winterFraction,
+        sample.height,
+        sample.slope,
+      );
+      nodes.push({
+        coverage,
+        archetype,
+        color: [snowed[0], snowed[1], snowed[2]],
+        heightMeters: sample.height,
+      });
+    }
+  }
+  return nodes;
+}
+
+/**
+ * 2-15 — ground clutter: the debris layer no plan document placed anywhere
+ * ("twigs, mess"). Density rides CANOPY CLOSURE through the density field
+ * (clutter belongs under trees) with a moisture bonus standing in for soil
+ * depth until 6-6's ecology channels exist — a wet hollow under closed
+ * canopy carries ~6× the litter of open grassland. Moss cushions require
+ * moisture; their share redistributes to branch litter on dry ground.
+ * Budget: ~30 accepted per closed-forest 128 m cell ≈ the plan's ~2,000
+ * instances over a Balanced near field, ~80 k triangles.
+ */
+function scatterClutter(
+  context: ScatterContext,
+  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+): readonly DetailClutterPlacement[] {
+  const random = createRandom(`${context.seed}/clutter/${detailCellKey(
+    Math.round(context.minX / context.cellSize),
+    Math.round(context.minZ / context.cellSize),
+  )}`);
+  const candidates = Math.min(
+    72,
+    Math.max(8, Math.round((context.cellSize * context.cellSize / 380) * context.density)),
+  );
+  const placements: DetailClutterPlacement[] = [];
+  for (let index = 0; index < candidates; index += 1) {
+    const x = context.minX + random() * context.cellSize;
+    const z = context.minZ + random() * context.cellSize;
+    const acceptance = random();
+    const kindRoll = random();
+    const sizeRoll = random();
+    const yaw = random() * TAU;
+    const selection = random();
+    const valueJitter = 0.82 + random() * 0.3;
+    const sample = sampleTerrain(x, z);
+    if (!validSample(sample)) continue;
+    const field = densityField(context.seedHash, {
+      x,
+      z,
+      heightMeters: sample.height,
+      seaLevelMeters: context.seaLevelMeters,
+      slope: sample.slope,
+      moisture: sample.moisture,
+      dayOfYear: context.dayOfYear,
+      ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
+      ...(sample.airportInfluence !== undefined
+        ? { airportInfluence: sample.airportInfluence }
+        : {}),
+    });
+    // Canopy closure proxy: closed forest carries ~0.05 stems/m².
+    const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
+    const probability = airportClearance(sample)
+      * (0.06 + closure * 0.5 + sample.moisture * 0.12);
+    if (acceptance >= probability) continue;
+    const wetEnough = sample.moisture >= 0.55;
+    const kind: ClutterKind = kindRoll < 0.2 ? "log"
+      : kindRoll < 0.35 ? "stump"
+      : kindRoll < 0.8 || !wetEnough ? "branchLitter"
+      : "mossCushion";
+    const size = kind === "log" ? 2.4 + sizeRoll * 2.2
+      : kind === "stump" ? 0.8 + sizeRoll * 0.8
+      : kind === "branchLitter" ? 1.2 + sizeRoll * 1.4
+      : 0.8 + sizeRoll * 1.4;
+    const base: readonly [number, number, number] = kind === "mossCushion"
+      ? [0.5 * valueJitter, 0.72 * valueJitter, 0.42 * valueJitter]
+      : [0.72 * valueJitter, 0.66 * valueJitter, 0.56 * valueJitter];
+    const snowed = applySnowCover(base, context.season, context.season.winterFraction, sample.height, sample.slope);
+    placements.push({
+      kind: "clutter",
+      id: `${context.seed}/clutter/${index}/${x.toFixed(1)}/${z.toFixed(1)}`,
+      clutterKind: kind,
+      x,
+      y: sample.height,
+      z,
+      yawRadians: yaw,
+      sizeMeters: size,
+      color: [snowed[0], snowed[1], snowed[2], 1],
+      selection,
+      normal: sample.normal ?? { x: 0, y: 1, z: 0 },
+    });
+  }
+  return placements;
 }
 
 /** Deterministically regenerate one cell without reading or mutating global state. */
@@ -620,6 +1047,10 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     throw new RangeError("Detail sea level must be finite");
   }
   const dayOfYear = options.dayOfYear ?? 0;
+  const latitudeDegrees = options.latitudeDegrees ?? 45;
+  if (!Number.isFinite(latitudeDegrees) || Math.abs(latitudeDegrees) > 90) {
+    throw new RangeError("Detail latitude must be within [-90, 90] degrees");
+  }
   const grid = buildScatterTerrainGrid(minX, minZ, cellSizeMeters, options.terrainSample);
   const context: ScatterContext = {
     seed,
@@ -630,6 +1061,11 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     density: densityMultiplier,
     seaLevelMeters,
     dayOfYear,
+    season: {
+      winterFraction: seasonalWinterFraction(dayOfYear, latitudeDegrees),
+      snowlineMeters: seaLevelMeters + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS
+        - seasonalSnowlineDescentMeters(dayOfYear, latitudeDegrees),
+    },
     grid,
   };
   return {
@@ -643,6 +1079,10 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     maxZ: minZ + cellSizeMeters,
     trees: densityMultiplier > 0 ? scatterTrees(context) : [],
     shrubs: densityMultiplier > 0 ? scatterShrubs(context) : [],
+    clutter: densityMultiplier > 0 ? scatterClutter(context, options.terrainSample) : [],
+    groundCover: densityMultiplier > 0
+      ? buildGroundCoverGrid(context, options.terrainSample)
+      : [],
     rocks: generateRocks(
       seed,
       key,
@@ -651,6 +1091,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
+      context.season,
     ),
   };
 }

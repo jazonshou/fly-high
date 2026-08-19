@@ -140,6 +140,14 @@ export interface TerrainTileOptions {
    * re-derive it. Defaults to 0 (core-only heights output).
    */
   halo?: number;
+  /**
+   * R-13: the environment clock's day, driving the seasonal snow blanket in
+   * the baked vertex colours. Defaults to the midsummer reference day the
+   * palette was tuned at, which is a bit-exact no-op. The clipmap passes a
+   * season-bucketed value so resident pages agree regardless of when they
+   * were generated.
+   */
+  dayOfYear?: number;
 }
 
 export interface TerrainTileData {
@@ -150,6 +158,8 @@ export interface TerrainTileData {
   readonly size: number;
   readonly resolution: number;
   readonly spacing: number;
+  /** The seasonal day the tile's colours were baked at (R-13). */
+  readonly dayOfYear: number;
   /**
    * Core-sized (resolution²) unless a halo was requested, in which case it is
    * stored-edge sized ((resolution + 2·halo)²) and addressed through

@@ -32,6 +32,13 @@ export {
   sampleTerrainMoisture,
   sampleTerrainNormal,
   sampleTerrainTemperature,
+  TERRAIN_REFERENCE_DAY_OF_YEAR,
+  TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
+  seasonalHumidityMultiplier,
+  seasonalSnowlineDescentMeters,
+  seasonalTemperatureOffsetK,
+  seasonalTemperatureShift,
+  seasonalWinterFraction,
 } from "./terrain";
 export {
   DEFAULT_TERRAIN_TILE_RESOLUTION,

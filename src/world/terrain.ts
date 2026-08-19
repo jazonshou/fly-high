@@ -307,6 +307,112 @@ export function sampleTerrainClimate(world: WorldDefinition, x: number, z: numbe
   return fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
 }
 
+/**
+ * R-13 — the seasonal kernel term. Every constant below was tuned against
+ * the midsummer default clock (dayOfYear 171, the "one pleasant flying day"
+ * all three presets share), so the seasonal functions are ANCHORED there:
+ * at the reference day they are exact zeros/ones and the shipped world is
+ * bit-identical. Winter is expressed as a deviation from that tuned state.
+ *
+ * Class K: pure trigonometry over numbers, transliterable to WGSL under the
+ * 0-4 portability rules.
+ */
+export const TERRAIN_REFERENCE_DAY_OF_YEAR = 171;
+
+/**
+ * Reference-day snowline altitude above sea level, metres — the anchor the
+ * seasonal descent (R-13) lowers. Exported for 2-13a: canopy snow uses the
+ * same snowline the ground blanket does, per the seasonalSnowCover rule.
+ */
+export const TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS = 1_520;
+
+/** Warmest day of the year (thermal lag ~1 month past the solstice). */
+const HOTTEST_DAY_OF_YEAR = 199;
+/** Peak-to-trough annual temperature swing at the poles, Kelvin. */
+const ANNUAL_TEMPERATURE_RANGE_POLAR_K = 14;
+/**
+ * Kelvin per unit of the normalised temperature field: the elevation-cooling
+ * slope is 1/2450 per metre, and a 6.5 K/km standard lapse makes one
+ * normalised unit 2450 m × 6.5 K/km = 15.925 K.
+ */
+const KELVIN_PER_NORMALIZED_TEMPERATURE = 15.925;
+/** Metres of iso-temperature (snowline) shift per normalised temperature unit. */
+const METERS_PER_NORMALIZED_TEMPERATURE = 2_450;
+
+/**
+ * Seasonal air-temperature offset from the ANNUAL MEAN, in Kelvin. Positive
+ * in the hemisphere's summer. `4-6`'s land-cover classifier and `2-13a`'s
+ * appearance field consume this same term rather than reinventing winter.
+ */
+export function seasonalTemperatureOffsetK(
+  dayOfYear: number,
+  latitudeDegrees: number,
+): number {
+  const latitudeRadians = (latitudeDegrees * Math.PI) / 180;
+  const annualRangeK = ANNUAL_TEMPERATURE_RANGE_POLAR_K * Math.abs(Math.sin(latitudeRadians));
+  const hottest = latitudeDegrees >= 0
+    ? HOTTEST_DAY_OF_YEAR
+    : HOTTEST_DAY_OF_YEAR - 365 / 2;
+  return (annualRangeK / 2) * Math.cos((2 * Math.PI * (dayOfYear - hottest)) / 365);
+}
+
+/**
+ * The seasonal temperature delta from the reference (midsummer-tuned) state,
+ * in normalised temperature units. Exactly 0 at the reference day; ≤ ~0 the
+ * rest of the year in the northern hemisphere.
+ */
+export function seasonalTemperatureShift(
+  dayOfYear: number,
+  latitudeDegrees: number,
+): number {
+  return (
+    (seasonalTemperatureOffsetK(dayOfYear, latitudeDegrees)
+      - seasonalTemperatureOffsetK(TERRAIN_REFERENCE_DAY_OF_YEAR, latitudeDegrees))
+    / KELVIN_PER_NORMALIZED_TEMPERATURE
+  );
+}
+
+/**
+ * How far the visible snowline has DESCENDED below its reference-day
+ * altitude, metres. 0 at the reference day.
+ */
+export function seasonalSnowlineDescentMeters(
+  dayOfYear: number,
+  latitudeDegrees: number,
+): number {
+  return Math.max(
+    0,
+    -seasonalTemperatureShift(dayOfYear, latitudeDegrees) * METERS_PER_NORMALIZED_TEMPERATURE,
+  );
+}
+
+/** 0 at the reference midsummer day, approaching 1 at the depth of winter. */
+export function seasonalWinterFraction(
+  dayOfYear: number,
+  latitudeDegrees: number,
+): number {
+  const latitudeRadians = (latitudeDegrees * Math.PI) / 180;
+  const annualRangeK = ANNUAL_TEMPERATURE_RANGE_POLAR_K * Math.abs(Math.sin(latitudeRadians));
+  if (annualRangeK <= 0) return 0;
+  const deltaK =
+    seasonalTemperatureOffsetK(TERRAIN_REFERENCE_DAY_OF_YEAR, latitudeDegrees)
+    - seasonalTemperatureOffsetK(dayOfYear, latitudeDegrees);
+  return saturate(deltaK / annualRangeK);
+}
+
+/**
+ * Seasonal humidity multiplier for the aerial perspective's turbidity
+ * (deviation D-5 shipped `mieTurbidityMultiplier = 1 + humidity·26`, so this
+ * moves the haze with no new plumbing). Winter air is clearer: 1.0 at the
+ * reference day, ~0.62 at the depth of a 45°N winter.
+ */
+export function seasonalHumidityMultiplier(
+  dayOfYear: number,
+  latitudeDegrees: number,
+): number {
+  return 1 - 0.4 * seasonalWinterFraction(dayOfYear, latitudeDegrees);
+}
+
 /** Temperature from a precomputed climate value plus exact per-point cooling. */
 export function terrainTemperatureFromClimate(
   world: WorldDefinition,
@@ -359,6 +465,37 @@ const PALETTES: Readonly<Record<TerrainBiomeId, readonly [number, number, number
   [TerrainBiome.RUNWAY]: [0.16, 0.18, 0.19],
 };
 
+/**
+ * R-13: the seasonal snow BLANKET — an appearance overlay, deliberately not
+ * a classification change. Threading the seasonal offset into
+ * `classifyBiome`/`sampleTerrainTemperature` would flip FOREST↔GRASSLAND
+ * (and delete forests under winter SNOW) with the calendar, which
+ * PHASE_2_EXECUTION_PLAN.md `2-18` explicitly forbids: species mix stays
+ * climatic. Ecology reads the climatic fields; only the paint migrates.
+ * Exactly 0 at the reference day, so the tuned midsummer world is untouched.
+ */
+function seasonalSnowCover(
+  world: WorldDefinition,
+  height: number,
+  slope: number,
+  temperature: number,
+  dayOfYear: number,
+): number {
+  const shift = seasonalTemperatureShift(dayOfYear, world.latitudeDegrees);
+  if (shift >= 0) return 0;
+  const snowline =
+    world.seaLevel + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS
+    + shift * METERS_PER_NORMALIZED_TEMPERATURE;
+  const heightBand = saturate((height - (snowline - 80)) / 120);
+  const coverFromHeight = heightBand * heightBand * (3 - 2 * heightBand);
+  const temperatureBand = saturate((0.2 - (temperature + shift)) / 0.06);
+  const coverFromCold = temperatureBand * temperatureBand * (3 - 2 * temperatureBand);
+  // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
+  // ground the same way it will be applied to canopy and rock.
+  const slopeShedding = 1 - saturate((slope - 0.55) * 2.2);
+  return Math.max(coverFromHeight, coverFromCold) * slopeShedding;
+}
+
 function writeTerrainColor(
   world: WorldDefinition,
   x: number,
@@ -366,6 +503,9 @@ function writeTerrainColor(
   biome: TerrainBiomeId,
   moisture: number,
   slope: number,
+  height: number,
+  temperature: number,
+  dayOfYear: number,
   target: TerrainColor,
 ): TerrainColor {
   const palette = PALETTES[biome];
@@ -391,6 +531,24 @@ function writeTerrainColor(
   target.r = saturate(palette[0] + variation + rockMottle + warmVariation);
   target.g = saturate(palette[1] + variation + rockMottle * 0.64);
   target.b = saturate(palette[2] + variation - rockMottle * 0.18 - warmVariation);
+  if (
+    biome !== TerrainBiome.WATER
+    && biome !== TerrainBiome.RUNWAY
+    && biome !== TerrainBiome.SNOW
+  ) {
+    const cover = seasonalSnowCover(world, height, slope, temperature, dayOfYear);
+    if (cover > 0) {
+      const snow = PALETTES[TerrainBiome.SNOW];
+      // Keep a whisper of the ground variation so the blanket reads as a
+      // surface rather than a flat fill.
+      const snowR = saturate(snow[0] + variation * 0.3);
+      const snowG = saturate(snow[1] + variation * 0.3);
+      const snowB = saturate(snow[2] + variation * 0.3);
+      target.r += (snowR - target.r) * cover;
+      target.g += (snowG - target.g) * cover;
+      target.b += (snowB - target.b) * cover;
+    }
+  }
   return target;
 }
 
@@ -428,6 +586,7 @@ export function sampleTerrainSurface(
   height: number,
   slope: number,
   target: TerrainSample,
+  dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
   moisture = sampleTerrainMoisture(world, x, z, 0),
   temperature = sampleTerrainTemperature(world, x, z, 0, height),
 ): TerrainSample {
@@ -442,7 +601,9 @@ export function sampleTerrainSurface(
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
   target.isRunway = runway;
-  writeTerrainColor(world, x, z, biome, moisture, slope, target.color);
+  writeTerrainColor(
+    world, x, z, biome, moisture, slope, height, temperature, dayOfYear, target.color,
+  );
   return target;
 }
 
@@ -452,9 +613,10 @@ export function sampleTerrain(
   x: number,
   z: number,
   target: TerrainSample = createTerrainSampleTarget(),
+  dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
 ): TerrainSample {
   const height = sampleTerrainHeight(world, x, z);
   sampleTerrainNormal(world, x, z, target.normal);
   const slope = saturate(1 - target.normal.y);
-  return sampleTerrainSurface(world, x, z, height, slope, target);
+  return sampleTerrainSurface(world, x, z, height, slope, target, dayOfYear);
 }

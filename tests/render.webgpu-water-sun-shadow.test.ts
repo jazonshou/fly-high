@@ -50,9 +50,13 @@ describe("shared water sun-shadow receiver", () => {
     expect(SUN_SHADOW_FRAGMENT_WGSL).toContain("textureSampleCompareLevel");
     expect(SUN_SHADOW_FRAGMENT_WGSL).toContain("sunShadowBlendStarts");
     expect(WATER_FRAGMENT_WGSL).toContain("directSunVisibility = cloudShadow * sunShadow");
-    expect(WATER_FRAGMENT_WGSL).not.toContain("atmosphereReflection * sunShadow");
+    expect(WATER_FRAGMENT_WGSL).not.toContain("analyticSky * sunShadow");
+    // 2-9: shadows gate the shared sun lobe, on both surfaces identically.
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(
-      "nDotL * 4.0 * directSunVisibility",
+      "* uniforms.sunColor * directSunVisibility",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "* uniforms.sunColor * directSunVisibility",
     );
   });
 });

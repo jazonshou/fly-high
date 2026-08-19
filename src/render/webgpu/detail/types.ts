@@ -12,6 +12,8 @@ export type TreeSpecies =
   | "birch"
   | "willow";
 export type ShrubSpecies = "juniper" | "hazel" | "sage";
+export type ClutterKind = "log" | "stump" | "branchLitter" | "mossCushion";
+export type GroundCoverArchetype = "grass" | "fern" | "heather" | "reed";
 export type RockVariant = "granite" | "limestone" | "dark";
 
 export interface DetailTerrainSample {
@@ -46,6 +48,11 @@ export interface DetailCellGenerationOptions {
   readonly seaLevelMeters?: number;
   /** Environment clock day (§1.6), threaded to the density field. Default 0. */
   readonly dayOfYear?: number;
+  /**
+   * 2-13a: world latitude in degrees for R-13's seasonal kernel (autumn
+   * turn, leaf fall, canopy snowline). Default 45°N, the world default.
+   */
+  readonly latitudeDegrees?: number;
 }
 
 export interface DetailTreePlacement {
@@ -62,6 +69,8 @@ export interface DetailTreePlacement {
   readonly windPhaseRadians: number;
   readonly windResponse: number;
   readonly color: readonly [number, number, number, number];
+  /** 2-11b: continuous stand age at this stem (0..1) — 2-12/2-13a consume it. */
+  readonly standAge: number;
   /** Stable random value used for deterministic distance thinning. */
   readonly selection: number;
 }
@@ -94,6 +103,44 @@ export interface DetailRockPlacement {
   readonly flattening: number;
   readonly color: readonly [number, number, number, number];
   readonly selection: number;
+  /** 2-15: terrain normal at the placement, for ~60% alignment. */
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
+}
+
+/**
+ * 2-16: one node of a cell's 8×8 ground-cover habitat grid. The appender
+ * expands nodes into patch instances with the 1/d density ramp — the grid
+ * carries WHAT grows where (archetype, strength, tint); the runtime decides
+ * how many patches the frame can afford at each range.
+ */
+export interface DetailGroundCoverNode {
+  /** 0..1 growth strength; 0 = bare (water, rock, graded apron). */
+  readonly coverage: number;
+  readonly archetype: GroundCoverArchetype;
+  readonly color: readonly [number, number, number];
+  /**
+   * Terrain height at the node, metres — the appender bilinearly
+   * interpolates patch heights from these instead of sampling terrain per
+   * candidate (measured: per-candidate sampling stalled whole frames on
+   * every 64 m rebuild).
+   */
+  readonly heightMeters: number;
+}
+
+/** 2-15: ground clutter — logs, stumps, branch litter, moss cushions. */
+export interface DetailClutterPlacement {
+  readonly kind: "clutter";
+  readonly id: string;
+  readonly clutterKind: ClutterKind;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly yawRadians: number;
+  /** Prototype scale (prototypes are unit-ish; this is heightScaleMeters). */
+  readonly sizeMeters: number;
+  readonly color: readonly [number, number, number, number];
+  readonly selection: number;
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
 }
 
 export interface GeneratedDetailCell {
@@ -108,6 +155,9 @@ export interface GeneratedDetailCell {
   readonly trees: readonly DetailTreePlacement[];
   readonly shrubs: readonly DetailShrubPlacement[];
   readonly rocks: readonly DetailRockPlacement[];
+  readonly clutter: readonly DetailClutterPlacement[];
+  /** 2-16: 8×8 habitat nodes, row-major, node spacing cellSize/8. */
+  readonly groundCover: readonly DetailGroundCoverNode[];
 }
 
 export interface WorldDetailObserver {
@@ -133,6 +183,8 @@ export interface WorldDetailStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
+  readonly clutterInstances: number;
+  readonly groundCoverInstances: number;
   /** Main-camera-frustum instances, including separate trunks/crowns and walls/roofs. */
   readonly renderedThinInstances: number;
   /** Spatial prototype/chunk batches selected by the main-camera frustum. */

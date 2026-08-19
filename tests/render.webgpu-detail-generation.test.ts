@@ -178,10 +178,10 @@ describe("WebGPU paged world-detail generation", () => {
         });
         const placements = [...cell.trees, ...cell.shrubs, ...cell.rocks];
         for (const placement of placements) {
-          expect(["tree", "shrub", "rock"]).toContain(placement.kind);
+          expect(["tree", "shrub", "rock", "clutter"]).toContain(placement.kind);
         }
         expect(Object.keys(cell).sort()).toEqual([
-          "cellSizeMeters", "cellX", "cellZ", "key",
+          "cellSizeMeters", "cellX", "cellZ", "clutter", "groundCover", "key",
           "maxX", "maxZ", "minX", "minZ",
           "rocks", "shrubs", "trees",
         ]);

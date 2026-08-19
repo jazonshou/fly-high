@@ -15,6 +15,10 @@
 > - **Decide the classifier-consumers contract before Phase 4 starts.** `chooseTreeSpecies`, `chooseShrubSpecies` and the wildlife habitat rules all read `classifyBiome`; after `4-6` the ground and the forest on it would be classified by two disagreeing authorities. `R-27`.
 > - **The seasonal snowline is a kernel change, not a palette change** — `seasonalTemperatureOffsetK` threaded into `sampleTerrainTemperature`/`classifyBiome`, landed in Phase 2 so this phase inherits it free. `R-13`.
 > - **Gate A (12.75 d) runs immediately after this phase** — the aircraft and the wildlife, which have no appearance work anywhere in the programme, built on `3-1`'s synthesis pipeline. `R-1`.
+>
+> **Further amended 2026-08-18 by [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md) §4 D4 (zero days):**
+>
+> - **`3-2`'s fourth vertex lane is named `atlasSlot`, not `spare`,** and is written as `-1`. Phase 4 bakes occlusion into channel pages at `4-7` and its consumer is *this* plugin's fragment shader; without a slot index on the CPU tile mesh that consumer cannot exist until `4-4`, and `4-8b` may not shorten the shadow distance until the horizon map is actually being sampled. Reserving the lane here costs nothing and is load-bearing for Phase 4's gate order. See §7 `3-2`.
 
 ---
 
@@ -337,8 +341,9 @@ Ten layers each, `materialArrayEdge` per tier, full mip chain from `TextureArray
 
 **Every noise primitive must be periodic on the texture's cell grid** — wrap cell indices modulo the octave frequency, exactly as the deleted `periodicNoise01` did and exactly as Phase 2's `2-1` cloud volumes require. A material that does not tile is worse than no material.
 
-**Two recipe details carry disproportionate weight**, per §3.2:
+**Three recipe details carry disproportionate weight**, per §3.2 and (for the third) the vegetation-quality amendments of 2026-08-18:
 
+- **Forest floor.** This layer sits under every tree in the world, so it is the most-seen material after grass — and it is the cheapest place in the whole programme to answer *"moss, twigs, mess"*, because it costs one of ten array layers that are already budgeted and nothing at all at runtime. Four superposed strata, each periodic on the cell grid: **(a) litter** — 2–6 cm elongated needle and leaf flakes at high coverage, each with its own hue draw across a brown/ochre/grey range rather than one tinted noise field; **(b) twig fragments** — short, dark, high-curvature strokes at ~8% coverage, laid along a weak flow field so the debris is anisotropic rather than isotropic salt; **(c) moss** — irregular cushions at 10–25% coverage carrying *their own roughness* (0.85–0.95, distinctly matte against litter's ~0.6) and a small positive height offset, biased into the concave regions of the height channel so it settles in hollows the way real moss does; **(d) exposed root and duff** breaking through at ~5%. Rock's per-block roughness-variance rule applies here too: adjacent litter and moss reading with visibly different gloss is most of what stops a forest floor being a brown sheet.
 - **Rock.** Two directional fracture families as half-plane bands at ±dip with per-block random phase — this is what makes rock read as bedding and jointing rather than crumple — plus roughness 0.45–0.72 **with ±0.08 variance per block**. Adjacent blocks having visibly different gloss is by itself most of the difference between rock and plastic.
 - **The mip reducer.** Average the normal *vector*, renormalise, and fold the lost length back into roughness with a Toksvig term: `rough' = sqrt(rough² + k·(1 − |avgN|))`. Five lines, and the single most important anti-plastic measure at distance — without it, distant terrain gets a false sharp highlight from a normal map that has been averaged into flatness.
 
@@ -364,7 +369,7 @@ Ten layers each, `materialArrayEdge` per tier, full mip chain from `TextureArray
 
 **The provisional splat path, and what it actually is.** `TerrainClipmapSystem.ts:663` allocates `new Float32Array(vertexCount * 4)` and assigns it as `vertexData.colors` at `:736`, with `useVertexColors = true` at `:740`. Repurpose the buffer and set `useVertexColors = false`.
 
-Until `4-6` rasterises real splat pages there are no per-texel material IDs, so the provisional encoding is a **two-material vertex blend**: `(materialIdA, materialIdB, weightB, spare)`. That is not a compromise dressed up — §5.3 sets the height-blend cap to **2 at tier 0**, so the provisional path *is* the Low-tier path, and it ships unchanged. `4-6` upgrades tiers 1–3 to the 4-way page splat that `world/payload.ts` already specifies.
+Until `4-6` rasterises real splat pages there are no per-texel material IDs, so the provisional encoding is a **two-material vertex blend**: `(materialIdA, materialIdB, weightB, atlasSlot)`. **The fourth lane is `atlasSlot`, written as `-1` until `4-2` fills it** — not a spare (Phase 4 §4 D4). `4-7`'s occlusion bake is consumed by this plugin on these meshes, before the quadtree exists. That is not a compromise dressed up — §5.3 sets the height-blend cap to **2 at tier 0**, so the provisional path *is* the Low-tier path, and it ships unchanged. `4-6` upgrades tiers 1–3 to the 4-way page splat that `world/payload.ts` already specifies.
 
 **Delete** `TerrainMaterialPlugin.ts`, its test, and the dead GLSL branch.
 

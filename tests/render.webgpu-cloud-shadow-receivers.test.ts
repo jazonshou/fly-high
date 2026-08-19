@@ -158,7 +158,8 @@ describe("opaque PBR cloud-shadow registry", () => {
     for (const materialName of [
       "hangar-metal",
       "detail-foliage-pine",
-      "detail-trunk",
+      // 2-12: per-species bark materials replaced the shared trunk.
+      "detail-bark-pine",
       "wildlife-deer",
     ]) {
       expect(

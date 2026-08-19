@@ -141,25 +141,74 @@ const SHADOW_DEPTH_BYTES = 5;
 /**
  * Ocean FFT bytes per texel per cascade: h0 spectrum (rgba32float, 16 B) +
  * wave data (16 B) + two ping-pong pairs (4 × rgba16float since 1B-13) +
- * displacement (rgba16float, 8 B) + two normal/foam targets (2 × 8 B).
+ * displacement (rgba16float, 8 B) + two slope/foam targets and one
+ * second-moment target (2-8: each rgba16float with a full mip chain, ×4/3).
  */
 const OCEAN_FFT_PING_PONG_BYTES = 8;
-const OCEAN_BYTES_PER_TEXEL = 16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 2 * 8;
+const OCEAN_MIP_CHAIN_FACTOR = 4 / 3;
+const OCEAN_BYTES_PER_TEXEL =
+  16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 3 * 8 * OCEAN_MIP_CHAIN_FACTOR;
 /** Integration + two temporal history targets, rgba16float. */
 const CLOUD_TARGET_COUNT = 3;
 /** Vertex layout of a CPU terrain tile: position + normal (f32x3) + colour (f32x4). */
 const TERRAIN_VERTEX_BYTES = (3 + 3 + 4) * 4;
 
 /**
- * Detail/wildlife thin-instance buffers, hydrology tiles, planar-reflection
- * mirror target. Coarse per-tier allowance; revisited when the 1A-1 numeric
- * report shows the real numbers.
+ * Z-4: the movable allocations (PRE_PHASE_4_REALIGNMENT.md §3, R-22). The
+ * old flat `DETAIL_ALLOWANCE_MIB` made assertion 47 and the `2-18`
+ * bucket-count arbitration vacuous — vegetation memory was a hand-written
+ * constant that no Phase-2 allocation could move. These inputs are the
+ * declared sources of truth: the item that changes an allocation changes the
+ * input here, and the budget rows follow. The `Z-4` "row moves when the
+ * input moves" test pins that property.
  */
-const DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
-  0: 12,
-  1: 20,
-  2: 28,
-  3: 32,
+export interface DynamicAllocationInputs {
+  /** Bytes per rendered detail instance (2-11a's packed record). */
+  readonly detailInstanceBytes: number;
+  /** Ceiling on simultaneously resident detail instances, per tier. */
+  readonly detailInstanceBudget: Readonly<Record<PerformanceTier, number>>;
+  /** Foliage card atlas (`2-11`); 0 until it exists. */
+  readonly foliageAtlasMiB: number;
+  /** Octahedral impostor atlas (`2-17`); 0 until it exists. */
+  readonly impostorAtlasMiB: number;
+  /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
+  readonly cloudVolumesMiB: number;
+  /** Terrain material arrays (`3-1`); 0 until Phase 3. */
+  readonly materialArraysMiB: number;
+}
+
+export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
+  // 2-11a: the 32-byte packed record replaced 96-byte matrix instancing.
+  detailInstanceBytes: 32,
+  detailInstanceBudget: Object.freeze({
+    0: 60_000,
+    1: 120_000,
+    2: 200_000,
+    3: 240_000,
+  }),
+  // 2-12: the atlas's first sampler went live — measured bytes across all
+  // 16 layers and their coverage-preserving mip chains.
+  foliageAtlasMiB: 5.33,
+  // 2-17: 7 species × 2 season buckets × 2 arrays (albedo, normal+depth) of
+  // 256² rgba8 with full mip chains — measured from the CPU bake. 64² tiles
+  // are the recorded decision (the plan's 128² sketch did not close against
+  // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px).
+  impostorAtlasMiB: 9.33,
+  // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
+  cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,
+  materialArraysMiB: 0,
+});
+
+/**
+ * Hydrology tiles and wildlife thin instances. 2-10 retired the
+ * planar-reflection mirror this allowance also covered — each tier gives
+ * back the mirror's ~0.2-1 MiB.
+ */
+const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
+  0: 8,
+  1: 9,
+  2: 11,
+  3: 13,
 });
 
 /** Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs. */
@@ -179,9 +228,15 @@ export interface GpuMemoryEstimateMiB {
   readonly framebuffersMiB: number;
   readonly shadowsMiB: number;
   readonly oceanMiB: number;
+  /** Includes the `2-1` cloud volumes once their input is non-zero. */
   readonly cloudsMiB: number;
   readonly terrainGeometryMiB: number;
-  readonly detailMiB: number;
+  /** Z-4: the split vegetation rows (replacing the flat detail allowance). */
+  readonly detailInstancesMiB: number;
+  readonly foliageAtlasMiB: number;
+  readonly impostorAtlasMiB: number;
+  readonly otherDetailMiB: number;
+  readonly materialArraysMiB: number;
   readonly miscMiB: number;
   readonly totalMiB: number;
 }
@@ -238,6 +293,7 @@ function terrainPageBytes(resolution: number): number {
 export function estimateGpuMemoryBreakdown(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): GpuMemoryEstimateMiB {
   const renderPixels = estimateRenderPixels(profile, viewport);
 
@@ -275,12 +331,19 @@ export function estimateGpuMemoryBreakdown(
   const framebuffersMiB = framebufferBytes / MIB;
   const shadowsMiB = shadowBytes / MIB;
   const oceanMiB = oceanBytes / MIB;
-  const cloudsMiB = cloudBytes / MIB;
+  const cloudsMiB = cloudBytes / MIB + inputs.cloudVolumesMiB;
   const terrainGeometryMiB = terrainBytes / MIB;
-  const detailMiB = DETAIL_ALLOWANCE_MIB[tier];
+  const detailInstancesMiB =
+    (inputs.detailInstanceBudget[tier] * inputs.detailInstanceBytes) / MIB;
+  const foliageAtlasMiB = inputs.foliageAtlasMiB;
+  const impostorAtlasMiB = inputs.impostorAtlasMiB;
+  const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
+  const materialArraysMiB = inputs.materialArraysMiB;
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
-    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB + detailMiB + miscMiB)
+    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB
+      + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
+      + materialArraysMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
 
   return Object.freeze({
@@ -290,7 +353,11 @@ export function estimateGpuMemoryBreakdown(
     oceanMiB,
     cloudsMiB,
     terrainGeometryMiB,
-    detailMiB,
+    detailInstancesMiB,
+    foliageAtlasMiB,
+    impostorAtlasMiB,
+    otherDetailMiB,
+    materialArraysMiB,
     miscMiB,
     totalMiB,
   });
@@ -299,16 +366,18 @@ export function estimateGpuMemoryBreakdown(
 export function estimateGpuMemoryMiB(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): number {
-  return estimateGpuMemoryBreakdown(profile, viewport).totalMiB;
+  return estimateGpuMemoryBreakdown(profile, viewport, inputs).totalMiB;
 }
 
 /** Fails loudly (with the full breakdown) when a profile overspends its tier ceiling. */
 export function assertWithinBudget(
   profile: WebGpuQualityProfile,
   viewport: RenderViewport,
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
 ): void {
-  const breakdown = estimateGpuMemoryBreakdown(profile, viewport);
+  const breakdown = estimateGpuMemoryBreakdown(profile, viewport, inputs);
   const ceiling = MEMORY_CEILING_MIB[profile.tier as PerformanceTier];
   if (breakdown.totalMiB <= ceiling) return;
   const rows = [
@@ -317,7 +386,11 @@ export function assertWithinBudget(
     `ocean ${breakdown.oceanMiB.toFixed(1)}`,
     `clouds ${breakdown.cloudsMiB.toFixed(1)}`,
     `terrain ${breakdown.terrainGeometryMiB.toFixed(1)}`,
-    `detail ${breakdown.detailMiB.toFixed(1)}`,
+    `detail-instances ${breakdown.detailInstancesMiB.toFixed(1)}`,
+    `foliage-atlas ${breakdown.foliageAtlasMiB.toFixed(1)}`,
+    `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,
+    `other-detail ${breakdown.otherDetailMiB.toFixed(1)}`,
+    `material-arrays ${breakdown.materialArraysMiB.toFixed(1)}`,
     `misc ${breakdown.miscMiB.toFixed(1)}`,
   ].join(", ");
   throw new Error(

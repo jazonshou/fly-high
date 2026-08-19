@@ -27,7 +27,8 @@ export default defineConfig({
     include: ["tests/perf/**/*.test.ts"],
     passWithNoTests: false,
     reporters: ["default"],
-    testTimeout: 300_000,
+    // 2Z grew the shot list from three to thirteen; streaming dominates.
+    testTimeout: 1_500_000,
     hookTimeout: 120_000,
     browser: {
       enabled: true,

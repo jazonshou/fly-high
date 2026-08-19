@@ -73,14 +73,23 @@ fn sampleCloudDensity(world_position: vec3<f32>, include_detail: bool) -> f32 {
   if (height_fraction <= 0.0 || height_fraction >= 1.0) {
     return 0.0;
   }
-  let weather = sampleCloudWeather(world_position);
+  // 2-2: wind shear — the sample position leans downwind with height, so
+  // cumulus lean instead of standing as vertical pillars. One of the
+  // strongest cheap cues that the sky is a fluid.
+  let wind_length = length(params.wind_time.xy);
+  var sheared_position = world_position;
+  if (wind_length > 1e-3) {
+    let shear = (params.wind_time.xy / wind_length) * (height_fraction * 560.0);
+    sheared_position = world_position + vec3<f32>(shear.x, 0.0, shear.y);
+  }
+  let weather = sampleCloudWeather(sheared_position);
   let coverage = cloudSaturate(weather.r + params.wind_time.w - 0.5);
   if (coverage <= 0.001) {
     return 0.0;
   }
   let cloud_type = cloudSaturate(mix(params.weather_origin_size.w, weather.g, 0.72));
   let profile = cloudVerticalProfile(height_fraction, cloud_type);
-  let absolute_position = world_position + params.world_coordinate_origin.xyz;
+  let absolute_position = sheared_position + params.world_coordinate_origin.xyz;
   let base_position = vec3<f32>(
     absolute_position.x + params.wind_time.x,
     absolute_position.y,
@@ -89,7 +98,12 @@ fn sampleCloudDensity(world_position: vec3<f32>, include_detail: bool) -> f32 {
   let base_uv = fract(base_position / max(params.noise_scales.x, 1.0));
   let base_noise = textureSampleLevel(base_noise_texture, linear_sampler, base_uv, 0.0);
   let worley = 1.0 - dot(base_noise.gba, vec3<f32>(0.625, 0.25, 0.125));
-  let connected_shape = mix(base_noise.r, worley, 0.36);
+  // 2-3: dual-scale sampling — a second fetch at an incommensurate 3.7×
+  // scale modulates the shape, so the base volume's repeat period and the
+  // modulation period never align over a 200 km leg.
+  let broad_uv = fract(base_position / max(params.noise_scales.x * 3.7, 1.0));
+  let broad_noise = textureSampleLevel(base_noise_texture, linear_sampler, broad_uv, 0.0).r;
+  let connected_shape = mix(base_noise.r, worley, 0.36) * (0.78 + 0.44 * broad_noise);
   let coverage_threshold = 1.0 - coverage;
   var density = cloudSaturate(cloudRemap(
     connected_shape * profile,
@@ -120,8 +134,12 @@ export const CLOUD_RAYMARCH_WGSL = /* wgsl */ `
 ${CLOUD_SHARED_WGSL}
 
 struct CloudRaymarchParams {
-  inverse_view_projection: mat4x4<f32>,
-  previous_view_projection: mat4x4<f32>,
+  /** xyz unit camera forward; w = view scale x (tan half-fov). */
+  camera_forward: vec4<f32>,
+  /** xyz unit camera right; w = view scale y. */
+  camera_right: vec4<f32>,
+  /** xyz unit camera up; w = march stride growth per metre of ray distance (2-5). */
+  camera_up: vec4<f32>,
   camera_position: vec4<f32>,
   planet_center_radius: vec4<f32>,
   sun_direction_angular_radius: vec4<f32>,
@@ -140,42 +158,62 @@ struct CloudRaymarchParams {
 
 @group(0) @binding(0) var<uniform> params: CloudRaymarchParams;
 @group(0) @binding(1) var linear_sampler: sampler;
-@group(0) @binding(2) var scene_depth: texture_depth_2d;
+// Camera-space Z in metres (2-0a DepthRenderer, storeCameraSpaceZ); 0 = sky.
+@group(0) @binding(2) var scene_depth: texture_2d<f32>;
 @group(0) @binding(3) var weather_texture: texture_2d<f32>;
 @group(0) @binding(4) var base_noise_texture: texture_3d<f32>;
 @group(0) @binding(5) var detail_noise_texture: texture_3d<f32>;
 @group(0) @binding(6) var blue_noise_texture: texture_2d<f32>;
 @group(0) @binding(7) var sky_view_lut: texture_2d<f32>;
 @group(0) @binding(8) var atmosphere_transmittance_lut: texture_2d<f32>;
+@group(0) @binding(9) var raymarch_cloud: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(10) var raymarch_aux: texture_storage_2d<rgba16float, write>;
+// 2-5: density-sample counter — the adaptive march's whole justification is
+// a measured number, not an impression (assertion 39).
+@group(0) @binding(11) var<storage, read_write> density_counter: array<atomic<u32>>;
 
 ${CLOUD_RAYMARCH_DENSITY_WGSL}
 
-fn reconstructWorldPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  let clip = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-  let world = params.inverse_view_projection * clip;
-  return world.xyz / max(abs(world.w), 1e-6);
-}
+// Must match transmittanceLutUv() in atmosphere/AtmosphereLuts.ts — the
+// tested CPU parameterisation the 2-0a upload was baked with.
+const CLOUD_ATMOSPHERE_SHELL_HEIGHT: f32 = 100000.0;
 
 fn sampleAtmosphereTransmittance(world_position: vec3<f32>) -> vec3<f32> {
   let relative = world_position - params.planet_center_radius.xyz;
   let up = normalize(relative);
-  let height_fraction = cloudSaturate(
-    (length(relative) - params.planet_center_radius.w)
-      / max(params.cloud_radii.y - params.planet_center_radius.w, 1.0),
-  );
+  let altitude = max(length(relative) - params.planet_center_radius.w, 0.0);
   let sun_zenith = dot(up, normalize(params.sun_direction_angular_radius.xyz));
-  let uv = vec2<f32>(sun_zenith * 0.5 + 0.5, height_fraction);
+  let uv = vec2<f32>(
+    clamp((sun_zenith + 0.2) / 1.2, 0.0, 1.0),
+    sqrt(clamp(altitude / CLOUD_ATMOSPHERE_SHELL_HEIGHT, 0.0, 1.0)),
+  );
   return textureSampleLevel(atmosphere_transmittance_lut, linear_sampler, uv, 0.0).rgb;
 }
 
+// Must match the 2-0a sky-ambient LUT bake: u = view elevation, v = azimuth
+// relative to the sun (wrapping), so the ambient brightens toward the sun.
 fn sampleSkyAmbient(world_position: vec3<f32>, ray_direction: vec3<f32>) -> vec3<f32> {
   let up = normalize(world_position - params.planet_center_radius.xyz);
-  let sky_uv = vec2<f32>(dot(ray_direction, up) * 0.5 + 0.5,
-    dot(up, normalize(params.sun_direction_angular_radius.xyz)) * 0.5 + 0.5);
+  let elevation = dot(ray_direction, up);
+  let sun = normalize(params.sun_direction_angular_radius.xyz);
+  var sun_horizontal = sun.xz;
+  if (dot(sun_horizontal, sun_horizontal) < 1e-8) {
+    sun_horizontal = vec2<f32>(1.0, 0.0);
+  }
+  sun_horizontal = normalize(sun_horizontal);
+  var ray_horizontal = ray_direction.xz;
+  if (dot(ray_horizontal, ray_horizontal) < 1e-8) {
+    ray_horizontal = sun_horizontal;
+  }
+  ray_horizontal = normalize(ray_horizontal);
+  let cos_azimuth = dot(ray_horizontal, sun_horizontal);
+  let sin_azimuth = ray_horizontal.x * sun_horizontal.y - ray_horizontal.y * sun_horizontal.x;
+  let azimuth_fraction = atan2(sin_azimuth, cos_azimuth) / (2.0 * CLOUD_PI) + 0.5;
+  let sky_uv = vec2<f32>(elevation * 0.5 + 0.5, azimuth_fraction);
   return textureSampleLevel(sky_view_lut, linear_sampler, sky_uv, 0.0).rgb;
 }
 
-fn cloudSunOpticalDepth(world_position: vec3<f32>) -> f32 {
+fn cloudSunOpticalDepth(world_position: vec3<f32>, requested_steps: u32) -> f32 {
   let sun_direction = normalize(params.sun_direction_angular_radius.xyz);
   let outer_hit = cloudRaySphere(
     world_position,
@@ -184,7 +222,7 @@ fn cloudSunOpticalDepth(world_position: vec3<f32>) -> f32 {
     params.cloud_radii.y,
   );
   let exit_distance = max(outer_hit.y, 0.0);
-  let light_step_count = min(u32(params.march.w), CLOUD_MAX_LIGHT_STEPS);
+  let light_step_count = min(requested_steps, CLOUD_MAX_LIGHT_STEPS);
   if (light_step_count == 0u || exit_distance <= 0.0) {
     return 0.0;
   }
@@ -206,64 +244,106 @@ fn cloudLighting(
   ray_direction: vec3<f32>,
   local_density: f32,
   view_step_length: f32,
+  light_step_count: u32,
 ) -> vec3<f32> {
+  let ambient = sampleSkyAmbient(world_position, ray_direction) * params.optical.w;
+  // 2-5: with the sun below the horizon its radiance terms are all zero, but
+  // the light march that feeds them still costs lightSteps density fetches
+  // per view sample. Skip the whole sun path when there is no sun energy —
+  // measured 20 ms GPU p95 on the night capture shot without this.
+  let sun_energy = params.sun_color_illuminance.w
+    * max(
+      params.sun_color_illuminance.r,
+      max(params.sun_color_illuminance.g, params.sun_color_illuminance.b),
+    );
+  if (sun_energy < 1e-3) {
+    return ambient;
+  }
   let sun_direction = normalize(params.sun_direction_angular_radius.xyz);
   let cosine = dot(ray_direction, sun_direction);
   let forward_phase = cloudHenyeyGreenstein(cosine, params.phase_precipitation.x);
   let backward_phase = cloudHenyeyGreenstein(cosine, params.phase_precipitation.y);
   let phase = mix(forward_phase, backward_phase, params.phase_precipitation.z);
-  let sun_optical_depth = cloudSunOpticalDepth(world_position);
+  let sun_optical_depth = cloudSunOpticalDepth(world_position, light_step_count);
   let sun_transmittance = exp(-sun_optical_depth * params.optical.x);
   let atmosphere_transmittance = sampleAtmosphereTransmittance(world_position);
+  // 2-4: powder is a BACKSCATTER approximation — it must fall off as the
+  // view aligns with the sun (cosine → 1 is the forward/silver-lining lobe,
+  // where the dark-edge effect does not exist).
   let powder = 1.0 - exp(
     -local_density * view_step_length * params.optical.x * 2.0,
   );
-  let powder_phase = phase + powder * params.optical.y * (1.0 / (4.0 * CLOUD_PI));
+  let powder_backscatter = cloudSaturate(0.5 - 0.5 * cosine);
+  let powder_phase = phase
+    + powder * powder_backscatter * params.optical.y * (1.0 / (4.0 * CLOUD_PI));
   let sun_radiance = params.sun_color_illuminance.rgb
     * params.sun_color_illuminance.w
     * atmosphere_transmittance
     * sun_transmittance
     * powder_phase;
-  let ambient = sampleSkyAmbient(world_position, ray_direction) * params.optical.w;
 
+  // 2-4: the multiple-scattering octaves decay energy, EXTINCTION and phase
+  // per order (a^n, b^n, c^n — Jarosz/Schneider). Decaying only energy
+  // brightens the cloud uniformly instead of filling shadowed interiors,
+  // which reads as milk. a = multipleScatteringFactor (config), b = c = 0.5
+  // (literature constants, pinned by comment not config — the knobs stay
+  // densityMultiplier and extinctionPerMeter).
   var multiple_scattering = vec3<f32>(0.0);
-  var order_weight = params.optical.z;
-  var order_transmittance = sqrt(max(sun_transmittance, 0.0));
+  var order_energy = params.optical.z;
+  var order_extinction = 0.5;
+  var order_phase_scale = 0.5;
   for (var order = 0u; order < 3u; order += 1u) {
+    let octave_transmittance = exp(-sun_optical_depth * params.optical.x * order_extinction);
+    let octave_phase = mix(
+      cloudHenyeyGreenstein(cosine, params.phase_precipitation.x * order_phase_scale),
+      cloudHenyeyGreenstein(cosine, params.phase_precipitation.y * order_phase_scale),
+      params.phase_precipitation.z,
+    );
     multiple_scattering += params.sun_color_illuminance.rgb
       * params.sun_color_illuminance.w
-      * order_weight * order_transmittance * (1.0 / (4.0 * CLOUD_PI));
-    order_weight *= params.optical.z;
-    order_transmittance = sqrt(order_transmittance);
+      * atmosphere_transmittance
+      * order_energy * octave_transmittance * octave_phase;
+    order_energy *= params.optical.z;
+    order_extinction *= 0.5;
+    order_phase_scale *= 0.5;
   }
   return sun_radiance + ambient + multiple_scattering;
 }
 
-struct CloudRaymarchOutput {
-  /** Premultiplied scene-linear radiance in rgb and transmittance in a. */
-  @location(0) radiance_transmittance: vec4<f32>,
-  /** Representative distance, previous-UV motion, and history confidence. */
-  @location(1) distance_motion_confidence: vec4<f32>,
-};
-
-@fragment
-fn raymarchVolumetricClouds(@builtin(position) pixel_position: vec4<f32>) -> CloudRaymarchOutput {
-  let uv = pixel_position.xy * params.output_size_inverse_size.zw;
+// 2-0 adoption deviation: the raymarch runs as a COMPUTE pass writing two
+// storage textures instead of an MRT fragment pass — Babylon's compute path
+// (the ocean's proven pattern) binds storage textures directly, and no MRT
+// plumbing needs to exist. Scene depth arrives as camera-space Z metres.
+@compute @workgroup_size(8, 8, 1)
+fn raymarchVolumetricClouds(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  let output_size = vec2<u32>(params.output_size_inverse_size.xy);
+  if (invocation.x >= output_size.x || invocation.y >= output_size.y) {
+    return;
+  }
+  let pixel = vec2<i32>(invocation.xy);
+  let uv = (vec2<f32>(invocation.xy) + 0.5) * params.output_size_inverse_size.zw;
   let scene_size = textureDimensions(scene_depth, 0);
   let scene_coordinate = clamp(
     vec2<i32>(uv * vec2<f32>(scene_size)),
     vec2<i32>(0),
     vec2<i32>(scene_size) - vec2<i32>(1),
   );
-  let depth = textureLoad(scene_depth, scene_coordinate, 0);
+  let view_z = textureLoad(scene_depth, scene_coordinate, 0).r;
   let camera_position = params.camera_position.xyz;
-  let far_position = reconstructWorldPosition(uv, 1.0);
-  let ray_direction = normalize(far_position - camera_position);
+  // The shipped 1B-12 ray convention: camera basis + view scale, the same
+  // formula the temporal reprojection and composite rebuild, so all three
+  // passes agree on rays by construction (no view-projection matrix).
+  let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let ray_direction = normalize(
+    params.camera_forward.xyz
+      + params.camera_right.xyz * (ndc.x * params.camera_forward.w)
+      + params.camera_up.xyz * (ndc.y * params.camera_right.w),
+  );
   var scene_distance = params.cloud_radii.z;
-  if (depth < 0.999999) {
+  if (view_z > 0.0) {
     scene_distance = min(
       scene_distance,
-      length(reconstructWorldPosition(uv, depth) - camera_position),
+      view_z / max(dot(ray_direction, params.camera_forward.xyz), 0.05),
     );
   }
 
@@ -275,75 +355,131 @@ fn raymarchVolumetricClouds(@builtin(position) pixel_position: vec4<f32>) -> Clo
   );
   var trace_start = max(outer_hit.x, 0.0);
   let trace_end = min(outer_hit.y, scene_distance);
-  var output: CloudRaymarchOutput;
+  // 2-5: a camera under the slab base otherwise marches provably-empty air
+  // from the lens to the base — every sky ray in a below-layer view paid
+  // skip strides through clear sky (measured on slant-10km/ground-2m).
+  // Density below the inner sphere is zero by construction, so starting at
+  // the base intersection is exact. For rays that dip below the horizon the
+  // inner exit lies beyond the trace cap, which correctly writes empty sky
+  // instead of marching far-side cloud through the planet.
+  let camera_height = length(camera_position - params.planet_center_radius.xyz);
+  if (camera_height < params.cloud_radii.x) {
+    let inner_hit = cloudRaySphere(
+      camera_position,
+      ray_direction,
+      params.planet_center_radius.xyz,
+      params.cloud_radii.x,
+    );
+    trace_start = max(trace_start, inner_hit.y);
+  }
   if (trace_end <= trace_start) {
-    output.radiance_transmittance = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    output.distance_motion_confidence = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    return output;
+    textureStore(raymarch_cloud, pixel, vec4<f32>(0.0, 0.0, 0.0, 1.0));
+    textureStore(raymarch_aux, pixel, vec4<f32>(0.0, 0.0, 0.0, 1.0));
+    return;
   }
 
   let blue_size = textureDimensions(blue_noise_texture, 0);
   let blue_coordinate = vec2<i32>(
-    (vec2<u32>(pixel_position.xy) + vec2<u32>(u32(params.full_size_frame_delta.z) * 37u, 0u))
+    (invocation.xy + vec2<u32>(u32(params.full_size_frame_delta.z) * 37u, 0u))
       % blue_size,
   );
   let jitter = textureLoad(blue_noise_texture, blue_coordinate, 0).r;
-  trace_start += jitter * params.march.x;
+  // The jitter must cover one local stride, and strides grow with distance —
+  // an unscaled jitter at a far slab entry no longer breaks up banding.
+  trace_start += jitter * params.march.x * (1.0 + trace_start * params.camera_up.w);
   var distance = trace_start;
   var transmittance = 1.0;
   var radiance = vec3<f32>(0.0);
   var weighted_distance = 0.0;
   var accumulated_opacity = 0.0;
+  var density_samples = 0u;
+  var was_skipping = false;
   let maximum_steps = min(u32(params.march.z), CLOUD_MAX_VIEW_STEPS);
+  // 2-5: strides grow linearly with ray distance (×2 at the configured
+  // doubling distance). A level ray can spend tens of kilometres inside the
+  // 5.7 km slab; at near-field stride that exhausts the whole step budget on
+  // far, low-frequency content — measured 32 ms GPU p95 on slant-10km.
+  let stride_growth = params.camera_up.w;
 
   for (var step_index = 0u; step_index < CLOUD_MAX_VIEW_STEPS; step_index += 1u) {
     if (step_index >= maximum_steps || distance >= trace_end || transmittance < 0.008) {
       break;
     }
+    let stride_scale = 1.0 + distance * stride_growth;
+    let fine_step = params.march.x * stride_scale;
+    // 2-5: the long stride used through empty space. Twice the coarse step —
+    // wide enough to pay, narrow enough that the back-up step recovers edges.
+    let skip_stride = params.march.y * 2.0 * stride_scale;
     let world_position = camera_position + ray_direction * distance;
     let density = sampleCloudDensity(world_position, true);
+    density_samples += 1u;
+    if (density <= 1e-4) {
+      // 2-5: empty space — advance by the long stride and keep striding
+      // until density reappears.
+      distance += skip_stride;
+      was_skipping = true;
+      continue;
+    }
+    if (was_skipping) {
+      // Density reappeared after a long stride: step back one stride and
+      // resume the fine march so the cloud edge is not overshot.
+      distance = max(distance - skip_stride + fine_step, trace_start);
+      was_skipping = false;
+      continue;
+    }
     let density_weight = cloudSaturate(density * 3.0);
     let step_length = min(
-      mix(params.march.y, params.march.x, density_weight),
+      mix(params.march.y, params.march.x, density_weight) * stride_scale,
       trace_end - distance,
     );
-    if (density > 1e-4) {
-      let sample_transmittance = exp(-density * params.optical.x * step_length);
-      let opacity = 1.0 - sample_transmittance;
-      let lighting = cloudLighting(world_position, ray_direction, density, step_length);
-      radiance += transmittance * opacity * lighting;
-      let weighted_opacity = transmittance * opacity;
-      weighted_distance += distance * weighted_opacity;
-      accumulated_opacity += weighted_opacity;
-      transmittance *= sample_transmittance;
-    }
-    distance += max(step_length, params.march.x);
+    // Distant samples keep their transmittance exact but light with fewer
+    // sun-march steps — the octave detail they resolve is subpixel out there.
+    let light_step_count = max(
+      2u,
+      u32(ceil(params.march.w / (1.0 + distance * stride_growth * 0.5))),
+    );
+    let sample_transmittance = exp(-density * params.optical.x * step_length);
+    let opacity = 1.0 - sample_transmittance;
+    let lighting = cloudLighting(
+      world_position,
+      ray_direction,
+      density,
+      step_length,
+      light_step_count,
+    );
+    radiance += transmittance * opacity * lighting;
+    let weighted_opacity = transmittance * opacity;
+    weighted_distance += distance * weighted_opacity;
+    accumulated_opacity += weighted_opacity;
+    transmittance *= sample_transmittance;
+    distance += max(step_length, fine_step);
   }
+  atomicAdd(&density_counter[0], density_samples);
 
   let representative_distance = select(
     0.0,
     weighted_distance / max(accumulated_opacity, 1e-5),
     accumulated_opacity > 1e-5,
   );
-  var motion = vec2<f32>(0.0);
-  if (representative_distance > 0.0) {
-    let representative_position = camera_position + ray_direction * representative_distance;
-    let previous_clip = params.previous_view_projection * vec4<f32>(representative_position, 1.0);
-    let previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
-    let previous_uv = vec2<f32>(previous_ndc.x * 0.5 + 0.5, 0.5 - previous_ndc.y * 0.5);
-    motion = previous_uv - uv;
-  }
-  output.radiance_transmittance = vec4<f32>(radiance, transmittance);
-  output.distance_motion_confidence = vec4<f32>(
+  // 1A-4/1B-12: motion vectors from a cached previous-frame camera matrix
+  // are the stale-matrix bug class CloudReprojection.ts exists to forbid. The
+  // temporal resolve reprojects from the previous RAY BASIS and the absolute
+  // camera delta instead; the aux motion slot stays zero.
+  textureStore(raymarch_cloud, pixel, vec4<f32>(radiance, transmittance));
+  textureStore(raymarch_aux, pixel, vec4<f32>(
     representative_distance,
-    motion,
+    0.0,
+    0.0,
     cloudSaturate(accumulated_opacity * 8.0 + 0.1),
-  );
-  return output;
+  ));
 }
 `;
 
 export const CLOUD_TEMPORAL_RESOLVE_WGSL = /* wgsl */ `
+// Reprojection follows CloudReprojection.ts's 1B-12 invariant: previous RAY
+// BASIS plus the delta of ABSOLUTE camera positions — never a cached
+// view-projection matrix, so a floating-origin rebase is a no-op by
+// construction (the 1A-4 counter-rotating-cloud bug class).
 struct CloudTemporalParams {
   output_size: vec2<u32>,
   camera_cut: u32,
@@ -352,6 +488,20 @@ struct CloudTemporalParams {
   distance_sigma_m: f32,
   luminance_clamp: f32,
   minimum_confidence: f32,
+  /** xyz current forward; w = maximum trace distance (metres). */
+  current_forward: vec4<f32>,
+  /** xyz current right; w = current view scale x. */
+  current_right: vec4<f32>,
+  /** xyz current up; w = current view scale y. */
+  current_up: vec4<f32>,
+  /** xyz previous forward; w = previous view scale x. */
+  previous_forward: vec4<f32>,
+  /** xyz previous right; w = previous view scale y. */
+  previous_right: vec4<f32>,
+  /** xyz previous up; w unused. */
+  previous_up: vec4<f32>,
+  /** xyz camera position delta (current − previous, absolute metres). */
+  camera_delta: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: CloudTemporalParams;
@@ -364,6 +514,30 @@ struct CloudTemporalParams {
 
 fn cloudLuminance(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn temporalViewRay(uv: vec2<f32>) -> vec3<f32> {
+  let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  return normalize(
+    params.current_forward.xyz
+      + params.current_right.xyz * (ndc.x * params.current_right.w)
+      + params.current_up.xyz * (ndc.y * params.current_up.w),
+  );
+}
+
+// Previous-frame uv of a point at the given distance along the current ray,
+// or (-1,-1) when it lands behind the previous camera.
+fn reprojectPreviousUv(uv: vec2<f32>, distance: f32) -> vec2<f32> {
+  let point = temporalViewRay(uv) * distance + params.camera_delta.xyz;
+  let forward_depth = dot(point, params.previous_forward.xyz);
+  if (forward_depth <= 1e-6) {
+    return vec2<f32>(-1.0, -1.0);
+  }
+  let ndc_x = dot(point, params.previous_right.xyz)
+    / (forward_depth * max(params.previous_forward.w, 1e-6));
+  let ndc_y = dot(point, params.previous_up.xyz)
+    / (forward_depth * max(params.previous_right.w, 1e-6));
+  return vec2<f32>(ndc_x * 0.5 + 0.5, 0.5 - ndc_y * 0.5);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -390,7 +564,14 @@ fn resolveCloudTemporal(@builtin(global_invocation_id) invocation: vec3<u32>) {
   }
 
   let current_uv = (vec2<f32>(invocation.xy) + 0.5) / vec2<f32>(params.output_size);
-  let previous_uv = current_uv + auxiliary.yz;
+  // Reproject at the representative distance; empty pixels reproject at the
+  // maximum trace distance so clear sky still tracks camera rotation.
+  let reprojection_distance = select(
+    params.current_forward.w,
+    auxiliary.x,
+    auxiliary.x > 0.0,
+  );
+  let previous_uv = reprojectPreviousUv(current_uv, reprojection_distance);
   let history_in_bounds = all(previous_uv >= vec2<f32>(0.0))
     && all(previous_uv <= vec2<f32>(1.0));
   var history = current;
@@ -455,7 +636,9 @@ struct CloudShadowParams {
 @group(0) @binding(1) var linear_sampler: sampler;
 @group(0) @binding(2) var weather_texture: texture_2d<f32>;
 @group(0) @binding(3) var base_noise_texture: texture_3d<f32>;
-@group(0) @binding(4) var cloud_shadow: texture_storage_2d<r32float, write>;
+// rgba16float, not r32float: the receiver materials sample this map with a
+// FILTERING sampler, and r32float is not filterable in core WebGPU.
+@group(0) @binding(4) var cloud_shadow: texture_storage_2d<rgba16float, write>;
 
 fn shadowHeightFraction(world_position: vec3<f32>) -> f32 {
   let radius = length(world_position - params.planet_center_radius.xyz);
@@ -542,18 +725,22 @@ export const CLOUD_RAYMARCH_SHADER: NatureShaderModule = Object.freeze({
   label: "nature/cloud-raymarch",
   code: CLOUD_RAYMARCH_WGSL,
   entryPoints: Object.freeze([
-    Object.freeze({ name: "raymarchVolumetricClouds", stage: "fragment" }),
+    // 2-0 adoption: compute, not an MRT fragment pass (recorded deviation).
+    Object.freeze({ name: "raymarchVolumetricClouds", stage: "compute", workgroupSize: CLOUD_WORKGROUP_8_X_8 }),
   ]),
   bindings: Object.freeze([
     Object.freeze({ group: 0, binding: 0, name: "params", kind: "uniform-buffer" }),
     Object.freeze({ group: 0, binding: 1, name: "linear_sampler", kind: "sampler", samplerType: "filtering" }),
-    Object.freeze({ group: 0, binding: 2, name: "scene_depth", kind: "sampled-texture", viewDimension: "2d", sampleType: "depth" }),
+    Object.freeze({ group: 0, binding: 2, name: "scene_depth", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
     Object.freeze({ group: 0, binding: 3, name: "weather_texture", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 4, name: "base_noise_texture", kind: "sampled-texture", viewDimension: "3d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 5, name: "detail_noise_texture", kind: "sampled-texture", viewDimension: "3d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 6, name: "blue_noise_texture", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 7, name: "sky_view_lut", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 8, name: "atmosphere_transmittance_lut", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
+    Object.freeze({ group: 0, binding: 9, name: "raymarch_cloud", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 10, name: "raymarch_aux", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 11, name: "density_counter", kind: "storage-buffer" }),
   ]),
 });
 
@@ -585,7 +772,7 @@ export const CLOUD_SHADOW_SHADER: NatureShaderModule = Object.freeze({
     Object.freeze({ group: 0, binding: 1, name: "linear_sampler", kind: "sampler", samplerType: "filtering" }),
     Object.freeze({ group: 0, binding: 2, name: "weather_texture", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 3, name: "base_noise_texture", kind: "sampled-texture", viewDimension: "3d", sampleType: "float" }),
-    Object.freeze({ group: 0, binding: 4, name: "cloud_shadow", kind: "storage-texture", viewDimension: "2d", storageFormat: "r32float" }),
+    Object.freeze({ group: 0, binding: 4, name: "cloud_shadow", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
   ]),
 });
 

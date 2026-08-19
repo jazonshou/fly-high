@@ -36,7 +36,11 @@ import {
   type WorldPageStreamingObserver,
   type WorldPageStreamingPriorityOptions,
 } from "@/src/render/webgpu/world/streamingPriority";
-import type { TerrainTileData, WorldDefinition } from "@/src/world";
+import {
+  TERRAIN_REFERENCE_DAY_OF_YEAR,
+  type TerrainTileData,
+  type WorldDefinition,
+} from "@/src/world";
 import { TerrainMaterialPlugin } from "./TerrainMaterialPlugin";
 
 export interface TerrainClipmapBounds {
@@ -68,6 +72,8 @@ interface TerrainPage {
   readonly address: WorldPageAddress;
   readonly bounds: WorldPageBounds;
   readonly resolution: number;
+  /** Season bucket the tile's colours were baked at (R-13). */
+  readonly seasonDay: number;
   readonly mesh: Mesh;
   readonly metadata: WorldPageCacheMetadata;
   topologyKey: string;
@@ -298,6 +304,7 @@ export class TerrainClipmapSystem {
   /** Governor B lever 1 (1A-6b): page requests admitted per pump. */
   private requestBudgetPerPump = Number.POSITIVE_INFINITY;
   private lastAnchor = "";
+  private seasonDayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR;
   private disposed = false;
 
   constructor(
@@ -378,6 +385,22 @@ export class TerrainClipmapSystem {
       if (page.address.level < profile.terrainRings) continue;
       this.disposePage(key, page);
     }
+  }
+
+  /**
+   * R-13: seasonal day for the baked snow blanket, quantised to ~15-day
+   * buckets ANCHORED at the reference day (so the default clock maps to the
+   * bit-exact reference bake). A bucket change re-requests resident pages
+   * through the same content-mismatch path a resolution change uses; stale
+   * meshes keep rendering until their replacements arrive.
+   */
+  setSeasonalDayOfYear(dayOfYear: number): void {
+    const bucketDays = 365 / 24;
+    const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
+    let bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
+    bucketed = ((bucketed % 365) + 365) % 365;
+    if (bucketed === this.seasonDayOfYear) return;
+    this.seasonDayOfYear = bucketed;
   }
 
   /**
@@ -537,7 +560,11 @@ export class TerrainClipmapSystem {
     for (const desired of this.desired.values()) {
       if (this.pending.has(desired.key)) continue;
       const page = this.pages.get(desired.key);
-      if (page !== undefined && page.resolution === this.profile.terrainTileResolution) continue;
+      if (
+        page !== undefined
+        && page.resolution === this.profile.terrainTileResolution
+        && page.seasonDay === this.seasonDayOfYear
+      ) continue;
       missing.push({ address: desired.address, desired });
     }
     if (missing.length === 0) return;
@@ -582,6 +609,7 @@ export class TerrainClipmapSystem {
           tileZ: desired.address.z,
           size: desired.bounds.extentMeters,
           resolution: this.profile.terrainTileResolution,
+          dayOfYear: this.seasonDayOfYear,
           includeNormals: true,
           includeColors: true,
           // 1B-1: no clipmap path reads moisture or biomes. Colours stay —
@@ -746,6 +774,7 @@ export class TerrainClipmapSystem {
       address: desired.address,
       bounds: desired.bounds,
       resolution: tile.resolution,
+      seasonDay: tile.dayOfYear,
       mesh,
       // Cache metadata timestamps use the frame index as the clock; eviction
       // ordering only needs monotonicity, not wall time.
@@ -754,7 +783,7 @@ export class TerrainClipmapSystem {
         pageSchemaVersion: WORLD_PAGE_SCHEMA_VERSION,
         key: desired.key,
         worldRevision: this.worldRevision,
-        contentRevision: `cpu-tile-r${tile.resolution}`,
+        contentRevision: `cpu-tile-r${tile.resolution}-d${tile.dayOfYear}`,
         cpuByteLength: tile.heights.byteLength
           + tile.normals.byteLength
           + tile.colors.byteLength

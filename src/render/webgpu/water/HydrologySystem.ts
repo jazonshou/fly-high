@@ -64,8 +64,32 @@ import {
   sunShadowVertexAssignmentWgsl,
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
+import {
+  fallbackWaterEnvironmentCube,
+  fallbackWaterPlanarTexture,
+  WATER_ENVIRONMENT_MIP_WGSL,
+  WATER_FOAM_WGSL,
+  WATER_FRESNEL_SCHLICK_WGSL,
+  WATER_SHADING_CONSTANTS_WGSL,
+  WATER_SUN_SPECULAR_WGSL,
+  waterReflectedSkyWgsl,
+  type WaterReflectedSkyParameters,
+} from "./WaterShaders";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 
 const HYDROLOGY_SHADER_NAME = "aerolithHydrologyWater";
+
+/**
+ * 2-8a/2-9 — the inland-water analytic-sky fallback constants, named at the
+ * call site. 2-9 deleted both surfaces' fake sun discs (the sun is the
+ * shared Karis lobe now); the slightly darker inland overcast palette and
+ * softer horizon falloff survive as the deliberate divergence.
+ */
+const HYDROLOGY_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
+  horizonFalloffExponent: 2.3,
+  overcastZenithColor: [0.31, 0.36, 0.41],
+  overcastHorizonColor: [0.56, 0.61, 0.65],
+};
 
 export const HYDROLOGY_WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -144,6 +168,7 @@ varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
 uniform sunColor: vec3f;
+uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
 uniform cloudCoverage: f32;
@@ -151,51 +176,31 @@ uniform windDirection: vec2f;
 uniform windSpeed: f32;
 uniform time: f32;
 uniform regionOpacity: f32;
+uniform environmentValid: f32;
+var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
 ${SUN_SHADOW_FRAGMENT_WGSL}
 ${AERIAL_PERSPECTIVE_WGSL}
 
-const PI: f32 = 3.14159265359;
+${WATER_SHADING_CONSTANTS_WGSL}
 
-fn fresnelSchlick(cosine: f32, f0: vec3f) -> vec3f {
-  return f0 + (vec3f(1.0) - f0) * pow(1.0 - cosine, 5.0);
-}
+${WATER_FRESNEL_SCHLICK_WGSL}
 
-fn distributionGgx(normal: vec3f, halfVector: vec3f, roughness: f32) -> f32 {
-  let alpha = roughness * roughness;
-  let alpha2 = alpha * alpha;
-  let nDotH = max(dot(normal, halfVector), 0.0);
-  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
-  return alpha2 / max(PI * denominator * denominator, 0.000001);
-}
+${WATER_SUN_SPECULAR_WGSL}
 
-fn geometrySchlickGgx(nDotDirection: f32, roughness: f32) -> f32 {
-  let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
-  return nDotDirection / max(nDotDirection * (1.0 - k) + k, 0.0001);
-}
+${WATER_FOAM_WGSL}
 
-fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
-  let horizonAmount = pow(1.0 - clamp(direction.y, 0.0, 1.0), 2.3);
-  var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizonAmount);
-  // Match the ocean fallback: cloud coverage changes reflected energy, but an
-  // unrelated procedural cloud pattern must not masquerade as a reflection of
-  // the volumetric sky.
-  let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
-  let overcastSky = mix(vec3f(0.31, 0.36, 0.41), vec3f(0.56, 0.61, 0.65), horizonAmount);
-  sky = mix(sky, overcastSky, overcast * 0.52);
-  let solarGlare = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), 1800.0);
-  return sky + uniforms.sunColor * solarGlare * 11.0 * directSunVisibility
-    * (1.0 - overcast * 0.88);
-}
+${WATER_ENVIRONMENT_MIP_WGSL}
+
+${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let normal = normalize(input.surfaceNormal);
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let light = normalize(uniforms.sunDirection);
-  let halfVector = normalize(view + light);
   let nDotV = max(dot(normal, view), 0.001);
   let nDotL = max(dot(normal, light), 0.0);
   let lakeFactor = clamp(input.waterInfo.y, 0.0, 1.0);
@@ -207,12 +212,6 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let f0 = vec3f(0.0204);
   let fresnel = fresnelSchlick(nDotV, f0);
-  let distribution = distributionGgx(normal, halfVector, roughness);
-  let geometry = geometrySchlickGgx(nDotV, roughness)
-    * geometrySchlickGgx(max(nDotL, 0.001), roughness);
-  let sunSpecular = distribution * geometry
-    * fresnelSchlick(max(dot(view, halfVector), 0.0), f0)
-    / max(4.0 * nDotV * max(nDotL, 0.001), 0.001);
 
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -223,16 +222,23 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.sunShadowViewDepth,
   );
   let directSunVisibility = cloudShadow * sunShadow;
-  let atmosphereReflection = reflectedSky(
-    reflect(-view, normal),
-    input.absoluteWorldXZ,
-    directSunVisibility,
-  );
+  // 2-9: sky reflections from the shared environment probe (roughness-mapped
+  // mips); the analytic mix is the not-yet-valid fallback and no longer
+  // paints a fake sun disc — the sun comes solely from the shared Karis lobe.
+  let reflectionDirection = reflect(-view, normal);
+  let analyticSky = reflectedSky(reflectionDirection);
+  let environmentSky = textureSampleLevel(
+    environmentCube,
+    environmentCubeSampler,
+    reflectionDirection,
+    environmentRoughnessToMip(roughness),
+  ).rgb;
+  let skyReflection = mix(analyticSky, environmentSky, uniforms.environmentValid);
   let reflection = samplePlanarSceneReflection(
     input.planarReflectionClip,
     normal,
     input.worldPosition.y,
-    atmosphereReflection,
+    skyReflection,
   );
   let absorption = mix(vec3f(0.42, 0.105, 0.055), vec3f(0.28, 0.075, 0.038), lakeFactor);
   let depthTransmittance = exp(-absorption * depth);
@@ -243,7 +249,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     * (1.0 - depthTransmittance);
   let transmitted = bed * depthTransmittance + volumeScatter;
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
-  color += sunSpecular * uniforms.sunColor * nDotL * 4.0 * directSunVisibility;
+  // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
+  // the old gain-of-four multiply.
+  color += sunSpecular(normal, view, light, roughness, uniforms.sunAngularRadius, f0)
+    * uniforms.sunColor * directSunVisibility;
 
   let flowCrest = pow(max(
     sin(dot(input.absoluteWorldXZ, input.flowDirection) * 0.13
@@ -256,8 +265,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;
   let rapidFoam = clamp(input.whitewater * (0.4 + flowCrest * 0.85), 0.0, 1.0);
-  let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0);
-  color = mix(color, vec3f(0.78, 0.84, 0.82), foam);
+  // 2-9: lit foam, advected with the flow so rapids' foam actually travels.
+  let foamMask = foamBreakup(
+    input.absoluteWorldXZ,
+    input.flowDirection * (uniforms.time * (0.5 + input.flowSpeed * 0.6)),
+  );
+  let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0) * mix(0.4, 1.0, foamMask);
+  let foamColor = litFoamColor(
+    vec3f(0.78, 0.84, 0.82),
+    normal,
+    light,
+    uniforms.sunColor,
+    uniforms.skyZenith,
+    uniforms.skyHorizon,
+    directSunVisibility,
+  );
+  color = mix(color, foamColor, foam);
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
   // around them — inland water no longer punches through the haze.
   color = applyAerialPerspective(
@@ -564,6 +587,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "cameraPosition",
           "sunDirection",
           "sunColor",
+          "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
           "cloudCoverage",
@@ -571,6 +595,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "windSpeed",
           "time",
           "regionOpacity",
+          "environmentValid",
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
@@ -580,6 +605,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           CLOUD_SHADOW_RECEIVER_SAMPLER,
           PLANAR_REFLECTION_SAMPLER,
           SUN_SHADOW_SAMPLER,
+          "environmentCube",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -602,6 +628,18 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setFloat("planarReflectionStrength", 0);
     this.material.setFloat("planarReflectionValid", 0);
     this.material.setFloat("planarReflectionReceiverEnabled", 0);
+    // 2-9: bound from construction (an unbound declared sampler keeps the
+    // WebGPU material un-ready forever); the renderer upgrades it to the
+    // sky probe once that exists.
+    const fallbackCube = fallbackWaterEnvironmentCube(scene);
+    if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
+    this.material.setFloat("environmentValid", 0);
+    // 2-10: the planar capture is retired; the receiver sampler stays bound
+    // to a zero-confidence texel until 5-12 re-points a lake capture.
+    this.material.setTexture(
+      PLANAR_REFLECTION_SAMPLER,
+      fallbackWaterPlanarTexture(scene),
+    );
     this.setAtmosphere(atmosphere);
 
     if (initializeSynchronously) {
@@ -673,7 +711,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     if (!binding) {
       this.material.setFloat("planarReflectionValid", 0);
       this.material.setFloat("planarReflectionReceiverEnabled", 0);
-      this.material.removeTexture(PLANAR_REFLECTION_SAMPLER);
+      const fallbackPlanar = fallbackWaterPlanarTexture(this.scene);
+      if (fallbackPlanar) this.material.setTexture(PLANAR_REFLECTION_SAMPLER, fallbackPlanar);
       return;
     }
     this.material.setTexture(PLANAR_REFLECTION_SAMPLER, binding.texture);
@@ -699,10 +738,26 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       "sunColor",
       atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
     );
+    this.material.setFloat("sunAngularRadius", atmosphere.sunAngularRadiusRadians);
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
     this.material.setFloat("windSpeed", atmosphere.windSpeed);
+  }
+
+  /**
+   * 2-9: environment reflections from the shared sky probe (1C-6). Pass null
+   * to fall back to the analytic zenith/horizon sky.
+   */
+  setEnvironmentReflection(texture: BaseTexture | null): void {
+    if (!texture) {
+      const fallbackCube = fallbackWaterEnvironmentCube(this.scene);
+      if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
+      this.material.setFloat("environmentValid", 0);
+      return;
+    }
+    this.material.setTexture("environmentCube", texture);
+    this.material.setFloat("environmentValid", 1);
   }
 
   update(

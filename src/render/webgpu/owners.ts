@@ -137,6 +137,137 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
   },
   {
+    // 2-0: the second instance of the payload.ts institutional failure,
+    // closed. The WGSL modules live here; clouds/VolumetricCloudSystem.ts is
+    // the runtime that consumes them (the nature/=shader-library,
+    // system-directory=runtime arrangement the ocean already uses).
+    artifact: "volumetric-cloud-shader-modules",
+    owner: "clouds",
+    definitionSites: ["src/render/webgpu/nature/CloudShaders.ts"],
+    consumers: ["clouds"],
+    ownedSymbols: [
+      "CLOUD_RAYMARCH_WGSL",
+      "CLOUD_TEMPORAL_RESOLVE_WGSL",
+      "CLOUD_SHADOW_WGSL",
+      "CLOUD_SHADER_MODULES",
+    ],
+    notes:
+      "No inline cloud WGSL outside this file and the composite shell. A second "
+      + "raymarch/temporal/shadow definition fails the boundary test.",
+  },
+  {
+    // 2-8a: the §3.6 drift closed. One definition of fresnel/GGX/reflectedSky
+    // for every water surface; the genuinely divergent constants are named
+    // WaterReflectedSkyParameters at the two call sites.
+    artifact: "water-shared-shading",
+    owner: "water",
+    definitionSites: ["src/render/webgpu/water/WaterShaders.ts"],
+    consumers: ["water"],
+    ownedSymbols: [
+      "WATER_SHADING_CONSTANTS_WGSL",
+      "WATER_FRESNEL_SCHLICK_WGSL",
+      "WATER_SUN_SPECULAR_WGSL",
+      "WATER_FOAM_WGSL",
+      "WATER_CREST_SSS_WGSL",
+      "WATER_ENVIRONMENT_MIP_WGSL",
+      "waterReflectedSkyWgsl",
+      "fallbackWaterEnvironmentCube",
+    ],
+    notes:
+      "A second textual fresnelSchlick/sunSpecular/reflectedSky in a water "
+      + "material is the drift 2-8a exists to prevent; 2-9 unified the sun "
+      + "lobe, foam, crest SSS and environment-mip helpers here.",
+  },
+  {
+    // 2-11: the CPU array-mip reducer (Babylon mips only layer 0 of a
+    // Texture2DArray — verified at webgpuTextureManager.js:716). Phase 3's
+    // 3-1 reuses it with a Toksvig reducer for the terrain material arrays.
+    artifact: "texture-array-mips",
+    owner: "performance",
+    definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts"],
+    consumers: ["performance", "vegetation", "terrain-material"],
+    ownedSymbols: [
+      "buildMipChain",
+      "alphaDilate",
+      "alphaCoverage",
+      "planMippedTextureArray",
+      "uploadMippedTextureArrayPlan",
+      "createMippedTextureArray",
+    ],
+  },
+  {
+    // 2-11: every card layer — trees, shrubs, grass, ground cover, litter —
+    // comes from this one atlas; the layer-index map lives here and
+    // prototypeGeometry aliases it.
+    artifact: "foliage-atlas",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/FoliageAtlas.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "FOLIAGE_LAYERS",
+      "FOLIAGE_ATLAS_EDGE",
+      "FOLIAGE_ALPHA_TEST_THRESHOLD",
+      "synthesizeFoliageLayers",
+      "planFoliageAtlas",
+      "createFoliageAtlas",
+    ],
+  },
+  {
+    // 2-11b: stand identity is a continuous field at the stem's own world
+    // position — never a lattice. 2-12's tint centres and 2-13a's seasonal
+    // appearance read the same field.
+    artifact: "stand-field",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/standField.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "sampleStandField",
+      "STAND_FIELD_MINIMUM_WAVELENGTH_METERS",
+    ],
+    notes:
+      "A per-block appearance constant anywhere in generation is the 32 m "
+      + "lattice returning; the appearance-spectrum test's ANOVA control "
+      + "exists to catch exactly that.",
+  },
+  {
+    // 2-11a: the ONE instance record every detail batch uploads and the ONE
+    // decoder that turns it into a world transform.
+    artifact: "detail-instance-format",
+    owner: "vegetation",
+    definitionSites: [
+      "src/render/webgpu/detail/instanceFormat.ts",
+      "src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts",
+    ],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: [
+      "DETAIL_INSTANCE_STRIDE_BYTES",
+      "DETAIL_INSTANCE_ATTRIBUTES",
+      "DetailInstanceWriter",
+      "DetailInstanceBounds",
+      "DetailInstanceMaterialPlugin",
+    ],
+    notes:
+      "A second instance layout or a matrix-based batch path is the 96-byte "
+      + "format returning; 2-12..2-17 extend the RECORD, never fork it.",
+  },
+  {
+    // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
+    // thinning all read these bands; nothing re-derives a density ceiling.
+    artifact: "rendered-density-law",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/renderedDensity.ts"],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: [
+      "RENDERED_DENSITY_LAWS",
+      "renderedShareAtDistance",
+      "estimateRenderedWoodyLoad",
+      "WOODY_TRIANGLE_BUDGETS",
+    ],
+    notes:
+      "A second stems/ha constant or falloff curve outside this file is the "
+      + "R-21 re-derivation failure returning.",
+  },
+  {
     artifact: "max-terrain-height",
     owner: "terrain-geometry",
     definitionSites: ["src/world/terrain.ts"],
@@ -212,6 +343,14 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
   {
     artifact: "vegetation-density-field",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
+  },
+  {
+    // R-13: the climate kernel that decides snow is itself seasonal now —
+    // `seasonalTemperatureOffsetK` and the anchored snow blanket live here,
+    // and `4-1` transliterates this file, so the clock must be in its
+    // signatures from the first commit (ARCHITECTURE.md §4).
+    artifact: "terrain-climate-kernel",
+    definitionSites: ["src/world/terrain.ts"],
   },
   {
     artifact: "vegetation-appearance-field",

@@ -44,6 +44,9 @@ workerScope.addEventListener("message", (event: MessageEvent<DetailWorkerCommand
       terrainSample: (x, z) => sampleTerrain(activeWorld, x, z),
       seaLevelMeters,
       dayOfYear: command.dayOfYear,
+      // 2-13a: the worker rebuilt the world from the seed, so the seasonal
+      // kernel's latitude comes from it directly — no protocol change.
+      latitudeDegrees: activeWorld.latitudeDegrees,
     });
     post({
       type: "cell",

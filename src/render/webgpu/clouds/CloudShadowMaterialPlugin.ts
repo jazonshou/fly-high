@@ -1,8 +1,11 @@
+import { Constants } from "@babylonjs/core/Engines/constants";
 import { MaterialPluginBase } from "@babylonjs/core/Materials/materialPluginBase";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
+import type { Scene } from "@babylonjs/core/scene";
 import {
   CLOUD_SHADOW_RECEIVER_FUNCTION_WGSL,
   CLOUD_SHADOW_RECEIVER_SAMPLER,
@@ -10,6 +13,42 @@ import {
   type CloudShadowProjection,
   type CloudShadowReceiverBinding,
 } from "./CloudShadowReceiver";
+
+/**
+ * Z-1: one shared 1×1 full-transmittance texture per scene, bound whenever a
+ * receiver has no live projection. The plugin used to stay disabled until the
+ * first projection arrived and `_enable(true)` mid-run; materials created
+ * after startup (streamed detail prototypes) then drew through a freshly
+ * compiled effect before their first bind, and Babylon logged
+ * `Texture "cloudShadowSampler" not found` — 36 lines per capture. With a
+ * fallback always bound and the plugin enabled from construction, the window
+ * does not exist and no mid-flight define churn recompiles receiver shaders.
+ */
+const FALLBACK_TEXTURES = new WeakMap<Scene, RawTexture>();
+
+function fallbackCloudShadowTexture(scene: Scene): RawTexture {
+  // The scene-dispose observer below clears the cache entry, so a cached
+  // texture is always live.
+  const existing = FALLBACK_TEXTURES.get(scene);
+  if (existing) return existing;
+  const texture = new RawTexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+    Constants.TEXTUREFORMAT_RGBA,
+    scene,
+    false,
+    false,
+    Constants.TEXTURE_NEAREST_SAMPLINGMODE,
+  );
+  texture.name = "cloud-shadow-fallback";
+  FALLBACK_TEXTURES.set(scene, texture);
+  scene.onDisposeObservable.addOnce(() => {
+    texture.dispose();
+    FALLBACK_TEXTURES.delete(scene);
+  });
+  return texture;
+}
 
 export const CLOUD_SHADOW_PBR_FRAGMENT_WGSL = Object.freeze({
   CUSTOM_FRAGMENT_DEFINITIONS: CLOUD_SHADOW_RECEIVER_FUNCTION_WGSL,
@@ -79,11 +118,9 @@ export const CLOUD_SHADOW_MATERIAL_PLUGIN_NAME = "cloud-shadow-receiver";
 export class CloudShadowMaterialPlugin extends MaterialPluginBase {
   private projection: CloudShadowProjection | null = null;
   private binding: CloudShadowReceiverBinding | null = null;
-  private active = false;
+  private readonly fallbackTexture: RawTexture;
 
   constructor(material: PBRMaterial) {
-    // Stay inactive until a real texture is supplied so isolated terrain tools
-    // do not compile a shader with an unbound sampler.
     super(
       material,
       CLOUD_SHADOW_MATERIAL_PLUGIN_NAME,
@@ -93,6 +130,14 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
       false,
     );
     this.doNotSerialize = true;
+    // Enabled from construction: the sampler is present in the material's
+    // very first effect, bound to the fallback until a projection arrives,
+    // and the WGSL's `cloudShadowReceiverValid < 0.5` guard makes the
+    // projection-less state an exact multiply-by-one.
+    this.fallbackTexture = fallbackCloudShadowTexture(material.getScene());
+    // Z-1: binding happens in hardBindForSubMesh (which requires this flag).
+    this.registerForExtraEvents = true;
+    this._enable(true);
   }
 
   override getClassName(): string {
@@ -122,6 +167,7 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
    * Publishes a pre-resolved binding. A registry can therefore resolve the
    * absolute projection once and share the immutable result across every PBR
    * receiver material instead of repeating floating-origin math per material.
+   * No define churn: the shader code is present from the first compile.
    */
   setResolvedProjection(
     projection: CloudShadowProjection,
@@ -129,20 +175,12 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
   ): void {
     this.projection = projection;
     this.binding = binding;
-    if (this.active) return;
-    this.active = true;
-    this._enable(true);
-    this.markAllDefinesAsDirty();
   }
 
-  /** Releases registry-held projection references and removes shader work. */
+  /** Releases registry-held projection references (shading falls back to 1.0). */
   clearProjection(): void {
     this.projection = null;
     this.binding = null;
-    if (!this.active) return;
-    this.active = false;
-    this._enable(false);
-    this.markAllDefinesAsDirty();
   }
 
   override hasTexture(texture: BaseTexture): boolean {
@@ -172,10 +210,25 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
     };
   }
 
-  override bindForSubMesh(uniformBuffer: UniformBuffer): void {
+  /**
+   * Z-1: bound through hardBindForSubMesh, not bindForSubMesh. The receiver
+   * materials are shared by many meshes; a plain bindForSubMesh is skipped
+   * for every mesh after the first under `mustRebind === false`, and on
+   * WebGPU each submesh draws through its OWN material context — the skipped
+   * binds left those contexts without the sampler and Babylon logged
+   * `Texture "cloudShadowSampler" not found` on their first frame. Babylon's
+   * decal plugin documents this exact hook for this exact reason.
+   */
+  override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
     const projection = this.projection;
     const binding = this.binding;
-    if (!projection || !binding) return;
+    if (!projection || !binding) {
+      // The sampler must never be unbound (Z-1); valid=0 short-circuits the
+      // WGSL to an exact multiply-by-one.
+      uniformBuffer.setTexture(CLOUD_SHADOW_RECEIVER_SAMPLER, this.fallbackTexture);
+      uniformBuffer.updateFloat("cloudShadowReceiverValid", 0);
+      return;
+    }
     uniformBuffer.setTexture(CLOUD_SHADOW_RECEIVER_SAMPLER, projection.texture);
     uniformBuffer.updateFloat2(
       "cloudShadowCenterLocal",

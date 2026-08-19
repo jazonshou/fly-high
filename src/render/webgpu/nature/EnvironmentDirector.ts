@@ -1,5 +1,9 @@
 import type { WeatherPreset } from "@/src/game/types";
 import { DAYS_PER_YEAR, type EnvironmentClock } from "@/src/world/environmentClock";
+import {
+  seasonalHumidityMultiplier,
+  seasonalWinterFraction,
+} from "@/src/world/terrain";
 import { evaluateTransmittance } from "@/src/render/webgpu/atmosphere/AtmosphereLuts";
 import { createEnvironmentState, type EnvironmentState } from "./EnvironmentState";
 
@@ -140,18 +144,29 @@ export function resolveEnvironmentState(input: EnvironmentDirectorInput): Enviro
   const direction = sunDirectionForClock(input.clock, input.latitudeDegrees);
   const weather = WEATHER_PROFILES[input.weather];
   const windBase = weather.windSpeedMetersPerSecond;
+  // R-13: winter air is clearer. Deviation D-5 expressed turbidity once as
+  // `1 + humidity·26`, so scaling humidity seasonally moves the haze with no
+  // new plumbing — an exact no-op at the reference midsummer clock.
+  const humidity = weather.relativeHumidity
+    * seasonalHumidityMultiplier(input.clock.dayOfYear, input.latitudeDegrees);
+  // R-13: snowCoverage was declared, GPU-packed and hardcoded to 0 with no
+  // owner. It now follows the same seasonal kernel the terrain snow blanket
+  // uses; surfaceWetness stays 0 until a precipitation model owns it
+  // (recorded decision — nothing renders precipitation in Phases 2–5).
+  const winter = seasonalWinterFraction(input.clock.dayOfYear, input.latitudeDegrees);
+  const snowCoverage = Math.min(1, Math.max(0, (winter - 0.5) * 2.2));
   return createEnvironmentState({
     sun: {
       direction: [direction[0], direction[1], direction[2]],
     },
     weather: {
-      relativeHumidity: weather.relativeHumidity,
+      relativeHumidity: humidity,
       cloudCoverage: weather.cloudCoverage,
       cloudType: weather.cloudType,
       convection: weather.convection,
       precipitation: 0,
       surfaceWetness: 0,
-      snowCoverage: 0,
+      snowCoverage,
     },
     windLayers: [
       {

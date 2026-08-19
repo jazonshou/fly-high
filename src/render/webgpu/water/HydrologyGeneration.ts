@@ -97,6 +97,14 @@ export interface HydrologyGenerationConfig {
   /** Headwater density bound for one base region; incoming halo rivers are additional. */
   readonly maximumRivers: number;
   readonly minimumDownhillDropMeters: number;
+  /**
+   * R-24: the terrain grade (rise/run) above which no ribbon is emitted. A
+   * photoreal ribbon lying down an uncarved hillside reads as a waterfall
+   * painted on the slope — worse than no river. Rivers keep only the run
+   * downstream of their last too-steep segment; `5-12` deletes this with
+   * `traceDownhillPath` when real channel carving lands.
+   */
+  readonly maximumRiverGrade: number;
   readonly directionInertia: number;
   readonly riverSurfaceOffsetMeters: number;
   readonly baseRiverWidthMeters: number;
@@ -150,8 +158,10 @@ export const DEFAULT_HYDROLOGY_CONFIG: HydrologyGenerationConfig = Object.freeze
   traceAngularSamples: 16,
   maximumTraceSteps: 180,
   minimumRiverPoints: 10,
-  maximumRivers: 10,
+  // R-24: 10 → 7 alongside the grade cull — fewer, better-placed ribbons.
+  maximumRivers: 7,
   minimumDownhillDropMeters: 0.08,
+  maximumRiverGrade: 0.09,
   directionInertia: 0.18,
   riverSurfaceOffsetMeters: 0.16,
   baseRiverWidthMeters: 2.4,
@@ -286,6 +296,10 @@ export function assertHydrologyConfig(config: HydrologyGenerationConfig): void {
   integerRange(config.minimumRiverPoints, 3, 64, "hydrology.minimumRiverPoints");
   integerRange(config.maximumRivers, 1, 24, "hydrology.maximumRivers");
   positive(config.minimumDownhillDropMeters, "hydrology.minimumDownhillDropMeters");
+  positive(config.maximumRiverGrade, "hydrology.maximumRiverGrade");
+  if (config.maximumRiverGrade > 1) {
+    throw new RangeError("hydrology.maximumRiverGrade must be at most 1 (rise/run)");
+  }
   if (config.directionInertia < 0 || config.directionInertia > 1) {
     throw new RangeError("hydrology.directionInertia must be in [0, 1]");
   }
@@ -581,8 +595,27 @@ function buildRiver(
   termination: HydrologyRiver["termination"],
   config: HydrologyGenerationConfig,
   terrainSample: HydrologyTerrainSampler,
-): HydrologyRiver {
-  const smoothed = smoothTrace(tracePoints);
+): HydrologyRiver | null {
+  const fullTrace = smoothTrace(tracePoints);
+  // R-24: no ribbon on terrain steeper than the maximum grade — keep only
+  // the run downstream of the last too-steep segment, and drop the river if
+  // what remains is short. Terrain is sampled once per point and reused by
+  // the provisional pass below, so the cull adds no sampling work.
+  const terrainSamples = fullTrace.map((position) =>
+    readTerrainSample(terrainSample, position.x, position.z));
+  let firstKeptIndex = 0;
+  for (let index = 1; index < fullTrace.length; index += 1) {
+    const previous = fullTrace[index - 1]!;
+    const current = fullTrace[index]!;
+    const run = Math.hypot(current.x - previous.x, current.z - previous.z);
+    if (run < 1e-3) continue;
+    const drop = terrainSamples[index - 1]!.terrainHeight
+      - terrainSamples[index]!.terrainHeight;
+    if (drop / run > config.maximumRiverGrade) firstKeptIndex = index;
+  }
+  const smoothed = fullTrace.slice(firstKeptIndex);
+  const keptSamples = terrainSamples.slice(firstKeptIndex);
+  if (smoothed.length < config.minimumRiverPoints) return null;
   const channelHash = hashText(id);
   // Stable source-owned channel character differentiates narrow creeks from
   // broad rivers even when their traces have a similar number of steps.
@@ -599,8 +632,9 @@ function buildRiver(
   let previousY = Number.POSITIVE_INFINITY;
   let previousX = 0;
   let previousZ = 0;
-  for (const position of smoothed) {
-    const terrain = readTerrainSample(terrainSample, position.x, position.z);
+  for (let smoothedIndex = 0; smoothedIndex < smoothed.length; smoothedIndex += 1) {
+    const position = smoothed[smoothedIndex]!;
+    const terrain = keptSamples[smoothedIndex]!;
     const distance = provisional.length === 0
       ? 0
       : Math.hypot(position.x - previousX, position.z - previousZ);
@@ -880,6 +914,8 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       config,
       terrainSample,
     );
+    // R-24: too-steep runs emit no ribbon at all.
+    if (!completeRiver) continue;
     const river = cropRiverToBounds(completeRiver, bounds, config.minimumRiverPoints);
     if (!river) continue;
     if (river.lengthMeters < config.traceStepMeters * (config.minimumRiverPoints - 2)) continue;

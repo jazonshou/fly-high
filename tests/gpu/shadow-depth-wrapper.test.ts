@@ -39,7 +39,12 @@ import { CloudShadowMaterialPlugin } from "../../src/render/webgpu/clouds/CloudS
  *      base-material effects only through onEffectCreatedObservable; attached
  *      to an already-rendering material it silently falls back to the
  *      undisplaced default depth pass.
- *   3. No remappedVariables are needed for PBRMaterial-with-plugins in WGSL.
+ *   3. remappedVariables ["vNormalW", "vertexOutputs.vNormalW"] whenever the
+ *      generator's normalBias is nonzero (2-12 amendment): the injected
+ *      shadowMapVertexNormalBias include references the varying by its bare
+ *      GLSL name, which no longer resolves after WGSL migration. This spike's
+ *      generator keeps the default normalBias of 0, which compiles the
+ *      include away — foliage-material-compile.test.ts pins the nonzero case.
  * Harness note: manual scene.render() calls on WebGPU must be wrapped in
  * engine.beginFrame()/endFrame() or no work is ever submitted.
  */

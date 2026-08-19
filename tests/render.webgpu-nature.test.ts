@@ -4,38 +4,40 @@ import {
   CLOUD_SHADER_MODULES,
   CLOUD_SHADOW_SHADER,
   CLOUD_TEMPORAL_RESOLVE_SHADER,
+} from "../src/render/webgpu/nature/CloudShaders";
+import {
+  assertVolumetricCloudConfig,
+  packCloudRaymarchUniforms,
+  packCloudShadowUniforms,
+  packCloudTemporalUniforms,
+  resolveVolumetricCloudConfig,
+} from "../src/render/webgpu/nature/CloudConfig";
+import {
   DEFAULT_ENVIRONMENT_STATE,
+  createEnvironmentState,
+  packEnvironmentUniforms,
+  sampleEnvironmentWind,
+} from "../src/render/webgpu/nature/EnvironmentState";
+import {
   OCEAN_SHADER_MODULES,
   OCEAN_SPECTRUM_EVOLUTION_SHADER,
   OCEAN_SPECTRUM_INITIALIZATION_SHADER,
   OCEAN_SPATIAL_DERIVATION_SHADER,
   OCEAN_STOCKHAM_IFFT_SHADER,
-  assertVolumetricCloudConfig,
+} from "../src/render/webgpu/nature/OceanShaders";
+import {
   buildOceanFftDispatches,
-  buildNatureBindGroupLayoutEntries,
-  computeDispatch2D,
-  createEnvironmentState,
-  packCloudRaymarchUniforms,
-  packCloudShadowUniforms,
-  packCloudTemporalUniforms,
-  packEnvironmentUniforms,
   packOceanDerivationUniforms,
   packOceanEvolutionUniforms,
   packOceanFftUniforms,
   packOceanInitializationUniforms,
   resolveSpectralOceanConfig,
-  resolveVolumetricCloudConfig,
-  sampleEnvironmentWind,
-  type Mat4,
+} from "../src/render/webgpu/nature/OceanConfig";
+import {
+  buildNatureBindGroupLayoutEntries,
+  computeDispatch2D,
   type NatureShaderModule,
-} from "../src/render/webgpu/nature";
-
-const IDENTITY_MATRIX: Mat4 = [
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-];
+} from "../src/render/webgpu/nature/ShaderModule";
 
 function expectStructurallyCompleteShader(module: NatureShaderModule): void {
   expect(module.code).not.toContain("#version");
@@ -281,8 +283,10 @@ describe("volumetric cloud foundations", () => {
       floatingOriginMeters: [1_000, 200, -3_000],
     });
     const raymarch = packCloudRaymarchUniforms(config, environment, {
-      inverseViewProjection: IDENTITY_MATRIX,
-      previousViewProjection: IDENTITY_MATRIX,
+      cameraForward: [0, 0, -1],
+      cameraRight: [1, 0, 0],
+      cameraUp: [0, 1, 0],
+      viewScale: [0.6, 0.35],
       cameraPositionMeters: [10, 2_500, -20],
       renderSize: [960, 540],
       fullResolutionSize: [1_920, 1_080],
@@ -290,17 +294,41 @@ describe("volumetric cloud foundations", () => {
       windOffsetMeters: [120, 40],
       weatherMapOriginMeters: [-80_000, -80_000],
     });
-    expect(raymarch.byteLength).toBe(352);
-    expect(Array.from(raymarch.slice(32, 35))).toEqual([10, 2_500, -20]);
-    expect(Array.from(raymarch.slice(48, 50))).toEqual([960, 540]);
-    expect(raymarch[50]).toBeCloseTo(1 / 960, 8);
-    expect(raymarch[51]).toBeCloseTo(1 / 540, 8);
-    expect(raymarch[54]).toBe(7);
-    expect(Array.from(raymarch.slice(84, 87))).toEqual([1_000, 200, -3_000]);
+    // 2-0 adoption: 17 vec4 rows — camera basis replaced the two matrices
+    // (rays are built from the shipped 1B-12 basis convention everywhere).
+    expect(raymarch.byteLength).toBe(272);
+    expect(Array.from(raymarch.slice(0, 3))).toEqual([0, 0, -1]);
+    expect(raymarch[3]).toBeCloseTo(0.6, 6);
+    expect(Array.from(raymarch.slice(4, 7))).toEqual([1, 0, 0]);
+    expect(raymarch[7]).toBeCloseTo(0.35, 6);
+    expect(Array.from(raymarch.slice(12, 15))).toEqual([10, 2_500, -20]);
+    expect(Array.from(raymarch.slice(28, 30))).toEqual([960, 540]);
+    expect(raymarch[30]).toBeCloseTo(1 / 960, 8);
+    expect(raymarch[31]).toBeCloseTo(1 / 540, 8);
+    expect(raymarch[34]).toBe(7);
+    expect(Array.from(raymarch.slice(64, 67))).toEqual([1_000, 200, -3_000]);
 
-    const temporal = packCloudTemporalUniforms(config, [960, 540], true);
-    expect(temporal.byteLength).toBe(32);
+    const temporal = packCloudTemporalUniforms(config, {
+      renderSize: [960, 540],
+      cameraCut: true,
+      currentForward: [0, 0, -1],
+      currentRight: [1, 0, 0],
+      currentUp: [0, 1, 0],
+      currentViewScale: [0.6, 0.35],
+      previousForward: [0, 0, -1],
+      previousRight: [1, 0, 0],
+      previousUp: [0, 1, 0],
+      previousViewScale: [0.6, 0.35],
+      cameraDeltaMeters: [3, -1, 2],
+    });
+    // 2-0 adoption: 9 vec4 rows — the previous ray basis + absolute camera
+    // delta ride in the block (1B-12 reprojection, no cached matrix).
+    expect(temporal.byteLength).toBe(144);
     expect(Array.from(new Uint32Array(temporal, 0, 4))).toEqual([960, 540, 1, 0]);
+    const temporalFloats = new Float32Array(temporal);
+    expect(Array.from(temporalFloats.slice(8, 11))).toEqual([0, 0, -1]);
+    expect(temporalFloats[11]).toBe(config.maximumTraceDistanceMeters);
+    expect(Array.from(temporalFloats.slice(32, 35))).toEqual([3, -1, 2]);
     const shadow = packCloudShadowUniforms(config, environment, {
       shadowCenterMeters: [0, 0, 0],
       eastAxis: [1, 0, 0],

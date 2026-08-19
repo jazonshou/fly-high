@@ -23,10 +23,12 @@ import {
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
 import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
+import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
@@ -40,19 +42,20 @@ import {
 } from "./webgpu/core/FrameGraph";
 import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
 import {
-  cpuWorkSettingsForLevel,
   createGovernorState,
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
-  type CpuWorkSettings,
+  workLeverSettingsFor,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
+  type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
+  frameTimingPercentile,
   frameTimingPercentile95,
   freshFrameTiming,
   isUsableFrameTiming,
@@ -65,11 +68,9 @@ import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
 import {
-  PlanarWaterReflectionSystem,
-  selectPlanarReflectionPlane,
-  type PlanarReflectionPlaneSelection,
-} from "./webgpu/water/PlanarWaterReflectionSystem";
-import { SpectralOceanSystem } from "./webgpu/water/SpectralOceanSystem";
+  resolveOceanMipGenerator,
+  SpectralOceanSystem,
+} from "./webgpu/water/SpectralOceanSystem";
 import type { FlightRenderingSystem } from "./types";
 import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
 
@@ -78,6 +79,14 @@ const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
 const MIN_GPU_TIMING_SAMPLES = 8;
 const GPU_TIMING_STALE_AFTER_FRAMES = 30;
+/**
+ * Z-2: the rolling diagnostics window. Separate from the governor's
+ * reset-per-window sample arrays — the governor consumes and clears its
+ * window every 120 frames, which is why every committed capture read
+ * `gpuFrameMsP95: null` (R-4: the value was discarded before the capture
+ * could read it). Diagnostics aggregate over this ring instead.
+ */
+const DIAGNOSTIC_WINDOW_FRAMES = 600;
 /** The present pass cannot be probed off — cutting it blacks the frame. */
 const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
 
@@ -197,6 +206,12 @@ export interface FlightRendererOptions {
   runway?: Readonly<AirportDefinition>;
   signal?: AbortSignal;
   onDeviceLost?: (reason: string) => void;
+  /**
+   * Z-1: pin the render scale and disable both governors. The perf capture
+   * passes 1.0 so `renderPixels === width × height` and no governor state can
+   * rewrite pixels mid-run; interactive sessions leave it unset.
+   */
+  pinnedRenderScale?: number;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -215,6 +230,8 @@ function finiteState(state: FlightVisualState): boolean {
 export class FlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly engine: WebGPUEngine;
+  /** 2-13: the world definition, kept for per-frame wind-field sampling. */
+  private readonly worldDefinition: WorldDefinition;
   private readonly scene: Scene;
   private readonly camera: UniversalCamera;
   private readonly graph = new WebGpuFrameGraph();
@@ -227,7 +244,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
-  private readonly waterReflection: PlanarWaterReflectionSystem;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly wildlife: WildlifeSystem;
@@ -246,6 +262,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly frameIntervalDurations: number[] = [];
   private readonly cpuFrameDurations: number[] = [];
   private readonly gpuFrameDurations: number[] = [];
+  /** Z-2: rolling rings the governor never resets (see DIAGNOSTIC_WINDOW_FRAMES). */
+  private readonly diagnosticIntervalDurations: number[] = [];
+  private readonly diagnosticCpuDurations: number[] = [];
+  private readonly diagnosticGpuDurations: number[] = [];
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
@@ -262,17 +282,18 @@ export class FlightRenderer implements FlightRenderingSystem {
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
-  private reflectionPlaneSelection: PlanarReflectionPlaneSelection | null = null;
   private originShifted = true;
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
   /** Null until 5-2: physics still samples the analytic kernel directly. */
   private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
-  private cpuWorkSettings: CpuWorkSettings = cpuWorkSettingsForLevel(0);
+  private readonly pinnedRenderScale: number | null;
+  private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
   private budgetProbe: FrameGraphBudgetProbe | null = null;
@@ -302,14 +323,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
-    waterReflection: PlanarWaterReflectionSystem,
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
+    atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
+    this.atmosphereResources = atmosphereResources;
     this.domElement = options.canvas;
     this.engine = engine;
     this.scene = scene;
@@ -323,7 +345,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
-    this.waterReflection = waterReflection;
     this.airport = airport;
     this.detail = detail;
     this.wildlife = wildlife;
@@ -332,11 +353,13 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
+    this.worldDefinition = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
-    this.governorConfig = governorConfigForProfile(this.profile);
+    this.pinnedRenderScale = options.pinnedRenderScale ?? null;
+    this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
     this.renderScale = this.governorState.renderScale;
@@ -449,6 +472,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         worldSeed: options.world.seed,
         terrainSample: options.terrainSample,
         seaLevelMeters: options.world.seaLevel,
+        latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
       });
       cleanup.push(() => detail.dispose());
@@ -474,7 +498,24 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       cleanup.push(() => hydrology.dispose());
       hydrology.setFloatingOrigin(0, 0);
-      const clouds = new VolumetricCloudSystem(scene, camera, profile, atmosphere.snapshot);
+      // 2-0a: the atmosphere-owned GPU resources the adopted cloud pipeline
+      // binds (transmittance LUT, sky ambient LUT, blue noise, scene depth).
+      const atmosphereResources = new AtmosphereGpuResources(
+        scene,
+        camera,
+        (mesh) =>
+          mesh === atmosphere.skyMesh
+          || mesh.name === "volumetric-cloud-shell"
+          || mesh.material?.disableDepthWrite === true,
+      );
+      cleanup.push(() => atmosphereResources.dispose());
+      const clouds = new VolumetricCloudSystem(
+        scene,
+        camera,
+        profile,
+        atmosphere.snapshot,
+        atmosphereResources,
+      );
       cleanup.push(() => clouds.dispose());
       await clouds.whenReadyAsync(options.signal);
       const ocean = await SpectralOceanSystem.create(
@@ -544,6 +585,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => skyProbe.dispose());
       if (initialAerialBinding) skyProbe.update(initialAerialBinding);
       scene.environmentTexture = skyProbe.texture;
+      // 2-9: the same probe feeds the water materials' environment
+      // reflections (they are raw ShaderMaterials — scene.environmentTexture
+      // only reaches PBR). The RTT object is stable across probe re-renders,
+      // so one binding suffices.
+      ocean.setEnvironmentReflection(skyProbe.texture);
+      hydrology.setEnvironmentReflection(skyProbe.texture);
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
@@ -596,6 +643,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         imageProcessingAppliedByPostProcess:
           scene.imageProcessingConfiguration.applyByPostProcess,
         sceneFogMode: scene.fogMode,
+        // 2-8: the ocean's storage-texture mip chain rides Babylon's private
+        // render-based generator — a Babylon bump that removes it must fail
+        // here, not as silently unfiltered distant water.
+        oceanMipGenerationAvailable: resolveOceanMipGenerator(engine) !== null,
       });
 
       await awaitRendererStartup(
@@ -605,16 +656,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       throwIfRendererStartupAborted(options.signal);
-      // Allocate only after the beauty scene is ready. The manually scheduled
-      // target does no reflection draw or render-pass shader work at startup.
-      const waterReflection = new PlanarWaterReflectionSystem(
-        scene,
-        camera,
-        options.world.seaLevel,
-        profile,
-        [ocean, hydrology],
-      );
-      cleanup.push(() => waterReflection.dispose());
+      // 2-10: the planar-reflection capture is retired — the environment
+      // probe covers water reflections; the receiver contract stays bound to
+      // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
         options,
@@ -630,12 +674,12 @@ export class FlightRenderer implements FlightRenderingSystem {
         skyProbe,
         ocean,
         hydrology,
-        waterReflection,
         airport,
         detail,
         wildlife,
         toneMap,
         fxaa,
+        atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
       cleanup.length = 0;
@@ -681,7 +725,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       weather,
     });
     this.atmosphere.applyEnvironment(this.environmentState);
+    // R-13: the terrain's baked snow blanket and the detail generator follow
+    // the same clock the sky does.
+    this.terrain.setSeasonalDayOfYear(clock.dayOfYear);
+    this.detail.setDayOfYear(clock.dayOfYear);
     this.skyProbeStale = true;
+    this.clouds.setEnvironment(this.environmentState);
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -723,13 +772,35 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (isUsableFrameTiming(this.lastCpuFrameMilliseconds)) {
       this.cpuFrameDurations.push(this.lastCpuFrameMilliseconds);
     }
+    if (isUsableFrameTiming(this.lastCpuFrameMilliseconds)) {
+      this.pushDiagnosticSample(this.diagnosticCpuDurations, this.lastCpuFrameMilliseconds);
+    }
     const freshGpuSample = this.captureGpuFrameTiming();
     if (this.budgetProbe !== null) {
       // Probe stages deliberately perturb the frame; the governor sits out.
       this.updateBudgetProbe(freshGpuSample);
-    } else if (this.frameIntervalDurations.length >= this.governorConfig.windowFrames) {
+    } else if (
+      this.pinnedRenderScale === null
+      && this.frameIntervalDurations.length >= this.governorConfig.windowFrames
+    ) {
       this.updateGovernor();
     }
+  }
+
+  /** Z-1: governor config, with the scale range collapsed when pinned. */
+  private resolveGovernorConfig(): GovernorConfig {
+    const config = governorConfigForProfile(this.profile);
+    if (this.pinnedRenderScale === null) return config;
+    return Object.freeze({
+      ...config,
+      scaleCeiling: this.pinnedRenderScale,
+      scaleFloor: this.pinnedRenderScale,
+    });
+  }
+
+  private pushDiagnosticSample(ring: number[], value: number): void {
+    ring.push(value);
+    if (ring.length > DIAGNOSTIC_WINDOW_FRAMES) ring.shift();
   }
 
   /**
@@ -771,6 +842,67 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
   }
 
+  /**
+   * Z-2: clear every timing window (governor and diagnostics). The perf
+   * capture calls this at the start of its rAF-paced measurement phase so
+   * hitch metrics describe paced frames only — the tight-loop streaming
+   * phase renders as fast as the CPU allows and would read as a hitch storm.
+   */
+  resetPerformanceWindow(): void {
+    this.resetTimingWindow();
+  }
+
+  /**
+   * Z-4: a best-effort inventory of what is actually allocated — textures by
+   * size×format, geometry by vertex stride and indices. It cannot see MSAA
+   * resolve targets, pipelines or driver overhead, so it is a FLOOR, used to
+   * sanity-check `estimateGpuMemoryMiB`'s arithmetic (whose fudge factor had
+   * never been compared against a real reading).
+   */
+  private inventoryGpuMemoryMiB(): number {
+    let bytes = 0;
+    const seenTextures = new Set<unknown>();
+    for (const texture of this.scene.textures) {
+      const internal = (texture as unknown as {
+        _texture?: {
+          width?: number;
+          height?: number;
+          depth?: number;
+          type?: number;
+          generateMipMaps?: boolean;
+        } | null;
+      })._texture;
+      if (!internal || seenTextures.has(internal)) continue;
+      seenTextures.add(internal);
+      const width = internal.width ?? 0;
+      const height = internal.height ?? 0;
+      const depth = Math.max(1, internal.depth ?? 1);
+      const bytesPerTexel = internal.type === Constants.TEXTURETYPE_HALF_FLOAT
+        ? 8
+        : internal.type === Constants.TEXTURETYPE_FLOAT
+          ? 16
+          : 4;
+      const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
+      bytes += width * height * depth * bytesPerTexel * mipFactor;
+    }
+    const seenGeometries = new Set<unknown>();
+    for (const mesh of this.scene.meshes) {
+      const geometry = (mesh as Mesh).geometry;
+      if (!geometry || seenGeometries.has(geometry)) continue;
+      seenGeometries.add(geometry);
+      let strideBytes = 0;
+      const buffers = geometry.getVertexBuffers();
+      if (buffers) {
+        for (const kind of Object.keys(buffers)) {
+          strideBytes += buffers[kind]?.byteStride ?? 0;
+        }
+      }
+      bytes += geometry.getTotalVertices() * strideBytes;
+      bytes += geometry.getTotalIndices() * 4;
+    }
+    return bytes / 1_048_576;
+  }
+
   getDiagnostics(): RenderDiagnostics {
     const terrain = this.terrain.statistics;
     const wildlife = this.wildlife.statistics;
@@ -781,6 +913,32 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.frameIndex,
       GPU_TIMING_STALE_AFTER_FRAMES,
     );
+    // Z-2: aggregate over the rolling rings, not the governor's consumable
+    // window (R-4 — the old path read null whenever the window had just been
+    // consumed, which was every committed capture).
+    // 4× the frame target (2-17 re-pin; 3× at 2-8, 2× originally): each
+    // re-pin has chased the same failure mode — the threshold sitting
+    // INSIDE the workload's vsync-quantization band, where frames
+    // oscillating between adjacent vsync multiples masquerade as hitch
+    // trains. With the full Gate-2C vegetation stack a typical heavy-shot
+    // frame sits at 33–46 ms (4–5.5 vsyncs at 120 Hz) against a 41 ms 3×
+    // threshold — 190–236 "hitches" per 240 frames on identical builds,
+    // pure quantization. At 4× (54.8 ms) a typical frame is invisible and
+    // every real stall observed this phase (teleport re-stream 600–1300 ms,
+    // GC, compositor) still counts. The sustained rate belongs to minFps.
+    const hitchThresholdMs = this.profile.frameTargetMs * 4;
+    let hitchCount = 0;
+    let maxFrameMs: number | null = null;
+    for (const interval of this.diagnosticIntervalDurations) {
+      if (interval > hitchThresholdMs) hitchCount += 1;
+      if (maxFrameMs === null || interval > maxFrameMs) maxFrameMs = interval;
+    }
+    const p999FrameMs = frameTimingPercentile(this.diagnosticIntervalDurations, 0.999);
+    const gpuP95Ms = this.diagnosticGpuDurations.length >= MIN_GPU_TIMING_SAMPLES
+      ? frameTimingPercentile95(this.diagnosticGpuDurations)
+      : this.lastSignals.gpuP95Ms;
+    const cpuP95Ms =
+      frameTimingPercentile95(this.diagnosticCpuDurations) ?? this.lastSignals.cpuP95Ms;
     return {
       fps: this.engine.getFps(),
       frameTime: this.lastFrameIntervalMilliseconds,
@@ -807,11 +965,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       oceanFftResolution: this.ocean.fftResolution,
       adapter: this.adapterLabel,
       renderingFallbackReason: null,
-      activeGovernor: this.governorState.mode,
-      gpuP95Ms: this.lastSignals.gpuP95Ms,
-      cpuP95Ms: this.lastSignals.cpuP95Ms,
+      activeGovernor: this.pinnedRenderScale !== null ? "pinned" : this.governorState.mode,
+      gpuP95Ms,
+      cpuP95Ms,
+      maxFrameMs,
+      p999FrameMs,
+      hitchCount,
       cpuWorkLevel: this.governorState.cpuWorkLevel,
       cpuWorkLever: this.governorState.lastLever,
+      gpuWorkLevel: this.governorState.gpuWorkLevel,
       resolutionInsensitive: this.governorState.resolutionInsensitive,
       renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
       topPassesByCpuMs: this.passTimingHistory
@@ -824,6 +986,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         cssHeight: Math.max(1, this.domElement.clientHeight),
         devicePixelRatio: window.devicePixelRatio || 1,
       }),
+      inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
     };
@@ -854,7 +1017,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.cloudShadowReceivers.dispose(),
       () => this.aerialReceivers.dispose(),
       () => this.skyProbe.dispose(),
-      () => this.waterReflection.dispose(),
+      () => this.atmosphereResources.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
       () => this.graph.dispose(),
@@ -874,27 +1037,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       after: ["flight-presentation"],
       execute: () => this.updateWorldVisibility(),
     });
-    this.graph.register({
-      name: "shared-planar-water-reflection",
-      phase: "opaque",
-      after: ["world-page-visibility"],
-      execute: (frame) => {
-        const plane = selectPlanarReflectionPlane(
-          this.seaLevel,
-          { x: this.cameraWorld.x, y: this.cameraWorld.y, z: this.cameraWorld.z },
-          this.hydrology.reflectionLakes,
-          this.reflectionPlaneSelection,
-        );
-        this.reflectionPlaneSelection = plane;
-        this.waterReflection.setPlaneHeight(plane.height, plane.source);
-        this.waterReflection.update(frame);
-      },
-      invalidateHistory: () => this.waterReflection.invalidate(),
-    });
+    // 2-10: the shared-planar-water-reflection node is retired with its
+    // capture system — the environment probe carries water reflections, and
+    // 5-12 rebuilds the lake capture around the preserved plane-selection
+    // hysteresis.
     this.graph.register({
       name: "spectral-ocean-compute",
       phase: "water",
-      after: ["shared-planar-water-reflection"],
+      after: ["world-page-visibility"],
       execute: (frame) => {
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         const state = this.currentState;
@@ -1001,6 +1151,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
     ) {
       this.skyProbe.update(binding);
+      // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
+      // same binding, so cloud ambient cannot drift from the sky/IBL pair.
+      this.atmosphereResources.update(binding);
       this.skyProbeStale = false;
       this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
     }
@@ -1067,6 +1220,22 @@ export class FlightRenderer implements FlightRenderingSystem {
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
     }, this.frameIndex);
+    // 2-13: one shared-field wind sample per frame at the observer — the
+    // plan's three bands all read this snapshot; per-instance bytes carry
+    // the spatial variation. simulationTime keeps it capture-deterministic.
+    const wind = sampleWind(
+      this.worldDefinition,
+      state.position.x,
+      state.position.y,
+      state.position.z,
+      state.simulationTime,
+    );
+    this.detail.setWind(
+      wind.x,
+      wind.z,
+      wind.speed / MAX_WIND_SPEED,
+      Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
+    );
     this.detail.update(
       {
         x: state.position.x,
@@ -1077,6 +1246,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       },
       { x: this.originX, y: 0, z: this.originZ },
       this.governedProfileCache,
+      // Wind sway phase must be a function of the simulation clock (Z-1):
+      // the capture pins simulationTime so reruns are pixel-comparable.
+      state.simulationTime,
     );
     this.wildlife.update(
       {
@@ -1097,8 +1269,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private syncDynamicShadowCasters(): void {
     const active = new Map<number, Mesh>();
     const collect = (mesh: Mesh) => active.set(mesh.uniqueId, mesh);
-    // Governor B lever 6 shortens caster registration reach under CPU load.
-    this.terrain.addShadowCasters(collect, this.cpuWorkSettings.shadowCasterDistanceMeters);
+    // The shadow-caster-distance lever (GPU ladder since R-11) shortens reach.
+    this.terrain.addShadowCasters(collect, this.workLeverSettings.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
@@ -1139,14 +1311,13 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
     // A profile change resets the governor entirely — including any
     // resolution-insensitive latch, per its re-arm contract.
-    this.governorConfig = governorConfigForProfile(this.profile);
+    this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.renderScale = this.governorState.renderScale;
-    this.applyCpuWorkLevel(0);
+    this.applyWorkLevels(0, 0);
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
-    this.waterReflection.setProfile(this.profile);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
@@ -1225,16 +1396,19 @@ export class FlightRenderer implements FlightRenderingSystem {
         }
       }
     }
-    if (state.cpuWorkLevel !== previous.cpuWorkLevel) {
-      this.applyCpuWorkLevel(state.cpuWorkLevel);
+    if (
+      state.cpuWorkLevel !== previous.cpuWorkLevel
+      || state.gpuWorkLevel !== previous.gpuWorkLevel
+    ) {
+      this.applyWorkLevels(state.cpuWorkLevel, state.gpuWorkLevel);
     }
     this.governorState = state;
   }
 
-  /** Push Governor B's ladder notch into every lever's subsystem seam. */
-  private applyCpuWorkLevel(level: number): void {
-    const settings = cpuWorkSettingsForLevel(level);
-    this.cpuWorkSettings = settings;
+  /** Push both ladders' notches into every lever's subsystem seam (R-11). */
+  private applyWorkLevels(cpuLevel: number, gpuLevel: number): void {
+    const settings = workLeverSettingsFor(cpuLevel, gpuLevel);
+    this.workLeverSettings = settings;
     this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
     this.detail.setGenerationBudgetCap(
       settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
@@ -1244,14 +1418,13 @@ export class FlightRenderer implements FlightRenderingSystem {
             maximumMilliseconds: settings.detailCellBudgetMs,
           },
     );
-    this.waterReflection.setUpdateIntervalFloor(settings.planarReflectionIntervalFrames);
     this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
     this.governedProfileCache = this.resolveGovernedProfile();
   }
 
-  /** The profile with Governor B's animal and vegetation caps applied. */
+  /** The profile with the governed animal and vegetation caps applied. */
   private resolveGovernedProfile(): WebGpuQualityProfile {
-    const settings = this.cpuWorkSettings;
+    const settings = this.workLeverSettings;
     if (
       settings.activeAnimalBudgetCap === Number.POSITIVE_INFINITY
       && settings.vegetationDistanceScale === 1
@@ -1273,6 +1446,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.previousFrameStartedAt = started;
     if (previous === null) return;
     const interval = started - previous;
+    // Z-2: the diagnostics ring keeps every finite interval — including the
+    // >250 ms stalls the governor's p95 deliberately excludes. Dropping them
+    // made the metric blind to the single most user-visible failure mode.
+    if (Number.isFinite(interval) && interval > 0) {
+      this.pushDiagnosticSample(this.diagnosticIntervalDurations, interval);
+    }
     if (!isUsableFrameTiming(interval)) {
       // A suspended/background tab must not poison a later active-window p95.
       this.lastFrameIntervalMilliseconds = 0;
@@ -1302,6 +1481,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.lastGpuFrameMilliseconds = milliseconds;
     this.lastGpuTimingFrameIndex = this.frameIndex;
     this.gpuFrameDurations.push(milliseconds);
+    this.pushDiagnosticSample(this.diagnosticGpuDurations, milliseconds);
     return milliseconds;
   }
 
@@ -1313,6 +1493,9 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   private resetTimingWindow(): void {
     this.resetTimingSamples();
+    this.diagnosticIntervalDurations.length = 0;
+    this.diagnosticCpuDurations.length = 0;
+    this.diagnosticGpuDurations.length = 0;
     this.previousFrameStartedAt = null;
     this.lastFrameIntervalMilliseconds = 0;
     this.lastCpuFrameMilliseconds = 0;

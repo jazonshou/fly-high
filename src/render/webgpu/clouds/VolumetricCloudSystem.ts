@@ -1,26 +1,51 @@
-import { Camera } from "@babylonjs/core/Cameras/camera";
-import { Constants } from "@babylonjs/core/Engines/constants";
+import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import type { Camera } from "@babylonjs/core/Cameras/camera";
+import { Camera as BabylonCamera } from "@babylonjs/core/Cameras/camera";
+import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
+import { Constants } from "@babylonjs/core/Engines/constants";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { Material } from "@babylonjs/core/Materials/material";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
-import { ProceduralTexture } from "@babylonjs/core/Materials/Textures/Procedurals/proceduralTexture.pure";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { TextureSampler } from "@babylonjs/core/Materials/Textures/textureSampler";
+import { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
-import { viewScaleFromFov } from "./CloudReprojection";
-import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { Mesh as BabylonMesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
-import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
   AERIAL_PERSPECTIVE_WGSL,
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import type { AtmosphereGpuResources } from "@/src/render/webgpu/atmosphere/AtmosphereGpuResources";
+import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  packCloudRaymarchUniforms,
+  packCloudShadowUniforms,
+  packCloudTemporalUniforms,
+  resolveVolumetricCloudConfig,
+  type VolumetricCloudConfig,
+} from "@/src/render/webgpu/nature/CloudConfig";
+import {
+  CLOUD_RAYMARCH_SHADER,
+  CLOUD_SHADOW_SHADER,
+  CLOUD_TEMPORAL_RESOLVE_SHADER,
+} from "@/src/render/webgpu/nature/CloudShaders";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  type EnvironmentState,
+} from "@/src/render/webgpu/nature/EnvironmentState";
+import type { NatureShaderModule } from "@/src/render/webgpu/nature/ShaderModule";
+import { computeDispatch2D } from "@/src/render/webgpu/nature/ShaderModule";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
-import { DEFAULT_VOLUMETRIC_CLOUD_CONFIG } from "@/src/render/webgpu/nature/CloudConfig";
+import { CloudVolumeBake } from "./CloudVolumeBake";
+import { viewScaleFromFov } from "./CloudReprojection";
 import type { CloudShadowProjection } from "./CloudShadowReceiver";
 import {
   resolveCloudRenderSize,
@@ -30,23 +55,35 @@ import {
   type CloudShadowSchedule,
 } from "./runtimePolicy";
 
+/**
+ * The volumetric cloud runtime, rebuilt by 2-0 (cloud shader adoption).
+ *
+ * INVARIANT THIS FILE OWNS: the cloud pipeline runs the three adopted
+ * `nature/CloudShaders.ts` modules — raymarch, temporal resolve and shadow,
+ * all compute passes on the ocean's proven `ComputeShader` pattern — and no
+ * inline cloud WGSL exists here beyond the composite shell that lifts the
+ * resolved image into the scene. Rays are built everywhere from the one
+ * shipped camera-basis convention (1B-12); no view-projection matrix exists
+ * anywhere in the pipeline (the 1A-4 stale-matrix bug class).
+ *
+ * Adoption deviations (decision log): raymarch converted from an MRT
+ * fragment pass to compute (no MRT plumbing needs to exist on this stack);
+ * scene depth arrives as the 2-0a DepthRenderer's camera-space Z (one frame
+ * of latency — the depth pass renders with the scene, after the dispatch);
+ * the shadow map stores rgba16float because receivers filter it.
+ */
+
 const CLOUD_COMPOSITE_SHADER_NAME = "aerolithVolumetricCloudComposite";
 const CLOUD_SHELL_DIAMETER_METERS = 118_000;
 const CLOUD_SHADOW_REFERENCE_ALTITUDE_METERS = 0;
-const CLOUD_AMBIENT_COLOR = new Color3(0.18, 0.27, 0.42);
 const CLOUD_SHADER_STARTUP_TIMEOUT_MILLISECONDS = 15_000;
 const CLOUD_SHADER_READINESS_POLL_MILLISECONDS = 8;
-
-interface CloudEffectReadinessState {
-  getCompilationError(): string;
-}
-
-interface CloudPipelineReadinessTarget {
-  readonly label: string;
-  isReady(): boolean;
-  getEffect(): CloudEffectReadinessState | null | undefined;
-  warm?(): void;
-}
+/** Raymarch params: 17 vec4 rows (272 bytes). */
+const RAYMARCH_PARAMS_VEC4S = 17;
+/** Temporal params: 9 vec4 rows (144 bytes). */
+const TEMPORAL_PARAMS_VEC4S = 9;
+/** Shadow params: 12 vec4 rows (192 bytes). */
+const SHADOW_PARAMS_VEC4S = 12;
 
 function cloudStartupAbortError(message: string): Error {
   const error = new Error(message);
@@ -68,328 +105,16 @@ fn main(input: VertexInputs) -> FragmentInputs {
 }
 `;
 
-const CLOUD_RUNTIME_DENSITY_WGSL = /* wgsl */ `
-fn hash31(point: vec3f) -> f32 {
-  var p = fract(point * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-fn valueNoise(point: vec3f) -> f32 {
-  let cell = floor(point);
-  let fraction = fract(point);
-  let blend = fraction * fraction * (3.0 - 2.0 * fraction);
-  let n000 = hash31(cell + vec3f(0.0, 0.0, 0.0));
-  let n100 = hash31(cell + vec3f(1.0, 0.0, 0.0));
-  let n010 = hash31(cell + vec3f(0.0, 1.0, 0.0));
-  let n110 = hash31(cell + vec3f(1.0, 1.0, 0.0));
-  let n001 = hash31(cell + vec3f(0.0, 0.0, 1.0));
-  let n101 = hash31(cell + vec3f(1.0, 0.0, 1.0));
-  let n011 = hash31(cell + vec3f(0.0, 1.0, 1.0));
-  let n111 = hash31(cell + vec3f(1.0, 1.0, 1.0));
-  let x00 = mix(n000, n100, blend.x);
-  let x10 = mix(n010, n110, blend.x);
-  let x01 = mix(n001, n101, blend.x);
-  let x11 = mix(n011, n111, blend.x);
-  return mix(mix(x00, x10, blend.y), mix(x01, x11, blend.y), blend.z);
-}
-
-fn baseFbm(point: vec3f) -> f32 {
-  var p = point;
-  var value = 0.0;
-  var amplitude = 0.58;
-  for (var octave = 0; octave < 3; octave += 1) {
-    value += valueNoise(p) * amplitude;
-    p = p * 2.07 + vec3f(11.7, 5.3, 17.1);
-    amplitude *= 0.47;
-  }
-  return value;
-}
-
-fn cloudDensity(worldPoint: vec3f) -> f32 {
-  let baseUndulation = (
-    valueNoise(vec3f(worldPoint.x * 0.000035, 4.7, worldPoint.z * 0.000035)) - 0.5
-  ) * 760.0;
-  let localBaseAltitude = uniforms.baseAltitude + baseUndulation;
-  let height = clamp(
-    (worldPoint.y - localBaseAltitude) / max(uniforms.topAltitude - localBaseAltitude, 1.0),
-    0.0,
-    1.0,
-  );
-  let vertical = smoothstep(0.0, 0.12, height)
-    * (1.0 - smoothstep(0.62, 1.0, height));
-  if (vertical <= 0.0001) { return 0.0; }
-
-  let advected = worldPoint + uniforms.wind * uniforms.time;
-  let weatherPoint = vec3f(
-    advected.x / uniforms.baseNoiseScale,
-    1.7 + advected.y / (uniforms.baseNoiseScale * 2.3),
-    advected.z / uniforms.baseNoiseScale,
-  );
-  let weather = baseFbm(weatherPoint);
-  let threshold = 1.04 - uniforms.coverage * 0.78 - uniforms.humidity * 0.1;
-  if (weather < threshold - 0.24) { return 0.0; }
-
-  let shape = baseFbm(advected / (uniforms.baseNoiseScale * 0.38) + vec3f(7.1, 0.0, 13.7));
-  var body = smoothstep(threshold, threshold + 0.3, weather * 0.68 + shape * 0.54);
-  if (body <= 0.001) { return 0.0; }
-  let erosion = valueNoise(advected / uniforms.detailNoiseScale + vec3f(31.0));
-  body -= (1.0 - erosion) * uniforms.detailErosion * 0.42 * (1.0 - body);
-  return clamp(body * vertical * uniforms.densityMultiplier, 0.0, 1.5);
-}
-`;
-
-export const CLOUD_INTEGRATION_FRAGMENT_WGSL = /* wgsl */ `
-varying vUV: vec2f;
-uniform cameraLocal: vec3f;
-uniform cameraWorld: vec3f;
-uniform cameraForward: vec3f;
-uniform cameraRight: vec3f;
-uniform cameraUp: vec3f;
-uniform viewScale: vec2f;
-uniform sunDirection: vec3f;
-uniform wind: vec3f;
-uniform time: f32;
-uniform coverage: f32;
-uniform humidity: f32;
-uniform raySteps: f32;
-uniform lightSteps: f32;
-uniform frameIndex: f32;
-uniform baseAltitude: f32;
-uniform topAltitude: f32;
-uniform maximumTraceDistance: f32;
-uniform baseNoiseScale: f32;
-uniform detailNoiseScale: f32;
-uniform detailErosion: f32;
-uniform densityMultiplier: f32;
-uniform extinctionPerMeter: f32;
-
-${CLOUD_RUNTIME_DENSITY_WGSL}
-
-fn viewRay(uv: vec2f) -> vec3f {
-  // Build the ray from the camera basis. This avoids projection-matrix Y and
-  // half-Z conventions leaking into an offscreen ProceduralTexture pass.
-  let ndc = uv * 2.0 - 1.0;
-  return normalize(
-    uniforms.cameraForward
-      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
-      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
-  );
-}
-
-fn layerInterval(direction: vec3f) -> vec2f {
-  if (abs(direction.y) < 0.0001) { return vec2f(1e30, -1e30); }
-  let first = (uniforms.baseAltitude - uniforms.cameraWorld.y) / direction.y;
-  let second = (uniforms.topAltitude - uniforms.cameraWorld.y) / direction.y;
-  return vec2f(
-    max(0.0, min(first, second)),
-    min(uniforms.maximumTraceDistance, max(first, second)),
-  );
-}
-
-fn lightTransmittance(point: vec3f) -> f32 {
-  var opticalDepth = 0.0;
-  var samplePoint = point;
-  var stepLength = (uniforms.topAltitude - uniforms.baseAltitude)
-    / max(uniforms.lightSteps, 1.0) * 0.55;
-  for (var sampleIndex = 0; sampleIndex < 16; sampleIndex += 1) {
-    if (f32(sampleIndex) >= uniforms.lightSteps) { break; }
-    samplePoint += normalize(uniforms.sunDirection) * stepLength;
-    opticalDepth += cloudDensity(samplePoint) * stepLength;
-    stepLength *= 1.18;
-  }
-  return exp(-opticalDepth * uniforms.extinctionPerMeter);
-}
-
-fn hg(cosTheta: f32, asymmetry: f32) -> f32 {
-  let g2 = asymmetry * asymmetry;
-  return (1.0 - g2)
-    / max(12.56637 * pow(1.0 + g2 - 2.0 * asymmetry * cosTheta, 1.5), 0.001);
-}
-
-@fragment
-fn main(input: FragmentInputs) -> FragmentOutputs {
-  let direction = viewRay(input.vUV);
-  let interval = layerInterval(direction);
-  if (interval.y <= interval.x) {
-    fragmentOutputs.color = vec4f(0.0);
-    return fragmentOutputs;
-  }
-
-  let steps = clamp(uniforms.raySteps, 8.0, 192.0);
-  let stepLength = (interval.y - interval.x) / steps;
-  let jitter = hash31(vec3f(input.position.xy, uniforms.frameIndex)) - 0.5;
-  var distance = interval.x + stepLength * (0.5 + jitter * 0.72);
-  var transmittance = 1.0;
-  var directCoefficient = 0.0;
-  var ambientCoefficient = 0.0;
-  var weightedDistance = 0.0;
-  var distanceWeight = 0.0;
-  let sunDirection = normalize(uniforms.sunDirection);
-  let cosine = dot(direction, sunDirection);
-  let phase = 0.72 * hg(cosine, 0.72) + 0.28 * hg(cosine, -0.22);
-
-  for (var stepIndex = 0; stepIndex < 192; stepIndex += 1) {
-    if (f32(stepIndex) >= steps || distance >= interval.y || transmittance < 0.012) { break; }
-    let point = uniforms.cameraWorld + direction * distance;
-    let density = cloudDensity(point);
-    if (density > 0.006) {
-      let extinction = density * stepLength * uniforms.extinctionPerMeter;
-      let segmentTransmittance = exp(-extinction);
-      let segmentWeight = transmittance * (1.0 - segmentTransmittance);
-      let sunlight = lightTransmittance(point);
-      let powder = 1.0 - exp(-density * stepLength * uniforms.extinctionPerMeter * 1.65);
-      directCoefficient += segmentWeight * sunlight
-        * (0.48 + phase * 5.5) * (0.7 + powder * 0.5);
-      // Sky illumination and unresolved multiple scattering keep cloud bodies
-      // readable under overcast lighting instead of turning into black slabs.
-      ambientCoefficient += segmentWeight * (1.02 + point.y / 11000.0);
-      weightedDistance += distance * segmentWeight;
-      distanceWeight += segmentWeight;
-      transmittance *= segmentTransmittance;
-    }
-    distance += stepLength;
-  }
-
-  let opacity = 1.0 - transmittance;
-  let representativeDistance = select(
-    0.0,
-    weightedDistance / max(distanceWeight, 0.000001),
-    distanceWeight > 0.000001,
-  );
-  // r/g are premultiplied direct/ambient lighting coefficients, b is opacity,
-  // and a is representative distance. This preserves HDR color plus depth in
-  // one filterable RGBA16F target.
-  fragmentOutputs.color = vec4f(
-    directCoefficient,
-    ambientCoefficient,
-    opacity,
-    representativeDistance / uniforms.maximumTraceDistance,
-  );
-}
-`;
-
-export const CLOUD_TEMPORAL_FRAGMENT_WGSL = /* wgsl */ `
-varying vUV: vec2f;
-var currentSamplerSampler: sampler;
-var currentSampler: texture_2d<f32>;
-var historySamplerSampler: sampler;
-var historySampler: texture_2d<f32>;
-uniform previousCameraForward: vec3f;
-uniform previousCameraRight: vec3f;
-uniform previousCameraUp: vec3f;
-uniform previousViewScale: vec2f;
-uniform cameraDelta: vec3f;
-uniform cameraForward: vec3f;
-uniform cameraRight: vec3f;
-uniform cameraUp: vec3f;
-uniform viewScale: vec2f;
-uniform inverseOutputSize: vec2f;
-uniform maximumTraceDistance: f32;
-uniform historyDepthSigma: f32;
-uniform historyWeight: f32;
-uniform historyValid: f32;
-
-fn temporalViewRay(uv: vec2f) -> vec3f {
-  let ndc = uv * 2.0 - 1.0;
-  return normalize(
-    uniforms.cameraForward
-      + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
-      + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
-  );
-}
-
-// No vertical flip belongs here. Babylon already compensates for WebGPU's
-// top-left render-target convention: every non-pure WGSL vertex shader is
-// patched with a yFactor multiply, and yFactor is -1 for every render target,
-// so a ProceduralTexture's interpolated vUV.y already equals the texture v it
-// will be sampled back with. The old flip helper re-flipped on top of that
-// compensation, mirroring the temporal output vertically — which is what made
-// clouds counter-rotate against the aircraft (1A-4).
-
-@fragment
-fn main(input: FragmentInputs) -> FragmentOutputs {
-  let currentUv = input.vUV;
-  let current = textureSampleLevel(currentSampler, currentSamplerSampler, currentUv, 0.0);
-  if (uniforms.historyValid < 0.5 || current.b < 0.001 || current.a <= 0.0) {
-    fragmentOutputs.color = current;
-    return fragmentOutputs;
-  }
-
-  // 1B-12: camera-relative ray-basis reprojection. The sample point sits at
-  // ray·distance from the CURRENT camera; relative to the PREVIOUS camera it
-  // is that plus cameraDelta (absolute world positions, so a floating-origin
-  // rebase between the frames cancels exactly — no matrix to go stale).
-  let distance = current.a * uniforms.maximumTraceDistance;
-  let point = temporalViewRay(input.vUV) * distance + uniforms.cameraDelta;
-  let forwardDepth = dot(point, uniforms.previousCameraForward);
-  if (forwardDepth <= 0.000001) {
-    fragmentOutputs.color = current;
-    return fragmentOutputs;
-  }
-  let previousNdc = vec2f(
-    dot(point, uniforms.previousCameraRight) / (forwardDepth * uniforms.previousViewScale.x),
-    dot(point, uniforms.previousCameraUp) / (forwardDepth * uniforms.previousViewScale.y),
-  );
-  let previousUv = previousNdc * 0.5 + 0.5;
-  if (any(previousUv < vec2f(0.0)) || any(previousUv > vec2f(1.0))) {
-    fragmentOutputs.color = current;
-    return fragmentOutputs;
-  }
-
-  let history = textureSampleLevel(
-    historySampler,
-    historySamplerSampler,
-    previousUv,
-    0.0,
-  );
-  var neighborhoodMinimum = current;
-  var neighborhoodMaximum = current;
-  for (var y = -1; y <= 1; y += 1) {
-    for (var x = -1; x <= 1; x += 1) {
-      let offset = vec2f(f32(x), f32(y)) * uniforms.inverseOutputSize;
-      let sampleValue = textureSampleLevel(
-        currentSampler,
-        currentSamplerSampler,
-        currentUv + offset,
-        0.0,
-      );
-      neighborhoodMinimum = min(neighborhoodMinimum, sampleValue);
-      neighborhoodMaximum = max(neighborhoodMaximum, sampleValue);
-    }
-  }
-
-  let clampedHistory = vec4f(
-    clamp(history.rg, neighborhoodMinimum.rg, neighborhoodMaximum.rg),
-    clamp(history.b, neighborhoodMinimum.b, neighborhoodMaximum.b),
-    history.a,
-  );
-  let depthDifference = abs(history.a - current.a) * uniforms.maximumTraceDistance;
-  let depthConfidence = exp(-depthDifference / max(uniforms.historyDepthSigma, 1.0));
-  let motionPixels = length((previousUv - input.vUV) / uniforms.inverseOutputSize);
-  let motionConfidence = exp(-motionPixels * 0.045);
-  let occupancyConfidence = smoothstep(0.004, 0.08, min(current.b, history.b));
-  let blendWeight = uniforms.historyWeight
-    * depthConfidence * motionConfidence * occupancyConfidence;
-  let resolved = mix(current, clampedHistory, blendWeight);
-  fragmentOutputs.color = vec4f(
-    resolved.rgb,
-    mix(current.a, history.a, blendWeight * 0.65),
-  );
-}
-`;
-
 export const CLOUD_COMPOSITE_FRAGMENT_WGSL = /* wgsl */ `
 var cloudSamplerSampler: sampler;
 var cloudSampler: texture_2d<f32>;
+var cloudAuxSamplerSampler: sampler;
+var cloudAuxSampler: texture_2d<f32>;
 uniform fullResolution: vec2f;
-uniform sunColor: vec3f;
-uniform ambientColor: vec3f;
 uniform cameraForward: vec3f;
 uniform cameraRight: vec3f;
 uniform cameraUp: vec3f;
 uniform viewScale: vec2f;
-uniform maximumTraceDistance: f32;
 
 ${AERIAL_PERSPECTIVE_WGSL}
 
@@ -404,86 +129,37 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.position.x / uniforms.fullResolution.x,
     input.position.y / uniforms.fullResolution.y,
   );
+  // Adopted payload: rgb premultiplied scene-linear radiance (lit inside the
+  // march by sun, sky-ambient LUT and multiple scattering), a transmittance.
   let cloud = textureSampleLevel(cloudSampler, cloudSamplerSampler, uv, 0.0);
-  if (cloud.b < 0.001 || cloud.a <= 0.0) { discard; }
+  let aux = textureSampleLevel(cloudAuxSampler, cloudAuxSamplerSampler, uv, 0.0);
+  let opacity = 1.0 - cloud.a;
+  if (opacity < 0.001) { discard; }
 
   // The shell vertex is fixed at reversed-Z far depth. Opaque terrain and the
   // aircraft therefore win naturally, while clouds remain confined to sky
-  // pixels. A single representative scattering depth cannot describe a whole
-  // volume ray; writing it here caused entire cloud columns to alternately pass
-  // and fail against distant terrain, creating horizontal bands at the horizon.
-  var radiance = uniforms.sunColor * cloud.r
-    + uniforms.ambientColor * (cloud.g + cloud.b * 0.55);
+  // pixels (no fragDepth write — a representative depth caused horizon bands).
+  var radiance = cloud.rgb;
   // 1C-4: haze the cloud at its representative scattering depth, on the same
   // shared curve as everything else. The ray is rebuilt with the exact basis
-  // formula the integration pass used for this texel. Premultiplied blending:
+  // formula the raymarch used for this texel. Premultiplied blending:
   // transmittance scales the cloud's own radiance, while in-scatter enters
-  // premultiplied by the cloud's coverage of the pixel.
+  // premultiplied by the cloud's coverage of the pixel. Shadow-through-haze
+  // stays STRUCTURAL (D-7/R-19): no strength × transmittance term exists.
   let ndc = uv * 2.0 - 1.0;
   let direction = normalize(
     uniforms.cameraForward
       + uniforms.cameraRight * ndc.x * uniforms.viewScale.x
       + uniforms.cameraUp * ndc.y * uniforms.viewScale.y
   );
-  let cloudDistance = cloud.a * uniforms.maximumTraceDistance;
+  let cloudDistance = max(aux.x, 0.0);
   let aerial = aerialPerspective(
     uniforms.aerialCameraAltitude + direction.y * cloudDistance,
     cloudDistance,
     dot(direction, uniforms.aerialSunDirection),
   );
-  radiance = radiance * aerial.transmittance + aerial.inScatter * cloud.b;
-  fragmentOutputs.color = vec4f(max(radiance, vec3f(0.0)), cloud.b);
-}
-`;
-
-/** Raster specialization of the shared cloud-shadow compute foundation. */
-export const CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL = /* wgsl */ `
-varying vUV: vec2f;
-uniform shadowCenter: vec2f;
-uniform shadowWorldSize: f32;
-uniform groundAltitude: f32;
-uniform sunDirection: vec3f;
-uniform wind: vec3f;
-uniform time: f32;
-uniform coverage: f32;
-uniform humidity: f32;
-uniform shadowSteps: f32;
-uniform frameIndex: f32;
-uniform baseAltitude: f32;
-uniform topAltitude: f32;
-uniform baseNoiseScale: f32;
-uniform detailNoiseScale: f32;
-uniform detailErosion: f32;
-uniform densityMultiplier: f32;
-uniform extinctionPerMeter: f32;
-
-${CLOUD_RUNTIME_DENSITY_WGSL}
-
-@fragment
-fn main(input: FragmentInputs) -> FragmentOutputs {
-  let sunDirection = normalize(uniforms.sunDirection);
-  if (sunDirection.y <= 0.001) {
-    fragmentOutputs.color = vec4f(1.0);
-    return fragmentOutputs;
-  }
-  let surface = vec3f(
-    uniforms.shadowCenter.x + (input.vUV.x - 0.5) * uniforms.shadowWorldSize,
-    uniforms.groundAltitude,
-    uniforms.shadowCenter.y + (input.vUV.y - 0.5) * uniforms.shadowWorldSize,
-  );
-  let nearDistance = max(0.0, (uniforms.baseAltitude - surface.y) / sunDirection.y);
-  let farDistance = max(nearDistance, (uniforms.topAltitude - surface.y) / sunDirection.y);
-  let steps = clamp(uniforms.shadowSteps, 4.0, 32.0);
-  let stepLength = (farDistance - nearDistance) / steps;
-  let jitter = hash31(vec3f(input.position.xy, uniforms.frameIndex));
-  var opticalDepth = 0.0;
-  for (var stepIndex = 0; stepIndex < 32; stepIndex += 1) {
-    if (f32(stepIndex) >= steps) { break; }
-    let distance = nearDistance + (f32(stepIndex) + jitter) * stepLength;
-    opticalDepth += cloudDensity(surface + sunDirection * distance) * stepLength;
-  }
-  let transmittance = exp(-opticalDepth * uniforms.extinctionPerMeter);
-  fragmentOutputs.color = vec4f(transmittance, transmittance, transmittance, 1.0);
+  radiance = radiance * aerial.transmittance + aerial.inScatter * opacity;
+  fragmentOutputs.color = vec4f(max(radiance, vec3f(0.0)), opacity);
 }
 `;
 
@@ -494,174 +170,211 @@ function registerShaders(): void {
     CLOUD_COMPOSITE_FRAGMENT_WGSL;
 }
 
-function createProceduralTexture(
-  scene: Scene,
-  name: string,
-  size: { readonly width: number; readonly height: number },
-  fragmentSource: string,
-  textureType: number,
-  format = Constants.TEXTUREFORMAT_RGBA,
-): ProceduralTexture {
-  const texture = new ProceduralTexture(
-    name,
-    size,
-    { fragmentSource },
-    scene,
-    {
-      shaderLanguage: ShaderLanguage.WGSL,
-      type: textureType,
-      format,
-      samplingMode: Constants.TEXTURE_BILINEAR_SAMPLINGMODE,
-      generateDepthBuffer: false,
-      generateStencilBuffer: false,
-      generateMipMaps: false,
-      gammaSpace: false,
-      skipSceneRegistration: true,
-    },
-    false,
-    false,
-    textureType,
-  );
-  texture.refreshRate = -1;
-  texture.autoClear = false;
-  texture.gammaSpace = false;
-  texture.wrapU = Constants.TEXTURE_CLAMP_ADDRESSMODE;
-  texture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
-  return texture;
-}
-
 function configurePremultipliedMaterial(material: ShaderMaterial): void {
   // 1A-4 step 3, resolved by measurement (tests/gpu/cloud-shell-culling.test.ts):
-  // the camera-centered BACKSIDE shell rasterises exactly once per pixel, so
-  // the hypothesised per-pixel double blend does not occur on this stack.
-  // Culling is enabled anyway — it is visually a no-op today (the GPU test
-  // pins that a culled BACKSIDE shell stays fully visible in the offscreen
-  // pass) and it protects the premultiplied blend from ever double-covering
-  // if the shell stops being camera-centered. Babylon's render-target winding
-  // flip and frontFace inversion cancel, so no sideOrientation change is
-  // needed. Keep the warmed pipeline descriptor in whenReadyAsync in step.
+  // the camera-centered BACKSIDE shell rasterises exactly once per pixel.
+  // Culling stays enabled as insurance against double-cover.
   material.backFaceCulling = true;
   material.disableDepthWrite = true;
   material.transparencyMode = Material.MATERIAL_ALPHABLEND;
   material.alphaMode = Constants.ALPHA_PREMULTIPLIED_PORTERDUFF;
 }
 
+/** Storage texture that computes write and materials/other computes sample. */
+function storageTexture(
+  scene: Scene,
+  name: string,
+  width: number,
+  height: number,
+): RawTexture {
+  const texture = RawTexture.CreateRGBAStorageTexture(
+    null,
+    width,
+    height,
+    scene,
+    false,
+    false,
+    Texture.BILINEAR_SAMPLINGMODE,
+    Constants.TEXTURETYPE_HALF_FLOAT,
+  );
+  texture.name = name;
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  return texture;
+}
+
+/** ComputeShader from an adopted module's own binding metadata. */
+function computeFromModule(scene: Scene, module: NatureShaderModule): ComputeShader {
+  const entryPoint = module.entryPoints[0];
+  if (!entryPoint || entryPoint.stage !== "compute") {
+    throw new RangeError(`${module.label} does not declare a compute entry point`);
+  }
+  const shader = new ComputeShader(
+    module.label,
+    scene.getEngine(),
+    { computeSource: module.code },
+    {
+      entryPoint: entryPoint.name,
+      bindingsMapping: Object.fromEntries(
+        module.bindings.map((binding) => [
+          binding.name,
+          { group: binding.group, binding: binding.binding },
+        ]),
+      ),
+    },
+  );
+  shader.onError = (_effect, errors) => {
+    throw new Error(`${module.label} failed to compile: ${errors}`);
+  };
+  return shader;
+}
+
+/** A params UBO treated as an opaque vec4-array blob (byte-packed by CloudConfig). */
+function paramsBuffer(scene: Scene, name: string, vec4Count: number): UniformBuffer {
+  const buffer = new UniformBuffer(scene.getEngine(), undefined, true, name);
+  buffer.addUniform("data", 4, vec4Count);
+  buffer.create();
+  return buffer;
+}
+
+function uploadParams(buffer: UniformBuffer, bytes: ArrayBufferLike, vec4Count: number): void {
+  // Bit-exact copy: small u32 lanes (sizes, flags) are denormal floats, which
+  // Float32Array copies preserve. (Only NaN payloads would be at risk, and
+  // none of the packed integers reach the NaN range.)
+  buffer.updateUniform("data", new Float32Array(bytes), vec4Count * 4);
+  buffer.update();
+}
+
 export interface CloudRuntimeStatistics {
   readonly frameIndex: number;
   readonly renderWidth: number;
   readonly renderHeight: number;
-  readonly resolutionScale: number;
-  readonly integrationRenders: number;
-  readonly temporalResolveRenders: number;
-  readonly historyValid: boolean;
-  readonly historyGeneration: number;
+  readonly renderScale: number;
+  readonly raySteps: number;
+  readonly lightSteps: number;
   readonly shadowResolution: number;
-  readonly shadowSteps: number;
-  readonly shadowUpdateEveryNFrames: number;
-  readonly shadowRenders: number;
-  readonly shadowCenterX: number;
-  readonly shadowCenterZ: number;
   readonly shadowWorldSize: number;
+  readonly shadowUpdateEveryNFrames: number;
+  readonly raymarchDispatchCount: number;
+  /** 2-5: measured density samples per frame (assertion 39's number). */
+  readonly densitySamplesPerFrame: number;
+  readonly temporalResolveDispatchCount: number;
+  readonly shadowDispatchCount: number;
+  readonly historyGeneration: number;
+  readonly historyValid: boolean;
+  readonly shadowReady: boolean;
+  readonly computeSupported: boolean;
 }
 
-/** Low-resolution, temporally resolved clouds with reversed-Z depth composition. */
+/** Every compute-side resource, created only where compute exists (not NullEngine). */
+interface CloudComputePipeline {
+  readonly raymarchCompute: ComputeShader;
+  readonly temporalCompute: ComputeShader;
+  readonly shadowCompute: ComputeShader;
+  readonly raymarchParams: UniformBuffer;
+  readonly temporalParams: UniformBuffer;
+  readonly shadowParams: UniformBuffer;
+  readonly linearSampler: TextureSampler;
+  /** 2-1: the GPU-baked noise volumes and weather map. */
+  readonly bake: CloudVolumeBake;
+  /** 2-5: one atomic u32 accumulating density samples (assertion 39). */
+  readonly densityCounter: StorageBuffer;
+  raymarchCloud: RawTexture;
+  raymarchAux: RawTexture;
+  resolvedCloud: [RawTexture, RawTexture];
+  resolvedAux: [RawTexture, RawTexture];
+  shadowMap: RawTexture;
+}
+
+/** WebGPU volumetric clouds: three adopted compute passes + a composite shell. */
 export class VolumetricCloudSystem {
+  private readonly scene: Scene;
+  private readonly camera: Camera;
   private readonly shell: Mesh;
   private readonly material: ShaderMaterial;
-  private readonly integrationTexture: ProceduralTexture;
-  private readonly historyTextures: readonly [ProceduralTexture, ProceduralTexture];
-  private readonly shadowTextureValue: ProceduralTexture;
+  private readonly resources: AtmosphereGpuResources;
+  /** Null exactly when the engine has no compute support (NullEngine). */
+  private readonly pipeline: CloudComputePipeline | null;
+  /** 1×1 full-transmittance stand-in when no compute pipeline exists. */
+  private readonly shadowFallback: RawTexture;
+  private config: VolumetricCloudConfig;
+  private profile: WebGpuQualityProfile;
+  private environment: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
+  private readonly computeSupported: boolean;
   private readonly cameraWorld = Vector3.Zero();
-  /** Previous frame's ray basis + ABSOLUTE camera position (1B-12). */
+  private readonly cameraForward = Vector3.Forward();
+  private readonly cameraRight = Vector3.Right();
+  private readonly cameraUp = Vector3.Up();
+  private readonly cameraLocalForward: Vector3;
+  private readonly viewScale = new Vector2(1, 1);
   private readonly previousCameraWorld = Vector3.Zero();
   private readonly previousCameraForward = Vector3.Forward();
   private readonly previousCameraRight = Vector3.Right();
   private readonly previousCameraUp = Vector3.Up();
   private readonly previousViewScale = new Vector2(1, 1);
-  private readonly cameraDelta = Vector3.Zero();
   private previousStateValid = false;
-  private readonly cameraForward = Vector3.Forward();
-  private readonly cameraRight = Vector3.Right();
-  private readonly cameraUp = Vector3.Up();
-  private readonly cameraLocalForward: Vector3;
-  private readonly viewScale = Vector2.One();
-  private readonly shadowCenter = Vector2.Zero();
-  private readonly inverseOutputSize = Vector2.One();
-  private readonly fullResolution = Vector2.One();
+  private readonly fullResolution = new Vector2(1, 1);
+  private readonly shadowCenter = new Vector2(0, 0);
   private readonly sunDirection = Vector3.Up();
-  private readonly wind = Vector3.Zero();
+  private readonly windVector = new Vector2(0, 0);
   private readonly lifetimeController = new AbortController();
   private cloudRenderSize: CloudRenderSize;
   private shadowSchedule: CloudShadowSchedule;
   private historyReadIndex: 0 | 1 = 0;
   private historyValid = false;
-  private atmosphereInitialized = false;
   private shadowDirty = true;
   private shadowReady = false;
-  /** Governor B lever 4 (1A-6b): a floor on frames between shadow renders. */
+  /** Governor lever (1A-6b / R-11): a floor on frames between shadow renders. */
   private shadowIntervalFloor: number | null = null;
   private frameIndex = 0;
   private lastShadowFrame = -1;
-  private integrationRenderCount = 0;
-  private temporalResolveRenderCount = 0;
-  private shadowRenderCount = 0;
+  private raymarchDispatchCount = 0;
+  /** 2-5: last measured density samples per frame (60-frame window mean). */
+  private densitySamplesPerFrame = 0;
+  private densityReadbackPending = false;
+  private temporalResolveDispatchCount = 0;
+  private shadowDispatchCount = 0;
   private historyGeneration = 0;
-  private coverage = 0;
-  private humidity = 0;
-  private pipelinesWarmed = false;
   private disposed = false;
 
   constructor(
-    private readonly scene: Scene,
-    private readonly camera: Camera,
-    private profile: WebGpuQualityProfile,
+    scene: Scene,
+    camera: Camera,
+    profile: WebGpuQualityProfile,
     atmosphere: AtmosphereSnapshot,
+    resources: AtmosphereGpuResources,
   ) {
-    registerShaders();
+    this.scene = scene;
+    this.camera = camera;
+    this.profile = profile;
+    this.resources = resources;
     this.cameraLocalForward = Vector3.Forward(scene.useRightHandedSystem);
     const engine = scene.getEngine();
-    this.cloudRenderSize = resolveCloudRenderSize(
-      engine.getRenderWidth(),
-      engine.getRenderHeight(),
-      profile.cloudResolutionScale,
-    );
+    this.computeSupported = engine.getCaps().supportComputeShaders === true;
     this.shadowSchedule = resolveCloudShadowSchedule(profile);
-    const hdrTextureType = engine.getCaps().textureHalfFloatRender
-      ? Constants.TEXTURETYPE_HALF_FLOAT
-      : Constants.TEXTURETYPE_UNSIGNED_BYTE;
-
-    this.integrationTexture = createProceduralTexture(
-      scene,
-      "volumetric-cloud-integration",
-      this.cloudRenderSize,
-      CLOUD_INTEGRATION_FRAGMENT_WGSL,
-      hdrTextureType,
-    );
-    this.historyTextures = [
-      createProceduralTexture(scene, "volumetric-cloud-history-a", this.cloudRenderSize,
-        CLOUD_TEMPORAL_FRAGMENT_WGSL, hdrTextureType),
-      createProceduralTexture(scene, "volumetric-cloud-history-b", this.cloudRenderSize,
-        CLOUD_TEMPORAL_FRAGMENT_WGSL, hdrTextureType),
-    ];
-    this.shadowTextureValue = createProceduralTexture(
-      scene,
-      "volumetric-cloud-shadow",
-      { width: this.shadowSchedule.resolution, height: this.shadowSchedule.resolution },
-      CLOUD_RUNTIME_SHADOW_FRAGMENT_WGSL,
-      hdrTextureType,
-      Constants.TEXTUREFORMAT_R,
+    this.config = this.resolveConfig(profile);
+    this.cloudRenderSize = resolveCloudRenderSize(
+      Math.max(engine.getRenderWidth(), 8),
+      Math.max(engine.getRenderHeight(), 8),
+      profile.cloudResolutionScale,
+      profile.maxCloudPixels,
     );
 
-    this.shell = CreateSphere("volumetric-cloud-shell", {
-      diameter: CLOUD_SHELL_DIAMETER_METERS,
-      segments: 24,
-      sideOrientation: Mesh.BACKSIDE,
-    }, scene);
-    this.shell.isPickable = false;
-    this.shell.applyFog = false;
-    this.shell.alwaysSelectAsActiveMesh = true;
-    this.shell.renderingGroupId = 0;
-    this.shell.alphaIndex = 1;
+    this.shadowFallback = new RawTexture(
+      new Uint8Array([255, 255, 255, 255]),
+      1,
+      1,
+      Constants.TEXTUREFORMAT_RGBA,
+      scene,
+      false,
+      false,
+      Texture.BILINEAR_SAMPLINGMODE,
+      Constants.TEXTURETYPE_UNSIGNED_BYTE,
+    );
+    this.shadowFallback.name = "cloud-shadow-fallback-map";
+    this.pipeline = this.computeSupported ? this.createPipeline() : null;
+
+    registerShaders();
     this.material = new ShaderMaterial(
       "volumetric-cloud-composite-material",
       scene,
@@ -669,26 +382,143 @@ export class VolumetricCloudSystem {
       {
         attributes: ["position"],
         uniforms: [
-          "worldViewProjection", "fullResolution", "sunColor", "ambientColor",
-          "cameraForward", "cameraRight", "cameraUp", "viewScale",
-          "maximumTraceDistance",
+          "worldViewProjection",
+          "fullResolution",
+          "cameraForward",
+          "cameraRight",
+          "cameraUp",
+          "viewScale",
           ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
-        samplers: ["cloudSampler"],
-        needAlphaBlending: true,
+        samplers: ["cloudSampler", "cloudAuxSampler"],
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
     configurePremultipliedMaterial(this.material);
-    this.material.depthFunction = Constants.GEQUAL;
-    this.material.setTexture("cloudSampler", this.integrationTexture);
+    this.shell = CreateSphere(
+      "volumetric-cloud-shell",
+      { diameter: CLOUD_SHELL_DIAMETER_METERS, segments: 24, sideOrientation: BabylonMesh.BACKSIDE },
+      scene,
+    );
     this.shell.material = this.material;
+    this.shell.isPickable = false;
+    this.shell.applyFog = false;
+    this.shell.alwaysSelectAsActiveMesh = true;
+    this.shell.renderingGroupId = 0;
+    this.shell.alphaIndex = 1;
     this.shell.setEnabled(false);
-
-    this.configureStaticUniforms();
-    this.configureTemporalBindings();
-    this.applyProfileUniforms();
+    if (this.pipeline) {
+      this.material.setTexture("cloudSampler", this.pipeline.resolvedCloud[0]);
+      this.material.setTexture("cloudAuxSampler", this.pipeline.resolvedAux[0]);
+    }
     this.setAtmosphere(atmosphere);
+  }
+
+  /** Config truth (assertion 35): tier values enter through overrides, once. */
+  private resolveConfig(profile: WebGpuQualityProfile): VolumetricCloudConfig {
+    return resolveVolumetricCloudConfig({
+      maximumViewSteps: Math.max(8, Math.min(192, profile.cloudPrimarySteps)),
+      lightSteps: Math.max(2, Math.min(16, profile.cloudLightSteps)),
+      renderScale: profile.cloudResolutionScale,
+      historyWeight: this.shadowSchedule.historyWeight,
+      shadowMapResolution: this.shadowSchedule.resolution,
+      shadowSteps: this.shadowSchedule.steps,
+      shadowUpdateEveryNFrames: this.shadowSchedule.updateEveryNFrames,
+    });
+  }
+
+  private createPipeline(): CloudComputePipeline {
+    const scene = this.scene;
+    const bake = new CloudVolumeBake(scene);
+    bake.setWeather(
+      this.environment.weather.cloudCoverage,
+      this.environment.weather.cloudType,
+      this.environment.weather.convection,
+    );
+    // Seed the weather window at the origin so the startup barrier can bake;
+    // update() re-follows the actual flight position.
+    bake.weatherWorldSizeMeters = this.config.weatherMapWorldSizeMeters;
+    bake.followCamera(0, 0, this.config.weatherMapWorldSizeMeters);
+    const { width, height } = this.cloudRenderSize;
+    const linearSampler = new TextureSampler();
+    linearSampler.setParameters(
+      Texture.WRAP_ADDRESSMODE,
+      Texture.WRAP_ADDRESSMODE,
+      Texture.WRAP_ADDRESSMODE,
+      1,
+      Texture.BILINEAR_SAMPLINGMODE,
+    );
+    const pipeline: CloudComputePipeline = {
+      raymarchCompute: computeFromModule(scene, CLOUD_RAYMARCH_SHADER),
+      temporalCompute: computeFromModule(scene, CLOUD_TEMPORAL_RESOLVE_SHADER),
+      shadowCompute: computeFromModule(scene, CLOUD_SHADOW_SHADER),
+      raymarchParams: paramsBuffer(scene, "cloud-raymarch-params", RAYMARCH_PARAMS_VEC4S),
+      temporalParams: paramsBuffer(scene, "cloud-temporal-params", TEMPORAL_PARAMS_VEC4S),
+      shadowParams: paramsBuffer(scene, "cloud-shadow-params", SHADOW_PARAMS_VEC4S),
+      linearSampler,
+      bake,
+      // The pipeline exists only when compute does, i.e. on WebGPU.
+      densityCounter: new StorageBuffer(scene.getEngine() as WebGPUEngine, 4),
+      raymarchCloud: storageTexture(scene, "cloud-raymarch-cloud", width, height),
+      raymarchAux: storageTexture(scene, "cloud-raymarch-aux", width, height),
+      resolvedCloud: [
+        storageTexture(scene, "cloud-resolved-cloud-a", width, height),
+        storageTexture(scene, "cloud-resolved-cloud-b", width, height),
+      ],
+      resolvedAux: [
+        storageTexture(scene, "cloud-resolved-aux-a", width, height),
+        storageTexture(scene, "cloud-resolved-aux-b", width, height),
+      ],
+      shadowMap: storageTexture(
+        scene,
+        "cloud-shadow-map",
+        this.shadowSchedule.resolution,
+        this.shadowSchedule.resolution,
+      ),
+    };
+    this.bindStaticComputeResources(pipeline);
+    this.bindSizedComputeResources(pipeline);
+    return pipeline;
+  }
+
+  private bindStaticComputeResources(pipeline: CloudComputePipeline): void {
+    pipeline.raymarchCompute.setUniformBuffer("params", pipeline.raymarchParams);
+    pipeline.raymarchCompute.setTextureSampler("linear_sampler", pipeline.linearSampler);
+    pipeline.raymarchCompute.setTexture("scene_depth", this.resources.sceneDepth, false);
+    pipeline.raymarchCompute.setTexture("weather_texture", pipeline.bake.weatherMap, false);
+    pipeline.raymarchCompute.setTexture("base_noise_texture", pipeline.bake.baseVolume, false);
+    pipeline.raymarchCompute.setTexture(
+      "detail_noise_texture",
+      pipeline.bake.detailVolume,
+      false,
+    );
+    pipeline.raymarchCompute.setTexture("blue_noise_texture", this.resources.blueNoise, false);
+    pipeline.raymarchCompute.setTexture("sky_view_lut", this.resources.skyAmbientLut, false);
+    pipeline.raymarchCompute.setTexture(
+      "atmosphere_transmittance_lut",
+      this.resources.transmittanceLut,
+      false,
+    );
+    pipeline.temporalCompute.setUniformBuffer("params", pipeline.temporalParams);
+    pipeline.shadowCompute.setUniformBuffer("params", pipeline.shadowParams);
+    pipeline.shadowCompute.setTextureSampler("linear_sampler", pipeline.linearSampler);
+    pipeline.shadowCompute.setTexture("weather_texture", pipeline.bake.weatherMap, false);
+    pipeline.shadowCompute.setTexture("base_noise_texture", pipeline.bake.baseVolume, false);
+  }
+
+  private bindSizedComputeResources(pipeline: CloudComputePipeline): void {
+    pipeline.raymarchCompute.setStorageTexture("raymarch_cloud", pipeline.raymarchCloud);
+    pipeline.raymarchCompute.setStorageTexture("raymarch_aux", pipeline.raymarchAux);
+    pipeline.raymarchCompute.setStorageBuffer("density_counter", pipeline.densityCounter);
+    pipeline.temporalCompute.setTexture("current_cloud", pipeline.raymarchCloud, false);
+    pipeline.temporalCompute.setTexture("current_aux", pipeline.raymarchAux, false);
+    // Initial ping-pong bindings: update() rebinds per frame, but isReady()
+    // requires every declared binding to hold a resource from the start.
+    pipeline.temporalCompute.setTexture("history_cloud", pipeline.resolvedCloud[0], false);
+    pipeline.temporalCompute.setTexture("history_aux", pipeline.resolvedAux[0], false);
+    pipeline.temporalCompute.setStorageTexture("resolved_cloud", pipeline.resolvedCloud[1]);
+    pipeline.temporalCompute.setStorageTexture("resolved_aux", pipeline.resolvedAux[1]);
+    pipeline.shadowCompute.setStorageTexture("cloud_shadow", pipeline.shadowMap);
   }
 
   get statistics(): CloudRuntimeStatistics {
@@ -696,28 +526,29 @@ export class VolumetricCloudSystem {
       frameIndex: this.frameIndex,
       renderWidth: this.cloudRenderSize.width,
       renderHeight: this.cloudRenderSize.height,
-      resolutionScale: this.cloudRenderSize.scale,
-      integrationRenders: this.integrationRenderCount,
-      temporalResolveRenders: this.temporalResolveRenderCount,
-      historyValid: this.historyValid,
-      historyGeneration: this.historyGeneration,
+      renderScale: this.cloudRenderSize.scale,
+      raySteps: this.config.maximumViewSteps,
+      lightSteps: this.config.lightSteps,
       shadowResolution: this.shadowSchedule.resolution,
-      shadowSteps: this.shadowSchedule.steps,
+      shadowWorldSize: this.config.shadowWorldSizeMeters,
       shadowUpdateEveryNFrames: this.shadowSchedule.updateEveryNFrames,
-      shadowRenders: this.shadowRenderCount,
-      shadowCenterX: this.shadowCenter.x,
-      shadowCenterZ: this.shadowCenter.y,
-      shadowWorldSize: DEFAULT_VOLUMETRIC_CLOUD_CONFIG.shadowWorldSizeMeters,
+      raymarchDispatchCount: this.raymarchDispatchCount,
+      densitySamplesPerFrame: this.densitySamplesPerFrame,
+      temporalResolveDispatchCount: this.temporalResolveDispatchCount,
+      shadowDispatchCount: this.shadowDispatchCount,
+      historyGeneration: this.historyGeneration,
+      historyValid: this.historyValid,
+      shadowReady: this.shadowReady,
+      computeSupported: this.computeSupported,
     };
   }
 
-  /** Bindable world-space transmittance projection for terrain/water materials. */
   get cloudShadow(): CloudShadowProjection {
     return {
-      texture: this.shadowTextureValue,
+      texture: this.pipeline?.shadowMap ?? this.shadowFallback,
       centerX: this.shadowCenter.x,
       centerZ: this.shadowCenter.y,
-      worldSizeMeters: DEFAULT_VOLUMETRIC_CLOUD_CONFIG.shadowWorldSizeMeters,
+      worldSizeMeters: this.config.shadowWorldSizeMeters,
       referenceAltitudeMeters: CLOUD_SHADOW_REFERENCE_ALTITUDE_METERS,
       sunDirectionX: this.sunDirection.x,
       sunDirectionY: this.sunDirection.y,
@@ -727,315 +558,295 @@ export class VolumetricCloudSystem {
   }
 
   /**
-   * Compiles every cloud shader variant and warms each offscreen render pipeline.
-   * Startup must await this finite barrier because ProceduralTexture.isReady()
-   * otherwise permits a failed or indefinitely compiling effect to be skipped
-   * silently by the per-frame update path.
+   * Startup barrier: resolves when the three compute pipelines and the
+   * composite material can execute (NullEngine reports no compute support and
+   * the barrier reduces to the material alone — that is what lets the Node
+   * tests run the lifecycle without a GPU).
    */
-  async whenReadyAsync(
+  whenReadyAsync(
     signal?: AbortSignal,
     timeoutMilliseconds = CLOUD_SHADER_STARTUP_TIMEOUT_MILLISECONDS,
   ): Promise<void> {
-    if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
-      throw new RangeError("Cloud shader startup timeout must be a positive finite number");
-    }
-    if (this.disposed) {
-      throw cloudStartupAbortError("Volumetric cloud system was disposed during shader startup");
-    }
-    if (signal?.aborted) {
-      throw cloudStartupAbortError("Volumetric cloud shader startup was cancelled");
-    }
-    if (this.pipelinesWarmed) return;
-
-    this.prepareStartupUniforms();
-    const compositeSubMesh = this.shell.subMeshes[0];
-    const getCompositeEffect = () => compositeSubMesh?.effect ?? this.material.getEffect();
-    const targets: readonly CloudPipelineReadinessTarget[] = [
-      {
-        label: "integration",
-        isReady: () => this.integrationTexture.isReady(),
-        getEffect: () => this.integrationTexture.getEffect(),
-        warm: () => this.integrationTexture.render(),
-      },
-      {
-        label: "temporal history A",
-        isReady: () => this.historyTextures[0].isReady(),
-        getEffect: () => this.historyTextures[0].getEffect(),
-        warm: () => this.historyTextures[0].render(),
-      },
-      {
-        label: "temporal history B",
-        isReady: () => this.historyTextures[1].isReady(),
-        getEffect: () => this.historyTextures[1].getEffect(),
-        warm: () => this.historyTextures[1].render(),
-      },
-      {
-        label: "shadow",
-        isReady: () => this.shadowTextureValue.isReady(),
-        getEffect: () => this.shadowTextureValue.getEffect(),
-        warm: () => this.shadowTextureValue.render(),
-      },
-      {
-        label: "composite",
-        isReady: () => {
-          const materialReady = this.material.isReady(this.shell);
-          return materialReady && (compositeSubMesh
-            ? this.material.isReadyForSubMesh(this.shell, compositeSubMesh, false)
-            : true);
-        },
-        getEffect: getCompositeEffect,
-      },
-    ];
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let pollTimer: ReturnType<typeof setTimeout> | undefined;
-      const lifetimeSignal = this.lifetimeController.signal;
-      const finish = (error?: unknown) => {
-        if (settled) return;
-        settled = true;
-        if (pollTimer !== undefined) clearTimeout(pollTimer);
-        clearTimeout(timeoutTimer);
-        signal?.removeEventListener("abort", onExternalAbort);
-        lifetimeSignal.removeEventListener("abort", onDisposed);
-        if (error === undefined) resolve();
-        else reject(error);
-      };
-      const onExternalAbort = () => {
-        finish(cloudStartupAbortError("Volumetric cloud shader startup was cancelled"));
-      };
-      const onDisposed = () => {
-        finish(cloudStartupAbortError(
-          "Volumetric cloud system was disposed during shader startup",
-        ));
-      };
-      const checkReadiness = () => {
-        if (settled) return;
-        try {
-          let allReady = true;
-          for (const target of targets) {
-            const ready = target.isReady();
-            const compilationError = target.getEffect()?.getCompilationError().trim();
-            if (compilationError) {
-              finish(new Error(
-                `Volumetric cloud ${target.label} shader failed to compile: ${compilationError}`,
-              ));
-              return;
-            }
-            allReady = allReady && ready;
-          }
-          if (allReady) {
-            for (const target of targets) target.warm?.();
-            const engine = this.scene.getEngine();
-            const webGpuEngine = engine as WebGPUEngine;
-            if (typeof webGpuEngine.createRenderPipelineAsync !== "function") {
-              // NullEngine deliberately has no native render-pipeline API.
-              this.pipelinesWarmed = true;
-              finish();
-              return;
-            }
-            const effect = getCompositeEffect();
-            if (!effect) {
-              finish(new Error(
-                "Volumetric cloud composite shader became unavailable during startup",
-              ));
-              return;
-            }
-            const pipelinePromises = webGpuEngine.createRenderPipelineAsync({
-                effect,
-                mesh: this.shell,
-                fillMode: Constants.MATERIAL_TriangleFillMode,
-                // The shell draws into the main offscreen chain, which is
-                // multisampled per the profile since 1B-11.
-                sampleCount: this.profile.msaaSamples,
-                colorFormat: "rgba16float",
-                depthStencilFormat: engine.isStencilEnable
-                  ? "depth24plus-stencil8"
-                  : "depth32float",
-                alphaMode: Constants.ALPHA_PREMULTIPLIED_PORTERDUFF,
-                depthWrite: false,
-                depthTest: true,
-                depthCompare: Constants.GEQUAL,
-                cullEnabled: true,
-                // The shell draws with reverseSide in this right-handed scene
-                // into a Y-flipped offscreen target, so the runtime pipeline
-                // keys frontFace 1 — Babylon's warm default of 2 would compile
-                // a pipeline the composite never uses.
-                frontFace: 1,
-              });
-            // Native WebGPU pipeline validation is asynchronous. Keep the same
-            // abort/dispose/timeout barrier alive until it completes; NullEngine
-            // tests intentionally have no render-pipeline creation API.
-            void Promise.all(pipelinePromises).then(
-              () => {
-                if (settled) return;
-                this.pipelinesWarmed = true;
-                finish();
-              },
-              (error: unknown) => finish(error),
-            );
-            return;
-          }
-        } catch (error) {
-          finish(error);
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+      const poll = (): void => {
+        if (this.disposed || this.lifetimeController.signal.aborted) {
+          reject(cloudStartupAbortError("Cloud system was disposed during startup"));
           return;
         }
-        pollTimer = setTimeout(
-          checkReadiness,
-          CLOUD_SHADER_READINESS_POLL_MILLISECONDS,
+        if (signal?.aborted) {
+          reject(cloudStartupAbortError("Cloud startup was aborted"));
+          return;
+        }
+        const pipeline = this.pipeline;
+        // The sky-ambient LUT allocates lazily on first render; nothing
+        // renders the scene during startup, so the barrier warms it (the old
+        // pipeline warmed its procedural textures the same way).
+        if (pipeline !== null) {
+          this.resources.warm();
+          pipeline.bake.bakeWhenReady();
+        }
+        if (Date.now() - startedAt > timeoutMilliseconds) {
+          const detail = pipeline === null
+            ? "no compute pipeline"
+            : `raymarch=${pipeline.raymarchCompute.isReady()} `
+              + `temporal=${pipeline.temporalCompute.isReady()} `
+              + `shadow=${pipeline.shadowCompute.isReady()} `
+              + `material=${this.material.isReady(this.shell)} `
+              + `skyLut=${this.resources.skyAmbientLut.isReady()} `
+              + `depth=${this.resources.sceneDepth.isReady()} `
+              + `transmittance=${this.resources.transmittanceLut.isReady()} `
+              + `blueNoise=${this.resources.blueNoise.isReady()} `
+              + `bake[${pipeline.bake.diagnostics}]`;
+          reject(new Error(
+            `Cloud pipelines were not ready after ${timeoutMilliseconds} ms (${detail})`,
+          ));
+          return;
+        }
+        const computesReady = pipeline === null || (
+          pipeline.raymarchCompute.isReady()
+          && pipeline.temporalCompute.isReady()
+          && pipeline.shadowCompute.isReady()
+          && pipeline.bake.ready
         );
+        const materialReady = this.material.isReady(this.shell);
+        if (computesReady && materialReady) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, CLOUD_SHADER_READINESS_POLL_MILLISECONDS);
       };
-
-      signal?.addEventListener("abort", onExternalAbort, { once: true });
-      lifetimeSignal.addEventListener("abort", onDisposed, { once: true });
-      const timeoutTimer = setTimeout(() => {
-        finish(new Error(
-          `Volumetric cloud shader startup timed out after ${timeoutMilliseconds} ms`,
-        ));
-      }, timeoutMilliseconds);
-      checkReadiness();
+      poll();
     });
   }
 
-  /**
-   * Governor B lever 4: lengthen the cloud-shadow cadence under CPU
-   * pressure. Applied as max() against the tier schedule so it only slows.
-   */
+  /** Governor lever (R-11 GPU ladder): a floor on frames between shadow renders. */
   setShadowIntervalFloor(intervalFrames: number | null): void {
-    this.shadowIntervalFloor = intervalFrames === null
-      ? null
-      : Math.max(1, Math.floor(intervalFrames));
+    this.shadowIntervalFloor = intervalFrames;
   }
 
   setProfile(profile: WebGpuQualityProfile): void {
-    const nextSchedule = resolveCloudShadowSchedule(profile);
-    resolveCloudRenderSize(
-      this.scene.getEngine().getRenderWidth(),
-      this.scene.getEngine().getRenderHeight(),
-      profile.cloudResolutionScale,
-    );
-    const samplingChanged = profile.cloudPrimarySteps !== this.profile.cloudPrimarySteps
-      || profile.cloudLightSteps !== this.profile.cloudLightSteps
-      || profile.cloudResolutionScale !== this.profile.cloudResolutionScale;
-    const shadowResolutionChanged = nextSchedule.resolution !== this.shadowSchedule.resolution;
-    const shadowScheduleChanged = shadowResolutionChanged
-      || nextSchedule.steps !== this.shadowSchedule.steps
-      || nextSchedule.updateEveryNFrames !== this.shadowSchedule.updateEveryNFrames;
+    if (profile === this.profile) return;
     this.profile = profile;
-    this.shadowSchedule = nextSchedule;
-    const resized = this.ensureCloudResolution();
-    if (shadowResolutionChanged) {
-      this.shadowTextureValue.resize({
-        width: nextSchedule.resolution,
-        height: nextSchedule.resolution,
-      }, false);
+    const schedule = resolveCloudShadowSchedule(profile);
+    const shadowResolutionChanged = schedule.resolution !== this.shadowSchedule.resolution;
+    this.shadowSchedule = schedule;
+    this.config = this.resolveConfig(profile);
+    if (shadowResolutionChanged && this.pipeline) {
+      this.pipeline.shadowMap.dispose();
+      this.pipeline.shadowMap = storageTexture(
+        this.scene,
+        "cloud-shadow-map",
+        schedule.resolution,
+        schedule.resolution,
+      );
+      this.pipeline.shadowCompute.setStorageTexture("cloud_shadow", this.pipeline.shadowMap);
+      this.shadowDirty = true;
       this.shadowReady = false;
     }
-    if (shadowScheduleChanged) this.shadowDirty = true;
-    this.applyProfileUniforms();
-    if (samplingChanged && !resized) this.resetTemporalHistory();
+    this.ensureCloudResolution();
+    this.invalidateHistory();
   }
 
-  /** Per-frame haze binding, resolved once by the renderer for all consumers. */
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
     applyAerialPerspectiveToShaderMaterial(
       this.material,
       binding,
       (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
-      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+      (name, x, y, z, w) => {
+        this.material.setVector4(name, new Vector4(x, y, z, w));
+      },
     );
   }
 
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
-    const nextWindX = atmosphere.windDirection.x * atmosphere.windSpeed;
-    const nextWindZ = atmosphere.windDirection.y * atmosphere.windSpeed;
-    const densityOrLightingChanged = this.atmosphereInitialized && (
-      Math.abs(this.coverage - atmosphere.cloudCoverage) > 0.0001
-      || Math.abs(this.humidity - atmosphere.humidity) > 0.0001
-      || Math.abs(this.wind.x - nextWindX) > 0.0001
-      || Math.abs(this.wind.z - nextWindZ) > 0.0001
-      || Vector3.DistanceSquared(this.sunDirection, atmosphere.sunDirection) > 0.000001
-    );
-    this.coverage = atmosphere.cloudCoverage;
-    this.humidity = atmosphere.humidity;
-    this.wind.set(nextWindX, 0, nextWindZ);
-    this.sunDirection.copyFrom(atmosphere.sunDirection);
-
-    this.integrationTexture.setVector3("sunDirection", this.sunDirection);
-    this.integrationTexture.setVector3("wind", this.wind);
-    this.integrationTexture.setFloat("coverage", this.coverage);
-    this.integrationTexture.setFloat("humidity", this.humidity);
-    this.shadowTextureValue.setVector3("sunDirection", this.sunDirection);
-    this.shadowTextureValue.setVector3("wind", this.wind);
-    this.shadowTextureValue.setFloat("coverage", this.coverage);
-    this.shadowTextureValue.setFloat("humidity", this.humidity);
-    this.material.setColor3(
-      "sunColor",
-      atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized),
-    );
-    this.material.setColor3(
-      "ambientColor",
-      atmosphere.ambientColor,
+    this.sunDirection.copyFrom(atmosphere.sunDirection).normalize();
+    this.windVector.set(
+      atmosphere.windDirection.x * atmosphere.windSpeed,
+      atmosphere.windDirection.y * atmosphere.windSpeed,
     );
     this.shadowDirty = true;
-    this.shadowReady = false;
-    if (densityOrLightingChanged) this.resetTemporalHistory();
-    this.atmosphereInitialized = true;
+    this.invalidateHistory();
+  }
+
+  /**
+   * R-13/2-0: the full environment state the adopted packers consume (sun,
+   * weather scalars, atmosphere constants). The renderer forwards its
+   * resolved state whenever the clock or weather changes.
+   */
+  setEnvironment(state: EnvironmentState): void {
+    this.environment = state;
+    this.pipeline?.bake.setWeather(
+      state.weather.cloudCoverage,
+      state.weather.cloudType,
+      state.weather.convection,
+    );
   }
 
   update(cameraWorld: Vector3, timeSeconds: number): void {
+    if (this.disposed) return;
     this.frameIndex += 1;
     this.cameraWorld.copyFrom(cameraWorld);
+    this.shell.position.copyFrom(this.camera.position);
     this.ensureCloudResolution();
-    // This pass runs in the frame graph's volumetrics phase, before
-    // scene.render() recomputes camera matrices — and the renderer lerps FOV
-    // every frame — so force a view-matrix refresh before reading camera
-    // directions (1A-4's fix, kept for the basis itself).
-    this.camera.getViewMatrix(true);
-
+    this.refreshCameraBasis();
     const engine = this.scene.getEngine();
     this.fullResolution.set(engine.getRenderWidth(), engine.getRenderHeight());
-    this.inverseOutputSize.set(1 / this.cloudRenderSize.width, 1 / this.cloudRenderSize.height);
-    this.shell.position.copyFrom(this.camera.position);
-    this.updateViewUniforms();
-    this.updateIntegrationUniforms(timeSeconds);
-    this.updateCompositeRayUniforms();
+    this.material.setVector2("fullResolution", this.fullResolution);
+    this.material.setVector3("cameraForward", this.cameraForward);
+    this.material.setVector3("cameraRight", this.cameraRight);
+    this.material.setVector3("cameraUp", this.cameraUp);
+    this.material.setVector2("viewScale", this.viewScale);
 
-    let cloudOutput: ProceduralTexture | null = null;
-    if (this.integrationTexture.isReady()) {
-      this.integrationTexture.render();
-      this.integrationRenderCount += 1;
-      cloudOutput = this.integrationTexture;
-      const writeIndex: 0 | 1 = this.historyReadIndex === 0 ? 1 : 0;
-      const historyWrite = this.historyTextures[writeIndex];
-      historyWrite.setFloat("historyValid", this.historyValid ? 1 : 0);
-      this.updateCameraRayUniforms(historyWrite);
-      if (!this.previousStateValid) this.capturePreviousCameraState();
-      this.cameraDelta.copyFrom(this.cameraWorld).subtractInPlace(this.previousCameraWorld);
-      historyWrite.setVector3("previousCameraForward", this.previousCameraForward);
-      historyWrite.setVector3("previousCameraRight", this.previousCameraRight);
-      historyWrite.setVector3("previousCameraUp", this.previousCameraUp);
-      historyWrite.setVector2("previousViewScale", this.previousViewScale);
-      historyWrite.setVector3("cameraDelta", this.cameraDelta);
-      historyWrite.setVector2("inverseOutputSize", this.inverseOutputSize);
-      if (historyWrite.isReady()) {
-        historyWrite.render();
-        this.temporalResolveRenderCount += 1;
-        this.historyReadIndex = writeIndex;
-        this.historyValid = true;
-        cloudOutput = historyWrite;
-      }
+    const pipeline = this.pipeline;
+    if (!pipeline) return;
+    if (
+      !pipeline.raymarchCompute.isReady()
+      || !pipeline.temporalCompute.isReady()
+      || !pipeline.shadowCompute.isReady()
+    ) {
+      return;
     }
-    if (cloudOutput) {
-      this.material.setTexture("cloudSampler", cloudOutput);
-      this.shell.setEnabled(true);
+    // The LUTs and the depth map allocate lazily (ProceduralTexture creates
+    // its target on first render; the depth RTT renders with the scene). A
+    // compute dispatch with a null hardware texture is a crash, not an error.
+    if (
+      this.resources.skyAmbientLut.getInternalTexture() == null
+      || this.resources.sceneDepth.getInternalTexture() == null
+      || !this.resources.transmittanceLut.isReady()
+      || !this.resources.blueNoise.isReady()
+    ) {
+      return;
     }
-    this.capturePreviousCameraState();
-    this.updateShadowPass(timeSeconds);
-  }
+    // 2-1: the noise volumes bake once and the weather map re-bakes on
+    // environment change; the march waits for both.
+    if (!pipeline.bake.bakeWhenReady()) return;
 
-  /** Cache this frame's basis and ABSOLUTE camera position for the next. */
-  private capturePreviousCameraState(): void {
+    const originX = this.cameraWorld.x - this.camera.position.x;
+    const originZ = this.cameraWorld.z - this.camera.position.z;
+    const environment: EnvironmentState = {
+      ...this.environment,
+      timeSeconds,
+      frameDeltaSeconds: 1 / 60,
+      floatingOriginMeters: [originX, 0, originZ],
+    };
+    // 2-3: the wind offset stays UNWRAPPED (the weather field is endless —
+    // wrapping would teleport the pattern), and the weather window follows
+    // the advected flight position.
+    const windOffset: [number, number] = [
+      this.windVector.x * timeSeconds,
+      this.windVector.y * timeSeconds,
+    ];
+    pipeline.bake.weatherWorldSizeMeters = this.config.weatherMapWorldSizeMeters;
+    pipeline.bake.followCamera(
+      this.cameraWorld.x + windOffset[0],
+      this.cameraWorld.z + windOffset[1],
+      this.config.weatherMapWorldSizeMeters,
+    );
+
+    // 1. Raymarch.
+    uploadParams(pipeline.raymarchParams, packCloudRaymarchUniforms(this.config, environment, {
+      cameraForward: [this.cameraForward.x, this.cameraForward.y, this.cameraForward.z],
+      cameraRight: [this.cameraRight.x, this.cameraRight.y, this.cameraRight.z],
+      cameraUp: [this.cameraUp.x, this.cameraUp.y, this.cameraUp.z],
+      viewScale: [this.viewScale.x, this.viewScale.y],
+      cameraPositionMeters: [
+        this.camera.position.x,
+        this.camera.position.y,
+        this.camera.position.z,
+      ],
+      renderSize: [this.cloudRenderSize.width, this.cloudRenderSize.height],
+      fullResolutionSize: [
+        Math.max(1, Math.round(this.fullResolution.x)),
+        Math.max(1, Math.round(this.fullResolution.y)),
+      ],
+      frameIndex: this.frameIndex % 4_096,
+      windOffsetMeters: windOffset,
+      weatherMapOriginMeters: pipeline.bake.weatherOrigin,
+    }).buffer as ArrayBuffer, RAYMARCH_PARAMS_VEC4S);
+    const [groupsX, groupsY] = computeDispatch2D(
+      this.cloudRenderSize.width,
+      this.cloudRenderSize.height,
+      [8, 8, 1],
+    );
+    pipeline.raymarchCompute.dispatch(groupsX, groupsY, 1);
+    this.raymarchDispatchCount += 1;
+    if (this.raymarchDispatchCount % 60 === 0 && !this.densityReadbackPending) {
+      this.densityReadbackPending = true;
+      pipeline.densityCounter
+        .read()
+        .then((view) => {
+          const total = new Uint32Array(view.buffer, view.byteOffset, 1)[0] ?? 0;
+          this.densitySamplesPerFrame = Math.round(total / 60);
+          pipeline.densityCounter.update(new Uint32Array([0]));
+          this.densityReadbackPending = false;
+        })
+        .catch(() => {
+          this.densityReadbackPending = false;
+        });
+    }
+
+    // 2. Temporal resolve into the write half of the ping-pong.
+    const writeIndex = (1 - this.historyReadIndex) as 0 | 1;
+    const cameraCut = !this.historyValid || !this.previousStateValid;
+    uploadParams(pipeline.temporalParams, packCloudTemporalUniforms(this.config, {
+      renderSize: [this.cloudRenderSize.width, this.cloudRenderSize.height],
+      cameraCut,
+      currentForward: [this.cameraForward.x, this.cameraForward.y, this.cameraForward.z],
+      currentRight: [this.cameraRight.x, this.cameraRight.y, this.cameraRight.z],
+      currentUp: [this.cameraUp.x, this.cameraUp.y, this.cameraUp.z],
+      currentViewScale: [this.viewScale.x, this.viewScale.y],
+      previousForward: [
+        this.previousCameraForward.x,
+        this.previousCameraForward.y,
+        this.previousCameraForward.z,
+      ],
+      previousRight: [
+        this.previousCameraRight.x,
+        this.previousCameraRight.y,
+        this.previousCameraRight.z,
+      ],
+      previousUp: [
+        this.previousCameraUp.x,
+        this.previousCameraUp.y,
+        this.previousCameraUp.z,
+      ],
+      previousViewScale: [this.previousViewScale.x, this.previousViewScale.y],
+      cameraDeltaMeters: [
+        this.cameraWorld.x - this.previousCameraWorld.x,
+        this.cameraWorld.y - this.previousCameraWorld.y,
+        this.cameraWorld.z - this.previousCameraWorld.z,
+      ],
+    }), TEMPORAL_PARAMS_VEC4S);
+    pipeline.temporalCompute.setTexture(
+      "history_cloud",
+      pipeline.resolvedCloud[this.historyReadIndex],
+      false,
+    );
+    pipeline.temporalCompute.setTexture(
+      "history_aux",
+      pipeline.resolvedAux[this.historyReadIndex],
+      false,
+    );
+    pipeline.temporalCompute.setStorageTexture(
+      "resolved_cloud",
+      pipeline.resolvedCloud[writeIndex],
+    );
+    pipeline.temporalCompute.setStorageTexture(
+      "resolved_aux",
+      pipeline.resolvedAux[writeIndex],
+    );
+    pipeline.temporalCompute.dispatch(groupsX, groupsY, 1);
+    this.temporalResolveDispatchCount += 1;
+    this.historyReadIndex = writeIndex;
+    this.historyValid = true;
+    this.material.setTexture("cloudSampler", pipeline.resolvedCloud[writeIndex]);
+    this.material.setTexture("cloudAuxSampler", pipeline.resolvedAux[writeIndex]);
+    if (!this.shell.isEnabled()) this.shell.setEnabled(true);
+
+    // 3. Shadow, on its cadence.
+    this.updateShadowPass(environment, windOffset);
+
     this.previousCameraWorld.copyFrom(this.cameraWorld);
     this.previousCameraForward.copyFrom(this.cameraForward);
     this.previousCameraRight.copyFrom(this.cameraRight);
@@ -1044,167 +855,11 @@ export class VolumetricCloudSystem {
     this.previousStateValid = true;
   }
 
-  invalidateHistory(): void {
-    this.frameIndex = 0;
-    this.lastShadowFrame = -1;
-    this.shadowDirty = true;
-    this.resetTemporalHistory();
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.lifetimeController.abort();
-    this.shell.dispose(false, false);
-    this.material.dispose(true, false);
-    this.integrationTexture.dispose();
-    this.historyTextures[0].dispose();
-    this.historyTextures[1].dispose();
-    this.shadowTextureValue.dispose();
-  }
-
-  private prepareStartupUniforms(): void {
-    this.cameraWorld.copyFrom(this.camera.position);
-    const engine = this.scene.getEngine();
-    this.fullResolution.set(engine.getRenderWidth(), engine.getRenderHeight());
-    this.inverseOutputSize.set(1 / this.cloudRenderSize.width, 1 / this.cloudRenderSize.height);
-    this.updateViewUniforms();
-    this.updateIntegrationUniforms(0);
-    this.updateCompositeRayUniforms();
-    for (const history of this.historyTextures) {
-      history.setFloat("historyValid", 0);
-      this.updateCameraRayUniforms(history);
-      this.capturePreviousCameraState();
-      this.cameraDelta.set(0, 0, 0);
-      history.setVector3("previousCameraForward", this.previousCameraForward);
-      history.setVector3("previousCameraRight", this.previousCameraRight);
-      history.setVector3("previousCameraUp", this.previousCameraUp);
-      history.setVector2("previousViewScale", this.previousViewScale);
-      history.setVector3("cameraDelta", this.cameraDelta);
-      history.setVector2("inverseOutputSize", this.inverseOutputSize);
-    }
-    this.shadowTextureValue.setVector2("shadowCenter", this.shadowCenter);
-    this.shadowTextureValue.setFloat("time", 0);
-    this.shadowTextureValue.setFloat("frameIndex", 0);
-  }
-
-  private configureStaticUniforms(): void {
-    const config = DEFAULT_VOLUMETRIC_CLOUD_CONFIG;
-    this.integrationTexture.setFloat("baseAltitude", config.baseAltitudeMeters);
-    this.integrationTexture.setFloat("topAltitude", config.topAltitudeMeters);
-    this.integrationTexture.setFloat("maximumTraceDistance", config.maximumTraceDistanceMeters);
-    this.integrationTexture.setFloat("baseNoiseScale", config.baseNoiseScaleMeters);
-    this.integrationTexture.setFloat("detailNoiseScale", config.detailNoiseScaleMeters);
-    this.integrationTexture.setFloat("detailErosion", config.detailErosion);
-    this.integrationTexture.setFloat("densityMultiplier", config.densityMultiplier);
-    this.integrationTexture.setFloat("extinctionPerMeter", config.extinctionPerMeter);
-    for (const history of this.historyTextures) {
-      history.setFloat("maximumTraceDistance", config.maximumTraceDistanceMeters);
-      history.setFloat("historyDepthSigma", config.historyDepthSigmaMeters);
-    }
-    this.shadowTextureValue.setFloat("shadowWorldSize", config.shadowWorldSizeMeters);
-    this.shadowTextureValue.setFloat(
-      "groundAltitude",
-      CLOUD_SHADOW_REFERENCE_ALTITUDE_METERS,
-    );
-    this.shadowTextureValue.setFloat("baseAltitude", config.baseAltitudeMeters);
-    this.shadowTextureValue.setFloat("topAltitude", config.topAltitudeMeters);
-    this.shadowTextureValue.setFloat("baseNoiseScale", config.baseNoiseScaleMeters);
-    this.shadowTextureValue.setFloat("detailNoiseScale", config.detailNoiseScaleMeters);
-    this.shadowTextureValue.setFloat("detailErosion", config.detailErosion);
-    this.shadowTextureValue.setFloat("densityMultiplier", config.densityMultiplier);
-    this.shadowTextureValue.setFloat("extinctionPerMeter", config.extinctionPerMeter);
-    this.material.setColor3("ambientColor", CLOUD_AMBIENT_COLOR);
-    this.material.setFloat(
-      "maximumTraceDistance",
-      DEFAULT_VOLUMETRIC_CLOUD_CONFIG.maximumTraceDistanceMeters,
-    );
-  }
-
-  private configureTemporalBindings(): void {
-    this.historyTextures[0].setTexture("currentSampler", this.integrationTexture);
-    this.historyTextures[0].setTexture("historySampler", this.historyTextures[1]);
-    this.historyTextures[1].setTexture("currentSampler", this.integrationTexture);
-    this.historyTextures[1].setTexture("historySampler", this.historyTextures[0]);
-  }
-
-  private applyProfileUniforms(): void {
-    this.integrationTexture.setFloat(
-      "raySteps", Math.max(8, Math.min(192, this.profile.cloudPrimarySteps)),
-    );
-    this.integrationTexture.setFloat(
-      "lightSteps", Math.max(2, Math.min(16, this.profile.cloudLightSteps)),
-    );
-    for (const history of this.historyTextures) {
-      history.setFloat("historyWeight", this.shadowSchedule.historyWeight);
-    }
-    this.shadowTextureValue.setFloat("shadowSteps", this.shadowSchedule.steps);
-  }
-
-  private ensureCloudResolution(): boolean {
-    const engine = this.scene.getEngine();
-    const next = resolveCloudRenderSize(
-      engine.getRenderWidth(), engine.getRenderHeight(), this.profile.cloudResolutionScale,
-    );
-    if (next.width === this.cloudRenderSize.width && next.height === this.cloudRenderSize.height) {
-      return false;
-    }
-    this.integrationTexture.resize(next, false);
-    this.historyTextures[0].resize(next, false);
-    this.historyTextures[1].resize(next, false);
-    this.cloudRenderSize = next;
-    this.resetTemporalHistory();
-    return true;
-  }
-
-  private resetTemporalHistory(): void {
-    this.historyValid = false;
-    this.shell.setEnabled(false);
-    this.historyGeneration += 1;
-  }
-
-  private updateViewUniforms(): void {
-    this.material.setVector2("fullResolution", this.fullResolution);
-  }
-
-  /**
-   * Publishes the ray basis the integration pass just used to the composite
-   * material, so 1C-4's per-texel haze rebuilds exactly the traced rays.
-   * Must run after updateCameraRayUniforms has refreshed the cached basis.
-   */
-  private updateCompositeRayUniforms(): void {
-    this.material.setVector3("cameraForward", this.cameraForward);
-    this.material.setVector3("cameraRight", this.cameraRight);
-    this.material.setVector3("cameraUp", this.cameraUp);
-    this.material.setVector2("viewScale", this.viewScale);
-  }
-
-  private updateIntegrationUniforms(timeSeconds: number): void {
-    this.updateCameraRayUniforms(this.integrationTexture);
-    this.integrationTexture.setVector3("cameraWorld", this.cameraWorld);
-    this.integrationTexture.setFloat("time", timeSeconds);
-    this.integrationTexture.setFloat("frameIndex", this.frameIndex % 4096);
-  }
-
-  private updateCameraRayUniforms(target: ProceduralTexture): void {
-    this.camera.getDirectionToRef(this.cameraLocalForward, this.cameraForward);
-    this.camera.getDirectionToRef(Vector3.Right(), this.cameraRight);
-    this.camera.getDirectionToRef(Vector3.Up(), this.cameraUp);
-    const scale = viewScaleFromFov(
-      this.camera.fov,
-      this.scene.getEngine().getAspectRatio(this.camera),
-      this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED,
-    );
-    this.viewScale.set(scale.x, scale.y);
-    target.setVector3("cameraLocal", this.camera.position);
-    target.setVector3("cameraForward", this.cameraForward);
-    target.setVector3("cameraRight", this.cameraRight);
-    target.setVector3("cameraUp", this.cameraUp);
-    target.setVector2("viewScale", this.viewScale);
-  }
-
-  private updateShadowPass(timeSeconds: number): void {
-    const worldSize = DEFAULT_VOLUMETRIC_CLOUD_CONFIG.shadowWorldSizeMeters;
+  private updateShadowPass(
+    environment: EnvironmentState,
+    windOffset: readonly [number, number],
+  ): void {
+    const worldSize = this.config.shadowWorldSizeMeters;
     const texelWorldSize = worldSize / this.shadowSchedule.resolution;
     const centerX = Math.round(this.cameraWorld.x / texelWorldSize) * texelWorldSize;
     const centerZ = Math.round(this.cameraWorld.z / texelWorldSize) * texelWorldSize;
@@ -1213,21 +868,128 @@ export class VolumetricCloudSystem {
       this.shadowDirty = true;
       this.shadowReady = false;
     }
-    this.shadowTextureValue.setVector2("shadowCenter", this.shadowCenter);
-    this.shadowTextureValue.setFloat("time", timeSeconds);
-    this.shadowTextureValue.setFloat("frameIndex", this.frameIndex % 4096);
-
     if (!shouldRenderCloudShadow(
       this.frameIndex,
       this.lastShadowFrame,
       Math.max(this.shadowSchedule.updateEveryNFrames, this.shadowIntervalFloor ?? 1),
       this.shadowDirty,
     )) return;
-    if (!this.shadowTextureValue.isReady()) return;
-    this.shadowTextureValue.render();
-    this.shadowRenderCount += 1;
+    if (this.sunDirection.y <= 1e-4) return;
+    const originX = environment.floatingOriginMeters[0];
+    const originZ = environment.floatingOriginMeters[2];
+    const pipeline = this.pipeline;
+    if (!pipeline) return;
+    uploadParams(pipeline.shadowParams, packCloudShadowUniforms(this.config, environment, {
+      shadowCenterMeters: [
+        this.shadowCenter.x - originX,
+        CLOUD_SHADOW_REFERENCE_ALTITUDE_METERS,
+        this.shadowCenter.y - originZ,
+      ],
+      eastAxis: [1, 0, 0],
+      northAxis: [0, 0, 1],
+      windOffsetMeters: [windOffset[0], windOffset[1]],
+      weatherMapOriginMeters: pipeline.bake.weatherOrigin,
+      frameIndex: this.frameIndex % 4_096,
+    }), SHADOW_PARAMS_VEC4S);
+    const [groupsX, groupsY] = computeDispatch2D(
+      this.shadowSchedule.resolution,
+      this.shadowSchedule.resolution,
+      [8, 8, 1],
+    );
+    pipeline.shadowCompute.dispatch(groupsX, groupsY, 1);
+    this.shadowDispatchCount += 1;
     this.lastShadowFrame = this.frameIndex;
     this.shadowDirty = false;
     this.shadowReady = true;
+  }
+
+  private refreshCameraBasis(): void {
+    this.camera.getDirectionToRef(this.cameraLocalForward, this.cameraForward);
+    this.camera.getDirectionToRef(Vector3.Right(), this.cameraRight);
+    this.camera.getDirectionToRef(Vector3.Up(), this.cameraUp);
+    const scale = viewScaleFromFov(
+      this.camera.fov,
+      this.scene.getEngine().getAspectRatio(this.camera),
+      this.camera.fovMode === BabylonCamera.FOVMODE_HORIZONTAL_FIXED,
+    );
+    this.viewScale.set(scale.x, scale.y);
+  }
+
+  private ensureCloudResolution(): boolean {
+    const engine = this.scene.getEngine();
+    const next = resolveCloudRenderSize(
+      Math.max(engine.getRenderWidth(), 8),
+      Math.max(engine.getRenderHeight(), 8),
+      this.profile.cloudResolutionScale,
+      this.profile.maxCloudPixels,
+    );
+    if (
+      next.width === this.cloudRenderSize.width
+      && next.height === this.cloudRenderSize.height
+    ) {
+      this.cloudRenderSize = next;
+      return false;
+    }
+    this.cloudRenderSize = next;
+    const pipeline = this.pipeline;
+    if (pipeline) {
+      for (const texture of [
+        pipeline.raymarchCloud,
+        pipeline.raymarchAux,
+        ...pipeline.resolvedCloud,
+        ...pipeline.resolvedAux,
+      ]) {
+        texture.dispose();
+      }
+      pipeline.raymarchCloud = storageTexture(
+        this.scene, "cloud-raymarch-cloud", next.width, next.height,
+      );
+      pipeline.raymarchAux = storageTexture(
+        this.scene, "cloud-raymarch-aux", next.width, next.height,
+      );
+      pipeline.resolvedCloud = [
+        storageTexture(this.scene, "cloud-resolved-cloud-a", next.width, next.height),
+        storageTexture(this.scene, "cloud-resolved-cloud-b", next.width, next.height),
+      ];
+      pipeline.resolvedAux = [
+        storageTexture(this.scene, "cloud-resolved-aux-a", next.width, next.height),
+        storageTexture(this.scene, "cloud-resolved-aux-b", next.width, next.height),
+      ];
+      this.bindSizedComputeResources(pipeline);
+      this.material.setTexture("cloudSampler", pipeline.resolvedCloud[0]);
+      this.material.setTexture("cloudAuxSampler", pipeline.resolvedAux[0]);
+    }
+    this.invalidateHistory();
+    return true;
+  }
+
+  invalidateHistory(): void {
+    this.historyValid = false;
+    this.historyReadIndex = 0;
+    this.shell.setEnabled(false);
+    this.historyGeneration += 1;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.lifetimeController.abort();
+    this.shell.dispose();
+    this.material.dispose();
+    this.shadowFallback.dispose();
+    const pipeline = this.pipeline;
+    if (pipeline) {
+      pipeline.raymarchParams.dispose();
+      pipeline.temporalParams.dispose();
+      pipeline.shadowParams.dispose();
+      pipeline.bake.dispose();
+      pipeline.raymarchCloud.dispose();
+      pipeline.raymarchAux.dispose();
+      for (const texture of [...pipeline.resolvedCloud, ...pipeline.resolvedAux]) {
+        texture.dispose();
+      }
+      pipeline.shadowMap.dispose();
+      pipeline.densityCounter.dispose();
+    }
   }
 }

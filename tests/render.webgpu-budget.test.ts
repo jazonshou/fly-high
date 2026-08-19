@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DYNAMIC_ALLOCATIONS,
   FRAME_BUDGET_MS,
   FRAME_TARGET_MS,
   MEMORY_CEILING_MIB,
@@ -67,6 +68,14 @@ describe("performance budget (1A-2)", () => {
     }
   });
 
+  it("mirrors FRAME_TARGET_MS into every profile's frameTargetMs datum (Z-2)", () => {
+    for (const profile of allProfiles()) {
+      expect(profile.frameTargetMs, `tier ${profile.tier}`).toBe(
+        FRAME_TARGET_MS[profile.tier as PerformanceTier],
+      );
+    }
+  });
+
   it("keeps the per-subsystem frame rows under each tier's frame target (assertion 20)", () => {
     for (const tier of [0, 1, 2, 3] as const) {
       expect(frameBudgetTotalMs(tier), `tier ${tier}`).toBeLessThanOrEqual(
@@ -117,10 +126,60 @@ describe("performance budget (1A-2)", () => {
       + breakdown.oceanMiB
       + breakdown.cloudsMiB
       + breakdown.terrainGeometryMiB
-      + breakdown.detailMiB
+      + breakdown.detailInstancesMiB
+      + breakdown.foliageAtlasMiB
+      + breakdown.impostorAtlasMiB
+      + breakdown.otherDetailMiB
+      + breakdown.materialArraysMiB
       + breakdown.miscMiB;
     expect(breakdown.totalMiB).toBeGreaterThan(parts);
     expect(breakdown.totalMiB).toBeLessThan(parts * 1.25);
+  });
+
+  it("moves each budget row when its declared input moves (Z-4, R-22)", () => {
+    // The whole point of the split rows: a Phase-2 allocation must be able
+    // to move the assertion. A vacuous row would let assertion 47 and the
+    // 2-18 bucket arbitration pass no matter what the code allocates.
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const viewport = VIEWPORTS[1]!;
+    const base = estimateGpuMemoryBreakdown(profile, viewport, DYNAMIC_ALLOCATIONS);
+
+    // 2-11a re-pinned the base to 32 bytes; the row must still track the
+    // input (perturb upward to the old 96-byte matrix layout).
+    const withMatrixInstances = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      detailInstanceBytes: 96,
+    });
+    expect(withMatrixInstances.detailInstancesMiB).toBeCloseTo(
+      base.detailInstancesMiB * (96 / 32),
+      5,
+    );
+    expect(withMatrixInstances.totalMiB).toBeGreaterThan(base.totalMiB);
+
+    const withAtlases = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      foliageAtlasMiB: 9,
+      impostorAtlasMiB: 18,
+    });
+    expect(withAtlases.foliageAtlasMiB).toBe(9);
+    expect(withAtlases.impostorAtlasMiB).toBe(18);
+    // 2-17 moved the impostor base to 9.33 MiB (foliage 5.33 since 2-12);
+    // the perturbation adds (9 − 5.33) + (18 − 9.33) ≈ 12.3 MiB before the
+    // estimate fudge.
+    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 11);
+
+    const withCloudVolumes = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      cloudVolumesMiB: DYNAMIC_ALLOCATIONS.cloudVolumesMiB + 2.4,
+    });
+    expect(withCloudVolumes.cloudsMiB).toBeCloseTo(base.cloudsMiB + 2.4, 5);
+
+    const withMaterialArrays = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      materialArraysMiB: 48,
+    });
+    expect(withMaterialArrays.materialArraysMiB).toBe(48);
+    expect(withMaterialArrays.totalMiB).toBeGreaterThan(base.totalMiB + 48);
   });
 
   it("rejects degenerate viewports", () => {

@@ -1,14 +1,51 @@
+import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
-import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import "@babylonjs/core/Meshes/thinInstanceMesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  RENDERED_DENSITY_LAWS,
+  renderedShareAtDistance,
+  type RenderedDensityLaw,
+} from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
-import { DetailWindMaterialPlugin } from "./DetailWindMaterialPlugin";
-import { detailCellKey, generateDetailCell } from "./generation";
+import { DetailInstanceMaterialPlugin } from "./DetailInstanceMaterialPlugin";
+import {
+  DETAIL_INSTANCE_ATTRIBUTES,
+  DETAIL_INSTANCE_RADIAL_MAX,
+  DETAIL_INSTANCE_RADIAL_MIN,
+  DETAIL_INSTANCE_STRIDE_BYTES,
+  DetailInstanceBounds,
+  DetailInstanceWriter,
+  normalAlignedQuaternion,
+  yawQuaternion,
+  type DetailInstanceRecord,
+} from "./instanceFormat";
+import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
+import {
+  createImpostorAtlas,
+  impostorBakeFrame,
+  impostorLayerIndex,
+  type ImpostorAtlas,
+} from "./ImpostorAtlas";
+import { seasonalWinterFraction } from "@/src/world";
+import {
+  buildClutterPrototype,
+  buildGrassPatchPrototype,
+  buildRockPrototype,
+  buildShrubPrototype,
+  buildTreePrototype,
+  SHRUB_VARIANT_COUNTS,
+  TREE_VARIANT_COUNTS,
+  type PrototypeGeometry,
+} from "./prototypeGeometry";
+import { detailCellKey, generateDetailCell, GROUND_COVER_GRID } from "./generation";
 import {
   canGenerateNextDetailCell,
   resolveDetailGenerationBudget,
@@ -21,7 +58,9 @@ import {
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
+  type ClutterKind,
   type DetailLod,
+  type GroundCoverArchetype,
   type DetailTerrainSampler,
   type GeneratedDetailCell,
   type RockVariant,
@@ -36,9 +75,9 @@ interface DetailBatch {
   readonly castsShadows: boolean;
   readonly prototypeKey: string;
   readonly chunkKey: string;
-  readonly matrices: number[];
-  readonly colors: number[];
-  readonly wind: number[];
+  /** 2-11a: packed 32-byte records built during generation. */
+  readonly writer: DetailInstanceWriter;
+  readonly bounds: DetailInstanceBounds;
 }
 
 interface RetiredDetailBatch {
@@ -58,6 +97,8 @@ interface DetailChunkStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
+  readonly clutterInstances: number;
+  readonly groundCoverInstances: number;
 }
 
 interface DetailPresentationChunk {
@@ -74,12 +115,8 @@ interface MutableDetailChunkStatistics {
   treeInstances: number;
   shrubInstances: number;
   rockInstances: number;
-}
-
-interface ThinInstanceMeshWithCache {
-  readonly _thinInstanceDataStorage: {
-    worldMatrices: unknown;
-  };
+  clutterInstances: number;
+  groundCoverInstances: number;
 }
 
 interface DesiredCell {
@@ -103,12 +140,59 @@ export interface WorldDetailRuntimeOptions {
   readonly cellSizeMeters?: number;
   /** Sea level anchoring the density field's shoreline/treeline (1B-7). */
   readonly seaLevelMeters?: number;
+  /** 2-13a: world latitude for the seasonal kernel. Default 45°N. */
+  readonly latitudeDegrees?: number;
   /**
    * Enables off-main-thread generation (1B-10): the worker rebuilds the same
    * world from this seed and streams cells back. Omit it (tests, headless
    * tools) and generation stays inline and synchronous.
    */
   readonly workerWorldSeed?: string | number;
+}
+
+/**
+ * 2-14: width of the dither-crossfade window at the near/mid and mid/far
+ * boundaries, and of the cull fade at the vegetation edge. Both clear the
+ * 128 m generation cell so per-stem fades sweep smoothly across rebuild
+ * granularity.
+ */
+export const DETAIL_FADE_MARGIN_METERS = 160;
+export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
+
+/**
+ * 2-16: ground-cover patch expansion. Candidates sit on a hash-jittered
+ * 2 m grid (≈ the plan's 2.5 m² patch footprint); acceptance is the 1/d
+ * ramp — full density inside 20% of the grass radius, thinning as
+ * (0.2·R)/d beyond it, dither-faded over the last 30 m. At the tier-2
+ * 220 m radius the integral is ≈ 13.7k patches ≈ 0.66 M triangles,
+ * inside the plan's ≤ 0.9 M Balanced exit budget.
+ */
+export const GROUND_COVER_CANDIDATE_SPACING_METERS = 2;
+/**
+ * 2-17 close: chunk rebuilds amortized to ONE per update — a rebuild frame
+ * carries base render (~30 ms on the capture rig) plus the chunk's append
+ * and upload; at three chunks the spike crossed the 41 ms hitch line, at
+ * one it stays under. The sweep takes proportionally longer to converge,
+ * which the membership slack absorbs.
+ */
+export const DETAIL_CHUNK_REBUILDS_PER_UPDATE = 1;
+/**
+ * 2-17 close: how far the observer may travel before a stem's band
+ * memberships could be wrong — the observer signature quantum must stay
+ * below this. Fades themselves are fragment-computed and continuous.
+ */
+export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
+export const GROUND_COVER_EDGE_FADE_METERS = 30;
+export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
+
+/** Pure 2D hash for candidate jitter/acceptance (world-position keyed). */
+function groundCoverHash(x: number, z: number, lane: number): number {
+  let h = (Math.imul(Math.round(x * 8), 0x27d4_eb2d)
+    ^ Math.imul(Math.round(z * 8), 0x1656_67b1)
+    ^ Math.imul(lane + 1, 0x9e37_79b9)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), h | 1);
+  h ^= h + Math.imul(h ^ (h >>> 7), h | 61);
+  return ((h ^ (h >>> 14)) >>> 0) / 4_294_967_296;
 }
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
@@ -131,6 +215,8 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   treeInstances: 0,
   shrubInstances: 0,
   rockInstances: 0,
+  clutterInstances: 0,
+  groundCoverInstances: 0,
   renderedThinInstances: 0,
   activeBatches: 0,
 });
@@ -164,35 +250,6 @@ function profileCellBudget(profile: WebGpuQualityProfile): number {
   return 896;
 }
 
-function bakePrototype(mesh: Mesh, y: number, scaleX = 1, scaleY = 1, scaleZ = 1): Mesh {
-  mesh.position.set(0, y, 0);
-  mesh.scaling.set(scaleX, scaleY, scaleZ);
-  mesh.bakeCurrentTransformIntoVertices();
-  mesh.position.set(0, 0, 0);
-  mesh.scaling.set(1, 1, 1);
-  return mesh;
-}
-
-function appendYawMatrix(
-  target: number[],
-  x: number,
-  y: number,
-  z: number,
-  scaleX: number,
-  scaleY: number,
-  scaleZ: number,
-  yaw: number,
-): void {
-  const cosine = Math.cos(yaw);
-  const sine = Math.sin(yaw);
-  target.push(
-    cosine * scaleX, 0, -sine * scaleX, 0,
-    0, scaleY, 0, 0,
-    sine * scaleZ, 0, cosine * scaleZ, 0,
-    x, y, z, 1,
-  );
-}
-
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -204,7 +261,22 @@ export class WorldDetailRuntime {
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   private readonly materials = new Set<PBRMaterial>();
-  private readonly windPlugins = new Set<DetailWindMaterialPlugin>();
+  private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
+  private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
+  /** 2-12: crown/trunk radius-per-height per species, from the built prototypes. */
+  private readonly crownAspects = new Map<TreeSpecies, number>();
+  private readonly trunkAspects = new Map<TreeSpecies, number>();
+  /** 2-12b: shrub radius-per-height per species, same convention. */
+  private readonly shrubAspects = new Map<ShrubSpecies, number>();
+  /** 2-12: the atlas (null under NullEngine — no raw 2D-array support). */
+  private foliageAtlas: FoliageAtlas | null = null;
+  /** 2-17: the impostor atlas (same NullEngine guard). */
+  private impostorAtlas: ImpostorAtlas | null = null;
+  /** 2-17 close: plugins whose tree bands use fragment-computed fades. */
+  private readonly bandFadePlugins = new Set<DetailInstanceMaterialPlugin>();
+  /** 2-17 close: law/grass radii last used, for frontier classification. */
+  private lastDensityLaw: RenderedDensityLaw = RENDERED_DENSITY_LAWS[1]!;
+  private lastGrassRadius = 150;
   private readonly cells = new Map<string, ResidentCell>();
   private desiredCells: readonly DesiredCell[] = [];
   private desiredKeys = new Set<string>();
@@ -215,6 +287,11 @@ export class WorldDetailRuntime {
   private batchesDirty = true;
   private windTimeSeconds = 0;
   private updateSequence = 0;
+  /** 2-14: observer position at the last rebuild, for per-stem fade radii. */
+  private observerX = 0;
+  private observerZ = 0;
+  /** R-13: the environment clock's day, forwarded to cell generation. */
+  private dayOfYear = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -264,6 +341,38 @@ export class WorldDetailRuntime {
     this.generationBudgetCap = cap;
   }
 
+  /**
+   * R-13: the environment clock's day, forwarded to cell generation. The
+   * density field is deliberately season-invariant today (stems do not move
+   * with the calendar), so a change does not invalidate resident cells —
+   * `2-13a`'s appearance field is the first consumer that reads it.
+   */
+  setDayOfYear(dayOfYear: number): void {
+    this.dayOfYear = dayOfYear;
+    // 2-17a: the impostor buckets cross-fade on the same shed window as the
+    // card dissolve (applyFoliageSeason's 0.34–0.7 winterFraction ramp).
+    const winter = seasonalWinterFraction(dayOfYear, this.options.latitudeDegrees ?? 45);
+    const t = Math.min(1, Math.max(0, (winter - 0.34) / 0.36));
+    const mix = t * t * (3 - 2 * t);
+    for (const plugin of this.instancePlugins) plugin.setImpostorSeason(mix);
+  }
+
+  /** Marks a material's plugin as tree-band shader-faded (2-17 close). */
+  private registerBandFadeMaterial(material: PBRMaterial): void {
+    const plugin = this.materialPlugin(material);
+    if (!plugin) return;
+    this.bandFadePlugins.add(plugin);
+    // Placeholder radii until the first update supplies the profile's law.
+    plugin.setBandFades(400, 1_400, 8_000);
+  }
+
+  /** 2-13: the frame's wind snapshot, forwarded to every instance plugin. */
+  setWind(directionX: number, directionZ: number, strength: number, gust: number): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setWind(directionX, directionZ, strength, gust);
+    }
+  }
+
   get statistics(): WorldDetailStatistics {
     return this.statisticsValue;
   }
@@ -272,14 +381,26 @@ export class WorldDetailRuntime {
     observer: WorldDetailObserver,
     floatingOrigin: DetailFloatingOrigin,
     profile: WebGpuQualityProfile,
+    simulationTimeSeconds?: number,
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
     this.disposeExpiredBatches();
-    const deltaMilliseconds = this.scene.getEngine().getDeltaTime();
-    if (Number.isFinite(deltaMilliseconds)) {
-      this.windTimeSeconds += clamp(deltaMilliseconds, 0, 100) / 1_000;
-      for (const plugin of this.windPlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+    // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
+    // a wall-clock accumulator made every tree's sway phase depend on how
+    // long streaming took on that particular run — the perf capture pins
+    // simulationTime exactly so reruns are pixel-comparable, and the sway
+    // must be a function of it. The wall-clock fallback serves callers with
+    // no simulation clock (dev harnesses).
+    if (simulationTimeSeconds !== undefined && Number.isFinite(simulationTimeSeconds)) {
+      this.windTimeSeconds = Math.max(0, simulationTimeSeconds);
+      for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+    } else {
+      const deltaMilliseconds = this.scene.getEngine().getDeltaTime();
+      if (Number.isFinite(deltaMilliseconds)) {
+        this.windTimeSeconds += clamp(deltaMilliseconds, 0, 100) / 1_000;
+        for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+      }
     }
     requireFinite(observer.x, "Detail observer x");
     requireFinite(observer.y, "Detail observer y");
@@ -361,7 +482,7 @@ export class WorldDetailRuntime {
             cellX: desired.cellX,
             cellZ: desired.cellZ,
             densityMultiplier: profile.vegetationDensity,
-            dayOfYear: 0,
+            dayOfYear: this.dayOfYear,
           },
           (cell) => this.onCellGenerated(desired.key, epoch, cell),
           () => this.pendingCells.delete(desired.key),
@@ -394,6 +515,8 @@ export class WorldDetailRuntime {
           densityMultiplier: profile.vegetationDensity,
           terrainSample: this.options.terrainSample,
           seaLevelMeters: this.options.seaLevelMeters ?? 0,
+          dayOfYear: this.dayOfYear,
+          latitudeDegrees: this.options.latitudeDegrees ?? 45,
         });
         this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
         this.cumulativeGeneratedCells += 1;
@@ -402,9 +525,18 @@ export class WorldDetailRuntime {
       }
     }
 
+    for (const plugin of this.bandFadePlugins) {
+      plugin.setBandFades(
+        profile.renderedDensityLaw.near.outerRadiusMeters,
+        profile.renderedDensityLaw.mid.outerRadiusMeters,
+        profile.renderedDensityLaw.far.outerRadiusMeters,
+      );
+    }
     if (this.batchesDirty) {
-      this.rebuildBatches(floatingOrigin, profile);
-      this.batchesDirty = false;
+      this.observerX = observer.x;
+      this.observerZ = observer.z;
+      // Stays dirty while the amortized sweep has a backlog.
+      this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
     } else {
       // Camera rotation does not affect paging signatures, but it does change
       // which spatial chunks Babylon submits to the main view.
@@ -416,7 +548,7 @@ export class WorldDetailRuntime {
   addShadowCasters(add: (mesh: Mesh) => void): void {
     if (this.disposed) return;
     for (const batch of this.batches.values()) {
-      if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.thinInstanceCount > 0) {
+      if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.forcedInstanceCount > 0) {
         add(batch.mesh);
       }
     }
@@ -444,7 +576,10 @@ export class WorldDetailRuntime {
     this.presentationChunks.clear();
     for (const prototype of this.prototypes.values()) prototype.mesh.dispose(false, false);
     this.prototypes.clear();
-    this.windPlugins.clear();
+    this.instancePlugins.clear();
+    this.pluginByMaterial.clear();
+    this.foliageAtlas?.texture.dispose();
+    this.foliageAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
     this.statisticsValue = ZERO_STATISTICS;
@@ -461,7 +596,11 @@ export class WorldDetailRuntime {
     const maxCellX = Math.floor((Math.max(observer.x, predictionX) + radius) / this.cellSizeMeters);
     const minCellZ = Math.floor((Math.min(observer.z, predictionZ) - radius) / this.cellSizeMeters);
     const maxCellZ = Math.floor((Math.max(observer.z, predictionZ) + radius) / this.cellSizeMeters);
-    const nearDistance = Math.min(1_400, radius * 0.34);
+    // R-21: the near residency boundary is the law's full-geometry band.
+    const nearDistance = Math.min(
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      radius * 0.34,
+    );
     const candidates: DesiredCell[] = [];
     const travelDistance = Math.hypot(predictionX - observer.x, predictionZ - observer.z);
 
@@ -522,7 +661,11 @@ export class WorldDetailRuntime {
   private rebuildBatches(
     floatingOrigin: DetailFloatingOrigin,
     profile: WebGpuQualityProfile,
-  ): void {
+  ): boolean {
+    let rebuildsThisUpdate = 0;
+    let rebuildBacklog = false;
+    this.lastDensityLaw = profile.renderedDensityLaw;
+    this.lastGrassRadius = profile.grassRadiusMeters;
     const grouped = new Map<
       string,
       { coordinates: DetailPresentationChunkCoordinates; residents: ResidentCell[] }
@@ -541,21 +684,24 @@ export class WorldDetailRuntime {
       if (!grouped.has(chunkKey)) this.disposePresentationChunk(chunk);
     }
 
-    // Rendered-share thinning (1B-9 interim): the density field and its
-    // acceptance tests carry the ECOLOGICAL stem density (300–800/ha closed
-    // forest); per-stem cone/sphere meshes cannot draw that — measured 39 M
-    // triangles and a sub-10 fps frame at the perf-capture viewpoints. Until
-    // Phase 2's impostors and grass (2-16/2-17) raise the renderable share,
-    // each cell renders a deterministic selection-keyed subset budgeted in
-    // stems/ha and falling off with distance. Selection is a stable per-stem
-    // uniform, so shares nest: raising the budget only ever ADDS stems.
-    const nearTreeBudgetPerHa = 40 + profile.vegetationDensity * 30;
+    // Rendered-share thinning: the density field carries the ECOLOGICAL stem
+    // density (300–800/ha closed forest); the R-21 rendered-density LAW
+    // (renderedDensity.ts, the one authority 2-12/2-14/2-17 also read)
+    // decides what fraction is drawn at each range. The near cap IS the
+    // crown-closure density, so closed-forest cells keep their interiors
+    // while open cells render everything they authored (they sit under the
+    // cap) — the per-cell cap, not a global scalar, is what preserves
+    // clumps. Selection is a stable per-stem uniform, so shares nest:
+    // raising the budget only ever ADDS stems.
+    const densityLaw = profile.renderedDensityLaw;
     const totals: MutableDetailChunkStatistics = {
       nearCells: 0,
       midCells: 0,
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
+      clutterInstances: 0,
+      groundCoverInstances: 0,
         };
 
     for (const group of grouped.values()) {
@@ -564,7 +710,18 @@ export class WorldDetailRuntime {
         floatingOrigin.x,
         floatingOrigin.y,
         floatingOrigin.z,
-        profile.vegetationDensity,
+        densityLaw.nearStemsPerHectare,
+        densityLaw.near.outerRadiusMeters,
+        profile.treeVariantCap,
+        profile.grassRadiusMeters,
+        // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
+        // those straddling a band or population edge, where memberships and
+        // single-edge baked fades actually change with camera range. An
+        // interior chunk (the bulk of the field) rebuilds only when its
+        // residents change, restoring the zero-steady-state-rebuild design;
+        // a naive global observer term rebuilt EVERY chunk each quantum and
+        // the capture measured it as a saturated hitch train.
+        this.chunkObserverTerm(group.coordinates),
         ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
       ].join(":");
       let chunk = this.presentationChunks.get(group.coordinates.key);
@@ -580,24 +737,41 @@ export class WorldDetailRuntime {
             treeInstances: 0,
             shrubInstances: 0,
             rockInstances: 0,
+            clutterInstances: 0,
+            groundCoverInstances: 0,
                     },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
       }
       if (chunk.signature !== signature) {
-        chunk.statistics = this.rebuildPresentationChunk(
-          chunk,
-          group.residents,
-          floatingOrigin,
-          nearTreeBudgetPerHa,
-        );
-        chunk.signature = signature;
+        // Amortized: at most DETAIL_CHUNK_REBUILDS_PER_UPDATE chunks rebuild
+        // per frame — the 64 m observer quantum otherwise rebuilt every
+        // chunk in ONE update and the capture measured it as a hitch train
+        // (39-147 per 240 frames at approach speeds). Skipped chunks keep
+        // their stale signature and rebuild on the following updates;
+        // batchesDirty stays set so the sweep continues.
+        if (rebuildsThisUpdate >= DETAIL_CHUNK_REBUILDS_PER_UPDATE) {
+          rebuildBacklog = true;
+        } else {
+          rebuildsThisUpdate += 1;
+          chunk.statistics = this.rebuildPresentationChunk(
+            chunk,
+            group.residents,
+            floatingOrigin,
+            densityLaw,
+            profile.treeVariantCap,
+            profile.grassRadiusMeters,
+          );
+          chunk.signature = signature;
+        }
       }
       totals.nearCells += chunk.statistics.nearCells;
       totals.midCells += chunk.statistics.midCells;
       totals.treeInstances += chunk.statistics.treeInstances;
       totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
+      totals.clutterInstances += chunk.statistics.clutterInstances;
+      totals.groundCoverInstances += chunk.statistics.groundCoverInstances;
     }
 
     this.statisticsValue = {
@@ -608,17 +782,22 @@ export class WorldDetailRuntime {
       treeInstances: totals.treeInstances,
       shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
+      clutterInstances: totals.clutterInstances,
+      groundCoverInstances: totals.groundCoverInstances,
       renderedThinInstances: 0,
       activeBatches: 0,
     };
     this.refreshVisibilityStatistics();
+    return rebuildBacklog;
   }
 
   private rebuildPresentationChunk(
     chunk: DetailPresentationChunk,
     residents: readonly ResidentCell[],
     floatingOrigin: DetailFloatingOrigin,
-    nearTreeBudgetPerHa: number,
+    densityLaw: RenderedDensityLaw,
+    treeVariantCap: number,
+    grassRadiusMeters: number,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -628,6 +807,8 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
+      clutterInstances: 0,
+      groundCoverInstances: 0,
         };
 
     for (const resident of residents) {
@@ -636,110 +817,350 @@ export class WorldDetailRuntime {
 
       const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
       const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
-      const distanceFalloff = Math.min(
-        1,
-        (1_000 / Math.max(resident.distance, 1_000)) ** 2,
-      );
-      const treeBudgetPerHa = nearTreeBudgetPerHa
-        * (resident.lod === "near" ? 1 : Math.max(distanceFalloff, 0.04));
+      // R-21: the law's share curve, keyed on real cell distance. Until 2-14
+      // and 2-17 land their card/impostor bands, mid- and far-band stems draw
+      // with today's mid geometry — the density is final, the geometry per
+      // band arrives with its item.
+      const treeBudgetPerHa = densityLaw.nearStemsPerHectare
+        * renderedShareAtDistance(densityLaw, resident.distance);
       const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
+      // Shrubs are woody plants: they ride the SAME law falloff as trees
+      // (the pre-law 60-near/6-mid share admitted 137k icosphere shrubs to
+      // 8 km — 11M triangles of sub-pixel blobs, +6-15 ms GPU on every
+      // shot), plus a hard cutoff at the mid boundary: understory at 1.4 km
+      // subtends under half a pixel. 2-12b re-prices the geometry to cards.
       const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
-      const shrubShare = Math.min(
-        1,
-        (resident.lod === "near" ? 60 : 6) / Math.max(shrubsPerHa, 1e-6),
-      );
+      const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
+      const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
+        ? 0
+        : Math.min(1, shrubBudgetPerHa / Math.max(shrubsPerHa, 1e-6));
 
       for (const tree of resident.cell.trees) {
         if (tree.selection > treeShare) continue;
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
-        const wind: readonly [number, number, number, number] = [
-          tree.windPhaseRadians,
-          tree.windResponse,
-          tree.heightMeters,
-          tree.selection,
-        ];
-        if (resident.lod === "near") {
-          this.appendInstance(
-            this.getBatch("tree-trunk-near", chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
-            tree.trunkRadiusMeters,
-            tree.heightMeters,
-            tree.trunkRadiusMeters,
-            tree.yawRadians,
-            [0.82, 0.74, 0.62, 1],
-            [tree.windPhaseRadians, 0.08, tree.heightMeters, tree.selection],
-          );
-          this.appendInstance(
-            this.getBatch(`tree-${tree.species}-near`, chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
+        // 2-14: banding by the LAW's radii from the STEM'S OWN distance,
+        // with dither-crossfade margins — a stem inside a margin appears in
+        // BOTH bands with exactly complementary fade bytes (two-LOD
+        // residency; the outgoing side disappears with the next rebuild
+        // past the margin). Also the cull fade at the far edge.
+        const stemDistance = Math.hypot(
+          tree.x - this.observerX,
+          tree.z - this.observerZ,
+        );
+        const memberships = WorldDetailRuntime.fadeBandMemberships(stemDistance, densityLaw);
+        if (memberships.length === 0) continue;
+        const modifierHash = (tree.selection * 137.3) % 1;
+        const modifierBits = modifierHash < 0.55 ? 0
+          : modifierHash < 0.70 ? 1
+          : modifierHash < 0.82 ? 3
+          : modifierHash < 0.92 ? 2
+          : 4;
+        // Per-instance lean of 2-8 degrees composed into the quaternion.
+        const leanRadians = (0.035 + ((tree.selection * 29.3) % 1) * 0.105);
+        const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
+        const quaternion = WorldDetailRuntime.yawLeanQuaternion(
+          tree.yawRadians,
+          leanRadians,
+          leanAzimuth,
+        );
+        const windPhase = tree.windPhaseRadians / (2 * Math.PI);
+        const crownAspect = this.crownAspects.get(tree.species) ?? 0.3;
+        const trunkAspect = this.trunkAspects.get(tree.species) ?? 0.02;
+        const crownBase: DetailInstanceRecord = {
+          x: localX,
+          y: localY,
+          z: localZ,
+          quaternion,
+          heightScaleMeters: tree.heightMeters,
+          radialScale: WorldDetailRuntime.radialMultiplier(
             tree.crownRadiusMeters,
             tree.heightMeters,
-            tree.crownRadiusMeters,
-            tree.yawRadians,
-            tree.color,
-            wind,
+            crownAspect,
+          ),
+          fade: 1,
+          variant: modifierBits * 32,
+          tint: tree.color,
+          windPhase,
+          windResponse: clamp(tree.windResponse, 0, 1),
+        };
+        const variantHash = (tree.selection * 71.7) % 1;
+        for (const membership of memberships) {
+          // Geometry variants cap per band (every (species, variant, band)
+          // mesh is a draw per chunk at ~26 µs of GPU each — the 2-12
+          // finding): far keeps ONE per species, mid three, near the
+          // profile's cap. Per-instance scales and tint carry the variety
+          // where the meshes collapse.
+          const bandVariantCap = membership.band === "far" ? 1
+            : membership.band === "mid" ? 3
+            : treeVariantCap;
+          const variantCount = clamp(
+            Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap, bandVariantCap),
+            1,
+            32,
           );
-          statistics.treeInstances += 1;
-        } else {
+          const geometryVariant = Math.min(
+            variantCount - 1,
+            Math.floor(variantHash * variantCount),
+          );
+          // Far band: geometry variants collapse to one mesh, so the
+          // variant byte is FREE — it carries a per-stem hash instead, which
+          // the impostor shader turns into a view-phase offset and a mirror
+          // (the 2-17 exit criterion: no two same-species impostors within
+          // a screen share both silhouette aspect and phase).
+          // The fade lane carries the BAND CODE (0 near / 1 mid / 2 far):
+          // the fragment computes the actual crossfade window from its own
+          // camera range (DETAIL_BAND_FADES).
+          const bandCode = membership.band === "near" ? 0 : membership.band === "mid" ? 1 : 2;
+          const crown: DetailInstanceRecord = {
+            ...crownBase,
+            fade: bandCode / 127,
+            fadeIncoming: false,
+            variant: membership.band === "far"
+              ? Math.floor(((tree.selection * 97.3) % 1) * 256)
+              : geometryVariant + modifierBits * 32,
+          };
+          const crownBatchKey = membership.band === "far" && this.impostorAtlas
+            ? `tree-${tree.species}-impostor`
+            : `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`;
           this.appendInstance(
-            this.getBatch(`tree-${tree.species}-mid`, chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
-            tree.crownRadiusMeters,
-            tree.heightMeters,
-            tree.crownRadiusMeters,
-            tree.yawRadians,
-            tree.color,
-            wind,
+            this.getBatch(crownBatchKey, chunk, nextBatchKeys),
+            crown,
           );
-          statistics.treeInstances += 1;
+          // A trunk exists at near and mid — no floating crowns; the far
+          // band's crossed cards carry the whole silhouette, so a trunk
+          // crossfading at the mid/far boundary fades against them.
+          if (membership.band !== "far") {
+            this.appendInstance(
+              this.getBatch(
+                `tree-${tree.species}-v${geometryVariant}-trunk-${membership.band}`,
+                chunk,
+                nextBatchKeys,
+              ),
+              {
+                ...crown,
+                radialScale: WorldDetailRuntime.radialMultiplier(
+                  tree.trunkRadiusMeters,
+                  tree.heightMeters,
+                  trunkAspect,
+                ),
+                windResponse: 0.08,
+              },
+            );
+          }
         }
+        statistics.treeInstances += 1;
       }
 
       for (const shrub of resident.cell.shrubs) {
-        if (shrub.selection > shrubShare) continue;
+        if (shrubShare <= 0 || shrub.selection > shrubShare) continue;
+        // 2-12b: card shrubs with the tree pipeline's exact conventions —
+        // geometry variant from the selection hash (both variants inside the
+        // near band, one at mid: every (species, variant) mesh is a draw per
+        // chunk, and mid shrubs are a few pixels), radial aspect from the
+        // built prototype through the shared per-material uniform.
+        const shrubDistance = Math.hypot(
+          shrub.x - this.observerX,
+          shrub.z - this.observerZ,
+        );
+        const shrubEdge = densityLaw.mid.outerRadiusMeters;
+        if (shrubDistance >= shrubEdge) continue;
+        // 2-14: shrubs fade out at their mid-boundary cutoff (nothing fades
+        // in behind them — understory at that range is sub-pixel).
+        const shrubFade = shrubDistance > shrubEdge - DETAIL_FADE_MARGIN_METERS
+          ? (shrubEdge - shrubDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
+        const shrubVariantCount = shrubDistance <= densityLaw.near.outerRadiusMeters
+          ? SHRUB_VARIANT_COUNTS[shrub.species]
+          : 1;
+        const shrubVariant = Math.min(
+          shrubVariantCount - 1,
+          Math.floor(((shrub.selection * 71.7) % 1) * shrubVariantCount),
+        );
+        const shrubAspect = this.shrubAspects.get(shrub.species) ?? 0.4;
         this.appendInstance(
-          this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys),
-          shrub.x - floatingOrigin.x,
-          shrub.y - floatingOrigin.y,
-          shrub.z - floatingOrigin.z,
-          shrub.radiusMeters,
-          shrub.heightMeters,
-          shrub.radiusMeters * (0.84 + shrub.selection * 0.24),
-          shrub.yawRadians,
-          shrub.color,
-          [
-            shrub.windPhaseRadians,
-            shrub.windResponse,
-            shrub.heightMeters,
-            shrub.selection,
-          ],
+          this.getBatch(`shrub-${shrub.species}-v${shrubVariant}`, chunk, nextBatchKeys),
+          {
+            x: shrub.x - floatingOrigin.x,
+            y: shrub.y - floatingOrigin.y,
+            z: shrub.z - floatingOrigin.z,
+            quaternion: yawQuaternion(shrub.yawRadians),
+            heightScaleMeters: shrub.heightMeters,
+            radialScale: WorldDetailRuntime.radialMultiplier(
+              shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
+              shrub.heightMeters,
+              shrubAspect,
+            ),
+            fade: shrubFade,
+            fadeIncoming: false,
+            variant: shrubVariant,
+            tint: shrub.color,
+            windPhase: shrub.windPhaseRadians / (2 * Math.PI),
+            windResponse: clamp(shrub.windResponse, 0, 1),
+          },
         );
         statistics.shrubInstances += 1;
       }
 
       for (const rock of resident.cell.rocks) {
-        if (resident.lod === "mid" && (rock.radiusMeters < 2.2 || rock.selection > 0.22)) continue;
+        // 2-15: small rocks live in the near field, boulders (≥ 2.2 m,
+        // thinned) reach the mid boundary — each with a 2-14 dither fade at
+        // its own edge from the stem's true range.
+        const rockDistance = Math.hypot(
+          rock.x - this.observerX,
+          rock.z - this.observerZ,
+        );
+        const bigRock = rock.radiusMeters >= 2.2 && rock.selection <= 0.22;
+        const rockEdge = bigRock
+          ? densityLaw.mid.outerRadiusMeters
+          : densityLaw.near.outerRadiusMeters;
+        if (rockDistance >= rockEdge) continue;
+        const rockFade = rockDistance > rockEdge - DETAIL_FADE_MARGIN_METERS
+          ? (rockEdge - rockDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
         this.appendInstance(
           this.getBatch(`rock-${rock.variant}`, chunk, nextBatchKeys),
-          rock.x - floatingOrigin.x,
-          rock.y - floatingOrigin.y,
-          rock.z - floatingOrigin.z,
-          rock.radiusMeters,
-          rock.radiusMeters * rock.flattening,
-          rock.radiusMeters * (0.78 + rock.selection * 0.4),
-          rock.yawRadians,
-          rock.color,
-          [0, 0, 0, rock.selection],
+          {
+            x: rock.x - floatingOrigin.x,
+            y: rock.y - floatingOrigin.y,
+            z: rock.z - floatingOrigin.z,
+            // ~60% terrain-normal alignment through the format's full
+            // orientation (the reason the quaternion is in the record).
+            quaternion: normalAlignedQuaternion(rock.normal, rock.yawRadians, 0.6),
+            heightScaleMeters: rock.radiusMeters * rock.flattening,
+            // Width recovery: x_world = proto·height·mult·aspect, so
+            // mult = jitter / (1.1 · flattening · 1.4) — inside [0.5, 1.6]
+            // across the 0.45–0.9 flattening spread at material aspect 1.4.
+            radialScale: WorldDetailRuntime.radialMultiplier(
+              rock.radiusMeters * (0.89 + rock.selection * 0.2),
+              rock.radiusMeters * rock.flattening * 1.1,
+              1.4,
+            ),
+            fade: rockFade,
+            fadeIncoming: false,
+            variant: 0,
+            tint: rock.color,
+            windPhase: 0,
+            windResponse: 0,
+          },
         );
         statistics.rockInstances += 1;
+      }
+
+      // 2-15: ground clutter — near field only (sub-metre debris is
+      // invisible past the near boundary), aligned hard to the terrain
+      // (logs lie on the ground: 85% blend), faded at the near edge.
+      for (const piece of resident.cell.clutter) {
+        const clutterDistance = Math.hypot(
+          piece.x - this.observerX,
+          piece.z - this.observerZ,
+        );
+        const clutterEdge = densityLaw.near.outerRadiusMeters;
+        if (clutterDistance >= clutterEdge) continue;
+        const clutterFade = clutterDistance > clutterEdge - DETAIL_FADE_MARGIN_METERS
+          ? (clutterEdge - clutterDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
+        this.appendInstance(
+          this.getBatch(`clutter-${piece.clutterKind}`, chunk, nextBatchKeys),
+          {
+            x: piece.x - floatingOrigin.x,
+            y: piece.y - floatingOrigin.y,
+            z: piece.z - floatingOrigin.z,
+            quaternion: normalAlignedQuaternion(piece.normal, piece.yawRadians, 0.85),
+            heightScaleMeters: piece.sizeMeters,
+            radialScale: 1,
+            fade: clutterFade,
+            fadeIncoming: false,
+            variant: 0,
+            tint: piece.color,
+            windPhase: 0,
+            windResponse: 0,
+          },
+        );
+        statistics.clutterInstances += 1;
+      }
+
+      // 2-16: ground-cover expansion — the habitat grid says WHAT grows;
+      // the 1/d ramp says how many patches the frame affords at each range
+      // (screen-space blade density roughly constant, the grass radius is
+      // the §5.3 tier knob). Candidate positions are world-hash keyed, so
+      // they never slide with the observer; only acceptance re-thins.
+      const grassRadius = grassRadiusMeters;
+      if (resident.cell.groundCover.length > 0
+        && resident.distance < grassRadius + this.cellSizeMeters) {
+        const cell = resident.cell;
+        const spacing = GROUND_COVER_CANDIDATE_SPACING_METERS;
+        const nodeSpacing = cell.cellSizeMeters / GROUND_COVER_GRID;
+        const fullDensityRadius = grassRadius * GROUND_COVER_FULL_DENSITY_SHARE;
+        const columns = Math.floor(cell.cellSizeMeters / spacing);
+        for (let row = 0; row < columns; row += 1) {
+          for (let column = 0; column < columns; column += 1) {
+            const baseX = cell.minX + (column + 0.5) * spacing;
+            const baseZ = cell.minZ + (row + 0.5) * spacing;
+            const jitterX = (groundCoverHash(baseX, baseZ, 0) - 0.5) * spacing;
+            const jitterZ = (groundCoverHash(baseX, baseZ, 1) - 0.5) * spacing;
+            const x = baseX + jitterX;
+            const z = baseZ + jitterZ;
+            const patchDistance = Math.hypot(x - this.observerX, z - this.observerZ);
+            if (patchDistance >= grassRadius) continue;
+            const ramp = Math.min(1, fullDensityRadius / Math.max(patchDistance, 1));
+            const nodeColumn = Math.min(
+              GROUND_COVER_GRID - 1,
+              Math.max(0, Math.floor((x - cell.minX) / nodeSpacing)),
+            );
+            const nodeRow = Math.min(
+              GROUND_COVER_GRID - 1,
+              Math.max(0, Math.floor((z - cell.minZ) / nodeSpacing)),
+            );
+            const node = cell.groundCover[nodeRow * GROUND_COVER_GRID + nodeColumn];
+            if (!node || node.coverage <= 0) continue;
+            if (groundCoverHash(x, z, 2) >= ramp * node.coverage) continue;
+            const heightHash = groundCoverHash(x, z, 3);
+            const grassFade = patchDistance > grassRadius - GROUND_COVER_EDGE_FADE_METERS
+              ? (grassRadius - patchDistance) / GROUND_COVER_EDGE_FADE_METERS
+              : 1;
+            // Bilinear height from the habitat grid — a terrainSample call
+            // per candidate stalled whole frames on every 64 m rebuild.
+            const gridU = clamp((x - cell.minX) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
+            const gridV = clamp((z - cell.minZ) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
+            const u0 = Math.floor(gridU);
+            const v0 = Math.floor(gridV);
+            const u1 = Math.min(GROUND_COVER_GRID - 1, u0 + 1);
+            const v1 = Math.min(GROUND_COVER_GRID - 1, v0 + 1);
+            const fu = gridU - u0;
+            const fv = gridV - v0;
+            const heightAt = (row: number, column: number): number =>
+              cell.groundCover[row * GROUND_COVER_GRID + column]?.heightMeters ?? node.heightMeters;
+            const patchHeight =
+              heightAt(v0, u0) * (1 - fu) * (1 - fv)
+              + heightAt(v0, u1) * fu * (1 - fv)
+              + heightAt(v1, u0) * (1 - fu) * fv
+              + heightAt(v1, u1) * fu * fv;
+            this.appendInstance(
+              this.getBatch(`ground-${node.archetype}`, chunk, nextBatchKeys),
+              {
+                x: x - floatingOrigin.x,
+                y: patchHeight - floatingOrigin.y,
+                z: z - floatingOrigin.z,
+                quaternion: yawQuaternion(groundCoverHash(x, z, 4) * 2 * Math.PI),
+                heightScaleMeters: (0.75 + heightHash * 0.5)
+                  * (node.archetype === "reed" ? 1.15
+                    : node.archetype === "heather" ? 0.75
+                    : node.archetype === "fern" ? 0.85 : 0.8),
+                radialScale: 1,
+                fade: grassFade,
+                fadeIncoming: false,
+                variant: 0,
+                tint: [node.color[0], node.color[1], node.color[2], 1],
+                windPhase: groundCoverHash(x, z, 5),
+                windResponse: node.archetype === "heather" ? 0.3
+                  : node.archetype === "fern" ? 0.5 : 0.9,
+              },
+            );
+            statistics.groundCoverInstances += 1;
+          }
+        }
       }
 
     }
@@ -760,32 +1181,57 @@ export class WorldDetailRuntime {
   }
 
   private uploadBatch(batch: DetailBatch): void {
-    const count = batch.matrices.length / 16;
-    batch.mesh.thinInstanceCount = 0;
+    const count = batch.writer.count;
+    batch.mesh.forcedInstanceCount = 0;
     if (count === 0) {
       batch.mesh.setEnabled(false);
       return;
     }
     batch.mesh.setEnabled(true);
-    // A changed chunk receives new immutable buffers. Unchanged chunks keep
-    // their GPU allocations while neighboring cells stream in.
-    const instanceMatrices = Float32Array.from(batch.matrices);
-    batch.mesh.thinInstanceSetBuffer("matrix", instanceMatrices, 16, true);
-    batch.mesh.thinInstanceSetBuffer("color", Float32Array.from(batch.colors), 4, true);
-    batch.mesh.thinInstanceSetBuffer(
-      "instanceWind",
-      Float32Array.from(batch.wind),
-      4,
+    // 2-11a: one interleaved immutable 32-byte-stride buffer per batch (the
+    // pooled writer's exact byte range), exposed as five typed instanced
+    // vertex buffers. A changed chunk receives new buffers; unchanged chunks
+    // keep their GPU allocations while neighboring cells stream in.
+    const packed = batch.writer.finish();
+    const engine = this.scene.getEngine();
+    const shared = new Buffer(
+      engine,
+      packed,
+      false,
+      DETAIL_INSTANCE_STRIDE_BYTES,
+      false,
+      true,
       true,
     );
+    const typeFor = (name: string): number =>
+      name === "float" ? VertexBuffer.FLOAT
+      : name === "snorm16" ? VertexBuffer.SHORT
+      : name === "unorm16" ? VertexBuffer.UNSIGNED_SHORT
+      : VertexBuffer.UNSIGNED_BYTE;
+    for (const attribute of DETAIL_INSTANCE_ATTRIBUTES) {
+      batch.mesh.setVerticesBuffer(
+        new VertexBuffer(engine, shared, attribute.kind, {
+          updatable: false,
+          instanced: true,
+          size: attribute.size,
+          offset: attribute.byteOffset,
+          stride: DETAIL_INSTANCE_STRIDE_BYTES,
+          useBytes: true,
+          type: typeFor(attribute.type),
+          normalized: attribute.normalized,
+        }),
+        false,
+      );
+    }
     batch.mesh.resetDrawCache(undefined, true);
-    batch.mesh.thinInstanceCount = count;
-    (batch.mesh as unknown as ThinInstanceMeshWithCache)
-      ._thinInstanceDataStorage.worldMatrices = null;
-    batch.mesh.thinInstanceRefreshBoundingInfo(true);
-    // Vertex wind can move branch tips slightly outside their static bounds.
-    // A small conservative expansion avoids edge-of-frustum popping.
-    batch.mesh.getBoundingInfo().scale(1.01);
+    batch.mesh.forcedInstanceCount = count;
+    // Generator-computed bounds — thinInstanceRefreshBoundingInfo has no
+    // matrix buffer to walk anymore, and the wind extent is already an
+    // explicit term in the accumulator.
+    batch.mesh.setBoundingInfo(new BoundingInfo(
+      Vector3.FromArray(batch.bounds.minimum()),
+      Vector3.FromArray(batch.bounds.maximum()),
+    ));
   }
 
   private refreshVisibilityStatistics(): void {
@@ -793,9 +1239,9 @@ export class WorldDetailRuntime {
     let activeBatches = 0;
     const camera = this.scene.activeCamera;
     for (const batch of this.batches.values()) {
-      if (!batch.mesh.isEnabled() || batch.mesh.thinInstanceCount <= 0) continue;
+      if (!batch.mesh.isEnabled() || batch.mesh.forcedInstanceCount <= 0) continue;
       if (camera && !camera.isInFrustum(batch.mesh)) continue;
-      renderedThinInstances += batch.mesh.thinInstanceCount;
+      renderedThinInstances += batch.mesh.forcedInstanceCount;
       activeBatches += 1;
     }
     this.statisticsValue = {
@@ -807,19 +1253,119 @@ export class WorldDetailRuntime {
 
   private appendInstance(
     batch: DetailBatch,
-    x: number,
-    y: number,
-    z: number,
-    scaleX: number,
-    scaleY: number,
-    scaleZ: number,
-    yaw: number,
-    color: readonly [number, number, number, number],
-    wind: readonly [number, number, number, number],
+    record: DetailInstanceRecord,
   ): void {
-    appendYawMatrix(batch.matrices, x, y, z, scaleX, scaleY, scaleZ, yaw);
-    batch.colors.push(...color);
-    batch.wind.push(...wind);
+    batch.writer.push(record);
+    // The wind extent is an explicit bounds term now, not a scale fudge.
+    batch.bounds.add(record, record.windResponse * record.heightScaleMeters * 0.11);
+  }
+
+  /** Composes yaw with a small lean about a hashed azimuth (2-12). */
+  private static yawLeanQuaternion(
+    yawRadians: number,
+    leanRadians: number,
+    leanAzimuthRadians: number,
+  ): [number, number, number, number] {
+    const [, yy, , yw] = yawQuaternion(yawRadians);
+    const halfLean = leanRadians / 2;
+    const sinLean = Math.sin(halfLean);
+    const lx = Math.cos(leanAzimuthRadians) * sinLean;
+    const lz = Math.sin(leanAzimuthRadians) * sinLean;
+    const lw = Math.cos(halfLean);
+    // q = lean ∘ yaw (yaw = (0, yy, 0, yw)).
+    return [
+      lx * yw + lz * yy,
+      yy * lw,
+      lz * yw - lx * yy,
+      lw * yw,
+    ];
+  }
+
+  /**
+   * 2-14: which render bands a stem at this range belongs to, with the
+   * dither-crossfade fades. Inside a margin the stem carries TWO
+   * memberships whose fade bytes are exact complements (outgoing
+   * `fade = t`, incoming `fade = 1 - t` with the incoming comparison
+   * flipped in the fragment); at the cull radius the far band fades out
+   * against nothing. Margins clear the 128 m generation cell so a
+   * boundary sweeps smoothly across rebuilds.
+   */
+  static fadeBandMemberships(
+    distanceMeters: number,
+    law: RenderedDensityLaw,
+  ): ReadonlyArray<{ band: "near" | "mid" | "far" }> {
+    const nearEdge = law.near.outerRadiusMeters;
+    const midEdge = law.mid.outerRadiusMeters;
+    const cullEdge = law.far.outerRadiusMeters;
+    const slack = DETAIL_MEMBERSHIP_SLACK_METERS;
+    if (!Number.isFinite(distanceMeters) || distanceMeters < 0
+      || distanceMeters >= cullEdge + slack) {
+      return [];
+    }
+    const memberships: Array<{ band: "near" | "mid" | "far" }> = [];
+    // Membership is generous by ±slack around each margin: the FADE itself
+    // is computed per fragment from the true camera range, so a stem merely
+    // needs to EXIST in every band whose window it could enter before the
+    // next amortized rebuild — out-of-window stems dither to nothing.
+    if (distanceMeters <= nearEdge + slack) memberships.push({ band: "near" });
+    if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS - slack
+      && distanceMeters <= midEdge + slack) {
+      memberships.push({ band: "mid" });
+    }
+    if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS - slack) {
+      memberships.push({ band: "far" });
+    }
+    return memberships;
+  }
+
+  /**
+   * 2-17 close: the chunk's observer signature term. Frontier chunks (any
+   * band/population edge within the chunk's padded distance envelope) carry
+   * the 64 m-quantized observer so memberships and baked edge fades
+   * re-bake as the frontier sweeps; interior chunks carry a constant.
+   */
+  private chunkObserverTerm(coordinates: DetailPresentationChunkCoordinates): string {
+    const law = this.lastDensityLaw;
+    const minX = coordinates.minCellX * this.cellSizeMeters;
+    const minZ = coordinates.minCellZ * this.cellSizeMeters;
+    const maxX = (coordinates.maxCellX + 1) * this.cellSizeMeters;
+    const maxZ = (coordinates.maxCellZ + 1) * this.cellSizeMeters;
+    const nearestX = clamp(this.observerX, minX, maxX);
+    const nearestZ = clamp(this.observerZ, minZ, maxZ);
+    const minDistance = Math.hypot(nearestX - this.observerX, nearestZ - this.observerZ);
+    const cornerDistance = Math.max(
+      Math.hypot(minX - this.observerX, minZ - this.observerZ),
+      Math.hypot(maxX - this.observerX, minZ - this.observerZ),
+      Math.hypot(minX - this.observerX, maxZ - this.observerZ),
+      Math.hypot(maxX - this.observerX, maxZ - this.observerZ),
+    );
+    const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
+    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
+    const edges: readonly (readonly [number, number])[] = [
+      [law.near.outerRadiusMeters, pad],
+      [law.mid.outerRadiusMeters, pad],
+      [law.far.outerRadiusMeters, cullPad],
+      [this.lastGrassRadius, GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64],
+    ];
+    for (const [edge, padding] of edges) {
+      if (minDistance - padding <= edge && cornerDistance + padding >= edge) {
+        return `f${Math.round(this.observerX / 64)}:${Math.round(this.observerZ / 64)}`;
+      }
+    }
+    return "interior";
+  }
+
+  /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */
+  private static radialMultiplier(
+    radiusMeters: number,
+    heightMeters: number,
+    aspect: number,
+  ): number {
+    return clamp(
+      radiusMeters / Math.max(heightMeters * aspect, 1e-4),
+      DETAIL_INSTANCE_RADIAL_MIN,
+      DETAIL_INSTANCE_RADIAL_MAX,
+    );
   }
 
   private getBatch(
@@ -850,7 +1396,12 @@ export class WorldDetailRuntime {
     mesh.material = prototype.material;
     mesh.isPickable = false;
     mesh.useVertexColors = true;
-    mesh.receiveShadows = true;
+    // INHERITED, never forced: the impostor prototype opts out — with
+    // front_facing and the three blend varyings, 4-cascade shadow inputs
+    // push its fragment past the 16-input limit (measured 17: nine CSM
+    // lanes + tint + A/B/C + a wasted fade lane), and one invalid pipeline
+    // poisons the whole render bundle to a black frame.
+    mesh.receiveShadows = prototype.mesh.receiveShadows;
     mesh.alwaysSelectAsActiveMesh = false;
     mesh.setEnabled(false);
     mesh.metadata = {
@@ -864,16 +1415,14 @@ export class WorldDetailRuntime {
       detailChunkMaxCellZ: coordinates.maxCellZ,
       detailChunkRevision: chunk.revision,
       detailCastsShadow: prototype.castsShadows,
-      windAttribute: "instanceWind",
     };
     const batch: DetailBatch = {
       mesh,
       castsShadows: prototype.castsShadows,
       prototypeKey,
       chunkKey: coordinates.key,
-      matrices: [],
-      colors: [],
-      wind: [],
+      writer: new DetailInstanceWriter(),
+      bounds: new DetailInstanceBounds(),
     };
     this.batches.set(batchKey, batch);
     return batch;
@@ -914,142 +1463,304 @@ export class WorldDetailRuntime {
   }
 
   private createBatches(): void {
-    const trunkMaterial = this.createMaterial(
-      "detail-trunk",
-      new Color3(0.26, 0.14, 0.065),
-      0.93,
-      true,
-    );
-    const trunk = bakePrototype(CreateCylinder(
-      "detail-tree-trunk-near",
-      { height: 1, diameterTop: 1.3, diameterBottom: 2, tessellation: 7 },
-      this.scene,
-    ), 0.5);
-    this.registerBatch("tree-trunk-near", trunk, trunkMaterial, true);
-
-    const foliageColors: Readonly<Record<TreeSpecies, Color3>> = {
-      pine: new Color3(0.09, 0.28, 0.14),
-      cedar: new Color3(0.16, 0.3, 0.12),
-      spruce: new Color3(0.075, 0.235, 0.16),
-      oak: new Color3(0.24, 0.42, 0.12),
-      maple: new Color3(0.3, 0.46, 0.13),
-      birch: new Color3(0.29, 0.5, 0.16),
-      willow: new Color3(0.31, 0.48, 0.19),
-    };
-    for (const species of TREE_SPECIES) {
-      const material = this.createMaterial(
-        `detail-foliage-${species}`,
-        foliageColors[species],
-        0.87,
-        true,
-      );
-      material.backFaceCulling = false;
-      material.twoSidedLighting = true;
-      this.registerBatch(
-        `tree-${species}-near`,
-        this.createTreeCrown(species, "near"),
-        material,
-        true,
-      );
-      this.registerBatch(
-        `tree-${species}-mid`,
-        this.createTreeCrown(species, "mid"),
-        material,
-        false,
-      );
+    // 2-12: the foliage atlas's FIRST sampler. Under NullEngine (no raw
+    // 2D-array support) the atlas is skipped and materials compile without
+    // the atlas define — geometry and instancing stay fully testable.
+    const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+    if (engineFlags.isWebGPU || engineFlags._gl) {
+      this.foliageAtlas = createFoliageAtlas(this.scene, this.options.worldSeed);
+      // 2-17: the far band's octahedral impostors, baked on the CPU from
+      // the same seed (byte-deterministic; ~0.4 s once at startup).
+      this.impostorAtlas = createImpostorAtlas(this.scene, this.options.worldSeed);
     }
 
+    // 2-12: card trees from the built prototypes — species-specific trunks
+    // (swept generalised cylinders with root flare and forks) and 40-60
+    // tilted crown quads, with 16-direction baked sky occlusion in vertex
+    // alpha. Prototypes are unit-height with true proportions, so the
+    // per-material radial aspect is the prototype's own crown/trunk radius.
+    // Bark stays back-face-culled in its own batch while foliage is
+    // two-sided: zero extra draw calls per the plan.
+    const prototypeSeed = 7;
+    for (const species of TREE_SPECIES) {
+      const variantCount = clamp(
+        Math.round(TREE_VARIANT_COUNTS[species]),
+        1,
+        32,
+      );
+      const crownMaterial = this.createMaterial(
+        `detail-foliage-${species}`,
+        new Color3(0.62, 0.66, 0.58),
+        0.87,
+        1,
+        true,
+      );
+      this.registerBandFadeMaterial(crownMaterial);
+      crownMaterial.backFaceCulling = false;
+      crownMaterial.twoSidedLighting = true;
+      // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
+      // AFTER opaque terrain and trunks have filled the depth buffer, so
+      // early-Z kills every canopy fragment behind a ridge or a trunk before
+      // its two-sided PBR shading runs. The built-in test itself is a no-op
+      // here (no albedo texture, material alpha 1) — the plugin's atlas
+      // discard is the real test; this move is purely about draw order.
+      crownMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+      const barkMaterial = this.createMaterial(
+        `detail-bark-${species}`,
+        new Color3(0.58, 0.52, 0.46),
+        0.93,
+        1,
+        true,
+      );
+      this.registerBandFadeMaterial(barkMaterial);
+      for (let variant = 0; variant < variantCount; variant += 1) {
+        const prototype = buildTreePrototype(species, variant, prototypeSeed);
+        const crownAspect = Math.max(prototype.crown.boundingRadius, 0.05);
+        const trunkAspect = Math.max(prototype.trunk.boundingRadius, 0.005);
+        if (variant === 0) {
+          this.crownAspects.set(species, crownAspect);
+          this.trunkAspects.set(species, trunkAspect);
+          this.materialPlugin(crownMaterial)?.setRadialAspect(crownAspect);
+          this.materialPlugin(barkMaterial)?.setRadialAspect(trunkAspect);
+        }
+        this.registerBatch(
+          `tree-${species}-v${variant}-crown-near`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-crown`, prototype.crown),
+          crownMaterial,
+          true,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-trunk-near`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-trunk`, prototype.trunk),
+          barkMaterial,
+          true,
+        );
+        // Mid and far bands draw the law-priced standins (≤48 and ≤8
+        // triangles per plant): a trunk exists at mid (no floating crowns);
+        // far is crossed cards, crown layer only. 2-14 replaces the mid
+        // standin with its authored card tier, 2-17 the far one with
+        // octahedral impostors.
+        const midPrototype = buildTreePrototype(species, variant, prototypeSeed, "mid");
+        const farPrototype = buildTreePrototype(species, variant, prototypeSeed, "far");
+        this.registerBatch(
+          `tree-${species}-v${variant}-crown-mid`,
+          this.buildPrototypeMesh(
+            `detail-tree-${species}-v${variant}-crown-mid`,
+            midPrototype.crown,
+          ),
+          crownMaterial,
+          false,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-trunk-mid`,
+          this.buildPrototypeMesh(
+            `detail-tree-${species}-v${variant}-trunk-mid`,
+            midPrototype.trunk,
+          ),
+          barkMaterial,
+          false,
+        );
+        if (variant === 0 && this.impostorAtlas) {
+          // 2-17: the far band is a billboard impostor — one quad, the
+          // three-view blend, the two season buckets. Its material carries
+          // the species' bake frame so the shader reconstructs the exact
+          // baked square; impostors neither cast nor receive shadows
+          // (which frees the cascade varyings the blend lanes consume).
+          const impostorMaterial = this.createMaterial(
+            `detail-impostor-${species}`,
+            new Color3(1, 1, 1),
+            0.95,
+            1,
+            false,
+          );
+          impostorMaterial.backFaceCulling = false;
+          impostorMaterial.twoSidedLighting = true;
+          impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+          const frame = impostorBakeFrame(species, prototypeSeed);
+          this.registerBandFadeMaterial(impostorMaterial);
+          this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
+            this.impostorAtlas.albedo,
+            frame.extentUnit,
+            frame.centerYUnit,
+            impostorLayerIndex(species, 0),
+            impostorLayerIndex(species, 1),
+          );
+          const quad = new Mesh(`detail-impostor-${species}`, this.scene);
+          const quadData = new VertexData();
+          quadData.positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+          quadData.normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+          quadData.uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+          quadData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+          quadData.applyToMesh(quad, false);
+          quad.setEnabled(false);
+          this.registerBatch(`tree-${species}-impostor`, quad, impostorMaterial, false);
+          // AFTER registerBatch (which forces receive on): impostors must
+          // NOT receive shadows — with front_facing (two-sided) and the
+          // three blend varyings, the 4-cascade CSM inputs push the
+          // fragment past the 16-input limit (17 measured), and one invalid
+          // pipeline poisons the whole render bundle to a black frame.
+          quad.receiveShadows = false;
+        } else if (variant === 0) {
+          this.registerBatch(
+            `tree-${species}-v${variant}-crown-far`,
+            this.buildPrototypeMesh(
+              `detail-tree-${species}-v${variant}-crown-far`,
+              farPrototype.crown,
+            ),
+            crownMaterial,
+            false,
+          );
+        }
+      }
+    }
+
+    // 2-12b: card shrubs — the flat-shaded icospheres are gone. 12-18
+    // alpha-tested foliage quads on a short multi-stem skeleton from the
+    // 2-11 atlas layers (hazel broadleaf, juniper scale, sage grey-leaf),
+    // with the same atlas sampling, occlusion bake and alpha-test-bucket
+    // treatment as tree crowns. Two variants per species; the albedo tint
+    // brightens toward white because the perceptual tint distribution now
+    // arrives per instance, exactly as it does for trees.
     const shrubColors: Readonly<Record<ShrubSpecies, Color3>> = {
-      juniper: new Color3(0.16, 0.31, 0.19),
-      hazel: new Color3(0.31, 0.46, 0.14),
-      sage: new Color3(0.35, 0.41, 0.31),
+      juniper: new Color3(0.5, 0.56, 0.5),
+      hazel: new Color3(0.55, 0.6, 0.48),
+      sage: new Color3(0.56, 0.58, 0.53),
     };
     for (const species of SHRUB_SPECIES) {
       const material = this.createMaterial(
         `detail-shrub-${species}-material`,
         shrubColors[species],
         0.91,
+        1,
         true,
       );
       material.backFaceCulling = false;
-      const mesh = CreateIcoSphere(
-        `detail-shrub-${species}`,
-        {
-          radius: 1,
-          radiusX: species === "sage" ? 1.18 : species === "hazel" ? 0.92 : 1.05,
-          radiusY: species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62,
-          radiusZ: species === "sage" ? 0.88 : 1,
-          subdivisions: 1,
-          flat: true,
-        },
-        this.scene,
-      );
-      const verticalRadius = species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62;
-      this.registerBatch(
-        `shrub-${species}`,
-        bakePrototype(mesh, verticalRadius),
-        material,
-        false,
-      );
+      material.twoSidedLighting = true;
+      material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
+        const prototype = buildShrubPrototype(species, variant, prototypeSeed);
+        if (variant === 0) {
+          const aspect = Math.max(prototype.boundingRadius, 0.05);
+          this.shrubAspects.set(species, aspect);
+          this.materialPlugin(material)?.setRadialAspect(aspect);
+        }
+        this.registerBatch(
+          `shrub-${species}-v${variant}`,
+          this.buildPrototypeMesh(`detail-shrub-${species}-v${variant}`, prototype),
+          material,
+          false,
+        );
+      }
     }
 
+    // 2-15: displaced-icosphere rocks — per-lithology normals live in the
+    // prototype (limestone smooth, granite/dark flat: the shading-model
+    // difference reads as lithology more strongly than colour does).
     const rockColors: Readonly<Record<RockVariant, Color3>> = {
       granite: new Color3(0.38, 0.39, 0.4),
       limestone: new Color3(0.5, 0.48, 0.41),
       dark: new Color3(0.22, 0.24, 0.25),
     };
     for (const variant of ROCK_VARIANTS) {
-      const mesh = CreateIcoSphere(
-        `detail-rock-${variant}`,
-        { radius: 1, subdivisions: 1, flat: true },
-        this.scene,
-      );
+      const prototype = buildRockPrototype(variant, prototypeSeed);
       this.registerBatch(
         `rock-${variant}`,
-        mesh,
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94),
+        this.buildPrototypeMesh(`detail-rock-${variant}`, prototype),
+        // Aspect 1.4 keeps the width-recovery multiplier inside the record's
+        // [0.5, 1.6] range across the flattening spread (see the appender).
+        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94, 1.4),
+        false,
+      );
+    }
+
+    // 2-15: ground clutter — logs, stumps, branch litter, moss cushions.
+    // Litter is alpha-tested cards from the 2-11 twig layer, so its material
+    // rides the atlas path double-sided; logs and stumps sample bark layers
+    // through the same path but stay culled; moss is untextured (−1).
+    const clutterKinds: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
+    for (const kind of clutterKinds) {
+      const prototype = buildClutterPrototype(kind, prototypeSeed);
+      const material = this.createMaterial(
+        `detail-clutter-${kind}-material`,
+        kind === "mossCushion" ? new Color3(0.62, 0.68, 0.56) : new Color3(0.64, 0.6, 0.55),
+        0.95,
+        1,
+        true,
+      );
+      if (kind === "branchLitter") {
+        material.backFaceCulling = false;
+        material.twoSidedLighting = true;
+        material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      }
+      this.registerBatch(
+        `clutter-${kind}`,
+        this.buildPrototypeMesh(`detail-clutter-${kind}`, prototype),
+        material,
+        false,
+      );
+    }
+
+    // 2-16: ground cover — four habitat archetypes on one blade-patch
+    // builder, all riding the atlas path double-sided (blades are
+    // alpha-tested textured quads) in the alpha-test bucket.
+    const groundCoverArchetypes: readonly GroundCoverArchetype[] = [
+      "grass", "fern", "heather", "reed",
+    ];
+    for (const archetype of groundCoverArchetypes) {
+      const prototype = buildGrassPatchPrototype(prototypeSeed, archetype);
+      const material = this.createMaterial(
+        `detail-ground-${archetype}-material`,
+        new Color3(0.85, 0.88, 0.8),
+        0.92,
+        1,
+        true,
+      );
+      material.backFaceCulling = false;
+      material.twoSidedLighting = true;
+      material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      this.registerBatch(
+        `ground-${archetype}`,
+        this.buildPrototypeMesh(`detail-ground-${archetype}`, prototype),
+        material,
         false,
       );
     }
 
   }
 
-  private createTreeCrown(species: TreeSpecies, lod: DetailLod): Mesh {
-    const suffix = `${species}-${lod}`;
-    if (species === "pine" || species === "cedar" || species === "spruce") {
-      const height = species === "cedar" ? 0.84 : species === "spruce" ? 0.9 : 0.78;
-      const mesh = CreateCylinder(
-        `detail-tree-${suffix}`,
-        {
-          height,
-          diameterTop: species === "cedar" ? 0.12 : 0,
-          diameterBottom: species === "spruce" ? 1.68 : 2,
-          tessellation: lod === "near" ? 9 : 5,
-        },
-        this.scene,
-      );
-      return bakePrototype(mesh, species === "pine" ? 0.59 : species === "spruce" ? 0.55 : 0.57);
-    }
-    const mesh = CreateIcoSphere(
-      `detail-tree-${suffix}`,
-      {
-        radius: 1,
-        radiusX: species === "birch" ? 0.72 : species === "willow" ? 1.12 : 1,
-        radiusY: species === "birch" ? 0.3 : species === "willow" ? 0.25 : 0.34,
-        radiusZ: species === "birch" ? 0.72 : species === "willow" ? 1.08 : 0.95,
-        subdivisions: lod === "near" ? 2 : 1,
-        flat: lod === "mid",
-      },
-      this.scene,
-    );
-    return bakePrototype(mesh, species === "birch" ? 0.72 : species === "willow" ? 0.7 : 0.67);
+
+  private materialPlugin(material: PBRMaterial): DetailInstanceMaterialPlugin | null {
+    return this.pluginByMaterial.get(material) ?? null;
+  }
+
+  /** 2-12: a Babylon mesh from a pure PrototypeGeometry (typed arrays). */
+  private buildPrototypeMesh(name: string, geometry: PrototypeGeometry): Mesh {
+    const mesh = new Mesh(name, this.scene);
+    const data = new VertexData();
+    data.positions = geometry.positions;
+    data.normals = geometry.normals;
+    data.uvs = geometry.uvs;
+    data.tangents = geometry.tangents;
+    data.colors = geometry.colors;
+    data.indices = geometry.indices;
+    data.applyToMesh(mesh, false);
+    // The per-vertex atlas layer (−1 = untextured) rides its own buffer.
+    mesh.setVerticesBuffer(new VertexBuffer(
+      this.scene.getEngine(),
+      geometry.atlasLayer,
+      "atlasLayer",
+      { updatable: false, instanced: false, size: 1 },
+    ));
+    mesh.setEnabled(false);
+    return mesh;
   }
 
   private createMaterial(
     name: string,
     albedo: Color3,
     roughness: number,
-    windDeformation = false,
+    radialAspect: number,
+    samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
     material.albedoColor = albedo;
@@ -1059,10 +1770,34 @@ export class WorldDetailRuntime {
     material.environmentIntensity = 1;
     material.directIntensity = 1.05;
     material.specularIntensity = 1;
-    if (windDeformation) {
-      const plugin = new DetailWindMaterialPlugin(material);
-      plugin.setTimeSeconds(this.windTimeSeconds);
-      this.windPlugins.add(plugin);
+    // 2-11a: the transform lives in the plugin now — every detail material
+    // carries it (rocks included; their wind response is simply zero).
+    const plugin = new DetailInstanceMaterialPlugin(material);
+    plugin.setTimeSeconds(this.windTimeSeconds);
+    plugin.setRadialAspect(radialAspect);
+    if (samplesFoliageAtlas && this.foliageAtlas) {
+      plugin.setFoliageAtlas(this.foliageAtlas.texture);
+    }
+    this.instancePlugins.add(plugin);
+    this.pluginByMaterial.set(material, plugin);
+    // 0-9 incantation, verbatim: the wrapper is assigned AFTER the vertex-
+    // participating plugin attaches and BEFORE the material's first effect
+    // compiles — attached later it silently falls back to the undisplaced
+    // depth pass, which with no matrix buffer would collapse every shadow
+    // instance onto the batch origin.
+    //
+    // remappedVariables amendment (2-12): with the CSM's normalBias > 0 the
+    // wrapper injects `shadowMapVertexNormalBias`, whose WGSL references the
+    // varying by its bare GLSL name — unresolved after migration. The remap
+    // rewrites it inside the include only; `vertexOutputs.vNormalW` is
+    // already assigned by the injection anchor. The 0-9 spike missed this
+    // because its generator kept the default normalBias of 0, which compiles
+    // the include away (tests/gpu/foliage-material-compile.test.ts pins it).
+    const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+    if (engineFlags.isWebGPU || engineFlags._gl) {
+      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene, {
+        remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
+      });
     }
     this.materials.add(material);
     return material;
@@ -1079,7 +1814,7 @@ export class WorldDetailRuntime {
     mesh.useVertexColors = true;
     mesh.receiveShadows = true;
     mesh.setEnabled(false);
-    mesh.metadata = { detailPrototype: key, windAttribute: "instanceWind" };
+    mesh.metadata = { detailPrototype: key };
     this.prototypes.set(key, {
       mesh,
       material,

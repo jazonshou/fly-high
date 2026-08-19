@@ -38,6 +38,7 @@ function createFlatTile(request: TerrainGenerationRequest): TerrainTileData {
     size,
     resolution,
     spacing: size / (resolution - 1),
+    dayOfYear: request.options.dayOfYear ?? 171,
     heights: new Float32Array(vertexCount),
     normals,
     colors,

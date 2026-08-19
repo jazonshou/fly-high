@@ -313,9 +313,10 @@ struct OceanDeriveParams {
 @group(0) @binding(0) var<uniform> params: OceanDeriveParams;
 @group(0) @binding(1) var spatial_height_displacement_x: texture_2d<f32>;
 @group(0) @binding(2) var spatial_displacement_z_aux: texture_2d<f32>;
-@group(0) @binding(3) var previous_normal_foam: texture_2d<f32>;
+@group(0) @binding(3) var previous_slope_foam: texture_2d<f32>;
 @group(0) @binding(4) var displacement_jacobian: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(5) var normal_foam: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var slope_foam: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var slope_moment: texture_storage_2d<rgba16float, write>;
 
 fn wrapped(value: i32, size: i32) -> i32 {
   return (value + size) % size;
@@ -329,6 +330,12 @@ fn spatialDisplacement(coordinate: vec2<i32>) -> vec3<f32> {
   return vec3<f32>(height_x.z, height_x.x, displacement_z.x);
 }
 
+// 2-8: the cascade output stores SLOPE, not a normal. A box-filtered mip of
+// a slope field is the correct filtered slope (slopes of an additive height
+// field average linearly); a box-filtered normal is not a normal. Layout:
+// RG = (dy/dx, dy/dz) of the displaced surface, B = foam, A = Jacobian.
+// slope_moment carries RG = (slope_x^2, slope_z^2) so the mip chain's
+// E[s^2] - E[s]^2 recovers the sub-footprint slope variance for Toksvig.
 @compute @workgroup_size(8, 8, 1)
 fn deriveOceanSurface(@builtin(global_invocation_id) invocation: vec3<u32>) {
   if (invocation.x >= params.resolution || invocation.y >= params.resolution) {
@@ -346,15 +353,23 @@ fn deriveOceanSurface(@builtin(global_invocation_id) invocation: vec3<u32>) {
 
   let tangent_x = vec3<f32>(1.0 + derivative_x.x, derivative_x.y, derivative_x.z);
   let tangent_z = vec3<f32>(derivative_z.x, derivative_z.y, 1.0 + derivative_z.z);
-  let normal = normalize(cross(tangent_z, tangent_x));
+  let normal = cross(tangent_z, tangent_x);
+  // slope = n.xz / n.y of the displaced surface. n.y equals the horizontal
+  // Jacobian, which pinches toward zero exactly where waves break; the
+  // denominator clamp plus the ±8 component clamp (tan ~83°, steeper than
+  // any renderable wave) bound the stored slope there — foam covers those
+  // crests, one breaking texel cannot poison a whole mip footprint, and the
+  // squared moments stay ≤ 64 where fp16 spacing is still 1/16.
+  let slope = clamp(normal.xz / max(normal.y, 0.05), vec2<f32>(-8.0), vec2<f32>(8.0));
   let jacobian = (1.0 + derivative_x.x) * (1.0 + derivative_z.z)
     - derivative_z.x * derivative_x.z;
   let breaking = clamp((params.foam_threshold - jacobian) * params.foam_gain, 0.0, 1.0);
-  let previous_foam = textureLoad(previous_normal_foam, coordinate, 0).w;
+  let previous_foam = textureLoad(previous_slope_foam, coordinate, 0).b;
   let foam = max(breaking, previous_foam * params.foam_history_decay);
 
   textureStore(displacement_jacobian, coordinate, vec4<f32>(centre, jacobian));
-  textureStore(normal_foam, coordinate, vec4<f32>(normal, foam));
+  textureStore(slope_foam, coordinate, vec4<f32>(slope.x, slope.y, foam, jacobian));
+  textureStore(slope_moment, coordinate, vec4<f32>(slope.x * slope.x, slope.y * slope.y, 0.0, 0.0));
 }
 `;
 
@@ -381,8 +396,10 @@ export const OCEAN_SPECTRUM_EVOLUTION_SHADER: NatureShaderModule = Object.freeze
     Object.freeze({ group: 0, binding: 0, name: "params", kind: "uniform-buffer" }),
     Object.freeze({ group: 0, binding: 1, name: "initial_spectrum", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
     Object.freeze({ group: 0, binding: 2, name: "wave_data", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
-    Object.freeze({ group: 0, binding: 3, name: "height_displacement_x", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba32float" }),
-    Object.freeze({ group: 0, binding: 4, name: "displacement_z_aux", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba32float" }),
+    // 1B-13: the FFT ping-pong is rgba16float (this metadata was stale at
+    // rgba32float until 2-8 touched the module — the WGSL is authoritative).
+    Object.freeze({ group: 0, binding: 3, name: "height_displacement_x", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 4, name: "displacement_z_aux", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
   ]),
 });
 
@@ -396,8 +413,8 @@ export const OCEAN_STOCKHAM_IFFT_SHADER: NatureShaderModule = Object.freeze({
     Object.freeze({ group: 0, binding: 0, name: "params", kind: "uniform-buffer" }),
     Object.freeze({ group: 0, binding: 1, name: "source_a", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
     Object.freeze({ group: 0, binding: 2, name: "source_b", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
-    Object.freeze({ group: 0, binding: 3, name: "destination_a", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba32float" }),
-    Object.freeze({ group: 0, binding: 4, name: "destination_b", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba32float" }),
+    Object.freeze({ group: 0, binding: 3, name: "destination_a", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 4, name: "destination_b", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
   ]),
 });
 
@@ -411,9 +428,10 @@ export const OCEAN_SPATIAL_DERIVATION_SHADER: NatureShaderModule = Object.freeze
     Object.freeze({ group: 0, binding: 0, name: "params", kind: "uniform-buffer" }),
     Object.freeze({ group: 0, binding: 1, name: "spatial_height_displacement_x", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
     Object.freeze({ group: 0, binding: 2, name: "spatial_displacement_z_aux", kind: "sampled-texture", viewDimension: "2d", sampleType: "unfilterable-float" }),
-    Object.freeze({ group: 0, binding: 3, name: "previous_normal_foam", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
+    Object.freeze({ group: 0, binding: 3, name: "previous_slope_foam", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 4, name: "displacement_jacobian", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
-    Object.freeze({ group: 0, binding: 5, name: "normal_foam", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 5, name: "slope_foam", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
+    Object.freeze({ group: 0, binding: 6, name: "slope_moment", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
   ]),
 });
 

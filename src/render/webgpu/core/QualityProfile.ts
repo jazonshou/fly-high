@@ -1,3 +1,7 @@
+import {
+  RENDERED_DENSITY_LAWS,
+  type RenderedDensityLaw,
+} from "@/src/render/webgpu/detail/renderedDensity";
 import type { QualityLevel } from "@/src/game/types";
 import type { RenderingMode } from "@/src/settings";
 
@@ -29,6 +33,22 @@ export interface WebGpuQualityProfile {
    * lines, runway edges and wing silhouettes, not tree canopies.
    */
   readonly msaaSamples: number;
+  /**
+   * The tier's controllable frame-time target (Z-2), mirrored from
+   * `FRAME_TARGET_MS` so consumers read a profile datum instead of a tier
+   * table. A hitch is a frame slower than twice this number.
+   */
+  readonly frameTargetMs: number;
+  /** R-21: the tier's rendered-density law (the one vegetation authority). */
+  readonly renderedDensityLaw: RenderedDensityLaw;
+  /** 2-12: cap on crown-geometry variants per species (Low keeps three). */
+  readonly treeVariantCap: number;
+  /**
+   * 2-16: grass draw radius — THE first tier knob per §5.3, because grass
+   * is the renderer's largest single triangle consumer. The 1/d density
+   * ramp inside it holds screen-space blade density roughly constant.
+   */
+  readonly grassRadiusMeters: number;
   readonly terrainRings: number;
   /**
    * Vertices per tile edge at every level (1B-3). One constant per tier —
@@ -43,6 +63,12 @@ export interface WebGpuQualityProfile {
   readonly oceanResolution: 128 | 256;
   readonly oceanCascades: number;
   readonly cloudResolutionScale: number;
+  /**
+   * Absolute ceiling on cloud-integration pixels (2-6). Clamped alongside
+   * the resolution scale in resolveCloudRenderSize — a multiply is not a cap
+   * (the 1A-6a argument, applied to the cloud pass).
+   */
+  readonly maxCloudPixels: number;
   readonly cloudPrimarySteps: number;
   readonly cloudLightSteps: number;
   readonly vegetationDistance: number;
@@ -85,6 +111,10 @@ export function resolveWebGpuQualityProfile(
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
       msaaSamples: 1,
+      frameTargetMs: 13.7,
+      renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
+      treeVariantCap: 3,
+      grassRadiusMeters: 90,
       terrainRings: 6,
       terrainTileResolution: 33,
       shadowMapSize: 1_024,
@@ -93,6 +123,7 @@ export function resolveWebGpuQualityProfile(
       oceanResolution: 128,
       oceanCascades: 3,
       cloudResolutionScale: 0.25,
+      maxCloudPixels: 350_000,
       cloudPrimarySteps: 40,
       cloudLightSteps: 4,
       vegetationDistance: 2_000,
@@ -108,7 +139,15 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
-      msaaSamples: 4,
+      // 2Z free win (PRE_PHASE_4_REALIGNMENT.md §3): 2×, was 4×. At the
+      // reference viewport 4× MSAA is ~69 MiB of framebuffer, and the
+      // alpha-tested foliage Phase 2 makes dominant gets no MSAA benefit
+      // (alpha-to-coverage is off) — the cheapest ~34 MiB in the programme.
+      msaaSamples: 2,
+      frameTargetMs: 13.7,
+      renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
+      treeVariantCap: 5,
+      grassRadiusMeters: 150,
       terrainRings: 7,
       terrainTileResolution: 65,
       shadowMapSize: 2_048,
@@ -117,6 +156,7 @@ export function resolveWebGpuQualityProfile(
       oceanResolution: 128,
       oceanCascades: 4,
       cloudResolutionScale: 0.45,
+      maxCloudPixels: 700_000,
       cloudPrimarySteps: 60,
       cloudLightSteps: 6,
       vegetationDistance: 4_500,
@@ -136,6 +176,10 @@ export function resolveWebGpuQualityProfile(
       // for 4× inside the 700 MiB ceiling (assertion 19); 4-8's near-field
       // shadow maps buy it back.
       msaaSamples: 2,
+      frameTargetMs: 13.7,
+      renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
+      treeVariantCap: 5,
+      grassRadiusMeters: 220,
       // 1C-4: the 45 km far plane makes level 7 (the 131 km ring) pure
       // waste. Levels 0–6 still guarantee 65.5 km worst-case coverage —
       // the lower tiers keep their counts because cutting them would end
@@ -150,6 +194,7 @@ export function resolveWebGpuQualityProfile(
       // Temporal reconstruction provides the stability return at this tier. Keep
       // the fully integrated per-frame ray march below a brute-force cost cliff.
       cloudResolutionScale: 0.6,
+      maxCloudPixels: 1_000_000,
       cloudPrimarySteps: 96,
       cloudLightSteps: 6,
       vegetationDistance: 8_000,
@@ -169,6 +214,10 @@ export function resolveWebGpuQualityProfile(
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
     msaaSamples: 4,
+    frameTargetMs: 30,
+    renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
+    treeVariantCap: 5,
+    grassRadiusMeters: 320,
     // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
     terrainRings: 7,
     terrainTileResolution: 65,
@@ -178,6 +227,7 @@ export function resolveWebGpuQualityProfile(
     oceanResolution: 256,
     oceanCascades: 5,
     cloudResolutionScale: 0.7,
+    maxCloudPixels: 1_600_000,
     cloudPrimarySteps: 96,
     cloudLightSteps: 6,
     vegetationDistance: 8_000,
@@ -215,6 +265,23 @@ export function frameTimingPercentile95(samples: readonly number[]): number | nu
   if (valid.length === 0) return null;
   const index = Math.max(0, Math.ceil(valid.length * 0.95) - 1);
   return valid[index] ?? null;
+}
+
+/**
+ * Nearest-rank percentile over every finite positive sample — deliberately
+ * *without* the 250 ms usability ceiling (Z-2). The governor's p95 must
+ * ignore suspended-tab gaps; the hitch metrics exist precisely to see them.
+ */
+export function frameTimingPercentile(
+  samples: readonly number[],
+  quantile: number,
+): number | null {
+  const valid = samples
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (valid.length === 0) return null;
+  const index = Math.max(0, Math.ceil(valid.length * quantile) - 1);
+  return valid[Math.min(index, valid.length - 1)] ?? null;
 }
 
 // worstFrameTimingPercentile95 and nextDynamicRenderScale are deleted (1A-6b):
