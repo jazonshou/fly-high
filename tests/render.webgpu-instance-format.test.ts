@@ -57,10 +57,23 @@ describe("compact instance format (2-11a)", () => {
           * (DETAIL_INSTANCE_RADIAL_MAX - DETAIL_INSTANCE_RADIAL_MIN),
     ).toBeCloseTo(1.05, 4);
     expect([...bytes.subarray(24, 28)]).toEqual([64, 128, 191, 255]);
+    // 2-14 fade byte: 7-bit level in the high bits, direction in bit 0
+    // (0.5 · 127 rounds to 64 → 128, outgoing).
     expect(bytes[28]).toBe(128);
     expect(bytes[29]).toBe(37);
     expect(bytes[30]).toBe(64);
     expect(bytes[31]).toBe(153);
+  });
+
+  it("encodes the 2-14 fade direction bit alongside the 7-bit level", () => {
+    const writer = new DetailInstanceWriter(2);
+    writer.push({ ...RECORD, fade: 0.5, fadeIncoming: true });
+    writer.push({ ...RECORD, fade: 1, fadeIncoming: false });
+    const bytes = writer.finish();
+    // Incoming at 0.5 → 64·2 + 1; full outgoing → 127·2 (the fast path the
+    // fragment takes without evaluating the dither).
+    expect(bytes[28]).toBe(129);
+    expect(bytes[DETAIL_INSTANCE_STRIDE_BYTES + 28]).toBe(254);
   });
 
   it("keeps the attribute table consistent with the stride", () => {

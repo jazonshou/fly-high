@@ -143,7 +143,12 @@ function buildPrototypeMesh(
 }
 
 /** Mirrors WorldDetailRuntime.uploadBatch for a single instance. */
-function uploadOneInstance(mesh: Mesh, scene: Scene): void {
+function uploadOneInstance(
+  mesh: Mesh,
+  scene: Scene,
+  fade = 1,
+  fadeIncoming = false,
+): void {
   const writer = new DetailInstanceWriter(1);
   writer.push({
     x: 0,
@@ -152,7 +157,8 @@ function uploadOneInstance(mesh: Mesh, scene: Scene): void {
     quaternion: yawQuaternion(0.4),
     heightScaleMeters: 18,
     radialScale: 1,
-    fade: 1,
+    fade,
+    fadeIncoming,
     variant: 1 + 3 * 32, // variant 1 with the thinned-crown modifier (bits 3)
     tint: [0.35, 0.5, 0.3, 1],
     windPhase: 0.25,
@@ -272,7 +278,10 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       );
       crown.useVertexColors = true;
       crown.receiveShadows = true;
-      uploadOneInstance(crown, scene);
+      // 2-14: drawn mid-crossfade so the dither path proves pixels, not
+      // just compilation — a quarter of the canopy dithers away and the
+      // visibility floor must still clear.
+      uploadOneInstance(crown, scene, 0.75, false);
 
       const trunk = buildPrototypeMesh("compile-trunk", prototype.trunk, scene);
       trunk.material = buildMaterial(
@@ -295,7 +304,8 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       shrub.material = buildMaterial("compile-shrub-material", true, 0.6);
       shrub.useVertexColors = true;
       shrub.receiveShadows = true;
-      uploadOneInstance(shrub, scene);
+      // 2-14: the INCOMING comparison path (survive bayer >= 1 - fade).
+      uploadOneInstance(shrub, scene, 0.6, true);
       shrub.position.x = 14;
 
       shadows.addShadowCaster(crown);

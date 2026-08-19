@@ -35,8 +35,15 @@ varying detailInstanceTint: vec4f;
 attribute uv: vec2f;
 attribute atlasLayer: f32;
 // One packed varying — PBR with 4-cascade shadows sits near the 16-location
-// vertex output limit: (uv.x, uv.y, atlasLayer, modifier + occlusion·0.5).
+// vertex output limit: (uv.x, uv.y, atlasLayer + fadeByte/512, modifier +
+// occlusion·0.5). The 2-14 fade byte hides in the layer's fraction so the
+// atlas path adds NO output location; layers stay ≤ 15, so layer + byte/512
+// is exact in f32 and floor() recovers the integer.
 varying detailAtlasData: vec4f;
+#else
+// Bark and rocks have output locations to spare — the fade byte rides its
+// own lane there.
+varying detailFadeByte: f32;
 #endif
 
 fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
@@ -123,7 +130,7 @@ positionUpdated = detailSwayed + vertexInputs.instancePosition;
 vertexOutputs.detailAtlasData = vec4f(
   vertexInputs.uv.x,
   vertexInputs.uv.y,
-  vertexInputs.atlasLayer,
+  vertexInputs.atlasLayer + floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 512.0,
   detailModifierBits + clamp(vertexInputs.color.a, 0.0, 1.0) * 0.5,
 );
 var detailTintOut = vertexInputs.instanceTint;
@@ -139,6 +146,7 @@ vertexOutputs.detailInstanceTint = detailTintOut;
 #else
 vertexOutputs.detailInstanceTint = vertexInputs.instanceTint
   * vec4f(1.0, 1.0, 1.0, 1.0);
+vertexOutputs.detailFadeByte = floor(vertexInputs.instanceState.x * 255.0 + 0.5);
 #endif
 `,
   CUSTOM_VERTEX_UPDATE_NORMAL: `
@@ -160,9 +168,53 @@ varying detailInstanceTint: vec4f;
 varying detailAtlasData: vec4f;
 var foliageAtlasSampler: sampler;
 var foliageAtlas: texture_2d_array<f32>;
+#else
+varying detailFadeByte: f32;
 #endif
+
+// 2-14 — ordered 8×8 Bayer threshold in [1/128, 127/128], the standard
+// bit-interleave construction.
+fn detailBayer8(pixel: vec2u) -> f32 {
+  let x = pixel.x % 8u;
+  let y = pixel.y % 8u;
+  let xorBits = x ^ y;
+  let index = ((y & 1u) << 5u) | ((xorBits & 1u) << 4u)
+    | ((y & 2u) << 2u) | ((xorBits & 2u) << 1u)
+    | ((y & 4u) >> 1u) | ((xorBits & 4u) >> 2u);
+  return (f32(index) + 0.5) / 64.0;
+}
+
+// 2-14 — the LOD crossfade decision. Fade byte: 7-bit level, direction in
+// bit 0. Outgoing survives bayer < fade; incoming survives bayer >= 1 −
+// fade — EXACT complements under one shared pattern offset, so a stem mid-
+// crossfade covers every pixel exactly once (a statistical complement
+// double-draws the whole canopy at fade 0.5). The offset hashes the tint,
+// which is per-stem and identical in BOTH bands; pixels are render-target
+// coordinates, so a governor render-scale step cannot make the pattern
+// swim against the output.
+fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
+  if (fadeByte >= 254.0) { return true; }
+  if (fadeByte <= 1.0) { return false; }
+  let incoming = fadeByte - floor(fadeByte / 2.0) * 2.0 >= 1.0;
+  let fade = floor(fadeByte / 2.0) / 127.0;
+  let hash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
+  let offset = vec2u(u32(hash * 5.0), u32(fract(hash * 7.0) * 5.0));
+  let threshold = detailBayer8(vec2u(pixel) + offset);
+  if (incoming) { return threshold >= 1.0 - fade; }
+  return threshold < fade;
+}
 `,
   CUSTOM_FRAGMENT_UPDATE_ALBEDO: `
+#ifdef DETAIL_FOLIAGE_ATLAS
+let detailFadeByteDecoded = fract(fragmentInputs.detailAtlasData.z) * 512.0;
+#else
+let detailFadeByteDecoded = fragmentInputs.detailFadeByte;
+#endif
+if (!detailDitherSurvives(
+  detailFadeByteDecoded,
+  fragmentInputs.position.xy,
+  fragmentInputs.detailInstanceTint.rgb,
+)) { discard; }
 #ifdef DETAIL_FOLIAGE_ATLAS
 let detailModifierDecoded = floor(fragmentInputs.detailAtlasData.w);
 let detailOcclusionDecoded = (fragmentInputs.detailAtlasData.w - detailModifierDecoded) * 2.0;
@@ -173,7 +225,7 @@ let detailCard = textureSample(
   foliageAtlas,
   foliageAtlasSampler,
   fragmentInputs.detailAtlasData.xy,
-  i32(max(fragmentInputs.detailAtlasData.z, 0.0) + 0.5),
+  i32(floor(max(fragmentInputs.detailAtlasData.z, 0.0))),
 );
 if (fragmentInputs.detailAtlasData.z >= 0.0) {
   // 2-12: the shipping alpha test (Castano coverage preserved per mip in

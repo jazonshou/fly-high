@@ -133,6 +133,15 @@ export interface WorldDetailRuntimeOptions {
   readonly workerWorldSeed?: string | number;
 }
 
+/**
+ * 2-14: width of the dither-crossfade window at the near/mid and mid/far
+ * boundaries, and of the cull fade at the vegetation edge. Both clear the
+ * 128 m generation cell so per-stem fades sweep smoothly across rebuild
+ * granularity.
+ */
+export const DETAIL_FADE_MARGIN_METERS = 160;
+export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
+
 const TREE_SPECIES: readonly TreeSpecies[] = [
   "pine",
   "cedar",
@@ -216,6 +225,9 @@ export class WorldDetailRuntime {
   private batchesDirty = true;
   private windTimeSeconds = 0;
   private updateSequence = 0;
+  /** 2-14: observer position at the last rebuild, for per-stem fade radii. */
+  private observerX = 0;
+  private observerZ = 0;
   /** R-13: the environment clock's day, forwarded to cell generation. */
   private dayOfYear = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
@@ -437,6 +449,8 @@ export class WorldDetailRuntime {
     }
 
     if (this.batchesDirty) {
+      this.observerX = observer.x;
+      this.observerZ = observer.z;
       this.rebuildBatches(floatingOrigin, profile);
       this.batchesDirty = false;
     } else {
@@ -705,40 +719,23 @@ export class WorldDetailRuntime {
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
-        // R-21 banding by the LAW's radii (see below) — computed first
-        // because the band also caps GEOMETRY variants: every distinct
-        // (species, variant, band) mesh is a draw call per chunk, and the
-        // measured cost was ~26 µs of GPU per draw — the 2-12 batch topology
-        // added ~350-560 draws over the 2B baseline and the Δgpu tracked
-        // Δdraws on every shot. Far cards keep ONE variant per species
-        // (aspect differences are invisible past 1.4 km; per-instance
-        // height/radial scales and tint carry the variety), mid keeps three.
-        const band = resident.distance <= densityLaw.near.outerRadiusMeters
-          ? "near"
-          : resident.distance <= densityLaw.mid.outerRadiusMeters
-            ? "mid"
-            : "far";
-        const bandVariantCap = band === "far" ? 1 : band === "mid" ? 3 : treeVariantCap;
-        // 2-12: geometry variant + character modifier from two stable
-        // hashes of the stem's selection value. Modifier mix: 55% intact,
-        // 15% lean, 12% thinned crown, 10% broken top, 8% dead top.
-        const variantCount = clamp(
-          Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap, bandVariantCap),
-          1,
-          32,
+        // 2-14: banding by the LAW's radii from the STEM'S OWN distance,
+        // with dither-crossfade margins — a stem inside a margin appears in
+        // BOTH bands with exactly complementary fade bytes (two-LOD
+        // residency; the outgoing side disappears with the next rebuild
+        // past the margin). Also the cull fade at the far edge.
+        const stemDistance = Math.hypot(
+          tree.x - this.observerX,
+          tree.z - this.observerZ,
         );
-        const variantHash = (tree.selection * 71.7) % 1;
-        const geometryVariant = Math.min(
-          variantCount - 1,
-          Math.floor(variantHash * variantCount),
-        );
+        const memberships = WorldDetailRuntime.fadeBandMemberships(stemDistance, densityLaw);
+        if (memberships.length === 0) continue;
         const modifierHash = (tree.selection * 137.3) % 1;
         const modifierBits = modifierHash < 0.55 ? 0
           : modifierHash < 0.70 ? 1
           : modifierHash < 0.82 ? 3
           : modifierHash < 0.92 ? 2
           : 4;
-        const variantByte = geometryVariant + modifierBits * 32;
         // Per-instance lean of 2-8 degrees composed into the quaternion.
         const leanRadians = (0.035 + ((tree.selection * 29.3) % 1) * 0.105);
         const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
@@ -750,7 +747,7 @@ export class WorldDetailRuntime {
         const windPhase = tree.windPhaseRadians / (2 * Math.PI);
         const crownAspect = this.crownAspects.get(tree.species) ?? 0.3;
         const trunkAspect = this.trunkAspects.get(tree.species) ?? 0.02;
-        const crown: DetailInstanceRecord = {
+        const crownBase: DetailInstanceRecord = {
           x: localX,
           y: localY,
           z: localZ,
@@ -762,43 +759,65 @@ export class WorldDetailRuntime {
             crownAspect,
           ),
           fade: 1,
-          variant: variantByte,
+          variant: modifierBits * 32,
           tint: tree.color,
           windPhase,
           windResponse: clamp(tree.windResponse, 0, 1),
         };
-        const trunk: DetailInstanceRecord = {
-          ...crown,
-          radialScale: WorldDetailRuntime.radialMultiplier(
-            tree.trunkRadiusMeters,
-            tree.heightMeters,
-            trunkAspect,
-          ),
-          windResponse: 0.08,
-        };
-        // Banding is the law's radii, not the residency lod: the law prices
-        // each band's geometry, so the band boundary must be the law's, and
-        // a far stem must never draw mid geometry (the first 2-12 capture
-        // integrated exactly that mistake to 4.7× budget).
-        this.appendInstance(
-          this.getBatch(
-            `tree-${tree.species}-v${geometryVariant}-crown-${band}`,
-            chunk,
-            nextBatchKeys,
-          ),
-          crown,
-        );
-        // A trunk exists at near and mid — no floating crowns; the far
-        // band's crossed cards carry the whole silhouette.
-        if (band !== "far") {
+        const variantHash = (tree.selection * 71.7) % 1;
+        for (const membership of memberships) {
+          // Geometry variants cap per band (every (species, variant, band)
+          // mesh is a draw per chunk at ~26 µs of GPU each — the 2-12
+          // finding): far keeps ONE per species, mid three, near the
+          // profile's cap. Per-instance scales and tint carry the variety
+          // where the meshes collapse.
+          const bandVariantCap = membership.band === "far" ? 1
+            : membership.band === "mid" ? 3
+            : treeVariantCap;
+          const variantCount = clamp(
+            Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap, bandVariantCap),
+            1,
+            32,
+          );
+          const geometryVariant = Math.min(
+            variantCount - 1,
+            Math.floor(variantHash * variantCount),
+          );
+          const crown: DetailInstanceRecord = {
+            ...crownBase,
+            fade: membership.fade,
+            fadeIncoming: membership.incoming,
+            variant: geometryVariant + modifierBits * 32,
+          };
           this.appendInstance(
             this.getBatch(
-              `tree-${tree.species}-v${geometryVariant}-trunk-${band}`,
+              `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`,
               chunk,
               nextBatchKeys,
             ),
-            trunk,
+            crown,
           );
+          // A trunk exists at near and mid — no floating crowns; the far
+          // band's crossed cards carry the whole silhouette, so a trunk
+          // crossfading at the mid/far boundary fades against them.
+          if (membership.band !== "far") {
+            this.appendInstance(
+              this.getBatch(
+                `tree-${tree.species}-v${geometryVariant}-trunk-${membership.band}`,
+                chunk,
+                nextBatchKeys,
+              ),
+              {
+                ...crown,
+                radialScale: WorldDetailRuntime.radialMultiplier(
+                  tree.trunkRadiusMeters,
+                  tree.heightMeters,
+                  trunkAspect,
+                ),
+                windResponse: 0.08,
+              },
+            );
+          }
         }
         statistics.treeInstances += 1;
       }
@@ -810,7 +829,18 @@ export class WorldDetailRuntime {
         // near band, one at mid: every (species, variant) mesh is a draw per
         // chunk, and mid shrubs are a few pixels), radial aspect from the
         // built prototype through the shared per-material uniform.
-        const shrubVariantCount = resident.distance <= densityLaw.near.outerRadiusMeters
+        const shrubDistance = Math.hypot(
+          shrub.x - this.observerX,
+          shrub.z - this.observerZ,
+        );
+        const shrubEdge = densityLaw.mid.outerRadiusMeters;
+        if (shrubDistance >= shrubEdge) continue;
+        // 2-14: shrubs fade out at their mid-boundary cutoff (nothing fades
+        // in behind them — understory at that range is sub-pixel).
+        const shrubFade = shrubDistance > shrubEdge - DETAIL_FADE_MARGIN_METERS
+          ? (shrubEdge - shrubDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
+        const shrubVariantCount = shrubDistance <= densityLaw.near.outerRadiusMeters
           ? SHRUB_VARIANT_COUNTS[shrub.species]
           : 1;
         const shrubVariant = Math.min(
@@ -831,7 +861,8 @@ export class WorldDetailRuntime {
               shrub.heightMeters,
               shrubAspect,
             ),
-            fade: 1,
+            fade: shrubFade,
+            fadeIncoming: false,
             variant: shrubVariant,
             tint: shrub.color,
             windPhase: shrub.windPhaseRadians / (2 * Math.PI),
@@ -982,6 +1013,51 @@ export class WorldDetailRuntime {
       lz * yw - lx * yy,
       lw * yw,
     ];
+  }
+
+  /**
+   * 2-14: which render bands a stem at this range belongs to, with the
+   * dither-crossfade fades. Inside a margin the stem carries TWO
+   * memberships whose fade bytes are exact complements (outgoing
+   * `fade = t`, incoming `fade = 1 - t` with the incoming comparison
+   * flipped in the fragment); at the cull radius the far band fades out
+   * against nothing. Margins clear the 128 m generation cell so a
+   * boundary sweeps smoothly across rebuilds.
+   */
+  static fadeBandMemberships(
+    distanceMeters: number,
+    law: RenderedDensityLaw,
+  ): ReadonlyArray<{ band: "near" | "mid" | "far"; fade: number; incoming: boolean }> {
+    const nearEdge = law.near.outerRadiusMeters;
+    const midEdge = law.mid.outerRadiusMeters;
+    const cullEdge = law.far.outerRadiusMeters;
+    if (!Number.isFinite(distanceMeters) || distanceMeters < 0 || distanceMeters >= cullEdge) {
+      return [];
+    }
+    if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS && distanceMeters <= nearEdge) {
+      const outgoing = (nearEdge - distanceMeters) / DETAIL_FADE_MARGIN_METERS;
+      return [
+        { band: "near", fade: outgoing, incoming: false },
+        { band: "mid", fade: 1 - outgoing, incoming: true },
+      ];
+    }
+    if (distanceMeters <= nearEdge) return [{ band: "near", fade: 1, incoming: false }];
+    if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS && distanceMeters <= midEdge) {
+      const outgoing = (midEdge - distanceMeters) / DETAIL_FADE_MARGIN_METERS;
+      return [
+        { band: "mid", fade: outgoing, incoming: false },
+        { band: "far", fade: 1 - outgoing, incoming: true },
+      ];
+    }
+    if (distanceMeters <= midEdge) return [{ band: "mid", fade: 1, incoming: false }];
+    if (distanceMeters > cullEdge - DETAIL_CULL_FADE_MARGIN_METERS) {
+      return [{
+        band: "far",
+        fade: (cullEdge - distanceMeters) / DETAIL_CULL_FADE_MARGIN_METERS,
+        incoming: false,
+      }];
+    }
+    return [{ band: "far", fade: 1, incoming: false }];
   }
 
   /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */

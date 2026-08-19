@@ -48,8 +48,16 @@ export interface DetailInstanceRecord {
   readonly heightScaleMeters: number;
   /** Radius as a fraction of height, decoded over [0.5, 1.6]. */
   readonly radialScale: number;
-  /** LOD crossfade / cull fade, 0..1. */
+  /** LOD crossfade / cull fade, 0..1 (127 usable levels — see fade byte). */
   readonly fade: number;
+  /**
+   * 2-14: fade DIRECTION. An outgoing instance survives `bayer < fade`; an
+   * incoming one survives `bayer >= 1 - fade` — with the same per-stem hash
+   * on both sides these are EXACT complements, so a crossfading stem covers
+   * every pixel exactly once (statistical complements double-draw the whole
+   * canopy at fade 0.5). Encoded as the fade byte's low bit.
+   */
+  readonly fadeIncoming?: boolean;
   /** Crown/rock variant index, 0..255 (high bits: 2-12 character modifiers). */
   readonly variant: number;
   /** Linear RGBA tint, 0..1 per channel. */
@@ -140,7 +148,11 @@ export class DetailInstanceWriter {
     view.setUint8(offset + 25, unorm8(record.tint[1]));
     view.setUint8(offset + 26, unorm8(record.tint[2]));
     view.setUint8(offset + 27, unorm8(record.tint[3]));
-    view.setUint8(offset + 28, unorm8(record.fade));
+    view.setUint8(
+      offset + 28,
+      Math.min(127, Math.round(clamp01(record.fade) * 127)) * 2
+        + (record.fadeIncoming ? 1 : 0),
+    );
     view.setUint8(offset + 29, Math.min(255, Math.max(0, Math.round(record.variant))));
     view.setUint8(offset + 30, unorm8(record.windPhase % 1));
     view.setUint8(offset + 31, unorm8(record.windResponse));
