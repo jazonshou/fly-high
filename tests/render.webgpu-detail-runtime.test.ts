@@ -26,7 +26,7 @@ function chunkMeshes(scene: Scene): Mesh[] {
       mesh instanceof Mesh
       && typeof mesh.metadata?.detailChunk === "string"
       && mesh.isEnabled()
-      && mesh.thinInstanceCount > 0
+      && mesh.forcedInstanceCount > 0
     ),
   );
 }
@@ -120,9 +120,9 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(new Set(repeatedPrototype?.map((mesh) => mesh.geometry?.uniqueId)).size).toBe(
       repeatedPrototype?.length,
     );
-    const totalInstances = meshes.reduce((sum, mesh) => sum + mesh.thinInstanceCount, 0);
+    const totalInstances = meshes.reduce((sum, mesh) => sum + mesh.forcedInstanceCount, 0);
     const visibleInstances = meshes.reduce(
-      (sum, mesh) => sum + (camera.isInFrustum(mesh) ? mesh.thinInstanceCount : 0),
+      (sum, mesh) => sum + (camera.isInFrustum(mesh) ? mesh.forcedInstanceCount : 0),
       0,
     );
     expect(visibleInstances).toBeGreaterThan(0);
@@ -136,17 +136,30 @@ describe("WebGPU world-detail spatial presentation", () => {
       new Set(meshes.filter((mesh) => mesh.metadata.detailCastsShadow === true)),
     );
 
-    const retainedMesh = meshes.find((mesh) => mesh.thinInstanceCount > 1);
+    // 2-11a: with the packed record there are no per-instance matrices —
+    // retention is buffer identity, rebase is decoded from the record bytes.
+    const firstInstanceLocal = (mesh: Mesh | undefined): [number, number, number] => {
+      const data = mesh?.getVertexBuffer("instancePosition")?.getData();
+      const bytes = data instanceof Uint8Array
+        ? data
+        : ArrayBuffer.isView(data)
+          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+          : null;
+      if (!bytes) throw new Error("instancePosition buffer missing");
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return [view.getFloat32(0, true), view.getFloat32(4, true), view.getFloat32(8, true)];
+    };
+    const retainedMesh = meshes.find((mesh) => mesh.forcedInstanceCount > 1);
     expect(retainedMesh).toBeDefined();
-    const retainedMatrices = retainedMesh?.thinInstanceGetWorldMatrices();
+    const retainedBuffer = retainedMesh?.getVertexBuffer("instancePosition");
     runtime.update(
       { x: 0, y: 120, z: 0 },
       { x: 0, y: 0, z: 0 },
       profile,
     );
-    expect(retainedMesh?.thinInstanceGetWorldMatrices()).toBe(retainedMatrices);
+    expect(retainedMesh?.getVertexBuffer("instancePosition")).toBe(retainedBuffer);
 
-    const beforeRebase = retainedMesh?.thinInstanceGetWorldMatrices()[0]?.getTranslation();
+    const beforeRebase = firstInstanceLocal(retainedMesh);
     const retainedBatch = retainedMesh?.metadata.detailBatch as string;
     const retainedChunk = retainedMesh?.metadata.detailChunk as string;
     runtime.update(
@@ -161,10 +174,10 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(rebasedMesh).toBeDefined();
     expect(rebasedMesh).not.toBe(retainedMesh);
     expect(retainedMesh?.isEnabled()).toBe(false);
-    const afterRebase = rebasedMesh?.thinInstanceGetWorldMatrices()[0]?.getTranslation();
-    expect(afterRebase?.x).toBeCloseTo((beforeRebase?.x ?? 0) - 512, 3);
-    expect(afterRebase?.y).toBeCloseTo((beforeRebase?.y ?? 0) - 30, 3);
-    expect(afterRebase?.z).toBeCloseTo((beforeRebase?.z ?? 0) + 256, 3);
+    const afterRebase = firstInstanceLocal(rebasedMesh);
+    expect(afterRebase[0]).toBeCloseTo(beforeRebase[0] - 512, 3);
+    expect(afterRebase[1]).toBeCloseTo(beforeRebase[1] - 30, 3);
+    expect(afterRebase[2]).toBeCloseTo(beforeRebase[2] + 256, 3);
 
     for (let pass = 0; pass < 4; pass += 1) {
       runtime.update(

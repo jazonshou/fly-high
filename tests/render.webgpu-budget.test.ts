@@ -144,15 +144,17 @@ describe("performance budget (1A-2)", () => {
     const viewport = VIEWPORTS[1]!;
     const base = estimateGpuMemoryBreakdown(profile, viewport, DYNAMIC_ALLOCATIONS);
 
-    const withCompactInstances = estimateGpuMemoryBreakdown(profile, viewport, {
+    // 2-11a re-pinned the base to 32 bytes; the row must still track the
+    // input (perturb upward to the old 96-byte matrix layout).
+    const withMatrixInstances = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
-      detailInstanceBytes: 32,
+      detailInstanceBytes: 96,
     });
-    expect(withCompactInstances.detailInstancesMiB).toBeCloseTo(
-      base.detailInstancesMiB * (32 / 96),
+    expect(withMatrixInstances.detailInstancesMiB).toBeCloseTo(
+      base.detailInstancesMiB * (96 / 32),
       5,
     );
-    expect(withCompactInstances.totalMiB).toBeLessThan(base.totalMiB);
+    expect(withMatrixInstances.totalMiB).toBeGreaterThan(base.totalMiB);
 
     const withAtlases = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,

@@ -163,7 +163,7 @@ const TERRAIN_VERTEX_BYTES = (3 + 3 + 4) * 4;
  * input moves" test pins that property.
  */
 export interface DynamicAllocationInputs {
-  /** Bytes per rendered detail instance. 96 today; `2-11a` re-pins to 32. */
+  /** Bytes per rendered detail instance (2-11a's packed record). */
   readonly detailInstanceBytes: number;
   /** Ceiling on simultaneously resident detail instances, per tier. */
   readonly detailInstanceBudget: Readonly<Record<PerformanceTier, number>>;
@@ -178,7 +178,8 @@ export interface DynamicAllocationInputs {
 }
 
 export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
-  detailInstanceBytes: 96,
+  // 2-11a: the 32-byte packed record replaced 96-byte matrix instancing.
+  detailInstanceBytes: 32,
   detailInstanceBudget: Object.freeze({
     0: 60_000,
     1: 120_000,

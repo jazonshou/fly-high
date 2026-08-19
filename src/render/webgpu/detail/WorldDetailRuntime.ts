@@ -3,7 +3,10 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
 import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import "@babylonjs/core/Meshes/thinInstanceMesh";
+import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
@@ -11,7 +14,17 @@ import {
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
-import { DetailWindMaterialPlugin } from "./DetailWindMaterialPlugin";
+import { DetailInstanceMaterialPlugin } from "./DetailInstanceMaterialPlugin";
+import {
+  DETAIL_INSTANCE_ATTRIBUTES,
+  DETAIL_INSTANCE_RADIAL_MAX,
+  DETAIL_INSTANCE_RADIAL_MIN,
+  DETAIL_INSTANCE_STRIDE_BYTES,
+  DetailInstanceBounds,
+  DetailInstanceWriter,
+  yawQuaternion,
+  type DetailInstanceRecord,
+} from "./instanceFormat";
 import { detailCellKey, generateDetailCell } from "./generation";
 import {
   canGenerateNextDetailCell,
@@ -40,9 +53,9 @@ interface DetailBatch {
   readonly castsShadows: boolean;
   readonly prototypeKey: string;
   readonly chunkKey: string;
-  readonly matrices: number[];
-  readonly colors: number[];
-  readonly wind: number[];
+  /** 2-11a: packed 32-byte records built during generation. */
+  readonly writer: DetailInstanceWriter;
+  readonly bounds: DetailInstanceBounds;
 }
 
 interface RetiredDetailBatch {
@@ -78,12 +91,6 @@ interface MutableDetailChunkStatistics {
   treeInstances: number;
   shrubInstances: number;
   rockInstances: number;
-}
-
-interface ThinInstanceMeshWithCache {
-  readonly _thinInstanceDataStorage: {
-    worldMatrices: unknown;
-  };
 }
 
 interface DesiredCell {
@@ -177,26 +184,6 @@ function bakePrototype(mesh: Mesh, y: number, scaleX = 1, scaleY = 1, scaleZ = 1
   return mesh;
 }
 
-function appendYawMatrix(
-  target: number[],
-  x: number,
-  y: number,
-  z: number,
-  scaleX: number,
-  scaleY: number,
-  scaleZ: number,
-  yaw: number,
-): void {
-  const cosine = Math.cos(yaw);
-  const sine = Math.sin(yaw);
-  target.push(
-    cosine * scaleX, 0, -sine * scaleX, 0,
-    0, scaleY, 0, 0,
-    sine * scaleZ, 0, cosine * scaleZ, 0,
-    x, y, z, 1,
-  );
-}
-
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -208,7 +195,7 @@ export class WorldDetailRuntime {
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   private readonly materials = new Set<PBRMaterial>();
-  private readonly windPlugins = new Set<DetailWindMaterialPlugin>();
+  private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
   private readonly cells = new Map<string, ResidentCell>();
   private desiredCells: readonly DesiredCell[] = [];
   private desiredKeys = new Set<string>();
@@ -295,7 +282,7 @@ export class WorldDetailRuntime {
     const deltaMilliseconds = this.scene.getEngine().getDeltaTime();
     if (Number.isFinite(deltaMilliseconds)) {
       this.windTimeSeconds += clamp(deltaMilliseconds, 0, 100) / 1_000;
-      for (const plugin of this.windPlugins) plugin.setTimeSeconds(this.windTimeSeconds);
+      for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
     }
     requireFinite(observer.x, "Detail observer x");
     requireFinite(observer.y, "Detail observer y");
@@ -432,7 +419,7 @@ export class WorldDetailRuntime {
   addShadowCasters(add: (mesh: Mesh) => void): void {
     if (this.disposed) return;
     for (const batch of this.batches.values()) {
-      if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.thinInstanceCount > 0) {
+      if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.forcedInstanceCount > 0) {
         add(batch.mesh);
       }
     }
@@ -460,7 +447,7 @@ export class WorldDetailRuntime {
     this.presentationChunks.clear();
     for (const prototype of this.prototypes.values()) prototype.mesh.dispose(false, false);
     this.prototypes.clear();
-    this.windPlugins.clear();
+    this.instancePlugins.clear();
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
     this.statisticsValue = ZERO_STATISTICS;
@@ -676,50 +663,45 @@ export class WorldDetailRuntime {
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
-        const wind: readonly [number, number, number, number] = [
-          tree.windPhaseRadians,
-          tree.windResponse,
-          tree.heightMeters,
-          tree.selection,
-        ];
-        if (resident.lod === "near") {
-          this.appendInstance(
-            this.getBatch("tree-trunk-near", chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
-            tree.trunkRadiusMeters,
+        const quaternion = yawQuaternion(tree.yawRadians);
+        const windPhase = tree.windPhaseRadians / (2 * Math.PI);
+        const crown: DetailInstanceRecord = {
+          x: localX,
+          y: localY,
+          z: localZ,
+          quaternion,
+          heightScaleMeters: tree.heightMeters,
+          radialScale: WorldDetailRuntime.radialMultiplier(
+            tree.crownRadiusMeters,
             tree.heightMeters,
-            tree.trunkRadiusMeters,
-            tree.yawRadians,
-            [0.82, 0.74, 0.62, 1],
-            [tree.windPhaseRadians, 0.08, tree.heightMeters, tree.selection],
-          );
+            0.3,
+          ),
+          fade: 1,
+          variant: 0,
+          tint: tree.color,
+          windPhase,
+          windResponse: clamp(tree.windResponse, 0, 1),
+        };
+        if (resident.lod === "near") {
+          this.appendInstance(this.getBatch("tree-trunk-near", chunk, nextBatchKeys), {
+            ...crown,
+            radialScale: WorldDetailRuntime.radialMultiplier(
+              tree.trunkRadiusMeters,
+              tree.heightMeters,
+              0.02,
+            ),
+            tint: [0.82, 0.74, 0.62, 1],
+            windResponse: 0.08,
+          });
           this.appendInstance(
             this.getBatch(`tree-${tree.species}-near`, chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
-            tree.crownRadiusMeters,
-            tree.heightMeters,
-            tree.crownRadiusMeters,
-            tree.yawRadians,
-            tree.color,
-            wind,
+            crown,
           );
           statistics.treeInstances += 1;
         } else {
           this.appendInstance(
             this.getBatch(`tree-${tree.species}-mid`, chunk, nextBatchKeys),
-            localX,
-            localY,
-            localZ,
-            tree.crownRadiusMeters,
-            tree.heightMeters,
-            tree.crownRadiusMeters,
-            tree.yawRadians,
-            tree.color,
-            wind,
+            crown,
           );
           statistics.treeInstances += 1;
         }
@@ -727,23 +709,26 @@ export class WorldDetailRuntime {
 
       for (const shrub of resident.cell.shrubs) {
         if (shrub.selection > shrubShare) continue;
-        this.appendInstance(
-          this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys),
-          shrub.x - floatingOrigin.x,
-          shrub.y - floatingOrigin.y,
-          shrub.z - floatingOrigin.z,
-          shrub.radiusMeters,
-          shrub.heightMeters,
-          shrub.radiusMeters * (0.84 + shrub.selection * 0.24),
-          shrub.yawRadians,
-          shrub.color,
-          [
-            shrub.windPhaseRadians,
-            shrub.windResponse,
+        // 2-11a: the format carries ONE radial — the old elliptic XZ hack
+        // (scaleZ = radius x (0.84 + selection x 0.24)) folds into the mean;
+        // footprint variety returns as 2-12/2-15 variant geometry.
+        this.appendInstance(this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys), {
+          x: shrub.x - floatingOrigin.x,
+          y: shrub.y - floatingOrigin.y,
+          z: shrub.z - floatingOrigin.z,
+          quaternion: yawQuaternion(shrub.yawRadians),
+          heightScaleMeters: shrub.heightMeters,
+          radialScale: WorldDetailRuntime.radialMultiplier(
+            shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
             shrub.heightMeters,
-            shrub.selection,
-          ],
-        );
+            1.1,
+          ),
+          fade: 1,
+          variant: 0,
+          tint: shrub.color,
+          windPhase: shrub.windPhaseRadians / (2 * Math.PI),
+          windResponse: clamp(shrub.windResponse, 0, 1),
+        });
         statistics.shrubInstances += 1;
       }
 
@@ -751,15 +736,23 @@ export class WorldDetailRuntime {
         if (resident.lod === "mid" && (rock.radiusMeters < 2.2 || rock.selection > 0.22)) continue;
         this.appendInstance(
           this.getBatch(`rock-${rock.variant}`, chunk, nextBatchKeys),
-          rock.x - floatingOrigin.x,
-          rock.y - floatingOrigin.y,
-          rock.z - floatingOrigin.z,
-          rock.radiusMeters,
-          rock.radiusMeters * rock.flattening,
-          rock.radiusMeters * (0.78 + rock.selection * 0.4),
-          rock.yawRadians,
-          rock.color,
-          [0, 0, 0, rock.selection],
+          {
+            x: rock.x - floatingOrigin.x,
+            y: rock.y - floatingOrigin.y,
+            z: rock.z - floatingOrigin.z,
+            quaternion: yawQuaternion(rock.yawRadians),
+            heightScaleMeters: rock.radiusMeters * rock.flattening,
+            radialScale: WorldDetailRuntime.radialMultiplier(
+              rock.radiusMeters * (0.89 + rock.selection * 0.2),
+              rock.radiusMeters * rock.flattening,
+              1.6,
+            ),
+            fade: 1,
+            variant: 0,
+            tint: rock.color,
+            windPhase: 0,
+            windResponse: 0,
+          },
         );
         statistics.rockInstances += 1;
       }
@@ -782,32 +775,57 @@ export class WorldDetailRuntime {
   }
 
   private uploadBatch(batch: DetailBatch): void {
-    const count = batch.matrices.length / 16;
-    batch.mesh.thinInstanceCount = 0;
+    const count = batch.writer.count;
+    batch.mesh.forcedInstanceCount = 0;
     if (count === 0) {
       batch.mesh.setEnabled(false);
       return;
     }
     batch.mesh.setEnabled(true);
-    // A changed chunk receives new immutable buffers. Unchanged chunks keep
-    // their GPU allocations while neighboring cells stream in.
-    const instanceMatrices = Float32Array.from(batch.matrices);
-    batch.mesh.thinInstanceSetBuffer("matrix", instanceMatrices, 16, true);
-    batch.mesh.thinInstanceSetBuffer("color", Float32Array.from(batch.colors), 4, true);
-    batch.mesh.thinInstanceSetBuffer(
-      "instanceWind",
-      Float32Array.from(batch.wind),
-      4,
+    // 2-11a: one interleaved immutable 32-byte-stride buffer per batch (the
+    // pooled writer's exact byte range), exposed as five typed instanced
+    // vertex buffers. A changed chunk receives new buffers; unchanged chunks
+    // keep their GPU allocations while neighboring cells stream in.
+    const packed = batch.writer.finish();
+    const engine = this.scene.getEngine();
+    const shared = new Buffer(
+      engine,
+      packed,
+      false,
+      DETAIL_INSTANCE_STRIDE_BYTES,
+      false,
+      true,
       true,
     );
+    const typeFor = (name: string): number =>
+      name === "float" ? VertexBuffer.FLOAT
+      : name === "snorm16" ? VertexBuffer.SHORT
+      : name === "unorm16" ? VertexBuffer.UNSIGNED_SHORT
+      : VertexBuffer.UNSIGNED_BYTE;
+    for (const attribute of DETAIL_INSTANCE_ATTRIBUTES) {
+      batch.mesh.setVerticesBuffer(
+        new VertexBuffer(engine, shared, attribute.kind, {
+          updatable: false,
+          instanced: true,
+          size: attribute.size,
+          offset: attribute.byteOffset,
+          stride: DETAIL_INSTANCE_STRIDE_BYTES,
+          useBytes: true,
+          type: typeFor(attribute.type),
+          normalized: attribute.normalized,
+        }),
+        false,
+      );
+    }
     batch.mesh.resetDrawCache(undefined, true);
-    batch.mesh.thinInstanceCount = count;
-    (batch.mesh as unknown as ThinInstanceMeshWithCache)
-      ._thinInstanceDataStorage.worldMatrices = null;
-    batch.mesh.thinInstanceRefreshBoundingInfo(true);
-    // Vertex wind can move branch tips slightly outside their static bounds.
-    // A small conservative expansion avoids edge-of-frustum popping.
-    batch.mesh.getBoundingInfo().scale(1.01);
+    batch.mesh.forcedInstanceCount = count;
+    // Generator-computed bounds — thinInstanceRefreshBoundingInfo has no
+    // matrix buffer to walk anymore, and the wind extent is already an
+    // explicit term in the accumulator.
+    batch.mesh.setBoundingInfo(new BoundingInfo(
+      Vector3.FromArray(batch.bounds.minimum()),
+      Vector3.FromArray(batch.bounds.maximum()),
+    ));
   }
 
   private refreshVisibilityStatistics(): void {
@@ -815,9 +833,9 @@ export class WorldDetailRuntime {
     let activeBatches = 0;
     const camera = this.scene.activeCamera;
     for (const batch of this.batches.values()) {
-      if (!batch.mesh.isEnabled() || batch.mesh.thinInstanceCount <= 0) continue;
+      if (!batch.mesh.isEnabled() || batch.mesh.forcedInstanceCount <= 0) continue;
       if (camera && !camera.isInFrustum(batch.mesh)) continue;
-      renderedThinInstances += batch.mesh.thinInstanceCount;
+      renderedThinInstances += batch.mesh.forcedInstanceCount;
       activeBatches += 1;
     }
     this.statisticsValue = {
@@ -829,19 +847,24 @@ export class WorldDetailRuntime {
 
   private appendInstance(
     batch: DetailBatch,
-    x: number,
-    y: number,
-    z: number,
-    scaleX: number,
-    scaleY: number,
-    scaleZ: number,
-    yaw: number,
-    color: readonly [number, number, number, number],
-    wind: readonly [number, number, number, number],
+    record: DetailInstanceRecord,
   ): void {
-    appendYawMatrix(batch.matrices, x, y, z, scaleX, scaleY, scaleZ, yaw);
-    batch.colors.push(...color);
-    batch.wind.push(...wind);
+    batch.writer.push(record);
+    // The wind extent is an explicit bounds term now, not a scale fudge.
+    batch.bounds.add(record, record.windResponse * record.heightScaleMeters * 0.11);
+  }
+
+  /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */
+  private static radialMultiplier(
+    radiusMeters: number,
+    heightMeters: number,
+    aspect: number,
+  ): number {
+    return clamp(
+      radiusMeters / Math.max(heightMeters * aspect, 1e-4),
+      DETAIL_INSTANCE_RADIAL_MIN,
+      DETAIL_INSTANCE_RADIAL_MAX,
+    );
   }
 
   private getBatch(
@@ -886,16 +909,14 @@ export class WorldDetailRuntime {
       detailChunkMaxCellZ: coordinates.maxCellZ,
       detailChunkRevision: chunk.revision,
       detailCastsShadow: prototype.castsShadows,
-      windAttribute: "instanceWind",
     };
     const batch: DetailBatch = {
       mesh,
       castsShadows: prototype.castsShadows,
       prototypeKey,
       chunkKey: coordinates.key,
-      matrices: [],
-      colors: [],
-      wind: [],
+      writer: new DetailInstanceWriter(),
+      bounds: new DetailInstanceBounds(),
     };
     this.batches.set(batchKey, batch);
     return batch;
@@ -936,11 +957,14 @@ export class WorldDetailRuntime {
   }
 
   private createBatches(): void {
+    // Aspect = the prototype's authored radius-per-height at multiplier 1;
+    // the appenders divide desired radii by it, so the quantised multiplier
+    // stays near 1 inside its [0.5, 1.6] band.
     const trunkMaterial = this.createMaterial(
       "detail-trunk",
       new Color3(0.26, 0.14, 0.065),
       0.93,
-      true,
+      0.02,
     );
     const trunk = bakePrototype(CreateCylinder(
       "detail-tree-trunk-near",
@@ -963,7 +987,7 @@ export class WorldDetailRuntime {
         `detail-foliage-${species}`,
         foliageColors[species],
         0.87,
-        true,
+        0.3,
       );
       material.backFaceCulling = false;
       material.twoSidedLighting = true;
@@ -991,7 +1015,7 @@ export class WorldDetailRuntime {
         `detail-shrub-${species}-material`,
         shrubColors[species],
         0.91,
-        true,
+        1.1,
       );
       material.backFaceCulling = false;
       const mesh = CreateIcoSphere(
@@ -1029,7 +1053,7 @@ export class WorldDetailRuntime {
       this.registerBatch(
         `rock-${variant}`,
         mesh,
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94),
+        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94, 1.6),
         false,
       );
     }
@@ -1071,7 +1095,7 @@ export class WorldDetailRuntime {
     name: string,
     albedo: Color3,
     roughness: number,
-    windDeformation = false,
+    radialAspect: number,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
     material.albedoColor = albedo;
@@ -1081,10 +1105,20 @@ export class WorldDetailRuntime {
     material.environmentIntensity = 1;
     material.directIntensity = 1.05;
     material.specularIntensity = 1;
-    if (windDeformation) {
-      const plugin = new DetailWindMaterialPlugin(material);
-      plugin.setTimeSeconds(this.windTimeSeconds);
-      this.windPlugins.add(plugin);
+    // 2-11a: the transform lives in the plugin now — every detail material
+    // carries it (rocks included; their wind response is simply zero).
+    const plugin = new DetailInstanceMaterialPlugin(material);
+    plugin.setTimeSeconds(this.windTimeSeconds);
+    plugin.setRadialAspect(radialAspect);
+    this.instancePlugins.add(plugin);
+    // 0-9 incantation, verbatim: the wrapper is assigned AFTER the vertex-
+    // participating plugin attaches and BEFORE the material's first effect
+    // compiles — attached later it silently falls back to the undisplaced
+    // depth pass, which with no matrix buffer would collapse every shadow
+    // instance onto the batch origin. No remappedVariables.
+    const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+    if (engineFlags.isWebGPU || engineFlags._gl) {
+      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene);
     }
     this.materials.add(material);
     return material;
@@ -1101,7 +1135,7 @@ export class WorldDetailRuntime {
     mesh.useVertexColors = true;
     mesh.receiveShadows = true;
     mesh.setEnabled(false);
-    mesh.metadata = { detailPrototype: key, windAttribute: "instanceWind" };
+    mesh.metadata = { detailPrototype: key };
     this.prototypes.set(key, {
       mesh,
       material,
