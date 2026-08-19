@@ -43,8 +43,12 @@ import {
   type TerrainTileData,
   type WorldDefinition,
 } from "@/src/world";
-import { createSurfaceMaterialArrays, type SurfaceMaterialArrays } from "./MaterialArraySynthesis";
-import { SURFACE_MATERIALS_BY_BIOME } from "./surfaceMaterials";
+import {
+  synthesizeSurfaceMaterial,
+  uploadSurfaceMaterialArrays,
+  type SurfaceMaterialArrays,
+} from "./MaterialArraySynthesis";
+import { SURFACE_MATERIALS, SURFACE_MATERIALS_BY_BIOME } from "./surfaceMaterials";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
 
 export interface TerrainClipmapBounds {
@@ -297,7 +301,18 @@ function buildTerrainIndicesWithSkirt(
 export class TerrainClipmapSystem {
   private readonly material: PBRMaterial;
   private readonly surfacePlugin: TerrainSurfacePlugin;
-  private materialArrays: SurfaceMaterialArrays | null;
+  private materialArrays: SurfaceMaterialArrays | null = null;
+  /** False under NullEngine, where a TEXTURE_2D_ARRAY upload cannot be expressed. */
+  private canBuildArrays = false;
+  /** The edge the arrays SHOULD have; the build runs until they do. */
+  private materialArrayEdge = 0;
+  /** One material's synthesis per frame, in flight. */
+  private materialArrayBuild: {
+    readonly edge: number;
+    readonly albedoHeight: Uint8Array[];
+    readonly normalMaterial: Uint8Array[];
+    index: number;
+  } | null = null;
   private readonly cloudShadowPlugin: CloudShadowMaterialPlugin;
   private readonly generator: TerrainClipmapPageGenerator;
   private readonly pages = new Map<WorldPageKey, TerrainPage>();
@@ -371,16 +386,12 @@ export class TerrainClipmapSystem {
     // suite runs the whole clipmap with the plugin disabled and the material
     // compiling without the arrays — exactly the guard WorldDetailRuntime
     // uses for the foliage atlas.
+    //
+    // The arrays are NOT built here: see stepMaterialArrayBuild, which the
+    // frame loop drives one material at a time.
     const engineFlags = scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
-    this.materialArrays = engineFlags.isWebGPU || engineFlags._gl
-      ? createSurfaceMaterialArrays(scene, world.seed, profile.materialArrayEdge)
-      : null;
-    if (this.materialArrays) {
-      this.surfacePlugin.setArrays(
-        this.materialArrays.albedoHeight,
-        this.materialArrays.normalMaterial,
-      );
-    }
+    this.canBuildArrays = Boolean(engineFlags.isWebGPU || engineFlags._gl);
+    this.materialArrayEdge = profile.materialArrayEdge;
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
@@ -389,6 +400,81 @@ export class TerrainClipmapSystem {
   /** Bytes the 3-1 arrays actually occupy, for the 1A-1 numeric report. */
   get materialArrayMemoryMiB(): number {
     return this.materialArrays?.memoryMiB ?? 0;
+  }
+
+  /**
+   * Synthesise the ten material layers ONE PER FRAME, from the frame loop, and
+   * upload once at the end.
+   *
+   * Three properties, each learned by breaking the app rather than by
+   * reasoning about it:
+   *
+   * - **After startup, not during it.** Building the arrays in the constructor
+   *   put ~1 s of unbroken main-thread work inside `FlightRenderer.create()`,
+   *   and the first frame then died: a foliage draw reached `createBindGroup`
+   *   with an entirely unbound material context — no textures, no `Light0..2`
+   *   — and the renderer stopped with "Unable to continue flight". Bisected to
+   *   the STALL, not the textures: the same two arrays built at an 8x8 edge
+   *   (microseconds) start cleanly, and so does the pre-Phase-3 tree.
+   * - **Driven by `update()`, not by a timer.** `update()` runs only from the
+   *   `world-page-visibility` pass, which runs only inside `render()`, which
+   *   happens only once `create()` has resolved — so the frame loop is both
+   *   the "startup is over" signal and the pacing. A `setTimeout` chain looked
+   *   equivalent and was not: spread over timer tasks the build tripped the
+   *   volumetric cloud system's 15 s pipeline barrier during startup, and
+   *   under the capture harness's headless Chromium it never completed at all
+   *   — `perf:capture` came back with white untextured terrain at SSIM 0.67.
+   * - **One material per frame.** ~25 ms at the Low tier's 256² and ~110 ms at
+   *   512², so the build costs ten dropped frames once rather than a second of
+   *   frozen main thread.
+   *
+   * The terrain renders untextured for those ten frames, which the plugin
+   * already supports because it is constructed disabled.
+   */
+  private stepMaterialArrayBuild(): void {
+    if (!this.canBuildArrays) return;
+    if (this.materialArrayBuild === null) {
+      if (this.materialArrays?.edge === this.materialArrayEdge) return;
+      this.materialArrayBuild = {
+        edge: this.materialArrayEdge,
+        albedoHeight: [],
+        normalMaterial: [],
+        index: 0,
+      };
+    }
+    const build = this.materialArrayBuild;
+    if (build.edge !== this.materialArrayEdge) {
+      // A profile change superseded it; the next frame restarts at the new edge.
+      this.materialArrayBuild = null;
+      return;
+    }
+    const spec = SURFACE_MATERIALS[build.index];
+    if (spec) {
+      const layer = synthesizeSurfaceMaterial(spec.id, this.world.seed, build.edge);
+      build.albedoHeight.push(layer.albedoHeight);
+      build.normalMaterial.push(layer.normalMaterial);
+      build.index += 1;
+      return;
+    }
+    const replacement = uploadSurfaceMaterialArrays(
+      this.scene,
+      { albedoHeight: build.albedoHeight, normalMaterial: build.normalMaterial },
+      this.world.seed,
+      build.edge,
+    );
+    const previous = this.materialArrays;
+    this.materialArrays = replacement;
+    this.materialArrayBuild = null;
+    this.surfacePlugin.setArrays(replacement.albedoHeight, replacement.normalMaterial);
+    // Enabling the plugin recompiles the shared material, but a page mesh that
+    // has already been drawn holds its own cached draw wrapper and render
+    // bundle against the OLD effect — and keeps using it. The first capture
+    // after the build moved off the startup path showed exactly that: pages
+    // created in the first ten frames stayed white while everything streamed
+    // in afterwards was textured. Every resident page has to drop its cache.
+    for (const page of this.pages.values()) page.mesh.resetDrawCache();
+    previous?.albedoHeight.dispose();
+    previous?.normalMaterial.dispose();
   }
 
   /**
@@ -429,22 +515,11 @@ export class TerrainClipmapSystem {
     // size would put the §5.2 memory row — which is derived from
     // `profile.materialArrayEdge` — permanently at odds with what is actually
     // allocated the moment anyone changes quality, which is exactly the
-    // decorative-budget-row failure assertion 56 exists to prevent. A tier
-    // change already cancels every in-flight page and rebuilds the resident
-    // set, so the ~0.4-1.1 s re-synthesis lands inside a hitch the user has
-    // already asked for.
-    if (this.materialArrays && this.materialArrays.edge !== profile.materialArrayEdge) {
-      const replacement = createSurfaceMaterialArrays(
-        this.scene,
-        this.world.seed,
-        profile.materialArrayEdge,
-      );
-      const previous = this.materialArrays;
-      this.materialArrays = replacement;
-      this.surfacePlugin.setArrays(replacement.albedoHeight, replacement.normalMaterial);
-      previous.albedoHeight.dispose();
-      previous.normalMaterial.dispose();
-    }
+    // decorative-budget-row failure assertion 56 exists to prevent. Recording
+    // the new edge is all this has to do: stepMaterialArrayBuild abandons any
+    // build still running for the old one and re-paces the new set a material
+    // per frame, alongside the page rebuild a tier change already causes.
+    this.materialArrayEdge = profile.materialArrayEdge;
     if (!topologyChanged) return;
     this.lastAnchor = "";
     // Cancel every in-flight request. Cancelling bumps the lifecycle epoch, so
@@ -519,6 +594,7 @@ export class TerrainClipmapSystem {
 
   update(observer: TerrainObserver, frameIndex: number): void {
     if (this.disposed) return;
+    this.stepMaterialArrayBuild();
     this.frameIndex = frameIndex;
     this.streamingObserver = {
       positionX: observer.x,
@@ -590,6 +666,7 @@ export class TerrainClipmapSystem {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.materialArrayBuild = null;
     this.generator.dispose();
     for (const page of this.pages.values()) page.mesh.dispose(false, false);
     this.pages.clear();

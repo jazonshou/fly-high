@@ -1491,13 +1491,53 @@ export function planSurfaceMaterialArrays(
  */
 export const SURFACE_ARRAY_ANISOTROPY = 16;
 
-/** GPU boundary: synthesise, mip and upload both arrays. */
+/**
+ * GPU boundary, second half: mip and upload layers that have already been
+ * synthesised.
+ *
+ * Split out from `createSurfaceMaterialArrays` so a caller can spread the
+ * synthesis over several tasks and upload once at the end — which the renderer
+ * must do, because a second of unbroken main-thread work during startup is not
+ * merely rude, it broke the first frame (see `TerrainClipmapSystem`).
+ */
+export function uploadSurfaceMaterialArrays(
+  scene: Scene,
+  layers: { readonly albedoHeight: Uint8Array[]; readonly normalMaterial: Uint8Array[] },
+  seed: WorldSeed,
+  edge: number,
+): SurfaceMaterialArrays {
+  const albedoHeightPlan = planMippedTextureArray(layers.albedoHeight, edge, "box");
+  const normalMaterialPlan = planMippedTextureArray(layers.normalMaterial, edge, {
+    kind: "toksvig",
+    roughnessGain: TOKSVIG_ROUGHNESS_GAIN,
+  });
+  return finishSurfaceMaterialArrays(scene, albedoHeightPlan, normalMaterialPlan, seed, edge);
+}
+
+/** GPU boundary: synthesise, mip and upload both arrays in one call. */
 export function createSurfaceMaterialArrays(
   scene: Scene,
   seed: WorldSeed,
   edge: number,
 ): SurfaceMaterialArrays {
   const plans = planSurfaceMaterialArrays(seed, edge);
+  return finishSurfaceMaterialArrays(
+    scene,
+    plans.albedoHeight,
+    plans.normalMaterial,
+    seed,
+    edge,
+  );
+}
+
+function finishSurfaceMaterialArrays(
+  scene: Scene,
+  albedoHeightPlan: MippedTextureArrayPlan,
+  normalMaterialPlan: MippedTextureArrayPlan,
+  seed: WorldSeed,
+  edge: number,
+): SurfaceMaterialArrays {
+  const plans = { albedoHeight: albedoHeightPlan, normalMaterial: normalMaterialPlan };
   const name = normalizeSeed(seed);
   const configure = (texture: RawTexture2DArray): RawTexture2DArray => {
     texture.anisotropicFilteringLevel = SURFACE_ARRAY_ANISOTROPY;
@@ -1516,7 +1556,7 @@ export function createSurfaceMaterialArrays(
     })),
     edge,
     layerCount: plans.albedoHeight.layerCount,
-    memoryMiB: plans.totalBytes / (1024 * 1024),
+    memoryMiB: (plans.albedoHeight.totalBytes + plans.normalMaterial.totalBytes) / (1024 * 1024),
   };
 }
 

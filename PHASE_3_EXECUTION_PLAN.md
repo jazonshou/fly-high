@@ -857,6 +857,70 @@ machine.
   which both authorities do agree on; closing the friction gap would mean
   evaluating the ragged-edge noise in the collision hot path.
 
+### 14.5 Post-close — why the app would not run (2026-08-19)
+
+The phase closed green: 548 Node tests, 21 GPU tests, thirteen captures. Then
+the app was started by hand and did not run. Two separate faults, one of them
+older than this phase.
+
+**A compound assignment onto a swizzle — invalid WGSL, shipped in Phase 2.**
+`nature/CloudShaders.ts`'s temporal-reprojection clamp wrote
+`history.rgb *= history_scale`. A multi-component swizzle is not a *reference*
+in WGSL, so it cannot be the target of a compound assignment: a spec-strict
+validator rejects the module outright, the cloud pipeline never compiles, and
+the renderer stops on "PREPARING AIRSPACE" with no useful error. The Tint build
+behind the GPU suite's Playwright Chromium accepts it — which is precisely why
+this shipped in Phase 2 with every assertion passing, and why the fix is
+accompanied by **assertion 51b**, a Node test that scans `src/**/*.ts` for
+`.<swizzle> op=` statically instead of trusting whichever adapter happens to be
+in front of us. Fixed by assigning the whole vector.
+
+**`3-1`'s synthesis ran inside `FlightRenderer.create()`.** Roughly a second of
+unbroken main-thread work sat in the clipmap constructor, and the first frame
+after it died in `createBindGroup` on a foliage draw whose material context was
+entirely unbound. The build is now paced one material per frame from
+`update()`. Three properties, each learned by breaking the app rather than by
+reasoning about it:
+
+- **After startup, not during it.** The same two arrays built at an 8×8 edge
+  (microseconds) start cleanly, and so does the pre-Phase-3 tree — so it is the
+  stall, not the textures.
+- **Driven by `update()`, not by a timer.** `update()` runs only from the
+  `world-page-visibility` pass, which runs only inside `render()`, which
+  happens only once `create()` has resolved: the frame loop is both the
+  "startup is over" signal and the pacing. A `setTimeout` chain looked
+  equivalent and was not — spread over timer tasks the build tripped the
+  volumetric cloud system's 15 s pipeline barrier, and under the capture
+  harness's headless Chromium it never completed at all (`perf:capture` came
+  back with white untextured terrain at SSIM 0.67).
+- **Every resident page must drop its draw cache when the arrays land.**
+  Enabling the plugin recompiles the shared material, but a page mesh that has
+  already been drawn holds its own cached draw wrapper and render bundle
+  against the OLD effect and keeps using it. The first capture after the move
+  showed exactly that: pages created in the first ten frames stayed white while
+  everything streamed in afterwards was textured (SSIM 0.71).
+  `mesh.resetDrawCache()` on every page closes it.
+
+The terrain renders untextured for those ten frames, which the plugin already
+supported because it is constructed disabled.
+
+**A verification trap worth recording.** The in-app browser pane advances
+`requestAnimationFrame` only when it paints, so a page left alone between
+screenshots runs at a few frames per *minute*. Every early reading taken there
+— "the terrain is white", "the build is stuck at material 3" — was an artefact
+of that, not of the app. Frame-paced work cannot be judged by wall clock in
+that pane; drive it with paints, or measure it in the capture harness.
+
+**Re-verification after the fixes.** `npm test` 548 passed, `npm run test:gpu`
+21 passed, lint and typecheck clean, both builds clean. The full capture came
+back **SSIM 1.0000 on eleven shots and 0.9998 on the other two, with draw calls
+identical to the baseline on every shot** — the images are the phase's images.
+It fails one assertion: `cruise-horizon` measured 52.8 fps against its 57
+floor. That is the box, not the change — the *committed* tree scored 55.9 on
+the same shot minutes later in the same session, and the working tree passed
+the shot when it was run alone. See 14.3b's caveat; the fps floors bind on the
+reference machine.
+
 ---
 
 ## Appendix A — File manifest
