@@ -29,6 +29,7 @@ import {
 import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
 import {
   buildClutterPrototype,
+  buildGrassPatchPrototype,
   buildRockPrototype,
   buildShrubPrototype,
   buildTreePrototype,
@@ -36,7 +37,7 @@ import {
   TREE_VARIANT_COUNTS,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
-import { detailCellKey, generateDetailCell } from "./generation";
+import { detailCellKey, generateDetailCell, GROUND_COVER_GRID } from "./generation";
 import {
   canGenerateNextDetailCell,
   resolveDetailGenerationBudget,
@@ -51,6 +52,7 @@ import {
   type DetailFloatingOrigin,
   type ClutterKind,
   type DetailLod,
+  type GroundCoverArchetype,
   type DetailTerrainSampler,
   type GeneratedDetailCell,
   type RockVariant,
@@ -88,6 +90,7 @@ interface DetailChunkStatistics {
   readonly shrubInstances: number;
   readonly rockInstances: number;
   readonly clutterInstances: number;
+  readonly groundCoverInstances: number;
 }
 
 interface DetailPresentationChunk {
@@ -105,6 +108,7 @@ interface MutableDetailChunkStatistics {
   shrubInstances: number;
   rockInstances: number;
   clutterInstances: number;
+  groundCoverInstances: number;
 }
 
 interface DesiredCell {
@@ -147,6 +151,28 @@ export interface WorldDetailRuntimeOptions {
 export const DETAIL_FADE_MARGIN_METERS = 160;
 export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
 
+/**
+ * 2-16: ground-cover patch expansion. Candidates sit on a hash-jittered
+ * 2 m grid (≈ the plan's 2.5 m² patch footprint); acceptance is the 1/d
+ * ramp — full density inside 20% of the grass radius, thinning as
+ * (0.2·R)/d beyond it, dither-faded over the last 30 m. At the tier-2
+ * 220 m radius the integral is ≈ 13.7k patches ≈ 0.66 M triangles,
+ * inside the plan's ≤ 0.9 M Balanced exit budget.
+ */
+export const GROUND_COVER_CANDIDATE_SPACING_METERS = 2;
+export const GROUND_COVER_EDGE_FADE_METERS = 30;
+export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
+
+/** Pure 2D hash for candidate jitter/acceptance (world-position keyed). */
+function groundCoverHash(x: number, z: number, lane: number): number {
+  let h = (Math.imul(Math.round(x * 8), 0x27d4_eb2d)
+    ^ Math.imul(Math.round(z * 8), 0x1656_67b1)
+    ^ Math.imul(lane + 1, 0x9e37_79b9)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), h | 1);
+  h ^= h + Math.imul(h ^ (h >>> 7), h | 61);
+  return ((h ^ (h >>> 14)) >>> 0) / 4_294_967_296;
+}
+
 const TREE_SPECIES: readonly TreeSpecies[] = [
   "pine",
   "cedar",
@@ -168,6 +194,7 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   shrubInstances: 0,
   rockInstances: 0,
   clutterInstances: 0,
+  groundCoverInstances: 0,
   renderedThinInstances: 0,
   activeBatches: 0,
 });
@@ -619,6 +646,7 @@ export class WorldDetailRuntime {
       shrubInstances: 0,
       rockInstances: 0,
       clutterInstances: 0,
+      groundCoverInstances: 0,
         };
 
     for (const group of grouped.values()) {
@@ -630,6 +658,12 @@ export class WorldDetailRuntime {
         densityLaw.nearStemsPerHectare,
         densityLaw.near.outerRadiusMeters,
         profile.treeVariantCap,
+        profile.grassRadiusMeters,
+        // 2-14/2-16: fades and the 1/d grass ramp are functions of the
+        // OBSERVER — quantized here so every 64 m of flight re-bakes them
+        // (without this a chunk with unchanged residents kept stale fades).
+        Math.round(this.observerX / 64),
+        Math.round(this.observerZ / 64),
         ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
       ].join(":");
       let chunk = this.presentationChunks.get(group.coordinates.key);
@@ -646,6 +680,7 @@ export class WorldDetailRuntime {
             shrubInstances: 0,
             rockInstances: 0,
             clutterInstances: 0,
+            groundCoverInstances: 0,
                     },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
@@ -657,6 +692,7 @@ export class WorldDetailRuntime {
           floatingOrigin,
           densityLaw,
           profile.treeVariantCap,
+          profile.grassRadiusMeters,
         );
         chunk.signature = signature;
       }
@@ -666,6 +702,7 @@ export class WorldDetailRuntime {
       totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
       totals.clutterInstances += chunk.statistics.clutterInstances;
+      totals.groundCoverInstances += chunk.statistics.groundCoverInstances;
     }
 
     this.statisticsValue = {
@@ -677,6 +714,7 @@ export class WorldDetailRuntime {
       shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
       clutterInstances: totals.clutterInstances,
+      groundCoverInstances: totals.groundCoverInstances,
       renderedThinInstances: 0,
       activeBatches: 0,
     };
@@ -689,6 +727,7 @@ export class WorldDetailRuntime {
     floatingOrigin: DetailFloatingOrigin,
     densityLaw: RenderedDensityLaw,
     treeVariantCap: number,
+    grassRadiusMeters: number,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -699,6 +738,7 @@ export class WorldDetailRuntime {
       shrubInstances: 0,
       rockInstances: 0,
       clutterInstances: 0,
+      groundCoverInstances: 0,
         };
 
     for (const resident of residents) {
@@ -959,6 +999,72 @@ export class WorldDetailRuntime {
           },
         );
         statistics.clutterInstances += 1;
+      }
+
+      // 2-16: ground-cover expansion — the habitat grid says WHAT grows;
+      // the 1/d ramp says how many patches the frame affords at each range
+      // (screen-space blade density roughly constant, the grass radius is
+      // the §5.3 tier knob). Candidate positions are world-hash keyed, so
+      // they never slide with the observer; only acceptance re-thins.
+      const grassRadius = grassRadiusMeters;
+      if (resident.cell.groundCover.length > 0
+        && resident.distance < grassRadius + this.cellSizeMeters) {
+        const cell = resident.cell;
+        const spacing = GROUND_COVER_CANDIDATE_SPACING_METERS;
+        const nodeSpacing = cell.cellSizeMeters / GROUND_COVER_GRID;
+        const fullDensityRadius = grassRadius * GROUND_COVER_FULL_DENSITY_SHARE;
+        const columns = Math.floor(cell.cellSizeMeters / spacing);
+        for (let row = 0; row < columns; row += 1) {
+          for (let column = 0; column < columns; column += 1) {
+            const baseX = cell.minX + (column + 0.5) * spacing;
+            const baseZ = cell.minZ + (row + 0.5) * spacing;
+            const jitterX = (groundCoverHash(baseX, baseZ, 0) - 0.5) * spacing;
+            const jitterZ = (groundCoverHash(baseX, baseZ, 1) - 0.5) * spacing;
+            const x = baseX + jitterX;
+            const z = baseZ + jitterZ;
+            const patchDistance = Math.hypot(x - this.observerX, z - this.observerZ);
+            if (patchDistance >= grassRadius) continue;
+            const ramp = Math.min(1, fullDensityRadius / Math.max(patchDistance, 1));
+            const nodeColumn = Math.min(
+              GROUND_COVER_GRID - 1,
+              Math.max(0, Math.floor((x - cell.minX) / nodeSpacing)),
+            );
+            const nodeRow = Math.min(
+              GROUND_COVER_GRID - 1,
+              Math.max(0, Math.floor((z - cell.minZ) / nodeSpacing)),
+            );
+            const node = cell.groundCover[nodeRow * GROUND_COVER_GRID + nodeColumn];
+            if (!node || node.coverage <= 0) continue;
+            if (groundCoverHash(x, z, 2) >= ramp * node.coverage) continue;
+            const heightHash = groundCoverHash(x, z, 3);
+            const grassFade = patchDistance > grassRadius - GROUND_COVER_EDGE_FADE_METERS
+              ? (grassRadius - patchDistance) / GROUND_COVER_EDGE_FADE_METERS
+              : 1;
+            const terrain = this.options.terrainSample(x, z);
+            this.appendInstance(
+              this.getBatch(`ground-${node.archetype}`, chunk, nextBatchKeys),
+              {
+                x: x - floatingOrigin.x,
+                y: terrain.height - floatingOrigin.y,
+                z: z - floatingOrigin.z,
+                quaternion: yawQuaternion(groundCoverHash(x, z, 4) * 2 * Math.PI),
+                heightScaleMeters: (0.75 + heightHash * 0.5)
+                  * (node.archetype === "reed" ? 1.15
+                    : node.archetype === "heather" ? 0.75
+                    : node.archetype === "fern" ? 0.85 : 0.8),
+                radialScale: 1,
+                fade: grassFade,
+                fadeIncoming: false,
+                variant: 0,
+                tint: [node.color[0], node.color[1], node.color[2], 1],
+                windPhase: groundCoverHash(x, z, 5),
+                windResponse: node.archetype === "heather" ? 0.3
+                  : node.archetype === "fern" ? 0.5 : 0.9,
+              },
+            );
+            statistics.groundCoverInstances += 1;
+          }
+        }
       }
 
     }
@@ -1412,6 +1518,32 @@ export class WorldDetailRuntime {
       this.registerBatch(
         `clutter-${kind}`,
         this.buildPrototypeMesh(`detail-clutter-${kind}`, prototype),
+        material,
+        false,
+      );
+    }
+
+    // 2-16: ground cover — four habitat archetypes on one blade-patch
+    // builder, all riding the atlas path double-sided (blades are
+    // alpha-tested textured quads) in the alpha-test bucket.
+    const groundCoverArchetypes: readonly GroundCoverArchetype[] = [
+      "grass", "fern", "heather", "reed",
+    ];
+    for (const archetype of groundCoverArchetypes) {
+      const prototype = buildGrassPatchPrototype(prototypeSeed, archetype);
+      const material = this.createMaterial(
+        `detail-ground-${archetype}-material`,
+        new Color3(0.85, 0.88, 0.8),
+        0.92,
+        1,
+        true,
+      );
+      material.backFaceCulling = false;
+      material.twoSidedLighting = true;
+      material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      this.registerBatch(
+        `ground-${archetype}`,
+        this.buildPrototypeMesh(`detail-ground-${archetype}`, prototype),
         material,
         false,
       );

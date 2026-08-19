@@ -834,6 +834,104 @@ function generateRocks(
 
 const CLUTTER_KINDS: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
 
+export const GROUND_COVER_GRID = 8;
+
+/**
+ * 2-16 — the ground-cover habitat grid: WHAT grows at each 16 m node, so
+ * the ground layer has variable CHARACTER, not just variable amount. The
+ * archetype comes from the terms the field already carries: reeds gated on
+ * high moisture and near-zero slope, heather on low fertility and exposure
+ * (thin canopy + steep or high ground), fern on shade and shelter (closed
+ * canopy + moisture), grass elsewhere. Coverage rides the shoreline and
+ * airport clearances (mown grass keeps growing, woody cover does not —
+ * ground cover is only SUPPRESSED toward the graded platform, never cut).
+ * Season: grass yellows toward straw as winterFraction rises, everything
+ * whitens under the snowline through the shared applySnowCover.
+ */
+function buildGroundCoverGrid(
+  context: ScatterContext,
+  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+): readonly import("./types").DetailGroundCoverNode[] {
+  const random = createRandom(`${context.seed}/ground-cover/${context.minX}/${context.minZ}`);
+  const spacing = context.cellSize / GROUND_COVER_GRID;
+  const nodes: import("./types").DetailGroundCoverNode[] = [];
+  for (let row = 0; row < GROUND_COVER_GRID; row += 1) {
+    for (let column = 0; column < GROUND_COVER_GRID; column += 1) {
+      const x = context.minX + (column + 0.5) * spacing;
+      const z = context.minZ + (row + 0.5) * spacing;
+      const jitter = random();
+      const sample = sampleTerrain(x, z);
+      if (!validSample(sample) || sample.height <= context.seaLevelMeters + 1) {
+        nodes.push({ coverage: 0, archetype: "grass", color: [0, 0, 0] });
+        continue;
+      }
+      const field = densityField(context.seedHash, {
+        x,
+        z,
+        heightMeters: sample.height,
+        seaLevelMeters: context.seaLevelMeters,
+        slope: sample.slope,
+        moisture: sample.moisture,
+        dayOfYear: context.dayOfYear,
+        ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
+        ...(sample.airportInfluence !== undefined
+          ? { airportInfluence: sample.airportInfluence }
+          : {}),
+      });
+      const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
+      const rocky = sample.biome === TerrainBiome.ALPINE || sample.biome === TerrainBiome.SNOW;
+      const beach = sample.biome === TerrainBiome.BEACH;
+      const coverage = rocky || beach
+        ? 0
+        : clamp(0.35 + sample.moisture * 0.5 + closure * 0.15, 0, 1)
+          // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
+          * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1));
+      const exposure = clamp(
+        (sample.height - context.seaLevelMeters) / 900 + sample.slope * 1.6,
+        0,
+        1,
+      );
+      const archetype: import("./types").GroundCoverArchetype =
+        sample.moisture > 0.72 && sample.slope < 0.06 ? "reed"
+        : closure > 0.45 && sample.moisture > 0.5 ? "fern"
+        : closure < 0.2 && exposure > 0.55 ? "heather"
+        : "grass";
+      // Habitat tint: wet ground deepens green, dry ground bleaches; grass
+      // yellows toward straw with the season; snow whitens everything.
+      const straw = archetype === "grass" || archetype === "reed"
+        ? smootherStep(0.25, 0.7, context.season.winterFraction)
+        : smootherStep(0.45, 0.85, context.season.winterFraction) * 0.5;
+      const wet = clamp(sample.moisture, 0, 1);
+      const baseColor: [number, number, number] = archetype === "fern"
+        ? [0.34, 0.5, 0.3]
+        : archetype === "heather"
+          ? [0.5, 0.44, 0.5]
+          : archetype === "reed"
+            ? [0.55, 0.58, 0.38]
+            : [0.42 + (1 - wet) * 0.18, 0.56 + wet * 0.1, 0.3];
+      const jittered: [number, number, number] = [
+        clamp(baseColor[0] * (0.9 + jitter * 0.2), 0, 1),
+        clamp(baseColor[1] * (0.9 + jitter * 0.2), 0, 1),
+        clamp(baseColor[2] * (0.9 + jitter * 0.2), 0, 1),
+      ];
+      const strawed: [number, number, number] = [
+        jittered[0] + (0.72 - jittered[0]) * straw,
+        jittered[1] + (0.62 - jittered[1]) * straw,
+        jittered[2] + (0.34 - jittered[2]) * straw,
+      ];
+      const snowed = applySnowCover(
+        strawed,
+        context.season,
+        context.season.winterFraction,
+        sample.height,
+        sample.slope,
+      );
+      nodes.push({ coverage, archetype, color: [snowed[0], snowed[1], snowed[2]] });
+    }
+  }
+  return nodes;
+}
+
 /**
  * 2-15 — ground clutter: the debris layer no plan document placed anywhere
  * ("twigs, mess"). Density rides CANOPY CLOSURE through the density field
@@ -972,6 +1070,9 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     trees: densityMultiplier > 0 ? scatterTrees(context) : [],
     shrubs: densityMultiplier > 0 ? scatterShrubs(context) : [],
     clutter: densityMultiplier > 0 ? scatterClutter(context, options.terrainSample) : [],
+    groundCover: densityMultiplier > 0
+      ? buildGroundCoverGrid(context, options.terrainSample)
+      : [],
     rocks: generateRocks(
       seed,
       key,

@@ -1246,10 +1246,47 @@ export function buildClutterPrototype(kind: ClutterKind, seed: number): Prototyp
  * triangles per patch — over a ~1 unit radius footprint (the runtime scales
  * to ~2.5 m²). Occlusion A ramps 0.75 at the base to 1 at the tip.
  */
-export function buildGrassPatchPrototype(seed: number): PrototypeGeometry {
-  const rng = createRandom(`grass/${seed}`);
+export type GroundCoverArchetype = "grass" | "fern" | "heather" | "reed";
+
+/** 2-16: per-archetype blade proportions and atlas layer. */
+const GROUND_COVER_SPECS: Readonly<Record<GroundCoverArchetype, {
+  readonly layer: number;
+  readonly blades: number;
+  readonly lengthBase: number;
+  readonly lengthSpread: number;
+  readonly leanBase: number;
+  readonly widthMultiplier: number;
+}>> = Object.freeze({
+  grass: {
+    layer: FOLIAGE_LAYER_INDEX.grassBlade,
+    blades: 12, lengthBase: 0.5, lengthSpread: 0.3, leanBase: 0.12, widthMultiplier: 1,
+  },
+  // Fern: fewer, wider, more-arched fronds.
+  fern: {
+    layer: FOLIAGE_LAYER_INDEX.fernFrond,
+    blades: 8, lengthBase: 0.55, lengthSpread: 0.25, leanBase: 0.35, widthMultiplier: 3.2,
+  },
+  // Heather: a dense low cushion of short sprigs.
+  heather: {
+    layer: FOLIAGE_LAYER_INDEX.heather,
+    blades: 11, lengthBase: 0.3, lengthSpread: 0.15, leanBase: 0.3, widthMultiplier: 2.6,
+  },
+  // Reed: tall, straight, narrow.
+  reed: {
+    layer: FOLIAGE_LAYER_INDEX.reed,
+    blades: 10, lengthBase: 0.85, lengthSpread: 0.3, leanBase: 0.04, widthMultiplier: 0.9,
+  },
+});
+
+export function buildGrassPatchPrototype(
+  seed: number,
+  archetype: GroundCoverArchetype = "grass",
+): PrototypeGeometry {
+  const spec = GROUND_COVER_SPECS[archetype];
+  const rng = createRandom(`grass/${archetype}/${seed}`);
   const acc = createAccumulator();
-  const bladeCount = 12 + Math.floor(rng() * 3);
+  // Blades × 4 triangles ≤ the plan's ~48-triangle patch price.
+  const bladeCount = Math.min(12, spec.blades + Math.floor(rng() * 3));
 
   const emitBladeQuad = (
     lowMinus: Vec3, lowPlus: Vec3, highPlus: Vec3, highMinus: Vec3,
@@ -1260,13 +1297,13 @@ export function buildGrassPatchPrototype(seed: number): PrototypeGeometry {
     const alpha0 = 0.75 + 0.25 * v0;
     const alpha1 = 0.75 + 0.25 * v1;
     pushVertex(acc, lowMinus.x, lowMinus.y, lowMinus.z, normal.x, normal.y, normal.z,
-      0, v0, tangent.x, tangent.y, tangent.z, 1, FOLIAGE_LAYER_INDEX.grassBlade, alpha0);
+      0, v0, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha0);
     pushVertex(acc, lowPlus.x, lowPlus.y, lowPlus.z, normal.x, normal.y, normal.z,
-      1, v0, tangent.x, tangent.y, tangent.z, 1, FOLIAGE_LAYER_INDEX.grassBlade, alpha0);
+      1, v0, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha0);
     pushVertex(acc, highPlus.x, highPlus.y, highPlus.z, normal.x, normal.y, normal.z,
-      1, v1, tangent.x, tangent.y, tangent.z, 1, FOLIAGE_LAYER_INDEX.grassBlade, alpha1);
+      1, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
     pushVertex(acc, highMinus.x, highMinus.y, highMinus.z, normal.x, normal.y, normal.z,
-      0, v1, tangent.x, tangent.y, tangent.z, 1, FOLIAGE_LAYER_INDEX.grassBlade, alpha1);
+      0, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
     acc.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
   };
 
@@ -1278,9 +1315,9 @@ export function buildGrassPatchPrototype(seed: number): PrototypeGeometry {
     // Blades lean outward from the patch centre, with per-blade jitter.
     const leanAzimuth = (baseRadius > 0.05 ? Math.atan2(baseZ, baseX) : rng() * TWO_PI)
       + (rng() - 0.5) * 1.2;
-    const lean = 0.12 + rng() * 0.33;
-    const length = 0.5 + rng() * 0.3;
-    const widthScale = 0.8 + rng() * 0.4;
+    const lean = spec.leanBase + rng() * 0.33;
+    const length = spec.lengthBase + rng() * spec.lengthSpread;
+    const widthScale = (0.8 + rng() * 0.4) * spec.widthMultiplier;
     const widths = [0.045 * widthScale, 0.028 * widthScale, 0.004 * widthScale] as const;
 
     const widthAxis: Vec3 = { x: -Math.sin(leanAzimuth), y: 0, z: Math.cos(leanAzimuth) };
