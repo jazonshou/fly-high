@@ -179,6 +179,23 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "lobe, foam, crest SSS and environment-mip helpers here.",
   },
   {
+    // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
+    // thinning all read these bands; nothing re-derives a density ceiling.
+    artifact: "rendered-density-law",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/renderedDensity.ts"],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: [
+      "RENDERED_DENSITY_LAWS",
+      "renderedShareAtDistance",
+      "estimateRenderedWoodyLoad",
+      "WOODY_TRIANGLE_BUDGETS",
+    ],
+    notes:
+      "A second stems/ha constant or falloff curve outside this file is the "
+      + "R-21 re-derivation failure returning.",
+  },
+  {
     artifact: "max-terrain-height",
     owner: "terrain-geometry",
     definitionSites: ["src/world/terrain.ts"],

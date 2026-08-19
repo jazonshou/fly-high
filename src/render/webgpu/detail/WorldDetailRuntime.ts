@@ -6,6 +6,10 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  renderedShareAtDistance,
+  type RenderedDensityLaw,
+} from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
 import { DetailWindMaterialPlugin } from "./DetailWindMaterialPlugin";
 import { detailCellKey, generateDetailCell } from "./generation";
@@ -473,7 +477,11 @@ export class WorldDetailRuntime {
     const maxCellX = Math.floor((Math.max(observer.x, predictionX) + radius) / this.cellSizeMeters);
     const minCellZ = Math.floor((Math.min(observer.z, predictionZ) - radius) / this.cellSizeMeters);
     const maxCellZ = Math.floor((Math.max(observer.z, predictionZ) + radius) / this.cellSizeMeters);
-    const nearDistance = Math.min(1_400, radius * 0.34);
+    // R-21: the near residency boundary is the law's full-geometry band.
+    const nearDistance = Math.min(
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      radius * 0.34,
+    );
     const candidates: DesiredCell[] = [];
     const travelDistance = Math.hypot(predictionX - observer.x, predictionZ - observer.z);
 
@@ -553,15 +561,16 @@ export class WorldDetailRuntime {
       if (!grouped.has(chunkKey)) this.disposePresentationChunk(chunk);
     }
 
-    // Rendered-share thinning (1B-9 interim): the density field and its
-    // acceptance tests carry the ECOLOGICAL stem density (300–800/ha closed
-    // forest); per-stem cone/sphere meshes cannot draw that — measured 39 M
-    // triangles and a sub-10 fps frame at the perf-capture viewpoints. Until
-    // Phase 2's impostors and grass (2-16/2-17) raise the renderable share,
-    // each cell renders a deterministic selection-keyed subset budgeted in
-    // stems/ha and falling off with distance. Selection is a stable per-stem
-    // uniform, so shares nest: raising the budget only ever ADDS stems.
-    const nearTreeBudgetPerHa = 40 + profile.vegetationDensity * 30;
+    // Rendered-share thinning: the density field carries the ECOLOGICAL stem
+    // density (300–800/ha closed forest); the R-21 rendered-density LAW
+    // (renderedDensity.ts, the one authority 2-12/2-14/2-17 also read)
+    // decides what fraction is drawn at each range. The near cap IS the
+    // crown-closure density, so closed-forest cells keep their interiors
+    // while open cells render everything they authored (they sit under the
+    // cap) — the per-cell cap, not a global scalar, is what preserves
+    // clumps. Selection is a stable per-stem uniform, so shares nest:
+    // raising the budget only ever ADDS stems.
+    const densityLaw = profile.renderedDensityLaw;
     const totals: MutableDetailChunkStatistics = {
       nearCells: 0,
       midCells: 0,
@@ -576,7 +585,8 @@ export class WorldDetailRuntime {
         floatingOrigin.x,
         floatingOrigin.y,
         floatingOrigin.z,
-        profile.vegetationDensity,
+        densityLaw.nearStemsPerHectare,
+        densityLaw.near.outerRadiusMeters,
         ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
       ].join(":");
       let chunk = this.presentationChunks.get(group.coordinates.key);
@@ -601,7 +611,7 @@ export class WorldDetailRuntime {
           chunk,
           group.residents,
           floatingOrigin,
-          nearTreeBudgetPerHa,
+          densityLaw,
         );
         chunk.signature = signature;
       }
@@ -630,7 +640,7 @@ export class WorldDetailRuntime {
     chunk: DetailPresentationChunk,
     residents: readonly ResidentCell[],
     floatingOrigin: DetailFloatingOrigin,
-    nearTreeBudgetPerHa: number,
+    densityLaw: RenderedDensityLaw,
   ): DetailChunkStatistics {
     chunk.revision += 1;
     const nextBatchKeys = new Set<string>();
@@ -648,12 +658,12 @@ export class WorldDetailRuntime {
 
       const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
       const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
-      const distanceFalloff = Math.min(
-        1,
-        (1_000 / Math.max(resident.distance, 1_000)) ** 2,
-      );
-      const treeBudgetPerHa = nearTreeBudgetPerHa
-        * (resident.lod === "near" ? 1 : Math.max(distanceFalloff, 0.04));
+      // R-21: the law's share curve, keyed on real cell distance. Until 2-14
+      // and 2-17 land their card/impostor bands, mid- and far-band stems draw
+      // with today's mid geometry — the density is final, the geometry per
+      // band arrives with its item.
+      const treeBudgetPerHa = densityLaw.nearStemsPerHectare
+        * renderedShareAtDistance(densityLaw, resident.distance);
       const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
       const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
       const shrubShare = Math.min(

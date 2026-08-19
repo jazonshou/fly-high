@@ -182,6 +182,24 @@ Three separate Phase 2 items collide with this:
 
 **One cost that must be named:** with no CPU-side `matrix` buffer, Babylon's `thinInstanceRefreshBoundingInfo` cannot compute bounds, so frustum culling and shadow-caster registration lose their input. The answer is to compute the AABB in the generator, which already knows every position and radius, and call `mesh.setBoundingInfo` directly. That is *cheaper* than today — the current path walks all 400k matrices on every upload and then applies a `scale(1.01)` fudge for wind.
 
+### 3.5a The rendered-density law (R-21, resolved 2026-08-18 at the Gate 2C head)
+
+**D-2, copied verbatim from `PHASE_1_EXECUTION_PLAN.md` §13:** *"The ecological density field is unrenderable as raw instances (~39 M triangles). The field stays authored and tested; the renderer applies selection-keyed rendered-share thinning. The scatter's domain warp was deleted outright — its own lattice re-introduced a 37 m spectral line — replaced by bilinear density interpolation over stratified full-cell jitter."* As implemented: near cap `40 + 30·vegetationDensity` stems/ha, mid falloff `(1000/d)²` floored at `0.04`, shrubs 60/ha near and 6/ha mid.
+
+**The re-derivation R-21 demanded, against Phase 2's real prototypes (152–212 triangles per tree):** D-2's constants integrate over tier 1's 4.5 km saturated closed-forest disc to **~94,000 stems ≈ 17 M triangles** — 10–19× every tier's §5.4 vegetation row. The mechanism survives; the constants are **replaced** by the three-banded per-tier law in `src/render/webgpu/detail/renderedDensity.ts` (the one authority `2-12`/`2-14`/`2-17` and the runtime thinning all read), pinned live against the woody triangle budgets by `tests/render.webgpu-rendered-density.test.ts` with D-2's 17 M integral as the negative control.
+
+| Tier | Band | Radius (m) | Rendered stems/ha (closed forest) | Tris/plant | Stems (saturated) | MTris |
+|---|---|---|---|---|---|---|
+| 1 | near (full geometry) | 0–350 | 70 (crown-closure) | 180 | 2,694 | 0.48 |
+| 1 | mid (card) | 350–1,400 | 70·(350/d)² | 48 | 7,469 | 0.36 |
+| 1 | far (impostor) | 1,400–4,500 | 70·max((350/d)², 0.02) | 8 | 9,282 | 0.07 |
+| 1 | **total** | | | | **19,445** | **0.92 ≤ 1.0** |
+| 0 | near/mid/far | 250 / 900 / 2,000 | 55, floor 0.02 | 180/48/8 | 5,607 | 0.34 ≤ 0.45 |
+| 2 | near/mid/far | 400 / 1,400 / 8,000 | 79, floor 0.015 | 180/48/8 | ~44,000 | ≤ 1.8 |
+| 3 | near/mid/far | 550 / 1,800 / 8,000 | 79, floor 0.015 | 180/48/8 | ~47,000 | ≤ 2.6 |
+
+Grass carries its own separate ≤ 0.9 M-triangle cap (`2-16`); the woody budgets above are the vegetation row's remainder. **Instance-count estimates restated:** tier 1 renders ~19.4k woody instances saturated (`6-8`'s "~110,000" was written against D-2's unrenderable field; the correct Phase-2 statement is ~19k woody + shrubs/rocks/clutter + grass patches ≈ 60–80k instances at tier 1, inside Z-4's 120k instance-memory row). Per R-21's closure requirement, the near budget is spent by AUTHORED density — closed-forest cells keep their interiors to the closure cap while open cells surrender their share — not by one global scalar; a uniform share turns a clumped field into a stipple.
+
 ### 3.6 Two smaller findings
 
 **Only two LOD tiers exist.** `DetailLod = "near" | "mid"`, and a `ResidentCell` holds exactly one. `2-14`'s crossfade requires a cell to render *two* LODs simultaneously for the duration of a fade, and `2-17` adds a third tier. Both the type and the resident model change — priced into `2-14` in §4 B5.
