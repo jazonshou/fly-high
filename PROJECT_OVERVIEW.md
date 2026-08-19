@@ -1,6 +1,6 @@
 # fly high — Rendering Overhaul: Project Overview
 
-**Status as of 2026-08-19.** Phases 0, 1, 2 and 2.5 are complete — 127.8 of ≈330 priced effort-days shipped (~39% of the programme, ~59% of the way to the v1 cut line). Phase 3 (terrain surface and the runway) is next to implement; Phase 5 (landscape evolution) is next to plan.
+**Status as of 2026-08-19.** Phases 0, 1, 2, 2.5 and 3 are complete — 158.05 of ≈330 priced effort-days shipped (~48% of the programme, ~73% of the way to the v1 cut line). Gate A (the aircraft and wildlife) is next to implement; Phase 5 (landscape evolution) is next to plan.
 
 This document is the high-level view of the programme for readers outside the day-to-day work. The normative sources it summarises are [`RENDERING_PLAN.md`](RENDERING_PLAN.md) (the master plan), [`ARCHITECTURE.md`](ARCHITECTURE.md) (the enforced architectural contract), [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) (a binding mid-programme audit), and one execution plan per phase.
 
@@ -32,7 +32,7 @@ A 2026-08-18 programme audit (`PRE_PHASE_4_REALIGNMENT.md`, amendments R-1…R-2
 
 - **Plans are verified against code before execution.** Each phase gets an execution plan whose factual claims (file/line, measured numbers) are checked against the tree before work starts; deviations discovered during implementation are logged, never silently absorbed.
 - **Architecture is enforced, not documented.** `ARCHITECTURE.md` is normative; a single-owner manifest (`src/render/webgpu/owners.ts`) and a boundary test fail `npm test` if any artifact grows a second definition site or a forbidden import.
-- **Performance is a measured number.** A deterministic 13-shot capture harness (`npm run perf:capture`) runs against committed baselines; frame and GPU-memory budgets are asserted per quality tier in CI. Baselines may only change at plan-sanctioned points.
+- **Performance is a measured number.** A deterministic 14-shot capture harness (`npm run perf:capture`) runs against committed baselines; frame and GPU-memory budgets are asserted per quality tier in CI. Baselines may only change at plan-sanctioned points.
 - **Physics and rendering must agree.** The surface the aircraft touches and the surface on screen are produced by the same authority, held by invariant tests (e.g. runway collision = rendered earthworks within 1 mm).
 - **Season is structural.** Rendering is driven by two continuous scalars — day-of-year and solar time — threaded into every seasonal function *from the moment it is written*, enforced by a boundary test.
 
@@ -40,24 +40,24 @@ A 2026-08-18 programme audit (`PRE_PHASE_4_REALIGNMENT.md`, amendments R-1…R-2
 
 ```mermaid
 flowchart LR
-    subgraph done["✅ Complete (127.8 d shipped)"]
+    subgraph done["✅ Complete (158.05 d shipped)"]
         direction LR
         P0["Phase 0<br/>Architecture shift<br/>16.8 d"] --> P1["Phase 1<br/>Foundation +<br/>atmosphere spine<br/>43.0 d"]
         P1 --> G2Z["Gate 2Z<br/>Measurement<br/>honesty<br/>6.0 d"]
         G2Z --> P2["Phase 2<br/>Clouds, water,<br/>living ground<br/>54.5 d"]
         P2 --> P25["Phase 2.5<br/>Night sky +<br/>veg. perf pass<br/>7.5 d"]
+        P25 --> P3["Phase 3<br/>Terrain surface<br/>+ runway<br/>30.25 d"]
     end
     subgraph next["🔵 Planned — next up"]
         direction LR
-        P3["Phase 3<br/>Terrain surface<br/>+ runway<br/>30.25 d"] --> GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"]
-        GA --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
+        GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"] --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
     end
     subgraph later["⚪ Planned — after the cut line"]
         direction LR
         P5["Phase 5<br/>Landscape<br/>evolution<br/>51.5 d"] --> P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.5 d"]
         P6 --> P7["Phase 7<br/>Night ops +<br/>airfield identity<br/>34.0 d"]
     end
-    P25 --> P3
+    P3 --> GA
     P4 -->|"v1 cut line ≈ day 217"| P5
 ```
 
@@ -104,18 +104,42 @@ The world's sky, water surface and vegetation rebuilt to read as real:
 - **A real night sky**: an authored star catalogue (~190 real bright stars with true J2000 positions and colours plus a statistically correct generated background) under whole-sky sidereal rotation; an ephemeris moon with real phase geometry, opposition surge, earthshine and its own warm light; and a **scotopic vision** post-process reproducing human rod vision — colours desaturate, blues brighten, acuity drops, dark adaptation takes time. The ground is no longer black at 22:00.
 - **Vegetation performance recovery**: −1,201 draw calls across the capture set (far-band impostors 7 meshes → 1 per chunk), GPU buffer pooling fixing a leak and a WebGPU buffer-lifetime hazard, and canopy-ranked thinning restoring measured forest cover (0.26 → 0.55) at the same budget.
 
+### Phase 3 — Terrain surface and the runway *(30.25 d, shipped 2026-08-19)*
+
+The audit's **#1 root cause closed**: the terrain had no surface material
+system at all — every pixel of ground was an 8-bit colour interpolated from
+the mesh's vertices, which past 5 km flipped between neighbours as often as
+independent random draws.
+
+- **Ten synthesised land-cover materials** — grass, dry grass, forest floor,
+  shrub, sand, gravel, rock, snow, asphalt, concrete — in two GPU texture
+  arrays, every layer carrying a full CPU-computed mip chain with a **Toksvig**
+  term that folds a flattened normal map back into roughness. That term is what
+  stops distant terrain acquiring a false sharp highlight, which is most of
+  what "everything looks like plastic" actually is. Material resolution is now
+  independent of mesh resolution — the structural fix the audit asks for.
+- **One terrain surface plugin**, superseding the old one rather than
+  neighbouring it: three decorrelated de-tiling scales, true triplanar
+  projection on slopes with reoriented normal blending, height-based material
+  blending, and per-material roughness, F0 and Oren-Nayar diffuse roughness.
+  A wetness response is wired for Phase 6.
+- **The runway rebuilt as earthworks the flight physics also sees.** A
+  three-zone cut/fill profile with a 0.35 m camber replaces the circular
+  plateau, and the collision fast path evaluates the *same* profile — held to
+  within 1 mm by a new invariant test. The 28 coplanar boxes that used to float
+  above the ground are gone; asphalt, rubber, worn markings and a ragged
+  grass-invaded edge are painted into the terrain by the analytic airport SDF.
+- **A seasonal ground palette** (`G-B`), anchored so midsummer is untouched,
+  and the light rig's ground bounce derived from the surface system's own mean
+  albedo — retiring two long-standing hand-tuned fakes.
+
+Sixteen new assertions; one carried open (a per-pass GPU timer the renderer
+does not yet have). Every deviation is recorded in
+[`PHASE_3_EXECUTION_PLAN.md`](PHASE_3_EXECUTION_PLAN.md) §14.
+
 ## 7. What's next
 
-### Phase 3 — Terrain surface and the runway *(30.25 d, planned — implementation next)*
-
-Closes the audit's #1 root cause: the ground gets a real material system.
-
-- Ten procedurally synthesised land-cover materials (grass, rock, scree, sand, snow, asphalt…) in GPU texture arrays with anti-shimmer mip discipline.
-- One terrain surface plugin: three-scale de-tiling, true triplanar projection on slopes, height-based material blending, per-material BRDF (the "nothing looks like plastic" fix).
-- The runway rebuilt as real cut/fill **earthworks the flight physics also sees** (1 mm render/collision invariant), with worn asphalt, faded markings and skid marks painted by an analytic SDF.
-- Seasonal ground palette — scheduled immediately after the plugin so G-B isn't hostage to a slip.
-
-### Gate A — The things you look at *(12.75 d, planned, after Phase 3)*
+### Gate A — The things you look at *(12.75 d, planned — implementation next)*
 
 The aircraft finally gets its appearance: lofted fuselage and real wing sections, synthesised paint with panel lines and wear, glass cockpit with a visible instrument panel, propeller-disc and shadow fixes — plus wildlife silhouettes and materials replacing unit spheres.
 
@@ -143,18 +167,20 @@ A clustered lighting engine and ~200 instanced light points; complete airfield l
 | Water surface | ✅ shipped (Phase 2) |
 | Water *placement* (rivers/lakes where water collects) | Phase 5 |
 | Mountains (real erosion-formed shape) | Phase 5 |
-| Terrain surface materials | Phase 3 → Phase 4 |
+| Terrain surface materials | ✅ shipped (Phase 3); one classifier authority Phase 4 |
 | Trees & foliage appearance | ✅ shipped (Phase 2/2.5) |
 | Tree *placement* (ecological) | ✅ field shipped (Phase 1); deepens in Phase 6 |
-| The aircraft | Gate A (after Phase 3) |
-| **G-B** sun path / seasons / night | ✅ sun+seasons+night sky shipped; ground palette Phase 3, classified snowline Phase 4 |
+| The aircraft | Gate A (next) |
+| **G-B** sun path / seasons / night | ✅ sun + seasons + night sky + ground palette shipped; classified snowline Phase 4 |
 | **G-C** measured performance | Instrument ✅ (Gate 2Z); budgets in CI ✅; open vegetation frame debt (below); binding tier evidence lands at Phase 4's `4-10` |
 
 ## 9. Open items carried honestly
 
 - **Vegetation frame debt.** The 1.8 ms vegetation budget row is ~5× over at tier 1 in near-field forest shots. A dedicated pass (Phase 2.5) removed 1,201 draw calls and priced the residual in code (`VEGETATION_DRAW_CEILING`, `VEGETATION_FRAME_DEBT_RATIO`); the next rung (crown+trunk mesh merge, 347 → 186 draws) is costed but unshipped. Scheduled before Phase 4's G-C gate.
 - **Two open decisions (R-16)** before Phase 4 designs the season epoch: does the clock advance in flight, and does precipitation get a renderer.
-- **Plan hygiene at hand-off.** Phase 3/4 execution plans were verified against the Phase-1 tree; their line-number citations must be re-derived against the current tree before implementation (their own stated rule).
+- **Plan hygiene at hand-off.** The Phase 4 execution plan was verified against the Phase-1 tree; its line-number citations must be re-derived against the current tree before implementation (its own stated rule). Phase 3's were re-derived during implementation.
+- **Terrain material boundaries are still the old classifier's** (`R-25`, unchanged by Phase 3). Ten good materials are still *selected* by the 8-bit per-vertex threshold cascade the audit indicts; the ordering work in `3-0` removes the worst artefact of that, but the boundaries are iso-contours in height and show as thin lines at long range. `4-6` closes it, and `R-27`'s classifier-consumers contract is owed before Phase 4 starts.
+- **No per-pass GPU timer.** Phase 3's terrain-raster budget row (assertion 67) could not be measured: the capture harness reports whole-frame GPU time only. Recommended for Phase 4's budget work, where `4-4` and `4-8b` need it too.
 - **fps floors are machine-specific.** Committed capture floors bind on the reference machine only; draw calls, triangles and batch counts are the portable counters.
 
 ## 10. Renderer systems map
@@ -173,7 +199,7 @@ flowchart TB
     end
     subgraph GROUND["Terrain"]
         TER["Clipmap terrain<br/>correct normals · band-limited LOD"]:::live
-        SRF["Surface materials + runway (P3)"]:::nextp
+        SRF["Surface materials + runway (P3)"]:::live
         SPN["GPU spine<br/>WGSL kernel · CDLOD · baked occlusion (P4)"]:::nextp
         ERO["Erosion · tectonics · drainage (P5)"]:::later
     end
@@ -188,7 +214,7 @@ flowchart TB
         ACW["Aircraft & wildlife appearance (Gate A)"]:::nextp
     end
     subgraph MEAS["Measurement (G-C)"]
-        HAR["Perf harness · 13-shot baseline<br/>budgets in CI · two governors"]:::live
+        HAR["Perf harness · 14-shot baseline<br/>budgets in CI · two governors"]:::live
         TRM["Tier re-measure at cut line (4-10)"]:::nextp
     end
 

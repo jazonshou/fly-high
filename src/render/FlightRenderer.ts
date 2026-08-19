@@ -73,6 +73,7 @@ import {
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { WorldDetailRuntime } from "./webgpu/detail";
+import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
@@ -486,7 +487,15 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphere.shadows.addShadowCaster(mesh, false);
       }
       const airportDefinition = options.runway ?? options.world.airport;
-      const airport = airportDefinition ? new AirportSystem(scene, airportDefinition) : null;
+      // 3-9: the hangars are the only airport meshes left, and the apron they
+      // stood on is gone — they read the ground the earthworks made.
+      const airport = airportDefinition
+        ? new AirportSystem(
+          scene,
+          airportDefinition,
+          (x, z) => options.terrainSample(x, z).height,
+        )
+        : null;
       if (airport) cleanup.push(() => airport.dispose());
       if (airport) {
         airport.setFloatingOrigin(0, 0);
@@ -607,7 +616,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       // during startup instead of stalling the first frame.
       const skyProbe = new SkyEnvironmentProbe(scene, atmosphere.skyMesh);
       cleanup.push(() => skyProbe.dispose());
-      if (initialAerialBinding) skyProbe.update(initialAerialBinding);
+      if (initialAerialBinding) {
+        skyProbe.update(initialAerialBinding, atmosphere.surfaceAlbedoLuminance);
+      }
       scene.environmentTexture = skyProbe.texture;
       // 2-9: the same probe feeds the water materials' environment
       // reflections (they are raw ShaderMaterials — scene.environmentTexture
@@ -765,6 +776,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       latitudeDegrees: this.latitudeDegrees,
       weather,
     });
+    // R-26: publish the surface albedo BEFORE the light rig reads it.
+    this.atmosphere.setSurfaceAlbedo(
+      meanSeasonalSurfaceAlbedo(clock.dayOfYear, this.latitudeDegrees),
+    );
     // Gate 7A: the moon's ephemeris and 7-2's adaptation ride the same clock
     // the sun does. A scrub snaps the adaptation (deltaSeconds 0) — the
     // 1C-6 probe's "the sun is static between scrubs" invariant, applied to
@@ -1230,7 +1245,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.skyProbeStale
       || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
     ) {
-      this.skyProbe.update(binding);
+      // R-26: the below-horizon half of the SH bake is the ground's own
+      // albedo now, not a hardcoded 0.25 floor.
+      this.skyProbe.update(binding, this.atmosphere.surfaceAlbedoLuminance);
       // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
       // same binding, so cloud ambient cannot drift from the sky/IBL pair.
       this.atmosphereResources.update(binding);

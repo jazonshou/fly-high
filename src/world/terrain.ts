@@ -1,4 +1,9 @@
-import { flattenHeightForAirport, getAirportInfluence, isPointOnRunway } from "./airport";
+import {
+  runwayCrownHeight,
+  runwayEarthworksHeightLocal,
+  runwayEarthworksProfile,
+} from "@/src/render/webgpu/terrain/RunwayEarthworks";
+import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
 import { sampleGeologicalRelief } from "./geology";
 import {
   blendTowardExpectation,
@@ -23,6 +28,9 @@ import {
   type WorldDefinition,
   type WorldVector3,
 } from "./types";
+
+/** 3-8's camber, mirrored for the collision normal. The profile owns the value. */
+const RUNWAY_CROWN_METERS = runwayEarthworksProfile.crownMeters;
 
 export const MIN_TERRAIN_HEIGHT = -180;
 export const MAX_TERRAIN_HEIGHT = 2_200;
@@ -179,11 +187,36 @@ export function sampleNaturalTerrainHeight(
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
 }
 
+/**
+ * 3-8: the airport's earthworks, applied to a natural height. One profile,
+ * evaluated identically by the render path and by physics — the §1.3
+ * same-authority contract, one derivative deeper than Phase 0 needed it.
+ */
+function applyAirportEarthworks(
+  world: WorldDefinition,
+  naturalHeight: number,
+  x: number,
+  z: number,
+): number {
+  const airport = world.airport;
+  if (!airport) return naturalHeight;
+  const local = worldToRunway(airport, x, z);
+  return runwayEarthworksHeightLocal(
+    airport,
+    naturalHeight,
+    local.along,
+    local.across,
+    x,
+    z,
+    world.seedHash,
+  );
+}
+
 /** Fast collision-query path: only computes terrain elevation. */
 export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
-  return flattenHeightForAirport(naturalHeight, world.airport, x, z);
+  return applyAirportEarthworks(world, naturalHeight, x, z);
 }
 
 /**
@@ -199,10 +232,19 @@ export function sampleFilteredTerrainHeight(
   filterWidthMeters: number,
 ): number {
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, filterWidthMeters);
-  return flattenHeightForAirport(naturalHeight, world.airport, x, z);
+  return applyAirportEarthworks(world, naturalHeight, x, z);
 }
 
-/** Height-only physics path with a zero-noise fast path on the flat airport platform. */
+/**
+ * Height-only physics path with a zero-noise fast path on the airport platform.
+ *
+ * 3-8: the short-circuit returns `elevation + crown`, not the bare elevation.
+ * The fast path stays fast — still one analytic evaluation with no noise and
+ * no terrain sampling — but it is no longer a lie: a runway is cambered so
+ * water sheds, and without this the aircraft would land on a plane up to
+ * 0.35 m away from the surface on screen, worst at the edges where a
+ * crosswind landing puts you. Assertion 63 pins the two to within 1 mm.
+ */
 export function sampleTerrainCollisionHeight(
   world: WorldDefinition,
   x: number,
@@ -212,7 +254,8 @@ export function sampleTerrainCollisionHeight(
     world.airport &&
     getAirportInfluence(world.airport, x, z) >= 1
   ) {
-    return world.airport.elevation;
+    return world.airport.elevation
+      + runwayCrownHeight(world.airport, worldToRunway(world.airport, x, z).across);
   }
   return sampleTerrainHeight(world, x, z);
 }
@@ -267,10 +310,25 @@ export function sampleTerrainCollision(
 ): TerrainCollisionSample {
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
   if (runway && world.airport) {
-    target.height = world.airport.elevation;
-    target.normal.x = 0;
-    target.normal.y = 1;
-    target.normal.z = 0;
+    // 3-8: the same crowned surface the renderer draws and
+    // sampleTerrainCollisionHeight returns. The normal follows the camber
+    // too — a flat normal on a cambered surface is the same lie one
+    // derivative up, and the cross-slope is ~1.3 deg at the edge, which is
+    // what a real runway has.
+    const local = worldToRunway(world.airport, x, z);
+    const halfWidth = world.airport.runwayWidth * 0.5 + world.airport.shoulderWidth;
+    target.height = world.airport.elevation + runwayCrownHeight(world.airport, local.across);
+    const crossGrade = halfWidth > 0
+      ? (-2 * RUNWAY_CROWN_METERS * clamp(local.across, -halfWidth, halfWidth))
+        / (halfWidth * halfWidth)
+      : 0;
+    // The gradient is along the runway's ACROSS axis; rotate it back to world.
+    const sinHeading = Math.sin(world.airport.headingRadians);
+    const cosHeading = Math.cos(world.airport.headingRadians);
+    const inverseLength = 1 / Math.hypot(crossGrade, 1);
+    target.normal.x = -crossGrade * cosHeading * inverseLength;
+    target.normal.y = inverseLength;
+    target.normal.z = crossGrade * sinHeading * inverseLength;
     target.isRunway = true;
     target.friction = 1.18;
     return target;

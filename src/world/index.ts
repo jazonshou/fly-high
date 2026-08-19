@@ -1,10 +1,10 @@
 export {
   DEFAULT_AIRPORT,
-  flattenHeightForAirport,
   getAirportInfluence,
   getRunwayEndpoints,
   getWorldAirport,
   isPointOnRunway,
+  roundedRectangleSignedDistance,
   runwayToWorld,
   worldToRunway,
 } from "./airport";

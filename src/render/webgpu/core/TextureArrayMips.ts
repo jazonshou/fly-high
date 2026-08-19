@@ -36,10 +36,20 @@ import type { Scene } from "@babylonjs/core/scene";
  *   `alpha / 255 >= threshold`, so 0.5 keeps the byte threshold at 128)
  *   matches mip 0's fraction. Without it alpha-tested foliage evaporates
  *   with distance.
+ * - `toksvig` — 3-1's reducer for the terrain normal/material array
+ *   (RG = tangent-space normal xy, B = roughness, A = cavity AO). Averaging a
+ *   normal MAP flattens it, and a flat normal map under an unchanged
+ *   roughness gives distant terrain a false sharp highlight — the single
+ *   loudest "everything is plastic" tell at range. So: average the normal
+ *   VECTOR, renormalise it, and fold the lost length back into roughness as
+ *   `rough' = sqrt(rough² + roughnessGain · (1 − |avgN|))`. Unlike `coverage`,
+ *   each level reduces the level ACTUALLY EMITTED above it, so the roughening
+ *   accumulates down the chain instead of being recomputed against mip 0.
  */
 export type MipKernel =
   | "box"
-  | { readonly kind: "coverage"; readonly alphaTestThreshold: number };
+  | { readonly kind: "coverage"; readonly alphaTestThreshold: number }
+  | { readonly kind: "toksvig"; readonly roughnessGain: number };
 
 /** Below this alpha a texel is transparent for dilation purposes. */
 const DILATE_TRANSPARENT_BELOW_ALPHA = 40;
@@ -96,6 +106,74 @@ function boxReduce(src: Uint8Array, srcEdge: number): Uint8Array {
           (src[a + channel]! + src[b + channel]! + src[c + channel]! + src[d + channel]!) / 4,
         );
       }
+    }
+  }
+  return dst;
+}
+
+/**
+ * One Toksvig reduction step over the normal/material layout. Exported
+ * because assertion 54 checks each emitted level against exactly this
+ * function applied to the level above it — an equality, not a tolerance.
+ */
+export function toksvigReduce(
+  src: Uint8Array,
+  srcEdge: number,
+  roughnessGain: number,
+): Uint8Array {
+  requireSquareRgba(src, srcEdge, "toksvigReduce");
+  if (srcEdge < 2) throw new RangeError("toksvigReduce: source edge must be at least 2");
+  if (!Number.isFinite(roughnessGain) || roughnessGain < 0) {
+    throw new RangeError(`toksvigReduce: roughnessGain must be finite and >= 0`);
+  }
+  const dstEdge = srcEdge >> 1;
+  const dst = new Uint8Array(dstEdge * dstEdge * RGBA_CHANNELS);
+  for (let y = 0; y < dstEdge; y += 1) {
+    const rowA = 2 * y * srcEdge;
+    const rowB = rowA + srcEdge;
+    for (let x = 0; x < dstEdge; x += 1) {
+      const taps = [
+        (rowA + 2 * x) * RGBA_CHANNELS,
+        (rowA + 2 * x + 1) * RGBA_CHANNELS,
+        (rowB + 2 * x) * RGBA_CHANNELS,
+        (rowB + 2 * x + 1) * RGBA_CHANNELS,
+      ];
+      let sumX = 0;
+      let sumY = 0;
+      let sumZ = 0;
+      let sumRoughSquared = 0;
+      let sumCavity = 0;
+      for (const tap of taps) {
+        const nx = (src[tap]! / 255) * 2 - 1;
+        const ny = (src[tap + 1]! / 255) * 2 - 1;
+        // The stored pair is the hemisphere projection; z is reconstructed the
+        // same way the shader reconstructs it, so CPU and GPU agree on what
+        // "this normal" means.
+        const nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+        sumX += nx;
+        sumY += ny;
+        sumZ += nz;
+        const rough = src[tap + 2]! / 255;
+        // Average roughness in the variance-like square, not linearly: two
+        // half-rough taps are not one rough tap.
+        sumRoughSquared += rough * rough;
+        sumCavity += src[tap + 3]!;
+      }
+      const meanX = sumX / 4;
+      const meanY = sumY / 4;
+      const meanZ = sumZ / 4;
+      const length = Math.hypot(meanX, meanY, meanZ);
+      const inverse = length > 1e-6 ? 1 / length : 0;
+      const normalX = length > 1e-6 ? meanX * inverse : 0;
+      const normalY = length > 1e-6 ? meanY * inverse : 0;
+      const roughened = Math.sqrt(
+        Math.min(1, sumRoughSquared / 4 + roughnessGain * (1 - Math.min(1, length))),
+      );
+      const out = (y * dstEdge + x) * RGBA_CHANNELS;
+      dst[out] = Math.round(Math.min(1, Math.max(0, normalX * 0.5 + 0.5)) * 255);
+      dst[out + 1] = Math.round(Math.min(1, Math.max(0, normalY * 0.5 + 0.5)) * 255);
+      dst[out + 2] = Math.round(roughened * 255);
+      dst[out + 3] = Math.round(sumCavity / 4);
     }
   }
   return dst;
@@ -180,7 +258,8 @@ export function buildMipChain(
   requireSquareRgba(rgba, edge, "buildMipChain");
   requirePowerOfTwo(edge, "buildMipChain");
 
-  const preserveCoverage = kernel !== "box";
+  const preserveCoverage = kernel !== "box" && kernel.kind === "coverage";
+  const toksvig = kernel !== "box" && kernel.kind === "toksvig";
   const threshold = preserveCoverage ? kernel.alphaTestThreshold : 0;
   if (preserveCoverage && (threshold < 0 || threshold > 1)) {
     throw new RangeError(
@@ -192,6 +271,14 @@ export function buildMipChain(
   const levels: Uint8Array[] = [new Uint8Array(rgba)];
   let filtered = rgba;
   for (let levelEdge = edge; levelEdge > 1; levelEdge >>= 1) {
+    if (toksvig) {
+      // Reduce the EMITTED level, not the unscaled one: the roughening from
+      // every step above must still be present, or a level-8 normal that has
+      // averaged to nothing is paired with a level-0 roughness.
+      filtered = toksvigReduce(levels[levels.length - 1]!, levelEdge, kernel.roughnessGain);
+      levels.push(filtered);
+      continue;
+    }
     filtered = boxReduce(filtered, levelEdge);
     if (preserveCoverage) {
       const scale = solveCoverageAlphaScale(filtered, threshold, targetCoverage);

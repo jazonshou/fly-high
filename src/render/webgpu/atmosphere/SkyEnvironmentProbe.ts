@@ -111,27 +111,44 @@ export function bakeSphericalPolynomialFromRadiance(
 }
 
 /**
+ * The albedo the below-horizon bake falls back to when no surface system has
+ * published one — the same 0.18 grey `EnvironmentState.atmosphere.groundAlbedo`
+ * carries, so a probe baked before the terrain exists lights exactly as it did.
+ */
+export const DEFAULT_GROUND_BOUNCE_ALBEDO = 0.18;
+
+/**
  * Below-horizon attenuation for the DIFFUSE bake only. The sky field's lower
  * hemisphere is the clamped horizon haze — brighter than the zenith — so an
  * unattenuated bake would light undersides more than tops. Physically that
- * hemisphere is terrain: keep the haze's colour but scale it toward a dark
- * ground-bounce albedo. The specular cube deliberately keeps the bright
- * haze — grazing reflections genuinely see it at the horizon.
+ * hemisphere is terrain: keep the haze's colour but scale it toward the
+ * ground's actual bounce albedo. The specular cube deliberately keeps the
+ * bright haze — grazing reflections genuinely see it at the horizon.
+ *
+ * `R-26` retires deviation `D-6`'s hardcoded 0.25 floor. That number was a
+ * ground-bounce fake tuned against a ground colour Phase 3 replaced; with real
+ * albedo it double-counts, and `G-B`'s seasonal ground would have fought it —
+ * a snow-covered world bounces more than twice what a summer one does, and a
+ * constant floor cannot say so. The floor is now the albedo itself.
  */
-function groundBounceFactor(directionY: number): number {
+function groundBounceFactor(directionY: number, groundAlbedo: number): number {
   if (directionY >= 0) return 1;
-  return Math.max(0.25, 1 + directionY * 1.875);
+  const albedo = Math.min(1, Math.max(0.01, groundAlbedo));
+  // Same shape as before — full haze at the horizon, reaching the ground's own
+  // albedo by 0.4 below it — with the terminal value derived rather than fixed.
+  return Math.max(albedo, 1 + directionY * ((1 - albedo) / 0.4));
 }
 
 /** The diffuse half of the probe: skyRadiance's TS mirror → SH irradiance. */
 export function bakeSkyIrradiancePolynomial(
   binding: AerialPerspectiveBinding,
   size = SKY_IRRADIANCE_SAMPLE_SIZE,
+  groundAlbedo = DEFAULT_GROUND_BOUNCE_ALBEDO,
 ): SphericalPolynomial {
   return bakeSphericalPolynomialFromRadiance(
     (direction) => {
       const radiance = evaluateSkyRadiance(binding, direction);
-      const factor = groundBounceFactor(direction[1]);
+      const factor = groundBounceFactor(direction[1], groundAlbedo);
       return [radiance[0] * factor, radiance[1] * factor, radiance[2] * factor];
     },
     size,
@@ -181,9 +198,16 @@ export class SkyEnvironmentProbe {
    * the TS mirror and re-arms the six-face specular render for the next
    * frame, which draws the sky dome with its already-current uniforms.
    */
-  update(binding: AerialPerspectiveBinding): void {
+  update(
+    binding: AerialPerspectiveBinding,
+    groundAlbedo = DEFAULT_GROUND_BOUNCE_ALBEDO,
+  ): void {
     if (this.disposed) return;
-    this.probe.cubeTexture.sphericalPolynomial = bakeSkyIrradiancePolynomial(binding);
+    this.probe.cubeTexture.sphericalPolynomial = bakeSkyIrradiancePolynomial(
+      binding,
+      SKY_IRRADIANCE_SAMPLE_SIZE,
+      groundAlbedo,
+    );
     this.probe.cubeTexture.refreshRate = RenderTargetTexture.REFRESHRATE_RENDER_ONCE;
   }
 

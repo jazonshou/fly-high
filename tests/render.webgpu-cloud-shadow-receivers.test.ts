@@ -132,7 +132,7 @@ describe("opaque PBR cloud-shadow registry", () => {
       endSafetyArea: 120,
       shoulderWidth: 14,
       terrainBlendDistance: 220,
-    });
+    }, () => 80);
     const detail = new WorldDetailRuntime(scene, {
       worldSeed: "cloud-shadow-detail",
       terrainSample: () => ({

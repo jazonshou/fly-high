@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  runwayEarthworksHeightLocal,
+  runwayPlatformHeight,
+} from "../src/render/webgpu/terrain/RunwayEarthworks";
+import {
   MAX_TERRAIN_HEIGHT,
   MAX_WIND_SPEED,
   MIN_TERRAIN_HEIGHT,
   TerrainBiome,
   assessAirportSite,
   createWorld,
-  flattenHeightForAirport,
   getAirportInfluence,
   hashCoordinates,
   hashSeed,
@@ -352,7 +355,11 @@ describe("starter airport terrain", () => {
     ).toBe(true);
   });
 
-  it("flattens the entire paved rectangle to the configured elevation", () => {
+  it("grades the entire paved rectangle onto the crowned platform", () => {
+    // 3-8: the platform is no longer a plane. A runway is cambered so water
+    // sheds, so the paved rectangle sits on `elevation + crown(across)` — the
+    // centreline at the datum and the edges up to 0.35 m below it. What must
+    // stay exact is that the natural terrain contributes NOTHING here.
     const positions = [
       runwayToWorld(airport, 0, 0),
       runwayToWorld(airport, airport.runwayLength * 0.49, airport.runwayWidth * 0.49),
@@ -360,11 +367,40 @@ describe("starter airport terrain", () => {
     ];
     for (const position of positions) {
       expect(isPointOnRunway(airport, position.x, position.z)).toBe(true);
-      expect(sampleTerrainHeight(world, position.x, position.z)).toBeCloseTo(airport.elevation, 10);
+      const local = worldToRunway(airport, position.x, position.z);
+      expect(sampleTerrainHeight(world, position.x, position.z)).toBeCloseTo(
+        runwayPlatformHeight(airport, local.across),
+        9,
+      );
       const sample = sampleTerrain(world, position.x, position.z);
       expect(sample.isRunway).toBe(true);
       expect(sample.biome).toBe(TerrainBiome.RUNWAY);
     }
+    // The centreline is the datum and the shoulder edge is a full crown below.
+    const centre = runwayToWorld(airport, 0, 0);
+    expect(sampleTerrainHeight(world, centre.x, centre.z)).toBeCloseTo(airport.elevation, 9);
+    const halfWidth = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+    const edge = runwayToWorld(airport, 0, halfWidth * 0.999);
+    expect(airport.elevation - sampleTerrainHeight(world, edge.x, edge.z)).toBeGreaterThan(0.34);
+  });
+
+  it("keeps getAirportInfluence total for hand-built definitions", () => {
+    // createWorld rejects a non-positive blend distance, but the sampler is
+    // also handed AirportDefinitions built by hand — tests, and 3-9's runway
+    // binding. Left unguarded, a negative blend distance returns influence 1
+    // at every distance, which since 3-8 makes the collision fast path
+    // short-circuit to the platform kilometres from the airport while the
+    // render path returns natural terrain: the two height authorities
+    // disagreeing, which is the one thing §1.3 forbids.
+    const far = runwayToWorld(airport, 0, airport.runwayWidth * 40);
+    for (const blend of [-240, 0, Number.NaN]) {
+      const malformed = { ...airport, terrainBlendDistance: blend };
+      expect(getAirportInfluence(malformed, far.x, far.z)).toBe(0);
+      // The apron itself is unaffected: influence is still exactly 1 inside.
+      const centre = runwayToWorld(airport, 0, 0);
+      expect(getAirportInfluence(malformed, centre.x, centre.z)).toBe(1);
+    }
+    expect(getAirportInfluence(airport, far.x, far.z)).toBe(0);
   });
 
   it("provides inverse runway/world transforms", () => {
@@ -384,9 +420,20 @@ describe("starter airport terrain", () => {
     expect(influence).toBeLessThan(1);
     expect(getAirportInfluence(airport, outsideBlend.x, outsideBlend.z)).toBe(0);
 
+    // 3-8 replaced the single lerp toward a flat disc with the three-zone
+    // cut/fill profile; the render path must evaluate exactly that profile.
     const natural = sampleNaturalTerrainHeight(world.seedHash, withinBlend.x, withinBlend.z, 0);
+    const local = worldToRunway(airport, withinBlend.x, withinBlend.z);
     expect(sampleTerrainHeight(world, withinBlend.x, withinBlend.z)).toBeCloseTo(
-      flattenHeightForAirport(natural, airport, withinBlend.x, withinBlend.z),
+      runwayEarthworksHeightLocal(
+        airport,
+        natural,
+        local.along,
+        local.across,
+        withinBlend.x,
+        withinBlend.z,
+        world.seedHash,
+      ),
       10,
     );
     expect(sampleTerrainHeight(world, outsideBlend.x, outsideBlend.z)).toBeCloseTo(

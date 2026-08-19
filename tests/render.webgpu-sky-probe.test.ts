@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { SphericalPolynomial } from "@babylonjs/core/Maths/sphericalPolynomial";
 import {
@@ -6,6 +8,7 @@ import {
 import {
   bakeSkyIrradiancePolynomial,
   bakeSphericalPolynomialFromRadiance,
+  DEFAULT_GROUND_BOUNCE_ALBEDO,
 } from "../src/render/webgpu/atmosphere/SkyEnvironmentProbe";
 import { resolveEnvironmentState } from "../src/render/webgpu/nature/EnvironmentDirector";
 
@@ -93,5 +96,68 @@ describe("spherical-harmonics irradiance (1C-6)", () => {
     expect(up[2]).toBeGreaterThan(down[2] * 1.15);
     expect(up[2]).toBeGreaterThan(up[0]);
     expect(up[1]).toBeGreaterThan(0.02);
+  });
+});
+
+describe("R-26 — the light rig's ground bounce is derived, not hardcoded", () => {
+  const binding = resolveAerialPerspectiveBinding(
+    resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 12.5 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    }),
+    120,
+    [1, 0.96, 0.88],
+    [0.58, 0.77, 0.96],
+    1,
+  );
+
+  it("scales the below-horizon bake with the surface albedo it is given", () => {
+    // Deviation D-6 pinned the below-horizon attenuation at a floor of 0.25 —
+    // a ground-bounce fake tuned against a ground colour Phase 3 replaced. It
+    // could not move with the season, so G-B's snow-covered world would have
+    // bounced exactly as much light as its summer one.
+    const down: readonly [number, number, number] = [0, -1, 0];
+    const summer = evaluatePolynomial(bakeSkyIrradiancePolynomial(binding, 12, 0.17), down);
+    const winter = evaluatePolynomial(bakeSkyIrradiancePolynomial(binding, 12, 0.42), down);
+    const luminance = (rgb: readonly [number, number, number]): number =>
+      0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    expect(luminance(summer)).toBeGreaterThan(0);
+    expect(
+      luminance(winter),
+      "a snow-covered world must bounce more than a summer one",
+    ).toBeGreaterThan(luminance(summer) * 1.3);
+
+    // Up-facing surfaces still see the sky, unattenuated, at every albedo.
+    const up: readonly [number, number, number] = [0, 1, 0];
+    const upSummer = evaluatePolynomial(bakeSkyIrradiancePolynomial(binding, 12, 0.17), up);
+    const upWinter = evaluatePolynomial(bakeSkyIrradiancePolynomial(binding, 12, 0.42), up);
+    expect(luminance(upWinter) / luminance(upSummer)).toBeGreaterThan(0.9);
+    expect(luminance(upWinter) / luminance(upSummer)).toBeLessThan(1.35);
+  });
+
+  it("defaults to the atmospheric ground albedo when no surface has published one", () => {
+    // A probe baked before terrain exists must light exactly as it always did.
+    const explicit = bakeSkyIrradiancePolynomial(binding, 12, DEFAULT_GROUND_BOUNCE_ALBEDO);
+    const implicit = bakeSkyIrradiancePolynomial(binding, 12);
+    const down: readonly [number, number, number] = [0, -1, 0];
+    expect(evaluatePolynomial(implicit, down)).toEqual(evaluatePolynomial(explicit, down));
+    expect(DEFAULT_GROUND_BOUNCE_ALBEDO).toBe(0.18);
+  });
+
+  it("D-9: the palette no longer carries a ground row for the light rig", () => {
+    // The palette persisted "only for the light rig and the snapshot until
+    // Phases 3/7 retire it". This is Phase 3 retiring the light rig's half:
+    // AtmosphereSystem derives the HemisphericLight's ground colour from the
+    // surface system's mean albedo, so a hand-tuned bounce colour has nowhere
+    // left to hide.
+    const source = readFileSync(
+      join(__dirname, "..", "src", "render", "webgpu", "atmosphere", "AtmosphereSystem.ts"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/^\s*ground: new Color3/mu);
+    expect(source).not.toContain("palette.ground");
+    expect(source).toContain("setSurfaceAlbedo");
+    expect(source).toContain("this.ambient.groundColor = skyHorizon.multiply(this.surfaceAlbedo)");
   });
 });

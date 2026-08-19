@@ -38,10 +38,14 @@ import {
 } from "@/src/render/webgpu/world/streamingPriority";
 import {
   TERRAIN_REFERENCE_DAY_OF_YEAR,
+  TerrainBiome,
+  type TerrainBiomeId,
   type TerrainTileData,
   type WorldDefinition,
 } from "@/src/world";
-import { TerrainMaterialPlugin } from "./TerrainMaterialPlugin";
+import { createSurfaceMaterialArrays, type SurfaceMaterialArrays } from "./MaterialArraySynthesis";
+import { SURFACE_MATERIALS_BY_BIOME } from "./surfaceMaterials";
+import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
 
 export interface TerrainClipmapBounds {
   readonly minX: number;
@@ -120,6 +124,18 @@ const EVICTION_GRACE_FRAMES = 90;
 // to cover transient fine/coarse gaps.  Deep 80 m two-sided walls were visible
 // as a regular line grid at medium quality, especially on ridge silhouettes.
 const TERRAIN_SKIRT_DEPTH_METERS = 24;
+
+/**
+ * 3-2 / Phase 4 §4 D4: the splat's fourth lane is `atlasSlot`, not a spare,
+ * and it is written as -1 until `4-2` fills it. `4-7` bakes occlusion into
+ * channel pages whose consumer is THIS plugin's fragment shader, on THESE
+ * meshes, before the quadtree exists — reserving the lane costs nothing here
+ * and is load-bearing for Phase 4's gate order.
+ */
+const TERRAIN_UNASSIGNED_ATLAS_SLOT = -1;
+
+/** The mix a tile vertex falls back to if a biome byte is ever out of range. */
+const DEFAULT_SURFACE_MIX = SURFACE_MATERIALS_BY_BIOME[TerrainBiome.GRASSLAND];
 
 /**
  * Tuning of the shared flight-corridor streaming priority for the CPU tile
@@ -280,7 +296,8 @@ function buildTerrainIndicesWithSkirt(
  */
 export class TerrainClipmapSystem {
   private readonly material: PBRMaterial;
-  private readonly materialDetail: TerrainMaterialPlugin;
+  private readonly surfacePlugin: TerrainSurfacePlugin;
+  private materialArrays: SurfaceMaterialArrays | null;
   private readonly cloudShadowPlugin: CloudShadowMaterialPlugin;
   private readonly generator: TerrainClipmapPageGenerator;
   private readonly pages = new Map<WorldPageKey, TerrainPage>();
@@ -318,9 +335,10 @@ export class TerrainClipmapSystem {
     this.generator = options.generator ?? new TerrainGenerationClient(world, { maxQueued: 128 });
     this.material = new PBRMaterial("terrain-pbr", scene);
     this.material.metallic = 0;
-    // Soil, grass, and exposed rock should retain broad diffuse highlights.
-    // The previous environment/specular balance made every biome look like the
-    // same polished plastic sheet, especially after rain or at low sun angles.
+    // 3-7 replaces this per fragment from the 3-0 BRDF table. It survives as
+    // the value the material compiles with before the arrays are bound (and
+    // under NullEngine, which cannot hold a 2D array at all) — never as the
+    // shipped answer, which is what the audit's uniform 0.93 was.
     this.material.roughness = 0.93;
     this.material.albedoColor = Color3.White();
     // 1C-6: full-strength now that scene.environmentTexture exists — the
@@ -328,14 +346,49 @@ export class TerrainClipmapSystem {
     this.material.environmentIntensity = 1;
     this.material.directIntensity = 1.03;
     this.material.specularIntensity = 1;
-    // 1B-11: kill specular shimmer on ridge lines under motion. (The plan's
-    // anisotropicFilteringLevel = 16 is a per-texture setting; terrain has no
-    // textures until 3-2 — it applies there.)
+    // 1B-11: kill specular shimmer on ridge lines under motion. Its partner,
+    // anisotropicFilteringLevel = 16, is a per-texture setting and lands on
+    // the 3-1 arrays; the two are complementary — one fixes the normal map's
+    // lost variance (with the Toksvig reducer), the other the geometric
+    // normal's.
     this.material.enableSpecularAntiAliasing = true;
-    this.materialDetail = new TerrainMaterialPlugin(this.material);
+    this.surfacePlugin = new TerrainSurfacePlugin(this.material);
+    this.surfacePlugin.setSamplingProfile(
+      profile.terrainTriplanarMode,
+      profile.heightBlendMaxMaterials,
+    );
+    this.surfacePlugin.setSeason(
+      this.seasonDayOfYear,
+      world.latitudeDegrees,
+      world.seaLevel,
+    );
+    // 3-9: the runway is painted into this material by the analytic airport
+    // SDF. Nothing else needs to know — no mesh, no second material, no
+    // coplanar boxes.
+    this.surfacePlugin.setRunway(world.airport);
+    // 3-1's GPU boundary. NullEngine cannot express a TEXTURE_2D_ARRAY upload
+    // (its WebGL raw-texture extension dereferences this._gl), so the Node
+    // suite runs the whole clipmap with the plugin disabled and the material
+    // compiling without the arrays — exactly the guard WorldDetailRuntime
+    // uses for the foliage atlas.
+    const engineFlags = scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+    this.materialArrays = engineFlags.isWebGPU || engineFlags._gl
+      ? createSurfaceMaterialArrays(scene, world.seed, profile.materialArrayEdge)
+      : null;
+    if (this.materialArrays) {
+      this.surfacePlugin.setArrays(
+        this.materialArrays.albedoHeight,
+        this.materialArrays.normalMaterial,
+      );
+    }
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
+  }
+
+  /** Bytes the 3-1 arrays actually occupy, for the 1A-1 numeric report. */
+  get materialArrayMemoryMiB(): number {
+    return this.materialArrays?.memoryMiB ?? 0;
   }
 
   /**
@@ -367,6 +420,31 @@ export class TerrainClipmapSystem {
     const topologyChanged = profile.terrainTileResolution !== this.profile.terrainTileResolution
       || profile.terrainRings !== this.profile.terrainRings;
     this.profile = profile;
+    // 3-0's shader-shaping rows follow the live profile.
+    this.surfacePlugin.setSamplingProfile(
+      profile.terrainTriplanarMode,
+      profile.heightBlendMaxMaterials,
+    );
+    // And so does the array edge. Leaving the arrays at their construction
+    // size would put the §5.2 memory row — which is derived from
+    // `profile.materialArrayEdge` — permanently at odds with what is actually
+    // allocated the moment anyone changes quality, which is exactly the
+    // decorative-budget-row failure assertion 56 exists to prevent. A tier
+    // change already cancels every in-flight page and rebuilds the resident
+    // set, so the ~0.4-1.1 s re-synthesis lands inside a hitch the user has
+    // already asked for.
+    if (this.materialArrays && this.materialArrays.edge !== profile.materialArrayEdge) {
+      const replacement = createSurfaceMaterialArrays(
+        this.scene,
+        this.world.seed,
+        profile.materialArrayEdge,
+      );
+      const previous = this.materialArrays;
+      this.materialArrays = replacement;
+      this.surfacePlugin.setArrays(replacement.albedoHeight, replacement.normalMaterial);
+      previous.albedoHeight.dispose();
+      previous.normalMaterial.dispose();
+    }
     if (!topologyChanged) return;
     this.lastAnchor = "";
     // Cancel every in-flight request. Cancelling bumps the lifecycle epoch, so
@@ -395,6 +473,15 @@ export class TerrainClipmapSystem {
    * meshes keep rendering until their replacements arrive.
    */
   setSeasonalDayOfYear(dayOfYear: number): void {
+    // 3-10's palette is continuous and costs nothing to move, so it follows
+    // the raw clock rather than the page bake's 15-day bucket: the seasonal
+    // tint and the snowline update on every scrub even when no page needs
+    // rebuilding.
+    this.surfacePlugin.setSeason(
+      dayOfYear,
+      this.world.latitudeDegrees,
+      this.world.seaLevel,
+    );
     const bucketDays = 365 / 24;
     const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
     let bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
@@ -418,7 +505,7 @@ export class TerrainClipmapSystem {
     if (x === this.originX && z === this.originZ) return;
     this.originX = x;
     this.originZ = z;
-    this.materialDetail.setWorldOrigin(x, z);
+    this.surfacePlugin.setWorldOrigin(x, z);
     if (this.cloudShadowProjection) {
       this.cloudShadowPlugin.setProjection(this.cloudShadowProjection, x, z);
     }
@@ -510,6 +597,10 @@ export class TerrainClipmapSystem {
     this.lifecycles.clear();
     // Cloud transmittance is owned by VolumetricCloudSystem.
     this.material.dispose(true, false);
+    // The 3-1 arrays are this system's own allocation, and material.dispose
+    // with forceDisposeTextures=false would leak them.
+    this.materialArrays?.albedoHeight.dispose();
+    this.materialArrays?.normalMaterial.dispose();
   }
 
   private rebuildDesired(
@@ -611,10 +702,14 @@ export class TerrainClipmapSystem {
           resolution: this.profile.terrainTileResolution,
           dayOfYear: this.seasonDayOfYear,
           includeNormals: true,
-          includeColors: true,
-          // 1B-1: no clipmap path reads moisture or biomes. Colours stay —
-          // vertex colour is the only surface appearance terrain has until 3-2.
-          includeClimate: false,
+          // 3-2 inverts 1B-1's choice. The 8-bit per-vertex COLOUR is gone —
+          // it was the whole of terrain appearance and the audit's root cause
+          // #1 — and the biome byte takes its place as the provisional splat's
+          // input. Net cheaper per vertex (1 byte of biome instead of 3 of
+          // colour), and moisture rides along for free because the tile's
+          // surface sample already computes it.
+          includeColors: false,
+          includeClimate: true,
         },
       },
       (tile) => this.onPageGenerated(desired.key, token, tile),
@@ -688,7 +783,11 @@ export class TerrainClipmapSystem {
     const vertexCount = surfaceVertexCount + boundary.length;
     const positions = new Float32Array(vertexCount * 3);
     const normals = new Float32Array(vertexCount * 3);
-    const colors = new Float32Array(vertexCount * 4);
+    // 3-2: the same Float32Array(vertexCount * 4) the colour path already
+    // allocated, repurposed 1:1 as the provisional splat —
+    // (materialIdA, materialIdB, weightB, atlasSlot). Zero net memory; the
+    // §5.2 terrain-geometry row does not move.
+    const splat = new Float32Array(vertexCount * 4);
     for (let row = 0; row < tile.resolution; row += 1) {
       for (let column = 0; column < tile.resolution; column += 1) {
         const vertex = row * tile.resolution + column;
@@ -696,12 +795,13 @@ export class TerrainClipmapSystem {
         positions[positionOffset] = column * tile.spacing;
         positions[positionOffset + 1] = tile.heights[vertex] ?? 0;
         positions[positionOffset + 2] = row * tile.spacing;
-        const sourceColorOffset = vertex * 3;
-        const colorOffset = vertex * 4;
-        colors[colorOffset] = (tile.colors[sourceColorOffset] ?? 128) / 255;
-        colors[colorOffset + 1] = (tile.colors[sourceColorOffset + 1] ?? 128) / 255;
-        colors[colorOffset + 2] = (tile.colors[sourceColorOffset + 2] ?? 128) / 255;
-        colors[colorOffset + 3] = 1;
+        const biome = (tile.biomes[vertex] ?? TerrainBiome.GRASSLAND) as TerrainBiomeId;
+        const mix = SURFACE_MATERIALS_BY_BIOME[biome] ?? DEFAULT_SURFACE_MIX;
+        const splatOffset = vertex * 4;
+        splat[splatOffset] = mix.primary;
+        splat[splatOffset + 1] = mix.secondary;
+        splat[splatOffset + 2] = mix.secondaryWeight;
+        splat[splatOffset + 3] = TERRAIN_UNASSIGNED_ATLAS_SLOT;
       }
     }
     normals.set(tile.normals, 0);
@@ -742,12 +842,12 @@ export class TerrainClipmapSystem {
         normals[destinationPosition + 1] = 0;
         normals[destinationPosition + 2] = 1;
       }
-      const sourceColor = sourceVertex * 4;
-      const destinationColor = destinationVertex * 4;
-      colors[destinationColor] = colors[sourceColor] ?? 0.5;
-      colors[destinationColor + 1] = colors[sourceColor + 1] ?? 0.5;
-      colors[destinationColor + 2] = colors[sourceColor + 2] ?? 0.5;
-      colors[destinationColor + 3] = 1;
+      const sourceSplat = sourceVertex * 4;
+      const destinationSplat = destinationVertex * 4;
+      splat[destinationSplat] = splat[sourceSplat] ?? 0;
+      splat[destinationSplat + 1] = splat[sourceSplat + 1] ?? 0;
+      splat[destinationSplat + 2] = splat[sourceSplat + 2] ?? 0;
+      splat[destinationSplat + 3] = TERRAIN_UNASSIGNED_ATLAS_SLOT;
     }
 
     const effectiveCoverage = this.effectiveCoverage(desired);
@@ -761,11 +861,14 @@ export class TerrainClipmapSystem {
     const vertexData = new VertexData();
     vertexData.positions = positions;
     vertexData.normals = normals;
-    vertexData.colors = colors;
+    vertexData.colors = splat;
     vertexData.indices = indices;
     vertexData.applyToMesh(mesh, false);
     mesh.material = this.material;
-    mesh.useVertexColors = true;
+    // 3-2: the lane is the surface plugin's, not Babylon's. With this false
+    // VERTEXCOLOR is never defined, PBR never multiplies albedo by it, and the
+    // plugin's own `attribute color` declaration owns the buffer.
+    mesh.useVertexColors = false;
     mesh.receiveShadows = true;
     mesh.isPickable = false;
     mesh.alwaysSelectAsActiveMesh = desired.address.level === 0;
@@ -791,7 +894,7 @@ export class TerrainClipmapSystem {
           + tile.biomes.byteLength,
         gpuByteLengthEstimate: positions.byteLength
           + normals.byteLength
-          + colors.byteLength
+          + splat.byteLength
           + indices.byteLength,
         createdAtMs: this.frameIndex,
         lastAccessedAtMs: this.frameIndex,

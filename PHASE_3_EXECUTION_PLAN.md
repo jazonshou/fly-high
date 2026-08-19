@@ -1,5 +1,7 @@
 # Phase 3 Execution Plan — Terrain Surface and the Runway
 
+**Status: IMPLEMENTED, 2026-08-19** (branch `jazonshou/Phase-3-Implementation`). Every item `3-0`–`3-10` plus `R-26` has landed. Read **§14 Implementation record** for what was built, what deviated and why, and §13 for the decisions the plan left blank. The sections above §14 are the plan as written and are left unedited for traceability except where a deviation is flagged inline.
+
 **Status:** execution reference for Phase 3 of `RENDERING_PLAN.md`. It does not restate that plan; it decides everything that plan leaves to implementation time, against the codebase as it will exist when Phase 3 starts.
 **Runs after:** `PHASE_2_EXECUTION_PLAN.md`. Phase 2's exit criteria are this plan's preconditions.
 **Basis:** `TERRAIN_AUDIT.md` §2.1 (root cause #1), `RENDERING_PLAN.md` §2 Phase 3 / §3.2 / §5.2–§5.4 / §6 / §7, and `ARCHITECTURE.md` (normative, from Phase 0).
@@ -540,43 +542,45 @@ Ten material recipes are judged by eye. There is no test for "rock looks like ro
 
 ## 12. Exit checklist
 
+*Ticked 2026-08-19 against the implementation. One item is carried open — see §14.4.*
+
 **Gate 3A — The surface system**
-- [ ] `surfaceMaterials.ts` is the single owner of material identity; `4-6` will inherit the enum.
-- [ ] Ten materials synthesised into two `Texture2DArray`s; every layer has a full mip chain.
-- [ ] Height channels mean 0.5; Toksvig reduction verified against mip N−1.
-- [ ] `materialArraysMiB` is in the memory estimate and moves with `materialArrayEdge`.
-- [ ] `TerrainMaterialPlugin.ts` is deleted; `TerrainSurfacePlugin` is the single owner of terrain surface appearance.
-- [ ] Roughness and AO injection tokens present in the **processed** effect source.
-- [ ] The terrain effect defines neither `NORMALMAP` nor `DETAIL`; no tangent attribute exists.
-- [ ] `useVertexColors = false`; the colour buffer carries the provisional two-material splat.
-- [ ] Micro-detail is footprint-gated, centrally differenced, and texture-sourced; the 1200–4200 m distance gate is gone.
+- [x] `surfaceMaterials.ts` is the single owner of material identity; `4-6` will inherit the enum.
+- [x] Ten materials synthesised into two `Texture2DArray`s; every layer has a full mip chain (assertion 55, Node *and* a device-side probe).
+- [x] Height channels mean 0.5 (assertion 53); Toksvig reduction verified against mip N−1 (assertion 54) *and* against a plain box chain, so the equality is not a tautology.
+- [x] `materialArraysMiB` is in the memory estimate and moves with `materialArrayEdge` (assertion 56).
+- [x] `TerrainMaterialPlugin.ts` and its test are deleted; `TerrainSurfacePlugin` is the single owner of terrain surface appearance.
+- [x] Roughness, AO **and F0** injection tokens present in the **processed** effect source (assertion 57), with a Node sibling matching all three anchors against the shipped Babylon files.
+- [x] The terrain effect defines neither `NORMALMAP` nor `DETAIL`; no tangent attribute exists (assertion 58).
+- [x] `useVertexColors = false`; the colour buffer carries the provisional two-material splat, with `atlasSlot` reserved at −1.
+- [x] Micro-detail is footprint-gated and texture-sourced; the 1.2–4.2 km camera-distance gate is gone, and there is no finite difference left in the shader at all — the normal is read from array B, whose gradients were centrally differenced at one texel by the synthesiser.
 
 **Gate 3B — Sampling and shading**
-- [ ] Three de-tiling scales at 13.7° and 61.2° — **not** 36.3°.
-- [ ] Triplanar above `1 − |n.y| > 0.22`, sign-flipped UVs, `textureSampleGrad`, RNM blending; 2-axis from Balanced.
-- [ ] No seam down ridges (GPU assertion).
-- [ ] Height blend is a partition of unity; material count respects the tier cap.
-- [ ] Ten distinct roughness values reach the shader; Oren-Nayar `diffuseRoughness` active.
-- [ ] Wetness response wired, driven by a constant zero until `6-5`.
-- [ ] Terrain raster ≤ 2.6 ms at Balanced.
+- [x] Three de-tiling scales at 13.7° and 61.2° — **not** 36.3°.
+- [x] Triplanar above `1 − |n.y| > 0.22`, sign-flipped UVs, `textureSampleGrad` everywhere, RNM blending; 2-axis from Balanced, 3-axis at High and Ultra, slope-stretched planar at Low.
+- [x] No seam down ridges (assertion 59, a rendered tent whose crest step is compared against the material's own texel-scale variation).
+- [x] Height blend is a partition of unity (assertion 60, 20,000 randomised inputs); material count respects the tier cap through a compiled-out define.
+- [x] Ten distinct roughness values reach the shader (assertion 61, read back from the device); Oren-Nayar `diffuseRoughness` active, with the four values the plan names pinned.
+- [x] Wetness response wired, driven by a constant zero until `6-5` — **except** submerged ground, which is unambiguous now and had to be handled (§14.2).
+- [ ] **Terrain raster ≤ 2.6 ms at Balanced** — carried open, see §14.4. The renderer has no per-pass GPU timer, so this cannot be measured without building one; the whole-frame numbers are in the committed capture report.
 
 **Gate 3C — The runway and the seasons**
-- [ ] The 0.5 m `|natural − final|` contour around the airport is not a closed convex curve.
-- [ ] `getAirportInfluence` is exactly 1.0 across the apron.
-- [ ] **Collision height inside the apron equals the earthworks profile within 1 mm.**
-- [ ] `sim.flight.test.ts` passes, checked in isolation from any rendering change.
-- [ ] No `CreateBox` runway, stripes or apron remain in `AirportSystem.ts`; hangars still present.
-- [ ] Runway edges are ragged and grass-invaded; markings are worn; skid lobes at both touchdown zones.
-- [ ] TS/WGSL airport SDF agree within 1e-3 m.
-- [ ] Deciduous ground cover responds to `dayOfYear`; rock, asphalt and concrete do not.
+- [x] The 0.5 m `|natural − final|` contour around the airport is not a closed convex curve (assertion 64).
+- [x] `getAirportInfluence` is exactly 1.0 across the apron (assertion 62).
+- [x] **Collision height inside the apron equals the earthworks profile within 1 mm** (assertion 63), with a non-vacuity check that the camber is actually applied.
+- [x] `sim.flight.test.ts` passes, checked in isolation.
+- [x] No `CreateBox` runway, stripes or apron remain in `AirportSystem.ts`; hangars still present.
+- [x] Runway edges are ragged and grass-invaded; markings are worn; rubber lobes at both touchdown zones; aggregate in the wheel paths.
+- [x] TS/WGSL airport SDF agree within 1e-3 m (assertion 65).
+- [x] Deciduous ground cover responds to `dayOfYear`; rock, asphalt and concrete do not (assertion 66).
 
 **Phase**
-- [ ] **Audit root cause #1 is closed.** Material resolution is decoupled from mesh resolution.
-- [ ] User goals **G6** (runway) and **G9** (nothing looks like plastic) served *(superseded labels — G6/G9 → **G-A**, `3-10` → **G-B**, per `RENDERING_PLAN.md` §0.4; noted 2026-08-19)*.
-- [ ] `npm run verify` green; `npm run test:gpu` green.
-- [ ] Three ownership rows added to `ARCHITECTURE.md`; the boundary test passes.
-- [ ] Baseline churned at no more than the three sanctioned points (`3-2`, `3-5`, `3-9`); the runway-approach scene is committed.
-- [ ] Decision log complete.
+- [x] **Audit root cause #1 is closed.** Material resolution is decoupled from mesh resolution: ten mipped, anisotropically filtered materials sampled per fragment, replacing one 8-bit colour per vertex.
+- [x] User goals **G-A** (the runway) and **G-B** (the seasonal ground palette) served.
+- [x] `npm run verify` green; `npm run test:gpu` green (13 files, 20 tests).
+- [x] Five ownership rows added to `owners.ts` and `ARCHITECTURE.md` (the plan expected three; `3-1`'s arrays and `3-9`'s painter earned their own); the boundary test passes.
+- [x] Baseline churned once, at the end of the phase, covering the three sanctioned points; the `runway-on-approach` scene is committed.
+- [x] Decision log complete (§13).
 
 ---
 
@@ -584,18 +588,294 @@ Ten material recipes are judged by eye. There is no test for "rock looks like ro
 
 | Date | Item | Decision | Measurement / rationale |
 |---|---|---|---|
-| — | `3-0` | The two material identities beyond §3.2's eight, and their tiling periods | *record the co-primality check* |
-| — | `3-1` | Per-material recipe constants | *record the reference photographs used* |
-| — | `3-1` | Toksvig `k` | *record the value and the mip-N comparison* |
-| — | `3-2` | Final regex anchors for roughness and AO | *record the matched text verbatim — it is minified and will change* |
-| — | `3-5` | Triplanar mode per tier | *record the terrain-raster ms for 2-axis vs 3-axis at Balanced* |
-| — | `3-6` | Transition depth `d` range | *record the value* |
-| — | `3-8` | Earthworks zone widths and crown | *record the contour test output and the collision agreement* |
-| — | `3-9` | Cut or keep the wear layer | *record against the week-6 date* |
+| 2026-08-19 | `3-0` | The two extra identities are **dry grass (2.9 m)** and **shrub (4.1 m)**; every period is re-cut to a distinct prime number of decimetres. | The plan's eight published periods are **not** mutually prime, which is the property assertion 52 tests: as decimetres they are 24, 31, 37, 43, 57, 69, 74, 91 — gravel and asphalt are an exact 2:1, and 24/57/69 share a factor of 3. Distinct primes make co-primality structural. Closest pair (23, 29 dm) realigns at 66.7 m; the five periods that could be kept unchanged were (3.1, 3.7, 4.3). |
+| 2026-08-19 | `3-0` | The enum order is the **ecotone axis**, not a free choice: indices 0–5 are the biome primaries in climatic order. | `3-2` interpolates the id and brackets it, so a climatic neighbour pair more than one step apart puts a third material in the boundary band. The first ordering put sand between shrub and rock and `approach-500ft` came back with bright closed rings around every mountain — sand is the brightest material in the table and shrub among the darkest. Assertion tightened from ≤4 steps to **exactly 1**. |
+| 2026-08-19 | `3-0` | `SHADOW_DEPTH_BYTES` 5 → 4, verified against the shipped Babylon. | The arrays pushed tiers 2 and 3 past their §5.2 ceilings; the row was checked before any feature was cut. `DepthOnlyCascadedShadowGenerator` calls `createDepthStencilTexture(comparison, true)` and stops, so the defaults apply (no stencil, format 14 = `DEPTH32_FLOAT`), and `webgpuTextureManager.js:279` maps that to `depth32float`. 64 MiB of phantom allocation at tier 2. |
+| 2026-08-19 | `3-1` | Per-material recipe constants are in `MaterialArraySynthesis.ts`; the reference targets are committed as `MATERIAL_REFERENCE_NOTES` beside them. | Citations rather than files: the repo ships **zero** image assets by design (`TERRAIN_AUDIT.md` §2.1) and Phase 3 keeps it that way. The viewer is `npm run material:preview` — ten materials across, five channels × three footprints down. Reference albedos are measured-range, not the deleted `PALETTES` table's: grassland at (0.29, 0.445, 0.215) was about three times a real sward. |
+| 2026-08-19 | `3-1` | Toksvig `k = 0.5`. Each level reduces the level **emitted** above it, so the roughening accumulates. | At `k = 1`, \|avgN\| = 0.9 takes rough 0.5 → 0.59, which visibly over-mattes mid-range rock; 0.5 gives 0.55. Mip-3 comparison against a plain box chain: every layer matter, rock +7.5 bytes, gravel +11 (that comparison IS assertion 54's non-tautology half). Normal strength had to become a declared RMS slope: the first, physically derived form left the normals so nearly parallel that the whole term was worth 0.2–0.6 of a roughness byte at mip 3 — the plan's "single most important anti-plastic measure" doing nothing. |
+| 2026-08-19 | `3-2` | Three anchors, matched text verbatim. | **Roughness** (`pbr.fragment.js:240`): `var roughness: f32=reflectivityOut.roughness;var diffuseRoughness: f32=reflectivityOut.diffuseRoughness;`. **AO**: the `);` closing `aoOut=ambientOcclusionBlock(` at ~174 — the plan's `:245` is unreachable (§3.2/C3). **F0** (`pbrBlockReflectance0`): `var specularEnvironmentR0: vec3f=reflectivityOut.colorReflectanceF0;`. Only `$1`-style back-references exist, so each anchor captures itself. |
+| 2026-08-19 | `3-5` | planar / biplanar / triplanar / triplanar per tier, from §5.3's row. | Terrain-raster ms was **not** measured per mode: `1A-1`'s report carries no per-pass GPU timer, so a 2-axis/3-axis comparison at Balanced would have been invented rather than measured. §5.3 already publishes the ladder and §7 R3's mandate (2-axis from Balanced) is satisfied at tier 1; assertion 67 is carried as an open item, see §14.4. |
+| 2026-08-19 | `3-6` | `d = mix(0.06, 0.5, saturate(fp / 3))`, exactly as specified. | Partition of unity over 20,000 randomised inputs including the all-equal degenerate case (assertion 60), plus the shipped TS mirror pinned against the shader's tokens. |
+| 2026-08-19 | `3-8` | Camber 0.35 m measured **downward** from the centreline; cut exponent 0.62, fill 1.75, bench ±0.55 m; blend distance modulated **inward only** by up to 45% at a 260 m wavelength. | Downward because `airport.elevation` is the aircraft's spawn datum and the height every pre-Phase-3 test was written against — crowning upward would have raised the runway 0.35 m relative to spawn. Chord error 5.8 mm at 8 m spacing (the plan's 11 mm assumed a 45 m width; the graded width is 62 m). Inward-only keeps `terrainBlendDistance` a hard outer bound, so `getAirportInfluence == 0` still implies untouched terrain. Contour test: assertion 64 finds chords of the 0.5 m contour whose midpoints are outside it. Collision agreement: **< 1 mm** across a 25 × 17 apron sweep (assertion 63). |
+| 2026-08-19 | `3-8` | Cut blends into fill over 4 m of height difference rather than being branched on; bench 0.42 m. | Found by adversarial review of the diff, not by a test. The two branches differ by more than their exponent — the bench is `+bench` for fill and `−bench` for cut — so `if (natural < platform)` put a `2 × bench` step on the closed contour where they meet: a **ring of 1.09 m cliffs around the airport**, in the collision surface as much as the rendered one. After the blend the worst 0.25 m step in the earthworks band is 0.11–0.14 m, comparable to the natural terrain's own, and a relative continuity invariant now pins it. |
+| 2026-08-19 | `3-9` | The wear layer is **kept**, in full: ragged SDF edge, rubber lobes at both touchdown zones, worn centreline and threshold bars, aggregate in the wheel paths. The apron slab is deleted and **not** replaced. | `R-3G`'s designated cut was not needed. The apron is not a cut: the plan lists it among the deletions and asks for no successor, and it sat 84 m outside the graded platform on sloping natural terrain. |
+| 2026-08-19 | `R-26` | Ground bounce = `skyHorizon × meanSurfaceAlbedo × 1.15`; the SH below-horizon attenuation floors at the albedo, not at 0.25. | The calibration constant reproduces the retired `ground` palette row at the reference day+clear key to within 0.03 on red and green. The blue it loses was never physical. Winter bounces > 1.5× summer (asserted), which `D-6`'s constant floor could not express. |
+
+---
+
+## 14. Implementation record (2026-08-19)
+
+Everything below is what actually landed. The plan above is unedited except
+for the status banner and the two tables it asked to have filled.
+
+### 14.1 What was built
+
+| Item | Landed as | Notes |
+|---|---|---|
+| `3-0` | `terrain/surfaceMaterials.ts` + three `WebGpuQualityProfile` fields + a derived `materialArrays` budget row | The contract went in first, exactly as `C6` argues. |
+| `3-1` | `terrain/MaterialArraySynthesis.ts`, `toksvigReduce` in `core/TextureArrayMips.ts`, `npm run material:preview` | CPU synthesis (D-3-2). Viewer on day one. |
+| `3-2` + `3-3` | `terrain/TerrainSurfacePlugin.ts`; `TerrainMaterialPlugin.ts` and its test **deleted** | `C1`'s absorption. |
+| `3-4`–`3-7` | The same file's WGSL | De-tiling, triplanar, height blend, per-material BRDF. |
+| `3-8` | `terrain/RunwayEarthworks.ts`; `world/terrain.ts` collision fast path; `flattenHeightForAirport` **deleted** | Class K. Merged with nothing else. |
+| `3-9` | `terrain/RunwaySurface.ts`; `AirportSystem.ts` boxes **deleted** | 28 coplanar boxes gone. |
+| `3-10` | `surfaceSeasonalResponse` in the plugin | Anchored at the reference day. |
+| `R-26` | `AtmosphereSystem.setSurfaceAlbedo`, `SkyEnvironmentProbe` ground-bounce albedo; the palette's `ground` row **deleted** | `D-6` and `D-9` retired. |
+
+Sixteen assertions were planned; sixteen landed, one carried open (67), and two
+more were added after an adversarial review of the diff: an earthworks
+continuity invariant (§14.2 D-3-13, a defect none of the sixteen could see) and
+a GPU test that compiles **all twelve** `triplanar × material-cap × runway`
+define combinations — a branch no shipping tier exercises during development
+would otherwise stay invisible until somebody changed a quality setting. Two of
+the original sixteen were strengthened past the plan: 54 now also compares against a plain box
+chain, so it cannot pass as a tautology over its own implementation, and 57
+gained a Node sibling that matches the anchors against the shipped Babylon
+files, so a dependency bump fails `npm test` rather than waiting for a GPU run.
+
+### 14.2 Deviations
+
+Ordered by how much they change the plan.
+
+**D-3-1 — `3-1` synthesises on the CPU (the plan says GPU compute for mip 0).**
+`C2` already moved the mip reduction to the CPU on the grounds that a one-time
+startup cost belongs on no frame budget. The split does not survive contact
+with its own conclusion: `RawTexture2DArray.updateMipLevel` uploads CPU bytes,
+so a GPU mip 0 must be read **back** before the Toksvig reduction can run — a
+full 2 × 10 × edge² readback costing more than the synthesis it accelerates.
+CPU synthesis also makes assertions 53/54/55 ordinary Node tests instead of
+GPU readbacks, and it is the shape `2-11`'s `FoliageAtlas` and `2-17`'s
+`ImpostorAtlas` already ship. **Measured: 1.07 s for all ten 512² layers**, once,
+on seed change.
+
+**D-3-2 — Ultra's material array edge is 512, not §5.3's 1024.** Follows from
+D-3-1: 1024² costs ~4.3 s of blocked main thread at startup, for a resolution
+the de-tiling warp and 16× anisotropy largely mask. It also returned 80 MiB to
+a tier that was sitting at 96% of its ceiling. `materialArrayEdge` stays a live
+tier knob (Low is 256) and the row reopens the moment synthesis moves to GPU
+compute — which is precisely the optimisation `C2` deferred.
+
+**D-3-3 — the enum order is the ecotone axis, and the splat interpolates the
+material id.** The plan specifies the lane layout `(materialIdA, materialIdB,
+weightB, atlasSlot)` but not how a fragment reads an *interpolated* id. Flat
+interpolation gives hard triangle edges at 8 m; naive rounding gives a hard
+edge at the midpoint. Instead the primary id is treated as a continuous
+coordinate and the fragment brackets the two integers it lies between — which
+is smooth by construction, and only correct if adjacent ids are materials that
+actually meet. So indices 0–5 are the chain of biome primaries in climatic
+order. **This was measured, not assumed**: the first ordering put sand between
+shrub and rock and the `approach-500ft` capture came back with bright closed
+rings around every mountain. The secondary id is rounded, and its weight fades
+to zero at the midpoint between two integers, because rounding an interpolated
+id only means anything where the neighbouring vertices agree.
+
+**D-3-4 — the tiling periods are re-cut to distinct primes in decimetres.** The
+plan's eight published periods are not mutually prime, which is the property
+assertion 52 tests: 3.7 and 7.4 are an exact 2:1, and 24/57/69 dm share a
+factor of 3. Three of the eight are unchanged.
+
+**D-3-5 — the camber is measured downward from the centreline.** The plan says
+"0.35 m crown" without a datum. `airport.elevation` is the aircraft's spawn
+datum and the height every pre-Phase-3 test was written against, so the
+centreline keeps it exactly and the camber lowers the shoulders. Crowning
+upward would have raised the whole runway 0.35 m relative to spawn.
+
+**D-3-6 — the collision NORMAL follows the camber too.** The plan mandates only
+the height. A flat normal on a cambered surface is the same lie one derivative
+up; the cross-slope is ~1.3° at the graded edge, which is what a real runway
+has. `sim.flight.test.ts` passes unchanged.
+
+**D-3-7 — the apron slab is deleted and not replaced**, and `3-9` keeps its
+full wear layer. `R-3G`'s designated cut was not needed.
+
+**D-3-8 — albedo is stored as `sqrt(linear)` and the layers are high-passed.**
+Neither is in the plan; both are consequences of shipping RGBA8 arrays that are
+sampled at range. Linear RGBA8 gives forest floor a mean albedo byte of 15 and
+asphalt 11 — a dozen usable levels for the two materials that cover most of the
+world. And a layer that still carries metre-scale energy at mip 6 shows its
+whole tiling period as a regular quilt: measured at ~1 km on `approach-500ft`,
+a 4.3 m sand tile repeating every four screen pixels. Both fixes are one
+instruction in the shader; the hundred-metre and kilometre variation the
+high-pass removes is put back by `3-4`'s macro term, where it does not repeat.
+
+**D-3-9 — the submerged half of `3-7`'s wetness response is live now.** The plan
+wires wetness to a constant zero until `6-5`. Submerged ground cannot wait:
+the WATER biome's primary must be sand (beach is its only ecotone neighbour)
+and dry sand is the brightest material in the table, so every lake rendered as
+a pale seabed until the wetting and a silt tint were applied. The *driven*
+field is still a constant zero.
+
+**D-3-10 — `SHADOW_DEPTH_BYTES` corrected from 5 to 4.** Not a Phase 3 item, but
+Phase 3's spend is what made the row load-bearing: the arrays pushed tiers 2
+and 3 past their §5.2 ceilings and the contract has to be checked before a
+feature is cut. The CSM's remaining attachment is plain `depth32float` — 64 MiB
+of phantom allocation at tier 2, verified against the shipped Babylon rather
+than assumed.
+
+**D-3-11 — five ownership rows, not three.** `3-1`'s arrays and `3-9`'s painter
+are separately owned artifacts with their own invariants.
+
+**D-3-12 — every band-based recipe curves its lines.** A perfectly periodic
+sub-metre band lattice (rock joints, sand ripples, concrete float sweeps, snow
+sastrugi) moirés into a metre-scale quilt at grazing angles. Real jointing,
+bedding and wind ripples all wander; making them wander removes the artefact
+and makes them read as geology.
+
+**D-3-13 — cut blends into fill; it is not branched on.** Not a deviation from
+the plan so much as a defect the plan could not have anticipated: `3-8`'s
+cut and fill differ by more than their batter grade, and switching between them
+on `natural < platform` put a `2 × bench` step on the closed contour where they
+meet. A ring of 1.09 m cliffs around the airport, in the collision surface as
+much as the rendered one. Caught by an adversarial review of the diff — not by
+any of the sixteen assertions, which is worth recording: assertion 63 checks
+the apron *interior*, 64 checks the contour's convexity, and neither looks at
+the batter's continuity. A relative continuity invariant now does.
+
+**D-3-14 — eleven defects from an adversarial review of the diff, nine fixed
+and two accepted.** The review is recorded here because most of what it found
+was invisible to the sixteen assertions, and because two of the fixes changed
+the design rather than a line:
+
+- **The planar tangent frame normalised the zero vector** on any surface whose
+  normal is exactly (±1, 0, 0) — which the clipmap's own crack-guard skirts
+  carry on two of their four sides. NaN normals on the Low tier, reproduced on
+  hardware. It is now the standard least-aligned-axis pick.
+- **The triplanar tangent normals were not sign-flipped** to match the
+  sign-flipped UVs, so the detail normal was mirrored against the pattern it
+  belonged to: the ridge seam `3-5` exists to remove, moved out of albedo and
+  into lighting where it is harder to see and just as wrong.
+- **The vertex splat's secondary material id was dropped entirely** (a design
+  change). Rounding an interpolated id paints every intermediate id it sweeps
+  through at full weight — a grassland/forest boundary lays a band of snow and
+  a band of rock along itself — and the "confidence" gate that was supposed to
+  suppress that only closes at half-integers, where the problem is not. The
+  third candidate is now purely fragment-derived (slope and seasonal snow);
+  lanes y and z still carry the biome's secondary cover for `4-6` to inherit.
+- **Assertion 59 was vacuous.** The tent it renders had faces at
+  `1 − |n.y| = 0.219`, under the 0.22 triplanar threshold by a hair, so no test
+  in the suite executed the projected branch at all. The tent is steeper and
+  the geometry now asserts it clears the threshold.
+- **Asphalt's and concrete's aggregate lattices were sub-texel** at every
+  shipping array edge (664 and 445 cells across 512 texels) — noise at the
+  Nyquist limit, not aggregate. Feature sizes are clamped to ≥2.5 texels.
+- **`fitRoughnessToSpec`'s degenerate guard was unreachable**, and making it
+  reachable immediately caught a real deficiency: the shrub recipe wrote a
+  constant roughness, which the fit was stretching across the whole band.
+- **The hangars floated.** They stood on the apron slab `3-9` deletes, pinned
+  to the airport datum, 118 m across the centreline — outside the graded
+  platform, on the batter. They read the ground now.
+- **The material arrays did not follow a tier change**, so the §5.2 memory row
+  (derived from `materialArrayEdge`) and the actual allocation diverged the
+  moment anyone touched quality — the decorative-row failure assertion 56
+  exists to prevent. They are re-synthesised on the same path that already
+  rebuilds every page.
+- **The runway masks antialiased against the isotropic footprint**, which at
+  the grazing angles a runway is always seen at dissolved a 0.9 m centreline
+  into a smear. The world derivatives are projected onto the runway's own axes
+  and each mask uses the one its edge normal points along.
+- **Accepted, recorded:** the mip chain box-filters gamma-2.0 albedo as if it
+  were linear (measured drift ≤3.0%, most under 1%), and the physics runway
+  rectangle disagrees with the painted ragged edge over a ~2 m band (the §1.3
+  contract binds height, which both authorities agree on).
+
+### 14.3 What the plan got right that was worth the trouble
+
+- **`C3`.** The plan's AO anchor at `:245` is genuinely unreachable, and a
+  `!regex` that matches nothing is silent. Without the correction AO would have
+  looked wired and never applied.
+- **`C1`.** `3-3` really did collapse into three edits inside one file.
+- **The debug viewer on day one.** It caught the vegetation reading as
+  camouflage blotches and the forest-floor litter being invisible, before
+  either reached a capture.
+- **§10's "what cannot be asserted".** It is right that ten recipes are judged
+  by eye — but the phase's worst defects were not in the recipes. They were in
+  the shader's handedness, in an interpolation that could not carry what it was
+  asked to, and in a test that had quietly gone vacuous. None of those is a
+  matter of taste, and none was caught by looking at pictures.
+- **§3.4.** The crown/collision desynchronisation is exactly as described, and
+  the four Phase-0 invariants would not have caught it.
+
+### 14.3b What it cost, measured
+
+The capture set was rebaselined once, at the end of the phase, covering all
+three sanctioned churn points. Comparing the committed pre-Phase-3 report
+against the new one on the same machine:
+
+- **Draw calls fell by exactly 70 on every shot.** That is `3-9` deleting the
+  runway box, ~27 marking boxes and the apron slab, and their shadow-pass
+  draws with them.
+- **GPU p95 fell on twelve of thirteen shots**, and frame rate rose on ten.
+  `approach-500ft` went 14.20 → 11.80 ms, `reference-viewport` 13.35 → 11.88,
+  `night` 13.40 → 12.00. A phase that adds a ten-material surface system came
+  out net *faster*, because the meshes it deleted cost more than the shading it
+  added.
+- **One shot regressed and is re-pinned: `canopy-1200ft`**, 10.86 → 12.16 ms
+  GPU p95, 29.9 → 26.6 fps, floor 27 → 24. It is the 45°-down cockpit shot over
+  forest — most of the frame is near-field terrain between the trees, which is
+  where ten mipped materials cost most, and there are no airport meshes in it
+  to pay for them.
+- The single largest optimisation was **skipping negligible height-blend
+  candidates** rather than sampling them and multiplying by zero: on
+  `cruise-horizon` that was the difference between 51.7 fps and 79.3.
+- Memory: 6.7 MiB at tier 0 and 26.7 MiB above it, against §5.2's 5.4/56/56
+  row. Tier totals land at 144 / 289 / 644 / 866 MiB against ceilings of
+  260 / 480 / 700 / 1000.
+
+**A caveat on the fps figures, stated because it matters more than the
+figures.** This box is not the reference machine, and it was warm: the
+committed *pre-Phase-3* report already recorded four shots below their own
+committed floors (`approach-500ft` 22.3 vs 24, `reference-viewport` 20.0 vs 21,
+`winter-noon` 21.3 vs 24, `night` 22.6 vs 24). Phase 3's rebaseline run put all
+four back above their floors, and two subsequent verification runs drifted
+under again by 1–2 fps with no code change. Only `canopy-1200ft`'s floor was
+re-pinned, because only that shot's regression is attributable — its GPU p95
+rose in the same run where every other shot's fell. `drawCalls`, `triangles`
+and GPU p95 are the portable numbers here; the fps floors bind on the reference
+machine.
+
+### 14.4 Carried open
+
+- **Assertion 67 — terrain raster ≤ 2.6 ms at Balanced.** Not measured, because
+  the renderer has no per-pass GPU timer: `1A-1`'s report carries whole-frame
+  `gpuFrameMsP95` and nothing finer. Measuring it means building the timer,
+  which is a performance-owned item rather than a terrain-material one. The
+  same gap makes the §13 row for `3-5`'s 2-axis/3-axis comparison
+  unmeasurable. Recommended: fold a per-pass GPU timestamp into Phase 4's
+  budget work, where `4-4` and `4-8b` need it too.
+- **`R-25`'s interim, unchanged.** Ten well-synthesised materials are still
+  selected by the 8-bit per-vertex threshold cascade the audit indicts. The
+  ecotone ordering removes the *worst* consequence (a third material appearing
+  in every boundary band), and the fragment evaluates slope and snow at
+  fragment resolution, but the boundaries themselves are still iso-contours in
+  height and are visible as thin lines at long range. That is `4-6`'s to close,
+  and `R-27`'s classifier-consumers contract is still owed before Phase 4
+  starts.
+- **`4-2` fills `atlasSlot`.** The lane is reserved and written as −1.
+- **`runway-on-approach`'s ceilings are pinned from one run, not three**, with
+  a widened margin. Re-pin on the reference machine.
+- **The physics runway rectangle and the painted pavement edge disagree over a
+  ~2 m band** (`RunwaySurface.ts` records it). §1.3 binds the surface height,
+  which both authorities do agree on; closing the friction gap would mean
+  evaluating the ragged-edge noise in the collision hot path.
 
 ---
 
 ## Appendix A — File manifest
+
+> **As shipped, 2026-08-19.** The manifest below was accurate. What it did not
+> anticipate: `scripts/material-preview.mts` (the `3-1` debug viewer's PNG
+> encoder, driven by the `3-1` Node test under `VITE_MATERIAL_PREVIEW=1`), five
+> ownership rows rather than three, four new test files
+> (`render.webgpu-surface-materials`, `render.webgpu-material-arrays`,
+> `render.webgpu-terrain-surface`, `gpu/terrain-surface-compile`), and edits to
+> `core/TextureArrayMips.ts` (the Toksvig kernel), `atmosphere/AtmosphereSystem.ts`
+> and `atmosphere/SkyEnvironmentProbe.ts` (`R-26`), `scripts/perf-capture.mts`
+> (the `runway-on-approach` scene), `sim.terrain-authority.test.ts` (three new
+> invariants), `render.webgpu-budget.test.ts`, `render.webgpu-core.test.ts`,
+> `render.webgpu-sky-probe.test.ts` and `world.test.ts`.
+>
+> `flattenHeightForAirport` was **deleted** rather than modified — the
+> earthworks profile replaces it outright, so the deletion list is one entry
+> longer than planned.
 
 **New (5)**
 `terrain/surfaceMaterials.ts` · `terrain/TerrainSurfacePlugin.ts` · `terrain/MaterialArraySynthesis.ts` · `terrain/RunwayEarthworks.ts` · `terrain/RunwaySurface.ts`
