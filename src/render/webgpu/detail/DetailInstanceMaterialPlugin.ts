@@ -54,18 +54,8 @@ let detailOrientation = normalize(vertexInputs.instanceOrientation);
 let detailTip = clamp(positionUpdated.y, 0.0, 1.0);
 var detailLocal = positionUpdated
   * vec3f(detailHeight * detailRadial, detailHeight, detailHeight * detailRadial);
-// Absorbed wind sway (2-13 replaces this with the three-band model): phase
-// arrives in turns, response in [0, 1]; taller instances sway slower.
 let detailWindPhaseRadians = vertexInputs.instanceState.z * 6.2831853;
 let detailWindResponse = vertexInputs.instanceState.w;
-let detailWindSpeed = 1.35 - min(detailHeight, 36.0) * 0.012;
-let detailWindAngle = uniforms.detailWindTime * detailWindSpeed + detailWindPhaseRadians;
-let detailWindGust = sin(detailWindAngle)
-  + 0.32 * sin(detailWindAngle * 1.73 + vertexInputs.instanceState.y * 6.2831853);
-let detailWindBend = detailTip * detailTip * detailWindResponse * 0.072 * detailHeight;
-detailLocal.x += detailWindGust * detailWindBend;
-detailLocal.z += cos(detailWindAngle * 0.83 + vertexInputs.instanceState.y * 3.1)
-  * detailWindBend * 0.58;
 #ifdef DETAIL_FOLIAGE_ATLAS
 // 2-12: character modifiers from the variant byte's high three bits — real
 // stands are not all intact symmetric specimens, and this is the cheapest
@@ -82,8 +72,51 @@ if (detailModifierBits == 2.0 || detailModifierBits == 4.0) {
   detailLocal.y = min(detailLocal.y, detailBreak + (detailLocal.y - detailBreak) * 0.06);
 }
 #endif
-positionUpdated = detailRotateByQuaternion(detailLocal, detailOrientation)
-  + vertexInputs.instancePosition;
+// 2-13 — three-band wind, WORLD space (the absorbed single band bent in
+// pre-rotation local axes, so a tree's sway direction spun with its yaw).
+// Direction/strength/gust arrive from the shared src/world wind field
+// sampled once per frame at the observer; the phase byte decorrelates
+// instances, the response byte scales all three bands.
+var detailSwayed = detailRotateByQuaternion(detailLocal, detailOrientation);
+let detailWindDir = vec2f(uniforms.detailWind.x, uniforms.detailWind.y);
+let detailWindCross = vec2f(-detailWindDir.y, detailWindDir.x);
+let detailWindStrength = uniforms.detailWind.z
+  * (1.0 + 0.35 * uniforms.detailWind.w
+    * sin(uniforms.detailWindTime * 0.9 + detailWindPhaseRadians));
+// Band 1 — trunk sway: slow whole-stem lean, mean deflection held downwind.
+let detailTrunkAngle = uniforms.detailWindTime * (0.5 + 0.3 * uniforms.detailWind.z)
+  + detailWindPhaseRadians;
+let detailTrunkBend = detailTip * detailTip * detailWindResponse
+  * detailWindStrength * detailHeight * 0.05;
+detailSwayed += vec3f(detailWindDir.x, 0.0, detailWindDir.y)
+  * (sin(detailTrunkAngle) * 0.7 + 0.3) * detailTrunkBend;
+detailSwayed += vec3f(detailWindCross.x, 0.0, detailWindCross.y)
+  * sin(detailTrunkAngle * 0.71 + 1.7) * detailTrunkBend * 0.3;
+// Band 2 — branch flex: the absorbed 2-11a band retuned; taller trees flex
+// slower, gust composite kept, now wind-aligned with cross-wind wobble.
+let detailBranchSpeed = 1.35 - min(detailHeight, 36.0) * 0.012;
+let detailBranchAngle = uniforms.detailWindTime * detailBranchSpeed + detailWindPhaseRadians;
+let detailBranchGust = sin(detailBranchAngle)
+  + 0.32 * sin(detailBranchAngle * 1.73 + vertexInputs.instanceState.y * 6.2831853);
+let detailBranchBend = detailTip * detailWindResponse
+  * detailWindStrength * detailHeight * 0.035;
+detailSwayed += vec3f(detailWindDir.x, 0.0, detailWindDir.y)
+  * detailBranchGust * detailBranchBend;
+detailSwayed += vec3f(detailWindCross.x, 0.0, detailWindCross.y)
+  * cos(detailBranchAngle * 0.83 + vertexInputs.instanceState.y * 3.1)
+  * detailBranchBend * 0.58;
+#ifdef DETAIL_FOLIAGE_ATLAS
+// Band 3 — leaf flutter: high-frequency card jitter, spatially decorrelated
+// through the card's local position so one crown shimmers rather than
+// shifting as a block. Gust speeds the flutter, never the amplitude.
+let detailFlutterPhase = dot(detailLocal.xz, vec2f(12.9898, 78.233))
+  + detailLocal.y * 4.1 + detailWindPhaseRadians;
+let detailFlutter = sin(uniforms.detailWindTime
+  * (7.0 + 3.0 * uniforms.detailWind.w) + detailFlutterPhase);
+detailSwayed += vec3f(detailWindDir.x, 0.35, detailWindDir.y)
+  * detailFlutter * detailWindResponse * detailWindStrength * detailHeight * 0.006;
+#endif
+positionUpdated = detailSwayed + vertexInputs.instancePosition;
 #ifdef DETAIL_FOLIAGE_ATLAS
 // Baked crown occlusion rides the prototype's vertex-colour alpha; a dead
 // top bleaches upward.
@@ -145,9 +178,11 @@ let detailCard = textureSample(
 if (fragmentInputs.detailAtlasData.z >= 0.0) {
   // 2-12: the shipping alpha test (Castano coverage preserved per mip in
   // the atlas bake); a thinned-crown modifier raises the threshold so the
-  // canopy loses texels, not quads.
-  var detailAlphaTest = 0.5;
-  if (detailModifierDecoded == 3.0) { detailAlphaTest = 0.72; }
+  // canopy loses texels, not quads. 2-13a: the tint's ALPHA lane is the
+  // seasonal leaf fraction — as deciduous crowns shed, the threshold lifts
+  // toward 0.86 and the canopy decays to bare speckle, texel by texel.
+  var detailAlphaTest = mix(0.86, 0.5, clamp(fragmentInputs.detailInstanceTint.a, 0.0, 1.0));
+  if (detailModifierDecoded == 3.0) { detailAlphaTest = max(detailAlphaTest, 0.72); }
   if (detailCard.a < detailAlphaTest) { discard; }
   surfaceAlbedo = surfaceAlbedo * detailCard.rgb;
 }
@@ -163,6 +198,11 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private timeSeconds = 0;
   private radialAspect = 1;
   private foliageAtlas: BaseTexture | null = null;
+  /** 2-13: (dirX, dirZ, strength01, gust01) from the shared wind field. */
+  private windDirectionX = 0.70710678;
+  private windDirectionZ = 0.70710678;
+  private windStrength = 0.25;
+  private windGust = 0;
 
   constructor(material: PBRMaterial) {
     // enable=false at super: registerForExtraEvents must be set BEFORE
@@ -228,6 +268,22 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     this.timeSeconds = Number.isFinite(value) ? value : 0;
   }
 
+  /**
+   * 2-13: the frame's wind snapshot — a unit XZ direction, a strength in
+   * [0, 1] (speed over MAX_WIND_SPEED) and a gust scalar in [0, 1]. Sampled
+   * once per frame from src/world's shared field at the observer; the
+   * per-instance phase/response bytes supply all spatial variation.
+   */
+  setWind(directionX: number, directionZ: number, strength: number, gust: number): void {
+    const length = Math.hypot(directionX, directionZ);
+    if (Number.isFinite(length) && length > 1e-6) {
+      this.windDirectionX = directionX / length;
+      this.windDirectionZ = directionZ / length;
+    }
+    this.windStrength = Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0;
+    this.windGust = Number.isFinite(gust) ? Math.min(1, Math.max(0, gust)) : 0;
+  }
+
   override getAttributes(attributes: string[]): void {
     for (const attribute of DETAIL_INSTANCE_ATTRIBUTES) {
       if (!attributes.includes(attribute.kind)) attributes.push(attribute.kind);
@@ -246,6 +302,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       ubo: [
         { name: "detailWindTime", size: 1, type: "float" },
         { name: "detailRadialAspect", size: 1, type: "float" },
+        { name: "detailWind", size: 4, type: "vec4" },
       ],
     };
   }
@@ -253,6 +310,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   override bindForSubMesh(uniformBuffer: UniformBuffer): void {
     uniformBuffer.updateFloat("detailWindTime", this.timeSeconds);
     uniformBuffer.updateFloat("detailRadialAspect", this.radialAspect);
+    uniformBuffer.updateFloat4(
+      "detailWind",
+      this.windDirectionX,
+      this.windDirectionZ,
+      this.windStrength,
+      this.windGust,
+    );
   }
 
   override getCustomCode(

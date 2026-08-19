@@ -319,6 +319,13 @@ export function sampleTerrainClimate(world: WorldDefinition, x: number, z: numbe
  */
 export const TERRAIN_REFERENCE_DAY_OF_YEAR = 171;
 
+/**
+ * Reference-day snowline altitude above sea level, metres — the anchor the
+ * seasonal descent (R-13) lowers. Exported for 2-13a: canopy snow uses the
+ * same snowline the ground blanket does, per the seasonalSnowCover rule.
+ */
+export const TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS = 1_520;
+
 /** Warmest day of the year (thermal lag ~1 month past the solstice). */
 const HOTTEST_DAY_OF_YEAR = 199;
 /** Peak-to-trough annual temperature swing at the poles, Kelvin. */
@@ -477,7 +484,8 @@ function seasonalSnowCover(
   const shift = seasonalTemperatureShift(dayOfYear, world.latitudeDegrees);
   if (shift >= 0) return 0;
   const snowline =
-    world.seaLevel + 1_520 + shift * METERS_PER_NORMALIZED_TEMPERATURE;
+    world.seaLevel + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS
+    + shift * METERS_PER_NORMALIZED_TEMPERATURE;
   const heightBand = saturate((height - (snowline - 80)) / 120);
   const coverFromHeight = heightBand * heightBand * (3 - 2 * heightBand);
   const temperatureBand = saturate((0.2 - (temperature + shift)) / 0.06);

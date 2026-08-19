@@ -123,6 +123,8 @@ export interface WorldDetailRuntimeOptions {
   readonly cellSizeMeters?: number;
   /** Sea level anchoring the density field's shoreline/treeline (1B-7). */
   readonly seaLevelMeters?: number;
+  /** 2-13a: world latitude for the seasonal kernel. Default 45°N. */
+  readonly latitudeDegrees?: number;
   /**
    * Enables off-main-thread generation (1B-10): the worker rebuilds the same
    * world from this seed and streams cells back. Omit it (tests, headless
@@ -275,6 +277,13 @@ export class WorldDetailRuntime {
     this.dayOfYear = dayOfYear;
   }
 
+  /** 2-13: the frame's wind snapshot, forwarded to every instance plugin. */
+  setWind(directionX: number, directionZ: number, strength: number, gust: number): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setWind(directionX, directionZ, strength, gust);
+    }
+  }
+
   get statistics(): WorldDetailStatistics {
     return this.statisticsValue;
   }
@@ -417,6 +426,8 @@ export class WorldDetailRuntime {
           densityMultiplier: profile.vegetationDensity,
           terrainSample: this.options.terrainSample,
           seaLevelMeters: this.options.seaLevelMeters ?? 0,
+          dayOfYear: this.dayOfYear,
+          latitudeDegrees: this.options.latitudeDegrees ?? 45,
         });
         this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
         this.cumulativeGeneratedCells += 1;

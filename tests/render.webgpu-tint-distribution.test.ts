@@ -37,6 +37,10 @@ function collectTrees(): DetailTreePlacement[] {
         densityMultiplier: 1,
         terrainSample: sampler,
         seaLevelMeters: 0,
+        // The distribution under measurement is the reference-day (summer)
+        // one — at the day-0 default the 2-13a seasonal crown legitimately
+        // collapses deciduous hue variance (leaf fall + snow whitening).
+        dayOfYear: 171,
       });
       trees.push(...cell.trees);
     }
@@ -146,6 +150,8 @@ describe("tree tint distribution (2-12)", () => {
           densityMultiplier: 1,
           terrainSample: sampler,
           seaLevelMeters: 0,
+          // Reference-day distribution — see collectTrees.
+          dayOfYear: 171,
         });
         shrubs.push(...cell.shrubs);
       }

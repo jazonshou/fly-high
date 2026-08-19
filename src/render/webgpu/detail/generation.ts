@@ -1,4 +1,9 @@
-import { TerrainBiome } from "@/src/world";
+import {
+  TerrainBiome,
+  TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
+  seasonalSnowlineDescentMeters,
+  seasonalWinterFraction,
+} from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
 import { hashSeed } from "@/src/world/seed";
 import { densityField, type VegetationDensitySample } from "./densityField";
@@ -208,6 +213,84 @@ function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
 const CONIFER_SPECIES: ReadonlySet<TreeSpecies> = new Set(["pine", "cedar", "spruce"]);
 
 /**
+ * 2-13a — autumn hue target (turns) and blend strength per DECIDUOUS
+ * species; evergreens are absent. Maple turns red-orange, birch clear
+ * yellow, oak russet, willow/hazel yellow-olive.
+ */
+const AUTUMN_HUE: Readonly<Partial<Record<TreeSpecies | ShrubSpecies, readonly [number, number]>>> = {
+  oak: [0.075, 0.75],
+  maple: [0.02, 0.85],
+  birch: [0.115, 0.9],
+  willow: [0.1, 0.7],
+  hazel: [0.09, 0.8],
+};
+
+function smootherStep(edge0: number, edge1: number, value: number): number {
+  const t = clamp((value - edge0) / Math.max(edge1 - edge0, 1e-9), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * 2-13a — the seasonal crown, R-13's kernel made visible. Deciduous species
+ * turn through their autumn hue (winterFraction 0.12-0.42), then shed: the
+ * tint's ALPHA lane carries the leaf fraction (1 = full crown) and the
+ * fragment stage lifts the alpha test as it falls, so the canopy loses
+ * texels progressively toward bare speckle. Conifers hold, dimming ~7% at
+ * the depth of winter. Above the descending snowline the crown whitens
+ * toward the unorm8 tint ceiling (slope-shedding weighted, matching
+ * seasonalSnowCover's ground rule) — full snow-white needs an albedo term
+ * beyond the tint lane, deferred to 2-17a with the impostor season buckets.
+ * Per-stem phenology jitter (±0.06 winterFraction) makes stands turn
+ * tree-by-tree rather than by calendar row.
+ */
+function applyFoliageSeason(
+  color: readonly [number, number, number, number],
+  species: TreeSpecies | ShrubSpecies,
+  season: FoliageSeason,
+  phenologyJitter: number,
+  terrainHeightMeters: number,
+  terrainSlope: number,
+): readonly [number, number, number, number] {
+  const winter = clamp(season.winterFraction + (phenologyJitter - 0.5) * 0.12, 0, 1);
+  let [r, g, b] = color;
+  let alpha = color[3];
+  const autumn = AUTUMN_HUE[species];
+  if (autumn) {
+    const [targetHue, strength] = autumn;
+    const autumnBlend = smootherStep(0.12, 0.42, winter) * strength;
+    if (autumnBlend > 0) {
+      const [hue, saturation, value] = rgbToHsv(r, g, b);
+      let hueDelta = targetHue - hue;
+      hueDelta -= Math.round(hueDelta);
+      const [ar, ag, ab] = hsvToRgb(
+        hue + hueDelta * autumnBlend,
+        clamp(saturation * (1 + 0.25 * autumnBlend), 0, 1),
+        clamp(value * (1 + 0.16 * autumnBlend), 0, 1),
+      );
+      r = ar; g = ag; b = ab;
+    }
+    alpha = alpha * (1 - smootherStep(0.34, 0.7, winter));
+  } else {
+    const winterDim = 1 - 0.07 * winter;
+    r *= winterDim; g *= winterDim; b *= winterDim;
+  }
+  const snowBand = smootherStep(
+    season.snowlineMeters - 140,
+    season.snowlineMeters + 40,
+    terrainHeightMeters,
+  );
+  const slopeShedding = 1 - clamp((terrainSlope - 0.55) * 2.2, 0, 1);
+  const seasonGate = smootherStep(0.15, 0.35, winter);
+  const snowCover = snowBand * slopeShedding * seasonGate * 0.85;
+  if (snowCover > 0) {
+    r += (1 - r) * snowCover;
+    g += (1 - g) * snowCover;
+    b += (1 - b) * snowCover;
+  }
+  return [clamp(r, 0, 1), clamp(g, 0, 1), clamp(b, 0, 1), clamp(alpha, 0, 1)];
+}
+
+/**
  * 2-12: tint DISTRIBUTION, not tint storage. Sampled in HSV: within a
  * species, hue σ ≈ 6–9° (broadleaf wider than conifer), saturation σ ≈ 0.10
  * relative, value σ ≈ 0.12. The mean is STAND-correlated — drawn from the
@@ -324,7 +407,19 @@ interface ScatterContext {
   readonly density: number;
   readonly seaLevelMeters: number;
   readonly dayOfYear: number;
+  readonly season: FoliageSeason;
   readonly grid: ScatterTerrainGrid;
+}
+
+/**
+ * 2-13a — the cell's seasonal state, computed once from R-13's anchored
+ * kernel. `winterFraction` is 0 at the reference midsummer day (the tuned
+ * world is untouched) and approaches 1 at the depth of winter;
+ * `snowlineMeters` is the canopy-snow altitude, descending with the season.
+ */
+export interface FoliageSeason {
+  readonly winterFraction: number;
+  readonly snowlineMeters: number;
 }
 
 function fieldAt(
@@ -558,7 +653,14 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor),
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
-      color: treeColor(species, random, stand.tintCentre, dimensions.individualAge),
+      color: applyFoliageSeason(
+        treeColor(species, random, stand.tintCentre, dimensions.individualAge),
+        species,
+        context.season,
+        random(),
+        y,
+        blockSample.slope,
+      ),
       standAge: stand.standAge,
       selection: random(),
     }));
@@ -590,7 +692,14 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       radiusMeters: radius,
       windPhaseRadians: random() * TAU,
       windResponse: 0.78 + random() * 0.38,
-      color: shrubColor(species, random, stand.tintCentre, maturity),
+      color: applyFoliageSeason(
+        shrubColor(species, random, stand.tintCentre, maturity),
+        species,
+        context.season,
+        random(),
+        y,
+        blockSample.slope,
+      ),
       selection: random(),
     }));
   }) as readonly DetailShrubPlacement[];
@@ -714,6 +823,10 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     throw new RangeError("Detail sea level must be finite");
   }
   const dayOfYear = options.dayOfYear ?? 0;
+  const latitudeDegrees = options.latitudeDegrees ?? 45;
+  if (!Number.isFinite(latitudeDegrees) || Math.abs(latitudeDegrees) > 90) {
+    throw new RangeError("Detail latitude must be within [-90, 90] degrees");
+  }
   const grid = buildScatterTerrainGrid(minX, minZ, cellSizeMeters, options.terrainSample);
   const context: ScatterContext = {
     seed,
@@ -724,6 +837,11 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     density: densityMultiplier,
     seaLevelMeters,
     dayOfYear,
+    season: {
+      winterFraction: seasonalWinterFraction(dayOfYear, latitudeDegrees),
+      snowlineMeters: seaLevelMeters + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS
+        - seasonalSnowlineDescentMeters(dayOfYear, latitudeDegrees),
+    },
     grid,
   };
   return {

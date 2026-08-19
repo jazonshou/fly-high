@@ -33,6 +33,7 @@ export {
   sampleTerrainNormal,
   sampleTerrainTemperature,
   TERRAIN_REFERENCE_DAY_OF_YEAR,
+  TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
   seasonalHumidityMultiplier,
   seasonalSnowlineDescentMeters,
   seasonalTemperatureOffsetK,

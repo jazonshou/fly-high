@@ -46,6 +46,11 @@ export interface DetailCellGenerationOptions {
   readonly seaLevelMeters?: number;
   /** Environment clock day (§1.6), threaded to the density field. Default 0. */
   readonly dayOfYear?: number;
+  /**
+   * 2-13a: world latitude in degrees for R-13's seasonal kernel (autumn
+   * turn, leaf fall, canopy snowline). Default 45°N, the world default.
+   */
+  readonly latitudeDegrees?: number;
 }
 
 export interface DetailTreePlacement {

@@ -28,6 +28,7 @@ import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
+import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
@@ -229,6 +230,8 @@ function finiteState(state: FlightVisualState): boolean {
 export class FlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly engine: WebGPUEngine;
+  /** 2-13: the world definition, kept for per-frame wind-field sampling. */
+  private readonly worldDefinition: WorldDefinition;
   private readonly scene: Scene;
   private readonly camera: UniversalCamera;
   private readonly graph = new WebGpuFrameGraph();
@@ -350,6 +353,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
+    this.worldDefinition = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
@@ -468,6 +472,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         worldSeed: options.world.seed,
         terrainSample: options.terrainSample,
         seaLevelMeters: options.world.seaLevel,
+        latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
       });
       cleanup.push(() => detail.dispose());
@@ -1210,6 +1215,22 @@ export class FlightRenderer implements FlightRenderingSystem {
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
     }, this.frameIndex);
+    // 2-13: one shared-field wind sample per frame at the observer — the
+    // plan's three bands all read this snapshot; per-instance bytes carry
+    // the spatial variation. simulationTime keeps it capture-deterministic.
+    const wind = sampleWind(
+      this.worldDefinition,
+      state.position.x,
+      state.position.y,
+      state.position.z,
+      state.simulationTime,
+    );
+    this.detail.setWind(
+      wind.x,
+      wind.z,
+      wind.speed / MAX_WIND_SPEED,
+      Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
+    );
     this.detail.update(
       {
         x: state.position.x,
