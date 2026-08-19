@@ -899,7 +899,7 @@ function synthesizeJuniperScale(raster: FoliageRaster, random: RandomSource): vo
       const segmentDy = line.ys[segment + 1]! - line.ys[segment]!;
       const segmentLength = Math.hypot(segmentDx, segmentDy);
       const angle = Math.atan2(segmentDy, segmentDx);
-      for (let along = 0; along < segmentLength; along += 2.6) {
+      for (let along = 0; along < segmentLength; along += 2.0) {
         const pointX = line.xs[segment]! + Math.cos(angle) * along;
         const pointY = line.ys[segment]! + Math.sin(angle) * along;
         for (const side of [-1, 1]) {
@@ -920,14 +920,22 @@ function synthesizeJuniperScale(raster: FoliageRaster, random: RandomSource): vo
       }
     }
   };
-  for (let spray = 0; spray < 6; spray += 1) {
+  // 17 sprays from varied anchors (2-12b): six bottom-anchored sprays left
+  // the card 90% discard — the same sprig-vs-card correction as the 2-12
+  // needle layers, now that shrub cards are this layer's first consumer.
+  for (let spray = 0; spray < 24; spray += 1) {
+    const bottomAnchored = spray < 6;
     const baseX = edge * (0.12 + 0.76 * random());
-    const baseY = edge - 6 - random() * 24;
-    const heading = -Math.PI / 2 + (random() - 0.5) * 1.1;
+    const baseY = bottomAnchored
+      ? edge - 6 - random() * 24
+      : edge * (0.2 + 0.6 * random());
+    const heading = bottomAnchored
+      ? -Math.PI / 2 + (random() - 0.5) * 1.1
+      : random() * Math.PI * 2;
     const hue = 0.4 + (random() - 0.5) * 0.03;
     const axis = walk(baseX, baseY, heading, 8, 13 + random() * 4);
     strokePolyline(raster, axis, 1.7, 0.6, hsvToRgb(0.1, 0.4, 0.3));
-    scaleAlong(axis, 5, hue);
+    scaleAlong(axis, 6.5, hue);
     for (const branchAt of [2, 4, 6]) {
       if (random() < 0.25) continue;
       const branchX = axis.xs[branchAt]!;
@@ -942,7 +950,9 @@ function synthesizeJuniperScale(raster: FoliageRaster, random: RandomSource): vo
 
 function synthesizeSageLeaf(raster: FoliageRaster, random: RandomSource): void {
   // Sage: narrow oblong grey-green leaves with a heavy pebbled grain.
-  for (let leaf = 0; leaf < 12; leaf += 1) {
+  // 22 leaves (2-12b): 12 sat under the card-coverage floor once shrub
+  // cards became the layer's consumer.
+  for (let leaf = 0; leaf < 22; leaf += 1) {
     const length = 68 + random() * 24;
     const style: LeafStyle = {
       lengthPx: length,

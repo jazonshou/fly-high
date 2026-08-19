@@ -28,7 +28,9 @@ import {
 } from "./instanceFormat";
 import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
 import {
+  buildShrubPrototype,
   buildTreePrototype,
+  SHRUB_VARIANT_COUNTS,
   TREE_VARIANT_COUNTS,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
@@ -182,15 +184,6 @@ function profileCellBudget(profile: WebGpuQualityProfile): number {
   return 896;
 }
 
-function bakePrototype(mesh: Mesh, y: number, scaleX = 1, scaleY = 1, scaleZ = 1): Mesh {
-  mesh.position.set(0, y, 0);
-  mesh.scaling.set(scaleX, scaleY, scaleZ);
-  mesh.bakeCurrentTransformIntoVertices();
-  mesh.position.set(0, 0, 0);
-  mesh.scaling.set(1, 1, 1);
-  return mesh;
-}
-
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -207,6 +200,8 @@ export class WorldDetailRuntime {
   /** 2-12: crown/trunk radius-per-height per species, from the built prototypes. */
   private readonly crownAspects = new Map<TreeSpecies, number>();
   private readonly trunkAspects = new Map<TreeSpecies, number>();
+  /** 2-12b: shrub radius-per-height per species, same convention. */
+  private readonly shrubAspects = new Map<ShrubSpecies, number>();
   /** 2-12: the atlas (null under NullEngine — no raw 2D-array support). */
   private foliageAtlas: FoliageAtlas | null = null;
   private readonly cells = new Map<string, ResidentCell>();
@@ -799,26 +794,39 @@ export class WorldDetailRuntime {
 
       for (const shrub of resident.cell.shrubs) {
         if (shrubShare <= 0 || shrub.selection > shrubShare) continue;
-        // 2-11a: the format carries ONE radial — the old elliptic XZ hack
-        // (scaleZ = radius x (0.84 + selection x 0.24)) folds into the mean;
-        // footprint variety returns as 2-12/2-15 variant geometry.
-        this.appendInstance(this.getBatch(`shrub-${shrub.species}`, chunk, nextBatchKeys), {
-          x: shrub.x - floatingOrigin.x,
-          y: shrub.y - floatingOrigin.y,
-          z: shrub.z - floatingOrigin.z,
-          quaternion: yawQuaternion(shrub.yawRadians),
-          heightScaleMeters: shrub.heightMeters,
-          radialScale: WorldDetailRuntime.radialMultiplier(
-            shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
-            shrub.heightMeters,
-            1.1,
-          ),
-          fade: 1,
-          variant: 0,
-          tint: shrub.color,
-          windPhase: shrub.windPhaseRadians / (2 * Math.PI),
-          windResponse: clamp(shrub.windResponse, 0, 1),
-        });
+        // 2-12b: card shrubs with the tree pipeline's exact conventions —
+        // geometry variant from the selection hash (both variants inside the
+        // near band, one at mid: every (species, variant) mesh is a draw per
+        // chunk, and mid shrubs are a few pixels), radial aspect from the
+        // built prototype through the shared per-material uniform.
+        const shrubVariantCount = resident.distance <= densityLaw.near.outerRadiusMeters
+          ? SHRUB_VARIANT_COUNTS[shrub.species]
+          : 1;
+        const shrubVariant = Math.min(
+          shrubVariantCount - 1,
+          Math.floor(((shrub.selection * 71.7) % 1) * shrubVariantCount),
+        );
+        const shrubAspect = this.shrubAspects.get(shrub.species) ?? 0.4;
+        this.appendInstance(
+          this.getBatch(`shrub-${shrub.species}-v${shrubVariant}`, chunk, nextBatchKeys),
+          {
+            x: shrub.x - floatingOrigin.x,
+            y: shrub.y - floatingOrigin.y,
+            z: shrub.z - floatingOrigin.z,
+            quaternion: yawQuaternion(shrub.yawRadians),
+            heightScaleMeters: shrub.heightMeters,
+            radialScale: WorldDetailRuntime.radialMultiplier(
+              shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
+              shrub.heightMeters,
+              shrubAspect,
+            ),
+            fade: 1,
+            variant: shrubVariant,
+            tint: shrub.color,
+            windPhase: shrub.windPhaseRadians / (2 * Math.PI),
+            windResponse: clamp(shrub.windResponse, 0, 1),
+          },
+        );
         statistics.shrubInstances += 1;
       }
 
@@ -1172,38 +1180,43 @@ export class WorldDetailRuntime {
       }
     }
 
+    // 2-12b: card shrubs — the flat-shaded icospheres are gone. 12-18
+    // alpha-tested foliage quads on a short multi-stem skeleton from the
+    // 2-11 atlas layers (hazel broadleaf, juniper scale, sage grey-leaf),
+    // with the same atlas sampling, occlusion bake and alpha-test-bucket
+    // treatment as tree crowns. Two variants per species; the albedo tint
+    // brightens toward white because the perceptual tint distribution now
+    // arrives per instance, exactly as it does for trees.
     const shrubColors: Readonly<Record<ShrubSpecies, Color3>> = {
-      juniper: new Color3(0.16, 0.31, 0.19),
-      hazel: new Color3(0.31, 0.46, 0.14),
-      sage: new Color3(0.35, 0.41, 0.31),
+      juniper: new Color3(0.5, 0.56, 0.5),
+      hazel: new Color3(0.55, 0.6, 0.48),
+      sage: new Color3(0.56, 0.58, 0.53),
     };
     for (const species of SHRUB_SPECIES) {
       const material = this.createMaterial(
         `detail-shrub-${species}-material`,
         shrubColors[species],
         0.91,
-        1.1,
+        1,
+        true,
       );
       material.backFaceCulling = false;
-      const mesh = CreateIcoSphere(
-        `detail-shrub-${species}`,
-        {
-          radius: 1,
-          radiusX: species === "sage" ? 1.18 : species === "hazel" ? 0.92 : 1.05,
-          radiusY: species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62,
-          radiusZ: species === "sage" ? 0.88 : 1,
-          subdivisions: 1,
-          flat: true,
-        },
-        this.scene,
-      );
-      const verticalRadius = species === "sage" ? 0.48 : species === "hazel" ? 0.78 : 0.62;
-      this.registerBatch(
-        `shrub-${species}`,
-        bakePrototype(mesh, verticalRadius),
-        material,
-        false,
-      );
+      material.twoSidedLighting = true;
+      material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
+        const prototype = buildShrubPrototype(species, variant, prototypeSeed);
+        if (variant === 0) {
+          const aspect = Math.max(prototype.boundingRadius, 0.05);
+          this.shrubAspects.set(species, aspect);
+          this.materialPlugin(material)?.setRadialAspect(aspect);
+        }
+        this.registerBatch(
+          `shrub-${species}-v${variant}`,
+          this.buildPrototypeMesh(`detail-shrub-${species}-v${variant}`, prototype),
+          material,
+          false,
+        );
+      }
     }
 
     const rockColors: Readonly<Record<RockVariant, Color3>> = {

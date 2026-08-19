@@ -590,7 +590,7 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       radiusMeters: radius,
       windPhaseRadians: random() * TAU,
       windResponse: 0.78 + random() * 0.38,
-      color: shrubColor(species, random),
+      color: shrubColor(species, random, stand.tintCentre, maturity),
       selection: random(),
     }));
   }) as readonly DetailShrubPlacement[];
@@ -606,16 +606,43 @@ function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubS
   return "sage";
 }
 
+const SHRUB_TINT_BASE: Readonly<Record<ShrubSpecies, readonly [number, number, number]>> = {
+  juniper: [0.67, 0.84, 0.7],
+  hazel: [0.88, 0.96, 0.62],
+  sage: [0.78, 0.84, 0.74],
+};
+
+/**
+ * 2-12b — the 2-12 tint treatment applied to the understory: the old single
+ * scalar was brightness jitter with zero hue variance (the exact flight-test
+ * complaint the tree distribution fixed). Real hue variance per species,
+ * stand-correlated means through the same tint centre, and young shrubs
+ * lighter through maturity. Understory hue spreads wider than canopy
+ * (σ 9.5° — mixed-age scrub is less uniform than a closed stand's crowns);
+ * juniper/sage keep muted saturation through their base colours.
+ */
 function shrubColor(
   species: ShrubSpecies,
   random: RandomSource,
+  tintCentre: number,
+  maturity: number,
 ): readonly [number, number, number, number] {
-  const variation = 0.82 + random() * 0.3;
-  switch (species) {
-    case "juniper": return [0.67 * variation, 0.84 * variation, 0.7 * variation, 1];
-    case "hazel": return [0.88 * variation, 0.96 * variation, 0.62 * variation, 1];
-    case "sage": return [0.78 * variation, 0.84 * variation, 0.74 * variation, 1];
-  }
+  const base = SHRUB_TINT_BASE[species];
+  const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
+  const triangular = (): number => random() + random() - 1;
+  const hueSigmaTurns = 9.5 / 360;
+  const standHueShift = (tintCentre - 0.5) * (14 / 360);
+  const hue = baseHue + standHueShift + triangular() * hueSigmaTurns * Math.sqrt(6) * 0.5;
+  const saturation = clamp(baseSat * (1 + triangular() * 0.11 * Math.sqrt(6) * 0.5), 0.05, 1);
+  const maturityDarkening = (maturity - 0.5) * 0.16;
+  const value = clamp(
+    baseVal * (1 + triangular() * 0.12 * Math.sqrt(6) * 0.5 - maturityDarkening),
+    0.2,
+    1.1,
+  );
+  const [r, g, b] = hsvToRgb(hue, saturation, Math.min(value, 1));
+  const gain = value > 1 ? value : 1;
+  return [r * gain, g * gain, b * gain, 1];
 }
 
 function chooseRockVariant(sample: DetailTerrainSample, random: RandomSource): RockVariant {

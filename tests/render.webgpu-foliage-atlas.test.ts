@@ -191,13 +191,18 @@ describe("WebGPU foliage atlas and array mips", () => {
     // cost (the needle layers were authored as close-up sprigs with no
     // consumer to judge them against). 0.05 "non-trivial" stays right for
     // ground-cover sprigs; the five tree crown layers need card scale.
-    // 2-12b extends this list with the shrub crown layers it re-authors.
+    // 2-12b: the three shrub layers joined when card shrubs became their
+    // first consumer (juniper sprays and sage leaves were re-authored to
+    // card density in the same change).
     const crownLayers: readonly (keyof typeof FOLIAGE_LAYERS)[] = [
       "broadleafOak",
       "broadleafMaple",
       "broadleafBirch",
       "needlePine",
       "needleSpruce",
+      "hazelLeaf",
+      "juniperScale",
+      "sageLeaf",
     ];
     for (const layerName of crownLayers) {
       const base = atlasPlan.layerChains[FOLIAGE_LAYERS[layerName]]![0]!;

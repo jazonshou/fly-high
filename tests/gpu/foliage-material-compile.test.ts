@@ -29,6 +29,7 @@ import {
   yawQuaternion,
 } from "../../src/render/webgpu/detail/instanceFormat";
 import {
+  buildShrubPrototype,
   buildTreePrototype,
   type PrototypeGeometry,
 } from "../../src/render/webgpu/detail/prototypeGeometry";
@@ -283,8 +284,23 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       trunk.receiveShadows = true;
       uploadOneInstance(trunk, scene);
 
+      // 2-12b: a card shrub rides the same stack (atlas define, alpha-test
+      // bucket, double-sided) on its own mesh — drawn here so the shrub
+      // path proves pixels on-adapter too, per the 2-12 rule.
+      const shrub = buildPrototypeMesh(
+        "compile-shrub",
+        buildShrubPrototype("juniper", 0, 7),
+        scene,
+      );
+      shrub.material = buildMaterial("compile-shrub-material", true, 0.6);
+      shrub.useVertexColors = true;
+      shrub.receiveShadows = true;
+      uploadOneInstance(shrub, scene);
+      shrub.position.x = 14;
+
       shadows.addShadowCaster(crown);
       shadows.addShadowCaster(trunk);
+      shadows.addShadowCaster(shrub);
 
       // Render until the shadow depth effects report ready (they compile
       // asynchronously) — without this the zero-error assertion would pass

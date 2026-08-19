@@ -130,6 +130,38 @@ describe("tree tint distribution (2-12)", () => {
     expect(closeDelta / closePairs).toBeLessThan((farDelta / farPairs) * 0.9);
   });
 
+  it("carries real hue variance in the understory too (2-12b)", () => {
+    // The shrub tint was the last single-scalar brightness jitter; card
+    // shrubs made it visible. Same gate as the canopy: per-species hue
+    // sigma in a card-consumer range, not near zero.
+    const sampler = closedForestSampler();
+    const shrubs = [];
+    for (let cellZ = 0; cellZ < 5; cellZ += 1) {
+      for (let cellX = 0; cellX < 5; cellX += 1) {
+        const cell = generateDetailCell({
+          worldSeed: "tint-distribution",
+          cellX,
+          cellZ,
+          cellSizeMeters: 128,
+          densityMultiplier: 1,
+          terrainSample: sampler,
+          seaLevelMeters: 0,
+        });
+        shrubs.push(...cell.shrubs);
+      }
+    }
+    const bySpecies = Map.groupBy(shrubs, (shrub) => shrub.species);
+    let checked = 0;
+    for (const [species, group] of bySpecies) {
+      if (group.length < 60) continue;
+      checked += 1;
+      const sigma = standardDeviation(group.map((shrub) => hueOf(shrub.color) * 360));
+      expect(sigma, `${species} hue sigma`).toBeGreaterThan(4);
+      expect(sigma, `${species} hue sigma`).toBeLessThan(18);
+    }
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
   it("renders young stems lighter (value anti-correlates with height)", () => {
     const trees = collectTrees();
     const bySpecies = Map.groupBy(trees, (tree) => tree.species);

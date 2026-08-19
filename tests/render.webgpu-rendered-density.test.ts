@@ -6,7 +6,9 @@ import {
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
 import {
+  SHRUB_VARIANT_COUNTS,
   TREE_VARIANT_COUNTS,
+  buildShrubPrototype,
   buildTreePrototype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
@@ -52,6 +54,21 @@ describe("rendered-density law (R-21)", () => {
               law[band].trianglesPerPlant,
             );
           }
+        }
+      }
+    }
+  });
+
+  it("fits every shrub prototype inside the mid-band allowance (2-12b)", () => {
+    // Shrubs draw at near and mid only (hard cutoff at the mid boundary),
+    // so the mid allowance is their ceiling everywhere they exist.
+    for (const species of Object.keys(SHRUB_VARIANT_COUNTS) as (keyof typeof SHRUB_VARIANT_COUNTS)[]) {
+      for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
+        const prototype = buildShrubPrototype(species, variant, 7);
+        for (const law of RENDERED_DENSITY_LAWS) {
+          expect(prototype.triangleCount, `${species} v${variant}`).toBeLessThanOrEqual(
+            law.mid.trianglesPerPlant,
+          );
         }
       }
     }
