@@ -163,7 +163,6 @@ describe("adaptive governor (1A-6b)", () => {
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
       detailCellBudgetMs: 2,
       detailCellCap: 24,
-      planarReflectionIntervalFrames: null,
       cloudShadowIntervalFrames: null,
       vegetationDistanceScale: 1,
     });
@@ -180,15 +179,14 @@ describe("adaptive governor (1A-6b)", () => {
       detailCellCap: 8,
       activeAnimalBudgetCap: 16,
       // GPU-cost levers stay untouched at any CPU level.
-      planarReflectionIntervalFrames: null,
       cloudShadowIntervalFrames: null,
       shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
       vegetationDistanceScale: 1,
     });
-    // The GPU ladder touches only render-side fields.
-    expect(workLeverSettingsFor(0, 1).planarReflectionIntervalFrames).toBe(5);
+    // The GPU ladder touches only render-side fields. (2-10 retired the
+    // planar-reflection rungs with their system.)
+    expect(workLeverSettingsFor(0, 1).cloudShadowIntervalFrames).toBe(3);
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
-      planarReflectionIntervalFrames: 8,
       cloudShadowIntervalFrames: 4,
       shadowCasterDistanceMeters: 1_200,
       vegetationDistanceScale: 0.75,
@@ -199,7 +197,7 @@ describe("adaptive governor (1A-6b)", () => {
     expect(cpuWorkLeverName(0)).toBeNull();
     expect(cpuWorkLeverName(1)).toBe("terrain-page-requests");
     expect(cpuWorkLeverName(CPU_WORK_MAX_LEVEL)).toBe("animal-budget");
-    expect(gpuWorkLeverName(1)).toBe("planar-reflection-cadence");
+    expect(gpuWorkLeverName(1)).toBe("cloud-shadow-cadence");
     expect(gpuWorkLeverName(GPU_WORK_MAX_LEVEL)).toBe("vegetation-distance");
     expect(() => workLeverSettingsFor(CPU_WORK_MAX_LEVEL + 1, 0)).toThrow(RangeError);
     expect(() => workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL + 1)).toThrow(RangeError);

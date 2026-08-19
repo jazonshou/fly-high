@@ -77,7 +77,6 @@ export interface WorkLeverSettings {
   readonly detailCellBudgetMs: number;
   readonly detailCellCap: number;
   /** null = profile default; otherwise a minimum interval in frames. */
-  readonly planarReflectionIntervalFrames: number | null;
   readonly cloudShadowIntervalFrames: number | null;
   readonly activeAnimalBudgetCap: number;
   readonly shadowCasterDistanceMeters: number;
@@ -96,7 +95,6 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
   detailCellBudgetMs: 2,
   detailCellCap: 24,
-  planarReflectionIntervalFrames: null,
   cloudShadowIntervalFrames: null,
   activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
   shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
@@ -124,8 +122,8 @@ const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
  * resolution-insensitive, or pinned at the scale floor).
  */
 const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
-  { lever: "planar-reflection-cadence", apply: (s) => ({ ...s, planarReflectionIntervalFrames: 5 }) },
-  { lever: "planar-reflection-cadence", apply: (s) => ({ ...s, planarReflectionIntervalFrames: 8 }) },
+  // 2-10 retired the planar-reflection-cadence rungs with their system — a
+  // governor lever must never be attached to nothing.
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 3 }) },
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 4 }) },
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_800 }) },

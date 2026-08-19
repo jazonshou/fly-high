@@ -66,6 +66,7 @@ import {
 } from "./SunShadowReceiver";
 import {
   fallbackWaterEnvironmentCube,
+  fallbackWaterPlanarTexture,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
@@ -633,6 +634,12 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    // 2-10: the planar capture is retired; the receiver sampler stays bound
+    // to a zero-confidence texel until 5-12 re-points a lake capture.
+    this.material.setTexture(
+      PLANAR_REFLECTION_SAMPLER,
+      fallbackWaterPlanarTexture(scene),
+    );
     this.setAtmosphere(atmosphere);
 
     if (initializeSynchronously) {
@@ -704,7 +711,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     if (!binding) {
       this.material.setFloat("planarReflectionValid", 0);
       this.material.setFloat("planarReflectionReceiverEnabled", 0);
-      this.material.removeTexture(PLANAR_REFLECTION_SAMPLER);
+      const fallbackPlanar = fallbackWaterPlanarTexture(this.scene);
+      if (fallbackPlanar) this.material.setTexture(PLANAR_REFLECTION_SAMPLER, fallbackPlanar);
       return;
     }
     this.material.setTexture(PLANAR_REFLECTION_SAMPLER, binding.texture);

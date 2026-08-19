@@ -67,11 +67,6 @@ import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
 import {
-  PlanarWaterReflectionSystem,
-  selectPlanarReflectionPlane,
-  type PlanarReflectionPlaneSelection,
-} from "./webgpu/water/PlanarWaterReflectionSystem";
-import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
@@ -246,7 +241,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
-  private readonly waterReflection: PlanarWaterReflectionSystem;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly wildlife: WildlifeSystem;
@@ -285,7 +279,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
-  private reflectionPlaneSelection: PlanarReflectionPlaneSelection | null = null;
   private originShifted = true;
   private cameraCut = true;
   private frameIndex = 0;
@@ -327,7 +320,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
-    waterReflection: PlanarWaterReflectionSystem,
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
     wildlife: WildlifeSystem,
@@ -350,7 +342,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
-    this.waterReflection = waterReflection;
     this.airport = airport;
     this.detail = detail;
     this.wildlife = wildlife;
@@ -660,16 +651,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       throwIfRendererStartupAborted(options.signal);
-      // Allocate only after the beauty scene is ready. The manually scheduled
-      // target does no reflection draw or render-pass shader work at startup.
-      const waterReflection = new PlanarWaterReflectionSystem(
-        scene,
-        camera,
-        options.world.seaLevel,
-        profile,
-        [ocean, hydrology],
-      );
-      cleanup.push(() => waterReflection.dispose());
+      // 2-10: the planar-reflection capture is retired — the environment
+      // probe covers water reflections; the receiver contract stays bound to
+      // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
         options,
@@ -685,7 +669,6 @@ export class FlightRenderer implements FlightRenderingSystem {
         skyProbe,
         ocean,
         hydrology,
-        waterReflection,
         airport,
         detail,
         wildlife,
@@ -1024,7 +1007,6 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.cloudShadowReceivers.dispose(),
       () => this.aerialReceivers.dispose(),
       () => this.skyProbe.dispose(),
-      () => this.waterReflection.dispose(),
       () => this.atmosphereResources.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
@@ -1045,27 +1027,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       after: ["flight-presentation"],
       execute: () => this.updateWorldVisibility(),
     });
-    this.graph.register({
-      name: "shared-planar-water-reflection",
-      phase: "opaque",
-      after: ["world-page-visibility"],
-      execute: (frame) => {
-        const plane = selectPlanarReflectionPlane(
-          this.seaLevel,
-          { x: this.cameraWorld.x, y: this.cameraWorld.y, z: this.cameraWorld.z },
-          this.hydrology.reflectionLakes,
-          this.reflectionPlaneSelection,
-        );
-        this.reflectionPlaneSelection = plane;
-        this.waterReflection.setPlaneHeight(plane.height, plane.source);
-        this.waterReflection.update(frame);
-      },
-      invalidateHistory: () => this.waterReflection.invalidate(),
-    });
+    // 2-10: the shared-planar-water-reflection node is retired with its
+    // capture system — the environment probe carries water reflections, and
+    // 5-12 rebuilds the lake capture around the preserved plane-selection
+    // hysteresis.
     this.graph.register({
       name: "spectral-ocean-compute",
       phase: "water",
-      after: ["shared-planar-water-reflection"],
+      after: ["world-page-visibility"],
       execute: (frame) => {
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         const state = this.currentState;
@@ -1320,7 +1289,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
-    this.waterReflection.setProfile(this.profile);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
@@ -1421,7 +1389,6 @@ export class FlightRenderer implements FlightRenderingSystem {
             maximumMilliseconds: settings.detailCellBudgetMs,
           },
     );
-    this.waterReflection.setUpdateIntervalFloor(settings.planarReflectionIntervalFrames);
     this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
     this.governedProfileCache = this.resolveGovernedProfile();
   }

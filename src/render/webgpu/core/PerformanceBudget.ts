@@ -192,12 +192,16 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   materialArraysMiB: 0,
 });
 
-/** Hydrology tiles, wildlife thin instances, planar-reflection mirror. */
+/**
+ * Hydrology tiles and wildlife thin instances. 2-10 retired the
+ * planar-reflection mirror this allowance also covered — each tier gives
+ * back the mirror's ~0.2-1 MiB.
+ */
 const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
   0: 8,
-  1: 10,
-  2: 12,
-  3: 14,
+  1: 9,
+  2: 11,
+  3: 13,
 });
 
 /** Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs. */

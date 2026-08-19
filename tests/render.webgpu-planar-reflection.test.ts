@@ -1,21 +1,8 @@
-import {
-  FreeCamera,
-  MeshBuilder,
-  NullEngine,
-  PBRMaterial,
-  Scene,
-  Vector3,
-} from "@babylonjs/core";
-import { describe, expect, it, vi } from "vitest";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import { describe, expect, it } from "vitest";
 import {
   PLANAR_REFLECTION_FRAGMENT_WGSL,
-  PlanarWaterReflectionSystem,
   acceptsInlandPlanarReflection,
-  isPlanarReflectionCaster,
-  resolvePlanarReflectionBudget,
   selectPlanarReflectionPlane,
-  type PlanarReflectionReceiver,
 } from "../src/render/webgpu/water/PlanarWaterReflectionSystem";
 import { WATER_FRAGMENT_WGSL } from "../src/render/webgpu/water/SpectralOceanSystem";
 import {
@@ -23,27 +10,14 @@ import {
   HYDROLOGY_WATER_VERTEX_WGSL,
 } from "../src/render/webgpu/water/HydrologySystem";
 
+/**
+ * 2-10 retired the planar-reflection CAPTURE system (the MirrorTexture pass,
+ * its budgets and its governor rung). What this suite still guards is the
+ * deliberately preserved Class-T surface: the receiver WGSL contract both
+ * water materials keep compiled in, and the plane-selection hysteresis
+ * `5-12` rebuilds the lake capture around.
+ */
 describe("WebGPU planar-water reflection policy", () => {
-  it("keeps every quality tier low-resolution and hard-cadenced", () => {
-    const budgets = ([0, 1, 2] as const).map((tier) => resolvePlanarReflectionBudget({ tier }));
-    for (const budget of budgets) {
-      expect(budget.width).toBeLessThanOrEqual(480);
-      expect(budget.height).toBeLessThanOrEqual(270);
-      expect(budget.updateEveryNFrames).toBeGreaterThanOrEqual(3);
-      expect(budget.warmupFrames).toBeGreaterThanOrEqual(4);
-      expect(budget.strength).toBeGreaterThan(0);
-      expect(budget.strength).toBeLessThan(1);
-    }
-    expect(budgets.map((budget) => budget.width)).toEqual([192, 320, 480]);
-    expect(budgets.map((budget) => budget.updateEveryNFrames)).toEqual([8, 5, 3]);
-
-    expect(resolvePlanarReflectionBudget(
-      resolveWebGpuQualityProfile("low", "ultra"),
-    )).toEqual(resolvePlanarReflectionBudget(
-      resolveWebGpuQualityProfile("medium", "balanced"),
-    ));
-  });
-
   it("uses one nearby lake plane and otherwise returns to sea level", () => {
     const lakes = [
       { centerX: 2_000, centerZ: -500, surfaceHeight: 184, radiusMeters: 220 },
@@ -107,58 +81,6 @@ describe("WebGPU planar-water reflection policy", () => {
     expect(acceptsInlandPlanarReflection({ ...base, isLakeMesh: false })).toBe(false);
     expect(acceptsInlandPlanarReflection({ ...base, isCurrentRegion: false })).toBe(false);
     expect(acceptsInlandPlanarReflection({ ...base, planeHeight: 185 })).toBe(false);
-  });
-
-  it("captures only enabled opaque finite-distance meshes", () => {
-    const engine = new NullEngine();
-    const scene = new Scene(engine);
-    const opaqueMaterial = new PBRMaterial("opaque", scene);
-    const opaque = MeshBuilder.CreateBox("opaque", {}, scene);
-    opaque.material = opaqueMaterial;
-    expect(isPlanarReflectionCaster(opaque)).toBe(true);
-
-    const transparentMaterial = new PBRMaterial("transparent", scene);
-    transparentMaterial.alpha = 0.5;
-    transparentMaterial.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND;
-    const transparent = MeshBuilder.CreateBox("transparent", {}, scene);
-    transparent.material = transparentMaterial;
-    expect(isPlanarReflectionCaster(transparent)).toBe(false);
-
-    opaque.infiniteDistance = true;
-    expect(isPlanarReflectionCaster(opaque)).toBe(false);
-    opaque.infiniteDistance = false;
-    opaque.metadata = { waterSurface: true };
-    expect(isPlanarReflectionCaster(opaque)).toBe(false);
-    opaque.metadata = null;
-    opaque.setEnabled(false);
-    expect(isPlanarReflectionCaster(opaque)).toBe(false);
-
-    scene.dispose();
-    engine.dispose();
-  });
-
-  it("stays manual/lazy and releases its receiver without joining scene recursion", () => {
-    const engine = new NullEngine();
-    const scene = new Scene(engine);
-    const camera = new FreeCamera("reflection-camera", new Vector3(0, 100, -300), scene);
-    scene.activeCamera = camera;
-    const setPlanarReflection = vi.fn<PlanarReflectionReceiver["setPlanarReflection"]>();
-    const receiver: PlanarReflectionReceiver = { setPlanarReflection };
-    const system = new PlanarWaterReflectionSystem(scene, camera, 0, { tier: 0 }, [receiver]);
-
-    expect(scene.customRenderTargets).toHaveLength(0);
-    expect(system.update({ frameIndex: 1, cameraCut: true, originShifted: false })).toEqual({
-      captured: false,
-      reason: "warmup",
-    });
-    expect(system.captureValid).toBe(false);
-    expect(setPlanarReflection).toHaveBeenCalledTimes(1);
-
-    system.dispose();
-    system.dispose();
-    expect(setPlanarReflection).toHaveBeenLastCalledWith(null);
-    scene.dispose();
-    engine.dispose();
   });
 
   it("preserves the analytic atmosphere response when capture confidence is absent", () => {

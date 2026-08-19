@@ -19,6 +19,7 @@
  */
 
 import { RawCubeTexture } from "@babylonjs/core/Materials/Textures/rawCubeTexture";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 
@@ -26,6 +27,35 @@ import type { Scene } from "@babylonjs/core/scene";
 export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.14159265359;`;
 
 const FALLBACK_ENVIRONMENT_CUBES = new WeakMap<Scene, RawCubeTexture>();
+const FALLBACK_PLANAR_TEXTURES = new WeakMap<Scene, RawTexture>();
+
+/**
+ * 2-10: with the capture system retired, nothing binds the planar-reflection
+ * sampler the receiver WGSL still declares — an unbound sampler keeps a
+ * WebGPU material un-ready forever. A 1×1 transparent texel keeps the
+ * contract alive at zero confidence (`sceneReflection.a = 0` falls through
+ * to the environment/analytic sky) until `5-12` re-points a lake capture.
+ */
+export function fallbackWaterPlanarTexture(scene: Scene): RawTexture {
+  const existing = FALLBACK_PLANAR_TEXTURES.get(scene);
+  if (existing) return existing;
+  const texture = RawTexture.CreateRGBATexture(
+    new Uint8Array([0, 0, 0, 0]),
+    1,
+    1,
+    scene,
+    false,
+    false,
+    Texture.NEAREST_SAMPLINGMODE,
+  );
+  texture.name = "water-planar-fallback";
+  FALLBACK_PLANAR_TEXTURES.set(scene, texture);
+  scene.onDisposeObservable.addOnce(() => {
+    FALLBACK_PLANAR_TEXTURES.get(scene)?.dispose();
+    FALLBACK_PLANAR_TEXTURES.delete(scene);
+  });
+  return texture;
+}
 
 /**
  * 2-9: a 1×1 mid-grey cube bound wherever a water material declares the

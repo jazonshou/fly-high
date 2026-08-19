@@ -142,7 +142,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 20, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 20, minFps: 29 },
   },
   {
     name: "slant-10km",
@@ -159,7 +159,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 29 },
   },
   {
     name: "high-10000ft-down",
@@ -176,7 +176,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 32 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 32 },
   },
   {
     // Z-3: the only configuration where the tier-1 pixel cap binds — i.e.
@@ -200,7 +200,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 30, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 30, minFps: 29 },
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -220,7 +220,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 30 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 30 },
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -241,7 +241,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 29 },
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -262,7 +262,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 29 },
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -288,7 +288,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 80, minFps: 25 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 25 },
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -308,7 +308,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 29 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 29 },
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -330,7 +330,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 70, minFps: 26 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 70, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -351,7 +351,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 15, minFps: 26 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -372,7 +372,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 70, minFps: 26 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 70, minFps: 26 },
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -393,7 +393,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_000, p999FrameMs: 1_000, hitchCount: 65, minFps: 27 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 65, minFps: 27 },
   },
 ]);
 

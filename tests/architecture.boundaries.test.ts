@@ -128,9 +128,9 @@ describe("architecture boundaries (0-1)", () => {
     // do not add to this list — extend WebGpuQualityProfile with data instead.
     const grandfathered = new Set([
       // TerrainClipmapSystem left this list at 1B-3 (terrainTileResolution
-      // became a profile datum). The two water readers leave with Phase 2's
-      // water work. The list only shrinks.
-      "src/render/webgpu/water/PlanarWaterReflectionSystem.ts",
+      // became a profile datum); PlanarWaterReflectionSystem left at 2-10
+      // (its capture system and tier budgets were retired outright). The
+      // ocean reader leaves with Phase 2's water work. The list only shrinks.
       "src/render/webgpu/water/SpectralOceanSystem.ts",
     ]);
     const tierRead = /\.tier\b/u;
