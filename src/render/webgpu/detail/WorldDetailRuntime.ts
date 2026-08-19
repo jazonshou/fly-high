@@ -1,7 +1,6 @@
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateIcoSphere } from "@babylonjs/core/Meshes/Builders/icoSphereBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -23,11 +22,14 @@ import {
   DETAIL_INSTANCE_STRIDE_BYTES,
   DetailInstanceBounds,
   DetailInstanceWriter,
+  normalAlignedQuaternion,
   yawQuaternion,
   type DetailInstanceRecord,
 } from "./instanceFormat";
 import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
 import {
+  buildClutterPrototype,
+  buildRockPrototype,
   buildShrubPrototype,
   buildTreePrototype,
   SHRUB_VARIANT_COUNTS,
@@ -47,6 +49,7 @@ import {
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
+  type ClutterKind,
   type DetailLod,
   type DetailTerrainSampler,
   type GeneratedDetailCell,
@@ -84,6 +87,7 @@ interface DetailChunkStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
+  readonly clutterInstances: number;
 }
 
 interface DetailPresentationChunk {
@@ -100,6 +104,7 @@ interface MutableDetailChunkStatistics {
   treeInstances: number;
   shrubInstances: number;
   rockInstances: number;
+  clutterInstances: number;
 }
 
 interface DesiredCell {
@@ -162,6 +167,7 @@ const ZERO_STATISTICS: WorldDetailStatistics = Object.freeze({
   treeInstances: 0,
   shrubInstances: 0,
   rockInstances: 0,
+  clutterInstances: 0,
   renderedThinInstances: 0,
   activeBatches: 0,
 });
@@ -612,6 +618,7 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
+      clutterInstances: 0,
         };
 
     for (const group of grouped.values()) {
@@ -638,6 +645,7 @@ export class WorldDetailRuntime {
             treeInstances: 0,
             shrubInstances: 0,
             rockInstances: 0,
+            clutterInstances: 0,
                     },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
@@ -657,6 +665,7 @@ export class WorldDetailRuntime {
       totals.treeInstances += chunk.statistics.treeInstances;
       totals.shrubInstances += chunk.statistics.shrubInstances;
       totals.rockInstances += chunk.statistics.rockInstances;
+      totals.clutterInstances += chunk.statistics.clutterInstances;
     }
 
     this.statisticsValue = {
@@ -667,6 +676,7 @@ export class WorldDetailRuntime {
       treeInstances: totals.treeInstances,
       shrubInstances: totals.shrubInstances,
       rockInstances: totals.rockInstances,
+      clutterInstances: totals.clutterInstances,
       renderedThinInstances: 0,
       activeBatches: 0,
     };
@@ -688,6 +698,7 @@ export class WorldDetailRuntime {
       treeInstances: 0,
       shrubInstances: 0,
       rockInstances: 0,
+      clutterInstances: 0,
         };
 
     for (const resident of residents) {
@@ -873,21 +884,41 @@ export class WorldDetailRuntime {
       }
 
       for (const rock of resident.cell.rocks) {
-        if (resident.lod === "mid" && (rock.radiusMeters < 2.2 || rock.selection > 0.22)) continue;
+        // 2-15: small rocks live in the near field, boulders (≥ 2.2 m,
+        // thinned) reach the mid boundary — each with a 2-14 dither fade at
+        // its own edge from the stem's true range.
+        const rockDistance = Math.hypot(
+          rock.x - this.observerX,
+          rock.z - this.observerZ,
+        );
+        const bigRock = rock.radiusMeters >= 2.2 && rock.selection <= 0.22;
+        const rockEdge = bigRock
+          ? densityLaw.mid.outerRadiusMeters
+          : densityLaw.near.outerRadiusMeters;
+        if (rockDistance >= rockEdge) continue;
+        const rockFade = rockDistance > rockEdge - DETAIL_FADE_MARGIN_METERS
+          ? (rockEdge - rockDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
         this.appendInstance(
           this.getBatch(`rock-${rock.variant}`, chunk, nextBatchKeys),
           {
             x: rock.x - floatingOrigin.x,
             y: rock.y - floatingOrigin.y,
             z: rock.z - floatingOrigin.z,
-            quaternion: yawQuaternion(rock.yawRadians),
+            // ~60% terrain-normal alignment through the format's full
+            // orientation (the reason the quaternion is in the record).
+            quaternion: normalAlignedQuaternion(rock.normal, rock.yawRadians, 0.6),
             heightScaleMeters: rock.radiusMeters * rock.flattening,
+            // Width recovery: x_world = proto·height·mult·aspect, so
+            // mult = jitter / (1.1 · flattening · 1.4) — inside [0.5, 1.6]
+            // across the 0.45–0.9 flattening spread at material aspect 1.4.
             radialScale: WorldDetailRuntime.radialMultiplier(
               rock.radiusMeters * (0.89 + rock.selection * 0.2),
-              rock.radiusMeters * rock.flattening,
-              1.6,
+              rock.radiusMeters * rock.flattening * 1.1,
+              1.4,
             ),
-            fade: 1,
+            fade: rockFade,
+            fadeIncoming: false,
             variant: 0,
             tint: rock.color,
             windPhase: 0,
@@ -895,6 +926,39 @@ export class WorldDetailRuntime {
           },
         );
         statistics.rockInstances += 1;
+      }
+
+      // 2-15: ground clutter — near field only (sub-metre debris is
+      // invisible past the near boundary), aligned hard to the terrain
+      // (logs lie on the ground: 85% blend), faded at the near edge.
+      for (const piece of resident.cell.clutter) {
+        const clutterDistance = Math.hypot(
+          piece.x - this.observerX,
+          piece.z - this.observerZ,
+        );
+        const clutterEdge = densityLaw.near.outerRadiusMeters;
+        if (clutterDistance >= clutterEdge) continue;
+        const clutterFade = clutterDistance > clutterEdge - DETAIL_FADE_MARGIN_METERS
+          ? (clutterEdge - clutterDistance) / DETAIL_FADE_MARGIN_METERS
+          : 1;
+        this.appendInstance(
+          this.getBatch(`clutter-${piece.clutterKind}`, chunk, nextBatchKeys),
+          {
+            x: piece.x - floatingOrigin.x,
+            y: piece.y - floatingOrigin.y,
+            z: piece.z - floatingOrigin.z,
+            quaternion: normalAlignedQuaternion(piece.normal, piece.yawRadians, 0.85),
+            heightScaleMeters: piece.sizeMeters,
+            radialScale: 1,
+            fade: clutterFade,
+            fadeIncoming: false,
+            variant: 0,
+            tint: piece.color,
+            windPhase: 0,
+            windResponse: 0,
+          },
+        );
+        statistics.clutterInstances += 1;
       }
 
     }
@@ -1306,21 +1370,49 @@ export class WorldDetailRuntime {
       }
     }
 
+    // 2-15: displaced-icosphere rocks — per-lithology normals live in the
+    // prototype (limestone smooth, granite/dark flat: the shading-model
+    // difference reads as lithology more strongly than colour does).
     const rockColors: Readonly<Record<RockVariant, Color3>> = {
       granite: new Color3(0.38, 0.39, 0.4),
       limestone: new Color3(0.5, 0.48, 0.41),
       dark: new Color3(0.22, 0.24, 0.25),
     };
     for (const variant of ROCK_VARIANTS) {
-      const mesh = CreateIcoSphere(
-        `detail-rock-${variant}`,
-        { radius: 1, subdivisions: 1, flat: true },
-        this.scene,
-      );
+      const prototype = buildRockPrototype(variant, prototypeSeed);
       this.registerBatch(
         `rock-${variant}`,
-        mesh,
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94, 1.6),
+        this.buildPrototypeMesh(`detail-rock-${variant}`, prototype),
+        // Aspect 1.4 keeps the width-recovery multiplier inside the record's
+        // [0.5, 1.6] range across the flattening spread (see the appender).
+        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94, 1.4),
+        false,
+      );
+    }
+
+    // 2-15: ground clutter — logs, stumps, branch litter, moss cushions.
+    // Litter is alpha-tested cards from the 2-11 twig layer, so its material
+    // rides the atlas path double-sided; logs and stumps sample bark layers
+    // through the same path but stay culled; moss is untextured (−1).
+    const clutterKinds: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
+    for (const kind of clutterKinds) {
+      const prototype = buildClutterPrototype(kind, prototypeSeed);
+      const material = this.createMaterial(
+        `detail-clutter-${kind}-material`,
+        kind === "mossCushion" ? new Color3(0.62, 0.68, 0.56) : new Color3(0.64, 0.6, 0.55),
+        0.95,
+        1,
+        true,
+      );
+      if (kind === "branchLitter") {
+        material.backFaceCulling = false;
+        material.twoSidedLighting = true;
+        material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      }
+      this.registerBatch(
+        `clutter-${kind}`,
+        this.buildPrototypeMesh(`detail-clutter-${kind}`, prototype),
+        material,
         false,
       );
     }

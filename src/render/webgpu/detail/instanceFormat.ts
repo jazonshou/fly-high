@@ -91,6 +91,44 @@ export function yawQuaternion(yawRadians: number): [number, number, number, numb
 }
 
 /**
+ * 2-15 — yaw about the object's own axis, then tilt that axis `blend` of
+ * the way from world-up toward the terrain normal (the plan's ~60% rock
+ * alignment; clutter lies flatter at higher blends). Hamilton product
+ * q_tilt ⊗ q_yaw, unit output.
+ */
+export function normalAlignedQuaternion(
+  normal: { readonly x: number; readonly y: number; readonly z: number },
+  yawRadians: number,
+  blend: number,
+): [number, number, number, number] {
+  const mix = Math.min(1, Math.max(0, blend));
+  let tx = normal.x * mix;
+  let ty = 1 + (normal.y - 1) * mix;
+  let tz = normal.z * mix;
+  const length = Math.hypot(tx, ty, tz);
+  if (!Number.isFinite(length) || length < 1e-6) {
+    return yawQuaternion(yawRadians);
+  }
+  tx /= length; ty /= length; tz /= length;
+  // Tilt +y onto the blended axis: axis = up × t = (tz, 0, −tx).
+  const axisLength = Math.hypot(tz, tx);
+  if (axisLength < 1e-6) return yawQuaternion(yawRadians);
+  const angle = Math.acos(Math.min(1, Math.max(-1, ty)));
+  const s = Math.sin(angle / 2) / axisLength;
+  const qtX = tz * s;
+  const qtZ = -tx * s;
+  const qtW = Math.cos(angle / 2);
+  const [qyX, qyY, qyZ, qyW] = yawQuaternion(yawRadians);
+  // Hamilton product (qt ⊗ qy) with qtY = 0.
+  const x = qtW * qyX + qtX * qyW + 0 * qyZ - qtZ * qyY;
+  const y = qtW * qyY + 0 * qyW + qtZ * qyX - qtX * qyZ;
+  const z = qtW * qyZ + qtZ * qyW + qtX * qyY - 0 * qyX;
+  const w = qtW * qyW - qtX * qyX - 0 * qyY - qtZ * qyZ;
+  const norm = Math.hypot(x, y, z, w) || 1;
+  return [x / norm, y / norm, z / norm, w / norm];
+}
+
+/**
  * Pooled instance writer: pushes 32-byte records into a growable buffer and
  * hands back the exact packed byte range. `reset()` reuses the allocation —
  * the plan's "build into a pooled buffer" requirement.

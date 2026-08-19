@@ -1,7 +1,7 @@
 import { clamp, lerp } from "@/src/world/noise";
 import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "@/src/world/seed";
 import { FOLIAGE_LAYERS } from "./FoliageAtlas";
-import type { RockVariant, ShrubSpecies, TreeSpecies } from "./types";
+import type { ClutterKind, RockVariant, ShrubSpecies, TreeSpecies } from "./types";
 
 /**
  * Vegetation prototype geometry builders (2-12, 2-12b, 2-15, 2-16).
@@ -72,7 +72,7 @@ export const SHRUB_VARIANT_COUNTS: Readonly<Record<ShrubSpecies, number>> = Obje
   sage: 2,
 });
 
-export type ClutterKind = "log" | "stump" | "branchLitter" | "mossCushion";
+export type { ClutterKind } from "./types";
 
 // ---------------------------------------------------------------------------
 // Deterministic streams. hashText/createRandom mirror generation.ts's private

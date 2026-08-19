@@ -12,6 +12,7 @@ export type TreeSpecies =
   | "birch"
   | "willow";
 export type ShrubSpecies = "juniper" | "hazel" | "sage";
+export type ClutterKind = "log" | "stump" | "branchLitter" | "mossCushion";
 export type RockVariant = "granite" | "limestone" | "dark";
 
 export interface DetailTerrainSample {
@@ -101,6 +102,24 @@ export interface DetailRockPlacement {
   readonly flattening: number;
   readonly color: readonly [number, number, number, number];
   readonly selection: number;
+  /** 2-15: terrain normal at the placement, for ~60% alignment. */
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
+}
+
+/** 2-15: ground clutter — logs, stumps, branch litter, moss cushions. */
+export interface DetailClutterPlacement {
+  readonly kind: "clutter";
+  readonly id: string;
+  readonly clutterKind: ClutterKind;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly yawRadians: number;
+  /** Prototype scale (prototypes are unit-ish; this is heightScaleMeters). */
+  readonly sizeMeters: number;
+  readonly color: readonly [number, number, number, number];
+  readonly selection: number;
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
 }
 
 export interface GeneratedDetailCell {
@@ -115,6 +134,7 @@ export interface GeneratedDetailCell {
   readonly trees: readonly DetailTreePlacement[];
   readonly shrubs: readonly DetailShrubPlacement[];
   readonly rocks: readonly DetailRockPlacement[];
+  readonly clutter: readonly DetailClutterPlacement[];
 }
 
 export interface WorldDetailObserver {
@@ -140,6 +160,7 @@ export interface WorldDetailStatistics {
   readonly treeInstances: number;
   readonly shrubInstances: number;
   readonly rockInstances: number;
+  readonly clutterInstances: number;
   /** Main-camera-frustum instances, including separate trunks/crowns and walls/roofs. */
   readonly renderedThinInstances: number;
   /** Spatial prototype/chunk batches selected by the main-camera frustum. */

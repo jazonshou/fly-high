@@ -10,7 +10,9 @@ import { densityField, type VegetationDensitySample } from "./densityField";
 import { sampleStandField, type StandSample } from "./standField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
+  type ClutterKind,
   type DetailCellGenerationOptions,
+  type DetailClutterPlacement,
   type DetailRockPlacement,
   type DetailShrubPlacement,
   type DetailTerrainSample,
@@ -274,20 +276,38 @@ function applyFoliageSeason(
     const winterDim = 1 - 0.07 * winter;
     r *= winterDim; g *= winterDim; b *= winterDim;
   }
+  const snowed = applySnowCover([r, g, b], season, winter, terrainHeightMeters, terrainSlope);
+  return [snowed[0], snowed[1], snowed[2], clamp(alpha, 0, 1)];
+}
+
+/**
+ * 2-13a/2-15 — the shared snow whitening, `seasonalSnowCover`'s ground rule
+ * applied to surface objects: band above the descending snowline, season
+ * gate, and slope shedding. The shedding term is vacuous for canopy (trees
+ * stop growing at slope ~0.2) and LIVE for rocks, which reach 0.9.
+ */
+function applySnowCover(
+  rgb: readonly [number, number, number],
+  season: FoliageSeason,
+  winterFraction: number,
+  terrainHeightMeters: number,
+  terrainSlope: number,
+): [number, number, number] {
   const snowBand = smootherStep(
     season.snowlineMeters - 140,
     season.snowlineMeters + 40,
     terrainHeightMeters,
   );
   const slopeShedding = 1 - clamp((terrainSlope - 0.55) * 2.2, 0, 1);
-  const seasonGate = smootherStep(0.15, 0.35, winter);
+  const seasonGate = smootherStep(0.15, 0.35, winterFraction);
   const snowCover = snowBand * slopeShedding * seasonGate * 0.85;
+  let [r, g, b] = rgb;
   if (snowCover > 0) {
     r += (1 - r) * snowCover;
     g += (1 - g) * snowCover;
     b += (1 - b) * snowCover;
   }
-  return [clamp(r, 0, 1), clamp(g, 0, 1), clamp(b, 0, 1), clamp(alpha, 0, 1)];
+  return [clamp(r, 0, 1), clamp(g, 0, 1), clamp(b, 0, 1)];
 }
 
 /**
@@ -769,6 +789,7 @@ function generateRocks(
   cellSize: number,
   density: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+  season: FoliageSeason,
 ): readonly DetailRockPlacement[] {
   if (density <= 0) return [];
   const random = createRandom(`${seed}/rocks/${key}`);
@@ -783,21 +804,116 @@ function generateRocks(
     const variant = chooseRockVariant(sample, random);
     const radius = 0.5 + (0.25 + sample.slope * 0.75) * random() * 4.2;
     const tint = 0.78 + random() * 0.3;
+    const flattening = 0.45 + random() * 0.45;
+    const winter = clamp(season.winterFraction + (random() - 0.5) * 0.04, 0, 1);
+    const snowed = applySnowCover(
+      [tint, tint * (variant === "limestone" ? 1.03 : 0.92), tint * 0.86],
+      season,
+      winter,
+      sample.height,
+      sample.slope,
+    );
     rocks.push({
       kind: "rock",
       id: `${key}/rock/${index}`,
       variant,
       x,
-      y: sample.height - radius * 0.12,
+      // 2-15: sunk by radius·(0.12 + 0.25·hash) so rocks sit IN the ground.
+      y: sample.height - radius * flattening * (0.12 + 0.25 * random()),
       z,
       yawRadians: random() * TAU,
       radiusMeters: radius,
-      flattening: 0.45 + random() * 0.45,
-      color: [tint, tint * (variant === "limestone" ? 1.03 : 0.92), tint * 0.86, 1],
+      flattening,
+      color: [snowed[0], snowed[1], snowed[2], 1],
       selection: random(),
+      normal: sample.normal ?? { x: 0, y: 1, z: 0 },
     });
   }
   return rocks;
+}
+
+const CLUTTER_KINDS: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
+
+/**
+ * 2-15 — ground clutter: the debris layer no plan document placed anywhere
+ * ("twigs, mess"). Density rides CANOPY CLOSURE through the density field
+ * (clutter belongs under trees) with a moisture bonus standing in for soil
+ * depth until 6-6's ecology channels exist — a wet hollow under closed
+ * canopy carries ~6× the litter of open grassland. Moss cushions require
+ * moisture; their share redistributes to branch litter on dry ground.
+ * Budget: ~30 accepted per closed-forest 128 m cell ≈ the plan's ~2,000
+ * instances over a Balanced near field, ~80 k triangles.
+ */
+function scatterClutter(
+  context: ScatterContext,
+  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+): readonly DetailClutterPlacement[] {
+  const random = createRandom(`${context.seed}/clutter/${detailCellKey(
+    Math.round(context.minX / context.cellSize),
+    Math.round(context.minZ / context.cellSize),
+  )}`);
+  const candidates = Math.min(
+    72,
+    Math.max(8, Math.round((context.cellSize * context.cellSize / 380) * context.density)),
+  );
+  const placements: DetailClutterPlacement[] = [];
+  for (let index = 0; index < candidates; index += 1) {
+    const x = context.minX + random() * context.cellSize;
+    const z = context.minZ + random() * context.cellSize;
+    const acceptance = random();
+    const kindRoll = random();
+    const sizeRoll = random();
+    const yaw = random() * TAU;
+    const selection = random();
+    const valueJitter = 0.82 + random() * 0.3;
+    const sample = sampleTerrain(x, z);
+    if (!validSample(sample)) continue;
+    const field = densityField(context.seedHash, {
+      x,
+      z,
+      heightMeters: sample.height,
+      seaLevelMeters: context.seaLevelMeters,
+      slope: sample.slope,
+      moisture: sample.moisture,
+      dayOfYear: context.dayOfYear,
+      ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
+      ...(sample.airportInfluence !== undefined
+        ? { airportInfluence: sample.airportInfluence }
+        : {}),
+    });
+    // Canopy closure proxy: closed forest carries ~0.05 stems/m².
+    const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
+    const probability = airportClearance(sample)
+      * (0.06 + closure * 0.5 + sample.moisture * 0.12);
+    if (acceptance >= probability) continue;
+    const wetEnough = sample.moisture >= 0.55;
+    const kind: ClutterKind = kindRoll < 0.2 ? "log"
+      : kindRoll < 0.35 ? "stump"
+      : kindRoll < 0.8 || !wetEnough ? "branchLitter"
+      : "mossCushion";
+    const size = kind === "log" ? 2.4 + sizeRoll * 2.2
+      : kind === "stump" ? 0.8 + sizeRoll * 0.8
+      : kind === "branchLitter" ? 1.2 + sizeRoll * 1.4
+      : 0.8 + sizeRoll * 1.4;
+    const base: readonly [number, number, number] = kind === "mossCushion"
+      ? [0.5 * valueJitter, 0.72 * valueJitter, 0.42 * valueJitter]
+      : [0.72 * valueJitter, 0.66 * valueJitter, 0.56 * valueJitter];
+    const snowed = applySnowCover(base, context.season, context.season.winterFraction, sample.height, sample.slope);
+    placements.push({
+      kind: "clutter",
+      id: `${context.seed}/clutter/${index}/${x.toFixed(1)}/${z.toFixed(1)}`,
+      clutterKind: kind,
+      x,
+      y: sample.height,
+      z,
+      yawRadians: yaw,
+      sizeMeters: size,
+      color: [snowed[0], snowed[1], snowed[2], 1],
+      selection,
+      normal: sample.normal ?? { x: 0, y: 1, z: 0 },
+    });
+  }
+  return placements;
 }
 
 /** Deterministically regenerate one cell without reading or mutating global state. */
@@ -855,6 +971,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     maxZ: minZ + cellSizeMeters,
     trees: densityMultiplier > 0 ? scatterTrees(context) : [],
     shrubs: densityMultiplier > 0 ? scatterShrubs(context) : [],
+    clutter: densityMultiplier > 0 ? scatterClutter(context, options.terrainSample) : [],
     rocks: generateRocks(
       seed,
       key,
@@ -863,6 +980,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       cellSizeMeters,
       densityMultiplier,
       options.terrainSample,
+      context.season,
     ),
   };
 }
