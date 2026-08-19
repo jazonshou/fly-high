@@ -34,6 +34,11 @@ const ATMOSPHERE: AtmosphereSnapshot = {
   humidity: 0.62,
   windSpeed: 9,
   windDirection: new Vector2(0.93, 0.37).normalize(),
+  moonDirection: new Vector3(0, -1, 0),
+  moonIlluminanceLux: 0,
+  moonIlluminatedFraction: 0,
+  adaptedLuminanceCdM2: 6_000,
+  sceneKeyLuminanceCdM2: 1_000,
 };
 
 function slopedTerrain(): HydrologyTerrainSampler {

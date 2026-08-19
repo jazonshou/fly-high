@@ -12,6 +12,7 @@ import {
   BASE_EXPOSURE,
   REFERENCE_EV100,
   exposureForState,
+  MAX_EXPOSURE,
   resolveEnvironmentState,
 } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
@@ -130,7 +131,17 @@ describe("single exposure (1C-2)", () => {
     });
     expect(exposureForState(dawn)).toBeGreaterThan(exposureForState(day));
     expect(exposureForState(night)).toBeGreaterThanOrEqual(exposureForState(dawn));
-    expect(exposureForState(night)).toBeLessThanOrEqual(2.6);
+    // 7-2 reopened the ceiling the realignment named as "a magic number with
+    // no stated night rationale". It is derived now: the curve keeps opening
+    // down to the illuminance at which human vision hands over to the rods
+    // and stops there, because past that point ScotopicVision's
+    // Naka-Rushton response is what a person's night vision does. Both the
+    // value and the fact that it BINDS at midnight are pinned, so neither
+    // the curve nor the scotopic threshold can move silently.
+    expect(exposureForState(night)).toBeLessThanOrEqual(MAX_EXPOSURE);
+    expect(MAX_EXPOSURE).toBeCloseTo(4.698, 2);
+    expect(exposureForState(night)).toBeCloseTo(MAX_EXPOSURE, 6);
+    expect(MAX_EXPOSURE).toBeGreaterThan(2.6);
   });
 });
 

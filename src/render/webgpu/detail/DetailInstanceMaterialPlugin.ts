@@ -21,6 +21,22 @@ import { DETAIL_INSTANCE_ATTRIBUTES } from "./instanceFormat";
  * the material's first effect compiles.
  */
 
+/**
+ * Rows in the per-species impostor bake table. Seven species today; the
+ * eighth slot is the round-up to a power of two. The variant byte's high
+ * three bits index it, so this cannot grow past eight without spending
+ * instance-format bits — which is a decision, not an accident.
+ */
+export const DETAIL_IMPOSTOR_SPECIES_SLOTS = 8;
+
+/** One species' bake frame: the square the billboard must reconstruct. */
+export interface ImpostorSpeciesFrame {
+  readonly extentUnit: number;
+  readonly centerYUnit: number;
+  readonly leafedLayer: number;
+  readonly bareLayer: number;
+}
+
 const WGSL_VERTEX_CODE = Object.freeze({
   CUSTOM_VERTEX_DEFINITIONS: `
 attribute instancePosition: vec3f;
@@ -99,20 +115,30 @@ fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f) -> bool {
   CUSTOM_VERTEX_UPDATE_POSITION: `
 #ifdef DETAIL_IMPOSTOR
 // 2-17 — cylindrical billboard + three-view hemi-octahedral selection.
-// The quad prototype spans x,y ∈ [−1, 1]; the species' bake extent and
-// vertical centre arrive in the detailImpostor uniform. Per-instance
-// variety at zero atlas cost: the variant byte rotates the sampled view
-// azimuth (view-phase offset) and mirrors the quad, so no two neighbours
-// share both silhouette aspect and phase.
+// The quad prototype spans x,y ∈ [−1, 1]. Per-instance variety at zero
+// atlas cost: the variant byte rotates the sampled view azimuth
+// (view-phase offset) and mirrors the quad, so no two neighbours share
+// both silhouette aspect and phase.
+//
+// Perf-debt pass: the byte's HIGH three bits now carry the SPECIES, and the
+// bake frame (extent, centre, leafed layer, bare layer) is a per-species
+// row of detailImpostorSpecies instead of a per-material uniform. That is
+// what lets all seven species share one quad, one material and therefore
+// ONE draw per presentation chunk — the far band spans by far the most
+// chunks, so seven meshes there was the programme's largest draw-call line.
+// The low five bits keep 2-17's per-stem hash exactly: bit 0 mirror,
+// bits 1-2 view phase, bits 3-4 spare.
+let impostorVariantByte = floor(vertexInputs.instanceState.y * 255.0 + 0.5);
+let impostorSpeciesIndex = floor(impostorVariantByte / 32.0);
+let impostorFrame = uniforms.detailImpostorSpecies[i32(impostorSpeciesIndex)];
 let impostorHeight = vertexInputs.instanceScale.x * 48.0;
-let impostorScale = impostorHeight * uniforms.detailImpostor.x;
-let impostorCenter = impostorHeight * uniforms.detailImpostor.y;
+let impostorScale = impostorHeight * impostorFrame.x;
+let impostorCenter = impostorHeight * impostorFrame.y;
 let impostorToCamera = scene.vEyePosition.xyz - vertexInputs.instancePosition;
 var impostorFlat = vec2f(impostorToCamera.x, impostorToCamera.z);
 let impostorFlatLength = max(length(impostorFlat), 1e-3);
 impostorFlat = impostorFlat / impostorFlatLength;
 let impostorRight = vec3f(-impostorFlat.y, 0.0, impostorFlat.x);
-let impostorVariantByte = vertexInputs.instanceState.y * 255.0;
 let impostorMirror = select(1.0, -1.0, fract(impostorVariantByte / 2.0) >= 0.5);
 let impostorRadial = (0.5 + vertexInputs.instanceScale.y * 1.1) * 0.85 + 0.15;
 positionUpdated = vec3f(0.0, 0.0, 0.0)
@@ -125,7 +151,7 @@ if (detailBandWindowEmpty(2.0, vertexInputs.instancePosition)) {
 }
 #endif
 // View direction for tile selection — phase-rotated by the variant.
-let impostorPhase = floor(impostorVariantByte / 2.0) % 4.0 * 0.19635;
+let impostorPhase = (floor(impostorVariantByte / 2.0) % 4.0) * 0.19635;
 let impostorCos = cos(impostorPhase);
 let impostorSin = sin(impostorPhase);
 let impostorView = normalize(vec3f(
@@ -153,7 +179,7 @@ vertexOutputs.detailImpostorA = vec4f(
   weightA,
 );
 vertexOutputs.detailImpostorB = vec4f(cornerA * 0.25, cornerB * 0.25);
-vertexOutputs.detailImpostorC = vec4f(cornerC * 0.25, weightB, 0.0);
+vertexOutputs.detailImpostorC = vec4f(cornerC * 0.25, weightB, impostorVariantByte);
 vertexOutputs.detailInstanceTint = vertexInputs.instanceTint;
 #else
 let detailHeight = vertexInputs.instanceScale.x * 48.0;
@@ -291,15 +317,28 @@ varying detailImpostorB: vec4f;
 varying detailImpostorC: vec4f;
 var impostorAlbedoSampler: sampler;
 var impostorAlbedo: texture_2d_array<f32>;
+var impostorNormalDepthSampler: sampler;
+var impostorNormalDepth: texture_2d_array<f32>;
+
+// Tile origin for one view, in the atlas's 4x4 grid.
+fn detailImpostorTileUv(tileOrigin: vec2f, quadUv: vec2f) -> vec2f {
+  return tileOrigin + clamp(quadUv, vec2f(0.002), vec2f(0.998)) * 0.25;
+}
 
 // One view's sample, season-blended between the leafed and bare layers.
-fn detailImpostorSample(tileOrigin: vec2f, quadUv: vec2f) -> vec4f {
-  let uv = tileOrigin + clamp(quadUv, vec2f(0.002), vec2f(0.998)) * 0.25;
-  let leafed = textureSample(
-    impostorAlbedo, impostorAlbedoSampler, uv, i32(uniforms.detailImpostor.z));
-  let bare = textureSample(
-    impostorAlbedo, impostorAlbedoSampler, uv, i32(uniforms.detailImpostor.w));
+// The layer pair arrives per INSTANCE now (the species rides the variant
+// byte), so a single material serves every species.
+fn detailImpostorSample(tileOrigin: vec2f, quadUv: vec2f, layers: vec2f) -> vec4f {
+  let uv = detailImpostorTileUv(tileOrigin, quadUv);
+  let leafed = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.x));
+  let bare = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.y));
   return mix(leafed, bare, uniforms.detailImpostorSeason);
+}
+
+// The per-fragment species row, decoded from the interpolated variant byte.
+fn detailImpostorFrame() -> vec4f {
+  let variant = floor(fragmentInputs.detailImpostorC.w + 0.5);
+  return uniforms.detailImpostorSpecies[i32(floor(variant / 32.0))];
 }
 #endif
 
@@ -390,9 +429,13 @@ let impostorQuadUv = vec2f(
   fragmentInputs.detailImpostorA.x,
   1.0 - fragmentInputs.detailImpostorA.y,
 );
-let impostorSampleA = detailImpostorSample(fragmentInputs.detailImpostorB.xy, impostorQuadUv);
-let impostorSampleB = detailImpostorSample(fragmentInputs.detailImpostorB.zw, impostorQuadUv);
-let impostorSampleC = detailImpostorSample(fragmentInputs.detailImpostorC.xy, impostorQuadUv);
+let impostorLayers = detailImpostorFrame().zw;
+let impostorSampleA = detailImpostorSample(
+  fragmentInputs.detailImpostorB.xy, impostorQuadUv, impostorLayers);
+let impostorSampleB = detailImpostorSample(
+  fragmentInputs.detailImpostorB.zw, impostorQuadUv, impostorLayers);
+let impostorSampleC = detailImpostorSample(
+  fragmentInputs.detailImpostorC.xy, impostorQuadUv, impostorLayers);
 let impostorWeightA = clamp(fragmentInputs.detailImpostorA.w, 0.0, 1.0);
 let impostorWeightB = clamp(fragmentInputs.detailImpostorC.z, 0.0, 1.0);
 let impostorWeightC = clamp(1.0 - impostorWeightA - impostorWeightB, 0.0, 1.0);
@@ -461,6 +504,90 @@ surfaceAlbedo = surfaceAlbedo * mix(0.42, 1.0, detailOcclusionDecoded);
 surfaceAlbedo = surfaceAlbedo * fragmentInputs.detailInstanceTint.rgb;
 #endif
 `,
+  CUSTOM_FRAGMENT_BEFORE_LIGHTS: `
+#ifdef DETAIL_IMPOSTOR
+// 2-17's DEFERRED NORMAL HOOKUP, closed by the perf-debt pass. The
+// normal+depth array was baked and uploaded and then never sampled, so
+// every impostor shaded with the billboard quad's own object normal — the
+// vertex stage deliberately skips the instance rotation for impostors, so
+// distant forest was lit from a direction unrelated to the crown it was
+// drawing. ONE sample (the highest-weight view; the three-view blend exists
+// for silhouette coherence and a normal does not need it) restores it.
+let impostorNormalVariant = floor(fragmentInputs.detailImpostorC.w + 0.5);
+let impostorNormalFrame = uniforms.detailImpostorSpecies[
+  i32(floor(impostorNormalVariant / 32.0))
+];
+let impostorNormalQuadUv = vec2f(
+  fragmentInputs.detailImpostorA.x,
+  1.0 - fragmentInputs.detailImpostorA.y,
+);
+let impostorNormalWeightA = clamp(fragmentInputs.detailImpostorA.w, 0.0, 1.0);
+let impostorNormalWeightB = clamp(fragmentInputs.detailImpostorC.z, 0.0, 1.0);
+var impostorNormalOrigin = fragmentInputs.detailImpostorB.xy;
+var impostorNormalBest = impostorNormalWeightA;
+if (impostorNormalWeightB > impostorNormalBest) {
+  impostorNormalOrigin = fragmentInputs.detailImpostorB.zw;
+  impostorNormalBest = impostorNormalWeightB;
+}
+if (1.0 - impostorNormalWeightA - impostorNormalWeightB > impostorNormalBest) {
+  impostorNormalOrigin = fragmentInputs.detailImpostorC.xy;
+}
+let impostorNormalTexel = textureSample(
+  impostorNormalDepth,
+  impostorNormalDepthSampler,
+  detailImpostorTileUv(impostorNormalOrigin, impostorNormalQuadUv),
+  i32(impostorNormalFrame.z),
+).xyz * 2.0 - 1.0;
+// The sprite is the tree seen from a direction the vertex stage rotated by
+// +phase about Y and optionally mirrored about the billboard's right axis,
+// so the baked (prototype-frame) normal carries exactly those two
+// transforms in reverse.
+let impostorNormalPhase = (floor(impostorNormalVariant / 2.0) % 4.0) * 0.19635;
+let impostorNormalCos = cos(impostorNormalPhase);
+let impostorNormalSin = sin(impostorNormalPhase);
+var impostorNormalWorld = vec3f(
+  impostorNormalTexel.x * impostorNormalCos + impostorNormalTexel.z * impostorNormalSin,
+  impostorNormalTexel.y,
+  -impostorNormalTexel.x * impostorNormalSin + impostorNormalTexel.z * impostorNormalCos,
+);
+if (fract(impostorNormalVariant / 2.0) >= 0.5) {
+  let impostorNormalEye = scene.vEyePosition.xyz - fragmentInputs.vPositionW;
+  let impostorNormalFlat = normalize(vec2f(impostorNormalEye.x, impostorNormalEye.z));
+  let impostorNormalRight = vec3f(-impostorNormalFlat.y, 0.0, impostorNormalFlat.x);
+  impostorNormalWorld -= 2.0 * dot(impostorNormalWorld, impostorNormalRight) * impostorNormalRight;
+}
+let impostorNormalLength = length(impostorNormalWorld);
+if (impostorNormalLength > 0.25) {
+  // Softened toward the billboard normal: a ≤20 px sprite carrying a raw
+  // leaf-facet normal would flicker as the view crosses tile boundaries,
+  // and 2-14's whole crossfade design exists to keep that from happening.
+  normalW = normalize(mix(normalW, impostorNormalWorld / impostorNormalLength, 0.75));
+}
+#endif
+`,
+  CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: `
+#ifdef DETAIL_FOLIAGE_ATLAS
+// 2-12's OTHER recorded gap, closed by the perf-debt pass: leaves are thin,
+// so a crown lit from behind glows instead of going black — the single
+// largest reason a backlit canopy reads as cardboard. This is a wrap
+// transmission term on the frame's KEY LIGHT, which the runtime forwards
+// from AtmosphereSystem's snapshot exactly as it forwards the wind field.
+// No second sun is defined here (that is the ownership failure the manifest
+// exists to prevent) and no exposure is multiplied (assertion 29); after
+// Gate 7A the key light is the moon at night, which is what a moonlit
+// canopy actually transmits.
+let detailBacklit = uniforms.detailKeyLight.w
+  * pow(clamp(-dot(viewDirectionW, uniforms.detailKeyLight.xyz), 0.0, 1.0), 4.0);
+if (detailBacklit > 0.0) {
+  // Baked crown occlusion gates it: an interior leaf sits behind several
+  // others and transmits a fraction of what a rim leaf does.
+  let detailBacklitOcclusion =
+    (fragmentInputs.detailAtlasData.w - floor(fragmentInputs.detailAtlasData.w)) * 2.0;
+  finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
+    * (detailBacklit * mix(0.15, 1.0, clamp(detailBacklitOcclusion, 0.0, 1.0)));
+}
+#endif
+`,
 });
 
 /** Builds the instance world transform and tint from the 32-byte record. */
@@ -468,13 +595,30 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private timeSeconds = 0;
   private radialAspect = 1;
   private foliageAtlas: BaseTexture | null = null;
-  /** 2-17: impostor albedo array + per-species bake constants. */
+  /** 2-17: impostor albedo + normal/depth arrays, and the species table. */
   private impostorAtlas: BaseTexture | null = null;
-  private impostorExtent = 1;
-  private impostorCenter = 0.5;
-  private impostorLeafedLayer = 0;
-  private impostorBareLayer = 1;
+  private impostorNormalAtlas: BaseTexture | null = null;
+  /**
+   * Perf-debt pass: one row per species — (extentUnit, centerYUnit,
+   * leafedLayer, bareLayer) — indexed by the instance's variant byte, which
+   * is what collapses seven per-species impostor meshes into one draw.
+   */
+  private readonly impostorSpecies = new Float32Array(
+    DETAIL_IMPOSTOR_SPECIES_SLOTS * 4,
+  );
   private impostorSeasonMix = 0;
+  /**
+   * 2-12's translucency term: the frame's key light, forwarded from
+   * `AtmosphereSystem`'s snapshot by the runtime. `w` is the strength
+   * (0 disables the term entirely, which is what a sunless sky gives).
+   */
+  private keyLightX = 0.36;
+  private keyLightY = 0.82;
+  private keyLightZ = 0.44;
+  private keyLightStrength = 0;
+  private keyLightR = 1;
+  private keyLightG = 1;
+  private keyLightB = 1;
   /** 2-17 close: band edges for shader-computed tree fades (0 = off). */
   private bandFadesEnabled = false;
   private bandNearEdge = 0;
@@ -529,20 +673,62 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
    * 2-17: switches the material into billboard-impostor mode — the quad
    * prototype, the three-view hemi-octahedral blend, and the season
    * cross-fade between the two baked buckets.
+   *
+   * Perf-debt pass: the bake frame is a TABLE now, one row per species in
+   * `IMPOSTOR_SPECIES` order, so a single material draws every species. The
+   * normal/depth array is bound alongside the albedo array — 2-17 uploaded
+   * it and deferred its shading hookup; `CUSTOM_FRAGMENT_BEFORE_LIGHTS`
+   * consumes it.
    */
   setImpostorAtlas(
-    texture: BaseTexture,
-    extentUnit: number,
-    centerYUnit: number,
-    leafedLayer: number,
-    bareLayer: number,
+    albedo: BaseTexture,
+    normalDepth: BaseTexture,
+    species: readonly ImpostorSpeciesFrame[],
   ): void {
-    this.impostorAtlas = texture;
-    this.impostorExtent = extentUnit;
-    this.impostorCenter = centerYUnit;
-    this.impostorLeafedLayer = leafedLayer;
-    this.impostorBareLayer = bareLayer;
+    if (species.length > DETAIL_IMPOSTOR_SPECIES_SLOTS) {
+      throw new RangeError(
+        `The impostor species table holds ${DETAIL_IMPOSTOR_SPECIES_SLOTS} rows; `
+        + `${species.length} were supplied. The variant byte's high three bits `
+        + "carry the index, so widening it costs instance-format bits.",
+      );
+    }
+    this.impostorAtlas = albedo;
+    this.impostorNormalAtlas = normalDepth;
+    this.impostorSpecies.fill(0);
+    species.forEach((frame, index) => {
+      this.impostorSpecies[index * 4] = frame.extentUnit;
+      this.impostorSpecies[index * 4 + 1] = frame.centerYUnit;
+      this.impostorSpecies[index * 4 + 2] = frame.leafedLayer;
+      this.impostorSpecies[index * 4 + 3] = frame.bareLayer;
+    });
     this.markAllDefinesAsDirty();
+  }
+
+  /**
+   * The frame's key light, in the same convention `AtmosphereSnapshot` uses
+   * (a unit vector FROM the world TOWARD the light). `strength` is the
+   * relative illuminance the translucency term is scaled by, so the glow
+   * follows the real sun and, after Gate 7A, the moon.
+   */
+  setKeyLight(
+    directionX: number,
+    directionY: number,
+    directionZ: number,
+    radiance: readonly [number, number, number],
+    strength: number,
+  ): void {
+    const length = Math.hypot(directionX, directionY, directionZ);
+    if (Number.isFinite(length) && length > 1e-6) {
+      this.keyLightX = directionX / length;
+      this.keyLightY = directionY / length;
+      this.keyLightZ = directionZ / length;
+    }
+    this.keyLightR = Math.max(0, radiance[0]);
+    this.keyLightG = Math.max(0, radiance[1]);
+    this.keyLightB = Math.max(0, radiance[2]);
+    this.keyLightStrength = Number.isFinite(strength)
+      ? Math.min(1, Math.max(0, strength))
+      : 0;
   }
 
   /** 2-17a: 0 = leafed bucket … 1 = bare (deciduous shed cross-fade). */
@@ -585,6 +771,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   override getSamplers(samplers: string[]): void {
     if (!samplers.includes("foliageAtlas")) samplers.push("foliageAtlas");
     if (!samplers.includes("impostorAlbedo")) samplers.push("impostorAlbedo");
+    if (!samplers.includes("impostorNormalDepth")) samplers.push("impostorNormalDepth");
   }
 
   override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
@@ -593,6 +780,9 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     }
     if (this.impostorAtlas) {
       uniformBuffer.setTexture("impostorAlbedo", this.impostorAtlas);
+    }
+    if (this.impostorNormalAtlas) {
+      uniformBuffer.setTexture("impostorNormalDepth", this.impostorNormalAtlas);
     }
   }
 
@@ -639,16 +829,23 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   }
 
   override getUniforms(): {
-    ubo: Array<{ name: string; size: number; type: string }>;
+    ubo: Array<{ name: string; size: number; type: string; arraySize?: number }>;
   } {
     return {
       ubo: [
         { name: "detailWindTime", size: 1, type: "float" },
         { name: "detailRadialAspect", size: 1, type: "float" },
         { name: "detailWind", size: 4, type: "vec4" },
-        { name: "detailImpostor", size: 4, type: "vec4" },
         { name: "detailImpostorSeason", size: 1, type: "float" },
         { name: "detailBandRadii", size: 4, type: "vec4" },
+        { name: "detailKeyLight", size: 4, type: "vec4" },
+        { name: "detailKeyLightColor", size: 4, type: "vec4" },
+        {
+          name: "detailImpostorSpecies",
+          size: 4,
+          type: "vec4",
+          arraySize: DETAIL_IMPOSTOR_SPECIES_SLOTS,
+        },
       ],
     };
   }
@@ -663,13 +860,6 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       this.windStrength,
       this.windGust,
     );
-    uniformBuffer.updateFloat4(
-      "detailImpostor",
-      this.impostorExtent,
-      this.impostorCenter,
-      this.impostorLeafedLayer,
-      this.impostorBareLayer,
-    );
     uniformBuffer.updateFloat("detailImpostorSeason", this.impostorSeasonMix);
     uniformBuffer.updateFloat4(
       "detailBandRadii",
@@ -678,6 +868,21 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       this.bandCullEdge,
       0,
     );
+    uniformBuffer.updateFloat4(
+      "detailKeyLight",
+      this.keyLightX,
+      this.keyLightY,
+      this.keyLightZ,
+      this.keyLightStrength,
+    );
+    uniformBuffer.updateFloat4(
+      "detailKeyLightColor",
+      this.keyLightR,
+      this.keyLightG,
+      this.keyLightB,
+      0,
+    );
+    uniformBuffer.updateFloatArray("detailImpostorSpecies", this.impostorSpecies);
   }
 
   override getCustomCode(

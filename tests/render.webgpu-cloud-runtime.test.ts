@@ -69,6 +69,11 @@ function createHarness() {
     humidity: 0.45,
     windSpeed: 8,
     windDirection: new Vector2(0.28, 0.96),
+    moonDirection: new Vector3(0, -1, 0),
+    moonIlluminanceLux: 0,
+    moonIlluminatedFraction: 0,
+    adaptedLuminanceCdM2: 6_000,
+    sceneKeyLuminanceCdM2: 1_000,
   };
   const resources = new AtmosphereGpuResources(scene, camera, (mesh) =>
     mesh.name === "volumetric-cloud-shell");

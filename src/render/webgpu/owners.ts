@@ -99,6 +99,83 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes: "Water, clouds, vegetation, aircraft, airport all consume. Nobody re-derives.",
   },
   {
+    // 7-1: the sun's RIGHT ASCENSION, the moon's position/phase/illuminance,
+    // and the Julian date the environment clock maps to. EnvironmentDirector
+    // keeps owning the sun's rendered DIRECTION — this adds the equatorial
+    // quantities that direction cannot express, and the two solar models are
+    // held to agreement by test rather than by hope.
+    artifact: "celestial-ephemeris",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/atmosphere/Ephemeris.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      "julianDayForClock",
+      "daysSinceJ2000",
+      "solarApparentPosition",
+      "moonState",
+      "moonApparentMagnitude",
+      "moonIlluminanceLux",
+      "MOONLIGHT_TINT",
+      "EPHEMERIS_REFERENCE_JULIAN_DAY",
+    ],
+    notes:
+      "The clock carries no year, so the reference epoch is a NAMED constant "
+      + "with a test — moon phase is a deterministic function of dayOfYear "
+      + "and a pinned capture clock produces a pinned moon.",
+  },
+  {
+    // 7-3: every star the renderer draws, the frame that puts it in the sky
+    // and the photometry that decides how bright it is. The 1C-10
+    // placeholder hashed view directions inside the sky fragment; a second
+    // star anywhere is that returning.
+    artifact: "star-catalogue",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/atmosphere/StarCatalogue.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      "BRIGHT_STARS",
+      "brightStars",
+      "generateBackgroundStars",
+      "localSiderealTimeHours",
+      "equatorialToWorldRows",
+      "starIlluminanceLux",
+      "relativeAirMass",
+      "colorForColorIndex",
+      "GALACTIC_POLE_EQUATORIAL",
+      "GALACTIC_CENTER_EQUATORIAL",
+    ],
+    notes:
+      "The sidereal matrix is shared: the star field, the sky's Milky Way "
+      + "band and the moon's world direction all ride equatorialToWorldRows, "
+      + "so they cannot drift apart.",
+  },
+  {
+    artifact: "star-field-renderer",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/atmosphere/StarField.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      "StarFieldSystem",
+      "buildStarFieldGeometry",
+      "starVisibilityForSunElevation",
+    ],
+  },
+  {
+    // 7-2: the rod/cone blend, the Purkinje shift, the desaturation and the
+    // acuity loss. A post-process, never a lighting change — moonlight is
+    // warm and the blue is the viewer's rods.
+    artifact: "scotopic-vision",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/atmosphere/ScotopicVision.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      "ScotopicVisionPass",
+      "rodFractionForAdaptedLuminance",
+      "SCOTOPIC_WEIGHTS",
+      "SCOTOPIC_TINT",
+    ],
+  },
+  {
     artifact: "sky-environment-probe",
     owner: "lighting",
     definitionSites: ["src/render/webgpu/atmosphere/SkyEnvironmentProbe.ts"],

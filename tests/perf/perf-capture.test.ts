@@ -53,6 +53,33 @@ const BASELINE_DIR = "tests/perf/baseline";
 const ARTIFACT_DIR = "tests/perf/artifacts";
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
 
+/**
+ * Comma-separated shot names to run, for diagnosis. A full capture is ~4
+ * minutes of wall clock, which is the wrong feedback loop for "why is this
+ * one shot black" — and that question has now come up twice (2-12's five
+ * on-adapter-only failures, and the perf-debt pass's black approach shot).
+ * Rebaselining is refused while a filter is active: a partial run must never
+ * be able to overwrite the committed set.
+ */
+const SHOT_FILTER = String(import.meta.env.VITE_PERF_SHOTS ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
+const SELECTED_SHOTS = SHOT_FILTER.length === 0
+  ? PERF_CAPTURE_SHOTS
+  : PERF_CAPTURE_SHOTS.filter((shot) => SHOT_FILTER.includes(shot.name));
+if (SHOT_FILTER.length > 0 && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_SHOTS and VITE_PERF_REBASELINE are mutually exclusive: a "
+    + "partial capture must never overwrite the committed baseline set.",
+  );
+}
+if (SHOT_FILTER.length > 0 && SELECTED_SHOTS.length !== SHOT_FILTER.length) {
+  throw new Error(
+    `VITE_PERF_SHOTS named a shot that does not exist: ${SHOT_FILTER.join(", ")}`,
+  );
+}
+
 async function readBaselineLuminance(
   name: string,
   width: number,
@@ -194,7 +221,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
 
     const shotReports: PerfCaptureShotReport[] = [];
     let simulationTime = 0;
-    for (const shot of PERF_CAPTURE_SHOTS) {
+    for (const shot of SELECTED_SHOTS) {
       const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
       const viewportHeight = shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
       if (canvas.width !== viewportWidth || canvas.height !== viewportHeight) {
@@ -389,6 +416,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
           : Math.round(diagnostics.p999FrameMs * 10) / 10,
         hitchCount: diagnostics.hitchCount,
         drawCalls: diagnostics.drawCalls,
+        vegetationBatches: diagnostics.vegetationBatches,
         triangles: diagnostics.triangles,
         residentTerrainPages: diagnostics.residentTerrainPages,
         pendingTerrainPages: diagnostics.pendingTerrainPages,
@@ -421,9 +449,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
     }
 
-    expect(shotReports).toHaveLength(PERF_CAPTURE_SHOTS.length);
+    expect(shotReports).toHaveLength(SELECTED_SHOTS.length);
     for (let index = 0; index < shotReports.length; index += 1) {
-      const definition = PERF_CAPTURE_SHOTS[index]!;
+      const definition = SELECTED_SHOTS[index]!;
       const shot = shotReports[index]!;
       // Z-1: the pinned scale must hold — the render target is exactly the
       // canvas, no letterbox, no black tiles.

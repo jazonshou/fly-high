@@ -111,12 +111,32 @@ describe("three-band wind plugin surface (2-13)", () => {
         updateFloat: (name: string, value: number) => writes.set(name, [value]),
         updateFloat4: (name: string, x: number, y: number, z: number, w: number) =>
           writes.set(name, [x, y, z, w]),
+        updateFloatArray: (name: string, array: Float32Array) =>
+          writes.set(name, Array.from(array)),
       } as never);
       const wind = writes.get("detailWind")!;
       expect(wind[0]).toBeCloseTo(0.6, 5);
       expect(wind[1]).toBeCloseTo(0.8, 5);
       expect(wind[2]).toBe(1);
       expect(wind[3]).toBe(0);
+
+      // 2-12's translucency term: the key light is the atmosphere's, not a
+      // second sun defined in the vegetation shader. Strength 0 by default,
+      // so a material nobody feeds cannot invent a backlit glow.
+      expect(writes.get("detailKeyLight")![3]).toBe(0);
+      plugin.setKeyLight(0, 3, 4, [1, 0.9, 0.8], 2);
+      plugin.bindForSubMesh({
+        updateFloat: (name: string, value: number) => writes.set(name, [value]),
+        updateFloat4: (name: string, x: number, y: number, z: number, w: number) =>
+          writes.set(name, [x, y, z, w]),
+        updateFloatArray: (name: string, array: Float32Array) =>
+          writes.set(name, Array.from(array)),
+      } as never);
+      const key = writes.get("detailKeyLight")!;
+      expect(key[1]).toBeCloseTo(0.6, 5);
+      expect(key[2]).toBeCloseTo(0.8, 5);
+      expect(key[3]).toBe(1);
+      expect(writes.get("detailKeyLightColor")!.slice(0, 3)).toEqual([1, 0.9, 0.8]);
     } finally {
       scene.dispose();
       engine.dispose();

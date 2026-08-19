@@ -442,6 +442,18 @@ the sun palette's below-horizon anchor is `intensity: 0.0`, and `ambient.intensi
 is an unconditional `0.05`. **At 22:00 the ground is black.** Half of the user's
 second-ranked goal is a placeholder for roughly 200 more days.
 
+> **EXECUTED 2026-08-19.** Gate 7A ran between Phase 2 and Phase 3, in this
+> order, alongside the vegetation perf-debt pass. Both constants named below
+> are reopened and both are derived rather than chosen: `MAX_EXPOSURE` is the
+> curve's own value at the illuminance where vision hands over to the rods
+> (4.698), and `ambientIntensity` follows the sky's illuminance with a stated
+> night floor. See `RENDERING_PLAN.md`'s Gate 7A block for the four recorded
+> deviations — chiefly that the star catalogue is authored rather than
+> vendored, and that night's absolute scale is art-directed because the fp16
+> beauty target cannot hold a 4.8 × 10⁵ range without a scene pre-exposure
+> this programme does not have. That pre-exposure decision is handed to `7-4`,
+> which meets the same range with light points.
+
 **R-17 — move Gate 7A (7-3 → 7-1 → 7-2, 7.5 d) to sit between Phase 2 and
 Phase 3.** Stars first, so the gate has pixels on screen without the moon.
 Placing it *before* Phase 3 means the ten-material set gets tuned once under both

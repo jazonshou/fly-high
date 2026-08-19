@@ -104,6 +104,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       cpuFrameTime: 4.2,
       gpuFrameTime: 11.8,
       visibleInstances: 24_500,
+      vegetationBatches: 24,
       activeAnimals: 48,
       riverCount: 9,
       lakeCount: 3,

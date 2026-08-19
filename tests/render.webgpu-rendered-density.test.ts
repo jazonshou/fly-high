@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   RENDERED_DENSITY_LAWS,
+  VEGETATION_DRAW_CEILING,
+  VEGETATION_DRAW_COST_MS,
+  VEGETATION_FRAME_DEBT_RATIO,
   WOODY_TRIANGLE_BUDGETS,
   estimateRenderedWoodyLoad,
+  estimateVegetationDrawCalls,
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
+import { FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
+import { DETAIL_PRESENTATION_CHUNK_CELL_SPAN } from "../src/render/webgpu/detail/spatialChunks";
+import { DEFAULT_DETAIL_CELL_SIZE_METERS } from "../src/render/webgpu/detail/types";
+import { IMPOSTOR_SPECIES } from "../src/render/webgpu/detail/ImpostorAtlas";
 import {
   SHRUB_VARIANT_COUNTS,
   TREE_VARIANT_COUNTS,
@@ -84,12 +92,32 @@ describe("rendered-density law (R-21)", () => {
     for (const [quality, mode] of tiers) {
       const profile = resolveWebGpuQualityProfile(quality, mode);
       const law = RENDERED_DENSITY_LAWS[profile.tier]!;
-      expect(law.far.outerRadiusMeters, `tier ${profile.tier}`).toBeLessThanOrEqual(
+      // §5.3 defines vegetationDistance AS the impostor radius, so the far
+      // band's outer edge and the profile row are the same number — a
+      // larger vegetationDistance would describe plants nothing draws, and a
+      // smaller one would cull the band the law budgets for. Equality, not
+      // an inequality: Gate 2C shipped 4,500 m of far band under an 8,000 m
+      // profile row and the slack was invisible.
+      expect(law.far.outerRadiusMeters, `tier ${profile.tier}`).toBe(
         profile.vegetationDistance,
       );
       expect(law.near.outerRadiusMeters).toBeLessThan(law.mid.outerRadiusMeters);
       expect(law.mid.outerRadiusMeters).toBeLessThan(law.far.outerRadiusMeters);
     }
+  });
+
+  it("keeps §5.3's published band radii", () => {
+    // The three vegetation rows the realignment added to §5.3 precisely
+    // because they "sat outside every cut ladder". If a later pass wants
+    // different radii it moves this table and the plan together.
+    const cardTreeLodRadius = [700, 1_100, 1_500, 2_000];
+    const impostorRadius = [2_000, 3_000, 4_000, 6_000];
+    RENDERED_DENSITY_LAWS.forEach((law, tier) => {
+      expect(law.mid.outerRadiusMeters, `tier ${tier} card radius`)
+        .toBe(cardTreeLodRadius[tier]);
+      expect(law.far.outerRadiusMeters, `tier ${tier} impostor radius`)
+        .toBe(impostorRadius[tier]);
+    });
   });
 
   it("falls off inverse-square from the near boundary with a far floor", () => {
@@ -113,5 +141,155 @@ describe("rendered-density law (R-21)", () => {
     };
     const estimate = estimateRenderedWoodyLoad(d2);
     expect(estimate.totalTriangles).toBeGreaterThan(10_000_000);
+  });
+});
+
+/**
+ * The vegetation FRAME row, made non-vacuous by the perf-debt pass. 2-12
+ * measured the currency: every (species, variant, band) mesh is one draw per
+ * presentation chunk per pass at ~26 µs of GPU, and Δgpu tracked Δdraws
+ * linearly across all thirteen capture shots while triangle deltas measured
+ * ~0. The woody-triangle budget above therefore guards the wrong axis on its
+ * own; this is the other one.
+ */
+describe("vegetation draw-call budget (perf-debt pass)", () => {
+  const CHUNK_EDGE_METERS =
+    DETAIL_PRESENTATION_CHUNK_CELL_SPAN * DEFAULT_DETAIL_CELL_SIZE_METERS;
+
+  /** Meshes a chunk submits, from the runtime's own prototype registrations. */
+  function meshCounts(treeVariantCap: number): {
+    near: number;
+    mid: number;
+    far: number;
+    understory: number;
+  } {
+    const species = Object.keys(TREE_VARIANT_COUNTS) as (keyof typeof TREE_VARIANT_COUNTS)[];
+    const nearVariants = species.reduce(
+      (sum, name) => sum + Math.min(TREE_VARIANT_COUNTS[name], treeVariantCap),
+      0,
+    );
+    const midVariants = species.reduce(
+      (sum, name) => sum + Math.min(TREE_VARIANT_COUNTS[name], treeVariantCap, 3),
+      0,
+    );
+    const shrubMeshes = Object.values(SHRUB_VARIANT_COUNTS).reduce((a, b) => a + b, 0);
+    return {
+      // Crown and trunk are separate materials, so separate draws.
+      near: nearVariants * 2,
+      mid: midVariants * 2,
+      far: 1,
+      // Shrub variants + three rock lithologies + four clutter kinds + four
+      // ground-cover archetypes, all near-band only.
+      understory: shrubMeshes + 3 + 4 + 4,
+    };
+  }
+
+  it("collapsed the far band to ONE mesh per chunk", () => {
+    // 2-17 registered one impostor prototype PER SPECIES. The quad geometry
+    // never differed; only the bake frame did, and that is a per-instance
+    // uniform row now. The far band spans more chunks than near and mid
+    // together, so this is where the draw calls were.
+    expect(meshCounts(5).far).toBe(1);
+    expect(IMPOSTOR_SPECIES.length).toBeGreaterThan(1);
+  });
+
+  const TIERS: readonly [QualityLevel, RenderingMode][] = [
+    ["low", "performance"],
+    ["medium", "balanced"],
+    ["high", "balanced"],
+    ["high", "ultra"],
+  ];
+
+  function estimateForTier(quality: QualityLevel, mode: RenderingMode) {
+    const profile = resolveWebGpuQualityProfile(quality, mode);
+    const counts = meshCounts(profile.treeVariantCap);
+    return {
+      profile,
+      counts,
+      estimate: estimateVegetationDrawCalls({
+        law: profile.renderedDensityLaw,
+        chunkEdgeMeters: CHUNK_EDGE_METERS,
+        nearMeshesPerChunk: counts.near,
+        midMeshesPerChunk: counts.mid,
+        farMeshesPerChunk: counts.far,
+        understoryMeshesPerChunk: counts.understory,
+        // Only the near band casts: mid, far, understory and ground cover
+        // are all registered with castsShadows false.
+        shadowMeshesPerChunk: counts.near,
+        shadowCascades: profile.shadowCascades,
+      }),
+    };
+  }
+
+  it("holds every tier under the draw ceiling the renderer currently meets", () => {
+    for (const [quality, mode] of TIERS) {
+      const { profile, estimate } = estimateForTier(quality, mode);
+      const ceiling = VEGETATION_DRAW_CEILING[profile.tier]!;
+      expect(estimate.total, `tier ${profile.tier} draws`).toBeLessThanOrEqual(ceiling);
+      // Non-vacuous: a ceiling the renderer sits far under is not a guard.
+      expect(estimate.total, `tier ${profile.tier} vacuous ceiling`)
+        .toBeGreaterThan(ceiling * 0.8);
+      expect(estimate.total * VEGETATION_DRAW_COST_MS).toBeCloseTo(estimate.estimatedMs, 9);
+    }
+  });
+
+  it("records the open frame debt, and fails when it is finally closed", () => {
+    // This is deliberately an equality-shaped assertion on a number that is
+    // ABOVE budget. §5.4's vegetation row is not met and this pass could not
+    // meet it (see VEGETATION_DRAW_CEILING's note: every lever §5.3's
+    // trade-off rule permits moves band radii and stem counts, and draws
+    // scale with chunks × meshes — a 4,096 m chunk is wider than the whole
+    // near+mid field). When the structural fix lands, this test fails and
+    // whoever lands it deletes the debt record instead of inheriting it.
+    for (const [quality, mode] of TIERS) {
+      const { profile, estimate } = estimateForTier(quality, mode);
+      const row = FRAME_BUDGET_MS[profile.tier].vegetation;
+      const ratio = estimate.estimatedMs / row;
+      expect(ratio, `tier ${profile.tier} debt ratio`)
+        .toBeCloseTo(VEGETATION_FRAME_DEBT_RATIO[profile.tier]!, 2);
+      expect(ratio, `tier ${profile.tier} still over budget`).toBeGreaterThan(1);
+    }
+  });
+
+  it("prices the named structural rung: crown and trunk are two meshes", () => {
+    // Crown and trunk are separate ONLY because they need different
+    // detailRadialAspect uniforms. Merging them is fidelity-neutral — same
+    // quads, same trunk sweep, same tint — and it is the whole remaining
+    // gap. The model prices it here so the next pass starts from a number.
+    const { profile, counts, estimate } = estimateForTier("medium", "balanced");
+    const merged = estimateVegetationDrawCalls({
+      law: profile.renderedDensityLaw,
+      chunkEdgeMeters: CHUNK_EDGE_METERS,
+      nearMeshesPerChunk: counts.near / 2,
+      midMeshesPerChunk: counts.mid / 2,
+      farMeshesPerChunk: counts.far,
+      understoryMeshesPerChunk: counts.understory,
+      shadowMeshesPerChunk: counts.near / 2,
+      shadowCascades: profile.shadowCascades,
+    });
+    expect(merged.total).toBeLessThan(estimate.total * 0.6);
+    // Still not inside the row even then — the rest is 6-9's GPU scatter.
+    expect(merged.estimatedMs).toBeGreaterThan(FRAME_BUDGET_MS[profile.tier].vegetation);
+  });
+
+  it("pins what the far-band merge was worth", () => {
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const counts = meshCounts(profile.treeVariantCap);
+    const shared = { 
+      law: profile.renderedDensityLaw,
+      chunkEdgeMeters: CHUNK_EDGE_METERS,
+      nearMeshesPerChunk: counts.near,
+      midMeshesPerChunk: counts.mid,
+      understoryMeshesPerChunk: counts.understory,
+      shadowMeshesPerChunk: counts.near,
+      shadowCascades: profile.shadowCascades,
+    };
+    const merged = estimateVegetationDrawCalls({ ...shared, farMeshesPerChunk: 1 });
+    const perSpecies = estimateVegetationDrawCalls({
+      ...shared,
+      farMeshesPerChunk: IMPOSTOR_SPECIES.length,
+    });
+    expect(perSpecies.far).toBeGreaterThan(merged.far * 6);
+    expect(merged.estimatedMs).toBeLessThan(perSpecies.estimatedMs);
   });
 });

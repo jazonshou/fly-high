@@ -416,7 +416,47 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 **Why it is its own phase.** It depends on the whole atmosphere spine (Phase 1), the material synthesis infrastructure (Phase 3) and the runway surface (`3-9`). It is also cleanly separable — the sim is complete and shippable without it, which makes it the right place to put 40 days of scope.
 
-#### Gate 7A — Night sky and human night vision (7.5 d)
+#### Gate 7A — Night sky and human night vision (7.5 d) — **EXECUTED 2026-08-19**
+
+> Ran between Phase 2 and Phase 3 per `PRE_PHASE_4_REALIGNMENT.md` §5 (`R-17`),
+> in the order that realignment set: `7-3` → `7-1` → `7-2`. Four deviations
+> are recorded, each with its reason; `ARCHITECTURE.md`'s decision log carries
+> the full rationale.
+>
+> 1. **The catalogue is authored, not vendored.** ~190 stars to magnitude
+>    ~3.6 with their real J2000 positions, magnitudes and colour indices, plus
+>    a background generated to the observed magnitude-count law below that —
+>    rather than the Yale BSC's 9,100 as a shipped data file. The row's own
+>    stated reason for wanting real data ("makes constellations correct") is a
+>    property of the bright end, every other asset in this renderer is
+>    synthesised from the seed, and the transcription is guarded by geometry
+>    (Orion's belt, the Dipper's pointers, the Summer Triangle, the Southern
+>    Cross) rather than by review.
+> 2. **Night's absolute scale is art-directed; everything relative is
+>    physical.** The sun-to-full-moon range is 4.8 × 10⁵ against an fp16
+>    beauty target with a 6.1 × 10⁻⁵ floor, so a photometric night needs a
+>    scene pre-exposure the programme does not have and `1C-2` deliberately
+>    did not build. Two named constants carry the level; phase, the opposition
+>    surge, altitude, distance, magnitude ratios, extinction and spectral
+>    colour are all computed, and `7-2` reads the true lux for the rod/cone
+>    decision. **`7-4` meets the same 10⁵ range with light points and is where
+>    the pre-exposure decision belongs.**
+> 3. **The rod response half-saturates at the scene's key luminance**, not the
+>    physical adapted luminance — measured: the physical σ drives every pixel
+>    to saturation and returns a flat grey frame. The perceptual call
+>    (`rodFraction`) stays physical.
+> 4. **Moonlight does not cast shadows.** A second cascade set would double
+>    the shadow row for a light whose shadows sit below resolvable contrast at
+>    0.25 lux; `7-9`'s night tier is where that trade is measured.
+>
+> Both constants the realignment named are reopened and both are derived:
+> `exposureForState`'s 2.6 clamp becomes `MAX_EXPOSURE` (the curve's own value
+> at the scotopic hand-over illuminance, 4.698), and `ambientIntensity`'s
+> unconditional 0.05 now follows the sky's illuminance, exactly 0.05 at the
+> reference key. `1C-10`'s 40-lux skylight floor — the actual cause of "at
+> 22:00 the ground is black" — is replaced by a twilight tail running to a
+> 0.0015 lux airglow floor.
+
 
 | ID | Item | Days | Depends on | Notes |
 |---|---|---|---|---|
@@ -707,6 +747,13 @@ Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in or
 
 Three tier rules learned from the review's overshoot analysis: **triplanar's 2-axis fast path is mandatory from Balanced up**, not a High-only optimisation; **grass radius is the first knob the tier scales**, because grass is the largest single triangle consumer; **bloom is High+ only**.
 
+> **Enforced 2026-08-19 by the vegetation perf-debt pass.** The card-tree LOD
+> radius and impostor-radius rows below are now the rendered-density law's own
+> band radii, asserted by `tests/render.webgpu-rendered-density.test.ts` —
+> Gate 2C shipped 4.5 km of impostor band at Balanced and 8.0 km at High
+> against a table that says 3.0 and 4.0, which is exactly the "sat outside
+> every cut ladder" the amendment below describes.
+
 **Three vegetation rows were missing from this table until 2026-08-18 and are now here because they are the rows that actually decide how many plants exist.** `vegetationDistance` and `vegetationDensity` shipped in `QualityProfile.ts` from Phase 1 and appeared in no plan table, so they sat outside every cut ladder — and the shipped tier-2 values (8 km, 1.00) bought roughly 95% more rendered stems than Balanced for a 5.6% increase in the vegetation frame row. `vegetationDistance` is now **defined equal to the tier's impostor radius**: beyond it, `6-8`'s canopy splat is the only vegetation representation, so a value larger than the impostor radius describes plants that are not drawn.
 
 ### The vegetation trade-off rule
@@ -739,7 +786,7 @@ Frame 16.67 ms − 1.5 ms compositor/present/submit − 1.5 ms pacing headroom =
 | Shadows (3 × 1280 near field, no terrain, per-cascade culled) | 1.1 | 0.8–1.6 | Terrain leaves the caster list entirely once horizon maps land |
 | Water (ocean FFT fp16 0.55 + ocean/river raster 1.05) | 1.6 | 1.2–2.2 | |
 | Clouds (integration at 0.45 + temporal + composite + shadow) | 2.2 | 1.7–3.0 | Post-`adaptive-march`; the only subsystem that comes in under its original allocation |
-| Vegetation (scatter/cull compute + alpha-tested draws + impostors) | 1.8 | 1.3–2.6 | Alpha test defeats TBDR hidden-surface removal; separate render group after opaque |
+| Vegetation (scatter/cull compute + alpha-tested draws + impostors) | 1.8 | 1.3–2.6 | Alpha test defeats TBDR hidden-surface removal; separate render group after opaque. **Not met — measured 5.0× over at Balanced and quantified 2026-08-19.** Vegetation is a DRAW-CALL workload (2-12: ~26 µs each, Δgpu linear in Δdraws, triangle deltas ~0), draws scale with (chunks × meshes), and §5.3's trade-off rule puts crown variants per species outside every budget ladder — so no permitted lever reaches this row. The perf-debt pass took every one that exists (−1,201 draws across the capture set) and priced the structural remainder: merging crown and trunk into one mesh is fidelity-neutral and takes tier 1 from 347 to 186 draws, with `6-9`'s GPU scatter beyond it. See `renderedDensity.ts`'s `VEGETATION_DRAW_CEILING`. |
 | Atmosphere (sky dome; AP is inline in each material) | 0.4 | 0.3–0.6 | |
 | Post (bloom + tonemap + MSAA resolve) | 0.9 | 0.6–1.4 | |
 | **Total** | **11.95** | 10.0–16.4 | **1.75 ms headroom** at the target |

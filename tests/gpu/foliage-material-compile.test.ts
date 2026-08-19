@@ -29,6 +29,7 @@ import {
   createImpostorAtlas,
   impostorBakeFrame,
   impostorLayerIndex,
+  IMPOSTOR_SPECIES,
 } from "../../src/render/webgpu/detail/ImpostorAtlas";
 import {
   DETAIL_INSTANCE_ATTRIBUTES,
@@ -364,13 +365,22 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       const impostorPlugin = new DetailInstanceMaterialPlugin(impostorMaterial);
       new CloudShadowMaterialPlugin(impostorMaterial);
       new AerialPerspectiveMaterialPlugin(impostorMaterial);
-      const impostorFrame = impostorBakeFrame("pine");
+      // Perf-debt pass: ONE material for every species, the bake frames a
+      // uniform table indexed by the instance's variant byte, and the
+      // normal/depth array bound alongside the albedo array (2-17 uploaded
+      // it and deferred the shading hookup).
       impostorPlugin.setImpostorAtlas(
         impostorAtlas.albedo,
-        impostorFrame.extentUnit,
-        impostorFrame.centerYUnit,
-        impostorLayerIndex("pine", 0),
-        impostorLayerIndex("pine", 1),
+        impostorAtlas.normalDepth,
+        IMPOSTOR_SPECIES.map((species) => {
+          const frame = impostorBakeFrame(species);
+          return {
+            extentUnit: frame.extentUnit,
+            centerYUnit: frame.centerYUnit,
+            leafedLayer: impostorLayerIndex(species, 0),
+            bareLayer: impostorLayerIndex(species, 1),
+          };
+        }),
       );
       impostorPlugin.setImpostorSeason(0.3);
       impostorMaterial.backFaceCulling = false;

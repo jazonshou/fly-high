@@ -107,6 +107,14 @@ export interface RenderDiagnostics {
   /** GPU frame duration when timestamp-query is available. */
   gpuFrameTime: number | null;
   visibleInstances: number;
+  /**
+   * Frustum-surviving vegetation batches — one draw per (prototype, chunk)
+   * per pass. Vegetation is a DRAW-CALL workload (2-12 measured ~26 µs each,
+   * with `Δgpu` tracking `Δdraws` linearly and triangle deltas at ~0), so
+   * this is the number its frame row is actually spent on; without it in the
+   * capture report the vegetation row was unmeasurable (the R-22 shape).
+   */
+  vegetationBatches: number;
   activeAnimals: number;
   riverCount: number;
   lakeCount: number;

@@ -71,6 +71,13 @@ export interface WebGpuQualityProfile {
   readonly maxCloudPixels: number;
   readonly cloudPrimarySteps: number;
   readonly cloudLightSteps: number;
+  /**
+   * §5.3's impostor radius, and therefore the outer edge of the
+   * rendered-density law's far band: beyond it `6-8`'s canopy splat is the
+   * only vegetation representation, so a larger value describes plants that
+   * are not drawn. Kept equal to `renderedDensityLaw.far.outerRadiusMeters`
+   * — the pairing is pinned by test.
+   */
   readonly vegetationDistance: number;
   readonly vegetationDensity: number;
   readonly activeAnimalBudget: number;
@@ -159,7 +166,10 @@ export function resolveWebGpuQualityProfile(
       maxCloudPixels: 700_000,
       cloudPrimarySteps: 60,
       cloudLightSteps: 6,
-      vegetationDistance: 4_500,
+      // Perf-debt pass: §5.3's Balanced impostor radius. Gate 2C shipped
+      // 4,500 m against a table that says 3,000; the far band's submitted
+      // chunk count falls with the square of this number.
+      vegetationDistance: 3_000,
       vegetationDensity: 0.75,
       activeAnimalBudget: 48,
     };
@@ -197,7 +207,10 @@ export function resolveWebGpuQualityProfile(
       maxCloudPixels: 1_000_000,
       cloudPrimarySteps: 96,
       cloudLightSteps: 6,
-      vegetationDistance: 8_000,
+      // Perf-debt pass: §5.3's High impostor radius. The realignment added
+      // this row because 8 km bought ~95% more rendered stems than Balanced
+      // for a 5.6% frame-row increase and sat outside every cut ladder.
+      vegetationDistance: 4_000,
       vegetationDensity: 1,
       activeAnimalBudget: 128,
     };
@@ -230,7 +243,8 @@ export function resolveWebGpuQualityProfile(
     maxCloudPixels: 1_600_000,
     cloudPrimarySteps: 96,
     cloudLightSteps: 6,
-    vegetationDistance: 8_000,
+    // Perf-debt pass: §5.3's Ultra impostor radius.
+    vegetationDistance: 6_000,
     vegetationDensity: 1,
     activeAnimalBudget: 128,
   };

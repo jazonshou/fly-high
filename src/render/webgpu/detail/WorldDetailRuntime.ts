@@ -32,6 +32,7 @@ import {
   createImpostorAtlas,
   impostorBakeFrame,
   impostorLayerIndex,
+  IMPOSTOR_SPECIES,
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
 import { seasonalWinterFraction } from "@/src/world";
@@ -70,6 +71,16 @@ import {
   type WorldDetailStatistics,
 } from "./types";
 
+/**
+ * The GPU side of one batch: ONE interleaved 32-byte-stride buffer plus the
+ * five typed instanced views onto it. Held across rebuilds — see
+ * `uploadBatch`.
+ */
+interface DetailInstanceGpuBuffers {
+  readonly shared: Buffer;
+  capacityBytes: number;
+}
+
 interface DetailBatch {
   readonly mesh: Mesh;
   readonly castsShadows: boolean;
@@ -78,11 +89,48 @@ interface DetailBatch {
   /** 2-11a: packed 32-byte records built during generation. */
   readonly writer: DetailInstanceWriter;
   readonly bounds: DetailInstanceBounds;
+  /**
+   * Perf-debt pass: the batch's GPU allocation, reused across rebuilds.
+   * Null until the first non-empty upload.
+   */
+  gpu: DetailInstanceGpuBuffers | null;
+  /** Chunk revision whose records the writer currently holds. */
+  filledRevision: number;
 }
 
 interface RetiredDetailBatch {
   readonly batch: DetailBatch;
   readonly disposeAfterUpdate: number;
+}
+
+/**
+ * A released allocation, RECYCLED rather than destroyed. **Nothing is ever
+ * destroyed while the runtime is live.**
+ *
+ * Measured on-adapter, and the measurement is the reason this is a pool and
+ * not a grace window. Destroying a vertex buffer that a submitted command
+ * buffer still references is a validation error, and WebGPU rejects the
+ * WHOLE submit — the symptom is a black frame at a suspiciously high frame
+ * rate, not a missing tree. A four-update grace window produced it
+ * immediately; a six-hundred-update one (ten seconds) still produced it,
+ * with the diagnostic confirming that NO live mesh held the buffer at
+ * eviction time. Whatever retains it inside Babylon 9.21.2's WebGPU backend
+ * outlives any window worth waiting, so the runtime stops guessing: released
+ * allocations go into a pool and are handed to the next batch that fits.
+ *
+ * Overwriting a pooled buffer is never an error — `writeBuffer` is ordered
+ * on the queue after the previous submit — so reuse only has to outlast the
+ * previous owner's last DRAW, which the reuse window covers.
+ *
+ * Memory is bounded by construction: reuse drains the pool, so live +
+ * pooled bytes never exceed the peak working set, which is exactly the
+ * `detailInstanceBudget` row `PerformanceBudget.ts` already books. The
+ * runtime's statistics publish the pooled byte count so it is visible.
+ */
+interface PooledInstanceBuffers {
+  readonly gpu: DetailInstanceGpuBuffers;
+  /** Earliest update at which the previous owner's draws have certainly retired. */
+  readonly reusableAfterUpdate: number;
 }
 
 interface DetailPrototype {
@@ -130,8 +178,56 @@ interface DesiredCell {
 
 interface ResidentCell {
   readonly cell: GeneratedDetailCell;
+  /**
+   * Canopy rank of each stem in `cell.trees`, in [0, 1): 0 is the widest
+   * crown in the cell. This — not the placement's uniform `selection` key —
+   * is what the rendered-share thinning compares against. See
+   * {@link canopyRankOrder}.
+   */
+  readonly treeCanopyRank: Float32Array;
   lod: DetailLod;
   distance: number;
+}
+
+/**
+ * Rendered-share thinning selects THE CANOPY, not a random sample of the
+ * forest (perf-debt pass).
+ *
+ * The ecological field authors ~400 stems/ha of closed forest across every
+ * age class — measured mean crown radius 3.40 m, median 3.15 m, p90 1.78 m:
+ * mostly saplings, as a real stand is. Thinning that to the law's ~70
+ * rendered stems/ha by a UNIFORM key keeps saplings and dominants in equal
+ * proportion, and the drawn stand's crown cover comes out at 0.26 against
+ * Gate 2C's 0.55 criterion — the criterion was never automated, so this went
+ * unseen through the whole of Phase 2. Ranking by crown radius instead draws
+ * the 70/ha widest crowns (measured mean radius 5.80 m, cover 0.53-0.56),
+ * which is exactly the "60-80 stems/ha with 6-7 m crowns" the law's own
+ * comment was priced against, and it is what a canopy IS: from the air you
+ * see the dominant stems, not the understory beneath them.
+ *
+ * The key keeps every property D-2 requires of `selection`: deterministic,
+ * uniform on [0, 1) by construction (it is a rank quotient), and NESTING —
+ * raising the share only ever adds stems, so a band boundary can never make
+ * a tree disappear and reappear. `selection` itself is untouched and stays
+ * the appearance hash (character modifier, lean, geometry variant, view
+ * phase), so nothing about how a drawn tree LOOKS moves with this.
+ */
+export function canopyRankOrder(
+  trees: readonly { readonly crownRadiusMeters: number; readonly selection: number }[],
+): Float32Array {
+  const order = new Float32Array(trees.length);
+  if (trees.length === 0) return order;
+  const indices = trees.map((_, index) => index);
+  indices.sort((first, second) => {
+    const wide = trees[second]!.crownRadiusMeters - trees[first]!.crownRadiusMeters;
+    if (wide !== 0) return wide;
+    // Deterministic tie-break; equal radii are common at the quantised end.
+    return trees[first]!.selection - trees[second]!.selection;
+  });
+  for (let rank = 0; rank < indices.length; rank += 1) {
+    order[indices[rank]!] = rank / trees.length;
+  }
+  return order;
 }
 
 export interface WorldDetailRuntimeOptions {
@@ -149,6 +245,13 @@ export interface WorldDetailRuntimeOptions {
    */
   readonly workerWorldSeed?: string | number;
 }
+
+/**
+ * Updates a released instance allocation must sit before another batch may
+ * write into it — long enough for the previous owner's last submitted draw
+ * to have retired, at ~60 Hz.
+ */
+export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
 
 /**
  * 2-14: width of the dither-crossfade window at the near/mid and mid/far
@@ -184,6 +287,18 @@ export const DETAIL_CHUNK_REBUILDS_PER_UPDATE = 1;
 export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
 export const GROUND_COVER_EDGE_FADE_METERS = 30;
 export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
+
+/**
+ * The one far-band prototype since the perf-debt pass. Every species draws
+ * through it; the instance record carries which one.
+ */
+export const TREE_IMPOSTOR_PROTOTYPE_KEY = "tree-impostor";
+
+/** Row of the plugin's per-species impostor table for a species. */
+function impostorSpeciesSlot(species: TreeSpecies): number {
+  const index = IMPOSTOR_SPECIES.indexOf(species);
+  return index < 0 ? 0 : index;
+}
 
 /** Pure 2D hash for candidate jitter/acceptance (world-position keyed). */
 function groundCoverHash(x: number, z: number, lane: number): number {
@@ -258,6 +373,7 @@ function profileCellBudget(profile: WebGpuQualityProfile): number {
 export class WorldDetailRuntime {
   private readonly batches = new Map<string, DetailBatch>();
   private readonly retiredBatches: RetiredDetailBatch[] = [];
+  private readonly instanceBufferPool: PooledInstanceBuffers[] = [];
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   private readonly materials = new Set<PBRMaterial>();
@@ -370,6 +486,24 @@ export class WorldDetailRuntime {
   setWind(directionX: number, directionZ: number, strength: number, gust: number): void {
     for (const plugin of this.instancePlugins) {
       plugin.setWind(directionX, directionZ, strength, gust);
+    }
+  }
+
+  /**
+   * 2-12's translucency term (the recorded gap the perf-debt pass closes):
+   * the frame's key light, forwarded from `AtmosphereSystem`'s snapshot on
+   * exactly the wind field's pattern. Vegetation consumes the lighting
+   * owner's published direction and radiance; it does not define a sun.
+   */
+  setKeyLight(
+    directionX: number,
+    directionY: number,
+    directionZ: number,
+    radiance: readonly [number, number, number],
+    strength: number,
+  ): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setKeyLight(directionX, directionY, directionZ, radiance, strength);
     }
   }
 
@@ -518,7 +652,12 @@ export class WorldDetailRuntime {
           dayOfYear: this.dayOfYear,
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
         });
-        this.cells.set(desired.key, { cell, lod: desired.lod, distance: desired.distance });
+        this.cells.set(desired.key, {
+          cell,
+          treeCanopyRank: canopyRankOrder(cell.trees),
+          lod: desired.lod,
+          distance: desired.distance,
+        });
         this.cumulativeGeneratedCells += 1;
         generated += 1;
         this.batchesDirty = true;
@@ -569,10 +708,20 @@ export class WorldDetailRuntime {
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
-    for (const batch of this.batches.values()) batch.mesh.dispose(false, false);
+    for (const batch of this.batches.values()) {
+      batch.mesh.dispose(false, false);
+      batch.gpu?.shared.dispose();
+      batch.gpu = null;
+    }
     this.batches.clear();
-    for (const retired of this.retiredBatches) retired.batch.mesh.dispose(false, false);
+    for (const retired of this.retiredBatches) {
+      retired.batch.mesh.dispose(false, false);
+      retired.batch.gpu?.shared.dispose();
+      retired.batch.gpu = null;
+    }
     this.retiredBatches.length = 0;
+    for (const pooled of this.instanceBufferPool) pooled.gpu.shared.dispose();
+    this.instanceBufferPool.length = 0;
     this.presentationChunks.clear();
     for (const prototype of this.prototypes.values()) prototype.mesh.dispose(false, false);
     this.prototypes.clear();
@@ -651,6 +800,7 @@ export class WorldDetailRuntime {
     const desired = this.desiredCells.find((candidate) => candidate.key === key);
     this.cells.set(key, {
       cell,
+      treeCanopyRank: canopyRankOrder(cell.trees),
       lod: desired?.lod ?? "mid",
       distance: desired?.distance ?? Number.POSITIVE_INFINITY,
     });
@@ -835,8 +985,10 @@ export class WorldDetailRuntime {
         ? 0
         : Math.min(1, shrubBudgetPerHa / Math.max(shrubsPerHa, 1e-6));
 
-      for (const tree of resident.cell.trees) {
-        if (tree.selection > treeShare) continue;
+      for (let treeIndex = 0; treeIndex < resident.cell.trees.length; treeIndex += 1) {
+        const tree = resident.cell.trees[treeIndex]!;
+        // Canopy rank, not the uniform selection key — see canopyRankOrder.
+        if ((resident.treeCanopyRank[treeIndex] ?? 1) > treeShare) continue;
         const localX = tree.x - floatingOrigin.x;
         const localY = tree.y - floatingOrigin.y;
         const localZ = tree.z - floatingOrigin.z;
@@ -917,12 +1069,18 @@ export class WorldDetailRuntime {
             ...crownBase,
             fade: bandCode / 127,
             fadeIncoming: false,
+            // Far band: the geometry variants collapse to one mesh, so the
+            // byte is free for identity. High three bits = SPECIES (the
+            // perf-debt pass's per-instance bake-frame index, which is what
+            // lets one mesh serve all seven); low five = 2-17's per-stem
+            // hash, whose bit 0 is the mirror and bits 1-2 the view phase.
             variant: membership.band === "far"
-              ? Math.floor(((tree.selection * 97.3) % 1) * 256)
+              ? impostorSpeciesSlot(tree.species) * 32
+                + Math.floor(((tree.selection * 97.3) % 1) * 32)
               : geometryVariant + modifierBits * 32,
           };
           const crownBatchKey = membership.band === "far" && this.impostorAtlas
-            ? `tree-${tree.species}-impostor`
+            ? TREE_IMPOSTOR_PROTOTYPE_KEY
             : `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`;
           this.appendInstance(
             this.getBatch(crownBatchKey, chunk, nextBatchKeys),
@@ -1165,12 +1323,16 @@ export class WorldDetailRuntime {
 
     }
 
-    // Never replace thin-instance buffers in place. WebGPU render bundles can
-    // still reference the previous allocation until the current frame submits;
-    // destroying it synchronously produces a validation error. Changed chunks
-    // publish new immutable meshes and retire the previous revision after a
-    // conservative multi-update grace window.
-    for (const batchKey of chunk.batchKeys) this.retireBatch(batchKey);
+    // Perf-debt pass: only batches this revision NO LONGER populates are
+    // retired; the rest keep their mesh, their unique geometry and their GPU
+    // instance buffer, and take new bytes in place. (The old code retired
+    // every batch of the chunk on every rebuild — the allocation churn the
+    // 2-17-close ledger recorded as open debt, and a genuine leak besides:
+    // the raw `Buffer`s it published were never disposed, because a
+    // VertexBuffer built over an existing Buffer does not own it.)
+    for (const batchKey of chunk.batchKeys) {
+      if (!nextBatchKeys.has(batchKey)) this.retireBatch(batchKey);
+    }
     chunk.batchKeys.clear();
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
     for (const batchKey of chunk.batchKeys) {
@@ -1180,6 +1342,20 @@ export class WorldDetailRuntime {
     return statistics;
   }
 
+  /**
+   * 2-11a: one interleaved 32-byte-stride buffer per batch (the pooled
+   * writer's exact byte range), exposed as five typed instanced vertex
+   * buffers.
+   *
+   * Perf-debt pass — the named "instance-buffer reuse" rung. A rebuild that
+   * fits inside the existing allocation now writes into it (`writeBuffer`,
+   * queue-ordered after the previous submit) and touches nothing else: no
+   * `Buffer`, no `VertexBuffer`, no `resetDrawCache` — which is the
+   * expensive half, because it invalidates the mesh's draw wrappers and
+   * forces Babylon to rebuild pipeline and bind groups for every pass the
+   * mesh appears in. Only GROWTH allocates, and the outgrown allocation
+   * waits out the same conservative grace window a retired batch does.
+   */
   private uploadBatch(batch: DetailBatch): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
@@ -1188,21 +1364,78 @@ export class WorldDetailRuntime {
       return;
     }
     batch.mesh.setEnabled(true);
-    // 2-11a: one interleaved immutable 32-byte-stride buffer per batch (the
-    // pooled writer's exact byte range), exposed as five typed instanced
-    // vertex buffers. A changed chunk receives new buffers; unchanged chunks
-    // keep their GPU allocations while neighboring cells stream in.
     const packed = batch.writer.finish();
-    const engine = this.scene.getEngine();
-    const shared = new Buffer(
-      engine,
-      packed,
-      false,
+    if (batch.gpu !== null && packed.byteLength <= batch.gpu.capacityBytes) {
+      // vertexCount stays undefined on purpose: Babylon drops its cached
+      // `_data` reference whenever a partial range is written, and that
+      // reference is what `getVertexBuffer(...).getData()` reads back.
+      batch.gpu.shared.updateDirectly(packed, 0, undefined, true);
+    } else {
+      if (batch.gpu !== null) this.recycleInstanceBuffers(batch.gpu);
+      batch.gpu = this.acquireInstanceBuffers(packed);
+      this.bindInstanceBuffers(batch);
+    }
+    batch.mesh.forcedInstanceCount = count;
+    // Generator-computed bounds — thinInstanceRefreshBoundingInfo has no
+    // matrix buffer to walk anymore, and the wind extent is already an
+    // explicit term in the accumulator.
+    batch.mesh.setBoundingInfo(new BoundingInfo(
+      Vector3.FromArray(batch.bounds.minimum()),
+      Vector3.FromArray(batch.bounds.maximum()),
+    ));
+  }
+
+  /**
+   * Takes a pooled allocation big enough for `packed`, or makes one. Pooled
+   * entries are searched smallest-fit-first so a large buffer is not spent
+   * on a small batch and then unavailable to the batch that needs it.
+   */
+  private acquireInstanceBuffers(packed: Uint8Array): DetailInstanceGpuBuffers {
+    let bestIndex = -1;
+    for (let index = 0; index < this.instanceBufferPool.length; index += 1) {
+      const entry = this.instanceBufferPool[index]!;
+      if (entry.reusableAfterUpdate > this.updateSequence) continue;
+      if (entry.gpu.capacityBytes < packed.byteLength) continue;
+      if (
+        bestIndex < 0
+        || entry.gpu.capacityBytes < this.instanceBufferPool[bestIndex]!.gpu.capacityBytes
+      ) {
+        bestIndex = index;
+      }
+    }
+    if (bestIndex >= 0) {
+      const [entry] = this.instanceBufferPool.splice(bestIndex, 1);
+      entry!.gpu.shared.updateDirectly(packed, 0, undefined, true);
+      return entry!.gpu;
+    }
+    // Grow with headroom so a slowly filling chunk does not reallocate on
+    // every rebuild; the record is 32 bytes, so the slack is cheap.
+    const capacityBytes = Math.max(
       DETAIL_INSTANCE_STRIDE_BYTES,
-      false,
-      true,
-      true,
+      Math.ceil((packed.byteLength * 1.5) / DETAIL_INSTANCE_STRIDE_BYTES)
+        * DETAIL_INSTANCE_STRIDE_BYTES,
     );
+    const backing = new Uint8Array(capacityBytes);
+    backing.set(packed);
+    return {
+      shared: new Buffer(
+        this.scene.getEngine(),
+        backing,
+        true,
+        DETAIL_INSTANCE_STRIDE_BYTES,
+        false,
+        true,
+        true,
+      ),
+      capacityBytes,
+    };
+  }
+
+  /** Exposes one allocation to a mesh as the five typed instanced streams. */
+  private bindInstanceBuffers(batch: DetailBatch): void {
+    const gpu = batch.gpu;
+    if (!gpu) return;
+    const engine = this.scene.getEngine();
     const typeFor = (name: string): number =>
       name === "float" ? VertexBuffer.FLOAT
       : name === "snorm16" ? VertexBuffer.SHORT
@@ -1210,8 +1443,8 @@ export class WorldDetailRuntime {
       : VertexBuffer.UNSIGNED_BYTE;
     for (const attribute of DETAIL_INSTANCE_ATTRIBUTES) {
       batch.mesh.setVerticesBuffer(
-        new VertexBuffer(engine, shared, attribute.kind, {
-          updatable: false,
+        new VertexBuffer(engine, gpu.shared, attribute.kind, {
+          updatable: true,
           instanced: true,
           size: attribute.size,
           offset: attribute.byteOffset,
@@ -1224,14 +1457,22 @@ export class WorldDetailRuntime {
       );
     }
     batch.mesh.resetDrawCache(undefined, true);
-    batch.mesh.forcedInstanceCount = count;
-    // Generator-computed bounds — thinInstanceRefreshBoundingInfo has no
-    // matrix buffer to walk anymore, and the wind extent is already an
-    // explicit term in the accumulator.
-    batch.mesh.setBoundingInfo(new BoundingInfo(
-      Vector3.FromArray(batch.bounds.minimum()),
-      Vector3.FromArray(batch.bounds.maximum()),
-    ));
+  }
+
+  /** Returns an allocation to the pool; nothing is destroyed in flight. */
+  private recycleInstanceBuffers(gpu: DetailInstanceGpuBuffers): void {
+    this.instanceBufferPool.push({
+      gpu,
+      reusableAfterUpdate:
+        this.updateSequence + DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES,
+    });
+  }
+
+  /** Bytes held by pooled allocations — the memory the pool is trading. */
+  get pooledInstanceBytes(): number {
+    let bytes = 0;
+    for (const pooled of this.instanceBufferPool) bytes += pooled.gpu.capacityBytes;
+    return bytes;
   }
 
   private refreshVisibilityStatistics(): void {
@@ -1374,14 +1615,30 @@ export class WorldDetailRuntime {
     usedBatchKeys: Set<string>,
   ): DetailBatch {
     const coordinates = chunk.coordinates;
-    const batchKey = `${prototypeKey}@${coordinates.key}#${chunk.revision}`;
+    // Perf-debt pass: the key no longer carries the chunk revision. It used
+    // to, so every rebuild published a whole new set of meshes — a clone, a
+    // `makeGeometryUnique` copy of the prototype geometry and a fresh GPU
+    // instance buffer per (prototype, chunk) on every 64 m observer quantum,
+    // with the previous set kept alive for four more updates. The immutable
+    // publication was there because destroying a buffer a render bundle may
+    // still reference is a validation error; reusing one is not — a
+    // `writeBuffer` is ordered on the queue against the previous submit — so
+    // the batch survives and `uploadBatch` writes into it in place.
+    const batchKey = `${prototypeKey}@${coordinates.key}`;
     usedBatchKeys.add(batchKey);
     const existing = this.batches.get(batchKey);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.filledRevision !== chunk.revision) {
+        existing.filledRevision = chunk.revision;
+        existing.writer.reset();
+        existing.bounds.reset();
+      }
+      return existing;
+    }
     const prototype = this.prototypes.get(prototypeKey);
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
     const mesh = prototype.mesh.clone(
-      `detail-${prototypeKey}-chunk-${coordinates.key}-revision-${chunk.revision}`,
+      `detail-${prototypeKey}-chunk-${coordinates.key}`,
       null,
       true,
     );
@@ -1413,7 +1670,6 @@ export class WorldDetailRuntime {
       detailChunkMinCellZ: coordinates.minCellZ,
       detailChunkMaxCellX: coordinates.maxCellX,
       detailChunkMaxCellZ: coordinates.maxCellZ,
-      detailChunkRevision: chunk.revision,
       detailCastsShadow: prototype.castsShadows,
     };
     const batch: DetailBatch = {
@@ -1423,6 +1679,8 @@ export class WorldDetailRuntime {
       chunkKey: coordinates.key,
       writer: new DetailInstanceWriter(),
       bounds: new DetailInstanceBounds(),
+      gpu: null,
+      filledRevision: chunk.revision,
     };
     this.batches.set(batchKey, batch);
     return batch;
@@ -1444,12 +1702,20 @@ export class WorldDetailRuntime {
     for (const retired of this.retiredBatches) {
       if (retired.disposeAfterUpdate <= this.updateSequence) {
         retired.batch.mesh.dispose(false, false);
+        // A VertexBuffer built over an existing Buffer does NOT own it (and
+        // Babylon 9.21.2 never increments the shared Buffer's reference
+        // count either), so disposing the mesh releases nothing. The
+        // allocation goes to the pool instead of being destroyed — see
+        // PooledInstanceBuffers.
+        if (retired.batch.gpu) this.recycleInstanceBuffers(retired.batch.gpu);
+        retired.batch.gpu = null;
         continue;
       }
       this.retiredBatches[writeIndex] = retired;
       writeIndex += 1;
     }
     this.retiredBatches.length = writeIndex;
+
   }
 
   private disposePresentationChunk(chunk: DetailPresentationChunk): void {
@@ -1560,47 +1826,9 @@ export class WorldDetailRuntime {
           barkMaterial,
           false,
         );
-        if (variant === 0 && this.impostorAtlas) {
-          // 2-17: the far band is a billboard impostor — one quad, the
-          // three-view blend, the two season buckets. Its material carries
-          // the species' bake frame so the shader reconstructs the exact
-          // baked square; impostors neither cast nor receive shadows
-          // (which frees the cascade varyings the blend lanes consume).
-          const impostorMaterial = this.createMaterial(
-            `detail-impostor-${species}`,
-            new Color3(1, 1, 1),
-            0.95,
-            1,
-            false,
-          );
-          impostorMaterial.backFaceCulling = false;
-          impostorMaterial.twoSidedLighting = true;
-          impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
-          const frame = impostorBakeFrame(species, prototypeSeed);
-          this.registerBandFadeMaterial(impostorMaterial);
-          this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
-            this.impostorAtlas.albedo,
-            frame.extentUnit,
-            frame.centerYUnit,
-            impostorLayerIndex(species, 0),
-            impostorLayerIndex(species, 1),
-          );
-          const quad = new Mesh(`detail-impostor-${species}`, this.scene);
-          const quadData = new VertexData();
-          quadData.positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
-          quadData.normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
-          quadData.uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
-          quadData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
-          quadData.applyToMesh(quad, false);
-          quad.setEnabled(false);
-          this.registerBatch(`tree-${species}-impostor`, quad, impostorMaterial, false);
-          // AFTER registerBatch (which forces receive on): impostors must
-          // NOT receive shadows — with front_facing (two-sided) and the
-          // three blend varyings, the 4-cascade CSM inputs push the
-          // fragment past the 16-input limit (17 measured), and one invalid
-          // pipeline poisons the whole render bundle to a black frame.
-          quad.receiveShadows = false;
-        } else if (variant === 0) {
+        if (variant === 0 && !this.impostorAtlas) {
+          // No atlas (NullEngine): the far band keeps 2-12's law-priced
+          // crossed cards, one mesh per species.
           this.registerBatch(
             `tree-${species}-v${variant}-crown-far`,
             this.buildPrototypeMesh(
@@ -1612,6 +1840,59 @@ export class WorldDetailRuntime {
           );
         }
       }
+    }
+
+    if (this.impostorAtlas) {
+      // 2-17: the far band is a billboard impostor — one quad, the
+      // three-view blend, the two season buckets. Impostors neither cast nor
+      // receive shadows (which frees the cascade varyings the blend lanes
+      // consume).
+      //
+      // Perf-debt pass: ONE mesh and ONE material for all seven species.
+      // The quad geometry never differed between them; only the bake frame
+      // did, and that is a per-species uniform ROW indexed by the instance's
+      // variant byte now. The far band spans more presentation chunks than
+      // near and mid combined, so this is the pass's single largest
+      // draw-call cut — seven draws per far chunk became one.
+      const impostorMaterial = this.createMaterial(
+        "detail-impostor",
+        new Color3(1, 1, 1),
+        0.95,
+        1,
+        false,
+      );
+      impostorMaterial.backFaceCulling = false;
+      impostorMaterial.twoSidedLighting = true;
+      impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+      this.registerBandFadeMaterial(impostorMaterial);
+      this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
+        this.impostorAtlas.albedo,
+        this.impostorAtlas.normalDepth,
+        IMPOSTOR_SPECIES.map((species) => {
+          const frame = impostorBakeFrame(species, prototypeSeed);
+          return {
+            extentUnit: frame.extentUnit,
+            centerYUnit: frame.centerYUnit,
+            leafedLayer: impostorLayerIndex(species, 0),
+            bareLayer: impostorLayerIndex(species, 1),
+          };
+        }),
+      );
+      const quad = new Mesh("detail-impostor", this.scene);
+      const quadData = new VertexData();
+      quadData.positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+      quadData.normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+      quadData.uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+      quadData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+      quadData.applyToMesh(quad, false);
+      quad.setEnabled(false);
+      this.registerBatch(TREE_IMPOSTOR_PROTOTYPE_KEY, quad, impostorMaterial, false);
+      // AFTER registerBatch (which forces receive on): impostors must NOT
+      // receive shadows — with front_facing (two-sided) and the three blend
+      // varyings, the 4-cascade CSM inputs push the fragment past the
+      // 16-input limit (17 measured), and one invalid pipeline poisons the
+      // whole render bundle to a black frame.
+      quad.receiveShadows = false;
     }
 
     // 2-12b: card shrubs — the flat-shaded icospheres are gone. 12-18

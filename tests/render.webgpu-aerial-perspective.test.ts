@@ -342,7 +342,7 @@ describe("the physical sky (1C-5)", () => {
   });
 });
 
-describe("the placeholder night (1C-10)", () => {
+describe("night below the horizon (1C-10, superseded by Gate 7A)", () => {
   it("keeps midnight inside the exposure clamp with the sun below the horizon", () => {
     const midnight = resolveEnvironmentState({
       clock: { dayOfYear: 171, solarTimeHours: 0 },
@@ -367,12 +367,24 @@ describe("the placeholder night (1C-10)", () => {
     }
   });
 
-  it("carries the placeholder star dome and moon disc, gated to night", () => {
-    // Deliberately minimal (the phase's designated cut item): Phase 7
-    // replaces these with ephemeris positioning and the Yale catalogue.
-    expect(SKY_FRAGMENT_WGSL).toContain("let night = clamp(-uniforms.aerialSunDirection.y");
-    expect(SKY_FRAGMENT_WGSL).toContain("starMask");
-    expect(SKY_FRAGMENT_WGSL).toContain("moonDisc");
+  it("has no placeholder star hash or anti-solar moon left in it (7-1, 7-3)", () => {
+    // 1C-10's placeholder hashed the view direction into identical "stars"
+    // on a dome that never rotated, and nailed the moon to the exact
+    // anti-solar point — so it was always full and always opposite the sun.
+    // Gate 7A deletes both; the negative assertion is what keeps them from
+    // creeping back beside the real ones.
+    expect(SKY_FRAGMENT_WGSL).not.toContain("starMask");
+    expect(SKY_FRAGMENT_WGSL).not.toContain("starHash");
+    expect(SKY_FRAGMENT_WGSL).not.toContain("normalize(-uniforms.aerialSunDirection)");
+    // The real moon: its own ephemeris direction and angular radius, and a
+    // terminator taken from the sky's OWN sun direction, so the drawn phase
+    // can never disagree with the light the scene is lit by.
+    expect(SKY_FRAGMENT_WGSL).toContain("uniform moonDirection: vec3f;");
+    expect(SKY_FRAGMENT_WGSL).toContain("dot(surfaceNormal, uniforms.aerialSunDirection)");
+    expect(SKY_FRAGMENT_WGSL).toContain("earthshine");
+    // The Milky Way rides the star field's own galactic frame.
+    expect(SKY_FRAGMENT_WGSL).toContain("uniforms.galacticPole");
+    expect(SKY_FRAGMENT_WGSL).toContain("uniforms.galacticCenter");
   });
 });
 

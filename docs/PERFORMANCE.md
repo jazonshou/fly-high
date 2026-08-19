@@ -22,7 +22,7 @@ The game-owned frame graph declares system order while Babylon owns WebGPU comma
 | 3 | `shared-planar-water-reflection` | One manually scheduled, opaque-only scene capture for the ocean or nearest relevant lake. |
 | 4 | `spectral-ocean-compute` | Ocean compute dispatches plus paged river/lake material updates. |
 | 5 | `volumetric-cloud-integration` | Low-resolution cloud integration, temporal resolve, and world-space transmittance projection. |
-| 6 | `hdr-present` | Babylon scene render, half-float ACES image processing, final FXAA, and presentation. |
+| 6 | `hdr-present` | Babylon scene render, the scotopic (rod-vision) pass, half-float ACES image processing, final FXAA, and presentation. |
 
 The renderer makes its floating-origin decision immediately before frame-graph execution. Camera cuts, floating-origin shifts, display resizes, atmosphere/profile changes, and dynamic-resolution changes invalidate the cloud system's temporal history through the graph. Floating-origin rebases occur on a 2,048 m grid after either horizontal camera-relative component reaches 4,096 m. Absolute world coordinates remain in the simulation and deterministic generators; only render-facing positions are rebased.
 
@@ -76,7 +76,9 @@ audit is why it now carries all four tiers):
 | Cloud resolution-scale profile value | 0.25 | 0.45 | 0.60 | 0.70 |
 | Requested cloud primary steps | 40 | 60 | 96 | 96 |
 | Cloud light-step profile value | 4 | 6 | 6 | 6 |
-| Vegetation radius | 2 km | 4.5 km | 8 km | 8 km |
+| Vegetation radius (= impostor radius = the density law's far band) | 2 km | 3 km | 4 km | 6 km |
+| Card-tree LOD radius (near + mid band) | 700 m | 1,100 m | 1,500 m | 2,000 m |
+| Rendered stems/ha at crown closure (near band) | 55 | 78 | 79 | 79 |
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
@@ -168,3 +170,70 @@ The performance overlay exposes:
 For performance changes, test a fixed URL seed, camera mode, weather/time preset, altitude, viewport size, device-pixel ratio, scenery quality, and rendering intent. Record the adapter and browser version. Compare at least a 30-second steady sample after terrain/detail residency and shader/pipeline compilation settle; renderer creation, first compute-pipeline compilation, first audio unlock, and a fresh page-streaming burst are not representative steady state.
 
 Suggested acceptance targets are 60 FPS at 1920×1080 on balanced/medium for a modern discrete GPU, and 60 FPS on performance/low or at least 30 FPS on balanced/medium for a modern integrated GPU. These are QA targets, not guaranteed minimums across every WebGPU adapter.
+
+## Night (Gate 7A)
+
+Night is a separate workload, and it is deliberately cheap:
+
+- **Stars** are one additive draw of ~4,700 magnitude-driven point sprites —
+  ~190 authored bright stars carrying real J2000 positions and colour indices,
+  and a background generated to the observed magnitude-count law. The sprite
+  is sized in PIXELS in clip space, so the adaptive governor's render scale
+  cannot change a star's apparent size. Atmospheric extinction is applied per
+  star from the Kasten–Young air mass, which is why faint stars go out near
+  the horizon before bright ones. The whole field is disabled above civil
+  twilight.
+- **The moon** costs one branch in the sky fragment and one directional
+  light. It does not cast shadows (see `7-9`).
+- **Scotopic vision** is one full-screen pass ahead of the tone map. Above
+  civil twilight it early-outs on a uniform branch after a single sample, so
+  daylight pays a copy and nothing else; being first in the chain it owns the
+  offscreen beauty target and therefore MSAA.
+
+**Night is not rendered at photometric scale, and that is a recorded
+decision.** The sun-to-full-moon range is 4.8 × 10⁵ against an fp16 beauty
+target whose smallest normal value is 6.1 × 10⁻⁵. Covering it needs a scene
+pre-exposure applied to every light and every shader that writes radiance —
+which is precisely what assertion 29 forbids a shader from doing. Two named
+constants carry the absolute level; every relative quantity (phase, the
+opposition surge, altitude, distance, magnitude ratios, extinction, spectral
+colour) is computed, and the rod/cone decision reads the true illuminance.
+`7-4`'s clustered lighting meets the same range with light points and is
+where the pre-exposure decision belongs.
+
+## Vegetation: a draw-call workload, and an open frame row
+
+`2-12` measured the currency directly: every (species, variant, band) mesh is
+one draw per presentation chunk per pass at ~26 µs of GPU, `Δgpu` tracked
+`Δdraws` linearly across all thirteen capture shots, and triangle deltas
+measured ~0. Two consequences the vegetation perf-debt pass made concrete:
+
+- **The capture report carries `vegetationBatches`** — frustum-surviving
+  vegetation batches, the number the frame row is actually spent on. Without
+  it the row could not be measured at all, only asserted.
+- **§5.4's 1.8 ms vegetation row is not met, and cannot be met by any lever
+  §5.3's vegetation trade-off rule permits.** Draws scale with (chunks ×
+  meshes); a presentation chunk is 4,096 m, wider than the whole near+mid
+  field at every tier, so band radii and stem counts barely move the number,
+  and crown variants per species are explicitly not a budget knob. The pass
+  took every available lever (far-band impostor meshes 7 → 1 per chunk,
+  §5.3's published band radii, instance-buffer reuse and recycling) for
+  −1,201 draw calls across the capture set, and priced the structural
+  remainder in `renderedDensity.ts`: `VEGETATION_DRAW_CEILING` is what the
+  renderer meets and `VEGETATION_FRAME_DEBT_RATIO` is the gap.
+
+## Capture harness
+
+`npm run perf:capture` renders the committed shot list against
+`tests/perf/baseline`. Two notes that matter when reading its output:
+
+- `VITE_PERF_SHOTS=name[,name]` runs a subset. A full capture is ~4–6 minutes,
+  which is the wrong feedback loop for diagnosing one bad shot; the filter
+  refuses to run alongside `VITE_PERF_REBASELINE` so a partial run can never
+  overwrite the committed set.
+- The committed `minFps`/`hitchCount` ceilings were measured on the reference
+  M-series machine. They are **not** portable: the same build on a different
+  box, or on a hot one, moves GPU p95 by several milliseconds on shots it
+  cannot possibly have touched. `drawCalls`, `vegetationBatches` and
+  `triangles` are load-independent and are the right counters to compare
+  across machines.
