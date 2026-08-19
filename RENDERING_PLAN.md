@@ -7,6 +7,8 @@
 
 > **Amended 2026-08-18 by [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md), which is binding over this file where they differ.**
 > That review found one uncovered user goal (the aircraft's own appearance, §1 there), two shipped defects that are literally the performance bar (§2), a performance gate that measures idle time and compares images that are 20.5% black (§3), and a season that today is only the sun's declination (§4). Phases 4–7 below are still the pre-Phase-0 tables; §8 there lists what a Phase 4 plan must absorb before it is written. The corrected ledger is §9 there, not §0.3 here.
+>
+> **Amended 2026-08-19.** Phase 4 is now governed by [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md) (46.5 d, binding); Gate 7A executed 2026-08-19. Only Phases 5–7 (less 7A) remain pre-Phase-0 tables.
 
 ---
 
@@ -264,6 +266,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 **Phase 1 total: 48.6 days.** (45.1 before seasons; +0.5 on `1C-1`, +1.5 `1C-9`, +1.5 `1C-10`.)
 
+> **Superseded 2026-08-19.** Phase 1 shipped at **43.0 d** (2026-08-17).
+
 ---
 
 ### Phase 2 — Sky, sea surface and living ground
@@ -297,6 +301,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 **Demo state.** *"The sky and the trees look real."* G3 and G4 served.
 **Phase 2 total: 43.0 days.** (41.0 + 2.0 for `2-18` seasonal foliage.)
 
+> **Superseded 2026-08-19.** Phase 2 shipped at **54.5 d** as amended (43.0 base + 1.0 `B1`–`B7` + 4.0 realignment §6 / `R-18`–`R-24` + 6.5 `B8`).
+
 ---
 
 ### Phase 3 — Terrain surface and the runway
@@ -322,11 +328,13 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 **Demo state.** *"The ground has a surface, and the runway looks like a runway."* Audit root cause #1 closed.
 **Phase 3 total: 29.5 days.** (27.5 + 2.0 for `3-10` seasonal palette.)
 
+> **Superseded 2026-08-19.** Phase 3 is **30.25 d** per [`PHASE_3_EXECUTION_PLAN.md`](PHASE_3_EXECUTION_PLAN.md) and the realignment (`C1`–`C7`, `R-26`).
+
 ---
 
 ### Phase 4 — The terrain GPU spine
 
-> **Executed per [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md), which is binding over this table.** It re-prices the phase at 44.0 d, adds `4-0` (spine contract), `4-0b` (= `6-10` moved), `4-8a` and `4-10`, splits `4-8`, and corrects four items that are fatal as written: `thinInstanceSetBuffer(…, 8)` throws, PCSS cannot run on Phase 1's depth-only CSM, `getCustomRenderList` cannot cull CDLOD nodes, and `terrainQueue.ts` must not be deleted. §5.3's Ultra 1 m L0 row and the `|x| = 5×10⁶ m` parity criterion are struck.
+> **Executed per [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md), which is binding over this table.** It re-prices the phase at 46.5 d, adds `4-0` (spine contract), `4-0b` (= `6-10` moved), `4-8a` and `4-10`, splits `4-8`, and corrects four items that are fatal as written: `thinInstanceSetBuffer(…, 8)` throws, PCSS cannot run on Phase 1's depth-only CSM, `getCustomRenderList` cannot cull CDLOD nodes, and `terrainQueue.ts` must not be deleted. §5.3's Ultra 1 m L0 row and the `|x| = 5×10⁶ m` parity criterion are struck.
 
 **Goal.** Replace 172 CPU-built meshes with one GPU-fed CDLOD quadtree over a page atlas, and bake the occlusion that makes lighting describe real shape. This is the enabling phase for everything in Phases 5–6 and it is the plan's biggest incrementality risk — several items promise no visible change by design.
 
@@ -351,6 +359,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 **Phase 4 total: 34.5 days.** (33.5 + 1.0 for the season term and cache key in `4-6`.)
 
 **— v1 cut line: Phases 1–4, ~147 days ≈ 7.5 months. Eight of nine user goals served. G1's *generation* half and G2's rivers/lakes are what remains. —**
+
+> **Superseded 2026-08-19** (correcting figures from 2026-08-18 and the Phase 4 re-price). The v1 cut line is **≈217 days** per the reconciled ledger (see the Phase totals note), and coverage is certified against **G-A/G-B/G-C** (§0.4) — not a count against the undefined `G1`–`G10`.
 
 ---
 
@@ -506,9 +516,13 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 **Internal cut line.** If the budget bites, `7-6` (volumetrics, 3.0), `7-12` (interior, 2.0) and half of `7-13` (furniture, ~1.5) can defer without breaking anything else — a **35.0-day** Phase 7 that still delivers a flyable, lit night approach and detailed hangars.
 
+> **Amended 2026-08-19.** Gate 7A (7.5 d) executed 2026-08-19, between Phase 2 and Phase 3 per the realignment; the remaining Phase 7 is **7B/7C/7D = 34.0 d**. The 35.0-day internal cut line above predates 7A's removal — the same cuts against the remaining 34.0 d leave 27.5 d.
+
 ---
 
 **Program total: 278.1 days.**
+
+> **Corrected 2026-08-19: ≈330 days.** See the Phase totals note. The figure above predates Phase 0 and every execution plan; the 2026-08-18 correction of ≈316 in turn predates [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md) re-pricing Phase 4 at 46.5 d.
 
 ---
 
@@ -1060,17 +1074,21 @@ Two platform notes that will otherwise cost a day each:
 |---|---|---|---|
 | 0 — Architecture shift *(shipped)* | 16.8 | 16.8 | ~4 weeks |
 | 1 — Foundation, correctness, atmosphere *(shipped)* | 43.0 | 59.8 | ~13 weeks |
-| 2Z — Evaluation surface + governor + seasonal kernel | 6.0 | 65.8 | ~15 weeks |
-| 2 — Sky, sea surface, living ground | 48.0 | 113.8 | ~25 weeks |
-| 7A — Night sky and night vision *(moved out of Phase 7)* | 7.5 | 121.3 | ~27 weeks |
+| 2Z — Evaluation surface + governor + seasonal kernel *(shipped)* | 6.0 | 65.8 | ~15 weeks |
+| 2 — Sky, sea surface, living ground *(shipped)* | 48.0 *(54.5 after the B8 vegetation-quality amendments, +6.5, 2026-08-18)* | 113.8 | ~25 weeks |
+| 7A — Night sky and night vision *(moved out of Phase 7; shipped)* | 7.5 | 121.3 | ~27 weeks |
 | 3 — Terrain surface and the runway | 30.25 | 151.6 | ~34 weeks |
 | A — The things you look at (aircraft, wildlife) | 12.75 | 164.3 | ~37 weeks |
-| 4 — The terrain GPU spine | ~38.5 | **~202.8** ← *v1 cut line* | ~45 weeks |
+| 4 — The terrain GPU spine | ~38.5 *(46.5 per the binding `PHASE_4_EXECUTION_PLAN.md`)* | **~202.8** ← *v1 cut line* | ~45 weeks |
 | 5 — Landscape evolution | 51.5 | 254.3 | ~57 weeks |
-| 6 — Water in motion, ecology, final tiers | ~28.0 | 282.3 | ~63 weeks |
+| 6 — Water in motion, ecology, final tiers | ~28.0 *(~27.5 — `6-10` moved to Phase 4 per `PHASE_4_EXECUTION_PLAN.md` D2)* | 282.3 | ~63 weeks |
 | 7 — Airfield lighting and identity (7B/7C/7D) | 34.0 | **~316** | **~70 weeks** |
 
+> **Reconciled ledger, 2026-08-19.** Shipped through Phase 2.5: **127.8 d** (Phase 0 = 16.8, Phase 1 = 43.0, Gate 2Z = 4.0, R-11/R-13 = 2.0, Phase 2 = 54.5 as amended, Gate 7A = 7.5). Remaining: Phase 3 = 30.25, Gate A = 12.75, Phase 4 = 46.5 (binding), Phase 5 = 51.5, Phase 6 ≈ 27.5, Phase 7 = 34.0. v1 cut line (through Phase 4) **≈217 d** (~48 weeks at 4.5 d/wk); programme **≈330 d** (~73 weeks). The rows and cumulative column above are kept as the 2026-08-18 record.
+
 ### First week, in order
+
+> **Historical, marked 2026-08-19.** Every step below shipped in Phase 0 / Gate 1A (2026-08-17). Kept as a record of the original sequencing; it is not a to-do list.
 
 1. `verify-flip` → `fix-temporal-flip` → `fix-double-blend` → `getViewMatrix(true)`. Ship it alone, first. It fixes the user's loudest complaint in under a day.
 2. `split-governor` + the absolute pixel cap. **Nothing else can be judged visually until the renderer stops silently trading resolution for nothing.**

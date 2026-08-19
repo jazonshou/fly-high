@@ -4,6 +4,7 @@
 **Runs after:** `PHASE_3_EXECUTION_PLAN.md` and Gate A (the aircraft and wildlife, `PRE_PHASE_4_REALIGNMENT.md` §1). Phase 3's exit criteria are this plan's preconditions.
 **Basis:** `TERRAIN_AUDIT.md` §2 root causes #2/#7/#8, `RENDERING_PLAN.md` §2 Phase 4 / §3.1 / §3.2 / §5.2–§5.4 / §6 / §7, `ARCHITECTURE.md` (normative), and `PRE_PHASE_4_REALIGNMENT.md` §8 (binding).
 **Verified against:** the merged Phase 1 tree at `989cdac`, `@babylonjs/core` 9.21.2 as installed, and a live WebGPU adapter on the reference machine. Every file, line, Babylon-internal and adapter-limit claim below was re-checked in the current tree; **four refute the source plans outright and two refute `PRE_PHASE_4_REALIGNMENT.md`** (recorded in its §8b).
+**Amended 2026-08-19:** Phases 2 and 2.5 have since landed (through commit `46bc24a`). Before Phase 4 starts, §3.9's rule applies against the implementation branch: re-derive every line citation there, and re-run `estimateGpuMemoryBreakdown` to regenerate §4 D3's projection table, as that table's own instruction requires.
 **Effort:** **46.5 days**, ~10.3 calendar weeks at 4.5 productive days/week. (34.5 in `RENDERING_PLAN.md`; ~38.5 after the realignment. See the ledger in §4.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
 
@@ -42,7 +43,7 @@ The realignment names five (`PRE_PHASE_4_REALIGNMENT.md` §8). Recon has now che
 
 Two standing conditions carry forward: **Babylon stays pinned at `9.21.2`**, and **one branch per gate** (`phase4/gate-4a` … `-4d`).
 
-**Gate 2Z and `R-11` are hard preconditions for every millisecond and pixel criterion in §11.** `gpuFrameMsP95` is `null` in all three committed baseline shots; until Z-2 lands, no GPU-millisecond exit criterion in this phase is falsifiable. Each criterion in §11 names its instrument dependency.
+**Gate 2Z and `R-11` are hard preconditions for every millisecond and pixel criterion in §11.** `gpuFrameMsP95` is `null` in all three committed baseline shots; until Z-2 lands, no GPU-millisecond exit criterion in this phase is falsifiable. Each criterion in §11 names its instrument dependency. *(Amended 2026-08-19: the Z-2 half is satisfied as of Phase 2's close — `gpuFrameMsP95` is non-null in all 13 committed baseline shots, verified 2026-08-19.)*
 
 ---
 
@@ -80,7 +81,7 @@ Babylon's own precedent is the `splatIndex` branch immediately above ([`thinInst
 
 | | Low | **Balanced** | High | Ultra |
 |---|---:|---:|---:|---:|
-| Today (post Phase 1) | 106.6 | **286.7** | 665.8 | 888.8 |
+| Phase 1 close (`989cdac`) | 106.6 | **286.7** | 665.8 | 888.8 |
 | Ceiling | 260 | **480** | 700 | 1000 |
 | Headroom | 59% | **40%** | **5%** | 11% |
 
@@ -89,7 +90,7 @@ Tier 2's shadow row alone is **320 MiB** — `4096² × 4 cascades × 5 B`.
 Phase 3's `3-0` adds `materialArraysMiB` (+26.7 raw at 512², +106.7 at Ultra's 1024²). The exact position at Phase 3's close depends on one thing — whether Gate 2Z's `Z-4` has split `detailMiB` into real cloud and vegetation rows yet:
 
 - **Tier 3 is red either way** (~1029 / 1000), from the 1024² material arrays alone.
-- **Tier 2 with the material arrays alone is 696.5 / 700 — it passes, by 3.5 MiB.** With `Z-4`'s Phase 2 rows also counted it is **712 / 700** and breaches. Since Phase 2 is underway and `Z-4` precedes Phase 4, 712 is the number to plan against.
+- **Tier 2 with the material arrays alone is 696.5 / 700 — it passes, by 3.5 MiB.** With `Z-4`'s Phase 2 rows also counted it is **712 / 700** and breaches. Since Phase 2 is underway and `Z-4` precedes Phase 4, 712 is the number to plan against. *(Amended 2026-08-19: Phase 2 is complete — closed 2026-08-19 — and `Z-4`'s cloud and vegetation rows are live; 712 stands as the number to plan against.)*
 - **Tier 2 is red at `4-2` under either reading**: the 4224² height atlas is 68.1 MiB raw, 78.3 after the 1.15 fudge, against at most 3.5 MiB of margin.
 
 `tests/render.webgpu-budget.test.ts` iterates **three** viewports (1280×720@1, 1512×982@2, 2560×1440@2) × nine profiles, so any of these fails `npm test`.
@@ -208,7 +209,7 @@ Generated from `estimateGpuMemoryBreakdown` at the reference viewport, with each
 
 | After | Balanced (ceiling 480) | High (ceiling 700) |
 |---|---:|---:|
-| Phase 1 close — today | 287 | 666 |
+| Phase 1 close (`989cdac`) | 287 | 666 |
 | + Phase 2 (cloud volumes, vegetation) | 300 | 681 |
 | + Phase 3 (material arrays) | 330 | **712 ✗** |
 | `4-8a` csm-resize | 330 | 436 |
@@ -265,7 +266,7 @@ Mandated by the realignment: `6-11` minus the four-tier redesign, so G-C has evi
 
 **The mechanism, decided in `4-0`:** one caster mesh **per cascade** (2/3/4 by `shadowCascades`), each sharing the 33×33 geometry, each with its own thin-instance buffer written exactly once per frame before the shadow map renders. Each carries `layerMask = 0` so no camera draws it, and `metadata.excludePlanarReflection = true` so the water mirror does not. This also preserves the Governor B shadow-caster-distance lever that the 151 → 1 mesh collapse would otherwise delete.
 
-### D12 — `densityField` is filtered and ported, as `4-6b` (1.5 d)
+### D12 — `densityField` is filtered and ported, as `4-6b` (2.0 d)
 
 The one bullet of the realignment's §8 this plan would otherwise drop. `densityField` is unfiltered and TypeScript-only, but `4-6` must read it for the canopy splat channel. Point-sampling a 260 m-lattice field onto a 128 m-texel level-5 page re-rolls an arbitrary phase per level — the same defect `1B-2` fixed for height, and it would show up as canopy cover that changes when a page changes LOD.
 
@@ -283,7 +284,7 @@ It also carries **`R-27`'s consumers contract**, which `D5` would otherwise leav
 | 4D — Identity and retirement | `4-6` `4-6b` `4-9` `4-10` | 8.0 | **13.50** |
 | **Phase 4** | | **34.5** | **46.5 d ≈ 10.3 weeks** |
 
-Net **+11.5 d**, of which 2.0 is `6-10` relocated (programme-neutral) and 2.0 is the climate chain relocated from a Phase 4 item that would otherwise port it twice. The genuinely new cost is **~7.5 d**: the contract (2.0), the CSM split (0.5), `4-1`'s re-price (2.0), `4-2`'s slot-lane ownership (0.5), `4-6b` (1.5), `4-9`'s parity test (0.5) and the tier re-measure (1.0).
+Net **+12.0 d**, of which 2.0 is `6-10` relocated (programme-neutral) and 2.0 is the climate chain relocated from a Phase 4 item that would otherwise port it twice. The genuinely new cost is **8.0 d**: the contract (2.0), the CSM split (0.5), `4-1`'s re-price (2.0), `4-2`'s slot-lane ownership (0.5), `4-6b` (1.5), `4-9`'s parity test (0.5) and the tier re-measure (1.0).
 
 ---
 
@@ -675,6 +676,8 @@ What replaces a test is a **named flight and a committed capture**, treated exac
 
 **Every millisecond and pixel criterion above is unfalsifiable until Gate 2Z lands.** `gpuFrameMsP95` is `null` in all three committed shots because `updateGovernor` resets `gpuFrameDurations` every 120-frame window and requires 8 fresh samples within 30; the capture asserts only `meanLuminance > 0.01` and SSIM ≥ 0.985; and `fps` is a `setTimeout`-yield rate, not a frame rate. Where an instrument still will not exist at Phase 4's close, the criterion in §13 is phrased against a quantity that *is* measurable, and says so.
 
+**Amended 2026-08-19:** satisfied as of Phase 2's close — Z-2 landed, and `gpuFrameMsP95` is non-null in all 13 committed baseline shots (verified 2026-08-19). The paragraph above records the position when this plan was written.
+
 ---
 
 ## 12. Risk register
@@ -684,11 +687,11 @@ What replaces a test is a **named flight and a committed capture**, treated exac
 | **R-4A** | **`4-1` parity does not close at ±10⁵ m** even with split-origin addressing. | Week 2. | The measured naive-f32 headroom is **11× at ±10⁴ m** (4.5 mm against a 50 mm bound) and **4.2× at ±10⁵ m** against D6's 0.25 m bound, and split-origin removes the dominant term, so the margin is real. If it still fails, the fallback is to shrink the *criterion radius*, not the criterion — record the achieved radius in `4-0`'s contract and gate `4-3` on it. Do not relax the bound; the bound is what §1.3 rests on. |
 | **R-4B** | **The atlas cannot be both a storage texture and a sampled texture in one frame** without a Babylon-managed transition. | `4-2`, week 3. | Verified achievable at the WebGPU level by the P2 probe (`STORAGE_BINDING \| TEXTURE_BINDING \| COPY_SRC`). The risk is Babylon's own usage-flag bookkeeping. Startup capability assertion in `RenderInvariants.ts`; documented fallback is a ping-pong pair with a copy, costing one atlas of memory at the tier that needs it. |
 | **R-4C** | **`4-5`'s geomorph does not close cracks**, and skirts cannot be deleted. | `4-5`, week 7. | Crack closure is analytic, not tuned: at `morphK = 1` the child's edge vertices are the parent's by construction. If cracks appear, the bug is in the snap lattice, not the concept. Do not re-add skirts — assert the edge-vertex equality directly in a unit test over the snap function before debugging visually. |
-| **R-4D** | **The `ShadowDepthWrapper` is attached late and fails silently.** | `4-4`. | Assertion 77 against the real material, plus the factory sub-step (D7). This is the only failure mode in the phase that is both invisible to CPU tests and visually plausible. |
+| **R-4D** | **The `ShadowDepthWrapper` is attached late and fails silently.** | `4-4`. | Assertion 81 against the real material, plus the factory sub-step (D7). This is the only failure mode in the phase that is both invisible to CPU tests and visually plausible. |
 | **R-4E** | **`4-6` slips.** Largest item, last position, and it carries the climate chain the plan moved into it. | End of week 9. | **The phase's designated cut, and `4-5`'s carry-forward is what makes it survivable.** Ship the classifier and splat atlas at tiers 1–3 and leave tier 0 on the provisional two-material path, which §5.3's height-blend cap of 2 already makes the Low-tier path. Second cut: `4-6b` defers to Phase 6 alongside `6-6`. Third: the seasonal snow-pack term, whose absence is a missing feature rather than a broken one — but **not** the `dayOfYear` signature, which must land regardless. Because `4-5` carries a provisional splat channel, none of these cuts leaves the terrain untextured. |
 | **R-4F** | **Memory closes on paper and not on the machine.** The estimator carries a 1.15 fudge factor calibrated once, in 2026-08. | Any gate. | `4-10` re-pins it. Until then, `perf:capture` reports `estimatedGpuMemoryMiB` every run; re-pin whenever \|estimate − actual\| exceeds 15%, as the constant's own docstring already requires. |
 | **R-4G** | **Tier 2 spends most of the phase visibly worse** because `4-8a` halves its shadow map. | Weeks 1–6. | Accepted, bounded and reversed at `4-8b`. It is per-tier deliberately: tier 1 — the tier G-C names — is untouched. If tier 2's softening is judged unacceptable at review, the alternative is holding `materialArrayEdge` at 256 through Phase 3, which is a worse trade for the same memory. |
-| **R-4H** | **`5-2` turns out not to be a one-file change** despite `ARCHITECTURE.md`'s promise. | Phase 5. | Mitigated inside `4-2`: `publishPage` and `fallbackSampleCount` are wired for real in Phase 4, so `5-2` swaps an authority rather than building plumbing. Assertion 82 makes the promise falsifiable a phase early. |
+| **R-4H** | **`5-2` turns out not to be a one-file change** despite `ARCHITECTURE.md`'s promise. | Phase 5. | Mitigated inside `4-2`: `publishPage` and `fallbackSampleCount` are wired for real in Phase 4, so `5-2` swaps an authority rather than building plumbing. Assertion 86 makes the promise falsifiable a phase early. |
 
 ---
 
@@ -804,4 +807,4 @@ What replaces a test is a **named flight and a committed capture**, treated exac
 
 **Nine of twelve closed at Phase 4's exit.** The three that remain — #2, #8, #9 — are all terrain *shape*: no erosion, nothing below 43 m, no macro-geology.
 
-**What the v1 cut line actually gives the user, stated plainly.** Against their own three goals: **G-A is substantially served for everything except terrain shape and water placement.** Clouds, sea surface, trees, foliage, ground material and the aircraft all look real; the *form* of the mountains is still a sum of noise rather than a landscape something happened to, and rivers and lakes are still the pre-Phase-5 ribbons pasted on slopes that have no channel. **G-B is served for sun path, ground cover, canopy and snowline; night is Gate 7A**, which the realignment moved to sit between Phases 2 and 3. **G-C has, for the first time, a measured tier table and a compute budget that is enforced rather than asserted** — but the flicker and hitch criteria are only as good as Gate 2Z's instruments. That is the honest position at ~203 days, and it is the last point at which stopping is defensible.
+**What the v1 cut line actually gives the user, stated plainly.** Against their own three goals: **G-A is substantially served for everything except terrain shape and water placement.** Clouds, sea surface, trees, foliage, ground material and the aircraft all look real; the *form* of the mountains is still a sum of noise rather than a landscape something happened to, and rivers and lakes are still the pre-Phase-5 ribbons pasted on slopes that have no channel. **G-B is served for sun path, ground cover, canopy and snowline; night is Gate 7A**, which the realignment moved to sit between Phases 2 and 3 *(amended 2026-08-19: Gate 7A shipped 2026-08-19 as Phase 2.5 — G-B's night component is delivered)*. **G-C has, for the first time, a measured tier table and a compute budget that is enforced rather than asserted** — but the flicker and hitch criteria are only as good as Gate 2Z's instruments. That is the honest position at ~203 days, and it is the last point at which stopping is defensible.

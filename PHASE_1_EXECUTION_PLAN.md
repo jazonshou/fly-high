@@ -4,7 +4,7 @@
 **Runs after:** `PHASE_0_ARCHITECTURE_SHIFT.md` (16.8 d, ~3.7 weeks). **Phase 0's exit criteria are this plan's preconditions.**
 **Basis:** `TERRAIN_AUDIT.md` (root causes, treated as established fact) and `RENDERING_PLAN.md` §2 Phase 1 (gates 1A/1B/1C).
 **Verified against:** working tree at `58d5d15`, plus the contracts Phase 0 lands.
-**Effort:** **43.0 days**, ~9.6 calendar weeks at 4.5 productive days/week. (48.6 in `RENDERING_PLAN.md`; −5.6 after Phase 0 absorbs five items and shrinks four more, +0.0 net amendment cost — see §3.)
+**Effort:** **43.0 days**, ~9.6 calendar weeks at 4.5 productive days/week. (49.6 in the previous edition of this plan — `RENDERING_PLAN.md`'s 48.6 plus its amendments; −6.6 after Phase 0 absorbs five items and shrinks six more, +0.0 net amendment cost — see §0.1 and §3.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
 
 ---
@@ -370,6 +370,8 @@ Also create `RenderInvariants.ts` here with its first two startup assertions (`1
 
 **The number**, verified: `AtmosphereSystem.ts:196-201` constructs `new CascadedShadowGenerator(profile.shadowMapSize, this.sun, true, camera)` — the fifth parameter `useRedTextureType` is **not passed**, so Babylon selects an RGBA format; and `float32-filterable` is absent because `FlightRenderer.ts:319-320` requests only `timestamp-query` with `enableAllFeatures: false`, so it falls through to half-float. Net **RGBA16F**: 4096² × 4 cascades × 8 B = **512 MiB colour** plus 256 MiB depth = **768 MiB**. And `filter = ShadowGenerator.FILTER_PCF` (`:209`) binds **only the depth texture** — the 512 MiB colour attachment is allocated, cleared and written every frame and never sampled.
 
+*(2026-08-19: premise stale as verified — see §13 D-1; shipped via a `noColorAttachment` RTT override.)*
+
 Depth-only RTT; also pass `usefullFloatFirst = false`.
 
 **Explicitly not in scope:** the shadow *distance*. Shortening it to a near-field CSM is `4-8`, gated on the baked horizon maps from `4-7`. Doing it now leaves distant mountains unshadowed for months.
@@ -612,6 +614,8 @@ Consumes `SharedReceiverRegistry` from `0-7`.
 
 **`1C-10` (1.5 d) is deliberately minimal**, and the plan says so twice. Sun below the horizon handled without breaking, a twilight-through-night exposure range, a placeholder moon disc and star dome. It exists **only** so that scrubbing the clock past dusk during Phases 1–6 looks *unfinished* rather than *broken*. **Do not gold-plate it** — Phase 7 (`7-1`, `7-2`, `7-3`) replaces the moon and stars outright with ephemeris positioning, phase, moonlight as a second directional light, scotopic vision and the Yale Bright Star catalogue. **This is the phase's designated cut item** (§10 R-P4).
 
+**Executed early (2026-08-19).** That Phase 7 replacement has since happened: Gate 7A shipped as part of Phase 2.5 (commit `46bc24a`), replacing this placeholder.
+
 ---
 
 ## 9. Verification
@@ -668,7 +672,7 @@ Two risks from the previous edition — the plugin spike and the test harness �
 |---|---|---|---|
 | **R-P2** | **`1C-4` overruns.** Largest estimate in the phase, four consumer integrations. | End of week 8 with the terrain consumer not correct. | Ship terrain + ocean first as a gate-internal commit; rivers, vegetation and the cloud composite follow within the week. **Do not ship a version where the ocean lacks haze** — that reintroduces the coastline tear, which is more visible than no change at all. |
 | **R-P3** | **MSAA mechanics through the hand-built post chain.** Multisample colour and depth sample counts must agree; the scene depth buffer is created by the first post-process's RTT. | Validation errors or a black frame when `toneMap.samples` is set. | `DefaultRenderingPipeline` with `samples = 4`. Budget half a day; do not spend two fighting the hand-built chain. |
-| **R-P4** | **Phase 1 overruns 9.6 weeks.** | End of week 8 behind by more than 3 days. | Cut `1C-10` (1.5 d) — placeholder work Phase 7 deletes, whose only function is cosmetic during Phases 2–6. Second cut: `1B-13` (1.0 d), a memory optimisation with no visual payoff and no Phase 1 dependants. **Do not cut `1A-1`, `1A-2` or `1A-6b`** — the whole phase's evaluability rests on them. |
+| **R-P4** | **Phase 1 overruns 9.6 weeks.** | End of week 8 behind by more than 3 days. | Cut `1C-10` (1.5 d) — placeholder work Phase 7 deletes, whose only function is cosmetic during Phases 2–6. *(2026-08-19: the Phase 7 replacement — Gate 7A — executed early as part of Phase 2.5, commit `46bc24a`.)* Second cut: `1B-13` (1.0 d), a memory optimisation with no visual payoff and no Phase 1 dependants. **Do not cut `1A-1`, `1A-2` or `1A-6b`** — the whole phase's evaluability rests on them. |
 | **R-P5** | **`1B-2` breaks `sim.flight.test.ts`.** It changes the physics authority's arithmetic. | An envelope assertion fails or becomes marginal. | Much smaller than before Phase 0: the signature churn and hash change already landed at `0-4` and were validated separately, so a failure here isolates cleanly to the octave cutoff. Treat as information about the test's tolerance, not a reason to revert. **Never** re-baseline `sim.flight.test.ts` in the same commit as a rendering change. |
 | **R-P6** | **`1B-3`'s constant-65 ladder blows the raster budget.** | Terrain raster above its budget row in the numeric report. | Switch tiers 1–2 to constant 33 per A5. Audit §2.3's corollary says the visual cost is near zero because there is no geometric content below 43 m. Record the measurement. |
 | **R-P8** | **Governor B has weak levers** until `1B-10` lands. | Weeks 2–5. | Accept it. The governor reports honestly and acts weakly, which is strictly better than today's behaviour of acting confidently and wrongly. Surface it in the HUD with the lever index. |
