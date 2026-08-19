@@ -29,6 +29,7 @@ const ATMOSPHERE: AtmosphereSnapshot = {
   skyHorizon: new Color3(0.58, 0.77, 0.96),
   ambientColor: new Color3(0.18, 0.27, 0.42),
   sunIlluminanceNormalized: 0.92,
+  sunAngularRadiusRadians: 0.004675,
   cloudCoverage: 0.32,
   humidity: 0.62,
   windSpeed: 9,
@@ -145,6 +146,37 @@ describe("pure deterministic downhill hydrology", () => {
     }
   });
 
+  it("emits no ribbon down terrain steeper than the maximum grade (R-24)", () => {
+    // 24% grade everywhere — every trace descends it, and every ribbon a
+    // pre-R-24 build would emit lies on a slope the maximum grade forbids.
+    const steepTerrain: HydrologyTerrainSampler = (x, z) => ({
+      height: 900 - x * 0.24 + Math.sin(z * 0.004) * 3,
+      moisture: 0.64,
+    });
+    const options = {
+      worldSeed: "r24-grade-cull",
+      terrainSample: steepTerrain,
+      centerX: 0,
+      centerZ: 0,
+      extentMeters: 4_000,
+      seaLevel: 0,
+      sourceCandidateSpacingMeters: 500,
+      minimumSourceElevationAboveSeaMeters: 0,
+      minimumSourceSeparationMeters: 350,
+      traceStepMeters: 70,
+      maximumTraceSteps: 80,
+      minimumRiverPoints: 6,
+      maximumRivers: 5,
+      maximumLakes: 2,
+    } as const;
+    const culled = generateHydrology(options);
+    expect(culled.rivers.length).toBe(0);
+    // The cull is the grade limit, not the terrain: the same options with the
+    // limit lifted emit ribbons again.
+    const lifted = generateHydrology({ ...options, maximumRiverGrade: 1 });
+    expect(lifted.rivers.length).toBeGreaterThan(0);
+  });
+
   it("emits finite lake polygons only for enclosed bowls", () => {
     const result = generateHydrology({
       worldSeed: "basin-lakes",
@@ -218,7 +250,8 @@ describe("Babylon WebGPU hydrology presentation", () => {
     expect(HYDROLOGY_WATER_VERTEX_WGSL).toContain("hydrologyWorldOrigin");
     expect(HYDROLOGY_WATER_VERTEX_WGSL).toContain("windPhase");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("fresnelSchlick");
-    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("distributionGgx");
+    // 2-9: the shared solid-angle sun lobe replaced the split GGX pair.
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("fn sunSpecular");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("shoreFoam");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("uniform regionOpacity");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(

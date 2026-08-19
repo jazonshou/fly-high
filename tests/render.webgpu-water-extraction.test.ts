@@ -8,9 +8,9 @@ import {
   WATER_VERTEX_WGSL,
 } from "../src/render/webgpu/water/SpectralOceanSystem";
 import {
+  WATER_FOAM_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
-  WATER_GGX_COMBINED_SPECULAR_WGSL,
-  WATER_GGX_SPLIT_WGSL,
+  WATER_SUN_SPECULAR_WGSL,
   waterReflectedSkyWgsl,
 } from "../src/render/webgpu/water/WaterShaders";
 
@@ -40,22 +40,32 @@ describe("water shader extraction (2-8a)", () => {
     // 2-8a extraction itself was verified against the pre-extraction hashes
     // (479ea4bc… / 02db7641…) before this re-pin.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "b38cfd595891745bb449d151c800b0e6940fc521ce1e15229ec2af704548758d",
+      "b0cad61d28a2368573d70b710e1a63d23334277a0780f81fe83981f1200a9774",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "376c14c3bae0f02597b7822e867af38904b9af17c80192279bacfe1cf3d19e20",
+      "3cc1febabdb41e14f02801061119519930cf88450e53e71469375b18f08f63c7",
     );
   });
 
-  it("gives both water surfaces the one shared fresnel text", () => {
+  it("gives both water surfaces the one shared shading text (2-9)", () => {
     // Exactly one definition each, and it is the shared block verbatim —
     // a second textual copy is the §3.6 drift this file exists to prevent.
     for (const fragment of [WATER_FRAGMENT_WGSL, HYDROLOGY_WATER_FRAGMENT_WGSL]) {
       expect(fragment).toContain(WATER_FRESNEL_SCHLICK_WGSL);
       expect(fragment.split("fn fresnelSchlick").length).toBe(2);
+      // 2-9: ONE solid-angle sun lobe everywhere; the pre-2-9 assemblies and
+      // their gains are gone.
+      expect(fragment).toContain(WATER_SUN_SPECULAR_WGSL);
+      expect(fragment.split("fn sunSpecular").length).toBe(2);
+      expect(fragment).toContain(WATER_FOAM_WGSL);
+      expect(fragment).not.toContain("distributionGgx");
+      expect(fragment).not.toContain("ggxSpecular");
+      expect(fragment).not.toContain("* 2.6 *");
+      expect(fragment).not.toContain("nDotL * 4.0");
+      // The fake specular sun discs died with 2-9.
+      expect(fragment).not.toContain("3200.0");
+      expect(fragment).not.toContain("1800.0");
     }
-    expect(WATER_FRAGMENT_WGSL).toContain(WATER_GGX_COMBINED_SPECULAR_WGSL);
-    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(WATER_GGX_SPLIT_WGSL);
   });
 
   it("keeps the divergent reflected-sky constants named and deliberate", () => {
@@ -66,8 +76,6 @@ describe("water shader extraction (2-8a)", () => {
         horizonFalloffExponent: 2.5,
         overcastZenithColor: [0.34, 0.39, 0.45],
         overcastHorizonColor: [0.58, 0.63, 0.68],
-        sunDiscExponent: 3_200,
-        sunDiscGain: 16,
       }),
     );
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(
@@ -75,8 +83,6 @@ describe("water shader extraction (2-8a)", () => {
         horizonFalloffExponent: 2.3,
         overcastZenithColor: [0.31, 0.36, 0.41],
         overcastHorizonColor: [0.56, 0.61, 0.65],
-        sunDiscExponent: 1_800,
-        sunDiscGain: 11,
       }),
     );
   });
@@ -86,13 +92,8 @@ describe("water shader extraction (2-8a)", () => {
       horizonFalloffExponent: 2,
       overcastZenithColor: [0, 0.5, 1],
       overcastHorizonColor: [1, 1, 1],
-      sunDiscExponent: 3_200,
-      sunDiscGain: 16,
     });
     expect(text).toContain("2.0);");
     expect(text).toContain("vec3f(0.0, 0.5, 1.0)");
-    expect(text).toContain("3200.0");
-    expect(text).toContain("* 16.0 *");
-    expect(text).not.toMatch(/[^0-9.]3200[^.]/u);
   });
 });

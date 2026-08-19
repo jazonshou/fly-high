@@ -9,17 +9,56 @@
  * character. Deliberate shading changes (2-8, 2-9) re-pin the hash in the
  * same commit, which is exactly the explicitness §3.6 asks for.
  *
- * The two GGX assemblies are exported separately on purpose: the ocean
- * shipped a combined D·G·denominator term with an inlined scalar
- * quasi-Fresnel, the hydrology a split distribution/geometry pair with a
- * true `fresnelSchlick(vDotH)` at the call site. They are different BRDF
- * assemblies, not one function with different constants — `2-9` replaces
- * both with the solid-angle-correct Karis lobe and this file is where that
- * replacement happens once.
+ * 2-9 completed the unification the extraction staged: both surfaces now
+ * light their sun through ONE solid-angle-correct Karis lobe
+ * (`WATER_SUN_SPECULAR_WGSL`), foam is lit Lambertian with a shared Worley
+ * break-up (`WATER_FOAM_WGSL`), backlit crests glow through
+ * `WATER_CREST_SSS_WGSL`, and environment reflections map roughness to the
+ * sky probe's mips via `WATER_ENVIRONMENT_MIP_WGSL`. The pre-2-9 GGX
+ * assemblies (ocean combined lobe, hydrology split pair) are deleted.
  */
+
+import { RawCubeTexture } from "@babylonjs/core/Materials/Textures/rawCubeTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import type { Scene } from "@babylonjs/core/scene";
 
 /** Shared constants block (PI). */
 export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.14159265359;`;
+
+const FALLBACK_ENVIRONMENT_CUBES = new WeakMap<Scene, RawCubeTexture>();
+
+/**
+ * 2-9: a 1×1 mid-grey cube bound wherever a water material declares the
+ * environment sampler before the sky probe publishes (WebGPU materials with
+ * an unbound declared sampler never become ready). `environmentValid` stays
+ * 0 while this is bound, so the analytic sky fallback is what renders.
+ * Returns null under NullEngine (no raw-cube support; those tests never
+ * compile the material) — the nullable-pipeline pattern the clouds use.
+ */
+export function fallbackWaterEnvironmentCube(scene: Scene): RawCubeTexture | null {
+  const engine = scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
+  if (!engine.isWebGPU && !engine._gl) return null;
+  const existing = FALLBACK_ENVIRONMENT_CUBES.get(scene);
+  if (existing) return existing;
+  const face = new Uint8Array([96, 108, 122, 255]);
+  const cube = new RawCubeTexture(
+    scene,
+    [face, face, face, face, face, face],
+    1,
+    undefined,
+    undefined,
+    false,
+    false,
+    Texture.BILINEAR_SAMPLINGMODE,
+  );
+  cube.name = "water-environment-fallback";
+  FALLBACK_ENVIRONMENT_CUBES.set(scene, cube);
+  scene.onDisposeObservable.addOnce(() => {
+    FALLBACK_ENVIRONMENT_CUBES.get(scene)?.dispose();
+    FALLBACK_ENVIRONMENT_CUBES.delete(scene);
+  });
+  return cube;
+}
 
 /** Schlick Fresnel — identical on both water surfaces (F0 stays at the call site). */
 export const WATER_FRESNEL_SCHLICK_WGSL = /* wgsl */ `fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
@@ -27,41 +66,104 @@ export const WATER_FRESNEL_SCHLICK_WGSL = /* wgsl */ `fn fresnelSchlick(cosTheta
 }`;
 
 /**
- * The ocean's combined GGX: D·G over the 4·nV·nL denominator with an inlined
- * scalar quasi-Fresnel. Superseded by the Karis lobe in `2-9`.
+ * 2-9: the ONE sun specular lobe for every water surface — solid-angle
+ * correct via Karis's representative-point method. The sun is a disc of
+ * angular radius θ, not a delta light: the GGX alpha widens by θ/2 and the
+ * peak renormalises by (α/α′)², which is what keeps the glitter path's
+ * total energy right as roughness varies. This deleted `pow(·, 3200)·16`,
+ * `pow(·, 1800)·11`, `×2.6` and `×nDotL·4.0` — four magic constants
+ * replaced by the sun's physical 0.004675 rad radius (1C-1).
+ *
+ * Returns BRDF × nDotL; the caller multiplies sun radiance (`sunColor`,
+ * illuminance-normalised) and `directSunVisibility`.
  */
-export const WATER_GGX_COMBINED_SPECULAR_WGSL = /* wgsl */ `fn ggxSpecular(normal: vec3f, view: vec3f, light: vec3f, roughness: f32) -> f32 {
+export const WATER_SUN_SPECULAR_WGSL = /* wgsl */ `fn sunSpecular(normal: vec3f, view: vec3f, light: vec3f, roughness: f32, sunAngularRadius: f32, f0: vec3f) -> vec3f {
   let halfVector = normalize(view + light);
   let nDotH = max(dot(normal, halfVector), 0.0);
   let nDotV = max(dot(normal, view), 0.001);
   let nDotL = max(dot(normal, light), 0.001);
   let vDotH = max(dot(view, halfVector), 0.001);
   let alpha = roughness * roughness;
-  let alpha2 = alpha * alpha;
-  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
-  let distribution = alpha2 / max(PI * denominator * denominator, 0.00001);
-  let k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+  let alphaPrime = clamp(alpha + sunAngularRadius * 0.5, alpha, 1.0);
+  let energy = (alpha / alphaPrime) * (alpha / alphaPrime);
+  let alphaPrime2 = alphaPrime * alphaPrime;
+  let denominator = nDotH * nDotH * (alphaPrime2 - 1.0) + 1.0;
+  let distribution = alphaPrime2 / max(PI * denominator * denominator, 0.00001);
+  let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
   let geometryV = nDotV / (nDotV * (1.0 - k) + k);
   let geometryL = nDotL / (nDotL * (1.0 - k) + k);
-  return distribution * geometryV * geometryL / max(4.0 * nDotV * nDotL, 0.001) * (0.02 + 0.98 * pow(1.0 - vDotH, 5.0));
+  let fresnel = fresnelSchlick(vDotH, f0);
+  return distribution * energy * geometryV * geometryL * fresnel
+    / max(4.0 * nDotV, 0.001);
 }`;
 
 /**
- * The hydrology's split GGX: distribution and Smith-Schlick geometry as
- * separate functions, assembled with an explicit `fresnelSchlick(vDotH)` at
- * the call site. Superseded by the Karis lobe in `2-9`.
+ * 2-9: lit foam. Foam is a Lambertian scatterer, not an unlit paint layer —
+ * it responds to the sun and the sky like everything else. The Worley
+ * break-up mask (advected by the caller) keeps sheets of foam from reading
+ * as flat decals. Albedo stays a call-site value per surface.
  */
-export const WATER_GGX_SPLIT_WGSL = /* wgsl */ `fn distributionGgx(normal: vec3f, halfVector: vec3f, roughness: f32) -> f32 {
-  let alpha = roughness * roughness;
-  let alpha2 = alpha * alpha;
-  let nDotH = max(dot(normal, halfVector), 0.0);
-  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
-  return alpha2 / max(PI * denominator * denominator, 0.000001);
+export const WATER_FOAM_WGSL = /* wgsl */ `fn foamCellHash(cell: vec2i) -> vec2f {
+  let hashed = vec2u(cell) * vec2u(1664525u, 22695477u) + vec2u(1013904223u, 1u);
+  let mixed = (hashed.x ^ (hashed.y << 8u)) * 2654435761u;
+  return vec2f(
+    f32(mixed & 65535u) / 65535.0,
+    f32((mixed >> 16u) & 65535u) / 65535.0,
+  );
 }
 
-fn geometrySchlickGgx(nDotDirection: f32, roughness: f32) -> f32 {
-  let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
-  return nDotDirection / max(nDotDirection * (1.0 - k) + k, 0.0001);
+fn foamWorley(position: vec2f) -> f32 {
+  let base = vec2i(floor(position));
+  var nearest = 8.0;
+  for (var y = -1; y <= 1; y += 1) {
+    for (var x = -1; x <= 1; x += 1) {
+      let cell = base + vec2i(x, y);
+      let feature = vec2f(cell) + foamCellHash(cell);
+      let delta = feature - position;
+      nearest = min(nearest, dot(delta, delta));
+    }
+  }
+  return clamp(sqrt(nearest), 0.0, 1.0);
+}
+
+fn foamBreakup(worldXZ: vec2f, advection: vec2f) -> f32 {
+  let coarse = foamWorley((worldXZ - advection) * 0.21);
+  let fine = foamWorley((worldXZ - advection * 1.35) * 0.83 + vec2f(37.0, 11.0));
+  return smoothstep(0.12, 0.66, coarse * 0.62 + fine * 0.38);
+}
+
+fn litFoamColor(albedo: vec3f, normal: vec3f, light: vec3f, sunColor: vec3f, skyZenith: vec3f, skyHorizon: vec3f, sunVisibility: f32) -> vec3f {
+  let nDotL = max(dot(normal, light), 0.0);
+  let skyAmbient = (skyZenith + skyHorizon) * 0.5;
+  return albedo * (skyAmbient * 0.55 + sunColor * nDotL * sunVisibility);
+}`;
+
+/**
+ * 2-9: wave-crest subsurface scattering — backlit crests transmit sunlight
+ * as a teal glow. Driven by the summed displacement height the vertex shader
+ * already computes; `intensity` is one of Gate 2B's two declared tuning
+ * knobs and lives at the call site.
+ */
+export const WATER_CREST_SSS_WGSL = /* wgsl */ `fn crestSubsurface(crestHeight: f32, view: vec3f, light: vec3f, sunColor: vec3f, sunVisibility: f32, intensity: f32) -> vec3f {
+  let crest = max(crestHeight, 0.0);
+  let towardSun = pow(max(dot(view, -light), 0.0), 4.0);
+  // view is SURFACE-TO-CAMERA: steep look-down views (view.y -> 1) see no
+  // transmission, grazing and below-crest look-up views (view.y <= 0) see it
+  // fully — the backlit-crest hero shot. (The review caught the mirrored
+  // form, which was inert aloft and dimmed exactly that shot.)
+  let grazing = 1.0 - max(view.y, 0.0);
+  return vec3f(0.06, 0.50, 0.42) * sunColor
+    * (crest * towardSun * grazing * (0.2 + 0.8 * sunVisibility) * intensity);
+}`;
+
+/**
+ * 2-9: environment-cube LOD from water roughness. Calibrated so the
+ * roughness floor (0.075) lands at mip 0 and the cap (0.34) at mip 2 —
+ * water roughness never exceeds ~0.34, so the probe's box mip chain
+ * suffices and no GGX prefilter convolution is needed.
+ */
+export const WATER_ENVIRONMENT_MIP_WGSL = /* wgsl */ `fn environmentRoughnessToMip(roughness: f32) -> f32 {
+  return clamp((roughness - 0.075) * (2.0 / 0.265), 0.0, 2.0);
 }`;
 
 /**
@@ -76,10 +178,6 @@ export interface WaterReflectedSkyParameters {
   readonly overcastZenithColor: readonly [number, number, number];
   /** Overcast replacement palette at the horizon. */
   readonly overcastHorizonColor: readonly [number, number, number];
-  /** Specular sun-disc power (deleted by `2-9`'s solid-angle lobe). */
-  readonly sunDiscExponent: number;
-  /** Specular sun-disc gain (deleted by `2-9`'s solid-angle lobe). */
-  readonly sunDiscGain: number;
 }
 
 /** Formats a number as a WGSL f32 literal (integers gain a trailing `.0`). */
@@ -95,14 +193,14 @@ function toWgslVec3(value: readonly [number, number, number]): string {
 }
 
 /**
- * The analytic sky reflection shared by both water surfaces. Expects
- * `uniforms.skyZenith` / `uniforms.skyHorizon` / `uniforms.cloudCoverage` /
- * `uniforms.sunDirection` / `uniforms.sunColor` in the enclosing material.
- * The `worldXZ` parameter is unused (kept for the pre-extraction call-site
- * signature; it leaves with `2-9`'s rewrite).
+ * The analytic sky reflection shared by both water surfaces — the FALLBACK
+ * when the environment probe is not yet valid. Expects `uniforms.skyZenith` /
+ * `uniforms.skyHorizon` / `uniforms.cloudCoverage` in the enclosing material.
+ * 2-9 deleted the fake specular sun disc: the sun's reflection now comes
+ * solely from the physical `sunSpecular` lobe, never painted into the sky.
  */
 export function waterReflectedSkyWgsl(parameters: WaterReflectedSkyParameters): string {
-  return /* wgsl */ `fn reflectedSky(direction: vec3f, worldXZ: vec2f, directSunVisibility: f32) -> vec3f {
+  return /* wgsl */ `fn reflectedSky(direction: vec3f) -> vec3f {
   let horizon = pow(1.0 - clamp(direction.y, 0.0, 1.0), ${toWgslFloat(parameters.horizonFalloffExponent)});
   var sky = mix(uniforms.skyZenith, uniforms.skyHorizon, horizon);
   // The former fallback invented a second, unrelated 2D cloud field. It could
@@ -111,9 +209,6 @@ export function waterReflectedSkyWgsl(parameters: WaterReflectedSkyParameters): 
   // energy until the real volumetric radiance is available as a reflection LUT.
   let overcast = smoothstep(0.18, 0.92, uniforms.cloudCoverage);
   let overcastSky = mix(${toWgslVec3(parameters.overcastZenithColor)}, ${toWgslVec3(parameters.overcastHorizonColor)}, horizon);
-  sky = mix(sky, overcastSky, overcast * 0.52);
-  let sun = pow(max(dot(direction, normalize(uniforms.sunDirection)), 0.0), ${toWgslFloat(parameters.sunDiscExponent)});
-  return sky + uniforms.sunColor * sun * ${toWgslFloat(parameters.sunDiscGain)} * directSunVisibility
-    * (1.0 - overcast * 0.88);
+  return mix(sky, overcastSky, overcast * 0.52);
 }`;
 }

@@ -167,7 +167,9 @@ describe("WebGPU planar-water reflection policy", () => {
     expect(PLANAR_REFLECTION_FRAGMENT_WGSL).toContain("planarReflectionPlaneHeight");
     expect(PLANAR_REFLECTION_FRAGMENT_WGSL).toContain("planarReflectionReceiverEnabled");
     expect(WATER_FRAGMENT_WGSL).toContain("samplePlanarSceneReflection");
-    expect(WATER_FRAGMENT_WGSL).toContain("atmosphereReflection");
+    // 2-9: the planar fallback is the environment/analytic sky blend.
+    expect(WATER_FRAGMENT_WGSL).toContain("skyReflection");
+    expect(WATER_FRAGMENT_WGSL).toContain("analyticSky");
     expect(HYDROLOGY_WATER_VERTEX_WGSL).toContain("planarReflectionViewProjection");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("samplePlanarSceneReflection");
     expect(

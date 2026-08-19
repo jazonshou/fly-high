@@ -589,6 +589,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => skyProbe.dispose());
       if (initialAerialBinding) skyProbe.update(initialAerialBinding);
       scene.environmentTexture = skyProbe.texture;
+      // 2-9: the same probe feeds the water materials' environment
+      // reflections (they are raw ShaderMaterials — scene.environmentTexture
+      // only reaches PBR). The RTT object is stable across probe re-renders,
+      // so one binding suffices.
+      ocean.setEnvironmentReflection(skyProbe.texture);
+      hydrology.setEnvironmentReflection(skyProbe.texture);
       const initialCloudShadow = clouds.cloudShadow;
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);

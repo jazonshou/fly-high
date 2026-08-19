@@ -156,6 +156,20 @@ export class SkyEnvironmentProbe {
     // PBR gathers only its own reflection RTTs; a probe serving
     // scene.environmentTexture must schedule itself.
     scene.customRenderTargets.push(cube);
+    // 2-9: the captured cube is the AMBIENT environment — reflections and
+    // IBL. Direct sun is analytic everywhere (the CSM light on solids, the
+    // water Karis lobe), so the probe suppresses the sky dome's painted sun
+    // disc for its six faces: a 40x-radiance disc is sub-texel at 128 px and
+    // would double-count the sun as a blocky blob in every mirror direction.
+    const skyUniforms = skyMesh.material as unknown as {
+      setFloat?: (name: string, value: number) => void;
+    } | null;
+    cube.onBeforeBindObservable.add(() => {
+      skyUniforms?.setFloat?.("sunDiscVisibility", 0);
+    });
+    cube.onAfterUnbindObservable.add(() => {
+      skyUniforms?.setFloat?.("sunDiscVisibility", 1);
+    });
   }
 
   get texture(): RenderTargetTexture {

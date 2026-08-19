@@ -166,13 +166,17 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "WATER_SHADING_CONSTANTS_WGSL",
       "WATER_FRESNEL_SCHLICK_WGSL",
-      "WATER_GGX_COMBINED_SPECULAR_WGSL",
-      "WATER_GGX_SPLIT_WGSL",
+      "WATER_SUN_SPECULAR_WGSL",
+      "WATER_FOAM_WGSL",
+      "WATER_CREST_SSS_WGSL",
+      "WATER_ENVIRONMENT_MIP_WGSL",
       "waterReflectedSkyWgsl",
+      "fallbackWaterEnvironmentCube",
     ],
     notes:
-      "A second textual fresnelSchlick/distributionGgx/reflectedSky in a water "
-      + "material is the drift 2-8a exists to prevent.",
+      "A second textual fresnelSchlick/sunSpecular/reflectedSky in a water "
+      + "material is the drift 2-8a exists to prevent; 2-9 unified the sun "
+      + "lobe, foam, crest SSS and environment-mip helpers here.",
   },
   {
     artifact: "max-terrain-height",
