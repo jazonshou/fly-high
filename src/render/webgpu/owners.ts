@@ -379,7 +379,12 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     // texture's own cell grid.
     artifact: "terrain-material-arrays",
     owner: "terrain-material",
-    definitionSites: ["src/render/webgpu/terrain/MaterialArraySynthesis.ts"],
+    definitionSites: [
+      "src/render/webgpu/terrain/MaterialArraySynthesis.ts",
+      // `4.5-C2b` split the GPU boundary out so the recipes can be imported
+      // by a worker; both halves are the same owned artifact.
+      "src/render/webgpu/terrain/MaterialArrayUpload.ts",
+    ],
     consumers: ["terrain-material"],
     ownedSymbols: [
       "synthesizeSurfaceMaterial",
@@ -696,6 +701,37 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: ["SharedReceiverRegistry"],
     notes:
       "The one implementation of shared-resource receiver plumbing (0-7). 1C-4 and 1C-6 subclass it; nobody hand-rolls a fourth copy.",
+  },
+  {
+    // 4.5-0: resetDrawCache on a rendered mesh orphans the wrapper's
+    // per-submesh defines registration; an unguarded wrapper then poisons its
+    // depth-params cache with defines=null and the CSM pass dies in
+    // createBindGroup. Every wrapper goes through the one guarded factory so
+    // a new construction site cannot reopen the crash.
+    artifact: "guarded-shadow-depth-wrapper",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/core/guardedShadowDepthWrapper.ts"],
+    consumers: "any",
+    ownedSymbols: ["createGuardedShadowDepthWrapper"],
+    notes:
+      "The one ShadowDepthWrapper construction site. Constructing the Babylon class directly anywhere in src/ reintroduces the orphaned-defines fatal stop; the boundary test forbids it.",
+  },
+  {
+    // 4.5-C2b: the ten ~110 ms layer syntheses moved off the main thread. The
+    // worker exists only because `MaterialArraySynthesis.ts` has no Babylon
+    // value import — that separation is the artifact, and a second synthesis
+    // path (or a Babylon import creeping back into the recipes) breaks it.
+    artifact: "terrain-material-synthesis-worker",
+    owner: "terrain-material",
+    definitionSites: [
+      "src/workers/materialSynthesis.worker.ts",
+      "src/workers/materialSynthesisProtocol.ts",
+      "src/render/webgpu/terrain/MaterialSynthesisClient.ts",
+    ],
+    consumers: ["terrain-material"],
+    ownedSymbols: ["MaterialSynthesisClient", "isMaterialSynthesisEvent"],
+    notes:
+      "Off-thread terrain material synthesis (4.5-C2b). The client falls back to the in-frame path wherever no Worker exists, which is what the Node suite and every headless tool run.",
   },
 ];
 

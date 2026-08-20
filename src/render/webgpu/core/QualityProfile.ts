@@ -90,9 +90,27 @@ export interface WebGpuQualityProfile {
    * exceeds this. Monotone decreasing in tier — a smaller threshold splits
    * sooner, so Ultra buys detail here rather than through a finer height page
    * (see `terrainTexelSizeMeters`, which takes no tier argument).
+   *
+   * **`4.5-A1` re-measured this and left every value alone, deliberately.**
+   * Under the global error queue the NODE BUDGET binds first at every shipped
+   * tier: with real kernel deviations the selector spends its whole budget at
+   * thresholds of 3 AND 6 pixels and produces the identical node set, because
+   * a kilometre-texel node at the horizon subtends far more than either. The
+   * threshold is now the knob that governs the un-budget-bound case (calm
+   * ocean, high cruise over flat ground); `cdlodNodeBudget` is the knob that
+   * governs how fine the ground gets under the aircraft.
    */
   readonly cdlodPixelThreshold: number;
-  /** `4-0`/`4-5`: ceiling on simultaneously drawn CDLOD nodes. */
+  /**
+   * `4-0`/`4-5`: ceiling on simultaneously drawn CDLOD nodes.
+   *
+   * `4.5-A1` re-tuned this against the new selector. Measured with real kernel
+   * deviations at 500 ft over the baseline airport, the level under the camera
+   * is a step function of this number: 240 converges at L3, 288-320 reaches
+   * L2. The values below are the smallest that reach each tier's intended
+   * level; page demand goes up with them and stays far inside every atlas
+   * (tier 1: 24 pages + 4 parents against 196 slots).
+   */
   readonly cdlodNodeBudget: number;
   /**
    * `4-0`: the finest page level this tier ever streams. Low reaches its
@@ -137,6 +155,27 @@ export interface WebGpuQualityProfile {
    */
   readonly vegetationDistance: number;
   readonly vegetationDensity: number;
+  /**
+   * `4.5-C1`: whether near-band vegetation is registered as a SHADOW CASTER.
+   *
+   * The largest single term in the tier-1 vegetation draw model: the near band
+   * submits every (species, variant, crown/trunk) mesh once per cascade, which
+   * at 2×1280 cascades is 148 of 347 draws and **3.85 ms of the modelled 9.0
+   * ms** — the cheapest large win that exists, and one no item before Phase 6
+   * otherwise owns. Trees keep the shadows they RECEIVE (the horizon map and
+   * the cloud-shadow projection are unaffected); what goes is the shadow a
+   * tree casts on the ground beside it.
+   *
+   * §5.3's ordered lever list does not contain shadow casting, and neither
+   * does its "not budget knobs at any tier" fidelity list. The governing
+   * precedent is D15, which cut a tier-2 cascade specifically to reduce
+   * vegetation shadow draws — i.e. the shadow side is outside the vegetation
+   * ladder. This knob only ever lowers a count row, so the §5.3 ratchet is
+   * satisfied.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly vegetationCastsShadows: boolean;
   readonly activeAnimalBudget: number;
 }
 
@@ -183,13 +222,18 @@ export function resolveWebGpuQualityProfile(
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
       cdlodPixelThreshold: 4,
-      cdlodNodeBudget: 160,
+      // `4.5-A1`: 160 -> 224. Low keeps L3 (512 m nodes, 16 m height texels)
+      // under the aircraft rather than the L6 the per-level loop converged on.
+      cdlodNodeBudget: 224,
       // Low never streams L0: 4 m effective spacing without a second page
       // geometry, and one less level of streaming pressure.
       finestResidentLevel: 1,
       heightAtlasSlots: 144,
       // DEVIATION from §5.3's 144, recorded in PHASE_4_EXECUTION_PLAN.md §4
-      // D13: at 144 the derived channel atlas is 71.1 MiB raw here, leaving
+      // **D14** (this comment said D13 until `4.5-D`'s stale-comment sweep;
+      // the plan document's numbering is authoritative and D13 is the `P1`
+      // headroom re-measure): at 144 the derived channel atlas is
+      // 71.1 MiB raw here, leaving
       // tier 0 at ~255/260 — inside the estimator's own +/-15% calibration
       // tolerance, i.e. not actually legal. §5.2's stated rule is to take
       // such a saving in sampling rather than in a second geometry; 100 slots
@@ -211,6 +255,9 @@ export function resolveWebGpuQualityProfile(
       cloudLightSteps: 4,
       vegetationDistance: 2_000,
       vegetationDensity: 0.45,
+      // `4.5-C1`: off below tier 2. At tier 0 the shadow term is 106 of 257
+      // modelled draws.
+      vegetationCastsShadows: false,
       activeAnimalBudget: 16,
     };
   }
@@ -230,12 +277,22 @@ export function resolveWebGpuQualityProfile(
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
       treeVariantCap: 5,
+      // `4.5-C1`'s A/B left this at §5.3's Balanced row. §7 ranks
+      // `grassRadiusMeters` 150 → 90-110 as the next lever after vegetation
+      // shadow casting, at "~7 ms extra in ground-level shots"; measured at
+      // the `ground-2m-lowsun` pose it moves ground-cover instances 3,372 →
+      // 1,836 (a real cut, the knob works) and the shot's GPU p95 by 0.11 ms,
+      // which is noise. Row 3 of §7 is a single-reader estimate and the
+      // measurement does not support it here. `6-11` owns the re-tier.
       grassRadiusMeters: 150,
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
       cdlodPixelThreshold: 3,
-      cdlodNodeBudget: 240,
+      // `4.5-A1`: 240 -> 320, the measured step that reaches L2 (128 m nodes,
+      // 4 m height texels) under the aircraft at 500 ft. At 240 the new
+      // selector converges at L3 and at 288 it reaches L2 with no margin.
+      cdlodNodeBudget: 320,
       finestResidentLevel: 0,
       heightAtlasSlots: 196,
       channelAtlasSlots: 196,
@@ -267,6 +324,9 @@ export function resolveWebGpuQualityProfile(
       // chunk count falls with the square of this number.
       vegetationDistance: 3_000,
       vegetationDensity: 0.75,
+      // `4.5-C1`: OFF at the G-C tier. 148 of 347 modelled draws, 3.85 of the
+      // 9.02 ms row.
+      vegetationCastsShadows: false,
       activeAnimalBudget: 48,
     };
   }
@@ -293,7 +353,9 @@ export function resolveWebGpuQualityProfile(
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
       cdlodPixelThreshold: 2,
-      cdlodNodeBudget: 320,
+      // `4.5-A1`: 320 -> 448. Same L2 floor as tier 1 with the mid field
+      // carried a level finer.
+      cdlodNodeBudget: 448,
       finestResidentLevel: 0,
       heightAtlasSlots: 256,
       channelAtlasSlots: 256,
@@ -321,6 +383,9 @@ export function resolveWebGpuQualityProfile(
       // for a 5.6% frame-row increase and sat outside every cut ladder.
       vegetationDistance: 4_000,
       vegetationDensity: 1,
+      // High and Ultra keep tree shadows: their frame targets are met by
+      // spending pixels, and D15 already cut this tier's cascade count once.
+      vegetationCastsShadows: true,
       activeAnimalBudget: 128,
     };
   }
@@ -344,7 +409,8 @@ export function resolveWebGpuQualityProfile(
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
     cdlodPixelThreshold: 1.5,
-    cdlodNodeBudget: 448,
+    // `4.5-A1`: 448 -> 640.
+    cdlodNodeBudget: 640,
     finestResidentLevel: 0,
     heightAtlasSlots: 256,
     channelAtlasSlots: 256,
@@ -361,6 +427,7 @@ export function resolveWebGpuQualityProfile(
     // Perf-debt pass: §5.3's Ultra impostor radius.
     vegetationDistance: 6_000,
     vegetationDensity: 1,
+    vegetationCastsShadows: true,
     activeAnimalBudget: 128,
   };
 }

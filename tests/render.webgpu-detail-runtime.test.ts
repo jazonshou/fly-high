@@ -131,12 +131,33 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(visibleInstances).toBeLessThan(totalInstances);
     expect(runtime.statistics.renderedThinInstances).toBe(visibleInstances);
 
+    // `4.5-C1`: the tier's `vegetationCastsShadows` datum gates the whole
+    // caster list, and it is FALSE at tier 1 — 148 of 347 modelled draws.
+    expect(profile.vegetationCastsShadows).toBe(false);
+    const suppressed: Mesh[] = [];
+    runtime.addShadowCasters((mesh) => suppressed.push(mesh));
+    expect(suppressed).toHaveLength(0);
+
+    // A tier that does cast still registers exactly the near band, and the
+    // switch takes effect in the same update — in both directions.
+    const casting = {
+      ...resolveWebGpuQualityProfile("high", "balanced"),
+      vegetationDistance: 1_200,
+      vegetationDensity: 1,
+    };
+    expect(casting.vegetationCastsShadows).toBe(true);
+    runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, casting);
     const shadowCasters: Mesh[] = [];
     runtime.addShadowCasters((mesh) => shadowCasters.push(mesh));
     expect(shadowCasters.length).toBeGreaterThan(0);
     expect(new Set(shadowCasters)).toEqual(
-      new Set(meshes.filter((mesh) => mesh.metadata.detailCastsShadow === true)),
+      new Set(chunkMeshes(scene).filter(
+        (mesh) => mesh.metadata.detailCastsShadow === true
+          && mesh.isEnabled()
+          && mesh.forcedInstanceCount > 0,
+      )),
     );
+    runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, profile);
 
     // 2-11a: with the packed record there are no per-instance matrices —
     // retention is buffer identity, rebase is decoded from the record bytes.

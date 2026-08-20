@@ -111,6 +111,11 @@ async function readBaselineLuminance(
   return luminanceFromRgba(data, width, height);
 }
 
+/** Three decimals is plenty for an aggregate nothing is gated on. */
+function round3(value: number | null): number | null {
+  return value === null ? null : Math.round(value * 1_000) / 1_000;
+}
+
 function nextAnimationFrame(): Promise<number> {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
@@ -422,6 +427,14 @@ describe("perf capture (1A-1c / 2Z)", () => {
         viewportHeight,
         estimatedGpuMemoryMiB: Math.round(diagnostics.estimatedGpuMemoryMiB * 10) / 10,
         inventoriedGpuMemoryMiB: Math.round(diagnostics.inventoriedGpuMemoryMiB * 10) / 10,
+        // 4.5-C3: uncorrelated per-pass aggregates. Never compared against a
+        // ceiling — they exist so the interval-versus-GPU gap is inspectable.
+        gpuPassMs: {
+          mainPass: round3(diagnostics.gpuPassMs.mainPass),
+          shadows: round3(diagnostics.gpuPassMs.shadows),
+          terrainCompute: round3(diagnostics.gpuPassMs.terrainCompute),
+          total: round3(diagnostics.gpuPassMs.total),
+        },
         ...(temporal ? { temporal } : {}),
       });
     }

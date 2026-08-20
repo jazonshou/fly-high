@@ -106,6 +106,23 @@ export interface TerrainAtlasSlot {
   lastRequiredFrame: number;
   /** The in-flight generation token, or null once resident. */
   token: WorldPageOperationToken | null;
+  /**
+   * `4.5-B1`: the slot's TEXELS are written and it may be drawn, whether or
+   * not its bounds/deviation readback has resolved yet. Never true before the
+   * generation dispatch is submitted, and cleared when the slot is released.
+   */
+  texelsResident: boolean;
+  /**
+   * `4.5-A3(c)`: the season day this slot's season-KEYED families were baked
+   * for, or null while none have been.
+   *
+   * The splat bake keys its slot on `invariantSlotKey` and bakes each slot
+   * once, so a season-bucket rollover left stale splat on screen until the
+   * page happened to be evicted — snow that does not melt and a snowline that
+   * does not descend. The record lives on the slot rather than in a side map
+   * so it cannot outlive the slot it describes.
+   */
+  bakedSeasonDay: number | null;
 }
 
 export interface TerrainAtlasResidencyOptions {
@@ -171,10 +188,36 @@ export class TerrainAtlasResidency {
     this.frameIndex = frameIndex;
   }
 
-  /** The slot a page's data lives in, or -1 while it is not resident. */
+  /**
+   * The slot a page's TEXELS live in, or -1 while there are none.
+   *
+   * `4.5-B1` split this from "stats resident". Drawing a page needs only its
+   * texels, which the generation dispatch writes; the CDLOD split needs its
+   * measured deviation, which arrives a GPU readback later. Gating the draw on
+   * the readback made a page's arrival cost a full round-trip on top of its
+   * dispatch, and a fresh spawn needs about ten sequential rounds of
+   * generate → readback → split to descend from the L9 roots.
+   */
   slotIndexOf(key: TerrainSlotKey): number {
     const slot = this.slots.get(terrainSlotKeyString(key));
-    return slot && slot.lifecycle.state === "resident" ? slot.slotIndex : -1;
+    return slot && (slot.texelsResident || slot.lifecycle.state === "resident")
+      ? slot.slotIndex
+      : -1;
+  }
+
+  /**
+   * `4.5-B1`: the page's texels are written and it may be DRAWN, while its
+   * bounds and deviation are still in flight.
+   *
+   * Epoch-checked like every other completion: a slot re-admitted for a
+   * different page between the dispatch and this call must not publish the
+   * new page's slot as holding the old page's texels.
+   */
+  publishTexels(key: TerrainSlotKey, token: WorldPageOperationToken): boolean {
+    const slot = this.slots.get(terrainSlotKeyString(key));
+    if (!slot || slot.token !== token || slot.lifecycle.state !== "generating") return false;
+    slot.texelsResident = true;
+    return true;
   }
 
   get(key: TerrainSlotKey): TerrainAtlasSlot | undefined {
@@ -233,6 +276,8 @@ export class TerrainAtlasResidency {
       stats: UNKNOWN_STATS,
       lastRequiredFrame: this.frameIndex,
       token,
+      texelsResident: false,
+      bakedSeasonDay: null,
     };
     this.slots.set(keyString, slot);
     return { slot, token };
@@ -248,6 +293,7 @@ export class TerrainAtlasResidency {
     if (!slot || !slot.lifecycle.markGenerated(token)) return false;
     slot.stats = stats;
     slot.token = null;
+    slot.texelsResident = true;
     return true;
   }
 
@@ -271,8 +317,33 @@ export class TerrainAtlasResidency {
       slot.lifecycle.cancelOperation(slot.token);
     }
     slot.token = null;
+    slot.texelsResident = false;
     this.slots.delete(keyString);
     this.free.push(slot.slotIndex);
+  }
+
+  /**
+   * `4.5-B3`: give back slots stuck in `generating` that nothing has wanted
+   * for `maxAgeFrames`, and return how many were reclaimed.
+   *
+   * `evictionCandidates` considers only `resident` slots, so a request whose
+   * dispatch never completed — a failed admission, a producer disposed by a
+   * quality switch, a page the aircraft turned away from before it was ever
+   * generated — held its slot index forever. Enough of them and `request()`
+   * returns null for every new page and streaming deadlocks with an atlas that
+   * looks half empty.
+   *
+   * Slots whose TEXELS are already published are never reclaimed here: those
+   * are drawable and merely awaiting their stats.
+   */
+  reclaimStalledGenerating(maxAgeFrames: number): number {
+    const stalled = [...this.slots.values()].filter(
+      (slot) => slot.lifecycle.state === "generating"
+        && !slot.texelsResident
+        && this.frameIndex - slot.lastRequiredFrame > maxAgeFrames,
+    );
+    for (const slot of stalled) this.release(slot.key);
+    return stalled.length;
   }
 
   /**
@@ -395,7 +466,19 @@ export class TerrainPageAtlas {
           scene,
           false,
           false,
-          Texture.NEAREST_SAMPLINGMODE,
+          // `4.5-A2`: BILINEAR, not NEAREST. This is `3-0`'s design finally
+          // taking effect. The channel families are rgba8unorm (filterable),
+          // the material axis is ORDERED so a filtered primary id lands
+          // between two materials that actually meet, and sky visibility and
+          // the horizon field are continuous quantities that were being
+          // point-sampled into 2 m blocks. NEAREST here is half of why even a
+          // fully resident page rendered as hard-edged single-material blocks.
+          //
+          // A 1-texel bilinear footprint cannot cross a slot: the fragment
+          // clamps its page-local position into [0, 1] and lands inside
+          // `[gutter, gutter + core]`, and the bake writes the full 4-texel
+          // gutter on every side.
+          Texture.BILINEAR_SAMPLINGMODE,
           Constants.TEXTURETYPE_UNSIGNED_BYTE,
         );
       texture.name = `terrain-${options.kind}-atlas-${index}`;
@@ -494,6 +577,38 @@ export function invariantSlotKey(address: WorldPageAddress): TerrainSlotKey {
 // ---------------------------------------------------------------------------
 // `4-3` — GPU height generation
 // ---------------------------------------------------------------------------
+
+/**
+ * `4.5-B1`: whether a page's texels are FINAL the moment its generation
+ * dispatch is submitted.
+ *
+ * True in the analytic-kernel era: one dispatch writes the whole page and
+ * nothing revisits it. `5-4`'s erosion makes a page the output of a multi-pass
+ * DAG, and D12's convergence rule is explicit that a slot is never sampled
+ * mid-erosion and that publish is the DAG's LAST stage — so this flag exists
+ * to make the fast path a deletion rather than an argument when that lands.
+ */
+const PAGES_ARE_FINAL_AT_DISPATCH = true;
+
+/**
+ * Bounds buffers in flight at once (`4.5-B1`).
+ *
+ * **One buffer is not enough, and the failure is silent.** `generate()` awaits
+ * `dispatchWhenReady` before issuing the readback, so the
+ * `copyBufferToBuffer` that snapshots the bounds is encoded a MICROTASK later
+ * — after `scene.render()` has returned, i.e. into the NEXT frame's command
+ * encoder. The next frame's `generate()` has by then already issued
+ * `boundsBuffer.update()` to seed the atomics for its own batch, so the copy
+ * reads the identities: min `+Infinity`, max `-Infinity`, deviation `0`. A
+ * page completes with a deviation of zero, the CDLOD selector reads zero
+ * error, and the whole world converges at the root ring with nothing to split.
+ * Measured exactly that way: 27 nodes, 9 pages, every slot but one reporting
+ * `min = Infinity`.
+ *
+ * Four is comfortably more than the two-to-three frames a readback takes, and
+ * the pump defers rather than reusing a buffer whose read has not landed.
+ */
+const BOUNDS_BUFFER_RING = 4;
 
 /** Workgroup edge; 264 / 8 = 33 workgroups per slot edge, exactly. */
 const PAGE_WORKGROUP_EDGE = 8;
@@ -675,6 +790,56 @@ fn generatePage(
 `;
 }
 
+/**
+ * `4.5-B2(a)` — consume a resolved GPU timing sample for a batched dispatch,
+ * ONCE, and price it per dispatch.
+ *
+ * Two properties the call sites must not re-derive:
+ *
+ * - **Divide by the batch size.** Babylon's counter times the whole batched
+ *   dispatch (`workgroup_id.z` selects the job) and the meter prices per page.
+ * - **Consume each result once.** WebGPU timestamp readback is asynchronous;
+ *   `counter.current` holds its value until another query resolves, so a
+ *   per-frame poll without the count check feeds the same measurement into
+ *   the smoother over and over and pins the estimate to one batch.
+ *
+ * `null` when the adapter has no `timestamp-query`, when no dispatch has run,
+ * or when the last sample has already been consumed.
+ */
+export interface GpuDispatchCostSampler {
+  readonly gpuTimeInFrame?: { readonly counter: { readonly count: number; readonly current: number } };
+}
+
+/**
+ * `4.5-C3`: the raw per-frame GPU milliseconds this shader's counter is
+ * holding, WITHOUT consuming it. An uncorrelated aggregate — the counter
+ * carries no frame id, so it is a distribution reading, never an attribution
+ * of this frame's interval.
+ */
+export function readGpuDispatchMs(sampler: GpuDispatchCostSampler | null): number | null {
+  const counter = sampler?.gpuTimeInFrame?.counter;
+  if (!counter) return null;
+  const milliseconds = counter.current / 1_000_000;
+  return Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
+export function consumeGpuDispatchCostMs(
+  sampler: GpuDispatchCostSampler | null,
+  batchSize: number,
+  lastConsumedCount: number,
+): { readonly milliseconds: number | null; readonly sampleCount: number } {
+  const counter = sampler?.gpuTimeInFrame?.counter;
+  if (!counter || batchSize <= 0) return { milliseconds: null, sampleCount: lastConsumedCount };
+  if (counter.count === lastConsumedCount) {
+    return { milliseconds: null, sampleCount: lastConsumedCount };
+  }
+  const milliseconds = counter.current / 1_000_000 / batchSize;
+  return {
+    milliseconds: Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : null,
+    sampleCount: counter.count,
+  };
+}
+
 /** Inverse of the shader's monotonic float encoding. */
 export function decodeOrderableFloat(order: number): number {
   const view = new DataView(new ArrayBuffer(4));
@@ -705,13 +870,17 @@ export class TerrainPageGenerator {
   private shader: ComputeShader | null = null;
   private jobBuffer: StorageBuffer | null = null;
   private pageBuffer: StorageBuffer | null = null;
-  private boundsBuffer: StorageBuffer | null = null;
+  private boundsRing: StorageBuffer[] = [];
+  private boundsRingIndex = 0;
   private offsetBuffer: StorageBuffer | null = null;
   private earthworksBuffer: StorageBuffer | null = null;
   private capacity = 0;
   private inFlight: readonly TerrainAtlasSlot[] = [];
-  private readbackPending = false;
+  private readbacksInFlight = 0;
+  private readonly pendingReadbacks = new Set<Promise<void>>();
   private disposed = false;
+  private lastBatchSize = 0;
+  private lastCostSampleCount = -1;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -721,7 +890,19 @@ export class TerrainPageGenerator {
   ) {}
 
   get dispatchesInFlight(): number {
-    return this.inFlight.length;
+    return this.inFlight.length + this.readbacksInFlight;
+  }
+
+  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  consumeMeasuredDispatchCostMs(): number | null {
+    const sample = consumeGpuDispatchCostMs(this.shader, this.lastBatchSize, this.lastCostSampleCount);
+    this.lastCostSampleCount = sample.sampleCount;
+    return sample.milliseconds;
+  }
+
+  /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame(): number | null {
+    return readGpuDispatchMs(this.shader);
   }
 
   /**
@@ -735,13 +916,16 @@ export class TerrainPageGenerator {
    */
   async generate(slots: readonly TerrainAtlasSlot[]): Promise<void> {
     if (this.disposed || slots.length === 0 || !this.atlas.hasTextures) return;
-    if (this.readbackPending) return;
+    // Never overwrite a bounds buffer whose read has not landed: that is what
+    // silently completes a page at zero deviation. See BOUNDS_BUFFER_RING.
+    if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return;
     this.ensureCapacity(slots.length);
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
     const pageBuffer = this.pageBuffer;
-    const boundsBuffer = this.boundsBuffer;
+    const boundsBuffer = this.boundsRing[this.boundsRingIndex];
     if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return;
+    this.boundsRingIndex = (this.boundsRingIndex + 1) % BOUNDS_BUFFER_RING;
 
     const jobs = new Float32Array(slots.length * 12);
     const pages = new Uint8Array(slots.length * TERRAIN_KERNEL_PAGE_BYTES);
@@ -781,20 +965,87 @@ export class TerrainPageGenerator {
     jobBuffer.update(new Uint8Array(jobs.buffer));
     pageBuffer.update(pages);
     boundsBuffer.update(new Uint8Array(bounds.buffer));
+    // Rebind: the ring hands each in-flight batch its own buffer, and the
+    // bind group is recorded per dispatch, so this cannot disturb a batch
+    // already encoded.
+    shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.inFlight = slots;
-    this.readbackPending = true;
+    this.lastBatchSize = slots.length;
     try {
       await shader.dispatchWhenReady(
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
         slots.length,
       );
-      const view = await boundsBuffer.read(
-        0,
-        slots.length * TERRAIN_PAGE_BOUNDS_SLOTS * 4,
-      );
+    } finally {
+      this.inFlight = [];
+    }
+
+    // ---------------------------------------------------------------------
+    // `4.5-B1` — publish the TEXELS now; let the stats arrive a round-trip
+    // later.
+    //
+    // This method used to await the bounds readback before anything became
+    // drawable, so a page's arrival cost a full GPU round-trip on top of its
+    // dispatch and the NEXT batch could not start until it landed. The vertex
+    // shader needs only texels, which the dispatch just wrote; the CDLOD split
+    // needs the deviation, and the never-split-unmeasured rule already
+    // tolerates it arriving late.
+    //
+    // **This fast path is analytic-era only.** It is legal exactly while a
+    // page is FINAL at dispatch. `5-4`/D12's convergence rule says a slot is
+    // never sampled mid-erosion and that publish is the DAG's last stage — so
+    // when erosion lands, `PAGES_ARE_FINAL_AT_DISPATCH` goes false and this
+    // branch is DELETED rather than fought.
+    // ---------------------------------------------------------------------
+    if (PAGES_ARE_FINAL_AT_DISPATCH) {
+      for (const slot of slots) {
+        if (slot.token) this.atlas.residency.publishTexels(slot.key, slot.token);
+      }
+    }
+    // NOT awaited: this batch is drawable now, and the next batch must not
+    // wait a round-trip for numbers only the CDLOD split reads. The copy into
+    // the readback staging buffer is encoded at THIS point in the frame's
+    // command encoder, so a later `update()` of the bounds buffer cannot
+    // overwrite what is being read.
+    const readback = this.collectBounds(boundsBuffer, slots);
+    this.pendingReadbacks.add(readback);
+    void readback.finally(() => this.pendingReadbacks.delete(readback));
+  }
+
+  /**
+   * Resolve once every readback issued so far has landed.
+   *
+   * The renderer never waits for this — that is the whole point of `4.5-B1`.
+   * It exists so tests and headless tools can observe the SECOND stage of a
+   * page's arrival (its bounds and deviation) without polling.
+   */
+  async settle(): Promise<void> {
+    while (this.pendingReadbacks.size > 0) {
+      await Promise.all([...this.pendingReadbacks]);
+    }
+  }
+
+  /**
+   * Resolve a submitted batch's bounds and deviation, a round-trip later.
+   *
+   * A failed readback completes the slots at ZERO stats rather than leaving
+   * them `generating` forever: a page with no measurement is drawn coarse and
+   * never split, which is exactly the never-split-unmeasured rule, whereas a
+   * stuck `generating` slot is un-evictable and would be re-dispatched every
+   * frame.
+   */
+  private async collectBounds(
+    boundsBuffer: StorageBuffer,
+    slots: readonly TerrainAtlasSlot[],
+  ): Promise<void> {
+    this.readbacksInFlight += 1;
+    const byteLength = slots.length * TERRAIN_PAGE_BOUNDS_SLOTS * 4;
+    try {
+      const view = await boundsBuffer.read(0, byteLength);
+      if (this.disposed) return;
       const read = new Uint32Array(
-        view.buffer.slice(view.byteOffset, view.byteOffset + slots.length * TERRAIN_PAGE_BOUNDS_SLOTS * 4),
+        view.buffer.slice(view.byteOffset, view.byteOffset + byteLength),
       );
       slots.forEach((slot, index) => {
         if (!slot.token) return;
@@ -805,9 +1056,12 @@ export class TerrainPageGenerator {
           maxDeviationFromParent: decodeOrderableFloat(read[base + 2]!),
         });
       });
+    } catch {
+      for (const slot of slots) {
+        if (slot.token) this.atlas.residency.complete(slot.key, slot.token, UNKNOWN_STATS);
+      }
     } finally {
-      this.readbackPending = false;
-      this.inFlight = [];
+      this.readbacksInFlight -= 1;
     }
   }
 
@@ -816,13 +1070,13 @@ export class TerrainPageGenerator {
     this.disposed = true;
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
-    this.boundsBuffer?.dispose();
+    for (const buffer of this.boundsRing) buffer.dispose();
+    this.boundsRing = [];
     this.offsetBuffer?.dispose();
     this.earthworksBuffer?.dispose();
     this.earthworksBuffer = null;
     this.jobBuffer = null;
     this.pageBuffer = null;
-    this.boundsBuffer = null;
     this.offsetBuffer = null;
     this.shader = null;
   }
@@ -831,7 +1085,7 @@ export class TerrainPageGenerator {
     if (count <= this.capacity && this.shader) return;
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
-    this.boundsBuffer?.dispose();
+    for (const buffer of this.boundsRing) buffer.dispose();
     this.capacity = Math.max(count, 8);
     const engine = this.engine as WebGPUEngine;
     this.jobBuffer = new StorageBuffer(engine, this.capacity * 12 * 4);
@@ -839,10 +1093,14 @@ export class TerrainPageGenerator {
     // Default creation flags (READWRITE): passing STORAGE|READ drops WRITE,
     // and then `update()` silently does nothing — the atomics reduce against a
     // zeroed buffer, whose min slot decodes to NaN. Found by measurement.
-    this.boundsBuffer = new StorageBuffer(
-      engine,
-      this.capacity * TERRAIN_PAGE_BOUNDS_SLOTS * 4,
-    );
+    this.boundsRing = [];
+    for (let index = 0; index < BOUNDS_BUFFER_RING; index += 1) {
+      this.boundsRing.push(new StorageBuffer(
+        engine,
+        this.capacity * TERRAIN_PAGE_BOUNDS_SLOTS * 4,
+      ));
+    }
+    this.boundsRingIndex = 0;
     if (!this.offsetBuffer) {
       const offsets = new Float32Array(TERRAIN_SUPERSAMPLE_OFFSETS.length * 4);
       TERRAIN_SUPERSAMPLE_OFFSETS.forEach(([x, z], index) => {
@@ -880,7 +1138,7 @@ export class TerrainPageGenerator {
     if (texture) this.shader.setStorageTexture("heightAtlas", texture);
     this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
     this.shader.setStorageBuffer("jobs", this.jobBuffer);
-    this.shader.setStorageBuffer("pageBounds", this.boundsBuffer);
+    this.shader.setStorageBuffer("pageBounds", this.boundsRing[0]!);
     this.shader.setStorageBuffer("supersample", this.offsetBuffer);
     this.earthworksBuffer ??= new StorageBuffer(engine, RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
     this.earthworksBuffer.update(new Uint8Array(

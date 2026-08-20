@@ -90,8 +90,15 @@ describe("terrain page generation (4-3)", () => {
       const request = atlas.residency.request(invariantSlotKey(address), address)!;
       expect(request.token).not.toBeNull();
       await generator.generate([request.slot]);
-      // The page becomes resident only once its bounds readback resolves —
+      // `4.5-B1`: the TEXELS are published at dispatch-submit, so the page is
+      // DRAWABLE immediately — its slot index resolves — while the bounds
+      // readback that makes it splittable is still in flight.
+      expect(request.slot.texelsResident).toBe(true);
+      expect(atlas.residency.slotIndexOf(request.slot.key)).toBe(request.slot.slotIndex);
+      expect(request.slot.lifecycle.state).toBe("generating");
+      // The page becomes fully resident only once that readback resolves —
       // the asynchronous half of WorldPageLifecycle, exercised for real.
+      await generator.settle();
       expect(request.slot.lifecycle.state).toBe("resident");
 
       const origin = atlas.slotOrigin(request.slot.slotIndex);
@@ -165,6 +172,9 @@ describe("terrain page generation (4-3)", () => {
       // One dispatch for the whole batch: a writeBuffer between per-page
       // dispatches would land before any of them executed.
       await generator.generate(slots);
+      // Drawable at dispatch-submit, measured a round-trip later (4.5-B1).
+      expect(slots.every((slot) => slot.texelsResident)).toBe(true);
+      await generator.settle();
       const collected = slots.map((slot) => ({
         state: slot.lifecycle.state,
         ...slot.stats,
@@ -181,6 +191,54 @@ describe("terrain page generation (4-3)", () => {
     // Coarser pages carry more deviation from their parent than L0 does: the
     // measurement is a real second difference, not a level heuristic.
     expect(stats[2]!.maxDeviationFromParent).toBeGreaterThan(stats[0]!.maxDeviationFromParent);
+  }, 180_000);
+
+  it("4.5-B1: overlapping batches each read their OWN bounds", async () => {
+    // The bug the bounds-buffer ring exists to stop, and it was SILENT.
+    // `generate()` awaits `dispatchWhenReady` before issuing the readback, so
+    // the copy that snapshots the bounds is encoded a microtask later — into
+    // the NEXT frame's command encoder. With one shared buffer the next
+    // batch's `update()` had already re-seeded the atomics, so the copy read
+    // the identities back: min `+Infinity`, max `-Infinity`, deviation 0. A
+    // page then completed at ZERO deviation, the CDLOD selector saw zero
+    // error, and the world converged at the root ring with nothing to split —
+    // measured as 27 nodes and 9 pages through the real renderer.
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const stats = await withScene(async (engine, scene) => {
+      const atlas = new TerrainPageAtlas(scene, profile, {
+        kind: "height",
+        worldRevision: "gpu-test",
+      });
+      const generator = new TerrainPageGenerator(engine, atlas, SEED_HASH);
+      atlas.residency.beginFrame(1);
+      const collected: { min: number; max: number; deviation: number }[] = [];
+      const slots = [];
+      // Three batches issued back to back WITHOUT awaiting any readback, which
+      // is exactly what the pump does now that the gate is gone.
+      for (let batch = 0; batch < 3; batch += 1) {
+        const address = createWorldPageAddress(4, batch, 7);
+        const slot = atlas.residency.request(invariantSlotKey(address), address)!.slot;
+        slots.push(slot);
+        await generator.generate([slot]);
+      }
+      await generator.settle();
+      for (const slot of slots) {
+        collected.push({
+          min: slot.stats.minHeightMeters,
+          max: slot.stats.maxHeightMeters,
+          deviation: slot.stats.maxDeviationFromParent,
+        });
+      }
+      generator.dispose();
+      atlas.dispose();
+      return collected;
+    });
+    for (const entry of stats) {
+      expect(Number.isFinite(entry.min), `min ${entry.min} is an atomic identity`).toBe(true);
+      expect(Number.isFinite(entry.max), `max ${entry.max} is an atomic identity`).toBe(true);
+      expect(entry.max).toBeGreaterThan(entry.min);
+      expect(entry.deviation, "a page completed at zero deviation").toBeGreaterThan(0);
+    }
   }, 180_000);
 
   it("keeps the height core inside the page geometry it was derived from", () => {

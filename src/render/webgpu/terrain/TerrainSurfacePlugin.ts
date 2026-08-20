@@ -6,7 +6,10 @@ import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
-import { TERRAIN_NODE_GRID_RESOLUTION } from "./TerrainSpineContract";
+import {
+  TERRAIN_NODE_GRID_RESOLUTION,
+  TERRAIN_PROVISIONAL_AXIS,
+} from "./TerrainSpineContract";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { TerrainTriplanarMode } from "@/src/render/webgpu/core/QualityProfile";
@@ -315,8 +318,8 @@ export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
 // kind resolves to _size = 8 inside VertexBuffer and
 // WebGPUCacheRenderPipeline throws "Invalid Format ... size=8", because
 // WebGPU has no vertex format wider than four components.
-//   A = (slotIndex, subNodeX + subNodeZ*8, level, splatPacked)
-//   B = (morphK, parentSlotIndex, texelSize, maxDeviation)
+//   A = (slotIndex, subNodeX + subNodeZ*8, level, provisionalAxisOverride)
+//   B = (morphK, parentSlotIndex, channelLane, maxDeviation)
 attribute terrainNodeA: vec4f;
 attribute terrainNodeB: vec4f;
 // 4-4: vertex-texture displacement. Sampled with textureLoad ONLY — r32float
@@ -416,18 +419,36 @@ varying terrainPageLocal: vec2f;
 `,
   CUSTOM_VERTEX_MAIN_END: /* wgsl */ `
 #ifdef TERRAIN_SURFACE_CDLOD
-// 4-5's carry-forward: the provisional two-material blend, packed into one
-// lane. Without it the gate the plan calls its most visible would ship an
-// untextured PBR surface for the ten working days until 4-6 lands.
+// 4-5's carry-forward, rebuilt at 4.5-A3: the provisional ecotone axis, walked
+// PER VERTEX from the height this shader just displaced to.
+//
+// It used to be one packed constant per node, computed on the CPU from the
+// page's mean height — so a node with no channel slot shaded as a single
+// material across up to 512*2^L m of ground. That is the "splotches of solid
+// colour" defect wherever the channel atlas is behind, and it is worst exactly
+// where streaming is worst. The walk is the same altitude walk, at vertex
+// spacing (2·2^L m) instead of at page spacing, and it now has ONE derivation
+// site: TERRAIN_PROVISIONAL_AXIS supplies the constants and the CPU lane
+// carries only the guard below.
 {
-  let packed = vertexInputs.terrainNodeA.w;
-  let primary = floor(packed / 1600.0);
-  let secondary = floor((packed - primary * 1600.0) / 100.0);
-  let weight = (packed - primary * 1600.0 - secondary * 100.0) * 0.01;
+  // Lane A.w >= 0 is the CPU's override: the node has no height texels to walk
+  // (slot -1 reads zero, and zero at sea level is SAND under every unstreamed
+  // node), so it shades the fallback material instead.
+  let axisOverride = vertexInputs.terrainNodeA.w;
+  let aboveSeaLevel = positionUpdated.y - uniforms.terrainSurfaceWetness.y;
+  let walked = select(
+    min(${TERRAIN_PROVISIONAL_AXIS.maxAxis}.0,
+      1.0 + aboveSeaLevel * ${(1 / TERRAIN_PROVISIONAL_AXIS.metersPerStep).toFixed(9)}),
+    0.0,
+    aboveSeaLevel <= ${TERRAIN_PROVISIONAL_AXIS.shoreBandMeters.toFixed(1)},
+  );
+  let axis = select(walked, axisOverride, axisOverride >= 0.0);
   // Lane w is the CHANNEL-atlas lane the fragment addresses page UV with:
-  // channelSlot*32 + level, or -1 when the page holds no channel slot.
+  // channelSlot*32 + level, or -1 when the page holds no channel slot. Lane y
+  // is -1 for the same reason the page path returns -1: no secondary id is
+  // supplied, and 0 would silently mean sand.
   vertexOutputs.terrainSplat = vec4f(
-    primary, secondary, weight, vertexInputs.terrainNodeB.z);
+    axis, -1.0, 0.0, vertexInputs.terrainNodeB.z);
   let subIndexOut = vertexInputs.terrainNodeA.y
     - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
   let subZOut = floor(subIndexOut * 0.125);
@@ -767,27 +788,42 @@ var terrainSplatWeightHi: texture_2d<f32>;
  * Ids are stored as unorm over the ten-material axis, and the axis is ordered
  * so that neighbouring biomes are one step apart — so a FILTERED fetch between
  * two texels lands between two materials that actually meet, which is the
- * whole reason 3-0 ordered it that way. Returns the top two as the provisional
- * lanes carry them, so every consumer downstream is unchanged.
+ * whole reason 3-0 ordered it that way. 4.5-A2 is where that finally
+ * happens: the channel atlas was created NEAREST, so this "filtered" fetch was
+ * point-sampling a 2 m grid and every resident page rendered as hard-edged
+ * single-material blocks.
+ *
+ * **Only the PRIMARY lane may be read from a filtered fetch.** Lanes y..w are
+ * the classifier's independent 2nd..4th picks per texel, not axis neighbours;
+ * filtering them sweeps through unrelated integers, which is the failure the
+ * fragment's own comment below documents. Minority cover therefore needs a
+ * per-texel textureLoad/gather fetch — 4.5-A2 records that as its own
+ * item, and nothing reads lane y today.
+ *
+ * 4.5-A2 also fixes the latent mix(idLo, idHi, blend): the comment already
+ * said to take the LOW bucket's ids, and the mix was masked only because the
+ * two buckets differ in how much snow they carry rather than in which material
+ * they name. Interpolating an id toward a material neither bucket chose is the
+ * same defect as filtering a secondary, one axis over.
  */
 fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
   let scale = f32(${SURFACE_MATERIAL_COUNT - 1});
-  let idLo = textureSampleLevel(terrainSplatIdLo, terrainSplatIdLoSampler, uv.xy, 0.0) * scale;
-  let idHi = textureSampleLevel(terrainSplatIdHi, terrainSplatIdHiSampler, uv.xy, 0.0) * scale;
+  let primary = textureSampleLevel(
+    terrainSplatIdLo, terrainSplatIdLoSampler, uv.xy, 0.0).x * scale;
   let weightLo = textureSampleLevel(
     terrainSplatWeightLo, terrainSplatWeightLoSampler, uv.xy, 0.0);
   let weightHi = textureSampleLevel(
     terrainSplatWeightHi, terrainSplatWeightHiSampler, uv.xy, 0.0);
-  // Cross-fade the WEIGHTS and take the low bucket's ids: the two buckets
-  // differ only in how much snow they carry, and the snow material is the same
-  // id in both, so mixing ids would interpolate toward a material neither
-  // bucket chose.
-  let ids = mix(idLo, idHi, blend);
+  // Cross-fade the WEIGHTS only: how much snow a texel carries moves with the
+  // season, which material it is does not.
   let weights = mix(weightLo, weightHi, blend);
   // WGSL has no ternary operator. A max() guard rather than select(), because
   // select() evaluates both arms and the division would still be by zero.
   let secondaryWeight = weights.y / max(1e-6, weights.x + weights.y);
-  return vec3f(ids.x, ids.y, secondaryWeight);
+  // y is deliberately -1: "this path supplies no secondary id". The fragment
+  // does not read one (see the block below); a later per-texel fetch is what
+  // would fill it, and 0 would silently mean SAND.
+  return vec3f(primary, -1.0, secondaryWeight);
 }
 
 /**

@@ -6,8 +6,8 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
 import type { Scene } from "@babylonjs/core/scene";
+import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RENDERED_DENSITY_LAWS,
@@ -418,6 +418,8 @@ export class WorldDetailRuntime {
   private readonly pendingCells = new Map<string, number>();
   /** Bumped whenever resident cells reset; stale worker results are dropped. */
   private cellEpoch = 0;
+  /** `4.5-C1`: the tier datum, refreshed from the profile every update. */
+  private vegetationCastsShadows = true;
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -521,6 +523,7 @@ export class WorldDetailRuntime {
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
+    this.vegetationCastsShadows = profile.vegetationCastsShadows;
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
     // a wall-clock accumulator made every tree's sway phase depend on how
@@ -690,9 +693,20 @@ export class WorldDetailRuntime {
     }
   }
 
-  /** Supplies active, deliberately bounded shadow batches to a CSM or shadow generator. */
+  /**
+   * Supplies active, deliberately bounded shadow batches to a CSM or shadow
+   * generator.
+   *
+   * `4.5-C1`: the tier's `vegetationCastsShadows` datum gates the whole list.
+   * The near band submits every (species, variant, crown/trunk) mesh once per
+   * cascade, which is 148 of tier 1's 347 modelled draws and 3.85 of its 9.02
+   * modelled milliseconds — the largest single term, and the only one no lever
+   * §5.3 governs can move. Read from the profile each update rather than
+   * baked into the prototypes so a runtime quality switch takes effect in the
+   * same frame, in both directions.
+   */
   addShadowCasters(add: (mesh: Mesh) => void): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.vegetationCastsShadows) return;
     for (const batch of this.batches.values()) {
       if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.forcedInstanceCount > 0) {
         add(batch.mesh);
@@ -2099,7 +2113,10 @@ export class WorldDetailRuntime {
     // the include away (tests/gpu/foliage-material-compile.test.ts pins it).
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
-      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene, {
+      // 4.5-0: guarded — bindInstanceBuffers resets a growing batch's draw
+      // cache in the same frame the CSM pass renders it, and an unguarded
+      // wrapper turns that into the createBindGroup fatal stop.
+      material.shadowDepthWrapper = createGuardedShadowDepthWrapper(material, this.scene, {
         remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
       });
     }

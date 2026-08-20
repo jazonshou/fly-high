@@ -173,6 +173,36 @@ export interface RenderDiagnostics {
   inventoriedGpuMemoryMiB: number;
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;
+  /**
+   * `4.5-C3` — per-pass GPU milliseconds, summed from Babylon's own
+   * `gpuTimeInFrame` counters. The honest fraction of assertion 67, which has
+   * been carried open through two phases and is owned by nobody.
+   *
+   * **UNCORRELATED AGGREGATES, and the label is load-bearing.** These counters
+   * carry no submitted-frame id, so they say what each pass costs the GPU;
+   * they do NOT say how much of a given frame's present-to-present interval
+   * any pass explains. `B-0`'s rule stands — no present-wait inference without
+   * a frame-correlatable timestamp source. What this buys is that the
+   * 39-53 ms interval against a 15 ms GPU p95 becomes INSPECTABLE rather than
+   * a gap nobody can name, and that every tuning decision in Gate 4.5-C stops
+   * being made against a single counter that under-reports the frame 2-4x.
+   *
+   * Null members mean the adapter granted no `timestamp-query`, or that pass
+   * has not run yet.
+   */
+  gpuPassMs: GpuPassAttribution;
+}
+
+/** `4.5-C3`'s uncorrelated per-pass GPU aggregates, in milliseconds. */
+export interface GpuPassAttribution {
+  /** The beauty pass, as Babylon's main-pass counter reports it. */
+  readonly mainPass: number | null;
+  /** Every cascade of the sun's cascaded shadow map, as one render target. */
+  readonly shadows: number | null;
+  /** Terrain page generation + the occlusion and splat bakes. */
+  readonly terrainCompute: number | null;
+  /** The sum of whatever is non-null above. */
+  readonly total: number | null;
 }
 
 export const INITIAL_VISUAL_STATE: FlightVisualState = {

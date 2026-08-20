@@ -357,7 +357,10 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // ceilings below are the Phase-4 design intents — the atlas holds 196
     // slots at tier 1, and a pump that leaves more than 24 pages pending is
     // admitting faster than the meter retires.
-    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 196 },
+    // `4.5-D1`: re-pinned from what the fixed selector actually produces
+    // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
+    // budget, which was a design intent nothing could fail.
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
     ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 24 },
   },
   {
@@ -381,7 +384,10 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // exactly the way flicker does; a working one is indistinguishable from
     // straight flight, which is the point of the item.
     temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
-    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 196 },
+    // `4.5-D1`: re-pinned from what the fixed selector actually produces
+    // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
+    // budget, which was a design intent nothing could fail.
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
     ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 60, minFps: 30 },
   },
   {
@@ -737,6 +743,19 @@ export interface PerfCaptureShotReport {
   readonly estimatedGpuMemoryMiB: number;
   /** Z-4: the renderer's actual-allocation floor reading. */
   readonly inventoriedGpuMemoryMiB: number;
+  /**
+   * `4.5-C3`: per-pass GPU milliseconds, as UNCORRELATED aggregates from
+   * Babylon's own counters. They say what each pass costs the GPU; they do not
+   * attribute any part of `frameIntervalMsP95`. Recorded so the gap between a
+   * ~15 ms GPU p95 and a 40-50 ms interval is at least inspectable — `B-0`'s
+   * correlation rule still forbids inferring a present wait from them.
+   */
+  readonly gpuPassMs?: {
+    readonly mainPass: number | null;
+    readonly shadows: number | null;
+    readonly terrainCompute: number | null;
+    readonly total: number | null;
+  };
   /** Z-3: present only for motion shots. */
   readonly temporal?: TemporalStability;
 }

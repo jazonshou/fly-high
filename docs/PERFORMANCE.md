@@ -66,14 +66,17 @@ audit is why it now carries all four tiers):
 | Absolute pixel cap (1A-6a) | 1.0 Mpx | 1.5 Mpx | 2.4 Mpx | 4.0 Mpx |
 | Device-pixel-ratio ceiling | 1 | 1.5 | 2 | 2 |
 | MSAA samples (offscreen beauty target) | 1 | 2 | 2 | 4 |
-| Terrain clipmap levels | 6 | 7 | 7 | 7 |
-| Terrain tile resolution | 33 | 65 | 65 | 65 |
+| CDLOD node budget (`4-5`, re-tuned at `4.5-A1`) | 224 | 320 | 448 | 640 |
+| CDLOD split threshold, pixels (`4-5`) | 4 | 3 | 2 | 1.5 |
+| Finest streamed page level (`4-0`) | 1 | 0 | 0 | 0 |
+| Height-atlas slots / channel-atlas slots (`4-0`) | 144 / 100 | 196 / 196 | 256 / 256 | 256 / 256 |
 | Terrain material array edge (3-0) | 256² | 512² | 512² | 512² |
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
-| Shadow map | 1,024 | 2,048 | 4,096 | 4,096 |
-| Shadow cascades | 2 | 2 | 4 | 4 |
-| Shadow distance | 4.5 km | 7 km | 16 km | 16 km |
+| Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
+| Shadow cascades (`4-8b`, D15) | 2 | 2 | 3 | 4 |
+| Shadow distance (`4-8b`) | 900 m | 1.4 km | 1.8 km | 2.4 km |
+| Vegetation casts shadows (`4.5-C1`) | no | no | yes | yes |
 | Ocean FFT resolution per cascade | 128² | 128² | 256² | 256² |
 | Active ocean cascades | 3 | 4 | 5 | 5 |
 | Cloud resolution-scale profile value | 0.25 | 0.45 | 0.60 | 0.70 |
@@ -100,16 +103,67 @@ Terrain page resolution, ocean presentation density, FFT topology, and every oth
 
 ## Terrain and world paging
 
-- Terrain uses camera-relative geometry-clipmap pages with a 512 m base extent. Each coarser level doubles extent. Its indices are hole-punched cell-by-cell against the exact union of resident finer page bounds, preventing both overlap and streaming holes during partial residency. Every page also carries an 80 m vertical edge skirt to hide unequal-density T-junctions at page and LOD boundaries.
-- A ring radius of two bounds each level to at most a 5×5 candidate neighborhood before hollowing. Six to seven levels (per tier) cover to the 45 km far plane; low tiers keep the same horizon with much cheaper far-page resolution rather than exposing a terrain edge.
-- The fine level predicts along aircraft velocity, while coarser levels remain observer-centered. This prioritizes pages likely to enter view during fast flight.
-- `TerrainGenerationClient` prefers a dedicated terrain Worker and uses a maximum queued count of 128. The clipmap refills missing far requests as earlier work drains, so the queue bound cannot permanently omit horizon pages. If that Worker cannot be created or fails, a deferred one-job-at-a-time CPU path runs the same generator. The simulation Worker remains a game requirement. Quality/generation changes cancel pending requests; late stale responses are discarded.
-- Pages outside the desired set receive a 90-frame grace period before eviction, limiting boundary churn.
-- Page resolution follows the resolved tier as one constant per tier (1B-3): 33 at tier 0, 65 at tiers 1–3, at every level — constant per-tier resolution keeps every adjacent-level ground-sample ratio exactly 2:1, which is what killed the audit's 4:1 T-junction.
-- Existing deterministic world sampling supplies continuous terrain, ravines/valleys, ridged mountains, biomes, geology relief, the airport earthworks, and collision data. Terrain generation remains CPU work, not a compute shader.
-- **Surface appearance (Phase 3).** One PBR material plugin owns albedo, normal, roughness, ambient occlusion and micro-detail. Ten synthesised land-cover materials live in two mipped `Texture2DArray`s at 16× anisotropy; the fragment brackets an interpolated material id along an ecotone-ordered axis, adds a slope/snow override evaluated at fragment resolution, and height-blends the survivors. **Candidates whose blend weight is negligible are skipped rather than sampled and multiplied by zero** — most of the ground sits well inside one biome, so the common fragment fetches one material rather than three, which is the difference between 51.7 and 57+ fps on the `cruise-horizon` capture. Distant mips carry a Toksvig roughness term so a normal map averaged into flatness cannot leave a false sharp highlight behind.
-- **The runway is not a mesh.** A three-zone cut/fill earthworks profile (`terrain/RunwayEarthworks.ts`) shapes the ground, the collision fast path evaluates the same profile, and the pavement, markings, rubber and ragged edge are painted by the airport's analytic SDF in the same fragment shader.
-- `src/render/webgpu/world/` defines the next-stage portable paging contract: canonical keys; quantized height, material, surface, and hydrology payloads; validation; CPU-ready/uploading/resident/evicting lifecycle states; cache metadata; and velocity-aware streaming scores. The active clipmap renderer remains worker-fed and does not yet claim a persistent on-disk page cache.
+Phase 4 replaced the CPU geometry-clipmap outright; the description below is
+what ships today, after Phase 4.5's corrections.
+
+- **One mesh draws the ground.** A single 33×33 unit grid is thin-instanced
+  over a CDLOD node set. Node span is `64·2^L` m across 32 quads, which is
+  exactly the level's own `2·2^L` m page texel spacing — nodes and pages sample
+  the same lattice by construction. Terrain submits one beauty draw plus one
+  caster draw per shadow cascade.
+- **Selection is a global screen-space-error priority queue** (`4.5-A1`): the
+  node with the largest MEASURED deviation-to-pixels is split first, whatever
+  its level, until the node budget is spent. The per-level loop it replaced
+  converged with the whole world at L5–L7 regardless of altitude. A 2:1
+  neighbour clamp is enforced as a precondition on splitting, because the
+  crack closure is analytic (a node morphs onto its parent's lattice) and
+  guarantees seam identity across one level only — which is what lets skirts be
+  deleted and back-face culling be true.
+- **A node is never split on a guess.** `maxDeviationFromParent` is measured by
+  the generation pass as the largest second difference over the page; a page
+  with no measurement is drawn coarse and never split.
+- **Pages are GPU-generated.** One compute dispatch resolves a batch (the job
+  index selects the page), writing an r32float height atlas whose surplus slots
+  ARE the LRU cache. A page's TEXELS are published at dispatch-submit so it can
+  be drawn immediately; its bounds and deviation arrive a readback later and
+  only the CDLOD split waits for them (`4.5-B1`). Every in-flight readback
+  holds its own bounds buffer — sharing one silently completed pages at zero
+  deviation, which converges the whole selector at the root ring.
+- **One meter admits every compute client.** Height generation, the occlusion
+  bake, the land-cover splat bake and (from Phase 5) erosion are admitted by
+  `ComputeBudget` under one per-frame cap in a declared priority order, priced
+  at MEASURED per-dispatch costs fed back from `timestamp-query`. A measured
+  height page costs ~1.9 ms of GPU, which is more than the whole compute cap,
+  so the highest-priority client with demand is always admitted one dispatch —
+  otherwise terrain streaming stops permanently under GPU pressure.
+- **Channel families ride a second atlas**: sky visibility and a bent normal,
+  an 8-azimuth horizon field, and the season-keyed land-cover splat pair. They
+  are sampled BILINEAR (`4.5-A2`) — the material axis is ordered so a filtered
+  primary id lands between two materials that actually meet, and only the
+  primary lane may be read that way.
+- **A page with no channel slot falls back to a per-VERTEX ecotone walk**
+  against the height the vertex shader just displaced to (`4.5-A3`), so the
+  fallback is a gradient at vertex spacing rather than one material across the
+  whole node.
+- **Surface appearance (Phase 3).** One PBR material plugin owns albedo,
+  normal, roughness, ambient occlusion and micro-detail. Ten synthesised
+  land-cover materials live in two mipped `Texture2DArray`s at 16× anisotropy;
+  the fragment brackets the interpolated material id along the ecotone axis,
+  adds a slope/snow override at fragment resolution, and height-blends the
+  survivors. Candidates whose blend weight is negligible are skipped rather
+  than sampled and multiplied by zero. Distant mips carry a Toksvig roughness
+  term so a normal map averaged into flatness cannot leave a false sharp
+  highlight behind. The ten ~110 ms layer syntheses run in a worker
+  (`4.5-C2b`); the four terrain compute pipelines are pre-warmed behind the
+  load screen, because Babylon 9.21 compiles a compute pipeline synchronously
+  on its first dispatch.
+- **The runway is not a mesh.** A three-zone cut/fill earthworks profile
+  (`terrain/RunwayEarthworks.ts`) shapes the ground, the collision fast path
+  evaluates the same profile, and the pavement, markings, rubber and ragged
+  edge are painted by the airport's analytic SDF in the same fragment shader.
+- `src/render/webgpu/world/` remains the one page-identity, payload,
+  lifecycle, cache-metadata and streaming-priority authority; the terrain atlas
+  consumes it verbatim rather than keeping a second residency map.
 
 ## Spectral ocean and inland water
 
@@ -260,6 +314,81 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   0.78–2.09 ms GPU; only one of all nine improved by at least 2 ms. The merge
   was rejected and reverted, so the split-runtime ceilings and debt ratios
   remain the truthful values.
+- **`4.5-C1` took the one large lever that was left: vegetation no longer
+  CASTS shadows below tier 2.** The near band was resubmitted once per cascade,
+  which is 148 of tier 1's 347 modelled draws and 3.85 of its 9.02 modelled ms
+  — the largest single term, and outside §5.3's ladder (D15 is the precedent:
+  it cut a tier-2 cascade specifically to reduce vegetation shadow draws).
+  Trees keep the shadows they receive. Measured 445 → 397 draw calls at the
+  reference viewport, against 148 modelled: the model counts every
+  presentation chunk a band's disc touches and the frustum drops most of them,
+  so its ORDERING is right and its magnitude is not. Ceilings re-pinned to
+  160/200/500/650, debt ratios to 3.28/2.87/6.32/4.56.
+- **§7's next lever down does not measure.** `grassRadiusMeters` 150 → 110 at
+  tier 1 is ranked at "~7 ms extra in ground-level shots". It moves
+  ground-cover instances 3,372 → 1,836 at the `ground-2m-lowsun` pose — the
+  knob works — and that shot's GPU p95 by 0.11 ms, which is noise. Left at
+  §5.3's Balanced row; `6-11` owns the re-tier and now has a measurement to
+  start from rather than an estimate.
+
+## Measured tier row (`4.5-D4`)
+
+The G-C question — "does medium/balanced hold a smooth frame at the reference
+viewport" — is not answered by this phase, and saying otherwise would be
+inventing a measurement. Here is what was actually measured and why that is
+the honest statement.
+
+**The capture host moved the number further than the code did.** Two runs on
+the same tree four hours apart reported `reference-viewport` at 20.3 fps / 6
+hitches and 18.5 fps / 117. Re-running the *pre-Phase-4.5* tree in a clean
+worktree, back to back with the new one, reported **16.5 fps and 232 hitches**
+against that same pinned 20.3 / 6. Nothing in the tree changed between those
+two numbers. Making the capture host's thermal state a controlled variable is
+still owned by nobody (§5 of the phase plan records it as an open Gate B
+residual).
+
+So every figure below is same-host and back-to-back, and the two reports are
+pinned under `docs/evidence/`:
+
+| Metric, `reference-viewport` | pre-4.5 control | Phase 4.5 |
+| --- | ---: | ---: |
+| GPU p95 | 13.10 ms | **10.43 ms** |
+| CPU p95 | 6.0 ms | **5.8 ms** |
+| draw calls | 446 | **398** |
+| fps | 16.3 | 15.8 |
+| interval p95 | 67.6 ms | 71.0 ms |
+| triangles | 1.18 M | 1.74 M |
+| resident terrain pages | 25 | **41** |
+
+Across the whole 16-shot set, mean GPU p95 falls **10.76 → 9.78 ms**; across
+the ten vegetation-heavy shots it falls **14.02 → 12.38 ms**. Both while the
+terrain draws ~47% more triangles and streams ~60% more pages, because
+`4.5-A1` spends its budget where the error is instead of spreading it evenly
+across a level.
+
+Three things this says, and one it does not:
+
+- **Every Gate C change moved its own counter the right way.** Vegetation
+  shadow casting off below tier 2 is worth 48 draw calls and ~2 ms of GPU p95
+  on the shots that were furthest from the bar.
+- **The terrain quality increase is not free at the top end.** The shots that
+  lost frame rate are the terrain-dominated ones that had headroom
+  (`slant-10km` 52 → 44, `coast-10km-lowsun` 55 → 41, `cdlod-transition`
+  50 → 40); every shot that was *below* 30 fps improved its GPU p95. Spending
+  headroom where there is headroom is the trade this phase took deliberately.
+- **The frame is still dominated by something neither timer sees**: ~10 ms of
+  GPU p95 and ~6 ms of CPU p95 against a ~70 ms present-to-present interval.
+  `4.5-C3`'s per-pass aggregates confirm it is not the shadow pass and not
+  terrain compute. Naming it needs the frame-correlatable timestamp source
+  `B-0` requires, and no plan owns that.
+- It does **not** say what the frame rate is on an idle reference machine.
+  `perf:capture`'s committed fps floors are unmet on this host by BOTH trees —
+  `approach-500ft` measures 20.9 (control) and 19.1 (new) against a floor of
+  24 — so the floors were left exactly where they are rather than relaxed to
+  fit a hot laptop. Re-running the capture on an idle machine is the
+  outstanding close-out step, and if `reference-viewport` still misses 30 fps
+  there, that is `6-11`'s documented input rather than a failure of this
+  phase.
 
 ## Capture harness
 

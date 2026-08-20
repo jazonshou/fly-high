@@ -120,6 +120,10 @@ function distanceToNode(
 }
 
 interface Candidate {
+  /** `level:nodeX:nodeZ` — the quadtree identity, not the page identity. */
+  readonly key: string;
+  readonly nodeX: number;
+  readonly nodeZ: number;
   readonly address: WorldPageAddress;
   readonly subNodeX: number;
   readonly subNodeZ: number;
@@ -129,6 +133,10 @@ interface Candidate {
   readonly level: number;
   readonly distanceMeters: number;
   readonly deviationMeters: number;
+  /** False while the page carries no measured deviation — never split. */
+  readonly measured: boolean;
+  /** Screen-space error in pixels, the priority queue's key. */
+  readonly errorPixels: number;
 }
 
 function makeCandidate(
@@ -136,6 +144,7 @@ function makeCandidate(
   level: number,
   nodeX: number,
   nodeZ: number,
+  key: string,
 ): Candidate | null {
   const span = terrainNodeSpanMeters(level);
   const originX = nodeX * span;
@@ -146,7 +155,13 @@ function makeCandidate(
   const pageZ = Math.floor(nodeZ / TERRAIN_NODES_PER_SLOT_EDGE);
   const address = createWorldPageAddress(level, pageX, pageZ);
   const deviation = input.deviationFor(address);
+  // A page with no measurement yet is treated as flat, so it is drawn
+  // coarse and never split — never skipped.
+  const deviationMeters = deviation ?? 0;
   return {
+    key,
+    nodeX,
+    nodeZ,
     address,
     subNodeX: nodeX - pageX * TERRAIN_NODES_PER_SLOT_EDGE,
     subNodeZ: nodeZ - pageZ * TERRAIN_NODES_PER_SLOT_EDGE,
@@ -155,71 +170,254 @@ function makeCandidate(
     spanMeters: span,
     level,
     distanceMeters,
-    // A page with no measurement yet is treated as flat, so it is drawn
-    // coarse and never split — never skipped.
-    deviationMeters: deviation ?? 0,
+    deviationMeters,
+    measured: deviation !== null,
+    errorPixels: terrainScreenSpaceError(
+      deviationMeters,
+      distanceMeters,
+      input.pixelsPerMeterAtUnitDistance,
+    ),
+  };
+}
+
+/** The four edge-adjacent neighbours; diagonals do not share an edge. */
+const EDGE_NEIGHBOUR_OFFSETS: readonly (readonly [number, number])[] = Object.freeze([
+  Object.freeze([1, 0] as const),
+  Object.freeze([-1, 0] as const),
+  Object.freeze([0, 1] as const),
+  Object.freeze([0, -1] as const),
+]);
+
+/**
+ * A max-heap over screen-space error, with lazy deletion.
+ *
+ * A split removes one leaf and adds four, so the queue is written to as often
+ * as it is read; re-sorting an array per split is O(n log n) each time, and
+ * this runs every frame against a 240-448 node budget.
+ */
+function createErrorHeap(): {
+  push(candidate: Candidate): void;
+  pop(): Candidate | null;
+} {
+  const items: Candidate[] = [];
+  return {
+    push(candidate: Candidate): void {
+      items.push(candidate);
+      let index = items.length - 1;
+      while (index > 0) {
+        const parent = (index - 1) >> 1;
+        if (items[parent]!.errorPixels >= items[index]!.errorPixels) break;
+        [items[parent], items[index]] = [items[index]!, items[parent]!];
+        index = parent;
+      }
+    },
+    pop(): Candidate | null {
+      const top = items[0];
+      if (top === undefined) return null;
+      const last = items.pop()!;
+      if (items.length > 0) {
+        items[0] = last;
+        let index = 0;
+        for (;;) {
+          const left = index * 2 + 1;
+          const right = left + 1;
+          let largest = index;
+          if (left < items.length && items[left]!.errorPixels > items[largest]!.errorPixels) {
+            largest = left;
+          }
+          if (right < items.length && items[right]!.errorPixels > items[largest]!.errorPixels) {
+            largest = right;
+          }
+          if (largest === index) break;
+          [items[largest], items[index]] = [items[index]!, items[largest]!];
+          index = largest;
+        }
+      }
+      return top;
+    },
   };
 }
 
 /**
- * Select the drawn node set, coarsest-first under a hard budget.
+ * Select the drawn node set: a GLOBAL screen-space-error priority queue under
+ * a hard budget, with a 2:1 neighbour-level clamp (`4.5-A1`).
  *
- * Breadth-first by level and NOT depth-first: a depth-first descent spends the
+ * **This amends one bullet of recorded deviation D17** — "selection is
+ * breadth-first by level, nearest-first inside a level" — and only that
+ * bullet. D17's level-9 roots, its `subIndex` page-parity lane and its
+ * budget-remainder counting stand.
+ *
+ * D17's rationale for breadth-first was real: a depth-first descent spends the
  * whole budget on the first quadrant it enters, so the ground behind the
- * aircraft disappears rather than coarsening. Coarsest-first means the budget
- * runs out as a resolution limit, everywhere at once.
+ * aircraft disappears rather than coarsening. But a per-level split loop
+ * *converges*: with a 240-node budget it terminates with the whole world at
+ * L5-L7 — kilometre-scale height texels at 150 m AGL, which is what the
+ * "splotches of solid colour" defect actually was. The unconstrained criterion
+ * wants >= 2,300 nodes, so raising the budget cannot fix it. A global error
+ * queue satisfies D17's rationale a different way: the roots are emitted
+ * first and are never dropped, so horizon coverage is complete by
+ * construction, and the budget is then spent where the MEASURED error is
+ * largest rather than spread evenly across a level nobody is looking at.
+ *
+ * **The neighbour-level clamp is mandatory, not complementary.** The analytic
+ * crack closure (`terrainNodeMorphK`, the morph to the parent lattice)
+ * guarantees seam identity across ONE level of difference; a pure max-error
+ * queue makes >1-level adjacencies common, and with skirts deleted a two-level
+ * seam is a hole in the ground. So a node may only be split once every
+ * edge-adjacent same-level neighbour EXISTS in the tree, which is the standard
+ * 2:1 restricted-quadtree invariant — and because a split is only ever applied
+ * with its whole forced-split closure, the invariant holds by construction
+ * rather than by a repair pass (assertion 108).
+ *
+ * The two rules the queue inherits unchanged: nothing below
+ * `finestResidentLevel` is ever selected, and an UNMEASURED page is never
+ * split — including inside a forced closure, where the alternative would be
+ * spending the budget on a guess to fix a seam.
  */
 export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNode[] {
   const finest = Math.max(0, input.finestResidentLevel);
   const coarsest = Math.max(finest, input.coarsestLevel);
+  const budget = Math.max(1, Math.floor(input.nodeBudget));
   const rootSpan = terrainNodeSpanMeters(coarsest);
   const reach = Math.ceil(input.farPlaneMeters / rootSpan) + 1;
   const rootX = Math.floor(input.cameraX / rootSpan);
   const rootZ = Math.floor(input.cameraZ / rootSpan);
 
-  let frontier: Candidate[] = [];
+  // One candidate object per quadtree cell, so identity comparisons are valid
+  // and `deviationFor` is asked at most once per cell per frame.
+  const candidates = new Map<string, Candidate | null>();
+  const candidateAt = (level: number, nodeX: number, nodeZ: number): Candidate | null => {
+    const key = `${level}:${nodeX}:${nodeZ}`;
+    const cached = candidates.get(key);
+    if (cached !== undefined) return cached;
+    const made = makeCandidate(input, level, nodeX, nodeZ, key);
+    candidates.set(key, made);
+    return made;
+  };
+
+  /** The current leaves — exactly the node set that will be drawn. */
+  const leaves = new Map<string, Candidate>();
+  /** Nodes that have been replaced by their four children. */
+  const split = new Set<string>();
+  const heap = createErrorHeap();
+
   for (let dz = -reach; dz <= reach; dz += 1) {
     for (let dx = -reach; dx <= reach; dx += 1) {
-      const candidate = makeCandidate(input, coarsest, rootX + dx, rootZ + dz);
-      if (candidate) frontier.push(candidate);
+      const root = candidateAt(coarsest, rootX + dx, rootZ + dz);
+      if (!root) continue;
+      leaves.set(root.key, root);
+      heap.push(root);
     }
   }
 
-  const emitted: Candidate[] = [];
-  while (frontier.length > 0) {
-    const next: Candidate[] = [];
-    // Nearest first inside a level, so the budget is spent where the error is.
-    frontier.sort((first, second) => first.distanceMeters - second.distanceMeters);
-    for (let index = 0; index < frontier.length; index += 1) {
-      const candidate = frontier[index]!;
-      const error = terrainScreenSpaceError(
-        candidate.deviationMeters,
-        candidate.distanceMeters,
-        input.pixelsPerMeterAtUnitDistance,
-      );
-      // A split replaces one node with four, so it costs three. The live
-      // total is everything already emitted, everything queued for the next
-      // level, and everything still ahead in this one — counting only the
-      // first two lets a level's tail overrun the budget silently.
-      const live = emitted.length + next.length + (frontier.length - index);
-      const canSplit = candidate.level > finest && live + 3 <= input.nodeBudget;
-      if (error > input.pixelThreshold && canSplit) {
-        const childLevel = candidate.level - 1;
-        const childSpan = terrainNodeSpanMeters(childLevel);
-        const baseX = Math.round(candidate.originX / childSpan);
-        const baseZ = Math.round(candidate.originZ / childSpan);
-        for (let dz = 0; dz < 2; dz += 1) {
-          for (let dx = 0; dx < 2; dx += 1) {
-            const child = makeCandidate(input, childLevel, baseX + dx, baseZ + dz);
-            if (child) next.push(child);
-          }
-        }
-        continue;
-      }
-      emitted.push(candidate);
+  /**
+   * The ancestors that must be split for cell `(level, nodeX, nodeZ)` to exist
+   * as a node of the tree, coarsest first. `null` means the cell's ground is
+   * not drawn at all (outside the root ring, or beyond the far plane), which
+   * is no adjacency and therefore no constraint.
+   */
+  const chainToExist = (
+    level: number,
+    nodeX: number,
+    nodeZ: number,
+    planned: ReadonlySet<string>,
+  ): Candidate[] | null => {
+    const chain: Candidate[] = [];
+    for (let ancestorLevel = coarsest; ancestorLevel > level; ancestorLevel -= 1) {
+      const step = 2 ** (ancestorLevel - level);
+      const ancestorX = Math.floor(nodeX / step);
+      const ancestorZ = Math.floor(nodeZ / step);
+      const key = `${ancestorLevel}:${ancestorX}:${ancestorZ}`;
+      // Already split (or about to be): its children exist, so descend.
+      if (split.has(key) || planned.has(key)) continue;
+      // The first ancestor that is not split is the leaf covering this ground.
+      // Everything from it down to the target's parent has to be split. If it
+      // is not a leaf either, nothing covers the ground here.
+      if (chain.length === 0 && !leaves.has(key)) return null;
+      const ancestor = candidateAt(ancestorLevel, ancestorX, ancestorZ);
+      if (!ancestor) return null;
+      chain.push(ancestor);
     }
-    frontier = next;
+    return chain;
+  };
+
+  /**
+   * Every node that must be split for `target` to split legally, or null when
+   * the closure is impossible (it reaches `finestResidentLevel`, an unmeasured
+   * page, or more splits than `maximumSplits` can pay for).
+   */
+  const planSplit = (target: Candidate, maximumSplits: number): Candidate[] | null => {
+    const planned = new Set<string>();
+    const ordered: Candidate[] = [];
+    const work: Candidate[] = [target];
+    while (work.length > 0) {
+      const node = work.pop()!;
+      if (split.has(node.key) || planned.has(node.key)) continue;
+      if (node.level <= finest) return null;
+      if (!node.measured) return null;
+      planned.add(node.key);
+      ordered.push(node);
+      if (ordered.length > maximumSplits) return null;
+      for (const [dx, dz] of EDGE_NEIGHBOUR_OFFSETS) {
+        const chain = chainToExist(node.level, node.nodeX + dx, node.nodeZ + dz, planned);
+        if (chain === null) continue;
+        for (const ancestor of chain) work.push(ancestor);
+      }
+    }
+    // COARSEST FIRST. Every member of a plan is a current leaf *given* the
+    // 2:1 invariant — a forced chain is one node deep, because a neighbour two
+    // levels coarser cannot exist while the invariant holds — so today the
+    // order does not matter. It is sorted anyway, and `applySplit` refuses to
+    // re-leaf an already-split child, because the failure if that argument
+    // ever stops holding is a node left in BOTH `split` and `leaves`: drawn on
+    // top of its own children, which is z-fighting rather than an exception.
+    // The property is pinned by "emits a partition: no selected node contains
+    // another".
+    ordered.sort((first, second) => second.level - first.level);
+    return ordered;
+  };
+
+  const applySplit = (node: Candidate): void => {
+    leaves.delete(node.key);
+    split.add(node.key);
+    const childLevel = node.level - 1;
+    for (let dz = 0; dz < 2; dz += 1) {
+      for (let dx = 0; dx < 2; dx += 1) {
+        const child = candidateAt(childLevel, node.nodeX * 2 + dx, node.nodeZ * 2 + dz);
+        // A child that is itself already split is not a leaf; re-adding it
+        // would draw it over its own children. Unreachable while a plan's
+        // members are all leaves; see planSplit's ordering note.
+        if (!child || split.has(child.key)) continue;
+        leaves.set(child.key, child);
+        heap.push(child);
+      }
+    }
+  };
+
+  for (;;) {
+    // A split replaces one node with four, so each one in the closure costs
+    // three. The budget is checked against the WHOLE closure, so the clamp can
+    // never be half-applied.
+    const affordableSplits = Math.floor((budget - leaves.size) / 3);
+    if (affordableSplits < 1) break;
+    const top = heap.pop();
+    if (top === null) break;
+    // Lazily deleted: this node was split (or never emitted) since it was
+    // pushed.
+    if (leaves.get(top.key) !== top) continue;
+    // The heap is ordered by error, so once the worst node is legal, every
+    // node is.
+    if (top.errorPixels <= input.pixelThreshold) break;
+    const plan = planSplit(top, affordableSplits);
+    if (plan === null) continue;
+    for (const node of plan) applySplit(node);
   }
+
+  // Nearest first: `writeTerrainNodeBuffers` truncates at the buffer capacity,
+  // and the near field is what a truncation must keep.
+  const emitted = [...leaves.values()].sort(
+    (first, second) => first.distanceMeters - second.distanceMeters,
+  );
 
   return emitted.map((candidate) => {
     const splitDistance = candidate.deviationMeters > 0
@@ -251,7 +449,7 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
  * Lane packing, stated once because the CPU writer and the WGSL reader cannot
  * be held together by anything else.
  *
- * `terrainNodeA = (slotIndex, subIndex, level, splatPacked)`, where `subIndex`
+ * `terrainNodeA = (slotIndex, subIndex, level, provisionalAxis)`, where `subIndex`
  * is `subNodeX + subNodeZ*8 + parityX*64 + parityZ*128`
  * `terrainNodeB = (morphK, parentSlotIndex, channelLane, maxDeviation)`, where
  * `channelLane` is `channelSlotIndex * 32 + level` — the same packing `3-2`'s
@@ -266,7 +464,8 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
  * through its format table and throws `Invalid Format ... size=8` — WebGPU has
  * no vertex format wider than four components.
  *
- * `subNodeX` and `subNodeZ` share a lane so the splat can have one. They are
+ * `subNodeX` and `subNodeZ` share a lane so the provisional axis can have one.
+ * They are
  * each under 8 by construction (one 264² slot serves an 8×8 block of nodes),
  * so the packed value is under 64 and exact.
  */
@@ -288,25 +487,19 @@ export function packTerrainNodeSubIndex(
 }
 
 /**
- * The provisional two-material blend, packed into one lane.
+ * The provisional-axis lane's "derive it per vertex" sentinel (`4.5-A3`).
  *
  * `4-5` deletes the CPU tile meshes and with them the per-vertex splat lanes
- * that are the ONLY material source until `4-6` lands. Without a carry-forward
- * the gate the plan calls its most visible would ship an untextured PBR
- * surface — it would delete the entire Phase 3 deliverable. Ids are under 16
- * and the weight is quantised to 1/100, so the packed value is under 1,700 and
- * exact in f32.
+ * that are the only material source wherever a page holds no channel slot.
+ * The carry-forward it shipped packed one (primary, secondary, weight) triple
+ * per NODE, so the fallback was a single material across the whole node — up
+ * to `512·2^L` m of solid colour. `4.5-A3` moves the altitude walk into the
+ * vertex shader, where it runs against the height that shader has just
+ * displaced to, and this lane carries only the CPU's guard: a non-negative
+ * value is an axis the shader must use verbatim (there are no height texels to
+ * walk), and this sentinel means "walk it yourself".
  */
-export function packTerrainNodeSplat(
-  primaryId: number,
-  secondaryId: number,
-  secondaryWeight: number,
-): number {
-  const primary = Math.max(0, Math.min(15, Math.round(primaryId)));
-  const secondary = Math.max(0, Math.min(15, Math.round(secondaryId)));
-  const weight = Math.max(0, Math.min(100, Math.round(secondaryWeight * 100)));
-  return primary * 1_600 + secondary * 100 + weight;
-}
+export const TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT = -1;
 
 /**
  * Reusable instance storage for one mesh, sized to the node budget ONCE.
@@ -347,7 +540,11 @@ export interface TerrainNodeWriteInput {
   readonly slotFor: (address: WorldPageAddress) => number;
   /** Channel-atlas slot, or -1 when the page holds no channel slot. */
   readonly channelSlotFor: (address: WorldPageAddress) => number;
-  readonly splatFor: (node: TerrainNode) => number;
+  /**
+   * `4.5-A3`: an axis the shader must shade with verbatim, or
+   * `TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT` to have it walked per vertex.
+   */
+  readonly provisionalAxisFor: (node: TerrainNode) => number;
 }
 
 /**
@@ -401,7 +598,7 @@ export function writeTerrainNodeBuffers(
       node.address.z - Math.floor(node.address.z / 2) * 2,
     );
     laneA[laneBase + 2] = node.level;
-    laneA[laneBase + 3] = input.splatFor(node);
+    laneA[laneBase + 3] = input.provisionalAxisFor(node);
     // A node whose parent is not resident cannot morph into it: the parent's
     // heights are not there to sample, and morphing toward an unwritten slot
     // is a hole in the ground rather than a smooth transition.

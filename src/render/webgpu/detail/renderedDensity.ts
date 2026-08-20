@@ -267,7 +267,12 @@ export interface VegetationDrawModelInput {
   readonly farMeshesPerChunk: number;
   /** Understory, rocks, clutter and ground cover — all near-band only. */
   readonly understoryMeshesPerChunk: number;
-  /** Shadow-casting meshes per near chunk, times the cascade count. */
+  /**
+   * Shadow-casting meshes per near chunk, times the cascade count. ZERO at
+   * every tier whose profile sets `vegetationCastsShadows: false` (`4.5-C1`) —
+   * the near band is resubmitted once per cascade, so this term is the largest
+   * in the model wherever it is not zero.
+   */
   readonly shadowMeshesPerChunk: number;
   readonly shadowCascades: number;
 }
@@ -355,8 +360,13 @@ export function estimateVegetationDrawCalls(
  * vegetation row, and the ratio below says by how much.
  */
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
-  270,
-  360,
+  // `4.5-C1` switched vegetation shadow casting OFF below tier 2, which
+  // deletes the near band's per-cascade resubmission outright. Measured 151.3
+  // draws (was 257.0).
+  160,
+  // Measured 198.7 draws (was 346.8) — the largest single cut available to
+  // this programme without the structural work `6-9` owns.
+  200,
   // `4-8b` cut this tier from four shadow cascades to three (§5.3's near-field
   // rows), and the near band submits its meshes once per cascade — so the
   // ceiling comes down with the measurement rather than staying a number the
@@ -372,8 +382,12 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
  * this record to be deleted rather than quietly outlived.
  */
 export const VEGETATION_FRAME_DEBT_RATIO: readonly number[] = Object.freeze([
-  5.57,
-  5.01,
+  // Re-measured at `4.5-C1`: 5.57 → 3.28 at tier 0 and 5.01 → 2.87 at tier 1,
+  // from switching vegetation shadow casting off below tier 2. Still 2.9x over
+  // the row at the G-C tier: the remainder is `6-9`'s GPU scatter, and this
+  // record stays until something really closes it.
+  3.28,
+  2.87,
   // Re-measured at `4-8b`: 7.38 → 6.32, from the tier-2 cascade cut. The debt
   // is not closed and this record is not deleted; it moved, and a moved number
   // has to be re-pinned or the assertion stops meaning anything.

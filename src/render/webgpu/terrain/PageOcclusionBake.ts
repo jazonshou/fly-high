@@ -23,6 +23,8 @@ import {
   terrainTexelSizeMeters,
 } from "./TerrainSpineContract";
 import {
+  consumeGpuDispatchCostMs,
+  readGpuDispatchMs,
   TERRAIN_CHANNEL_TEXTURES,
   type TerrainAtlasSlot,
   type TerrainPageAtlas,
@@ -213,6 +215,8 @@ export class PageOcclusionBake {
   private capacity = 0;
   private running = false;
   private disposed = false;
+  private lastBatchSize = 0;
+  private lastCostSampleCount = -1;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -223,6 +227,19 @@ export class PageOcclusionBake {
 
   get isBaking(): boolean {
     return this.running;
+  }
+
+  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  consumeMeasuredDispatchCostMs(): number | null {
+    const sample = consumeGpuDispatchCostMs(
+      this.shader, this.lastBatchSize, this.lastCostSampleCount);
+    this.lastCostSampleCount = sample.sampleCount;
+    return sample.milliseconds;
+  }
+
+  /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame(): number | null {
+    return readGpuDispatchMs(this.shader);
   }
 
   /**
@@ -278,6 +295,7 @@ export class PageOcclusionBake {
     jobBuffer.update(new Uint8Array(jobs.buffer));
 
     this.running = true;
+    this.lastBatchSize = bakeable.length;
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);
@@ -354,6 +372,8 @@ export class PageSplatBake {
   private capacity = 0;
   private running = false;
   private disposed = false;
+  private lastBatchSize = 0;
+  private lastCostSampleCount = -1;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -367,6 +387,19 @@ export class PageSplatBake {
 
   get isBaking(): boolean {
     return this.running;
+  }
+
+  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  consumeMeasuredDispatchCostMs(): number | null {
+    const sample = consumeGpuDispatchCostMs(
+      this.shader, this.lastBatchSize, this.lastCostSampleCount);
+    this.lastCostSampleCount = sample.sampleCount;
+    return sample.milliseconds;
+  }
+
+  /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame(): number | null {
+    return readGpuDispatchMs(this.shader);
   }
 
   /** Bake both resident season buckets for a batch of channel slots. */
@@ -434,6 +467,7 @@ export class PageSplatBake {
     pageBuffer.update(pages);
 
     this.running = true;
+    this.lastBatchSize = bakeable.length;
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);

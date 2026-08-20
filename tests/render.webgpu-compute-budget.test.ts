@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   COMPUTE_BUDGET_CLIENTS,
+  COMPUTE_DISPATCH_SEED_COST_MS,
   ComputeBudget,
   computeBudgetCapMs,
   planComputeAdmissions,
-  type ComputeBudgetClient,
 } from "../src/render/webgpu/core/ComputeBudget";
 import { FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
@@ -145,12 +145,88 @@ describe("shared amortised-compute meter (4-0b)", () => {
     expect(budget.estimatedCostMs("terrainCompute")).toBe(moved);
   });
 
-  it("keeps every client's estimate seeded from its published row", () => {
+  it("4.5-B2(a): seeds every estimate at a measured PER-DISPATCH cost", () => {
+    // It used to seed at the client's whole per-frame ROW, which prices one
+    // page bake at everything the frame may spend on page bakes. That is 5-10x
+    // over, and it is the whole of the admission-starvation defect: with the
+    // rows, tier 1 admitted two height pages per pump at scale 1 and NONE at
+    // Governor B's GPU rung 2.
     const budget = new ComputeBudget(resolveWebGpuQualityProfile("high", "balanced"));
     for (const client of COMPUTE_BUDGET_CLIENTS) {
-      expect(budget.estimatedCostMs(client as ComputeBudgetClient))
-        .toBe(FRAME_BUDGET_MS[2][client]);
+      expect(budget.estimatedCostMs(client))
+        .toBe(COMPUTE_DISPATCH_SEED_COST_MS[client]);
+      // Non-vacuous: a seed that happened to equal the row would leave the
+      // defect in place at that client.
+      expect(COMPUTE_DISPATCH_SEED_COST_MS[client], client)
+        .toBeLessThan(FRAME_BUDGET_MS[2][client] * 2);
     }
+  });
+
+  // Assertion 114.
+  it("assertion 114: admits a height page at Governor B's deepest compute rung", () => {
+    // The verified starvation: at computeBudgetScale 0.35 the tier-1 cap is
+    // 0.54 ms, every client was priced at its whole row, and terrain admitted
+    // ZERO — forever, because a starved client observes no cost and its
+    // estimate never falls — while the LOWER-priority occlusion client still
+    // admitted two. A priority inversion that stops terrain streaming for the
+    // session.
+    for (const scale of [1, 0.6, 0.35]) {
+      const plan = planComputeAdmissions(
+        [
+          { client: "terrainCompute", count: 12, costMs: rows.terrainCompute },
+          { client: "occlusionCompute", count: 12, costMs: rows.occlusionCompute },
+        ],
+        rows,
+        scale,
+      );
+      const terrain = plan.admissions.find((entry) => entry.client === "terrainCompute")!;
+      expect(terrain.admitted, `scale ${scale}`).toBeGreaterThanOrEqual(1);
+    }
+    // The floor is a FLOOR, not a bypass: it fires only for the highest
+    // priority client with demand, and only when that client got nothing.
+    const starved = planComputeAdmissions(
+      [{ client: "occlusionCompute", count: 4, costMs: 99 }],
+      rows,
+      0.35,
+    );
+    expect(starved.admissions.find((entry) => entry.client === "occlusionCompute")!.admitted)
+      .toBe(1);
+    // …and it costs at most one dispatch of overspend, which is what Phase 5's
+    // cap assertions have to be authored for.
+    expect(starved.spentMs).toBeLessThanOrEqual(starved.capMs + 99);
+    expect(starved.deferredDispatches).toBe(3);
+  });
+
+  // Assertion 113.
+  it("assertion 113: estimates converge to within 3x of the observed cost", () => {
+    const budget = new ComputeBudget(resolveWebGpuQualityProfile("medium", "balanced"));
+    const observed = 0.042;
+    for (let batch = 0; batch < 12; batch += 1) {
+      budget.observeDispatchCostMs("terrainCompute", observed);
+    }
+    const estimate = budget.estimatedCostMs("terrainCompute");
+    expect(estimate).toBeLessThanOrEqual(observed * 3);
+    expect(estimate).toBeGreaterThanOrEqual(observed / 3);
+    // The seed is far enough from the observation for that to mean something.
+    expect(COMPUTE_DISPATCH_SEED_COST_MS.terrainCompute).toBeGreaterThan(observed * 3);
+  });
+
+  // Assertion 112.
+  it("assertion 112: two clients in one frame share one cap", () => {
+    const budget = new ComputeBudget(resolveWebGpuQualityProfile("medium", "balanced"));
+    budget.beginFrame();
+    budget.submit("terrainCompute", 20, 0.1);
+    budget.submit("occlusionCompute", 20, 0.1);
+    const shared = budget.resolve();
+    expect(shared.spentMs).toBeLessThanOrEqual(shared.capMs + 1e-9);
+
+    // The defect shape, so the assertion is not vacuous: a second beginFrame
+    // inside the same frame — which is exactly what TerrainClipmapSystem's two
+    // pumps used to do — wipes the first plan and spends a fresh cap.
+    budget.beginFrame();
+    budget.submit("occlusionCompute", 20, 0.1);
+    const second = budget.resolve();
+    expect(second.spentMs + shared.spentMs).toBeGreaterThan(shared.capMs);
   });
 });
 

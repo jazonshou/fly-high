@@ -213,9 +213,11 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
         midMeshesPerChunk: counts.mid,
         farMeshesPerChunk: counts.far,
         understoryMeshesPerChunk: counts.understory,
-        // Only the near band casts: mid, far, understory and ground cover
-        // are all registered with castsShadows false.
-        shadowMeshesPerChunk: counts.near,
+        // Only the near band casts, and only where the tier's
+        // `vegetationCastsShadows` datum lets it (4.5-C1): mid, far,
+        // understory and ground cover are all registered with castsShadows
+        // false in the runtime itself.
+        shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
         shadowCascades: profile.shadowCascades,
       }),
     };
@@ -268,7 +270,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       midMeshesPerChunk: counts.mid / 2,
       farMeshesPerChunk: counts.far,
       understoryMeshesPerChunk: counts.understory,
-      shadowMeshesPerChunk: counts.near / 2,
+      shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near / 2 : 0,
       shadowCascades: profile.shadowCascades,
     });
     expect(merged.total).toBeLessThan(estimate.total * 0.6);
@@ -299,7 +301,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       nearMeshesPerChunk: counts.near,
       midMeshesPerChunk: counts.mid,
       understoryMeshesPerChunk: counts.understory,
-      shadowMeshesPerChunk: counts.near,
+      shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
       shadowCascades: profile.shadowCascades,
     };
     const merged = estimateVegetationDrawCalls({ ...shared, farMeshesPerChunk: 1 });

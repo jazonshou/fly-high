@@ -140,6 +140,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       inventoriedGpuMemoryMiB: 312.9,
       budgetProbeActive: false,
       budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
+      gpuPassMs: { mainPass: 8.1, shadows: 1.4, terrainCompute: 1.9, total: 11.4 },
     };
     const markup = renderToStaticMarkup(createElement(Hud, {
       state: INITIAL_VISUAL_STATE,

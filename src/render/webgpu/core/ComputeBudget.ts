@@ -154,6 +154,35 @@ export function planComputeAdmissions(
   // Surplus pass: the ceiling is the whole cap, so priority alone decides.
   for (const client of COMPUTE_BUDGET_CLIENTS) take(client, capMs);
 
+  // ---------------------------------------------------------------------
+  // `4.5-B2(b)` — the floor of one.
+  //
+  // The compute ladder's stated intent is that deferring a page bake by a
+  // frame is invisible. What was actually happening at `computeBudgetScale`
+  // 0.35 (Governor B GPU rung 2) was that the HIGHEST-priority client admitted
+  // zero dispatches forever while the lower-priority occlusion client still
+  // admitted two — a priority inversion, and terrain streaming stopped for the
+  // rest of the session. Once a client is starved to zero it never observes a
+  // cost, so its estimate never falls and it never recovers: the state is
+  // absorbing.
+  //
+  // So the highest-priority client with demand always gets one dispatch. It
+  // lives INSIDE the owner rather than as a pump-side bypass, so everything is
+  // still admitted through `ComputeBudget` (the `4-0b` invariant survives).
+  // The consequence, stated because Phase 5's unwritten assertion 105 has to
+  // be authored for it: the cap can be exceeded by exactly one dispatch.
+  // ---------------------------------------------------------------------
+  for (const client of COMPUTE_BUDGET_CLIENTS) {
+    const entry = demand.get(client);
+    if (!entry) continue;
+    if ((admitted.get(client) ?? 0) > 0 || entry.count <= 0) break;
+    entry.count -= 1;
+    admitted.set(client, 1);
+    spentPerClient.set(client, (spentPerClient.get(client) ?? 0) + entry.costMs);
+    spentMs += entry.costMs;
+    break;
+  }
+
   let deferredDispatches = 0;
   const admissions: ComputeAdmission[] = [];
   for (const [client, entry] of demand) {
@@ -178,6 +207,51 @@ export function planComputeAdmissions(
 const COST_ESTIMATE_SMOOTHING = 0.25;
 
 /**
+ * `4.5-B2(a)` — the seed each client's PER-DISPATCH estimate starts at, in
+ * milliseconds, before any measurement exists.
+ *
+ * These used to be seeded at the client's whole per-frame BUDGET ROW, on the
+ * reasoning that "before any measurement exists, the budget table IS the best
+ * estimate available". It is not: a row is what a client may spend across a
+ * whole frame and an estimate is what ONE dispatch costs. Combined with
+ * `observeDispatchCostMs` having had zero call sites, that seed was the whole
+ * of the admission-starvation defect.
+ *
+ * Measured on the reference adapter through `timestamp-query` by
+ * `tests/gpu/terrain-compute-cost.test.ts`, which re-measures and fails if a
+ * pinned value drifts more than 4x. One figure per client rather than per
+ * tier: a dispatch's cost is set by the page geometry, which takes no tier
+ * argument. Observed across four runs on the same adapter — 1.16-1.91 for
+ * terrain, 0.19-0.30 for occlusion, 0.10-0.39 for splat — which is why the
+ * band is wide and the seeds sit at the conservative end.
+ *
+ * **The measurement is bigger than the budget row, and that is the finding.**
+ * One height page costs ~1.9 ms of GPU (264² texels × 4× supersampling through
+ * the ~750-line kernel), against a 0.7 ms tier-1 `terrainCompute` row and a
+ * 1.55 ms whole-compute cap. So NO height page can ever be admitted through
+ * the normal two-pass plan, at any tier, and the `4.5-B2(b)` floor of one is
+ * not a corner-case safety net — it is the terrain client's only admission
+ * path until either the kernel gets cheaper or the meter learns to amortise a
+ * dispatch across frames. Both are recorded in `PHASE_4_5_EXECUTION_PLAN.md`
+ * §10 as inputs to Phase 5/6; neither is attempted here, because the floor
+ * already delivers ~1 page per pump and 25 pages is a 0.4 s cold spawn.
+ */
+export const COMPUTE_DISPATCH_SEED_COST_MS: Readonly<Record<ComputeBudgetClient, number>> =
+  Object.freeze({
+    // Measured 1.91 ms/page at L3 (four supersamples). L0 takes one sample and
+    // is ~4x cheaper; the running estimate tracks whatever mix is streaming.
+    terrainCompute: 1.9,
+    // Measured 0.385 ms/page: the classifier over 136² channel texels, twice
+    // (both resident season buckets).
+    splatCompute: 0.4,
+    // Measured 0.301 ms/page: 16 azimuths × 24 steps over 136² texels.
+    occlusionCompute: 0.3,
+    // Erosion does not ship until Phase 5; a placeholder `5-4` must replace
+    // with its own measurement.
+    erosionCompute: 0.4,
+  });
+
+/**
  * The live meter: per-frame admission plus a running per-client cost estimate
  * fed by whatever timing the renderer can actually observe.
  *
@@ -200,9 +274,9 @@ export class ComputeBudget {
   constructor(profile: WebGpuQualityProfile) {
     this.rows = FRAME_BUDGET_MS[profile.tier as PerformanceTier];
     for (const client of COMPUTE_BUDGET_CLIENTS) {
-      // Seed each estimate at its own published row: before any measurement
-      // exists, the budget table IS the best estimate available.
-      this.costEstimateMs.set(client, clientRowMs(this.rows, client));
+      // `4.5-B2(a)`: a measured PER-DISPATCH constant, never the per-frame row.
+      // See COMPUTE_DISPATCH_SEED_COST_MS.
+      this.costEstimateMs.set(client, COMPUTE_DISPATCH_SEED_COST_MS[client]);
     }
   }
 

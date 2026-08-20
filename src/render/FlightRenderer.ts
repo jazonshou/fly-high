@@ -12,6 +12,7 @@ import { Scene, ScenePerformancePriority } from "@babylonjs/core/scene";
 import type {
   CameraMode,
   FlightVisualState,
+  GpuPassAttribution,
   QualityLevel,
   RenderDiagnostics,
   WeatherPreset,
@@ -730,6 +731,24 @@ export class FlightRenderer implements FlightRenderingSystem {
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       throwIfRendererStartupAborted(options.signal);
+      // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
+      // the load screen. Babylon 9.21 calls `createComputePipeline`
+      // synchronously on first dispatch and three of these shaders inline the
+      // ~750-line height kernel, so unwarmed they land as multi-hundred-
+      // millisecond in-frame stalls during the first second of flight — most
+      // of the `maxFrameMs` the capture reports in its warmup window. It warms
+      // them against the coarsest real page under the spawn, so the aircraft
+      // also starts over ground that already exists.
+      await awaitRendererStartup(
+        terrain.warmUpComputePipelines(
+          options.world.airport?.centerX ?? 0,
+          options.world.airport?.centerZ ?? 0,
+        ),
+        options.signal,
+        "terrain compute pre-warm",
+        SCENE_STARTUP_TIMEOUT_MILLISECONDS,
+      );
+      throwIfRendererStartupAborted(options.signal);
       // 2-10: the planar-reflection capture is retired — the environment
       // probe covers water reflections; the receiver contract stays bound to
       // a zero-confidence fallback texel inside each water material.
@@ -1091,6 +1110,41 @@ export class FlightRenderer implements FlightRenderingSystem {
       inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
+      gpuPassMs: this.collectGpuPassAttribution(),
+    };
+  }
+
+  /**
+   * `4.5-C3` — sum Babylon's per-pass GPU counters.
+   *
+   * Assertion 67 has been carried open through two phases with no owner. This
+   * is its cheap, honest fraction: the counters exist whenever the adapter
+   * granted `timestamp-query`, and reading them costs nothing. They are
+   * UNCORRELATED — no submitted-frame id — so `B-0`'s rule stands and nothing
+   * here infers a present wait. What it buys is that the frame's 39-53 ms
+   * interval against a ~15 ms GPU p95 becomes inspectable instead of being a
+   * gap nobody can name.
+   */
+  private collectGpuPassAttribution(): GpuPassAttribution {
+    if (!this.engine.enableGPUTimingMeasurements) {
+      return { mainPass: null, shadows: null, terrainCompute: null, total: null };
+    }
+    const nanoseconds = (value: number | undefined): number | null =>
+      value === undefined || !Number.isFinite(value) ? null : value / 1_000_000;
+    const mainPass = nanoseconds(this.engine.gpuTimeInFrameForMainPass?.counter.current);
+    const shadowTarget = this.atmosphere.shadows.getShadowMap()?.renderTarget as
+      { gpuTimeInFrame?: { counter: { current: number } } } | null | undefined;
+    const shadows = nanoseconds(shadowTarget?.gpuTimeInFrame?.counter.current);
+    const terrainCompute = this.terrain.gpuComputeMillisecondsInFrame;
+    const parts = [mainPass, shadows, terrainCompute]
+      .filter((value): value is number => value !== null);
+    return {
+      mainPass,
+      shadows,
+      terrainCompute,
+      total: parts.length === 0
+        ? null
+        : parts.reduce((sum, value) => sum + value, 0),
     };
   }
 

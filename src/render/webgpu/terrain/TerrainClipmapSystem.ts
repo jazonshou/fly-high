@@ -4,13 +4,13 @@
 // simply draws nothing, silently.
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import { CloudShadowMaterialPlugin } from "@/src/render/webgpu/clouds/CloudShadowMaterialPlugin";
 import type { CloudShadowProjection } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
 import { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
+import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   WORLD_PAGE_BASE_EXTENT_METERS,
@@ -28,13 +28,14 @@ import {
 } from "@/src/render/webgpu/world/streamingPriority";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type WorldDefinition } from "@/src/world";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
+import { synthesizeSurfaceMaterial } from "./MaterialArraySynthesis";
 import {
-  synthesizeSurfaceMaterial,
   uploadSurfaceMaterialArrays,
   type SurfaceMaterialArrays,
-} from "./MaterialArraySynthesis";
+} from "./MaterialArrayUpload";
+import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
-import { SURFACE_MATERIALS, SurfaceMaterial } from "./surfaceMaterials";
+import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
   TERRAIN_CHANNEL_TEXTURES,
@@ -44,10 +45,11 @@ import {
   invariantSlotKey,
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
+import type { TerrainSlotKey } from "./TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
   createTerrainNodeBuffers,
-  packTerrainNodeSplat,
+  TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
   selectTerrainNodes,
   writeTerrainNodeBuffers,
   type TerrainNode,
@@ -56,6 +58,7 @@ import {
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
+  TERRAIN_PROVISIONAL_AXIS,
   seasonBucketBlend,
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
@@ -64,10 +67,103 @@ import {
 } from "./TerrainSpineContract";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
 
+/**
+ * The four terrain compute producers, as the clipmap uses them (`4.5-B4`).
+ *
+ * Structural interfaces rather than the concrete classes, because the whole
+ * defect they exist to close is invisible to the NullEngine suite: under
+ * NullEngine the atlases hold no textures, so the system NEVER CONSTRUCTS a
+ * generator, and a `setProfile` that leaves the generator pointing at a
+ * disposed atlas cannot be observed. `computeFactory` is the seam assertion
+ * 116 drives them through.
+ */
+export interface TerrainPageProducer {
+  /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame?(): number | null;
+  generate(slots: readonly TerrainAtlasSlot[]): Promise<void>;
+  consumeMeasuredDispatchCostMs(): number | null;
+  dispose(): void;
+}
+
+export interface TerrainChannelProducer {
+  /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame?(): number | null;
+  bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]>;
+  consumeMeasuredDispatchCostMs(): number | null;
+  dispose(): void;
+}
+
+export interface TerrainSplatProducer {
+  /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
+  gpuMillisecondsInFrame?(): number | null;
+  bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<number>;
+  consumeMeasuredDispatchCostMs(): number | null;
+  dispose(): void;
+}
+
+export interface TerrainHeightPyramidProducer {
+  recenter(x: number, z: number): Promise<unknown>;
+  readonly isResident: boolean;
+  dispose(): void;
+}
+
+export interface TerrainComputeProducers {
+  readonly pageGenerator: TerrainPageProducer | null;
+  readonly occlusionBake: TerrainChannelProducer | null;
+  readonly splatBake: TerrainSplatProducer | null;
+  /**
+   * Created once and REUSED across an atlas reshape: the pyramid is a global
+   * height field that holds no atlas reference, so disposing it would throw
+   * away a recentre for nothing.
+   */
+  readonly pyramid: TerrainHeightPyramidProducer | null;
+}
+
+export interface TerrainComputeFactoryInput {
+  readonly heightAtlas: TerrainPageAtlas;
+  readonly channelAtlas: TerrainPageAtlas;
+  /** Non-null on a rebuild; the factory should hand it straight back. */
+  readonly existingPyramid: TerrainHeightPyramidProducer | null;
+}
+
+export type TerrainComputeFactory = (
+  input: TerrainComputeFactoryInput,
+) => TerrainComputeProducers;
+
 export interface TerrainClipmapSystemOptions {
   /** Injection point for headless tools and tests; omitted uses the real one. */
   readonly nodeBudgetOverride?: number;
+  /** `4.5-B4`'s seam. Omitted builds the real WebGPU producers. */
+  readonly computeFactory?: TerrainComputeFactory;
+  /**
+   * `4.5-C2b`'s seam. Omitted constructs the real worker-backed client, which
+   * falls back to inline synthesis wherever no `Worker` exists.
+   */
+  readonly materialSynthesisClient?: MaterialSynthesisClient;
 }
+
+/**
+ * Frames a rebuilt caster mesh is asked whether it is ready (`4.5-B4(b)`).
+ *
+ * A `ShadowDepthWrapper` learns about a submesh only through the FORWARD
+ * effect's `onEffectCreatedObservable`, and the caster meshes render at
+ * `layerMask 0` — no camera ever creates that effect for them. The one sweep
+ * that does is `scene.whenReadyAsync()` at startup, which a runtime
+ * cascade-count change happens long after: `rebuildCasterMeshes` then produced
+ * submeshes with no registration at all, which silently never cast. Asking
+ * `isReady(true)` is that sweep, re-run for the new meshes; it is polled
+ * rather than called once because effect compilation is asynchronous.
+ */
+const CASTER_READINESS_SWEEP_FRAMES = 120;
+
+/**
+ * Frames a slot may sit in `generating`, un-wanted and undispatched, before
+ * the atlas takes it back (`4.5-B3`). Two seconds at 60 Hz: long enough that a
+ * page the aircraft is still flying toward is never reclaimed out from under
+ * an in-flight dispatch, short enough that a banked turn's abandoned corridor
+ * does not hold the atlas hostage.
+ */
+const STALLED_SLOT_RECLAIM_FRAMES = 120;
 
 export interface TerrainObserver {
   readonly x: number;
@@ -177,7 +273,7 @@ export function attachTerrainSurfacePlugin(
   scene: Scene,
 ): TerrainSurfacePlugin {
   const plugin = new TerrainSurfacePlugin(material);
-  material.shadowDepthWrapper = new ShadowDepthWrapper(material, scene, {
+  material.shadowDepthWrapper = createGuardedShadowDepthWrapper(material, scene, {
     // `2-12`'s amendment, which `0-9`'s "no remappedVariables needed" predates
     // — that spike ran at `normalBias = 0`, where the include compiles away.
     // The atmosphere's CSM runs at 0.035, so the wrapper injects
@@ -229,14 +325,18 @@ export class TerrainClipmapSystem {
 
   private heightAtlas: TerrainPageAtlas;
   private channelAtlas: TerrainPageAtlas;
-  private pageGenerator: TerrainPageGenerator | null = null;
-  private pyramid: GlobalHeightPyramid | null = null;
-  private occlusionBake: PageOcclusionBake | null = null;
-  private splatBake: PageSplatBake | null = null;
+  private pageGenerator: TerrainPageProducer | null = null;
+  private pyramid: TerrainHeightPyramidProducer | null = null;
+  private occlusionBake: TerrainChannelProducer | null = null;
+  private splatBake: TerrainSplatProducer | null = null;
+  private casterReadinessSweeps = 0;
   private readonly computeBudget: ComputeBudget;
+  /** `4.5-C2b`: off-thread layer synthesis, or null where no worker exists. */
+  private synthesisClient: MaterialSynthesisClient | null = null;
   private debugOverlay: TerrainDebugOverlay;
   private generationInFlight = false;
   private occlusionInFlight = false;
+  private splatRebakeInFlight = false;
 
   private readonly beautyMesh: Mesh;
   /**
@@ -313,29 +413,10 @@ export class TerrainClipmapSystem {
     });
     this.computeBudget = new ComputeBudget(profile);
     this.debugOverlay = new TerrainDebugOverlay(scene, profile.heightAtlasSlots);
-    if (this.heightAtlas.hasTextures) {
-      this.pageGenerator = new TerrainPageGenerator(
-        scene.getEngine(),
-        this.heightAtlas,
-        world.seedHash,
-        world.airport ?? null,
-      );
-      this.pyramid = new GlobalHeightPyramid(scene, scene.getEngine(), world.seedHash);
-      this.occlusionBake = new PageOcclusionBake(
-        scene.getEngine(),
-        this.heightAtlas,
-        this.channelAtlas,
-        this.pyramid,
-      );
-      this.splatBake = new PageSplatBake(
-        scene.getEngine(),
-        this.heightAtlas,
-        this.channelAtlas,
-        world.seedHash,
-        world.seaLevel,
-        world.latitudeDegrees,
-        world.airport ?? null,
-      );
+    this.buildComputeProducers();
+    if (this.canBuildArrays) {
+      this.synthesisClient = options.materialSynthesisClient
+        ?? new MaterialSynthesisClient();
     }
 
     this.beautyBuffers = createTerrainNodeBuffers(
@@ -368,6 +449,15 @@ export class TerrainClipmapSystem {
    *   — and the renderer stopped with "Unable to continue flight". Bisected to
    *   the STALL, not the textures: the same two arrays built at an 8x8 edge
    *   (microseconds) start cleanly, and so does the pre-Phase-3 tree.
+   *   `4.5-0` amendment: the stall was the WINDOW, not the mechanism. The
+   *   death mode is the ShadowDepthWrapper's orphaned-defines cache — a
+   *   rendered submesh whose draw cache is reset before its first depth
+   *   render (see `core/guardedShadowDepthWrapper.ts`). The startup stall
+   *   batched the detail worker's results so growth rebinds landed together
+   *   in the first frames, holding that window open; removing the stall
+   *   narrowed it, and streaming loads kept crashing through it until the
+   *   guard closed it. This bullet's pacing rationale still stands on its
+   *   own (a 1 s frozen main thread is a defect regardless).
    * - **Driven by `update()`, not by a timer.** `update()` runs only from the
    *   `world-page-visibility` pass, which runs only inside `render()`, which
    *   happens only once `create()` has resolved — so the frame loop is both
@@ -380,7 +470,15 @@ export class TerrainClipmapSystem {
    *   512², so the build costs ten dropped frames once rather than a second of
    *   frozen main thread.
    *
-   * The terrain renders untextured for those ten frames, which the plugin
+   * `4.5-C2b` deletes the ten dropped frames themselves: `synthesizeSurface
+   * Material` is pure CPU pixel maths with no Babylon dependency, so a worker
+   * runs it and this loop only DRAINS what has landed. Both properties above
+   * survive — consumption is still driven by `update()`, and the upload still
+   * happens once at the end. Where no worker exists (the Node suite, headless
+   * tools, a bundler that did not emit one) the inline path below is unchanged
+   * and still paces itself at one layer per frame.
+   *
+   * The terrain renders untextured until the arrays land, which the plugin
    * already supports because it is constructed disabled.
    */
   private stepMaterialArrayBuild(): void {
@@ -393,20 +491,44 @@ export class TerrainClipmapSystem {
         normalMaterial: [],
         index: 0,
       };
+      this.requestMaterialSynthesis(this.materialArrayEdge);
     }
     const build = this.materialArrayBuild;
     if (build.edge !== this.materialArrayEdge) {
       // A profile change superseded it; the next frame restarts at the new edge.
       this.materialArrayBuild = null;
+      this.synthesisClient?.cancel();
       return;
     }
     const spec = SURFACE_MATERIALS[build.index];
     if (spec) {
-      const layer = synthesizeSurfaceMaterial(spec.id, this.world.seed, build.edge);
-      build.albedoHeight.push(layer.albedoHeight);
-      build.normalMaterial.push(layer.normalMaterial);
-      build.index += 1;
-      return;
+      const offThread = this.synthesisClient?.requestedEdge === build.edge
+        ? this.synthesisClient.take(build.index)
+        : null;
+      // Drain as many worker-produced layers as have landed: they arrive
+      // faster than one per frame, and holding them back would reintroduce
+      // exactly the ten-frame window this item removes.
+      if (offThread) {
+        let layer: { albedoHeight: Uint8Array; normalMaterial: Uint8Array } | null = offThread;
+        while (layer) {
+          build.albedoHeight.push(layer.albedoHeight);
+          build.normalMaterial.push(layer.normalMaterial);
+          build.index += 1;
+          layer = this.synthesisClient?.take(build.index) ?? null;
+        }
+        if (build.index < SURFACE_MATERIALS.length) return;
+      } else {
+        // No worker, or its layer has not landed yet. The inline path is the
+        // fallback AND the Node/headless path; it stays one layer per frame.
+        if (this.synthesisClient?.isAvailable && this.synthesisClient.requestedEdge === build.edge) {
+          return;
+        }
+        const inline = synthesizeSurfaceMaterial(spec.id, this.world.seed, build.edge);
+        build.albedoHeight.push(inline.albedoHeight);
+        build.normalMaterial.push(inline.normalMaterial);
+        build.index += 1;
+        return;
+      }
     }
     const replacement = uploadSurfaceMaterialArrays(
       this.scene,
@@ -423,10 +545,21 @@ export class TerrainClipmapSystem {
     // against the OLD effect — and keeps using it. The first capture after
     // the build moved off the startup path showed exactly that: pages created
     // in the first ten frames stayed white while everything streamed in
-    // afterwards was textured. There is one beauty mesh now, and one caster
-    // mesh per cascade, and all of them have to drop their caches.
+    // afterwards was textured. Only the beauty mesh drops its cache.
+    //
+    // The caster meshes deliberately do NOT (4.5-0). They never render in the
+    // main pass (layerMask 0), so their forward draw wrappers exist only from
+    // the startup readiness sweep and are never recreated; the shadow path
+    // reads them solely as the defines source when the ShadowDepthWrapper
+    // first builds a (subMesh, generator) depth params entry. Resetting them
+    // therefore refreshes nothing the shadow pass uses while destroying the
+    // defines that entry needs — a caster whose first cascade appearance came
+    // after this reset either died in createBindGroup with an unbound
+    // material context (the "Unable to continue flight" stop) or, once the
+    // orphaned effect was released, silently never cast again. The depth pass
+    // does not consume the fragment texturing this recompile changes, so the
+    // casters have nothing to gain from the reset either.
     this.beautyMesh.resetDrawCache();
-    for (const mesh of this.casterMeshes) mesh.resetDrawCache();
     previous?.albedoHeight.dispose();
     previous?.normalMaterial.dispose();
   }
@@ -458,6 +591,22 @@ export class TerrainClipmapSystem {
       nodes: this.nodes.length,
       drawCalls: 1 + this.casterMeshes.length,
     };
+  }
+
+  /**
+   * `4.5-C3`: GPU milliseconds this frame's terrain COMPUTE counters are
+   * holding, summed. An uncorrelated aggregate — Babylon's counters carry no
+   * frame id, so this says how much GPU terrain compute is costing, never how
+   * much of THIS frame's interval it explains. Null when the adapter granted
+   * no `timestamp-query`.
+   */
+  get gpuComputeMillisecondsInFrame(): number | null {
+    const parts = [
+      this.pageGenerator?.gpuMillisecondsInFrame?.() ?? null,
+      this.occlusionBake?.gpuMillisecondsInFrame?.() ?? null,
+      this.splatBake?.gpuMillisecondsInFrame?.() ?? null,
+    ].filter((value): value is number => value !== null);
+    return parts.length === 0 ? null : parts.reduce((total, value) => total + value, 0);
   }
 
   /** 4-2/4-3: the GPU page atlases, for the generator and the surface plugin. */
@@ -499,6 +648,10 @@ export class TerrainClipmapSystem {
       });
       this.debugOverlay.dispose();
       this.debugOverlay = new TerrainDebugOverlay(this.scene, profile.heightAtlasSlots);
+      // `4.5-B4(a)`: the generator and both bakes hold the atlases they were
+      // constructed with. Recreating the atlases without recreating them left
+      // terrain streaming silently dead for the rest of the session.
+      this.buildComputeProducers();
       this.bindAtlasesToPlugin();
     }
     if (cascadesChanged) this.rebuildCasterMeshes();
@@ -592,10 +745,10 @@ export class TerrainClipmapSystem {
           : null;
       },
     });
+    this.stepCasterReadiness();
     this.updateAtlasResidency();
     this.writeNodeBuffers();
-    this.pumpPageGeneration();
-    this.pumpOcclusionBake(observer);
+    this.pumpComputeClients(observer);
     this.debugOverlay.update(this.heightAtlas);
   }
 
@@ -620,6 +773,8 @@ export class TerrainClipmapSystem {
     if (this.disposed) return;
     this.disposed = true;
     this.materialArrayBuild = null;
+    this.synthesisClient?.dispose();
+    this.synthesisClient = null;
     this.pageGenerator?.dispose();
     this.occlusionBake?.dispose();
     this.splatBake?.dispose();
@@ -637,6 +792,138 @@ export class TerrainClipmapSystem {
   }
 
   // -------------------------------------------------------------------------
+
+  /**
+   * Build (or rebuild) the four compute producers against the CURRENT atlases.
+   *
+   * `4.5-B4(a)`: an atlas-reshaping quality switch disposed and recreated both
+   * atlases and left the generator and both bakes holding the disposed ones.
+   * `generate()` then early-returns forever on `!atlas.hasTextures`, slots pile
+   * up un-evictable in `generating`, and terrain streaming is permanently and
+   * silently dead for the session — with no error, because every guard on the
+   * way down is a well-behaved early return. The old producers are disposed
+   * FIRST (their `disposed` flag makes any late readback inert) and all three
+   * reconstructed; the pyramid holds no atlas reference and is handed back.
+   */
+  private buildComputeProducers(): void {
+    this.pageGenerator?.dispose();
+    this.occlusionBake?.dispose();
+    this.splatBake?.dispose();
+    const built = (this.options.computeFactory ?? this.defaultComputeFactory)({
+      heightAtlas: this.heightAtlas,
+      channelAtlas: this.channelAtlas,
+      existingPyramid: this.pyramid,
+    });
+    this.pageGenerator = built.pageGenerator;
+    this.occlusionBake = built.occlusionBake;
+    this.splatBake = built.splatBake;
+    this.pyramid = built.pyramid;
+    // A dispatch that was in flight against the disposed atlas can never
+    // complete into the new one; clear the gates so the next pump admits.
+    this.generationInFlight = false;
+    this.occlusionInFlight = false;
+    this.splatRebakeInFlight = false;
+  }
+
+  private readonly defaultComputeFactory: TerrainComputeFactory = (input) => {
+    if (!input.heightAtlas.hasTextures) {
+      return { pageGenerator: null, occlusionBake: null, splatBake: null, pyramid: null };
+    }
+    const engine = this.scene.getEngine();
+    const pyramid = input.existingPyramid
+      ?? new GlobalHeightPyramid(this.scene, engine, this.world.seedHash);
+    return {
+      pageGenerator: new TerrainPageGenerator(
+        engine,
+        input.heightAtlas,
+        this.world.seedHash,
+        this.world.airport ?? null,
+      ),
+      pyramid,
+      occlusionBake: new PageOcclusionBake(
+        engine,
+        input.heightAtlas,
+        input.channelAtlas,
+        pyramid as GlobalHeightPyramid,
+      ),
+      splatBake: new PageSplatBake(
+        engine,
+        input.heightAtlas,
+        input.channelAtlas,
+        this.world.seedHash,
+        this.world.seaLevel,
+        this.world.latitudeDegrees,
+        this.world.airport ?? null,
+      ),
+    };
+  };
+
+  /**
+   * `4.5-C2(a)` — pay for the four terrain compute pipelines BEHIND the load
+   * screen, not in the first second of flight.
+   *
+   * Babylon 9.21 has no async compute-pipeline path: `createComputePipeline`
+   * is called synchronously on the first dispatch. Three of these shaders
+   * inline the ~750-line height kernel (page generation, the global pyramid,
+   * the splat bake) and the fourth is large in its own right, so the first
+   * dispatch of each is a multi-hundred-millisecond in-frame stall — which is
+   * most of the `maxFrameMs` 298-971 ms the capture reports during warmup. The
+   * ocean's `waitForComputeReady` idiom exists for exactly this, and `5-4`/D12
+   * already mandates it for erosion; this applies it to the Phase 4 shaders.
+   *
+   * It warms them with REAL work rather than a dummy dispatch: the coarsest
+   * page under the spawn is the root the quadtree needs first anyway, so every
+   * shader is compiled against valid job data and the aircraft spawns over
+   * ground that already exists.
+   *
+   * Never throws. A pre-warm that fails is a hitch, not a broken renderer.
+   */
+  async warmUpComputePipelines(observerX = 0, observerZ = 0): Promise<void> {
+    if (this.disposed) return;
+    const generator = this.pageGenerator;
+    const pyramid = this.pyramid;
+    if (!generator || !pyramid) return;
+    try {
+      await pyramid.recenter(observerX, observerZ);
+      const extent = WORLD_PAGE_BASE_EXTENT_METERS * 2 ** COARSEST_NODE_LEVEL;
+      const address = createWorldPageAddress(
+        COARSEST_NODE_LEVEL,
+        Math.floor(observerX / extent),
+        Math.floor(observerZ / extent),
+      );
+      const key = invariantSlotKey(address);
+      this.heightAtlas.residency.beginFrame(0);
+      this.channelAtlas.residency.beginFrame(0);
+      const height = this.heightAtlas.residency.request(key, address);
+      if (!height) return;
+      await generator.generate([height.slot]);
+      const channel = this.channelAtlas.residency.request(key, address);
+      if (!channel || !this.occlusionBake) return;
+      const baked = await this.occlusionBake.bake([channel.slot]);
+      if (baked.length === 0 || !this.splatBake) return;
+      await this.splatBake.bake(baked, this.seasonDayOfYear);
+      for (const slot of baked) {
+        slot.bakedSeasonDay = this.seasonDayOfYear;
+        if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
+      }
+    } catch {
+      // Nothing to recover: the pipelines will compile on their first real
+      // dispatch, which is exactly the behaviour this method improves on.
+    }
+  }
+
+  /**
+   * Hand the whole batch to the worker at once (`4.5-C2b`).
+   *
+   * One message, ten layers streaming back with their buffers transferred —
+   * rather than a request per layer, which would put a message round-trip
+   * between every 110 ms of work and lose most of the win.
+   */
+  private requestMaterialSynthesis(edge: number): void {
+    const client = this.synthesisClient;
+    if (!client?.isAvailable) return;
+    client.request(this.world.seed, edge, SURFACE_MATERIALS.map((spec) => spec.id));
+  }
 
   private bindAtlasesToPlugin(): void {
     this.surfacePlugin.setHeightAtlas(this.heightAtlas.texture(), {
@@ -687,6 +974,24 @@ export class TerrainClipmapSystem {
         this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
       ));
     }
+    // `4.5-B4(b)`: new caster submeshes have no ShadowDepthWrapper
+    // registration until something creates their FORWARD effect, and nothing
+    // ever does at layerMask 0. Re-run the startup readiness sweep for them.
+    this.casterReadinessSweeps = CASTER_READINESS_SWEEP_FRAMES;
+  }
+
+  /**
+   * One frame of the rebuilt-caster readiness sweep. See
+   * `CASTER_READINESS_SWEEP_FRAMES`.
+   */
+  private stepCasterReadiness(): void {
+    if (this.casterReadinessSweeps <= 0) return;
+    this.casterReadinessSweeps -= 1;
+    let ready = true;
+    for (const mesh of this.casterMeshes) {
+      if (!mesh.isReady(true)) ready = false;
+    }
+    if (ready) this.casterReadinessSweeps = 0;
   }
 
   /**
@@ -699,10 +1004,19 @@ export class TerrainClipmapSystem {
   private updateAtlasResidency(): void {
     this.heightAtlas.residency.beginFrame(this.frameIndex);
     this.channelAtlas.residency.beginFrame(this.frameIndex);
+    // `4.5-B3`: a request whose dispatch never completed used to hold its slot
+    // index forever, because `evictionCandidates` considers only `resident`
+    // slots. Give those back before admitting anything new.
+    this.heightAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
+    this.channelAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
     const wanted = new Map<string, WorldPageAddress>();
     for (const node of this.nodes) {
       wanted.set(`${node.address.level}:${node.address.x}:${node.address.z}`, node.address);
-      if (node.level >= 30) continue;
+      // `4.5-B1`: no parent above the ROOT level. A node at the coarsest level
+      // has `morphK = 0` by construction (there is nothing to morph into), so
+      // an L10 page is streamed, generated at ~1.9 ms and given an atlas slot
+      // purely to be never sampled — four of them, measured, on every spawn.
+      if (node.level >= COARSEST_NODE_LEVEL) continue;
       const parent = createWorldPageAddress(
         node.level + 1,
         Math.floor(node.address.x / 2),
@@ -710,32 +1024,53 @@ export class TerrainClipmapSystem {
       );
       wanted.set(`${parent.level}:${parent.x}:${parent.z}`, parent);
     }
-    const missing: { address: WorldPageAddress }[] = [];
+    const missingHeight: { address: WorldPageAddress }[] = [];
+    const missingChannel: { address: WorldPageAddress }[] = [];
     for (const address of wanted.values()) {
       const key = invariantSlotKey(address);
       if (this.heightAtlas.residency.slotIndexOf(key) >= 0) {
         this.heightAtlas.residency.touch(key);
         this.channelAtlas.residency.touch(key);
+        // `4.5-A3(b)`: the never-retry hole. `touch()` no-ops on a key the
+        // channel atlas does not hold, and this branch used to `continue`
+        // straight past it — so one refused or failed channel admission left
+        // the page shading the provisional fallback FOREVER, until the height
+        // page itself was evicted. Ask again.
+        if (this.channelAtlas.residency.get(key) === undefined) {
+          missingChannel.push({ address });
+        }
         continue;
       }
-      missing.push({ address });
+      missingHeight.push({ address });
     }
-    if (missing.length === 0) return;
     // The shared swept flight-corridor priority (0-3), verbatim: soonest
-    // needed first, so a banked turn admits what it is turning into.
-    const ranked = rankWorldPageStreamingCandidates(
-      missing,
-      this.streamingObserver,
-      TERRAIN_STREAMING_PRIORITY_OPTIONS,
-    );
+    // needed first, so a banked turn admits what it is turning into. Height
+    // first and channel second: ground before the shading of ground.
     let admitted = 0;
-    for (const entry of ranked) {
-      if (admitted >= this.requestBudgetPerPump) break;
-      const key = invariantSlotKey(entry.candidate.address);
-      if (this.heightAtlas.residency.request(key, entry.candidate.address) === null) break;
-      this.channelAtlas.residency.request(key, entry.candidate.address);
-      admitted += 1;
-    }
+    const admit = (
+      candidates: readonly { readonly address: WorldPageAddress }[],
+      request: (key: TerrainSlotKey, address: WorldPageAddress) => unknown,
+    ): void => {
+      if (candidates.length === 0) return;
+      const ranked = rankWorldPageStreamingCandidates(
+        candidates,
+        this.streamingObserver,
+        TERRAIN_STREAMING_PRIORITY_OPTIONS,
+      );
+      for (const entry of ranked) {
+        if (admitted >= this.requestBudgetPerPump) return;
+        const key = invariantSlotKey(entry.candidate.address);
+        if (request(key, entry.candidate.address) === null) return;
+        admitted += 1;
+      }
+    };
+    admit(missingHeight, (key, address) => {
+      const height = this.heightAtlas.residency.request(key, address);
+      if (height === null) return null;
+      this.channelAtlas.residency.request(key, address);
+      return height;
+    });
+    admit(missingChannel, (key, address) => this.channelAtlas.residency.request(key, address));
   }
 
   /**
@@ -751,26 +1086,35 @@ export class TerrainClipmapSystem {
       this.heightAtlas.residency.slotIndexOf(invariantSlotKey(address));
     const channelSlotFor = (address: WorldPageAddress): number =>
       this.channelAtlas.residency.slotIndexOf(invariantSlotKey(address));
-    const splatFor = (node: TerrainNode): number => this.provisionalSplatFor(node);
+    const provisionalAxisFor = (node: TerrainNode): number => this.provisionalAxisFor(node);
     writeTerrainNodeBuffers({
       nodes: this.nodes,
       originX: this.originX,
       originZ: this.originZ,
       slotFor,
       channelSlotFor,
-      splatFor,
+      provisionalAxisFor,
     }, this.beautyBuffers);
 
-    for (let cascade = 0; cascade < this.casterMeshes.length; cascade += 1) {
-      const reach = Math.min(this.profile.shadowDistance, this.shadowCasterDistanceMeters)
-        * ((cascade + 1) / this.casterMeshes.length);
+    const cascades = this.casterMeshes.length;
+    const shadowReach = Math.min(this.profile.shadowDistance, this.shadowCasterDistanceMeters);
+    for (let cascade = 0; cascade < cascades; cascade += 1) {
+      // Every cascade is handed [0, outer], so cascade N redraws what
+      // cascades 0..N-1 already drew. `4.5-C1` measured the alternative —
+      // giving each cascade its own depth slice plus half a slice of margin —
+      // and it removed 2% of terrain triangles at the reference viewport and
+      // none at all at `cdlod-transition`, because `distanceMeters` is 3D and
+      // an airborne camera puts the whole near field inside the first slice
+      // anyway. Not taken: a real risk of losing a low-sun shadow, for a
+      // saving that does not measure.
+      const outer = shadowReach * ((cascade + 1) / cascades);
       writeTerrainNodeBuffers({
-        nodes: this.nodes.filter((node) => node.distanceMeters <= reach),
+        nodes: this.nodes.filter((node) => node.distanceMeters <= outer),
         originX: this.originX,
         originZ: this.originZ,
         slotFor,
         channelSlotFor,
-        splatFor,
+        provisionalAxisFor,
       }, this.casterBuffers[cascade]!);
     }
 
@@ -793,52 +1137,122 @@ export class TerrainClipmapSystem {
 
 
   /**
-   * The provisional two-material blend a node carries until `4-6` lands.
+   * The CPU half of `4.5-A3`'s provisional axis: the grass guard, and nothing
+   * else.
    *
-   * Derived from the page's own MEASURED height band rather than from a biome
-   * byte: the CPU tile path's classifier is gone with the worker, and this is
-   * a carry-forward, not a second classifier. `4-6`'s page splat replaces it
-   * and these lanes go away.
+   * The altitude walk itself moved into the vertex shader, where it runs
+   * against the height that shader has just displaced to — so a node with no
+   * channel slot shades a continuous gradient at vertex spacing instead of one
+   * packed constant across up to `512·2^L` m of ground. What the shader cannot
+   * know is whether the height it sampled MEANS anything: a node with no
+   * resident height slot reads zero, and zero at sea level is sand under every
+   * node the streamer has not reached — a desert wherever the atlas is behind.
+   * Residency is a lifecycle fact and the lifecycle lives here, so that one
+   * decision stays on the CPU.
    */
-  private provisionalSplatFor(node: TerrainNode): number {
-    const slot = this.heightAtlas.residency.get(invariantSlotKey(node.address));
-    const measured = slot !== undefined && slot.lifecycle.state === "resident";
-    if (!measured) {
-      // **Not sand.** A page with no measurement yet has min = max = 0, and
-      // reading that as "at sea level" put the FIRST material on the ecotone
-      // axis — sand — under every node the streamer had not reached, which is
-      // a desert wherever the atlas is behind. Grass is the axis's lowland
-      // default and the only honest guess before a height exists.
-      return packTerrainNodeSplat(SurfaceMaterial.Grass, SurfaceMaterial.ForestFloor, 0.25);
-    }
-    const mid = (slot.stats.minHeightMeters + slot.stats.maxHeightMeters) * 0.5;
-    const above = mid - this.world.seaLevel;
-    const relief = slot.stats.maxHeightMeters - slot.stats.minHeightMeters;
-    // The SurfaceMaterial axis is ordered so bracketed neighbours plausibly
-    // grade into one another; walking it by altitude is the cheapest honest
-    // provisional answer until `4-6`'s page splat is baked for this page.
-    const axis = above <= 2
-      ? 0
-      : Math.min(SURFACE_MATERIALS.length - 1, 1 + above / 380);
-    const primary = Math.floor(axis);
-    const secondary = Math.min(SURFACE_MATERIALS.length - 1, primary + 1);
-    const weight = Math.min(1, Math.max(0, axis - primary) + relief / 4_000);
-    return packTerrainNodeSplat(primary, secondary, weight);
+  private provisionalAxisFor(node: TerrainNode): number {
+    const hasTexels = this.heightAtlas.residency.slotIndexOf(invariantSlotKey(node.address)) >= 0;
+    return hasTexels
+      ? TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT
+      : TERRAIN_PROVISIONAL_AXIS.fallbackAxis;
   }
 
 
-  private pumpPageGeneration(): void {
-    const generator = this.pageGenerator;
-    if (!generator || this.generationInFlight) return;
-    const pending = this.heightAtlas.residency.entries.filter(
-      (slot) => slot.lifecycle.state === "generating" && slot.token !== null,
-    );
-    if (pending.length === 0) return;
+  /**
+   * Every terrain compute client, admitted through ONE plan (`4.5-B2(c)`).
+   *
+   * Both pumps used to call `ComputeBudget.beginFrame()` themselves, so each
+   * wiped the other's plan and spent a fresh cap — the `4-0b` "one cap per
+   * frame" invariant broken in the owner's own call sites, and invisible
+   * because no test submitted two clients in one frame (assertion 112 does
+   * now). The splat bake was never priced at all: it ran attached to the
+   * occlusion bake's admission and spent `splatCompute`'s row silently.
+   *
+   * Order matters twice over: every demand is declared before any admission is
+   * read (the meter resolves lazily and a late `submit` invalidates the plan),
+   * and the declaration order is the priority order the budget publishes.
+   */
+  private pumpComputeClients(observer: TerrainObserver): void {
+    this.observeDispatchCosts();
     this.computeBudget.beginFrame();
-    this.computeBudget.submit("terrainCompute", pending.length);
+    const heightPending = this.pendingHeightGeneration();
+    const channelPending = this.pendingChannelBake(observer);
+    const splatRebakes = this.pendingSplatRebakes();
+    if (heightPending.length > 0) {
+      this.computeBudget.submit("terrainCompute", heightPending.length);
+    }
+    if (channelPending.length > 0) {
+      // A channel slot's TWO bakes are ONE admission: occlusion writes three
+      // textures, the splat writes four, both into the same slot, and the slot
+      // is published only once both have run — publishing between them puts
+      // material 0 at weight 0 (sand) on screen, permanently, because a slot
+      // is baked once. So the pair is submitted as one demand at the combined
+      // per-page cost, to the LOWER-priority of the two clients: a paired unit
+      // of work must not jump the queue on the strength of its cheaper half.
+      this.computeBudget.submit(
+        "occlusionCompute",
+        channelPending.length,
+        this.computeBudget.estimatedCostMs("occlusionCompute")
+          + this.computeBudget.estimatedCostMs("splatCompute"),
+      );
+    }
+    if (splatRebakes.length > 0) {
+      // A season re-bake is the splat dispatch alone; occlusion is
+      // geometry-only and never goes stale.
+      this.computeBudget.submit("splatCompute", splatRebakes.length);
+    }
+    this.dispatchPageGeneration(heightPending);
+    this.dispatchChannelBake(channelPending);
+    this.dispatchSplatRebake(splatRebakes);
+  }
+
+  /**
+   * `4.5-B2(a)`: feed the meter what its dispatches actually cost.
+   *
+   * `ComputeBudget.observeDispatchCostMs` shipped with ZERO call sites, so
+   * every estimate sat at its seed forever and the admission plan was a
+   * statement about the budget table rather than about the GPU. Babylon
+   * publishes a per-compute-shader `gpuTimeInFrame` counter whenever the
+   * adapter granted `timestamp-query`; the producers divide it by their batch
+   * size and hand back a per-page number.
+   *
+   * Sampled at the TOP of the pump, before this frame's plan is built, because
+   * timestamp readback lands one or more frames after the dispatch it timed.
+   */
+  private observeDispatchCosts(): void {
+    const terrain = this.pageGenerator?.consumeMeasuredDispatchCostMs();
+    if (terrain !== null && terrain !== undefined) {
+      this.computeBudget.observeDispatchCostMs("terrainCompute", terrain);
+    }
+    const occlusion = this.occlusionBake?.consumeMeasuredDispatchCostMs();
+    if (occlusion !== null && occlusion !== undefined) {
+      this.computeBudget.observeDispatchCostMs("occlusionCompute", occlusion);
+    }
+    const splat = this.splatBake?.consumeMeasuredDispatchCostMs();
+    if (splat !== null && splat !== undefined) {
+      this.computeBudget.observeDispatchCostMs("splatCompute", splat);
+    }
+  }
+
+  private pendingHeightGeneration(): readonly TerrainAtlasSlot[] {
+    if (!this.pageGenerator || this.generationInFlight) return [];
+    return this.heightAtlas.residency.entries.filter(
+      (slot) => slot.lifecycle.state === "generating"
+        && slot.token !== null
+        // `4.5-B1`: a slot stays `generating` until its bounds readback lands,
+        // but its TEXELS are published at dispatch-submit — so texel residency
+        // is what says "this page has been dispatched". Without it every
+        // in-flight page would be re-dispatched on the next frame.
+        && !slot.texelsResident,
+    );
+  }
+
+  private dispatchPageGeneration(pending: readonly TerrainAtlasSlot[]): void {
+    const generator = this.pageGenerator;
+    if (!generator || pending.length === 0) return;
     const admitted = this.computeBudget.admitted("terrainCompute");
     if (admitted <= 0) return;
-    const batch = pending.slice(0, admitted);
+    const batch = this.rankForDispatch(pending).slice(0, admitted);
     this.generationInFlight = true;
     void generator.generate(batch)
       .catch(() => this.releaseBatch(this.heightAtlas, batch, "page generation failed"))
@@ -847,24 +1261,26 @@ export class TerrainClipmapSystem {
       });
   }
 
-  private pumpOcclusionBake(observer: TerrainObserver): void {
-    const bake = this.occlusionBake;
+  private pendingChannelBake(observer: TerrainObserver): readonly TerrainAtlasSlot[] {
     const pyramid = this.pyramid;
-    if (!bake || !pyramid || this.occlusionInFlight) return;
+    if (!this.occlusionBake || !pyramid || this.occlusionInFlight) return [];
     void pyramid.recenter(observer.x, observer.z).catch(() => undefined);
-    if (!pyramid.isResident) return;
-    const pending = this.channelAtlas.residency.entries.filter(
+    if (!pyramid.isResident) return [];
+    return this.channelAtlas.residency.entries.filter(
       (slot) => slot.lifecycle.state === "generating"
         && slot.token !== null
         && this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
     );
-    if (pending.length === 0) return;
-    this.computeBudget.beginFrame();
-    this.computeBudget.submit("occlusionCompute", pending.length);
+  }
+
+  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[]): void {
+    const bake = this.occlusionBake;
+    if (!bake || pending.length === 0) return;
     const admitted = this.computeBudget.admitted("occlusionCompute");
     if (admitted <= 0) return;
-    const batch = pending.slice(0, admitted);
+    const batch = this.rankForDispatch(pending).slice(0, admitted);
     this.occlusionInFlight = true;
+    const seasonDay = this.seasonDayOfYear;
     // BOTH channel bakes, then residency — in that order, and awaited rather
     // than chained past. A channel slot carries occlusion and splat, and
     // publishing it between the two put a zeroed splat on screen: material 0
@@ -874,8 +1290,9 @@ export class TerrainClipmapSystem {
       try {
         const baked = await bake.bake(batch);
         if (baked.length === 0) return;
-        await this.splatBake?.bake(baked, this.seasonDayOfYear);
+        await this.splatBake?.bake(baked, seasonDay);
         for (const slot of baked) {
+          slot.bakedSeasonDay = seasonDay;
           if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
         }
       } catch {
@@ -884,6 +1301,65 @@ export class TerrainClipmapSystem {
         this.occlusionInFlight = false;
       }
     })();
+  }
+
+  /**
+   * `4.5-A3(c)`: resident channel slots whose splat was baked for a season
+   * bucket the clock has left behind.
+   *
+   * The splat bake keys its slot on `invariantSlotKey` and bakes once, so
+   * before this the snowline froze at whatever day the page happened to stream
+   * in on — and with `4.5-A2` taking the ids from the LOW bucket rather than
+   * mixing them, a rollover moves the ids too. Occlusion and the horizon field
+   * are geometry-only and never need this.
+   */
+  private pendingSplatRebakes(): readonly TerrainAtlasSlot[] {
+    if (!this.splatBake || this.splatRebakeInFlight) return [];
+    return this.channelAtlas.residency.entries.filter(
+      (slot) => slot.lifecycle.state === "resident"
+        && slot.bakedSeasonDay !== null
+        && slot.bakedSeasonDay !== this.seasonDayOfYear
+        && this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
+    );
+  }
+
+  private dispatchSplatRebake(pending: readonly TerrainAtlasSlot[]): void {
+    const splatBake = this.splatBake;
+    if (!splatBake || pending.length === 0) return;
+    const admitted = this.computeBudget.admitted("splatCompute");
+    if (admitted <= 0) return;
+    const batch = this.rankForDispatch(pending).slice(0, admitted);
+    this.splatRebakeInFlight = true;
+    const seasonDay = this.seasonDayOfYear;
+    void splatBake.bake(batch, seasonDay)
+      .then(() => {
+        // The slot never leaves `resident`: its texels are overwritten in
+        // place, so there is no window in which it reads as unbaked.
+        for (const slot of batch) slot.bakedSeasonDay = seasonDay;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.splatRebakeInFlight = false;
+      });
+  }
+
+  /**
+   * `4.5-B3`: rank a pending set against the CURRENT corridor before slicing
+   * it to the admitted count.
+   *
+   * `residency.entries` is Map insertion order, i.e. the order pages were
+   * first requested — so a banked turn appended the newly urgent pages behind
+   * tens of stale ones and the pump drained them FIFO. Re-ranking costs one
+   * sort of a set that is at most the atlas slot count.
+   */
+  private rankForDispatch(pending: readonly TerrainAtlasSlot[]): readonly TerrainAtlasSlot[] {
+    if (pending.length <= 1) return pending;
+    const ranked = rankWorldPageStreamingCandidates(
+      pending.map((slot) => ({ address: slot.address, slot })),
+      this.streamingObserver,
+      TERRAIN_STREAMING_PRIORITY_OPTIONS,
+    );
+    return ranked.map((entry) => entry.candidate.slot);
   }
 
 

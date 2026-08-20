@@ -139,7 +139,9 @@ const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   // moves. Two notches rather than the plan's single rung — the ladder sheds
   // one step per 120-frame window, and one notch gives the meter no room to
   // resolve a spike before the next step cuts something visible. Recorded as
-  // a deviation in PHASE_4_EXECUTION_PLAN.md §4 D14.
+  // a deviation in PHASE_4_EXECUTION_PLAN.md §4 **D15** (this comment said
+  // D14 until `4.5-D`'s stale-comment sweep; the plan document's numbering is
+  // authoritative and D14 is tier 0's channelAtlasSlots cut, one row over).
   { lever: "compute-budget", apply: (s) => ({ ...s, computeBudgetScale: 0.6 }) },
   { lever: "compute-budget", apply: (s) => ({ ...s, computeBudgetScale: 0.35 }) },
   // 2-10 retired the planar-reflection-cadence rungs with their system — a

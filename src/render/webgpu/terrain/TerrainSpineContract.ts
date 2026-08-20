@@ -7,6 +7,7 @@ import {
   pageTexelSizeMeters,
 } from "@/src/render/webgpu/world/pageGeometry";
 import type { WorldPageKey } from "@/src/render/webgpu/world/pageKey";
+import { SURFACE_MATERIAL_COUNT, SurfaceMaterial } from "./surfaceMaterials";
 import {
   WORLD_PAGE_GPU_CHANNELS,
   worldPageChannelBytesPerTexel,
@@ -296,6 +297,36 @@ export const TERRAIN_NODE_ATTRIBUTE_STRIDE = 4;
 export const TERRAIN_NODE_LANES = Object.freeze({
   a: Object.freeze(["slotIndex", "subNodeX", "subNodeZ", "level"] as const),
   b: Object.freeze(["morphK", "parentSlotIndex", "texelSize", "maxDeviation"] as const),
+});
+
+/**
+ * `4.5-A3`: the PROVISIONAL ecotone axis — the material a node shades with
+ * while its page holds no channel (splat) slot.
+ *
+ * Stated here because it now has exactly two consumers that must agree and
+ * only one derivation site: the WGSL vertex path walks these constants against
+ * the just-displaced height, and `TerrainClipmapSystem` reads only
+ * `fallbackAxis` for the guard below. Before this item the walk lived on the
+ * CPU against the page's mean height, which made the fallback ONE material per
+ * node — a solid block up to `512·2^L` m across, which is what the reported
+ * "splotches of solid colour" were wherever a channel slot was missing.
+ *
+ * `fallbackAxis` is GRASS and not sand, and the reason is worth keeping: a
+ * node with no resident HEIGHT slot samples zero, and zero read as "at sea
+ * level" puts the first material on the axis — sand — under every node the
+ * streamer has not reached, i.e. a desert wherever the atlas is behind. The
+ * recorded caveat stands: in the fallback only, a height-non-resident beach
+ * loses its sand band.
+ */
+export const TERRAIN_PROVISIONAL_AXIS = Object.freeze({
+  /** Below this height above sea level the axis is pinned to sand/water. */
+  shoreBandMeters: 2,
+  /** Metres of elevation per step along the ecotone axis. */
+  metersPerStep: 380,
+  /** Last index on the axis; the axis is clamped into it. */
+  maxAxis: SURFACE_MATERIAL_COUNT - 1,
+  /** What a node with no height texels to walk shades with. */
+  fallbackAxis: SurfaceMaterial.Grass as number,
 });
 
 /**

@@ -47,6 +47,28 @@ Four items, each named in `PHASE_4_EXECUTION_PLAN.md` §13 with its reason:
 3. **Assertion 85** — cross-level splat consistency (a level-N page's weights equal the box average of the four level-(N−1) pages beneath it, within quantisation). The bake supersamples 2×2 and averages weight vectors, which is the mechanism this would measure; the comparison is not written.
 4. **The tier re-measure and the `perf:capture` rebaseline.** `4-10` landed the page-thrash and CDLOD-transition scenes with residency ceilings, but the ceilings are DESIGN INTENTS and every SSIM baseline in `tests/perf/baseline` is stale after `4-5`/`4-6`/`4-7` — the three rebaselines the plan sanctions. **Run `npm run perf:capture:rebaseline` on the reference machine before trusting any Phase 5 performance claim**, and re-pin the ceilings from what it reports.
 
+### Amended 2026-08-20 again: Phase 4.5 is implemented
+
+`PHASE_4_5_EXECUTION_PLAN.md` was written and executed between Phase 4 and
+this one. It closes three of the four carried items above — 83b and 85 are
+written (`tests/gpu/terrain-splat-filtering.test.ts` and
+`tests/gpu/terrain-splat-bake.test.ts`), and the sanctioned rebaseline is
+taken with the residency ceilings re-pinned from what the fixed selector
+produces (196 → 88). **The three named flights are still not flown**, and are
+carried a third time.
+
+Six things it changed or found that this plan must account for before `5-1`.
+Read `PHASE_4_5_EXECUTION_PLAN.md` §10 for the measurements behind each.
+
+| # | What | What Phase 5 must do |
+|---|---|---|
+| **X1** | **`PAGES_ARE_FINAL_AT_DISPATCH`** — `TerrainPageGenerator` publishes a page's TEXELS at dispatch-submit and lets its bounds/deviation readback land later. That is legal only while a page is final at dispatch. | `5-4`'s convergence rule (D12: a slot is never sampled mid-erosion, publish is the DAG's last stage) **retires this flag and deletes the branch it guards**. The constant exists so that retirement is a deletion, not an argument. `TerrainAtlasResidency.publishTexels` and the `texelsResident` field go with it, or become the DAG's own publish step. |
+| **X2** | **A height page costs ~1.9 ms of GPU**, measured through `timestamp-query` (264² texels × 4× supersampling through the ~750-line kernel), against a 0.7 ms tier-1 `terrainCompute` row and a 1.55 ms whole-compute cap. No height page can be admitted through `planComputeAdmissions`' normal two-pass plan at any tier. | Two consequences. First, `erosionCompute`'s 0.4 ms row is almost certainly the same kind of guess and must be measured before `5-1` prices anything against it — `tests/gpu/terrain-compute-cost.test.ts` is the harness, and `COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute` is a placeholder this phase owns. Second, the meter has **no notion of amortising one dispatch across several frames**; the `4.5-B2(b)` floor of one stands in for it. If the erosion DAG needs several dispatches per frame, that mechanism has to exist. |
+| **X3** | **The floor of one.** `planComputeAdmissions` always admits one dispatch for the highest-priority client with demand, inside `ComputeBudget` (so `4-0b`'s "everything is admitted through the meter" invariant survives). The cap can therefore be exceeded by exactly one dispatch. | **Assertion 105 ("caps hold on burst traces") must be authored floor-aware**, or it fails on the first burst it sees. Erosion is the LOWEST-priority client, so the floor never fires for it while terrain has demand — which is the intended behaviour and worth asserting. |
+| **X4** | **Supersampling is 4× at every level above L0** and is the dominant term in that 1.9 ms. The analytic `filterWidthMeters` band-limit already runs; the supersample is on top of it. | Grading or dropping it is a ~4× cut in the single most expensive compute client, and `5-4` is the item that rewrites page generation. It changes stored page heights, so it needs its own visual measurement and it lands with the DAG or not at all. |
+| **X5** | **`splatIdHi` is written and never read.** `4.5-A2` takes the season-bucket ids from the LOW bucket alone (the `mix(idLo, idHi, blend)` it replaced was a latent defect its own comment already contradicted), so one of the seven channel-family textures is baked and stored for nothing. | Retiring it is a `WORLD_PAGE_GPU_CHANNELS` change with a memory-estimator row behind it — page-payload territory, which is this phase's. It returns a channel-atlas row and a share of every splat bake. |
+| **X6** | **The bounds readback needs a ring of buffers.** Sharing one silently completed pages at min `+Infinity`, max `−Infinity`, deviation 0, which converged the whole CDLOD selector at the root ring with every automated test green. | Any DAG stage that dispatches and reads back on the same buffer has the same hazard: `copyBufferToBuffer` is encoded when the read is ISSUED, which is a microtask after the dispatch resolves — i.e. in the next frame's encoder, after that frame's `update()` has already overwritten the buffer. `tests/gpu/terrain-streaming-convergence.test.ts` is the instrument that catches this class; extend it rather than trusting a green suite. |
+
 The original (pre-implementation) precondition table follows.
 
 
