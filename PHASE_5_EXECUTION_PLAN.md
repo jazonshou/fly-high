@@ -26,7 +26,30 @@ Read §3 and §4 before writing any code.
 
 ## 1. Preconditions
 
-Phase 4 is planned but unimplemented, so unlike previous plans these preconditions name what must be **verified against code when Phase 5 starts**, not what is true today. Each cites the Phase 4 item that must have delivered it.
+**Amended 2026-08-20: Phase 4 is implemented.** The preconditions below are now facts to re-check rather than promises, and the status column records what the implementation actually delivered. Read `PHASE_4_EXECUTION_PLAN.md` §4 D13–D17 and its ticked exit checklist before planning against this table — five deviations were forced by measurement, and four exit boxes did not close.
+
+| # | Precondition | Status after Phase 4 |
+|---|---|---|
+| **P1** | Height pages generate on the GPU; L0 is supersample-free at width 0 | ✅ `terrainSupersampleOffsets(0)` has one entry, asserted in both projects. Parity: 3.78 mm at ±10⁴ m, 3.44 mm at ±10⁵ m, **2.37 mm at ±2.8×10⁶ m** — flat with radius. Criterion 4 is **5 mm, not 1 mm** (§4 D16): f32 accumulation floors at ~3.6 mm and the runway crown itself carries 5.8 mm of chord error at L0 vertex spacing. Measured through the atlas: 0.056 mm. |
+| **P2** | `publishPage` has real call sites; `fallbackSampleCount` counts | ✅ `PublishingTerrainCollisionMirror` has a page ring, a bilinear query and a miss counter, and `src/sim/terrainGrid.ts` carries `setGroundHeightMirror` — a one-line seam. **`5-2` swaps a PRODUCER**, not plumbing. The interpolation kernel is deliberately bilinear; `5-2` replaces it with Catmull-Rom alongside the producer. |
+| **P3** | `ComputeBudget` with `erosionCompute` live; Governor B rung 0 fires first | ✅ `core/ComputeBudget.ts`, four clients, reservation-then-surplus admission under one cap. Rung 0 is **two notches** (0.6, 0.35), not one — §4 D15. |
+| **P4** | The classifier is live with `dayOfYear` in its signature and a swappable wetness proxy | ✅ `LandCoverClassifier.ts`. The wetness proxy is `LandCoverInput.moisture`; `5-5` swaps its producer. Note the reference-day rule: the ECOLOGY reads the classifier at the reference day and only the splat bake passes the real one, because snow is paint (`2-18`). |
+| **P5** | The global height pyramid exists (512 m/texel, 256² over 128 km) | ✅ `GlobalHeightPyramid.ts`, recentred in whole texels, band-limited at its own texel size. |
+| **P6** | The GPU harness reads back r32float; `tests/gpu/webgpu-limits.test.ts` is committed | ✅ Committed, and it settled a second question the plan left open: **binding an r32float texture as `texture_2d<f32>` and reading it with `textureLoad` validates and returns exact values**, so the occlusion bake reads the height atlas directly rather than routing pages through a storage buffer. |
+| **P7** | The world-churn inventory is re-derived on the post-Phase-4 tree | ⚠️ **Re-derive it.** `src/world/tile.ts`, `TerrainGenerationClient.ts`, `terrain.worker.ts`, `terrainProtocol.ts`, `tests/world.tile.test.ts` and `tests/world.tile-normals.test.ts` are all deleted; `terrainQueue.ts` is now `boundedPriorityQueue.ts`; `tests/render.webgpu-terrain-clipmap.test.ts` is a quadtree suite. |
+
+### Work Phase 4 did not close, carried here
+
+Four items, each named in `PHASE_4_EXECUTION_PLAN.md` §13 with its reason:
+
+1. **The three named flights** (§11.2: full descent, cruise over a mountain range at low sun, season scrub across a bucket boundary). These are human deliverables — a recorded capture treated as a baseline — and no automated substitute exists for *no popping*, *ridges shadow valleys* or *material identity stops being a coin flip*. The measurable halves are asserted; the flights are not flown.
+2. **Assertion 83b** — a fragment-stage readback proving `vPositionW` equals the DISPLACED height at a known slope. The hook choice is asserted (the displacement compiles into both the beauty and the shadow vertex sources) and documented, but the direct measurement is not written. Cheap to add beside `tests/gpu/terrain-physics-parity.test.ts`.
+3. **Assertion 85** — cross-level splat consistency (a level-N page's weights equal the box average of the four level-(N−1) pages beneath it, within quantisation). The bake supersamples 2×2 and averages weight vectors, which is the mechanism this would measure; the comparison is not written.
+4. **The tier re-measure and the `perf:capture` rebaseline.** `4-10` landed the page-thrash and CDLOD-transition scenes with residency ceilings, but the ceilings are DESIGN INTENTS and every SSIM baseline in `tests/perf/baseline` is stale after `4-5`/`4-6`/`4-7` — the three rebaselines the plan sanctions. **Run `npm run perf:capture:rebaseline` on the reference machine before trusting any Phase 5 performance claim**, and re-pin the ceilings from what it reports.
+
+The original (pre-implementation) precondition table follows.
+
+
 
 | # | Precondition | Source | What to verify |
 |---|---|---|---|

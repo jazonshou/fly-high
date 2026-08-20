@@ -73,7 +73,7 @@ The single most likely schedule slip is erosion parameter tuning. Budget 2× the
 | Surface material | One `PBRMaterial` with no textures, `roughness = 0.93` uniformly, an 8-bit per-vertex colour from a threshold cascade (`TerrainClipmapSystem.ts:271-286`, `terrain.ts:217-226`) | Ten procedurally synthesised land-cover materials in two `Texture2DArray`s (albedo+height, normal+roughness+AO), height-blended by per-page splat weights from a continuous softmaxed classifier, triplanar on slopes, per-material BRDF |
 | Atmosphere | `Scene.FOGMODE_EXP2` with one `Color3` (`AtmosphereSystem.ts:265-267`); water and clouds receive none of it | One shared analytic aerial-perspective WGSL include consumed by terrain, water, rivers, vegetation, aircraft, airport and the cloud composite, sharing the sky's own phase functions and LUTs |
 | Indirect light | `scene.environmentTexture` never set; `environmentIntensity` is a dead uniform; one unshadowed `HemisphericLight` at 4.4% of the light budget | A physical-sky environment cube → SH irradiance + a 128 px specular probe. `HemisphericLight` retired in the same commit. Then baked per-page sky visibility, bent normals and horizon maps |
-| Shadows | `CascadedShadowGenerator(4096, sun, true, camera)`, 4 cascades, 16 km, PCF, ~840 un-culled draws (`AtmosphereSystem.ts:196-209`) | Depth-only near-field CSM (3×1536, 1.8 km, PCSS) for aircraft/trees/rocks. Terrain-vs-terrain shadowing moves to the baked horizon map — one fetch, no cascade, no bias, works to the horizon |
+| Shadows | `CascadedShadowGenerator(4096, sun, true, camera)`, 4 cascades, 16 km, PCF, ~840 un-culled draws (`AtmosphereSystem.ts:196-209`) | Depth-only near-field CSM (§5.3's per-tier rows, `FILTER_PCF` — PCSS cannot run on the depth-only RTT `1A-5` shipped) for aircraft/trees/rocks. Terrain-vs-terrain shadowing moves to the baked horizon map — one fetch, no cascade, no bias, works to the horizon |
 | Rivers/lakes | A greedy 16-direction downhill walker at 90 m steps (`HydrologyGeneration.ts:317-400`) pasting flat blue ribbons on slopes that have no channel | Geometry built from the erosion pass's exported channel graph and lake mask, with carved beds, hydraulic-geometry widths, real confluences and deltas |
 | Resolution control | One governor taking the **worst** p95 of frame-interval, CPU and GPU, lowering pixel count for CPU-bound frames (`QualityProfile.ts:164-175`, `FlightRenderer.ts:903-937`) | Governor A (GPU p95 only, anti-ratchet, absolute pixel cap) and Governor B (CPU p95, an ordered ladder of CPU-work levers). The HUD says which fired |
 | Measurement | None. `FrameGraph.passTimings` is computed and thrown away (`FrameGraph.ts:127-132`) | Per-pass attribution, a budget contract asserted in CI, and a fixed-seed screenshot harness |
@@ -338,6 +338,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 ### Phase 4 — The terrain GPU spine
 
+> **IMPLEMENTED 2026-08-20.** Nine of the twelve audit root causes are closed at this phase's exit; #7 (no screen-space-error LOD, no geomorphing) and #10 (CPU generation) close here, #10 outright. Five further deviations were forced by measurement — see `PHASE_4_EXECUTION_PLAN.md` §4 D13–D17 and its ticked exit checklist, which names the four boxes that did not close (the three named flights, assertion 83b's fragment readback, assertion 85's cross-level splat check, and the tier re-measure/rebaseline).
+>
 > **Executed per [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md), which is binding over this table.** It re-prices the phase at 46.5 d, adds `4-0` (spine contract), `4-0b` (= `6-10` moved), `4-8a` and `4-10`, splits `4-8`, and corrects four items that are fatal as written: `thinInstanceSetBuffer(…, 8)` throws, PCSS cannot run on Phase 1's depth-only CSM, `getCustomRenderList` cannot cull CDLOD nodes, and `terrainQueue.ts` must not be deleted. §5.3's Ultra 1 m L0 row and the `|x| = 5×10⁶ m` parity criterion are struck.
 
 **Goal.** Replace 172 CPU-built meshes with one GPU-fed CDLOD quadtree over a page atlas, and bake the occlusion that makes lighting describe real shape. This is the enabling phase for everything in Phases 5–6 and it is the plan's biggest incrementality risk — several items promise no visible change by design.
@@ -351,11 +353,11 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 4-1 | `wgsl-kernel` — the height kernel as a shared WGSL include, bit-exact hashing, per-octave domain wrap | 3.5 | 1B-2, 1A-3 | See §1.3. `avalanche`/`mixSeed`/`hashCoordinates` port literally. Clamp `pow` bases: `pow(0, x)` is indeterminate in WGSL. |
 | 4-2 | `page-atlas` — one r32float height atlas, slot-keyed, with indirection through thin-instance attributes | 4.0 | 4-1 | 264² slots. Reuse `WorldPageLifecycle`, `calculateWorldPageStreamingPriority` and `compareWorldPageCacheEvictionOrder` from the dead `world/` architecture verbatim. Surplus slots **are** the LRU cache. |
 | 4-3 | `gpu-height-generate` — compute generation with 2×2 rotated-grid supersampling | 3.0 | 4-2 | 8×8 workgroups. Create `ComputeShader` objects **once** and rebind uniforms per page. Second dispatch: parallel min/max reduction for the CDLOD AABB. |
-| 4-4 | `vertex-displacement` — vertex-texture displacement + fragment-computed normals; retire the terrain worker | 4.0 | 4-3, 1A-7 | +1 day over the design for `ShadowDepthWrapper` (§7 R1). Manual bilinear via 4 `textureLoad`s (r32float is not filterable in core WebGPU). Deletes `TerrainGenerationClient`, `terrain.worker.ts`, `terrainProtocol.ts`, `terrainQueue.ts`. |
+| 4-4 | `vertex-displacement` — vertex-texture displacement + fragment-computed normals; retire the terrain worker | 4.0 | 4-3, 1A-7 | +1 day over the design for `ShadowDepthWrapper` (§7 R1). Manual bilinear via 4 `textureLoad`s (r32float is not filterable in core WebGPU). Deletes `TerrainGenerationClient`, `terrain.worker.ts`, `terrainProtocol.ts`. **`terrainQueue.ts` is KEPT** — `BoundedTerrainQueue` is the VEGETATION worker's queue and deleting it breaks vegetation generation; `4-4` renamed it `boundedPriorityQueue.ts`/`BoundedPriorityQueue` and gave it an owner row under vegetation. |
 | 4-5 | `cdlod-quadtree` — screen-space error + geomorphing, one draw call | 5.0 | 4-4 | `maxDeviationFromParent × pixelsPerMeter(distance3D) > τ`. Delete `TERRAIN_SKIRT_DEPTH_METERS`, `buildTerrainIndicesWithSkirt` and friends, then set `backFaceCulling = true`. Supply a **per-cascade thin-instance subset** — Babylon's WebGPU `objectRenderer` has no `isInFrustum` on the render-list path (`objectRenderer.js:713`) and re-prepares the list per cascade (`:626`). |
 | 4-6 | `wgsl-classifier` + `page-splat-atlas` — continuous softmaxed land-cover classifier and splat page rasterisation, merged, WGSL-first, **`dayOfYear` in the signature** | 7.0 | 4-3, 3-6, 1C-9 | See §3.2. TypeScript mirror kept only as a golden-value test oracle. +1.0 d for the seasonal snow-pack term and the **24-bucket season cache key** on the splat atlas, with a two-bucket shader cross-fade so scrubbing the season never re-bakes per frame (§1.6). Designing the key in here is roughly free; adding it later is a re-architecture. |
 | 4-7 | `page-occlusion-bake` — sky visibility (GTAO horizon-arc form), bent normal, 8-azimuth horizon map, merged into one owner and one format | 5.0 | 4-3, 1C-6 | Four designs baked this four ways at three resolutions. One bake, 136² channel pages, 16 azimuths × 24 steps, marching a **coarse global height pyramid** beyond the page (512 m/texel over 128 km, 256² r32float = 256 KiB) so there is no shadow discontinuity at page edges. |
-| 4-8 | `csm-nearfield` — 3×1536, 1.8 km, PCSS, per-cascade `getCustomRenderList` frustum culling | 2.0 | 4-7 | **Now** it is safe to shorten the distance: the horizon map covers everything beyond. Doing it earlier leaves distant mountains unshadowed for months. |
+| 4-8 | `csm-nearfield` — §5.3's per-tier near-field rows, **`FILTER_PCF`**, per-cascade CASTER MESHES (`getCustomRenderList` returns meshes, and after `4-5` there is one) | 0.5 + 1.5 | 4-7 | **Now** it is safe to shorten the distance: the horizon map covers everything beyond. Doing it earlier leaves distant mountains unshadowed for months. |
 | 4-9 | `retire-cpu-terrain-path` + runway earthworks ported to WGSL | 1.0 | 4-5, 3-8 | |
 
 **Exit criteria.** Kernel parity: `|h_GPU − h_CPU| < 0.05 m` over 4,096 Halton points at five filter widths *and* at |x| = 5×10⁶ m. Terrain draw calls ≤ 12. Terrain vertex/index buffers ≤ 3 MiB. `sim.flight.test.ts` ground clearance never negative. Shadow render list contains zero terrain nodes. Cross-level consistency: a level-N page's splat weights equal the box average of the four level-(N−1) pages beneath it to within quantisation.
@@ -709,12 +711,21 @@ All figures are estimates for the reference machine with a stated range. `perf-h
 
 | Allocation | Low | Balanced | High | Ultra |
 |---|---|---|---|---|
-| Terrain height atlas (r32float, 264² slots) | 38 | 55 | 55 | 71 |
-| Terrain channel atlases (splat + surface + occlusion + aux, 136² slots) | 42 | 72 | 87 | 110 |
+<!-- 4-0: DERIVED from `heightAtlasSlots`, not copied. The row read 38/55/55/71,
+which mixed MiB with decimal-MB figures and put High equal to Balanced,
+contradicting §3.1's own grouping of High with Ultra at 4224². The numbers below
+are `edge² × 4 B` with `edge = sqrt(slots) × 264`, and a test asserts the
+estimator and the profile field move together. The channel row replaces §5.2's
+unattributed "surface + aux" allowance, and it is `edge² × 28 B` with 28 =
+occlusion 4 + horizon 8 + splat 8 × SEASON_BUCKETS_RESIDENT. Low's channel slot
+budget is 100, not 144 — see PHASE_4_EXECUTION_PLAN.md §4 D14. -->
+| Terrain height atlas (r32float, 264² slots) | 38 | 52 | 68 | 68 |
+| Terrain channel atlases (136² slots: splat ×2 buckets, occlusion, horizon) | 49 | 97 | 126 | 126 |
+| Global height pyramid (256² r32float) | 0.25 | 0.25 | 0.25 | 0.25 |
 | Erosion scratch (6 × 384² r32float, reused forever) | 3.5 | 3.5 | 3.5 | 3.5 |
 | Material arrays (2 × RGBA8 × 10 layers + mips) | 5.4 | 56 | 56 | 114 |
 | *— as shipped at `3-1` (derived from `materialArrayEdge`, not declared)* | *6.7* | *26.7* | *26.7* | *26.7* |
-| Shadow maps (depth-only near-field) | 6 | 18 | 27 | 48 |
+| Shadow maps (depth-only near-field, `4-8b`'s rows) | 8 | 12.5 | 27 | 64 |
 | Ocean (fp16 FFT working set + slope mips) | 8 | 18 | 20 | 26 |
 | Bathymetry clipmap | 1 | 2 | 4 | 4 |
 | Clouds (noise volumes + 2 history + shadow) | 12 | 16 | 20 | 26 |
@@ -749,11 +760,24 @@ Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in or
 | `msaaSamples` | 1 (+ FXAA) | 4 | 4 | 4 |
 | GPU memory ceiling | 260 MiB | 480 MiB | 700 MiB | 1000 MiB |
 | CDLOD τ / node budget | 4.0 px / 160 | 3.0 px / 240 | 2.0 px / 320 | 1.5 px / 448 |
-| L0 texel spacing | 4 m | 2 m | 2 m | 1 m |
+<!-- 4-0: STRUCK. Level-L texel size is `512·2^L / 256 = 2·2^L` m for every
+tier, fixed by the normative page geometry; reaching 1 m needs a 520² slot or a
+256 m base extent, and either is a second page geometry that the architecture
+boundary test fails by name. Worse, a tier-dependent spacing would make the
+§1.3 render-height authority a function of a graphics setting. Replaced by
+`finestResidentLevel` (1/0/0/0): Low reaches 4 m by never streaming L0. -->
+| Finest resident level (`finestResidentLevel`) | 1 (→ 4 m) | 0 (2 m) | 0 (2 m) | 0 (2 m) |
+| CDLOD pixel threshold | 4.0 | 3.0 | 2.0 | 1.5 |
+| CDLOD node budget | 160 | 240 | 320 | 448 |
+| Height / channel atlas slots | 144 / 100 | 196 / 196 | 256 / 256 | 256 / 256 |
 | Erosion scope | macro (L8) only | macro + pages L ≤ 3 | all pages | all pages, +50% iterations |
 | Erosion compute cap | 0.2 ms | 0.4 ms | 0.7 ms | 1.2 ms |
 | Terrain compute cap | 0.4 ms | 0.7 ms | 1.0 ms | 1.6 ms |
-| Shadows | 2 × 1024 @ 900 m, PCF | 3 × 1280 @ 1400 m, PCF | 3 × 1536 @ 1800 m, PCSS | 4 × 2048 @ 2400 m, PCSS |
+<!-- 4-8b: PCSS STRUCK at High and Ultra. `computeShadowWithCSMPCSS` needs a
+second `texture_2d_array<f32>` bound from the shadow map's COLOUR attachment,
+and `1A-5` deleted that attachment for the single largest memory win in Phase 1.
+Balanced ships TWO cascades, not three — PHASE_4_EXECUTION_PLAN.md §4 D15. -->
+| Shadows | 2 × 1024 @ 900 m, PCF | 2 × 1280 @ 1400 m, PCF | 3 × 1536 @ 1800 m, PCF | 4 × 2048 @ 2400 m, PCF |
 | Material array edge | 256² | 512² | 512² | ~~1024²~~ **512²** *(`3-1`, CPU synthesis — see `PHASE_3_EXECUTION_PLAN.md` §14.2 D-3-2)* |
 | Triplanar | off (slope-stretched planar) | 2-axis fast path | 3-axis | 3-axis |
 | Height-blend max materials | 2 | 3 | 4 | 4 |
@@ -806,7 +830,8 @@ Frame 16.67 ms − 1.5 ms compositor/present/submit − 1.5 ms pacing headroom =
 | Terrain compute (height + normal/AO/horizon), amortised **cap** | 0.7 | hard cap | Not an average — the scheduler enforces it |
 | Erosion compute, amortised **cap** | 0.4 | hard cap | |
 | Splat/classifier compute, amortised **cap** | 0.25 | hard cap | |
-| Shadows (3 × 1280 near field, no terrain, per-cascade culled) | 1.1 | 0.8–1.6 | Terrain leaves the caster list entirely once horizon maps land |
+| Shadows (2 × 1280 near field, per-cascade caster meshes) | 0.7 | 0.7–1.8 | 4-8b: terrain leaves the FAR field, not the caster list — inside the shortened cascades it still casts, through one caster mesh per cascade; beyond `shadowDistance` the horizon map is the authority |
+| Occlusion compute (4-7's page bake) | 0.20 | 0.10–0.40 | Added at `4-0` in the same commit as the shadow cut that funds it: tier 2 had 0.10 ms of slack, so the row and its funding could not be separated |
 | Water (ocean FFT fp16 0.55 + ocean/river raster 1.05) | 1.6 | 1.2–2.2 | |
 | Clouds (integration at 0.45 + temporal + composite + shadow) | 2.2 | 1.7–3.0 | Post-`adaptive-march`; the only subsystem that comes in under its original allocation |
 | Vegetation (scatter/cull compute + alpha-tested draws + impostors) | 1.8 | 1.3–2.6 | Alpha test defeats TBDR hidden-surface removal; separate render group after opaque. **Not met — measured 5.0× over at Balanced and quantified 2026-08-19.** Vegetation is a DRAW-CALL workload (2-12: ~26 µs each, Δgpu linear in Δdraws, triangle deltas ~0), draws scale with (chunks × meshes), and §5.3's trade-off rule puts crown variants per species outside every budget ladder — so no permitted lever reaches this row. The perf-debt pass took every one that exists (−1,201 draws across the capture set) and priced the structural remainder: merging crown and trunk into one mesh is fidelity-neutral and takes tier 1 from 347 to 186 draws, with `6-9`'s GPU scatter beyond it. See `renderedDensity.ts`'s `VEGETATION_DRAW_CEILING`. |
