@@ -35,6 +35,21 @@ export interface SubsystemBudgetMs {
   readonly terrainCompute: number;
   readonly erosionCompute: number;
   readonly splatCompute: number;
+  /**
+   * `4-0`/`4-7`: the page occlusion bake (sky visibility, bent normal and the
+   * 8-azimuth horizon map). An amortised hard cap, admitted through
+   * `ComputeBudget` like every other compute row.
+   *
+   * **This row and its funding are in one commit, deliberately.**
+   * `FRAME_BUDGET_MS[2]` summed to 13.60 ms against a 13.7 ms target — 0.10 ms
+   * of slack — so adding any positive value at tier 2 would trip the budget
+   * test in the same commit that adds the row. The funding is the shadow cut:
+   * `4-8a` has already halved the maps at tiers 2 and 3 by the time this row
+   * exists, and `4-8b` shortens tier 1's cascades before tier 1's `shadows`
+   * row moves. A budget row must never assert a spend nothing has delivered
+   * (the `R-22` failure mode).
+   */
+  readonly occlusionCompute: number;
   readonly shadows: number;
   readonly water: number;
   readonly clouds: number;
@@ -67,6 +82,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       terrainCompute: 0.4,
       erosionCompute: 0.2,
       splatCompute: 0.15,
+      occlusionCompute: 0.1,
       shadows: 0.7,
       water: 1.1,
       clouds: 1.5,
@@ -79,6 +95,9 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       terrainCompute: 0.7,
       erosionCompute: 0.4,
       splatCompute: 0.25,
+      occlusionCompute: 0.2,
+      // Tier 1 keeps 1.1 ms until `4-8b` actually shortens its cascades:
+      // `4-8a` cut tiers 2 and 3 only, so only they may spend the refund yet.
       shadows: 1.1,
       water: 1.6,
       clouds: 2.2,
@@ -91,7 +110,9 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       terrainCompute: 1.0,
       erosionCompute: 0.7,
       splatCompute: 0.3,
-      shadows: 1.2,
+      occlusionCompute: 0.25,
+      // `4-8a` halved this tier's maps in week 1; the row follows.
+      shadows: 0.8,
       water: 1.8,
       clouds: 2.3,
       vegetation: 1.9,
@@ -103,7 +124,9 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       terrainCompute: 1.6,
       erosionCompute: 1.2,
       splatCompute: 0.5,
-      shadows: 2.6,
+      occlusionCompute: 0.4,
+      // `4-8a` halved this tier's maps in week 1; the row follows.
+      shadows: 1.8,
       water: 4.0,
       clouds: 5.5,
       vegetation: 3.6,
@@ -193,6 +216,32 @@ export interface DynamicAllocationInputs {
   readonly materialArrayCount: number;
   readonly materialArrayLayers: number;
   readonly materialArrayBytesPerTexel: number;
+  /**
+   * `4-0`: the page-atlas SHAPE, for the same reason the material arrays are
+   * declared as a shape. `heightAtlasMiB` is a function of the tier's
+   * `heightAtlasSlots` knob and the slot's stored edge, so it moves when
+   * either moves; a MiB scalar could not.
+   *
+   * Values are pinned against `TerrainSpineContract.ts` by test rather than
+   * imported, so `core/` keeps its no-subsystem-imports shape.
+   */
+  readonly heightSlotStoredEdge: number;
+  readonly heightSlotBytesPerTexel: number;
+  readonly channelSlotStoredEdge: number;
+  /** Bytes per channel texel from the SEASON-INVARIANT families. */
+  readonly channelInvariantBytesPerTexel: number;
+  /** Bytes per channel texel from ONE season bucket of the keyed families. */
+  readonly channelSeasonBytesPerTexel: number;
+  /**
+   * `SEASON_BUCKETS_RESIDENT`. Two, and the row must reflect it: a two-bucket
+   * cross-fade needs both buckets resident for every VISIBLE page at once, so
+   * peak splat demand is two slots per page and the atlas is sized for it.
+   * Assertion 69 asserts the row moves when this moves.
+   */
+  readonly residentSeasonBuckets: number;
+  /** `4-7`'s coarse global height pyramid. */
+  readonly heightPyramidEdge: number;
+  readonly heightPyramidBytesPerTexel: number;
 }
 
 export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
@@ -222,6 +271,19 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   materialArrayCount: 2,
   materialArrayLayers: 10,
   materialArrayBytesPerTexel: 4,
+  // 4-0/4-2: 256 height core + 2x4 gutter.
+  heightSlotStoredEdge: 264,
+  heightSlotBytesPerTexel: 4,
+  // 4-0/4-6/4-7: 128 channel core + 2x4 gutter.
+  channelSlotStoredEdge: 136,
+  // occlusion (1 x rgba8) + horizon (2 x rgba8).
+  channelInvariantBytesPerTexel: 12,
+  // splat: 4 material ids + 4 weights, 2 x rgba8, per season bucket.
+  channelSeasonBytesPerTexel: 8,
+  residentSeasonBuckets: 2,
+  // 256 texels at 512 m/texel = 131 km across, beyond the 45 km far plane.
+  heightPyramidEdge: 256,
+  heightPyramidBytesPerTexel: 4,
 });
 
 /**
@@ -277,6 +339,12 @@ export interface GpuMemoryEstimateMiB {
   /** Includes the `2-1` cloud volumes once their input is non-zero. */
   readonly cloudsMiB: number;
   readonly terrainGeometryMiB: number;
+  /** `4-2`: the r32float height atlas. */
+  readonly heightAtlasMiB: number;
+  /** `4-6`/`4-7`: the splat, occlusion and horizon page atlases. */
+  readonly channelAtlasMiB: number;
+  /** `4-7`: the coarse global height pyramid the occlusion bake marches. */
+  readonly heightPyramidMiB: number;
   /** Z-4: the split vegetation rows (replacing the flat detail allowance). */
   readonly detailInstancesMiB: number;
   readonly foliageAtlasMiB: number;
@@ -319,6 +387,15 @@ export function estimateRenderPixels(
  */
 function terrainPagesAtLevel(level: number): number {
   return level === 0 ? 25 : 21;
+}
+
+/**
+ * Texels per atlas edge for a slot budget. The atlas is a square slot grid,
+ * so `sqrt(slots)` slots per edge; `TerrainSpineContract.terrainAtlasEdgeTexels`
+ * is the same arithmetic and a test pins them together.
+ */
+function atlasEdgeTexels(slots: number, slotEdge: number): number {
+  return Math.ceil(Math.sqrt(Math.max(1, slots))) * slotEdge;
 }
 
 function terrainPageBytes(resolution: number): number {
@@ -373,12 +450,29 @@ export function estimateGpuMemoryBreakdown(
       terrainPagesAtLevel(level) * terrainPageBytes(profile.terrainTileResolution);
   }
 
+  const heightAtlasEdge = atlasEdgeTexels(profile.heightAtlasSlots, inputs.heightSlotStoredEdge);
+  const heightAtlasBytes =
+    heightAtlasEdge * heightAtlasEdge * inputs.heightSlotBytesPerTexel;
+
+  const channelAtlasEdge =
+    atlasEdgeTexels(profile.channelAtlasSlots, inputs.channelSlotStoredEdge);
+  const channelBytesPerTexel =
+    inputs.channelInvariantBytesPerTexel
+    + inputs.channelSeasonBytesPerTexel * inputs.residentSeasonBuckets;
+  const channelAtlasBytes = channelAtlasEdge * channelAtlasEdge * channelBytesPerTexel;
+
+  const heightPyramidBytes =
+    inputs.heightPyramidEdge * inputs.heightPyramidEdge * inputs.heightPyramidBytesPerTexel;
+
   const tier = profile.tier as PerformanceTier;
   const framebuffersMiB = framebufferBytes / MIB;
   const shadowsMiB = shadowBytes / MIB;
   const oceanMiB = oceanBytes / MIB;
   const cloudsMiB = cloudBytes / MIB + inputs.cloudVolumesMiB;
   const terrainGeometryMiB = terrainBytes / MIB;
+  const heightAtlasMiB = heightAtlasBytes / MIB;
+  const channelAtlasMiB = channelAtlasBytes / MIB;
+  const heightPyramidMiB = heightPyramidBytes / MIB;
   const detailInstancesMiB =
     (inputs.detailInstanceBudget[tier] * inputs.detailInstanceBytes) / MIB;
   const foliageAtlasMiB = inputs.foliageAtlasMiB;
@@ -394,6 +488,7 @@ export function estimateGpuMemoryBreakdown(
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
     (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB
+      + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
       + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
       + materialArraysMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
@@ -405,6 +500,9 @@ export function estimateGpuMemoryBreakdown(
     oceanMiB,
     cloudsMiB,
     terrainGeometryMiB,
+    heightAtlasMiB,
+    channelAtlasMiB,
+    heightPyramidMiB,
     detailInstancesMiB,
     foliageAtlasMiB,
     impostorAtlasMiB,
@@ -438,6 +536,9 @@ export function assertWithinBudget(
     `ocean ${breakdown.oceanMiB.toFixed(1)}`,
     `clouds ${breakdown.cloudsMiB.toFixed(1)}`,
     `terrain ${breakdown.terrainGeometryMiB.toFixed(1)}`,
+    `height-atlas ${breakdown.heightAtlasMiB.toFixed(1)}`,
+    `channel-atlas ${breakdown.channelAtlasMiB.toFixed(1)}`,
+    `height-pyramid ${breakdown.heightPyramidMiB.toFixed(2)}`,
     `detail-instances ${breakdown.detailInstancesMiB.toFixed(1)}`,
     `foliage-atlas ${breakdown.foliageAtlasMiB.toFixed(1)}`,
     `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,

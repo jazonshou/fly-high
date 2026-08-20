@@ -84,18 +84,137 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "QuantizedSurfacePage",
       "QuantizedHydrologyPage",
       "WORLD_PAGE_SURFACE_CHANNELS",
+      "WorldPageChannelDescriptor",
+      "WORLD_PAGE_GPU_CHANNELS",
+      "WORLD_PAGE_GPU_FORMAT_BYTES",
     ],
     notes:
       "Every page-channel addition goes through one PR against this file. No page-channel type is declared anywhere else.",
+  },
+  {
+    // 4-0: eleven Phase 4 consumers agree about slot geometry, atlas sizing,
+    // the season key, the node record and the parity criterion because this
+    // file says so once, before any of them exists.
+    artifact: "terrain-spine-contract",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainSpineContract.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "TerrainSlotKey",
+      "SEASON_BUCKETS",
+      "SEASON_BUCKETS_RESIDENT",
+      "seasonBucket",
+      "seasonBucketBlend",
+      "terrainTexelSizeMeters",
+      "terrainAtlasEdgeTexels",
+      "terrainSlotOrigin",
+      "TERRAIN_HEIGHT_SLOT_EDGE",
+      "TERRAIN_CHANNEL_SLOT_EDGE",
+      "TERRAIN_NODE_GRID_RESOLUTION",
+      "TERRAIN_NODES_PER_SLOT_EDGE",
+      "TERRAIN_SUPERSAMPLE_OFFSETS",
+      "TERRAIN_HEIGHT_PARITY_CRITERIA",
+      "TERRAIN_SUPPORTED_WORLD_RADIUS_METERS",
+      "TERRAIN_HEIGHT_PYRAMID_EDGE",
+    ],
+    notes:
+      "Imports page geometry from world/ and names its own symbols "
+      + "TerrainSlot*/TERRAIN_* — a WorldPage* declaration here fails the "
+      + "boundary test by name.",
+  },
+  {
+    // 4-0b: 6-10 pulled forward. Three amortised compute producers with hard
+    // millisecond caps documented as "enforced by their schedulers", and no
+    // scheduler — FrameGraphPass.cadence is an integer frame divisor and
+    // nothing else. A second admission policy is that gap reopening.
+    artifact: "amortised-compute-meter",
+    owner: "performance",
+    definitionSites: ["src/render/webgpu/core/ComputeBudget.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "ComputeBudget",
+      "COMPUTE_BUDGET_CLIENTS",
+      "ComputeBudgetClient",
+    ],
+    notes: "One per-frame millisecond meter; every GPU compute producer admits through it.",
+  },
+  {
+    // 4-1: the WGSL height kernel had NO owner row, which is exactly how a
+    // second definition of the height kernel would appear — the institutional
+    // failure the audit found, in the artifact the phase creates.
+    artifact: "terrain-height-kernel-wgsl",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainKernel.ts"],
+    consumers: ["terrain-geometry", "terrain-material"],
+    ownedSymbols: [
+      "TERRAIN_KERNEL_WGSL",
+      "TERRAIN_KERNEL_CONSTANTS",
+      "TERRAIN_KERNEL_LATTICES",
+      "buildTerrainKernelPageUniform",
+      "TERRAIN_KERNEL_FORBIDDEN_BUILTINS",
+    ],
+    notes:
+      "A transliteration of src/world/{seed,noise,geology,terrain}.ts, not a "
+      + "second kernel. Every expectation constant is INJECTED from the TS "
+      + "source; retyping one is how coarse-page mean height moves by metres.",
+    plannedBy: "4-1",
   },
   {
     artifact: "terrain-page-atlas",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
     consumers: ["terrain-geometry", "terrain-material"],
-    ownedSymbols: ["TerrainPageAtlas"],
-    plannedBy: "4-2",
+    ownedSymbols: ["TerrainPageAtlas", "TerrainAtlasResidency"],
     notes: "Terrain-material consumes atlases; it does not create them.",
+    plannedBy: "4-2",
+  },
+  {
+    // 4-3: the false-colour overlay RENDERING_PLAN.md mandates before the
+    // items that consume it. Unowned, it becomes three overlays.
+    artifact: "terrain-debug-overlay",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainDebugOverlay.ts"],
+    consumers: ["terrain-geometry", "performance"],
+    ownedSymbols: ["TerrainDebugOverlay", "TERRAIN_DEBUG_OVERLAY_MODES"],
+    plannedBy: "4-3",
+  },
+  {
+    // 4-7: the coarse global height field the occlusion bake marches beyond a
+    // page, so there is no shadow discontinuity at page edges.
+    artifact: "global-height-pyramid",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/GlobalHeightPyramid.ts"],
+    consumers: ["terrain-geometry", "lighting"],
+    ownedSymbols: ["GlobalHeightPyramid", "GLOBAL_HEIGHT_PYRAMID_WGSL"],
+    plannedBy: "4-7",
+  },
+  {
+    // 4-7: ONE bake, one owner, one format. Four subsystem designs baked
+    // this four ways at three resolutions before the audit.
+    artifact: "page-occlusion-bake",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/PageOcclusionBake.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "PageOcclusionBake",
+      "PAGE_OCCLUSION_WGSL",
+      "PAGE_OCCLUSION_AZIMUTHS",
+    ],
+    plannedBy: "4-7",
+  },
+  {
+    // 4-5: the quadtree, the node record writer and the caster meshes.
+    artifact: "cdlod-quadtree",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainQuadtree.ts"],
+    consumers: ["terrain-geometry"],
+    ownedSymbols: [
+      "TerrainQuadtree",
+      "selectTerrainNodes",
+      "terrainNodeMorphK",
+      "buildTerrainNodeGrid",
+    ],
+    plannedBy: "4-5",
   },
   {
     artifact: "page-geometry-one-number",
@@ -488,6 +607,38 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: ["ChannelNetwork"],
     plannedBy: "5-5",
     notes: "Previously unowned and on the critical path.",
+  },
+  {
+    // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,
+    // which trees stand on it and which animals live in them. Before this,
+    // classifyBiome's threshold cascade, chooseTreeSpecies and the wildlife
+    // habitat rules were three independent answers to one question.
+    artifact: "land-cover-classification",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/LandCoverClassifier.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "classifyLandCover",
+      "LandCoverWeights",
+      "LAND_COVER_CLASSIFIER_WGSL",
+      "landCoverSuitabilities",
+    ],
+    notes:
+      "Ten smooth suitability functions, softmaxed and top-4 renormalised, "
+      + "replacing classifyBiome's threshold cascade. dayOfYear is in the "
+      + "signature from the first line (seasonal-family rule).",
+    plannedBy: "4-6",
+  },
+  {
+    // 4-6b (D12): densityField's WGSL half. ONE shared include consumed by
+    // both the classifier and the vegetation path — not a copy.
+    artifact: "vegetation-density-field-wgsl",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/densityFieldWgsl.ts"],
+    consumers: "any",
+    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL", "GROUND_COVER_ARCHETYPES"],
+    notes: "Transliteration of densityField.ts; the TS remains the authority.",
+    plannedBy: "4-6b",
   },
   {
     artifact: "detail-worker",

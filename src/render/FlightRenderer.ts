@@ -457,6 +457,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
+        // 4-0: assert the limits the renderer DECLARES, not the ones it hopes
+        // for. `setMaximumLimits: false` above means the device runs at spec
+        // defaults regardless of how generous the adapter is.
+        reportedLimits: capability.limits,
       });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());

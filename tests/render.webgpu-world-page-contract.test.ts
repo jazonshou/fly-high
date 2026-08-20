@@ -25,7 +25,9 @@ import {
 function createPayload(): WorldPagePayload {
   const layout = {
     extentMeters: 512,
-    heightResolution: 5,
+    // 4-0: the height core is a power of two since §1.4 (the validator's
+    // 2^n + 1 rule was the pre-§1.4 geometry and is gone).
+    heightResolution: 4,
     surfaceResolution: 4,
     gutter: 1,
   } as const;

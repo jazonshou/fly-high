@@ -104,19 +104,34 @@ export function validateWorldPageLayout(value: unknown): readonly WorldPageValid
 
   requireFiniteNumber(value, "extentMeters", "layout", issues, Number.MIN_VALUE);
 
+  /**
+   * `4-0` (§3.9): a POWER OF TWO, mirroring the rule `surfaceResolution`
+   * already has.
+   *
+   * This rule was `2^n + 1` — the pre-§1.4 vertex-shared geometry — while the
+   * shipped `WORLD_PAGE_LAYOUT.heightResolution` has been 256 since Phase 0.
+   * So the canonical layout FAILED its own validator, and had done since the
+   * geometry was resolved, because nothing ever called the validator on it.
+   * `world.page-geometry.test.ts` now asserts
+   * `validateWorldPageLayout(WORLD_PAGE_LAYOUT)` returns no issues, so the two
+   * can never diverge again unnoticed.
+   *
+   * Deliberately NOT "either 2^n or 2^n + 1": accepting both would let the
+   * retired geometry back in through a validator that says it is fine.
+   */
   const heightResolution = value.heightResolution;
   if (
     typeof heightResolution !== "number" ||
     !Number.isSafeInteger(heightResolution) ||
-    heightResolution < 3 ||
-    heightResolution > 2_049 ||
-    !isPowerOfTwo(heightResolution - 1)
+    heightResolution < 2 ||
+    heightResolution > 2_048 ||
+    !isPowerOfTwo(heightResolution)
   ) {
     addIssue(
       issues,
       "layout.heightResolution",
       "invalid-value",
-      "must be a 2^n + 1 integer between 3 and 2049",
+      "must be a power-of-two integer between 2 and 2048",
     );
   }
 

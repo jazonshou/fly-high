@@ -1,5 +1,7 @@
+import { findWebGpuLimitShortfalls } from "./Capabilities";
+
 /**
- * Startup render invariants (1A-2, extended by 1C-4).
+ * Startup render invariants (1A-2, extended by 1C-4 and 4-0).
  *
  * INVARIANT THIS FILE OWNS: configuration states the renderer silently
  * depends on are asserted once at startup instead of being discovered as
@@ -40,6 +42,16 @@ export interface StartupInvariantInput {
    * Omit on engines that never run the ocean compute (NullEngine tests).
    */
   readonly oceanMipGenerationAvailable?: boolean;
+  /**
+   * `4-0`: the limits the ADAPTER reported, checked against
+   * `REQUIRED_WEBGPU_LIMITS`. The device runs at spec defaults (the renderer
+   * passes `setMaximumLimits: false`), so an adapter that cannot meet the
+   * declared floors means Phase 4's atlases cannot be allocated — and without
+   * this check, that is discovered as a texture-creation failure on a user's
+   * machine rather than as a named refusal at startup. Omit where no probe
+   * ran.
+   */
+  readonly reportedLimits?: Readonly<Record<string, number>>;
 }
 
 /** Babylon's Scene.FOGMODE_NONE, restated as data so this file stays Class P. */
@@ -100,6 +112,13 @@ export function collectStartupInvariantFailures(
       "engine._generateMipmaps is missing (Babylon private API changed); the ocean's "
       + "slope cascades cannot be mipped and distant water would silently un-filter — "
       + "re-verify the 2-8 mip path against the new Babylon version",
+    );
+  }
+
+  for (const shortfall of findWebGpuLimitShortfalls(input.reportedLimits ?? {})) {
+    failures.push(
+      `WebGPU limit ${shortfall.limit} is ${shortfall.reported}, below the `
+      + `${shortfall.required} the renderer declares; Phase 4's page atlases do not fit`,
     );
   }
 

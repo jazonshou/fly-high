@@ -162,3 +162,107 @@ export function getWorldPageTransferables(payload: WorldPagePayload): ArrayBuffe
   }
   return [...buffers];
 }
+
+// ---------------------------------------------------------------------------
+// GPU residency encoding (`4-0`).
+//
+// `payload.ts` stays the SOLE owner of *what channels exist and what they
+// mean*. The `Quantized*Page` types above are the **CPU/worker transfer
+// encoding**: 16-bit quantised, row-major, transferable, produced by a worker
+// and consumed by an uploader. From Phase 4 a page is also generated directly
+// on the GPU and never has a CPU payload at all, so the same channel set needs
+// a second, GPU-resident description. Both live here, in one file, because the
+// channel rule ("every page-channel addition goes through one PR against this
+// file") would quietly stop meaning anything if the GPU half lived elsewhere.
+// ---------------------------------------------------------------------------
+
+/** Texture formats the page atlases use. Kept to what WebGPU guarantees. */
+export type WorldPageGpuFormat = "r32float" | "rgba8unorm" | "r16float";
+
+/** Bytes one texel of a GPU page format occupies, per texture. */
+export const WORLD_PAGE_GPU_FORMAT_BYTES: Readonly<Record<WorldPageGpuFormat, number>> =
+  Object.freeze({
+    r32float: 4,
+    rgba8unorm: 4,
+    r16float: 2,
+  });
+
+/**
+ * One GPU-resident channel family. `coreResolution` names which of the
+ * layout's two cores the family stores at — never a literal, so a family can
+ * never introduce a third page geometry (§1.4).
+ */
+export interface WorldPageChannelDescriptor {
+  readonly name: string;
+  readonly gpuFormat: WorldPageGpuFormat;
+  readonly coreResolution: "height" | "surface";
+  /** Textures of `gpuFormat` this family occupies per resident slot. */
+  readonly textureCount: number;
+  /**
+   * True only for families whose content is a function of `dayOfYear`.
+   * Exactly one family is: land cover. Height is a function of
+   * `(level, x, z, seed)`, erosion runs on geological time, and occlusion and
+   * the horizon field are geometry-only.
+   */
+  readonly seasonKeyed: boolean;
+  /** The plan item that first writes this family; absent means it is live. */
+  readonly plannedBy?: string;
+}
+
+export const WORLD_PAGE_GPU_CHANNELS: readonly WorldPageChannelDescriptor[] = Object.freeze([
+  Object.freeze({
+    name: "height",
+    gpuFormat: "r32float" as const,
+    coreResolution: "height" as const,
+    textureCount: 1,
+    seasonKeyed: false,
+  }),
+  Object.freeze({
+    name: "splat",
+    gpuFormat: "rgba8unorm" as const,
+    coreResolution: "surface" as const,
+    // Four material ids and four weights: one texture each.
+    textureCount: 2,
+    seasonKeyed: true,
+  }),
+  Object.freeze({
+    name: "occlusion",
+    gpuFormat: "rgba8unorm" as const,
+    coreResolution: "surface" as const,
+    // Sky visibility plus the bent normal's xy.
+    textureCount: 1,
+    seasonKeyed: false,
+  }),
+  Object.freeze({
+    name: "horizon",
+    gpuFormat: "rgba8unorm" as const,
+    coreResolution: "surface" as const,
+    // Eight azimuth elevation angles, four per texture.
+    textureCount: 2,
+    seasonKeyed: false,
+  }),
+  Object.freeze({
+    name: "flowAccum",
+    gpuFormat: "r16float" as const,
+    coreResolution: "surface" as const,
+    textureCount: 3,
+    seasonKeyed: false,
+    plannedBy: "5-5",
+  }),
+]);
+
+/** Stored edge of one slot of a channel family under a layout, gutter included. */
+export function worldPageChannelStoredEdge(
+  descriptor: WorldPageChannelDescriptor,
+  layout: WorldPageLayout,
+): number {
+  const core = descriptor.coreResolution === "height"
+    ? layout.heightResolution
+    : layout.surfaceResolution;
+  return core + layout.gutter * 2;
+}
+
+/** Bytes one stored texel of a family occupies across all of its textures. */
+export function worldPageChannelBytesPerTexel(descriptor: WorldPageChannelDescriptor): number {
+  return WORLD_PAGE_GPU_FORMAT_BYTES[descriptor.gpuFormat] * descriptor.textureCount;
+}

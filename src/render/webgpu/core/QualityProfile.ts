@@ -92,6 +92,36 @@ export interface WebGpuQualityProfile {
    * the rest.
    */
   readonly heightBlendMaxMaterials: number;
+  /**
+   * `4-0`/`4-5`: screen-space error, in pixels, above which a CDLOD node
+   * splits. Split when `maxDeviationFromParent × pixelsPerMeter(distance3D)`
+   * exceeds this. Monotone decreasing in tier — a smaller threshold splits
+   * sooner, so Ultra buys detail here rather than through a finer height page
+   * (see `terrainTexelSizeMeters`, which takes no tier argument).
+   */
+  readonly cdlodPixelThreshold: number;
+  /** `4-0`/`4-5`: ceiling on simultaneously drawn CDLOD nodes. */
+  readonly cdlodNodeBudget: number;
+  /**
+   * `4-0`: the finest page level this tier ever streams. Low reaches its
+   * 4 m effective spacing by never admitting L0, NOT by storing a coarser
+   * page — §1.3's height authority must not be a function of a graphics
+   * setting.
+   */
+  readonly finestResidentLevel: number;
+  /**
+   * `4-0`/`4-2`: r32float height-atlas slots. Surplus slots ARE the LRU
+   * cache. The estimator's `heightAtlasMiB` row is derived from this field,
+   * so the tier knob and the budget cannot disagree (assertion 69).
+   */
+  readonly heightAtlasSlots: number;
+  /**
+   * `4-0`/`4-6`/`4-7`: channel-atlas slots (splat, occlusion, horizon).
+   * Independent of `heightAtlasSlots`: a page may hold a height slot with no
+   * channel slot, in which case its surface falls back to the provisional
+   * splat — the co-residency rule `4-2` states.
+   */
+  readonly channelAtlasSlots: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -162,6 +192,20 @@ export function resolveWebGpuQualityProfile(
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
+      cdlodPixelThreshold: 4,
+      cdlodNodeBudget: 160,
+      // Low never streams L0: 4 m effective spacing without a second page
+      // geometry, and one less level of streaming pressure.
+      finestResidentLevel: 1,
+      heightAtlasSlots: 144,
+      // DEVIATION from §5.3's 144, recorded in PHASE_4_EXECUTION_PLAN.md §4
+      // D13: at 144 the derived channel atlas is 71.1 MiB raw here, leaving
+      // tier 0 at ~255/260 — inside the estimator's own +/-15% calibration
+      // tolerance, i.e. not actually legal. §5.2's stated rule is to take
+      // such a saving in sampling rather than in a second geometry; 100 slots
+      // is that saving, and Low's `finestResidentLevel: 1` already halves its
+      // finest-level page demand, so channel residency is where it belongs.
+      channelAtlasSlots: 100,
       shadowMapSize: 1_024,
       shadowCascades: 2,
       shadowDistance: 4_500,
@@ -198,6 +242,11 @@ export function resolveWebGpuQualityProfile(
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
+      cdlodPixelThreshold: 3,
+      cdlodNodeBudget: 240,
+      finestResidentLevel: 0,
+      heightAtlasSlots: 196,
+      channelAtlasSlots: 196,
       shadowMapSize: 2_048,
       shadowCascades: 2,
       shadowDistance: 7_000,
@@ -240,7 +289,19 @@ export function resolveWebGpuQualityProfile(
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
-      shadowMapSize: 4_096,
+      cdlodPixelThreshold: 2,
+      cdlodNodeBudget: 320,
+      finestResidentLevel: 0,
+      heightAtlasSlots: 256,
+      channelAtlasSlots: 256,
+      // `4-8a` (Class D, deleted at `4-8b`): 4096 -> 2048 at tiers 2 and 3
+      // only. Cascade count and distance unchanged; distant terrain still
+      // self-shadows at ~3 m/texel in the far cascade instead of ~1.5 m.
+      // This refunds 192 MiB raw here, which is what makes `4-2`'s height
+      // atlas and `4-6`'s splat atlas legal at this tier. Tier 1 is
+      // deliberately NOT cut — it has 40% headroom and §2.0's "no gate leaves
+      // the sim worse" is worth more than symmetry.
+      shadowMapSize: 2_048,
       shadowCascades: 4,
       shadowDistance: 16_000,
       oceanResolution: 256,
@@ -281,7 +342,13 @@ export function resolveWebGpuQualityProfile(
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
-    shadowMapSize: 4_096,
+    cdlodPixelThreshold: 1.5,
+    cdlodNodeBudget: 448,
+    finestResidentLevel: 0,
+    heightAtlasSlots: 256,
+    channelAtlasSlots: 256,
+    // `4-8a`: see tier 2. Same cut, same reason.
+    shadowMapSize: 2_048,
     shadowCascades: 4,
     shadowDistance: 16_000,
     oceanResolution: 256,
