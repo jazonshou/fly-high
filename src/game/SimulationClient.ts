@@ -11,14 +11,21 @@ import {
 type StateListener = (state: FlightVisualState) => void;
 type ErrorListener = (message: string) => void;
 
+/** Heavy frames may coast briefly, but never predict far enough to invent a manoeuvre. */
+export const MAX_VISUAL_EXTRAPOLATION_SECONDS = 0.05;
+const WORKER_CLOCK_OFFSET_EMA_ALPHA = 0.1;
+
 export class SimulationClient {
   private readonly worker: Worker;
   private stateListener: StateListener | null = null;
   private errorListener: ErrorListener | null = null;
   private previousState: FlightVisualState | null = null;
   private latestState: FlightVisualState | null = null;
-  private latestReceivedAt = 0;
   private renderState: FlightVisualState | null = null;
+  /** Main-thread seconds minus simulation seconds, smoothed across message jitter. */
+  private workerClockOffsetSeconds: number | null = null;
+  /** The sampled simulation clock may coast or pause, but never move backwards. */
+  private lastSampledSimulationTime: number | null = null;
 
   constructor(
     world: WorldDefinition,
@@ -99,12 +106,56 @@ export class SimulationClient {
     const latest = this.latestState;
     const previous = this.previousState;
     if (!latest) return null;
-    if (!previous || previous.simulationTime === latest.simulationTime) return latest;
+    if (
+      !previous
+      || this.workerClockOffsetSeconds === null
+    ) {
+      this.lastSampledSimulationTime = latest.simulationTime;
+      this.renderState = cloneVisualState(latest);
+      return this.renderState;
+    }
+    if (previous.simulationTime === latest.simulationTime) {
+      const targetTime = Math.min(
+        latest.simulationTime + MAX_VISUAL_EXTRAPOLATION_SECONDS,
+        Math.max(this.lastSampledSimulationTime ?? latest.simulationTime, latest.simulationTime),
+      );
+      this.renderState = targetTime > latest.simulationTime
+        ? extrapolateFlightState(
+            latest,
+            targetTime - latest.simulationTime,
+            this.renderState ?? undefined,
+          )
+        : cloneVisualState(latest);
+      this.lastSampledSimulationTime = this.renderState.simulationTime;
+      return this.renderState;
+    }
     const snapshotDuration = Math.max(1 / 240, latest.simulationTime - previous.simulationTime);
-    const elapsedSinceSnapshot = Math.max(0, (timestamp - this.latestReceivedAt) / 1_000);
-    const targetTime = latest.simulationTime - snapshotDuration + elapsedSinceSnapshot;
-    const alpha = Math.min(1, Math.max(0, (targetTime - previous.simulationTime) / snapshotDuration));
-    this.renderState = interpolateFlightState(previous, latest, alpha, this.renderState ?? undefined);
+    const estimatedWorkerTime = timestamp / 1_000 - this.workerClockOffsetSeconds;
+    const delayedTargetTime = estimatedWorkerTime - snapshotDuration;
+    const monotoneTargetTime = Math.max(
+      this.lastSampledSimulationTime ?? previous.simulationTime,
+      delayedTargetTime,
+    );
+    const targetTime = Math.min(
+      latest.simulationTime + MAX_VISUAL_EXTRAPOLATION_SECONDS,
+      monotoneTargetTime,
+    );
+    if (targetTime <= latest.simulationTime) {
+      const alpha = (targetTime - previous.simulationTime) / snapshotDuration;
+      this.renderState = interpolateFlightState(
+        previous,
+        latest,
+        alpha,
+        this.renderState ?? undefined,
+      );
+    } else {
+      this.renderState = extrapolateFlightState(
+        latest,
+        targetTime - latest.simulationTime,
+        this.renderState ?? undefined,
+      );
+    }
+    this.lastSampledSimulationTime = this.renderState.simulationTime;
     return this.renderState;
   }
 
@@ -125,14 +176,25 @@ export class SimulationClient {
       this.errorListener?.(event.data.message);
       return;
     }
-    if (event.data.type === "ready") {
-      this.previousState = event.data.state;
+    const receivedAtSeconds = performance.now() / 1_000;
+    const state = event.data.state;
+    const clockRestarted = event.data.type === "ready"
+      || (this.latestState !== null && state.simulationTime < this.latestState.simulationTime);
+    if (clockRestarted) {
+      this.previousState = state;
+      this.workerClockOffsetSeconds = receivedAtSeconds - state.simulationTime;
+      this.lastSampledSimulationTime = state.simulationTime;
+      this.renderState = null;
     } else {
-      this.previousState = this.latestState ?? event.data.state;
+      this.previousState = this.latestState ?? state;
+      const offsetSample = receivedAtSeconds - state.simulationTime;
+      this.workerClockOffsetSeconds = this.workerClockOffsetSeconds === null
+        ? offsetSample
+        : this.workerClockOffsetSeconds
+          + (offsetSample - this.workerClockOffsetSeconds) * WORKER_CLOCK_OFFSET_EMA_ALPHA;
     }
-    this.latestState = event.data.state;
-    this.latestReceivedAt = performance.now();
-    this.stateListener?.(event.data.state);
+    this.latestState = state;
+    this.stateListener?.(state);
   };
 
   private readonly handleWorkerError = (event: ErrorEvent): void => {
@@ -234,4 +296,90 @@ export function interpolateFlightState(
   result.stalled = useSecondFlags ? second.stalled : first.stalled;
   result.crashed = useSecondFlags ? second.crashed : first.crashed;
   return result;
+}
+
+/**
+ * Constant-velocity, constant-body-rate visual prediction. This deliberately
+ * does not advance forces, controls, contacts, or flags: the worker remains
+ * authoritative, and the renderer only bridges one missed snapshot.
+ */
+export function extrapolateFlightState(
+  state: FlightVisualState,
+  durationSeconds: number,
+  target?: FlightVisualState,
+): FlightVisualState {
+  const dt = Math.min(
+    MAX_VISUAL_EXTRAPOLATION_SECONDS,
+    Math.max(0, Number.isFinite(durationSeconds) ? durationSeconds : 0),
+  );
+  // A caller may reasonably request an in-place update. Do not let the
+  // scratch vectors alias the authoritative snapshot in that case.
+  const result = target && target !== state ? target : cloneVisualState(state);
+  const position = result.position;
+  const velocity = result.velocity;
+  const orientation = result.orientation;
+  const angularVelocity = result.angularVelocity;
+  Object.assign(result, state);
+  result.position = position;
+  result.velocity = velocity;
+  result.orientation = orientation;
+  result.angularVelocity = angularVelocity;
+  result.position.x = state.position.x + state.velocity.x * dt;
+  result.position.y = state.position.y + state.velocity.y * dt;
+  result.position.z = state.position.z + state.velocity.z * dt;
+  result.velocity.x = state.velocity.x;
+  result.velocity.y = state.velocity.y;
+  result.velocity.z = state.velocity.z;
+  result.angularVelocity.x = state.angularVelocity.x;
+  result.angularVelocity.y = state.angularVelocity.y;
+  result.angularVelocity.z = state.angularVelocity.z;
+
+  // Same q_dot = 1/2 * q * omega_body convention as the authoritative sim.
+  const qx = state.orientation.x;
+  const qy = state.orientation.y;
+  const qz = state.orientation.z;
+  const qw = state.orientation.w;
+  const omega = state.angularVelocity;
+  const halfDt = 0.5 * dt;
+  result.orientation.x = qx + halfDt * (qw * omega.x + qy * omega.z - qz * omega.y);
+  result.orientation.y = qy + halfDt * (qw * omega.y - qx * omega.z + qz * omega.x);
+  result.orientation.z = qz + halfDt * (qw * omega.z + qx * omega.y - qy * omega.x);
+  result.orientation.w = qw + halfDt * (-qx * omega.x - qy * omega.y - qz * omega.z);
+  normalizeVisualQuaternion(result.orientation);
+  updateVisualAnglesFromOrientation(result);
+
+  result.altitude = state.altitude + state.velocity.y * dt;
+  result.altitudeAgl = state.altitudeAgl + state.velocity.y * dt;
+  result.verticalSpeed = state.velocity.y;
+  result.simulationTime = state.simulationTime + dt;
+  return result;
+}
+
+function normalizeVisualQuaternion(orientation: FlightVisualState["orientation"]): void {
+  const length = Math.hypot(orientation.x, orientation.y, orientation.z, orientation.w);
+  if (!Number.isFinite(length) || length < 1e-8) {
+    orientation.x = 0;
+    orientation.y = 0;
+    orientation.z = 0;
+    orientation.w = 1;
+    return;
+  }
+  const inverse = 1 / length;
+  orientation.x *= inverse;
+  orientation.y *= inverse;
+  orientation.z *= inverse;
+  orientation.w *= inverse;
+}
+
+function updateVisualAnglesFromOrientation(state: FlightVisualState): void {
+  const { x, y, z, w } = state.orientation;
+  // Body +X (forward), +Z (port), and +Y (up), rotated into world space.
+  const forwardX = 1 - 2 * (y * y + z * z);
+  const forwardY = 2 * (x * y + w * z);
+  const forwardZ = 2 * (x * z - w * y);
+  const rightY = -2 * (y * z - w * x);
+  const upY = 1 - 2 * (x * x + z * z);
+  state.heading = ((Math.atan2(forwardX, forwardZ) * 180) / Math.PI + 360) % 360;
+  state.pitch = (Math.asin(Math.min(1, Math.max(-1, forwardY))) * 180) / Math.PI;
+  state.bank = (Math.atan2(-rightY, upY) * 180) / Math.PI;
 }

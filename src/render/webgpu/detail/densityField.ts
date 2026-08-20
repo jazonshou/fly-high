@@ -44,6 +44,12 @@ export interface VegetationDensitySample {
   readonly heightFactor: number;
   /** −1 cool north face … +1 warm south face; shifts the conifer share. */
   readonly aspect: number;
+  /**
+   * 0 in stand interiors, approaching 1 through the forest-edge margin.
+   * Generation uses this to make edge stems shorter and bushier without
+   * changing the climatic species/stand decision.
+   */
+  readonly forestEdge: number;
 }
 
 /** Base canopy density: ~800 stems/ha before habitat factors. */
@@ -57,7 +63,92 @@ const ZERO_DENSITY: VegetationDensitySample = Object.freeze({
   shrubStemsPerSquareMeter: 0,
   heightFactor: 1,
   aspect: 0,
+  forestEdge: 0,
 });
+
+interface ForestPatternSample {
+  readonly glade: number;
+  readonly disturbance: number;
+  readonly forestFraction: number;
+  readonly forestEdge: number;
+}
+
+/** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
+export function forestFraction(
+  seedHash: number,
+  x: number,
+  z: number,
+  moisture: number,
+): number {
+  const provinceRaw = fbm2D(
+    mixSeed(seedHash, 75),
+    (x + z * 0.21) / 7_200,
+    (z - x * 0.21) / 5_400,
+    3,
+    2,
+    0.5,
+  );
+  return smoothstep(-0.22, 0.2, provinceRaw + (moisture - 0.55) * 0.7);
+}
+
+/**
+ * Gate B's authored forest pattern. This stays in the density owner so no
+ * renderer, material, or future classifier can grow a second answer to
+ * "where is forest?".
+ *
+ * Three scales have deliberately different jobs:
+ * - a multi-kilometre province gate makes meadow valleys and unbroken forest;
+ * - a sharpened 260 m glade field can fall below the rendered-stem cap;
+ * - disturbances include both a soft succession field and a rare hard edge.
+ */
+function sampleForestPattern(
+  seedHash: number,
+  x: number,
+  z: number,
+  moisture: number,
+): ForestPatternSample {
+  // Moist climates are more likely to carry forest, but never force every
+  // valley closed. The smooth gate is wide enough to form a real ecotone.
+  const province = forestFraction(seedHash, x, z, moisture);
+
+  const gladeRaw = fbm2D(mixSeed(seedHash, 73), x / 260, z / 260, 2, 2, 0.5);
+  // The previous 0.30 floor authored at least 240 stems/ha in a nominal
+  // 800-stem stand, still far above the ~78/ha rendered cap. A 0.02 floor
+  // lets a clearing actually expose ground after rendered-share thinning.
+  const glade = 0.02 + 0.98 * smoothstep(-0.24, 0.02, gladeRaw);
+
+  const successionRaw = fbm2D(
+    mixSeed(seedHash, 74),
+    x / 1_400,
+    z / 1_400,
+    2,
+    2,
+    0.5,
+  );
+  // Full amplitude: the disturbed end reaches zero rather than retaining a
+  // permanent 15% canopy floor.
+  const succession = 1 - smoothstep(0.3, 0.48, successionRaw);
+
+  // One genuinely hard-edged class (windthrow): an elongated, low-frequency
+  // field is thresholded rather than eased. Real burns/cuts/windthrow do not
+  // all dissolve through the same procedural softness.
+  const windthrowRaw = valueNoise2D(
+    mixSeed(seedHash, 76),
+    (x + z * 0.46) / 3_600,
+    (z - x * 0.46) / 1_700,
+  );
+  const windthrow = windthrowRaw > 0.61 ? 0 : 1;
+  const disturbance = succession * windthrow;
+
+  // Edge margins are keyed to the transition bands themselves, not a second
+  // placement noise. The hard-edge term is intentionally narrow.
+  const provinceEdge = 1 - smoothstep(0.05, 0.22, Math.abs(province - 0.5));
+  const gladeEdge = 1 - smoothstep(0.025, 0.14, Math.abs(gladeRaw + 0.11));
+  const windthrowEdge = 1 - smoothstep(0.008, 0.045, Math.abs(windthrowRaw - 0.61));
+  const forestEdge = saturate(Math.max(provinceEdge, gladeEdge * 0.7, windthrowEdge));
+
+  return { glade, disturbance, forestFraction: province, forestEdge };
+}
 
 export function densityField(
   seedHash: number,
@@ -99,23 +190,18 @@ export function densityField(
   const lapse = 1 - smoothstep(500, Math.max(501, treeline), elevation) * 0.45;
   const aspectFactor = 1 - aspect * 0.25;
 
-  // Multiplicative glade and disturbance fields: openings without centres.
-  const glade = 0.3 + 0.7 * smoothstep(
-    -0.38,
-    0.14,
-    fbm2D(mixSeed(seedHash, 73), input.x / 260, input.z / 260, 2, 2, 0.5),
-  );
-  const disturbance = 1 - 0.85 * smoothstep(
-    0.34,
-    0.5,
-    fbm2D(mixSeed(seedHash, 74), input.x / 1_400, input.z / 1_400, 2, 2, 0.5),
+  const forest = sampleForestPattern(
+    seedHash,
+    input.x,
+    input.z,
+    input.moisture,
   );
   // Airfields are mown grass (1B-6): woody stems fade multiplicatively.
   const clearance = 1 - clamp(input.airportInfluence ?? 0, 0, 1);
 
   const habitat =
-    shoreline * slopeFactor * lapse * treelineFactor * aspectFactor * glade * disturbance
-    * clearance;
+    shoreline * slopeFactor * lapse * treelineFactor * aspectFactor
+    * forest.glade * forest.disturbance * forest.forestFraction * clearance;
   const treeStems = BASE_TREE_STEMS * moistureFactor * habitat;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
@@ -123,15 +209,20 @@ export function densityField(
   const shrubMoisture = smoothstep(0.2, 0.5, input.moisture);
   const shrubSlope = 1 - smoothstep(0.09, 0.26, input.slope);
   const shrubTreeline = 1 - smoothstep(treeline - 80, treeline + 140, elevation);
-  const openness = 0.45 + 0.55 * (1 - glade * 0.7);
+  const openness = 0.45 + 0.55 * (1 - forest.glade * 0.7);
+  const shrubForestGate = 0.28 + forest.forestFraction * 0.72;
+  const edgeShrubGain = 1 + forest.forestEdge * 0.45;
   const shrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
-    * disturbance * clearance;
+    * forest.disturbance * shrubForestGate * edgeShrubGain * clearance;
 
   return {
     treeStemsPerSquareMeter: saturate(treeStems),
     shrubStemsPerSquareMeter: saturate(shrubStems),
-    heightFactor,
+    // Edge stems trade height for lateral mass in generation. Keeping the
+    // scalar here makes the margin a property of the density authority.
+    heightFactor: heightFactor * (1 - forest.forestEdge * 0.34),
     aspect,
+    forestEdge: forest.forestEdge,
   };
 }

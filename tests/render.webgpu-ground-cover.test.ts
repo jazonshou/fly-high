@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { TerrainBiome } from "../src/world";
+import { hashSeed, TerrainBiome } from "../src/world";
 import { generateDetailCell, GROUND_COVER_GRID } from "../src/render/webgpu/detail/generation";
+import { densityField } from "../src/render/webgpu/detail/densityField";
 import { buildGrassPatchPrototype } from "../src/render/webgpu/detail/prototypeGeometry";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
@@ -30,11 +31,12 @@ function sampler(overrides: Partial<DetailTerrainSample>): (x: number, z: number
 function nodesFor(
   terrainSample: (x: number, z: number) => DetailTerrainSample,
   dayOfYear = 171,
+  cell = { x: 4, z: 9 },
 ) {
   return generateDetailCell({
     worldSeed: "ground-cover",
-    cellX: 4,
-    cellZ: 9,
+    cellX: cell.x,
+    cellZ: cell.z,
     cellSizeMeters: 128,
     densityMultiplier: 1,
     terrainSample,
@@ -43,6 +45,35 @@ function nodesFor(
     latitudeDegrees: 45,
   }).groundCover;
 }
+
+/** Find a stable 128 m cell whose ground-cover nodes are actually shaded. */
+function selectClosedForestCell(): { readonly x: number; readonly z: number; readonly shade: number } {
+  const seedHash = hashSeed("ground-cover");
+  let best = { x: 0, z: 0, shade: Number.NEGATIVE_INFINITY };
+  for (let cellZ = -64; cellZ <= 64; cellZ += 1) {
+    for (let cellX = -64; cellX <= 64; cellX += 1) {
+      let shaded = 0;
+      for (let row = 0; row < GROUND_COVER_GRID; row += 1) {
+        for (let column = 0; column < GROUND_COVER_GRID; column += 1) {
+          const field = densityField(seedHash, {
+            x: cellX * 128 + (column + 0.5) * 16,
+            z: cellZ * 128 + (row + 0.5) * 16,
+            heightMeters: 320,
+            seaLevelMeters: 0,
+            slope: 0.05,
+            moisture: 0.66,
+            dayOfYear: 171,
+          });
+          if (field.treeStemsPerSquareMeter / 0.05 > 0.45) shaded += 1;
+        }
+      }
+      if (shaded > best.shade) best = { x: cellX, z: cellZ, shade: shaded };
+    }
+  }
+  return best;
+}
+
+const CLOSED_FOREST_CELL = selectClosedForestCell();
 
 function dominantArchetype(nodes: ReturnType<typeof nodesFor>): string {
   const counts = new Map<string, number>();
@@ -84,6 +115,8 @@ describe("ground cover patches (2-16)", () => {
     expect(dominantArchetype(nodesFor(sampler({ moisture: 0.8, slope: 0.02 })))).toBe("reed");
     expect(dominantArchetype(nodesFor(
       sampler({ biome: TerrainBiome.FOREST, moisture: 0.66 }),
+      171,
+      CLOSED_FOREST_CELL,
     ))).toBe("fern");
     expect(dominantArchetype(nodesFor(
       sampler({ biome: TerrainBiome.HIGHLAND, height: 980, slope: 0.3, moisture: 0.3 }),

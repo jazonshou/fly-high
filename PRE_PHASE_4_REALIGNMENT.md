@@ -141,6 +141,80 @@ takeoff roll, low pass and flare, where that shadow is the height cue.
 `tests/render.webgpu-aircraft.test.ts` that every mesh with
 `metadata.castsShadow !== false` has `isVisible === true` in both camera modes.
 
+### Gate A implementation record — 2026-08-19
+
+Gate A is implemented on the Phase 3.5 implementation branch. The historical
+finding and estimates above are retained as the audit record; the shipped
+result reconciles them with the code that existed at implementation time:
+
+- **A-1:** the trainer and jet primary bodies are capped elliptical lofts and
+  the wings/tails are finite NACA-like airfoil volumes with UVs and outward
+  right-handed normals. Separate ailerons, elevators and flaps leave physical
+  hinge gaps. The code already had useful gear legs, wheels, braces and control
+  transforms, so those were preserved and tested rather than rebuilt to match
+  the audit's stale primitive count.
+- **A-2:** three small deterministic maps per paint recipe carry every named
+  feature — panels, rivets, seams, filler, soot, leading-edge wear and livery —
+  with per-part BRDF values. Phase 3 ultimately shipped CPU synthesis rather
+  than the older GPU-compute sketch; Gate A therefore reuses the shipped
+  `TextureArrayMips.buildMipChain` box/Toksvig reducers and explicit mip upload
+  at 64², without adding a second generic synthesis framework or an imported
+  asset pipeline. The worst live aircraft uses about **0.188 MiB** of these
+  fixed surface maps.
+- **A-3:** both aircraft use PBR clearcoat plus subsurface refraction/
+  transmission against the existing sky IBL, and both have modeled seats,
+  panels, gauges, needles and emissive markings visible from cockpit view.
+- **A-4:** a pure 15–35 rad/s smoothstep crossfade replaces the sinusoidal
+  enable/disable strobe; the hub, blades and radial-alpha disc remain enabled.
+  Cockpit-obscuring skin occupies one reserved camera layer, while every
+  shadow caster remains `isVisible === true` in chase and cockpit modes.
+- **A-5:** gull, hawk, deer and boar now have species-specific procedural
+  silhouettes and feather/fur/keratin PBR character. The runtime still owns
+  exactly ten shared prototype batches and thin-instance matrices — no
+  per-animal mesh path was introduced. Right-handed signed-volume and outward-
+  normal tests guard every prototype. Measured steady allocation is **37,716
+  bytes** of prototype position/normal/index data plus the unchanged
+  **1,310,720-byte** fixed matrix buffers (**1,348,436 bytes / 1.286 MiB**).
+
+The existing planned aircraft row in `ARCHITECTURE.md` was activated rather
+than duplicated, and `aircraft` is now a live `SubsystemName` with a manifest
+entry. Focused aircraft/wildlife/receiver/architecture suites passed 32/32;
+both aircraft material combinations and all ten wildlife prototypes also
+compiled and rendered on the real WebGPU adapter without validation errors.
+
+That production-style adapter test exposed and closed one integration defect
+the older flat aircraft materials had not exercised. Babylon 9.21.2 could
+drop the cloud receiver's implicit effect-cache marker when the aerial plugin
+was attached second, then reuse a cloud-injected effect for an aerial-only
+emissive aircraft material that had no cloud sampler binder. The cloud plugin
+now publishes an explicit sentinel define, the former capture allowlist for
+that warning is deleted, and cloud+aerial versus aerial-only material contexts
+must compile and render with zero Babylon or GPU errors.
+
+**Close-policy decision.** The original Gate A omitted a formal exit list,
+memory rule and screenshot-churn policy. The implementation uses the structural
+and on-adapter tests above, the allocations recorded here, and the full gate
+verification suite as its exit. Because the aircraft is intentionally present
+in persistent capture pixels, **exactly one Gate-A-close visual rebaseline is
+authorised**, after Gate B's own sanctioned vegetation rebaseline. It may
+rewrite the intended aircraft pixels but may not re-pin fps/hitch floors or
+hide unrelated image drift. This is an implementation-time completion of the
+missing policy, not an amendment to an already implemented phase.
+
+**Close evidence.** The authorised Gate-A-close run completed all fourteen
+fixed scenes and the intended aircraft/forest pixels were inspected. Against
+the immediately preceding Gate-B-only run, the rebuilt aircraft adds 35–46
+draws per scene while GPU p95 moves between **−0.21 and +0.45 ms**; that is the
+measured Gate A cost on this capture state, not a re-pinned budget. The already
+hot host again missed the unchanged `approach-500ft` floor (**18.2 vs 24 fps**)
+with a 63.4 ms interval p95 against 5.6 ms CPU and 17.64 ms GPU, so the failure
+is retained rather than normalised away. The banked-turn min/mean consecutive
+SSIM is **0.8313/0.8421** and maximum mean-luminance delta is **0.0019**,
+holding the Gate-B temporal improvement and remaining far inside the 0.01
+ceiling. After the cache-sentinel fix, a filtered full-renderer capture was
+warning-free and passed the committed image gate; no second baseline rewrite
+was required.
+
 ---
 
 ## 3. G-C has no instrument, and the one it has is measuring idle time

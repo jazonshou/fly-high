@@ -1,14 +1,20 @@
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AircraftKind } from "@/src/sim";
 import {
   resolveAircraftAnimationPose,
+  resolvePropellerPresentation,
   safeAircraftAnimationDelta,
 } from "./animation";
 import { AircraftBuildContext } from "./builders";
-import type { AircraftVisual } from "./types";
+import {
+  AIRCRAFT_EXTERIOR_LAYER_MASK,
+  aircraftCameraLayerMask,
+  type AircraftVisual,
+} from "./types";
 
 interface CommonRig {
   readonly root: TransformNode;
@@ -21,6 +27,13 @@ interface CommonRig {
   readonly noseSteer: TransformNode;
   readonly mainWheels: readonly TransformNode[];
   readonly noseWheel: TransformNode;
+}
+
+interface TrainerPropellerRig {
+  readonly bladeMaterial: PBRMaterial;
+  readonly discMaterial: PBRMaterial;
+  readonly blades: readonly AbstractMesh[];
+  readonly disc: AbstractMesh;
 }
 
 interface JetRig extends CommonRig {
@@ -53,21 +66,107 @@ function configureRoot(root: TransformNode, kind: AircraftKind): void {
   };
 }
 
+function addInstrumentPanel(
+  build: AircraftBuildContext,
+  prefix: string,
+  root: TransformNode,
+  x: number,
+  y: number,
+  depth: number,
+  panelMaterial: PBRMaterial,
+  faceMaterial: PBRMaterial,
+  markingMaterial: PBRMaterial,
+): readonly AbstractMesh[] {
+  const meshes: AbstractMesh[] = [];
+  const panel = build.box(
+    `${prefix}-instrument-panel`,
+    0.1,
+    0.54,
+    depth,
+    panelMaterial,
+    root,
+  );
+  panel.position.set(x, y, 0);
+  panel.rotation.z = -0.12;
+  panel.metadata = { ...panel.metadata, cockpitInterior: true };
+  meshes.push(panel);
+
+  const gauges = [
+    { name: "airspeed", y: 0.09, z: 0.22 },
+    { name: "attitude", y: 0.09, z: -0.02 },
+    { name: "altimeter", y: 0.09, z: -0.26 },
+    { name: "engine", y: -0.13, z: 0.12 },
+    { name: "vertical-speed", y: -0.13, z: -0.14 },
+  ] as const;
+  for (const [index, gauge] of gauges.entries()) {
+    const face = build.cylinder(
+      `${prefix}-${gauge.name}-gauge`,
+      0.016,
+      index === 1 ? 0.2 : 0.17,
+      index === 1 ? 0.2 : 0.17,
+      24,
+      faceMaterial,
+      root,
+    );
+    face.rotation.z = Math.PI / 2;
+    face.position.set(x - 0.061, y + gauge.y, gauge.z * depth);
+    face.metadata = { ...face.metadata, cockpitInterior: true, castsShadow: false };
+    const needle = build.box(
+      `${prefix}-${gauge.name}-needle`,
+      0.013,
+      0.012,
+      index === 1 ? 0.072 : 0.06,
+      markingMaterial,
+      root,
+    );
+    needle.position.set(x - 0.073, y + gauge.y, gauge.z * depth + 0.018);
+    needle.rotation.x = (index - 2) * 0.38;
+    needle.metadata = { ...needle.metadata, cockpitInterior: true, castsShadow: false };
+    meshes.push(face, needle);
+  }
+  return meshes;
+}
+
 function createTrainer(scene: Scene): AircraftVisual {
   const build = new AircraftBuildContext(scene);
   const root = new TransformNode("aerolith-trainer", scene);
   configureRoot(root, "trainer");
 
-  const body = build.material("trainer-body", 0xe8eee7);
-  const accent = build.material("trainer-accent", 0xcfe95d, { roughness: 0.38 });
+  const body = build.paintMaterial("trainer-body", {
+    seed: 0x41a2_1701,
+    baseColor: 0xe8eee7,
+    liveryColor: 0xcfe95d,
+    roughness: 0.43,
+    metallic: 0.08,
+    sootStrength: 0.92,
+    wearStrength: 0.74,
+  });
+  const accent = build.paintMaterial("trainer-accent", {
+    seed: 0x41a2_1702,
+    baseColor: 0xcfe95d,
+    liveryColor: 0x183941,
+    roughness: 0.38,
+    metallic: 0.06,
+    sootStrength: 0.26,
+    wearStrength: 0.68,
+  });
   const dark = build.material("trainer-dark", 0x142b32, {
     roughness: 0.25,
     metallic: 0.15,
   });
   const glass = build.material("trainer-glass", 0x163845, {
-    roughness: 0.08,
-    metallic: 0.2,
-    alpha: 0.82,
+    roughness: 0.045,
+    metallic: 0,
+    alpha: 0.34,
+    doubleSided: true,
+    clearCoat: { intensity: 1, roughness: 0.025, indexOfRefraction: 1.5 },
+    transmission: {
+      indexOfRefraction: 1.52,
+      minimumThickness: 0.004,
+      maximumThickness: 0.012,
+      tintColor: 0xb7e5ed,
+      tintColorAtDistance: 2.4,
+    },
   });
   const tire = build.material("trainer-tire", 0x07090a, {
     roughness: 1,
@@ -99,71 +198,149 @@ function createTrainer(scene: Scene): AircraftVisual {
     emissiveIntensity: 3.2,
   });
 
-  const fuselage = build.cylinder("trainer-fuselage", 6.2, 1.08, 0.8, 14, body, root);
-  fuselage.rotation.z = Math.PI / 2;
-  fuselage.position.x = -0.1;
-  const nose = build.cylinder("trainer-nose", 1.25, 0.32, 1.08, 14, accent, root);
-  nose.rotation.z = -Math.PI / 2;
-  nose.position.x = 3.55;
+  const instrumentFace = build.material("trainer-instrument-face", 0x071014, {
+    roughness: 0.72,
+    metallic: 0.04,
+  });
+  const instrumentMarking = build.material("trainer-instrument-marking", 0xd5efe8, {
+    roughness: 0.4,
+    metallic: 0,
+    emissive: 0x86b8a9,
+    emissiveIntensity: 0.42,
+  });
+
+  const fuselage = build.loft(
+    "trainer-fuselage",
+    [
+      { x: -3.42, yRadius: 0.18, zRadius: 0.22, yOffset: 0.08 },
+      { x: -2.92, yRadius: 0.42, zRadius: 0.44, yOffset: 0.04 },
+      { x: -1.75, yRadius: 0.56, zRadius: 0.57 },
+      { x: -0.25, yRadius: 0.62, zRadius: 0.59, yOffset: 0.02 },
+      { x: 1.25, yRadius: 0.65, zRadius: 0.61, yOffset: 0.03 },
+      { x: 2.72, yRadius: 0.55, zRadius: 0.54 },
+      { x: 3.25, yRadius: 0.46, zRadius: 0.45 },
+    ],
+    24,
+    body,
+    root,
+  );
+  build.loft(
+    "trainer-nose",
+    [
+      { x: 3.2, yRadius: 0.46, zRadius: 0.45 },
+      { x: 3.72, yRadius: 0.34, zRadius: 0.35 },
+      { x: 4.18, yRadius: 0.16, zRadius: 0.17 },
+    ],
+    20,
+    accent,
+    root,
+  );
   const spinner = build.cylinder("trainer-spinner", 0.48, 0, 0.4, 12, dark, root);
   spinner.rotation.z = -Math.PI / 2;
   spinner.position.x = 4.35;
 
-  const wingOutline = [
-    { x: 1.28, z: 0.5 },
-    { x: 0.72, z: 5.4 },
-    { x: -0.52, z: 5.4 },
-    { x: -0.78, z: 0.5 },
-    { x: -0.78, z: -0.5 },
-    { x: -0.52, z: -5.4 },
-    { x: 0.72, z: -5.4 },
-    { x: 1.28, z: -0.5 },
-  ] as const;
-  const wing = build.planform("tapered-main-wing", wingOutline, 0.15, body, root);
-  wing.position.y = 0.28;
-  const wingAccent = build.planform(
-    "leading-edge-accent",
-    [
-      { x: 1.3, z: 0.51 },
-      { x: 0.73, z: 5.41 },
-      { x: 0.48, z: 5.41 },
-      { x: 1.03, z: 0.51 },
-      { x: 1.03, z: -0.51 },
-      { x: 0.48, z: -5.41 },
-      { x: 0.73, z: -5.41 },
-      { x: 1.3, z: -0.51 },
-    ],
-    0.162,
-    accent,
-    root,
-  );
-  wingAccent.position.y = 0.28;
+  const wingSurfaces: AbstractMesh[] = [];
+  for (const side of [-1, 1] as const) {
+    const sideName = side < 0 ? "starboard" : "port";
+    const forwardWing = build.airfoilWing(
+      `${sideName}-main-wing-forward`,
+      {
+        rootLeadingX: 1.28,
+        rootTrailingX: -0.27,
+        tipLeadingX: 0.72,
+        tipTrailingX: -0.12,
+        rootZ: side * 0.52,
+        tipZ: side * 5.4,
+        thicknessRatio: 0.12,
+        camberRatio: 0.018,
+        chordSegments: 14,
+        spanSegments: 3,
+      },
+      body,
+      root,
+    );
+    forwardWing.position.y = 0.28;
+    const flap = build.airfoilWing(
+      `${sideName}-wing-flap`,
+      {
+        rootLeadingX: -0.33,
+        rootTrailingX: -0.78,
+        tipLeadingX: -0.26,
+        tipTrailingX: -0.68,
+        rootZ: side * 0.62,
+        tipZ: side * 2.28,
+        thicknessRatio: 0.09,
+        camberRatio: 0.016,
+        chordSegments: 8,
+      },
+      accent,
+      root,
+    );
+    flap.position.y = 0.28;
+    wingSurfaces.push(forwardWing, flap);
+  }
 
   const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(-0.49, 0.28, -3.8);
-  const starboardAileronSurface = build.box(
+  starboardAileron.position.set(-0.29, 0.28, -2.4);
+  const starboardAileronSurface = build.airfoilWing(
     "starboard-aileron-surface",
-    0.38,
-    0.075,
-    2.55,
+    {
+      rootLeadingX: 0,
+      rootTrailingX: -0.43,
+      tipLeadingX: 0.16,
+      tipTrailingX: -0.23,
+      rootZ: 0,
+      tipZ: -2.9,
+      thicknessRatio: 0.085,
+      camberRatio: 0.012,
+      chordSegments: 8,
+      spanSegments: 2,
+    },
     accent,
     starboardAileron,
   );
-  starboardAileronSurface.position.x = -0.19;
   const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(-0.49, 0.28, 3.8);
-  const portAileronSurface = build.box(
+  portAileron.position.set(-0.29, 0.28, 2.4);
+  const portAileronSurface = build.airfoilWing(
     "port-aileron-surface",
-    0.38,
-    0.075,
-    2.55,
+    {
+      rootLeadingX: 0,
+      rootTrailingX: -0.43,
+      tipLeadingX: 0.16,
+      tipTrailingX: -0.23,
+      rootZ: 0,
+      tipZ: 2.9,
+      thicknessRatio: 0.085,
+      camberRatio: 0.012,
+      chordSegments: 8,
+      spanSegments: 2,
+    },
     accent,
     portAileron,
   );
-  portAileronSurface.position.x = -0.19;
+  wingSurfaces.push(starboardAileronSurface, portAileronSurface);
 
-  const tailplane = build.box("trainer-tailplane", 1.22, 0.1, 3.9, body, root);
-  tailplane.position.set(-2.86, 0.42, 0);
+  for (const side of [-1, 1] as const) {
+    const tail = build.airfoilWing(
+      side < 0 ? "starboard-trainer-tailplane" : "port-trainer-tailplane",
+      {
+        rootLeadingX: -2.22,
+        rootTrailingX: -3.16,
+        tipLeadingX: -2.42,
+        tipTrailingX: -3.1,
+        rootZ: side * 0.18,
+        tipZ: side * 1.96,
+        thicknessRatio: 0.09,
+        camberRatio: 0.006,
+        chordSegments: 10,
+        spanSegments: 2,
+      },
+      body,
+      root,
+    );
+    tail.position.y = 0.42;
+    wingSurfaces.push(tail);
+  }
   const fin = build.verticalProfile(
     "trainer-vertical-stabilizer",
     [
@@ -177,16 +354,24 @@ function createTrainer(scene: Scene): AircraftVisual {
   );
   fin.position.set(-2.52, 0.2, 0);
   const elevator = node("elevator", root, scene);
-  elevator.position.set(-3.27, 0.42, 0);
-  const elevatorSurface = build.box(
-    "elevator-surface",
-    0.42,
-    0.075,
-    3.72,
-    accent,
-    elevator,
-  );
-  elevatorSurface.position.x = -0.21;
+  elevator.position.set(-3.22, 0.42, 0);
+  for (const side of [-1, 1] as const) {
+    wingSurfaces.push(build.airfoilWing(
+      side < 0 ? "starboard-elevator-surface" : "port-elevator-surface",
+      {
+        rootLeadingX: 0,
+        rootTrailingX: -0.42,
+        tipLeadingX: 0.08,
+        tipTrailingX: -0.33,
+        rootZ: side * 0.18,
+        tipZ: side * 1.86,
+        thicknessRatio: 0.075,
+        chordSegments: 7,
+      },
+      accent,
+      elevator,
+    ));
+  }
   const rudder = node("rudder", root, scene);
   rudder.position.set(-3.13, 1.02, 0);
   const rudderSurface = build.box("rudder-surface", 0.42, 1.05, 0.075, accent, rudder);
@@ -225,6 +410,17 @@ function createTrainer(scene: Scene): AircraftVisual {
     );
     headrest.position.set(-0.2, 0.72, side * 0.27);
   }
+  addInstrumentPanel(
+    build,
+    "trainer",
+    root,
+    1.62,
+    0.55,
+    0.94,
+    interior,
+    instrumentFace,
+    instrumentMarking,
+  );
 
   const cowlingBand = build.cylinder("engine-cowling-band", 0.075, 1.09, 1.09, 14, panel, root);
   cowlingBand.rotation.z = Math.PI / 2;
@@ -266,13 +462,53 @@ function createTrainer(scene: Scene): AircraftVisual {
   const belly = build.box("trainer-belly-panel", 2.9, 0.045, 0.58, dark, root);
   belly.position.set(0.28, -0.51, 0);
 
+  const propellerBladeMaterial = build.material("trainer-propeller-blades", 0x17252a, {
+    roughness: 0.3,
+    metallic: 0.18,
+    alpha: 1,
+    alphaBlend: true,
+  });
+  const propellerDiscMaterial = build.material("trainer-propeller-disc", 0x718086, {
+    roughness: 0.62,
+    metallic: 0.18,
+    alpha: 0,
+    alphaBlend: true,
+    doubleSided: true,
+  });
   const propeller = node("trainer-propeller", root, scene);
   propeller.position.x = 4.25;
   const propHub = build.cylinder("trainer-propeller-hub", 0.28, 0.2, 0.2, 10, dark, propeller);
   propHub.rotation.z = Math.PI / 2;
-  build.box("trainer-propeller-blade-a", 0.06, 2.6, 0.14, dark, propeller);
-  const bladeB = build.box("trainer-propeller-blade-b", 0.06, 2.6, 0.14, dark, propeller);
+  const bladeA = build.box(
+    "trainer-propeller-blade-a",
+    0.06,
+    2.6,
+    0.14,
+    propellerBladeMaterial,
+    propeller,
+  );
+  const bladeB = build.box(
+    "trainer-propeller-blade-b",
+    0.06,
+    2.6,
+    0.14,
+    propellerBladeMaterial,
+    propeller,
+  );
   bladeB.rotation.x = Math.PI / 2;
+  const propellerDisc = build.radialBlurDisc(
+    "trainer-propeller-disc",
+    1.36,
+    56,
+    propellerDiscMaterial,
+    propeller,
+  );
+  const propellerRig: TrainerPropellerRig = {
+    bladeMaterial: propellerBladeMaterial,
+    discMaterial: propellerDiscMaterial,
+    blades: [bladeA, bladeB],
+    disc: propellerDisc,
+  };
 
   const mainWheels: TransformNode[] = [];
   for (const side of [-1, 1]) {
@@ -328,8 +564,11 @@ function createTrainer(scene: Scene): AircraftVisual {
   const rig: CommonRig = {
     root,
     propeller,
-    cockpitParts: [fuselage, canopy],
-    wingSurfaces: [wing, wingAccent],
+    // Only opaque exterior skin belongs on the cockpit-excluded layer. The
+    // clearcoat/transmission canopy stays on ordinary world layers so the
+    // windscreen remains visible from the pilot's camera.
+    cockpitParts: [fuselage],
+    wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     elevator,
     rudder,
@@ -337,6 +576,7 @@ function createTrainer(scene: Scene): AircraftVisual {
     mainWheels,
     noseWheel,
   };
+  configureCockpitLayers(rig.cockpitParts);
   let disposed = false;
   return {
     kind: "trainer",
@@ -355,15 +595,18 @@ function createTrainer(scene: Scene): AircraftVisual {
       // makes every frame a pure function of (state, frame sequence) — the
       // perf capture diffs identically-timed frames across runs.
       propeller.rotation.x = pose.rotorRadiansPerSecond * state.simulationTime;
-      const normalizedRpm = Math.min(1.2, Math.max(0, state.engineRpm / 2_600));
-      propeller.setEnabled(
-        normalizedRpm < 0.12 || Math.sin(propeller.rotation.x * 0.27) > -0.82,
-      );
+      const presentation = resolvePropellerPresentation(pose.rotorRadiansPerSecond);
+      propellerRig.bladeMaterial.alpha = presentation.bladeOpacity;
+      propellerRig.discMaterial.alpha = presentation.discOpacity;
+      // Both remain part of the rig at every phase. Opacity is the only
+      // transition; setEnabled/isVisible never strobe with rotor angle.
+      for (const blade of propellerRig.blades) blade.isVisible = true;
+      propellerRig.disc.isVisible = true;
       applyCommonPose(rig, pose, delta);
     },
     setCockpitView(enabled) {
       if (disposed) return;
-      setCockpitVisibility(rig, enabled);
+      setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {
       if (disposed) return;
@@ -379,23 +622,50 @@ function createJet(scene: Scene): AircraftVisual {
   const root = new TransformNode("vesper-fast-jet", scene);
   configureRoot(root, "jet");
 
-  const body = build.material("jet-body", 0xc9d2d2, { roughness: 0.34, metallic: 0.28 });
-  const underside = build.material("jet-underside", 0x66777b, {
+  const body = build.paintMaterial("jet-body", {
+    seed: 0x7e57_2201,
+    baseColor: 0xc9d2d2,
+    liveryColor: 0xe55b3f,
+    roughness: 0.34,
+    metallic: 0.28,
+    sootStrength: 0.7,
+    wearStrength: 0.82,
+  });
+  const underside = build.paintMaterial("jet-underside", {
+    seed: 0x7e57_2202,
+    baseColor: 0x66777b,
+    liveryColor: 0xb7c5c4,
     roughness: 0.46,
     metallic: 0.2,
+    sootStrength: 0.94,
+    wearStrength: 0.58,
   });
-  const accent = build.material("jet-accent", 0xe55b3f, {
+  const accent = build.paintMaterial("jet-accent", {
+    seed: 0x7e57_2203,
+    baseColor: 0xe55b3f,
+    liveryColor: 0x263941,
     roughness: 0.38,
     metallic: 0.08,
+    sootStrength: 0.3,
+    wearStrength: 0.76,
   });
   const dark = build.material("jet-dark", 0x17242a, {
     roughness: 0.3,
     metallic: 0.48,
   });
   const glass = build.material("jet-glass", 0x163947, {
-    roughness: 0.07,
-    metallic: 0.22,
-    alpha: 0.78,
+    roughness: 0.04,
+    metallic: 0,
+    alpha: 0.31,
+    doubleSided: true,
+    clearCoat: { intensity: 1, roughness: 0.02, indexOfRefraction: 1.5 },
+    transmission: {
+      indexOfRefraction: 1.52,
+      minimumThickness: 0.004,
+      maximumThickness: 0.011,
+      tintColor: 0xaedee9,
+      tintColorAtDistance: 2.8,
+    },
   });
   const tire = build.material("jet-tire", 0x060809, { roughness: 1, metallic: 0 });
   const hub = build.material("jet-hub", 0x89979a, { roughness: 0.3, metallic: 0.72 });
@@ -414,86 +684,175 @@ function createJet(scene: Scene): AircraftVisual {
     emissiveIntensity: 2.4,
   });
 
-  const fuselage = build.cylinder("jet-fuselage", 8.15, 1.28, 1, 18, body, root);
-  fuselage.rotation.z = Math.PI / 2;
-  fuselage.position.x = 0.05;
-  const nose = build.cylinder("radar-nose", 1.75, 0, 1.26, 18, body, root);
-  nose.rotation.z = -Math.PI / 2;
-  nose.position.x = 4.98;
-  const tailCone = build.cylinder("engine-tail-cone", 1.15, 0.64, 1, 16, underside, root);
-  tailCone.rotation.z = Math.PI / 2;
-  tailCone.position.x = -4.55;
+  const interior = build.material("jet-interior", 0x182226, {
+    roughness: 0.8,
+    metallic: 0.02,
+  });
+  const instrumentFace = build.material("jet-instrument-face", 0x050a0d, {
+    roughness: 0.7,
+    metallic: 0.05,
+  });
+  const instrumentMarking = build.material("jet-instrument-marking", 0x91d8b8, {
+    roughness: 0.34,
+    metallic: 0,
+    emissive: 0x49c18c,
+    emissiveIntensity: 0.7,
+  });
 
-  const wing = build.planform(
-    "swept-main-wing",
+  const fuselage = build.loft(
+    "jet-fuselage",
     [
-      { x: 1.65, z: 0.48 },
-      { x: -0.2, z: 4.8 },
-      { x: -1.28, z: 4.8 },
-      { x: -0.72, z: 0.48 },
-      { x: -0.72, z: -0.48 },
-      { x: -1.28, z: -4.8 },
-      { x: -0.2, z: -4.8 },
-      { x: 1.65, z: -0.48 },
+      { x: -4.12, yRadius: 0.48, zRadius: 0.5 },
+      { x: -3.2, yRadius: 0.58, zRadius: 0.59 },
+      { x: -1.25, yRadius: 0.67, zRadius: 0.67, yOffset: 0.01 },
+      { x: 1.15, yRadius: 0.72, zRadius: 0.69, yOffset: 0.04 },
+      { x: 2.75, yRadius: 0.68, zRadius: 0.64, yOffset: 0.03 },
+      { x: 4.2, yRadius: 0.54, zRadius: 0.55 },
     ],
-    0.18,
+    28,
     body,
     root,
   );
-  const wingChevron = build.planform(
-    "wing-leading-edge-chevron",
+  const nose = build.loft(
+    "radar-nose",
     [
-      { x: 1.67, z: 0.5 },
-      { x: -0.19, z: 4.82 },
-      { x: -0.43, z: 4.82 },
-      { x: 1.35, z: 0.5 },
-      { x: 1.35, z: -0.5 },
-      { x: -0.43, z: -4.82 },
-      { x: -0.19, z: -4.82 },
-      { x: 1.67, z: -0.5 },
+      { x: 4.16, yRadius: 0.54, zRadius: 0.55 },
+      { x: 4.82, yRadius: 0.4, zRadius: 0.42 },
+      { x: 5.45, yRadius: 0.2, zRadius: 0.21 },
+      { x: 5.82, yRadius: 0.035, zRadius: 0.035 },
     ],
-    0.192,
-    accent,
+    24,
+    body,
+    root,
+  );
+  build.loft(
+    "engine-tail-cone",
+    [
+      { x: -5.22, yRadius: 0.31, zRadius: 0.32 },
+      { x: -4.72, yRadius: 0.43, zRadius: 0.44 },
+      { x: -4.08, yRadius: 0.5, zRadius: 0.51 },
+    ],
+    22,
+    underside,
     root,
   );
 
+  const wingSurfaces: AbstractMesh[] = [];
+  for (const side of [-1, 1] as const) {
+    const sideName = side < 0 ? "starboard" : "port";
+    const forwardWing = build.airfoilWing(
+      `${sideName}-swept-main-wing`,
+      {
+        rootLeadingX: 1.65,
+        rootTrailingX: -0.58,
+        tipLeadingX: -0.2,
+        tipTrailingX: -0.86,
+        rootZ: side * 0.5,
+        tipZ: side * 4.8,
+        thicknessRatio: 0.085,
+        camberRatio: 0.002,
+        chordSegments: 14,
+        spanSegments: 4,
+      },
+      body,
+      root,
+    );
+    const flap = build.airfoilWing(
+      `${sideName}-jet-flap`,
+      {
+        rootLeadingX: -0.64,
+        rootTrailingX: -0.75,
+        tipLeadingX: -0.79,
+        tipTrailingX: -1.02,
+        rootZ: side * 0.61,
+        tipZ: side * 2.65,
+        thicknessRatio: 0.065,
+        chordSegments: 7,
+        spanSegments: 2,
+      },
+      underside,
+      root,
+    );
+    wingSurfaces.push(forwardWing, flap);
+  }
+
   const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(-0.88, 0.05, -3.65);
-  const starboardSurface = build.box(
+  starboardAileron.position.set(-0.78, 0.02, -2.76);
+  const starboardSurface = build.airfoilWing(
     "starboard-aileron-surface",
-    0.5,
-    0.09,
-    1.65,
+    {
+      rootLeadingX: 0,
+      rootTrailingX: -0.28,
+      tipLeadingX: -0.1,
+      tipTrailingX: -0.5,
+      rootZ: 0,
+      tipZ: -1.94,
+      thicknessRatio: 0.06,
+      chordSegments: 7,
+      spanSegments: 2,
+    },
     accent,
     starboardAileron,
   );
-  starboardSurface.position.x = -0.22;
   const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(-0.88, 0.05, 3.65);
-  const portSurface = build.box("port-aileron-surface", 0.5, 0.09, 1.65, accent, portAileron);
-  portSurface.position.x = -0.22;
-
-  const tailplane = build.planform(
-    "swept-tailplane",
-    [
-      { x: 0.72, z: 0.35 },
-      { x: -0.08, z: 2.15 },
-      { x: -0.72, z: 2.15 },
-      { x: -0.55, z: 0.35 },
-      { x: -0.55, z: -0.35 },
-      { x: -0.72, z: -2.15 },
-      { x: -0.08, z: -2.15 },
-      { x: 0.72, z: -0.35 },
-    ],
-    0.12,
-    body,
-    root,
+  portAileron.position.set(-0.78, 0.02, 2.76);
+  const portSurface = build.airfoilWing(
+    "port-aileron-surface",
+    {
+      rootLeadingX: 0,
+      rootTrailingX: -0.28,
+      tipLeadingX: -0.1,
+      tipTrailingX: -0.5,
+      rootZ: 0,
+      tipZ: 1.94,
+      thicknessRatio: 0.06,
+      chordSegments: 7,
+      spanSegments: 2,
+    },
+    accent,
+    portAileron,
   );
-  tailplane.position.set(-3.52, 0.43, 0);
+  wingSurfaces.push(starboardSurface, portSurface);
+
+  for (const side of [-1, 1] as const) {
+    const tail = build.airfoilWing(
+      side < 0 ? "starboard-swept-tailplane" : "port-swept-tailplane",
+      {
+        rootLeadingX: -2.8,
+        rootTrailingX: -3.91,
+        tipLeadingX: -3.6,
+        tipTrailingX: -4.05,
+        rootZ: side * 0.35,
+        tipZ: side * 2.15,
+        thicknessRatio: 0.065,
+        chordSegments: 10,
+        spanSegments: 2,
+      },
+      body,
+      root,
+    );
+    tail.position.y = 0.43;
+    wingSurfaces.push(tail);
+  }
   const elevator = node("elevator", root, scene);
-  elevator.position.set(-4.05, 0.43, 0);
-  const elevatorSurface = build.box("elevator-surface", 0.42, 0.08, 3.7, accent, elevator);
-  elevatorSurface.position.x = -0.18;
+  elevator.position.set(-3.96, 0.43, 0);
+  for (const side of [-1, 1] as const) {
+    wingSurfaces.push(build.airfoilWing(
+      side < 0 ? "starboard-jet-elevator-surface" : "port-jet-elevator-surface",
+      {
+        rootLeadingX: 0,
+        rootTrailingX: -0.4,
+        tipLeadingX: -0.09,
+        tipTrailingX: -0.36,
+        rootZ: side * 0.35,
+        tipZ: side * 1.96,
+        thicknessRatio: 0.055,
+        chordSegments: 7,
+      },
+      accent,
+      elevator,
+    ));
+  }
   const fin = build.verticalProfile(
     "swept-vertical-stabilizer",
     [
@@ -522,6 +881,40 @@ function createJet(scene: Scene): AircraftVisual {
     0.028,
     dark,
     root,
+  );
+  for (const [index, seatX] of [0.72, -0.25].entries()) {
+    const seat = build.box(
+      index === 0 ? "jet-front-seat" : "jet-rear-seat",
+      0.52,
+      0.66,
+      0.5,
+      interior,
+      root,
+    );
+    seat.position.set(seatX, 0.36, 0);
+    seat.rotation.z = -0.1;
+    seat.metadata = { ...seat.metadata, cockpitInterior: true };
+    const headrest = build.box(
+      index === 0 ? "jet-front-headrest" : "jet-rear-headrest",
+      0.22,
+      0.28,
+      0.38,
+      interior,
+      root,
+    );
+    headrest.position.set(seatX - 0.25, 0.74, 0);
+    headrest.metadata = { ...headrest.metadata, cockpitInterior: true };
+  }
+  addInstrumentPanel(
+    build,
+    "jet",
+    root,
+    2.24,
+    0.59,
+    0.82,
+    interior,
+    instrumentFace,
+    instrumentMarking,
   );
   const belly = build.box("jet-belly-panel", 4.7, 0.06, 0.72, underside, root);
   belly.position.set(-0.25, -0.58, 0);
@@ -628,8 +1021,10 @@ function createJet(scene: Scene): AircraftVisual {
   const rig: JetRig = {
     root,
     propeller,
-    cockpitParts: [fuselage, nose, canopy, canopyFrame],
-    wingSurfaces: [wing, wingChevron],
+    // Keep the transparent canopy visible in cockpit view; only opaque skin
+    // and its obstructing centre frame use the cockpit-excluded layer.
+    cockpitParts: [fuselage, nose, canopyFrame],
+    wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     elevator,
     rudder,
@@ -640,6 +1035,7 @@ function createJet(scene: Scene): AircraftVisual {
     gearDoors,
     speedBrakes,
   };
+  configureCockpitLayers(rig.cockpitParts);
   let disposed = false;
   return {
     kind: "jet",
@@ -666,7 +1062,7 @@ function createJet(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
-      setCockpitVisibility(rig, enabled);
+      setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {
       if (disposed) return;
@@ -693,9 +1089,25 @@ function applyCommonPose(
   rig.noseWheel.rotation.z += pose.noseWheelRadiansPerSecond * deltaSeconds;
 }
 
-function setCockpitVisibility(rig: CommonRig, enabled: boolean): void {
-  for (const part of rig.cockpitParts) part.isVisible = !enabled;
-  // Wing roots are intentional cockpit reference geometry and stay visible.
+function configureCockpitLayers(parts: readonly AbstractMesh[]): void {
+  for (const part of parts) {
+    part.layerMask = AIRCRAFT_EXTERIOR_LAYER_MASK;
+    // Shadow generators use visibility/enabled state, not the active camera's
+    // layer mask. Exterior skin therefore remains a caster in cockpit view.
+    part.isVisible = true;
+  }
+}
+
+function setCockpitVisibility(rig: CommonRig, scene: Scene, enabled: boolean): void {
+  for (const part of rig.cockpitParts) {
+    part.layerMask = AIRCRAFT_EXTERIOR_LAYER_MASK;
+    part.isVisible = true;
+  }
+  const camera = scene.activeCamera;
+  if (camera) camera.layerMask = aircraftCameraLayerMask(camera.layerMask, enabled);
+  // Wing roots are intentional cockpit reference geometry and stay visible;
+  // they use Babylon's ordinary multi-bit world mask rather than the isolated
+  // exterior-skin bit.
   for (const wing of rig.wingSurfaces) wing.isVisible = true;
 }
 

@@ -96,6 +96,8 @@ interface DetailBatch {
   gpu: DetailInstanceGpuBuffers | null;
   /** Chunk revision whose records the writer currently holds. */
   filledRevision: number;
+  /** Floating origin encoded into the currently uploaded instance records. */
+  builtOrigin: { x: number; y: number; z: number };
 }
 
 interface RetiredDetailBatch {
@@ -544,6 +546,11 @@ export class WorldDetailRuntime {
     requireFinite(floatingOrigin.x, "Detail floating-origin x");
     requireFinite(floatingOrigin.y, "Detail floating-origin y");
     requireFinite(floatingOrigin.z, "Detail floating-origin z");
+    // 67d: origin changes are corrected for every live batch immediately.
+    // The amortized rebuild may still rewrite only one chunk this update;
+    // stale records remain valid because their mesh carries the uniform
+    // built-origin -> current-origin translation in the meantime.
+    this.compensateBatchOrigins(floatingOrigin);
     if (!Number.isFinite(profile.vegetationDistance) || profile.vegetationDistance <= 0) {
       throw new RangeError("Vegetation distance must be finite and greater than zero");
     }
@@ -1337,7 +1344,7 @@ export class WorldDetailRuntime {
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
     for (const batchKey of chunk.batchKeys) {
       const batch = this.batches.get(batchKey);
-      if (batch) this.uploadBatch(batch);
+      if (batch) this.uploadBatch(batch, floatingOrigin);
     }
     return statistics;
   }
@@ -1356,7 +1363,7 @@ export class WorldDetailRuntime {
    * mesh appears in. Only GROWTH allocates, and the outgrown allocation
    * waits out the same conservative grace window a retired batch does.
    */
-  private uploadBatch(batch: DetailBatch): void {
+  private uploadBatch(batch: DetailBatch, floatingOrigin: DetailFloatingOrigin): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     if (count === 0) {
@@ -1383,6 +1390,21 @@ export class WorldDetailRuntime {
       Vector3.FromArray(batch.bounds.minimum()),
       Vector3.FromArray(batch.bounds.maximum()),
     ));
+    batch.builtOrigin.x = floatingOrigin.x;
+    batch.builtOrigin.y = floatingOrigin.y;
+    batch.builtOrigin.z = floatingOrigin.z;
+    batch.mesh.position.set(0, 0, 0);
+  }
+
+  /** Keeps stale, origin-relative records world-stable during the rebuild sweep. */
+  private compensateBatchOrigins(floatingOrigin: DetailFloatingOrigin): void {
+    for (const batch of this.batches.values()) {
+      batch.mesh.position.set(
+        batch.builtOrigin.x - floatingOrigin.x,
+        batch.builtOrigin.y - floatingOrigin.y,
+        batch.builtOrigin.z - floatingOrigin.z,
+      );
+    }
   }
 
   /**
@@ -1681,6 +1703,7 @@ export class WorldDetailRuntime {
       bounds: new DetailInstanceBounds(),
       gpu: null,
       filledRevision: chunk.revision,
+      builtOrigin: { x: 0, y: 0, z: 0 },
     };
     this.batches.set(batchKey, batch);
     return batch;

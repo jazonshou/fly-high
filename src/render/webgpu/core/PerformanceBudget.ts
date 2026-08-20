@@ -242,9 +242,10 @@ export function mipChainByteFactor(edge: number): number {
 }
 
 /**
- * Hydrology tiles and wildlife thin instances. 2-10 retired the
- * planar-reflection mirror this allowance also covered — each tier gives
- * back the mirror's ~0.2-1 MiB.
+ * Hydrology tiles and wildlife thin instances. Gate A's measured wildlife
+ * total is 1,348,436 B (1.286 MiB), including the unchanged fixed matrix
+ * buffers. 2-10 retired the planar-reflection mirror this allowance also
+ * covered — each tier gives back the mirror's ~0.2-1 MiB.
  */
 const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
   0: 8,
@@ -253,7 +254,10 @@ const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Ob
   3: 13,
 });
 
-/** Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs. */
+/**
+ * Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs.
+ * Gate A's worst live aircraft surface maps add about 0.188 MiB here.
+ */
 const MISC_ALLOWANCE_MIB = 40;
 
 /**

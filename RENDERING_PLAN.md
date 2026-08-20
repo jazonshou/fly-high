@@ -9,6 +9,8 @@
 > That review found one uncovered user goal (the aircraft's own appearance, §1 there), two shipped defects that are literally the performance bar (§2), a performance gate that measures idle time and compares images that are 20.5% black (§3), and a season that today is only the sun's declination (§4). Phases 4–7 below are still the pre-Phase-0 tables; §8 there lists what a Phase 4 plan must absorb before it is written. The corrected ledger is §9 there, not §0.3 here.
 >
 > **Amended 2026-08-19.** Phase 4 is now governed by [`PHASE_4_EXECUTION_PLAN.md`](PHASE_4_EXECUTION_PLAN.md) (46.5 d, binding); Gate 7A executed 2026-08-19. Only Phases 5–7 (less 7A) remain pre-Phase-0 tables.
+>
+> **Gate-close status, 2026-08-19.** Phase 3 and the post-Phase-3 Gates B and A are complete on the Phase 3.5 implementation branch; Phase 4 is next. Gate B shipped honest frame-interval attribution, simulation-time presentation, floating-origin detail compensation, and kilometre-scale forest variance. Its conditional crown/trunk draw merge failed the adapter bar and was reverted, so the split-runtime vegetation debt remains open. Gate A shipped the aircraft and wildlife work required by the realignment. Implementation and deviation records live in [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §15.1 and [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) §1.
 
 ---
 
@@ -1092,6 +1094,8 @@ Two platform notes that will otherwise cost a day each:
 | 7 — Airfield lighting and identity (7B/7C/7D) | 34.0 | **~316** | **~70 weeks** |
 
 > **Reconciled ledger, 2026-08-19.** Shipped through Phase 2.5: **127.8 d** (Phase 0 = 16.8, Phase 1 = 43.0, Gate 2Z = 4.0, R-11/R-13 = 2.0, Phase 2 = 54.5 as amended, Gate 7A = 7.5). Remaining: Phase 3 = 30.25, Gate A = 12.75, Phase 4 = 46.5 (binding), Phase 5 = 51.5, Phase 6 ≈ 27.5, Phase 7 = 34.0. v1 cut line (through Phase 4) **≈217 d** (~48 weeks at 4.5 d/wk); programme **≈330 d** (~73 weeks). The rows and cumulative column above are kept as the 2026-08-18 record.
+
+> **Current gate-close ledger, 2026-08-19.** Shipped through Phase 3 plus Gates B and A: **178.05 d**. Gate B contributes 7.25 d and Gate A 12.75 d; a rejected conditional optimisation remains completed gate work, not shipped runtime scope. Remaining binding work begins with Phase 4 (46.5 d), followed by Phase 5 (57.25 d) and the later phases described by the maintained overview. The reconciled programme is ≈343 d and the v1 cut line remains ≈224 d. This paragraph supersedes the immediately preceding pre-Phase-3 ledger while preserving it as history.
 
 ### First week, in order
 

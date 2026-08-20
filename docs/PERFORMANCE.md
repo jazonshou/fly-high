@@ -32,7 +32,7 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 
 | System | Generation/simulation | GPU presentation |
 | --- | --- | --- |
-| Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots | Interpolated procedural aircraft meshes |
+| Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots | Simulation-time presentation with a worker-clock EMA, monotone interpolation and at most 50 ms velocity/body-rate coasting; procedural aircraft meshes |
 | Terrain | Deterministic CPU sampling in the terrain Worker, with a deferred CPU fallback | Babylon PBR geometry-clipmap pages |
 | World-page contract | CPU page keys, quantized payload validation, lifecycle/cache metadata, and velocity priority | Defines upload/residency boundaries; it does not itself issue draw work |
 | Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, normals, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and probe-fed environment reflections (the planar capture is retired, 2-10) |
@@ -150,14 +150,17 @@ World detail is deterministic and page-owned rather than attached to transient t
 - Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because matrix/color/wind thin-instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting bounds independently, so one visible tree no longer submits every offscreen resident instance. Unchanged chunk buffers survive incremental neighboring-cell generation; changed chunks publish immutable replacement buffers and retire the previous revision after a short WebGPU-safe grace window.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
-- A floating-origin change rebuilds camera-relative matrices for every affected presentation chunk. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
+- `densityField.ts` owns a 7.2 × 5.4 km forest-fraction field in addition to the continuous stand field. Its 260 m glades reach a 0.02 authored-density floor, thresholded windthrow supplies a genuinely hard edge, and the published edge margin makes generated stems shorter and crowns broader. This changes where and how much forest grows; it deliberately does not change species/stand selection.
+- A floating-origin change immediately translates every live presentation batch by its build-origin delta while the bounded rebuild sweep catches up. The detail shader receives the same offset for pre-world band culling and impostor facing. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
 
-Wildlife uses deterministic 800 m cells, a default 2 km activation radius, and active budgets of 16, 48, or 128 animals (with a hard safety cap of 512). Birds currently include gulls and hawks; ground animals include deer and boar.
+Wildlife uses deterministic 800 m cells, a default 2 km activation radius, and active budgets of 16, 48, or 128 animals (with a hard safety cap of 512). Birds include gulls and hawks; ground animals include deer and boar. Their species-specific procedural bodies, wings, antlers and tusks still occupy exactly ten shared prototype batches, with feather, fur and keratin PBR variants rather than per-animal meshes.
 
 - AI advances at a fixed 30 Hz and limits catch-up work. Far agents update expensive behavior less often.
 - Bird flocking uses a bounded spatial hash and local-neighbor queries instead of all-pairs behavior.
 - Distance LOD reduces procedural body parts for far animals. The 30 Hz simulation stores previous/current poses and render frames interpolate position, heading, wing phase, and gait before uploading one current matrix buffer.
 - Population selection predicts ahead of aircraft velocity and remains seeded by world/cell identity, so paging does not reshuffle the ecosystem.
+
+Gate A adds only small, fixed steady allocations. The worst live aircraft surface set is about 0.188 MiB (64² albedo, normal and packed-material mip chains per paint recipe) inside the existing miscellaneous allowance. Wildlife uses 37,716 bytes of prototype position/normal/index data plus the unchanged 1,310,720-byte thin-matrix buffers, 1.286 MiB total inside the other-detail allowance.
 
 ## HDR color, FXAA, and resolution
 
@@ -172,13 +175,30 @@ Wildlife uses deterministic 800 m cells, a default 2 km activation radius, and a
 
 The performance overlay exposes:
 
-- FPS and frame time.
+- FPS, current frame interval, and start-to-start frame-interval p95.
 - CPU frame time and GPU frame time when `timestamp-query` is available.
 - Draw calls, triangles, geometries, and textures.
 - Resident terrain pages and visible detail/wildlife thin instances.
 - Active animals and river/lake counts.
 - Requested rendering mode, active render scale, cloud step request, and ocean FFT resolution/cascade count.
 - WebGPU adapter label, backend, and render-technique identifier. The fallback reason is always `null` for a successfully created renderer because there is no alternate backend.
+
+### Gate B frame attribution
+
+Frame interval, CPU duration and GPU duration overlap; they are not additive.
+The renderer pairs each start-to-start interval with the CPU work from the
+frame that just ended. Babylon's asynchronous GPU counter does not expose a
+submitted-frame identifier, so its distribution cannot be safely correlated
+with either value. Consequently `presentWaitMs` and `presentWaitP95Ms` remain
+`null` until a correlatable timestamp source exists. This is intentional: a
+difference of independent p95s is neither the p95 of per-frame residuals nor a
+literal present/compositor timer.
+
+Before Gate B tuning, the nine committed sub-30-fps shots occupied 34.4–45.5 ms
+intervals from sustained fps, against 5.3–7.4 ms CPU p95 and 11.8–20.45 ms GPU
+p95. `interval − max(cpu,gpu)` therefore left a 17.3–33.6 ms aggregate
+pacing/uncaptured envelope. That range motivated the new interval diagnostic;
+it is an inference across aggregates, not a field emitted by the runtime.
 
 For performance changes, test a fixed URL seed, camera mode, weather/time preset, altitude, viewport size, device-pixel ratio, scenery quality, and rendering intent. Record the adapter and browser version. Compare at least a 30-second steady sample after terrain/detail residency and shader/pipeline compilation settle; renderer creation, first compute-pipeline compilation, first audio unlock, and a fresh page-streaming burst are not representative steady state.
 
@@ -234,6 +254,12 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   −1,201 draw calls across the capture set, and priced the structural
   remainder in `renderedDensity.ts`: `VEGETATION_DRAW_CEILING` is what the
   renderer meets and `VEGETATION_FRAME_DEBT_RATIO` is the gap.
+- **Gate B did not erase that debt by accounting.** A crown/trunk prototype
+  merge reduced modeled draws but moved trunks from the opaque depth pre-fill
+  into the alpha-test path. All five core sub-30-fps captures regressed by
+  0.78–2.09 ms GPU; only one of all nine improved by at least 2 ms. The merge
+  was rejected and reverted, so the split-runtime ceilings and debt ratios
+  remain the truthful values.
 
 ## Capture harness
 
@@ -261,3 +287,15 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   cannot possibly have touched. `drawCalls`, `vegetationBatches` and
   `triangles` are load-independent and are the right counters to compare
   across machines.
+- Gate B's one sanctioned vegetation capture accepted the new forest/glade
+  pixels but did not re-pin a performance floor. Repeated full WebGPU runs on
+  the capture host also slowed one-batch high-altitude scenes, so the recorded
+  floor failure remains evidence of host pacing/thermal state rather than a
+  claimed budget improvement.
+- Gate A's sanctioned close capture adds 35–46 aircraft draws per scene and
+  measured −0.21 to +0.45 ms GPU p95 against the immediately preceding Gate-B
+  state. The hot host again missed `approach-500ft` (18.2 versus its unchanged
+  24 fps floor), while interval/CPU/GPU p95 were 63.4/5.6/17.64 ms. No floor
+  moved. Its production material test also removed the last renderer-error
+  allowlist: cloud+aerial and aerial-only PBR effect variants must now compile
+  with distinct cache keys and zero missing-sampler warnings.

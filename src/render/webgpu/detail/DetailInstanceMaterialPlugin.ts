@@ -113,6 +113,13 @@ fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f) -> bool {
 #endif
 `,
   CUSTOM_VERTEX_UPDATE_POSITION: `
+// Gate B / 67d: instance positions are authored relative to the origin at
+// upload time. During an amortized origin rebuild the owning mesh carries
+// the built-origin -> current-origin translation; mirror that translation
+// here for camera-distance and facing calculations that run before
+// Babylon applies the mesh world matrix to positionUpdated.
+let detailInstancePositionW = vertexInputs.instancePosition
+  + uniforms.detailMeshOffset.xyz;
 #ifdef DETAIL_IMPOSTOR
 // 2-17 — cylindrical billboard + three-view hemi-octahedral selection.
 // The quad prototype spans x,y ∈ [−1, 1]. Per-instance variety at zero
@@ -134,7 +141,7 @@ let impostorFrame = uniforms.detailImpostorSpecies[i32(impostorSpeciesIndex)];
 let impostorHeight = vertexInputs.instanceScale.x * 48.0;
 let impostorScale = impostorHeight * impostorFrame.x;
 let impostorCenter = impostorHeight * impostorFrame.y;
-let impostorToCamera = scene.vEyePosition.xyz - vertexInputs.instancePosition;
+let impostorToCamera = scene.vEyePosition.xyz - detailInstancePositionW;
 var impostorFlat = vec2f(impostorToCamera.x, impostorToCamera.z);
 let impostorFlatLength = max(length(impostorFlat), 1e-3);
 impostorFlat = impostorFlat / impostorFlatLength;
@@ -146,7 +153,7 @@ positionUpdated = vec3f(0.0, 0.0, 0.0)
   + vec3f(0.0, positionUpdated.y * impostorScale + impostorCenter, 0.0)
   + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
-if (detailBandWindowEmpty(2.0, vertexInputs.instancePosition)) {
+if (detailBandWindowEmpty(2.0, detailInstancePositionW)) {
   positionUpdated = vec3f(0.0, -100000.0, 0.0);
 }
 #endif
@@ -258,7 +265,7 @@ positionUpdated = detailSwayed + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
 if (detailBandWindowEmpty(
   floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0,
-  vertexInputs.instancePosition,
+  detailInstancePositionW,
 )) { positionUpdated = vec3f(0.0, -100000.0, 0.0); }
 #endif
 #ifdef DETAIL_FOLIAGE_ATLAS
@@ -774,7 +781,12 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (!samplers.includes("impostorNormalDepth")) samplers.push("impostorNormalDepth");
   }
 
-  override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
+  override hardBindForSubMesh(
+    uniformBuffer: UniformBuffer,
+    _scene?: Parameters<MaterialPluginBase["hardBindForSubMesh"]>[1],
+    _engine?: Parameters<MaterialPluginBase["hardBindForSubMesh"]>[2],
+    subMesh?: Parameters<MaterialPluginBase["hardBindForSubMesh"]>[3],
+  ): void {
     if (this.foliageAtlas) {
       uniformBuffer.setTexture("foliageAtlas", this.foliageAtlas);
     }
@@ -784,6 +796,17 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (this.impostorNormalAtlas) {
       uniformBuffer.setTexture("impostorNormalDepth", this.impostorNormalAtlas);
     }
+    // Unlike bindForSubMesh, Babylon invokes the hard-bind hook even when a
+    // shared material/effect remains cached. The offset is mesh-dependent,
+    // so every batch draw must refresh it through this unconditional path.
+    const meshOffset = subMesh?.getMesh().position;
+    uniformBuffer.updateFloat4(
+      "detailMeshOffset",
+      meshOffset?.x ?? 0,
+      meshOffset?.y ?? 0,
+      meshOffset?.z ?? 0,
+      0,
+    );
   }
 
   override getClassName(): string {
@@ -835,6 +858,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       ubo: [
         { name: "detailWindTime", size: 1, type: "float" },
         { name: "detailRadialAspect", size: 1, type: "float" },
+        { name: "detailMeshOffset", size: 4, type: "vec4" },
         { name: "detailWind", size: 4, type: "vec4" },
         { name: "detailImpostorSeason", size: 1, type: "float" },
         { name: "detailBandRadii", size: 4, type: "vec4" },

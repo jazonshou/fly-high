@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
-import { TerrainBiome } from "../src/world";
+import { hashSeed, TerrainBiome } from "../src/world";
 import { DetailGenerationClient } from "../src/render/webgpu/detail/DetailGenerationClient";
+import { densityField } from "../src/render/webgpu/detail/densityField";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
 import { WorldDetailRuntime } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
@@ -49,6 +50,43 @@ const forestSample = (): DetailTerrainSample => ({
   moisture: 0.68,
   biome: TerrainBiome.FOREST,
 });
+
+/**
+ * Gate B deliberately makes world zero capable of being a meadow. Select a
+ * deterministic closed-canopy cell so this worker/runtime parity test still
+ * exercises non-empty tree buffers instead of depending on an accidental
+ * biome at one coordinate.
+ */
+function selectClosedForestCell(worldSeed: string): {
+  readonly cellX: number;
+  readonly cellZ: number;
+  readonly meanDensity: number;
+} {
+  const cellSize = 128;
+  const seedHash = hashSeed(worldSeed);
+  let best = { cellX: 0, cellZ: 0, meanDensity: Number.NEGATIVE_INFINITY };
+  for (let cellZ = -64; cellZ <= 64; cellZ += 2) {
+    for (let cellX = -64; cellX <= 64; cellX += 2) {
+      let total = 0;
+      for (const localZ of [32, 96]) {
+        for (const localX of [32, 96]) {
+          total += densityField(seedHash, {
+            x: cellX * cellSize + localX,
+            z: cellZ * cellSize + localZ,
+            heightMeters: 220,
+            seaLevelMeters: 0,
+            slope: 0.05,
+            moisture: 0.68,
+            dayOfYear: 171,
+          }).treeStemsPerSquareMeter;
+        }
+      }
+      const meanDensity = total / 4;
+      if (meanDensity > best.meanDensity) best = { cellX, cellZ, meanDensity };
+    }
+  }
+  return best;
+}
 
 describe("detail generation client (1B-10)", () => {
   it("dispatches one request at a time by priority and drops stale generations", () => {
@@ -111,7 +149,14 @@ describe("detail generation client (1B-10)", () => {
       vegetationDistance: 300,
       vegetationDensity: 1,
     };
-    runtime.update({ x: 64, y: 100, z: 64 }, { x: 0, y: 0, z: 0 }, profile);
+    const closedCell = selectClosedForestCell("worker-parity");
+    expect(closedCell.meanDensity, "worker parity fixture is closed forest").toBeGreaterThan(0.03);
+    const observer = {
+      x: (closedCell.cellX + 0.5) * 128,
+      y: 100,
+      z: (closedCell.cellZ + 0.5) * 128,
+    };
+    runtime.update(observer, { x: 0, y: 0, z: 0 }, profile);
     expect(runtime.statistics.residentCells).toBe(0);
     const generates = worker.commands.filter(
       (command) => command.type === "generate",
@@ -141,7 +186,7 @@ describe("detail generation client (1B-10)", () => {
           dayOfYear: next.dayOfYear,
         }),
       });
-      runtime.update({ x: 64, y: 100, z: 64 }, { x: 0, y: 0, z: 0 }, profile);
+      runtime.update(observer, { x: 0, y: 0, z: 0 }, profile);
     }
     expect(runtime.statistics.residentCells).toBeGreaterThan(0);
     expect(runtime.statistics.treeInstances).toBeGreaterThan(0);

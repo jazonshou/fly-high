@@ -17,12 +17,42 @@ export interface AircraftAnimationPose {
   readonly speedBrake: number;
 }
 
+export interface PropellerPresentation {
+  readonly bladeOpacity: number;
+  readonly discOpacity: number;
+}
+
+export const PROPELLER_DISC_CROSSFADE_START_RADIANS_PER_SECOND = 15;
+export const PROPELLER_DISC_CROSSFADE_END_RADIANS_PER_SECOND = 35;
+
 function finite(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, finite(value)));
+}
+
+/**
+ * Below ~15 rad/s the eye resolves solid blades. Above that threshold the
+ * exposure-integrated sweep takes over continuously; neither mesh nor the
+ * propeller root is ever enabled/disabled as a phase-dependent strobe.
+ */
+export function resolvePropellerPresentation(
+  radiansPerSecond: number,
+): PropellerPresentation {
+  const speed = Math.abs(finite(radiansPerSecond));
+  const t = clamp(
+    (speed - PROPELLER_DISC_CROSSFADE_START_RADIANS_PER_SECOND)
+      / (
+        PROPELLER_DISC_CROSSFADE_END_RADIANS_PER_SECOND
+        - PROPELLER_DISC_CROSSFADE_START_RADIANS_PER_SECOND
+      ),
+    0,
+    1,
+  );
+  const eased = t * t * (3 - 2 * t);
+  return { bladeOpacity: 1 - eased, discOpacity: eased };
 }
 
 /**
@@ -70,7 +100,10 @@ export function resolveAircraftAnimationPose(
   const normalizedRpm = clamp(state.engineRpm / 2_600, 0, 1.2);
   const wheelsRolling = state.onGround || finite(state.altitudeAgl, Infinity) < 0.35;
   return {
-    rotorRadiansPerSecond: 18 + normalizedRpm * 105,
+    // 123 rad/s at red line and zero at a stopped engine. The old artificial
+    // 18 rad/s floor made a stopped propeller blur and made the A-4 solid
+    // blade threshold unreachable.
+    rotorRadiansPerSecond: normalizedRpm * 123,
     starboardAileron: -aileron * 0.25,
     portAileron: aileron * 0.25,
     elevator: -elevator * 0.3,
@@ -90,4 +123,3 @@ export function resolveAircraftAnimationPose(
 export function safeAircraftAnimationDelta(deltaSeconds: number): number {
   return Math.min(0.1, Math.max(0, finite(deltaSeconds)));
 }
-

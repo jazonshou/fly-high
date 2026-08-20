@@ -340,17 +340,15 @@ export function estimateVegetationDrawCalls(
  *   trade-off rule puts crown variants per species on the "not a budget knob
  *   at any tier" list. So no lever the rule permits can close this row.
  *
- * What is left is structural, and the model prices it exactly: crown and
- * trunk are separate meshes purely because they need different
- * `detailRadialAspect` uniforms, and merging them (one prototype carrying
- * both at true proportion, one per-instance radial multiplier, the trunk's
- * radius following the crown's as it does in a real tree) halves the near,
- * mid AND shadow terms at identical fidelity — 347 → 186 draws at tier 1,
- * 9.0 → 4.8 ms. It is not free of risk: trunks would move from the opaque
- * bucket into the alpha-test bucket, and R-2E's mandated overdraw
- * mitigation is precisely that opaque trunks fill depth before the canopy
- * shades. That trade has to be MEASURED, not assumed, which is why this
- * pass prices it and leaves it rather than taking it blind.
+ * Gate B-2 measured the structural option this model prices: one prototype
+ * carrying crown and trunk would halve the near, mid and shadow terms —
+ * 347 → 186 modelled draws and 9.0 → 4.8 modelled ms at tier 1. The real
+ * adapter result rejected it. Moving opaque trunks into the alpha-test
+ * foliage bucket regressed GPU p95 in every one of the five core sub-30-fps
+ * shots (0.78–2.09 ms), instead of improving each by at least 2 ms. The
+ * experiment was reverted exactly as the conditional gate required, so the
+ * separate opaque trunk pre-fill remains live and these pre-merge ceilings
+ * deliberately remain the regression guard.
  *
  * These ceilings are what the renderer meets today. They are a regression
  * guard, not a budget: `estimatedMs` at each of them is still above §5.4's

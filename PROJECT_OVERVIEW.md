@@ -1,6 +1,6 @@
 # fly high — Rendering Overhaul: Project Overview
 
-**Status as of 2026-08-19.** Phases 0, 1, 2, 2.5 and 3 are complete — 158.05 of ≈343 priced effort-days shipped (~46% of the programme, ~71% of the way to the v1 cut line). **Gate B (the felt frame) is next to implement**, then Gate A (the aircraft and wildlife) and Phase 4; Phase 5 is now planned in full, so Phase 6 is next to plan.
+**Status as of 2026-08-19.** Phases 0, 1, 2, 2.5 and 3 plus Gates B and A are complete — 178.05 of ≈343 priced effort-days shipped (~52% of the programme, ~79% of the way to the v1 cut line). **Phase 4 is next to implement**; Phase 5 is planned in full, so Phase 6 is next to plan.
 
 This document is the high-level view of the programme for readers outside the day-to-day work. The normative sources it summarises are [`RENDERING_PLAN.md`](RENDERING_PLAN.md) (the master plan), [`ARCHITECTURE.md`](ARCHITECTURE.md) (the enforced architectural contract), [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) (a binding mid-programme audit), and one execution plan per phase.
 
@@ -40,25 +40,26 @@ A 2026-08-18 programme audit (`PRE_PHASE_4_REALIGNMENT.md`, amendments R-1…R-2
 
 ```mermaid
 flowchart LR
-    subgraph done["✅ Complete (158.05 d shipped)"]
+    subgraph done["✅ Complete (178.05 d shipped)"]
         direction LR
         P0["Phase 0<br/>Architecture shift<br/>16.8 d"] --> P1["Phase 1<br/>Foundation +<br/>atmosphere spine<br/>43.0 d"]
         P1 --> G2Z["Gate 2Z<br/>Measurement<br/>honesty<br/>6.0 d"]
         G2Z --> P2["Phase 2<br/>Clouds, water,<br/>living ground<br/>54.5 d"]
         P2 --> P25["Phase 2.5<br/>Night sky +<br/>veg. perf pass<br/>7.5 d"]
         P25 --> P3["Phase 3<br/>Terrain surface<br/>+ runway<br/>30.25 d"]
+        P3 --> GB["Gate B<br/>The felt frame<br/>7.25 d"]
+        GB --> GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"]
     end
     subgraph next["🔵 Planned — next up"]
         direction LR
-        GB["Gate B<br/>The felt frame<br/>7.25 d"] --> GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"]
-        GA --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
+        P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
     end
     subgraph later["⚪ Planned — after the cut line"]
         direction LR
         P5["Phase 5<br/>Landscape<br/>evolution<br/>57.25 d"] --> P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.0 d"]
         P6 --> P7["Phase 7<br/>Night ops +<br/>airfield identity<br/>34.0 d"]
     end
-    P3 --> GB
+    GA --> P4
     P4 -->|"v1 cut line ≈ day 224"| P5
 ```
 
@@ -138,23 +139,23 @@ Sixteen new assertions; one carried open (a per-pass GPU timer the renderer
 does not yet have). Every deviation is recorded in
 [`PHASE_3_EXECUTION_PLAN.md`](PHASE_3_EXECUTION_PLAN.md) §14.
 
-## 7. What's next
+## 7. Gates after Phase 3, and what's next
 
-### Gate B — The felt frame *(7.25 d, planned — **implementation next**)*
+### Gate B — The felt frame *(7.25 d, shipped 2026-08-19)*
 
-Created 2026-08-19 by [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §15 from that day's flight-test reports ("choppy on anything but lowest settings; the plane constantly feels like it's shaking"; "too much foliage — forests are good, but there should be variance"). It runs before Gate A and Phase 4 so that Phase 4's `4-10` tier re-measure captures the fixed state instead of baking today's draw debt and presentation-timing defect into the committed tiers. Every item is independent of the terrain chain.
+Created 2026-08-19 by [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §15 from that day's flight-test reports ("choppy on anything but lowest settings; the plane constantly feels like it's shaking"; "too much foliage — forests are good, but there should be variance"). It landed before Gate A and Phase 4 so Phase 4's `4-10` re-measure starts from a stable presentation clock and honest forest pattern.
 
-- **`B-0` frame attribution (0.5 d)** — 33–46 ms frames against 12+7 ms of counters is an unexplained gap; attribute present-to-present time before touching anything, so the rest is checked against the real bottleneck.
-- **`B-1` presentation timing (2.0 d)** — the shaking's actual mechanism: anchor interpolation to snapshot *sim-time* with a worker-clock offset estimator instead of re-anchoring on arrival, add bounded (≤50 ms) extrapolation so heavy frames coast instead of snapping, and smooth the chase camera's target and up-vector the way its position already is.
-- **`B-4` rebase stale chunks (0.75 d)** — failing test first for a latent floating-origin bug; if confirmed, each batch compensates by uniform rather than rebuild.
-- **`B-2` vegetation draw merge (2.5 d)** — the priced structural fix, 347 → 186 draws and 9.0 → 4.8 ms at tier 1 at identical fidelity, with a **measured go/no-go** (accept only if five sub-30-fps shots each improve ≥2 ms GPU and none regresses).
-- **`B-3` forest pattern variance (1.5 d)** — glades that actually open (floor 0.3 → 0.02), a hard-edged disturbance class, and a multi-km `forestFraction` gate field so whole valleys can be meadow. Argued on looks, not milliseconds; net authored stems fall.
+- **`B-0`** added start-to-start interval p95 and stopped pretending an asynchronous, uncorrelated GPU aggregate can produce a present-wait timer. The pre-gate nine-shot pacing/uncaptured envelope was 17.3–33.6 ms.
+- **`B-1`** moved presentation onto snapshot simulation time with a worker-clock EMA, monotone sampling and ≤50 ms velocity/body-rate coasting; exterior camera position, aim, up and FOV now ease as one rig.
+- **`B-4`** confirmed and fixed stale floating-origin chunks through immediate mesh compensation plus a matching pre-world shader offset, covered on a real adapter.
+- **`B-2`** completed as a rejected experiment: all five core scenes regressed 0.78–2.09 ms GPU, so the merged alpha-test tree path was reverted and opaque trunks remain split. No ceiling was fraudulently re-pinned.
+- **`B-3`** added real kilometre-scale meadow/forest provinces, below-render-cap glades, hard windthrow boundaries and shorter/bushier forest margins while leaving species/stand selection untouched.
 
-**Honesty clause, carried from the plan:** Gate B does not close G-C. 22–29 fps near the ground needs Phase 4's terrain spine and Phase 6's vegetation work. It removes the two mechanisms the user can *feel* that no phase owned, takes the one priced draw win, and makes every later measurement clean.
+**Honesty clause, carried from the plan:** Gate B does not close G-C. Near-ground frame debt still needs Phase 4 and Phase 6; Gate B fixed the shaking mechanisms and forest uniformity, and correctly refused a draw optimisation that lost on the adapter.
 
-### Gate A — The things you look at *(12.75 d, planned — after Gate B)*
+### Gate A — The things you look at *(12.75 d, shipped 2026-08-19)*
 
-The aircraft finally gets its appearance: lofted fuselage and real wing sections, synthesised paint with panel lines and wear, glass cockpit with a visible instrument panel, propeller-disc and shadow fixes — plus wildlife silhouettes and materials replacing unit spheres.
+The trainer and jet now use lofted bodies and real airfoil volumes, synthesised mapped paint with panels/rivets/wear/livery, transmitted clearcoat glass and visible instrument panels. A continuous blade/disc crossfade replaces the propeller strobe, and cockpit camera layers keep every shadow caster live. Gull, hawk, deer and boar retain the shared thin-instance architecture but now have recognisable silhouettes and feather/fur/keratin materials.
 
 ### Phase 4 — The terrain GPU spine *(46.5 d, planned; v1 cut line at its close, ≈ day 224)*
 
@@ -183,13 +184,13 @@ A clustered lighting engine and ~200 instanced light points; complete airfield l
 | Terrain surface materials | ✅ shipped (Phase 3); one classifier authority Phase 4 |
 | Trees & foliage appearance | ✅ shipped (Phase 2/2.5) |
 | Tree *placement* (ecological) | ✅ field shipped (Phase 1); deepens in Phase 6 |
-| The aircraft | Gate A (next) |
+| The aircraft | ✅ shipped (Gate A) |
 | **G-B** sun path / seasons / night | ✅ sun + seasons + night sky + ground palette shipped; classified snowline Phase 4 |
 | **G-C** measured performance | Instrument ✅ (Gate 2Z); budgets in CI ✅; open vegetation frame debt (below); binding tier evidence lands at Phase 4's `4-10` |
 
 ## 9. Open items carried honestly
 
-- **Vegetation frame debt — now owned.** The 1.8 ms vegetation budget row is ~5× over at tier 1 in near-field forest shots. Phase 2.5 removed 1,201 draw calls and priced the residual in code (`VEGETATION_DRAW_CEILING`, `VEGETATION_FRAME_DEBT_RATIO`); the next rung, the crown+trunk mesh merge, is now **Gate B `B-2`** with a measured accept/reject rule rather than an assumed win. Near-ground 22–29 fps is not closed by it — that needs Phase 4 and Phase 6.
+- **Vegetation frame debt — still open, with a failed shortcut recorded.** The 1.8 ms tier-1 row remains ~5× over in the split runtime. Gate B measured the tempting crown+trunk merge and rejected it because the alpha-test path regressed every core shot; `VEGETATION_DRAW_CEILING` and `VEGETATION_FRAME_DEBT_RATIO` intentionally remain at their pre-merge values. Phase 4 and Phase 6 own the next real opportunities.
 - **Two open decisions (R-16)** before Phase 4 designs the season epoch: does the clock advance in flight, and does precipitation get a renderer.
 - **Plan hygiene at hand-off.** The Phase 4 execution plan was verified against the Phase-1 tree; its line-number citations must be re-derived against the current tree before implementation (its own stated rule). Phase 3's were re-derived during implementation.
 - **Terrain material boundaries are still the old classifier's** (`R-25`, unchanged by Phase 3). Ten good materials are still *selected* by the 8-bit per-vertex threshold cascade the audit indicts; the ordering work in `3-0` removes the worst artefact of that, but the boundaries are iso-contours in height and show as thin lines at long range. `4-6` closes it, and `R-27`'s classifier-consumers contract is owed before Phase 4 starts.
@@ -224,11 +225,11 @@ flowchart TB
     subgraph LIFE["Living world"]
         VEG["Vegetation<br/>card trees · grass · impostors · wind · seasons"]:::live
         ECO["Ecology channels (P6)"]:::later
-        ACW["Aircraft & wildlife appearance (Gate A)"]:::nextp
+        ACW["Aircraft & wildlife appearance (Gate A)"]:::live
     end
     subgraph MEAS["Measurement (G-C)"]
         HAR["Perf harness · 14-shot baseline<br/>budgets in CI · two governors"]:::live
-        FLT["Felt frame — presentation timing,<br/>draw merge, forest variance (Gate B)"]:::nextp
+        FLT["Felt frame — presentation timing,<br/>rebase fix, forest variance (Gate B)"]:::live
         TRM["Tier re-measure at cut line (4-10)"]:::nextp
     end
 

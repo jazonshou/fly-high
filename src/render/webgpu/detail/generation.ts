@@ -561,6 +561,7 @@ function scatterLayer(
         shrubStemsPerSquareMeter: 0,
         heightFactor: 1,
         aspect: 0,
+        forestEdge: 0,
       },
       stems: field === null ? 0 : (layer === "canopy"
         ? field.treeStemsPerSquareMeter
@@ -657,7 +658,12 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     const dimensions = treeDimensions(species, random, stand.standAge);
     // Krummholz: near the treeline trees shrink before they disappear.
     const height = dimensions.height * field.heightFactor;
-    const crown = dimensions.crown * (0.55 + 0.45 * field.heightFactor);
+    // Gate B forest-edge margin: the density authority shortens edge stems
+    // through heightFactor and publishes the same margin for crown form.
+    // Species and stand selection remain untouched; only silhouette changes.
+    const crown = dimensions.crown
+      * (0.55 + 0.45 * field.heightFactor)
+      * (1 + field.forestEdge * 0.48);
     // Half a crown: real closed-canopy forests overlap crowns; a full-crown
     // exclusion zone thins the stand far below its ecological density.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({

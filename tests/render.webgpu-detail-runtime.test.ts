@@ -162,11 +162,49 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(retainedMesh?.getVertexBuffer("instancePosition")).toBe(retainedBuffer);
 
     const beforeRebase = firstInstanceLocal(retainedMesh);
+    const beforeWorldByBatch = new Map(meshes.map((batchMesh) => {
+      const local = firstInstanceLocal(batchMesh);
+      return [
+        `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`,
+        [
+          local[0] + batchMesh.position.x,
+          local[1] + batchMesh.position.y,
+          local[2] + batchMesh.position.z,
+        ] as const,
+      ];
+    }));
     const retainedBatch = retainedMesh?.metadata.detailBatch as string;
     const retainedChunk = retainedMesh?.metadata.detailChunk as string;
     // The rebase dirties every chunk; the 2-17 amortized sweep rebuilds
-    // one per update, so drain it before asserting the rebased clone.
-    for (let sweep = 0; sweep < 12; sweep += 1) {
+    // one per update. Assertion 67d checks the FIRST update, before draining:
+    // every stale batch must already render against the new origin.
+    runtime.update(
+      { x: 0, y: 120, z: 0 },
+      { x: 512, y: 30, z: -256 },
+      profile,
+    );
+    const immediateMeshes = chunkMeshes(scene);
+    expect(immediateMeshes.length).toBe(meshes.length);
+    for (const batchMesh of immediateMeshes) {
+      const key = `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`;
+      const beforeWorld = beforeWorldByBatch.get(key);
+      expect(beforeWorld, key).toBeDefined();
+      const local = firstInstanceLocal(batchMesh);
+      expect(local[0] + batchMesh.position.x, `${key} x`).toBeCloseTo(
+        beforeWorld![0] - 512,
+        3,
+      );
+      expect(local[1] + batchMesh.position.y, `${key} y`).toBeCloseTo(
+        beforeWorld![1] - 30,
+        3,
+      );
+      expect(local[2] + batchMesh.position.z, `${key} z`).toBeCloseTo(
+        beforeWorld![2] + 256,
+        3,
+      );
+    }
+    // Drain the remaining chunks before asserting the rewritten record.
+    for (let sweep = 1; sweep < 12; sweep += 1) {
       runtime.update(
         { x: 0, y: 120, z: 0 },
         { x: 512, y: 30, z: -256 },

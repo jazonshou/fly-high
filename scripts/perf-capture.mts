@@ -647,8 +647,12 @@ export interface PerfCaptureShotReport {
    * frame rate, not a macrotask-yield artefact.
    */
   readonly fps: number;
+  /** B-0: present-to-present p95, before attribution into overlapping streams. */
+  readonly frameIntervalMsP95: number | null;
   readonly cpuFrameMsP95: number;
   readonly gpuFrameMsP95: number | null;
+  /** B-0: compositor/present residual; null without frame-correlated GPU timing. */
+  readonly presentWaitMsP95: number | null;
   /** Z-2 hitch metrics over the measurement phase only. */
   readonly maxFrameMs: number | null;
   readonly p999FrameMs: number | null;

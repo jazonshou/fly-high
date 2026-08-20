@@ -20,6 +20,7 @@ export type SubsystemName =
   | "vegetation"
   | "water"
   | "clouds"
+  | "aircraft"
   | "world"
   | "simulation";
 
@@ -42,6 +43,34 @@ export interface ArchitecturalOwner {
 }
 
 export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
+  {
+    // Gate A: form, finish and cockpit presentation are one aircraft-owned
+    // subsystem. Consumers register its meshes/materials; they do not build a
+    // parallel aircraft or reimplement its visibility/propeller contracts.
+    artifact: "aircraft-form-and-materials",
+    owner: "aircraft",
+    definitionSites: [
+      "src/render/webgpu/aircraft/builders.ts",
+      "src/render/webgpu/aircraft/materialSynthesis.ts",
+      "src/render/webgpu/aircraft/animation.ts",
+      "src/render/webgpu/aircraft/types.ts",
+      "src/render/webgpu/aircraft/createAircraft.ts",
+    ],
+    consumers: "any",
+    ownedSymbols: [
+      "AircraftBuildContext",
+      "synthesizeAircraftSurface",
+      "createAircraftSurfaceTextures",
+      "AIRCRAFT_PAINT_FEATURES",
+      "resolvePropellerPresentation",
+      "AIRCRAFT_EXTERIOR_LAYER_MASK",
+      "aircraftCameraLayerMask",
+      "createAircraft",
+      "createWebGpuAircraft",
+    ],
+    notes:
+      "Gate A owns loft/airfoil form, deterministic finish synthesis, cockpit layers and propeller presentation under src/render/webgpu/aircraft/.",
+  },
   {
     artifact: "world-page-payload-schema",
     owner: "terrain-geometry",
@@ -308,7 +337,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
     consumers: ["vegetation", "terrain-material"],
-    ownedSymbols: ["densityField"],
+    ownedSymbols: ["densityField", "forestFraction"],
     notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
   },
   {
@@ -360,7 +389,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     artifact: "texture-array-mips",
     owner: "performance",
     definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts"],
-    consumers: ["performance", "vegetation", "terrain-material"],
+    consumers: ["performance", "vegetation", "terrain-material", "aircraft"],
     ownedSymbols: [
       "buildMipChain",
       "alphaDilate",

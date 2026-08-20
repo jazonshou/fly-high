@@ -507,6 +507,100 @@ Not Phase 5 work — scheduled first, created by this plan from the 2026-08-19 f
 
 **Order:** B-0 → B-1 → B-4 → B-2 → B-3. **One sanctioned vegetation-look rebaseline** at gate close (B-2 + B-3 change pixels together). **Exit:** 67a–67f green; the banked-turn temporal metric holds or improves; the five sub-30 shots' measured deltas recorded against B-0's attribution; a flown before/after of the shaking at tier 1. **Honesty clause:** Gate B does not close G-C — 22–29 fps near the ground needs Phase 4's terrain spine and Phase 6's vegetation work; it removes the two *mechanisms* the user can feel that no phase owned, takes the one priced structural draw win, and makes every later measurement clean.
 
+### 15.1 Gate B implementation record — 2026-08-19
+
+Gate B is implemented on the Phase 3.5 implementation branch, with B-2
+**measured and rejected** under its own conditional rule. The accepted runtime
+therefore contains B-0, B-1, B-3 and B-4; it deliberately retains split opaque
+trunks and the pre-gate draw/debt ceilings.
+
+- **B-0 / attribution.** The committed pre-tuning report's nine sub-30 shots
+  pace at 34.4–45.5 ms from sustained fps, while CPU p95 is 5.3–7.4 ms and GPU
+  p95 is 11.8–20.45 ms. Treating CPU and GPU as overlapping leaves a coarse
+  **17.3–33.6 ms pacing/uncaptured envelope** (`interval − max(cpu,gpu)`), not
+  evidence that their durations should be added. The implementation adds the
+  actual start-to-start interval p95 to diagnostics/HUD/capture. CPU work is
+  paired with the interval that ends at the following frame start. Babylon's
+  asynchronous WebGPU counter exposes no submitted frame id, so it remains an
+  independent aggregate and `presentWait` stays `null`; the code does not
+  fabricate a per-frame or p95 present timer by subtracting unrelated samples.
+- **B-1 / presentation.** `SimulationClient` estimates `arrival − simTime`
+  with a 0.1 EMA, presents one snapshot interval behind, never samples time
+  backwards, resets the estimator on worker-clock restart, and coasts for at
+  most 50 ms using velocity plus the simulation's body-rate quaternion
+  convention. `angularVelocity` already existed end-to-end, so the planned
+  protocol extension was unnecessary. Exterior camera position, target, up
+  and FOV now share one exponential response; cockpit remains exact and cuts
+  snap. Assertions 67a/67b cover jitter, duplicate snapshots, the coast bound,
+  target and up-vector deltas.
+- **B-4 / rebases.** The latent finding was confirmed. Every live batch keeps
+  its build origin and immediately receives `builtOrigin − currentOrigin` as
+  its mesh translation while the one-chunk rebuild sweep catches up. The plan's
+  mesh-only recipe was insufficient: band culling and impostor facing run in
+  the vertex plugin before Babylon applies the mesh world transform, so a
+  per-submesh `detailMeshOffset` uniform mirrors the same translation there.
+  Assertion 67d checks every live batch immediately and after rebuild; a real
+  WebGPU test renders a non-zero 2,048 m rebase with stale batches carrying
+  distinct offsets through one shared material.
+- **B-3 / forest variance.** The density owner now combines a multi-kilometre
+  7.2 × 5.4 km province gate, a sharpened 260 m glade field with a 0.02 floor,
+  full-amplitude 1.4 km succession and a thresholded 3.6 × 1.7 km windthrow
+  class. Transition bands publish `forestEdge`; generation shortens stems by
+  up to 34% and widens crowns by up to 48% there. Species and stand selection
+  are untouched. Deterministic closed-forest fixture selection replaces the
+  old assumption that world zero is forest; the 300–800 stems/ha, canopy
+  closure and spectral assertions remain strict. Assertions 67e/67f prove
+  multi-kilometre meadow/forest extremes, below-render-cap openings, a hard
+  boundary, shorter/bushier margins and lower broad-domain mean stems.
+
+**B-2 result (67c).** The merged prototype compiled and rendered correctly,
+preserved packed trunk ratio/phase endpoints, bark BRDF/season semantics and
+CSM casting, and reduced the expected draw/batch counts. It nevertheless moved
+trunks out of the opaque depth pre-fill and failed the measured gate. Values
+below are `committed GPU p95 − merged GPU p95`, so negative is a regression:
+
+| Shot | GPU improvement (ms) |
+|---|---:|
+| `approach-500ft` | -1.725 |
+| `reference-viewport` | -2.087 |
+| `winter-noon` | -1.013 |
+| `night` | -0.784 |
+| `motion-banked-turn` | -1.169 |
+| `forest-500ft-sunbehind` | -1.467 |
+| `ground-2m-lowsun` | +0.858 |
+| `canopy-1200ft` | -1.163 |
+| `runway-on-approach` | +3.837 |
+
+All five core shots regressed; only one of all nine cleared +2 ms. The merge,
+its packed instance semantics and its re-pinned ceilings were reverted. 67c is
+the green **conditional-decision** guard: it preserves the split runtime and
+records why the attractive 347 → 186 draw model was not accepted.
+
+**Recorded deviations and close evidence.**
+
+1. §3.14 and the committed report say nine shots are sub-30, while the B-2 and
+   exit prose says five. The implementation applies the rule to the named five
+   core shots and reports all nine; this is stricter and avoids silently
+   excluding the four later near-ground captures.
+2. B-2/B-3 implementation work overlapped before the isolated Gate A-free
+   capture instead of landing serially. Because B-3 remains in the measured
+   image, rejection is conservative; no claimed B-2 win is inferred from the
+   model. The accepted state is B-3 plus the original split materials.
+3. The accepted-state sanctioned capture completed all 14 scenes and rewrote
+   the intended forest pixels. On this host, back-to-back eight-minute WebGPU
+   runs degraded even one-batch high-altitude shots (about 5.2 → 8.9 ms GPU)
+   and failed the unchanged approach fps floor. No floor was re-pinned. The
+   B-0 fields made the failure explicit: interval p95 reached 23.8–70.9 ms,
+   CPU p95 stayed 3.8–7.3 ms, and the uncorrelated present residual correctly
+   remained unavailable. Final gate verification records that host result
+   rather than converting it into an accepted budget.
+4. The banked-turn accepted-state capture improved temporal structure from
+   min/mean consecutive SSIM 0.7530/0.7605 to 0.8301/0.8406. Maximum mean-luma
+   delta moved 0.00157 → 0.00178, still far inside the committed 0.01 ceiling.
+   The synthetic jitter/camera tests and this scripted flown turn are the
+   repeatable before/after for the reported shaking; no claim is made that
+   Gate B closes the remaining near-ground frame-rate debt.
+
 ---
 
 ## 16. Decision log
@@ -525,6 +619,9 @@ Not Phase 5 work — scheduled first, created by this plan from the 2026-08-19 f
 | 2026-08-19 | §3.14 | Gate B created from flight-test reports; runs first | The report is the committed baseline (9/14 shots < 30 fps); the shaking has a named mechanism no phase owned |
 | 2026-08-19 | B-2 | Crown/trunk merge behind a measured go/no-go | The perf-debt pass priced it and left it *because* the R-2E trade must be measured; Gate B measures it |
 | 2026-08-19 | §3.15 | Openings require authored density below the render cap; glade floor → 0.02 | Measured: floored glades author 240/ha against a 78/ha cap — invisible from the air by arithmetic |
+| 2026-08-19 | B-0 close | GPU timestamps stay an independent aggregate; present residual is null without a correlatable frame id | CPU/interval pairs are aligned, but Babylon's async counter does not identify the submitted frame. Subtracting marginal p95s would manufacture a number. The new interval-p95 field exposes the real pacing gap. |
+| 2026-08-19 | B-2 close | **Merge rejected and reverted; split opaque trunks remain live** | All five core sub-30 shots regressed 0.78–2.09 ms GPU; only one of all nine exceeded +2 ms. The conditional experiment completed successfully by refusing a failed optimisation. |
+| 2026-08-19 | B-3 close | Forest provinces use 7.2 × 5.4 km gate scales; windthrow is the hard-edge class; edge morphology is density-owned | Pure deterministic fields preserve the future WGSL boundary and leave R-27 species/stand ownership untouched. |
 | — | `5-1` | Minimum meshed lake area (proposed 0.04 km²) | *pin from the first flown lake review* |
 | — | `5-3` | Whether `4-7`'s pyramid merges into the macro grid | *decide on measured occlusion-bake quality against the eroded macro* |
 | — | `5-A` | Airport site-selection re-tune contents | *record what the 384-seed audit needed* |

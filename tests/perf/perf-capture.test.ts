@@ -116,17 +116,6 @@ function nextAnimationFrame(): Promise<number> {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
-/**
- * Z-1: the one allowlisted renderer error. Babylon 9.21.2's WebGPU backend
- * gives every submesh its own material context, but binds a shared
- * material's textures only on the first submesh of a frame — so the first
- * frame a fresh pipeline/context pair draws, the remaining submeshes log
- * `cloudShadowSampler … not found` once and then heal. Verified transient
- * and pixel-free (all baseline SSIMs hold); recorded in the Phase 2 decision
- * log. Everything else fails the capture.
- */
-const ALLOWLISTED_ERROR = /cloudShadowSampler[^ ]* not found in the material context/u;
-
 describe("perf capture (1A-1c / 2Z)", () => {
   let renderer: FlightRenderer | null = null;
   const consoleErrors: string[] = [];
@@ -406,8 +395,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
         ssimAgainstBaseline: ssim === null ? null : Math.round(ssim * 10_000) / 10_000,
         tiles: tileStatistics(luminance, viewportWidth, viewportHeight),
         fps: Math.round(measuredFps * 10) / 10,
+        frameIntervalMsP95: diagnostics.frameIntervalP95Ms,
         cpuFrameMsP95: diagnostics.cpuP95Ms ?? diagnostics.cpuFrameTime,
         gpuFrameMsP95: diagnostics.gpuP95Ms,
+        presentWaitMsP95: diagnostics.presentWaitP95Ms,
         maxFrameMs: diagnostics.maxFrameMs === null
           ? null
           : Math.round(diagnostics.maxFrameMs * 10) / 10,
@@ -505,14 +496,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
       }
     }
 
-    // Z-1: the renderer must not have logged an error during the run —
-    // except the one documented Babylon submesh-context transient.
+    // Z-1: the renderer must not have logged an error during the run.
     expect(
-      consoleErrors.filter((entry) => !ALLOWLISTED_ERROR.test(entry)),
+      consoleErrors,
       "The renderer logged console errors during the capture (Z-1 gate)",
     ).toEqual([]);
     expect(
-      loggerErrors.filter((entry) => !ALLOWLISTED_ERROR.test(entry)),
+      loggerErrors,
       "Babylon logged errors during the capture (Z-1 gate)",
     ).toEqual([]);
   }, 1_500_000);

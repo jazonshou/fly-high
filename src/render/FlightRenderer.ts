@@ -82,7 +82,12 @@ import {
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
 import type { FlightRenderingSystem } from "./types";
-import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
+import { attributePresentFrame } from "./frameAttribution";
+import {
+  cameraPresentationResponse,
+  shouldStabilizeCameraHorizon,
+  smoothCameraVectorToRef,
+} from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
@@ -277,6 +282,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly forward = Vector3.Right();
   private readonly up = Vector3.Up();
   private readonly cameraTarget = Vector3.Zero();
+  private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
   private readonly cameraWorld = Vector3.Zero();
@@ -287,6 +293,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly diagnosticIntervalDurations: number[] = [];
   private readonly diagnosticCpuDurations: number[] = [];
   private readonly diagnosticGpuDurations: number[] = [];
+  /** B-0: residuals computed only from three measurements of the same frame. */
+  private readonly diagnosticPresentWaitDurations: number[] = [];
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
@@ -323,6 +331,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private previousFrameStartedAt: number | null = null;
   private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
+  private lastPresentWaitMilliseconds: number | null = null;
   private lastDrawCalls = 0;
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
@@ -1005,11 +1014,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       : this.lastSignals.gpuP95Ms;
     const cpuP95Ms =
       frameTimingPercentile95(this.diagnosticCpuDurations) ?? this.lastSignals.cpuP95Ms;
+    const frameIntervalP95Ms =
+      frameTimingPercentile95(this.diagnosticIntervalDurations)
+      ?? this.lastSignals.intervalP95Ms;
     return {
       fps: this.engine.getFps(),
       frameTime: this.lastFrameIntervalMilliseconds,
       cpuFrameTime: this.lastCpuFrameMilliseconds,
       gpuFrameTime,
+      presentWaitTime: this.lastPresentWaitMilliseconds,
       drawCalls: this.lastDrawCalls,
       triangles: Math.round(this.scene.getActiveIndices() / 3),
       geometries: this.scene.geometries.length,
@@ -1035,6 +1048,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       activeGovernor: this.pinnedRenderScale !== null ? "pinned" : this.governorState.mode,
       gpuP95Ms,
       cpuP95Ms,
+      frameIntervalP95Ms,
+      // A percentile of per-frame residuals, never a subtraction of three
+      // independently ranked marginal percentiles.
+      presentWaitP95Ms: frameTimingPercentile95(this.diagnosticPresentWaitDurations),
       maxFrameMs,
       p999FrameMs,
       hitchCount,
@@ -1263,7 +1280,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.desiredCamera.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(1.15))
         .addInPlace(this.up.scale(1.12));
-      this.cameraTarget.copyFrom(this.desiredCamera).addInPlace(this.forward.scale(400));
+      this.desiredCameraTarget.copyFrom(this.desiredCamera)
+        .addInPlace(this.forward.scale(400));
       // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
       // was the widest view in the game, which is backwards.
       fieldOfView = 56;
@@ -1274,35 +1292,50 @@ export class FlightRenderer implements FlightRenderingSystem {
         8.5 + Math.sin(angle * 0.7) * 2,
         Math.sin(angle) * 24,
       );
-      this.cameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
+      this.desiredCameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
       fieldOfView = 58;
     } else {
       const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
       this.desiredCamera.copyFrom(aircraftPosition)
         .subtractInPlace(this.forward.scale(profile.distance))
         .addInPlace(this.up.scale(profile.height));
-      this.cameraTarget.copyFrom(aircraftPosition)
+      this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(16))
         .addInPlace(this.up.scale(1.25));
       fieldOfView = profile.fieldOfView;
     }
-    const response = this.cameraCut
-      ? 1
-      : 1 - Math.exp(-this.currentDeltaSeconds * (this.reducedMotion ? 12 : 7));
-    Vector3.LerpToRef(this.camera.position, this.desiredCamera, response, this.camera.position);
+    const response = cameraPresentationResponse(
+      this.cameraMode,
+      this.cameraCut,
+      this.currentDeltaSeconds,
+      this.reducedMotion,
+    );
+    smoothCameraVectorToRef(
+      this.camera.position,
+      this.desiredCamera,
+      response,
+      this.camera.position,
+    );
+    smoothCameraVectorToRef(
+      this.cameraTarget,
+      this.desiredCameraTarget,
+      response,
+      this.cameraTarget,
+    );
     if (shouldStabilizeCameraHorizon(this.cameraMode, this.reducedMotion)) {
       this.desiredCameraUp.copyFromFloats(0, 1, 0);
-      Vector3.LerpToRef(
-        this.camera.upVector,
-        this.desiredCameraUp,
-        response,
-        this.camera.upVector,
-      );
-      this.camera.upVector.normalize();
     } else {
-      // Cockpit and non-stabilized views retain the aircraft's physical roll.
-      this.camera.upVector.copyFrom(this.up);
+      // Cockpit and non-stabilized exterior views retain physical roll. The
+      // exterior rig eases toward it; cockpit response is exactly one.
+      this.desiredCameraUp.copyFrom(this.up);
     }
+    smoothCameraVectorToRef(
+      this.camera.upVector,
+      this.desiredCameraUp,
+      response,
+      this.camera.upVector,
+    );
+    this.camera.upVector.normalize();
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
   }
@@ -1564,11 +1597,37 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!isUsableFrameTiming(interval)) {
       // A suspended/background tab must not poison a later active-window p95.
       this.lastFrameIntervalMilliseconds = 0;
+      this.lastPresentWaitMilliseconds = null;
       this.resetTimingSamples();
       return;
     }
     this.lastFrameIntervalMilliseconds = interval;
     this.frameIntervalDurations.push(interval);
+    // The interval ending at this frame start belongs to the CPU work saved
+    // from the preceding render. Babylon's WebGPU PerfCounter does not expose
+    // the submitted frame id for its asynchronous timestamp result, so that
+    // independent GPU aggregate must not be spliced into this frame. Keep the
+    // residual unavailable until the engine exposes a correlatable sample.
+    this.recordPresentAttribution(interval, this.lastCpuFrameMilliseconds, null);
+  }
+
+  private recordPresentAttribution(
+    intervalMilliseconds: number,
+    cpuMilliseconds: number,
+    correlatedGpuMilliseconds: number | null,
+  ): void {
+    const attribution = attributePresentFrame(
+      intervalMilliseconds,
+      cpuMilliseconds,
+      correlatedGpuMilliseconds,
+    );
+    this.lastPresentWaitMilliseconds = attribution.presentWaitMs;
+    if (attribution.presentWaitMs !== null) {
+      this.pushDiagnosticSample(
+        this.diagnosticPresentWaitDurations,
+        attribution.presentWaitMs,
+      );
+    }
   }
 
   /** Returns this frame's freshly resolved GPU sample, or null. */
@@ -1580,6 +1639,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     const counter = this.engine.getGPUFrameTimeCounter();
     // WebGPU timestamp readback is asynchronous. `current` remains unchanged
     // until another query resolves, so consume each counter result only once.
+    // The counter carries no submitted frame id; it is valid as an independent
+    // GPU distribution but deliberately not used for present attribution.
     if (counter.count === this.lastGpuCounterSampleCount) return null;
     this.lastGpuCounterSampleCount = counter.count;
     const milliseconds = counter.current / 1_000_000;
@@ -1605,9 +1666,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.diagnosticIntervalDurations.length = 0;
     this.diagnosticCpuDurations.length = 0;
     this.diagnosticGpuDurations.length = 0;
+    this.diagnosticPresentWaitDurations.length = 0;
     this.previousFrameStartedAt = null;
     this.lastFrameIntervalMilliseconds = 0;
     this.lastCpuFrameMilliseconds = 0;
+    this.lastPresentWaitMilliseconds = null;
     this.lastGpuFrameMilliseconds = null;
     this.lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
     this.lastGpuCounterSampleCount = this.engine.enableGPUTimingMeasurements

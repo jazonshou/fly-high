@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { TerrainBiome } from "../src/world";
+import { hashSeed, TerrainBiome } from "../src/world";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
+import { densityField } from "../src/render/webgpu/detail/densityField";
 import {
   CANOPY_CLOSURE_TARGET,
   RENDERED_DENSITY_LAWS,
@@ -38,6 +39,45 @@ const CELL_SIZE = 512;
 /** 4 × 512 m = 2,048 m — the criterion's window. */
 const CELL_SPAN = 4;
 const HECTARE = 10_000;
+const CLOSURE_SEED = "canopy-closure";
+
+/** Gate B makes meadow provinces intentional; closure is measured in a
+ * deterministic CLOSED-forest window rather than assuming world zero is one. */
+function selectClosureWindow(): { cellX: number; cellZ: number } {
+  const seedHash = hashSeed(CLOSURE_SEED);
+  let best = { cellX: 0, cellZ: 0, score: Number.NEGATIVE_INFINITY };
+  for (let cellZ = -32; cellZ <= 28; cellZ += CELL_SPAN) {
+    for (let cellX = -32; cellX <= 28; cellX += CELL_SPAN) {
+      const densities: number[] = [];
+      for (let z = 64; z < CELL_SIZE * CELL_SPAN; z += 128) {
+        for (let x = 64; x < CELL_SIZE * CELL_SPAN; x += 128) {
+          densities.push(densityField(seedHash, {
+            x: cellX * CELL_SIZE + x,
+            z: cellZ * CELL_SIZE + z,
+            heightMeters: 320,
+            seaLevelMeters: 0,
+            slope: 0.04,
+            moisture: 0.72,
+            normalX: 0.01,
+            normalZ: 0.02,
+            dayOfYear: 171,
+          }).treeStemsPerSquareMeter);
+        }
+      }
+      densities.sort((a, b) => a - b);
+      const mean = densities.reduce((sum, value) => sum + value, 0) / densities.length;
+      // Prefer a window whose lower quartile is forest too, not a high mean
+      // carried by dense islands around several intentional glades.
+      const lowerQuartile = densities[Math.floor(densities.length * 0.25)] ?? 0;
+      const score = mean + lowerQuartile;
+      if (score > best.score) best = { cellX, cellZ, score };
+    }
+  }
+  expect(best.score, "closure fixture has a dense authored canopy").toBeGreaterThan(0.06);
+  return best;
+}
+
+const CLOSURE_WINDOW = selectClosureWindow();
 
 function closedForestSampler(): (x: number, z: number) => DetailTerrainSample {
   return () => ({
@@ -63,9 +103,9 @@ const WINDOW_CELLS = ((): readonly ReturnType<typeof generateDetailCell>[] => {
   for (let cellZ = 0; cellZ < CELL_SPAN; cellZ += 1) {
     for (let cellX = 0; cellX < CELL_SPAN; cellX += 1) {
       cells.push(generateDetailCell({
-        worldSeed: "canopy-closure",
-        cellX,
-        cellZ,
+        worldSeed: CLOSURE_SEED,
+        cellX: CLOSURE_WINDOW.cellX + cellX,
+        cellZ: CLOSURE_WINDOW.cellZ + cellZ,
         cellSizeMeters: CELL_SIZE,
         densityMultiplier: 1,
         terrainSample: sampler,

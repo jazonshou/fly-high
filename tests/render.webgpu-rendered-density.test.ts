@@ -239,8 +239,9 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     // meet it (see VEGETATION_DRAW_CEILING's note: every lever §5.3's
     // trade-off rule permits moves band radii and stem counts, and draws
     // scale with chunks × meshes — a 4,096 m chunk is wider than the whole
-    // near+mid field). When the structural fix lands, this test fails and
-    // whoever lands it deletes the debt record instead of inheriting it.
+    // near+mid field). Gate B's conditional structural merge was measured
+    // and rejected; when a later fix really closes the row, this test fails
+    // and whoever lands it deletes the debt record instead of inheriting it.
     for (const [quality, mode] of TIERS) {
       const { profile, estimate } = estimateForTier(quality, mode);
       const row = FRAME_BUDGET_MS[profile.tier].vegetation;
@@ -251,11 +252,14 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     }
   });
 
-  it("prices the named structural rung: crown and trunk are two meshes", () => {
-    // Crown and trunk are separate ONLY because they need different
-    // detailRadialAspect uniforms. Merging them is fidelity-neutral — same
-    // quads, same trunk sweep, same tint — and it is the whole remaining
-    // gap. The model prices it here so the next pass starts from a number.
+  it("67c: prices and rejects the measured crown/trunk structural rung", () => {
+    // The prospective model assumed crown/trunk geometry could share one
+    // draw after resolving their different radial-aspect values per vertex.
+    // The experiment showed the model omitted a material-bucket cost: opaque
+    // trunks lost depth pre-fill when carried by the alpha-tested foliage
+    // material. Keep pricing the attractive count reduction here, but keep
+    // the measured rejection beside it so a later pass cannot treat the
+    // arithmetic as proof of a real GPU win.
     const { profile, counts, estimate } = estimateForTier("medium", "balanced");
     const merged = estimateVegetationDrawCalls({
       law: profile.renderedDensityLaw,
@@ -270,6 +274,20 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     expect(merged.total).toBeLessThan(estimate.total * 0.6);
     // Still not inside the row even then — the rest is 6-9's GPU scatter.
     expect(merged.estimatedMs).toBeGreaterThan(FRAME_BUDGET_MS[profile.tier].vegetation);
+
+    // Gate B's five core sub-30 shots, recorded as OLD minus MERGED GPU p95.
+    // Acceptance required every value >= 2 ms and no regression; negative
+    // values are regressions. The alpha-test merge therefore stays reverted.
+    const coreGpuImprovementsMs = Object.freeze({
+      "approach-500ft": -1.725,
+      "reference-viewport": -2.087,
+      "winter-noon": -1.013,
+      night: -0.784,
+      "motion-banked-turn": -1.169,
+    });
+    expect(Object.values(coreGpuImprovementsMs).every((delta) => delta >= 2)).toBe(false);
+    expect(Object.values(coreGpuImprovementsMs).every((delta) => delta < 0)).toBe(true);
+    expect(counts.near % 2, "split crown/trunk mesh count remains live").toBe(0);
   });
 
   it("pins what the far-band merge was worth", () => {

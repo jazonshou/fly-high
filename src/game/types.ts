@@ -106,6 +106,8 @@ export interface RenderDiagnostics {
   cpuFrameTime: number;
   /** GPU frame duration when timestamp-query is available. */
   gpuFrameTime: number | null;
+  /** Present/compositor residual for the most recent fully correlated interval. */
+  presentWaitTime: number | null;
   visibleInstances: number;
   /**
    * Frustum-surviving vegetation batches — one draw per (prototype, chunk)
@@ -135,6 +137,10 @@ export interface RenderDiagnostics {
   activeGovernor: RenderGovernorMode;
   gpuP95Ms: number | null;
   cpuP95Ms: number | null;
+  /** Present-to-present p95 over the same rolling diagnostics window. */
+  frameIntervalP95Ms: number | null;
+  /** p95 of fully correlated per-frame residuals; never marginal-p95 subtraction. */
+  presentWaitP95Ms: number | null;
   /**
    * Z-2 hitch metrics over the rolling diagnostics window. The p95 streams
    * deliberately ignore >250 ms samples (suspended tabs must not poison a
