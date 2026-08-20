@@ -48,7 +48,6 @@ describe("WebGPU quality profiles", () => {
     });
     expect(resolveWebGpuQualityProfile("low", "performance").oceanResolution).toBe(128);
     expect(resolveWebGpuQualityProfile("medium", "balanced")).toMatchObject({
-      terrainRings: 7,
       shadowCascades: 2,
       // 4-8b: the cascades became a CONTACT instrument. 7,000 m at 2×2048 was
       // ~1.5 m/texel in the near cascade; 1,400 m at 2×1280 is ~0.23 m, and

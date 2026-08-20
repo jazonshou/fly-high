@@ -142,6 +142,8 @@ describe("terrain surface plugin (3-2)", () => {
         "terrainOcclusionAtlas",
         "terrainHorizonAtlasA",
         "terrainHorizonAtlasB",
+        // 4-4's vertex-texture displacement source.
+        "terrainHeightAtlas",
       ]);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("terrainMaterialTiling");

@@ -1042,12 +1042,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       triangles: Math.round(this.scene.getActiveIndices() / 3),
       geometries: this.scene.geometries.length,
       textures: this.scene.textures.length,
-      terrainTiles: terrain.residentPages,
-      // 4-2: the GPU atlas's residency, not the CPU tile count. `4-4` retires
-      // the tile path and these fields keep their meaning across that change.
-      residentTerrainPages: terrain.residentSlots > 0
-        ? terrain.residentSlots
-        : terrain.residentPages,
+      terrainTiles: terrain.nodes,
+      // 4-2/4-5: the GPU atlas's residency. The CPU tile path is gone, and
+      // these fields kept their names because their MEANING survived it —
+      // resident pages are resident pages.
+      residentTerrainPages: terrain.residentSlots,
       collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       vegetationBatches: this.detail.statistics.activeBatches,
@@ -1083,7 +1082,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
-      terrainWorkersBusy: terrain.workersBusy,
+      terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
         cssHeight: Math.max(1, this.domElement.clientHeight),
@@ -1364,6 +1363,23 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
   }
 
+  /**
+   * `viewportHeightPixels / (2 * tan(verticalFov / 2))`.
+   *
+   * Recomputed per frame rather than cached: it moves with the render scale,
+   * the display, and the camera's own field-of-view response to airspeed, and
+   * a stale value would make the quadtree split against a viewport that is no
+   * longer on screen.
+   */
+  private terrainPixelsPerMeter(): number {
+    const height = Math.max(1, this.engine.getRenderHeight());
+    const width = Math.max(1, this.engine.getRenderWidth());
+    const verticalFov = this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED
+      ? 2 * Math.atan(Math.tan(this.camera.fov / 2) * (height / width))
+      : this.camera.fov;
+    return height / (2 * Math.tan(Math.max(0.05, verticalFov) / 2));
+  }
+
   private updateWorldVisibility(): void {
     const state = this.currentState;
     if (!state) return;
@@ -1373,6 +1389,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       z: state.position.z,
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
+      // 4-5: the one camera datum CDLOD's screen-space error needs. The
+      // camera is FOVMODE_HORIZONTAL_FIXED, so the VERTICAL half-angle it
+      // implies is what a pixel of ground error is measured against.
+      pixelsPerMeterAtUnitDistance: this.terrainPixelsPerMeter(),
     }, this.frameIndex);
     // 2-13: one shared-field wind sample per frame at the observer — the
     // plan's three bands all read this snapshot; per-instance bytes carry

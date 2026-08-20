@@ -185,8 +185,6 @@ const OCEAN_BYTES_PER_TEXEL =
   16 + 16 + 4 * OCEAN_FFT_PING_PONG_BYTES + 8 + 3 * 8 * OCEAN_MIP_CHAIN_FACTOR;
 /** Integration + two temporal history targets, rgba16float. */
 const CLOUD_TARGET_COUNT = 3;
-/** Vertex layout of a CPU terrain tile: position + normal (f32x3) + colour (f32x4). */
-const TERRAIN_VERTEX_BYTES = (3 + 3 + 4) * 4;
 
 /**
  * Z-4: the movable allocations (PRE_PHASE_4_REALIGNMENT.md §3, R-22). The
@@ -339,7 +337,6 @@ export interface GpuMemoryEstimateMiB {
   readonly oceanMiB: number;
   /** Includes the `2-1` cloud volumes once their input is non-zero. */
   readonly cloudsMiB: number;
-  readonly terrainGeometryMiB: number;
   /** `4-2`: the r32float height atlas. */
   readonly heightAtlasMiB: number;
   /** `4-6`/`4-7`: the splat, occlusion and horizon page atlases. */
@@ -382,15 +379,6 @@ export function estimateRenderPixels(
 }
 
 /**
- * Mirrors the CPU tile path: level 0 keeps a full 5×5 ring, coarser levels
- * lose the four pages fully hidden beneath finer coverage (measured 25 + 21
- * per level; 172 pages at 8 rings).
- */
-function terrainPagesAtLevel(level: number): number {
-  return level === 0 ? 25 : 21;
-}
-
-/**
  * Texels per atlas edge for a slot budget. The atlas is a square slot grid,
  * so `sqrt(slots)` slots per edge; `TerrainSpineContract.terrainAtlasEdgeTexels`
  * is the same arithmetic and a test pins them together.
@@ -399,20 +387,18 @@ function atlasEdgeTexels(slots: number, slotEdge: number): number {
   return Math.ceil(Math.sqrt(Math.max(1, slots))) * slotEdge;
 }
 
-function terrainPageBytes(resolution: number): number {
-  const skirtVertices = 4 * (resolution - 1);
-  const vertexCount = resolution * resolution + skirtVertices;
-  const indexCount = (resolution - 1) * (resolution - 1) * 6 + skirtVertices * 6;
-  const indexBytes = vertexCount > 65_535 ? 4 : 2;
-  return vertexCount * TERRAIN_VERTEX_BYTES + indexCount * indexBytes;
-}
 
 /**
  * Sums every steady-state GPU allocation from first principles: shadow maps
  * from map size and cascade count, the ocean FFT working set from resolution
  * and cascades, cloud history from the integration scale and the pixel cap,
- * framebuffers from the capped pixel count, terrain geometry from the ring
- * configuration.
+ * framebuffers from the capped pixel count, and the page atlases from the
+ * tier's slot budgets.
+ *
+ * `4-5` deleted the `terrainGeometryMiB` row with the CPU tile meshes it
+ * described: one 33x33 unit grid plus a few hundred instance records is under
+ * 0.3 MiB at every tier, which is inside `miscMiB` and not worth a row that
+ * would only ever read as noise.
  */
 export function estimateGpuMemoryBreakdown(
   profile: WebGpuQualityProfile,
@@ -445,12 +431,6 @@ export function estimateGpuMemoryBreakdown(
     cloudPixels * CLOUD_TARGET_COUNT * HDR_COLOR_BYTES
     + cloudShadowEdge * cloudShadowEdge * HDR_COLOR_BYTES;
 
-  let terrainBytes = 0;
-  for (let level = 0; level < profile.terrainRings; level += 1) {
-    terrainBytes +=
-      terrainPagesAtLevel(level) * terrainPageBytes(profile.terrainTileResolution);
-  }
-
   const heightAtlasEdge = atlasEdgeTexels(profile.heightAtlasSlots, inputs.heightSlotStoredEdge);
   const heightAtlasBytes =
     heightAtlasEdge * heightAtlasEdge * inputs.heightSlotBytesPerTexel;
@@ -470,7 +450,6 @@ export function estimateGpuMemoryBreakdown(
   const shadowsMiB = shadowBytes / MIB;
   const oceanMiB = oceanBytes / MIB;
   const cloudsMiB = cloudBytes / MIB + inputs.cloudVolumesMiB;
-  const terrainGeometryMiB = terrainBytes / MIB;
   const heightAtlasMiB = heightAtlasBytes / MIB;
   const channelAtlasMiB = channelAtlasBytes / MIB;
   const heightPyramidMiB = heightPyramidBytes / MIB;
@@ -488,7 +467,7 @@ export function estimateGpuMemoryBreakdown(
     / MIB;
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
-    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB
+    (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB
       + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
       + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
       + materialArraysMiB + miscMiB)
@@ -500,7 +479,6 @@ export function estimateGpuMemoryBreakdown(
     shadowsMiB,
     oceanMiB,
     cloudsMiB,
-    terrainGeometryMiB,
     heightAtlasMiB,
     channelAtlasMiB,
     heightPyramidMiB,
@@ -536,7 +514,6 @@ export function assertWithinBudget(
     `shadows ${breakdown.shadowsMiB.toFixed(1)}`,
     `ocean ${breakdown.oceanMiB.toFixed(1)}`,
     `clouds ${breakdown.cloudsMiB.toFixed(1)}`,
-    `terrain ${breakdown.terrainGeometryMiB.toFixed(1)}`,
     `height-atlas ${breakdown.heightAtlasMiB.toFixed(1)}`,
     `channel-atlas ${breakdown.channelAtlasMiB.toFixed(1)}`,
     `height-pyramid ${breakdown.heightPyramidMiB.toFixed(2)}`,

@@ -212,12 +212,13 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/terrain/TerrainQuadtree.ts"],
     consumers: ["terrain-geometry"],
     ownedSymbols: [
-      "TerrainQuadtree",
       "selectTerrainNodes",
       "terrainNodeMorphK",
+      "terrainScreenSpaceError",
+      "writeTerrainNodeBuffers",
+      "packTerrainNodeSplat",
       "buildTerrainNodeGrid",
     ],
-    plannedBy: "4-5",
   },
   {
     artifact: "page-geometry-one-number",
@@ -642,6 +643,17 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL", "GROUND_COVER_ARCHETYPES"],
     notes: "Transliteration of densityField.ts; the TS remains the authority.",
     plannedBy: "4-6b",
+  },
+  {
+    // 4-4: renamed from `terrainQueue.ts`/`BoundedTerrainQueue`. It is the
+    // vegetation worker's queue and always was; the owner row exists so the
+    // next reader of `RENDERING_PLAN.md:340`'s deletion list cannot mistake
+    // it for a terrain file again.
+    artifact: "bounded-priority-queue",
+    owner: "vegetation",
+    definitionSites: ["src/workers/boundedPriorityQueue.ts"],
+    consumers: "any",
+    ownedSymbols: ["BoundedPriorityQueue"],
   },
   {
     artifact: "detail-worker",

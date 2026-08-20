@@ -95,6 +95,7 @@ export interface RenderDiagnostics {
   triangles: number;
   geometries: number;
   textures: number;
+  /** 4-5: CDLOD nodes drawn this frame (was CPU tile meshes). */
   terrainTiles: number;
   /** What the user selected; reported separately from what is actually running. */
   requestedRenderingMode: RequestedRenderingMode;
@@ -162,7 +163,8 @@ export interface RenderDiagnostics {
   topPassesByCpuMs: readonly PassCpuTiming[];
   pendingTerrainPages: number;
   /** Terrain generation workers currently busy (1B-4). */
-  terrainWorkersBusy: number;
+  /** 4-4: the CPU worker pool is gone; this is GPU compute dispatches in flight. */
+  terrainComputeDispatches: number;
   estimatedGpuMemoryMiB: number;
   /**
    * Z-4: best-effort walk of actual texture/geometry allocations — a floor

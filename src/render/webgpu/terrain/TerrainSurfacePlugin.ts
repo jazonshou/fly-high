@@ -2,6 +2,7 @@ import { MaterialPluginBase } from "@babylonjs/core/Materials/materialPluginBase
 import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
+import { TERRAIN_NODE_GRID_RESOLUTION } from "./TerrainSpineContract";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { TerrainTriplanarMode } from "@/src/render/webgpu/core/QualityProfile";
@@ -305,6 +306,40 @@ const MICRO_SIN = Math.sin((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 
 export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
   CUSTOM_VERTEX_DEFINITIONS: /* wgsl */ `
+#ifdef TERRAIN_SURFACE_CDLOD
+// 4-5's node record. TWO stride-4 attributes, never one stride-8: a custom
+// kind resolves to _size = 8 inside VertexBuffer and
+// WebGPUCacheRenderPipeline throws "Invalid Format ... size=8", because
+// WebGPU has no vertex format wider than four components.
+//   A = (slotIndex, subNodeX + subNodeZ*8, level, splatPacked)
+//   B = (morphK, parentSlotIndex, texelSize, maxDeviation)
+attribute terrainNodeA: vec4f;
+attribute terrainNodeB: vec4f;
+// 4-4: vertex-texture displacement. Sampled with textureLoad ONLY — r32float
+// is unfilterable (float32-filterable is available and deliberately not
+// requested), and the geomorph wants exact texel values at snapped lattice
+// positions anyway.
+var terrainHeightAtlas: texture_2d<f32>;
+
+/** Bilinear height from the atlas, as four textureLoads. */
+fn terrainSampleHeight(slot: f32, texelX: f32, texelZ: f32) -> f32 {
+  if (slot < 0.0) { return 0.0; }
+  let grid = uniforms.terrainHeightAtlasShape.w;
+  let row = floor(slot / grid);
+  let slotOrigin = vec2f(slot - row * grid, row) * uniforms.terrainHeightAtlasShape.y
+    + vec2f(uniforms.terrainHeightAtlasShape.z);
+  let base = floor(vec2f(texelX, texelZ));
+  let fraction = vec2f(texelX, texelZ) - base;
+  let corner = vec2i(slotOrigin + base);
+  let h00 = textureLoad(terrainHeightAtlas, corner, 0).r;
+  let h10 = textureLoad(terrainHeightAtlas, corner + vec2i(1, 0), 0).r;
+  let h01 = textureLoad(terrainHeightAtlas, corner + vec2i(0, 1), 0).r;
+  let h11 = textureLoad(terrainHeightAtlas, corner + vec2i(1, 1), 0).r;
+  let top = h00 + (h10 - h00) * fraction.x;
+  let bottom = h01 + (h11 - h01) * fraction.x;
+  return top + (bottom - top) * fraction.y;
+}
+#else
 // 3-2's provisional splat rides the colour attribute the clipmap already
 // allocated. useVertexColors is false on those meshes, so VERTEXCOLOR is
 // never defined and this lane is the plugin's alone:
@@ -313,6 +348,7 @@ export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
 // The ids are CONTINUOUS along the SurfaceMaterial axis and the fragment
 // brackets them; see the contract's note on why that order is load-bearing.
 attribute color: vec4f;
+#endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
 // built page-local and positioned by their world matrix, so this is free —
@@ -320,9 +356,83 @@ varying terrainSplat: vec4f;
 // per-mesh uniform on a material every page shares.
 varying terrainPageLocal: vec2f;
 `,
+  /**
+   * `4-4`: displacement at `CUSTOM_VERTEX_UPDATE_POSITION`, and the hook
+   * choice is load-bearing rather than stylistic.
+   *
+   * `pbr.vertex` assigns `vPositionW = worldPos.xyz` and computes `vNormalW`
+   * BEFORE the `CUSTOM_VERTEX_UPDATE_WORLDPOS` marker. Displacing there moves
+   * the rasterised geometry but leaves `vPositionW` at the undisplaced height
+   * — and `vPositionW` is what the aerial-perspective include, the
+   * cloud-shadow plugin and the triplanar projection all read. The symptom is
+   * haze and cloud shadows sitting at the wrong altitude on every slope, which
+   * reads as a lighting bug and is not one.
+   */
+  CUSTOM_VERTEX_UPDATE_POSITION: /* wgsl */ `
+#ifdef TERRAIN_SURFACE_CDLOD
+{
+  let nodeA = vertexInputs.terrainNodeA;
+  let nodeB = vertexInputs.terrainNodeB;
+  let quads = ${TERRAIN_NODE_GRID_RESOLUTION - 1}.0;
+  // The geomorph, in the node's OWN grid coordinates. At morphK = 1 every odd
+  // vertex has collapsed onto the previous even one, which is exactly the
+  // parent's lattice — so the two edges are the same curve and cracks close
+  // ANALYTICALLY. That is what lets skirts be deleted, which is what lets
+  // backFaceCulling be true.
+  let gridPosition = positionUpdated.xz * quads;
+  let evenLattice = floor(gridPosition * 0.5) * 2.0;
+  let morphed = (gridPosition + (evenLattice - gridPosition) * nodeB.x) / quads;
+  positionUpdated.x = morphed.x;
+  positionUpdated.z = morphed.y;
+
+  // One 264-texel slot serves an 8x8 block of nodes, and a node spans 32
+  // quads, so a node vertex lands on a page texel exactly: no rounding, no
+  // half-texel convention to get wrong.
+  let parityZ = floor(nodeA.y * 0.0078125);
+  let afterZ = nodeA.y - parityZ * 128.0;
+  let parityX = floor(afterZ * 0.015625);
+  let subIndex = afterZ - parityX * 64.0;
+  let subZ = floor(subIndex * 0.125);
+  let subX = subIndex - subZ * 8.0;
+
+  let nodeTexel = (vec2f(subX, subZ) + morphed) * quads;
+  let fine = terrainSampleHeight(nodeA.x, nodeTexel.x, nodeTexel.y);
+  // The parent page is one level coarser — half the texel density — and this
+  // node sits in one quadrant of its parent page's 8x8 node block. At
+  // morphK = 1 morphed*quads is even, so morphed*16 is an integer and
+  // this load is an EXACT parent texel: the child's edge is the parent's, by
+  // construction rather than by tuning.
+  let parentTexel = vec2f(parityX, parityZ) * 128.0
+    + vec2f(subX, subZ) * 16.0
+    + morphed * (quads * 0.5);
+  let coarse = terrainSampleHeight(nodeB.y, parentTexel.x, parentTexel.y);
+  positionUpdated.y = fine + (coarse - fine) * nodeB.x;
+}
+#endif
+`,
   CUSTOM_VERTEX_MAIN_END: /* wgsl */ `
+#ifdef TERRAIN_SURFACE_CDLOD
+// 4-5's carry-forward: the provisional two-material blend, packed into one
+// lane. Without it the gate the plan calls its most visible would ship an
+// untextured PBR surface for the ten working days until 4-6 lands.
+{
+  let packed = vertexInputs.terrainNodeA.w;
+  let primary = floor(packed / 1600.0);
+  let secondary = floor((packed - primary * 1600.0) / 100.0);
+  let weight = (packed - primary * 1600.0 - secondary * 100.0) * 0.01;
+  vertexOutputs.terrainSplat = vec4f(primary, secondary, weight, vertexInputs.terrainNodeA.x);
+  let subIndexOut = vertexInputs.terrainNodeA.y
+    - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
+  let subZOut = floor(subIndexOut * 0.125);
+  let subXOut = subIndexOut - subZOut * 8.0;
+  // Page-local in [0, 1]: eight nodes span a page on each axis.
+  vertexOutputs.terrainPageLocal = (vec2f(subXOut, subZOut)
+    + vec2f(positionUpdated.x, positionUpdated.z)) * 0.125;
+}
+#else
 vertexOutputs.terrainSplat = vertexInputs.color;
 vertexOutputs.terrainPageLocal = vertexInputs.position.xz;
+#endif
 `,
 });
 
@@ -1097,6 +1207,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private pageAtlasShape: readonly [number, number, number, number] = [1, 1, 1, 0];
   private pageAtlasGrid: readonly [number, number, number, number] = [1, 512, 1, 0.02];
   private sunDirection: readonly [number, number, number] = [0, 1, 0];
+  private heightAtlasTexture: BaseTexture | null = null;
+  private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
+  private cdlodEnabled = false;
 
   constructor(material: PBRMaterial) {
     super(
@@ -1109,6 +1222,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         TERRAIN_SURFACE_THREE_MATERIALS: false,
         TERRAIN_SURFACE_RUNWAY: false,
         TERRAIN_SURFACE_PAGE_CHANNELS: false,
+        TERRAIN_SURFACE_CDLOD: false,
       },
       true,
       // enable = false at construction, as CloudShadowMaterialPlugin does, so
@@ -1253,6 +1367,35 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   /**
+   * `4-4`/`4-5`: bind the height atlas and switch the vertex path to the CDLOD
+   * node record.
+   *
+   * Passing null restores the CPU tile path, which is what the Node suite and
+   * NullEngine run — the whole displacement path compiles out rather than
+   * binding an unbound sampler.
+   */
+  setHeightAtlas(
+    texture: BaseTexture | null,
+    shape: {
+      readonly atlasEdge: number;
+      readonly slotEdge: number;
+      readonly gutter: number;
+      readonly gridEdge: number;
+    },
+  ): void {
+    const enabled = texture !== null;
+    this.heightAtlasTexture = texture;
+    this.heightAtlasShape = [shape.atlasEdge, shape.slotEdge, shape.gutter, shape.gridEdge];
+    if (enabled === this.cdlodEnabled) return;
+    this.cdlodEnabled = enabled;
+    this.markAllDefinesAsDirty();
+  }
+
+  get isCdlod(): boolean {
+    return this.cdlodEnabled;
+  }
+
+  /**
    * The direction TOWARD the sun, in world space (Babylon's directional light
    * points the other way). Only the horizon shadow reads it.
    */
@@ -1268,6 +1411,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     // splat spends the rest of the tier's cap.
     defines["TERRAIN_SURFACE_THREE_MATERIALS"] = this.heightBlendMaxMaterials >= 3;
     defines["TERRAIN_SURFACE_RUNWAY"] = this.runwayEnabled;
+    defines["TERRAIN_SURFACE_CDLOD"] = this.cdlodEnabled;
     defines["TERRAIN_SURFACE_PAGE_CHANNELS"] =
       this.occlusionAtlas !== null && this.horizonAtlasA !== null && this.horizonAtlasB !== null;
   }
@@ -1279,12 +1423,22 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainOcclusionAtlas",
       "terrainHorizonAtlasA",
       "terrainHorizonAtlasB",
+      "terrainHeightAtlas",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
   }
 
   override getAttributes(attributes: string[]): void {
+    if (this.cdlodEnabled) {
+      // 4-5: the node record replaces the per-vertex splat lane. Declaring
+      // `color` here as well would ask Babylon for a buffer the one shared
+      // grid does not have.
+      for (const name of ["terrainNodeA", "terrainNodeB"]) {
+        if (!attributes.includes(name)) attributes.push(name);
+      }
+      return;
+    }
     // The splat lane. useVertexColors is false on the terrain meshes, so
     // Babylon never defines VERTEXCOLOR and this attribute is the plugin's.
     if (!attributes.includes("color")) attributes.push("color");
@@ -1306,6 +1460,13 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     if (this.horizonAtlasB) {
       uniformBuffer.setTexture("terrainHorizonAtlasB", this.horizonAtlasB);
     }
+    if (this.heightAtlasTexture) {
+      // r32float: Babylon flips the binding to `unfilterable-float` and its
+      // sampler to `non-filtering` automatically, because
+      // `textureFloatLinearFiltering` is false — which is why the shader may
+      // only ever `textureLoad` it.
+      uniformBuffer.setTexture("terrainHeightAtlas", this.heightAtlasTexture);
+    }
   }
 
   override getUniforms(): {
@@ -1321,6 +1482,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         { name: "terrainPageAtlas", size: 4, type: "vec4" },
         { name: "terrainPageAtlasGrid", size: 4, type: "vec4" },
         { name: "terrainSunDirection", size: 4, type: "vec4" },
+        // 4-4: (atlasEdge, slotEdge, gutter, gridEdge) for the height atlas.
+        { name: "terrainHeightAtlasShape", size: 4, type: "vec4" },
         {
           name: "terrainMaterialTiling",
           size: 4,
@@ -1366,6 +1529,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainPageAtlas", ...this.pageAtlasShape);
     uniformBuffer.updateFloat4("terrainPageAtlasGrid", ...this.pageAtlasGrid);
     uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, 1);
+    uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
     uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);
   }

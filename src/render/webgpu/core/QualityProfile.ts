@@ -56,14 +56,6 @@ export interface WebGpuQualityProfile {
    * ramp inside it holds screen-space blade density roughly constant.
    */
   readonly grassRadiusMeters: number;
-  readonly terrainRings: number;
-  /**
-   * Vertices per tile edge at every level (1B-3). One constant per tier —
-   * constant ground-sample-distance ratios between adjacent levels (2:1)
-   * kill the 4:1 T-junction the audit measured at L2/L3. A datum, not a
-   * policy: 4-5's CDLOD deletes it (plan A5).
-   */
-  readonly terrainTileResolution: number;
   /**
    * `3-0`: edge of both terrain material `Texture2DArray`s. `3-1` synthesises
    * at this edge and `estimateGpuMemory`'s material-array row follows it, so
@@ -187,8 +179,6 @@ export function resolveWebGpuQualityProfile(
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
       treeVariantCap: 3,
       grassRadiusMeters: 90,
-      terrainRings: 6,
-      terrainTileResolution: 33,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
@@ -241,8 +231,6 @@ export function resolveWebGpuQualityProfile(
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
       treeVariantCap: 5,
       grassRadiusMeters: 150,
-      terrainRings: 7,
-      terrainTileResolution: 65,
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
@@ -301,12 +289,6 @@ export function resolveWebGpuQualityProfile(
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
       treeVariantCap: 5,
       grassRadiusMeters: 220,
-      // 1C-4: the 45 km far plane makes level 7 (the 131 km ring) pure
-      // waste. Levels 0–6 still guarantee 65.5 km worst-case coverage —
-      // the lower tiers keep their counts because cutting them would end
-      // terrain INSIDE the far plane (guaranteed coverage is 512·2^rings).
-      terrainRings: 7,
-      terrainTileResolution: 65,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
@@ -358,9 +340,6 @@ export function resolveWebGpuQualityProfile(
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
     treeVariantCap: 5,
     grassRadiusMeters: 320,
-    // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
-    terrainRings: 7,
-    terrainTileResolution: 65,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
