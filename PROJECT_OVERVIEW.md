@@ -1,6 +1,6 @@
 # fly high — Rendering Overhaul: Project Overview
 
-**Status as of 2026-08-19.** Phases 0, 1, 2, 2.5 and 3 are complete — 158.05 of ≈330 priced effort-days shipped (~48% of the programme, ~73% of the way to the v1 cut line). Gate A (the aircraft and wildlife) is next to implement; Phase 5 (landscape evolution) is next to plan.
+**Status as of 2026-08-19.** Phases 0, 1, 2, 2.5 and 3 are complete — 158.05 of ≈343 priced effort-days shipped (~46% of the programme, ~71% of the way to the v1 cut line). **Gate B (the felt frame) is next to implement**, then Gate A (the aircraft and wildlife) and Phase 4; Phase 5 is now planned in full, so Phase 6 is next to plan.
 
 This document is the high-level view of the programme for readers outside the day-to-day work. The normative sources it summarises are [`RENDERING_PLAN.md`](RENDERING_PLAN.md) (the master plan), [`ARCHITECTURE.md`](ARCHITECTURE.md) (the enforced architectural contract), [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) (a binding mid-programme audit), and one execution plan per phase.
 
@@ -50,18 +50,19 @@ flowchart LR
     end
     subgraph next["🔵 Planned — next up"]
         direction LR
-        GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"] --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
+        GB["Gate B<br/>The felt frame<br/>7.25 d"] --> GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"]
+        GA --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
     end
     subgraph later["⚪ Planned — after the cut line"]
         direction LR
-        P5["Phase 5<br/>Landscape<br/>evolution<br/>51.5 d"] --> P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.5 d"]
+        P5["Phase 5<br/>Landscape<br/>evolution<br/>57.25 d"] --> P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.0 d"]
         P6 --> P7["Phase 7<br/>Night ops +<br/>airfield identity<br/>34.0 d"]
     end
-    P3 --> GA
-    P4 -->|"v1 cut line ≈ day 217"| P5
+    P3 --> GB
+    P4 -->|"v1 cut line ≈ day 224"| P5
 ```
 
-Day counts are the plan's effort-pricing currency (4.5 productive days/week in the original solo-calendar model); actual execution has run far faster in calendar terms. Reconciled ledger, 2026-08-19: **≈330 programme days, v1 cut line ≈217** (a defensible v1 exists after Phase 4).
+Day counts are the plan's effort-pricing currency (4.5 productive days/week in the original solo-calendar model); actual execution has run far faster in calendar terms. Reconciled ledger, 2026-08-19 (evening, after `PHASE_5_EXECUTION_PLAN.md`): **≈343 programme days, v1 cut line ≈224** (a defensible v1 exists after Phase 4). The rise is Phase 5 repriced 51.5 → 57.25 and the new 7.25-day Gate B.
 
 ## 6. What has shipped
 
@@ -139,19 +140,31 @@ does not yet have). Every deviation is recorded in
 
 ## 7. What's next
 
-### Gate A — The things you look at *(12.75 d, planned — implementation next)*
+### Gate B — The felt frame *(7.25 d, planned — **implementation next**)*
+
+Created 2026-08-19 by [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §15 from that day's flight-test reports ("choppy on anything but lowest settings; the plane constantly feels like it's shaking"; "too much foliage — forests are good, but there should be variance"). It runs before Gate A and Phase 4 so that Phase 4's `4-10` tier re-measure captures the fixed state instead of baking today's draw debt and presentation-timing defect into the committed tiers. Every item is independent of the terrain chain.
+
+- **`B-0` frame attribution (0.5 d)** — 33–46 ms frames against 12+7 ms of counters is an unexplained gap; attribute present-to-present time before touching anything, so the rest is checked against the real bottleneck.
+- **`B-1` presentation timing (2.0 d)** — the shaking's actual mechanism: anchor interpolation to snapshot *sim-time* with a worker-clock offset estimator instead of re-anchoring on arrival, add bounded (≤50 ms) extrapolation so heavy frames coast instead of snapping, and smooth the chase camera's target and up-vector the way its position already is.
+- **`B-4` rebase stale chunks (0.75 d)** — failing test first for a latent floating-origin bug; if confirmed, each batch compensates by uniform rather than rebuild.
+- **`B-2` vegetation draw merge (2.5 d)** — the priced structural fix, 347 → 186 draws and 9.0 → 4.8 ms at tier 1 at identical fidelity, with a **measured go/no-go** (accept only if five sub-30-fps shots each improve ≥2 ms GPU and none regresses).
+- **`B-3` forest pattern variance (1.5 d)** — glades that actually open (floor 0.3 → 0.02), a hard-edged disturbance class, and a multi-km `forestFraction` gate field so whole valleys can be meadow. Argued on looks, not milliseconds; net authored stems fall.
+
+**Honesty clause, carried from the plan:** Gate B does not close G-C. 22–29 fps near the ground needs Phase 4's terrain spine and Phase 6's vegetation work. It removes the two mechanisms the user can *feel* that no phase owned, takes the one priced draw win, and makes every later measurement clean.
+
+### Gate A — The things you look at *(12.75 d, planned — after Gate B)*
 
 The aircraft finally gets its appearance: lofted fuselage and real wing sections, synthesised paint with panel lines and wear, glass cockpit with a visible instrument panel, propeller-disc and shadow fixes — plus wildlife silhouettes and materials replacing unit spheres.
 
-### Phase 4 — The terrain GPU spine *(46.5 d, planned; v1 cut line at its close, ≈ day 217)*
+### Phase 4 — The terrain GPU spine *(46.5 d, planned; v1 cut line at its close, ≈ day 224)*
 
 The height kernel moves to the GPU with a measured physics-parity contract; 172 CPU-built terrain meshes become one GPU-fed CDLOD quadtree (≤12 draw calls, no popping, 2 m near detail); baked occlusion lets distant ridges shadow valleys; a GPU land-cover classifier gives material identity a single authority — with the snowline migrating along a 24-bucket season cache. The CPU terrain path retires. Phase 4's close is the programme's stated "last defensible stopping point" for a v1.
 
-### Phase 5 — Landscape evolution *(51.5 d, planned — **planning is the next planning task**)*
+### Phase 5 — Landscape evolution *(57.25 d, planned in full 2026-08-19; stated range 55–68)*
 
-The single largest realism change and the highest schedule risk: GPU erosion and macro drainage give the world real valleys, ridge networks, rivers and lakes *where water actually collects*; a tectonic skeleton replaces the global 35° grain; the terrain ceiling rises to 4,500 m; physics reads the eroded surface through a readback contract.
+The single largest realism change and the highest schedule risk: GPU erosion and macro drainage give the world real valleys, ridge networks, rivers and lakes *where water actually collects*; a tectonic skeleton replaces the global 35° grain; the terrain ceiling rises to 4,500 m; physics reads the eroded surface through a readback contract. [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) adds an evolution contract (`5-0`), a single activation commit (`5-A`), riparian exclusion (`5-13`), moves the tectonic uplift ahead of erosion tuning so erosion is tuned once against its final input, defines the macro flood domain no plan document had defined, and strikes the tier-dependent erosion rows — a graphics setting must not change the collision surface.
 
-### Phase 6 — Water in motion, ecology and final tiers *(~27.5 d, planned)*
+### Phase 6 — Water in motion, ecology and final tiers *(~27.0 d, planned — **planning is the next planning task**)*
 
 Flowing rivers, surf with run-up and wet sand, caustics and wetness; ecology channels (riparian corridors, soil, shelter) driving where plants and animals live; GPU vegetation scatter; quality tiers re-certified on measured numbers.
 
@@ -176,7 +189,7 @@ A clustered lighting engine and ~200 instanced light points; complete airfield l
 
 ## 9. Open items carried honestly
 
-- **Vegetation frame debt.** The 1.8 ms vegetation budget row is ~5× over at tier 1 in near-field forest shots. A dedicated pass (Phase 2.5) removed 1,201 draw calls and priced the residual in code (`VEGETATION_DRAW_CEILING`, `VEGETATION_FRAME_DEBT_RATIO`); the next rung (crown+trunk mesh merge, 347 → 186 draws) is costed but unshipped. Scheduled before Phase 4's G-C gate.
+- **Vegetation frame debt — now owned.** The 1.8 ms vegetation budget row is ~5× over at tier 1 in near-field forest shots. Phase 2.5 removed 1,201 draw calls and priced the residual in code (`VEGETATION_DRAW_CEILING`, `VEGETATION_FRAME_DEBT_RATIO`); the next rung, the crown+trunk mesh merge, is now **Gate B `B-2`** with a measured accept/reject rule rather than an assumed win. Near-ground 22–29 fps is not closed by it — that needs Phase 4 and Phase 6.
 - **Two open decisions (R-16)** before Phase 4 designs the season epoch: does the clock advance in flight, and does precipitation get a renderer.
 - **Plan hygiene at hand-off.** The Phase 4 execution plan was verified against the Phase-1 tree; its line-number citations must be re-derived against the current tree before implementation (its own stated rule). Phase 3's were re-derived during implementation.
 - **Terrain material boundaries are still the old classifier's** (`R-25`, unchanged by Phase 3). Ten good materials are still *selected* by the 8-bit per-vertex threshold cascade the audit indicts; the ordering work in `3-0` removes the worst artefact of that, but the boundaries are iso-contours in height and show as thin lines at long range. `4-6` closes it, and `R-27`'s classifier-consumers contract is owed before Phase 4 starts.
@@ -215,6 +228,7 @@ flowchart TB
     end
     subgraph MEAS["Measurement (G-C)"]
         HAR["Perf harness · 14-shot baseline<br/>budgets in CI · two governors"]:::live
+        FLT["Felt frame — presentation timing,<br/>draw merge, forest variance (Gate B)"]:::nextp
         TRM["Tier re-measure at cut line (4-10)"]:::nextp
     end
 
@@ -222,6 +236,7 @@ flowchart TB
     TER --> SRF --> SPN --> ERO
     ERO --> RIV --> FLW
     VEG --> ECO
+    HAR --> FLT --> TRM
     SPN -.->|"classifier feeds species & habitat"| ECO
 ```
 
