@@ -52,12 +52,21 @@ import {
 import { SURFACE_MATERIALS, SURFACE_MATERIALS_BY_BIOME } from "./surfaceMaterials";
 import { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
 import {
+  TERRAIN_CHANNEL_TEXTURES,
+  TERRAIN_CHANNEL_TEXTURE_COUNT,
   TerrainPageAtlas,
   TerrainPageGenerator,
   invariantSlotKey,
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
+import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
+import { PageOcclusionBake } from "./PageOcclusionBake";
+import {
+  TERRAIN_CHANNEL_SLOT_EDGE,
+  terrainAtlasGridEdge,
+} from "./TerrainSpineContract";
+import { WORLD_PAGE_CHANNEL_CORE, WORLD_PAGE_GUTTER } from "@/src/render/webgpu/world/pageGeometry";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
 
 export interface TerrainClipmapBounds {
@@ -368,6 +377,10 @@ export class TerrainClipmapSystem {
   private readonly computeBudget: ComputeBudget;
   private debugOverlay: TerrainDebugOverlay;
   private generationInFlight = false;
+  /** 4-7: the coarse global field, and the one bake that reads it. */
+  private pyramid: GlobalHeightPyramid | null = null;
+  private occlusionBake: PageOcclusionBake | null = null;
+  private occlusionInFlight = false;
   private disposed = false;
 
   constructor(
@@ -435,9 +448,7 @@ export class TerrainClipmapSystem {
     this.channelAtlas = new TerrainPageAtlas(scene, profile, {
       kind: "channel",
       worldRevision: this.worldRevision,
-      // occlusion (1) + horizon (2) + splat id/weight (2), season-keyed pair
-      // resident: five rgba8 textures at the channel slot edge.
-      textureCount: 5,
+      textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
     });
     this.computeBudget = new ComputeBudget(profile);
     this.debugOverlay = new TerrainDebugOverlay(scene, profile.heightAtlasSlots);
@@ -447,7 +458,15 @@ export class TerrainClipmapSystem {
         this.heightAtlas,
         world.seedHash,
       );
+      this.pyramid = new GlobalHeightPyramid(scene, scene.getEngine(), world.seedHash);
+      this.occlusionBake = new PageOcclusionBake(
+        scene.getEngine(),
+        this.heightAtlas,
+        this.channelAtlas,
+        this.pyramid,
+      );
     }
+    this.bindChannelAtlas();
   }
 
   /** Bytes the 3-1 arrays actually occupy, for the 1A-1 numeric report. */
@@ -593,9 +612,10 @@ export class TerrainClipmapSystem {
       this.channelAtlas = new TerrainPageAtlas(this.scene, profile, {
         kind: "channel",
         worldRevision: this.worldRevision,
-        textureCount: 5,
+        textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
       });
       for (const page of this.pages.values()) page.atlasSlot = TERRAIN_UNASSIGNED_ATLAS_SLOT;
+      this.bindChannelAtlas();
     }
     if (!topologyChanged) return;
     this.lastAnchor = "";
@@ -711,6 +731,7 @@ export class TerrainClipmapSystem {
     this.evictExpiredPages(frameIndex);
     this.updateAtlasResidency();
     this.pumpPageGeneration();
+    this.pumpOcclusionBake(observer);
     this.debugOverlay.update(this.heightAtlas);
     // The worker queue is deliberately bounded. Keep feeding any desired pages
     // that did not fit during the anchor rebuild as earlier requests complete;
@@ -759,6 +780,8 @@ export class TerrainClipmapSystem {
     this.materialArrays?.albedoHeight.dispose();
     this.materialArrays?.normalMaterial.dispose();
     this.pageGenerator?.dispose();
+    this.occlusionBake?.dispose();
+    this.pyramid?.dispose();
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
     this.channelAtlas.dispose();
@@ -807,10 +830,78 @@ export class TerrainClipmapSystem {
       const slot = this.channelAtlas.residency.slotIndexOf(invariantSlotKey(page.address));
       if (slot === page.atlasSlot) continue;
       page.atlasSlot = slot;
-      const lane = slot >= 0 ? slot : TERRAIN_UNASSIGNED_ATLAS_SLOT;
+      // The lane packs `slotIndex * 32 + level`: the fragment shader needs the
+      // page EXTENT to normalise its local position into atlas UV, and a
+      // material every page shares cannot carry a per-mesh uniform. Level is
+      // at most 30 (MAX_WORLD_PAGE_LEVEL) and slot at most 256, so the packed
+      // value is under 8,222 and exact in f32.
+      const lane = slot >= 0
+        ? slot * 32 + page.address.level
+        : TERRAIN_UNASSIGNED_ATLAS_SLOT;
       for (let offset = 3; offset < page.splat.length; offset += 4) page.splat[offset] = lane;
       page.mesh.updateVerticesData(VertexBuffer.ColorKind, page.splat, false, false);
     }
+  }
+
+  /** 4-7: describe the channel atlas to the surface plugin, once per shape. */
+  private bindChannelAtlas(): void {
+    const occlusion = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.occlusion);
+    const horizonA = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA);
+    const horizonB = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonB);
+    this.surfacePlugin.setChannelAtlas(occlusion, horizonA, horizonB, {
+      atlasEdge: this.channelAtlas.atlasEdge,
+      slotEdge: TERRAIN_CHANNEL_SLOT_EDGE,
+      core: WORLD_PAGE_CHANNEL_CORE,
+      gutter: WORLD_PAGE_GUTTER,
+      gridEdge: terrainAtlasGridEdge(this.channelAtlas.residency.slotCount),
+      basePageExtentMeters: WORLD_PAGE_BASE_EXTENT_METERS,
+    });
+  }
+
+  /** The direction TOWARD the sun; only the horizon shadow reads it. */
+  setSunDirection(x: number, y: number, z: number): void {
+    this.surfacePlugin.setSunDirection(x, y, z);
+  }
+
+  /**
+   * 4-7: recentre the global height pyramid, then bake occlusion for the
+   * channel slots whose HEIGHT page is already resident.
+   *
+   * The ordering is the whole design: the march reads the height atlas, so a
+   * bake issued against a slot still being generated would produce a page
+   * whose shadows are of nothing. The pyramid is recentred first for the same
+   * reason — a bake that marches beyond the page into a stale pyramid puts a
+   * discontinuity exactly where this item exists to remove one.
+   */
+  private pumpOcclusionBake(observer: TerrainObserver): void {
+    const bake = this.occlusionBake;
+    const pyramid = this.pyramid;
+    if (!bake || !pyramid || this.occlusionInFlight) return;
+    void pyramid.recenter(observer.x, observer.z).catch(() => undefined);
+    if (!pyramid.isResident) return;
+    const pending = this.channelAtlas.residency.entries.filter(
+      (slot) => slot.lifecycle.state === "generating"
+        && slot.token !== null
+        && this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
+    );
+    if (pending.length === 0) return;
+    this.computeBudget.beginFrame();
+    this.computeBudget.submit("occlusionCompute", pending.length);
+    const admitted = this.computeBudget.admitted("occlusionCompute");
+    if (admitted <= 0) return;
+    const batch = pending.slice(0, admitted);
+    this.occlusionInFlight = true;
+    void bake.bake(batch)
+      .catch(() => {
+        for (const slot of batch) {
+          if (slot.token) {
+            this.channelAtlas.residency.fail(slot.key, slot.token, "occlusion bake failed");
+          }
+        }
+      })
+      .finally(() => {
+        this.occlusionInFlight = false;
+      });
   }
 
   /**

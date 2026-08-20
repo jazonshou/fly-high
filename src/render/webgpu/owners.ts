@@ -191,7 +191,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/terrain/GlobalHeightPyramid.ts"],
     consumers: ["terrain-geometry", "lighting"],
     ownedSymbols: ["GlobalHeightPyramid", "GLOBAL_HEIGHT_PYRAMID_WGSL"],
-    plannedBy: "4-7",
   },
   {
     // 4-7: ONE bake, one owner, one format. Four subsystem designs baked
@@ -205,7 +204,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "PAGE_OCCLUSION_WGSL",
       "PAGE_OCCLUSION_AZIMUTHS",
     ],
-    plannedBy: "4-7",
   },
   {
     // 4-5: the quadtree, the node record writer and the caster meshes.

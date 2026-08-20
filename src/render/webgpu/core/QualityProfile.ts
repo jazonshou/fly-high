@@ -206,9 +206,13 @@ export function resolveWebGpuQualityProfile(
       // is that saving, and Low's `finestResidentLevel: 1` already halves its
       // finest-level page demand, so channel residency is where it belongs.
       channelAtlasSlots: 100,
+      // `4-8b`: §5.3's near-field rows. Terrain beyond `shadowDistance` is
+      // shadowed by `4-7`'s horizon map, which reaches 45 km — so the cascades
+      // stop being a distance instrument and become a CONTACT one, and the
+      // texel density inside them roughly triples at every tier.
       shadowMapSize: 1_024,
       shadowCascades: 2,
-      shadowDistance: 4_500,
+      shadowDistance: 900,
       oceanResolution: 128,
       oceanCascades: 3,
       cloudResolutionScale: 0.25,
@@ -247,9 +251,23 @@ export function resolveWebGpuQualityProfile(
       finestResidentLevel: 0,
       heightAtlasSlots: 196,
       channelAtlasSlots: 196,
-      shadowMapSize: 2_048,
+      // `4-8b`: 1280 @ 1400 m, with TWO cascades rather than §5.3's three.
+      //
+      // DEVIATION, measured (PHASE_4_EXECUTION_PLAN.md §4 D15). A third
+      // cascade multiplies the vegetation SHADOW draw estimate by 1.5 —
+      // `estimateVegetationDrawCalls` counts near-band chunks once per
+      // cascade — at the one tier whose vegetation frame row is already ~5×
+      // over budget and whose draw ceiling this pass may not raise. What it
+      // buys is near-cascade texel density, and two cascades over 1400 m at
+      // 1280² already give ~0.23 m/texel in the contact cascade against the
+      // ~1.5 m Phase 1 shipped at 2×2048 over 7 km. Six times finer for the
+      // same draw count is the trade; the third cascade is not.
+      //
+      // `RENDERING_PLAN.md`'s `4-8` item text said "3×1536, 1.8 km, PCSS",
+      // which is the HIGH row plus a filter that cannot run (tier-2 note).
+      shadowMapSize: 1_280,
       shadowCascades: 2,
-      shadowDistance: 7_000,
+      shadowDistance: 1_400,
       oceanResolution: 128,
       oceanCascades: 4,
       cloudResolutionScale: 0.45,
@@ -272,10 +290,13 @@ export function resolveWebGpuQualityProfile(
       renderScale: 1,
       maxRenderPixels: 2_400_000,
       maxDevicePixelRatio: 2,
-      // 2× at this tier: Phase 1's full-distance 4096² CSM leaves no room
-      // for 4× inside the 700 MiB ceiling (assertion 19); 4-8's near-field
-      // shadow maps buy it back.
-      msaaSamples: 2,
+      // `4-8b` restores 4×, which the `1B-11` decision in ARCHITECTURE.md
+      // explicitly deferred to this item: Phase 1's full-distance 4096² CSM
+      // left no room for it inside the 700 MiB ceiling, and the near-field
+      // rows above have now paid for it. Note this COSTS 54.9 MiB raw here —
+      // more than the shadow refund — so `4-8b` is net +8.7 MiB at this tier.
+      // It is not a refund, and the D3 table carries it as a cost.
+      msaaSamples: 4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
       treeVariantCap: 5,
@@ -294,16 +315,17 @@ export function resolveWebGpuQualityProfile(
       finestResidentLevel: 0,
       heightAtlasSlots: 256,
       channelAtlasSlots: 256,
-      // `4-8a` (Class D, deleted at `4-8b`): 4096 -> 2048 at tiers 2 and 3
-      // only. Cascade count and distance unchanged; distant terrain still
-      // self-shadows at ~3 m/texel in the far cascade instead of ~1.5 m.
-      // This refunds 192 MiB raw here, which is what makes `4-2`'s height
-      // atlas and `4-6`'s splat atlas legal at this tier. Tier 1 is
-      // deliberately NOT cut — it has 40% headroom and §2.0's "no gate leaves
-      // the sim worse" is worth more than symmetry.
-      shadowMapSize: 2_048,
-      shadowCascades: 4,
-      shadowDistance: 16_000,
+      // `4-8b`: 3 × 1536 @ 1800 m, superseding `4-8a`'s temporary 2048 cut.
+      //
+      // **`FILTER_PCF`, not PCSS.** §5.3 published PCSS at High and Ultra and
+      // it cannot run: `computeShadowWithCSMPCSS` needs a second
+      // `texture_2d_array<f32>` bound from the shadow map's COLOUR attachment,
+      // and `1A-5` deleted that attachment — the single largest memory win in
+      // Phase 1. Buying it back costs more than softer contact shadows are
+      // worth here, so PCSS is a Phase 7 conversation.
+      shadowMapSize: 1_536,
+      shadowCascades: 3,
+      shadowDistance: 1_800,
       oceanResolution: 256,
       oceanCascades: 5,
       // Temporal reconstruction provides the stability return at this tier. Keep
@@ -347,10 +369,10 @@ export function resolveWebGpuQualityProfile(
     finestResidentLevel: 0,
     heightAtlasSlots: 256,
     channelAtlasSlots: 256,
-    // `4-8a`: see tier 2. Same cut, same reason.
+    // `4-8b`: 4 × 2048 @ 2400 m. PCSS struck here too (see tier 2).
     shadowMapSize: 2_048,
     shadowCascades: 4,
-    shadowDistance: 16_000,
+    shadowDistance: 2_400,
     oceanResolution: 256,
     oceanCascades: 5,
     cloudResolutionScale: 0.7,

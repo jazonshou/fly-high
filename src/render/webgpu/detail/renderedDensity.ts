@@ -357,7 +357,11 @@ export function estimateVegetationDrawCalls(
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
   270,
   360,
-  560,
+  // `4-8b` cut this tier from four shadow cascades to three (§5.3's near-field
+  // rows), and the near band submits its meshes once per cascade — so the
+  // ceiling comes down with the measurement rather than staying a number the
+  // renderer now sits comfortably under. Measured 462.0 draws.
+  500,
   650,
 ]);
 
@@ -370,6 +374,9 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
 export const VEGETATION_FRAME_DEBT_RATIO: readonly number[] = Object.freeze([
   5.57,
   5.01,
-  7.38,
+  // Re-measured at `4-8b`: 7.38 → 6.32, from the tier-2 cascade cut. The debt
+  // is not closed and this record is not deleted; it moved, and a moved number
+  // has to be re-pinned or the assertion stops meaning anything.
+  6.32,
   4.56,
 ]);

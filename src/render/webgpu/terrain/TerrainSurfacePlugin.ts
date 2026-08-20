@@ -314,14 +314,21 @@ export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
 // brackets them; see the contract's note on why that order is load-bearing.
 attribute color: vec4f;
 varying terrainSplat: vec4f;
+// 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
+// built page-local and positioned by their world matrix, so this is free —
+// and it is what lets the fragment address the channel atlas without a
+// per-mesh uniform on a material every page shares.
+varying terrainPageLocal: vec2f;
 `,
   CUSTOM_VERTEX_MAIN_END: /* wgsl */ `
 vertexOutputs.terrainSplat = vertexInputs.color;
+vertexOutputs.terrainPageLocal = vertexInputs.position.xz;
 `,
 });
 
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying terrainSplat: vec4f;
+varying terrainPageLocal: vec2f;
 var terrainSurfaceAlbedoSampler: sampler;
 var terrainSurfaceAlbedo: texture_2d_array<f32>;
 var terrainSurfaceNormalSampler: sampler;
@@ -606,6 +613,78 @@ fn terrainSurfaceSample(
   layer.diffuseRoughness = row.w;
   return layer;
 }
+
+// ---------------------------------------------------------------------------
+// 4-7's channel pages, consumed on the CPU TILE MESHES.
+//
+// This is what makes Gate 4B visible one gate before the quadtree exists: the
+// occlusion bake writes into channel pages, and their consumer is THIS
+// fragment shader, addressed through 3-2's reserved atlasSlot lane. The
+// whole block compiles out when no channel atlas is bound.
+// ---------------------------------------------------------------------------
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+var terrainOcclusionAtlasSampler: sampler;
+var terrainOcclusionAtlas: texture_2d<f32>;
+var terrainHorizonAtlasASampler: sampler;
+var terrainHorizonAtlasA: texture_2d<f32>;
+var terrainHorizonAtlasBSampler: sampler;
+var terrainHorizonAtlasB: texture_2d<f32>;
+
+/**
+ * Atlas UV for this fragment's page, or w = 0 when the page holds no channel
+ * slot — the CO-RESIDENCY RULE: a mesh samples channel pages only while its
+ * page is resident, and otherwise falls back to the Phase 3 provisional path.
+ *
+ * The lane packs slotIndex * 32 + level, because the fragment needs the
+ * page EXTENT to normalise its local position and a shared material cannot
+ * carry a per-mesh uniform.
+ */
+fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec3f {
+  if (lane < 0.0) { return vec3f(0.0, 0.0, 0.0); }
+  let slot = floor(lane * ${1 / 32});
+  let level = lane - slot * 32.0;
+  let extent = uniforms.terrainPageAtlasGrid.y * exp2(level);
+  let grid = uniforms.terrainPageAtlasGrid.x;
+  let row = floor(slot / grid);
+  let slotOrigin = vec2f(slot - row * grid, row) * uniforms.terrainPageAtlas.y;
+  let core = uniforms.terrainPageAtlas.z;
+  let inPage = clamp(pageLocal / extent, vec2f(0.0), vec2f(1.0));
+  let texel = slotOrigin + vec2f(uniforms.terrainPageAtlas.w) + inPage * core;
+  return vec3f(texel / uniforms.terrainPageAtlas.x, 1.0);
+}
+
+/**
+ * Sun visibility from the 8-azimuth horizon map.
+ *
+ * The stored value is sin(horizonElevation) and the sun direction is a unit
+ * vector toward the sun, so sunDirection.y is sin(sunElevation) and the
+ * comparison is one subtraction — no trigonometry per fragment. The soft band
+ * is ~1.1 degrees, which is close enough to the sun's real angular diameter
+ * that the terminator does not read as a hard line.
+ */
+fn terrainSurfaceHorizonShadow(uv: vec3f, sunDirection: vec3f) -> f32 {
+  if (uv.z <= 0.0 || sunDirection.y <= 0.0) { return 1.0; }
+  let horizontal = max(1e-5, length(sunDirection.xz));
+  // The bake marches azimuth s with direction angle (s + 0.5) * pi/4, so the
+  // lookup index is the angle in those units minus the half-step.
+  let angle = atan2(sunDirection.z / horizontal, sunDirection.x / horizontal);
+  let index = angle * ${(4 / Math.PI).toFixed(9)} - 0.5;
+  let wrapped = index - floor(index * 0.125) * 8.0;
+  let low = floor(wrapped);
+  let blend = wrapped - low;
+  let packedA = textureSampleLevel(terrainHorizonAtlasA, terrainHorizonAtlasASampler, uv.xy, 0.0);
+  let packedB = textureSampleLevel(terrainHorizonAtlasB, terrainHorizonAtlasBSampler, uv.xy, 0.0);
+  var slots = array<f32, 8>(
+    packedA.x, packedA.y, packedA.z, packedA.w,
+    packedB.x, packedB.y, packedB.z, packedB.w,
+  );
+  let lowIndex = u32(low);
+  let highIndex = u32(low + 1.0) % 8u;
+  let horizonSin = mix(slots[lowIndex], slots[highIndex], blend);
+  let band = uniforms.terrainPageAtlasGrid.w;
+  return smoothstep(horizonSin - band, horizonSin + band, sunDirection.y);
+}
+#endif
 `;
 
 const FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
@@ -687,6 +766,27 @@ let terrainAxisFraction = terrainAxis - terrainLowerId;
 // the classifier feeding it: a cliff gets rock at fragment resolution instead
 // of at 8 m. 4-6's page splat restores real minority cover.
 let terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
+
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+let terrainPageUv = terrainSurfacePageUv(
+  fragmentInputs.terrainSplat.w,
+  fragmentInputs.terrainPageLocal,
+);
+// textureSampleLevel, not textureSample: the house rule since 2-8 is that no
+// sample under a branch or a wrap takes implicit derivatives, and the channel
+// atlas carries no mip chain — level 0 is the only correct level, and mip
+// selection across atlas slots would bleed neighbouring pages into each other.
+let terrainOcclusionTexel = textureSampleLevel(
+  terrainOcclusionAtlas, terrainOcclusionAtlasSampler, terrainPageUv.xy, 0.0);
+// r is baked sky visibility; a fully unbaked page reads 0, so the fallback
+// keeps it at 1 rather than plunging the ground into darkness.
+let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
+let terrainHorizonShadow = terrainSurfaceHorizonShadow(
+  terrainPageUv, uniforms.terrainSunDirection.xyz);
+#else
+let terrainSkyVisibility = 1.0;
+let terrainHorizonShadow = 1.0;
+#endif
 
 // 3-10's SEASONAL snow blanket. Two properties, both learned the hard way from
 // the first capture after this plugin landed:
@@ -914,7 +1014,7 @@ export const TERRAIN_SURFACE_INJECTION_ANCHORS = Object.freeze({
 
 /** The tokens assertion 57 looks for in the PROCESSED effect source. */
 export const TERRAIN_SURFACE_INJECTION_TOKENS = Object.freeze([
-  "aoOut.ambientOcclusionColor *= vec3f(terrainSurfaceCavity);",
+  "aoOut.ambientOcclusionColor *= vec3f(terrainSurfaceCavity * terrainSkyVisibility);",
   "roughness = terrainSurfaceRoughness;",
   "diffuseRoughness = terrainSurfaceDiffuseRoughness;",
   "specularEnvironmentR0 = vec3f(terrainSurfaceF0);",
@@ -930,8 +1030,28 @@ ${RUNWAY_SURFACE_WGSL}
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_LIGHTS: FRAGMENT_BEFORE_LIGHTS,
+  // 4-7: the horizon map shadows DIRECT light only, at the same hook the
+  // cloud-shadow receiver uses (priority 210). Babylon concatenates same-hook
+  // code across plugins in priority order, so both multiply and neither
+  // overwrites — which is exactly why every identifier here carries the
+  // `terrain`/`terrainSurface` prefix the §5.6 convention requires.
+  //
+  // This is Gate 4B's payoff: a 3,000 m ridge shadows the valley behind it at
+  // 40 km, where the cascaded shadow map has never reached.
+  CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: /* wgsl */ `
+#ifndef UNLIT
+finalDiffuse *= terrainHorizonShadow;
+#ifdef SPECULARTERM
+finalSpecularScaled *= terrainHorizonShadow;
+#endif
+#endif
+`,
   [TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion]: /* wgsl */ `$1
-aoOut.ambientOcclusionColor *= vec3f(terrainSurfaceCavity);
+// 4-7: the baked sky visibility rides the same anchor as 3-1's cavity map.
+// Both are ambient-only occlusion, and the ONE thing that must not happen is
+// applying either to direct sunlight — that is the horizon map's job below,
+// and doubling them would darken slopes twice for the same reason.
+aoOut.ambientOcclusionColor *= vec3f(terrainSurfaceCavity * terrainSkyVisibility);
 `,
   [TERRAIN_SURFACE_INJECTION_ANCHORS.roughness]: /* wgsl */ `$1
 roughness = terrainSurfaceRoughness;
@@ -971,6 +1091,12 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private seaLevelMeters = 0;
   private readonly tiling = new Float32Array(SURFACE_MATERIAL_COUNT * 4);
   private readonly season = new Float32Array(SURFACE_MATERIAL_COUNT * 4);
+  private occlusionAtlas: BaseTexture | null = null;
+  private horizonAtlasA: BaseTexture | null = null;
+  private horizonAtlasB: BaseTexture | null = null;
+  private pageAtlasShape: readonly [number, number, number, number] = [1, 1, 1, 0];
+  private pageAtlasGrid: readonly [number, number, number, number] = [1, 512, 1, 0.02];
+  private sunDirection: readonly [number, number, number] = [0, 1, 0];
 
   constructor(material: PBRMaterial) {
     super(
@@ -982,6 +1108,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         TERRAIN_SURFACE_PLANAR_ONLY: false,
         TERRAIN_SURFACE_THREE_MATERIALS: false,
         TERRAIN_SURFACE_RUNWAY: false,
+        TERRAIN_SURFACE_PAGE_CHANNELS: false,
       },
       true,
       // enable = false at construction, as CloudShadowMaterialPlugin does, so
@@ -1089,6 +1216,51 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     );
   }
 
+  /**
+   * `4-7`: bind the channel pages and describe the atlas geometry.
+   *
+   * `gridEdge` and `slotEdge` come from the atlas, not from a constant here:
+   * the slot budget is a profile datum, so a tier change reshapes the atlas
+   * and the shader's addressing has to follow it in the same frame.
+   */
+  setChannelAtlas(
+    occlusion: BaseTexture | null,
+    horizonA: BaseTexture | null,
+    horizonB: BaseTexture | null,
+    shape: {
+      readonly atlasEdge: number;
+      readonly slotEdge: number;
+      readonly core: number;
+      readonly gutter: number;
+      readonly gridEdge: number;
+      readonly basePageExtentMeters: number;
+    },
+  ): void {
+    const enabled = occlusion !== null && horizonA !== null && horizonB !== null;
+    this.occlusionAtlas = occlusion;
+    this.horizonAtlasA = horizonA;
+    this.horizonAtlasB = horizonB;
+    this.pageAtlasShape = [shape.atlasEdge, shape.slotEdge, shape.core, shape.gutter];
+    this.pageAtlasGrid = [
+      shape.gridEdge,
+      shape.basePageExtentMeters,
+      1,
+      this.pageAtlasGrid[3],
+    ];
+    if (enabled === (this.occlusionAtlas !== null && this.horizonAtlasA !== null)) {
+      this.markAllDefinesAsDirty();
+    }
+  }
+
+  /**
+   * The direction TOWARD the sun, in world space (Babylon's directional light
+   * points the other way). Only the horizon shadow reads it.
+   */
+  setSunDirection(x: number, y: number, z: number): void {
+    const length = Math.hypot(x, y, z);
+    this.sunDirection = length > 1e-6 ? [x / length, y / length, z / length] : [0, 1, 0];
+  }
+
   override prepareDefines(defines: MaterialDefines): void {
     defines["TERRAIN_SURFACE_TRIPLANAR"] = this.triplanarMode === "triplanar";
     defines["TERRAIN_SURFACE_PLANAR_ONLY"] = this.triplanarMode === "planar";
@@ -1096,11 +1268,20 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     // splat spends the rest of the tier's cap.
     defines["TERRAIN_SURFACE_THREE_MATERIALS"] = this.heightBlendMaxMaterials >= 3;
     defines["TERRAIN_SURFACE_RUNWAY"] = this.runwayEnabled;
+    defines["TERRAIN_SURFACE_PAGE_CHANNELS"] =
+      this.occlusionAtlas !== null && this.horizonAtlasA !== null && this.horizonAtlasB !== null;
   }
 
   override getSamplers(samplers: string[]): void {
-    if (!samplers.includes("terrainSurfaceAlbedo")) samplers.push("terrainSurfaceAlbedo");
-    if (!samplers.includes("terrainSurfaceNormal")) samplers.push("terrainSurfaceNormal");
+    for (const name of [
+      "terrainSurfaceAlbedo",
+      "terrainSurfaceNormal",
+      "terrainOcclusionAtlas",
+      "terrainHorizonAtlasA",
+      "terrainHorizonAtlasB",
+    ]) {
+      if (!samplers.includes(name)) samplers.push(name);
+    }
   }
 
   override getAttributes(attributes: string[]): void {
@@ -1116,6 +1297,15 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     if (this.normalMaterialArray) {
       uniformBuffer.setTexture("terrainSurfaceNormal", this.normalMaterialArray);
     }
+    if (this.occlusionAtlas) {
+      uniformBuffer.setTexture("terrainOcclusionAtlas", this.occlusionAtlas);
+    }
+    if (this.horizonAtlasA) {
+      uniformBuffer.setTexture("terrainHorizonAtlasA", this.horizonAtlasA);
+    }
+    if (this.horizonAtlasB) {
+      uniformBuffer.setTexture("terrainHorizonAtlasB", this.horizonAtlasB);
+    }
   }
 
   override getUniforms(): {
@@ -1126,6 +1316,11 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         { name: "terrainWorldOrigin", size: 2, type: "vec2" },
         { name: "terrainSurfaceTuning", size: 4, type: "vec4" },
         { name: "terrainSurfaceWetness", size: 4, type: "vec4" },
+        // 4-7: (atlasEdge, slotEdge, core, gutter) and
+        // (gridEdge, basePageExtent, occlusionStrength, horizonSoftness).
+        { name: "terrainPageAtlas", size: 4, type: "vec4" },
+        { name: "terrainPageAtlasGrid", size: 4, type: "vec4" },
+        { name: "terrainSunDirection", size: 4, type: "vec4" },
         {
           name: "terrainMaterialTiling",
           size: 4,
@@ -1168,6 +1363,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     );
     uniformBuffer.updateFloatArray("terrainMaterialTiling", this.tiling);
     uniformBuffer.updateFloatArray("terrainMaterialSeason", this.season);
+    uniformBuffer.updateFloat4("terrainPageAtlas", ...this.pageAtlasShape);
+    uniformBuffer.updateFloat4("terrainPageAtlasGrid", ...this.pageAtlasGrid);
+    uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, 1);
     uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
     uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);
   }

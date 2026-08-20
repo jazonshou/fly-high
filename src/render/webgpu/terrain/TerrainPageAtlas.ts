@@ -297,6 +297,26 @@ export class TerrainAtlasResidency {
 
 export type TerrainAtlasKind = "height" | "channel";
 
+/**
+ * Texture indices inside the channel atlas, named once.
+ *
+ * Seven rgba8 textures per slot: occlusion (sky visibility + bent normal),
+ * two horizon textures (eight azimuths), and the season-keyed splat pair for
+ * each of the TWO resident buckets. The estimator's channel row is the same
+ * accounting from the other direction (12 invariant + 8 per bucket bytes).
+ */
+export const TERRAIN_CHANNEL_TEXTURES = Object.freeze({
+  occlusion: 0,
+  horizonA: 1,
+  horizonB: 2,
+  splatIdLo: 3,
+  splatWeightLo: 4,
+  splatIdHi: 5,
+  splatWeightHi: 6,
+});
+
+export const TERRAIN_CHANNEL_TEXTURE_COUNT = 7;
+
 export interface TerrainPageAtlasOptions {
   readonly kind: TerrainAtlasKind;
   readonly worldRevision: string;

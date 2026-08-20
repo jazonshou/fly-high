@@ -96,9 +96,10 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.4,
       splatCompute: 0.25,
       occlusionCompute: 0.2,
-      // Tier 1 keeps 1.1 ms until `4-8b` actually shortens its cascades:
-      // `4-8a` cut tiers 2 and 3 only, so only they may spend the refund yet.
-      shadows: 1.1,
+      // `4-8b` shortened this tier's cascades (2×2048@7000 → 3×1280@1400), so
+      // the row may move. The cut is phased with the item that EARNS it: a
+      // budget row must never assert a spend nothing has delivered.
+      shadows: 0.7,
       water: 1.6,
       clouds: 2.2,
       vegetation: 1.8,
@@ -111,7 +112,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.7,
       splatCompute: 0.3,
       occlusionCompute: 0.25,
-      // `4-8a` halved this tier's maps in week 1; the row follows.
+      // `4-8b`'s 3×1536@1800 near field; `4-8a`'s temporary cut is gone.
       shadows: 0.8,
       water: 1.8,
       clouds: 2.3,
@@ -125,7 +126,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 1.2,
       splatCompute: 0.5,
       occlusionCompute: 0.4,
-      // `4-8a` halved this tier's maps in week 1; the row follows.
+      // `4-8b`'s 4×2048@2400 near field.
       shadows: 1.8,
       water: 4.0,
       clouds: 5.5,

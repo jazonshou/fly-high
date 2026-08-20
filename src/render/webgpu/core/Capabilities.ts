@@ -83,6 +83,33 @@ export interface WebGpuCapabilityReport {
   readonly limits: Readonly<Record<string, number>>;
 }
 
+/**
+ * Copy a `GPUSupportedLimits` into a plain record.
+ *
+ * **`Object.entries` returns nothing here**, which is why this needs a
+ * function. `GPUSupportedLimits` exposes every limit as a GETTER ON ITS
+ * PROTOTYPE, not as an own enumerable property, so the obvious
+ * `Object.entries(adapter.limits)` loop produced an empty map — and had done
+ * since Phase 0, silently, because nothing read the result until `4-0`'s
+ * startup assertion. Found by the P2 probe printing `undefined` for every
+ * limit it asked about.
+ */
+export function readWebGpuLimits(source: object): Record<string, number> {
+  const limits: Record<string, number> = {};
+  for (
+    let level: object | null = source;
+    level !== null;
+    level = Object.getPrototypeOf(level) as object | null
+  ) {
+    for (const key of Object.getOwnPropertyNames(level)) {
+      if (key === "constructor" || key in limits) continue;
+      const value = (source as Record<string, unknown>)[key];
+      if (typeof value === "number") limits[key] = value;
+    }
+  }
+  return limits;
+}
+
 /** Read-only adapter probe used before constructing the Babylon WebGPU engine. */
 export async function inspectWebGpuCapabilities(): Promise<WebGpuCapabilityReport> {
   if (typeof navigator === "undefined") {
@@ -108,11 +135,7 @@ export async function inspectWebGpuCapabilities(): Promise<WebGpuCapabilityRepor
       limits: {},
     };
   }
-  const limits: Record<string, number> = {};
-  const source = adapter.limits as unknown as Record<string, unknown>;
-  for (const [key, value] of Object.entries(source)) {
-    if (typeof value === "number") limits[key] = value;
-  }
+  const limits = readWebGpuLimits(adapter.limits);
   return {
     supported: true,
     reason: null,

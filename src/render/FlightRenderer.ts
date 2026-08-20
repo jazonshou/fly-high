@@ -1395,6 +1395,14 @@ export class FlightRenderer implements FlightRenderingSystem {
     // strength is the relative illuminance, so a backlit canopy glows in
     // daylight, dims through dusk and goes out with the sun.
     const keySnapshot = this.atmosphere.snapshot;
+    // 4-7: the horizon map's sun. The snapshot's direction points TOWARD the
+    // sun (Babylon's directional light points the other way), which is the
+    // convention the plugin's uniform documents.
+    this.terrain.setSunDirection(
+      keySnapshot.sunDirection.x,
+      keySnapshot.sunDirection.y,
+      keySnapshot.sunDirection.z,
+    );
     this.detail.setKeyLight(
       keySnapshot.sunDirection.x,
       keySnapshot.sunDirection.y,
