@@ -3,6 +3,10 @@ import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "../src/game/spawn";
+import {
+  runwayEarthworksHeightLocal,
+  runwayPlatformHeight,
+} from "../src/render/webgpu/terrain/RunwayEarthworks";
 import { NullTerrainCollisionMirror } from "../src/render/webgpu/terrain/TerrainCollisionMirror";
 import {
   FIXED_TIME_STEP,
@@ -16,6 +20,9 @@ import {
   getAirportInfluence,
   isPointOnRunway,
   runwayToWorld,
+  sampleNaturalTerrainHeight,
+  sampleTerrainHeight,
+  worldToRunway,
   type TerrainCollisionSample,
 } from "../src/world";
 
@@ -54,7 +61,14 @@ describe("terrain authority contract (0-5)", () => {
         const across = (acrossStep / 5) * halfAcross * 0.999;
         const point = runwayToWorld(airport, along, across);
         expect(getAirportInfluence(airport, point.x, point.z)).toBe(1);
-        expect(sampleGroundHeight(world, point.x, point.z)).toBe(airport.elevation);
+        // 3-8: the apron is a CROWNED platform now, not a plane. What must
+        // still hold exactly is that the natural terrain contributes nothing
+        // inside it — the collision fast path evaluates the profile and
+        // nothing else.
+        expect(sampleGroundHeight(world, point.x, point.z)).toBeCloseTo(
+          runwayPlatformHeight(airport, across),
+          9,
+        );
       }
     }
 
@@ -74,10 +88,169 @@ describe("terrain authority contract (0-5)", () => {
       );
       expect(isPointOnRunway(airport, point.x, point.z)).toBe(true);
       const contact = sampleGroundContact(world, point.x, point.z, target);
+      const local = worldToRunway(airport, point.x, point.z);
       expect(contact.isRunway).toBe(true);
-      expect(contact.height).toBe(airport.elevation);
+      expect(contact.height).toBeCloseTo(runwayPlatformHeight(airport, local.across), 9);
       expect(contact.friction).toBeCloseTo(1.18, 12);
-      expect(contact.normal).toEqual({ x: 0, y: 1, z: 0 });
+      // The camber tilts the contact normal by ~1.3 deg at the graded edge and
+      // by nothing on the centreline. A flat normal on a cambered surface is
+      // the same lie one derivative up.
+      expect(Math.hypot(contact.normal.x, contact.normal.y, contact.normal.z)).toBeCloseTo(1, 9);
+      expect(contact.normal.y).toBeGreaterThan(0.999);
+      if (Math.abs(acrossFactor) < 1e-9) {
+        expect(contact.normal).toEqual({ x: 0, y: 1, z: 0 });
+      } else {
+        expect(Math.hypot(contact.normal.x, contact.normal.z)).toBeGreaterThan(1e-4);
+      }
+    }
+  });
+
+  it("assertion 63: collision height inside the apron equals the earthworks profile", () => {
+    // The failure this exists for: 3-8 adds a 0.35 m camber to the RENDERED
+    // surface, and sampleTerrainCollision's runway branch returns before any
+    // height sampling. Left alone, the aircraft would touch down on a plane up
+    // to 0.35 m away from the surface on screen — worst at the edges, where a
+    // crosswind landing puts you. Phase 0's four invariants would not have
+    // caught it: they assert getAirportInfluence == 1.0 across the apron,
+    // which stays true. The influence is fine; the height behind it is what
+    // changes.
+    const world = createWorld("terrain-authority-fixture");
+    const airport = world.airport;
+    expect(airport).not.toBeNull();
+    if (!airport) return;
+
+    const halfAlong = airport.runwayLength * 0.5 + airport.endSafetyArea;
+    const halfAcross = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+    let worstMillimetres = 0;
+    let sawCamber = false;
+    for (let alongStep = -12; alongStep <= 12; alongStep += 1) {
+      for (let acrossStep = -8; acrossStep <= 8; acrossStep += 1) {
+        const along = (alongStep / 12) * halfAlong * 0.999;
+        const across = (acrossStep / 8) * halfAcross * 0.999;
+        const point = runwayToWorld(airport, along, across);
+        const natural = sampleNaturalTerrainHeight(world.seedHash, point.x, point.z, 0);
+        const local = worldToRunway(airport, point.x, point.z);
+        // The RENDERED profile, evaluated through the same function the tile
+        // generator reaches through sampleFilteredTerrainHeight.
+        const rendered = runwayEarthworksHeightLocal(
+          airport,
+          natural,
+          local.along,
+          local.across,
+          point.x,
+          point.z,
+          world.seedHash,
+        );
+        const collision = sampleGroundHeight(world, point.x, point.z);
+        worstMillimetres = Math.max(worstMillimetres, Math.abs(rendered - collision) * 1_000);
+        if (Math.abs(rendered - airport.elevation) > 0.05) sawCamber = true;
+      }
+    }
+    expect(worstMillimetres, "collision and the rendered earthworks disagree").toBeLessThan(1);
+    // Non-vacuity: if the camber were zero this test would pass on a plane.
+    expect(sawCamber, "the apron is flat — the camber is not being applied").toBe(true);
+  });
+
+  it("assertion 64: the 0.5 m earthworks contour is not a closed convex curve", () => {
+    // The exit criterion, stated as the plan states it. A convex contour means
+    // the profile is still a disc — the circular plateau the audit names, which
+    // is what a single lerp against a rounded-rectangle influence field always
+    // produces. Convexity is disproved constructively: two points inside the
+    // region whose midpoint is outside it.
+    const world = createWorld("terrain-authority-fixture");
+    const airport = world.airport;
+    expect(airport).not.toBeNull();
+    if (!airport) return;
+
+    const reach = airport.runwayLength * 0.5 + airport.endSafetyArea
+      + airport.terrainBlendDistance * 1.6;
+    const step = 24;
+    const displacement = (x: number, z: number): number => Math.abs(
+      sampleTerrainHeight(world, x, z) - sampleNaturalTerrainHeight(world.seedHash, x, z, 0),
+    );
+    const inside = (x: number, z: number): boolean => displacement(x, z) >= 0.5;
+
+    const points: { x: number; z: number }[] = [];
+    for (let along = -reach; along <= reach; along += step) {
+      for (let across = -reach; across <= reach; across += step) {
+        const point = runwayToWorld(airport, along, across);
+        if (inside(point.x, point.z)) points.push({ x: point.x, z: point.z });
+      }
+    }
+    expect(points.length, "nothing is displaced by 0.5 m — the probe is vacuous")
+      .toBeGreaterThan(200);
+
+    let witnesses = 0;
+    for (let first = 0; first < points.length && witnesses < 3; first += 7) {
+      for (let second = first + 1; second < points.length && witnesses < 3; second += 11) {
+        const a = points[first]!;
+        const b = points[second]!;
+        if (Math.hypot(a.x - b.x, a.z - b.z) < step * 2) continue;
+        if (!inside((a.x + b.x) / 2, (a.z + b.z) / 2)) witnesses += 1;
+      }
+    }
+    expect(
+      witnesses,
+      "every chord of the 0.5 m contour stayed inside it — the earthworks is still a disc",
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("adds no cliff the natural terrain does not already have", () => {
+    // 3-8 shapes the ground the aircraft lands on, so a discontinuity in the
+    // profile is a discontinuity in the collision surface. One nearly shipped:
+    // cut and fill differ by more than their batter grade — the bench term is
+    // +bench for one and −bench for the other — so branching on
+    // `natural < platform` put a 2 x bench step on the closed contour where
+    // the two meet. A RING of 1.09 m cliffs around the airport, measured over
+    // 0.25 m of ground on three seeds, in both the render and the physics
+    // path. The blend that replaced the branch is what this pins.
+    //
+    // Stated relatively, because the absolute number is a property of the
+    // terrain: the earthworks may not be materially steeper than the natural
+    // surface it is grafted onto.
+    for (const seed of ["terrain-authority-fixture", "open-skies"]) {
+      const world = createWorld(seed);
+      const airport = world.airport;
+      expect(airport).not.toBeNull();
+      if (!airport) continue;
+      const step = 0.25;
+      let worstEarthworks = 0;
+      let worstNatural = 0;
+      let worstWhere = "";
+      for (let ray = 0; ray < 24; ray += 1) {
+        const angle = (ray / 24) * Math.PI * 2;
+        const alongEdge = airport.runwayLength * 0.5 + airport.endSafetyArea;
+        const acrossEdge = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+        for (let out = 0; out < airport.terrainBlendDistance * 1.2; out += step) {
+          const along = Math.cos(angle) * (alongEdge + out);
+          const across = Math.sin(angle) * (acrossEdge + out);
+          const here = runwayToWorld(airport, along, across);
+          const next = runwayToWorld(
+            airport,
+            along + Math.cos(angle) * step,
+            across + Math.sin(angle) * step,
+          );
+          const graded = Math.abs(
+            sampleGroundHeight(world, next.x, next.z) - sampleGroundHeight(world, here.x, here.z),
+          );
+          const natural = Math.abs(
+            sampleNaturalTerrainHeight(world.seedHash, next.x, next.z, 0)
+            - sampleNaturalTerrainHeight(world.seedHash, here.x, here.z, 0),
+          );
+          if (graded > worstEarthworks) {
+            worstEarthworks = graded;
+            worstWhere = `${out.toFixed(1)} m outside the platform`;
+          }
+          worstNatural = Math.max(worstNatural, natural);
+        }
+      }
+      // Non-vacuity: the sweep must actually cross real relief.
+      expect(worstNatural, `${seed}: the sweep found flat ground`).toBeGreaterThan(0.02);
+      expect(
+        worstEarthworks,
+        `${seed}: the earthworks steps ${worstEarthworks.toFixed(3)} m over ${step} m `
+        + `(${worstWhere}) against the natural surface's ${worstNatural.toFixed(3)} m`,
+      ).toBeLessThan(Math.max(worstNatural * 1.6, 0.2));
     }
   });
 

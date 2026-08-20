@@ -134,10 +134,21 @@ const LDR_COLOR_BYTES = 4;
 /** Main depth: depth32float under reversed-Z. */
 const DEPTH_BYTES = 4;
 /**
- * CSM depth-stencil (DEPTH32FLOAT_STENCIL8): 4 B depth + 1 B stencil planes
- * on Apple-family GPUs. Colour attachment is gone since 1A-5's depth-only RTT.
+ * CSM depth attachment. Colour is gone since 1A-5's depth-only RTT, and the
+ * remaining attachment is plain `depth32float` — 4 B/texel, no stencil plane.
+ *
+ * Corrected at `3-0` from 5 (the provisional "DEPTH32FLOAT_STENCIL8" reading)
+ * after the material arrays pushed tiers 2 and 3 past their ceilings and the
+ * row had to be checked rather than cut. Verified in 9.21.2, not assumed:
+ * `AtmosphereSystem.DepthOnlyCascadedShadowGenerator._createTargetRenderTexture`
+ * calls `createDepthStencilTexture(comparison, true)` and stops there, so
+ * `renderTargetTexture.pure.js:517`'s defaults apply — `generateStencil =
+ * false`, `format = 14` (`TEXTUREFORMAT_DEPTH32_FLOAT`) — and
+ * `webgpuTextureManager.js:279` maps 14 to the WebGPU `depth32float` format.
+ * The stencil branch is `engine.renderTarget.pure.js:54`'s `13`, which this
+ * renderer never selects. 64 MiB of phantom allocation at tier 2.
  */
-const SHADOW_DEPTH_BYTES = 5;
+const SHADOW_DEPTH_BYTES = 4;
 /**
  * Ocean FFT bytes per texel per cascade: h0 spectrum (rgba32float, 16 B) +
  * wave data (16 B) + two ping-pong pairs (4 × rgba16float since 1B-13) +
@@ -173,8 +184,15 @@ export interface DynamicAllocationInputs {
   readonly impostorAtlasMiB: number;
   /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
   readonly cloudVolumesMiB: number;
-  /** Terrain material arrays (`3-1`); 0 until Phase 3. */
-  readonly materialArraysMiB: number;
+  /**
+   * Terrain material arrays (`3-1`). Declared as the SHAPE, not a MiB scalar,
+   * because the allocation is a function of the tier's `materialArrayEdge` —
+   * a scalar row could not move when that knob moves, which is exactly the
+   * vacuous-row failure Z-4 exists to prevent (assertion 56).
+   */
+  readonly materialArrayCount: number;
+  readonly materialArrayLayers: number;
+  readonly materialArrayBytesPerTexel: number;
 }
 
 export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
@@ -196,8 +214,32 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   impostorAtlasMiB: 9.33,
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
   cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,
-  materialArraysMiB: 0,
+  // 3-0/3-1: two RGBA8 arrays (albedo+height, normal+material) of
+  // SURFACE_MATERIAL_COUNT layers each, sized by profile.materialArrayEdge
+  // and carrying a full mip chain. The layer count is pinned against
+  // SURFACE_MATERIALS by test rather than imported, so core/ keeps its
+  // no-subsystem-imports shape.
+  materialArrayCount: 2,
+  materialArrayLayers: 10,
+  materialArrayBytesPerTexel: 4,
 });
+
+/**
+ * Exact bytes multiplier for a complete square mip chain down to 1×1:
+ * `sum(4^-k)` for k in [0, log2(edge)]. Approaches 4/3 and is within 3e-7 of
+ * it at 512² — computed rather than assumed because the arrays are the
+ * largest single allocation Phase 3 adds.
+ */
+export function mipChainByteFactor(edge: number): number {
+  if (!Number.isInteger(edge) || edge < 1 || (edge & (edge - 1)) !== 0) {
+    throw new RangeError(`Material array edge must be a power of two, got ${edge}`);
+  }
+  let factor = 0;
+  for (let levelEdge = edge; levelEdge >= 1; levelEdge >>= 1) {
+    factor += (levelEdge * levelEdge) / (edge * edge);
+  }
+  return factor;
+}
 
 /**
  * Hydrology tiles and wildlife thin instances. 2-10 retired the
@@ -338,7 +380,13 @@ export function estimateGpuMemoryBreakdown(
   const foliageAtlasMiB = inputs.foliageAtlasMiB;
   const impostorAtlasMiB = inputs.impostorAtlasMiB;
   const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
-  const materialArraysMiB = inputs.materialArraysMiB;
+  const materialArraysMiB =
+    (inputs.materialArrayCount
+      * inputs.materialArrayLayers
+      * profile.materialArrayEdge * profile.materialArrayEdge
+      * inputs.materialArrayBytesPerTexel
+      * mipChainByteFactor(profile.materialArrayEdge))
+    / MIB;
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
     (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB + terrainGeometryMiB

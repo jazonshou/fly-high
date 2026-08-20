@@ -57,6 +57,46 @@ describe("WebGPU quality profiles", () => {
     });
   });
 
+  it("carries the 3-0 surface-material rows from RENDERING_PLAN.md §5.3", () => {
+    // Material array edge 256/512/512/1024, triplanar off/2-axis/3-axis/3-axis,
+    // height-blend cap 2/3/4/4 — the three rows the terrain surface system
+    // reads instead of branching on the tier.
+    expect(resolveWebGpuQualityProfile("low", "performance")).toMatchObject({
+      materialArrayEdge: 256,
+      terrainTriplanarMode: "planar",
+      heightBlendMaxMaterials: 2,
+    });
+    expect(resolveWebGpuQualityProfile("medium", "balanced")).toMatchObject({
+      materialArrayEdge: 512,
+      // §5.3's tier rule: the 2-axis fast path is mandatory from Balanced up,
+      // not a High-only optimisation.
+      terrainTriplanarMode: "biplanar",
+      heightBlendMaxMaterials: 3,
+    });
+    expect(resolveWebGpuQualityProfile("high", "balanced")).toMatchObject({
+      materialArrayEdge: 512,
+      terrainTriplanarMode: "triplanar",
+      heightBlendMaxMaterials: 4,
+    });
+    // Ultra ships 512, not §5.3's 1024 — see the QualityProfile field comment
+    // and the 3-1 CPU-synthesis deviation. The knob is still live: Low is 256.
+    expect(resolveWebGpuQualityProfile("high", "ultra")).toMatchObject({
+      materialArrayEdge: 512,
+      terrainTriplanarMode: "triplanar",
+      heightBlendMaxMaterials: 4,
+    });
+    // Every edge must be a power of two: the CPU mip reducer halves to 1x1.
+    for (const [quality, mode] of [
+      ["low", "performance"],
+      ["medium", "balanced"],
+      ["high", "balanced"],
+      ["high", "ultra"],
+    ] as const) {
+      const edge = resolveWebGpuQualityProfile(quality, mode).materialArrayEdge;
+      expect(edge & (edge - 1)).toBe(0);
+    }
+  });
+
   it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {
     expect(resolveWebGpuQualityProfile("low", "performance")).toMatchObject({
       maxRenderPixels: 1_000_000,

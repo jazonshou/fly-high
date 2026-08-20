@@ -13,6 +13,13 @@ import type { RenderingMode } from "@/src/settings";
  */
 export const CAMERA_FAR_PLANE_METERS = 45_000;
 
+/**
+ * `3-5`'s projection ladder. Planar is the XZ projection alone with a
+ * slope-stretch correction; biplanar blends the two dominant axes (the
+ * mandatory Balanced fast path); triplanar blends all three.
+ */
+export type TerrainTriplanarMode = "planar" | "biplanar" | "triplanar";
+
 export interface WebGpuQualityProfile {
   readonly tier: 0 | 1 | 2 | 3;
   readonly quality: QualityLevel;
@@ -57,6 +64,34 @@ export interface WebGpuQualityProfile {
    * policy: 4-5's CDLOD deletes it (plan A5).
    */
   readonly terrainTileResolution: number;
+  /**
+   * `3-0`: edge of both terrain material `Texture2DArray`s. `3-1` synthesises
+   * at this edge and `estimateGpuMemory`'s material-array row follows it, so
+   * the tier knob and the budget cannot disagree (assertion 56).
+   *
+   * §5.3 publishes 256/512/512/**1024**; Ultra ships 512 instead. `3-1`
+   * synthesises on the CPU (see that file's deviation note on `C2`), measured
+   * at 1.07 s for all ten 512² layers and ~4.3 s at 1024² — several seconds of
+   * blocked main thread at startup, for a resolution the de-tiling warp and
+   * 16× anisotropy largely mask. It also returned 80 MiB to a tier that was
+   * sitting at 96% of its ceiling. The row reopens the moment synthesis moves
+   * to GPU compute, which is the optimisation `C2` deliberately deferred.
+   */
+  readonly materialArrayEdge: number;
+  /**
+   * `3-0`/`3-5`: how the surface plugin projects material UVs. §5.3's row —
+   * Low gets a slope-stretched planar projection and no triplanar at all,
+   * Balanced gets the mandatory 2-axis fast path, High and Ultra get 3-axis.
+   */
+  readonly terrainTriplanarMode: TerrainTriplanarMode;
+  /**
+   * `3-0`/`3-6`: how many materials the height blend may carry (§5.3's row —
+   * 2/3/4/4). Phase 3's provisional splat offers at most three candidates
+   * (the bracketed pair on the material axis plus the slope/snow override),
+   * so Low genuinely compiles fewer samples; `4-6`'s 4-way page splat spends
+   * the rest.
+   */
+  readonly heightBlendMaxMaterials: number;
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -124,6 +159,9 @@ export function resolveWebGpuQualityProfile(
       grassRadiusMeters: 90,
       terrainRings: 6,
       terrainTileResolution: 33,
+      materialArrayEdge: 256,
+      terrainTriplanarMode: "planar",
+      heightBlendMaxMaterials: 2,
       shadowMapSize: 1_024,
       shadowCascades: 2,
       shadowDistance: 4_500,
@@ -157,6 +195,9 @@ export function resolveWebGpuQualityProfile(
       grassRadiusMeters: 150,
       terrainRings: 7,
       terrainTileResolution: 65,
+      materialArrayEdge: 512,
+      terrainTriplanarMode: "biplanar",
+      heightBlendMaxMaterials: 3,
       shadowMapSize: 2_048,
       shadowCascades: 2,
       shadowDistance: 7_000,
@@ -196,6 +237,9 @@ export function resolveWebGpuQualityProfile(
       // terrain INSIDE the far plane (guaranteed coverage is 512·2^rings).
       terrainRings: 7,
       terrainTileResolution: 65,
+      materialArrayEdge: 512,
+      terrainTriplanarMode: "triplanar",
+      heightBlendMaxMaterials: 4,
       shadowMapSize: 4_096,
       shadowCascades: 4,
       shadowDistance: 16_000,
@@ -234,6 +278,9 @@ export function resolveWebGpuQualityProfile(
     // 1C-4: level 7 sits wholly beyond the 45 km far plane (see tier 2).
     terrainRings: 7,
     terrainTileResolution: 65,
+    materialArrayEdge: 512,
+    terrainTriplanarMode: "triplanar",
+    heightBlendMaxMaterials: 4,
     shadowMapSize: 4_096,
     shadowCascades: 4,
     shadowDistance: 16_000,

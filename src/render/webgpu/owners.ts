@@ -196,14 +196,112 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "AdaptiveGovernor arrives at 1A-6b, PerformanceBudget at 1A-2. Subsystems contribute rows of data, not tier tables — see the grandfathered-tier-reads allowlist in the boundary test.",
   },
   {
+    // 3-0: ten material identities and their physical constants, landed as a
+    // tiny reviewable commit before the seven-day synthesis item because SEVEN
+    // later consumers depend on it — 3-1 synthesis, 3-2 bindings, 3-6 height
+    // blend, 3-7 BRDF, 3-9 runway materials, 3-10 seasonal palette, and 4-6's
+    // classifier. An enum with seven consumers that is invented halfway
+    // through an eight-day item gets invented seven times.
+    artifact: "surface-material-contract",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/surfaceMaterials.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "SurfaceMaterial",
+      "SURFACE_MATERIALS",
+      "SURFACE_MATERIAL_COUNT",
+      "SURFACE_MATERIAL_ARRAY_COUNT",
+      "SURFACE_MATERIALS_BY_BIOME",
+      "SURFACE_ALBEDO_STORAGE_GAMMA",
+      "meanSurfaceAlbedo",
+      "landCoverShare",
+    ],
+    notes:
+      "4-6 INHERITS this enum rather than defining its own — that is the whole "
+      + "point of landing it in Phase 3. Lighting consumes meanSurfaceAlbedo "
+      + "for the R-26 ground bounce.",
+  },
+  {
+    // 3-1: the ten synthesised land-cover materials. Every texel is a pure
+    // function of (seed, edge) and every noise primitive is periodic on the
+    // texture's own cell grid.
+    artifact: "terrain-material-arrays",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/MaterialArraySynthesis.ts"],
+    consumers: ["terrain-material"],
+    ownedSymbols: [
+      "synthesizeSurfaceMaterial",
+      "synthesizeSurfaceMaterialLayers",
+      "planSurfaceMaterialArrays",
+      "createSurfaceMaterialArrays",
+      "composeSurfaceMaterialContactSheet",
+      "TOKSVIG_ROUGHNESS_GAIN",
+    ],
+    notes:
+      "The repo ships zero image assets by design; a second synthesiser, or an "
+      + "imported texture, is the audit's root cause #1 reopening from the "
+      + "other side.",
+  },
+  {
+    // 3-2 (C1): TerrainMaterialPlugin is DELETED, not neighboured. Both
+    // plugins wrote surfaceAlbedo and normalW with composition decided by an
+    // undocumented priority number.
+    artifact: "terrain-surface-plugin",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/TerrainSurfacePlugin.ts"],
+    consumers: ["terrain-material"],
+    ownedSymbols: [
+      "TerrainSurfacePlugin",
+      "surfaceSeasonalResponse",
+      "meanSeasonalSurfaceAlbedo",
+      "heightBlendWeights",
+      "TERRAIN_SURFACE_INJECTION_ANCHORS",
+      "TERRAIN_SURFACE_INJECTION_TOKENS",
+    ],
+    notes:
+      "The single owner of terrain surface appearance: albedo, normal, "
+      + "roughness, AO and micro-detail. A second plugin writing surfaceAlbedo "
+      + "on this material is the split C1 closed.",
+  },
+  {
+    // 3-9: the runway PAINTED into the terrain surface by the analytic airport
+    // SDF — not a mesh, not a splat weight, not a decal. That is what decouples
+    // it from Phase 4 and what deletes the 28 coplanar boxes' z-fighting.
+    artifact: "runway-surface-painter",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/RunwaySurface.ts"],
+    consumers: ["terrain-material"],
+    ownedSymbols: [
+      "RUNWAY_SURFACE_WGSL",
+      "RUNWAY_SDF_WGSL",
+      "RUNWAY_SURFACE_UNIFORMS",
+      "runwayMarkingProfile",
+      "resolveRunwaySurfaceBinding",
+    ],
+    notes:
+      "The WGSL SDF is a transliteration of roundedRectangleSignedDistance "
+      + "(src/world/airport.ts), held to it by assertion 65. A second SDF is "
+      + "the drift that gave water two sun discs.",
+  },
+  {
     artifact: "runway-earthworks-profile",
     owner: "terrain-material",
     definitionSites: ["src/render/webgpu/terrain/RunwayEarthworks.ts"],
-    consumers: ["terrain-material", "terrain-geometry"],
-    ownedSymbols: ["RunwayEarthworks", "runwayEarthworksProfile"],
-    plannedBy: "3-8",
+    // 3-8 is Class K: it changes the physics authority, so simulation and
+    // world consume it too — the collision fast path in src/world/terrain.ts
+    // evaluates exactly this profile.
+    consumers: "any",
+    ownedSymbols: [
+      "runwayEarthworksProfile",
+      "runwayEarthworksHeightLocal",
+      "runwayCrownHeight",
+      "runwayPlatformHeight",
+      "runwayPlatformSignedDistance",
+      "runwayPlatformHalfLength",
+      "runwayPlatformHalfWidth",
+    ],
     notes:
-      "Terrain-geometry contributes the erosion exclusion mask only. The profile must keep getAirportInfluence exactly 1.0 inside the apron (tests/sim.terrain-authority.test.ts).",
+      "Terrain-geometry contributes the erosion exclusion mask only. The profile must keep getAirportInfluence exactly 1.0 inside the apron (tests/sim.terrain-authority.test.ts), and collision must agree with the rendered surface to within 1 mm (assertion 63).",
   },
   {
     artifact: "vegetation-density-field",
@@ -267,6 +365,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "buildMipChain",
       "alphaDilate",
       "alphaCoverage",
+      "toksvigReduce",
       "planMippedTextureArray",
       "uploadMippedTextureArrayPlan",
       "createMippedTextureArray",
@@ -435,9 +534,10 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
     plannedBy: "2-18",
   },
   {
+    // 3-10: surfaceSeasonalResponse(spec, dayOfYear, latitudeDegrees), anchored
+    // at the reference day so the tuned midsummer world is unchanged.
     artifact: "surface-seasonal-palette",
     definitionSites: ["src/render/webgpu/terrain/TerrainSurfacePlugin.ts"],
-    plannedBy: "3-10",
   },
   {
     artifact: "land-cover-classifier",

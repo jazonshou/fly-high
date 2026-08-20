@@ -68,6 +68,9 @@ audit is why it now carries all four tiers):
 | MSAA samples (offscreen beauty target) | 1 | 2 | 2 | 4 |
 | Terrain clipmap levels | 6 | 7 | 7 | 7 |
 | Terrain tile resolution | 33 | 65 | 65 | 65 |
+| Terrain material array edge (3-0) | 256² | 512² | 512² | 512² |
+| Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
+| Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map | 1,024 | 2,048 | 4,096 | 4,096 |
 | Shadow cascades | 2 | 2 | 4 | 4 |
 | Shadow distance | 4.5 km | 7 km | 16 km | 16 km |
@@ -83,6 +86,14 @@ audit is why it now carries all four tiers):
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
+Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
+synthesises the ten layers on the CPU (measured 1.07 s at 512², ~4.3 s at
+1024²), and several seconds of blocked main thread at startup is not worth a
+resolution the de-tiling warp and 16× anisotropy largely mask. The row reopens
+if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
+and 26.7 MiB above it, derived from the tier's edge rather than declared, so
+the memory row cannot disagree with the knob.
+
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
 Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. The ACES/FXAA post stack is the same across quality profiles.
@@ -95,7 +106,9 @@ Terrain page resolution, ocean presentation density, FFT topology, and every oth
 - `TerrainGenerationClient` prefers a dedicated terrain Worker and uses a maximum queued count of 128. The clipmap refills missing far requests as earlier work drains, so the queue bound cannot permanently omit horizon pages. If that Worker cannot be created or fails, a deferred one-job-at-a-time CPU path runs the same generator. The simulation Worker remains a game requirement. Quality/generation changes cancel pending requests; late stale responses are discarded.
 - Pages outside the desired set receive a 90-frame grace period before eviction, limiting boundary churn.
 - Page resolution follows the resolved tier as one constant per tier (1B-3): 33 at tier 0, 65 at tiers 1–3, at every level — constant per-tier resolution keeps every adjacent-level ground-sample ratio exactly 2:1, which is what killed the audit's 4:1 T-junction.
-- Existing deterministic world sampling supplies continuous terrain, ravines/valleys, ridged mountains, biomes, geology color, runway flattening, and collision data. A PBR material plugin adds camera-stable macro geology, slope strata, and near-field triplanar micro-normal detail. Terrain generation remains CPU work, not a compute shader.
+- Existing deterministic world sampling supplies continuous terrain, ravines/valleys, ridged mountains, biomes, geology relief, the airport earthworks, and collision data. Terrain generation remains CPU work, not a compute shader.
+- **Surface appearance (Phase 3).** One PBR material plugin owns albedo, normal, roughness, ambient occlusion and micro-detail. Ten synthesised land-cover materials live in two mipped `Texture2DArray`s at 16× anisotropy; the fragment brackets an interpolated material id along an ecotone-ordered axis, adds a slope/snow override evaluated at fragment resolution, and height-blends the survivors. **Candidates whose blend weight is negligible are skipped rather than sampled and multiplied by zero** — most of the ground sits well inside one biome, so the common fragment fetches one material rather than three, which is the difference between 51.7 and 57+ fps on the `cruise-horizon` capture. Distant mips carry a Toksvig roughness term so a normal map averaged into flatness cannot leave a false sharp highlight behind.
+- **The runway is not a mesh.** A three-zone cut/fill earthworks profile (`terrain/RunwayEarthworks.ts`) shapes the ground, the collision fast path evaluates the same profile, and the pavement, markings, rubber and ragged edge are painted by the airport's analytic SDF in the same fragment shader.
 - `src/render/webgpu/world/` defines the next-stage portable paging contract: canonical keys; quantized height, material, surface, and hydrology payloads; validation; CPU-ready/uploading/resident/evicting lifecycle states; cache metadata; and velocity-aware streaming scores. The active clipmap renderer remains worker-fed and does not yet claim a persistent on-disk page cache.
 
 ## Spectral ocean and inland water
@@ -205,7 +218,7 @@ where the pre-exposure decision belongs.
 
 `2-12` measured the currency directly: every (species, variant, band) mesh is
 one draw per presentation chunk per pass at ~26 µs of GPU, `Δgpu` tracked
-`Δdraws` linearly across all thirteen capture shots, and triangle deltas
+`Δdraws` linearly across all the capture shots, and triangle deltas
 measured ~0. Two consequences the vegetation perf-debt pass made concrete:
 
 - **The capture report carries `vegetationBatches`** — frustum-surviving
@@ -231,6 +244,17 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   which is the wrong feedback loop for diagnosing one bad shot; the filter
   refuses to run alongside `VITE_PERF_REBASELINE` so a partial run can never
   overwrite the committed set.
+- `npm run material:preview` writes a terrain-material contact sheet to
+  `tests/perf/artifacts/` — ten materials across, five channels at three
+  footprints down. It is the tool the recipes are tuned against; the artifacts
+  directory is gitignored because the repo ships no image assets by design.
+- Phase 3 rebaselined the whole set. Net effect on the capture machine:
+  **−70 draw calls on every shot** (`3-9` deleted the runway boxes and the
+  apron), GPU p95 **down on twelve of thirteen** shots, frame rate up on ten.
+  The one regression is `canopy-1200ft` (10.86 → 12.16 ms GPU p95), whose floor
+  was re-pinned 27 → 24 — a 45°-down cockpit shot over forest is mostly
+  near-field terrain between the trees, where ten mipped materials cost most
+  and no airport meshes were deleted to pay for them.
 - The committed `minFps`/`hitchCount` ceilings were measured on the reference
   M-series machine. They are **not** portable: the same build on a different
   box, or on a hot one, moves GPU p95 by several milliseconds on shots it

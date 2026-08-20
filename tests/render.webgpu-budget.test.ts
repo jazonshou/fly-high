@@ -9,9 +9,14 @@ import {
   estimateGpuMemoryMiB,
   estimateRenderPixels,
   frameBudgetTotalMs,
+  mipChainByteFactor,
   type PerformanceTier,
   type RenderViewport,
 } from "../src/render/webgpu/core/PerformanceBudget";
+import {
+  SURFACE_MATERIAL_ARRAY_COUNT,
+  SURFACE_MATERIAL_COUNT,
+} from "../src/render/webgpu/terrain/surfaceMaterials";
 import {
   assertStartupInvariants,
   collectStartupInvariantFailures,
@@ -174,12 +179,68 @@ describe("performance budget (1A-2)", () => {
     });
     expect(withCloudVolumes.cloudsMiB).toBeCloseTo(base.cloudsMiB + 2.4, 5);
 
-    const withMaterialArrays = estimateGpuMemoryBreakdown(profile, viewport, {
+    // 3-0: the material arrays are declared as a SHAPE, so both halves of the
+    // row must move — the declared input (layer count) and the tier knob
+    // (materialArrayEdge, assertion 56).
+    const withDoubleLayers = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
-      materialArraysMiB: 48,
+      materialArrayLayers: DYNAMIC_ALLOCATIONS.materialArrayLayers * 2,
     });
-    expect(withMaterialArrays.materialArraysMiB).toBe(48);
-    expect(withMaterialArrays.totalMiB).toBeGreaterThan(base.totalMiB + 48);
+    expect(withDoubleLayers.materialArraysMiB).toBeCloseTo(base.materialArraysMiB * 2, 5);
+    expect(withDoubleLayers.totalMiB).toBeGreaterThan(base.totalMiB + base.materialArraysMiB);
+  });
+
+  it("moves the material-array row when the tier's array edge moves (assertion 56)", () => {
+    // The failure this guards is a decorative budget row: §5.2 puts the
+    // arrays at over a tenth of the Balanced ceiling, and Phase 1 built the
+    // contract precisely to catch that class of spend.
+    const viewport = VIEWPORTS[1]!;
+    const balanced = resolveWebGpuQualityProfile("medium", "balanced");
+    expect(balanced.materialArrayEdge).toBe(512);
+
+    const base = estimateGpuMemoryBreakdown(balanced, viewport);
+    const halved = estimateGpuMemoryBreakdown(
+      { ...balanced, materialArrayEdge: 256 },
+      viewport,
+    );
+    const doubled = estimateGpuMemoryBreakdown(
+      { ...balanced, materialArrayEdge: 1_024 },
+      viewport,
+    );
+    // Area scaling, exactly — the mip factor differs by one level and is
+    // folded in, so compare against the closed form rather than a ratio.
+    expect(halved.materialArraysMiB).toBeLessThan(base.materialArraysMiB * 0.26);
+    expect(doubled.materialArraysMiB).toBeGreaterThan(base.materialArraysMiB * 3.9);
+    expect(halved.totalMiB).toBeLessThan(base.totalMiB);
+    expect(doubled.totalMiB).toBeGreaterThan(base.totalMiB);
+
+    // The published §5.2 rows: 5.4 / 56 / 56 / 114 MiB. The estimate must sit
+    // under each, or the memory table is describing a different renderer.
+    const publishedMiB: Readonly<Record<PerformanceTier, number>> = { 0: 8, 1: 56, 2: 56, 3: 114 };
+    for (const [quality, mode] of [
+      ["low", "performance"],
+      ["medium", "balanced"],
+      ["high", "balanced"],
+      ["high", "ultra"],
+    ] as const) {
+      const profile = resolveWebGpuQualityProfile(quality, mode);
+      const breakdown = estimateGpuMemoryBreakdown(profile, viewport);
+      expect(
+        breakdown.materialArraysMiB,
+        `tier ${profile.tier} material arrays ${breakdown.materialArraysMiB.toFixed(1)} MiB`,
+      ).toBeLessThanOrEqual(publishedMiB[profile.tier as PerformanceTier]);
+    }
+  });
+
+  it("keeps the declared material-array layer count equal to the shipped enum", () => {
+    // core/ deliberately does not import terrain/, so the layer count is a
+    // declared literal. This is the pin that stops it drifting from the
+    // contract 3-0 owns.
+    expect(DYNAMIC_ALLOCATIONS.materialArrayLayers).toBe(SURFACE_MATERIAL_COUNT);
+    expect(DYNAMIC_ALLOCATIONS.materialArrayCount).toBe(SURFACE_MATERIAL_ARRAY_COUNT);
+    expect(mipChainByteFactor(512)).toBeCloseTo(4 / 3, 5);
+    expect(mipChainByteFactor(1)).toBe(1);
+    expect(() => mipChainByteFactor(300)).toThrow(RangeError);
   });
 
   it("rejects degenerate viewports", () => {

@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLOUD_RAYMARCH_SHADER,
@@ -379,5 +381,48 @@ describe("volumetric cloud foundations", () => {
     expect(DEFAULT_ENVIRONMENT_STATE.atmosphere.atmosphereRadiusMeters).toBeGreaterThan(
       DEFAULT_ENVIRONMENT_STATE.atmosphere.planetRadiusMeters,
     );
+  });
+});
+
+describe("WGSL the spec accepts, not just the adapter in front of us", () => {
+  it("assertion 51b: no compound assignment targets a multi-component swizzle", () => {
+    // WGSL: the left side of `*=`, `+=`, `-=`, `/=` must be a REFERENCE. A
+    // single component (`v.x`) is one; a multi-component swizzle (`v.rgb`) is
+    // not, so `v.rgb *= f` is invalid and a spec-strict validator rejects it
+    // with "no matching overload for operator *= (swizzle<...>, f32)".
+    //
+    // This is not hypothetical. `CloudShaders.ts` shipped with exactly that
+    // line at Gate 2A and the renderer failed to boot on a stock Chromium —
+    // stuck on "PREPARING AIRSPACE", the cloud temporal-resolve compute never
+    // compiling. Every GPU test and every perf capture passed, because the
+    // Tint build behind the suites' Playwright Chromium accepts it. One
+    // adapter agreeing is not the same as the shader being valid, so this
+    // check is STATIC and runs in `npm test`.
+    const shaderRoot = join(__dirname, "..", "src");
+    const offenders: string[] = [];
+    const compoundSwizzle = /\.[xyzwrgba]{2,4}\s*(?:\*=|\+=|-=|\/=)/u;
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          walk(path);
+          continue;
+        }
+        if (!/\.ts$/.test(entry.name)) continue;
+        readFileSync(path, "utf8").split("\n").forEach((line, index) => {
+          // Comments describing the rule are not violations of it.
+          if (/^\s*(?:\/\/|\*)/.test(line)) return;
+          if (compoundSwizzle.test(line)) {
+            offenders.push(`${relative(shaderRoot, path)}:${index + 1}  ${line.trim()}`);
+          }
+        });
+      }
+    };
+    walk(shaderRoot);
+    expect(
+      offenders,
+      "compound assignment to a multi-component swizzle is invalid WGSL — assign the whole "
+      + "vector instead, e.g. `v = vec4f(v.rgb * s, v.a);`",
+    ).toEqual([]);
   });
 });

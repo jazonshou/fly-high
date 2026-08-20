@@ -424,7 +424,43 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 65, minFps: 27 },
+    // Re-pinned at Phase 3's sanctioned churn point, 2026-08-19: 27 -> 24.
+    // This is the ONE capture the terrain surface system made slower — GPU p95
+    // 10.86 -> 12.16 ms, fps 29.9 -> 26.6. It is a 45-degree-down cockpit shot
+    // over forest, so most of the frame is NEAR-FIELD TERRAIN between the
+    // trees, which is exactly where ten mipped materials cost most, and there
+    // are no airport meshes in it to pay for them. The other twelve shots got
+    // faster: 3-9 deleted 70 draw calls of runway boxes from every one, and
+    // GPU p95 fell on twelve of thirteen.
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 65, minFps: 24 },
+  },
+  {
+    // Phase 3 §10: the scene 3-9 is judged in. Short final over the threshold,
+    // where the runway fills the lower frame — SDF-painted asphalt, the ragged
+    // grass-invaded edge, the worn centreline and threshold bars, and the
+    // rubber at the touchdown zone. It is also the one shot in the harness
+    // where the earthworks embankment is on screen.
+    //
+    // APPENDED, never inserted: perf-capture.test.ts pins
+    // `simulationTime = 500 + shotReports.length * 120`, so inserting mid-array
+    // shifts the temporal phase of every later shot and fails their SSIM gates
+    // with no renderer change.
+    name: "runway-on-approach",
+    description: "Short final, 200 ft AGL, runway threshold filling the frame",
+    cameraMode: "chase",
+    altitudeAglMeters: 61,
+    altitudeMslMeters: null,
+    // 900 m out on the approach centreline: the threshold bars and the near
+    // touchdown zone are both inside the frame at a 62 deg horizontal FOV.
+    offsetXMeters: -900,
+    offsetZMeters: 0,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 34,
+    // Pinned from ONE clean run at Phase 3's churn point (fps 23.7, hitch 3,
+    // max 332.6 ms), with the documented margin widened because one run is not
+    // three: this box's run-to-run fps spread on the near-field shots is ~15%.
+    // Re-pin from three clean runs on the reference machine.
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 20, minFps: 19 },
   },
 ]);
 

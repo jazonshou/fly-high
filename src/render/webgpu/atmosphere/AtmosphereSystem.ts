@@ -285,11 +285,25 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
   }
 }
 
+/**
+ * R-26's calibration: `skyHorizon x meanSurfaceAlbedo x this` reproduces the
+ * retired `ground` palette row at the reference day+clear key (55 deg sun) to
+ * within 0.03 on red and green. Chosen once, against the value it replaces, so
+ * daylight does not move on the day the derivation lands.
+ */
+const GROUND_BOUNCE_CALIBRATION = 1.15;
+
+/**
+ * `R-26` removed this table's `ground` row. Deviation `D-9` kept the palette
+ * alive "only for the light rig and the snapshot until Phases 3/7 retire it",
+ * and the ground row was the light rig's half of that: a hand-tuned bounce
+ * colour standing in for a ground that had no albedo. The bounce is derived
+ * from the surface system's mean albedo now — see `setSurfaceAlbedo`.
+ */
 interface AtmospherePalette {
   readonly sunColor: Color3;
   readonly zenith: Color3;
   readonly horizon: Color3;
-  readonly ground: Color3;
   readonly intensity: number;
 }
 
@@ -306,7 +320,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     sunColor: new Color3(0.9, 0.4, 0.25),
     zenith: new Color3(0.012, 0.03, 0.085),
     horizon: new Color3(0.08, 0.075, 0.14),
-    ground: new Color3(0.02, 0.024, 0.035),
     intensity: 0.0,
   },
   {
@@ -314,7 +327,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     sunColor: new Color3(1, 0.42, 0.18),
     zenith: new Color3(0.03, 0.08, 0.22),
     horizon: new Color3(0.7, 0.24, 0.12),
-    ground: new Color3(0.04, 0.05, 0.07),
     intensity: 1.1,
   },
   {
@@ -322,7 +334,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     sunColor: new Color3(1, 0.48, 0.22),
     zenith: new Color3(0.055, 0.13, 0.32),
     horizon: new Color3(0.94, 0.3, 0.13),
-    ground: new Color3(0.055, 0.065, 0.09),
     intensity: 3.1,
   },
   {
@@ -330,7 +341,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     sunColor: new Color3(1, 0.66, 0.33),
     zenith: new Color3(0.1, 0.27, 0.56),
     horizon: new Color3(0.91, 0.44, 0.19),
-    ground: new Color3(0.08, 0.07, 0.07),
     intensity: 4.1,
   },
   {
@@ -338,7 +348,6 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     sunColor: new Color3(1, 0.96, 0.88),
     zenith: new Color3(0.1, 0.36, 0.78),
     horizon: new Color3(0.58, 0.77, 0.96),
-    ground: new Color3(0.11, 0.15, 0.18),
     intensity: 5.2,
   },
 ];
@@ -363,7 +372,6 @@ function paletteForElevation(elevationDegrees: number): AtmospherePalette {
       sunColor: lerpColor(lower.sunColor, upper.sunColor, t),
       zenith: lerpColor(lower.zenith, upper.zenith, t),
       horizon: lerpColor(lower.horizon, upper.horizon, t),
-      ground: lerpColor(lower.ground, upper.ground, t),
       intensity: lower.intensity + (upper.intensity - lower.intensity) * t,
     };
   }
@@ -420,6 +428,12 @@ export class AtmosphereSystem {
   /** 7-1: moonlight, reflected sunlight at ~4,100 K — warm, never blue. */
   readonly moon: DirectionalLight;
   readonly ambient: HemisphericLight;
+  /**
+   * R-26: the terrain surface system's seasonal mean albedo, pushed in by the
+   * renderer. Defaults to the same 0.18 grey the atmospheric ground albedo
+   * uses, so a scene without terrain lights exactly as it did.
+   */
+  private surfaceAlbedo = new Color3(0.18, 0.18, 0.18);
   readonly shadows: CascadedShadowGenerator;
   private readonly sky: Mesh;
   private readonly skyMaterial: ShaderMaterial;
@@ -578,6 +592,28 @@ export class AtmosphereSystem {
     );
   }
 
+  /**
+   * R-26: publish the terrain surface system's seasonal mean linear albedo.
+   * Both ground-bounce fakes this retires — `D-6`'s SH floor and `D-9`'s
+   * palette row — were tuned against a ground that had no albedo at all; this
+   * is the number that replaces them, and it moves with the season because a
+   * snow-covered world bounces more than twice what a summer one does.
+   */
+  setSurfaceAlbedo(albedo: readonly [number, number, number]): void {
+    this.surfaceAlbedo.set(
+      Math.min(1, Math.max(0, albedo[0])),
+      Math.min(1, Math.max(0, albedo[1])),
+      Math.min(1, Math.max(0, albedo[2])),
+    );
+  }
+
+  /** The published mean surface albedo, for the sky probe's below-horizon bake. */
+  get surfaceAlbedoLuminance(): number {
+    return 0.2126 * this.surfaceAlbedo.r
+      + 0.7152 * this.surfaceAlbedo.g
+      + 0.0722 * this.surfaceAlbedo.b;
+  }
+
   addShadowCaster(mesh: Mesh, includeDescendants = true): void {
     this.shadows.addShadowCaster(mesh, includeDescendants);
   }
@@ -660,7 +696,13 @@ export class AtmosphereSystem {
     this.sun.diffuse = palette.sunColor;
     this.sun.intensity = sunIntensity;
     this.ambient.diffuse = skyZenith;
-    this.ambient.groundColor = palette.ground;
+    // R-26: the ground bounce is the sky's own horizon radiance reflected off
+    // the surface system's mean albedo, not a palette row. At the reference
+    // day+clear key this lands within ~0.03 of the retired row on red and
+    // green; the blue it loses is the part that was never physical — ground
+    // bounce cannot be bluer than the ground.
+    this.ambient.groundColor = skyHorizon.multiply(this.surfaceAlbedo)
+      .scale(GROUND_BOUNCE_CALIBRATION);
     this.ambient.intensity = ambientIntensity;
 
     // 7-1/7-3: the sky's night inputs.

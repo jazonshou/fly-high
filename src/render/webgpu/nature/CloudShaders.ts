@@ -594,7 +594,16 @@ fn resolveCloudTemporal(@builtin(global_invocation_id) invocation: vec3<u32>) {
     1.0 / params.luminance_clamp,
     params.luminance_clamp,
   );
-  history.rgb *= (current_luminance * luminance_ratio) / history_luminance;
+  // Whole-vector assignment, not a compound assignment to .rgb. A
+  // multi-component swizzle is not a reference in WGSL, so it cannot be the
+  // target of a compound assignment: spec-strict validators reject it
+  // ("no matching overload for operator *= (swizzle<...>, f32)") and the
+  // renderer then fails to boot with a bare "PREPARING AIRSPACE". The Tint
+  // build behind the test suites' Playwright Chromium accepts it, which is
+  // exactly why this shipped — and why assertion 51b scans the sources
+  // statically instead of trusting one adapter.
+  let history_scale = (current_luminance * luminance_ratio) / history_luminance;
+  history = vec4<f32>(history.rgb * history_scale, history.a);
 
   let both_clear = auxiliary.x <= 0.0 && history_distance <= 0.0;
   let distance_confidence = select(

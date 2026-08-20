@@ -4,84 +4,74 @@ import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder.pure";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
-import type { AirportDefinition } from "@/src/world";
+import { runwayToWorld, type AirportDefinition } from "@/src/world";
 
-/** Small authored-detail island around the deterministic starter airport. */
+/**
+ * The authored detail around the starter airport — which, since `3-9`, is the
+ * hangars and nothing else.
+ *
+ * Deleted at `3-9`: the 0.16 m runway box at y = 0.08, the ~9 centreline
+ * stripes and ~18 threshold bars floating at y = 0.175, and the apron slab.
+ * That stack of 28 coplanar boxes was the z-fighting the audit names, and it
+ * floated above ground that had been flattened into a circular plateau to
+ * receive it. The runway is now PAINTED into the terrain surface by the
+ * analytic airport SDF (`terrain/RunwaySurface.ts`), on ground shaped by the
+ * earthworks profile (`terrain/RunwayEarthworks.ts`) — nothing is coplanar
+ * with anything, because there is only one surface.
+ *
+ * The hangars stay: `RENDERING_PLAN.md` §1.5 keeps them because they are the
+ * only scale reference on final approach, and Phase 7 `7-10` replaces them
+ * properly, apron included.
+ */
 export class AirportSystem {
   readonly root: TransformNode;
   readonly shadowCasters: readonly Mesh[];
   private readonly materials: PBRMaterial[] = [];
 
-  constructor(scene: Scene, private readonly definition: Readonly<AirportDefinition>) {
+  /**
+   * `groundHeight` samples the shipped terrain at a WORLD coordinate. It is
+   * required since `3-9`: the hangars used to stand on the apron slab, which
+   * was itself pinned to `airport.elevation` and floated above whatever the
+   * ground did. The slab is gone and the ground beneath them is now the
+   * earthworks batter — 118 m across the centreline, well outside the graded
+   * platform — so a hangar pinned to the datum floats or sinks by however much
+   * the batter has fallen away. Each one is placed on the ground it stands on.
+   */
+  constructor(
+    scene: Scene,
+    private readonly definition: Readonly<AirportDefinition>,
+    groundHeight: (x: number, z: number) => number,
+  ) {
     this.root = new TransformNode("airport", scene);
     this.root.rotation.y = definition.headingRadians;
 
-    const asphalt = this.material(scene, "runway-asphalt", new Color3(0.045, 0.052, 0.055), 0.9);
-    const paint = this.material(scene, "runway-paint", new Color3(0.82, 0.82, 0.76), 0.62);
-    const concrete = this.material(scene, "airport-concrete", new Color3(0.26, 0.27, 0.25), 0.84);
     const metal = this.material(scene, "hangar-metal", new Color3(0.20, 0.25, 0.27), 0.48, 0.42);
-
-    const runway = CreateBox("runway", {
-      width: definition.runwayWidth,
-      height: 0.16,
-      depth: definition.runwayLength,
-    }, scene);
-    runway.position.y = 0.08;
-    runway.material = asphalt;
-    runway.parent = this.root;
-    runway.receiveShadows = true;
-
-    const markings: Mesh[] = [];
-    const stripeCount = Math.floor(definition.runwayLength / 180);
-    for (let index = -stripeCount; index <= stripeCount; index += 1) {
-      if (index === 0) continue;
-      const stripe = CreateBox(`runway-centre-${index}`, {
-        width: 0.9,
-        height: 0.025,
-        depth: 28,
-      }, scene);
-      stripe.position.set(0, 0.175, index * 90);
-      stripe.material = paint;
-      stripe.parent = this.root;
-      markings.push(stripe);
-    }
-    for (const end of [-1, 1]) {
-      for (let stripeIndex = -4; stripeIndex <= 4; stripeIndex += 1) {
-        const threshold = CreateBox(`threshold-${end}-${stripeIndex}`, {
-          width: 2.4,
-          height: 0.026,
-          depth: 32,
-        }, scene);
-        threshold.position.set(stripeIndex * 4.2, 0.176, end * (definition.runwayLength * 0.5 - 48));
-        threshold.material = paint;
-        threshold.parent = this.root;
-        markings.push(threshold);
-      }
-    }
-
-    const apron = CreateBox("airport-apron", {
-      width: 150,
-      height: 0.14,
-      depth: 210,
-    }, scene);
-    apron.position.set(definition.runwayWidth * 0.5 + 98, 0.07, -definition.runwayLength * 0.12);
-    apron.material = concrete;
-    apron.parent = this.root;
-    apron.receiveShadows = true;
 
     const hangars: Mesh[] = [];
     for (let index = 0; index < 3; index += 1) {
+      const height = 14 + index * 2;
       const hangar = CreateBox(`airport-hangar-${index}`, {
         width: 46,
-        height: 14 + index * 2,
+        height,
         depth: 34,
       }, scene);
-      hangar.position.set(definition.runwayWidth * 0.5 + 118, 7 + index, -definition.runwayLength * 0.12 + (index - 1) * 52);
+      // The node's local +x is the runway's ACROSS axis and local +z its ALONG
+      // axis (the root carries the heading rotation), so these are runway-local
+      // coordinates and `runwayToWorld` converts them for the ground query.
+      const across = definition.runwayWidth * 0.5 + 118;
+      const along = -definition.runwayLength * 0.12 + (index - 1) * 52;
+      const world = runwayToWorld(definition, along, across);
+      const ground = groundHeight(world.x, world.z);
+      // The root sits at `definition.elevation`, so a hangar's local y is its
+      // own half-height plus however far the ground has fallen from the datum.
+      // Sunk 0.4 m so the sill meets the ground rather than hovering on it.
+      const sit = Number.isFinite(ground) ? ground - definition.elevation : 0;
+      hangar.position.set(across, sit + height * 0.5 - 0.4, along);
       hangar.material = metal;
       hangar.parent = this.root;
       hangars.push(hangar);
     }
-    this.shadowCasters = Object.freeze([runway, apron, ...hangars]);
+    this.shadowCasters = Object.freeze(hangars);
   }
 
   setFloatingOrigin(x: number, z: number): void {
