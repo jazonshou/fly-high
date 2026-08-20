@@ -45,11 +45,15 @@ export const TERRAIN_NORMAL_SAMPLE_DISTANCE = 2;
  * several metres of mean uplift per LOD (the amplitudeSum trap's quieter
  * sibling).
  */
-const RIDGES_POW_212_MEAN = 0.2125;
-const RIDGES_POW_158_MEAN = 0.299;
-const RIDGES_INVERSE_POW_31_MEAN = 0.2072;
-const RIDGES_SMOOTH_42_82_MEAN = 0.1965;
-const LOCAL_RIDGES_KNOLL_MEAN = 0.1534;
+// Exported since `4-1`: the WGSL transliteration INJECTS these values from
+// this module rather than retyping them. A wrong digit changes coarse-page
+// mean height by metres and would pass every parity test run at
+// `filterWidth = 0`, because `blendTowardExpectation` short-circuits there.
+export const RIDGES_POW_212_MEAN = 0.2125;
+export const RIDGES_POW_158_MEAN = 0.299;
+export const RIDGES_INVERSE_POW_31_MEAN = 0.2072;
+export const RIDGES_SMOOTH_42_82_MEAN = 0.1965;
+export const LOCAL_RIDGES_KNOLL_MEAN = 0.1534;
 
 function assertFiniteCoordinate(value: number, label: string): void {
   if (!Number.isFinite(value)) {

@@ -157,7 +157,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "A transliteration of src/world/{seed,noise,geology,terrain}.ts, not a "
       + "second kernel. Every expectation constant is INJECTED from the TS "
       + "source; retyping one is how coarse-page mean height moves by metres.",
-    plannedBy: "4-1",
   },
   {
     artifact: "terrain-page-atlas",

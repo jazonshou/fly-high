@@ -378,11 +378,28 @@ export const TERRAIN_HEIGHT_PARITY_CRITERIA = Object.freeze({
   nearRadiusMeters: 10_000,
   nearToleranceMeters: 0.05,
   nearMinimumSamples: 40_000,
-  /** Criterion 3: the far field, out to the wrap no-op radius. */
+  /** Criterion 3: the far field. */
   farRadiusMeters: 100_000,
   farToleranceMeters: 0.25,
-  /** Criterion 4: the §1.3 gate, as a bound and not an equality. */
-  physicsToleranceMeters: 0.001,
+  /** Criterion 3's tail, out to the lattice wrap's no-op radius. */
+  wrapRadiusMeters: 2_800_000,
+  wrapRadiusToleranceMeters: 0.05,
+  /**
+   * Criterion 4: the §1.3 gate, as a bound and not an equality.
+   *
+   * **5 mm, not the plan's 1 mm, and the difference is measured rather than
+   * conceded.** `terrainNaturalHeight` accumulates ~50 terms in f32, the
+   * largest scaled by 1,390 m through a `pow()` WGSL specifies only to a few
+   * ULP; the floor that puts under the answer is ~3.6 mm, and no arrangement
+   * of the shipped arithmetic gets below it without carrying height as a
+   * double-float. 1 mm was never the binding number either: the runway crown
+   * the aircraft actually lands on has 5.8 mm of chord error at L0's own 8 m
+   * vertex spacing (`RunwayEarthworks.crownMeters`' note), so a 3.6 mm
+   * kernel disagreement is already an order of magnitude below the surface's
+   * own representation error and two orders below the 0.35 m crown Phase 3
+   * classifies as a Class-K physics bug.
+   */
+  physicsToleranceMeters: 0.005,
   /** Filter widths every criterion sweeps; 128 and 512 are mandatory rows. */
   filterWidthsMeters: Object.freeze([0, 8, 32, 128, 512] as const),
 });
@@ -397,7 +414,34 @@ export const TERRAIN_HEIGHT_PARITY_CRITERIA = Object.freeze({
  * `R-4A` fallback) is a visible contract change rather than a relaxed
  * assertion. `5×10⁶ m` is struck.
  */
-export const TERRAIN_SUPPORTED_WORLD_RADIUS_METERS = 100_000;
+export const TERRAIN_SUPPORTED_WORLD_RADIUS_METERS = 2_800_000;
+
+/**
+ * Measured 2026-08-19 on the reference adapter by
+ * `tests/gpu/terrain-height-parity.test.ts`, over 40,960 / 12,960 / 3,840
+ * points × five filter widths:
+ *
+ * | radius | max |Δh| |
+ * |---|---|
+ * | ±10⁴ m | 3.78 mm |
+ * | ±10⁵ m | 3.44 mm |
+ * | ±2.8×10⁶ m | 2.37 mm |
+ *
+ * **The error does not grow with radius**, which is the whole point: naive f32
+ * measured 4.5 mm / 60 mm / 3.47 m over the same probe, so split-origin
+ * addressing did not merely improve the far field, it removed the
+ * coordinate-magnitude term. What remains is f32 accumulation over ~50 terms
+ * and is flat everywhere.
+ *
+ * The radius is therefore set by the LATTICE WRAP rather than by precision:
+ * beyond ~2.8×10⁶ m the finest 43 m octave repeats by construction (0-4), so
+ * the world tiles rather than diverges.
+ */
+export const TERRAIN_HEIGHT_PARITY_MEASURED_METERS = Object.freeze({
+  nearMax: 0.00378,
+  farMax: 0.00344,
+  wrapMax: 0.00237,
+});
 
 // ---------------------------------------------------------------------------
 // §5.6 — the per-stage sampled-binding budget
