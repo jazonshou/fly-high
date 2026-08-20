@@ -56,6 +56,7 @@ function selectClosedForestCell(): { readonly x: number; readonly z: number; rea
       for (let row = 0; row < GROUND_COVER_GRID; row += 1) {
         for (let column = 0; column < GROUND_COVER_GRID; column += 1) {
           const field = densityField(seedHash, {
+            filterWidthMeters: 0,
             x: cellX * 128 + (column + 0.5) * 16,
             z: cellZ * 128 + (row + 0.5) * 16,
             heightMeters: 320,

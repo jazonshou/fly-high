@@ -45,6 +45,18 @@ function isFiniteSample(sample: WildlifeTerrainSample): boolean {
   );
 }
 
+/**
+ * `R-27`: habitat is the LAND-COVER classifier's answer, reached through the
+ * biome id.
+ *
+ * `4-6` deleted `classifyBiome`'s threshold cascade; `sample.biome` is now the
+ * dominant material of `classifyLandCover`'s weight vector. So this predicate
+ * and `chooseTreeSpecies` and the ground splat are all reading one
+ * classification — which is the whole of `R-27` — rather than three tables
+ * that happened to be tuned against each other. The ids are kept here (rather
+ * than the weight vector) because the wildlife sampler carries no moisture or
+ * normal, and inventing them to reach the vector would be a fourth answer.
+ */
 function groundHabitat(sample: WildlifeTerrainSample): boolean {
   if (!isFiniteSample(sample) || sample.slope > 0.34) return false;
   return (

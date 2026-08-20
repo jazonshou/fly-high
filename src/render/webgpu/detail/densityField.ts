@@ -1,4 +1,10 @@
-import { clamp, fbm2D, saturate, smoothstep, valueNoise2D } from "@/src/world/noise";
+import {
+  clamp,
+  fbm2D,
+  filteredValueNoise2D,
+  saturate,
+  smoothstep,
+} from "@/src/world/noise";
 import { mixSeed } from "@/src/world/seed";
 
 /**
@@ -34,6 +40,20 @@ export interface VegetationDensityInput {
    * 2-16/2-18 consumes it here.
    */
   readonly dayOfYear: number;
+  /**
+   * `4-6b` (D12): the half-width of the sampling footprint, under the `0-4`
+   * convention — the same parameter the terrain kernel has carried since
+   * Phase 0.
+   *
+   * **This field exists because point-sampling this field was the same defect
+   * `1B-2` fixed for height, one system over.** The glade channel has a 260 m
+   * lattice; sampled onto a level-5 page whose texels are 128 m apart it
+   * re-rolls an arbitrary phase per level, and the symptom is canopy cover
+   * that CHANGES when a page changes LOD. Collision and per-stem placement
+   * keep 0 (the full-bandwidth field) forever; only a page bake passes a
+   * width.
+   */
+  readonly filterWidthMeters: number;
 }
 
 export interface VegetationDensitySample {
@@ -50,6 +70,72 @@ export interface VegetationDensitySample {
    * changing the climatic species/stand decision.
    */
   readonly forestEdge: number;
+  /**
+   * `4-6b`: ground-cover archetype weights — grass / fern / heather / reed /
+   * clutter — summing to 1.
+   *
+   * `2-16` rolled a flat 15% for ground cover, so a wet hollow and a
+   * wind-scoured ridge read as the same ground at different densities. These
+   * come from terms the field ALREADY carries (moisture, slope, shade,
+   * exposure), so it costs no new noise: what was missing was not information
+   * but a place to put it.
+   */
+  readonly groundCover: GroundCoverWeights;
+}
+
+/** The five ground-cover archetypes, in the order the weight vector uses. */
+export const GROUND_COVER_ARCHETYPES = [
+  "grass",
+  "fern",
+  "heather",
+  "reed",
+  "clutter",
+] as const;
+
+export type GroundCoverArchetype = (typeof GROUND_COVER_ARCHETYPES)[number];
+
+export type GroundCoverWeights = Readonly<Record<GroundCoverArchetype, number>>;
+
+const OPEN_GRASSLAND_COVER: GroundCoverWeights = Object.freeze({
+  grass: 1, fern: 0, heather: 0, reed: 0, clutter: 0,
+});
+
+/**
+ * Archetype mix from the drivers the density field already has.
+ *
+ * Ferns need shade and moisture, heather takes the dry exposed ridge, reeds
+ * want wet flat ground near the water table, and clutter (fallen wood, stones)
+ * follows slope and disturbance. Normalised, so it is a mix rather than five
+ * independent probabilities.
+ */
+export function groundCoverWeights(
+  moisture: number,
+  slope: number,
+  canopyShade: number,
+  elevationAboveSeaLevel: number,
+): GroundCoverWeights {
+  const wet = smoothstep(0.42, 0.78, moisture);
+  const dry = 1 - smoothstep(0.24, 0.55, moisture);
+  const flat = 1 - smoothstep(0.04, 0.18, slope);
+  const steep = smoothstep(0.12, 0.42, slope);
+  const shade = saturate(canopyShade);
+  const lowland = 1 - smoothstep(180, 700, elevationAboveSeaLevel);
+  const raw = {
+    grass: 0.35 + flat * 0.4 * (1 - shade),
+    fern: shade * (0.25 + wet * 0.75),
+    heather: dry * (0.2 + steep * 0.5) * (1 - lowland * 0.4),
+    reed: wet * flat * lowland * 0.9,
+    clutter: steep * 0.35 + shade * 0.2,
+  };
+  const total = raw.grass + raw.fern + raw.heather + raw.reed + raw.clutter;
+  if (!(total > 0)) return OPEN_GRASSLAND_COVER;
+  return Object.freeze({
+    grass: raw.grass / total,
+    fern: raw.fern / total,
+    heather: raw.heather / total,
+    reed: raw.reed / total,
+    clutter: raw.clutter / total,
+  });
 }
 
 /** Base canopy density: ~800 stems/ha before habitat factors. */
@@ -64,6 +150,7 @@ const ZERO_DENSITY: VegetationDensitySample = Object.freeze({
   heightFactor: 1,
   aspect: 0,
   forestEdge: 0,
+  groundCover: OPEN_GRASSLAND_COVER,
 });
 
 interface ForestPatternSample {
@@ -79,6 +166,7 @@ export function forestFraction(
   x: number,
   z: number,
   moisture: number,
+  filterWidthMeters = 0,
 ): number {
   const provinceRaw = fbm2D(
     mixSeed(seedHash, 75),
@@ -87,6 +175,10 @@ export function forestFraction(
     3,
     2,
     0.5,
+    // The SMALLER period of an anisotropic channel keys its fade, exactly as
+    // the terrain kernel's fracture channels do.
+    5_400,
+    filterWidthMeters,
   );
   return smoothstep(-0.22, 0.2, provinceRaw + (moisture - 0.55) * 0.7);
 }
@@ -106,12 +198,13 @@ function sampleForestPattern(
   x: number,
   z: number,
   moisture: number,
+  filterWidthMeters: number,
 ): ForestPatternSample {
   // Moist climates are more likely to carry forest, but never force every
   // valley closed. The smooth gate is wide enough to form a real ecotone.
-  const province = forestFraction(seedHash, x, z, moisture);
+  const province = forestFraction(seedHash, x, z, moisture, filterWidthMeters);
 
-  const gladeRaw = fbm2D(mixSeed(seedHash, 73), x / 260, z / 260, 2, 2, 0.5);
+  const gladeRaw = fbm2D(mixSeed(seedHash, 73), x / 260, z / 260, 2, 2, 0.5, 260, filterWidthMeters);
   // The previous 0.30 floor authored at least 240 stems/ha in a nominal
   // 800-stem stand, still far above the ~78/ha rendered cap. A 0.02 floor
   // lets a clearing actually expose ground after rendered-share thinning.
@@ -124,6 +217,8 @@ function sampleForestPattern(
     2,
     2,
     0.5,
+    1_400,
+    filterWidthMeters,
   );
   // Full amplitude: the disturbed end reaches zero rather than retaining a
   // permanent 15% canopy floor.
@@ -132,10 +227,12 @@ function sampleForestPattern(
   // One genuinely hard-edged class (windthrow): an elongated, low-frequency
   // field is thresholded rather than eased. Real burns/cuts/windthrow do not
   // all dissolve through the same procedural softness.
-  const windthrowRaw = valueNoise2D(
+  const windthrowRaw = filteredValueNoise2D(
     mixSeed(seedHash, 76),
     (x + z * 0.46) / 3_600,
     (z - x * 0.46) / 1_700,
+    1_700,
+    filterWidthMeters,
   );
   const windthrow = windthrowRaw > 0.61 ? 0 : 1;
   const disturbance = succession * windthrow;
@@ -169,8 +266,13 @@ export function densityField(
 
   // The ragged treeline: base + aspect + shelter + a 2.4 km wander. Trees do
   // not stop at a contour line; they thin, shrink, and give up unevenly.
-  const shelter = valueNoise2D(mixSeed(seedHash, 72), input.x / 560, input.z / 560);
-  const treelineWander = fbm2D(mixSeed(seedHash, 71), input.x / 2_400, input.z / 2_400, 2, 2, 0.5);
+  const shelter = filteredValueNoise2D(
+    mixSeed(seedHash, 72), input.x / 560, input.z / 560, 560, input.filterWidthMeters,
+  );
+  const treelineWander = fbm2D(
+    mixSeed(seedHash, 71), input.x / 2_400, input.z / 2_400, 2, 2, 0.5,
+    2_400, input.filterWidthMeters,
+  );
   const treeline = TREELINE_BASE_METERS + aspect * 120 + shelter * 80 + treelineWander * 90;
   const treelineFactor = 1 - smoothstep(treeline - 220, treeline + 40, elevation);
   // Height taper begins below the density taper: trees become 2 m krummholz
@@ -195,6 +297,7 @@ export function densityField(
     input.x,
     input.z,
     input.moisture,
+    input.filterWidthMeters,
   );
   // Airfields are mown grass (1B-6): woody stems fade multiplicatively.
   const clearance = 1 - clamp(input.airportInfluence ?? 0, 0, 1);
@@ -224,5 +327,13 @@ export function densityField(
     heightFactor: heightFactor * (1 - forest.forestEdge * 0.34),
     aspect,
     forestEdge: forest.forestEdge,
+    groundCover: groundCoverWeights(
+      input.moisture,
+      input.slope,
+      // Canopy closure IS the shade term: the field already knows how much
+      // canopy stands here, so shade needs no field of its own.
+      saturate(treeStems / BASE_TREE_STEMS),
+      elevation,
+    ),
   };
 }

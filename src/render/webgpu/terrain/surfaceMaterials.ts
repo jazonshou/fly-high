@@ -1,4 +1,8 @@
-import { TerrainBiome, type TerrainBiomeId } from "@/src/world";
+// From `src/world/types.ts` directly, not the `@/src/world` barrel: the barrel
+// re-exports `terrain.ts`, which reads this file's material axis through the
+// land-cover classifier (`4-6`), and the resulting cycle leaves `SurfaceMaterial`
+// undefined at module-init time. `types.ts` is a leaf and cannot cycle.
+import { TerrainBiome, type TerrainBiomeId } from "@/src/world/types";
 
 /**
  * 3-0 — the surface material contract (owner: terrain-material).

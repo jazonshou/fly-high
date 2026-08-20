@@ -3,7 +3,19 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import {
+  LAND_COVER_CLASSIFIER_WGSL,
+  LAND_COVER_SPLAT_BAKE_WGSL,
+} from "./LandCoverClassifier";
+import {
+  TERRAIN_KERNEL_PAGE_BYTES,
+  TERRAIN_KERNEL_WGSL,
+  buildTerrainKernelPageUniform,
+  terrainKernelPageBindingWgsl,
+} from "./TerrainKernel";
+import {
   TERRAIN_CHANNEL_SLOT_EDGE,
+  seasonBucketBlend,
+  seasonBucketCenterDay,
   TERRAIN_HEIGHT_PYRAMID_EDGE,
   TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS,
   TERRAIN_HEIGHT_SLOT_EDGE,
@@ -21,6 +33,8 @@ import {
 } from "@/src/render/webgpu/world/pageGeometry";
 import { worldPageBounds } from "@/src/render/webgpu/world/pageKey";
 import type { GlobalHeightPyramid } from "./GlobalHeightPyramid";
+import type { AirportDefinition } from "@/src/world/types";
+import { seasonalTemperatureShift } from "@/src/world/terrain";
 
 /**
  * The page occlusion bake (`4-7`).
@@ -321,5 +335,167 @@ export class PageOcclusionBake {
     if (occlusion) this.shader.setStorageTexture("occlusionTarget", occlusion);
     if (horizonA) this.shader.setStorageTexture("horizonTargetA", horizonA);
     if (horizonB) this.shader.setStorageTexture("horizonTargetB", horizonB);
+  }
+}
+
+/**
+ * The land-cover splat bake (`4-6`), hosted alongside the occlusion bake.
+ *
+ * They share a host because they write into the same channel slot and are
+ * admitted by the same meter: a page whose occlusion exists but whose splat
+ * does not is a page the shader has to guard against, and one dispatch pair
+ * per admitted slot removes the state entirely.
+ */
+export class PageSplatBake {
+  private shader: ComputeShader | null = null;
+  private jobBuffer: StorageBuffer | null = null;
+  private pageBuffer: StorageBuffer | null = null;
+  private capacity = 0;
+  private running = false;
+  private disposed = false;
+
+  constructor(
+    private readonly engine: AbstractEngine,
+    private readonly heightAtlas: TerrainPageAtlas,
+    private readonly channelAtlas: TerrainPageAtlas,
+    private readonly seedHash: number,
+    private readonly seaLevelMeters: number,
+    private readonly latitudeDegrees: number,
+    private readonly airport: Readonly<AirportDefinition> | null,
+  ) {}
+
+  get isBaking(): boolean {
+    return this.running;
+  }
+
+  /** Bake both resident season buckets for a batch of channel slots. */
+  async bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<number> {
+    if (this.disposed || this.running) return 0;
+    if (!this.channelAtlas.hasTextures || !this.heightAtlas.hasTextures) return 0;
+    const bakeable = slots.filter(
+      (slot) => this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
+    );
+    if (bakeable.length === 0) return 0;
+    this.ensureCapacity(bakeable.length);
+    const shader = this.shader;
+    const jobBuffer = this.jobBuffer;
+    const pageBuffer = this.pageBuffer;
+    if (!shader || !jobBuffer || !pageBuffer) return 0;
+
+    const blend = seasonBucketBlend(dayOfYear);
+    const jobs = new Float32Array(bakeable.length * 16);
+    const pages = new Uint8Array(bakeable.length * TERRAIN_KERNEL_PAGE_BYTES);
+    bakeable.forEach((slot, index) => {
+      const level = slot.address.level;
+      const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
+      const channelOrigin = this.channelAtlas.slotOrigin(slot.slotIndex);
+      const heightOrigin = this.heightAtlas.slotOrigin(
+        this.heightAtlas.residency.slotIndexOf(slot.key),
+      );
+      const channelTexel = terrainChannelTexelSizeMeters(level);
+      const heightTexel = terrainTexelSizeMeters(level);
+      const base = index * 16;
+      jobs[base] = channelOrigin.u;
+      jobs[base + 1] = channelOrigin.v;
+      jobs[base + 2] = heightOrigin.u;
+      jobs[base + 3] = heightOrigin.v;
+      jobs[base + 4] = channelTexel;
+      jobs[base + 5] = heightTexel;
+      jobs[base + 6] = index;
+      jobs[base + 7] = this.seaLevelMeters;
+      // The page's own gutter offset, in the kernel page's local frame.
+      jobs[base + 8] = -WORLD_PAGE_GUTTER * channelTexel;
+      jobs[base + 9] = -WORLD_PAGE_GUTTER * channelTexel;
+      jobs[base + 10] = seasonalTemperatureShift(
+        seasonBucketCenterDay(blend.lo),
+        this.latitudeDegrees,
+      );
+      jobs[base + 11] = seasonalTemperatureShift(
+        seasonBucketCenterDay(blend.hi),
+        this.latitudeDegrees,
+      );
+      // Airport influence, page-local, so the graded platform is mown grass.
+      jobs[base + 12] = this.airport ? this.airport.centerX - bounds.minX : 1e9;
+      jobs[base + 13] = this.airport ? this.airport.centerZ - bounds.minZ : 1e9;
+      jobs[base + 14] = this.airport ? 1 / Math.max(1, this.airport.terrainBlendDistance) : 0;
+      jobs[base + 15] = dayOfYear;
+      pages.set(
+        new Uint8Array(buildTerrainKernelPageUniform({
+          seedHash: this.seedHash,
+          originX: bounds.minX,
+          originZ: bounds.minZ,
+          filterWidthMeters: channelTexel,
+        })),
+        index * TERRAIN_KERNEL_PAGE_BYTES,
+      );
+    });
+    jobBuffer.update(new Uint8Array(jobs.buffer));
+    pageBuffer.update(pages);
+
+    this.running = true;
+    try {
+      const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
+      await shader.dispatchWhenReady(groups, groups, bakeable.length);
+      return bakeable.length;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.jobBuffer?.dispose();
+    this.pageBuffer?.dispose();
+    this.jobBuffer = null;
+    this.pageBuffer = null;
+    this.shader = null;
+  }
+
+  private ensureCapacity(count: number): void {
+    if (count <= this.capacity && this.shader) return;
+    this.jobBuffer?.dispose();
+    this.pageBuffer?.dispose();
+    this.capacity = Math.max(count, 4);
+    const engine = this.engine as WebGPUEngine;
+    this.jobBuffer = new StorageBuffer(engine, this.capacity * 16 * 4);
+    this.pageBuffer = new StorageBuffer(engine, this.capacity * TERRAIN_KERNEL_PAGE_BYTES);
+    this.shader ??= new ComputeShader(
+      "terrain-page-splat",
+      engine,
+      {
+        computeSource: [
+          terrainKernelPageBindingWgsl(0, 0),
+          TERRAIN_KERNEL_WGSL,
+          LAND_COVER_CLASSIFIER_WGSL,
+          LAND_COVER_SPLAT_BAKE_WGSL,
+        ].join("\n"),
+      },
+      {
+        entryPoint: "bakeSplat",
+        bindingsMapping: {
+          terrainKernelPages: { group: 0, binding: 0 },
+          splatJobs: { group: 0, binding: 1 },
+          splatHeightAtlas: { group: 0, binding: 2 },
+          splatIdLo: { group: 0, binding: 3 },
+          splatWeightLo: { group: 0, binding: 4 },
+          splatIdHi: { group: 0, binding: 5 },
+          splatWeightHi: { group: 0, binding: 6 },
+        },
+      },
+    );
+    this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
+    this.shader.setStorageBuffer("splatJobs", this.jobBuffer);
+    const height = this.heightAtlas.texture();
+    if (height) this.shader.setTexture("splatHeightAtlas", height, false);
+    for (const [name, index] of [
+      ["splatIdLo", TERRAIN_CHANNEL_TEXTURES.splatIdLo],
+      ["splatWeightLo", TERRAIN_CHANNEL_TEXTURES.splatWeightLo],
+      ["splatIdHi", TERRAIN_CHANNEL_TEXTURES.splatIdHi],
+      ["splatWeightHi", TERRAIN_CHANNEL_TEXTURES.splatWeightHi],
+    ] as const) {
+      const texture = this.channelAtlas.texture(index);
+      if (texture) this.shader.setStorageTexture(name, texture);
+    }
   }
 }

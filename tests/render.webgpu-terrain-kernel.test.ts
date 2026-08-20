@@ -56,13 +56,19 @@ describe("terrain height kernel WGSL (4-1)", () => {
     expect(TERRAIN_KERNEL_CONSTANTS.MAX_TERRAIN_HEIGHT).toBe(2_200);
   });
 
-  it("enumerates the 34 lattices one evaluation costs", () => {
-    // 34 valueNoise2D calls = 306 avalanche() calls = 612 wrapping u32
-    // multiplies. This is the number 4-3's compute budget row derives from.
-    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(34);
-    expect(TERRAIN_KERNEL_LATTICES).toHaveLength(34);
+  it("enumerates the lattices one evaluation costs", () => {
+    // The HEIGHT chain is 34 valueNoise2D calls = 306 avalanche() calls = 612
+    // wrapping u32 multiplies. That is the number `4-3`'s compute budget row
+    // derives from, and it must not drift when `4-6` appends its own channels.
+    const heightChain = TERRAIN_KERNEL_LATTICES.filter(
+      (lattice) => !lattice.name.startsWith("moisture") && !lattice.name.startsWith("climate"),
+    );
+    expect(heightChain).toHaveLength(34);
+    // `4-6` (D5) moved the climate chain here from `4-1`: four moisture-broad
+    // octaves, the local and rain-shadow channels, and three climate octaves.
+    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(43);
     const names = TERRAIN_KERNEL_LATTICES.map((lattice) => lattice.name);
-    expect(new Set(names).size).toBe(34);
+    expect(new Set(names).size).toBe(43);
     for (const lattice of TERRAIN_KERNEL_LATTICES) {
       expect(lattice.divisorX, lattice.name).toBeGreaterThan(0);
       expect(lattice.divisorZ, lattice.name).toBeGreaterThan(0);

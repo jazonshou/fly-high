@@ -71,6 +71,7 @@ function selectClosedForestWindow(): {
           for (const localZ of [32, 96]) {
             for (const localX of [32, 96]) {
               total += densityField(seedHash, {
+            filterWidthMeters: 0,
                 x: (originX + dx) * 128 + localX,
                 z: (originZ + dz) * 128 + localZ,
                 heightMeters: 320,

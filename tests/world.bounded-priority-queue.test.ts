@@ -9,35 +9,7 @@ import { describe, expect, it } from "vitest";
  * vegetation worker's, not terrain's.
  */
 import { BoundedPriorityQueue } from "../src/workers/boundedPriorityQueue";
-import { createWorld } from "../src/world";
 
-class FakeTerrainWorker {
-  readonly posted: unknown[] = [];
-  private readonly listeners = new Map<string, Set<EventListener>>();
-
-  postMessage(message: unknown): void {
-    this.posted.push(message);
-  }
-
-  addEventListener(type: string, listener: EventListener): void {
-    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: EventListener): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  terminate(): void {}
-
-  emitMessage(data: unknown): void {
-    const event = { data } as MessageEvent<unknown>;
-    for (const listener of this.listeners.get("message") ?? []) {
-      listener(event as unknown as Event);
-    }
-  }
-}
 
 describe("bounded priority queue (renamed at 4-4)", () => {
   it("takes nearest work first and preserves FIFO ordering for ties", () => {

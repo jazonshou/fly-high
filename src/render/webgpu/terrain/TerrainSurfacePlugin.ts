@@ -743,6 +743,44 @@ var terrainHorizonAtlasASampler: sampler;
 var terrainHorizonAtlasA: texture_2d<f32>;
 var terrainHorizonAtlasBSampler: sampler;
 var terrainHorizonAtlasB: texture_2d<f32>;
+var terrainSplatIdLoSampler: sampler;
+var terrainSplatIdLo: texture_2d<f32>;
+var terrainSplatWeightLoSampler: sampler;
+var terrainSplatWeightLo: texture_2d<f32>;
+var terrainSplatIdHiSampler: sampler;
+var terrainSplatIdHi: texture_2d<f32>;
+var terrainSplatWeightHiSampler: sampler;
+var terrainSplatWeightHi: texture_2d<f32>;
+
+/**
+ * 4-6: the real page splat, cross-faded between the two resident season
+ * buckets.
+ *
+ * Ids are stored as unorm over the ten-material axis, and the axis is ordered
+ * so that neighbouring biomes are one step apart — so a FILTERED fetch between
+ * two texels lands between two materials that actually meet, which is the
+ * whole reason 3-0 ordered it that way. Returns the top two as the provisional
+ * lanes carry them, so every consumer downstream is unchanged.
+ */
+fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
+  let scale = f32(${SURFACE_MATERIAL_COUNT - 1});
+  let idLo = textureSampleLevel(terrainSplatIdLo, terrainSplatIdLoSampler, uv.xy, 0.0) * scale;
+  let idHi = textureSampleLevel(terrainSplatIdHi, terrainSplatIdHiSampler, uv.xy, 0.0) * scale;
+  let weightLo = textureSampleLevel(
+    terrainSplatWeightLo, terrainSplatWeightLoSampler, uv.xy, 0.0);
+  let weightHi = textureSampleLevel(
+    terrainSplatWeightHi, terrainSplatWeightHiSampler, uv.xy, 0.0);
+  // Cross-fade the WEIGHTS and take the low bucket's ids: the two buckets
+  // differ only in how much snow they carry, and the snow material is the same
+  // id in both, so mixing ids would interpolate toward a material neither
+  // bucket chose.
+  let ids = mix(idLo, idHi, blend);
+  let weights = mix(weightLo, weightHi, blend);
+  let secondaryWeight = weights.x + weights.y > 0.0
+    ? weights.y / (weights.x + weights.y)
+    : 0.0;
+  return vec3f(ids.x, ids.y, secondaryWeight);
+}
 
 /**
  * Atlas UV for this fragment's page, or w = 0 when the page holds no channel
@@ -856,7 +894,13 @@ let terrainSamplePosition = vec3f(
 // 8 m and rounding it alone would give a hard edge at the midpoint. The axis
 // is ordered so bracketed neighbours are materials that plausibly grade into
 // one another; 4-6 replaces the whole scheme with real splat pages.
-let terrainAxis = clamp(fragmentInputs.terrainSplat.x, 0.0, ${LAST_MATERIAL_INDEX}.0);
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+let terrainSplatSource = mix(
+  fragmentInputs.terrainSplat.xyz, terrainPageSplat, terrainPageUv.z);
+#else
+let terrainSplatSource = fragmentInputs.terrainSplat.xyz;
+#endif
+let terrainAxis = clamp(terrainSplatSource.x, 0.0, ${LAST_MATERIAL_INDEX}.0);
 let terrainLowerId = floor(terrainAxis);
 let terrainUpperId = min(terrainLowerId + 1.0, ${LAST_MATERIAL_INDEX}.0);
 let terrainAxisFraction = terrainAxis - terrainLowerId;
@@ -897,6 +941,11 @@ let terrainOcclusionTexel = textureSampleLevel(
 let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
 let terrainHorizonShadow = terrainSurfaceHorizonShadow(
   terrainPageUv, uniforms.terrainSunDirection.xyz);
+// 4-6: the real classifier's output replaces the provisional lanes wherever a
+// channel page is resident. Where one is not, the co-residency rule applies
+// and the Phase 3 provisional splat is what the fragment gets.
+let terrainPageSplat = terrainSurfacePageSplat(
+  terrainPageUv, uniforms.terrainSunDirection.w);
 #else
 let terrainSkyVisibility = 1.0;
 let terrainHorizonShadow = 1.0;
@@ -1209,6 +1258,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private occlusionAtlas: BaseTexture | null = null;
   private horizonAtlasA: BaseTexture | null = null;
   private horizonAtlasB: BaseTexture | null = null;
+  private splatAtlases: readonly (BaseTexture | null)[] = [null, null, null, null];
+  private seasonBlend = 0;
   private pageAtlasShape: readonly [number, number, number, number] = [1, 1, 1, 0];
   private pageAtlasGrid: readonly [number, number, number, number] = [1, 512, 1, 0.02];
   private sunDirection: readonly [number, number, number] = [0, 1, 0];
@@ -1379,6 +1430,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     occlusion: BaseTexture | null,
     horizonA: BaseTexture | null,
     horizonB: BaseTexture | null,
+    splat: readonly (BaseTexture | null)[],
     shape: {
       readonly atlasEdge: number;
       readonly slotEdge: number;
@@ -1392,6 +1444,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.occlusionAtlas = occlusion;
     this.horizonAtlasA = horizonA;
     this.horizonAtlasB = horizonB;
+    this.splatAtlases = splat;
     this.pageAtlasShape = [shape.atlasEdge, shape.slotEdge, shape.core, shape.gutter];
     this.pageAtlasGrid = [
       shape.gridEdge,
@@ -1436,6 +1489,11 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     return this.cdlodEnabled;
   }
 
+  /** `4-6`: the cross-fade weight between the two resident season buckets. */
+  setSeasonBlend(blend: number): void {
+    this.seasonBlend = Number.isFinite(blend) ? Math.min(1, Math.max(0, blend)) : 0;
+  }
+
   /**
    * The direction TOWARD the sun, in world space (Babylon's directional light
    * points the other way). Only the horizon shadow reads it.
@@ -1465,6 +1523,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainHorizonAtlasA",
       "terrainHorizonAtlasB",
       "terrainHeightAtlas",
+      "terrainSplatIdLo",
+      "terrainSplatWeightLo",
+      "terrainSplatIdHi",
+      "terrainSplatWeightHi",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
@@ -1504,6 +1566,16 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     if (this.horizonAtlasB) {
       uniformBuffer.setTexture("terrainHorizonAtlasB", this.horizonAtlasB);
     }
+    const splatNames = [
+      "terrainSplatIdLo",
+      "terrainSplatWeightLo",
+      "terrainSplatIdHi",
+      "terrainSplatWeightHi",
+    ] as const;
+    splatNames.forEach((name, index) => {
+      const texture = this.splatAtlases[index];
+      if (texture) uniformBuffer.setTexture(name, texture);
+    });
     if (this.heightAtlasTexture) {
       // r32float: Babylon flips the binding to `unfilterable-float` and its
       // sampler to `non-filtering` automatically, because
@@ -1572,7 +1644,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloatArray("terrainMaterialSeason", this.season);
     uniformBuffer.updateFloat4("terrainPageAtlas", ...this.pageAtlasShape);
     uniformBuffer.updateFloat4("terrainPageAtlasGrid", ...this.pageAtlasGrid);
-    uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, 1);
+    // w carries the season cross-fade: one vec4 rather than a second one for
+    // a single scalar, and the two are read in the same block.
+    uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, this.seasonBlend);
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
     uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);

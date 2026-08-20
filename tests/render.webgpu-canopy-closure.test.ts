@@ -52,6 +52,7 @@ function selectClosureWindow(): { cellX: number; cellZ: number } {
       for (let z = 64; z < CELL_SIZE * CELL_SPAN; z += 128) {
         for (let x = 64; x < CELL_SIZE * CELL_SPAN; x += 128) {
           densities.push(densityField(seedHash, {
+            filterWidthMeters: 0,
             x: cellX * CELL_SIZE + x,
             z: cellZ * CELL_SIZE + z,
             heightMeters: 320,

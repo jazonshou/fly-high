@@ -71,6 +71,7 @@ function selectClosedForestCell(worldSeed: string): {
       for (const localZ of [32, 96]) {
         for (const localX of [32, 96]) {
           total += densityField(seedHash, {
+            filterWidthMeters: 0,
             x: cellX * cellSize + localX,
             z: cellZ * cellSize + localZ,
             heightMeters: 220,

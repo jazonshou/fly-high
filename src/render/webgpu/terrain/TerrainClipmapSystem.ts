@@ -19,7 +19,6 @@ import {
 } from "@/src/render/webgpu/world/pageGeometry";
 import {
   createWorldPageAddress,
-  worldPageBounds,
   type WorldPageAddress,
 } from "@/src/render/webgpu/world/pageKey";
 import {
@@ -34,7 +33,7 @@ import {
   uploadSurfaceMaterialArrays,
   type SurfaceMaterialArrays,
 } from "./MaterialArraySynthesis";
-import { PageOcclusionBake } from "./PageOcclusionBake";
+import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
@@ -55,6 +54,7 @@ import {
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
+  seasonBucketBlend,
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
   TERRAIN_NODE_ATTRIBUTE_STRIDE,
@@ -219,6 +219,7 @@ export class TerrainClipmapSystem {
   private pageGenerator: TerrainPageGenerator | null = null;
   private pyramid: GlobalHeightPyramid | null = null;
   private occlusionBake: PageOcclusionBake | null = null;
+  private splatBake: PageSplatBake | null = null;
   private readonly computeBudget: ComputeBudget;
   private debugOverlay: TerrainDebugOverlay;
   private generationInFlight = false;
@@ -308,6 +309,15 @@ export class TerrainClipmapSystem {
         this.heightAtlas,
         this.channelAtlas,
         this.pyramid,
+      );
+      this.splatBake = new PageSplatBake(
+        scene.getEngine(),
+        this.heightAtlas,
+        this.channelAtlas,
+        world.seedHash,
+        world.seaLevel,
+        world.latitudeDegrees,
+        world.airport ?? null,
       );
     }
 
@@ -481,6 +491,11 @@ export class TerrainClipmapSystem {
    */
   setSeasonalDayOfYear(dayOfYear: number): void {
     this.surfacePlugin.setSeason(dayOfYear, this.world.latitudeDegrees, this.world.seaLevel);
+    // 4-0's cyclic blend: the two resident buckets are cross-faded at ALL
+    // times rather than snapped when the clock is static. Snapping saves no
+    // memory (the atlas is sized for two either way) and quantises the
+    // snowline to 15-day steps exactly when the user is looking at it.
+    this.surfacePlugin.setSeasonBlend(seasonBucketBlend(dayOfYear).t);
     const bucketDays = 365 / 24;
     const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
     let bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
@@ -587,6 +602,7 @@ export class TerrainClipmapSystem {
     this.materialArrayBuild = null;
     this.pageGenerator?.dispose();
     this.occlusionBake?.dispose();
+    this.splatBake?.dispose();
     this.pyramid?.dispose();
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
@@ -613,6 +629,12 @@ export class TerrainClipmapSystem {
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.occlusion),
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA),
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonB),
+      [
+        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdLo),
+        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightLo),
+        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdHi),
+        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightHi),
+      ],
       {
         atlasEdge: this.channelAtlas.atlasEdge,
         slotEdge: TERRAIN_CHANNEL_SLOT_EDGE,
@@ -796,8 +818,11 @@ export class TerrainClipmapSystem {
     if (admitted <= 0) return;
     const batch = pending.slice(0, admitted);
     this.occlusionInFlight = true;
+    // Both channel bakes for the same slots, in one admission: a page with
+    // occlusion but no splat is a state the shader would have to guard.
     void bake.bake(batch)
-      .catch(() => this.releaseBatch(this.channelAtlas, batch, "occlusion bake failed"))
+      .then(() => this.splatBake?.bake(batch, this.seasonDayOfYear))
+      .catch(() => this.releaseBatch(this.channelAtlas, batch, "channel bake failed"))
       .finally(() => {
         this.occlusionInFlight = false;
       });

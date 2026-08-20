@@ -106,7 +106,7 @@ export const TERRAIN_KERNEL_FORBIDDEN_BUILTINS: readonly string[] = Object.freez
 // ---------------------------------------------------------------------------
 
 /** Which coordinate frame a lattice's local offsets arrive in. */
-export type TerrainKernelSpace = "world" | "warped" | "rotated";
+export type TerrainKernelSpace = "world" | "warped" | "rotated" | "sheared";
 
 export interface TerrainKernelLattice {
   readonly name: string;
@@ -245,6 +245,19 @@ export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.f
   ...ridgedRun("fractureRidges", "rotated", 142, 3, 390, 980),
   bareLattice("fractureVariation", "rotated", 143, 155, 240, 155),
   ...ridgedRun("talusRidges", "rotated", 145, 2, 120, 280),
+  // ——— `4-6`: the climate chain (D5 moved it here from `4-1`) ———
+  //
+  // Unwarped, like `fine`: moisture and climate are geographic fields, not
+  // terrain-following ones. They ride the same lattice table as the height
+  // chain so the split-origin machinery is shared rather than duplicated —
+  // which is also what lets one page uniform serve both bakes.
+  ...fbmRun("moistureBroad", "world", 201, 4, 5_200, 2, 0.52),
+  bareLattice("moistureLocal", "world", 202, 850, 850, 850),
+  // NOTE: the rain-shadow channel's coordinates are (x + z·0.42, z − x·0.42),
+  // a shear rather than the geology fabric's rotation. Its split origin is
+  // built for the SHEARED frame by the uniform builder's `shear` field.
+  bareLattice("moistureRainShadow", "sheared", 203, 18_000, 9_500, 9_500),
+  ...fbmRun("climate", "world", 211, 3, 11_000, 2, 0.5),
 ]);
 
 /** Base indices the emitted WGSL uses; derived so the two cannot disagree. */
@@ -321,9 +334,15 @@ export function buildTerrainKernelPageUniform(
   const rotatedOriginZ = -input.originX * FABRIC_SIN + input.originZ * FABRIC_COS;
 
   TERRAIN_KERNEL_LATTICES.forEach((lattice, index) => {
-    const [sourceX, sourceZ] = lattice.space === "rotated"
-      ? [rotatedOriginX, rotatedOriginZ]
-      : [input.originX, input.originZ];
+    let sourceX = input.originX;
+    let sourceZ = input.originZ;
+    if (lattice.space === "rotated") {
+      sourceX = rotatedOriginX;
+      sourceZ = rotatedOriginZ;
+    } else if (lattice.space === "sheared") {
+      sourceX = input.originX + input.originZ * 0.42;
+      sourceZ = input.originZ - input.originX * 0.42;
+    }
     // Everything above this line is f64. Only the SPLIT crosses to f32.
     const originU = wrapOriginCells(sourceX / lattice.divisorX + lattice.offsetX);
     const originV = wrapOriginCells(sourceZ / lattice.divisorZ + lattice.offsetZ);
@@ -637,6 +656,22 @@ fn terrainGeologicalRelief(
  * metres from the page origin the uniform was built for. The absolute
  * coordinate never reaches the GPU — that is the whole of rule 1.
  */
+fn terrainMoisture(localX: f32, localZ: f32) -> f32 {
+  let broad = kFbm(${latticeBase("moistureBroad")}u, 4u, localX, localZ);
+  let local = kFilteredNoise(${latticeBase("moistureLocal")}u, localX, localZ);
+  let rainShadow = kFilteredNoise(${latticeBase("moistureRainShadow")}u, localX, localZ);
+  return kSaturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
+}
+
+fn terrainClimate(localX: f32, localZ: f32) -> f32 {
+  return kFbm(${latticeBase("climate")}u, 3u, localX, localZ);
+}
+
+/** terrainTemperatureFromClimate: exact per-point cooling above sea level. */
+fn terrainTemperatureFromClimate(climate: f32, heightAboveSeaLevel: f32) -> f32 {
+  return kSaturate(0.66 + climate * 0.2 - max(0.0, heightAboveSeaLevel) / 2450.0);
+}
+
 fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
   let warpX = kFilteredNoise(${latticeBase("warpX")}u, localX, localZ) * K_WARP_AMPLITUDE;
   let warpZ = kFilteredNoise(${latticeBase("warpZ")}u, localX, localZ) * K_WARP_AMPLITUDE;

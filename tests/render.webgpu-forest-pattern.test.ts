@@ -10,6 +10,7 @@ const MOISTURE = 0.7;
 
 function sample(x: number, z: number) {
   return densityField(SEED, {
+            filterWidthMeters: 0,
     x,
     z,
     heightMeters: 320,

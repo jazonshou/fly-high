@@ -35,6 +35,7 @@ function selectClosedForestWindow(): { cellX: number; cellZ: number } {
       for (let z = 128; z < CELL_SIZE * CELL_SPAN; z += 256) {
         for (let x = 128; x < CELL_SIZE * CELL_SPAN; x += 256) {
           score += densityField(seedHash, {
+            filterWidthMeters: 0,
             x: cellX * CELL_SIZE + x,
             z: cellZ * CELL_SIZE + z,
             heightMeters: 320,

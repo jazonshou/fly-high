@@ -17,6 +17,11 @@ import {
   smoothstep,
   valueNoise2D,
 } from "./noise";
+import {
+  classifyLandCover,
+  dominantLandCover,
+} from "@/src/render/webgpu/terrain/LandCoverClassifier";
+import { SurfaceMaterial } from "@/src/render/webgpu/terrain/surfaceMaterials";
 import { mixSeed } from "./seed";
 import {
   TERRAIN_BIOME_NAMES,
@@ -352,21 +357,42 @@ export function sampleTerrainMoisture(
   filterWidthMeters: number,
 ): number {
   assertFilterWidth(filterWidthMeters);
-  const broad = fbm2D(mixSeed(world.seedHash, 201), x / 5_200, z / 5_200, 4, 2, 0.52);
-  const local = valueNoise2D(mixSeed(world.seedHash, 202), x / 850, z / 850);
+  // 4-6 (D5): `filterWidthMeters` was validated here and then never used —
+  // the one remaining point-sampled field in the height/appearance chain. It
+  // is band-limited now for the same reason height is (1B-2): sampled onto a
+  // coarse page, an unfiltered 850 m channel re-rolls its phase per level and
+  // the land cover changes when a page changes LOD. Width 0 is bit-identical.
+  const broad = fbm2D(
+    mixSeed(world.seedHash, 201), x / 5_200, z / 5_200, 4, 2, 0.52,
+    5_200, filterWidthMeters,
+  );
+  const local = filteredValueNoise2D(
+    mixSeed(world.seedHash, 202), x / 850, z / 850, 850, filterWidthMeters,
+  );
   // Elongated rain-shadow provinces break the old near-uniform moisture field
   // into wet watersheds, dry uplands, and transitional ecological corridors.
-  const rainShadow = valueNoise2D(
+  // The SMALLER period keys the fade, as every anisotropic channel does.
+  const rainShadow = filteredValueNoise2D(
     mixSeed(world.seedHash, 203),
     (x + z * 0.42) / 18_000,
     (z - x * 0.42) / 9_500,
+    9_500,
+    filterWidthMeters,
   );
   return saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
 }
 
 /** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
-export function sampleTerrainClimate(world: WorldDefinition, x: number, z: number): number {
-  return fbm2D(mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5);
+export function sampleTerrainClimate(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters = 0,
+): number {
+  return fbm2D(
+    mixSeed(world.seedHash, 211), x / 11_000, z / 11_000, 3, 2, 0.5,
+    11_000, filterWidthMeters,
+  );
 }
 
 /**
@@ -496,6 +522,17 @@ export function sampleTerrainTemperature(
   return terrainTemperatureFromClimate(world, sampleTerrainClimate(world, x, z), height);
 }
 
+/**
+ * `4-6`/`R-27`: the biome id is now the classifier's DOMINANT material, not a
+ * threshold cascade.
+ *
+ * `classifyBiome`'s cascade is deleted. It answered one question with one
+ * hard-edged id, which is why material identity at a boundary could only ever
+ * be a coin flip between two neighbours; `classifyLandCover` returns a weight
+ * vector with no boundary in it at all. This function exists only to keep the
+ * `TerrainBiome` id — which vegetation, wildlife and the HUD still name — as a
+ * derived READING of that vector rather than a second opinion about it.
+ */
 function classifyBiome(
   world: WorldDefinition,
   height: number,
@@ -503,18 +540,52 @@ function classifyBiome(
   moisture: number,
   temperature: number,
   runway: boolean,
+  airportInfluence: number,
 ): TerrainBiomeId {
   if (runway) return TerrainBiome.RUNWAY;
   if (height <= world.seaLevel) return TerrainBiome.WATER;
-  if (height <= world.seaLevel + 8 && slope < 0.32) return TerrainBiome.BEACH;
-  if (temperature < 0.2 || height > world.seaLevel + 1_520) return TerrainBiome.SNOW;
-  if (height > world.seaLevel + 920 || (slope > 0.48 && height > world.seaLevel + 460)) {
-    return TerrainBiome.ALPINE;
-  }
-  if (height > world.seaLevel + 390 || slope > 0.28) return TerrainBiome.HIGHLAND;
-  if (moisture > 0.55 && temperature > 0.24) return TerrainBiome.FOREST;
-  return TerrainBiome.GRASSLAND;
+  // **The ECOLOGICAL classification, which is deliberately season-invariant.**
+  //
+  // The classifier's `dayOfYear` drives the snow weight, and snow is PAINT.
+  // Letting it move the dominant material would flip forest to snow with the
+  // calendar and delete every forest each winter — which `2-18` forbids in as
+  // many words: species mix stays climatic, only the paint migrates. So the
+  // biome id is read at the reference day, and the splat bake passes the real
+  // one. Same authority, two readings, and the difference is stated rather
+  // than emergent.
+  const weights = classifyLandCover({
+    elevationMeters: height - world.seaLevel,
+    slope,
+    moisture,
+    temperature,
+    aspect: 0,
+    airportInfluence,
+    dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
+    seasonalTemperatureShift: 0,
+  });
+  return BIOME_FOR_DOMINANT_MATERIAL[dominantLandCover(weights)] ?? TerrainBiome.GRASSLAND;
 }
+
+/**
+ * The one mapping from a dominant material back to the legacy biome id.
+ *
+ * Deliberately a lookup rather than a cascade: every entry is the biome whose
+ * `SURFACE_MATERIALS_BY_BIOME` primary IS that material, so the round trip
+ * `biome -> primary material -> biome` is the identity and the two tables
+ * cannot drift.
+ */
+const BIOME_FOR_DOMINANT_MATERIAL: Readonly<Record<number, TerrainBiomeId>> = Object.freeze({
+  [SurfaceMaterial.Sand]: TerrainBiome.BEACH,
+  [SurfaceMaterial.Grass]: TerrainBiome.GRASSLAND,
+  [SurfaceMaterial.ForestFloor]: TerrainBiome.FOREST,
+  [SurfaceMaterial.Shrub]: TerrainBiome.HIGHLAND,
+  [SurfaceMaterial.Rock]: TerrainBiome.ALPINE,
+  [SurfaceMaterial.Snow]: TerrainBiome.SNOW,
+  [SurfaceMaterial.DryGrass]: TerrainBiome.GRASSLAND,
+  [SurfaceMaterial.Gravel]: TerrainBiome.ALPINE,
+  [SurfaceMaterial.Asphalt]: TerrainBiome.RUNWAY,
+  [SurfaceMaterial.Concrete]: TerrainBiome.RUNWAY,
+});
 
 const PALETTES: Readonly<Record<TerrainBiomeId, readonly [number, number, number]>> = {
   [TerrainBiome.WATER]: [0.08, 0.19, 0.25],
@@ -653,7 +724,10 @@ export function sampleTerrainSurface(
   temperature = sampleTerrainTemperature(world, x, z, 0, height),
 ): TerrainSample {
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
-  const biome = classifyBiome(world, height, slope, moisture, temperature, runway);
+  const airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
+  const biome = classifyBiome(
+    world, height, slope, moisture, temperature, runway, airportInfluence,
+  );
 
   target.height = height;
   target.slope = slope;
@@ -661,7 +735,7 @@ export function sampleTerrainSurface(
   target.temperature = temperature;
   target.biome = biome;
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
-  target.airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
+  target.airportInfluence = airportInfluence;
   target.isRunway = runway;
   writeTerrainColor(
     world, x, z, biome, moisture, slope, height, temperature, dayOfYear, target.color,

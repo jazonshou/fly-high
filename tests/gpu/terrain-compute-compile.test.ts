@@ -5,6 +5,10 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { GLOBAL_HEIGHT_PYRAMID_WGSL } from "../../src/render/webgpu/terrain/GlobalHeightPyramid";
 import { PAGE_OCCLUSION_WGSL } from "../../src/render/webgpu/terrain/PageOcclusionBake";
 import {
+  LAND_COVER_CLASSIFIER_WGSL,
+  LAND_COVER_SPLAT_BAKE_WGSL,
+} from "../../src/render/webgpu/terrain/LandCoverClassifier";
+import {
   TERRAIN_KERNEL_WGSL,
   terrainKernelPageBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainKernel";
@@ -48,6 +52,16 @@ describe("Phase 4 terrain compute modules compile (4-1, 4-3, 4-7)", () => {
         ],
         ["global-height-pyramid", GLOBAL_HEIGHT_PYRAMID_WGSL, "bakePyramid"],
         ["page-occlusion", PAGE_OCCLUSION_WGSL, "bakeOcclusion"],
+        [
+          "page-splat",
+          [
+            terrainKernelPageBindingWgsl(0, 0),
+            TERRAIN_KERNEL_WGSL,
+            LAND_COVER_CLASSIFIER_WGSL,
+            LAND_COVER_SPLAT_BAKE_WGSL,
+          ].join("\n"),
+          "bakeSplat",
+        ],
       ] as const;
       for (const [name, source, entryPoint] of modules) {
         const errors: string[] = [];

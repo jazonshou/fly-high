@@ -626,12 +626,14 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "LandCoverWeights",
       "LAND_COVER_CLASSIFIER_WGSL",
       "landCoverSuitabilities",
+      "landCoverHabitat",
+      "landCoverSoftmaxTemperature",
+      "LAND_COVER_SPLAT_BAKE_WGSL",
     ],
     notes:
       "Ten smooth suitability functions, softmaxed and top-4 renormalised, "
       + "replacing classifyBiome's threshold cascade. dayOfYear is in the "
       + "signature from the first line (seasonal-family rule).",
-    plannedBy: "4-6",
   },
   {
     // 4-6b (D12): densityField's WGSL half. ONE shared include consumed by
@@ -640,9 +642,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityFieldWgsl.ts"],
     consumers: "any",
-    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL", "GROUND_COVER_ARCHETYPES"],
+    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL"],
     notes: "Transliteration of densityField.ts; the TS remains the authority.",
-    plannedBy: "4-6b",
   },
   {
     // 4-4: renamed from `terrainQueue.ts`/`BoundedTerrainQueue`. It is the
