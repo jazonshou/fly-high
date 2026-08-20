@@ -125,7 +125,14 @@ export class CloudShadowMaterialPlugin extends MaterialPluginBase {
       material,
       CLOUD_SHADOW_MATERIAL_PLUGIN_NAME,
       210,
-      undefined,
+      // Keep an explicit, plugin-owned define in the effect cache key. In
+      // Babylon 9.21.2, adding a second plugin rebuilds a material manager's
+      // generated define list with only the newest plugin's implicit class
+      // marker. Without this sentinel, cloud+aerial and aerial-only PBR
+      // materials can share the cloud-injected effect; the latter has no
+      // cloud plugin to bind its sampler and WebGPU rejects the first bind
+      // group. Explicit plugin defines are recollected for every rebuild.
+      { AEROLITH_CLOUD_SHADOW_RECEIVER: true },
       true,
       false,
     );

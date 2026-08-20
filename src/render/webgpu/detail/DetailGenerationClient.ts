@@ -1,4 +1,4 @@
-import { BoundedTerrainQueue } from "@/src/workers/terrainQueue";
+import { BoundedPriorityQueue } from "@/src/workers/boundedPriorityQueue";
 import {
   isDetailWorkerEvent,
   type DetailWorkerCommand,
@@ -49,7 +49,7 @@ const defaultWorkerFactory: WorkerFactory = () =>
  * are unavailable.
  */
 export class DetailGenerationClient {
-  private readonly queue: BoundedTerrainQueue<PendingDetailRequest>;
+  private readonly queue: BoundedPriorityQueue<PendingDetailRequest>;
   private readonly pending = new Map<number, PendingDetailRequest>();
   private worker: Worker | null = null;
   private activeRequestId: number | null = null;
@@ -62,7 +62,7 @@ export class DetailGenerationClient {
     options: DetailGenerationClientOptions,
     onWorkerUnavailable: () => void = () => undefined,
   ) {
-    this.queue = new BoundedTerrainQueue(options.maxQueued ?? 96);
+    this.queue = new BoundedPriorityQueue(options.maxQueued ?? 96);
     this.onWorkerUnavailable = onWorkerUnavailable;
     try {
       this.worker = (options.workerFactory ?? defaultWorkerFactory)();

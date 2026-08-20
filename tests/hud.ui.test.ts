@@ -103,6 +103,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
       renderScale: 0.86,
       cpuFrameTime: 4.2,
       gpuFrameTime: 11.8,
+      presentWaitTime: 5.4,
       visibleInstances: 24_500,
       vegetationBatches: 24,
       activeAnimals: 48,
@@ -119,6 +120,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
       activeGovernor: "cpu-work",
       gpuP95Ms: 9.4,
       cpuP95Ms: 15.6,
+      frameIntervalP95Ms: 24.8,
+      presentWaitP95Ms: 9.2,
       maxFrameMs: 41.5,
       p999FrameMs: 38.2,
       hitchCount: 2,
@@ -132,11 +135,12 @@ describe("flight HUD camera and terminal-state presentation", () => {
         { name: "volumetric-cloud-integration", p95Ms: 1.2 },
       ],
       pendingTerrainPages: 5,
-      terrainWorkersBusy: 4,
+      terrainComputeDispatches: 4,
       estimatedGpuMemoryMiB: 402.4,
       inventoriedGpuMemoryMiB: 312.9,
       budgetProbeActive: false,
       budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
+      gpuPassMs: { mainPass: 8.1, shadows: 1.4, terrainCompute: 1.9, total: 11.4 },
     };
     const markup = renderToStaticMarkup(createElement(Hud, {
       state: INITIAL_VISUAL_STATE,
@@ -160,6 +164,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("17.2 ms frame");
     expect(markup).toContain("4.2 ms CPU");
     expect(markup).toContain("11.8 ms GPU");
+    expect(markup).toContain("5.4 ms present wait");
     // 1A-6b: the user must be able to see why the picture changed.
     expect(markup).toContain("GOV CPU-WORK");
     expect(markup).toContain("RES-INSENSITIVE");
@@ -167,8 +172,10 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("42 ms max · 38 ms p999 · 2 hitches");
     expect(markup).toContain("9.4 ms GPU p95");
     expect(markup).toContain("15.6 ms CPU p95");
+    expect(markup).toContain("24.8 ms interval p95 · 9.2 ms present wait p95");
     expect(markup).toContain("1.48 Mpx");
-    expect(markup).toContain("5 pending · 4 workers");
+    // 4-4: the CPU worker pool is gone; the HUD reports GPU dispatches.
+    expect(markup).toContain("5 pending · 4 dispatches");
     expect(markup).toContain("~402 MiB est");
     expect(markup).toContain("world-page-visibility 3.7 · volumetric-cloud-integration 1.2 ms CPU p95");
     expect(markup).toContain("RUN GPU BUDGET PROBE");

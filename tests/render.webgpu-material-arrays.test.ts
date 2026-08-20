@@ -14,11 +14,11 @@ import {
   composeSurfaceMaterialContactSheet,
   CONTACT_SHEET_VIEWS,
   MATERIAL_REFERENCE_NOTES,
-  planSurfaceMaterialArrays,
   synthesizeSurfaceMaterial,
   synthesizeSurfaceMaterialLayers,
   TOKSVIG_ROUGHNESS_GAIN,
 } from "../src/render/webgpu/terrain/MaterialArraySynthesis";
+import { planSurfaceMaterialArrays } from "../src/render/webgpu/terrain/MaterialArrayUpload";
 import {
   SURFACE_MATERIAL_COUNT,
   SURFACE_MATERIALS,

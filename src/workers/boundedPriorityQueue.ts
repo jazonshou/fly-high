@@ -1,26 +1,35 @@
-export interface TerrainQueueEntry<T> {
+export interface BoundedQueueEntry<T> {
   readonly id: number;
   readonly priority: number;
   readonly value: T;
 }
 
-interface SequencedTerrainQueueEntry<T> extends TerrainQueueEntry<T> {
+interface SequencedBoundedQueueEntry<T> extends BoundedQueueEntry<T> {
   readonly sequence: number;
 }
 
-export interface TerrainQueueEnqueueResult<T> {
+export interface BoundedQueueEnqueueResult<T> {
   readonly accepted: boolean;
   /** The least-important entry evicted to preserve the queue bound. */
-  readonly dropped: TerrainQueueEntry<T> | null;
+  readonly dropped: BoundedQueueEntry<T> | null;
 }
 
 /**
- * Small bounded priority queue for streamed terrain work. Lower priorities are
- * taken first; equal priorities retain FIFO ordering. Its O(n) selection keeps
- * cancellation simple and is faster than a heap at the intended <=64 entries.
+ * Small bounded priority queue for streamed generation work. Lower priorities
+ * are taken first; equal priorities retain FIFO ordering. Its O(n) selection
+ * keeps cancellation simple and is faster than a heap at the intended <=64
+ * entries.
+ *
+ * **Renamed from `BoundedTerrainQueue` at `4-4`, and the rename is the point.**
+ * `RENDERING_PLAN.md:340` lists `terrainQueue.ts` among the files `4-4`
+ * deletes with the CPU terrain worker. It is not a terrain file: it is the
+ * VEGETATION worker's queue (`DetailGenerationClient` is its only consumer),
+ * and deleting it on the strength of its name would have broken vegetation
+ * generation. It now has a name that says what it is, and an owner row under
+ * vegetation.
  */
-export class BoundedTerrainQueue<T> {
-  private readonly entries = new Map<number, SequencedTerrainQueueEntry<T>>();
+export class BoundedPriorityQueue<T> {
+  private readonly entries = new Map<number, SequencedBoundedQueueEntry<T>>();
   private sequence = 0;
 
   constructor(readonly capacity: number) {
@@ -33,12 +42,12 @@ export class BoundedTerrainQueue<T> {
     return this.entries.size;
   }
 
-  enqueue(id: number, priority: number, value: T): TerrainQueueEnqueueResult<T> {
+  enqueue(id: number, priority: number, value: T): BoundedQueueEnqueueResult<T> {
     if (!Number.isInteger(id)) throw new RangeError("Terrain queue ids must be integers");
     if (!Number.isFinite(priority)) throw new RangeError("Terrain queue priority must be finite");
     if (this.entries.has(id)) throw new Error(`Terrain queue already contains id ${id}`);
 
-    const entry: SequencedTerrainQueueEntry<T> = {
+    const entry: SequencedBoundedQueueEntry<T> = {
       id,
       priority,
       value,
@@ -60,8 +69,8 @@ export class BoundedTerrainQueue<T> {
     return { accepted: true, dropped: worst };
   }
 
-  take(): TerrainQueueEntry<T> | null {
-    let best: SequencedTerrainQueueEntry<T> | null = null;
+  take(): BoundedQueueEntry<T> | null {
+    let best: SequencedBoundedQueueEntry<T> | null = null;
     for (const entry of this.entries.values()) {
       if (!best || this.compare(entry, best) < 0) best = entry;
     }
@@ -70,7 +79,7 @@ export class BoundedTerrainQueue<T> {
     return best;
   }
 
-  remove(id: number): TerrainQueueEntry<T> | null {
+  remove(id: number): BoundedQueueEntry<T> | null {
     const entry = this.entries.get(id) ?? null;
     if (entry) this.entries.delete(id);
     return entry;
@@ -80,7 +89,7 @@ export class BoundedTerrainQueue<T> {
     return this.entries.has(id);
   }
 
-  clear(): TerrainQueueEntry<T>[] {
+  clear(): BoundedQueueEntry<T>[] {
     const removed = [...this.entries.values()].sort((first, second) =>
       this.compare(first, second),
     );
@@ -88,8 +97,8 @@ export class BoundedTerrainQueue<T> {
     return removed;
   }
 
-  private findWorst(): SequencedTerrainQueueEntry<T> | null {
-    let worst: SequencedTerrainQueueEntry<T> | null = null;
+  private findWorst(): SequencedBoundedQueueEntry<T> | null {
+    let worst: SequencedBoundedQueueEntry<T> | null = null;
     for (const entry of this.entries.values()) {
       if (!worst || this.compare(entry, worst) > 0) worst = entry;
     }
@@ -97,8 +106,8 @@ export class BoundedTerrainQueue<T> {
   }
 
   private compare(
-    first: SequencedTerrainQueueEntry<T>,
-    second: SequencedTerrainQueueEntry<T>,
+    first: SequencedBoundedQueueEntry<T>,
+    second: SequencedBoundedQueueEntry<T>,
   ): number {
     return first.priority - second.priority || first.sequence - second.sequence;
   }

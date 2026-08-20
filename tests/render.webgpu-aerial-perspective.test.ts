@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { terrainNodeSpanMeters } from "../src/render/webgpu/terrain/TerrainSpineContract";
 import {
   AERIAL_PERSPECTIVE_FUNCTIONS_WGSL,
   AERIAL_PERSPECTIVE_UNIFORMS,
@@ -219,22 +220,18 @@ describe("turbidity calibration and the far plane (assertion 33)", () => {
     ] as const;
     for (const [quality, mode] of combos) {
       const profile = resolveWebGpuQualityProfile(quality, mode);
-      // Worst-case guaranteed radius: the observer sits at the edge of the
-      // outermost level's centre page, leaving 2 × extent(outermost) of
-      // covered ground — 512 · 2^rings meters.
-      const guaranteedCoverage = 512 * 2 ** profile.terrainRings;
-      if (profile.tier >= 1) {
-        expect(
-          guaranteedCoverage,
-          `tier ${profile.tier} must cover the far plane`,
-        ).toBeGreaterThanOrEqual(CAMERA_FAR_PLANE_METERS);
-      } else {
-        // Tier 0 (the budget tier) deliberately stops at 32.8 km — ~89%
-        // luminance opacity hides most of the edge, and a seventh ring is
-        // the wrong place to spend that tier's budget. Pinned so the gap
-        // is a decision, not drift.
-        expect(guaranteedCoverage).toBe(32_768);
-      }
+      // 4-5: the ring ladder is gone. The quadtree roots at level 9 (32,768 m
+      // nodes) and `selectTerrainNodes` sizes its root ring from the far
+      // plane, so coverage is no longer a per-tier constant that could fall
+      // short of it — EVERY tier now covers the far plane by construction,
+      // including tier 0, which used to stop at 32.8 km.
+      const rootSpan = terrainNodeSpanMeters(9);
+      expect(
+        rootSpan * 2,
+        `tier ${profile.tier} must cover the far plane`,
+      ).toBeGreaterThanOrEqual(CAMERA_FAR_PLANE_METERS);
+      // What DOES stay a tier knob is how finely that coverage is resolved.
+      expect(profile.cdlodNodeBudget).toBeGreaterThan(0);
     }
   });
 });

@@ -20,7 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createSurfaceMaterialArrays,
   planSurfaceMaterialArrays,
-} from "@/src/render/webgpu/terrain/MaterialArraySynthesis";
+} from "@/src/render/webgpu/terrain/MaterialArrayUpload";
 import {
   SURFACE_MATERIAL_COUNT,
   SURFACE_MATERIALS,

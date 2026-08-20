@@ -133,7 +133,22 @@ describe("terrain surface plugin (3-2)", () => {
       expect(attributes).toEqual(["color"]);
       const samplers: string[] = [];
       plugin.getSamplers(samplers);
-      expect(samplers).toEqual(["terrainSurfaceAlbedo", "terrainSurfaceNormal"]);
+      // 4-7 adds the three channel-page samplers. They are declared
+      // unconditionally (Babylon collects the sampler list once) and compiled
+      // out by TERRAIN_SURFACE_PAGE_CHANNELS when no atlas is bound.
+      expect(samplers).toEqual([
+        "terrainSurfaceAlbedo",
+        "terrainSurfaceNormal",
+        "terrainOcclusionAtlas",
+        "terrainHorizonAtlasA",
+        "terrainHorizonAtlasB",
+        // 4-4's vertex-texture displacement source, and 4-6's page splat.
+        "terrainHeightAtlas",
+        "terrainSplatIdLo",
+        "terrainSplatWeightLo",
+        "terrainSplatIdHi",
+        "terrainSplatWeightHi",
+      ]);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("terrainMaterialTiling");
       expect(uniformNames).toContain("terrainMaterialSeason");

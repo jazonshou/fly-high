@@ -20,6 +20,7 @@ export type SubsystemName =
   | "vegetation"
   | "water"
   | "clouds"
+  | "aircraft"
   | "world"
   | "simulation";
 
@@ -43,6 +44,34 @@ export interface ArchitecturalOwner {
 
 export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
   {
+    // Gate A: form, finish and cockpit presentation are one aircraft-owned
+    // subsystem. Consumers register its meshes/materials; they do not build a
+    // parallel aircraft or reimplement its visibility/propeller contracts.
+    artifact: "aircraft-form-and-materials",
+    owner: "aircraft",
+    definitionSites: [
+      "src/render/webgpu/aircraft/builders.ts",
+      "src/render/webgpu/aircraft/materialSynthesis.ts",
+      "src/render/webgpu/aircraft/animation.ts",
+      "src/render/webgpu/aircraft/types.ts",
+      "src/render/webgpu/aircraft/createAircraft.ts",
+    ],
+    consumers: "any",
+    ownedSymbols: [
+      "AircraftBuildContext",
+      "synthesizeAircraftSurface",
+      "createAircraftSurfaceTextures",
+      "AIRCRAFT_PAINT_FEATURES",
+      "resolvePropellerPresentation",
+      "AIRCRAFT_EXTERIOR_LAYER_MASK",
+      "aircraftCameraLayerMask",
+      "createAircraft",
+      "createWebGpuAircraft",
+    ],
+    notes:
+      "Gate A owns loft/airfoil form, deterministic finish synthesis, cockpit layers and propeller presentation under src/render/webgpu/aircraft/.",
+  },
+  {
     artifact: "world-page-payload-schema",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/world/payload.ts"],
@@ -55,18 +84,141 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "QuantizedSurfacePage",
       "QuantizedHydrologyPage",
       "WORLD_PAGE_SURFACE_CHANNELS",
+      "WorldPageChannelDescriptor",
+      "WORLD_PAGE_GPU_CHANNELS",
+      "WORLD_PAGE_GPU_FORMAT_BYTES",
     ],
     notes:
       "Every page-channel addition goes through one PR against this file. No page-channel type is declared anywhere else.",
+  },
+  {
+    // 4-0: eleven Phase 4 consumers agree about slot geometry, atlas sizing,
+    // the season key, the node record and the parity criterion because this
+    // file says so once, before any of them exists.
+    artifact: "terrain-spine-contract",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainSpineContract.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "TerrainSlotKey",
+      "SEASON_BUCKETS",
+      "SEASON_BUCKETS_RESIDENT",
+      "seasonBucket",
+      "seasonBucketBlend",
+      "terrainTexelSizeMeters",
+      "terrainAtlasEdgeTexels",
+      "terrainSlotOrigin",
+      "TERRAIN_HEIGHT_SLOT_EDGE",
+      "TERRAIN_CHANNEL_SLOT_EDGE",
+      "TERRAIN_NODE_GRID_RESOLUTION",
+      "TERRAIN_NODES_PER_SLOT_EDGE",
+      "TERRAIN_SUPERSAMPLE_OFFSETS",
+      "TERRAIN_HEIGHT_PARITY_CRITERIA",
+      "TERRAIN_SUPPORTED_WORLD_RADIUS_METERS",
+      "TERRAIN_HEIGHT_PYRAMID_EDGE",
+    ],
+    notes:
+      "Imports page geometry from world/ and names its own symbols "
+      + "TerrainSlot*/TERRAIN_* — a WorldPage* declaration here fails the "
+      + "boundary test by name.",
+  },
+  {
+    // 4-0b: 6-10 pulled forward. Three amortised compute producers with hard
+    // millisecond caps documented as "enforced by their schedulers", and no
+    // scheduler — FrameGraphPass.cadence is an integer frame divisor and
+    // nothing else. A second admission policy is that gap reopening.
+    artifact: "amortised-compute-meter",
+    owner: "performance",
+    definitionSites: ["src/render/webgpu/core/ComputeBudget.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "ComputeBudget",
+      "COMPUTE_BUDGET_CLIENTS",
+      "ComputeBudgetClient",
+    ],
+    notes: "One per-frame millisecond meter; every GPU compute producer admits through it.",
+  },
+  {
+    // 4-1: the WGSL height kernel had NO owner row, which is exactly how a
+    // second definition of the height kernel would appear — the institutional
+    // failure the audit found, in the artifact the phase creates.
+    artifact: "terrain-height-kernel-wgsl",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainKernel.ts"],
+    consumers: ["terrain-geometry", "terrain-material"],
+    ownedSymbols: [
+      "TERRAIN_KERNEL_WGSL",
+      "TERRAIN_KERNEL_CONSTANTS",
+      "TERRAIN_KERNEL_LATTICES",
+      "buildTerrainKernelPageUniform",
+      "TERRAIN_KERNEL_FORBIDDEN_BUILTINS",
+    ],
+    notes:
+      "A transliteration of src/world/{seed,noise,geology,terrain}.ts, not a "
+      + "second kernel. Every expectation constant is INJECTED from the TS "
+      + "source; retyping one is how coarse-page mean height moves by metres.",
   },
   {
     artifact: "terrain-page-atlas",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
     consumers: ["terrain-geometry", "terrain-material"],
-    ownedSymbols: ["TerrainPageAtlas"],
-    plannedBy: "4-2",
+    ownedSymbols: [
+      "TerrainPageAtlas",
+      "TerrainAtlasResidency",
+      "terrainPageGenerationWgsl",
+    ],
     notes: "Terrain-material consumes atlases; it does not create them.",
+  },
+  {
+    // 4-3: the false-colour overlay RENDERING_PLAN.md mandates before the
+    // items that consume it. Unowned, it becomes three overlays.
+    artifact: "terrain-debug-overlay",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainDebugOverlay.ts"],
+    consumers: ["terrain-geometry", "performance"],
+    ownedSymbols: [
+      "TerrainDebugOverlay",
+      "TERRAIN_DEBUG_OVERLAY_MODES",
+      "terrainDebugOverlayColor",
+    ],
+  },
+  {
+    // 4-7: the coarse global height field the occlusion bake marches beyond a
+    // page, so there is no shadow discontinuity at page edges.
+    artifact: "global-height-pyramid",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/GlobalHeightPyramid.ts"],
+    consumers: ["terrain-geometry", "lighting"],
+    ownedSymbols: ["GlobalHeightPyramid", "GLOBAL_HEIGHT_PYRAMID_WGSL"],
+  },
+  {
+    // 4-7: ONE bake, one owner, one format. Four subsystem designs baked
+    // this four ways at three resolutions before the audit.
+    artifact: "page-occlusion-bake",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/PageOcclusionBake.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "PageOcclusionBake",
+      "PAGE_OCCLUSION_WGSL",
+      "PAGE_OCCLUSION_AZIMUTHS",
+    ],
+  },
+  {
+    // 4-5: the quadtree, the node record writer and the caster meshes.
+    artifact: "cdlod-quadtree",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainQuadtree.ts"],
+    consumers: ["terrain-geometry"],
+    ownedSymbols: [
+      "selectTerrainNodes",
+      "terrainNodeMorphK",
+      "terrainScreenSpaceError",
+      "writeTerrainNodeBuffers",
+      "packTerrainNodeSplat",
+      "buildTerrainNodeGrid",
+    ],
   },
   {
     artifact: "page-geometry-one-number",
@@ -227,7 +379,12 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     // texture's own cell grid.
     artifact: "terrain-material-arrays",
     owner: "terrain-material",
-    definitionSites: ["src/render/webgpu/terrain/MaterialArraySynthesis.ts"],
+    definitionSites: [
+      "src/render/webgpu/terrain/MaterialArraySynthesis.ts",
+      // `4.5-C2b` split the GPU boundary out so the recipes can be imported
+      // by a worker; both halves are the same owned artifact.
+      "src/render/webgpu/terrain/MaterialArrayUpload.ts",
+    ],
     consumers: ["terrain-material"],
     ownedSymbols: [
       "synthesizeSurfaceMaterial",
@@ -308,7 +465,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
     consumers: ["vegetation", "terrain-material"],
-    ownedSymbols: ["densityField"],
+    ownedSymbols: ["densityField", "forestFraction"],
     notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
   },
   {
@@ -360,7 +517,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     artifact: "texture-array-mips",
     owner: "performance",
     definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts"],
-    consumers: ["performance", "vegetation", "terrain-material"],
+    consumers: ["performance", "vegetation", "terrain-material", "aircraft"],
     ownedSymbols: [
       "buildMipChain",
       "alphaDilate",
@@ -461,6 +618,50 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes: "Previously unowned and on the critical path.",
   },
   {
+    // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,
+    // which trees stand on it and which animals live in them. Before this,
+    // classifyBiome's threshold cascade, chooseTreeSpecies and the wildlife
+    // habitat rules were three independent answers to one question.
+    artifact: "land-cover-classification",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/LandCoverClassifier.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "classifyLandCover",
+      "LandCoverWeights",
+      "LAND_COVER_CLASSIFIER_WGSL",
+      "landCoverSuitabilities",
+      "landCoverHabitat",
+      "landCoverSoftmaxTemperature",
+      "LAND_COVER_SPLAT_BAKE_WGSL",
+    ],
+    notes:
+      "Ten smooth suitability functions, softmaxed and top-4 renormalised, "
+      + "replacing classifyBiome's threshold cascade. dayOfYear is in the "
+      + "signature from the first line (seasonal-family rule).",
+  },
+  {
+    // 4-6b (D12): densityField's WGSL half. ONE shared include consumed by
+    // both the classifier and the vegetation path — not a copy.
+    artifact: "vegetation-density-field-wgsl",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/densityFieldWgsl.ts"],
+    consumers: "any",
+    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL"],
+    notes: "Transliteration of densityField.ts; the TS remains the authority.",
+  },
+  {
+    // 4-4: renamed from `terrainQueue.ts`/`BoundedTerrainQueue`. It is the
+    // vegetation worker's queue and always was; the owner row exists so the
+    // next reader of `RENDERING_PLAN.md:340`'s deletion list cannot mistake
+    // it for a terrain file again.
+    artifact: "bounded-priority-queue",
+    owner: "vegetation",
+    definitionSites: ["src/workers/boundedPriorityQueue.ts"],
+    consumers: "any",
+    ownedSymbols: ["BoundedPriorityQueue"],
+  },
+  {
     artifact: "detail-worker",
     owner: "vegetation",
     definitionSites: ["src/workers/detail.worker.ts"],
@@ -500,6 +701,37 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: ["SharedReceiverRegistry"],
     notes:
       "The one implementation of shared-resource receiver plumbing (0-7). 1C-4 and 1C-6 subclass it; nobody hand-rolls a fourth copy.",
+  },
+  {
+    // 4.5-0: resetDrawCache on a rendered mesh orphans the wrapper's
+    // per-submesh defines registration; an unguarded wrapper then poisons its
+    // depth-params cache with defines=null and the CSM pass dies in
+    // createBindGroup. Every wrapper goes through the one guarded factory so
+    // a new construction site cannot reopen the crash.
+    artifact: "guarded-shadow-depth-wrapper",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/core/guardedShadowDepthWrapper.ts"],
+    consumers: "any",
+    ownedSymbols: ["createGuardedShadowDepthWrapper"],
+    notes:
+      "The one ShadowDepthWrapper construction site. Constructing the Babylon class directly anywhere in src/ reintroduces the orphaned-defines fatal stop; the boundary test forbids it.",
+  },
+  {
+    // 4.5-C2b: the ten ~110 ms layer syntheses moved off the main thread. The
+    // worker exists only because `MaterialArraySynthesis.ts` has no Babylon
+    // value import — that separation is the artifact, and a second synthesis
+    // path (or a Babylon import creeping back into the recipes) breaks it.
+    artifact: "terrain-material-synthesis-worker",
+    owner: "terrain-material",
+    definitionSites: [
+      "src/workers/materialSynthesis.worker.ts",
+      "src/workers/materialSynthesisProtocol.ts",
+      "src/render/webgpu/terrain/MaterialSynthesisClient.ts",
+    ],
+    consumers: ["terrain-material"],
+    ownedSymbols: ["MaterialSynthesisClient", "isMaterialSynthesisEvent"],
+    notes:
+      "Off-thread terrain material synthesis (4.5-C2b). The client falls back to the in-frame path wherever no Worker exists, which is what the Node suite and every headless tool run.",
   },
 ];
 

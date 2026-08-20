@@ -5,7 +5,6 @@ import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
 import {
   createWorld,
-  generateTerrainTile,
   sampleTerrain,
   sampleTerrainHeight,
 } from "../../src/world";
@@ -112,20 +111,14 @@ async function readBaselineLuminance(
   return luminanceFromRgba(data, width, height);
 }
 
+/** Three decimals is plenty for an aggregate nothing is gated on. */
+function round3(value: number | null): number | null {
+  return value === null ? null : Math.round(value * 1_000) / 1_000;
+}
+
 function nextAnimationFrame(): Promise<number> {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
-
-/**
- * Z-1: the one allowlisted renderer error. Babylon 9.21.2's WebGPU backend
- * gives every submesh its own material context, but binds a shared
- * material's textures only on the first submesh of a frame — so the first
- * frame a fresh pipeline/context pair draws, the remaining submeshes log
- * `cloudShadowSampler … not found` once and then heal. Verified transient
- * and pixel-free (all baseline SSIMs hold); recorded in the Phase 2 decision
- * log. Everything else fails the capture.
- */
-const ALLOWLISTED_ERROR = /cloudShadowSampler[^ ]* not found in the material context/u;
 
 describe("perf capture (1A-1c / 2Z)", () => {
   let renderer: FlightRenderer | null = null;
@@ -178,16 +171,23 @@ describe("perf capture (1A-1c / 2Z)", () => {
       ...(world.airport ? { runway: world.airport } : {}),
     });
 
-    // Page-generation cost at the plan's reference resolution (65).
+    // 4-9: `generateTerrainTile` is deleted with the CPU render path. What
+    // this row measured — the CPU cost of building one page — no longer
+    // exists at all: pages are a compute dispatch now. The row is kept and
+    // re-pointed at the analytic kernel over one page's worth of L0 samples,
+    // which is what the COLLISION path still costs and is the only CPU
+    // terrain cost left to watch.
     const generationRuns = 5;
     const generationStarted = performance.now();
     for (let run = 0; run < generationRuns; run += 1) {
-      generateTerrainTile(world, {
-        tileX: 3 + run,
-        tileZ: -2,
-        size: 512,
-        resolution: 65,
-      });
+      const originX = (3 + run) * 512;
+      for (let index = 0; index < 4_225; index += 1) {
+        sampleTerrainHeight(
+          world,
+          originX + (index % 65) * 8,
+          -1_024 + Math.floor(index / 65) * 8,
+        );
+      }
     }
     const pageGenerationMs = (performance.now() - generationStarted) / generationRuns;
 
@@ -406,8 +406,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
         ssimAgainstBaseline: ssim === null ? null : Math.round(ssim * 10_000) / 10_000,
         tiles: tileStatistics(luminance, viewportWidth, viewportHeight),
         fps: Math.round(measuredFps * 10) / 10,
+        frameIntervalMsP95: diagnostics.frameIntervalP95Ms,
         cpuFrameMsP95: diagnostics.cpuP95Ms ?? diagnostics.cpuFrameTime,
         gpuFrameMsP95: diagnostics.gpuP95Ms,
+        presentWaitMsP95: diagnostics.presentWaitP95Ms,
         maxFrameMs: diagnostics.maxFrameMs === null
           ? null
           : Math.round(diagnostics.maxFrameMs * 10) / 10,
@@ -425,6 +427,14 @@ describe("perf capture (1A-1c / 2Z)", () => {
         viewportHeight,
         estimatedGpuMemoryMiB: Math.round(diagnostics.estimatedGpuMemoryMiB * 10) / 10,
         inventoriedGpuMemoryMiB: Math.round(diagnostics.inventoriedGpuMemoryMiB * 10) / 10,
+        // 4.5-C3: uncorrelated per-pass aggregates. Never compared against a
+        // ceiling — they exist so the interval-versus-GPU gap is inspectable.
+        gpuPassMs: {
+          mainPass: round3(diagnostics.gpuPassMs.mainPass),
+          shadows: round3(diagnostics.gpuPassMs.shadows),
+          terrainCompute: round3(diagnostics.gpuPassMs.terrainCompute),
+          total: round3(diagnostics.gpuPassMs.total),
+        },
         ...(temporal ? { temporal } : {}),
       });
     }
@@ -503,16 +513,30 @@ describe("perf capture (1A-1c / 2Z)", () => {
           ).toBeLessThanOrEqual(ceilings.p999FrameMs);
         }
       }
+      // 4-10 (assertion 84b): page residency under streaming load. The
+      // page-thrash and CDLOD-transition scenes exist to make a pump that
+      // outruns the compute meter visible as a rising queue rather than as a
+      // hitch nobody can attribute.
+      const residency = definition.residencyCeilings;
+      if (residency) {
+        expect(
+          shot.pendingTerrainPages,
+          `${shot.name}: more pages pending generation than the committed ceiling`,
+        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages);
+        expect(
+          shot.residentTerrainPages,
+          `${shot.name}: more resident page slots than the atlas holds`,
+        ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
+      }
     }
 
-    // Z-1: the renderer must not have logged an error during the run —
-    // except the one documented Babylon submesh-context transient.
+    // Z-1: the renderer must not have logged an error during the run.
     expect(
-      consoleErrors.filter((entry) => !ALLOWLISTED_ERROR.test(entry)),
+      consoleErrors,
       "The renderer logged console errors during the capture (Z-1 gate)",
     ).toEqual([]);
     expect(
-      loggerErrors.filter((entry) => !ALLOWLISTED_ERROR.test(entry)),
+      loggerErrors,
       "Babylon logged errors during the capture (Z-1 gate)",
     ).toEqual([]);
   }, 1_500_000);

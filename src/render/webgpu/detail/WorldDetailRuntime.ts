@@ -6,8 +6,8 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
 import type { Scene } from "@babylonjs/core/scene";
+import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RENDERED_DENSITY_LAWS,
@@ -96,6 +96,8 @@ interface DetailBatch {
   gpu: DetailInstanceGpuBuffers | null;
   /** Chunk revision whose records the writer currently holds. */
   filledRevision: number;
+  /** Floating origin encoded into the currently uploaded instance records. */
+  builtOrigin: { x: number; y: number; z: number };
 }
 
 interface RetiredDetailBatch {
@@ -416,6 +418,8 @@ export class WorldDetailRuntime {
   private readonly pendingCells = new Map<string, number>();
   /** Bumped whenever resident cells reset; stale worker results are dropped. */
   private cellEpoch = 0;
+  /** `4.5-C1`: the tier datum, refreshed from the profile every update. */
+  private vegetationCastsShadows = true;
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -519,6 +523,7 @@ export class WorldDetailRuntime {
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
+    this.vegetationCastsShadows = profile.vegetationCastsShadows;
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
     // a wall-clock accumulator made every tree's sway phase depend on how
@@ -544,6 +549,11 @@ export class WorldDetailRuntime {
     requireFinite(floatingOrigin.x, "Detail floating-origin x");
     requireFinite(floatingOrigin.y, "Detail floating-origin y");
     requireFinite(floatingOrigin.z, "Detail floating-origin z");
+    // 67d: origin changes are corrected for every live batch immediately.
+    // The amortized rebuild may still rewrite only one chunk this update;
+    // stale records remain valid because their mesh carries the uniform
+    // built-origin -> current-origin translation in the meantime.
+    this.compensateBatchOrigins(floatingOrigin);
     if (!Number.isFinite(profile.vegetationDistance) || profile.vegetationDistance <= 0) {
       throw new RangeError("Vegetation distance must be finite and greater than zero");
     }
@@ -683,9 +693,20 @@ export class WorldDetailRuntime {
     }
   }
 
-  /** Supplies active, deliberately bounded shadow batches to a CSM or shadow generator. */
+  /**
+   * Supplies active, deliberately bounded shadow batches to a CSM or shadow
+   * generator.
+   *
+   * `4.5-C1`: the tier's `vegetationCastsShadows` datum gates the whole list.
+   * The near band submits every (species, variant, crown/trunk) mesh once per
+   * cascade, which is 148 of tier 1's 347 modelled draws and 3.85 of its 9.02
+   * modelled milliseconds — the largest single term, and the only one no lever
+   * §5.3 governs can move. Read from the profile each update rather than
+   * baked into the prototypes so a runtime quality switch takes effect in the
+   * same frame, in both directions.
+   */
   addShadowCasters(add: (mesh: Mesh) => void): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.vegetationCastsShadows) return;
     for (const batch of this.batches.values()) {
       if (batch.castsShadows && batch.mesh.isEnabled() && batch.mesh.forcedInstanceCount > 0) {
         add(batch.mesh);
@@ -1337,7 +1358,7 @@ export class WorldDetailRuntime {
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
     for (const batchKey of chunk.batchKeys) {
       const batch = this.batches.get(batchKey);
-      if (batch) this.uploadBatch(batch);
+      if (batch) this.uploadBatch(batch, floatingOrigin);
     }
     return statistics;
   }
@@ -1356,7 +1377,7 @@ export class WorldDetailRuntime {
    * mesh appears in. Only GROWTH allocates, and the outgrown allocation
    * waits out the same conservative grace window a retired batch does.
    */
-  private uploadBatch(batch: DetailBatch): void {
+  private uploadBatch(batch: DetailBatch, floatingOrigin: DetailFloatingOrigin): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     if (count === 0) {
@@ -1383,6 +1404,21 @@ export class WorldDetailRuntime {
       Vector3.FromArray(batch.bounds.minimum()),
       Vector3.FromArray(batch.bounds.maximum()),
     ));
+    batch.builtOrigin.x = floatingOrigin.x;
+    batch.builtOrigin.y = floatingOrigin.y;
+    batch.builtOrigin.z = floatingOrigin.z;
+    batch.mesh.position.set(0, 0, 0);
+  }
+
+  /** Keeps stale, origin-relative records world-stable during the rebuild sweep. */
+  private compensateBatchOrigins(floatingOrigin: DetailFloatingOrigin): void {
+    for (const batch of this.batches.values()) {
+      batch.mesh.position.set(
+        batch.builtOrigin.x - floatingOrigin.x,
+        batch.builtOrigin.y - floatingOrigin.y,
+        batch.builtOrigin.z - floatingOrigin.z,
+      );
+    }
   }
 
   /**
@@ -1681,6 +1717,7 @@ export class WorldDetailRuntime {
       bounds: new DetailInstanceBounds(),
       gpu: null,
       filledRevision: chunk.revision,
+      builtOrigin: { x: 0, y: 0, z: 0 },
     };
     this.batches.set(batchKey, batch);
     return batch;
@@ -2076,7 +2113,10 @@ export class WorldDetailRuntime {
     // the include away (tests/gpu/foliage-material-compile.test.ts pins it).
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
-      material.shadowDepthWrapper = new ShadowDepthWrapper(material, this.scene, {
+      // 4.5-0: guarded — bindInstanceBuffers resets a growing batch's draw
+      // cache in the same frame the CSM pass renders it, and an unguarded
+      // wrapper turns that into the createBindGroup fatal stop.
+      material.shadowDepthWrapper = createGuardedShadowDepthWrapper(material, this.scene, {
         remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
       });
     }

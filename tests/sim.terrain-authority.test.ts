@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  terrainPageFilterWidthMeters,
+  terrainTexelSizeMeters,
+} from "../src/render/webgpu/terrain/TerrainSpineContract";
+import { WORLD_PAGE_BASE_EXTENT_METERS, WORLD_PAGE_HEIGHT_CORE } from "../src/render/webgpu/world/pageGeometry";
+import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "../src/game/spawn";
@@ -16,11 +21,11 @@ import {
 import { sampleGroundContact, sampleGroundHeight } from "../src/sim/terrainGrid";
 import {
   createWorld,
-  generateTerrainTile,
   getAirportInfluence,
   isPointOnRunway,
   runwayToWorld,
   sampleNaturalTerrainHeight,
+  sampleFilteredTerrainHeight,
   sampleTerrainHeight,
   worldToRunway,
   type TerrainCollisionSample,
@@ -294,41 +299,47 @@ describe("terrain authority contract (0-5)", () => {
     expect(minimumRawAgl).toBeGreaterThan(0);
   });
 
-  it("keeps render-path heights equal to physics-path heights at L0 spacing", () => {
-    // The render path builds tiles through generateTerrainTile; the physics
-    // path samples src/sim/terrainGrid.ts. Compare them vertex-for-vertex on
-    // four real L0 pages (512 m at resolution 65 — 8 m spacing, where 1B-2's
-    // band-limit fade is exactly a no-op because the finest kernel wavelength
-    // is 43 m ≥ 3.2 × 8 m). Coarser rings diverge from physics by design; the
-    // aircraft only ever touches ground inside L0 coverage. At 5-2 this
-    // becomes the parity bound on the readback grid — and it is written
-    // against the real tile pipeline, not a private shortcut, so it fails
-    // loudly rather than vacuously if either side stops being the authority.
+  // Assertion 77 — the Node-side half of the §1.3 invariant, rewritten at
+  // `4-9`.
+  //
+  // Its old form compared `generateTerrainTile` against `sampleGroundHeight`.
+  // `4-4` deleted that function's last production consumer and `4-9` deleted
+  // the function, so the old test would have compared the physics kernel
+  // against a TypeScript function nothing renders — and KEPT PASSING. The
+  // render path is now a WGSL kernel over page atlases, so this half asserts
+  // the property that makes the GPU half meaningful: at L0 the render page's
+  // band-limit width is exactly zero, so the render kernel and the physics
+  // kernel are the same function, evaluated at the same points.
+  //
+  // Its GPU sibling is `tests/gpu/terrain-physics-parity.test.ts`, which reads
+  // the real atlas back. Duplicated rather than moved: `npm run verify` does
+  // not run the GPU project, so a move would delete the invariant from CI.
+  it("assertion 77: the render kernel at L0 IS the physics kernel", () => {
     const world = createWorld("terrain-authority-fixture");
-    for (const [tileX, tileZ] of [
-      [0, 0],
-      [-1, 0],
-      [3, -2],
-      [-4, 5],
-    ] as const) {
-      const tile = generateTerrainTile(world, {
-        tileX,
-        tileZ,
-        size: 512,
-        resolution: 65,
-        includeNormals: false,
-        includeColors: false,
-        includeClimate: false,
-      });
-      for (let row = 0; row < tile.resolution; row += 1) {
-        for (let column = 0; column < tile.resolution; column += 1) {
-          const x = tile.originX + column * tile.spacing;
-          const z = tile.originZ + row * tile.spacing;
-          const renderHeight = tile.heights[row * tile.resolution + column];
-          // Tiles store f32; the physics path is f64. Equality holds exactly
-          // at the render path's declared storage precision — anything looser
-          // than fround would hide real divergence.
-          expect(renderHeight).toBe(Math.fround(sampleGroundHeight(world, x, z)));
+    // 4-0's rule, as a property rather than a comment: L0 pages bake at width
+    // zero, which is what makes them bit-identical to physics by construction
+    // rather than by floating-point luck.
+    expect(terrainPageFilterWidthMeters(0)).toBe(0);
+    expect(terrainPageFilterWidthMeters(1)).toBeGreaterThan(0);
+
+    for (const [pageX, pageZ] of [[0, 0], [-1, 0], [3, -2], [-4, 5]] as const) {
+      const originX = pageX * WORLD_PAGE_BASE_EXTENT_METERS;
+      const originZ = pageZ * WORLD_PAGE_BASE_EXTENT_METERS;
+      const spacing = terrainTexelSizeMeters(0);
+      // Every 8th L0 texel of the page core: 1,024 comparisons per page is
+      // dense enough to catch a systematic offset and fast enough to stay in
+      // the Node suite, where this invariant has to live.
+      for (let row = 0; row < WORLD_PAGE_HEIGHT_CORE; row += 8) {
+        for (let column = 0; column < WORLD_PAGE_HEIGHT_CORE; column += 8) {
+          const x = originX + column * spacing;
+          const z = originZ + row * spacing;
+          const render = sampleFilteredTerrainHeight(
+            world,
+            x,
+            z,
+            terrainPageFilterWidthMeters(0),
+          );
+          expect(render).toBe(sampleGroundHeight(world, x, z));
         }
       }
     }

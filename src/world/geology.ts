@@ -8,6 +8,20 @@ import {
 import { mixSeed } from "./seed";
 
 /**
+ * Full-bandwidth expectations of this file's nonlinear ridge composites,
+ * measured 2026-08-17 over 250k samples spanning ~2000 lattice cells.
+ *
+ * Named and exported since `4-1`: the WGSL transliteration injects them from
+ * here. They were inline literals, which is exactly how a retyped digit would
+ * move coarse-page mean height by metres without failing a parity test run at
+ * `filterWidth = 0`.
+ */
+export const FRACTURE_EXPOSURE_MEAN = 0.1296;
+export const FRACTURE_RAVINE_MEAN = 0.2099;
+/** The talus channel's full-bandwidth mean, subtracted so it adds no bias. */
+export const TALUS_RIDGES_MEAN = 0.58;
+
+/**
  * Adds the short-wavelength relief that broad continental and mountain fields
  * cannot provide on their own. Inputs are the already-computed land/uplift
  * masks, keeping this addition bounded and preserving open lowland.
@@ -90,7 +104,7 @@ export function sampleGeologicalRelief(
       exposure *
       (17 + mountainRegion * 66) *
       (0.82 + fractureVariation * 0.18),
-    land * upliftMask * 0.1296 * (17 + mountainRegion * 66),
+    land * upliftMask * FRACTURE_EXPOSURE_MEAN * (17 + mountainRegion * 66),
     fractureKept,
   );
 
@@ -98,7 +112,7 @@ export function sampleGeologicalRelief(
   // the positive ribs from merely inflating the whole mountain mass.
   const ravineSignal = blendTowardExpectation(
     Math.pow(Math.max(0, 1 - fractureRidges), 3.2),
-    0.2099,
+    FRACTURE_RAVINE_MEAN,
     fractureKept,
   );
   const ravineCarve =
@@ -115,7 +129,7 @@ export function sampleGeologicalRelief(
     120,
     filterWidthMeters,
   );
-  const talusMeanRemoved = (talusRidges - 0.58) *
+  const talusMeanRemoved = (talusRidges - TALUS_RIDGES_MEAN) *
     land * (foothillRegion * 2.8 + mountainRegion * 7.6);
 
   return groundRoughness + smallRelief + outcropLift - ravineCarve + talusMeanRemoved;

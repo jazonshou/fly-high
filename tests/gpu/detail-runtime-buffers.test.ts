@@ -7,6 +7,7 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { AerialPerspectiveMaterialPlugin } from "../../src/render/webgpu/atmosphere/AerialPerspective";
 import { CloudShadowMaterialPlugin } from "../../src/render/webgpu/clouds/CloudShadowMaterialPlugin";
@@ -105,10 +106,11 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
       z: number,
       predictionX: number,
       predictionZ: number,
+      floatingOrigin = { x: 0, y: 0, z: 0 },
     ): Promise<void> => {
       runtime.update(
         { x, y: 60, z, velocityX: predictionX - x, velocityZ: predictionZ - z },
-        { x: 0, y: 0, z: 0 },
+        floatingOrigin,
         profile,
         0,
       );
@@ -116,8 +118,16 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
       // the FAR band (1.1-3.0 km of billboard impostors) fully in frustum
       // alongside the near band. The capture's black shots were all at this
       // altitude; its ground-level and cruise shots rendered.
-      camera.position.set(x, 150, z - 120);
-      camera.setTarget(new Vector3(x, 90, z + 3_000));
+      camera.position.set(
+        x - floatingOrigin.x,
+        150 - floatingOrigin.y,
+        z - floatingOrigin.z - 120,
+      );
+      camera.setTarget(new Vector3(
+        x - floatingOrigin.x,
+        90 - floatingOrigin.y,
+        z - floatingOrigin.z + 3_000,
+      ));
       engine.beginFrame();
       scene.render();
       engine.endFrame();
@@ -142,6 +152,33 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
         await step(index * 40, index * 40, index * 40, index * 40);
         if (gpuErrors.length > 0) break;
       }
+
+      // 67d on-adapter: keep the observer/view fixed while moving the floating
+      // origin. One presentation chunk rebuilds immediately; the remaining
+      // live batches keep their old records and use distinct mesh offsets.
+      // That deliberately exercises multiple values of the material-shared
+      // detailMeshOffset UBO in one real WebGPU frame.
+      const rebaseOrigin = { x: 2_048, y: 0, z: -2_048 };
+      await step(440, 440, 440, 440, rebaseOrigin);
+      const liveBatches = scene.meshes.filter(
+        (mesh): mesh is Mesh => mesh instanceof Mesh
+          && typeof mesh.metadata?.detailChunk === "string"
+          && mesh.isEnabled()
+          && mesh.forcedInstanceCount > 0,
+      );
+      const offsetsByMaterial = new Map<number, Set<string>>();
+      for (const mesh of liveBatches) {
+        if (!mesh.material) continue;
+        const offsets = offsetsByMaterial.get(mesh.material.uniqueId) ?? new Set<string>();
+        offsets.add(`${mesh.position.x}:${mesh.position.y}:${mesh.position.z}`);
+        offsetsByMaterial.set(mesh.material.uniqueId, offsets);
+      }
+      expect(liveBatches.filter((mesh) => !mesh.position.equals(Vector3.Zero())).length)
+        .toBeGreaterThan(1);
+      expect(
+        [...offsetsByMaterial.values()].some((offsets) => offsets.size > 1),
+        "no shared detail material rendered batches built against two origins",
+      ).toBe(true);
 
       expect(gpuErrors.join("\n")).toBe("");
 

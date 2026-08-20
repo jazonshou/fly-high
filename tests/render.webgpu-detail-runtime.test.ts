@@ -131,12 +131,33 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(visibleInstances).toBeLessThan(totalInstances);
     expect(runtime.statistics.renderedThinInstances).toBe(visibleInstances);
 
+    // `4.5-C1`: the tier's `vegetationCastsShadows` datum gates the whole
+    // caster list, and it is FALSE at tier 1 — 148 of 347 modelled draws.
+    expect(profile.vegetationCastsShadows).toBe(false);
+    const suppressed: Mesh[] = [];
+    runtime.addShadowCasters((mesh) => suppressed.push(mesh));
+    expect(suppressed).toHaveLength(0);
+
+    // A tier that does cast still registers exactly the near band, and the
+    // switch takes effect in the same update — in both directions.
+    const casting = {
+      ...resolveWebGpuQualityProfile("high", "balanced"),
+      vegetationDistance: 1_200,
+      vegetationDensity: 1,
+    };
+    expect(casting.vegetationCastsShadows).toBe(true);
+    runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, casting);
     const shadowCasters: Mesh[] = [];
     runtime.addShadowCasters((mesh) => shadowCasters.push(mesh));
     expect(shadowCasters.length).toBeGreaterThan(0);
     expect(new Set(shadowCasters)).toEqual(
-      new Set(meshes.filter((mesh) => mesh.metadata.detailCastsShadow === true)),
+      new Set(chunkMeshes(scene).filter(
+        (mesh) => mesh.metadata.detailCastsShadow === true
+          && mesh.isEnabled()
+          && mesh.forcedInstanceCount > 0,
+      )),
     );
+    runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, profile);
 
     // 2-11a: with the packed record there are no per-instance matrices —
     // retention is buffer identity, rebase is decoded from the record bytes.
@@ -162,11 +183,49 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(retainedMesh?.getVertexBuffer("instancePosition")).toBe(retainedBuffer);
 
     const beforeRebase = firstInstanceLocal(retainedMesh);
+    const beforeWorldByBatch = new Map(meshes.map((batchMesh) => {
+      const local = firstInstanceLocal(batchMesh);
+      return [
+        `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`,
+        [
+          local[0] + batchMesh.position.x,
+          local[1] + batchMesh.position.y,
+          local[2] + batchMesh.position.z,
+        ] as const,
+      ];
+    }));
     const retainedBatch = retainedMesh?.metadata.detailBatch as string;
     const retainedChunk = retainedMesh?.metadata.detailChunk as string;
     // The rebase dirties every chunk; the 2-17 amortized sweep rebuilds
-    // one per update, so drain it before asserting the rebased clone.
-    for (let sweep = 0; sweep < 12; sweep += 1) {
+    // one per update. Assertion 67d checks the FIRST update, before draining:
+    // every stale batch must already render against the new origin.
+    runtime.update(
+      { x: 0, y: 120, z: 0 },
+      { x: 512, y: 30, z: -256 },
+      profile,
+    );
+    const immediateMeshes = chunkMeshes(scene);
+    expect(immediateMeshes.length).toBe(meshes.length);
+    for (const batchMesh of immediateMeshes) {
+      const key = `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`;
+      const beforeWorld = beforeWorldByBatch.get(key);
+      expect(beforeWorld, key).toBeDefined();
+      const local = firstInstanceLocal(batchMesh);
+      expect(local[0] + batchMesh.position.x, `${key} x`).toBeCloseTo(
+        beforeWorld![0] - 512,
+        3,
+      );
+      expect(local[1] + batchMesh.position.y, `${key} y`).toBeCloseTo(
+        beforeWorld![1] - 30,
+        3,
+      );
+      expect(local[2] + batchMesh.position.z, `${key} z`).toBeCloseTo(
+        beforeWorld![2] + 256,
+        3,
+      );
+    }
+    // Drain the remaining chunks before asserting the rewritten record.
+    for (let sweep = 1; sweep < 12; sweep += 1) {
       runtime.update(
         { x: 0, y: 120, z: 0 },
         { x: 512, y: 30, z: -256 },

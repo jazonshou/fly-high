@@ -244,16 +244,26 @@ export function Hud({
           <strong>{diagnostics.fps.toFixed(0)} FPS</strong>
           <span>{diagnostics.frameTime.toFixed(1)} ms frame</span>
           <span>{diagnostics.cpuFrameTime.toFixed(1)} ms CPU</span>
+          <span>{diagnostics.presentWaitTime === null ? "present wait n/a" : `${diagnostics.presentWaitTime.toFixed(1)} ms present wait`}</span>
           <span>{diagnostics.drawCalls} calls</span>
           <span>{Math.round(diagnostics.triangles / 1_000)}k tris</span>
-          <span>{diagnostics.residentTerrainPages} pages</span>
+          <span>{diagnostics.residentTerrainPages} pages · {diagnostics.terrainTiles} nodes</span>
           <span>{diagnostics.collisionSamplesServedByFallback} collision fallback</span>
           <span>{diagnostics.renderScale.toFixed(2)}x scale</span>
           <span>{diagnostics.gpuFrameTime === null ? "GPU timing n/a" : `${diagnostics.gpuFrameTime.toFixed(1)} ms GPU`}</span>
           <span>{(diagnostics.renderPixels / 1_000_000).toFixed(2)} Mpx</span>
-          <span>{diagnostics.pendingTerrainPages} pending · {diagnostics.terrainWorkersBusy} workers</span>
+          <span>{diagnostics.pendingTerrainPages} pending · {diagnostics.terrainComputeDispatches} dispatches</span>
           <span>{diagnostics.gpuP95Ms === null ? "GPU p95 n/a" : `${diagnostics.gpuP95Ms.toFixed(1)} ms GPU p95`}</span>
           <span>{diagnostics.cpuP95Ms === null ? "CPU p95 n/a" : `${diagnostics.cpuP95Ms.toFixed(1)} ms CPU p95`}</span>
+          <span className="diagnostics__wide">
+            {diagnostics.frameIntervalP95Ms === null
+              ? "interval p95 n/a"
+              : `${diagnostics.frameIntervalP95Ms.toFixed(1)} ms interval p95`}
+            {" · "}
+            {diagnostics.presentWaitP95Ms === null
+              ? "present wait p95 n/a"
+              : `${diagnostics.presentWaitP95Ms.toFixed(1)} ms present wait p95`}
+          </span>
           <span className="diagnostics__wide">
             {diagnostics.maxFrameMs === null ? "max n/a" : `${diagnostics.maxFrameMs.toFixed(0)} ms max`}
             {" · "}

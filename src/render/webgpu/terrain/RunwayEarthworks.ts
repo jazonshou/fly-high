@@ -243,3 +243,148 @@ export function runwayEarthworksHeightLocal(
   height += runwayEarthworksProfile.benchMeters * (fillness * 2 - 1) * lobe;
   return height;
 }
+
+// ---------------------------------------------------------------------------
+// `4-9` — the earthworks in WGSL
+// ---------------------------------------------------------------------------
+
+/**
+ * The airport uniform the WGSL earthworks read, packed by
+ * `packRunwayEarthworksUniform`.
+ *
+ * `sinHeading` and `cosHeading` are HOISTED, computed once in f64 on the CPU
+ * and passed as f32. WGSL specifies `sin` and `cos` to an ABSOLUTE error
+ * bound rather than a relative one, so recomputing the heading rotation per
+ * texel is the single largest divergence source in this item — larger than
+ * everything else in the profile put together. Hoisting removes it.
+ */
+export const RUNWAY_EARTHWORKS_UNIFORM_FLOATS = 16;
+
+export function packRunwayEarthworksUniform(
+  airport: Readonly<AirportDefinition> | null,
+  seedHash: number,
+): Float32Array {
+  const packed = new Float32Array(RUNWAY_EARTHWORKS_UNIFORM_FLOATS);
+  if (!airport) return packed;
+  packed[0] = 1;
+  packed[1] = airport.centerX;
+  packed[2] = airport.centerZ;
+  packed[3] = airport.elevation;
+  packed[4] = Math.sin(airport.headingRadians);
+  packed[5] = Math.cos(airport.headingRadians);
+  packed[6] = runwayPlatformHalfLength(airport);
+  packed[7] = runwayPlatformHalfWidth(airport);
+  packed[8] = airport.terrainBlendDistance;
+  // The noise channel's already-mixed hash: valueNoise2D mixes channel 0 once
+  // per evaluation, and both mixes are page constants.
+  // Slot 12 is the struct's `seeds: vec4u`: the already-mixed hash reaches
+  // the shader as a real u32, never through an f32 lane.
+  new Uint32Array(packed.buffer)[12] = mixSeed(
+    mixSeed(seedHash, runwayEarthworksProfile.blendNoiseChannel),
+    0,
+  ) >>> 0;
+  return packed;
+}
+
+/**
+ * `runwayEarthworksHeightLocal`, transliterated.
+ *
+ * `3-9` already owns the airport SDF (`RUNWAY_SDF_WGSL`); this CONSUMES it and
+ * does not write a second one. The two physics entry points take DIFFERENT
+ * short-circuits — `sampleTerrainCollisionHeight` returns early on
+ * `getAirportInfluence >= 1` (the full graded platform) while the render path
+ * evaluates the fade — so the parity grid has to cover the apron, the shoulder
+ * band, the whole `terrainBlendDistance` fade and beyond it, not just the
+ * paved rectangle.
+ *
+ * Requires `kLerp`, `kSaturate`, `kSmoothstep`, `kValueNoiseSplit` and
+ * `kMixSeed` from the terrain kernel include, and `terrainRunwayRoundedRect`
+ * and `terrainRunwayLocal` from the airport SDF include.
+ */
+export const RUNWAY_EARTHWORKS_WGSL = /* wgsl */ `
+struct RunwayEarthworks {
+  // (enabled, centre x, centre z, platform elevation)
+  site: vec4f,
+  // (sinHeading, cosHeading, half length, half width)
+  frame: vec4f,
+  // (terrainBlendDistance, 0, 0, 0)
+  blend: vec4f,
+  // The already-mixed noise hash, as a REAL u32: routing it through an f32
+  // lane risks the hash landing on a NaN bit pattern, which a storage load is
+  // free to canonicalise.
+  seeds: vec4u,
+};
+
+const K_CROWN_METERS: f32 = ${runwayEarthworksProfile.crownMeters};
+const K_FILL_SHAPE_EXPONENT: f32 = ${runwayEarthworksProfile.fillShapeExponent};
+const K_CUT_SHAPE_EXPONENT: f32 = ${runwayEarthworksProfile.cutShapeExponent};
+const K_CUT_BLEND_SCALE: f32 = ${runwayEarthworksProfile.cutBlendScale};
+const K_CUT_FILL_BLEND_METERS: f32 = ${runwayEarthworksProfile.cutFillBlendMeters};
+const K_BLEND_MODULATION: f32 = ${runwayEarthworksProfile.blendModulation};
+const K_BLEND_NOISE_WAVELENGTH: f32 = ${runwayEarthworksProfile.blendNoiseWavelengthMeters};
+const K_BENCH_METERS: f32 = ${runwayEarthworksProfile.benchMeters};
+
+/** The camber, as a SIGNED offset from the platform datum. */
+fn terrainRunwayCrownHeight(earthworks: RunwayEarthworks, across: f32) -> f32 {
+  let halfWidth = earthworks.frame.w;
+  if (halfWidth <= 0.0) { return 0.0; }
+  let normalized = clamp(abs(across) / halfWidth, 0.0, 1.0);
+  return -K_CROWN_METERS * normalized * normalized;
+}
+
+/**
+ * The three-zone cut/fill profile.
+ *
+ * Zone 1 (distance <= 0) is the crowned platform exactly; zone 2 is a
+ * cut-or-fill batter blended over cutFillBlendMeters of HEIGHT difference
+ * rather than switched, because the two shapes differ by 2 x benchMeters and
+ * a hard branch would put that step on the closed contour where they meet —
+ * a RING of cliffs around the airport, which the collision path would feel;
+ * zone 3 is untouched natural terrain.
+ */
+fn terrainRunwayEarthworksHeight(
+  earthworks: RunwayEarthworks,
+  naturalHeight: f32,
+  worldX: f32,
+  worldZ: f32,
+) -> f32 {
+  if (earthworks.site.x < 0.5) { return naturalHeight; }
+  let local = terrainRunwayLocal(
+    vec2f(worldX, worldZ),
+    earthworks.site.yz,
+    earthworks.frame.x,
+    earthworks.frame.y,
+  );
+  let platform = earthworks.site.w + terrainRunwayCrownHeight(earthworks, local.y);
+  let distance = terrainRunwayRoundedRect(
+    local.x, local.y, earthworks.frame.z, earthworks.frame.w,
+  );
+  if (distance <= 0.0) { return platform; }
+
+  let wobble = kValueNoiseSplit(
+    earthworks.seeds.x,
+    0,
+    worldX / K_BLEND_NOISE_WAVELENGTH,
+    0,
+    worldZ / K_BLEND_NOISE_WAVELENGTH,
+  );
+  let fillness = kSaturate(0.5 - (naturalHeight - platform) / K_CUT_FILL_BLEND_METERS);
+  let blendDistance = max(
+    1.0,
+    earthworks.blend.x
+      * (1.0 - K_BLEND_MODULATION * kSaturate(0.5 + 0.5 * wobble))
+      * kLerp(K_CUT_BLEND_SCALE, 1.0, fillness),
+  );
+  if (distance >= blendDistance) { return naturalHeight; }
+
+  let t = kSaturate(distance / blendDistance);
+  let exponent = kLerp(K_CUT_SHAPE_EXPONENT, K_FILL_SHAPE_EXPONENT, fillness);
+  // max(0, ...) under the pow is the 0-4 rule, not decoration: a negative
+  // base is undefined in WGSL.
+  let shape = pow(max(0.0, t), exponent);
+  var height = platform + (naturalHeight - platform) * shape;
+  let lobe = kSmoothstep(0.35, 0.7, t) * (1.0 - kSmoothstep(0.7, 1.0, t));
+  height = height + K_BENCH_METERS * (fillness * 2.0 - 1.0) * lobe;
+  return height;
+}
+`;

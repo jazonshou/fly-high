@@ -122,6 +122,24 @@ describe("architecture boundaries (0-1)", () => {
     }
   });
 
+  it("assertion 117: routes every ShadowDepthWrapper through the guarded factory (4.5-0)", () => {
+    // resetDrawCache on a rendered mesh orphans a raw wrapper's defines
+    // registration and the CSM pass dies in createBindGroup ("Unable to
+    // continue flight"). The guarded factory is the one construction site;
+    // tests/gpu/shadow-depth-wrapper-reset-guard.test.ts pins the mechanism.
+    const factoryPath = "src/render/webgpu/core/guardedShadowDepthWrapper.ts";
+    const rawConstruction = /\bnew\s+ShadowDepthWrapper\b/u;
+    for (const file of sourceFiles) {
+      if (file.path === factoryPath) continue;
+      expect(
+        rawConstruction.test(file.content),
+        `${file.path} constructs a raw ShadowDepthWrapper. Use `
+        + `createGuardedShadowDepthWrapper (${factoryPath}) — an unguarded wrapper `
+        + `reintroduces the orphaned-defines renderer stop the 4.5-0 guard closes.`,
+      ).toBe(false);
+    }
+  });
+
   it("keeps quality-tier branching inside core/ (plus grandfathered readers)", () => {
     // The tier table is performance-owned. These pre-Phase-0 tier readers are
     // grandfathered until their items land (1B-3 and Phase 2 water work);

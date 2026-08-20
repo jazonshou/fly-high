@@ -12,6 +12,7 @@ import { Scene, ScenePerformancePriority } from "@babylonjs/core/scene";
 import type {
   CameraMode,
   FlightVisualState,
+  GpuPassAttribution,
   QualityLevel,
   RenderDiagnostics,
   WeatherPreset,
@@ -82,7 +83,12 @@ import {
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
 import type { FlightRenderingSystem } from "./types";
-import { shouldStabilizeCameraHorizon } from "./cameraPresentation";
+import { attributePresentFrame } from "./frameAttribution";
+import {
+  cameraPresentationResponse,
+  shouldStabilizeCameraHorizon,
+  smoothCameraVectorToRef,
+} from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
@@ -277,6 +283,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly forward = Vector3.Right();
   private readonly up = Vector3.Up();
   private readonly cameraTarget = Vector3.Zero();
+  private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
   private readonly cameraWorld = Vector3.Zero();
@@ -287,6 +294,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly diagnosticIntervalDurations: number[] = [];
   private readonly diagnosticCpuDurations: number[] = [];
   private readonly diagnosticGpuDurations: number[] = [];
+  /** B-0: residuals computed only from three measurements of the same frame. */
+  private readonly diagnosticPresentWaitDurations: number[] = [];
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
@@ -323,6 +332,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private previousFrameStartedAt: number | null = null;
   private lastFrameIntervalMilliseconds = 0;
   private lastCpuFrameMilliseconds = 0;
+  private lastPresentWaitMilliseconds: number | null = null;
   private lastDrawCalls = 0;
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
@@ -398,6 +408,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.graph.invalidateHistory("display resize");
     });
     this.resizeObserver.observe(this.domElement);
+    // 4-3: RENDERING_PLAN.md mandates a false-colour overlay before the items
+    // that consume it. Backquote is unused by the flight input map.
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", this.handleDebugKey);
+    }
     this.engine.onContextLostObservable.add(() => {
       if (this.disposed || this.deviceLost) return;
       this.deviceLost = true;
@@ -406,6 +421,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
   }
+
+  private readonly handleDebugKey = (event: KeyboardEvent): void => {
+    if (this.disposed || event.code !== "Backquote" || event.repeat) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    this.terrain.cycleDebugOverlay();
+  };
 
   static async create(options: FlightRendererOptions): Promise<FlightRenderer> {
     const capability = await awaitRendererStartup(
@@ -448,6 +469,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
+        // 4-0: assert the limits the renderer DECLARES, not the ones it hopes
+        // for. `setMaximumLimits: false` above means the device runs at spec
+        // defaults regardless of how generous the adapter is.
+        reportedLimits: capability.limits,
       });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
@@ -703,6 +728,24 @@ export class FlightRenderer implements FlightRenderingSystem {
         scene.whenReadyAsync(),
         options.signal,
         "WebGPU scene startup",
+        SCENE_STARTUP_TIMEOUT_MILLISECONDS,
+      );
+      throwIfRendererStartupAborted(options.signal);
+      // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
+      // the load screen. Babylon 9.21 calls `createComputePipeline`
+      // synchronously on first dispatch and three of these shaders inline the
+      // ~750-line height kernel, so unwarmed they land as multi-hundred-
+      // millisecond in-frame stalls during the first second of flight — most
+      // of the `maxFrameMs` the capture reports in its warmup window. It warms
+      // them against the coarsest real page under the spawn, so the aircraft
+      // also starts over ground that already exists.
+      await awaitRendererStartup(
+        terrain.warmUpComputePipelines(
+          options.world.airport?.centerX ?? 0,
+          options.world.airport?.centerZ ?? 0,
+        ),
+        options.signal,
+        "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       throwIfRendererStartupAborted(options.signal);
@@ -1005,17 +1048,24 @@ export class FlightRenderer implements FlightRenderingSystem {
       : this.lastSignals.gpuP95Ms;
     const cpuP95Ms =
       frameTimingPercentile95(this.diagnosticCpuDurations) ?? this.lastSignals.cpuP95Ms;
+    const frameIntervalP95Ms =
+      frameTimingPercentile95(this.diagnosticIntervalDurations)
+      ?? this.lastSignals.intervalP95Ms;
     return {
       fps: this.engine.getFps(),
       frameTime: this.lastFrameIntervalMilliseconds,
       cpuFrameTime: this.lastCpuFrameMilliseconds,
       gpuFrameTime,
+      presentWaitTime: this.lastPresentWaitMilliseconds,
       drawCalls: this.lastDrawCalls,
       triangles: Math.round(this.scene.getActiveIndices() / 3),
       geometries: this.scene.geometries.length,
       textures: this.scene.textures.length,
-      terrainTiles: terrain.residentPages,
-      residentTerrainPages: terrain.residentPages,
+      terrainTiles: terrain.nodes,
+      // 4-2/4-5: the GPU atlas's residency. The CPU tile path is gone, and
+      // these fields kept their names because their MEANING survived it —
+      // resident pages are resident pages.
+      residentTerrainPages: terrain.residentSlots,
       collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       vegetationBatches: this.detail.statistics.activeBatches,
@@ -1035,6 +1085,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       activeGovernor: this.pinnedRenderScale !== null ? "pinned" : this.governorState.mode,
       gpuP95Ms,
       cpuP95Ms,
+      frameIntervalP95Ms,
+      // A percentile of per-frame residuals, never a subtraction of three
+      // independently ranked marginal percentiles.
+      presentWaitP95Ms: frameTimingPercentile95(this.diagnosticPresentWaitDurations),
       maxFrameMs,
       p999FrameMs,
       hitchCount,
@@ -1046,8 +1100,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
-      pendingTerrainPages: terrain.pendingPages,
-      terrainWorkersBusy: terrain.workersBusy,
+      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
+      terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
         cssHeight: Math.max(1, this.domElement.clientHeight),
@@ -1056,6 +1110,41 @@ export class FlightRenderer implements FlightRenderingSystem {
       inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
+      gpuPassMs: this.collectGpuPassAttribution(),
+    };
+  }
+
+  /**
+   * `4.5-C3` — sum Babylon's per-pass GPU counters.
+   *
+   * Assertion 67 has been carried open through two phases with no owner. This
+   * is its cheap, honest fraction: the counters exist whenever the adapter
+   * granted `timestamp-query`, and reading them costs nothing. They are
+   * UNCORRELATED — no submitted-frame id — so `B-0`'s rule stands and nothing
+   * here infers a present wait. What it buys is that the frame's 39-53 ms
+   * interval against a ~15 ms GPU p95 becomes inspectable instead of being a
+   * gap nobody can name.
+   */
+  private collectGpuPassAttribution(): GpuPassAttribution {
+    if (!this.engine.enableGPUTimingMeasurements) {
+      return { mainPass: null, shadows: null, terrainCompute: null, total: null };
+    }
+    const nanoseconds = (value: number | undefined): number | null =>
+      value === undefined || !Number.isFinite(value) ? null : value / 1_000_000;
+    const mainPass = nanoseconds(this.engine.gpuTimeInFrameForMainPass?.counter.current);
+    const shadowTarget = this.atmosphere.shadows.getShadowMap()?.renderTarget as
+      { gpuTimeInFrame?: { counter: { current: number } } } | null | undefined;
+    const shadows = nanoseconds(shadowTarget?.gpuTimeInFrame?.counter.current);
+    const terrainCompute = this.terrain.gpuComputeMillisecondsInFrame;
+    const parts = [mainPass, shadows, terrainCompute]
+      .filter((value): value is number => value !== null);
+    return {
+      mainPass,
+      shadows,
+      terrainCompute,
+      total: parts.length === 0
+        ? null
+        : parts.reduce((sum, value) => sum + value, 0),
     };
   }
 
@@ -1074,6 +1163,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.scene.dispose(),
       () => this.atmosphere.dispose(),
       () => this.aircraft.dispose(),
+      () => {
+        if (typeof window !== "undefined") {
+          window.removeEventListener("keydown", this.handleDebugKey);
+        }
+      },
       () => this.terrain.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
@@ -1263,7 +1357,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.desiredCamera.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(1.15))
         .addInPlace(this.up.scale(1.12));
-      this.cameraTarget.copyFrom(this.desiredCamera).addInPlace(this.forward.scale(400));
+      this.desiredCameraTarget.copyFrom(this.desiredCamera)
+        .addInPlace(this.forward.scale(400));
       // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
       // was the widest view in the game, which is backwards.
       fieldOfView = 56;
@@ -1274,37 +1369,69 @@ export class FlightRenderer implements FlightRenderingSystem {
         8.5 + Math.sin(angle * 0.7) * 2,
         Math.sin(angle) * 24,
       );
-      this.cameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
+      this.desiredCameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
       fieldOfView = 58;
     } else {
       const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
       this.desiredCamera.copyFrom(aircraftPosition)
         .subtractInPlace(this.forward.scale(profile.distance))
         .addInPlace(this.up.scale(profile.height));
-      this.cameraTarget.copyFrom(aircraftPosition)
+      this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(16))
         .addInPlace(this.up.scale(1.25));
       fieldOfView = profile.fieldOfView;
     }
-    const response = this.cameraCut
-      ? 1
-      : 1 - Math.exp(-this.currentDeltaSeconds * (this.reducedMotion ? 12 : 7));
-    Vector3.LerpToRef(this.camera.position, this.desiredCamera, response, this.camera.position);
+    const response = cameraPresentationResponse(
+      this.cameraMode,
+      this.cameraCut,
+      this.currentDeltaSeconds,
+      this.reducedMotion,
+    );
+    smoothCameraVectorToRef(
+      this.camera.position,
+      this.desiredCamera,
+      response,
+      this.camera.position,
+    );
+    smoothCameraVectorToRef(
+      this.cameraTarget,
+      this.desiredCameraTarget,
+      response,
+      this.cameraTarget,
+    );
     if (shouldStabilizeCameraHorizon(this.cameraMode, this.reducedMotion)) {
       this.desiredCameraUp.copyFromFloats(0, 1, 0);
-      Vector3.LerpToRef(
-        this.camera.upVector,
-        this.desiredCameraUp,
-        response,
-        this.camera.upVector,
-      );
-      this.camera.upVector.normalize();
     } else {
-      // Cockpit and non-stabilized views retain the aircraft's physical roll.
-      this.camera.upVector.copyFrom(this.up);
+      // Cockpit and non-stabilized exterior views retain physical roll. The
+      // exterior rig eases toward it; cockpit response is exactly one.
+      this.desiredCameraUp.copyFrom(this.up);
     }
+    smoothCameraVectorToRef(
+      this.camera.upVector,
+      this.desiredCameraUp,
+      response,
+      this.camera.upVector,
+    );
+    this.camera.upVector.normalize();
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
+  }
+
+  /**
+   * `viewportHeightPixels / (2 * tan(verticalFov / 2))`.
+   *
+   * Recomputed per frame rather than cached: it moves with the render scale,
+   * the display, and the camera's own field-of-view response to airspeed, and
+   * a stale value would make the quadtree split against a viewport that is no
+   * longer on screen.
+   */
+  private terrainPixelsPerMeter(): number {
+    const height = Math.max(1, this.engine.getRenderHeight());
+    const width = Math.max(1, this.engine.getRenderWidth());
+    const verticalFov = this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED
+      ? 2 * Math.atan(Math.tan(this.camera.fov / 2) * (height / width))
+      : this.camera.fov;
+    return height / (2 * Math.tan(Math.max(0.05, verticalFov) / 2));
   }
 
   private updateWorldVisibility(): void {
@@ -1316,6 +1443,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       z: state.position.z,
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
+      // 4-5: the one camera datum CDLOD's screen-space error needs. The
+      // camera is FOVMODE_HORIZONTAL_FIXED, so the VERTICAL half-angle it
+      // implies is what a pixel of ground error is measured against.
+      pixelsPerMeterAtUnitDistance: this.terrainPixelsPerMeter(),
     }, this.frameIndex);
     // 2-13: one shared-field wind sample per frame at the observer — the
     // plan's three bands all read this snapshot; per-instance bytes carry
@@ -1338,6 +1469,14 @@ export class FlightRenderer implements FlightRenderingSystem {
     // strength is the relative illuminance, so a backlit canopy glows in
     // daylight, dims through dusk and goes out with the sun.
     const keySnapshot = this.atmosphere.snapshot;
+    // 4-7: the horizon map's sun. The snapshot's direction points TOWARD the
+    // sun (Babylon's directional light points the other way), which is the
+    // convention the plugin's uniform documents.
+    this.terrain.setSunDirection(
+      keySnapshot.sunDirection.x,
+      keySnapshot.sunDirection.y,
+      keySnapshot.sunDirection.z,
+    );
     this.detail.setKeyLight(
       keySnapshot.sunDirection.x,
       keySnapshot.sunDirection.y,
@@ -1519,6 +1658,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     const settings = workLeverSettingsFor(cpuLevel, gpuLevel);
     this.workLeverSettings = settings;
     this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    // 4-0b rung 0: the shared compute cap moves before any visible lever.
+    this.terrain.setComputeBudgetScale(settings.computeBudgetScale);
     this.detail.setGenerationBudgetCap(
       settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
         ? null
@@ -1564,11 +1705,37 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!isUsableFrameTiming(interval)) {
       // A suspended/background tab must not poison a later active-window p95.
       this.lastFrameIntervalMilliseconds = 0;
+      this.lastPresentWaitMilliseconds = null;
       this.resetTimingSamples();
       return;
     }
     this.lastFrameIntervalMilliseconds = interval;
     this.frameIntervalDurations.push(interval);
+    // The interval ending at this frame start belongs to the CPU work saved
+    // from the preceding render. Babylon's WebGPU PerfCounter does not expose
+    // the submitted frame id for its asynchronous timestamp result, so that
+    // independent GPU aggregate must not be spliced into this frame. Keep the
+    // residual unavailable until the engine exposes a correlatable sample.
+    this.recordPresentAttribution(interval, this.lastCpuFrameMilliseconds, null);
+  }
+
+  private recordPresentAttribution(
+    intervalMilliseconds: number,
+    cpuMilliseconds: number,
+    correlatedGpuMilliseconds: number | null,
+  ): void {
+    const attribution = attributePresentFrame(
+      intervalMilliseconds,
+      cpuMilliseconds,
+      correlatedGpuMilliseconds,
+    );
+    this.lastPresentWaitMilliseconds = attribution.presentWaitMs;
+    if (attribution.presentWaitMs !== null) {
+      this.pushDiagnosticSample(
+        this.diagnosticPresentWaitDurations,
+        attribution.presentWaitMs,
+      );
+    }
   }
 
   /** Returns this frame's freshly resolved GPU sample, or null. */
@@ -1580,6 +1747,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     const counter = this.engine.getGPUFrameTimeCounter();
     // WebGPU timestamp readback is asynchronous. `current` remains unchanged
     // until another query resolves, so consume each counter result only once.
+    // The counter carries no submitted frame id; it is valid as an independent
+    // GPU distribution but deliberately not used for present attribution.
     if (counter.count === this.lastGpuCounterSampleCount) return null;
     this.lastGpuCounterSampleCount = counter.count;
     const milliseconds = counter.current / 1_000_000;
@@ -1605,9 +1774,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.diagnosticIntervalDurations.length = 0;
     this.diagnosticCpuDurations.length = 0;
     this.diagnosticGpuDurations.length = 0;
+    this.diagnosticPresentWaitDurations.length = 0;
     this.previousFrameStartedAt = null;
     this.lastFrameIntervalMilliseconds = 0;
     this.lastCpuFrameMilliseconds = 0;
+    this.lastPresentWaitMilliseconds = null;
     this.lastGpuFrameMilliseconds = null;
     this.lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
     this.lastGpuCounterSampleCount = this.engine.enableGPUTimingMeasurements

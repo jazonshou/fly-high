@@ -5,6 +5,25 @@ import {
   type WorldDefinition,
 } from "@/src/world";
 
+/** The published-height authority `5-2` installs. Null keeps the analytic kernel. */
+export interface GroundHeightMirror {
+  sampleHeight(x: number, z: number): number | null;
+}
+
+let publishedMirror: GroundHeightMirror | null = null;
+
+/**
+ * Install (or clear) the published-height authority.
+ *
+ * `4-2` added this seam so `5-2` swaps a PRODUCER rather than building
+ * plumbing: the ring, the query path and the miss counter already exist and
+ * are already asserted. Passing null restores the analytic kernel, which is
+ * what ships until erosion breaks parity.
+ */
+export function setGroundHeightMirror(mirror: GroundHeightMirror | null): void {
+  publishedMirror = mirror;
+}
+
 /**
  * The simulation-side terrain authority (0-5).
  *
@@ -23,6 +42,11 @@ import {
 
 /** Ground elevation at a world coordinate, from the active terrain authority. */
 export function sampleGroundHeight(world: WorldDefinition, x: number, z: number): number {
+  // A published page wins where one exists; a miss is counted by the mirror
+  // and served analytically. Until 5-2 installs a mirror this is the analytic
+  // kernel and nothing else, so the contract holds by construction.
+  const published = publishedMirror?.sampleHeight(x, z);
+  if (published !== null && published !== undefined) return published;
   return sampleTerrainCollisionHeight(world, x, z);
 }
 

@@ -4,6 +4,19 @@ import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
 
 /**
+ * Babylon's default camera/renderable mask is 0x0fffffff. Bit 27 is reserved
+ * for cockpit-occluding aircraft skin: chase cameras include it; cockpit
+ * cameras clear it while every ordinary world layer keeps intersecting.
+ */
+export const AIRCRAFT_EXTERIOR_LAYER_MASK = 0x0800_0000;
+
+export function aircraftCameraLayerMask(currentMask: number, cockpit: boolean): number {
+  return cockpit
+    ? currentMask & ~AIRCRAFT_EXTERIOR_LAYER_MASK
+    : currentMask | AIRCRAFT_EXTERIOR_LAYER_MASK;
+}
+
+/**
  * Babylon equivalent of the legacy aircraft presentation contract.
  *
  * The body frame is deliberately renderer-independent and right-handed:
@@ -18,7 +31,7 @@ export interface AircraftVisual {
   readonly root: TransformNode;
   /** Propeller for the trainer and compressor/nozzle assembly for the jet. */
   readonly propeller: TransformNode;
-  /** Exterior pieces hidden to prevent cockpit-camera self-occlusion. */
+  /** Opaque exterior pieces isolated onto the cockpit-excluded camera layer. */
   readonly cockpitParts: readonly AbstractMesh[];
   /** All meshes owned by this visual, useful for shadow-caster registration. */
   readonly meshes: readonly AbstractMesh[];
@@ -26,4 +39,3 @@ export interface AircraftVisual {
   setCockpitView(enabled: boolean): void;
   dispose(): void;
 }
-

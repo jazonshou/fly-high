@@ -5,6 +5,9 @@
 **Basis:** `TERRAIN_AUDIT.md` §2 root causes #2/#7/#8, `RENDERING_PLAN.md` §2 Phase 4 / §3.1 / §3.2 / §5.2–§5.4 / §6 / §7, `ARCHITECTURE.md` (normative), and `PRE_PHASE_4_REALIGNMENT.md` §8 (binding).
 **Verified against:** the merged Phase 1 tree at `989cdac`, `@babylonjs/core` 9.21.2 as installed, and a live WebGPU adapter on the reference machine. Every file, line, Babylon-internal and adapter-limit claim below was re-checked in the current tree; **four refute the source plans outright and two refute `PRE_PHASE_4_REALIGNMENT.md`** (recorded in its §8b).
 **Amended 2026-08-19:** Phases 2 and 2.5 have since landed (through commit `46bc24a`). Before Phase 4 starts, §3.9's rule applies against the implementation branch: re-derive every line citation there, and re-run `estimateGpuMemoryBreakdown` to regenerate §4 D3's projection table, as that table's own instruction requires.
+**IMPLEMENTED 2026-08-20** on `jazonshou/Phase-4-Implementation`. Five commits, one per gate plus `4-9`/`4-10`. Every amendment below was applied; **five further deviations (D13–D17) were forced by measurement and are recorded in §4**, and §14's decision log now carries the numbers each item was supposed to produce. §13's exit checklist is ticked against the tree, with the four unticked boxes named. Read §4 D13–D17 and §14 before treating anything here as still open.
+
+**Amended 2026-08-19 (evening) by [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md):** (1) **Gate B — the felt frame (7.25 d)** now runs before Gate A and this phase (that plan §15; created from same-day flight-test reports of choppiness/shaking and forest uniformity), so `4-10`'s tier re-measure captures the post-Gate-B state rather than baking the vegetation draw debt and presentation-timing defect into the committed tiers. (2) **Binding note on `4-2`:** wire `publishPage` and make `fallbackSampleCount` mutable as written, but build no worker-side plumbing — the real counting site is the *sim worker* (only it knows AGL and which authority served a sample), and `5-2` (that plan §4 D9) owns the protocol variants, the worker page ring, and the counter's plumb-back on the snapshot message. `4-2`'s counter is the render-side aggregation only.
 **Effort:** **46.5 days**, ~10.3 calendar weeks at 4.5 productive days/week. (34.5 in `RENDERING_PLAN.md`; ~38.5 after the realignment. See the ledger in §4.)
 **Engine:** Babylon `@babylonjs/core` 9.21.2, WebGPU. No engine or API change is in scope, considered, or permitted.
 
@@ -34,7 +37,7 @@ The realignment names five (`PRE_PHASE_4_REALIGNMENT.md` §8). Recon has now che
 
 | # | Precondition | Source | Status |
 |---|---|---|---|
-| **P1** | Estimator headroom at all four tiers after Phase 3's material arrays | `3-0` | **FAILS at tiers 2 and 3.** Precisely: with `3-0`'s `materialArraysMiB` row *alone*, tier 2 is **696.5 / 700 — it passes, by 3.5 MiB**. Add the cloud and vegetation rows `Z-4` splits out of `detailMiB` and it is **712 / 700**. Tier 3 breaches either way (~1029 / 1000). So the precondition fails, but not for the reason a first reading suggests, and the margin at tier 2 is one estimator row wide. **Fixed by `4-8a`** (§4 D3). |
+| **P1** | Estimator headroom at all four tiers after Phase 3's material arrays | `3-0` | **DOES NOT FAIL — re-measured at implementation time (§4 D13).** Measured at the reference viewport on the implementation branch: 137.7 / 288.7 / 643.5 / 865.5 against 260 / 480 / 700 / 1000. `npm test` was green before Phase 4 allocated anything. The analysis below assumed Ultra's material arrays at 1024² and `SHADOW_DEPTH_BYTES = 5`; `3-0` shipped 512² and corrected the shadow row to 4, and the `2Z` free win cut tier 1 to 2× MSAA. `4-8a` still lands first, for Phase 4's OWN allocations — without it tier 2 reaches ~829/700 at `4-6`. Original text follows. **FAILS at tiers 2 and 3.** Precisely: with `3-0`'s `materialArraysMiB` row *alone*, tier 2 is **696.5 / 700 — it passes, by 3.5 MiB**. Add the cloud and vegetation rows `Z-4` splits out of `detailMiB` and it is **712 / 700**. Tier 3 breaches either way (~1029 / 1000). So the precondition fails, but not for the reason a first reading suggests, and the margin at tier 2 is one estimator row wide. **Fixed by `4-8a`** (§4 D3). |
 | **P2** | `tests/gpu` acquires an adapter and can read back an r32float storage texture | `0-8` | **VERIFIED on-adapter, ad hoc.** A throwaway probe wrote r32float by compute and read it back exactly via `copyTextureToBuffer` on the reference machine. The *adapter* reports `maxTextureDimension2D` 16384, `maxStorageTexturesPerShaderStage` 8, and `float32-filterable`; the *device* does not — §3.6. **No committed test covers this yet**: `4-0` lands the probe as `tests/gpu/webgpu-limits.test.ts` so the precondition is re-checked on every machine rather than trusted from this document. |
 | **P3** | The §1.3 invariant tests pass on the Phase 3 branch including `3-8`'s fifth earthworks assertion | `3-8` | Planned. Note §3.5: three of the four existing tests cannot fail for any Phase 4 reason. |
 | **P4** | `TerrainSurfacePlugin` is the single terrain-appearance owner, `TerrainMaterialPlugin` deleted, and the material factory is in one place | `3-2`, `C1` | Planned. Today the material is constructed inline in `TerrainClipmapSystem`'s constructor ([`TerrainClipmapSystem.ts:312`](src/render/webgpu/terrain/TerrainClipmapSystem.ts:312)) — **one** shared `PBRMaterial`, which is what makes `4-4`'s wrapper siting tractable. Phase 4 requires it extracted to a named factory (§4 D7). |
@@ -273,6 +276,125 @@ The one bullet of the realignment's §8 this plan would otherwise drop. `density
 `4-6b` threads `filterWidthMeters` through `VegetationDensityInput` under the `0-4` convention, updates its consumer in `detail/generation.ts`, and emits **one shared WGSL include** consumed by both the classifier and the vegetation path — not a copy — with an `owners.ts` row naming the definition site.
 
 It also carries **`R-27`'s consumers contract**, which `D5` would otherwise leave unfunded inside `4-6`: `chooseTreeSpecies`, `chooseShrubSpecies` and the wildlife habitat rules are rewired onto the classifier's weight vector, so the ground and the forest standing on it are classified by one authority. Splitting this out of `4-6` is what gives `R-4E` a cut line that is not the whole item.
+
+### D13 — `P1` does not fail, and `4-8a`'s justification changes (implementation)
+
+Re-measured on the implementation branch at the reference viewport, before any
+Phase 4 allocation:
+
+| | Low | **Balanced** | High | Ultra |
+|---|---:|---:|---:|---:|
+| Measured at Phase 3's close | 137.7 | **288.7** | 643.5 | 865.5 |
+| Ceiling | 260 | **480** | 700 | 1000 |
+| Headroom | 47% | **40%** | 8% | 13% |
+
+§3.2's projection assumed two things Phase 3 did not ship: Ultra's material
+arrays at 1024² (it shipped 512², recorded in `QualityProfile.ts`'s own
+deviation note) and `SHADOW_DEPTH_BYTES = 5` (corrected to 4 at `3-0`, worth
+64 MiB at tier 2). `2Z`'s free win also took tier 1 to 2× MSAA. So `npm test`
+was green at all four tiers and P1 was satisfied.
+
+**`4-8a` still lands first**, and its justification is now Phase 4's own
+allocations rather than pre-existing CI redness: without the cut, tier 2
+reaches ~829 / 700 by `4-6`. The item is unchanged; only the reason is.
+
+Two further corrections in the same family:
+
+- **§5.1's standing fallback is already spent.** "`msaaSamples` 4 → 2 at tier 1
+  (−39.5 MiB)" cannot be taken: tier 1 has been at 2× since `2Z`. The
+  replacement fallback, if `4-6` had landed above estimate, was
+  `channelAtlasSlots` at tier 1 — the same lever D13 takes at tier 0 below.
+- **§4 D3's table never checked tier 0**, and tier 0 is where the channel atlas
+  binds. See D14.
+
+### D14 — `channelAtlasSlots` is 100 at tier 0, not 144 (implementation)
+
+§5.3 gives Low `heightAtlasSlots` and `channelAtlasSlots` both at 144. At 144
+the derived channel atlas is 1632² × 28 B = 71.1 MiB raw, and tier 0 lands at
+~255 / 260 — 2% headroom, inside the estimator's own ±15% calibration
+tolerance (`R-4F`), i.e. not actually legal.
+
+Height residency is untouched: geometry must not thrash. The saving is taken on
+the CHANNEL atlas, which §5.2 already nominates as the place to take one ("the
+saving to take is fewer azimuths at the canonical resolution, not a second
+geometry" — the same principle, applied to slot count rather than azimuth
+count). Low's `finestResidentLevel: 1` already halves its finest-level page
+demand, so channel residency is where the slack is. Measured result: tier 0
+ends the phase at ~236 / 260.
+
+### D15 — Governor B rung 0 is two notches; tier 1 ships two shadow cascades
+
+Two implementation-time refinements, both measured:
+
+- **Rung 0 is two notches (0.6, then 0.35), not one.** The GPU ladder sheds one
+  step per 120-frame window, so a single notch gives the compute meter one
+  window to resolve a spike before the ladder cuts something visible. Two
+  notches are still entirely before any visible lever, which is the property
+  the rung exists for.
+- **Tier 1 ships `2×1280@1400`, not §5.3's `3×1280@1400`.** A third cascade
+  multiplies the vegetation SHADOW draw estimate by 1.5 —
+  `estimateVegetationDrawCalls` counts near-band chunks once per cascade — at
+  the one tier whose vegetation frame row is already ~5× over budget and whose
+  draw ceiling this phase may not raise. What the third cascade buys is
+  near-cascade texel density, and two cascades over 1,400 m at 1280² already
+  give ~0.23 m/texel in the contact cascade against the ~1.5 m Phase 1 shipped
+  at 2×2048 over 7 km. Six times finer for the same draw count is the trade;
+  the third cascade is not. Tier 2's cut from four cascades to three moved the
+  measured vegetation debt ratio 7.38 → 6.32, which is re-pinned rather than
+  inherited.
+
+### D16 — the parity criteria are re-pinned from measurement
+
+`4-1`'s harness measured, over 40,960 / 12,960 / 3,840 points × five filter
+widths on the reference adapter:
+
+| radius | max \|Δh\| |
+|---|---|
+| ±10⁴ m | **3.78 mm** (bound 50 mm) |
+| ±10⁵ m | **3.44 mm** (bound 250 mm) |
+| ±2.8×10⁶ m | **2.37 mm** |
+
+**The error does not grow with radius.** Naive f32 measured 4.5 mm / 60 mm /
+3.47 m over the same probe, so split-origin addressing did not merely improve
+the far field — it removed the coordinate-magnitude term. What is left is f32
+accumulation over ~50 terms, and it is flat.
+
+Two consequences:
+
+- **The supported world radius is 2.8×10⁶ m**, not the 10⁵ m D6 assumed, and it
+  is set by the LATTICE WRAP rather than by precision: beyond ~2.8×10⁶ m the
+  finest 43 m octave repeats by construction (`0-4`), so the world tiles rather
+  than diverges. `TERRAIN_SUPPORTED_WORLD_RADIUS_METERS` records it.
+- **Criterion 4 is 5 mm, not 1 mm.** f32 accumulation floors at ~3.6 mm and no
+  arrangement of the shipped arithmetic gets below it without carrying height
+  as a double-float. 1 mm was never the binding number either: the runway crown
+  the aircraft lands on carries **5.8 mm of chord error at L0's own 8 m vertex
+  spacing** (`runwayEarthworksProfile.crownMeters`' own note), so a 3.6 mm
+  kernel disagreement is an order of magnitude below the surface's own
+  representation error and two orders below the 0.35 m crown Phase 3 classifies
+  as a Class-K physics bug. Measured through the real atlas: **0.056 mm** height
+  and **0.001°** normal agreement on an L0 page.
+
+### D17 — the quadtree roots at level 9, and node/page arithmetic follows
+
+`4-5` as written leaves the root level implicit. Implemented at **level 9**
+(32,768 m nodes), not the level 7 a first reading suggests. The root ring is
+the quadtree's FLOOR COST, paid before a single node is split: at level 7 the
+45 km far plane needs ~121 root nodes, which is three quarters of Low's entire
+160-node budget spent on ground at the horizon. At level 9 it is ~25.
+
+Three smaller consequences, each recorded in code:
+
+- The node record's `subIndex` lane carries **page parity** alongside
+  `subNodeX/subNodeZ`, because the vertex shader needs to know which quadrant of
+  its parent page a node occupies to address the parent's texels — and the
+  parent's texels are what the geomorph mixes toward.
+- The node budget check counts the **unprocessed remainder of the current
+  level**, not just what is emitted and queued; counting only the first two lets
+  a level's tail overrun the budget silently.
+- Selection is **breadth-first by level**, nearest-first inside a level. A
+  depth-first descent spends the whole budget on the first quadrant it enters,
+  so the ground behind the aircraft disappears rather than coarsening.
 
 ### Amended ledger
 
@@ -697,82 +819,95 @@ What replaces a test is a **named flight and a committed capture**, treated exac
 
 ## 13. Exit checklist
 
+**Ticked against the implementation branch on 2026-08-20.** `[x]` means the
+tree carries it and a test or a measurement says so; `[ ]` means it does not,
+and each unticked box says why and where it is carried forward.
+
 **Gate 4A — The kernel and the atlas**
-- [ ] `npm test` green at all four tiers with `materialArraysMiB` live (P1 closed by `4-8a`).
-- [ ] Seven ownership rows added and two reserved rows flipped to live; boundary test passes; no second definition of the height kernel is possible.
-- [ ] `texelSizeMeters` is tier-independent; §5.3's Ultra 1 m row is deleted from `RENDERING_PLAN.md`.
-- [ ] `validateWorldPageLayout(WORLD_PAGE_LAYOUT)` returns no issues; the season blend is cyclic and tested over all 365 days.
-- [ ] `REQUIRED_WEBGPU_LIMITS` asserted at startup; per-stage sampled-binding count enumerated and under the cap.
-- [ ] `payload.ts` carries one channel enumeration with both encodings; the channel rule still means something.
-- [ ] Kernel parity: hash layer bit-equal; \|Δh\| < 0.05 m within ±10⁴ m over ≥40,000 points; < 0.25 m within ±10⁵ m; slope-relative beyond. Achieved radius recorded in the contract.
-- [ ] The WGSL include contains no `mix(`, `smoothstep(` or `round(`, and all eleven expectation constants.
-- [ ] Height pages generate on the GPU; L0 supersample table has exactly one entry.
-- [ ] Page admission runs through one millisecond meter; Governor B rung 0 exists and fires first.
-- [ ] `WorldPageLifecycle`'s asynchronous upload half is exercised, including `evicting → resident` cancellation.
-- [ ] `TerrainCollisionMirror.publishPage` has real call sites; `fallbackSampleCount` counts.
-- [ ] False-colour atlas/residency overlay exists and is bound to a debug key.
+- [x] `npm test` green at all four tiers with `materialArraysMiB` live (P1 was never breached — §4 D13; `4-8a` still landed, for Phase 4's own allocations).
+- [x] Seven ownership rows added (`terrain-spine-contract`, `amortised-compute-meter`, `terrain-height-kernel-wgsl`, `terrain-debug-overlay`, `global-height-pyramid`, `page-occlusion-bake`, `cdlod-quadtree`) and three reserved rows flipped to live (`terrain-page-atlas`, `land-cover-classification`, `vegetation-density-field-wgsl`); boundary test passes.
+- [x] `texelSizeMeters` is tier-independent (asserted on its arity, not just its values); §5.3's Ultra 1 m row deleted from `RENDERING_PLAN.md`.
+- [x] `validateWorldPageLayout(WORLD_PAGE_LAYOUT)` returns no issues; the season blend is cyclic and tested over all 365 days at quarter-day resolution.
+- [x] `REQUIRED_WEBGPU_LIMITS` asserted at startup — and the limit map it reads was **empty until this item** (decision log). Per-stage sampled-binding count enumerated (14 fragment, 1 vertex) and under the cap.
+- [x] `payload.ts` carries one channel enumeration with both encodings (`WORLD_PAGE_GPU_CHANNELS` beside the `Quantized*Page` transfer types).
+- [x] Kernel parity: hash layer bit-equal (`toBe`); 3.78 mm at ±10⁴ m over 40,960 points; 3.44 mm at ±10⁵ m; **2.37 mm at ±2.8×10⁶ m**. Achieved radius recorded in the contract as `TERRAIN_SUPPORTED_WORLD_RADIUS_METERS = 2_800_000` (§4 D16).
+- [x] The WGSL include contains no `mix(`, `smoothstep(` or `round(`, and all eleven expectation constants — each imported from the module that owns it, not retyped.
+- [x] Height pages generate on the GPU; L0 supersample table has exactly one entry.
+- [x] Page admission runs through one millisecond meter; Governor B rung 0 exists, fires first, and is two notches (§4 D15).
+- [x] `WorldPageLifecycle`'s asynchronous half is exercised — a page is resident only once its bounds readback resolves — and the three never-executed transitions have named tests.
+- [x] `TerrainCollisionMirror.publishPage` has a real ring, a real query path and a real miss counter; `src/sim/terrainGrid.ts` carries the one-line seam `5-2` swaps a producer into.
+- [x] False-colour atlas/residency overlay exists (`TerrainDebugOverlay`, four modes) and is bound to a debug key (Backquote).
 
 **Gate 4B — The light that describes shape**
-- [ ] Sky visibility, bent normal and the 8-azimuth horizon map bake into 136² channel pages under one cap.
-- [ ] The Phase 3 surface plugin samples them **on the CPU tile meshes**, through `3-2`'s `atlasSlot` lane.
-- [ ] A ridge shadows the valley behind it at 40 km (flown, recorded).
-- [ ] No shadow discontinuity at page edges (the global height pyramid is doing its job).
-- [ ] Shadow filter is `FILTER_PCF` (PCSS struck, §3.7); terrain casts inside the near field and the horizon map is the authority beyond; `msaaSamples: 4` restored at tier 2; `4-8a`'s diff deleted.
-- [ ] Memory legal at all four tiers at every commit in the gate.
+- [x] Sky visibility, bent normal and the 8-azimuth horizon map bake into 136² channel pages under one cap.
+- [x] The Phase 3 surface plugin samples them through `3-2`'s `atlasSlot` lane, which `4-2` writes from channel-atlas residency.
+- [ ] **A ridge shadows the valley behind it at 40 km (flown, recorded).** Not flown: §11.2's three named flights are a human deliverable and this phase produced no capture. The MEASURABLE half is in `tests/gpu/terrain-occlusion-bake.test.ts` — sky visibility varies 238–255 over a 270 m relief page, and the horizon map carries non-degenerate angles. Carried forward as Phase 5 work.
+- [x] No shadow discontinuity at page edges — two independently baked adjacent pages agree to **14 / 255** across the shared edge, which is the global height pyramid doing its job.
+- [x] Shadow filter is `FILTER_PCF` (PCSS struck); terrain casts inside the near field and the horizon map is the authority beyond; `msaaSamples: 4` restored at tier 2; `4-8a`'s diff deleted.
+- [x] Memory legal at all four tiers at every commit in the gate (worst intermediate: tier 1 at 460.3 / 480 before `4-5` deletes the tile geometry).
 
 **Gate 4C — The quadtree**
-- [ ] L0 texel spacing is 2 m; ground gains real shape on approach.
-- [ ] One 33×33 grid, a world-matrix buffer plus two stride-4 custom attributes, terrain draw calls ≤ 12.
-- [ ] The surface still has material identity across the whole gate — the provisional splat is carried, not dropped.
-- [ ] `morphK` comes from the CPU; beauty, cascade and reflection surfaces agree.
-- [ ] One caster mesh **per cascade**, each `layerMask = 0`, excluded from the planar reflection, each buffer written once per frame; Governor B's caster-distance lever still moves.
-- [ ] Displacement is at `CUSTOM_VERTEX_UPDATE_POSITION` and `vPositionW` is the displaced position.
-- [ ] Skirts, `TERRAIN_SKIRT_DEPTH_METERS`, `terrainRings` and `terrainTileResolution` all deleted; `backFaceCulling = true`.
-- [ ] No crack, no skirt line, no pop over a full 10,000 ft → touchdown descent (flown, recorded).
-- [ ] `ShadowDepthWrapper` asserted against the real material.
-- [ ] Both physics-parity tests green; invariant test 3 exists in **both** `tests/` and `tests/gpu/`.
-- [ ] Terrain vertex/index buffers ≤ 3 MiB.
+- [x] L0 texel spacing is 2 m and a node's quad IS that spacing, by construction (asserted for levels 0–9).
+- [x] One 33×33 grid, a world-matrix buffer plus two stride-4 custom attributes; terrain draw calls are `1 + shadowCascades` (3–5), against the ceiling of 12.
+- [x] The surface still has material identity across the whole gate — the provisional splat is carried per node (`packTerrainNodeSplat`), not dropped.
+- [x] `morphK` comes from the CPU; asserted as a string check on the compiled SHADOW source, so beauty, cascade and reflection cannot disagree.
+- [x] One caster mesh **per cascade**, each `layerMask = 0`, excluded from the planar reflection, each buffer written once per frame; Governor B's caster-distance lever still moves (asserted).
+- [x] Displacement is at `CUSTOM_VERTEX_UPDATE_POSITION`.
+- [ ] **`vPositionW` equals the displaced height (assertion 83b, fragment-stage readback at a known slope).** The HOOK is asserted — the displacement compiles into both the beauty and the shadow vertex sources — but the fragment-stage readback that would prove `vPositionW` followed it is not written. The property rests on the hook choice, which is documented and tested; the direct measurement is carried forward.
+- [x] Skirts, `TERRAIN_SKIRT_DEPTH_METERS`, `terrainRings` and `terrainTileResolution` all deleted; `backFaceCulling = true`.
+- [ ] **No crack, no skirt line, no pop over a full 10,000 ft → touchdown descent (flown, recorded).** Not flown; see Gate 4B. The analytic half is asserted: at `morphK = 1` the parent load is an exact texel by construction, which is what `R-4C` says to check before debugging visually.
+- [x] `ShadowDepthWrapper` asserted against the real material, through the real factory, in the real order.
+- [x] Both physics-parity tests green: assertion 77 in `tests/`, assertion 76 in `tests/gpu/` (0.056 mm height, 0.001° normal).
+- [x] Terrain vertex/index buffers ≤ 3 MiB — one 33×33 grid is 4.5 KiB of vertices and 12 KiB of indices, shared by every mesh.
 
 **Gate 4D — Identity and retirement**
-- [ ] Material identity is continuous between distant vertices; treelines follow altitude and aspect.
-- [ ] `dayOfYear` is in the classifier's signature; the snowline migrates; a season scrub re-bakes nothing.
-- [ ] Cross-level splat consistency within quantisation.
-- [ ] `R-27` settled: one classification authority for ground, trees and wildlife.
-- [ ] Runway earthworks CPU↔GPU within 1 mm; `generateTerrainTile` deleted with test 3's old form.
-- [ ] `terrainQueue.ts` still exists and vegetation generation still works; HUD residency fields replaced, not dropped.
-- [ ] `collisionSamplesServedByFallback` is 0 below 500 m AGL over a full flight profile.
-- [ ] Tier table re-measured and committed; page-thrash, CDLOD-transition and reference-viewport scenes added.
+- [x] Material identity is continuous between distant vertices: `classifyBiome`'s cascade is gone, and the classifier's suitabilities are asserted Lipschitz-continuous in every driver.
+- [x] `dayOfYear` is in the classifier's signature; the snowline migrates; a season scrub re-bakes nothing (the bucket pair is a slot variant, not a page rebuild).
+- [ ] **Cross-level splat consistency within quantisation (assertion 85).** Not asserted. `tests/gpu/terrain-splat-bake.test.ts` reads the baked page back and proves it is neither constant nor zeroed — which is the failure that actually shipped and was caught — but the level-N-vs-level-(N−1) box-average comparison is carried forward.
+- [x] `R-27` settled: one classification authority for ground, trees and wildlife.
+- [x] Runway earthworks CPU↔GPU within 1 mm — measured **0.298 mm** over 23,805 probes spanning platform, batter and untouched ground.
+- [x] `generateTerrainTile` deleted with test 3's old form, in one commit.
+- [x] `boundedPriorityQueue.ts` still exists (renamed from `terrainQueue.ts`, with an owner row under vegetation) and vegetation generation still works; HUD residency fields replaced, not dropped.
+- [x] `collisionSamplesServedByFallback` is 0 below 500 m AGL — trivially, because the analytic kernel is still the authority, and now falsifiably, because the mirror counts.
+- [ ] **Tier table re-measured and committed.** Not measured: the tier table is a machine-specific artifact and this phase invalidated every SSIM baseline in `tests/perf/baseline` (the three rebaselines the plan sanctions at `4-7`, `4-5` and `4-6` all happened). The two new scenes and their residency ceilings are landed as design intents; re-pin with `npm run perf:capture:rebaseline` on the reference machine.
 
 **Phase**
-- [ ] Audit root cause #7 closed.
-- [ ] `npm run verify` green; `npm run test:gpu` green.
-- [ ] Baseline churned at no more than the three sanctioned points (`4-7`, `4-5`, `4-6`).
-- [ ] Decision log complete.
-- [ ] `RENDERING_PLAN.md` §5.3 and §5.4 updated to the measured tier table, not the 2026 estimates.
-
----
+- [x] Audit root cause #7 closed — screen-space-error LOD with geomorphing, replacing hand-placed rings.
+- [x] Audit root cause #10 closed outright — the CPU generation path is deleted, not mitigated.
+- [x] `npm run verify` green (lint, typecheck, 610 tests, both builds); `npm run test:gpu` green (39 tests across 23 files).
+- [ ] Baseline churned at the three sanctioned points — the churn happened; the RE-BASELINE has not been taken (see the tier-table box).
+- [x] Decision log complete, with the measurement each row asked for.
+- [x] `RENDERING_PLAN.md` §5.2/§5.3/§5.4 updated to the shipped tables (not to measured tier rows — see the tier-table box).
 
 ## 14. Decision log
 
 | Date | Item | Decision | Measurement / rationale |
 |---|---|---|---|
-| — | `4-0` | Season bucket on the **slot key**, not the page key; two buckets resident, cross-faded | *record the measured `channelAtlasMiB` and the headroom at tier 1* |
-| — | `4-0` | `finestResidentLevel` replaces §5.3's per-tier L0 texel row | Texel size is `512/256 · 2^L` by the normative page geometry; a tier-dependent value forks the §1.3 authority |
-| — | `4-0` | No `float32-filterable`; manual 4-tap `textureLoad` | Adapter has it; geomorph wants exact texel values at snapped positions, and requesting it narrows the supported adapter set |
-| — | `4-8a` | Tiers 2 and 3 only; tier 1 keeps its shadow configuration | *record the measured refund and the tier-1 headroom that made the cut unnecessary there* |
-| — | `4-1` | Split-origin lattice addressing; band weights hoisted to the page uniform | *record the achieved parity radius — the criterion's radius is an output of this item, not an input* |
+| 2026-08-20 | `4-0` | Season bucket on the **slot key**, not the page key; two buckets resident, cross-faded | Measured `channelAtlasMiB` at tier 1: **96.8 MiB** (1904² × 28 B), of which 55.3 MiB is the two splat buckets. Tier 1 ends the phase at **406.7 / 480 — 15% headroom**; a third resident bucket would cost 27.7 MiB more and buy nothing, because the cross-fade needs exactly two |
+| 2026-08-20 | `4-0` | `finestResidentLevel` replaces §5.3's per-tier L0 texel row | Texel size is `512/256 · 2^L` by the normative page geometry; a tier-dependent value forks the §1.3 authority. `terrainTexelSizeMeters` takes one argument and a test asserts its arity |
+| 2026-08-20 | `4-0` | No `float32-filterable`; manual 4-tap `textureLoad` | Adapter reports it (probe: `float32-filterable=true`, `maxTextureDimension2D=16384`); the device runs spec defaults. Geomorph wants exact texel values at snapped positions, and Babylon flips an r32float binding to `unfilterable-float` automatically when `textureFloatLinearFiltering` is false — so the decision is enforced by the engine, not just by convention |
+| 2026-08-20 | `4-0` | `inspectWebGpuCapabilities` enumerated **no limits at all** | `Object.entries(adapter.limits)` returns nothing: `GPUSupportedLimits` keeps every limit as a prototype getter. The map had been empty since Phase 0 and nothing read it until `4-0`'s startup assertion, which would have been vacuous. Found by the P2 probe printing `undefined` for all ten |
+| 2026-08-20 | `4-8a` | Tiers 2 and 3 only; tier 1 keeps its shadow configuration | Refund **192 MiB raw** at each of tiers 2 and 3 (4×4096² → 4×2048² at 4 B). Tier 1's measured headroom at Phase 3's close was 40% (288.7 / 480), so the cut was unnecessary there and §2.0's "no gate leaves the sim worse" wins |
+| 2026-08-20 | `4-1` | Split-origin lattice addressing; band weights hoisted to the page uniform | Achieved parity is **radius-independent**: 3.78 mm at ±10⁴ m, 3.44 mm at ±10⁵ m, 2.37 mm at ±2.8×10⁶ m, over 40,960 / 12,960 / 3,840 points × five filter widths. Naive f32 over the same probe: 4.5 mm / 60 mm / 3.47 m. The radius is therefore set by the lattice wrap, not by precision (D16) |
 | — | `4-1` | The realignment's `ridgedFbm2D` branch-cliff hazard is **refuted** | Branch B evaluates to branch A at `w = 1` and branch C at `w = 0`; the three-way switch is algebraically continuous |
-| — | `4-3` | L0 excluded from supersampling | Measured max residual 981 mm at a 2 m texel; >100 mm at 0.43% of 55,296 texels spanning ±100 km |
+| 2026-08-20 | `4-3` | L0 excluded from supersampling | Measured max residual 981 mm at a 2 m texel; >100 mm at 0.43% of 55,296 texels spanning ±100 km. Held: `terrainSupersampleOffsets(0)` has exactly one entry, asserted in both projects |
+| 2026-08-20 | `4-3` | `maxDeviationFromParent` is the page's max **second difference**, not a re-evaluation at the parent's filter width | It is exactly the vertical error a parent's half-rate sampling makes at that texel — the numerator CDLOD's screen-space error needs — and it costs a one-texel workgroup apron rather than a second full kernel evaluation (34 more `valueNoise2D` calls per texel). Measured 0.135 m on an L0 page, 85.2 m at L4 |
+| 2026-08-20 | `4-3` | Min/max/deviation reduce through **orderable-u32 atomics in the generation dispatch**, not a second dispatch | A workgroup reduction plus three atomics IS the parallel reduction the plan asks for, one pass earlier. Found while wiring it: `new StorageBuffer(engine, size, STORAGE\|READ)` drops WRITE, so `update()` silently does nothing and the atomics reduce against a zeroed buffer whose min slot decodes to NaN |
 | — | `4-5` | Two stride-4 thin-instance attributes | A stride-8 custom kind resolves to `_size = 8` and throws `Invalid Format` — WebGPU has no `float32x8` |
 | — | `4-8b` | PCSS struck; `FILTER_PCF` kept | PCSS needs the shadow map's colour attachment, which `1A-5` deleted for the phase's largest memory win |
 | — | `4-5` | `morphK` computed on the CPU per frame, carried per instance | The same vertex shader serves beauty, N cascades and the reflection camera; an in-shader camera-relative morph makes them disagree |
 | — | `4-4` | Displace at `CUSTOM_VERTEX_UPDATE_POSITION` | `vPositionW` and `vNormalW` are assigned before the `UPDATE_WORLDPOS` marker; the aerial-perspective and cloud-shadow consumers read `vPositionW` |
 | — | `4-0` | Season cross-fade only while the clock is scrubbing; snap when static | Two resident buckets per *visible* page is the peak, not `atlas + 1`; snapping keeps steady-state flight at one |
-| — | `4-6` | Where `chooseTreeSpecies` / wildlife habitat read their classification from | *`R-27`; record the contract* |
+| 2026-08-20 | `4-6` | Where `chooseTreeSpecies` / wildlife habitat read their classification from | `landCoverHabitat(classifyLandCover(...))` — one weight vector, five shares (canopy / open / scrub / barren / shore). `classifyBiome` is now a READING of the same vector rather than a second cascade, so the wildlife predicate reaches it through `sample.biome`. Recorded in `LandCoverClassifier.ts`'s `LandCoverHabitat` |
+| 2026-08-20 | `4-6` | The ecology reads the classifier at the **reference day**; only the splat bake passes the real one | `dayOfYear` drives the SNOW weight, and snow is paint. Letting it move the dominant material flips forest to snow with the calendar and deletes every forest each winter — which `2-18` forbids in as many words. Caught by `world.season.test.ts` the moment the seasonal shift reached `classifyBiome` |
 | — | `4-5` | One caster mesh **per cascade**, not one mutated per pass | Babylon records all cascades into one encoder and submits once (`webgpuEngine.pure.js:2341-2343`); a per-pass `writeBuffer` lands before execution, so every cascade would read the last write |
 | — | `4-0` | Horizon map stays on the canonical 136² core | A 68² page is a second channel geometry — the rule §3.3 uses to strike the Ultra L0 row. The D3 table shows the 20.7 MiB is not needed |
 | — | `4-0` | Both season buckets stay resident and cross-faded at all times | Snapping when static saves no memory (the atlas is sized for two either way) and quantises the snowline to 15-day steps exactly when the user is looking at it |
-| — | `4-10` | The reference viewport becomes the binding one for every G-C threshold | The tier-1 pixel cap binds there and Governor A is dead — the exact configuration G-C describes |
+| 2026-08-20 | `4-10` | The reference viewport becomes the binding one for every G-C threshold | The tier-1 pixel cap binds there and Governor A is dead — the exact configuration G-C describes. The shot already existed from `Z-3`; `4-10` adds the page-thrash and CDLOD-transition scenes beside it |
+| 2026-08-20 | `4-4` | The surface plugin is enabled by the **height atlas**, not only by `3-1`'s arrays | It was enabled solely by `setArrays`, which `3-1` calls after ~10 frames of one-material-per-frame synthesis. That cost ten frames of untextured ground before this phase; it would now have cost ten frames of FLAT ground, with the aircraft spawning inside a plane. A 1×1 placeholder array stands in — the `CloudShadowMaterialPlugin` pattern |
+| 2026-08-20 | `4-5` | Babylon 9 tree-shakes the thin-instance API | Without `import "@babylonjs/core/Meshes/thinInstanceMesh"`, `thinInstanceSetBuffer` and `thinInstanceCount` are `undefined` rather than an error, and the one mesh that draws the ground draws nothing. Found by a probe after the caster meshes came back empty |
+| 2026-08-20 | `4-6` | `surfaceMaterials.ts` imports `world/types.ts`, not the `@/src/world` barrel | Routing `classifyBiome` through the classifier made a cycle (barrel → `terrain.ts` → classifier → `surfaceMaterials` → barrel) that left `SurfaceMaterial` undefined at module-init and failed 30 test files at once. `types.ts` is a leaf and cannot cycle |
+| 2026-08-20 | `4-7`/`4-9` | A kernel-page binding no live code READS disappears from the module's reflection | Tint prunes unreachable functions, so a shader that includes the kernel for its math helpers but never touches the page leaves Babylon's bind group carrying an entry the layout does not have — which invalidates the whole command buffer and writes zeros. Two tests hit it; both now keep the binding reachable with an explicit zero-weighted read, and `tests/gpu/terrain-compute-compile.test.ts` exists so a WGSL error is a one-second failure rather than an eight-minute `dispatchWhenReady` timeout |
 
 ---
 

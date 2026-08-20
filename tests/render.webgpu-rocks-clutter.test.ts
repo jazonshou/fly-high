@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { TerrainBiome } from "../src/world";
+import { hashSeed, TerrainBiome } from "../src/world";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
+import { densityField } from "../src/render/webgpu/detail/densityField";
 import { normalAlignedQuaternion } from "../src/render/webgpu/detail/instanceFormat";
 import {
   buildClutterPrototype,
@@ -50,6 +51,57 @@ function cellAt(
   });
 }
 
+/**
+ * Select a contiguous six-cell closed-canopy fixture. Gate B's province gate
+ * makes the old cells at world zero valid meadow, so habitat tests must name
+ * the habitat they intend to measure rather than inherit it by accident.
+ */
+function selectClosedForestWindow(): {
+  readonly cells: readonly { readonly x: number; readonly z: number }[];
+  readonly meanDensity: number;
+} {
+  const seedHash = hashSeed("rocks-clutter");
+  let best = { originX: 0, originZ: 0, meanDensity: Number.NEGATIVE_INFINITY };
+  for (let originZ = -64; originZ <= 62; originZ += 2) {
+    for (let originX = -64; originX <= 62; originX += 2) {
+      let total = 0;
+      let probes = 0;
+      for (let dz = 0; dz < 2; dz += 1) {
+        for (let dx = 0; dx < 3; dx += 1) {
+          for (const localZ of [32, 96]) {
+            for (const localX of [32, 96]) {
+              total += densityField(seedHash, {
+            filterWidthMeters: 0,
+                x: (originX + dx) * 128 + localX,
+                z: (originZ + dz) * 128 + localZ,
+                heightMeters: 320,
+                seaLevelMeters: 0,
+                slope: 0.08,
+                moisture: 0.7,
+                dayOfYear: 171,
+              }).treeStemsPerSquareMeter;
+              probes += 1;
+            }
+          }
+        }
+      }
+      const meanDensity = total / probes;
+      if (meanDensity > best.meanDensity) {
+        best = { originX, originZ, meanDensity };
+      }
+    }
+  }
+  const cells = [];
+  for (let dz = 0; dz < 2; dz += 1) {
+    for (let dx = 0; dx < 3; dx += 1) {
+      cells.push({ x: best.originX + dx, z: best.originZ + dz });
+    }
+  }
+  return { cells, meanDensity: best.meanDensity };
+}
+
+const CLOSED_FOREST_WINDOW = selectClosedForestWindow();
+
 function rotateByQuaternion(
   v: readonly [number, number, number],
   q: readonly [number, number, number, number],
@@ -90,9 +142,10 @@ describe("clutter density (2-15)", () => {
   it("piles litter under closed canopy, not on open grassland", () => {
     let forest = 0;
     let grass = 0;
-    for (let cell = 0; cell < 6; cell += 1) {
-      forest += cellAt(sampler(TerrainBiome.FOREST, 0.7), 171, cell, 0).clutter.length;
-      grass += cellAt(sampler(TerrainBiome.GRASSLAND, 0.3), 171, cell, 0).clutter.length;
+    expect(CLOSED_FOREST_WINDOW.meanDensity, "clutter fixture is closed forest").toBeGreaterThan(0.03);
+    for (const cell of CLOSED_FOREST_WINDOW.cells) {
+      forest += cellAt(sampler(TerrainBiome.FOREST, 0.7), 171, cell.x, cell.z).clutter.length;
+      grass += cellAt(sampler(TerrainBiome.GRASSLAND, 0.3), 171, cell.x, cell.z).clutter.length;
     }
     expect(forest).toBeGreaterThan(60);
     expect(grass).toBeLessThan(forest / 2.5);

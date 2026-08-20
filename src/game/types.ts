@@ -95,6 +95,7 @@ export interface RenderDiagnostics {
   triangles: number;
   geometries: number;
   textures: number;
+  /** 4-5: CDLOD nodes drawn this frame (was CPU tile meshes). */
   terrainTiles: number;
   /** What the user selected; reported separately from what is actually running. */
   requestedRenderingMode: RequestedRenderingMode;
@@ -106,6 +107,8 @@ export interface RenderDiagnostics {
   cpuFrameTime: number;
   /** GPU frame duration when timestamp-query is available. */
   gpuFrameTime: number | null;
+  /** Present/compositor residual for the most recent fully correlated interval. */
+  presentWaitTime: number | null;
   visibleInstances: number;
   /**
    * Frustum-surviving vegetation batches — one draw per (prototype, chunk)
@@ -135,6 +138,10 @@ export interface RenderDiagnostics {
   activeGovernor: RenderGovernorMode;
   gpuP95Ms: number | null;
   cpuP95Ms: number | null;
+  /** Present-to-present p95 over the same rolling diagnostics window. */
+  frameIntervalP95Ms: number | null;
+  /** p95 of fully correlated per-frame residuals; never marginal-p95 subtraction. */
+  presentWaitP95Ms: number | null;
   /**
    * Z-2 hitch metrics over the rolling diagnostics window. The p95 streams
    * deliberately ignore >250 ms samples (suspended tabs must not poison a
@@ -156,7 +163,8 @@ export interface RenderDiagnostics {
   topPassesByCpuMs: readonly PassCpuTiming[];
   pendingTerrainPages: number;
   /** Terrain generation workers currently busy (1B-4). */
-  terrainWorkersBusy: number;
+  /** 4-4: the CPU worker pool is gone; this is GPU compute dispatches in flight. */
+  terrainComputeDispatches: number;
   estimatedGpuMemoryMiB: number;
   /**
    * Z-4: best-effort walk of actual texture/geometry allocations — a floor
@@ -165,6 +173,36 @@ export interface RenderDiagnostics {
   inventoriedGpuMemoryMiB: number;
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;
+  /**
+   * `4.5-C3` — per-pass GPU milliseconds, summed from Babylon's own
+   * `gpuTimeInFrame` counters. The honest fraction of assertion 67, which has
+   * been carried open through two phases and is owned by nobody.
+   *
+   * **UNCORRELATED AGGREGATES, and the label is load-bearing.** These counters
+   * carry no submitted-frame id, so they say what each pass costs the GPU;
+   * they do NOT say how much of a given frame's present-to-present interval
+   * any pass explains. `B-0`'s rule stands — no present-wait inference without
+   * a frame-correlatable timestamp source. What this buys is that the
+   * 39-53 ms interval against a 15 ms GPU p95 becomes INSPECTABLE rather than
+   * a gap nobody can name, and that every tuning decision in Gate 4.5-C stops
+   * being made against a single counter that under-reports the frame 2-4x.
+   *
+   * Null members mean the adapter granted no `timestamp-query`, or that pass
+   * has not run yet.
+   */
+  gpuPassMs: GpuPassAttribution;
+}
+
+/** `4.5-C3`'s uncorrelated per-pass GPU aggregates, in milliseconds. */
+export interface GpuPassAttribution {
+  /** The beauty pass, as Babylon's main-pass counter reports it. */
+  readonly mainPass: number | null;
+  /** Every cascade of the sun's cascaded shadow map, as one render target. */
+  readonly shadows: number | null;
+  /** Terrain page generation + the occlusion and splat bakes. */
+  readonly terrainCompute: number | null;
+  /** The sum of whatever is non-null above. */
+  readonly total: number | null;
 }
 
 export const INITIAL_VISUAL_STATE: FlightVisualState = {

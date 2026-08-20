@@ -48,9 +48,12 @@ describe("WebGPU quality profiles", () => {
     });
     expect(resolveWebGpuQualityProfile("low", "performance").oceanResolution).toBe(128);
     expect(resolveWebGpuQualityProfile("medium", "balanced")).toMatchObject({
-      terrainRings: 7,
       shadowCascades: 2,
-      shadowDistance: 7_000,
+      // 4-8b: the cascades became a CONTACT instrument. 7,000 m at 2×2048 was
+      // ~1.5 m/texel in the near cascade; 1,400 m at 2×1280 is ~0.23 m, and
+      // beyond it 4-7's horizon map is the shadow authority out to 45 km.
+      shadowDistance: 1_400,
+      shadowMapSize: 1_280,
       oceanResolution: 128,
       cloudResolutionScale: 0.45,
       cloudPrimarySteps: 60,

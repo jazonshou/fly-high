@@ -125,20 +125,17 @@ describe("performance budget (1A-2)", () => {
   it("reports a breakdown whose parts sum to the total before slack", () => {
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
     const breakdown = estimateGpuMemoryBreakdown(profile, VIEWPORTS[1]!);
-    const parts =
-      breakdown.framebuffersMiB
-      + breakdown.shadowsMiB
-      + breakdown.oceanMiB
-      + breakdown.cloudsMiB
-      + breakdown.terrainGeometryMiB
-      + breakdown.detailInstancesMiB
-      + breakdown.foliageAtlasMiB
-      + breakdown.impostorAtlasMiB
-      + breakdown.otherDetailMiB
-      + breakdown.materialArraysMiB
-      + breakdown.miscMiB;
+    // Enumerated from the breakdown itself, not by hand: a row added to the
+    // shape but forgotten in the total (or vice versa) has to fail here. The
+    // hand-written list this replaced went stale the moment `4-0` added the
+    // three page-atlas rows.
+    const parts = Object.entries(breakdown)
+      .filter(([name]) => name !== "totalMiB" && name !== "renderPixels")
+      .reduce((sum, [, value]) => sum + value, 0);
+    expect(Object.keys(breakdown)).toContain("heightAtlasMiB");
     expect(breakdown.totalMiB).toBeGreaterThan(parts);
     expect(breakdown.totalMiB).toBeLessThan(parts * 1.25);
+    expect(breakdown.totalMiB / parts).toBeCloseTo(1.15, 6);
   });
 
   it("moves each budget row when its declared input moves (Z-4, R-22)", () => {

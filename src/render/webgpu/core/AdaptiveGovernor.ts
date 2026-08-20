@@ -81,6 +81,18 @@ export interface WorkLeverSettings {
   readonly activeAnimalBudgetCap: number;
   readonly shadowCasterDistanceMeters: number;
   readonly vegetationDistanceScale: number;
+  /**
+   * `4-0b`, GPU ladder rung 0: a multiplier on the SHARED amortised-compute
+   * cap (`ComputeBudget`). 1 is the published `FRAME_BUDGET_MS` compute rows.
+   *
+   * This is deliberately the first thing the GPU ladder touches. Deferring a
+   * page bake by a frame is invisible; every other rung on this ladder is
+   * something the pilot can see — cloud shadows updating more slowly, near
+   * objects dropping out of the shadow map, the treeline retreating. Before
+   * this rung existed the governor's first response to a compute spike was to
+   * cut one of those.
+   */
+  readonly computeBudgetScale: number;
 }
 
 interface WorkStep {
@@ -99,6 +111,7 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
   shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
   vegetationDistanceScale: 1,
+  computeBudgetScale: 1,
 });
 
 /**
@@ -122,6 +135,15 @@ const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
  * resolution-insensitive, or pinned at the scale floor).
  */
 const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
+  // 4-0b rung 0: shrink the shared compute cap BEFORE any visible lever
+  // moves. Two notches rather than the plan's single rung — the ladder sheds
+  // one step per 120-frame window, and one notch gives the meter no room to
+  // resolve a spike before the next step cuts something visible. Recorded as
+  // a deviation in PHASE_4_EXECUTION_PLAN.md §4 **D15** (this comment said
+  // D14 until `4.5-D`'s stale-comment sweep; the plan document's numbering is
+  // authoritative and D14 is tier 0's channelAtlasSlots cut, one row over).
+  { lever: "compute-budget", apply: (s) => ({ ...s, computeBudgetScale: 0.6 }) },
+  { lever: "compute-budget", apply: (s) => ({ ...s, computeBudgetScale: 0.35 }) },
   // 2-10 retired the planar-reflection-cadence rungs with their system — a
   // governor lever must never be attached to nothing.
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 3 }) },

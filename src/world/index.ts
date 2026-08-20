@@ -28,6 +28,7 @@ export {
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
   sampleTerrain,
+  sampleFilteredTerrainHeight,
   sampleTerrainHeight,
   sampleTerrainMoisture,
   sampleTerrainNormal,
@@ -40,17 +41,10 @@ export {
   seasonalTemperatureShift,
   seasonalWinterFraction,
 } from "./terrain";
-export {
-  DEFAULT_TERRAIN_TILE_RESOLUTION,
-  DEFAULT_TERRAIN_TILE_SIZE,
-  MAX_TERRAIN_TILE_RESOLUTION,
-  generateTerrainGridIndices,
-  generateTerrainTile,
-  getTerrainTileTransferables,
-  terrainTileKey,
-  terrainTileVertexCoordinate,
-  worldToTerrainTile,
-} from "./tile";
+// 4-9: `src/world/tile.ts` is deleted. `generateTerrainTile` lost its last
+// production consumer at `4-4` when the CPU terrain worker went, and a render
+// path nothing renders is exactly what the §1.3 invariant test would have kept
+// passing against — so it goes with the test's old form, in one commit.
 export { TERRAIN_BIOME_NAMES, TerrainBiome } from "./types";
 export type {
   AirportDefinition,

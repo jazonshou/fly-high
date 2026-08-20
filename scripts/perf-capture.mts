@@ -98,6 +98,19 @@ export interface PerfCaptureShotDefinition {
     readonly maxMeanLuminanceDelta: number;
   };
   readonly ceilings: PerfCaptureShotCeilings | null;
+  /**
+   * `4-10`: page-residency ceilings, for the scenes that exist to stress
+   * streaming rather than shading.
+   *
+   * Peak `pendingTerrainPages` is the streaming pump's queue depth and peak
+   * `residentTerrainPages` is the atlas's occupancy; a turn that admits pages
+   * faster than the compute meter retires them shows up here as a rising
+   * pending count long before it shows up as a hitch.
+   */
+  readonly residencyCeilings?: {
+    readonly maxPendingTerrainPages: number;
+    readonly maxResidentTerrainPages: number;
+  };
 }
 
 /**
@@ -320,6 +333,62 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
     ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 27 },
+  },
+  {
+    // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
+    // quadtree to admit and evict L0 pages continuously — the one flight
+    // manoeuvre that can outrun the compute meter, and the reason `4-0b`
+    // exists. Its gate is hitch count and residency depth, not an image.
+    name: "page-thrash-turn",
+    description: "Sustained 60° banked turn at 500 ft AGL (L0 page admission under load)",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_200,
+    offsetZMeters: 1_800,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 78,
+    kind: "motion",
+    bankDegrees: 60,
+    comparesToBaseline: false,
+    temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
+    // UNMEASURED on this machine: re-pin at the next sanctioned rebaseline
+    // (`npm run perf:capture:rebaseline` on the reference machine). The
+    // ceilings below are the Phase-4 design intents — the atlas holds 196
+    // slots at tier 1, and a pump that leaves more than 24 pages pending is
+    // admitting faster than the meter retires.
+    // `4.5-D1`: re-pinned from what the fixed selector actually produces
+    // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
+    // budget, which was a design intent nothing could fail.
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 24 },
+  },
+  {
+    // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
+    // airport, so nodes cross level boundaries continuously in front of the
+    // camera. Geomorph popping has a number here — the consecutive-frame SSIM
+    // — instead of being a thing someone did or did not notice.
+    name: "cdlod-transition",
+    description: "Outbound climb across CDLOD level boundaries (geomorph stability)",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 900,
+    offsetXMeters: 5_500,
+    offsetZMeters: -1_200,
+    pitchDownDegrees: 12,
+    airspeedMetersPerSecond: 96,
+    kind: "motion",
+    bankDegrees: 0,
+    comparesToBaseline: false,
+    // A geomorph that pops shows as a consecutive-frame SSIM collapse in
+    // exactly the way flicker does; a working one is indistinguishable from
+    // straight flight, which is the point of the item.
+    temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
+    // `4.5-D1`: re-pinned from what the fixed selector actually produces
+    // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
+    // budget, which was a design intent nothing could fail.
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 60, minFps: 30 },
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -647,8 +716,12 @@ export interface PerfCaptureShotReport {
    * frame rate, not a macrotask-yield artefact.
    */
   readonly fps: number;
+  /** B-0: present-to-present p95, before attribution into overlapping streams. */
+  readonly frameIntervalMsP95: number | null;
   readonly cpuFrameMsP95: number;
   readonly gpuFrameMsP95: number | null;
+  /** B-0: compositor/present residual; null without frame-correlated GPU timing. */
+  readonly presentWaitMsP95: number | null;
   /** Z-2 hitch metrics over the measurement phase only. */
   readonly maxFrameMs: number | null;
   readonly p999FrameMs: number | null;
@@ -670,6 +743,19 @@ export interface PerfCaptureShotReport {
   readonly estimatedGpuMemoryMiB: number;
   /** Z-4: the renderer's actual-allocation floor reading. */
   readonly inventoriedGpuMemoryMiB: number;
+  /**
+   * `4.5-C3`: per-pass GPU milliseconds, as UNCORRELATED aggregates from
+   * Babylon's own counters. They say what each pass costs the GPU; they do not
+   * attribute any part of `frameIntervalMsP95`. Recorded so the gap between a
+   * ~15 ms GPU p95 and a 40-50 ms interval is at least inspectable — `B-0`'s
+   * correlation rule still forbids inferring a present wait from them.
+   */
+  readonly gpuPassMs?: {
+    readonly mainPass: number | null;
+    readonly shadows: number | null;
+    readonly terrainCompute: number | null;
+    readonly total: number | null;
+  };
   /** Z-3: present only for motion shots. */
   readonly temporal?: TemporalStability;
 }

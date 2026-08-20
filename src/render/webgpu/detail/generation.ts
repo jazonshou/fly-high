@@ -5,7 +5,12 @@ import {
   seasonalWinterFraction,
 } from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
+import {
+  classifyLandCover,
+  landCoverHabitat,
+} from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import { hashSeed } from "@/src/world/seed";
+import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import { densityField, type VegetationDensitySample } from "./densityField";
 import { sampleStandField, type StandSample } from "./standField";
 import {
@@ -109,8 +114,35 @@ function rockProbability(sample: DetailTerrainSample): number {
   return clamp(probability + sample.slope * 0.35, 0, 0.75) * airportClearance(sample);
 }
 
+/** 4-6b: the density authority's own empty answer, not a local literal. */
+const ZERO_VEGETATION_DENSITY: VegetationDensitySample = Object.freeze({
+  treeStemsPerSquareMeter: 0,
+  shrubStemsPerSquareMeter: 0,
+  heightFactor: 1,
+  aspect: 0,
+  forestEdge: 0,
+  groundCover: Object.freeze({ grass: 1, fern: 0, heather: 0, reed: 0, clutter: 0 }),
+});
+
+/**
+ * `R-27`: species read the CLASSIFIER's weight vector, not their own rules.
+ *
+ * The old form branched on `sample.biome` and raw moisture thresholds — a
+ * third independent answer to "what grows here", alongside `classifyBiome`'s
+ * cascade and the wildlife habitat table. A treeline could end where the rock
+ * started or 80 m above it, and only a screenshot would say which. The habitat
+ * shares below come from `landCoverHabitat`, so the ground, the trees on it
+ * and the animals in them are classified once.
+ *
+ * The mix is still a random DRAW, not a lookup: a stand is a mixture, and
+ * picking the argmax species would make every forest a monoculture.
+ */
 function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
-  if (sample.biome === TerrainBiome.HIGHLAND || sample.biome === TerrainBiome.ALPINE) {
+  const habitat = landCoverHabitat(classifyDetailSample(sample));
+  // Upland: conifer-dominated, and the classifier's scrub/barren shares are
+  // what "upland" MEANS here rather than a height threshold.
+  const upland = habitat.scrub + habitat.barren;
+  if (upland > habitat.canopy + habitat.open) {
     if (choice < 0.44) return "spruce";
     if (choice < 0.79) return "pine";
     return "cedar";
@@ -133,6 +165,29 @@ function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpe
   if (choice < 0.76) return "pine";
   if (choice < 0.9) return "spruce";
   return "cedar";
+}
+
+/**
+ * Classify a detail sample through the one authority.
+ *
+ * Read at the REFERENCE day deliberately: species mix stays climatic (`2-18`),
+ * and only the paint migrates with the calendar.
+ */
+function classifyDetailSample(sample: DetailTerrainSample) {
+  const normalY = sample.normal?.y ?? 1;
+  const horizontal = Math.hypot(sample.normal?.x ?? 0, sample.normal?.z ?? 0);
+  return classifyLandCover({
+    elevationMeters: sample.height,
+    slope: sample.slope,
+    moisture: sample.moisture,
+    // The detail sampler carries no temperature; the classifier's warmth term
+    // is a lowland/upland gate here, which slope and elevation already supply.
+    temperature: 0.66 - Math.max(0, sample.height) / 2_450,
+    aspect: horizontal > 1e-6 ? (-(sample.normal?.z ?? 0) / horizontal) * (1 - normalY) : 0,
+    airportInfluence: sample.airportInfluence ?? 0,
+    dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
+    seasonalTemperatureShift: 0,
+  });
 }
 
 function treeDimensions(
@@ -449,6 +504,9 @@ function fieldAt(
   z: number,
 ): VegetationDensitySample {
   return densityField(context.seedHash, {
+    // Per-stem placement is the full-bandwidth field, forever: filtering here
+    // would move individual trees, not smooth a page.
+    filterWidthMeters: 0,
     x,
     z,
     heightMeters: sample.height,
@@ -556,12 +614,7 @@ function scatterLayer(
       : null;
     const info = {
       sample,
-      field: field ?? {
-        treeStemsPerSquareMeter: 0,
-        shrubStemsPerSquareMeter: 0,
-        heightFactor: 1,
-        aspect: 0,
-      },
+      field: field ?? ZERO_VEGETATION_DENSITY,
       stems: field === null ? 0 : (layer === "canopy"
         ? field.treeStemsPerSquareMeter
         : field.shrubStemsPerSquareMeter) * context.density,
@@ -657,7 +710,12 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     const dimensions = treeDimensions(species, random, stand.standAge);
     // Krummholz: near the treeline trees shrink before they disappear.
     const height = dimensions.height * field.heightFactor;
-    const crown = dimensions.crown * (0.55 + 0.45 * field.heightFactor);
+    // Gate B forest-edge margin: the density authority shortens edge stems
+    // through heightFactor and publishes the same margin for crown form.
+    // Species and stand selection remain untouched; only silhouette changes.
+    const crown = dimensions.crown
+      * (0.55 + 0.45 * field.heightFactor)
+      * (1 + field.forestEdge * 0.48);
     // Half a crown: real closed-canopy forests overlap crowns; a full-crown
     // exclusion zone thins the stand far below its ecological density.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
@@ -725,9 +783,11 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
   }) as readonly DetailShrubPlacement[];
 }
 
+/** `R-27`: the understory reads the same weight vector the canopy does. */
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
   if (sample.moisture > 0.64) return choice < 0.68 ? "hazel" : "juniper";
-  if (sample.biome === TerrainBiome.HIGHLAND || sample.biome === TerrainBiome.ALPINE) {
+  const habitat = landCoverHabitat(classifyDetailSample(sample));
+  if (habitat.scrub + habitat.barren > habitat.canopy + habitat.open) {
     return choice < 0.72 ? "juniper" : "sage";
   }
   if (choice < 0.34) return "hazel";
@@ -871,6 +931,7 @@ function buildGroundCoverGrid(
         continue;
       }
       const field = densityField(context.seedHash, {
+        filterWidthMeters: 0,
         x,
         z,
         heightMeters: sample.height,
@@ -977,6 +1038,7 @@ function scatterClutter(
     const sample = sampleTerrain(x, z);
     if (!validSample(sample)) continue;
     const field = densityField(context.seedHash, {
+      filterWidthMeters: 0,
       x,
       z,
       heightMeters: sample.height,

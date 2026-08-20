@@ -1,13 +1,15 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder.pure";
-import { CreateCylinder } from "@babylonjs/core/Meshes/Builders/cylinderBuilder.pure";
-import { CreateSphere } from "@babylonjs/core/Meshes/Builders/sphereBuilder.pure";
-import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import {
+  createWildlifePrototypeGeometry,
+  type WildlifePrototypeKey,
+} from "./appearance";
 import { generateWildlifeCell, selectActiveWildlife } from "./generation";
 import {
   FixedStepClock,
@@ -36,6 +38,17 @@ interface WildlifeBatch {
   readonly matrices: number[];
   readonly castsShadows: boolean;
   readonly matrixData: Float32Array;
+}
+
+type WildlifeSurfaceKind = "feather" | "fur" | "keratin";
+
+interface WildlifeMaterialOptions {
+  readonly roughness: number;
+  readonly surface: WildlifeSurfaceKind;
+  readonly sheenIntensity?: number;
+  readonly translucencyIntensity?: number;
+  readonly clearCoatIntensity?: number;
+  readonly doubleSided?: boolean;
 }
 
 interface ThinInstanceMatrixCacheOwner {
@@ -358,24 +371,57 @@ export class WildlifeSystem {
       z: agent.previousPosition.z
         + (agent.position.z - agent.previousPosition.z) * alpha - origin.z,
     };
-    const size = agent.species === "gull" ? 1 : 0.9;
+    const size = agent.species === "gull" ? 1 : 0.92;
     const bodyBatch = `bird-${agent.species}-body`;
     const wingBatch = `bird-${agent.species}-wing`;
-    this.appendPart(bodyBatch, position, this.bodyRotation, 0, 0, 0, 0.42 * size, 0.34 * size, 1.05 * size);
-    if (agent.lod === "near") {
-      this.appendPart(bodyBatch, position, this.bodyRotation, 0, 0.02, 0.62 * size, 0.29 * size, 0.27 * size, 0.31 * size);
-    }
+    this.appendPart(
+      bodyBatch,
+      position,
+      this.bodyRotation,
+      0,
+      0,
+      0,
+      size,
+      size,
+      size,
+    );
     const phase = interpolateAngle(
       agent.previousAnimationPhase,
       agent.animationPhase,
       alpha,
     );
     const flap = Math.sin(phase) * (agent.lod === "near" ? 0.62 : 0.34);
-    this.appendPart(wingBatch, position, this.bodyRotation, -0.58 * size, 0, 0, 1.05 * size, 0.06 * size, 0.42 * size, 0, 0, flap);
-    this.appendPart(wingBatch, position, this.bodyRotation, 0.58 * size, 0, 0, 1.05 * size, 0.06 * size, 0.42 * size, 0, 0, -flap);
-    if (agent.lod === "near") {
-      this.appendPart(wingBatch, position, this.bodyRotation, 0, 0, -0.66 * size, 0.7 * size, 0.04 * size, 0.4 * size);
-    }
+    // Both shared wing prototypes extend from a shoulder along local +X.
+    // Rotate the port copy through PI instead of mirroring its matrix, keeping
+    // the determinant positive for PBR normal and shadow evaluation.
+    this.appendPart(
+      wingBatch,
+      position,
+      this.bodyRotation,
+      -0.1 * size,
+      0,
+      0,
+      size,
+      size,
+      size,
+      0,
+      0,
+      Math.PI - flap,
+    );
+    this.appendPart(
+      wingBatch,
+      position,
+      this.bodyRotation,
+      0.1 * size,
+      0,
+      0,
+      size,
+      size,
+      size,
+      0,
+      0,
+      flap,
+    );
   }
 
   private renderGroundAnimal(
@@ -408,9 +454,7 @@ export class WildlifeSystem {
     gaitPhase: number,
   ): void {
     const body = "deer-coat";
-    this.appendPart(body, position, this.bodyRotation, 0, 1.18, 0, 0.88, 0.92, 1.72);
-    this.appendPart(body, position, this.bodyRotation, 0, 1.77, 0.82, 0.53, 0.58, 0.72, -0.28, 0, 0);
-    this.appendPart(body, position, this.bodyRotation, 0, 2.05, 1.18, 0.5, 0.45, 0.66);
+    this.appendPart(body, position, this.bodyRotation, 0, 0, 0, 1, 1, 1);
     if (agent.lod === "far") return;
     const gait = Math.sin(gaitPhase) * 0.28;
     const legs: readonly [number, number, number, number][] = [
@@ -420,11 +464,9 @@ export class WildlifeSystem {
       [0.28, 0.56, -0.58, gait],
     ];
     for (const [x, y, z, swing] of legs) {
-      this.appendPart("deer-leg", position, this.bodyRotation, x, y, z, 0.16, 1.12, 0.16, 0, swing, 0);
+      this.appendPart("deer-leg", position, this.bodyRotation, x, y, z, 1, 1, 1, 0, swing, 0);
     }
-    for (const side of [-1, 1]) {
-      this.appendPart("deer-antler", position, this.bodyRotation, side * 0.18, 2.43, 1.14, 0.075, 0.7, 0.075, 0, 0, side * 0.34);
-    }
+    this.appendPart("deer-antler", position, this.bodyRotation, 0, 2.15, 1.04, 1, 1, 1);
   }
 
   private renderBoar(
@@ -433,23 +475,19 @@ export class WildlifeSystem {
     gaitPhase: number,
   ): void {
     const body = "boar-hide";
-    this.appendPart(body, position, this.bodyRotation, 0, 0.72, 0, 0.98, 0.95, 1.72);
-    this.appendPart(body, position, this.bodyRotation, 0, 0.78, 0.95, 0.75, 0.7, 0.82);
-    this.appendPart(body, position, this.bodyRotation, 0, 0.66, 1.42, 0.52, 0.43, 0.52);
+    this.appendPart(body, position, this.bodyRotation, 0, 0, 0, 1, 1, 1);
     if (agent.lod === "far") return;
     const gait = Math.sin(gaitPhase) * 0.18;
     const legs: readonly [number, number, number, number][] = [
-      [-0.34, 0.3, 0.54, gait],
-      [0.34, 0.3, 0.54, -gait],
-      [-0.34, 0.3, -0.54, -gait],
-      [0.34, 0.3, -0.54, gait],
+      [-0.34, 0.575, 0.54, gait],
+      [0.34, 0.575, 0.54, -gait],
+      [-0.34, 0.575, -0.54, -gait],
+      [0.34, 0.575, -0.54, gait],
     ];
     for (const [x, y, z, swing] of legs) {
-      this.appendPart("boar-leg", position, this.bodyRotation, x, y, z, 0.21, 0.58, 0.21, 0, swing, 0);
+      this.appendPart("boar-leg", position, this.bodyRotation, x, y, z, 1, 1, 1, 0, swing, 0);
     }
-    for (const side of [-1, 1]) {
-      this.appendPart("boar-tusk", position, this.bodyRotation, side * 0.24, 0.68, 1.65, 0.08, 0.34, 0.08, 0.72, 0, side * 0.3);
-    }
+    this.appendPart("boar-tusk", position, this.bodyRotation, 0, 0.58, 1.3, 1, 1, 1);
   }
 
   private appendPart(
@@ -530,77 +568,148 @@ export class WildlifeSystem {
   }
 
   private createBatches(): void {
-    const gull = this.material("wildlife-gull", new Color3(0.72, 0.76, 0.76), 0.82);
-    const gullWing = this.material("wildlife-gull-wing", new Color3(0.58, 0.62, 0.64), 0.86);
-    const hawk = this.material("wildlife-hawk", new Color3(0.27, 0.18, 0.1), 0.9);
-    const hawkWing = this.material("wildlife-hawk-wing", new Color3(0.18, 0.11, 0.065), 0.92);
-    const deer = this.material("wildlife-deer", new Color3(0.42, 0.24, 0.11), 0.92);
-    const deerLeg = this.material("wildlife-deer-leg", new Color3(0.19, 0.1, 0.055), 0.95);
-    const antler = this.material("wildlife-antler", new Color3(0.48, 0.38, 0.25), 0.96);
-    const boar = this.material("wildlife-boar", new Color3(0.16, 0.12, 0.095), 0.98);
-    const boarLeg = this.material("wildlife-boar-leg", new Color3(0.09, 0.075, 0.065), 1);
-    const tusk = this.material("wildlife-tusk", new Color3(0.78, 0.72, 0.57), 0.76);
+    const gull = this.material("wildlife-gull", new Color3(0.78, 0.8, 0.78), {
+      roughness: 0.83,
+      surface: "feather",
+      sheenIntensity: 0.16,
+      translucencyIntensity: 0.025,
+    });
+    const gullWing = this.material(
+      "wildlife-gull-wing",
+      new Color3(0.58, 0.62, 0.64),
+      {
+        roughness: 0.88,
+        surface: "feather",
+        sheenIntensity: 0.2,
+        translucencyIntensity: 0.11,
+        doubleSided: true,
+      },
+    );
+    const hawk = this.material("wildlife-hawk", new Color3(0.3, 0.18, 0.08), {
+      roughness: 0.9,
+      surface: "feather",
+      sheenIntensity: 0.14,
+      translucencyIntensity: 0.02,
+    });
+    const hawkWing = this.material(
+      "wildlife-hawk-wing",
+      new Color3(0.18, 0.095, 0.035),
+      {
+        roughness: 0.93,
+        surface: "feather",
+        sheenIntensity: 0.17,
+        translucencyIntensity: 0.085,
+        doubleSided: true,
+      },
+    );
+    const deer = this.material("wildlife-deer", new Color3(0.43, 0.24, 0.1), {
+      roughness: 0.93,
+      surface: "fur",
+      sheenIntensity: 0.12,
+    });
+    const deerLeg = this.material("wildlife-deer-leg", new Color3(0.19, 0.095, 0.04), {
+      roughness: 0.97,
+      surface: "fur",
+      sheenIntensity: 0.07,
+    });
+    const antler = this.material("wildlife-antler", new Color3(0.47, 0.34, 0.2), {
+      roughness: 0.9,
+      surface: "keratin",
+      clearCoatIntensity: 0.035,
+    });
+    const boar = this.material("wildlife-boar", new Color3(0.13, 0.085, 0.055), {
+      roughness: 0.98,
+      surface: "fur",
+      sheenIntensity: 0.14,
+    });
+    const boarLeg = this.material("wildlife-boar-leg", new Color3(0.075, 0.055, 0.04), {
+      roughness: 1,
+      surface: "fur",
+      sheenIntensity: 0.06,
+    });
+    const tusk = this.material("wildlife-tusk", new Color3(0.83, 0.76, 0.59), {
+      roughness: 0.58,
+      surface: "keratin",
+      clearCoatIntensity: 0.16,
+    });
 
-    this.registerSphere("bird-gull-body", gull, true, 7);
-    this.registerBox("bird-gull-wing", gullWing, true);
-    this.registerSphere("bird-hawk-body", hawk, true, 7);
-    this.registerBox("bird-hawk-wing", hawkWing, true);
-    this.registerSphere("deer-coat", deer, true, 8);
-    this.registerCylinder("deer-leg", deerLeg, true, 6);
-    this.registerCylinder("deer-antler", antler, true, 5);
-    this.registerSphere("boar-hide", boar, true, 7);
-    this.registerCylinder("boar-leg", boarLeg, true, 6);
-    this.registerCylinder("boar-tusk", tusk, true, 6);
+    this.registerPrototype("bird-gull-body", gull, true);
+    this.registerPrototype("bird-gull-wing", gullWing, true);
+    this.registerPrototype("bird-hawk-body", hawk, true);
+    this.registerPrototype("bird-hawk-wing", hawkWing, true);
+    this.registerPrototype("deer-coat", deer, true);
+    this.registerPrototype("deer-leg", deerLeg, true);
+    this.registerPrototype("deer-antler", antler, true);
+    this.registerPrototype("boar-hide", boar, true);
+    this.registerPrototype("boar-leg", boarLeg, true);
+    this.registerPrototype("boar-tusk", tusk, true);
   }
 
-  private material(name: string, color: Color3, roughness: number): PBRMaterial {
+  private material(
+    name: string,
+    color: Color3,
+    options: WildlifeMaterialOptions,
+  ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
     material.albedoColor = color;
-    material.roughness = roughness;
+    material.roughness = options.roughness;
     material.metallic = 0;
+    material.backFaceCulling = options.doubleSided !== true;
+    if (options.sheenIntensity !== undefined) {
+      material.sheen.isEnabled = true;
+      material.sheen.linkSheenWithAlbedo = true;
+      material.sheen.intensity = options.sheenIntensity;
+      material.sheen.roughness = Math.min(1, options.roughness + 0.02);
+    }
+    if (options.translucencyIntensity !== undefined) {
+      material.subSurface.isTranslucencyEnabled = true;
+      material.subSurface.translucencyIntensity = options.translucencyIntensity;
+      material.subSurface.tintColor.copyFrom(color);
+    }
+    if (options.clearCoatIntensity !== undefined) {
+      material.clearCoat.isEnabled = true;
+      material.clearCoat.intensity = options.clearCoatIntensity;
+      material.clearCoat.roughness = Math.min(0.72, options.roughness);
+      material.clearCoat.indexOfRefraction = 1.5;
+    }
+    material.metadata = {
+      wildlifeMaterial: true,
+      wildlifeSurface: options.surface,
+      wildlifeSurfaceFeatures: options.surface === "feather"
+        ? ["barb-sheen", "thin-edge-translucency"]
+        : options.surface === "fur"
+          ? ["broad-matte-lobe", "grazing-fibre-sheen"]
+          : ["dielectric-keratin", "subtle-clearcoat"],
+    };
     this.materials.add(material);
     return material;
   }
 
-  private registerSphere(
-    key: string,
+  private registerPrototype(
+    key: WildlifePrototypeKey,
     material: PBRMaterial,
     castsShadows: boolean,
-    segments: number,
   ): void {
-    this.registerBatch(
-      key,
-      CreateSphere(`wildlife-${key}`, { diameter: 1, segments }, this.scene),
-      material,
-      castsShadows,
-    );
-  }
-
-  private registerBox(key: string, material: PBRMaterial, castsShadows: boolean): void {
-    this.registerBatch(
-      key,
-      CreateBox(`wildlife-${key}`, { size: 1 }, this.scene),
-      material,
-      castsShadows,
-    );
-  }
-
-  private registerCylinder(
-    key: string,
-    material: PBRMaterial,
-    castsShadows: boolean,
-    tessellation: number,
-  ): void {
-    this.registerBatch(
-      key,
-      CreateCylinder(
-        `wildlife-${key}`,
-        { height: 1, diameter: 1, tessellation },
-        this.scene,
-      ),
-      material,
-      castsShadows,
-    );
+    const prototype = createWildlifePrototypeGeometry(key);
+    const positions = [...prototype.positions];
+    const indices = [...prototype.indices];
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, indices, normals);
+    const vertexData = new VertexData();
+    vertexData.positions = positions;
+    vertexData.indices = indices;
+    vertexData.normals = normals;
+    const mesh = new Mesh(`wildlife-${key}`, this.scene);
+    vertexData.applyToMesh(mesh, false);
+    mesh.refreshBoundingInfo();
+    mesh.metadata = {
+      wildlifePrototype: true,
+      wildlifePrototypeKey: key,
+      wildlifeSpecies: prototype.species,
+      wildlifeSilhouetteFeatures: [...prototype.silhouetteFeatures],
+      wildlifePrototypeGeometryBytes: prototype.sourceByteLength + normals.length * 4,
+    };
+    this.registerBatch(key, mesh, material, castsShadows);
   }
 
   private registerBatch(
@@ -613,7 +722,11 @@ export class WildlifeSystem {
     mesh.isPickable = false;
     mesh.receiveShadows = true;
     mesh.alwaysSelectAsActiveMesh = true;
-    mesh.metadata = { wildlife: true, castsShadow: castsShadows };
+    mesh.metadata = {
+      ...(mesh.metadata as Record<string, unknown> | null),
+      wildlife: true,
+      castsShadow: castsShadows,
+    };
     const matrixCapacity = MAX_ACTIVE_ANIMALS * 4;
     const matrixData = new Float32Array(matrixCapacity * 16);
     mesh.thinInstanceSetBuffer("matrix", matrixData, 16, false);

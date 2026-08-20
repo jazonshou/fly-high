@@ -6,6 +6,9 @@ export const WORLD_PAGE_LIFECYCLE_STATES = [
   "loading",
   "cpu-ready",
   "uploading",
+  // 4-2: a GPU-generated page never passes through "cpu-ready" — there is no
+  // CPU payload to be ready. It is queued, dispatched, and resident.
+  "generating",
   "resident",
   "evicting",
   "failed",
@@ -17,10 +20,11 @@ export const WORLD_PAGE_ALLOWED_TRANSITIONS: Readonly<
   Record<WorldPageLifecycleState, readonly WorldPageLifecycleState[]>
 > = {
   unloaded: ["queued"],
-  queued: ["loading", "unloaded", "failed"],
+  queued: ["loading", "generating", "unloaded", "failed"],
   loading: ["cpu-ready", "unloaded", "failed"],
   "cpu-ready": ["uploading", "unloaded"],
   uploading: ["resident", "cpu-ready", "unloaded", "failed"],
+  generating: ["resident", "unloaded", "failed"],
   resident: ["evicting"],
   evicting: ["resident", "cpu-ready", "unloaded"],
   failed: ["queued", "unloaded"],
@@ -50,6 +54,11 @@ export function canTransitionWorldPageLifecycle(
 /**
  * Enforces the CPU generation -> GPU upload -> residency pipeline and supplies
  * epochs for harmless rejection of stale worker, upload, and eviction results.
+ *
+ * 4-2 added the GPU-generation branch (`queued -> generating -> resident`)
+ * alongside the CPU one. It is a second path, not a widening of the first: the
+ * CPU tile path keeps `beginUpload`'s `cpu-ready` assertion until `4-4`
+ * retires it.
  */
 export class WorldPageLifecycle {
   private stateValue: WorldPageLifecycleState = "unloaded";
@@ -113,6 +122,22 @@ export class WorldPageLifecycle {
     return this.transitionForToken(token, "uploading", "resident");
   }
 
+  /**
+   * 4-2: start a GPU generation for a page that has no CPU payload.
+   *
+   * Deliberately NOT a widening of `beginUpload`. That call asserts
+   * `cpu-ready`, and the CPU tile path still relies on it until `4-4` retires
+   * the terrain worker; letting it accept `queued` would delete the one check
+   * that catches an upload issued before its payload exists.
+   */
+  beginGeneration(token: WorldPageOperationToken): boolean {
+    return this.transitionForToken(token, "queued", "generating");
+  }
+
+  markGenerated(token: WorldPageOperationToken): boolean {
+    return this.transitionForToken(token, "generating", "resident");
+  }
+
   beginEviction(): WorldPageOperationToken {
     this.requireState("resident");
     const token = this.nextToken();
@@ -145,7 +170,14 @@ export class WorldPageLifecycle {
    */
   cancelOperation(token: WorldPageOperationToken, retainCpuPayload = false): boolean {
     if (!this.isCurrent(token)) return false;
-    if (this.stateValue === "queued" || this.stateValue === "loading") {
+    if (
+      this.stateValue === "queued"
+      || this.stateValue === "loading"
+      // 4-2: a generating page has no CPU payload to retain, so cancelling it
+      // always unloads. The `retainCpuPayload` flag is ignored rather than
+      // rejected: an atlas that drops a slot mid-dispatch is a normal event.
+      || this.stateValue === "generating"
+    ) {
       this.transition("unloaded");
     } else if (this.stateValue === "uploading") {
       this.transition(retainCpuPayload ? "cpu-ready" : "unloaded");
@@ -159,7 +191,7 @@ export class WorldPageLifecycle {
   markFailed(token: WorldPageOperationToken, message: string): boolean {
     if (!this.isCurrent(token)) return false;
     if (message.trim().length === 0) throw new RangeError("Failure message must not be empty");
-    this.requireState("queued", "loading", "uploading");
+    this.requireState("queued", "loading", "uploading", "generating");
     this.failureValue = message;
     this.transition("failed", true);
     return true;
