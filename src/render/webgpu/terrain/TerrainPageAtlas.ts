@@ -7,6 +7,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import type { AirportDefinition } from "@/src/world/types";
 import {
   compareWorldPageCacheEvictionOrder,
   touchWorldPageCacheMetadata,
@@ -28,6 +29,12 @@ import {
   type WorldPageKey,
 } from "@/src/render/webgpu/world/pageKey";
 import { WORLD_PAGE_SCHEMA_VERSION } from "@/src/render/webgpu/world/payload";
+import {
+  RUNWAY_EARTHWORKS_UNIFORM_FLOATS,
+  RUNWAY_EARTHWORKS_WGSL,
+  packRunwayEarthworksUniform,
+} from "./RunwayEarthworks";
+import { RUNWAY_SDF_WGSL } from "./RunwaySurface";
 import {
   TERRAIN_KERNEL_PAGE_BYTES,
   TERRAIN_KERNEL_WGSL,
@@ -504,10 +511,15 @@ export const TERRAIN_PAGE_BOUNDS_SLOTS = 4;
  * any of them executed and every dispatch would read the last job (§4 D11's
  * hazard, in the generation path rather than the shadow path).
  */
-export function terrainPageGenerationWgsl(kernelWgsl: string, bindingWgsl: string): string {
+export function terrainPageGenerationWgsl(
+  kernelWgsl: string,
+  bindingWgsl: string,
+  airportWgsl: string,
+): string {
   return /* wgsl */ `
 ${bindingWgsl}
 ${kernelWgsl}
+${airportWgsl}
 
 struct PageJob {
   // (atlas texel u, atlas texel v, world offset of stored texel 0 from the
@@ -515,12 +527,17 @@ struct PageJob {
   placement: vec4f,
   // (texelSize, kernel page index, supersample count, level)
   shape: vec4f,
+  // (page origin world x, page origin world z, 0, 0) — the ABSOLUTE origin,
+  // needed only by the airport earthworks, which are a local feature. The
+  // height kernel itself never sees an absolute coordinate.
+  world: vec4f,
 };
 
 @group(0) @binding(1) var<storage, read> jobs: array<PageJob>;
 @group(0) @binding(2) var heightAtlas: texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var<storage, read_write> pageBounds: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read> supersample: array<vec4f>;
+@group(0) @binding(5) var<storage, read> earthworks: RunwayEarthworks;
 
 /**
  * A monotonic u32 encoding of an f32, so atomicMin/atomicMax reduce floats.
@@ -548,18 +565,33 @@ var<workgroup> groupDeviation: atomic<u32>;
  * cause is the C0 crease in ridgedFbm2D, so the residual scales LINEARLY with
  * texel size rather than quadratically.
  */
+fn pageHeightAt(job: PageJob, localX: f32, localZ: f32) -> f32 {
+  let natural = terrainNaturalHeight(localX, localZ);
+  // 4-3/4-9: the page stores the AIRPORT-FLATTENED height. The CDLOD min/max
+  // AABB has to be correct over the airport, the collision fast path returns
+  // the crowned platform, and after 4-4 there is no CPU tile path left to
+  // apply the earthworks anywhere else.
+  return terrainRunwayEarthworksHeight(
+    earthworks,
+    natural,
+    job.world.x + localX - job.placement.z,
+    job.world.y + localZ - job.placement.w,
+  );
+}
+
 fn samplePageTexel(job: PageJob, texelX: f32, texelZ: f32) -> f32 {
   let texelSize = job.shape.x;
   let baseX = job.placement.z + texelX * texelSize;
   let baseZ = job.placement.w + texelZ * texelSize;
   let count = u32(job.shape.z);
   if (count <= 1u) {
-    return terrainNaturalHeight(baseX, baseZ);
+    return pageHeightAt(job, baseX, baseZ);
   }
   var total = 0.0;
   for (var index = 0u; index < count; index = index + 1u) {
     let offset = supersample[index];
-    total = total + terrainNaturalHeight(
+    total = total + pageHeightAt(
+      job,
       baseX + offset.x * texelSize,
       baseZ + offset.y * texelSize,
     );
@@ -600,7 +632,8 @@ fn generatePage(
     if (interior) {
       tile[cursor] = samplePageTexel(job, texelX, texelZ);
     } else {
-      tile[cursor] = terrainNaturalHeight(
+      tile[cursor] = pageHeightAt(
+        job,
         job.placement.z + texelX * job.shape.x,
         job.placement.w + texelZ * job.shape.x,
       );
@@ -674,6 +707,7 @@ export class TerrainPageGenerator {
   private pageBuffer: StorageBuffer | null = null;
   private boundsBuffer: StorageBuffer | null = null;
   private offsetBuffer: StorageBuffer | null = null;
+  private earthworksBuffer: StorageBuffer | null = null;
   private capacity = 0;
   private inFlight: readonly TerrainAtlasSlot[] = [];
   private readbackPending = false;
@@ -683,6 +717,7 @@ export class TerrainPageGenerator {
     private readonly engine: AbstractEngine,
     private readonly atlas: TerrainPageAtlas,
     private readonly seedHash: number,
+    private readonly airport: Readonly<AirportDefinition> | null = null,
   ) {}
 
   get dispatchesInFlight(): number {
@@ -708,7 +743,7 @@ export class TerrainPageGenerator {
     const boundsBuffer = this.boundsBuffer;
     if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return;
 
-    const jobs = new Float32Array(slots.length * 8);
+    const jobs = new Float32Array(slots.length * 12);
     const pages = new Uint8Array(slots.length * TERRAIN_KERNEL_PAGE_BYTES);
     const bounds = new Uint32Array(slots.length * TERRAIN_PAGE_BOUNDS_SLOTS);
     slots.forEach((slot, index) => {
@@ -717,14 +752,16 @@ export class TerrainPageGenerator {
       const pageBounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
       const texel = this.atlas.slotOrigin(slot.slotIndex);
       const gutterOffset = -WORLD_PAGE_GUTTER * texelSize;
-      jobs[index * 8] = texel.u;
-      jobs[index * 8 + 1] = texel.v;
-      jobs[index * 8 + 2] = gutterOffset;
-      jobs[index * 8 + 3] = gutterOffset;
-      jobs[index * 8 + 4] = texelSize;
-      jobs[index * 8 + 5] = index;
-      jobs[index * 8 + 6] = terrainSupersampleOffsets(level).length;
-      jobs[index * 8 + 7] = level;
+      jobs[index * 12] = texel.u;
+      jobs[index * 12 + 1] = texel.v;
+      jobs[index * 12 + 2] = gutterOffset;
+      jobs[index * 12 + 3] = gutterOffset;
+      jobs[index * 12 + 4] = texelSize;
+      jobs[index * 12 + 5] = index;
+      jobs[index * 12 + 6] = terrainSupersampleOffsets(level).length;
+      jobs[index * 12 + 7] = level;
+      jobs[index * 12 + 8] = pageBounds.minX;
+      jobs[index * 12 + 9] = pageBounds.minZ;
       pages.set(
         new Uint8Array(buildTerrainKernelPageUniform({
           seedHash: this.seedHash,
@@ -781,6 +818,8 @@ export class TerrainPageGenerator {
     this.pageBuffer?.dispose();
     this.boundsBuffer?.dispose();
     this.offsetBuffer?.dispose();
+    this.earthworksBuffer?.dispose();
+    this.earthworksBuffer = null;
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.boundsBuffer = null;
@@ -795,7 +834,7 @@ export class TerrainPageGenerator {
     this.boundsBuffer?.dispose();
     this.capacity = Math.max(count, 8);
     const engine = this.engine as WebGPUEngine;
-    this.jobBuffer = new StorageBuffer(engine, this.capacity * 8 * 4);
+    this.jobBuffer = new StorageBuffer(engine, this.capacity * 12 * 4);
     this.pageBuffer = new StorageBuffer(engine, this.capacity * TERRAIN_KERNEL_PAGE_BYTES);
     // Default creation flags (READWRITE): passing STORAGE|READ drops WRITE,
     // and then `update()` silently does nothing — the atomics reduce against a
@@ -822,6 +861,7 @@ export class TerrainPageGenerator {
         computeSource: terrainPageGenerationWgsl(
           TERRAIN_KERNEL_WGSL,
           terrainKernelPageBindingWgsl(0, 0),
+          `${RUNWAY_SDF_WGSL}\n${RUNWAY_EARTHWORKS_WGSL}`,
         ),
       },
       {
@@ -832,6 +872,7 @@ export class TerrainPageGenerator {
           heightAtlas: { group: 0, binding: 2 },
           pageBounds: { group: 0, binding: 3 },
           supersample: { group: 0, binding: 4 },
+          earthworks: { group: 0, binding: 5 },
         },
       },
     );
@@ -841,5 +882,10 @@ export class TerrainPageGenerator {
     this.shader.setStorageBuffer("jobs", this.jobBuffer);
     this.shader.setStorageBuffer("pageBounds", this.boundsBuffer);
     this.shader.setStorageBuffer("supersample", this.offsetBuffer);
+    this.earthworksBuffer ??= new StorageBuffer(engine, RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
+    this.earthworksBuffer.update(new Uint8Array(
+      packRunwayEarthworksUniform(this.airport, this.seedHash).buffer,
+    ));
+    this.shader.setStorageBuffer("earthworks", this.earthworksBuffer);
   }
 }

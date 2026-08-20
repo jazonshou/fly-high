@@ -300,6 +300,7 @@ export class TerrainClipmapSystem {
         scene.getEngine(),
         this.heightAtlas,
         world.seedHash,
+        world.airport ?? null,
       );
       this.pyramid = new GlobalHeightPyramid(scene, scene.getEngine(), world.seedHash);
       this.occlusionBake = new PageOcclusionBake(

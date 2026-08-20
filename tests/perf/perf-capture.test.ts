@@ -5,7 +5,6 @@ import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
 import {
   createWorld,
-  generateTerrainTile,
   sampleTerrain,
   sampleTerrainHeight,
 } from "../../src/world";
@@ -167,16 +166,23 @@ describe("perf capture (1A-1c / 2Z)", () => {
       ...(world.airport ? { runway: world.airport } : {}),
     });
 
-    // Page-generation cost at the plan's reference resolution (65).
+    // 4-9: `generateTerrainTile` is deleted with the CPU render path. What
+    // this row measured — the CPU cost of building one page — no longer
+    // exists at all: pages are a compute dispatch now. The row is kept and
+    // re-pointed at the analytic kernel over one page's worth of L0 samples,
+    // which is what the COLLISION path still costs and is the only CPU
+    // terrain cost left to watch.
     const generationRuns = 5;
     const generationStarted = performance.now();
     for (let run = 0; run < generationRuns; run += 1) {
-      generateTerrainTile(world, {
-        tileX: 3 + run,
-        tileZ: -2,
-        size: 512,
-        resolution: 65,
-      });
+      const originX = (3 + run) * 512;
+      for (let index = 0; index < 4_225; index += 1) {
+        sampleTerrainHeight(
+          world,
+          originX + (index % 65) * 8,
+          -1_024 + Math.floor(index / 65) * 8,
+        );
+      }
     }
     const pageGenerationMs = (performance.now() - generationStarted) / generationRuns;
 

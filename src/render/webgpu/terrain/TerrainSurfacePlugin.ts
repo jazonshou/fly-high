@@ -1,6 +1,10 @@
 import { MaterialPluginBase } from "@babylonjs/core/Materials/materialPluginBase";
 import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { Constants } from "@babylonjs/core/Engines/constants";
+import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture2DArray";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import type { Scene } from "@babylonjs/core/scene";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { TERRAIN_NODE_GRID_RESOLUTION } from "./TerrainSpineContract";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
@@ -1201,6 +1205,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private seaLevelMeters = 0;
   private readonly tiling = new Float32Array(SURFACE_MATERIAL_COUNT * 4);
   private readonly season = new Float32Array(SURFACE_MATERIAL_COUNT * 4);
+  private placeholderArray: RawTexture2DArray | null = null;
   private occlusionAtlas: BaseTexture | null = null;
   private horizonAtlasA: BaseTexture | null = null;
   private horizonAtlasB: BaseTexture | null = null;
@@ -1266,6 +1271,39 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.normalMaterialArray = normalMaterial;
     this._enable(true);
     this.markAllDefinesAsDirty();
+  }
+
+  /**
+   * 1x1 stand-ins for the material arrays, so the plugin can be enabled for
+   * its GEOMETRY before its appearance exists.
+   *
+   * `3-1` builds the real arrays one material per frame from the frame loop —
+   * about ten frames — and before `4-4` that only cost ten frames of untextured
+   * ground. It now also gates vertex displacement, and ten frames of FLAT
+   * ground is a different thing entirely: the aircraft would spawn inside a
+   * plane. Binding a placeholder is the same trick `CloudShadowMaterialPlugin`
+   * uses for its projection texture, for the same reason: an enabled plugin
+   * with an unbound sampler dies in `createBindGroup`.
+   */
+  private fallbackArray(scene: Scene): BaseTexture {
+    if (!this.placeholderArray) {
+      const texels = new Uint8Array(SURFACE_MATERIAL_COUNT * 4);
+      texels.fill(128);
+      this.placeholderArray = new RawTexture2DArray(
+        texels,
+        1,
+        1,
+        SURFACE_MATERIAL_COUNT,
+        Constants.TEXTUREFORMAT_RGBA,
+        scene,
+        false,
+        false,
+        Texture.NEAREST_SAMPLINGMODE,
+        Constants.TEXTURETYPE_UNSIGNED_BYTE,
+      );
+      this.placeholderArray.name = "terrain-surface-placeholder";
+    }
+    return this.placeholderArray;
   }
 
   get hasArrays(): boolean {
@@ -1388,6 +1426,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.heightAtlasShape = [shape.atlasEdge, shape.slotEdge, shape.gutter, shape.gridEdge];
     if (enabled === this.cdlodEnabled) return;
     this.cdlodEnabled = enabled;
+    // The plugin has to be ON for the vertex path, whether or not `3-1`'s
+    // arrays have finished building.
+    if (enabled) this._enable(true);
     this.markAllDefinesAsDirty();
   }
 
@@ -1445,12 +1486,15 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
-    if (this.albedoHeightArray) {
-      uniformBuffer.setTexture("terrainSurfaceAlbedo", this.albedoHeightArray);
-    }
-    if (this.normalMaterialArray) {
-      uniformBuffer.setTexture("terrainSurfaceNormal", this.normalMaterialArray);
-    }
+    const scene = this._material.getScene();
+    uniformBuffer.setTexture(
+      "terrainSurfaceAlbedo",
+      this.albedoHeightArray ?? this.fallbackArray(scene),
+    );
+    uniformBuffer.setTexture(
+      "terrainSurfaceNormal",
+      this.normalMaterialArray ?? this.fallbackArray(scene),
+    );
     if (this.occlusionAtlas) {
       uniformBuffer.setTexture("terrainOcclusionAtlas", this.occlusionAtlas);
     }

@@ -9,6 +9,8 @@ import {
   terrainKernelPageBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainKernel";
 import { terrainPageGenerationWgsl } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
+import { RUNWAY_EARTHWORKS_WGSL } from "../../src/render/webgpu/terrain/RunwayEarthworks";
+import { RUNWAY_SDF_WGSL } from "../../src/render/webgpu/terrain/RunwaySurface";
 
 /**
  * Every Phase 4 compute module, compiled on a real adapter and REPORTING its
@@ -37,7 +39,11 @@ describe("Phase 4 terrain compute modules compile (4-1, 4-3, 4-7)", () => {
       const modules = [
         [
           "terrain-page-generate",
-          terrainPageGenerationWgsl(TERRAIN_KERNEL_WGSL, terrainKernelPageBindingWgsl(0, 0)),
+          terrainPageGenerationWgsl(
+            TERRAIN_KERNEL_WGSL,
+            terrainKernelPageBindingWgsl(0, 0),
+            `${RUNWAY_SDF_WGSL}\n${RUNWAY_EARTHWORKS_WGSL}`,
+          ),
           "generatePage",
         ],
         ["global-height-pyramid", GLOBAL_HEIGHT_PYRAMID_WGSL, "bakePyramid"],
