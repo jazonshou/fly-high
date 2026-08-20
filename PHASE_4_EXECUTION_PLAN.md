@@ -863,7 +863,7 @@ and each unticked box says why and where it is carried forward.
 **Gate 4D — Identity and retirement**
 - [x] Material identity is continuous between distant vertices: `classifyBiome`'s cascade is gone, and the classifier's suitabilities are asserted Lipschitz-continuous in every driver.
 - [x] `dayOfYear` is in the classifier's signature; the snowline migrates; a season scrub re-bakes nothing (the bucket pair is a slot variant, not a page rebuild).
-- [ ] **Cross-level splat consistency within quantisation (assertion 85).** Not asserted. The bake supersamples 2×2 and averages weight vectors, which is the mechanism the assertion would measure, and it compiles and runs on-adapter; the level-N-vs-level-(N−1) box-average comparison is carried forward.
+- [ ] **Cross-level splat consistency within quantisation (assertion 85).** Not asserted. `tests/gpu/terrain-splat-bake.test.ts` reads the baked page back and proves it is neither constant nor zeroed — which is the failure that actually shipped and was caught — but the level-N-vs-level-(N−1) box-average comparison is carried forward.
 - [x] `R-27` settled: one classification authority for ground, trees and wildlife.
 - [x] Runway earthworks CPU↔GPU within 1 mm — measured **0.298 mm** over 23,805 probes spanning platform, batter and untouched ground.
 - [x] `generateTerrainTile` deleted with test 3's old form, in one commit.
