@@ -163,9 +163,12 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
     consumers: ["terrain-geometry", "terrain-material"],
-    ownedSymbols: ["TerrainPageAtlas", "TerrainAtlasResidency"],
+    ownedSymbols: [
+      "TerrainPageAtlas",
+      "TerrainAtlasResidency",
+      "terrainPageGenerationWgsl",
+    ],
     notes: "Terrain-material consumes atlases; it does not create them.",
-    plannedBy: "4-2",
   },
   {
     // 4-3: the false-colour overlay RENDERING_PLAN.md mandates before the
@@ -174,8 +177,11 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainDebugOverlay.ts"],
     consumers: ["terrain-geometry", "performance"],
-    ownedSymbols: ["TerrainDebugOverlay", "TERRAIN_DEBUG_OVERLAY_MODES"],
-    plannedBy: "4-3",
+    ownedSymbols: [
+      "TerrainDebugOverlay",
+      "TERRAIN_DEBUG_OVERLAY_MODES",
+      "terrainDebugOverlayColor",
+    ],
   },
   {
     // 4-7: the coarse global height field the occlusion bake marches beyond a

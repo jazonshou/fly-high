@@ -407,6 +407,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.graph.invalidateHistory("display resize");
     });
     this.resizeObserver.observe(this.domElement);
+    // 4-3: RENDERING_PLAN.md mandates a false-colour overlay before the items
+    // that consume it. Backquote is unused by the flight input map.
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", this.handleDebugKey);
+    }
     this.engine.onContextLostObservable.add(() => {
       if (this.disposed || this.deviceLost) return;
       this.deviceLost = true;
@@ -415,6 +420,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
   }
+
+  private readonly handleDebugKey = (event: KeyboardEvent): void => {
+    if (this.disposed || event.code !== "Backquote" || event.repeat) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    this.terrain.cycleDebugOverlay();
+  };
 
   static async create(options: FlightRendererOptions): Promise<FlightRenderer> {
     const capability = await awaitRendererStartup(
@@ -1032,7 +1043,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       geometries: this.scene.geometries.length,
       textures: this.scene.textures.length,
       terrainTiles: terrain.residentPages,
-      residentTerrainPages: terrain.residentPages,
+      // 4-2: the GPU atlas's residency, not the CPU tile count. `4-4` retires
+      // the tile path and these fields keep their meaning across that change.
+      residentTerrainPages: terrain.residentSlots > 0
+        ? terrain.residentSlots
+        : terrain.residentPages,
       collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       vegetationBatches: this.detail.statistics.activeBatches,
@@ -1067,7 +1082,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
-      pendingTerrainPages: terrain.pendingPages,
+      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       terrainWorkersBusy: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
@@ -1095,6 +1110,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       () => this.scene.dispose(),
       () => this.atmosphere.dispose(),
       () => this.aircraft.dispose(),
+      () => {
+        if (typeof window !== "undefined") {
+          window.removeEventListener("keydown", this.handleDebugKey);
+        }
+      },
       () => this.terrain.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
@@ -1556,6 +1576,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     const settings = workLeverSettingsFor(cpuLevel, gpuLevel);
     this.workLeverSettings = settings;
     this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    // 4-0b rung 0: the shared compute cap moves before any visible lever.
+    this.terrain.setComputeBudgetScale(settings.computeBudgetScale);
     this.detail.setGenerationBudgetCap(
       settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
         ? null

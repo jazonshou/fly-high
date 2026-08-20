@@ -3,6 +3,7 @@ import {
   type PerformanceTier,
   type SubsystemBudgetMs,
 } from "./PerformanceBudget";
+import type { WebGpuQualityProfile } from "./QualityProfile";
 
 /**
  * The shared amortised-compute meter (`4-0b`; `6-10` moved forward).
@@ -192,8 +193,12 @@ export class ComputeBudget {
   private readonly costEstimateMs = new Map<ComputeBudgetClient, number>();
   private plan: ComputeAdmissionPlan | null = null;
 
-  constructor(tier: PerformanceTier) {
-    this.rows = FRAME_BUDGET_MS[tier];
+  /**
+   * Takes the PROFILE, not a tier, so the tier read stays inside `core/` where
+   * the budget tables live — the boundary rule, not a stylistic choice.
+   */
+  constructor(profile: WebGpuQualityProfile) {
+    this.rows = FRAME_BUDGET_MS[profile.tier as PerformanceTier];
     for (const client of COMPUTE_BUDGET_CLIENTS) {
       // Seed each estimate at its own published row: before any measurement
       // exists, the budget table IS the best estimate available.
@@ -201,8 +206,8 @@ export class ComputeBudget {
     }
   }
 
-  setTier(tier: PerformanceTier): void {
-    this.rows = FRAME_BUDGET_MS[tier];
+  setProfile(profile: WebGpuQualityProfile): void {
+    this.rows = FRAME_BUDGET_MS[profile.tier as PerformanceTier];
   }
 
   /**

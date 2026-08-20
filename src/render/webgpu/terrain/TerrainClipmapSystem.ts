@@ -1,6 +1,7 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import {
@@ -49,6 +50,14 @@ import {
   type SurfaceMaterialArrays,
 } from "./MaterialArraySynthesis";
 import { SURFACE_MATERIALS, SURFACE_MATERIALS_BY_BIOME } from "./surfaceMaterials";
+import { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
+import {
+  TerrainPageAtlas,
+  TerrainPageGenerator,
+  invariantSlotKey,
+  type TerrainAtlasSlot,
+} from "./TerrainPageAtlas";
+import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
 
 export interface TerrainClipmapBounds {
@@ -84,6 +93,14 @@ interface TerrainPage {
   readonly seasonDay: number;
   readonly mesh: Mesh;
   readonly metadata: WorldPageCacheMetadata;
+  /**
+   * 4-2: the provisional splat buffer, retained so the `atlasSlot` lane can be
+   * REWRITTEN. The slot index is not a build-time constant — it changes
+   * whenever the LRU re-admits or re-homes a page, and it is -1 until the page
+   * holds a slot at all.
+   */
+  readonly splat: Float32Array;
+  atlasSlot: number;
   topologyKey: string;
   lastRequiredFrame: number;
 }
@@ -115,6 +132,12 @@ export interface TerrainClipmapStatistics {
   readonly triangles: number;
   /** Generation workers currently busy (1B-4); 0 for synchronous fakes. */
   readonly workersBusy: number;
+  /** 4-2: height-atlas slots holding a generated page. */
+  readonly residentSlots: number;
+  /** 4-2: slots whose generation dispatch is in flight. */
+  readonly slotsGenerating: number;
+  /** 4-2: channel-atlas slots holding baked channel pages. */
+  readonly residentChannelSlots: number;
 }
 
 const RING_RADIUS = 2;
@@ -337,6 +360,14 @@ export class TerrainClipmapSystem {
   private requestBudgetPerPump = Number.POSITIVE_INFINITY;
   private lastAnchor = "";
   private seasonDayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR;
+  /** 4-2: the GPU page atlases. Residency is shared with the CPU tile path. */
+  private heightAtlas: TerrainPageAtlas;
+  private channelAtlas: TerrainPageAtlas;
+  /** 4-3: page generation, its meter, and the false-colour residency overlay. */
+  private pageGenerator: TerrainPageGenerator | null = null;
+  private readonly computeBudget: ComputeBudget;
+  private debugOverlay: TerrainDebugOverlay;
+  private generationInFlight = false;
   private disposed = false;
 
   constructor(
@@ -395,6 +426,28 @@ export class TerrainClipmapSystem {
     // Skirts are crack guards, so accept either winding on their vertical faces.
     this.material.backFaceCulling = false;
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
+    // 4-2: one height atlas and one channel atlas per tier. Surplus slots ARE
+    // the LRU cache; residency, priority and eviction order are world/'s.
+    this.heightAtlas = new TerrainPageAtlas(scene, profile, {
+      kind: "height",
+      worldRevision: this.worldRevision,
+    });
+    this.channelAtlas = new TerrainPageAtlas(scene, profile, {
+      kind: "channel",
+      worldRevision: this.worldRevision,
+      // occlusion (1) + horizon (2) + splat id/weight (2), season-keyed pair
+      // resident: five rgba8 textures at the channel slot edge.
+      textureCount: 5,
+    });
+    this.computeBudget = new ComputeBudget(profile);
+    this.debugOverlay = new TerrainDebugOverlay(scene, profile.heightAtlasSlots);
+    if (this.heightAtlas.hasTextures) {
+      this.pageGenerator = new TerrainPageGenerator(
+        scene.getEngine(),
+        this.heightAtlas,
+        world.seedHash,
+      );
+    }
   }
 
   /** Bytes the 3-1 arrays actually occupy, for the 1A-1 numeric report. */
@@ -494,6 +547,9 @@ export class TerrainClipmapSystem {
       pendingPages: this.pending.size,
       triangles,
       workersBusy: this.generator.busyWorkerCount ?? 0,
+      residentSlots: this.heightAtlas.residency.residentCount,
+      slotsGenerating: this.heightAtlas.residency.generatingCount,
+      residentChannelSlots: this.channelAtlas.residency.residentCount,
     };
   }
 
@@ -520,6 +576,27 @@ export class TerrainClipmapSystem {
     // build still running for the old one and re-paces the new set a material
     // per frame, alongside the page rebuild a tier change already causes.
     this.materialArrayEdge = profile.materialArrayEdge;
+    this.computeBudget.setProfile(profile);
+    // 4-2: the atlas slot budgets are profile data, so a tier change reshapes
+    // the textures. Rebuilding drops residency, which is correct: every slot's
+    // index would otherwise address a different texel in the new atlas.
+    if (
+      profile.heightAtlasSlots !== this.heightAtlas.residency.slotCount
+      || profile.channelAtlasSlots !== this.channelAtlas.residency.slotCount
+    ) {
+      this.heightAtlas.dispose();
+      this.channelAtlas.dispose();
+      this.heightAtlas = new TerrainPageAtlas(this.scene, profile, {
+        kind: "height",
+        worldRevision: this.worldRevision,
+      });
+      this.channelAtlas = new TerrainPageAtlas(this.scene, profile, {
+        kind: "channel",
+        worldRevision: this.worldRevision,
+        textureCount: 5,
+      });
+      for (const page of this.pages.values()) page.atlasSlot = TERRAIN_UNASSIGNED_ATLAS_SLOT;
+    }
     if (!topologyChanged) return;
     this.lastAnchor = "";
     // Cancel every in-flight request. Cancelling bumps the lifecycle epoch, so
@@ -632,6 +709,9 @@ export class TerrainClipmapSystem {
       }
     }
     this.evictExpiredPages(frameIndex);
+    this.updateAtlasResidency();
+    this.pumpPageGeneration();
+    this.debugOverlay.update(this.heightAtlas);
     // The worker queue is deliberately bounded. Keep feeding any desired pages
     // that did not fit during the anchor rebuild as earlier requests complete;
     // otherwise the cheapest far-horizon rings could remain permanently absent.
@@ -678,6 +758,113 @@ export class TerrainClipmapSystem {
     // with forceDisposeTextures=false would leak them.
     this.materialArrays?.albedoHeight.dispose();
     this.materialArrays?.normalMaterial.dispose();
+    this.pageGenerator?.dispose();
+    this.debugOverlay.dispose();
+    this.heightAtlas.dispose();
+    this.channelAtlas.dispose();
+  }
+
+  /** 4-3: the debug overlay's mode, cycled from the renderer's debug key. */
+  cycleDebugOverlay(): TerrainDebugOverlayMode {
+    return this.debugOverlay.cycleMode();
+  }
+
+  setDebugOverlay(mode: TerrainDebugOverlayMode): void {
+    this.debugOverlay.setMode(mode);
+  }
+
+  /** 4-0b: Governor B rung 0 scales the shared compute cap. */
+  setComputeBudgetScale(scale: number): void {
+    this.computeBudget.setBudgetScale(scale);
+  }
+
+  /** 4-2: the GPU page atlases, for the generator and the surface plugin. */
+  get atlases(): { readonly height: TerrainPageAtlas; readonly channel: TerrainPageAtlas } {
+    return { height: this.heightAtlas, channel: this.channelAtlas };
+  }
+
+  /**
+   * 4-2: admit the desired pages into both atlases, then republish the
+   * `atlasSlot` lane wherever residency moved.
+   *
+   * **The co-residency rule, stated once:** a CPU tile mesh samples channel
+   * pages only while its page holds a CHANNEL slot. Otherwise its lane reads
+   * -1 and the fragment shader falls back to the Phase 3 provisional path.
+   * Without this the lane Phase 3 reserved is never written, `4-7`'s bake has
+   * no consumer until `4-4`, and `4-8b` cannot shorten the shadow distance —
+   * which is the whole of Gate 4B's visibility.
+   */
+  private updateAtlasResidency(): void {
+    this.heightAtlas.residency.beginFrame(this.frameIndex);
+    this.channelAtlas.residency.beginFrame(this.frameIndex);
+    for (const desired of this.desired.values()) {
+      if (desired.address.level < this.profile.finestResidentLevel) continue;
+      const key = invariantSlotKey(desired.address);
+      this.heightAtlas.residency.request(key, desired.address);
+      this.channelAtlas.residency.request(key, desired.address);
+    }
+    for (const page of this.pages.values()) {
+      const slot = this.channelAtlas.residency.slotIndexOf(invariantSlotKey(page.address));
+      if (slot === page.atlasSlot) continue;
+      page.atlasSlot = slot;
+      const lane = slot >= 0 ? slot : TERRAIN_UNASSIGNED_ATLAS_SLOT;
+      for (let offset = 3; offset < page.splat.length; offset += 4) page.splat[offset] = lane;
+      page.mesh.updateVerticesData(VertexBuffer.ColorKind, page.splat, false, false);
+    }
+  }
+
+  /**
+   * 4-3: dispatch the admitted page generations for this frame.
+   *
+   * Admission goes through the SHARED millisecond meter, not a private budget:
+   * a banked turn that admits many pages at once must spend one cap alongside
+   * the splat and occlusion bakes, which is the whole reason `4-0b` exists.
+   * Only one batch is in flight at a time — the readback that makes a page
+   * resident is what paces this, and queueing a second batch behind it would
+   * put two writes to the same job buffer inside one command encoder.
+   */
+  private pumpPageGeneration(): void {
+    const generator = this.pageGenerator;
+    if (!generator || this.generationInFlight) return;
+    const pending = this.heightAtlas.residency.entries.filter(
+      (slot) => slot.lifecycle.state === "generating" && slot.token !== null,
+    );
+    if (pending.length === 0) return;
+    this.computeBudget.beginFrame();
+    this.computeBudget.submit("terrainCompute", pending.length);
+    const admitted = this.computeBudget.admitted("terrainCompute");
+    if (admitted <= 0) return;
+    const batch = pending.slice(0, admitted);
+    this.generationInFlight = true;
+    void generator.generate(batch)
+      .catch(() => {
+        // A failed dispatch releases its slots; the next pump re-admits them.
+        for (const slot of batch) {
+          if (slot.token) this.heightAtlas.residency.fail(slot.key, slot.token, "page generation failed");
+        }
+      })
+      .finally(() => {
+        this.generationInFlight = false;
+      });
+  }
+
+  /**
+   * 4-2: complete every generation the caller dispatched. Separated from
+   * admission so `4-3` can run the compute in between, and so a stale epoch is
+   * rejected here rather than inside the dispatch loop.
+   */
+  completeAtlasGeneration(
+    slots: readonly TerrainAtlasSlot[],
+    stats: (slot: TerrainAtlasSlot) => {
+      readonly minHeightMeters: number;
+      readonly maxHeightMeters: number;
+      readonly maxDeviationFromParent: number;
+    },
+  ): void {
+    for (const slot of slots) {
+      if (!slot.token) continue;
+      this.heightAtlas.residency.complete(slot.key, slot.token, stats(slot));
+    }
   }
 
   private rebuildDesired(
@@ -941,6 +1128,10 @@ export class TerrainClipmapSystem {
     vertexData.colors = splat;
     vertexData.indices = indices;
     vertexData.applyToMesh(mesh, false);
+    // 4-2: the colour lane alone becomes UPDATABLE — the slot index changes
+    // whenever the LRU re-homes a page, and rebuilding the whole vertex data
+    // for a one-lane rewrite would re-upload positions and normals too.
+    mesh.setVerticesData(VertexBuffer.ColorKind, splat, true, 4);
     mesh.material = this.material;
     // 3-2: the lane is the surface plugin's, not Babylon's. With this false
     // VERTEXCOLOR is never defined, PBR never multiplies albedo by it, and the
@@ -958,6 +1149,8 @@ export class TerrainClipmapSystem {
       mesh,
       // Cache metadata timestamps use the frame index as the clock; eviction
       // ordering only needs monotonicity, not wall time.
+      splat,
+      atlasSlot: TERRAIN_UNASSIGNED_ATLAS_SLOT,
       metadata: {
         metadataVersion: WORLD_PAGE_CACHE_METADATA_VERSION,
         pageSchemaVersion: WORLD_PAGE_SCHEMA_VERSION,

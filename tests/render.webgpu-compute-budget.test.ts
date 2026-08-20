@@ -7,6 +7,7 @@ import {
   type ComputeBudgetClient,
 } from "../src/render/webgpu/core/ComputeBudget";
 import { FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
+import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   GPU_WORK_MAX_LEVEL,
   createGovernorState,
@@ -115,7 +116,7 @@ describe("shared amortised-compute meter (4-0b)", () => {
   });
 
   it("runs the live meter across frames and smooths measured costs", () => {
-    const budget = new ComputeBudget(1);
+    const budget = new ComputeBudget(resolveWebGpuQualityProfile("medium", "balanced"));
     expect(budget.budgetScale).toBe(1);
     budget.beginFrame();
     budget.submit("terrainCompute", 6, 0.2);
@@ -145,7 +146,7 @@ describe("shared amortised-compute meter (4-0b)", () => {
   });
 
   it("keeps every client's estimate seeded from its published row", () => {
-    const budget = new ComputeBudget(2);
+    const budget = new ComputeBudget(resolveWebGpuQualityProfile("high", "balanced"));
     for (const client of COMPUTE_BUDGET_CLIENTS) {
       expect(budget.estimatedCostMs(client as ComputeBudgetClient))
         .toBe(FRAME_BUDGET_MS[2][client]);
