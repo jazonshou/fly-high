@@ -130,7 +130,7 @@ npm run test:world # world-generation suite
 npm run benchmark  # deterministic flight scenarios
 npm run test:gpu   # WebGPU suite; needs a hardware adapter
 npm run material:preview # writes the terrain-material contact sheet to tests/perf/artifacts/
-npm run perf:capture   # thirteen-shot capture gate on a real GPU; diffs tests/perf/baseline/
+npm run perf:capture   # fourteen-shot capture gate on a real GPU; diffs tests/perf/baseline/
 npm run build      # production bundle (Cloudflare Worker)
 npm run build:pages # static bundle for GitHub Pages
 ```
