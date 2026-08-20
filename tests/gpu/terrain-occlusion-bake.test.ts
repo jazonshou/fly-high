@@ -102,8 +102,10 @@ async function bakePages(addresses: readonly ReturnType<typeof createWorldPageAd
       addresses[0]!.z * 512 * 2 ** addresses[0]!.level,
     );
     expect(pyramid.isResident).toBe(true);
+    // The bake no longer marks residency: the splat bake writes the same slot
+    // afterwards, and publishing between the two shows a zeroed splat.
     const baked = await bake.bake(channelSlots);
-    expect(baked).toBe(addresses.length);
+    expect(baked).toHaveLength(addresses.length);
 
     const occlusionTexture = channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.occlusion)!;
     const horizonTexture = channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA)!;

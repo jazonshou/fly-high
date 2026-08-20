@@ -50,8 +50,22 @@ describe("terrain shadow depth wrapper (4-4)", () => {
       setMaximumLimits: false,
     });
     let scene: Scene | null = null;
+    const gpuErrors: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      const text = args.map((value) => String(value)).join(" ");
+      if (text.includes("uncaptured error") || text.includes("Error while parsing WGSL")) {
+        gpuErrors.push(text.slice(0, 400));
+      }
+      originalWarn(...args);
+    };
     try {
       await engine.initAsync();
+      // An uncaptured GPU error is what a broken shader looks like from the
+      // outside: the pipeline is invalid, the render bundle is invalid, the
+      // frame's command buffer is invalid, and the screen goes black while
+      // every CPU test stays green. Fail on it.
+      engine.onContextLostObservable.add(() => gpuErrors.push("device lost"));
       scene = new Scene(engine);
       scene.clearColor = new Color4(0, 0, 0, 1);
       const camera = new FreeCamera("camera", new Vector3(0, 200, -200), scene);
@@ -72,6 +86,7 @@ describe("terrain shadow depth wrapper (4-4)", () => {
 
       // The REAL factory, in the REAL order: plugins first, then the wrapper,
       // then — and only then — the first effect.
+      const channelTextures: RawTexture[] = [];
       const material = createTerrainMaterial(scene);
       const plugin = attachTerrainSurfacePlugin(material, scene);
       expect(material.shadowDepthWrapper).toBeTruthy();
@@ -85,6 +100,34 @@ describe("terrain shadow depth wrapper (4-4)", () => {
         heights, atlasEdge, atlasEdge, scene, false, false,
         Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_FLOAT,
       );
+      // 4-6/4-7: bind the CHANNEL pages too, so this test compiles the
+      // `TERRAIN_SURFACE_PAGE_CHANNELS` fragment path as well. It is the only
+      // GPU test that does, and its absence is what let a TypeScript-style
+      // ternary — which WGSL does not have — reach a running app.
+      const channelEdge = 272;
+      const channelTexels = new Uint8Array(channelEdge * channelEdge * 4);
+      channelTexels.fill(200);
+      const channelPage = (): RawTexture => {
+        const texture = RawTexture.CreateRGBATexture(
+          channelTexels, channelEdge, channelEdge, scene!, false, false,
+          Texture.NEAREST_SAMPLINGMODE,
+        );
+        channelTextures.push(texture);
+        return texture;
+      };
+      plugin.setChannelAtlas(
+        channelPage(), channelPage(), channelPage(),
+        [channelPage(), channelPage(), channelPage(), channelPage()],
+        {
+          atlasEdge: channelEdge,
+          slotEdge: 136,
+          core: 128,
+          gutter: WORLD_PAGE_GUTTER,
+          gridEdge: 2,
+          basePageExtentMeters: 512,
+        },
+      );
+      plugin.setSeasonBlend(0.4);
       plugin.setHeightAtlas(heightAtlas, {
         atlasEdge,
         slotEdge: TERRAIN_HEIGHT_SLOT_EDGE,
@@ -114,6 +157,14 @@ describe("terrain shadow depth wrapper (4-4)", () => {
       mesh.thinInstanceSetBuffer("terrainNodeB", laneB, 4, false);
 
       const generator = new ShadowGenerator(1_024, light);
+      // NONZERO, deliberately: at normalBias 0 the `shadowMapVertexNormalBias`
+      // include compiles away and this test cannot see the failure that
+      // actually shipped — the bare `vNormalW` the include references does not
+      // resolve after the WGSL migration, the shadow vertex module fails to
+      // compile, and the frame's whole command buffer is invalidated. The
+      // renderer's CSM runs at 0.035.
+      generator.normalBias = 0.035;
+      generator.bias = 0.00035;
       generator.addShadowCaster(mesh);
 
       // Render until the shadow effect exists — the wrapper compiles it lazily
@@ -132,6 +183,18 @@ describe("terrain shadow depth wrapper (4-4)", () => {
       }
 
       expect(shadowSource, "no shadow effect ever compiled").not.toBe("");
+      // The normal-bias include IS in the source (at a nonzero bias Babylon
+      // injects it), and the remap must have rewritten every reference it
+      // makes to the varying. A BARE `vNormalW` there is the compile failure
+      // that shipped, not a style issue.
+      expect(shadowSource).toContain("worldLightDirSM");
+      const biasBlock = shadowSource.slice(shadowSource.indexOf("worldLightDirSM"));
+      expect(biasBlock.slice(0, 600)).not.toMatch(/[^.\w]vNormalW\b/u);
+      // The page-channel fragment path must have compiled too.
+      const beautyFragment = material.getEffect()?.fragmentSourceCode ?? "";
+      expect(beautyFragment).toContain("terrainSurfacePageSplat");
+      expect(beautyFragment).toContain("terrainSurfaceHorizonShadow");
+
       // The BEAUTY effect must carry it too, or the two surfaces disagree —
       // which is the depth-fighting failure a shadow-only check would miss.
       expect(material.isReady(mesh, false)).toBe(true);
@@ -156,9 +219,13 @@ describe("terrain shadow depth wrapper (4-4)", () => {
         expect(morphBlock.includes(symbol), `morph reads ${symbol}`).toBe(false);
       }
 
+      expect(gpuErrors.join("\n---\n")).toBe("");
+
       heightAtlas.dispose();
+      for (const texture of channelTextures) texture.dispose();
       generator.dispose();
     } finally {
+      console.warn = originalWarn;
       scene?.dispose();
       engine.dispose();
       canvas.remove();

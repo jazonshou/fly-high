@@ -102,7 +102,13 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     // aspect strength the treeline uses.
     + aspect * 90;
 
-  const shore = smoothstep(-1, 9, elevation);
+  // The beach band is METRES of elevation, not tens of them. At
+  // `smoothstep(-1, 9, ...)` every coastal plain up to ~9 m classified as
+  // sand — measured against a real seed, a forested plain came out a desert.
+  // 3 m matches the density field's own shoreline gate
+  // (`smoothstep(1.5, 7, elevation)`), so the ground and the plants agree
+  // about where the beach ends.
+  const shore = smoothstep(-1, 3, elevation);
   const dry = 1 - smoothstep(0.28, 0.62, moisture);
   const wet = smoothstep(0.3, 0.64, moisture);
   const warm = smoothstep(0.16, 0.34, temperature);
@@ -261,7 +267,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let snowline = LAND_COVER_SNOWLINE_REFERENCE
     + input.seasonalTemperatureShift * LAND_COVER_METERS_PER_TEMPERATURE
     + input.aspect * 90.0;
-  let shore = kSmoothstep(-1.0, 9.0, elevation);
+  let shore = kSmoothstep(-1.0, 3.0, elevation);
   let dry = 1.0 - kSmoothstep(0.28, 0.62, input.moisture);
   let wet = kSmoothstep(0.3, 0.64, input.moisture);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
@@ -484,5 +490,6 @@ fn bakeSplat(
   let hi = splatSupersample(job, localX, localZ, job.placement.w);
   textureStore(splatIdHi, texel, hi.ids * scale);
   textureStore(splatWeightHi, texel, hi.weights);
+
 }
 `;

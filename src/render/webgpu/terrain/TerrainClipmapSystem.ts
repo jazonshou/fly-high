@@ -34,7 +34,7 @@ import {
   type SurfaceMaterialArrays,
 } from "./MaterialArraySynthesis";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
-import { SURFACE_MATERIALS } from "./surfaceMaterials";
+import { SURFACE_MATERIALS, SurfaceMaterial } from "./surfaceMaterials";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
   TERRAIN_CHANNEL_TEXTURES,
@@ -46,10 +46,12 @@ import {
 } from "./TerrainPageAtlas";
 import {
   buildTerrainNodeGrid,
+  createTerrainNodeBuffers,
   packTerrainNodeSplat,
   selectTerrainNodes,
   writeTerrainNodeBuffers,
   type TerrainNode,
+  type TerrainNodeBuffers,
 } from "./TerrainQuadtree";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
@@ -175,7 +177,18 @@ export function attachTerrainSurfacePlugin(
   scene: Scene,
 ): TerrainSurfacePlugin {
   const plugin = new TerrainSurfacePlugin(material);
-  material.shadowDepthWrapper = new ShadowDepthWrapper(material, scene);
+  material.shadowDepthWrapper = new ShadowDepthWrapper(material, scene, {
+    // `2-12`'s amendment, which `0-9`'s "no remappedVariables needed" predates
+    // — that spike ran at `normalBias = 0`, where the include compiles away.
+    // The atmosphere's CSM runs at 0.035, so the wrapper injects
+    // `shadowMapVertexNormalBias`, whose WGSL references the varying by its
+    // bare GLSL name `vNormalW` — unresolved after the WGSL migration. Without
+    // this the terrain's whole SHADOW vertex module fails to compile, which
+    // invalidates the shadow render bundle, which invalidates the frame's
+    // command buffer: the screen goes black and nothing in the Node suite
+    // notices. Found by running the app.
+    remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
+  });
   return plugin;
 }
 
@@ -242,6 +255,10 @@ export class TerrainClipmapSystem {
    * mesh collapse would otherwise have deleted.
    */
   private casterMeshes: Mesh[] = [];
+  /** Persistent instance storage, one set per mesh; see TerrainNodeBuffers. */
+  private beautyBuffers: TerrainNodeBuffers;
+  private casterBuffers: TerrainNodeBuffers[] = [];
+  private instanceBuffersBound = false;
   private nodes: readonly TerrainNode[] = [];
   private profile: WebGpuQualityProfile;
   private frameIndex = 0;
@@ -321,6 +338,9 @@ export class TerrainClipmapSystem {
       );
     }
 
+    this.beautyBuffers = createTerrainNodeBuffers(
+      options.nodeBudgetOverride ?? profile.cdlodNodeBudget,
+    );
     this.beautyMesh = new Mesh("terrain-cdlod", scene);
     buildTerrainNodeGrid().applyToMesh(this.beautyMesh, false);
     this.beautyMesh.material = this.material;
@@ -649,6 +669,8 @@ export class TerrainClipmapSystem {
   private rebuildCasterMeshes(): void {
     for (const mesh of this.casterMeshes) mesh.dispose(false, false);
     this.casterMeshes = [];
+    this.casterBuffers = [];
+    this.instanceBuffersBound = false;
     for (let cascade = 0; cascade < this.profile.shadowCascades; cascade += 1) {
       const mesh = new Mesh(`terrain-cdlod-caster-${cascade}`, this.scene);
       buildTerrainNodeGrid().applyToMesh(mesh, false);
@@ -661,6 +683,9 @@ export class TerrainClipmapSystem {
       mesh.layerMask = 0;
       mesh.metadata = { ...(mesh.metadata ?? {}), excludePlanarReflection: true };
       this.casterMeshes.push(mesh);
+      this.casterBuffers.push(createTerrainNodeBuffers(
+        this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
+      ));
     }
   }
 
@@ -724,34 +749,48 @@ export class TerrainClipmapSystem {
   private writeNodeBuffers(): void {
     const slotFor = (address: WorldPageAddress): number =>
       this.heightAtlas.residency.slotIndexOf(invariantSlotKey(address));
-    const buffers = writeTerrainNodeBuffers({
+    const channelSlotFor = (address: WorldPageAddress): number =>
+      this.channelAtlas.residency.slotIndexOf(invariantSlotKey(address));
+    const splatFor = (node: TerrainNode): number => this.provisionalSplatFor(node);
+    writeTerrainNodeBuffers({
       nodes: this.nodes,
       originX: this.originX,
       originZ: this.originZ,
       slotFor,
-      splatFor: (node) => this.provisionalSplatFor(node),
-    });
-    applyTerrainNodeBuffers(this.beautyMesh, buffers.matrices, buffers.laneA, buffers.laneB);
+      channelSlotFor,
+      splatFor,
+    }, this.beautyBuffers);
 
     for (let cascade = 0; cascade < this.casterMeshes.length; cascade += 1) {
       const reach = Math.min(this.profile.shadowDistance, this.shadowCasterDistanceMeters)
         * ((cascade + 1) / this.casterMeshes.length);
-      const inCascade = this.nodes.filter((node) => node.distanceMeters <= reach);
-      const cascadeBuffers = writeTerrainNodeBuffers({
-        nodes: inCascade,
+      writeTerrainNodeBuffers({
+        nodes: this.nodes.filter((node) => node.distanceMeters <= reach),
         originX: this.originX,
         originZ: this.originZ,
         slotFor,
-        splatFor: (node) => this.provisionalSplatFor(node),
-      });
-      applyTerrainNodeBuffers(
-        this.casterMeshes[cascade]!,
-        cascadeBuffers.matrices,
-        cascadeBuffers.laneA,
-        cascadeBuffers.laneB,
-      );
+        channelSlotFor,
+        splatFor,
+      }, this.casterBuffers[cascade]!);
+    }
+
+    // The GPU buffers are created ONCE, at capacity, and updated in place from
+    // then on. Re-creating them per frame destroys buffers a recorded render
+    // bundle still references, which invalidates the frame's whole command
+    // buffer — a black screen, sky included.
+    if (!this.instanceBuffersBound) {
+      bindTerrainNodeBuffers(this.beautyMesh, this.beautyBuffers);
+      for (let cascade = 0; cascade < this.casterMeshes.length; cascade += 1) {
+        bindTerrainNodeBuffers(this.casterMeshes[cascade]!, this.casterBuffers[cascade]!);
+      }
+      this.instanceBuffersBound = true;
+    }
+    updateTerrainNodeBuffers(this.beautyMesh, this.beautyBuffers);
+    for (let cascade = 0; cascade < this.casterMeshes.length; cascade += 1) {
+      updateTerrainNodeBuffers(this.casterMeshes[cascade]!, this.casterBuffers[cascade]!);
     }
   }
+
 
   /**
    * The provisional two-material blend a node carries until `4-6` lands.
@@ -763,14 +802,21 @@ export class TerrainClipmapSystem {
    */
   private provisionalSplatFor(node: TerrainNode): number {
     const slot = this.heightAtlas.residency.get(invariantSlotKey(node.address));
-    const mid = slot
-      ? (slot.stats.minHeightMeters + slot.stats.maxHeightMeters) * 0.5
-      : this.world.seaLevel;
+    const measured = slot !== undefined && slot.lifecycle.state === "resident";
+    if (!measured) {
+      // **Not sand.** A page with no measurement yet has min = max = 0, and
+      // reading that as "at sea level" put the FIRST material on the ecotone
+      // axis — sand — under every node the streamer had not reached, which is
+      // a desert wherever the atlas is behind. Grass is the axis's lowland
+      // default and the only honest guess before a height exists.
+      return packTerrainNodeSplat(SurfaceMaterial.Grass, SurfaceMaterial.ForestFloor, 0.25);
+    }
+    const mid = (slot.stats.minHeightMeters + slot.stats.maxHeightMeters) * 0.5;
     const above = mid - this.world.seaLevel;
-    const relief = slot ? slot.stats.maxHeightMeters - slot.stats.minHeightMeters : 0;
+    const relief = slot.stats.maxHeightMeters - slot.stats.minHeightMeters;
     // The SurfaceMaterial axis is ordered so bracketed neighbours plausibly
     // grade into one another; walking it by altitude is the cheapest honest
-    // provisional answer.
+    // provisional answer until `4-6`'s page splat is baked for this page.
     const axis = above <= 2
       ? 0
       : Math.min(SURFACE_MATERIALS.length - 1, 1 + above / 380);
@@ -779,6 +825,7 @@ export class TerrainClipmapSystem {
     const weight = Math.min(1, Math.max(0, axis - primary) + relief / 4_000);
     return packTerrainNodeSplat(primary, secondary, weight);
   }
+
 
   private pumpPageGeneration(): void {
     const generator = this.pageGenerator;
@@ -818,15 +865,27 @@ export class TerrainClipmapSystem {
     if (admitted <= 0) return;
     const batch = pending.slice(0, admitted);
     this.occlusionInFlight = true;
-    // Both channel bakes for the same slots, in one admission: a page with
-    // occlusion but no splat is a state the shader would have to guard.
-    void bake.bake(batch)
-      .then(() => this.splatBake?.bake(batch, this.seasonDayOfYear))
-      .catch(() => this.releaseBatch(this.channelAtlas, batch, "channel bake failed"))
-      .finally(() => {
+    // BOTH channel bakes, then residency — in that order, and awaited rather
+    // than chained past. A channel slot carries occlusion and splat, and
+    // publishing it between the two put a zeroed splat on screen: material 0
+    // at weight 0, which is sand. The failure is permanent, because a slot is
+    // only baked once.
+    void (async () => {
+      try {
+        const baked = await bake.bake(batch);
+        if (baked.length === 0) return;
+        await this.splatBake?.bake(baked, this.seasonDayOfYear);
+        for (const slot of baked) {
+          if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
+        }
+      } catch {
+        this.releaseBatch(this.channelAtlas, batch, "channel bake failed");
+      } finally {
         this.occlusionInFlight = false;
-      });
+      }
+    })();
   }
+
 
   private releaseBatch(
     atlas: TerrainPageAtlas,
@@ -840,23 +899,24 @@ export class TerrainClipmapSystem {
 }
 
 /**
- * Write one node set onto a mesh.
+ * Create the mesh's instance buffers once, at capacity.
  *
- * The matrix buffer FIRST: it is the only kind that sets `instancesCount`,
- * so setting the custom lanes before it would leave them describing zero
+ * The matrix buffer FIRST: it is the only kind that sets `instancesCount`, so
+ * setting the custom lanes before it would leave them describing zero
  * instances.
  */
-function applyTerrainNodeBuffers(
-  mesh: Mesh,
-  matrices: Float32Array,
-  laneA: Float32Array,
-  laneB: Float32Array,
-): void {
-  if (matrices.length === 0) {
-    mesh.thinInstanceCount = 0;
-    return;
-  }
-  mesh.thinInstanceSetBuffer("matrix", matrices, 16, false);
-  mesh.thinInstanceSetBuffer(TERRAIN_NODE_ATTRIBUTE_A, laneA, TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
-  mesh.thinInstanceSetBuffer(TERRAIN_NODE_ATTRIBUTE_B, laneB, TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
+function bindTerrainNodeBuffers(mesh: Mesh, buffers: TerrainNodeBuffers): void {
+  mesh.thinInstanceSetBuffer("matrix", buffers.matrices, 16, false);
+  mesh.thinInstanceSetBuffer(
+    TERRAIN_NODE_ATTRIBUTE_A, buffers.laneA, TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
+  mesh.thinInstanceSetBuffer(
+    TERRAIN_NODE_ATTRIBUTE_B, buffers.laneB, TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
+}
+
+/** Push this frame's writes into the existing buffers, and set the count. */
+function updateTerrainNodeBuffers(mesh: Mesh, buffers: TerrainNodeBuffers): void {
+  mesh.thinInstanceBufferUpdated("matrix");
+  mesh.thinInstanceBufferUpdated(TERRAIN_NODE_ATTRIBUTE_A);
+  mesh.thinInstanceBufferUpdated(TERRAIN_NODE_ATTRIBUTE_B);
+  mesh.thinInstanceCount = buffers.count;
 }

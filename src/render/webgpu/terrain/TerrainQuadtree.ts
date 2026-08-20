@@ -3,7 +3,6 @@ import {
   TERRAIN_NODES_PER_SLOT_EDGE,
   TERRAIN_NODE_GRID_RESOLUTION,
   terrainNodeSpanMeters,
-  terrainTexelSizeMeters,
 } from "./TerrainSpineContract";
 import {
   createWorldPageAddress,
@@ -254,7 +253,13 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
  *
  * `terrainNodeA = (slotIndex, subIndex, level, splatPacked)`, where `subIndex`
  * is `subNodeX + subNodeZ*8 + parityX*64 + parityZ*128`
- * `terrainNodeB = (morphK, parentSlotIndex, texelSize, maxDeviation)`
+ * `terrainNodeB = (morphK, parentSlotIndex, channelLane, maxDeviation)`, where
+ * `channelLane` is `channelSlotIndex * 32 + level` — the same packing `3-2`'s
+ * `atlasSlot` vertex lane used, because the fragment needs the page EXTENT to
+ * normalise its position into channel-atlas UV and a shared material cannot
+ * carry a per-mesh uniform. It is the CHANNEL slot, not the height slot: the
+ * two atlases have independent slot budgets (100 vs 144 at tier 0) and
+ * independent free lists, so they diverge.
  *
  * Two stride-4 attributes, not one stride-8: a custom kind resolves to
  * `_size = 8` inside `VertexBuffer`, and `WebGPUCacheRenderPipeline` falls
@@ -303,11 +308,36 @@ export function packTerrainNodeSplat(
   return primary * 1_600 + secondary * 100 + weight;
 }
 
+/**
+ * Reusable instance storage for one mesh, sized to the node budget ONCE.
+ *
+ * **Not a fresh allocation per frame**, and the reason is a GPU lifetime rather
+ * than GC pressure: `thinInstanceSetBuffer` with a new array disposes the
+ * previous `Buffer` and creates another, and Babylon records a frame's draws
+ * into render bundles that are submitted later — so the buffer a bundle
+ * references can be destroyed before the submit reaches it. That surfaces as
+ * `used in submit while destroyed`, which invalidates the whole command buffer
+ * and drops the frame: **the entire screen goes black, including the sky.**
+ * Found by running the app, not by any test.
+ */
 export interface TerrainNodeBuffers {
   readonly matrices: Float32Array;
   readonly laneA: Float32Array;
   readonly laneB: Float32Array;
-  readonly count: number;
+  /** Instances written this frame; the arrays stay at their capacity. */
+  count: number;
+  readonly capacity: number;
+}
+
+export function createTerrainNodeBuffers(capacity: number): TerrainNodeBuffers {
+  const slots = Math.max(1, Math.floor(capacity));
+  return {
+    matrices: new Float32Array(slots * 16),
+    laneA: new Float32Array(slots * TERRAIN_NODE_LANE_STRIDE),
+    laneB: new Float32Array(slots * TERRAIN_NODE_LANE_STRIDE),
+    count: 0,
+    capacity: slots,
+  };
 }
 
 export interface TerrainNodeWriteInput {
@@ -315,6 +345,8 @@ export interface TerrainNodeWriteInput {
   readonly originX: number;
   readonly originZ: number;
   readonly slotFor: (address: WorldPageAddress) => number;
+  /** Channel-atlas slot, or -1 when the page holds no channel slot. */
+  readonly channelSlotFor: (address: WorldPageAddress) => number;
   readonly splatFor: (node: TerrainNode) => number;
 }
 
@@ -327,12 +359,18 @@ export interface TerrainNodeWriteInput {
  * `thinInstanceCount` setter clamps to `matrixData.length / 16` and silently
  * does nothing without one. It also carries node origin and scale for free.
  */
-export function writeTerrainNodeBuffers(input: TerrainNodeWriteInput): TerrainNodeBuffers {
-  const count = input.nodes.length;
-  const matrices = new Float32Array(count * 16);
-  const laneA = new Float32Array(count * TERRAIN_NODE_LANE_STRIDE);
-  const laneB = new Float32Array(count * TERRAIN_NODE_LANE_STRIDE);
-  input.nodes.forEach((node, index) => {
+export function writeTerrainNodeBuffers(
+  input: TerrainNodeWriteInput,
+  target: TerrainNodeBuffers,
+): TerrainNodeBuffers {
+  const { matrices, laneA, laneB } = target;
+  const count = Math.min(input.nodes.length, target.capacity);
+  target.count = count;
+  // Only the written prefix is read (`thinInstanceCount` is set to `count`),
+  // but a stale matrix left behind a shrinking node set would draw a node that
+  // is no longer selected if the count is ever raised without a rewrite.
+  matrices.fill(0, count * 16);
+  input.nodes.slice(0, count).forEach((node, index) => {
     const scale = node.spanMeters;
     const base = index * 16;
     // Column-major, matching Babylon's Matrix.m layout: scale on the
@@ -369,10 +407,13 @@ export function writeTerrainNodeBuffers(input: TerrainNodeWriteInput): TerrainNo
     // is a hole in the ground rather than a smooth transition.
     laneB[laneBase] = parentSlot >= 0 ? node.morphK : 0;
     laneB[laneBase + 1] = parentSlot;
-    laneB[laneBase + 2] = terrainTexelSizeMeters(node.level);
+    const channelSlot = input.channelSlotFor(node.address);
+    // -1 when the page holds no channel slot: the fragment falls back to the
+    // provisional per-node splat, which is the co-residency rule `4-2` states.
+    laneB[laneBase + 2] = channelSlot >= 0 ? channelSlot * 32 + node.level : -1;
     laneB[laneBase + 3] = node.maxDeviationMeters;
   });
-  return { matrices, laneA, laneB, count };
+  return target;
 }
 
 // ---------------------------------------------------------------------------

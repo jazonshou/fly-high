@@ -232,21 +232,21 @@ export class PageOcclusionBake {
    * height atlas, and baking against an unwritten slot would produce a page
    * whose shadows are of nothing.
    */
-  async bake(slots: readonly TerrainAtlasSlot[]): Promise<number> {
-    if (this.disposed || this.running) return 0;
-    if (!this.channelAtlas.hasTextures || !this.heightAtlas.hasTextures) return 0;
+  async bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
+    if (this.disposed || this.running) return [];
+    if (!this.channelAtlas.hasTextures || !this.heightAtlas.hasTextures) return [];
     const pyramidTexture = this.pyramid.heightTexture;
-    if (!pyramidTexture || !this.pyramid.isResident) return 0;
+    if (!pyramidTexture || !this.pyramid.isResident) return [];
 
     const bakeable = slots.filter((slot) => {
       const heightSlot = this.heightAtlas.residency.slotIndexOf(slot.key);
       return heightSlot >= 0 && slot.token !== null;
     });
-    if (bakeable.length === 0) return 0;
+    if (bakeable.length === 0) return [];
     this.ensureCapacity(bakeable.length, pyramidTexture);
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
-    if (!shader || !jobBuffer) return 0;
+    if (!shader || !jobBuffer) return [];
 
     const jobs = new Float32Array(bakeable.length * 12);
     bakeable.forEach((slot, index) => {
@@ -281,11 +281,12 @@ export class PageOcclusionBake {
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);
-      for (const slot of bakeable) {
-        if (!slot.token) continue;
-        this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
-      }
-      return bakeable.length;
+      // Deliberately does NOT mark the slots resident. A channel slot carries
+      // occlusion AND splat, and the splat bake runs after this one; marking
+      // residency here published a page whose splat texels were still zero —
+      // which decodes to material 0 at weight 0, and material 0 is SAND. The
+      // caller completes the slots once both bakes have written.
+      return bakeable;
     } finally {
       this.running = false;
     }

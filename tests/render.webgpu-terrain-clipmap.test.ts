@@ -12,6 +12,7 @@ import {
 } from "../src/render/webgpu/terrain/TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
+  createTerrainNodeBuffers,
   packTerrainNodeSplat,
   packTerrainNodeSubIndex,
   selectTerrainNodes,
@@ -189,9 +190,11 @@ describe("CDLOD node record (4-5)", () => {
         if (!slots.has(key)) slots.set(key, slots.size);
         return slots.get(key)!;
       },
+      channelSlotFor: () => 5,
       splatFor: () => packTerrainNodeSplat(2, 3, 0.5),
-    });
+    }, createTerrainNodeBuffers(nodes.length));
     expect(buffers.count).toBe(nodes.length);
+    expect(buffers.capacity).toBe(nodes.length);
     expect(buffers.matrices).toHaveLength(nodes.length * 16);
     expect(buffers.laneA).toHaveLength(nodes.length * 4);
     expect(buffers.laneB).toHaveLength(nodes.length * 4);
@@ -205,7 +208,8 @@ describe("CDLOD node record (4-5)", () => {
     // Every lane value is finite and inside its packing range.
     for (let index = 0; index < nodes.length; index += 1) {
       expect(buffers.laneA[index * 4 + 1]).toBeLessThan(256);
-      expect(buffers.laneB[index * 4 + 2]).toBe(terrainTexelSizeMeters(nodes[index]!.level));
+      // Lane B's third slot is the CHANNEL lane, packed `slot * 32 + level`.
+      expect(buffers.laneB[index * 4 + 2]).toBe(5 * 32 + nodes[index]!.level);
     }
   });
 
@@ -218,8 +222,9 @@ describe("CDLOD node record (4-5)", () => {
       originX: 0,
       originZ: 0,
       slotFor: () => -1,
+      channelSlotFor: () => -1,
       splatFor: () => 0,
-    });
+    }, createTerrainNodeBuffers(nodes.length));
     for (let index = 0; index < nodes.length; index += 1) {
       expect(buffers.laneB[index * 4]).toBe(0);
       expect(buffers.laneB[index * 4 + 1]).toBe(-1);

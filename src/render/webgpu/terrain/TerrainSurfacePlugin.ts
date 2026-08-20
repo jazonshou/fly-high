@@ -424,14 +424,22 @@ varying terrainPageLocal: vec2f;
   let primary = floor(packed / 1600.0);
   let secondary = floor((packed - primary * 1600.0) / 100.0);
   let weight = (packed - primary * 1600.0 - secondary * 100.0) * 0.01;
-  vertexOutputs.terrainSplat = vec4f(primary, secondary, weight, vertexInputs.terrainNodeA.x);
+  // Lane w is the CHANNEL-atlas lane the fragment addresses page UV with:
+  // channelSlot*32 + level, or -1 when the page holds no channel slot.
+  vertexOutputs.terrainSplat = vec4f(
+    primary, secondary, weight, vertexInputs.terrainNodeB.z);
   let subIndexOut = vertexInputs.terrainNodeA.y
     - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
   let subZOut = floor(subIndexOut * 0.125);
   let subXOut = subIndexOut - subZOut * 8.0;
-  // Page-local in [0, 1]: eight nodes span a page on each axis.
+  // Page-local in METRES, which is what the fragment's page-UV helper
+  // divides by the page extent. Emitting it normalised instead made every
+  // fragment sample its page's FIRST texel — a per-page constant material,
+  // which renders as a flawless uniform desert. The CPU tile path fed metres
+  // here and this path has to as well.
+  let nodeSpanOut = 64.0 * exp2(vertexInputs.terrainNodeA.z);
   vertexOutputs.terrainPageLocal = (vec2f(subXOut, subZOut)
-    + vec2f(positionUpdated.x, positionUpdated.z)) * 0.125;
+    + vec2f(positionUpdated.x, positionUpdated.z)) * nodeSpanOut;
 }
 #else
 vertexOutputs.terrainSplat = vertexInputs.color;
@@ -776,9 +784,9 @@ fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
   // bucket chose.
   let ids = mix(idLo, idHi, blend);
   let weights = mix(weightLo, weightHi, blend);
-  let secondaryWeight = weights.x + weights.y > 0.0
-    ? weights.y / (weights.x + weights.y)
-    : 0.0;
+  // WGSL has no ternary operator. A max() guard rather than select(), because
+  // select() evaluates both arms and the division would still be by zero.
+  let secondaryWeight = weights.y / max(1e-6, weights.x + weights.y);
   return vec3f(ids.x, ids.y, secondaryWeight);
 }
 
@@ -887,6 +895,32 @@ let terrainSamplePosition = vec3f(
   terrainAbsolutePosition.z + terrainWarp.y,
 );
 
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+let terrainPageUv = terrainSurfacePageUv(
+  fragmentInputs.terrainSplat.w,
+  fragmentInputs.terrainPageLocal,
+);
+// textureSampleLevel, not textureSample: the house rule since 2-8 is that no
+// sample under a branch or a wrap takes implicit derivatives, and the channel
+// atlas carries no mip chain — level 0 is the only correct level, and mip
+// selection across atlas slots would bleed neighbouring pages into each other.
+let terrainOcclusionTexel = textureSampleLevel(
+  terrainOcclusionAtlas, terrainOcclusionAtlasSampler, terrainPageUv.xy, 0.0);
+// r is baked sky visibility; a fully unbaked page reads 0, so the fallback
+// keeps it at 1 rather than plunging the ground into darkness.
+let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
+let terrainHorizonShadow = terrainSurfaceHorizonShadow(
+  terrainPageUv, uniforms.terrainSunDirection.xyz);
+// 4-6: the real classifier's output replaces the provisional lanes wherever a
+// channel page is resident. Where one is not, the co-residency rule applies
+// and the Phase 3 provisional splat is what the fragment gets.
+let terrainPageSplat = terrainSurfacePageSplat(
+  terrainPageUv, uniforms.terrainSunDirection.w);
+#else
+let terrainSkyVisibility = 1.0;
+let terrainHorizonShadow = 1.0;
+#endif
+
 // The provisional splat (Class T until 4-6). The primary id is a CONTINUOUS
 // coordinate on the SurfaceMaterial axis: interpolating it across a triangle
 // and bracketing the two integers it lies between gives a smooth material
@@ -925,31 +959,6 @@ let terrainAxisFraction = terrainAxis - terrainLowerId;
 // of at 8 m. 4-6's page splat restores real minority cover.
 let terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
 
-#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
-let terrainPageUv = terrainSurfacePageUv(
-  fragmentInputs.terrainSplat.w,
-  fragmentInputs.terrainPageLocal,
-);
-// textureSampleLevel, not textureSample: the house rule since 2-8 is that no
-// sample under a branch or a wrap takes implicit derivatives, and the channel
-// atlas carries no mip chain — level 0 is the only correct level, and mip
-// selection across atlas slots would bleed neighbouring pages into each other.
-let terrainOcclusionTexel = textureSampleLevel(
-  terrainOcclusionAtlas, terrainOcclusionAtlasSampler, terrainPageUv.xy, 0.0);
-// r is baked sky visibility; a fully unbaked page reads 0, so the fallback
-// keeps it at 1 rather than plunging the ground into darkness.
-let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
-let terrainHorizonShadow = terrainSurfaceHorizonShadow(
-  terrainPageUv, uniforms.terrainSunDirection.xyz);
-// 4-6: the real classifier's output replaces the provisional lanes wherever a
-// channel page is resident. Where one is not, the co-residency rule applies
-// and the Phase 3 provisional splat is what the fragment gets.
-let terrainPageSplat = terrainSurfacePageSplat(
-  terrainPageUv, uniforms.terrainSunDirection.w);
-#else
-let terrainSkyVisibility = 1.0;
-let terrainHorizonShadow = 1.0;
-#endif
 
 // 3-10's SEASONAL snow blanket. Two properties, both learned the hard way from
 // the first capture after this plugin landed:

@@ -69,7 +69,9 @@ describe("land-cover classifier (4-6)", () => {
     // is 1.5/width times its coefficient. A threshold cascade would give an
     // unbounded ratio at its edge, which is exactly what this catches.
     for (const [driver, from, to, steps, lipschitz] of [
-      ["elevationMeters", 0, 2_000, 4_000, 0.35],
+      // The shore band is the steepest term: 1.35 over 4 m of elevation, so
+      // its peak slope is 1.35 × 1.5/4 ≈ 0.51 per metre.
+      ["elevationMeters", 0, 2_000, 4_000, 0.7],
       ["slope", 0, 0.9, 1_800, 12],
       ["moisture", 0, 1, 2_000, 12],
       ["temperature", 0, 1, 2_000, 15],
@@ -93,8 +95,12 @@ describe("land-cover classifier (4-6)", () => {
   });
 
   it("puts the right material on the right ground", () => {
-    expect(dominantLandCover(classifyLandCover(at({ elevationMeters: 2 }))))
+    // Sand is the WAVE-WASHED band, not every coastal plain: the shore term
+    // reaches 1 by 3 m, matching the density field's own shoreline gate.
+    expect(dominantLandCover(classifyLandCover(at({ elevationMeters: 0 }))))
       .toBe(SurfaceMaterial.Sand);
+    expect(dominantLandCover(classifyLandCover(at({ elevationMeters: 12 }))))
+      .toBe(SurfaceMaterial.Grass);
     expect(dominantLandCover(classifyLandCover(at({ moisture: 0.85, temperature: 0.7 }))))
       .toBe(SurfaceMaterial.ForestFloor);
     expect(dominantLandCover(classifyLandCover(at({ slope: 0.8 }))))
