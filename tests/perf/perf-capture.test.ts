@@ -500,6 +500,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
           ).toBeLessThanOrEqual(ceilings.p999FrameMs);
         }
       }
+      // 4-10 (assertion 84b): page residency under streaming load. The
+      // page-thrash and CDLOD-transition scenes exist to make a pump that
+      // outruns the compute meter visible as a rising queue rather than as a
+      // hitch nobody can attribute.
+      const residency = definition.residencyCeilings;
+      if (residency) {
+        expect(
+          shot.pendingTerrainPages,
+          `${shot.name}: more pages pending generation than the committed ceiling`,
+        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages);
+        expect(
+          shot.residentTerrainPages,
+          `${shot.name}: more resident page slots than the atlas holds`,
+        ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
+      }
     }
 
     // Z-1: the renderer must not have logged an error during the run.

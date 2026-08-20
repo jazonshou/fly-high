@@ -98,6 +98,19 @@ export interface PerfCaptureShotDefinition {
     readonly maxMeanLuminanceDelta: number;
   };
   readonly ceilings: PerfCaptureShotCeilings | null;
+  /**
+   * `4-10`: page-residency ceilings, for the scenes that exist to stress
+   * streaming rather than shading.
+   *
+   * Peak `pendingTerrainPages` is the streaming pump's queue depth and peak
+   * `residentTerrainPages` is the atlas's occupancy; a turn that admits pages
+   * faster than the compute meter retires them shows up here as a rising
+   * pending count long before it shows up as a hitch.
+   */
+  readonly residencyCeilings?: {
+    readonly maxPendingTerrainPages: number;
+    readonly maxResidentTerrainPages: number;
+  };
 }
 
 /**
@@ -320,6 +333,56 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // observed medians — they catch order-of-magnitude regressions, while
     // minFps and the SSIM gate catch everything gradual.
     ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 27 },
+  },
+  {
+    // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
+    // quadtree to admit and evict L0 pages continuously — the one flight
+    // manoeuvre that can outrun the compute meter, and the reason `4-0b`
+    // exists. Its gate is hitch count and residency depth, not an image.
+    name: "page-thrash-turn",
+    description: "Sustained 60° banked turn at 500 ft AGL (L0 page admission under load)",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_200,
+    offsetZMeters: 1_800,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 78,
+    kind: "motion",
+    bankDegrees: 60,
+    comparesToBaseline: false,
+    temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
+    // UNMEASURED on this machine: re-pin at the next sanctioned rebaseline
+    // (`npm run perf:capture:rebaseline` on the reference machine). The
+    // ceilings below are the Phase-4 design intents — the atlas holds 196
+    // slots at tier 1, and a pump that leaves more than 24 pages pending is
+    // admitting faster than the meter retires.
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 196 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 24 },
+  },
+  {
+    // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
+    // airport, so nodes cross level boundaries continuously in front of the
+    // camera. Geomorph popping has a number here — the consecutive-frame SSIM
+    // — instead of being a thing someone did or did not notice.
+    name: "cdlod-transition",
+    description: "Outbound climb across CDLOD level boundaries (geomorph stability)",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 900,
+    offsetXMeters: 5_500,
+    offsetZMeters: -1_200,
+    pitchDownDegrees: 12,
+    airspeedMetersPerSecond: 96,
+    kind: "motion",
+    bankDegrees: 0,
+    comparesToBaseline: false,
+    // A geomorph that pops shows as a consecutive-frame SSIM collapse in
+    // exactly the way flicker does; a working one is indistinguishable from
+    // straight flight, which is the point of the item.
+    temporalFloors: { minConsecutiveSsim: 0.7, maxMeanLuminanceDelta: 0.01 },
+    residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 196 },
+    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 60, minFps: 30 },
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
