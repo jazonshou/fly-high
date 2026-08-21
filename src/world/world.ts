@@ -12,8 +12,25 @@ import type {
 } from "./types";
 
 export const DEFAULT_WORLD_SEED = "open-skies";
-/** Phase 5 activation: newly created worlds use the eroded height authority. */
-export const DEFAULT_WORLD_EVOLUTION: WorldEvolution = "eroded";
+/**
+ * `G0-1` (RESOLUTION_PLAN.md §Gate 0): back to the analytic height authority.
+ *
+ * Phase 5 activated `"eroded"` here, and `FlightGame.tsx` takes this default
+ * unconditionally. In that path `TerrainPageGenerator.generate` short-circuits
+ * away from the batched WGSL dispatch (~1.9 ms/page) to ONE page at a time
+ * through a single CPU worker at ~2.1 s (L0) to ~5.5 s (L2+), with a second
+ * full recomputation for any separately-admitted channel slot. Page supply
+ * collapses below demand and every downstream system then correctly does the
+ * right thing with nothing to work on: `deviationFor` returns null, `4.5-A1`
+ * refuses to split an unmeasured node, `terrainSampleHeight` returns 0.0, and
+ * `provisionalAxisFor` falls back to a constant Grass axis — a flat sea-level
+ * grass plate, which is half of the reported "splotches of colour".
+ *
+ * Explicit `"eroded"` worlds are unaffected and stay bit-compatible; this
+ * changes only what a caller that passes no option gets. The GPU erosion port
+ * (plan items 5-3/5-4) is the separate workstream that re-earns this default.
+ */
+export const DEFAULT_WORLD_EVOLUTION: WorldEvolution = "analytic";
 
 /**
  * Mid-latitude default (0-6): temperate seasons and sun paths that match the

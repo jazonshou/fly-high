@@ -166,10 +166,15 @@ function independentlyAuditAirport(
 }
 
 describe("world seeds", () => {
-  it("activates eroded worlds by default while preserving analytic parity worlds", () => {
-    expect(DEFAULT_WORLD_EVOLUTION).toBe("eroded");
+  it("defaults to the analytic authority while preserving explicit eroded worlds", () => {
+    // `G0-1`: the default is analytic. The eroded path generates one page at a
+    // time on a single CPU worker, which starves page supply and shows up as a
+    // flat sea-level grass plate. Explicit eroded worlds still work; only the
+    // no-option default moved. Re-pin this to "eroded" when 5-3/5-4 land the
+    // GPU erosion port.
+    expect(DEFAULT_WORLD_EVOLUTION).toBe("analytic");
     expect(createWorld("evolution-default", { airport: false }).worldEvolution).toBe(
-      "eroded",
+      "analytic",
     );
     expect(
       createWorld("evolution-parity", {
