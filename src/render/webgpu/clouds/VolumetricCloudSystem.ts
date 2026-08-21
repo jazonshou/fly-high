@@ -54,6 +54,7 @@ import {
   type CloudRenderSize,
   type CloudShadowSchedule,
 } from "./runtimePolicy";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 /**
  * The volumetric cloud runtime, rebuilt by 2-0 (cloud shader adoption).
@@ -209,7 +210,7 @@ function computeFromModule(scene: Scene, module: NatureShaderModule): ComputeSha
   if (!entryPoint || entryPoint.stage !== "compute") {
     throw new RangeError(`${module.label} does not declare a compute entry point`);
   }
-  const shader = new ComputeShader(
+  const shader = withoutDispatchTiming(new ComputeShader(
     module.label,
     scene.getEngine(),
     { computeSource: module.code },
@@ -222,7 +223,7 @@ function computeFromModule(scene: Scene, module: NatureShaderModule): ComputeSha
         ]),
       ),
     },
-  );
+  ));
   shader.onError = (_effect, errors) => {
     throw new Error(`${module.label} failed to compile: ${errors}`);
   };

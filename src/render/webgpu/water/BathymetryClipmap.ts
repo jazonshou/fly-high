@@ -24,6 +24,7 @@ import {
   terrainEvolutionMacroBlend,
   type TerrainMacroEvolutionExport,
 } from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 /** Both levels deliberately have the same footprint and GPU format. */
 export const BATHYMETRY_CLIPMAP_EDGE = 1_024;
@@ -706,7 +707,7 @@ export class BathymetryClipmap {
     if (this.shader) return;
     this.paramsBuffer = new StorageBuffer(this.engine, 32);
     this.pageBuffer = new StorageBuffer(this.engine, TERRAIN_KERNEL_PAGE_BYTES);
-    this.shader = new ComputeShader(
+    this.shader = withoutDispatchTiming(new ComputeShader(
       "bathymetry-clipmap-update",
       this.engine,
       { computeSource: BATHYMETRY_UPDATE_WGSL },
@@ -719,7 +720,7 @@ export class BathymetryClipmap {
           bathymetryMacroHeight: { group: 0, binding: 3 },
         },
       },
-    );
+    ));
   }
 
   private ensureMacroHeightBuffer(): void {

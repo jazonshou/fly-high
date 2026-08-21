@@ -74,6 +74,7 @@ import {
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { BathymetryClipmap } from "./BathymetryClipmap";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
@@ -629,13 +630,13 @@ function createCompute(
   entryPoint: string,
   names: readonly string[],
 ): ComputeShader {
-  return new ComputeShader(name, engine, { computeSource: source }, {
+  return withoutDispatchTiming(new ComputeShader(name, engine, { computeSource: source }, {
     entryPoint,
     bindingsMapping: Object.fromEntries(names.map((bindingName, binding) => [
       bindingName,
       { group: 0, binding },
     ])),
-  });
+  }));
 }
 
 function createInitializationUniforms(

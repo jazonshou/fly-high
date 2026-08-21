@@ -5,6 +5,7 @@ import { RawTexture3D } from "@babylonjs/core/Materials/Textures/rawTexture3D";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { Scene } from "@babylonjs/core/scene";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 /**
  * 2-1 — the cloud noise and weather bake (owner: clouds).
@@ -333,7 +334,7 @@ export class CloudVolumeBake {
     this.weatherMap.wrapV = Texture.WRAP_ADDRESSMODE;
 
     const engine = scene.getEngine();
-    this.baseCompute = new ComputeShader(
+    this.baseCompute = withoutDispatchTiming(new ComputeShader(
       "cloud-base-bake",
       engine,
       { computeSource: BASE_BAKE_WGSL },
@@ -341,8 +342,8 @@ export class CloudVolumeBake {
         entryPoint: "bakeBaseVolume",
         bindingsMapping: { base_volume: { group: 0, binding: 0 } },
       },
-    );
-    this.detailCompute = new ComputeShader(
+    ));
+    this.detailCompute = withoutDispatchTiming(new ComputeShader(
       "cloud-detail-bake",
       engine,
       { computeSource: DETAIL_BAKE_WGSL },
@@ -350,8 +351,8 @@ export class CloudVolumeBake {
         entryPoint: "bakeDetailVolume",
         bindingsMapping: { detail_volume: { group: 0, binding: 0 } },
       },
-    );
-    this.weatherCompute = new ComputeShader(
+    ));
+    this.weatherCompute = withoutDispatchTiming(new ComputeShader(
       "cloud-weather-bake",
       engine,
       { computeSource: WEATHER_BAKE_WGSL },
@@ -362,7 +363,7 @@ export class CloudVolumeBake {
           weather_map: { group: 0, binding: 1 },
         },
       },
-    );
+    ));
     for (const [shader, label] of [
       [this.baseCompute, "cloud-base-bake"],
       [this.detailCompute, "cloud-detail-bake"],
