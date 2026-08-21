@@ -199,6 +199,91 @@ on identical code. Ship determinism before the ceiling, or the gate will flap.
 
 ---
 
+## 4. Implementation log — 2026-08-21
+
+### 4.1 Gate 0 is DONE and committed
+
+| commit | item | result |
+|---|---|---|
+| `26ee76e` | **G0-1** analytic default | `forest-500ft` 3,009,077 -> 1,663,462 tris, 521 -> 396 draws |
+| `bcf0934` | **G0-2** selective GPU timing | P95 -20% on both shots, GPU counter intact |
+
+**G0-2 did not land as planned.** The plan said "batch the `resolveQuerySet` calls". Built that
+first: it patches Babylon's `WebGPUQuerySet` to coalesce the frame's readbacks into one submit.
+It won on mean fps and lost on everything else — see the deviation log (D-7).
+
+What shipped instead: Babylon gates BOTH the timestamp write and the resolve on
+`if (gpuPerfCounter)` (`Extensions/engine.computeShader.pure.js`), so clearing `gpuTimeInFrame`
+removes a dispatch from the timing system outright. Only three counters have consumers here
+(main pass, shadow target, and `TerrainPageAtlas`/`PageOcclusionBake` -> `ComputeBudget`), and the
+ocean's ~44 dispatches per frame are not among them. `withoutDispatchTiming` drops the counter at
+the seven sites outside that set; a static test requires every future `new ComputeShader` to be
+wrapped or to name its consumer.
+
+Measured, matched geometry, control run back-to-back:
+
+| shot | control P95 | G0-2 P95 | control fps | G0-2 fps |
+|---|---:|---:|---:|---:|
+| `cdlod-transition` | 30.6 | **24.4** | 44.6 | **59.8** |
+| `forest-500ft-sunbehind` | 45.8 | **37.5** | 24.3 | **29.6** |
+
+### 4.2 What the envelope is NOT
+
+Four candidates eliminated by measurement, not argument. **Do not re-litigate these.**
+
+| candidate | effect on P95 | verdict |
+|---|---|---|
+| GPU timing instrumentation | **-6 ms** | real; fixed in `bcf0934` |
+| Ocean compute (all 44 dispatches disabled) | -1.1 / -1.6 ms | **not the envelope** |
+| Cloud compute (`clouds.update` disabled) | -0.3 / -0.8 ms | **not the envelope** |
+| Harness rAF pump serialisation | **0.0 ms** | **not the envelope** |
+
+**The ocean visibility gate named in G0-2 is CANCELLED.** It buys ~1.5 ms, not the ~20 ms
+assumed. The ablation cost one capture and saved building it.
+
+The rAF-pump theory deserves a note because it was wrong in an instructive way: the harness
+re-registers `requestAnimationFrame` only after `render()` returns, which cannot pipeline, and the
+vsync arithmetic fit both shots exactly. Pre-registering the frame changed nothing (24.1 -> 24.0,
+38.8 -> 39.2). **Arithmetic that fits is not evidence.**
+
+### 4.3 What the envelope IS: vsync quantisation
+
+| condition (`cdlod-transition`) | fps | P95 |
+|---|---:|---:|
+| no rendering at all | **121.3** | — |
+| render, vsync on | 59.4 | 24.1 |
+| render, `--disable-gpu-vsync --disable-frame-rate-limit` | 71.4 | 29.8 |
+
+**The environment is not the constraint** — it delivers ~8.24 ms rAF cadence (120 Hz) with
+rendering skipped. And 59.4 fps is not incidental: it is exactly TWO vsyncs
+(2 x 8.33 = 16.67 ms = 60.0 fps). Frames land on vsync boundaries, and the "unattributed
+envelope" is the wait for the next boundary, not work.
+
+Restated for each shot:
+
+- `cdlod-transition`: work ~7.6 ms, fits 2 vsyncs -> **already 60 fps mean**. It fails a strict
+  P95 gate (24.1 ms = 3 vsyncs) because some frames slip one boundary.
+- `forest-500ft`: cpu 6.6 + gpu 10.0 = 16.6 ms, lands at **4 vsyncs** -> 28.8 fps. Pipelined it
+  would be `max(6.6, 10.0)` = 10 ms -> 2 vsyncs -> 60 fps. It is not pipelining.
+
+**Unlocking vsync is not a fix.** Mean fps rises to 71.4 while P95 gets worse (29.8) and
+`maxFrameMs` reaches 1487. The goal is P95, so this is a regression dressed as an improvement.
+
+### 4.4 The 60 fps problem, correctly posed
+
+Two questions, in this order:
+
+1. **Why does 16.6 ms of measured work cost 33 ms of wall clock?** cpu and gpu appear to
+   serialise rather than pipeline. If they pipelined, `forest-500ft` would already be at 60 fps.
+   This is worth more than any amount of draw-count work and it is **plan item C-1**.
+2. **Then** reduce work to fit one 16.67 ms window with margin.
+
+**C-1 is promoted ahead of D-1.** Draw-count reduction does not address serialisation, and until
+question 1 is answered its 8-16 days would be aimed at the wrong term — the same mistake the
+cancelled ocean gate nearly repeated.
+
+---
+
 ## Gate 0 — two experiments that gate everything
 
 **1.5 days. Nothing else starts until both land.** Both are cheap and either could invalidate weeks of planning
@@ -518,6 +603,10 @@ Record every departure from this plan here, with the reason and the evidence tha
 | D-4 | Risks 1–2 | Risk 1 resolved. Risk 2 **re-opened** after an initial "disproved". | The 95.8 fps reading came from a scene with 4.9× fewer triangles. Corrected same day. | 2026-08-21 |
 | D-5 | G0-2 method | The A/B patched the same worktree a parallel analysis was reading, and overwrote `tests/perf/artifacts/report.json` mid-analysis. | Avoidable. Use a second worktree for experiments that run alongside analysis. | 2026-08-21 |
 | D-6 | G0-2 remediation | Changed from "duty-cycle the timing" to "batch the `resolveQuerySet` calls". | Probe shows batching restores full speed with instrumentation intact — strictly better than sampling. | 2026-08-21 |
+| D-7 | G0-2 | Batching REPLACED by selective per-dispatch timing. | Batching won mean fps (74.9/34.4) but regressed P95 to 29.4/63.1, took forest hitches 3 -> 44, and collapsed `gpuFrameMsP95` to an identical 0.3239 on both shots — a dead governor signal, via a vendor-internals patch. Selective is simpler, keeps the counter, and wins on P95. | 2026-08-21 |
+| D-8 | G0-2 | Ocean visibility gate CANCELLED. | Ablation: disabling all 44 ocean dispatches moves P95 1.1-1.6 ms, not the ~20 ms assumed. | 2026-08-21 |
+| D-9 | §4.3 | "No shot has ever exceeded 47.8 fps" finally explained. | Not a ceiling — vsync quantisation on a 120 Hz surface. The no-render floor is 121.3 fps. | 2026-08-21 |
+| D-10 | Sequencing | C-1 promoted ahead of D-1. | The dominant term is CPU/GPU serialisation, which draw-count work does not address. | 2026-08-21 |
 
 ---
 
