@@ -35,7 +35,14 @@ import {
   IMPOSTOR_SPECIES,
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
-import { seasonalWinterFraction } from "@/src/world";
+import { seasonalWinterFraction, type WorldDefinition } from "@/src/world";
+import {
+  TERRAIN_READBACK_RING_CAPACITY,
+  type TerrainMacroGrid,
+  type TerrainPagePublication,
+} from "@/src/workers/terrainAuthority";
+import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
+import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
 import {
   buildClutterPrototype,
   buildGrassPatchPrototype,
@@ -246,6 +253,8 @@ export interface WorldDetailRuntimeOptions {
    * tools) and generation stays inline and synchronous.
    */
   readonly workerWorldSeed?: string | number;
+  /** Full live world preserves explicit evolution mode and authored airports in the worker. */
+  readonly workerWorld?: Readonly<WorldDefinition>;
 }
 
 /**
@@ -414,6 +423,8 @@ export class WorldDetailRuntime {
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
   private client: DetailGenerationClient | null = null;
+  /** Mirrors the consumer authority's bounded L0 ring for aux-arrival gating. */
+  private readonly terrainPageAddresses: string[] = [];
   /** Desired keys with a request in flight, mapped to their request ids. */
   private readonly pendingCells = new Map<string, number>();
   /** Bumped whenever resident cells reset; stale worker results are dropped. */
@@ -441,6 +452,7 @@ export class WorldDetailRuntime {
       this.client = new DetailGenerationClient(
         {
           worldSeed: options.workerWorldSeed,
+          ...(options.workerWorld ? { world: options.workerWorld } : {}),
           cellSizeMeters: this.cellSizeMeters,
           seaLevelMeters: options.seaLevelMeters ?? 0,
         },
@@ -459,6 +471,77 @@ export class WorldDetailRuntime {
    */
   setGenerationBudgetCap(cap: DetailGenerationBudget | null): void {
     this.generationBudgetCap = cap;
+  }
+
+  /** Transfer the canonical macro fallback into the off-thread placement authority. */
+  publishTerrainMacro(macro: TerrainMacroGrid): boolean {
+    return this.client?.publishTerrainMacro(macro) ?? false;
+  }
+
+  /** Transfer one final L0 page into the off-thread placement authority. */
+  publishTerrainPage(page: TerrainPagePublication): boolean {
+    const published = this.client?.publishTerrainPage(page) ?? false;
+    if (page.level !== 0) return published;
+
+    const address = `${page.tileX}:${page.tileZ}`;
+    const previousIndex = this.terrainPageAddresses.indexOf(address);
+    if (previousIndex >= 0) this.terrainPageAddresses.splice(previousIndex, 1);
+    this.terrainPageAddresses.push(address);
+    if (this.terrainPageAddresses.length > TERRAIN_READBACK_RING_CAPACITY) {
+      this.terrainPageAddresses.shift();
+    }
+    this.invalidateTerrainPage(page.tileX, page.tileZ);
+    return published;
+  }
+
+  /**
+   * Transfer one committed signed-shore page. An early aux-only arrival is
+   * retained by the worker authority but cannot invalidate/cache a cell until
+   * its matching final height page has arrived.
+   */
+  publishTerrainAuxPage(page: TerrainAuxPagePublication): boolean {
+    const published = this.client?.publishTerrainAuxPage(page) ?? false;
+    if (
+      page.level === 0
+      && this.terrainPageAddresses.includes(`${page.tileX}:${page.tileZ}`)
+    ) {
+      this.invalidateTerrainPage(page.tileX, page.tileZ);
+    }
+    return published;
+  }
+
+  private invalidateTerrainPage(tileX: number, tileZ: number): void {
+
+    // Macro-authored cells are already evolved, but the final L0 page owns
+    // local incision/detail and signed shoreline. Retire only overlapping
+    // cells and requests so their next generation uses the complete product.
+    const minimumX = tileX * WORLD_PAGE_BASE_EXTENT_METERS;
+    const minimumZ = tileZ * WORLD_PAGE_BASE_EXTENT_METERS;
+    const maximumX = minimumX + WORLD_PAGE_BASE_EXTENT_METERS;
+    const maximumZ = minimumZ + WORLD_PAGE_BASE_EXTENT_METERS;
+    const overlapsPage = (cellX: number, cellZ: number): boolean => {
+      const cellMinimumX = cellX * this.cellSizeMeters;
+      const cellMinimumZ = cellZ * this.cellSizeMeters;
+      return cellMinimumX < maximumX
+        && cellMinimumX + this.cellSizeMeters > minimumX
+        && cellMinimumZ < maximumZ
+        && cellMinimumZ + this.cellSizeMeters > minimumZ;
+    };
+    let invalidated = false;
+    for (const [key, resident] of this.cells) {
+      if (!overlapsPage(resident.cell.cellX, resident.cell.cellZ)) continue;
+      this.cells.delete(key);
+      invalidated = true;
+    }
+    for (const desired of this.desiredCells) {
+      if (!overlapsPage(desired.cellX, desired.cellZ)) continue;
+      const requestId = this.pendingCells.get(desired.key);
+      if (requestId === undefined) continue;
+      this.client?.cancel(requestId);
+      this.pendingCells.delete(desired.key);
+      invalidated = true;
+    }
+    if (invalidated) this.batchesDirty = true;
   }
 
   /**

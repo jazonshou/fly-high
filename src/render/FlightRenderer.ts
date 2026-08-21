@@ -42,7 +42,6 @@ import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
-import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMirror";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
 import {
@@ -76,13 +75,25 @@ import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
+import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
+import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
+import {
+  TerrainConsumerAuthority,
+  terrainConsumerSampleFromAuthority,
+} from "./webgpu/terrain/TerrainConsumerAuthority";
+import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
+import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
+import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
-import type { FlightRenderingSystem } from "./types";
+import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
+import {
+  type TerrainPagePublication,
+} from "@/src/workers/terrainAuthority";
 import { attributePresentFrame } from "./frameAttribution";
 import {
   cameraPresentationResponse,
@@ -93,6 +104,8 @@ import {
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
+/** CPU-worker reference path; the future measured GPU pass keeps this boundary. */
+const TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS = 180_000;
 const MIN_GPU_TIMING_SAMPLES = 8;
 const GPU_TIMING_STALE_AFTER_FRAMES = 30;
 /**
@@ -260,6 +273,9 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly graph = new WebGpuFrameGraph();
   private readonly aircraft: AircraftVisual;
   private readonly terrain: TerrainClipmapSystem;
+  private readonly terrainEvolution: TerrainEvolutionRuntime;
+  /** Main-thread copy serving wildlife and inline detail placement. */
+  private readonly terrainConsumerAuthority: TerrainConsumerAuthority | null;
   private readonly atmosphere: AtmosphereSystem;
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
@@ -267,6 +283,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
+  private readonly bathymetry: BathymetryClipmap;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly wildlife: WildlifeSystem;
@@ -316,8 +333,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
-  /** Null until 5-2: physics still samples the analytic kernel directly. */
-  private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
@@ -347,6 +363,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     camera: UniversalCamera,
     aircraft: AircraftVisual,
     terrain: TerrainClipmapSystem,
+    terrainEvolution: TerrainEvolutionRuntime,
+    terrainConsumerAuthority: TerrainConsumerAuthority | null,
     atmosphere: AtmosphereSystem,
     clouds: VolumetricCloudSystem,
     cloudShadowReceivers: CloudShadowReceiverRegistry,
@@ -354,6 +372,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
+    bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
     wildlife: WildlifeSystem,
@@ -371,6 +390,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.camera = camera;
     this.aircraft = aircraft;
     this.terrain = terrain;
+    this.terrainEvolution = terrainEvolution;
+    this.terrainConsumerAuthority = terrainConsumerAuthority;
     this.atmosphere = atmosphere;
     this.clouds = clouds;
     this.cloudShadowReceivers = cloudShadowReceivers;
@@ -378,6 +399,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
+    this.bathymetry = bathymetry;
     this.airport = airport;
     this.detail = detail;
     this.wildlife = wildlife;
@@ -418,6 +440,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.deviceLost = true;
       options.onDeviceLost?.("The WebGPU device was lost. The renderer must be recreated.");
     });
+    // Ecology is a terrain-authority consumer in its own right. Do not make
+    // its final-page feed depend on the simulation publisher being attached.
+    if (this.terrainConsumerAuthority) {
+      this.terrain.setCollisionPagePublisher(
+        (page) => this.publishTerrainConsumerPage(page),
+      );
+      this.terrain.setAuxPagePublisher(
+        (page) => this.publishTerrainConsumerAuxPage(page),
+      );
+    }
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
   }
@@ -438,7 +470,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!capability.supported) throw new Error(capability.reason ?? "WebGPU is unavailable.");
     throwIfRendererStartupAborted(options.signal);
     const timestampQueries = capability.features.has("timestamp-query");
-    const requiredFeatures: GPUFeatureName[] = timestampQueries ? ["timestamp-query"] : [];
+    if (!capability.features.has("texture-formats-tier1")) {
+      throw new Error(
+        "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
+      );
+    }
+    const requiredFeatures: GPUFeatureName[] = [
+      "texture-formats-tier1",
+      ...(timestampQueries ? ["timestamp-query" as const] : []),
+    ];
     const engine = await awaitRendererStartup(
       WebGPUEngine.CreateAsync(options.canvas, {
         // 1B-11: the hand-built post chain forces an offscreen target, so
@@ -496,6 +536,13 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.activeCamera = camera;
 
       const profile = resolveWebGpuQualityProfile(options.quality, options.renderingMode);
+      const terrainEvolution = new TerrainEvolutionRuntime();
+      cleanup.push(() => terrainEvolution.dispose());
+      // Start the eager macro pass as early as possible. It runs in its own
+      // worker while the main thread constructs the first device resources,
+      // but eroded pages, water and graph hydrology do not become visible
+      // until this one canonical result is ready.
+      const terrainEvolutionPromise = terrainEvolution.initialize(options.world);
       const atmosphere = new AtmosphereSystem(
         scene,
         camera,
@@ -505,6 +552,35 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      const evolutionResult = await awaitRendererStartup(
+        terrainEvolutionPromise,
+        options.signal,
+        "terrain macro evolution",
+        TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
+      );
+      terrain.setMacroEvolution(evolutionResult.evolution);
+      let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
+      let consumerTerrainSample = options.terrainSample;
+      if (evolutionResult.mode === "eroded") {
+        terrainConsumerAuthority = new TerrainConsumerAuthority();
+        // This view is retained on the main thread. Simulation and detail
+        // receive separate copies because both worker posts detach them.
+        terrainConsumerAuthority.publishMacro(
+          terrainMacroGridFromEvolution(evolutionResult.evolution, false),
+        );
+        consumerTerrainSample = terrainConsumerSampleFromAuthority(
+          options.world,
+          options.terrainSample,
+          terrainConsumerAuthority,
+        );
+      }
+      const bathymetry = new BathymetryClipmap(scene, options.world);
+      cleanup.push(() => bathymetry.dispose());
+      bathymetry.setMacroEvolution(evolutionResult.evolution);
+      await bathymetry.initialize(
+        options.world.airport?.centerX ?? 0,
+        options.world.airport?.centerZ ?? 0,
+      );
       const aircraft = createWebGpuAircraft(scene, options.aircraft);
       cleanup.push(() => aircraft.dispose());
       for (const mesh of aircraft.meshes) {
@@ -528,15 +604,21 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
-        terrainSample: options.terrainSample,
+        terrainSample: consumerTerrainSample,
         seaLevelMeters: options.world.seaLevel,
         latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
+        workerWorld: options.world,
       });
       cleanup.push(() => detail.dispose());
+      if (evolutionResult.mode === "eroded") {
+        detail.publishTerrainMacro(
+          terrainMacroGridFromEvolution(evolutionResult.evolution),
+        );
+      }
       const wildlife = new WildlifeSystem(scene, {
         worldSeed: options.world.seed,
-        terrainSample: options.terrainSample,
+        terrainSample: consumerTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
       const hydrology = await HydrologySystem.create(
@@ -550,7 +632,15 @@ export class FlightRenderer implements FlightRenderingSystem {
           centerX: airportDefinition?.centerX ?? 0,
           centerZ: airportDefinition?.centerZ ?? 0,
           atmosphere: atmosphere.snapshot,
+          bathymetry,
           windDirectionRadians: options.world.prevailingWindRadians,
+          ...(evolutionResult.mode === "eroded"
+            ? {
+              graphHydrology: channelGraphToHydrologyGeometry(
+                evolutionResult.channelGraph,
+              ),
+            }
+            : {}),
         },
         options.signal,
       );
@@ -586,6 +676,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.world.prevailingWindRadians,
         options.world.prevailingWindSpeed,
         options.signal,
+        bathymetry,
       );
       cleanup.push(() => ocean.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
@@ -760,6 +851,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         camera,
         aircraft,
         terrain,
+        terrainEvolution,
+        terrainConsumerAuthority,
         atmosphere,
         clouds,
         cloudShadowReceivers,
@@ -767,6 +860,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         skyProbe,
         ocean,
         hydrology,
+        bathymetry,
         airport,
         detail,
         wildlife,
@@ -794,6 +888,40 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     this.aircraft.setCockpitView(mode === "cockpit");
     this.graph.invalidateHistory("camera mode changed");
+  }
+
+  setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
+    this.terrainAuthorityPublisher = publisher;
+    if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
+    this.terrain.setCollisionPagePublisher(
+      publisher || needsEvolvedConsumers
+        ? (page) => this.publishTerrainConsumerPage(page)
+        : null,
+    );
+  }
+
+  /** Copy before either worker detaches its transfer-owned publication. */
+  private publishTerrainConsumerPage(page: TerrainPagePublication): void {
+    const authority = this.terrainConsumerAuthority;
+    if (authority) {
+      authority.publish({ ...page, heights: page.heights.slice() });
+      this.detail.publishTerrainPage({ ...page, heights: page.heights.slice() });
+    }
+    // Keep the original for the simulation worker and transfer it last.
+    this.terrainAuthorityPublisher?.publishTerrainPage(page);
+  }
+
+  /** Aux hydrology remains render/detail-only; simulation receives no copy. */
+  private publishTerrainConsumerAuxPage(page: TerrainAuxPagePublication): void {
+    const authority = this.terrainConsumerAuthority;
+    if (!authority) return;
+    authority.publishAuxPage({
+      ...page,
+      shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
+    });
+    // Transfer the producer-owned buffer only after retaining the main-thread copy.
+    this.detail.publishTerrainAuxPage(page);
   }
 
   setQuality(quality: QualityLevel): void {
@@ -1066,7 +1194,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       // these fields kept their names because their MEANING survived it —
       // resident pages are resident pages.
       residentTerrainPages: terrain.residentSlots,
-      collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
+      collisionSamplesServedByFallback:
+        this.currentState?.terrainAuthority?.analyticServed ?? 0,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       vegetationBatches: this.detail.statistics.activeBatches,
       activeAnimals: wildlife.activeAnimals,
@@ -1169,6 +1298,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         }
       },
       () => this.terrain.dispose(),
+      () => this.terrainEvolution.dispose(),
+      () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
       () => this.airport?.dispose(),
@@ -1207,6 +1338,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       phase: "water",
       after: ["world-page-visibility"],
       execute: (frame) => {
+        void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         const state = this.currentState;
         this.hydrology.update(

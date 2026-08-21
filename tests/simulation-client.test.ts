@@ -4,6 +4,7 @@ import {
   MAX_VISUAL_EXTRAPOLATION_SECONDS,
   SimulationClient,
   extrapolateFlightState,
+  interpolateFlightState,
 } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types";
 import { createWorld } from "../src/world";
@@ -12,14 +13,16 @@ import type { SimulationEvent } from "../src/workers/protocol";
 class WorkerStub extends EventTarget {
   static latest: WorkerStub | null = null;
   readonly messages: unknown[] = [];
+  readonly transfers: Transferable[][] = [];
 
   constructor() {
     super();
     WorkerStub.latest = this;
   }
 
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, transferables: Transferable[] = []): void {
     this.messages.push(message);
+    this.transfers.push(transferables);
   }
 
   emit(event: SimulationEvent): void {
@@ -109,6 +112,54 @@ describe("simulation worker lifecycle commands", () => {
     expect(recovery).toContain('installSimulation(\n    "airborne"');
     expect(recovery).not.toContain("originX");
     expect(recovery).not.toContain("originZ");
+  });
+
+  it("transfers terrain page and macro publications without adapter objects", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const client = new SimulationClient(createWorld(456), "unassisted");
+    const worker = WorkerStub.latest!;
+    const pageHeights = new Float32Array(256 * 256);
+    const macroHeights = new Float32Array(4);
+
+    client.publishTerrainPage({ level: 0, tileX: -2, tileZ: 7, heights: pageHeights });
+    client.publishTerrainMacro({
+      originX: -256,
+      originZ: -256,
+      texelSizeMeters: 512,
+      width: 2,
+      height: 2,
+      heights: macroHeights,
+    });
+
+    expect(worker.messages.at(-2)).toEqual({
+      type: "terrainPage",
+      page: { level: 0, tileX: -2, tileZ: 7, heights: pageHeights },
+    });
+    expect(worker.transfers.at(-2)).toEqual([pageHeights.buffer]);
+    expect(worker.messages.at(-1)).toEqual({
+      type: "terrainMacro",
+      macro: {
+        originX: -256,
+        originZ: -256,
+        texelSizeMeters: 512,
+        width: 2,
+        height: 2,
+        heights: macroHeights,
+      },
+    });
+    expect(worker.transfers.at(-1)).toEqual([macroHeights.buffer]);
+    client.dispose();
+  });
+
+  it("carries optional worker terrain counters without interpolating them", () => {
+    const first = visualStateAt(1);
+    const counters = { readbackServed: 12, macroServed: 3, analyticServed: 0 };
+    const second = visualStateAt(2, { terrainAuthority: counters });
+    expect(interpolateFlightState(first, second, 0.25).terrainAuthority).toBe(counters);
+
+    const staleTarget = visualStateAt(2, { terrainAuthority: counters });
+    const extrapolated = extrapolateFlightState(first, 0.01, staleTarget);
+    expect(extrapolated).not.toHaveProperty("terrainAuthority");
   });
 
   it("67a: samples snapshot time monotonically under arrival jitter and caps coasting", () => {

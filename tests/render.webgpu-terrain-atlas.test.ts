@@ -5,9 +5,16 @@ import {
   seasonSlotKeys,
 } from "../src/render/webgpu/terrain/TerrainPageAtlas";
 import {
+  buildTerrainEvolutionDebugPreview,
   TERRAIN_DEBUG_OVERLAY_MODES,
   terrainDebugOverlayColor,
+  terrainEvolutionDebugColor,
 } from "../src/render/webgpu/terrain/TerrainDebugOverlay";
+import {
+  EVOLUTION_DOMAIN_SAMPLE_COUNT,
+  TERRAIN_EVOLUTION_CONTRACT_VERSION,
+  type TerrainMacroEvolutionExport,
+} from "../src/render/webgpu/terrain/TerrainEvolutionContract";
 import {
   NullTerrainCollisionMirror,
   PublishingTerrainCollisionMirror,
@@ -175,6 +182,35 @@ describe("terrain page atlas residency (4-2)", () => {
     expect(atlas.slotIndexOf(request.slot.key)).toBe(-1);
   });
 
+  it("publishes an eroded channel slot only after the atomic aux commit", () => {
+    const atlas = new TerrainAtlasResidency(1, {
+      worldRevision: "eroded-aux-gate",
+      slotByteLength: 136 * 136 * 31,
+      requireHydrology: true,
+    });
+    atlas.beginFrame(1);
+    const request = atlas.request(
+      invariantSlotKey(address(0, 4, -3)),
+      address(0, 4, -3),
+    )!;
+    const stats = {
+      minHeightMeters: 0,
+      maxHeightMeters: 10,
+      maxDeviationFromParent: 1,
+    };
+    expect(request.slot.hydrologyReady).toBe(false);
+    expect(atlas.complete(request.slot.key, request.token!, stats)).toBe(false);
+    expect(request.slot.lifecycle.state).toBe("generating");
+    expect(atlas.slotIndexOf(request.slot.key)).toBe(-1);
+    expect(atlas.markHydrologyReady(request.slot.key, {
+      key: request.token!.key,
+      epoch: request.token!.epoch + 1,
+    })).toBe(false);
+    expect(atlas.markHydrologyReady(request.slot.key, request.token!)).toBe(true);
+    expect(atlas.complete(request.slot.key, request.token!, stats)).toBe(true);
+    expect(atlas.slotIndexOf(request.slot.key)).toBe(request.slot.slotIndex);
+  });
+
   it("keys season-dependent slots by bucket and nothing else by anything", () => {
     const page = createWorldPageKey(address(0, 4, 4));
     const summer = seasonSlotKeys(page, 171);
@@ -247,7 +283,7 @@ describe("terrain collision mirror (4-2)", () => {
   });
 });
 
-describe("terrain debug overlay (4-3)", () => {
+describe("terrain debug overlay (4-3/5-3)", () => {
   it("false-colours residency, level and height, and draws nothing when off", () => {
     const resident = {
       state: "resident", level: 0, minHeightMeters: 0, maxHeightMeters: 40,
@@ -287,5 +323,73 @@ describe("terrain debug overlay (4-3)", () => {
     expect(TERRAIN_DEBUG_OVERLAY_MODES[0]).toBe("off");
     expect(new Set(TERRAIN_DEBUG_OVERLAY_MODES).size)
       .toBe(TERRAIN_DEBUG_OVERLAY_MODES.length);
+  });
+
+  it("exposes the five macro tuning fields and preserves narrow drainage at preview scale", () => {
+    expect(TERRAIN_DEBUG_OVERLAY_MODES).toEqual(expect.arrayContaining([
+      "flow-accumulation",
+      "lake-mask",
+      "base-levels",
+      "fabric",
+      "erodibility",
+    ]));
+    const flow = terrainEvolutionDebugColor("flow-accumulation", {
+      maximumFlowAreaM2: 1_000_000,
+      lakeCoverage: 0,
+      baseLevelTermination: null,
+      fabricCos2: 1,
+      fabricSin2: 0,
+      erodibility: 1,
+    }, 1_000_000);
+    expect(flow[0]).toBeGreaterThan(flow[2]!);
+    expect(terrainEvolutionDebugColor("base-levels", {
+      maximumFlowAreaM2: 0,
+      lakeCoverage: 0,
+      baseLevelTermination: "lake",
+      fabricCos2: 1,
+      fabricSin2: 0,
+      erodibility: 1,
+    }, 1)).toEqual([225, 55, 235, 245]);
+
+    const heightMeters = new Float32Array(EVOLUTION_DOMAIN_SAMPLE_COUNT);
+    const flowAccumulationAreaM2 = new Float32Array(EVOLUTION_DOMAIN_SAMPLE_COUNT);
+    const lakeMask = new Uint8Array(EVOLUTION_DOMAIN_SAMPLE_COUNT);
+    // A single hot macro texel must survive a 1024:1 block reduction.
+    flowAccumulationAreaM2[17] = 4_000_000;
+    lakeMask[19] = 1;
+    const macro: TerrainMacroEvolutionExport = {
+      contractVersion: TERRAIN_EVOLUTION_CONTRACT_VERSION,
+      provenance: { worldSeed: "overlay", deviceFingerprint: "node" },
+      seaLevelMeters: 0,
+      heightMeters,
+      flowAccumulationAreaM2,
+      lakeMask,
+      lakes: [],
+      drainageBaseLevels: [{
+        drainageId: 1,
+        elevationMeters: 0,
+        outletTexel: { x: 21, z: 0 },
+        termination: "sea",
+      }],
+      channelSeedTexelIndices: Uint32Array.of(17),
+    };
+    for (const mode of [
+      "flow-accumulation",
+      "lake-mask",
+      "base-levels",
+      "fabric",
+      "erodibility",
+    ] as const) {
+      const preview = buildTerrainEvolutionDebugPreview(mode, {
+        macro,
+        seedHash: 123,
+      }, 1);
+      expect(preview).toHaveLength(4);
+      expect(preview[3]).toBeGreaterThan(0);
+    }
+    expect(buildTerrainEvolutionDebugPreview("flow-accumulation", {
+      macro,
+      seedHash: 123,
+    }, 1)[0]).toBe(255);
   });
 });

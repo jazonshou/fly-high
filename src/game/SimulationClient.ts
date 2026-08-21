@@ -1,6 +1,10 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
 import type { WorldDefinition } from "@/src/world";
+import type {
+  TerrainMacroGrid,
+  TerrainPagePublication,
+} from "@/src/workers/terrainAuthority";
 import {
   DEFAULT_AIRBORNE_START_AGL,
   type SimulationCommand,
@@ -93,6 +97,26 @@ export class SimulationClient {
     this.send({ type: "pause", paused });
   }
 
+  /**
+   * Transfer one final L0 atlas core to the worker-owned collision ring.
+   * The supplied typed array is detached; callers must provide a dedicated
+   * readback buffer rather than the renderer's own working view.
+   */
+  publishTerrainPage(page: TerrainPagePublication): void {
+    this.send(
+      { type: "terrainPage", page },
+      page.heights.buffer instanceof ArrayBuffer ? [page.heights.buffer] : [],
+    );
+  }
+
+  /** Transfer the once-per-world macro fallback to the simulation worker. */
+  publishTerrainMacro(macro: TerrainMacroGrid): void {
+    this.send(
+      { type: "terrainMacro", macro },
+      macro.heights.buffer instanceof ArrayBuffer ? [macro.heights.buffer] : [],
+    );
+  }
+
   reset(spawn: SpawnKind, airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
     this.send({ type: "reset", spawn, airborneStartAgl });
   }
@@ -167,8 +191,8 @@ export class SimulationClient {
     this.errorListener = null;
   }
 
-  private send(command: SimulationCommand): void {
-    this.worker.postMessage(command);
+  private send(command: SimulationCommand, transferables: Transferable[] = []): void {
+    this.worker.postMessage(command, transferables);
   }
 
   private readonly handleMessage = (event: MessageEvent<SimulationEvent>): void => {
@@ -295,6 +319,9 @@ export function interpolateFlightState(
   result.onGround = useSecondFlags ? second.onGround : first.onGround;
   result.stalled = useSecondFlags ? second.stalled : first.stalled;
   result.crashed = useSecondFlags ? second.crashed : first.crashed;
+  const terrainAuthority = second.terrainAuthority ?? first.terrainAuthority;
+  if (terrainAuthority) result.terrainAuthority = terrainAuthority;
+  else delete result.terrainAuthority;
   return result;
 }
 
@@ -320,6 +347,7 @@ export function extrapolateFlightState(
   const orientation = result.orientation;
   const angularVelocity = result.angularVelocity;
   Object.assign(result, state);
+  if (!state.terrainAuthority) delete result.terrainAuthority;
   result.position = position;
   result.velocity = velocity;
   result.orientation = orientation;

@@ -7,6 +7,7 @@ import {
   MAX_TERRAIN_HEIGHT,
   MAX_WIND_SPEED,
   MIN_TERRAIN_HEIGHT,
+  DEFAULT_WORLD_EVOLUTION,
   TerrainBiome,
   assessAirportSite,
   createWorld,
@@ -165,6 +166,28 @@ function independentlyAuditAirport(
 }
 
 describe("world seeds", () => {
+  it("activates eroded worlds by default while preserving analytic parity worlds", () => {
+    expect(DEFAULT_WORLD_EVOLUTION).toBe("eroded");
+    expect(createWorld("evolution-default", { airport: false }).worldEvolution).toBe(
+      "eroded",
+    );
+    expect(
+      createWorld("evolution-parity", {
+        airport: false,
+        worldEvolution: "analytic",
+      }).worldEvolution,
+    ).toBe("analytic");
+  });
+
+  it("rejects an unknown world-evolution authority at the runtime boundary", () => {
+    expect(() =>
+      createWorld("invalid-evolution", {
+        airport: false,
+        worldEvolution: "future-mode",
+      } as never),
+    ).toThrow(/worldEvolution/);
+  });
+
   it("hashes text, numbers, and signed coordinates deterministically", () => {
     expect(hashSeed("alpine-dawn")).toBe(hashSeed("alpine-dawn"));
     expect(hashSeed("alpine-dawn")).not.toBe(hashSeed("alpine-dusk"));

@@ -1,6 +1,13 @@
 /** A seed accepted by the deterministic world generator. */
 export type WorldSeed = string | number;
 
+/**
+ * Selects which terrain-height authority defines a world. This is world
+ * content, not a render-quality setting: changing it changes terrain shape,
+ * collision, drainage, and therefore the world's cache identity.
+ */
+export type WorldEvolution = "analytic" | "eroded";
+
 /** World-space vector. Horizontal coordinates are x/z and elevation is y. */
 export interface WorldVector3 {
   x: number;
@@ -28,6 +35,8 @@ export interface AirportDefinition {
 
 export interface WorldOptions {
   seaLevel?: number;
+  /** Defaults to the activated Phase 5 eroded authority. */
+  worldEvolution?: WorldEvolution;
   /** Pass false to generate a world without the starter airport. */
   airport?: false | Partial<AirportDefinition>;
   /** Geographic latitude of the world, in degrees. Defaults to 45°N. */
@@ -36,6 +45,8 @@ export interface WorldOptions {
 
 export interface WorldDefinition {
   readonly seed: string;
+  /** Terrain content authority; deliberately invariant across graphics tiers. */
+  readonly worldEvolution: WorldEvolution;
   /** Stable hash of the public/shareable seed string. */
   readonly sourceSeedHash: number;
   /** Terrain-region hash resolved from the public seed. */

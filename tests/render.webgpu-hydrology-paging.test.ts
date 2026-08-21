@@ -28,6 +28,7 @@ import {
   selectHydrologyRegion,
 } from "../src/render/webgpu/water/HydrologyPaging";
 import { HydrologySystem } from "../src/render/webgpu/water/HydrologySystem";
+import type { ChannelHydrologyGeometry } from "../src/render/webgpu/water/ChannelNetwork";
 import { isHydrologyWorkerEvent } from "../src/workers/hydrologyProtocol";
 
 const ATMOSPHERE: AtmosphereSnapshot = {
@@ -452,6 +453,110 @@ describe("hydrology generation scheduling", () => {
 });
 
 describe("paged Babylon hydrology residency", () => {
+  it("keeps canonical graph hydrology resident without constructing or paging the legacy generator", async () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("graph-hydrology-camera", new Vector3(0, 300, -400), scene);
+    const terrainSample = vi.fn(() => {
+      throw new Error("Graph hydrology must not invoke the analytic terrain tracer");
+    });
+    let workerConstructionCount = 0;
+    class ForbiddenHydrologyWorker {
+      constructor() {
+        workerConstructionCount += 1;
+        throw new Error("Graph hydrology must not construct the legacy generation worker");
+      }
+    }
+    vi.stubGlobal("Worker", ForbiddenHydrologyWorker);
+    const graphHydrology: ChannelHydrologyGeometry = Object.freeze({
+      rivers: Object.freeze([Object.freeze({
+        id: "channel:headwater-to-rim",
+        termination: "boundary" as const,
+        lengthMeters: 240,
+        maximumWidthMeters: 9,
+        points: Object.freeze([
+          Object.freeze({
+            x: -120,
+            y: 18,
+            z: 0,
+            widthMeters: 5,
+            flowSpeedMetersPerSecond: 1.2,
+            estimatedDischargeCubicMetersPerSecond: 8,
+          }),
+          Object.freeze({
+            x: 0,
+            y: 14,
+            z: 0,
+            widthMeters: 7,
+            flowSpeedMetersPerSecond: 1.5,
+            estimatedDischargeCubicMetersPerSecond: 16,
+          }),
+          Object.freeze({
+            x: 120,
+            y: 10,
+            z: 0,
+            widthMeters: 9,
+            flowSpeedMetersPerSecond: 1.8,
+            estimatedDischargeCubicMetersPerSecond: 28,
+          }),
+        ]),
+      })]),
+      lakes: Object.freeze([]),
+    });
+
+    try {
+      const system = await HydrologySystem.create(scene, camera, {
+        atmosphere: ATMOSPHERE,
+        worldSeed: "graph-backed-hydrology",
+        terrainSample,
+        workerWorldSeed: "graph-backed-hydrology",
+        extentMeters: 1_200,
+        graphHydrology,
+      });
+      expect(workerConstructionCount).toBe(0);
+      expect(terrainSample).not.toHaveBeenCalled();
+      expect(system.hydrology.rivers).toBe(graphHydrology.rivers);
+      expect(system.getStatistics()).toMatchObject({
+        riverCount: 1,
+        terrainSampleCount: 0,
+        generationPending: false,
+        queuedGenerationCount: 0,
+        pagingRequestCount: 0,
+        regionSwapCount: 0,
+        usingMainThreadFallback: false,
+        lastGenerationUsedWorker: false,
+        residentRegionCount: 1,
+      });
+
+      system.update(10, camera.position, {
+        x: 90_000,
+        z: -70_000,
+        velocityX: 1_500,
+        velocityZ: -900,
+      });
+      system.update(20, camera.position, {
+        x: -120_000,
+        z: 110_000,
+        velocityX: -2_000,
+        velocityZ: 2_000,
+      });
+      expect(workerConstructionCount).toBe(0);
+      expect(terrainSample).not.toHaveBeenCalled();
+      expect(system.getStatistics()).toMatchObject({
+        activeRegionKey: "0:0",
+        generationPending: false,
+        pagingRequestCount: 0,
+        regionSwapCount: 0,
+        residentRegionCount: 1,
+      });
+      system.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
   it("retains old water until a region is complete, then crossfades within a two-region bound", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);

@@ -20,7 +20,7 @@ The game-owned frame graph declares system order while Babylon owns WebGPU comma
 | 1 | `flight-presentation` | Aircraft transform, camera, and atmosphere state. |
 | 2 | `world-page-visibility` | Terrain pages, detail cells, wildlife, and velocity-aware residency/LOD. |
 | 3 | `shared-planar-water-reflection` | Retired (2-10): the sky environment probe carries water reflections; the receiver contract and lake-plane hysteresis survive for a future lake capture (5-12). |
-| 4 | `spectral-ocean-compute` | Ocean compute dispatches plus paged river/lake material updates. |
+| 4 | `spectral-ocean-compute` | Ocean compute dispatches, bathymetry toroidal-strip updates, and river/lake material updates. |
 | 5 | `volumetric-cloud-integration` | Low-resolution cloud integration, temporal resolve, and world-space transmittance projection. |
 | 6 | `hdr-present` | Babylon scene render, the scotopic (rod-vision) pass, half-float ACES image processing, final FXAA, and presentation. |
 
@@ -33,16 +33,22 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 | System | Generation/simulation | GPU presentation |
 | --- | --- | --- |
 | Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots | Simulation-time presentation with a worker-clock EMA, monotone interpolation and at most 50 ms velocity/body-rate coasting; procedural aircraft meshes |
-| Terrain | Deterministic CPU sampling in the terrain Worker, with a deferred CPU fallback | Babylon PBR geometry-clipmap pages |
-| World-page contract | CPU page keys, quantized payload validation, lifecycle/cache metadata, and velocity priority | Defines upload/residency boundaries; it does not itself issue draw work |
+| Terrain | Analytic worlds use the GPU kernel. Eroded worlds eagerly build the canonical 1024² macro field in a CPU Worker, then run the deterministic bounded page reference in a second CPU Worker with one page in flight; the simulation Worker samples L0 → macro → analytic recovery. | Completed r32float atlas pages feed the CDLOD ground; eroded worker bytes upload through the same atlas and become visible only at final publication. |
+| World-page contract | CPU page keys, quantized payload validation, lifecycle/cache metadata, velocity priority, and the canonical flow/lake/soil/shore fields | Defines heterogeneous upload/residency boundaries; it does not itself issue draw work |
 | Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, normals, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and probe-fed environment reflections (the planar capture is retired, 2-10) |
-| Rivers and lakes | Deterministic, velocity-ahead region generation in a cancellable Worker, with a scheduled CPU fallback | Crossfaded flow-aligned meshes with WGSL ripples, Fresnel, sun/sky/cloud response, and the same probe-fed environment reflections |
+| Rivers and lakes | Eroded worlds extract one deterministic channel graph from the canonical macro export. Explicit analytic compatibility worlds retain the velocity-ahead tracer Worker and scheduled CPU fallback. | Graph-backed or legacy geometry uses the shared WGSL water response and bathymetry depth field. |
 | Clouds | Procedural density is evaluated during the WGSL fragment ray march | Low-resolution integration, ping-pong temporal resolve, representative-depth composition, and a bounded transmittance map sampled by world-space receivers |
 | Atmosphere | CPU solar position, transmittance LUT bake, and per-frame haze binding | Analytic HDR WGSL sky and aerial perspective from one shared closed-form Rayleigh/Mie/ozone integral; Babylon fog is permanently off |
 | Trees, rocks, shrubs | Deterministic CPU detail-cell generation and LOD selection | Spatially chunked Babylon thin instances with per-instance color and tree wind deformation |
 | Wildlife | Deterministic CPU population and bounded fixed-step AI | Interpolated current thin-instance transforms for procedural animals |
 
-The only active general-purpose GPU compute simulation in the current frame is the spectral ocean. Terrain, hydrology, ecology, and wildlife are deliberately CPU-generated or CPU-simulated and rendered through WebGPU. Clouds are a fragment-shader volume ray march, not an FFT or compute-fluid simulation. This distinction is important when profiling CPU generation versus GPU shading.
+The spectral ocean remains the only active general-purpose GPU *simulation* in
+the frame. Terrain also uses compute for analytic page generation and channel
+bakes, and bathymetry uses compute for bounded toroidal strip updates. Phase 5
+erosion itself is presently a deterministic CPU-worker reference, not the
+plan's final GPU erosion implementation. Clouds are a fragment-shader volume
+ray march, not an FFT or compute-fluid simulation. This distinction is
+load-bearing when attributing worker CPU time, upload time, and GPU shading.
 
 The flight simulation never depends on render cadence. Its collision path also avoids paying for visual biome/material sampling: a dedicated terrain query returns only height, normal, runway state, and friction; ordinary airborne steps use a height-only early reject before requesting per-wheel normals; high-AGL telemetry can reuse a center height; and the exactly flat airport platform bypasses terrain noise. These CPU savings remain independent of the rendering overhaul.
 
@@ -99,12 +105,43 @@ the memory row cannot disagree with the knob.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
+`worldEvolution` is world content and is invariant across this tier table. The
+Phase-5 memory rows in `PerformanceBudget.ts` deliberately reserve the target
+GPU macro, erosion-scratch and channel-graph layouts even though the current
+reference producer owns those structures on CPU. They are conservative
+headroom reservations, not measured live GPU inventory. The two 1024² R16F
+bathymetry textures are a live 4 MiB allocation; the macro height additionally
+has a read-only GPU storage upload for bathymetry sampling. A local
+production-shape CPU-reference run for seed `phase5-production-benchmark`
+measured 3,174 ms sampling uplift/erodibility/repose plus 4,323 ms evolution,
+7,497 ms total. That result misses the 1.5 s load target and is neither a
+reference-machine nor final-GPU acceptance measurement. No measured per-page
+erosion cost is claimed here.
+
 Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. The ACES/FXAA post stack is the same across quality profiles.
 
 ## Terrain and world paging
 
-Phase 4 replaced the CPU geometry-clipmap outright; the description below is
-what ships today, after Phase 4.5's corrections.
+Phase 4 replaced the CPU geometry-clipmap outright. Phase 5 keeps that
+presentation spine and changes the height authority behind it:
+
+- **The default world is eroded; analytic is explicit compatibility.** Startup
+  begins a cell-centred, world-anchored 1024² × 512 m macro evolution in a
+  Worker while device resources are constructed, and waits for the canonical
+  result before eroded terrain, graph hydrology, and bathymetry become visible.
+  The runtime export is tier-independent and reused by every consumer.
+- **The current erosion implementation is the CPU reference.** A second Worker
+  executes fixed priority-breach, MFD/stream-power and talus operators inside a
+  64-texel halo. The atlas admits one page at a time so stale flight-path work
+  cannot fill the queue. Height and accumulation seed directly from the macro
+  authority plus band-limited fine detail; a resident-parent dependency chain
+  is not part of the current implementation. The full runway earthworks mask
+  is protected from erosion, and the production page generator supplies
+  deterministic strictly-downhill, acyclic receiver overrides that route
+  drainage around its perimeter.
+- **Evolution is inspectable without a capture.** The terrain debug overlay's
+  live macro preview exposes flow accumulation, lake mask, drainage base levels,
+  double-angle fabric and erodibility alongside the Phase-4 residency views.
 
 - **One mesh draws the ground.** A single 33×33 unit grid is thin-instanced
   over a CDLOD node set. Node span is `64·2^L` m across 32 quads, which is
@@ -122,23 +159,36 @@ what ships today, after Phase 4.5's corrections.
 - **A node is never split on a guess.** `maxDeviationFromParent` is measured by
   the generation pass as the largest second difference over the page; a page
   with no measurement is drawn coarse and never split.
-- **Pages are GPU-generated.** One compute dispatch resolves a batch (the job
-  index selects the page), writing an r32float height atlas whose surplus slots
-  ARE the LRU cache. A page's TEXELS are published at dispatch-submit so it can
-  be drawn immediately; its bounds and deviation arrive a readback later and
-  only the CDLOD split waits for them (`4.5-B1`). Every in-flight readback
-  holds its own bounds buffer — sharing one silently completed pages at zero
-  deviation, which converges the whole selector at the root ring.
-- **One meter admits every compute client.** Height generation, the occlusion
-  bake, the land-cover splat bake and (from Phase 5) erosion are admitted by
-  `ComputeBudget` under one per-frame cap in a declared priority order, priced
-  at MEASURED per-dispatch costs fed back from `timestamp-query`. A measured
-  height page costs ~1.9 ms of GPU, which is more than the whole compute cap,
-  so the highest-priority client with demand is always admitted one dispatch —
-  otherwise terrain streaming stops permanently under GPU pressure.
+- **Analytic pages are GPU-generated; eroded pages are worker-generated.** The
+  analytic path retains one compute dispatch per admitted batch and the
+  `4.5-B1` split publication of texels before bounds. The eroded path transfers
+  one final stored page, uploads it into the same r32float atlas, and withholds
+  residency until its complete generation DAG and L0 collision publication
+  finish. It never exposes a half-evolved slot.
+- **Detail and wildlife share the collision height ladder.**
+  `TerrainConsumerAuthority` adapts L0 → macro → analytic height, normal and
+  slope for those consumers while leaving the established analytic climate and
+  material fields intact. Eroded worlds therefore do not place ecology against
+  a second, analytic-only ground surface.
+- **One meter paces every terrain producer.** Analytic height generation,
+  occlusion and splat bakes feed measured GPU dispatch costs back from
+  `timestamp-query`. The CPU-reference erosion client uses the reserved
+  `erosionCompute` admission as a pacing boundary, but supplies no GPU timing
+  sample; its seeded cost is not evidence of measured erosion performance. A
+  measured analytic height page costs ~1.9 ms of GPU, more than the whole
+  compute cap, so the highest-priority client with demand retains the floor of
+  one dispatch.
 - **Channel families ride a second atlas**: sky visibility and a bent normal,
-  an 8-azimuth horizon field, and the season-keyed land-cover splat pair. They
-  are sampled BILINEAR (`4.5-A2`) — the material axis is ordered so a filtered
+  an 8-azimuth horizon field, the season-keyed land-cover splat weights, and
+  invariant flow accumulation, lake depth, soil depth and signed shore
+  distance resources. The four Phase-5 fields use heterogeneous formats and
+  become resident atomically with their page; only after all four uploads and
+  slot residency does the runtime publish the aux page to the detail authority.
+  Flow/TWI currently feeds the land-cover classifier and signed shore distance
+  feeds the live riparian density path; lake and soil remain exposed for later
+  consumers.
+  The original sampled surface families retain BILINEAR filtering (`4.5-A2`)
+  — the material axis is ordered so a filtered
   primary id lands between two materials that actually meet, and only the
   primary lane may be read that way.
 - **A page with no channel slot falls back to a per-VERTEX ecotone walk**
@@ -177,8 +227,28 @@ The ocean is the renderer's native WebGPU compute workload:
 - The camera-centered ocean presentation surface is a single crack-free 40 km radial grid. Tiers 0/1 use 96×128 or 144×192 radial/angular topology and tiers 2/3 share 192×256; a fifth-power distribution concentrates sub-metre radial spacing near the aircraft and grows cells toward the hazed far plane.
 - The WGSL surface combines multi-cascade geometric displacement with per-fragment slope/normal and foam sampling, dielectric Fresnel, GGX sun glint, sky/cloud color, depth tint, and height-aware cloud transmittance on direct sunlight. Ocean and inland-water shaders also bind Babylon's existing cascaded-shadow depth array through its public matrices and comparison sampler; cascade splits/blends follow live quality changes, and only direct solar glare/scatter is attenuated. This reuses the terrain/scenery shadow render instead of scheduling a water-only pass. Environment reflections sample the shared sky environment probe cube with roughness-mapped mips; the planar scene capture that used to add nearby geometry is retired (2-10), and its surviving receiver contract idles at zero validity so the analytic sky/cloud response remains the fallback.
 - Lower-cadence far cascades accumulate elapsed time before applying foam decay, so their half-life is independent of update cadence. Live quality changes initialize replacement compute resources before swapping away the active ocean.
+- A shared two-level bathymetry clipmap stores `bedElevation − seaLevel` at
+  16 m/texel over 16.4 km and 128 m/texel over 131 km. Both 1024² levels are
+  R16F and update only newly exposed toroidal strips after their initial fill.
+  Analytic mode samples the historical terrain kernel exactly. Eroded mode
+  bilinearly samples the canonical cell-centred macro height and blends back to
+  analytic across the macro domain's 16-texel rim. It does **not** currently
+  overlay resident L0 erosion pages; that planned authority refinement remains
+  open.
+- Shared depth optics apply Beer-Lambert attenuation, a soft shoreline,
+  turbidity, underwater-interface handling and air-to-water refraction of the
+  bed coordinate. The refracted substrate colour is still a deterministic
+  analytic mineral proxy; it does not sample the terrain material arrays.
 
-Rivers and lakes are a separate hydrology path. A cancellable Worker generates overlapping, deterministic world regions ahead of aircraft velocity while the old region remains active; a no-hole two-phase opacity handoff publishes the replacement without a blank or translucent midpoint. The main-thread fallback uses the same generator and yields between scheduled jobs. Region meshes remain bounded, floating-origin aware, and disposable. Globally anchored source cells are enumerated over a maximum-trace-length halo, traced and width-resolved in source-owned domains, then clipped to the page. This preserves incoming downstream reaches whose headwaters lie outside the next page. A job rejects configurations exceeding 100 halo source cells or 300,000 theoretical direction samples rather than silently applying a page-local top-N that could alter geography. The flow/ripple shader shares atmosphere, sun, the height-aware cloud-shadow projection, and the live cascaded sun-shadow receiver with the ocean. The shared planar capture a nearby lake once consumed is retired (2-10); all inland water now shares the probe-fed environment reflections, while the lake plane-selection gate survives for the future lake capture (5-12). There is no shallow-water compute solver in the current implementation.
+Rivers and lakes have two explicit content paths. Eroded worlds consume the
+single deterministic `ChannelNetwork` extracted from the canonical macro
+export; that geometry remains resident and never enters the legacy paging
+tracer. Analytic compatibility worlds retain the cancellable, velocity-ahead
+region Worker, its no-hole two-phase handoff, and the scheduled main-thread
+fallback. Keeping the old carve proxies and tracer in this mode is deliberate
+compatibility, not a second producer for eroded geography. Both presentations
+share bathymetry, atmosphere, cloud and cascaded-sun-shadow inputs. The planar
+capture remains retired, and there is no shallow-water compute solver.
 
 The planar scene-reflection capture is retired (2-10): with the sky environment probe live on both water materials and water roughness capped at 0.34, the probe cube covers what the mirror pass existed for, at zero extra cameras. The receiver contract survives bound to a zero-confidence fallback texel, so the physically shaded atmosphere remains the mandatory fallback instead of reflecting black or stale geometry. The lake distance and projected-angular-size thresholds, with their mild hysteresis, are also preserved for the future lake capture (5-12), so a tiny lake below a high-altitude camera still cannot claim the reflection plane.
 

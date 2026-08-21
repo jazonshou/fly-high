@@ -455,6 +455,7 @@ export function FlightGame() {
         initialAttractMode,
         activeSettings.aircraft,
       ));
+      renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);
       renderer.setAtmosphere(
         {

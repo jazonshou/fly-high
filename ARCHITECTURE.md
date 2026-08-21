@@ -20,19 +20,24 @@ creates the file — the ownership decision is already binding.
 | World-page payload schema — every page channel | terrain-geometry | `src/render/webgpu/world/payload.ts` | live |
 | Page geometry — one number | terrain-geometry | `src/render/webgpu/world/pageGeometry.ts` | live |
 | Terrain spine contract — slot geometry, atlas sizing, the season key, the node record, the parity criterion | terrain-geometry | `src/render/webgpu/terrain/TerrainSpineContract.ts` | live (`4-0`) |
+| Terrain evolution contract — macro domain, height-authority ladder, erosion/hydrology exports and hydraulic geometry | terrain-geometry | `src/render/webgpu/terrain/TerrainEvolutionContract.ts` | live (`5-0`/`5-1`) |
 | Shared amortised-compute meter | performance | `src/render/webgpu/core/ComputeBudget.ts` | live (`4-0b`, = `6-10` moved) |
 | Guarded `ShadowDepthWrapper` factory — the one construction site | lighting | `src/render/webgpu/core/guardedShadowDepthWrapper.ts` | live (`4.5-0`) |
 | Off-thread terrain material synthesis — worker, protocol and client | terrain-material | `src/workers/materialSynthesis.worker.ts`, `src/workers/materialSynthesisProtocol.ts`, `src/render/webgpu/terrain/MaterialSynthesisClient.ts` | live (`4.5-C2b`) |
 | Terrain height kernel (WGSL) — the transliteration of `src/world/{seed,noise,geology,terrain}.ts` | terrain-geometry | `src/render/webgpu/terrain/TerrainKernel.ts` | live (`4-1`) |
-| `TerrainPageAtlas` + residency + page generation | terrain-geometry | `src/render/webgpu/terrain/TerrainPageAtlas.ts` | live (`4-2`, `4-3`) |
-| Terrain debug overlay — false-colour atlas residency | terrain-geometry | `src/render/webgpu/terrain/TerrainDebugOverlay.ts` | live (`4-3`) |
+| `TerrainPageAtlas` + residency + page generation, including heterogeneous hydrology resources | terrain-geometry | `src/render/webgpu/terrain/TerrainPageAtlas.ts` | live (`4-2`, `4-3`, extended `5-5`) |
+| Terrain debug overlay — atlas residency plus macro flow/lakes/base-levels/fabric/erodibility | terrain-geometry | `src/render/webgpu/terrain/TerrainDebugOverlay.ts` | live (`4-3`, extended `5-3`) |
 | Global height pyramid — the coarse field the occlusion bake marches beyond a page | terrain-geometry | `src/render/webgpu/terrain/GlobalHeightPyramid.ts` | live (`4-7`) |
 | Page occlusion bake — sky visibility, bent normal, 8-azimuth horizon; and the land-cover splat bake | terrain-geometry | `src/render/webgpu/terrain/PageOcclusionBake.ts` | live (`4-7`, `4-6`) |
 | CDLOD quadtree — node selection, morph, the node record, the one grid | terrain-geometry | `src/render/webgpu/terrain/TerrainQuadtree.ts` | live (`4-5`) |
 | Land-cover classification — the sole authority for ground, tree species and wildlife habitat | terrain-material | `src/render/webgpu/terrain/LandCoverClassifier.ts` | live (`4-6`, `R-27`) |
 | Vegetation density field (WGSL) — one shared include, never a copy | vegetation | `src/render/webgpu/detail/densityFieldWgsl.ts` | live (`4-6b`) |
 | Bounded priority queue — the VEGETATION worker's queue | vegetation | `src/workers/boundedPriorityQueue.ts` | live (renamed from `terrainQueue.ts` at `4-4`) |
-| `TerrainErosionCompute` | terrain-geometry | `src/render/webgpu/terrain/TerrainErosionCompute.ts` | planned `5-1` |
+| Page-evolution reference producer — bounded operators, page builder, client, protocol and worker | terrain-geometry | `src/render/webgpu/terrain/TerrainErosionCompute.ts`, `src/render/webgpu/terrain/TerrainPageErosion.ts`, `src/render/webgpu/terrain/TerrainPageErosionClient.ts`, `src/workers/terrainErosionProtocol.ts`, `src/workers/terrainErosion.worker.ts` | live (`5-3`/`5-4`; CPU-worker reference) |
+| Macro evolution producer and runtime — algorithm, client, protocol, worker and activation orchestration | terrain-geometry | `src/render/webgpu/terrain/TerrainMacroEvolution.ts`, `src/render/webgpu/terrain/TerrainMacroEvolutionClient.ts`, `src/render/webgpu/terrain/TerrainEvolutionRuntime.ts`, `src/workers/terrainMacroEvolutionProtocol.ts`, `src/workers/terrainMacroEvolutionRuntime.ts`, `src/workers/terrainMacroEvolution.worker.ts` | live (`5-3`; CPU-worker reference) |
+| Per-page hydrology fields — flow, lake depth, soil depth and signed shore distance | terrain-geometry | `src/render/webgpu/terrain/TerrainPageHydrology.ts` | live (`5-5`) |
+| Simulation terrain readback authority — L0 ring and macro fallback | simulation | `src/workers/terrainAuthority.ts` | live (`5-2`) |
+| Rich terrain-sample authority adapter — evolved height/normal/slope for detail and wildlife | terrain-geometry | `src/render/webgpu/terrain/TerrainConsumerAuthority.ts` | live (`5-2` consumer closure) |
 | Aerial-perspective WGSL include | lighting | `src/render/webgpu/atmosphere/AerialPerspective.ts` | live (`1C-4`) |
 | Volumetric cloud shader modules — raymarch, temporal resolve, shadow | clouds | `src/render/webgpu/nature/CloudShaders.ts` | live (`2-0`) |
 | Atmosphere GPU resources — transmittance LUT texture, sky-ambient LUT, blue noise, scene depth | lighting | `src/render/webgpu/atmosphere/AtmosphereGpuResources.ts` | live (`2-0a`) |
@@ -48,8 +53,9 @@ creates the file — the ownership decision is already binding.
 | Runway surface painter — the analytic airport SDF, markings, rubber, ragged edge | terrain-material | `src/render/webgpu/terrain/RunwaySurface.ts` | live (`3-9`) |
 | Runway earthworks profile | terrain-material | `src/render/webgpu/terrain/RunwayEarthworks.ts` | live (`3-8`; Class K — physics reads it too) |
 | Vegetation density function, kilometre forest provinces and edge morphology | vegetation | `src/render/webgpu/detail/densityField.ts` | live (`1B-7`; Gate B `B-3`) |
-| `MAX_TERRAIN_HEIGHT` (2,200 m until `5-8`) | terrain-geometry | `src/world/terrain.ts` | live |
-| Channel-graph extractor | water | `src/render/webgpu/water/ChannelNetwork.ts` | planned `5-5` |
+| `MAX_TERRAIN_HEIGHT` (4,500 m) | terrain-geometry | `src/world/terrain.ts` | live (`5-A`) |
+| Channel-graph extractor | water | `src/render/webgpu/water/ChannelNetwork.ts` | live (`5-9`) |
+| Bathymetry clipmap | water | `src/render/webgpu/water/BathymetryClipmap.ts` | live (`5-10`) |
 | Rendered-density law — stems/ha bands, falloff, woody triangle budgets | vegetation | `src/render/webgpu/detail/renderedDensity.ts` | live (`R-21`) |
 | CPU texture-array mip reducer (coverage/Toksvig kernels) | performance | `src/render/webgpu/core/TextureArrayMips.ts` | live (`2-11`; `3-1` reuses) |
 | Compact 32-byte instance record + its vertex-stage decoder | vegetation | `src/render/webgpu/detail/instanceFormat.ts` (+ `DetailInstanceMaterialPlugin.ts`) | live (`2-11a`) |
@@ -90,21 +96,33 @@ halo (`gutter = 1`) and Phase 4's atlas (`gutter = 4`).
 ## 3. The physics/render consistency invariant (§1.3)
 
 **The surface the aircraft touches and the surface on screen are produced by
-the same authority.** Until `5-2` that authority is
-`sampleNaturalTerrainHeight` — by construction; afterwards it is the eroded
-readback grid — by parity tests.
+the same authority.** Explicit `worldEvolution: "analytic"` worlds preserve the
+historical pointwise kernel. The default `"eroded"` world renders completed
+evolution pages and serves physics from the fixed ladder **L0 readback → macro
+grid → analytic recovery**. A graphics tier never changes that content choice.
 
 - Every physics terrain query routes through `src/sim/terrainGrid.ts`. The
-  boundary test forbids direct collision-kernel imports anywhere else, so
-  `5-2` changes exactly one file.
-- `src/render/webgpu/terrain/TerrainCollisionMirror.ts` is the render half;
-  `RenderDiagnostics.collisionSamplesServedByFallback` (HUD row exists) must
-  stay 0 below 500 m AGL.
-- The invariant tests live in `tests/sim.terrain-authority.test.ts`: runway
+  boundary test forbids direct collision-kernel imports anywhere else. The
+  worker-side implementation is `src/workers/terrainAuthority.ts`: complete L0
+  Catmull-Rom stencils win, the cell-centred macro grid is the deterministic
+  fallback, and an incomplete L0 edge is never clamped into a false hit.
+- The renderer publishes the macro grid once and transfers completed L0 page
+  cores only after atlas upload and collision readback. Simulation owns the
+  counters. `RenderDiagnostics.collisionSamplesServedByFallback` reports the
+  worker's `analyticServed` count; it is not a render-side proxy counter.
+- `TerrainConsumerAuthority.ts` is the only adapter from that height ladder to
+  a rich `TerrainSample`. Detail and wildlife retain the analytic climate and
+  material fields, but derive height, normal and slope from the evolved
+  authority (and preserve authored airport earthworks exactly). Eroded-page
+  hydrology is built before erosion scratch disposal, transferred with the
+  final page, uploaded to all four heterogeneous channel resources, and only
+  then atomically marked resident and published to this consumer authority.
+- The invariant tests live in `tests/sim.terrain-authority.test.ts` and
+  `tests/sim.terrain-authority-ladder.test.ts`: runway
   influence exactly 1.0 across the apron; ground clearance never negative over
   a real-terrain profile; render-path heights equal physics-path heights at L0
   (exact at f32 storage precision); the crash-recovery ring fully served by the
-  active authority. **They must keep passing at every gate to Phase 5.**
+  active authority; and incomplete page stencils fall through legally.
 
 > **Amended 2026-08-19 by `3-8`.** They no longer pass trivially. The runway
 > earthworks gave the apron a 0.35 m camber, and `sampleTerrainCollision`'s
@@ -322,3 +340,11 @@ sources** in the Node project instead (assertion 51b is the standing example).
 | `4.5-B3`/`4.5-B4` | Pending pages are re-ranked against the current corridor before slicing; slots stuck in `generating` are reclaimable; an atlas-reshaping `setProfile` reconstructs the generator and both bakes. | `residency.entries` is Map insertion order, which is the order pages were first requested — and `evictionCandidates` considered only `resident` slots, so a request whose dispatch never completed held its slot index forever. The `setProfile` half was worse and entirely silent: an atlas-reshaping quality switch disposed both atlases and left the generator and bakes holding the disposed ones, `generate()` early-returned on `!hasTextures` forever, and terrain streaming was dead for the rest of the session. The NullEngine suite cannot see it — under NullEngine the system never constructs a generator at all — so `TerrainClipmapSystemOptions.computeFactory` is the seam assertion 116 drives it through. `4.5-0`'s recorded residual closes here too: rebuilt caster meshes get a re-run readiness sweep, because a `ShadowDepthWrapper` learns about a submesh only through the forward effect's `onEffectCreatedObservable` and nothing creates that effect at `layerMask 0`. |
 | `4.5-C1` | Vegetation does not CAST shadows below tier 2 (`vegetationCastsShadows`, a profile datum). | The largest single term in the tier-1 vegetation draw model and the only one no lever §5.3 governs can move: the near band submits every (species, variant, crown/trunk) mesh once per cascade, 148 of 347 modelled draws and 3.85 of the 9.02 modelled ms. Trees keep the shadows they RECEIVE. §5.3's ordered lever list does not contain shadow casting and neither does its "not budget knobs at any tier" list; the governing precedent is D15, which cut a tier-2 cascade specifically to reduce vegetation shadow draws. Measured on the adapter as 445 → 397 draw calls (the model over-predicts because it counts chunks a frustum drops) and, in the same-host control below, GPU p95 12.53 → 10.76 ms at the reference viewport while the terrain drew 47% more triangles. `VEGETATION_DRAW_CEILING` re-pinned 270/360 → 160/200 and `VEGETATION_FRAME_DEBT_RATIO` 5.57/5.01 → 3.28/2.87. |
 | `4.5-C2`/`4.5-C3` | The four terrain compute pipelines are pre-warmed behind the load screen against a real page; the ten material-layer syntheses run in a worker; per-pass GPU counters are summed into `RenderDiagnostics` as UNCORRELATED aggregates. | Babylon 9.21 has no async compute-pipeline path — `createComputePipeline` runs synchronously on first dispatch — and three of the four shaders inline the ~750-line height kernel, so unwarmed they land as multi-hundred-millisecond in-frame stalls during the first second of flight. Warming them against the coarsest real page under the spawn compiles every shader on valid job data and leaves the aircraft over ground that exists. `synthesizeSurfaceMaterial` is ~110 ms of pure CPU pixel maths per layer with no Babylon dependency, so it moved to a worker; keeping that true is why the GPU boundary split into `MaterialArrayUpload.ts`, and consumption stays frame-loop-driven because a `setTimeout` chain was already measured to break startup. The per-pass counters carry no submitted-frame id, so `B-0`'s rule stands and nothing infers a present wait from them — what they buy is that the ~40-70 ms interval against a ~10 ms GPU p95 is inspectable rather than a gap nobody can name. |
+| `5-0`/`5-1` | The evolution domain is one world-origin-anchored 1024² grid at 512 m/texel with an open rim and 16-texel analytic blend; exported flow accumulation is upstream area in m². | A moving window would make lake spills depend on flight path. Area rather than a tier- or level-relative texel count gives the hydraulic law one physical input across macro and page exports. Results are same-device bit-reproducible; cross-device identity is deliberately not promised. |
+| `5-0` X5 | One invariant splat-id texture plus two seasonal weight textures replace the two complete seasonal id/weight pairs. | `4.5-A2` already consumed ids from the low bucket only, so `splatIdHi` was written and allocated but never sampled. The channel atlas now has six live RGBA8 textures, saving 4 B/texel and one fragment sampler before Phase 5's aux channels arrive. |
+| `5-3`/`5-4` | The production integration uses deterministic CPU workers behind the final producer boundaries; the page atlas keeps exactly one erosion page in flight. | This is the correctness reference, not a claim that the plan's final GPU erosion pass shipped. Macro evolution samples the 1024² cell-centred uplift off the main thread. Page evolution uses a fixed 64-texel halo and seeds height/accumulation directly from the canonical macro authority plus band-limited detail, rather than depending on a resident-parent arrival chain. One-page admission prevents stale flight-path work from filling the worker queue. |
+| `5-6` | The production page path zeroes erosion across the complete runway earthworks mask and supplies perimeter-drain receiver overrides. | `generateTerrainErodedPage` constructs the overrides deterministically; every override is strictly downhill and the resulting receiver graph is acyclic. Focused tests pin the mask, diversion legality and deterministic regeneration. |
+| `5-5` | Four invariant hydrology resources share the page lifecycle but not a GPU format. | Flow accumulation (`r16float`), lake depth (`r16float`), soil depth (`r8unorm`) and signed shore distance (`r16sint`) are uploaded and made resident atomically with the height page, then the aux page is published. Flow/TWI is the current shader-classifier consumer and signed shore distance feeds detail's riparian density; lake and soil remain exposed for later water/ecology consumers, not silently re-derived. |
+| `5-7`/`5-8a` | The activated uplift is a seeded broad range/convergence field with rotating double-angle fabric, lithology and two fine bands. | It is not yet the specified Lloyd-relaxed plate-cell/motion-boundary/rift/hotspot model. Fine bands are fabric/lithology/local-rock masked on uplift input but do not yet apply the planned post-erosion soil-depth and curvature mask. |
+| `5-10` | Eroded bathymetry currently samples the canonical macro height, cell-centred and blended across the 16-texel rim; it does not overlay resident L0 pages yet. | One uploaded read-only macro buffer keeps the two 1024² R16F clipmaps deterministic while camera motion remains toroidal strip updates. Analytic worlds ignore an installed macro and retain the historical kernel exactly. Replacing the macro sampler with the current L0 authority is a later activation refinement, not something water consumers may implement independently. |
+| `5-A` compatibility | `worldEvolution: "eroded"` is the default, while explicit `"analytic"` worlds retain the historical carve proxies and downhill tracer. | Deleting those paths would break the promised compatibility mode. The eroded runtime does not call the tracer: it extracts one channel graph from the canonical macro export and gives that graph to inland-water presentation. |

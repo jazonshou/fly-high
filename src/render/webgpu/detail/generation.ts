@@ -11,7 +11,11 @@ import {
 } from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import { hashSeed } from "@/src/world/seed";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
-import { densityField, type VegetationDensitySample } from "./densityField";
+import {
+  densityField,
+  riparianVegetationFactors,
+  type VegetationDensitySample,
+} from "./densityField";
 import { sampleStandField, type StandSample } from "./standField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
@@ -517,6 +521,9 @@ function fieldAt(
     ...(sample.airportInfluence !== undefined
       ? { airportInfluence: sample.airportInfluence }
       : {}),
+    ...(sample.shoreDistanceMeters !== undefined
+      ? { shoreDistanceMeters: sample.shoreDistanceMeters }
+      : {}),
     dayOfYear: context.dayOfYear,
   });
 }
@@ -943,6 +950,9 @@ function buildGroundCoverGrid(
         ...(sample.airportInfluence !== undefined
           ? { airportInfluence: sample.airportInfluence }
           : {}),
+        ...(sample.shoreDistanceMeters !== undefined
+          ? { shoreDistanceMeters: sample.shoreDistanceMeters }
+          : {}),
       });
       const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
       const rocky = sample.biome === TerrainBiome.ALPINE || sample.biome === TerrainBiome.SNOW;
@@ -951,7 +961,8 @@ function buildGroundCoverGrid(
         ? 0
         : clamp(0.35 + sample.moisture * 0.5 + closure * 0.15, 0, 1)
           // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
-          * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1));
+          * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1))
+          * riparianVegetationFactors(sample.shoreDistanceMeters).clearance;
       const exposure = clamp(
         (sample.height - context.seaLevelMeters) / 900 + sample.slope * 1.6,
         0,
@@ -1050,10 +1061,14 @@ function scatterClutter(
       ...(sample.airportInfluence !== undefined
         ? { airportInfluence: sample.airportInfluence }
         : {}),
+      ...(sample.shoreDistanceMeters !== undefined
+        ? { shoreDistanceMeters: sample.shoreDistanceMeters }
+        : {}),
     });
     // Canopy closure proxy: closed forest carries ~0.05 stems/m².
     const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
     const probability = airportClearance(sample)
+      * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
       * (0.06 + closure * 0.5 + sample.moisture * 0.12);
     if (acceptance >= probability) continue;
     const wetEnough = sample.moisture >= 0.55;

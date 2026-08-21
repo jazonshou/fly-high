@@ -211,6 +211,14 @@ export const TERRAIN_CHANNEL_FAMILIES: readonly WorldPageChannelDescriptor[] = O
   ),
 );
 
+/** Contracted channel families whose producers land later in the active phase. */
+export const TERRAIN_PLANNED_CHANNEL_FAMILIES: readonly WorldPageChannelDescriptor[] =
+  Object.freeze(
+    WORLD_PAGE_GPU_CHANNELS.filter(
+      (channel) => channel.name !== "height" && channel.plannedBy !== undefined,
+    ),
+  );
+
 /** Bytes one channel-atlas texel occupies, across every live family. */
 export function terrainChannelBytesPerTexel(
   residentSeasonBuckets: number = SEASON_BUCKETS_RESIDENT,
@@ -221,6 +229,14 @@ export function terrainChannelBytesPerTexel(
     bytes += family.seasonKeyed ? perTexel * residentSeasonBuckets : perTexel;
   }
   return bytes;
+}
+
+/** Bytes already reserved for planned channel families in the phase budget. */
+export function terrainPlannedChannelBytesPerTexel(): number {
+  return TERRAIN_PLANNED_CHANNEL_FAMILIES.reduce(
+    (bytes, family) => bytes + worldPageChannelBytesPerTexel(family),
+    0,
+  );
 }
 
 /** Bytes one height-atlas texel occupies. */
@@ -500,11 +516,13 @@ export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
     "terrainSurfaceNormal",
     // Phase 4's page atlases.
     "terrainHeightAtlas",
-    "terrainSplatIdAtlas",
-    "terrainSplatWeightAtlas",
     "terrainOcclusionAtlas",
     "terrainHorizonAtlasA",
     "terrainHorizonAtlasB",
+    // X5: one season-invariant id texture plus two weight buckets.
+    "terrainSplatId",
+    "terrainSplatWeightLo",
+    "terrainSplatWeightHi",
   ] as const),
 });
 

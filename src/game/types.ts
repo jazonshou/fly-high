@@ -1,3 +1,7 @@
+import type {
+  TerrainHeightAuthorityCounters,
+} from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+
 export interface Vec3State {
   x: number;
   y: number;
@@ -51,6 +55,13 @@ export interface FlightVisualState {
   crashed: boolean;
   touchdown: number;
   simulationTime: number;
+  /**
+   * `5-2`: worker-side terrain-authority service counters, cumulative from
+   * the latest macro publication (the first fully provisioned authority).
+   * Optional so recorded fixtures and non-worker simulations remain source
+   * compatible; live worker snapshots always include it.
+   */
+  terrainAuthority?: TerrainHeightAuthorityCounters;
 }
 
 export interface ControlState {

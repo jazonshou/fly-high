@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
-import { hashSeed, TerrainBiome } from "../src/world";
+import { createWorld, hashSeed, TerrainBiome } from "../src/world";
 import { DetailGenerationClient } from "../src/render/webgpu/detail/DetailGenerationClient";
 import { densityField } from "../src/render/webgpu/detail/densityField";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
@@ -20,9 +20,11 @@ import type { DetailTerrainSample } from "../src/render/webgpu/detail/types";
 class FakeDetailWorker {
   readonly listeners = new Map<string, Set<EventListener>>();
   readonly commands: DetailWorkerCommand[] = [];
+  readonly transfers: Transferable[][] = [];
 
-  postMessage(message: DetailWorkerCommand): void {
+  postMessage(message: DetailWorkerCommand, transfer: Transferable[] = []): void {
     this.commands.push(message);
+    this.transfers.push(transfer);
   }
 
   addEventListener(type: string, listener: EventListener): void {
@@ -90,6 +92,60 @@ function selectClosedForestCell(worldSeed: string): {
 }
 
 describe("detail generation client (1B-10)", () => {
+  it("transfers macro and final L0 authority publications to the worker", () => {
+    const worker = new FakeDetailWorker();
+    const world = createWorld("detail-evolved-authority", {
+      airport: false,
+      worldEvolution: "eroded",
+    });
+    const client = new DetailGenerationClient({
+      worldSeed: world.seed,
+      world,
+      cellSizeMeters: 128,
+      seaLevelMeters: world.seaLevel,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    expect(worker.commands[0]).toMatchObject({ type: "initialize", world });
+    const macroHeights = new Float32Array([10, 20, 30, 40]);
+    const pageHeights = new Float32Array(256 * 256).fill(321);
+    const shoreDistance = new Int16Array(136 * 136).fill(24);
+    expect(client.publishTerrainMacro({
+      originX: 0,
+      originZ: 0,
+      texelSizeMeters: 512,
+      width: 2,
+      height: 2,
+      heights: macroHeights,
+    })).toBe(true);
+    expect(client.publishTerrainPage({
+      level: 0,
+      tileX: 2,
+      tileZ: -3,
+      heights: pageHeights,
+    })).toBe(true);
+    expect(client.publishTerrainAuxPage({
+      level: 0,
+      tileX: 2,
+      tileZ: -3,
+      coreSize: 128,
+      gutter: 4,
+      storedEdge: 136,
+      texelSizeMeters: 4,
+      shoreDistanceMetersPerUnit: 0.25,
+      shoreDistanceR16Sint: shoreDistance,
+    })).toBe(true);
+
+    expect(worker.commands.slice(1).map((command) => command.type)).toEqual([
+      "terrainMacro",
+      "terrainPage",
+      "terrainAux",
+    ]);
+    expect(worker.transfers[1]).toEqual([macroHeights.buffer]);
+    expect(worker.transfers[2]).toEqual([pageHeights.buffer]);
+    expect(worker.transfers[3]).toEqual([shoreDistance.buffer]);
+    client.dispose();
+  });
+
   it("dispatches one request at a time by priority and drops stale generations", () => {
     const worker = new FakeDetailWorker();
     const client = new DetailGenerationClient({

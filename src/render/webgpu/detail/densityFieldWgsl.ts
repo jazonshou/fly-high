@@ -48,6 +48,9 @@ struct VegetationDensityDrivers {
   moisture: f32,
   aspect: f32,
   airportInfluence: f32,
+  // Signed metres to exported water edge; large positive is the neutral
+  // pre-load/out-of-domain value.
+  shoreDistanceMeters: f32,
   filterWidthMeters: f32,
 };
 
@@ -78,7 +81,7 @@ fn vegetationDensity(
   var result: VegetationDensitySample;
   let elevation = drivers.elevationAboveSeaLevel;
   let shoreline = kSmoothstep(1.5, 7.0, elevation);
-  if (shoreline <= 0.0) {
+  if (shoreline <= 0.0 || drivers.shoreDistanceMeters <= 0.0) {
     result.treeStemsPerSquareMeter = 0.0;
     result.shrubStemsPerSquareMeter = 0.0;
     result.heightFactor = 1.0;
@@ -120,9 +123,13 @@ fn vegetationDensity(
   let lapse = 1.0 - kSmoothstep(500.0, max(501.0, treeline), elevation) * 0.45;
   let aspectFactor = 1.0 - drivers.aspect * 0.25;
   let clearance = 1.0 - kSaturate(drivers.airportInfluence);
+  let channelClearance = kSmoothstep(0.0, 2.0, drivers.shoreDistanceMeters);
+  let riparianBand = kSmoothstep(1.5, 6.0, drivers.shoreDistanceMeters)
+    * (1.0 - kSmoothstep(28.0, 50.0, drivers.shoreDistanceMeters));
 
   let habitat = shoreline * slopeFactor * lapse * treelineFactor * aspectFactor
-    * glade * disturbance * province * clearance;
+    * glade * disturbance * province * clearance * channelClearance
+    * (1.0 + riparianBand * 0.2);
   result.treeStemsPerSquareMeter = kSaturate(VEG_BASE_TREE_STEMS * moistureFactor * habitat);
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
@@ -133,7 +140,8 @@ fn vegetationDensity(
   let edgeShrubGain = 1.0 + forestEdge * 0.45;
   result.shrubStemsPerSquareMeter = kSaturate(
     VEG_BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness
-      * shoreline * disturbance * shrubForestGate * edgeShrubGain * clearance,
+      * shoreline * disturbance * shrubForestGate * edgeShrubGain * clearance
+      * channelClearance * (1.0 + riparianBand * 0.65),
   );
   result.heightFactor = heightFactor * (1.0 - forestEdge * 0.34);
   result.forestFraction = province;

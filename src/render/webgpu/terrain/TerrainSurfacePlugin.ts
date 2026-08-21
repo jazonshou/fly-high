@@ -772,12 +772,10 @@ var terrainHorizonAtlasASampler: sampler;
 var terrainHorizonAtlasA: texture_2d<f32>;
 var terrainHorizonAtlasBSampler: sampler;
 var terrainHorizonAtlasB: texture_2d<f32>;
-var terrainSplatIdLoSampler: sampler;
-var terrainSplatIdLo: texture_2d<f32>;
+var terrainSplatIdSampler: sampler;
+var terrainSplatId: texture_2d<f32>;
 var terrainSplatWeightLoSampler: sampler;
 var terrainSplatWeightLo: texture_2d<f32>;
-var terrainSplatIdHiSampler: sampler;
-var terrainSplatIdHi: texture_2d<f32>;
 var terrainSplatWeightHiSampler: sampler;
 var terrainSplatWeightHi: texture_2d<f32>;
 
@@ -809,7 +807,7 @@ var terrainSplatWeightHi: texture_2d<f32>;
 fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
   let scale = f32(${SURFACE_MATERIAL_COUNT - 1});
   let primary = textureSampleLevel(
-    terrainSplatIdLo, terrainSplatIdLoSampler, uv.xy, 0.0).x * scale;
+    terrainSplatId, terrainSplatIdSampler, uv.xy, 0.0).x * scale;
   let weightLo = textureSampleLevel(
     terrainSplatWeightLo, terrainSplatWeightLoSampler, uv.xy, 0.0);
   let weightHi = textureSampleLevel(
@@ -1568,9 +1566,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainHorizonAtlasA",
       "terrainHorizonAtlasB",
       "terrainHeightAtlas",
-      "terrainSplatIdLo",
+      "terrainSplatId",
       "terrainSplatWeightLo",
-      "terrainSplatIdHi",
       "terrainSplatWeightHi",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
@@ -1612,9 +1609,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       uniformBuffer.setTexture("terrainHorizonAtlasB", this.horizonAtlasB);
     }
     const splatNames = [
-      "terrainSplatIdLo",
+      "terrainSplatId",
       "terrainSplatWeightLo",
-      "terrainSplatIdHi",
       "terrainSplatWeightHi",
     ] as const;
     splatNames.forEach((name, index) => {

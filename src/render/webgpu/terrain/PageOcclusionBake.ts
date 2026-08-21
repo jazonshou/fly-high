@@ -512,10 +512,10 @@ export class PageSplatBake {
           terrainKernelPages: { group: 0, binding: 0 },
           splatJobs: { group: 0, binding: 1 },
           splatHeightAtlas: { group: 0, binding: 2 },
-          splatIdLo: { group: 0, binding: 3 },
+          splatId: { group: 0, binding: 3 },
           splatWeightLo: { group: 0, binding: 4 },
-          splatIdHi: { group: 0, binding: 5 },
-          splatWeightHi: { group: 0, binding: 6 },
+          splatWeightHi: { group: 0, binding: 5 },
+          splatFlowAccumAtlas: { group: 0, binding: 6 },
         },
       },
     );
@@ -523,10 +523,11 @@ export class PageSplatBake {
     this.shader.setStorageBuffer("splatJobs", this.jobBuffer);
     const height = this.heightAtlas.texture();
     if (height) this.shader.setTexture("splatHeightAtlas", height, false);
+    const flowAccum = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.flowAccum);
+    if (flowAccum) this.shader.setTexture("splatFlowAccumAtlas", flowAccum, false);
     for (const [name, index] of [
-      ["splatIdLo", TERRAIN_CHANNEL_TEXTURES.splatIdLo],
+      ["splatId", TERRAIN_CHANNEL_TEXTURES.splatId],
       ["splatWeightLo", TERRAIN_CHANNEL_TEXTURES.splatWeightLo],
-      ["splatIdHi", TERRAIN_CHANNEL_TEXTURES.splatIdHi],
       ["splatWeightHi", TERRAIN_CHANNEL_TEXTURES.splatWeightHi],
     ] as const) {
       const texture = this.channelAtlas.texture(index);

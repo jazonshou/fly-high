@@ -3,9 +3,17 @@ import { resolveGuaranteedAirportRegion } from "./airportSite";
 import { unitFloatFromHash, hashSeed, mixSeed, normalizeSeed } from "./seed";
 import { sampleNaturalTerrainHeight } from "./terrain";
 import type { AirportFootprint, GeneratedAirportSite } from "./airportSite";
-import type { AirportDefinition, WorldDefinition, WorldOptions, WorldSeed } from "./types";
+import type {
+  AirportDefinition,
+  WorldDefinition,
+  WorldEvolution,
+  WorldOptions,
+  WorldSeed,
+} from "./types";
 
 export const DEFAULT_WORLD_SEED = "open-skies";
+/** Phase 5 activation: newly created worlds use the eroded height authority. */
+export const DEFAULT_WORLD_EVOLUTION: WorldEvolution = "eroded";
 
 /**
  * Mid-latitude default (0-6): temperate seasons and sun paths that match the
@@ -22,6 +30,14 @@ function positiveOrThrow(value: number, label: string): number {
   finiteOrThrow(value, label);
   if (value <= 0) throw new RangeError(`${label} must be greater than zero`);
   return value;
+}
+
+function resolveWorldEvolution(value: WorldOptions["worldEvolution"]): WorldEvolution {
+  const evolution = value ?? DEFAULT_WORLD_EVOLUTION;
+  if (evolution !== "analytic" && evolution !== "eroded") {
+    throw new RangeError('worldEvolution must be "analytic" or "eroded"');
+  }
+  return evolution;
 }
 
 function createAirportFootprint(
@@ -89,6 +105,7 @@ export function createWorld(
   options: WorldOptions = {},
 ): WorldDefinition {
   const normalizedSeed = normalizeSeed(seed);
+  const worldEvolution = resolveWorldEvolution(options.worldEvolution);
   const sourceSeedHash = hashSeed(normalizedSeed);
   const seaLevel = finiteOrThrow(options.seaLevel ?? 0, "seaLevel");
   const latitudeDegrees = finiteOrThrow(
@@ -119,6 +136,7 @@ export function createWorld(
 
   return Object.freeze({
     seed: normalizedSeed,
+    worldEvolution,
     sourceSeedHash,
     seedHash,
     seaLevel,

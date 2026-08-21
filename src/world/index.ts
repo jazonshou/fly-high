@@ -25,10 +25,13 @@ export {
   MIN_TERRAIN_HEIGHT,
   TERRAIN_NORMAL_SAMPLE_DISTANCE,
   sampleNaturalTerrainHeight,
+  sampleTerrainEvolutionGeology,
+  sampleTerrainUpliftHeight,
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
   sampleTerrain,
   sampleFilteredTerrainHeight,
+  sampleFilteredTerrainUpliftHeight,
   sampleTerrainHeight,
   sampleTerrainMoisture,
   sampleTerrainNormal,
@@ -41,6 +44,7 @@ export {
   seasonalTemperatureShift,
   seasonalWinterFraction,
 } from "./terrain";
+export type { TerrainEvolutionGeologySample } from "./terrain";
 // 4-9: `src/world/tile.ts` is deleted. `generateTerrainTile` lost its last
 // production consumer at `4-4` when the CPU terrain worker went, and a render
 // path nothing renders is exactly what the §1.3 invariant test would have kept
@@ -60,6 +64,7 @@ export type {
   TerrainTileOptions,
   WindSample,
   WorldDefinition,
+  WorldEvolution,
   WorldOptions,
   WorldSeed,
   WorldVector3,
@@ -75,4 +80,9 @@ export {
   wrapEnvironmentClock,
   type EnvironmentClock,
 } from "./environmentClock";
-export { DEFAULT_WORLD_LATITUDE_DEGREES, DEFAULT_WORLD_SEED, createWorld } from "./world";
+export {
+  DEFAULT_WORLD_EVOLUTION,
+  DEFAULT_WORLD_LATITUDE_DEGREES,
+  DEFAULT_WORLD_SEED,
+  createWorld,
+} from "./world";

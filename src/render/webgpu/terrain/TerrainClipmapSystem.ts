@@ -21,6 +21,7 @@ import {
   createWorldPageAddress,
   type WorldPageAddress,
 } from "@/src/render/webgpu/world/pageKey";
+import { WORLD_PAGE_SCHEMA_VERSION } from "@/src/render/webgpu/world/payload";
 import {
   rankWorldPageStreamingCandidates,
   type WorldPageStreamingObserver,
@@ -43,6 +44,8 @@ import {
   TerrainPageAtlas,
   TerrainPageGenerator,
   invariantSlotKey,
+  type TerrainAuxPagePublisher,
+  type TerrainCollisionPagePublisher,
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
 import type { TerrainSlotKey } from "./TerrainSpineContract";
@@ -66,6 +69,7 @@ import {
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
+import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
 
 /**
  * The four terrain compute producers, as the clipmap uses them (`4.5-B4`).
@@ -81,6 +85,11 @@ export interface TerrainPageProducer {
   /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
   gpuMillisecondsInFrame?(): number | null;
   generate(slots: readonly TerrainAtlasSlot[]): Promise<void>;
+  /** Fill Phase-5 aux fields for channel slots admitted after height. */
+  ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
+  setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
+  setAuxPagePublisher?(publisher: TerrainAuxPagePublisher | null): void;
+  setMacroEvolution?(macro: Readonly<TerrainMacroEvolutionExport> | null): void;
   consumeMeasuredDispatchCostMs(): number | null;
   dispose(): void;
 }
@@ -91,6 +100,17 @@ export interface TerrainChannelProducer {
   bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]>;
   consumeMeasuredDispatchCostMs(): number | null;
   dispose(): void;
+}
+
+/**
+ * Content revision shared by both terrain atlases. Evolution mode belongs in
+ * the key because analytic parity worlds and activated eroded worlds may have
+ * the same public seed but never the same page bytes.
+ */
+export function terrainWorldRevision(
+  world: Pick<WorldDefinition, "seed" | "worldEvolution">,
+): string {
+  return `terrain-gpu-page-v${WORLD_PAGE_SCHEMA_VERSION}/${world.worldEvolution}/${world.seed}`;
 }
 
 export interface TerrainSplatProducer {
@@ -337,6 +357,9 @@ export class TerrainClipmapSystem {
   private generationInFlight = false;
   private occlusionInFlight = false;
   private splatRebakeInFlight = false;
+  private collisionPagePublisher: TerrainCollisionPagePublisher | null = null;
+  private auxPagePublisher: TerrainAuxPagePublisher | null = null;
+  private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
 
   private readonly beautyMesh: Mesh;
   /**
@@ -386,7 +409,7 @@ export class TerrainClipmapSystem {
     private readonly options: TerrainClipmapSystemOptions = {},
   ) {
     this.profile = profile;
-    this.worldRevision = `terrain-gpu-page/${world.seed}`;
+    this.worldRevision = terrainWorldRevision(world);
     this.material = createTerrainMaterial(scene);
     this.surfacePlugin = attachTerrainSurfacePlugin(this.material, scene);
     this.surfacePlugin.setSamplingProfile(
@@ -410,6 +433,7 @@ export class TerrainClipmapSystem {
       kind: "channel",
       worldRevision: this.worldRevision,
       textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
+      requiresHydrology: world.worldEvolution === "eroded",
     });
     this.computeBudget = new ComputeBudget(profile);
     this.debugOverlay = new TerrainDebugOverlay(scene, profile.heightAtlasSlots);
@@ -645,9 +669,13 @@ export class TerrainClipmapSystem {
         kind: "channel",
         worldRevision: this.worldRevision,
         textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
+        requiresHydrology: this.world.worldEvolution === "eroded",
       });
       this.debugOverlay.dispose();
       this.debugOverlay = new TerrainDebugOverlay(this.scene, profile.heightAtlasSlots);
+      this.debugOverlay.setEvolutionSource(this.macroEvolution
+        ? { macro: this.macroEvolution, seedHash: this.world.seedHash }
+        : null);
       // `4.5-B4(a)`: the generator and both bakes hold the atlases they were
       // constructed with. Recreating the atlases without recreating them left
       // terrain streaming silently dead for the rest of the session.
@@ -714,6 +742,34 @@ export class TerrainClipmapSystem {
   setCloudShadow(projection: CloudShadowProjection): void {
     this.cloudShadowProjection = projection;
     this.cloudShadowPlugin.setProjection(projection, this.originX, this.originZ);
+  }
+
+  /** Connect final L0 page publication to the simulation worker. */
+  setCollisionPagePublisher(publisher: TerrainCollisionPagePublisher | null): void {
+    this.collisionPagePublisher = publisher;
+    this.pageGenerator?.setCollisionPagePublisher?.(publisher);
+  }
+
+  /** Connect final signed-shore pages to render/detail consumers, never sim. */
+  setAuxPagePublisher(publisher: TerrainAuxPagePublisher | null): void {
+    this.auxPagePublisher = publisher;
+    this.pageGenerator?.setAuxPagePublisher?.(publisher);
+  }
+
+  /**
+   * Install the eager world-level erosion authority. Eroded page admissions
+   * remain queued and unsubmitted until this arrives; analytic worlds ignore
+   * it and retain the existing GPU generator byte-for-byte.
+   */
+  setMacroEvolution(macro: Readonly<TerrainMacroEvolutionExport> | null): void {
+    if (macro && macro.provenance.worldSeed !== this.world.seed) {
+      throw new RangeError("Terrain macro evolution belongs to a different world");
+    }
+    this.macroEvolution = macro;
+    this.pageGenerator?.setMacroEvolution?.(macro);
+    this.debugOverlay.setEvolutionSource(macro
+      ? { macro, seedHash: this.world.seedHash }
+      : null);
   }
 
   update(observer: TerrainObserver, frameIndex: number): void {
@@ -818,6 +874,9 @@ export class TerrainClipmapSystem {
     this.occlusionBake = built.occlusionBake;
     this.splatBake = built.splatBake;
     this.pyramid = built.pyramid;
+    this.pageGenerator?.setCollisionPagePublisher?.(this.collisionPagePublisher);
+    this.pageGenerator?.setAuxPagePublisher?.(this.auxPagePublisher);
+    this.pageGenerator?.setMacroEvolution?.(this.macroEvolution);
     // A dispatch that was in flight against the disposed atlas can never
     // complete into the new one; clear the gates so the next pump admits.
     this.generationInFlight = false;
@@ -838,6 +897,7 @@ export class TerrainClipmapSystem {
         input.heightAtlas,
         this.world.seedHash,
         this.world.airport ?? null,
+        { world: this.world, channelAtlas: input.channelAtlas },
       ),
       pyramid,
       occlusionBake: new PageOcclusionBake(
@@ -896,9 +956,13 @@ export class TerrainClipmapSystem {
       this.channelAtlas.residency.beginFrame(0);
       const height = this.heightAtlas.residency.request(key, address);
       if (!height) return;
-      await generator.generate([height.slot]);
+      // Eroded generation returns height and aux together. Admit both slots
+      // before starting it so neither product needs a second cache.
       const channel = this.channelAtlas.residency.request(key, address);
-      if (!channel || !this.occlusionBake) return;
+      if (!channel) return;
+      await generator.generate([height.slot]);
+      await generator.ensureHydrology?.([channel.slot]);
+      if (!this.occlusionBake) return;
       const baked = await this.occlusionBake.bake([channel.slot]);
       if (baked.length === 0 || !this.splatBake) return;
       await this.splatBake.bake(baked, this.seasonDayOfYear);
@@ -937,9 +1001,8 @@ export class TerrainClipmapSystem {
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA),
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonB),
       [
-        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdLo),
+        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatId),
         this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightLo),
-        this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdHi),
         this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightHi),
       ],
       {
@@ -1010,6 +1073,7 @@ export class TerrainClipmapSystem {
     this.heightAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
     this.channelAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
     const wanted = new Map<string, WorldPageAddress>();
+    const collisionOnly = new Set<string>();
     for (const node of this.nodes) {
       wanted.set(`${node.address.level}:${node.address.x}:${node.address.z}`, node.address);
       // `4.5-B1`: no parent above the ROOT level. A node at the coarsest level
@@ -1024,7 +1088,27 @@ export class TerrainClipmapSystem {
       );
       wanted.set(`${parent.level}:${parent.x}:${parent.z}`, parent);
     }
+    // Collision authority is tier-invariant. Low renders no L0 nodes, but it
+    // still generates the same 5x5 L0 ring used by every other tier; those
+    // pages consume no channel slots and are never added to the draw list.
+    if (this.collisionPagePublisher) {
+      const collisionTileX = Math.floor(
+        this.streamingObserver.positionX / WORLD_PAGE_BASE_EXTENT_METERS,
+      );
+      const collisionTileZ = Math.floor(
+        this.streamingObserver.positionZ / WORLD_PAGE_BASE_EXTENT_METERS,
+      );
+      for (let dz = -2; dz <= 2; dz += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const address = createWorldPageAddress(0, collisionTileX + dx, collisionTileZ + dz);
+          const addressKey = `0:${address.x}:${address.z}`;
+          if (!wanted.has(addressKey)) collisionOnly.add(addressKey);
+          wanted.set(addressKey, address);
+        }
+      }
+    }
     const missingHeight: { address: WorldPageAddress }[] = [];
+    const missingCollision: { address: WorldPageAddress }[] = [];
     const missingChannel: { address: WorldPageAddress }[] = [];
     for (const address of wanted.values()) {
       const key = invariantSlotKey(address);
@@ -1036,12 +1120,15 @@ export class TerrainClipmapSystem {
         // straight past it — so one refused or failed channel admission left
         // the page shading the provisional fallback FOREVER, until the height
         // page itself was evicted. Ask again.
-        if (this.channelAtlas.residency.get(key) === undefined) {
+        const addressKey = `${address.level}:${address.x}:${address.z}`;
+        if (!collisionOnly.has(addressKey)
+          && this.channelAtlas.residency.get(key) === undefined) {
           missingChannel.push({ address });
         }
         continue;
       }
-      missingHeight.push({ address });
+      const addressKey = `${address.level}:${address.x}:${address.z}`;
+      (collisionOnly.has(addressKey) ? missingCollision : missingHeight).push({ address });
     }
     // The shared swept flight-corridor priority (0-3), verbatim: soonest
     // needed first, so a banked turn admits what it is turning into. Height
@@ -1067,9 +1154,11 @@ export class TerrainClipmapSystem {
     admit(missingHeight, (key, address) => {
       const height = this.heightAtlas.residency.request(key, address);
       if (height === null) return null;
-      this.channelAtlas.residency.request(key, address);
+      const addressKey = `${address.level}:${address.x}:${address.z}`;
+      if (!collisionOnly.has(addressKey)) this.channelAtlas.residency.request(key, address);
       return height;
     });
+    admit(missingCollision, (key, address) => this.heightAtlas.residency.request(key, address));
     admit(missingChannel, (key, address) => this.channelAtlas.residency.request(key, address));
   }
 
@@ -1178,8 +1267,15 @@ export class TerrainClipmapSystem {
     const heightPending = this.pendingHeightGeneration();
     const channelPending = this.pendingChannelBake(observer);
     const splatRebakes = this.pendingSplatRebakes();
+    const heightClient = this.world.worldEvolution === "eroded"
+      ? "erosionCompute"
+      : "terrainCompute";
     if (heightPending.length > 0) {
-      this.computeBudget.submit("terrainCompute", heightPending.length);
+      // The activated worker pass is the Phase-5 erosion client even though
+      // its final bytes upload through the height atlas. Booking it as
+      // terrainCompute would silently bypass the only tier pacing lever the
+      // evolution contract permits (D11 / assertion 105).
+      this.computeBudget.submit(heightClient, heightPending.length);
     }
     if (channelPending.length > 0) {
       // A channel slot's TWO bakes are ONE admission: occlusion writes three
@@ -1236,21 +1332,23 @@ export class TerrainClipmapSystem {
 
   private pendingHeightGeneration(): readonly TerrainAtlasSlot[] {
     if (!this.pageGenerator || this.generationInFlight) return [];
+    if (this.world.worldEvolution === "eroded" && !this.macroEvolution) return [];
     return this.heightAtlas.residency.entries.filter(
       (slot) => slot.lifecycle.state === "generating"
         && slot.token !== null
-        // `4.5-B1`: a slot stays `generating` until its bounds readback lands,
-        // but its TEXELS are published at dispatch-submit — so texel residency
-        // is what says "this page has been dispatched". Without it every
-        // in-flight page would be re-dispatched on the next frame.
-        && !slot.texelsResident,
+        // Phase 5 keeps the slot private until the whole generation DAG and
+        // collision readback finish. Submission state prevents duplicate work
+        // without making partially generated texels visible.
+        && !slot.generationSubmitted,
     );
   }
 
   private dispatchPageGeneration(pending: readonly TerrainAtlasSlot[]): void {
     const generator = this.pageGenerator;
     if (!generator || pending.length === 0) return;
-    const admitted = this.computeBudget.admitted("terrainCompute");
+    const admitted = this.computeBudget.admitted(
+      this.world.worldEvolution === "eroded" ? "erosionCompute" : "terrainCompute",
+    );
     if (admitted <= 0) return;
     const batch = this.rankForDispatch(pending).slice(0, admitted);
     this.generationInFlight = true;
@@ -1288,7 +1386,10 @@ export class TerrainClipmapSystem {
     // only baked once.
     void (async () => {
       try {
-        const baked = await bake.bake(batch);
+        await this.pageGenerator?.ensureHydrology?.(batch);
+        const ready = batch.filter((slot) => slot.hydrologyReady);
+        if (ready.length === 0) return;
+        const baked = await bake.bake(ready);
         if (baked.length === 0) return;
         await this.splatBake?.bake(baked, seasonDay);
         for (const slot of baked) {

@@ -61,7 +61,9 @@ import {
 import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
+  WATER_BATHYMETRY_DECLARATIONS_WGSL,
   WATER_CREST_SSS_WGSL,
+  WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
@@ -71,6 +73,7 @@ import {
   type WaterReflectedSkyParameters,
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { BathymetryClipmap } from "./BathymetryClipmap";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
@@ -392,6 +395,7 @@ uniform patchLength4: f32;
 uniform cascadeCount: f32;
 uniform environmentValid: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
+${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 var slopeFoam0Sampler: sampler; var slopeFoam0: texture_2d<f32>;
 var slopeFoam1Sampler: sampler; var slopeFoam1: texture_2d<f32>;
 var slopeFoam2Sampler: sampler; var slopeFoam2: texture_2d<f32>;
@@ -411,6 +415,8 @@ ${AERIAL_PERSPECTIVE_WGSL}
 ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
+
+${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
@@ -457,14 +463,16 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); }
   if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); }
   if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); }
-  let normal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
+  let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
+  let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
+  let normal = select(geometricNormal, -geometricNormal, cameraBelow);
   let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.0);
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
-  let fresnel = fresnelSchlick(nDotV, vec3f(0.0204));
+  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
     input.sunShadowClip0,
@@ -474,9 +482,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.sunShadowViewDepth,
   );
   let directSunVisibility = cloudShadow * sunShadow;
+  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate);
   let baseRoughness = 0.075 + foamAmount * 0.2;
-  let alpha = baseRoughness * baseRoughness;
-  let alphaSquared = alpha * alpha + min(slopeVariance, 0.25);
+  let microAlpha = baseRoughness * baseRoughness;
+  let alphaSquared = microAlpha * microAlpha + min(slopeVariance, 0.25);
   let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.34);
   // 2-9: the sky reflection comes from the shared environment probe (the
   // rendered sky, clouds and haze included), roughness-mapped to its mips;
@@ -497,10 +506,17 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  // 2-8 Toksvig (roughness computed above, before the environment-mip
-  // lookup): the slope detail a mip footprint filtered away comes back as
-  // microfacet roughness — the mechanism that stops the distant sea boiling.
-  let deepAbsorption = vec3f(0.002, 0.032, 0.052);
+  // 5-11: the body is now the same real bed + Beer-Lambert + one-scatter
+  // model used by inland water, rather than an additive deep-blue constant.
+  let transmitted = waterVolumeRadiance(
+    input.oceanCoordinate,
+    input.worldPosition.y,
+    depth,
+    normal,
+    view,
+    cameraBelow,
+    directSunVisibility,
+  );
   let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
     * nDotL * (0.1 + 0.12 * directSunVisibility);
   let horizonScatter = vec3f(0.008, 0.055, 0.064) * pow(1.0 - nDotV, 2.0);
@@ -514,7 +530,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     directSunVisibility,
     ${OCEAN_CREST_SSS_INTENSITY_WGSL},
   );
-  let bodyColor = deepAbsorption + subsurfaceScatter + horizonScatter + crestGlow;
+  let bodyColor = transmitted + subsurfaceScatter + horizonScatter + crestGlow;
   // 2-9: the one solid-angle-correct sun lobe (Karis), shared with inland
   // water — the sun's angular radius replaced the 2.6 gain.
   let sunGlitter = sunSpecular(normal, view, light, roughness, uniforms.sunAngularRadius, vec3f(0.0204))
@@ -535,10 +551,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     directSunVisibility,
   );
   water = mix(water, foamColor, foam);
+  if (cameraBelow) {
+    water = applyUnderwaterBeerLambert(water, cameraDistance, directSunVisibility);
+  }
   // 1C-4: the shared aerial perspective — the ocean fades on the same curve
   // as terrain, closing the audit's hard tear at every distant coastline.
   water = applyAerialPerspective(water, input.worldPosition.y, cameraDistance, -view);
-  fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), 1.0);
+  let shorelineAlpha = max(waterShorelineAlpha(depth), foam);
+  fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), shorelineAlpha);
 }
 `;
 
@@ -990,6 +1010,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     atmosphere: AtmosphereSnapshot,
     windDirectionRadians?: number,
     windSpeedMetersPerSecond?: number,
+    private readonly bathymetry: BathymetryClipmap | null = null,
   ) {
     registerWaterShaders();
     this.profile = profile;
@@ -1027,6 +1048,9 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "cloudWind",
           "time",
           "environmentValid",
+          "bathymetryNearPlacement",
+          "bathymetryFarPlacement",
+          "bathymetrySeaLevel",
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
@@ -1042,8 +1066,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           PLANAR_REFLECTION_SAMPLER,
           SUN_SHADOW_SAMPLER,
           "environmentCube",
+          "bathymetryNear",
+          "bathymetryFar",
         ],
-        needAlphaBlending: false,
+        needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
@@ -1053,6 +1079,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
     this.material.setTexture(
@@ -1060,8 +1087,9 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       fallbackWaterPlanarTexture(scene),
     );
     this.material.backFaceCulling = false;
-    this.material.transparencyMode = Material.MATERIAL_OPAQUE;
-    this.material.disableDepthWrite = false;
+    this.material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.material.alphaMode = Constants.ALPHA_COMBINE;
+    this.material.disableDepthWrite = true;
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
     this.material.setFloat("planarReflectionPlaneHeight", seaLevel);
     this.material.setFloat("planarReflectionStrength", 0);
@@ -1083,6 +1111,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     windDirectionRadians?: number,
     windSpeedMetersPerSecond?: number,
     signal?: AbortSignal,
+    bathymetry?: BathymetryClipmap,
   ): Promise<SpectralOceanSystem> {
     const ocean = new SpectralOceanSystem(
       scene,
@@ -1093,6 +1122,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       atmosphere,
       windDirectionRadians,
       windSpeedMetersPerSecond,
+      bathymetry ?? null,
     );
     try {
       await ocean.compute.initialize(signal, 0);
@@ -1253,6 +1283,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     this.lastTimeSeconds = timeSeconds;
     this.compute.update(timeSeconds, deltaSeconds);
     this.bindOutputs();
+    this.bathymetry?.bind(this.material);
     this.mesh.position.set(
       cameraWorld.x - this.originX,
       this.seaLevel,
@@ -1334,11 +1365,11 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private configureMesh(mesh: Mesh): void {
     mesh.isPickable = false;
     mesh.receiveShadows = true;
-    // The ocean is an optically deep, opaque depth-writing surface. Shallow
-    // transmission belongs to inland water, where an estimated bed depth is
-    // available; constant alpha here made coastlines and reflections look like
-    // a translucent plastic sheet.
-    mesh.renderingGroupId = 0;
+    // Depth-aware ocean first, graph-fed inland water second. Both remain in
+    // one transparent group so the terrain bed is already present and shallow
+    // pixels can feather instead of punching an opaque coastline silhouette.
+    mesh.renderingGroupId = 1;
+    mesh.alphaIndex = 0;
     mesh.metadata = {
       ...(mesh.metadata as Record<string, unknown> | null),
       waterSurface: true,

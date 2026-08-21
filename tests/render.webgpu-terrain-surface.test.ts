@@ -144,9 +144,8 @@ describe("terrain surface plugin (3-2)", () => {
         "terrainHorizonAtlasB",
         // 4-4's vertex-texture displacement source, and 4-6's page splat.
         "terrainHeightAtlas",
-        "terrainSplatIdLo",
+        "terrainSplatId",
         "terrainSplatWeightLo",
-        "terrainSplatIdHi",
         "terrainSplatWeightHi",
       ]);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);

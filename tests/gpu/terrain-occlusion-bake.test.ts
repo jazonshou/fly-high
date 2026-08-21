@@ -95,6 +95,10 @@ async function bakePages(addresses: readonly ReturnType<typeof createWorldPageAd
     const channelSlots = addresses.map((address) =>
       channelAtlas.residency.request(invariantSlotKey(address), address)!.slot);
     await generator.generate(heightSlots);
+    // Phase 5's final-publication rule removed the analytic dispatch-time
+    // fast path. Occlusion is allowed to sample only fully published heights;
+    // relying on the pyramid dispatch to hide this readback was a race.
+    await generator.settle();
     // The pyramid is centred on the first page, so the march has real
     // coarse-field data beyond every page's own edge.
     await pyramid.recenter(

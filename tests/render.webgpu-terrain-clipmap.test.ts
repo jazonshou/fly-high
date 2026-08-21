@@ -5,8 +5,13 @@ import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   TerrainClipmapSystem,
+  terrainWorldRevision,
   type TerrainComputeFactory,
 } from "../src/render/webgpu/terrain/TerrainClipmapSystem";
+import {
+  TERRAIN_EVOLUTION_CONTRACT_VERSION,
+  type TerrainMacroEvolutionExport,
+} from "../src/render/webgpu/terrain/TerrainEvolutionContract";
 import { ComputeBudget } from "../src/render/webgpu/core/ComputeBudget";
 import {
   TERRAIN_NODES_PER_SLOT_EDGE,
@@ -69,6 +74,23 @@ const BASE_SELECTION: TerrainNodeSelectionInput = {
   // everywhere and terminate only on the budget.
   deviationFor: (address) => 0.135 * 2 ** address.level,
 };
+
+describe("terrain world revision (5-0/5-A)", () => {
+  it("separates activated eroded pages from explicit analytic parity pages", () => {
+    const eroded = createWorld("revision-world", {
+      airport: false,
+      worldEvolution: "eroded",
+    });
+    const analytic = createWorld("revision-world", {
+      airport: false,
+      worldEvolution: "analytic",
+    });
+
+    expect(terrainWorldRevision(eroded)).not.toBe(terrainWorldRevision(analytic));
+    expect(terrainWorldRevision(eroded)).toContain("/eroded/");
+    expect(terrainWorldRevision(analytic)).toContain("/analytic/");
+  });
+});
 
 function select(overrides: Partial<TerrainNodeSelectionInput> = {}): TerrainNode[] {
   return selectTerrainNodes({ ...BASE_SELECTION, ...overrides });
@@ -268,7 +290,7 @@ describe("terrain quadtree host (4-5)", () => {
   function createSystem(quality: "low" | "medium" | "high" = "medium") {
     const engine = new NullEngine();
     const scene = new Scene(engine);
-    const world = createWorld("quadtree-host");
+    const world = createWorld("quadtree-host", { worldEvolution: "analytic" });
     const profile = resolveWebGpuQualityProfile(quality, "balanced");
     const system = new TerrainClipmapSystem(scene, world, profile);
     return { engine, scene, system, profile };
@@ -433,7 +455,7 @@ function realKernelDeviations(seed: string): (address: {
   readonly x: number;
   readonly z: number;
 }) => number {
-  const world = createWorld(seed);
+  const world = createWorld(seed, { worldEvolution: "analytic" });
   const cache = new Map<string, number>();
   return (address) => {
     const key = `${address.level}:${address.x}:${address.z}`;
@@ -503,7 +525,7 @@ function worstNeighbourLevelGap(
 describe("CDLOD distance-graded selection (4.5-A1)", () => {
   it("assertion 107: reaches L2 under the camera at 500 ft on real deviations", () => {
     const seed = "phase1-perf-baseline";
-    const world = createWorld(seed);
+    const world = createWorld(seed, { worldEvolution: "analytic" });
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
     const airportX = world.airport?.centerX ?? 0;
     const airportZ = world.airport?.centerZ ?? 0;
@@ -717,7 +739,7 @@ function recordingComputeFactory(): {
 function createSeamedSystem(quality: "low" | "medium" | "high" = "medium") {
   const engine = new NullEngine();
   const scene = new Scene(engine);
-  const world = createWorld("quadtree-streaming");
+  const world = createWorld("quadtree-streaming", { worldEvolution: "analytic" });
   const profile = resolveWebGpuQualityProfile(quality, "balanced");
   const recording = recordingComputeFactory();
   const system = new TerrainClipmapSystem(scene, world, profile, {
@@ -742,6 +764,45 @@ async function pump(
 }
 
 describe("terrain streaming lifecycle (4.5-B)", () => {
+  it("5D holds eroded admissions until the canonical macro authority arrives", async () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const world = createWorld("eroded-streaming-gate", {
+      airport: false,
+      worldEvolution: "eroded",
+    });
+    const recording = recordingComputeFactory();
+    const system = new TerrainClipmapSystem(
+      scene,
+      world,
+      resolveWebGpuQualityProfile("medium", "balanced"),
+      { computeFactory: recording.factory },
+    );
+    const observer = { x: 0, y: 300, z: 0, velocityX: 0, velocityZ: 0 };
+    try {
+      await pump(system, 3, observer);
+      expect(recording.generatedBatches).toHaveLength(0);
+      const macro: TerrainMacroEvolutionExport = {
+        contractVersion: TERRAIN_EVOLUTION_CONTRACT_VERSION,
+        provenance: { worldSeed: world.seed, deviceFingerprint: "streaming-fixture" },
+        seaLevelMeters: world.seaLevel,
+        heightMeters: new Float32Array(0),
+        flowAccumulationAreaM2: new Float32Array(0),
+        lakeMask: new Uint8Array(0),
+        lakes: [],
+        drainageBaseLevels: [],
+        channelSeedTexelIndices: new Uint32Array(0),
+      };
+      system.setMacroEvolution(macro);
+      await pump(system, 3, observer, 10);
+      expect(recording.generatedBatches.length).toBeGreaterThan(0);
+    } finally {
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
   it("assertion 116: a reshaping setProfile still brings a page to resident", async () => {
     const { engine, scene, system } = createSeamedSystem("medium");
     try {
@@ -843,7 +904,7 @@ describe("terrain streaming lifecycle (4.5-B)", () => {
           const pending = system.atlases.height.residency.entries.filter(
             (slot) => slot.lifecycle.state === "generating"
               && slot.token !== null
-              && !slot.texelsResident);
+              && !slot.generationSubmitted);
           const admitted = recording.generatedBatches.slice(boundary).flat();
           await Promise.resolve();
           await Promise.resolve();
