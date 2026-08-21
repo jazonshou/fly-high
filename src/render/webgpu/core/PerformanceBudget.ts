@@ -229,6 +229,8 @@ export interface DynamicAllocationInputs {
   readonly channelSlotStoredEdge: number;
   /** Bytes per channel texel from the SEASON-INVARIANT families. */
   readonly channelInvariantBytesPerTexel: number;
+  /** Bytes reserved for contracted channel families whose producers are not live yet. */
+  readonly channelPlannedInvariantBytesPerTexel: number;
   /** Bytes per channel texel from ONE season bucket of the keyed families. */
   readonly channelSeasonBytesPerTexel: number;
   /**
@@ -241,6 +243,29 @@ export interface DynamicAllocationInputs {
   /** `4-7`'s coarse global height pyramid. */
   readonly heightPyramidEdge: number;
   readonly heightPyramidBytesPerTexel: number;
+  /**
+   * `5-0`: target-GPU reservation for resident eroded height plus lake mask.
+   * The current CPU-worker reference uploads only macro height for bathymetry;
+   * this reservation deliberately protects the final GPU producer's headroom.
+   */
+  readonly macroEvolutionEdge: number;
+  readonly macroEvolutionResidentBytesPerTexel: number;
+  /**
+   * `5-4`: final-GPU reservation for six reusable r32float scratch fields.
+   * The current reference scratch is worker CPU memory, not live GPU inventory.
+   */
+  readonly erosionScratchEdge: number;
+  readonly erosionScratchFieldCount: number;
+  readonly erosionScratchBytesPerTexel: number;
+  /** `5-10`: two R16F bathymetry clipmaps. */
+  readonly bathymetryClipmapEdge: number;
+  readonly bathymetryClipmapTextureCount: number;
+  readonly bathymetryClipmapBytesPerTexel: number;
+  /**
+   * `5-9` target-GPU reservation. The current serialized graph is CPU-owned;
+   * do not report this row as measured live GPU residency.
+   */
+  readonly channelGraphBudgetBytes: number;
 }
 
 export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
@@ -275,14 +300,33 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   heightSlotBytesPerTexel: 4,
   // 4-0/4-6/4-7: 128 channel core + 2x4 gutter.
   channelSlotStoredEdge: 136,
-  // occlusion (1 x rgba8) + horizon (2 x rgba8).
-  channelInvariantBytesPerTexel: 12,
-  // splat: 4 material ids + 4 weights, 2 x rgba8, per season bucket.
-  channelSeasonBytesPerTexel: 8,
+  // Occlusion/horizon/splat id (16 B) plus live Phase-5 flow/lake/soil/shore (7 B).
+  channelInvariantBytesPerTexel: 23,
+  // No remaining contracted-but-unimplemented channel resources.
+  channelPlannedInvariantBytesPerTexel: 0,
+  // X5: ids do not change by season; only one rgba8 weight map does.
+  channelSeasonBytesPerTexel: 4,
   residentSeasonBuckets: 2,
   // 256 texels at 512 m/texel = 131 km across, beyond the 45 km far plane.
   heightPyramidEdge: 256,
   heightPyramidBytesPerTexel: 4,
+  // 5-0 target-GPU reservation: 1024² resident eroded r32 height plus r8 lake
+  // mask. The CPU-worker reference currently uploads the r32 height only for
+  // bathymetry; reserving the final layout prevents that headroom being spent
+  // a second time before the measured GPU producer replaces it.
+  macroEvolutionEdge: 1_024,
+  macroEvolutionResidentBytesPerTexel: 5,
+  // 5-4 final-GPU reservation. Today's worker creates the 384² six-field r32
+  // scratch on CPU; the estimator still protects the intended GPU residency.
+  erosionScratchEdge: 384,
+  erosionScratchFieldCount: 6,
+  erosionScratchBytesPerTexel: 4,
+  // 5-10's height/depth pair, both R16F.
+  bathymetryClipmapEdge: 1_024,
+  bathymetryClipmapTextureCount: 2,
+  bathymetryClipmapBytesPerTexel: 2,
+  // 5-9 target-GPU reservation; today's serialized channel graph is CPU-owned.
+  channelGraphBudgetBytes: 2 * 1_048_576,
 });
 
 /**
@@ -343,6 +387,14 @@ export interface GpuMemoryEstimateMiB {
   readonly channelAtlasMiB: number;
   /** `4-7`: the coarse global height pyramid the occlusion bake marches. */
   readonly heightPyramidMiB: number;
+  /** `5-0`: reserved final-GPU macro authority plus lake mask. */
+  readonly macroEvolutionMiB: number;
+  /** `5-4`: reserved final-GPU page-erosion working set. */
+  readonly erosionScratchMiB: number;
+  /** `5-10`: the two R16F bathymetry clipmaps. */
+  readonly bathymetryClipmapMiB: number;
+  /** `5-9`: target-GPU channel-graph reservation. */
+  readonly channelGraphMiB: number;
   /** Z-4: the split vegetation rows (replacing the flat detail allowance). */
   readonly detailInstancesMiB: number;
   readonly foliageAtlasMiB: number;
@@ -389,11 +441,15 @@ function atlasEdgeTexels(slots: number, slotEdge: number): number {
 
 
 /**
- * Sums every steady-state GPU allocation from first principles: shadow maps
+ * Sums every live steady-state GPU allocation plus the explicitly named
+ * Phase-5 final-GPU reservations from first principles: shadow maps
  * from map size and cascade count, the ocean FFT working set from resolution
  * and cascades, cloud history from the integration scale and the pixel cap,
  * framebuffers from the capped pixel count, and the page atlases from the
- * tier's slot budgets.
+ * tier's slot budgets. The macro/scratch/channel-graph rows intentionally do
+ * not claim current residency or measurement: the shipped reference producer
+ * is CPU-worker-owned, but the target GPU layout's headroom may not be spent a
+ * second time before that producer is replaced.
  *
  * `4-5` deleted the `terrainGeometryMiB` row with the CPU tile meshes it
  * described: one 33x33 unit grid plus a few hundred instance records is under
@@ -439,11 +495,26 @@ export function estimateGpuMemoryBreakdown(
     atlasEdgeTexels(profile.channelAtlasSlots, inputs.channelSlotStoredEdge);
   const channelBytesPerTexel =
     inputs.channelInvariantBytesPerTexel
+    + inputs.channelPlannedInvariantBytesPerTexel
     + inputs.channelSeasonBytesPerTexel * inputs.residentSeasonBuckets;
   const channelAtlasBytes = channelAtlasEdge * channelAtlasEdge * channelBytesPerTexel;
 
   const heightPyramidBytes =
     inputs.heightPyramidEdge * inputs.heightPyramidEdge * inputs.heightPyramidBytesPerTexel;
+  const macroEvolutionBytes =
+    inputs.macroEvolutionEdge
+    * inputs.macroEvolutionEdge
+    * inputs.macroEvolutionResidentBytesPerTexel;
+  const erosionScratchBytes =
+    inputs.erosionScratchEdge
+    * inputs.erosionScratchEdge
+    * inputs.erosionScratchFieldCount
+    * inputs.erosionScratchBytesPerTexel;
+  const bathymetryClipmapBytes =
+    inputs.bathymetryClipmapEdge
+    * inputs.bathymetryClipmapEdge
+    * inputs.bathymetryClipmapTextureCount
+    * inputs.bathymetryClipmapBytesPerTexel;
 
   const tier = profile.tier as PerformanceTier;
   const framebuffersMiB = framebufferBytes / MIB;
@@ -453,6 +524,10 @@ export function estimateGpuMemoryBreakdown(
   const heightAtlasMiB = heightAtlasBytes / MIB;
   const channelAtlasMiB = channelAtlasBytes / MIB;
   const heightPyramidMiB = heightPyramidBytes / MIB;
+  const macroEvolutionMiB = macroEvolutionBytes / MIB;
+  const erosionScratchMiB = erosionScratchBytes / MIB;
+  const bathymetryClipmapMiB = bathymetryClipmapBytes / MIB;
+  const channelGraphMiB = inputs.channelGraphBudgetBytes / MIB;
   const detailInstancesMiB =
     (inputs.detailInstanceBudget[tier] * inputs.detailInstanceBytes) / MIB;
   const foliageAtlasMiB = inputs.foliageAtlasMiB;
@@ -469,6 +544,7 @@ export function estimateGpuMemoryBreakdown(
   const totalMiB =
     (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB
       + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
+      + macroEvolutionMiB + erosionScratchMiB + bathymetryClipmapMiB + channelGraphMiB
       + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
       + materialArraysMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
@@ -482,6 +558,10 @@ export function estimateGpuMemoryBreakdown(
     heightAtlasMiB,
     channelAtlasMiB,
     heightPyramidMiB,
+    macroEvolutionMiB,
+    erosionScratchMiB,
+    bathymetryClipmapMiB,
+    channelGraphMiB,
     detailInstancesMiB,
     foliageAtlasMiB,
     impostorAtlasMiB,
@@ -517,6 +597,10 @@ export function assertWithinBudget(
     `height-atlas ${breakdown.heightAtlasMiB.toFixed(1)}`,
     `channel-atlas ${breakdown.channelAtlasMiB.toFixed(1)}`,
     `height-pyramid ${breakdown.heightPyramidMiB.toFixed(2)}`,
+    `macro-evolution ${breakdown.macroEvolutionMiB.toFixed(1)}`,
+    `erosion-scratch ${breakdown.erosionScratchMiB.toFixed(1)}`,
+    `bathymetry ${breakdown.bathymetryClipmapMiB.toFixed(1)}`,
+    `channel-graph ${breakdown.channelGraphMiB.toFixed(1)}`,
     `detail-instances ${breakdown.detailInstancesMiB.toFixed(1)}`,
     `foliage-atlas ${breakdown.foliageAtlasMiB.toFixed(1)}`,
     `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,

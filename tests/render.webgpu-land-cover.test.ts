@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   LAND_COVER_CLASSIFIER_WGSL,
+  LAND_COVER_SPLAT_BAKE_WGSL,
   LAND_COVER_TOP_MATERIALS,
   classifyLandCover,
   dominantLandCover,
   landCoverHabitat,
   landCoverSoftmaxTemperature,
   landCoverSuitabilities,
+  landCoverWetness,
   landCoverWeightOf,
   type LandCoverInput,
 } from "../src/render/webgpu/terrain/LandCoverClassifier";
@@ -121,6 +123,18 @@ describe("land-cover classifier (4-6)", () => {
     expect(sharp).toBeGreaterThan(0);
   });
 
+  it("lets real contributing area supersede the analytic moisture proxy", () => {
+    const dryProxy = at({ moisture: 0.02, flowAccumulationAreaM2: 10_000_000 });
+    const wetProxy = at({ moisture: 0.98, flowAccumulationAreaM2: 10_000_000 });
+    expect(landCoverWetness(dryProxy)).toBe(landCoverWetness(wetProxy));
+    expect(landCoverSuitabilities(dryProxy)).toEqual(landCoverSuitabilities(wetProxy));
+    expect(classifyLandCover(dryProxy)).toEqual(classifyLandCover(wetProxy));
+    expect(landCoverWetness(dryProxy)).toBeGreaterThan(0.8);
+    // Omitting the erosion field is explicit analytic parity.
+    expect(landCoverWetness(at({ moisture: 0.02 }))).toBeCloseTo(0.02, 12);
+    expect(landCoverWetness(at({ moisture: 0.98 }))).toBeCloseTo(0.98, 12);
+  });
+
   it("moves the snowline with the season and nothing else", () => {
     const summer = classifyLandCover(at({ elevationMeters: 1_400 }));
     const winter = classifyLandCover(at({
@@ -169,6 +183,8 @@ describe("land-cover classifier (4-6)", () => {
       .replace(/\/\/[^\n]*/gu, "");
     expect(code).not.toMatch(/[^k]smoothstep\(/u);
     expect(code).toContain("kSmoothstep(");
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("splatFlowAccumAtlas");
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("exp2(flowLog2) - 1.0");
   });
 });
 

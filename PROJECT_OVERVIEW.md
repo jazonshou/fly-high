@@ -1,8 +1,8 @@
 # fly high — Rendering Overhaul: Project Overview
 
-**Status as of 2026-08-20.** Phases 0, 1, 2, 2.5, 3 and **4** plus Gates B and A are complete — 224.55 of ≈343 priced effort-days shipped (~65% of the programme, and **past the v1 cut line at ≈224**). **Phase 5 is next to implement**; Phase 6 is next to plan.
+**Status as of 2026-08-20.** Phases 0, 1, 2, 2.5, 3, **4** and the corrective **4.5** plus Gates B and A are complete — 239.55 of ≈358 priced effort-days shipped (~67% of the programme, and **past the v1 cut line at ≈224**). A **Phase 5 implementation candidate** now exists in the working tree, but it is not counted as shipped or phase-closed while its final GPU, visual, capture, rebaseline and timing evidence remains open. Phase 6 is next to plan.
 
-Phase 4 closed nine of the audit's twelve root causes. Four of its exit boxes did not close and are named in `PHASE_4_EXECUTION_PLAN.md` §13: the three flown-and-recorded flights (§11.2's irreducibly visual outcomes), assertion 83b's fragment-stage `vPositionW` readback, assertion 85's cross-level splat consistency, and the tier re-measure — which needs a `perf:capture` rebaseline on the reference machine, since `4-5`, `4-6` and `4-7` invalidated every SSIM baseline exactly as the plan sanctions.
+Phase 4 closed nine of the audit's twelve root causes — and then flying the shipped tree found it failing all three goals from the pilot's seat, which is why the unplanned **Phase 4.5** exists ([`PHASE_4_5_EXECUTION_PLAN.md`](PHASE_4_5_EXECUTION_PLAN.md)). It absorbed Phase 4's four unclosed exit boxes and closed three of them: assertions 83b and 85 are written, and the sanctioned rebaseline and tier re-measure are taken. **Three items remain open** — `perf:capture` is not green (fps floors unmet on a hot laptop by the pre-change tree too, and deliberately not relaxed to fit it), the 20-consecutive-cold-loads check has not been re-run, and the three named flights are carried a third time. They are recordings, not code.
 
 This document is the high-level view of the programme for readers outside the day-to-day work. The normative sources it summarises are [`RENDERING_PLAN.md`](RENDERING_PLAN.md) (the master plan), [`ARCHITECTURE.md`](ARCHITECTURE.md) (the enforced architectural contract), [`PRE_PHASE_4_REALIGNMENT.md`](PRE_PHASE_4_REALIGNMENT.md) (a binding mid-programme audit), and one execution plan per phase.
 
@@ -42,7 +42,7 @@ A 2026-08-18 programme audit (`PRE_PHASE_4_REALIGNMENT.md`, amendments R-1…R-2
 
 ```mermaid
 flowchart LR
-    subgraph done["✅ Complete (178.05 d shipped)"]
+    subgraph done["✅ Complete (239.55 d shipped)"]
         direction LR
         P0["Phase 0<br/>Architecture shift<br/>16.8 d"] --> P1["Phase 1<br/>Foundation +<br/>atmosphere spine<br/>43.0 d"]
         P1 --> G2Z["Gate 2Z<br/>Measurement<br/>honesty<br/>6.0 d"]
@@ -51,21 +51,23 @@ flowchart LR
         P25 --> P3["Phase 3<br/>Terrain surface<br/>+ runway<br/>30.25 d"]
         P3 --> GB["Gate B<br/>The felt frame<br/>7.25 d"]
         GB --> GA["Gate A<br/>Aircraft +<br/>wildlife<br/>12.75 d"]
+        GA --> P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
+        P4 --> P45["Phase 4.5<br/>Run-the-app<br/>defects<br/>≈15 d"]
     end
-    subgraph next["🔵 Planned — next up"]
+    subgraph candidate["🟠 Implementation candidate — acceptance open"]
         direction LR
-        P4["Phase 4<br/>Terrain GPU<br/>spine<br/>46.5 d"]
+        P5["Phase 5<br/>Landscape evolution<br/>57.25 d planned"]
     end
     subgraph later["⚪ Planned — after the cut line"]
         direction LR
-        P5["Phase 5<br/>Landscape<br/>evolution<br/>57.25 d"] --> P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.0 d"]
+        P6["Phase 6<br/>Water in motion,<br/>ecology, tiers<br/>~27.0 d"]
         P6 --> P7["Phase 7<br/>Night ops +<br/>airfield identity<br/>34.0 d"]
     end
-    GA --> P4
-    P4 -->|"v1 cut line ≈ day 224"| P5
+    P45 -->|"v1 cut line ≈ day 224, passed"| P5
+    P5 --> P6
 ```
 
-Day counts are the plan's effort-pricing currency (4.5 productive days/week in the original solo-calendar model); actual execution has run far faster in calendar terms. Reconciled ledger, 2026-08-19 (evening, after `PHASE_5_EXECUTION_PLAN.md`): **≈343 programme days, v1 cut line ≈224** (a defensible v1 exists after Phase 4). The rise is Phase 5 repriced 51.5 → 57.25 and the new 7.25-day Gate B.
+Day counts are the plan's effort-pricing currency (4.5 productive days/week in the original solo-calendar model); actual execution has run far faster in calendar terms. Reconciled ledger, 2026-08-20: **≈358 programme days, v1 cut line ≈224**. The rises are Phase 5 repriced 51.5 → 57.25, the 7.25-day Gate B, and Phase 4.5's ≈15 unplanned corrective days.
 
 ## 6. What has shipped
 
@@ -167,9 +169,25 @@ The height kernel moved to the GPU with a measured physics-parity contract; 151�
 
 Phase 4's close is the programme's stated "last defensible stopping point" for a v1.
 
-### Phase 5 — Landscape evolution *(57.25 d, planned in full 2026-08-19; stated range 55–68)*
+### Phase 4.5 — Run-the-app defects at the G-C bar *(≈15 d, shipped 2026-08-20)*
 
-The single largest realism change and the highest schedule risk: GPU erosion and macro drainage give the world real valleys, ridge networks, rivers and lakes *where water actually collects*; a tectonic skeleton replaces the global 35° grain; the terrain ceiling rises to 4,500 m; physics reads the eroded surface through a readback contract. [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) adds an evolution contract (`5-0`), a single activation commit (`5-A`), riparian exclusion (`5-13`), moves the tectonic uplift ahead of erosion tuning so erosion is tuned once against its final input, defines the macro flood domain no plan document had defined, and strikes the tier-dependent erosion rows — a graphics setting must not change the collision surface.
+An unplanned corrective phase, written after a 2026-08-20 investigation of the *running* app found the shipped Phase 4 tree failing all three goals from the pilot's seat: loads crashed, medium/balanced was choppy, and the terrain had visibly regressed into flat colour patches. Nine findings were handed to a second reader to refute; all nine came back confirmed, and everything outside that set is labelled single-reader confidence in the plan rather than quoted as measurement.
+
+- **The crash was never a graphics-load problem** (`4.5-0`): a race between foliage batch growth and the shadow pass through a `ShadowDepthWrapper` cache poisoned by `resetDrawCache`. A validation guard fired 20 times in one load.
+- **The splotches were a converged fixed point, not lag** (Gate 4.5-A): every capture reported 24–25 resident pages with none pending after up to 6,000 frames, because the breadth-first selector stalls the world at L5–L7 while the unconstrained criterion wants ≥2,300 nodes — raising the budget could never have fixed it. A global screen-space-error priority queue with a one-level neighbour clamp now reaches **L2 under the camera**, with bilinear splat sampling, a per-vertex provisional fallback, and the never-retry hole closed.
+- **Streaming was starved by its own meter** (Gate 4.5-B): the real admission planner admitted 2 height pages per pump at full scale, 1 at governor rung 1 and **0 forever** at rung 2, while the lower-priority occlusion client still admitted two. `observeDispatchCostMs` had zero call sites. Now real per-dispatch costs, a floor of one, one budget plan per update, corridor re-ranking, and a fixed `setProfile` path that used to kill streaming silently for a whole session.
+- **The felt frame** (Gate 4.5-C): vegetation shadow-casting off below tier 2, the startup hitch train removed (compute pre-warm plus the ten ~110 ms material syntheses moved to a worker), and per-pass GPU aggregates that make the frame gap inspectable.
+- **Measured:** mean GPU p95 across the 16 shots 10.76 → 9.78 ms, and 14.02 → 12.38 ms across the ten vegetation-heavy ones, with a same-host pre-change control beside it. `VEGETATION_FRAME_DEBT_RATIO` re-pinned 5.57/5.01 → **3.28/2.87**; residency ceilings 196 → 88 from what the fixed selector actually produces.
+
+**What it does not claim.** fps is not settled: re-running the *pre-4.5* tree back-to-back on the same host reported 16.5 fps against the 20.3 pinned four hours earlier, so the machine moved the number 19% on its own. Every counter moved the right way; the G-C verdict needs an idle reference machine.
+
+### Phase 5 — Landscape evolution *(57.25 d planned; implementation candidate 2026-08-20; acceptance open)*
+
+The candidate makes `worldEvolution: "eroded"` the default and keeps explicit `"analytic"` compatibility. A world-anchored, cell-centred 1024² macro authority computes drainage, lake spills and channel seeds off the main thread; bounded page evolution adds the fine terrain through a fixed 64-texel halo; the tectonic uplift uses a turning double-angle fabric and closes the fine spectral gap; the height ceiling is 4,500 m. Completed L0 pages and the macro grid feed the simulation worker's L0 → macro → analytic recovery ladder, so a quality tier cannot change the collision surface.
+
+The same canonical export now drives a deterministic channel graph, graph-backed inland-water geometry, two-level bathymetry and depth-aware water shading. Per-page flow/lake/soil/shore fields share atomic residency: flow/TWI feeds the land-cover classifier, and signed shore distance is published through the bounded detail authority and worker into the live riparian-density path; lake and soil remain exposed future inputs. The debug overlay exposes macro flow, lakes, base levels, fabric and erodibility.
+
+This is deliberately an **implementation candidate**, not a Phase-5 close. The erosion producers are deterministic CPU-worker references behind the intended client/runtime boundaries, not the plan's final measured GPU passes; page work is one-at-a-time and seeds directly from the macro instead of a resident-parent chain; bathymetry samples the macro authority rather than overlaying resident L0 pages. The broad seeded tectonic field is not yet the planned plate-motion/rift/hotspot model, and fine bands lack the planned post-erosion soil/curvature mask. Production does protect the runway earthworks and applies strictly-downhill acyclic perimeter drainage. Analytic compatibility retains the historical carve proxies and tracer. A reserved WGSL `target` identifier exposed Babylon's non-settling `dispatchWhenReady` failure path; the bathymetry shader now uses `targetTexel`, has real-adapter compile coverage, and starts through bounded abortable readiness plus a renderer deadline. The built default-eroded game now reached the start screen in a local 13,255 ms navigation and entered the cockpit with no current errors; full Node, build and WebGPU verification are green. That and the 7,497 ms CPU algorithm benchmark are local diagnostics, not cold/reference-machine or 1.5 s acceptance. No measured per-page cost, sanctioned rebaseline, named visual flight, new capture shot, or final GPU acceptance result is claimed. The exact deviations and remaining gates are recorded in [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §14.1.
 
 ### Phase 6 — Water in motion, ecology and final tiers *(~27.0 d, planned — **planning is the next planning task**)*
 
@@ -185,29 +203,33 @@ A clustered lighting engine and ~200 instanced light points; complete airfield l
 |---|---|
 | Clouds | ✅ shipped (Phase 2) |
 | Water surface | ✅ shipped (Phase 2) |
-| Water *placement* (rivers/lakes where water collects) | Phase 5 |
-| Mountains (real erosion-formed shape) | Phase 5 |
-| Terrain surface materials | ✅ shipped (Phase 3); ✅ one classifier authority (Phase 4 `4-6`, `R-27`) |
+| Water *placement* (rivers/lakes where water collects) | 🟠 Phase 5 implementation candidate; visual/capture acceptance open |
+| Mountains (real erosion-formed shape) | 🟠 Phase 5 implementation candidate; final GPU/performance/visual acceptance open |
+| Terrain surface materials | ✅ shipped (Phase 3); ✅ one classifier authority (Phase 4 `4-6`, `R-27`); ✅ the Phase 4 splotch regression fixed (Phase 4.5 Gate A) |
 | Trees & foliage appearance | ✅ shipped (Phase 2/2.5) |
 | Tree *placement* (ecological) | ✅ field shipped (Phase 1); deepens in Phase 6 |
 | The aircraft | ✅ shipped (Gate A) |
 | **G-B** sun path / seasons / night | ✅ sun + seasons + night sky + ground palette + classified snowline (24-bucket season cache, cross-faded) |
-| **G-C** measured performance | Instrument ✅ (Gate 2Z); budgets in CI ✅; a compute budget that is ENFORCED rather than asserted ✅ (`4-0b`); open vegetation frame debt (below); **the binding tier table is still unmeasured** — `4-10` landed the two scenes and their ceilings as design intents, and the rebaseline is open work |
+| **G-C** measured performance | Instrument ✅ (Gate 2Z); budgets in CI ✅; compute budget ENFORCED ✅ (`4-0b`); tier table measured and committed ✅ (Phase 4.5); **but the verdict is not in** — `perf:capture` fps floors are unmet on the capture host by the pre-change tree as well, so the number needs an idle reference machine, and `6-11` owns the re-tier |
 
 ## 9. Open items carried honestly
 
-- **Vegetation frame debt — still open, with a failed shortcut recorded.** The 1.8 ms tier-1 row remains ~5× over in the split runtime. Gate B measured the tempting crown+trunk merge and rejected it because the alpha-test path regressed every core shot; `VEGETATION_DRAW_CEILING` and `VEGETATION_FRAME_DEBT_RATIO` intentionally remain at their pre-merge values. Phase 4 moved tier 2 from 7.38 to 6.32 (four shadow cascades to three) and re-pinned the record rather than inheriting it; tier 1's ratio is unchanged at 5.01, because `4-8b` ships two cascades there rather than the plan's three precisely so the debt would not grow. Phase 6 owns the next real opportunity.
-- **Two open decisions (R-16)** before Phase 4 designs the season epoch: does the clock advance in flight, and does precipitation get a renderer.
-- **Plan hygiene at hand-off.** The Phase 4 execution plan was verified against the Phase-1 tree; its line-number citations must be re-derived against the current tree before implementation (its own stated rule). Phase 3's were re-derived during implementation.
-- **Terrain material boundaries are still the old classifier's** (`R-25`, unchanged by Phase 3). Ten good materials are still *selected* by the 8-bit per-vertex threshold cascade the audit indicts; the ordering work in `3-0` removes the worst artefact of that, but the boundaries are iso-contours in height and show as thin lines at long range. `4-6` closes it, and `R-27`'s classifier-consumers contract is owed before Phase 4 starts.
-- **No per-pass GPU timer.** Phase 3's terrain-raster budget row (assertion 67) could not be measured: the capture harness reports whole-frame GPU time only. Recommended for Phase 4's budget work, where `4-4` and `4-8b` need it too.
-- **fps floors are machine-specific.** Committed capture floors bind on the reference machine only; draw calls, triangles and batch counts are the portable counters.
+- **Three Phase 4.5 exit boxes are still open.** `perf:capture` is not green — `approach-500ft` measures 19.1 fps against a committed floor of 24, and the pre-change control measures 20.9 on the same host, so the floor is unmet by *both* trees; the floors were deliberately left where they are rather than relaxed to fit a hot laptop. The 20-consecutive-cold-loads check is mechanism-covered by assertions but has not been re-run. And the three named flights are carried a third time — they are recordings, and nothing in code can produce them.
+- **The capture host's thermal state is an uncontrolled variable.** The same commit reported 20.3 fps / 6 hitches and 18.5 fps / 117 four hours apart, and a clean pre-4.5 worktree read 16.5 fps / 232 back-to-back against the 20.3 pinned earlier. Any fps delta smaller than ~19% is unmeasured on this machine, and no item owns making it controlled.
+- **Half the frame is invisible to both timers.** ~10 ms GPU p95 against a ~70 ms interval p95. Phase 4.5's per-pass aggregates confirm it is neither the shadow pass nor terrain compute; naming it needs the frame-correlatable timestamp source `B-0` specified and no plan owns.
+- **Vegetation frame debt — reduced, not closed.** `VEGETATION_FRAME_DEBT_RATIO` is re-pinned 5.57/5.01 → 3.28/2.87 after the shadow-cast knob, and Gate B's crown+trunk merge stays measured-and-rejected. Phase 6's GPU scatter (`6-9`) and re-tiering (`6-11`) own the structural fix.
+- **A height page costs ~1.9 ms of GPU** against a 0.7 ms tier-1 row — recorded by Phase 4.5 as an input to Phases 5 and 6: the compute rows are not reachable for this client at any tier, and the floor of one is currently terrain's only admission path.
+- **Phase 5 is not closed by code existence.** Its live candidate uses CPU workers for macro/page erosion, admits one page at a time, seeds from macro rather than a resident-parent chain, and gives bathymetry macro rather than L0 page authority. Planned plates/rifts/hotspots and post-erosion fine-band masking remain gaps; runway exclusion and strictly-downhill acyclic perimeter diversion are live. The bathymetry load hang caused by reserved WGSL `target` plus Babylon's pending readiness Promise is corrected with compile coverage and bounded abortable startup. The built game now reaches the default-eroded start screen and cockpit, but its local 13,255 ms navigation still leaves reference-machine cold-load timing, the 1.5 s target, measured per-page cost, named flights, new capture shots and sanctioned rebaselines open.
+- **Two open decisions (R-16)** the season epoch rests on: does the clock advance in flight, and does precipitation get a renderer.
+- **Plan hygiene at hand-off.** The Phase 5 implementation record now reconciles the live architecture with the plan; historical line citations still describe the tree against which the plan was written and must not be treated as current source locations.
+- **fps floors are machine-specific.** Committed capture floors bind on the reference machine only; draw calls, triangles and batch counts are the portable cross-machine counters.
 
 ## 10. Renderer systems map
 
 ```mermaid
 flowchart TB
     classDef live fill:#1a7f37,stroke:#116329,color:#ffffff
+    classDef candidate fill:#bf8700,stroke:#9a6700,color:#ffffff
     classDef nextp fill:#0969da,stroke:#0550ae,color:#ffffff
     classDef later fill:#6e7781,stroke:#57606a,color:#ffffff
 
@@ -220,12 +242,12 @@ flowchart TB
     subgraph GROUND["Terrain"]
         TER["Clipmap terrain<br/>correct normals · band-limited LOD"]:::live
         SRF["Surface materials + runway (P3)"]:::live
-        SPN["GPU spine<br/>WGSL kernel · CDLOD · baked occlusion (P4)"]:::nextp
-        ERO["Erosion · tectonics · drainage (P5)"]:::later
+        SPN["GPU spine<br/>WGSL kernel · CDLOD · baked occlusion (P4)"]:::live
+        ERO["Erosion · tectonics · drainage (P5 candidate)"]:::candidate
     end
     subgraph WATER["Water"]
         OCN["Spectral ocean<br/>slope mips · glitter · foam · SSS"]:::live
-        RIV["Carved rivers & lakes (P5)"]:::later
+        RIV["Carved rivers & lakes (P5 candidate)"]:::candidate
         FLW["Flowing water · surf · caustics (P6)"]:::later
     end
     subgraph LIFE["Living world"]
@@ -236,7 +258,7 @@ flowchart TB
     subgraph MEAS["Measurement (G-C)"]
         HAR["Perf harness · 14-shot baseline<br/>budgets in CI · two governors"]:::live
         FLT["Felt frame — presentation timing,<br/>rebase fix, forest variance (Gate B)"]:::live
-        TRM["Tier re-measure at cut line (4-10)"]:::nextp
+        TRM["Tier re-measure at cut line (4.5)"]:::live
     end
 
     ATM --> CLD & NGT & OCN & TER & VEG
@@ -247,7 +269,7 @@ flowchart TB
     SPN -.->|"classifier feeds species & habitat"| ECO
 ```
 
-**Legend:** green = shipped · blue = planned, before the v1 cut line · grey = planned, after the cut line.
+**Legend:** green = shipped · amber = implementation candidate with acceptance open · blue = planned before the v1 cut line · grey = planned after the cut line.
 
 ---
 

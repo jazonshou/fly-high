@@ -26,6 +26,136 @@ import type { Scene } from "@babylonjs/core/scene";
 /** Shared constants block (PI). */
 export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.14159265359;`;
 
+/** `5-11`: one physical depth model shared by ocean, rivers, and lakes. */
+export const WATER_ABSORPTION_PER_METER = Object.freeze([0.45, 0.07, 0.02] as const);
+export const WATER_SHORE_FADE_METERS = 0.4;
+export const WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES = 48.6;
+
+/** Declarations are separate so ShaderMaterial sampler manifests can mirror them. */
+export const WATER_BATHYMETRY_DECLARATIONS_WGSL = /* wgsl */ `
+uniform bathymetryNearPlacement: vec4f;
+uniform bathymetryFarPlacement: vec4f;
+uniform bathymetrySeaLevel: f32;
+var bathymetryNearSampler: sampler; var bathymetryNear: texture_2d<f32>;
+var bathymetryFarSampler: sampler; var bathymetryFar: texture_2d<f32>;
+`;
+
+/**
+ * `5-11`: shared Beer-Lambert, analytic bed, turbidity, shoreline, and
+ * underwater-interface implementation. The two water materials supply only
+ * their surface normal/reflection/foam; neither owns a second depth model.
+ */
+export const WATER_DEPTH_OPTICS_WGSL = /* wgsl */ `
+const WATER_ABSORPTION_PER_METER = vec3f(0.45, 0.07, 0.02);
+const WATER_SHORE_FADE_METERS: f32 = 0.4;
+const WATER_CRITICAL_ANGLE_DEGREES: f32 = 48.6;
+
+fn bathymetryWrappedUv(worldXZ: vec2f, placement: vec4f) -> vec2f {
+  let worldTexel = worldXZ / placement.z;
+  let wrapped = worldTexel - floor(worldTexel / placement.w) * placement.w;
+  return (wrapped + vec2f(0.5)) / placement.w;
+}
+
+fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
+  let nearCenter = (uniforms.bathymetryNearPlacement.xy
+    + vec2f(uniforms.bathymetryNearPlacement.w * 0.5))
+    * uniforms.bathymetryNearPlacement.z;
+  let nearHalfSpan = uniforms.bathymetryNearPlacement.z
+    * uniforms.bathymetryNearPlacement.w * 0.48;
+  let insideNear = max(
+    abs(worldXZ.x - nearCenter.x),
+    abs(worldXZ.y - nearCenter.y),
+  ) <= nearHalfSpan;
+  if (insideNear) {
+    return textureSampleLevel(
+      bathymetryNear,
+      bathymetryNearSampler,
+      bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
+      0.0,
+    ).r;
+  }
+  return textureSampleLevel(
+    bathymetryFar,
+    bathymetryFarSampler,
+    bathymetryWrappedUv(worldXZ, uniforms.bathymetryFarPlacement),
+    0.0,
+  ).r;
+}
+
+fn waterDepthFromBathymetry(surfaceElevation: f32, worldXZ: vec2f) -> f32 {
+  let bedElevation = uniforms.bathymetrySeaLevel + sampleBathymetryBedDelta(worldXZ);
+  return max(surfaceElevation - bedElevation, 0.0);
+}
+
+fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32) -> vec3f {
+  let mineral = 0.5 + 0.5 * sin(dot(worldXZ, vec2f(0.021, 0.017)) + bedElevation * 0.08);
+  let sand = vec3f(0.31, 0.285, 0.205);
+  let rock = vec3f(0.075, 0.105, 0.095);
+  let deepSilt = vec3f(0.028, 0.055, 0.052);
+  let substrate = mix(rock, sand, mineral * 0.32);
+  return mix(substrate, deepSilt, smoothstep(8.0, 45.0, -bedElevation));
+}
+
+fn waterVolumeRadiance(
+  worldXZ: vec2f,
+  surfaceElevation: f32,
+  depth: f32,
+  normal: vec3f,
+  view: vec3f,
+  cameraBelow: bool,
+  sunVisibility: f32,
+) -> vec3f {
+  let bedElevation = surfaceElevation - depth;
+  var bedXZ = worldXZ;
+  if (!cameraBelow && depth > 0.0) {
+    // Trace the view ray through the air-to-water interface before evaluating
+    // the stable analytic bed. Without this offset the substrate is painted
+    // directly below the fragment and appears glued to the water surface as
+    // the camera moves. WGSL refract returns the transmitted direction travelling
+    // from the interface toward the bed (eta = n_air / n_water).
+    let transmittedDirection = refract(-view, normal, 1.0 / 1.333);
+    let verticalTravel = max(-transmittedDirection.y, 0.02);
+    bedXZ = worldXZ + transmittedDirection.xz * (depth / verticalTravel);
+  }
+  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation);
+  let transmittance = exp(-WATER_ABSORPTION_PER_METER * depth);
+  // One-scatter turbidity: energy removed from the direct bed path is
+  // returned directionally as the familiar shallow turquoise glow.
+  let turbidity = vec3f(0.018, 0.115, 0.105)
+    * (vec3f(1.0) - transmittance)
+    * (0.38 + 0.62 * sunVisibility);
+  return bed * transmittance + turbidity;
+}
+
+fn waterShorelineAlpha(depth: f32) -> f32 {
+  return smoothstep(0.0, WATER_SHORE_FADE_METERS, depth);
+}
+
+fn waterInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool) -> vec3f {
+  let f0 = vec3f(0.0204);
+  if (!cameraBelow) {
+    return fresnelSchlick(max(dot(normal, view), 0.0), f0);
+  }
+  let incidentCos = clamp(dot(-normal, view), 0.0, 1.0);
+  let incidentSin2 = max(1.0 - incidentCos * incidentCos, 0.0);
+  let transmittedSin2 = 1.333 * 1.333 * incidentSin2;
+  // 48.6 degrees: water-to-air critical angle. Above it there is no
+  // transmitted ray and the underside is a total internal reflection.
+  if (transmittedSin2 >= 1.0) { return vec3f(1.0); }
+  let transmittedCos = sqrt(max(1.0 - transmittedSin2, 0.0));
+  return fresnelSchlick(transmittedCos, f0);
+}
+
+fn applyUnderwaterBeerLambert(color: vec3f, pathMeters: f32, sunVisibility: f32) -> vec3f {
+  let path = clamp(pathMeters, 0.0, 80.0);
+  let transmittance = exp(-WATER_ABSORPTION_PER_METER * path);
+  let inScatter = vec3f(0.012, 0.085, 0.09)
+    * (vec3f(1.0) - transmittance)
+    * (0.3 + 0.7 * sunVisibility);
+  return color * transmittance + inScatter;
+}
+`;
+
 const FALLBACK_ENVIRONMENT_CUBES = new WeakMap<Scene, RawCubeTexture>();
 const FALLBACK_PLANAR_TEXTURES = new WeakMap<Scene, RawTexture>();
 

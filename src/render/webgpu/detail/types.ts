@@ -28,6 +28,8 @@ export interface DetailTerrainSample {
    * carries it, so the live sampler provides it for free.
    */
   readonly airportInfluence?: number;
+  /** `5-13`: signed metres to the exported wetted edge; <= 0 is water. */
+  readonly shoreDistanceMeters?: number;
   /**
    * Surface normal for the density field's aspect term (1B-7). Optional; the
    * world-layer TerrainSample carries it. Omitted reads as flat ground.

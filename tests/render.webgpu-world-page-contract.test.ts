@@ -64,15 +64,16 @@ function createPayload(): WorldPagePayload {
       biomes: new Uint8Array(dimensions.surfaceTexelCount),
     },
     hydrology: {
-      format: "rg16snorm-flow+r16uint-depth+r16sint-shore+r16uint-discharge",
-      flowXZ: new Int16Array(dimensions.surfaceTexelCount * 2),
-      waterDepth: new Uint16Array(dimensions.surfaceTexelCount),
+      format: "r16uint-log-flow+r16uint-lake-depth+r8unorm-soil+r16sint-shore-v2",
+      flowAccum: new Uint16Array(dimensions.surfaceTexelCount),
+      lakeDepth: new Uint16Array(dimensions.surfaceTexelCount),
+      soilDepth: new Uint8Array(dimensions.surfaceTexelCount),
       shoreDistance: new Int16Array(dimensions.surfaceTexelCount),
-      discharge: new Uint16Array(dimensions.surfaceTexelCount),
-      depthMetersPerUnit: 0.01,
+      lakeDepthMetersPerUnit: 0.01,
+      soilDepthMaxMeters: 8,
       shoreDistanceMetersPerUnit: 0.25,
-      dischargeLog2Bias: 0,
-      dischargeLog2PerUnit: 0.001,
+      flowAccumLog2Bias: 0,
+      flowAccumLog2PerUnit: 0.001,
     },
   };
 }

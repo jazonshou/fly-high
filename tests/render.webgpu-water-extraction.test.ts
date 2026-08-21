@@ -35,15 +35,16 @@ function sha256(text: string): string {
 
 describe("water shader extraction (2-8a)", () => {
   it("pins the composed ocean WGSL (assertion 41)", () => {
-    // Re-pinned by 2-8 (slope storage, cascade fades, textureSampleGrad,
-    // Toksvig) — the deliberate-change flow this gate exists to force. The
+    // Re-pinned by 5-11 after the shared bathymetry/Beer-Lambert/underwater
+    // include replaced opaque constant-depth ocean colour. This is the
+    // deliberate-change flow this gate exists to force. The
     // 2-8a extraction itself was verified against the pre-extraction hashes
     // (479ea4bc… / 02db7641…) before this re-pin.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "b0cad61d28a2368573d70b710e1a63d23334277a0780f81fe83981f1200a9774",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "3cc1febabdb41e14f02801061119519930cf88450e53e71469375b18f08f63c7",
+      "91872d3d1350acaa627171f7468f09824dbd6293045b4383c47cd63692f0707b",
     );
   });
 

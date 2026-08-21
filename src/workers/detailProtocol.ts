@@ -1,13 +1,29 @@
 import type { GeneratedDetailCell } from "@/src/render/webgpu/detail/types";
-import type { WorldSeed } from "@/src/world";
+import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
+import type { WorldDefinition, WorldSeed } from "@/src/world";
+import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Commands into the detail generation worker (1B-10). */
 export type DetailWorkerCommand =
   | {
       type: "initialize";
       worldSeed: WorldSeed;
+      /** The live renderer supplies this so explicit analytic mode and authored airports survive. */
+      world?: WorldDefinition;
       cellSizeMeters: number;
       seaLevelMeters: number;
+    }
+  | {
+      type: "terrainMacro";
+      macro: TerrainMacroGrid;
+    }
+  | {
+      type: "terrainPage";
+      page: TerrainPagePublication;
+    }
+  | {
+      type: "terrainAux";
+      page: TerrainAuxPagePublication;
     }
   | {
       type: "generate";
@@ -35,6 +51,28 @@ export type DetailWorkerEvent =
       key: string;
       message: string;
     };
+
+/** Transfer ownership of retained terrain copies into the detail worker. */
+export function detailWorkerCommandTransferables(
+  command: DetailWorkerCommand,
+): Transferable[] {
+  if (command.type === "terrainMacro") {
+    return command.macro.heights.buffer instanceof ArrayBuffer
+      ? [command.macro.heights.buffer]
+      : [];
+  }
+  if (command.type === "terrainPage") {
+    return command.page.heights.buffer instanceof ArrayBuffer
+      ? [command.page.heights.buffer]
+      : [];
+  }
+  if (command.type === "terrainAux") {
+    return command.page.shoreDistanceR16Sint.buffer instanceof ArrayBuffer
+      ? [command.page.shoreDistanceR16Sint.buffer]
+      : [];
+  }
+  return [];
+}
 
 /** Runtime guard for messages crossing the worker boundary. */
 export function isDetailWorkerEvent(value: unknown): value is DetailWorkerEvent {

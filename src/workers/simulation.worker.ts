@@ -21,7 +21,11 @@ import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "@/src/game/spawn";
-import { sampleGroundContact, sampleGroundHeight } from "@/src/sim/terrainGrid";
+import {
+  sampleGroundContact,
+  sampleGroundHeight,
+  setGroundHeightMirror,
+} from "@/src/sim/terrainGrid";
 import type {
   ControlState,
   FlightMode,
@@ -35,8 +39,11 @@ import {
   type SimulationEvent,
   type SpawnKind,
 } from "./protocol";
+import { TerrainAuthority } from "./terrainAuthority";
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
+const terrainAuthority = new TerrainAuthority();
+setGroundHeightMirror(terrainAuthority);
 
 let world: WorldDefinition | null = null;
 let simulator: FlightSimulator | null = null;
@@ -187,6 +194,7 @@ function visualState(): FlightVisualState {
     crashed: snapshot.crashed,
     touchdown: simulator.state.peakImpactSpeed,
     simulationTime: snapshot.time,
+    terrainAuthority: terrainAuthority.countersSnapshot(),
   };
 }
 
@@ -238,6 +246,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // The main thread already resolved and certified the public seed. Reuse
       // that structured-cloneable world so worker startup cannot repeat the
       // synchronous airport search or select a different fallback region.
+      terrainAuthority.clear();
       world = command.world;
       aircraftKind = command.aircraft;
       mode = command.mode;
@@ -245,6 +254,14 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       attractMode = command.attractMode;
       airborneStartAgl = normalizeAirborneStartAgl(command.airborneStartAgl);
       reset(command.spawn, airborneStartAgl);
+      return;
+    }
+    if (command.type === "terrainPage") {
+      terrainAuthority.publish(command.page);
+      return;
+    }
+    if (command.type === "terrainMacro") {
+      terrainAuthority.publishMacro(command.macro);
       return;
     }
     if (command.type === "controls") controls = { ...command.controls };

@@ -56,7 +56,12 @@ describe("terrain streaming convergence (4.5-B)", () => {
   it("descends from the L9 roots to the tier's finest level from a cold spawn", async () => {
     const trace = await withScene(async (engine, scene) => {
       void engine;
-      const world = createWorld("phase1-perf-baseline");
+      // This Phase-4 convergence fixture exercises the analytic GPU producer.
+      // Phase 5's default eroded producer intentionally admits no page until
+      // TerrainEvolutionRuntime supplies its canonical macro authority.
+      const world = createWorld("phase1-perf-baseline", {
+        worldEvolution: "analytic",
+      });
       const profile = resolveWebGpuQualityProfile("medium", "balanced");
       const system = new TerrainClipmapSystem(scene, world, profile);
       const spawnX = world.airport?.centerX ?? 0;

@@ -176,6 +176,44 @@ describe("performance budget (1A-2)", () => {
     });
     expect(withCloudVolumes.cloudsMiB).toBeCloseTo(base.cloudsMiB + 2.4, 5);
 
+    // Phase 5 assertion 106: every evolution reservation is attached to the
+    // allocation input that will replace the CPU reference implementation.
+    const withAuxChannelByte = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      channelPlannedInvariantBytesPerTexel:
+        DYNAMIC_ALLOCATIONS.channelPlannedInvariantBytesPerTexel + 1,
+    });
+    expect(withAuxChannelByte.channelAtlasMiB).toBeGreaterThan(base.channelAtlasMiB);
+
+    const withMacroField = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      macroEvolutionResidentBytesPerTexel:
+        DYNAMIC_ALLOCATIONS.macroEvolutionResidentBytesPerTexel + 1,
+    });
+    expect(withMacroField.macroEvolutionMiB - base.macroEvolutionMiB).toBeCloseTo(1, 6);
+
+    const withErosionField = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      erosionScratchFieldCount: DYNAMIC_ALLOCATIONS.erosionScratchFieldCount + 1,
+    });
+    expect(withErosionField.erosionScratchMiB - base.erosionScratchMiB).toBeCloseTo(
+      384 * 384 * 4 / (1_024 * 1_024),
+      6,
+    );
+
+    const withBathymetryTexture = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      bathymetryClipmapTextureCount: DYNAMIC_ALLOCATIONS.bathymetryClipmapTextureCount + 1,
+    });
+    expect(withBathymetryTexture.bathymetryClipmapMiB - base.bathymetryClipmapMiB)
+      .toBeCloseTo(2, 6);
+
+    const withGraphMiB = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      channelGraphBudgetBytes: DYNAMIC_ALLOCATIONS.channelGraphBudgetBytes + 1_048_576,
+    });
+    expect(withGraphMiB.channelGraphMiB - base.channelGraphMiB).toBeCloseTo(1, 6);
+
     // 3-0: the material arrays are declared as a SHAPE, so both halves of the
     // row must move — the declared input (layer count) and the tier knob
     // (materialArrayEdge, assertion 56).

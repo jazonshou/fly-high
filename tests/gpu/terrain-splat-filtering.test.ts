@@ -126,7 +126,7 @@ describe("terrain splat filtering and the provisional fallback (4.5-A)", () => {
         worldRevision: "splat-filter-test",
         textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
       });
-      const target = atlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdLo)!;
+      const target = atlas.texture(TERRAIN_CHANNEL_TEXTURES.splatId)!;
       expect(target).not.toBeNull();
       // The sampling mode IS the assertion's subject, so state it up front.
       expect(target.samplingMode).toBe(Texture.BILINEAR_SAMPLINGMODE);
@@ -540,5 +540,4 @@ describe("displaced position reaches the fragment stage (4.5-D3)", () => {
     expect(gpuErrors).toEqual([]);
   }, 180_000);
 });
-
 

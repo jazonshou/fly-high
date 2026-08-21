@@ -33,6 +33,12 @@ export interface VegetationDensityInput {
   /** 0 outside the airport blend, 1 on the graded platform (1B-6). */
   readonly airportInfluence?: number;
   /**
+   * `5-13`: signed metres to the nearest exported wetted edge. Values <= 0
+   * are water; positive values are dry land. Omitted means hydrology has not
+   * provisioned this point and is a neutral factor.
+   */
+  readonly shoreDistanceMeters?: number;
+  /**
    * §1.6 threading rule: part of this signature from the moment the field
    * was first written. Canopy stem positions are deliberately
    * season-invariant — trees must not pop with the calendar — so today the
@@ -160,6 +166,42 @@ interface ForestPatternSample {
   readonly forestEdge: number;
 }
 
+export interface RiparianVegetationFactors {
+  readonly clearance: number;
+  readonly treeDensityGain: number;
+  readonly shrubDensityGain: number;
+}
+
+const NEUTRAL_RIPARIAN_FACTORS: RiparianVegetationFactors = Object.freeze({
+  clearance: 1,
+  treeDensityGain: 1,
+  shrubDensityGain: 1,
+});
+
+/**
+ * One multiplicative channel exclusion. It adds no placement lattice: the
+ * shape comes entirely from the authoritative shore-distance export.
+ */
+export function riparianVegetationFactors(
+  shoreDistanceMeters: number | undefined,
+): RiparianVegetationFactors {
+  if (shoreDistanceMeters === undefined) return NEUTRAL_RIPARIAN_FACTORS;
+  if (!Number.isFinite(shoreDistanceMeters)) {
+    throw new RangeError("shore distance must be finite when supplied");
+  }
+  if (shoreDistanceMeters <= 0) {
+    return { clearance: 0, treeDensityGain: 1, shrubDensityGain: 1 };
+  }
+  const clearance = smoothstep(0, 2, shoreDistanceMeters);
+  const bankBand = smoothstep(1.5, 6, shoreDistanceMeters)
+    * (1 - smoothstep(28, 50, shoreDistanceMeters));
+  return {
+    clearance,
+    treeDensityGain: 1 + bankBand * 0.2,
+    shrubDensityGain: 1 + bankBand * 0.65,
+  };
+}
+
 /** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
 export function forestFraction(
   seedHash: number,
@@ -255,6 +297,8 @@ export function densityField(
   // Continuous shoreline: underwater and wave-washed sand carry nothing.
   const shoreline = smoothstep(1.5, 7, elevation);
   if (shoreline <= 0) return ZERO_DENSITY;
+  const riparian = riparianVegetationFactors(input.shoreDistanceMeters);
+  if (riparian.clearance <= 0) return ZERO_DENSITY;
 
   // Aspect from the horizontal normal: equator-facing (south, −z at 45°N)
   // slopes are warm. Flat ground has no aspect, faded in with steepness.
@@ -304,7 +348,8 @@ export function densityField(
 
   const habitat =
     shoreline * slopeFactor * lapse * treelineFactor * aspectFactor
-    * forest.glade * forest.disturbance * forest.forestFraction * clearance;
+    * forest.glade * forest.disturbance * forest.forestFraction * clearance
+    * riparian.clearance * riparian.treeDensityGain;
   const treeStems = BASE_TREE_STEMS * moistureFactor * habitat;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
@@ -317,7 +362,8 @@ export function densityField(
   const edgeShrubGain = 1 + forest.forestEdge * 0.45;
   const shrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
-    * forest.disturbance * shrubForestGate * edgeShrubGain * clearance;
+    * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
+    * riparian.clearance * riparian.shrubDensityGain;
 
   return {
     treeStemsPerSquareMeter: saturate(treeStems),

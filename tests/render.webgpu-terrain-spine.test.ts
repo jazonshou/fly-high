@@ -17,6 +17,7 @@ import {
   TERRAIN_HEIGHT_SLOT_EDGE,
   TERRAIN_NODES_PER_SLOT_EDGE,
   TERRAIN_NODE_GRID_RESOLUTION,
+  TERRAIN_PLANNED_CHANNEL_FAMILIES,
   TERRAIN_SAMPLED_BINDINGS,
   seasonBucket,
   seasonBucketBlend,
@@ -27,6 +28,7 @@ import {
   terrainHeightBytesPerTexel,
   terrainNodeSpanMeters,
   terrainPageFilterWidthMeters,
+  terrainPlannedChannelBytesPerTexel,
   terrainReadbackBytesPerRow,
   terrainSlotOrigin,
   terrainSupersampleOffsets,
@@ -159,11 +161,24 @@ describe("terrain spine contract (4-0)", () => {
 
   it("names exactly one season-keyed channel family", () => {
     const keyed = TERRAIN_CHANNEL_FAMILIES.filter((family) => family.seasonKeyed);
-    expect(keyed.map((family) => family.name)).toEqual(["splat"]);
+    expect(keyed.map((family) => family.name)).toEqual(["splatWeight"]);
     expect(terrainHeightBytesPerTexel()).toBe(4);
-    // occlusion 4 + horizon 8 + splat 8 × 2 resident buckets.
-    expect(terrainChannelBytesPerTexel()).toBe(28);
-    expect(terrainChannelBytesPerTexel(1)).toBe(20);
+    // occlusion 4 + horizon 8 + invariant ids 4 + weights 4 × 2 buckets.
+    // Base shading 24 + live Phase-5 aux 7.
+    expect(terrainChannelBytesPerTexel()).toBe(31);
+    expect(terrainChannelBytesPerTexel(1)).toBe(27);
+    expect(TERRAIN_CHANNEL_FAMILIES.map((family) => family.name)).toEqual([
+      "splatId",
+      "splatWeight",
+      "occlusion",
+      "horizon",
+      "flowAccum",
+      "lakeDepth",
+      "soilDepth",
+      "shoreDistance",
+    ]);
+    expect(TERRAIN_PLANNED_CHANNEL_FAMILIES).toEqual([]);
+    expect(terrainPlannedChannelBytesPerTexel()).toBe(0);
   });
 
   // Assertion 69.
@@ -180,7 +195,10 @@ describe("terrain spine contract (4-0)", () => {
     const channelEdge =
       terrainAtlasEdgeTexels(profile.channelAtlasSlots, TERRAIN_CHANNEL_SLOT_EDGE);
     expect(base.channelAtlasMiB).toBeCloseTo(
-      (channelEdge * channelEdge * terrainChannelBytesPerTexel()) / 1_048_576,
+      (channelEdge
+        * channelEdge
+        * (terrainChannelBytesPerTexel() + terrainPlannedChannelBytesPerTexel()))
+        / 1_048_576,
       6,
     );
     expect(base.heightPyramidMiB).toBeCloseTo(
@@ -219,8 +237,9 @@ describe("terrain spine contract (4-0)", () => {
     expect(DYNAMIC_ALLOCATIONS.residentSeasonBuckets).toBe(SEASON_BUCKETS_RESIDENT);
     expect(
       DYNAMIC_ALLOCATIONS.channelInvariantBytesPerTexel
+      + DYNAMIC_ALLOCATIONS.channelPlannedInvariantBytesPerTexel
       + DYNAMIC_ALLOCATIONS.channelSeasonBytesPerTexel * SEASON_BUCKETS_RESIDENT,
-    ).toBe(terrainChannelBytesPerTexel());
+    ).toBe(terrainChannelBytesPerTexel() + terrainPlannedChannelBytesPerTexel());
     expect(DYNAMIC_ALLOCATIONS.heightPyramidEdge).toBe(TERRAIN_HEIGHT_PYRAMID_EDGE);
     expect(TERRAIN_HEIGHT_PYRAMID_SPAN_METERS).toBe(131_072);
   });

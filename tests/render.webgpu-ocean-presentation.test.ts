@@ -8,12 +8,16 @@ import {
 } from "../src/render/webgpu/water/SpectralOceanSystem";
 
 describe("spectral ocean presentation topology", () => {
-  it("uses an opaque, variance-filtered physical surface without a duplicate cloud field", () => {
+  it("uses a depth-aware, variance-filtered physical surface without a duplicate cloud field", () => {
     // 2-8: distance filtering is Toksvig — the moment mips' slope variance
     // becomes roughness; the old ad-hoc smoothstep distance term is gone.
     expect(WATER_FRAGMENT_WGSL).toContain("slopeVariance");
     expect(WATER_FRAGMENT_WGSL).not.toContain("distanceRoughness");
-    expect(WATER_FRAGMENT_WGSL).toContain("deepAbsorption");
+    // 5-11: bathymetry drives Beer-Lambert transmission and the soft shore;
+    // the former constant additive deep colour and opaque alpha are retired.
+    expect(WATER_FRAGMENT_WGSL).toContain("WATER_ABSORPTION_PER_METER");
+    expect(WATER_FRAGMENT_WGSL).toContain("waterShorelineAlpha(depth)");
+    expect(WATER_FRAGMENT_WGSL).not.toContain("deepAbsorption");
     // Slopes are stored and summed directly (fade-weighted) — the clamped
     // normal-recovery denominator must stay deleted.
     expect(WATER_FRAGMENT_WGSL).toContain("cascadeFades");
@@ -21,7 +25,9 @@ describe("spectral ocean presentation topology", () => {
     // Mip selection needs derivatives of the UNWRAPPED coordinate.
     expect(WATER_FRAGMENT_WGSL).toContain("textureSampleGrad");
     expect(WATER_FRAGMENT_WGSL).toContain("dpdx(unwrapped)");
-    expect(WATER_FRAGMENT_WGSL).toContain("vec4f(max(water, vec3f(0.0)), 1.0)");
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "vec4f(max(water, vec3f(0.0)), shorelineAlpha)",
+    );
     expect(WATER_FRAGMENT_WGSL).not.toContain("fn cloudNoise");
   });
 

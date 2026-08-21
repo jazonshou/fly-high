@@ -1,10 +1,13 @@
 import { BoundedPriorityQueue } from "@/src/workers/boundedPriorityQueue";
 import {
+  detailWorkerCommandTransferables,
   isDetailWorkerEvent,
   type DetailWorkerCommand,
   type DetailWorkerEvent,
 } from "@/src/workers/detailProtocol";
-import type { WorldSeed } from "@/src/world";
+import type { TerrainMacroGrid, TerrainPagePublication } from "@/src/workers/terrainAuthority";
+import type { WorldDefinition, WorldSeed } from "@/src/world";
+import type { TerrainAuxPagePublication } from "../terrain/TerrainPageAtlas";
 import type { GeneratedDetailCell } from "./types";
 
 export interface DetailGenerationRequest {
@@ -27,6 +30,7 @@ type WorkerFactory = () => Worker;
 
 export interface DetailGenerationClientOptions {
   readonly worldSeed: WorldSeed;
+  readonly world?: Readonly<WorldDefinition>;
   readonly cellSizeMeters: number;
   readonly seaLevelMeters: number;
   readonly maxQueued?: number;
@@ -72,6 +76,7 @@ export class DetailGenerationClient {
       this.worker.postMessage({
         type: "initialize",
         worldSeed: options.worldSeed,
+        ...(options.world ? { world: options.world } : {}),
         cellSizeMeters: options.cellSizeMeters,
         seaLevelMeters: options.seaLevelMeters,
       } satisfies DetailWorkerCommand);
@@ -90,6 +95,21 @@ export class DetailGenerationClient {
 
   get busy(): boolean {
     return this.activeRequestId !== null;
+  }
+
+  /** Publish the once-per-world macro fallback; ownership of its buffer transfers. */
+  publishTerrainMacro(macro: TerrainMacroGrid): boolean {
+    return this.postTerrainAuthority({ type: "terrainMacro", macro });
+  }
+
+  /** Publish one final L0 core; ownership of its buffer transfers. */
+  publishTerrainPage(page: TerrainPagePublication): boolean {
+    return this.postTerrainAuthority({ type: "terrainPage", page });
+  }
+
+  /** Publish one committed signed-shore page; ownership of its buffer transfers. */
+  publishTerrainAuxPage(page: TerrainAuxPagePublication): boolean {
+    return this.postTerrainAuthority({ type: "terrainAux", page });
   }
 
   /** Rejection contract mirrors the terrain client: -1 alone for the newcomer. */
@@ -153,6 +173,22 @@ export class DetailGenerationClient {
     } catch {
       this.activeRequestId = null;
       this.markUnavailable();
+    }
+  }
+
+  private postTerrainAuthority(
+    command: Extract<
+      DetailWorkerCommand,
+      { type: "terrainMacro" | "terrainPage" | "terrainAux" }
+    >,
+  ): boolean {
+    if (this.disposed || this.failed || !this.worker) return false;
+    try {
+      this.worker.postMessage(command, detailWorkerCommandTransferables(command));
+      return true;
+    } catch {
+      this.markUnavailable();
+      return false;
     }
   }
 

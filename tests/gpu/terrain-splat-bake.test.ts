@@ -69,6 +69,9 @@ const address = createWorldPageAddress(4, 3, -2);
       const heightSlot = heightAtlas.residency.request(invariantSlotKey(address), address)!.slot;
       const channelSlot = channelAtlas.residency.request(invariantSlotKey(address), address)!.slot;
       await generator.generate([heightSlot]);
+      // Phase 5 retired analytic dispatch-time publication: channel work may
+      // sample a height slot only after its final bounds/readback publication.
+      await generator.settle();
       await pyramid.recenter(address.x * 512, address.z * 512);
       const baked = await splat.bake([channelSlot], 171);
       expect(baked).toBe(1);
@@ -79,7 +82,7 @@ const address = createWorldPageAddress(4, 3, -2);
           0, 0, undefined, true, false,
           origin.u, origin.v, TERRAIN_CHANNEL_SLOT_EDGE, TERRAIN_CHANNEL_SLOT_EDGE,
         ) as Uint8Array;
-      const ids = await read(TERRAIN_CHANNEL_TEXTURES.splatIdLo);
+      const ids = await read(TERRAIN_CHANNEL_TEXTURES.splatId);
       const weights = await read(TERRAIN_CHANNEL_TEXTURES.splatWeightLo);
 
       const edge = TERRAIN_CHANNEL_SLOT_EDGE;
@@ -188,7 +191,7 @@ const address = createWorldPageAddress(4, 3, -2);
         await generator.settle();
         expect(await splat.bake([channelSlot], 171)).toBe(1);
         const origin = channelAtlas.slotOrigin(channelSlot.slotIndex);
-        const ids = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatIdLo)!.readPixels(
+        const ids = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatId)!.readPixels(
           0, 0, undefined, true, false,
           origin.u, origin.v, TERRAIN_CHANNEL_SLOT_EDGE, TERRAIN_CHANNEL_SLOT_EDGE,
         ) as Uint8Array;

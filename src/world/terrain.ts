@@ -11,6 +11,7 @@ import {
   fbm2D,
   filteredValueNoise2D,
   lerp,
+  RIDGED_OCTAVE_BAND_LIMIT_MEAN,
   ridgedChannelVarianceKept,
   ridgedFbm2D,
   saturate,
@@ -37,9 +38,99 @@ import {
 /** 3-8's camber, mirrored for the collision normal. The profile owns the value. */
 const RUNWAY_CROWN_METERS = runwayEarthworksProfile.crownMeters;
 
-export const MIN_TERRAIN_HEIGHT = -180;
-export const MAX_TERRAIN_HEIGHT = 2_200;
+/** Phase 5's shelf/slope/abyssal uplift profile bottoms at the abyssal plain. */
+export const MIN_TERRAIN_HEIGHT = -4_500;
+/** Activated Phase 5 headroom. The analytic compatibility kernel remains below it. */
+export const MAX_TERRAIN_HEIGHT = 4_500;
 export const TERRAIN_NORMAL_SAMPLE_DISTANCE = 2;
+
+/**
+ * Spatial material fields consumed by the landscape-evolution operators.
+ *
+ * Fabric is double-angle encoded: `(cos(2θ), sin(2θ))`. A geological
+ * direction has no arrow, so θ and θ+π are the same orientation; blending a
+ * scalar angle would introduce a discontinuity at that wrap.
+ */
+export interface TerrainEvolutionGeologySample {
+  fabricCos2: number;
+  fabricSin2: number;
+  /** Dimensionless stream-power K multiplier. */
+  erodibility: number;
+  /** Local dry angle of repose, in degrees. */
+  reposeDegrees: number;
+}
+
+function terrainEvolutionFabricDoubleAngle(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  // Two very broad fields stand in for the locally blended directions of the
+  // seeded plate boundaries. Encoding the result in double-angle space is the
+  // load-bearing part of the contract: interpolation never crosses an angle
+  // branch cut and every downstream anisotropic field turns with the range.
+  const directionX = filteredValueNoise2D(
+    mixSeed(seedHash, 154),
+    x / 96_000,
+    z / 96_000,
+    96_000,
+    filterWidthMeters,
+  );
+  const directionZ = filteredValueNoise2D(
+    mixSeed(seedHash, 155),
+    x / 72_000 + 17.3,
+    z / 72_000 - 9.1,
+    72_000,
+    filterWidthMeters,
+  );
+  if (Math.hypot(directionX, directionZ) < 1e-8) return 0;
+  return Math.atan2(directionZ, directionX);
+}
+
+/** Sample the seeded structural fabric and lithology fields used by erosion. */
+export function sampleTerrainEvolutionGeology(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+  target: TerrainEvolutionGeologySample = {
+    fabricCos2: 1,
+    fabricSin2: 0,
+    erodibility: 1,
+    reposeDegrees: 34,
+  },
+): TerrainEvolutionGeologySample {
+  assertFiniteCoordinate(x, "x");
+  assertFiniteCoordinate(z, "z");
+  assertFilterWidth(filterWidthMeters);
+  const doubleAngle = terrainEvolutionFabricDoubleAngle(
+    seedHash,
+    x,
+    z,
+    filterWidthMeters,
+  );
+  const lithology = filteredValueNoise2D(
+    mixSeed(seedHash, 156),
+    x / 28_000,
+    z / 28_000,
+    28_000,
+    filterWidthMeters,
+  );
+  const jointing = filteredValueNoise2D(
+    mixSeed(seedHash, 157),
+    x / 9_500 + 4.7,
+    z / 9_500 - 12.8,
+    9_500,
+    filterWidthMeters,
+  );
+  const hardness = saturate(0.5 + lithology * 0.38 + jointing * 0.12);
+  target.fabricCos2 = Math.cos(doubleAngle);
+  target.fabricSin2 = Math.sin(doubleAngle);
+  target.erodibility = lerp(1.45, 0.32, hardness);
+  target.reposeDegrees = lerp(28, 42, hardness);
+  return target;
+}
 
 /**
  * Full-bandwidth expectations of the kernel's nonlinear ridge composites,
@@ -197,6 +288,193 @@ export function sampleNaturalTerrainHeight(
 }
 
 /**
+ * Phase 5's pre-erosion tectonic field.
+ *
+ * This is intentionally separate from `sampleNaturalTerrainHeight`: explicit
+ * `worldEvolution: "analytic"` worlds keep the historical pointwise kernel,
+ * while eroded worlds feed this uplift/lithology field to the macro and page
+ * operators. In particular, the old valley/ravine/talus carve proxies are not
+ * present here; drainage and mass movement now create those shapes.
+ */
+export function sampleTerrainUpliftHeight(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  assertFiniteCoordinate(x, "x");
+  assertFiniteCoordinate(z, "z");
+  assertFilterWidth(filterWidthMeters);
+
+  const warpScale = 1 / 18_000;
+  const warpX = filteredValueNoise2D(
+    mixSeed(seedHash, 101),
+    x * warpScale,
+    z * warpScale,
+    18_000,
+    filterWidthMeters,
+  ) * 2_400;
+  const warpZ = filteredValueNoise2D(
+    mixSeed(seedHash, 102),
+    x * warpScale + 19.4,
+    z * warpScale - 7.7,
+    18_000,
+    filterWidthMeters,
+  ) * 2_400;
+  const warpedX = x + warpX;
+  const warpedZ = z + warpZ;
+
+  // Preserve the established coastline field while replacing its uniform
+  // -105 m floor with shelf -> continental slope -> abyssal plain.
+  const continental = fbm2D(
+    mixSeed(seedHash, 110),
+    warpedX / 8_600,
+    warpedZ / 8_600,
+    4,
+    2.01,
+    0.52,
+    8_600,
+    filterWidthMeters,
+  ) * 0.5 + 0.5;
+  const land = smoothstep(0.38, 0.57, continental);
+  const abyssToShelf = lerp(-4_000, -140, smoothstep(0.08, 0.36, continental));
+  const continentalProfile = lerp(
+    abyssToShelf,
+    135,
+    smoothstep(0.34, 0.58, continental),
+  );
+
+  const doubleAngle = terrainEvolutionFabricDoubleAngle(
+    seedHash,
+    warpedX,
+    warpedZ,
+    filterWidthMeters,
+  );
+  const angle = doubleAngle * 0.5;
+  const fabricCos = Math.cos(angle);
+  const fabricSin = Math.sin(angle);
+  const fabricX = warpedX * fabricCos + warpedZ * fabricSin;
+  const fabricZ = -warpedX * fabricSin + warpedZ * fabricCos;
+
+  // Broad seeded plate-boundary convergence creates one or two elongated
+  // ranges across the 524 km authority domain. The 12:1 anisotropic range
+  // channel is local to the rotating fabric, never a fixed compass bearing.
+  const plateBoundary = ridgedFbm2D(
+    mixSeed(seedHash, 150),
+    warpedX / 96_000,
+    warpedZ / 96_000,
+    3,
+    96_000,
+    filterWidthMeters,
+  );
+  const relativeMotion = filteredValueNoise2D(
+    mixSeed(seedHash, 151),
+    warpedX / 210_000 + 5.4,
+    warpedZ / 210_000 - 3.8,
+    210_000,
+    filterWidthMeters,
+  );
+  const convergence = smoothstep(0.38, 0.82, plateBoundary)
+    * smoothstep(-0.28, 0.58, relativeMotion);
+  const rangeRidges = ridgedFbm2D(
+    mixSeed(seedHash, 152),
+    fabricX / 6_000,
+    fabricZ / 72_000,
+    5,
+    6_000,
+    filterWidthMeters,
+  );
+  const rangeUplift = land * convergence
+    * Math.pow(Math.max(0, rangeRidges), 1.42)
+    * (900 + convergence * 2_850);
+
+  // The inherited provinces/rolling/ridge mass remain uplift, as specified by
+  // 5-8a. Pointwise faux erosion does not: no inverse-ridge valley term and no
+  // ravine or talus subtraction appears in this authority.
+  const rolling = fbm2D(
+    mixSeed(seedHash, 120),
+    warpedX / 1_650,
+    warpedZ / 1_650,
+    5,
+    2,
+    0.48,
+    1_650,
+    filterWidthMeters,
+  );
+  const province = fbm2D(
+    mixSeed(seedHash, 130),
+    warpedX / 13_500,
+    warpedZ / 13_500,
+    3,
+    2,
+    0.55,
+    13_500,
+    filterWidthMeters,
+  ) * 0.5 + 0.5;
+  const foothills = smoothstep(0.34, 0.7, province);
+  const inheritedRidges = ridgedFbm2D(
+    mixSeed(seedHash, 131),
+    fabricX / 2_550,
+    fabricZ / 8_900,
+    5,
+    2_550,
+    filterWidthMeters,
+  );
+  const foothillUplift = land * foothills
+    * Math.pow(Math.max(0, inheritedRidges), 2.12)
+    * 310;
+
+  // Lithology/detail is present before erosion so it can influence incision
+  // and talus. These mean-removed fine bands close the old 43 m spectral hole
+  // at 24 m and 9 m while the shared filter width removes them from coarse LODs.
+  const lithology = filteredValueNoise2D(
+    mixSeed(seedHash, 156),
+    x / 28_000,
+    z / 28_000,
+    28_000,
+    filterWidthMeters,
+  );
+  const localRock = land * (0.35 + foothills * 0.65);
+  const detail310 = fbm2D(
+    mixSeed(seedHash, 121),
+    x / 310,
+    z / 310,
+    3,
+    2.04,
+    0.46,
+    310,
+    filterWidthMeters,
+  ) * (5 + land * 12);
+  const ridges24 = ridgedFbm2D(
+    mixSeed(seedHash, 158),
+    fabricX / 24,
+    fabricZ / 96,
+    2,
+    24,
+    filterWidthMeters,
+  ) - RIDGED_OCTAVE_BAND_LIMIT_MEAN;
+  const ridges9 = ridgedFbm2D(
+    mixSeed(seedHash, 159),
+    fabricX / 9,
+    fabricZ / 36,
+    1,
+    9,
+    filterWidthMeters,
+  ) - RIDGED_OCTAVE_BAND_LIMIT_MEAN;
+  const fineLithology = localRock * (0.7 + lithology * 0.25)
+    * (ridges24 * 2.8 + ridges9 * 1.15);
+
+  const hillStrength = land * (30 + 92 * (1 - convergence * 0.45));
+  const height = continentalProfile
+    + rolling * hillStrength
+    + foothillUplift
+    + rangeUplift
+    + detail310
+    + fineLithology;
+  return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
+}
+
+/**
  * 3-8: the airport's earthworks, applied to a natural height. One profile,
  * evaluated identically by the render path and by physics — the §1.3
  * same-authority contract, one derivative deeper than Phase 0 needed it.
@@ -219,6 +497,22 @@ function applyAirportEarthworks(
     z,
     world.seedHash,
   );
+}
+
+/** Eroded-world source field with the same authored airport earthworks. */
+export function sampleFilteredTerrainUpliftHeight(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  const upliftHeight = sampleTerrainUpliftHeight(
+    world.seedHash,
+    x,
+    z,
+    filterWidthMeters,
+  );
+  return applyAirportEarthworks(world, upliftHeight, x, z);
 }
 
 /** Fast collision-query path: only computes terrain elevation. */
@@ -372,10 +666,28 @@ export function sampleTerrainMoisture(
   // Elongated rain-shadow provinces break the old near-uniform moisture field
   // into wet watersheds, dry uplands, and transitional ecological corridors.
   // The SMALLER period keys the fade, as every anisotropic channel does.
+  let rainShadowX: number;
+  let rainShadowZ: number;
+  if (world.worldEvolution === "eroded") {
+    const evolutionFabricAngle = terrainEvolutionFabricDoubleAngle(
+      world.seedHash,
+      x,
+      z,
+      filterWidthMeters,
+    ) * 0.5;
+    const fabricCos = Math.cos(evolutionFabricAngle);
+    const fabricSin = Math.sin(evolutionFabricAngle);
+    rainShadowX = x * fabricCos + z * fabricSin;
+    rainShadowZ = -x * fabricSin + z * fabricCos;
+  } else {
+    // Explicit analytic parity keeps the historical 0.42 shear bit-for-bit.
+    rainShadowX = x + z * 0.42;
+    rainShadowZ = z - x * 0.42;
+  }
   const rainShadow = filteredValueNoise2D(
     mixSeed(world.seedHash, 203),
-    (x + z * 0.42) / 18_000,
-    (z - x * 0.42) / 9_500,
+    rainShadowX / 18_000,
+    rainShadowZ / 9_500,
     9_500,
     filterWidthMeters,
   );

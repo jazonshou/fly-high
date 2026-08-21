@@ -4,6 +4,14 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import {
+  TERRAIN_TWI_DRY,
+  TERRAIN_TWI_SLOPE_EPSILON,
+  TERRAIN_TWI_WET,
+  terrainSlopeAngleFromNormalizedSteepness,
+  terrainTopographicWetnessIndex,
+  terrainTopographicWetnessToUnit,
+} from "./TerrainPageHydrology";
 
 /**
  * The land-cover classifier (`4-6`, `4-6b`, `R-27`).
@@ -42,6 +50,11 @@ export interface LandCoverInput {
   readonly elevationMeters: number;
   /** Normalised steepness (1 − normalY): 0 flat, ~0.21 at the angle of repose. */
   readonly slope: number;
+  /**
+   * Real upstream area from the erosion page. When present it supersedes the
+   * pre-erosion moisture proxy for wetness; omission preserves analytic parity.
+   */
+  readonly flowAccumulationAreaM2?: number;
   readonly moisture: number;
   /** Normalised temperature from the climate chain, before the seasonal shift. */
   readonly temperature: number;
@@ -76,6 +89,15 @@ export const LAND_COVER_SOFTMAX_BASE_TEMPERATURE = 0.22;
 const SNOWLINE_REFERENCE_METERS = 1_520;
 const METERS_PER_NORMALIZED_TEMPERATURE = 2_450;
 
+/** One classifier seam: real drainage when available, climatic proxy otherwise. */
+export function landCoverWetness(input: LandCoverInput): number {
+  if (input.flowAccumulationAreaM2 === undefined) return saturate(input.moisture);
+  return terrainTopographicWetnessToUnit(terrainTopographicWetnessIndex(
+    input.flowAccumulationAreaM2,
+    terrainSlopeAngleFromNormalizedSteepness(input.slope),
+  ));
+}
+
 /**
  * The ten suitabilities, in `SurfaceMaterial` order.
  *
@@ -88,11 +110,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const {
     elevationMeters: elevation,
     slope,
-    moisture,
     temperature,
     aspect,
     airportInfluence,
   } = input;
+  const wetness = landCoverWetness(input);
 
   // The snowline descends with the season; the reference day leaves it exactly
   // where Phase 3 tuned it.
@@ -109,8 +131,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // (`smoothstep(1.5, 7, elevation)`), so the ground and the plants agree
   // about where the beach ends.
   const shore = smoothstep(-1, 3, elevation);
-  const dry = 1 - smoothstep(0.28, 0.62, moisture);
-  const wet = smoothstep(0.3, 0.64, moisture);
+  const dry = 1 - smoothstep(0.28, 0.62, wetness);
+  const wet = smoothstep(0.3, 0.64, wetness);
   const warm = smoothstep(0.16, 0.34, temperature);
   const gentle = 1 - smoothstep(0.06, 0.26, slope);
   const steep = smoothstep(0.24, 0.58, slope);
@@ -157,7 +179,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
  * add noise to a boundary whose shape was already uniform.
  */
 export function landCoverSoftmaxTemperature(input: LandCoverInput): number {
-  const sharpening = saturate(input.slope * 2.4) * 0.6 + (1 - saturate(input.moisture)) * 0.25;
+  const sharpening = saturate(input.slope * 2.4) * 0.6
+    + (1 - landCoverWetness(input)) * 0.25;
   return LAND_COVER_SOFTMAX_BASE_TEMPERATURE * (1.35 - sharpening);
 }
 
@@ -247,6 +270,8 @@ export const LAND_COVER_CLASSIFIER_WGSL = /* wgsl */ `
 struct LandCoverInput {
   elevationMeters: f32,
   slope: f32,
+  flowAccumulationAreaM2: f32,
+  flowAccumulationValid: f32,
   moisture: f32,
   temperature: f32,
   aspect: f32,
@@ -261,15 +286,28 @@ const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
 const LAND_COVER_SNOWLINE_REFERENCE: f32 = ${SNOWLINE_REFERENCE_METERS}.0;
 const LAND_COVER_METERS_PER_TEMPERATURE: f32 = ${METERS_PER_NORMALIZED_TEMPERATURE}.0;
 
+fn landCoverWetness(input: LandCoverInput) -> f32 {
+  if (input.flowAccumulationValid < 0.5) { return kSaturate(input.moisture); }
+  let normalY = max(0.000001, 1.0 - input.slope);
+  let tanSlope = sqrt(max(0.0, 1.0 / (normalY * normalY) - 1.0));
+  let twi = log(
+    (1.0 + max(0.0, input.flowAccumulationAreaM2))
+      / (tanSlope + ${TERRAIN_TWI_SLOPE_EPSILON}),
+  );
+  let mapped = kSaturate((twi - ${TERRAIN_TWI_DRY}.0) / ${TERRAIN_TWI_WET - TERRAIN_TWI_DRY}.0);
+  return mapped * mapped * (3.0 - 2.0 * mapped);
+}
+
 fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
   let elevation = input.elevationMeters;
   let slope = input.slope;
+  let wetness = landCoverWetness(input);
   let snowline = LAND_COVER_SNOWLINE_REFERENCE
     + input.seasonalTemperatureShift * LAND_COVER_METERS_PER_TEMPERATURE
     + input.aspect * 90.0;
   let shore = kSmoothstep(-1.0, 3.0, elevation);
-  let dry = 1.0 - kSmoothstep(0.28, 0.62, input.moisture);
-  let wet = kSmoothstep(0.3, 0.64, input.moisture);
+  let dry = 1.0 - kSmoothstep(0.28, 0.62, wetness);
+  let wet = kSmoothstep(0.3, 0.64, wetness);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
   let gentle = 1.0 - kSmoothstep(0.06, 0.26, slope);
   let steep = kSmoothstep(0.24, 0.58, slope);
@@ -301,7 +339,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
 
 fn landCoverSoftmaxTemperature(input: LandCoverInput) -> f32 {
   let sharpening = kSaturate(input.slope * 2.4) * 0.6
-    + (1.0 - kSaturate(input.moisture)) * 0.25;
+    + (1.0 - landCoverWetness(input)) * 0.25;
   return LAND_COVER_SOFTMAX_BASE * (1.35 - sharpening);
 }
 
@@ -387,10 +425,10 @@ struct SplatJob {
 
 @group(0) @binding(1) var<storage, read> splatJobs: array<SplatJob>;
 @group(0) @binding(2) var splatHeightAtlas: texture_2d<f32>;
-@group(0) @binding(3) var splatIdLo: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var splatId: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var splatWeightLo: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(5) var splatIdHi: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(6) var splatWeightHi: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(5) var splatWeightHi: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(6) var splatFlowAccumAtlas: texture_2d<f32>;
 
 /** Slope from the page's own texel grid — never a fixed 2 m difference. */
 fn splatSlopeAt(job: SplatJob, heightTexel: vec2f) -> f32 {
@@ -416,6 +454,15 @@ fn splatClassify(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> LandCov
   var input: LandCoverInput;
   input.elevationMeters = elevation;
   input.slope = splatSlopeAt(job, heightTexel);
+  let channelTexel = vec2i(job.slots.xy) + vec2i(vec2f(
+    (localX - job.placement.x) / job.shape.x,
+    (localZ - job.placement.y) / job.shape.x,
+  ));
+  let flowLog2 = max(0.0, textureLoad(splatFlowAccumAtlas, channelTexel, 0).r);
+  input.flowAccumulationAreaM2 = max(0.0, exp2(flowLog2) - 1.0);
+  // A null-created analytic atlas is zero-initialised. Erosion flow starts at
+  // one contributing source cell, so zero is an unambiguous parity sentinel.
+  input.flowAccumulationValid = select(0.0, 1.0, flowLog2 > 0.0);
   input.moisture = terrainMoisture(localX, localZ);
   input.temperature = terrainTemperatureFromClimate(terrainClimate(localX, localZ), elevation);
   input.aspect = 0.0;
@@ -485,10 +532,9 @@ fn bakeSplat(
   // axis — which is exactly what the axis was ordered for.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
   let lo = splatSupersample(job, localX, localZ, job.placement.z);
-  textureStore(splatIdLo, texel, lo.ids * scale);
+  textureStore(splatId, texel, lo.ids * scale);
   textureStore(splatWeightLo, texel, lo.weights);
   let hi = splatSupersample(job, localX, localZ, job.placement.w);
-  textureStore(splatIdHi, texel, hi.ids * scale);
   textureStore(splatWeightHi, texel, hi.weights);
 
 }
