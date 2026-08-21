@@ -555,6 +555,7 @@ runtime wiring only. It does not tick Gate 5A–5E or the phase exit above.
 |---|---|---|
 | `5-0`/`5-1` contract | `TerrainEvolutionContract.ts` owns the 1024² × 512 m cell-centred macro layout, open rim, 16-texel analytic blend, authority ladder, transferable macro/page/graph/lake exports and one physical hydraulic law. `worldEvolution` is world content and has no tier input. | Matches D2/D9/D11. The performance estimator reserves the target GPU macro/scratch/graph layouts, but those rows are conservative final-layout headroom rather than measured live GPU inventory in the current CPU reference. |
 | `5-3` macro evolution | `TerrainMacroEvolutionClient` samples the full analytic uplift/lithology authority in a dedicated Worker, runs the deterministic open-rim fill/MFD/stream-power/talus reference, transfers the canonical arrays, and exposes progress/state/disposal. `TerrainEvolutionRuntime` extracts `ChannelNetwork`, retains a safe simulation macro grid and publishes that grid once. | **Material deviation:** this is a CPU-worker reference, not the planned production GPU macro pass. A local production-shape CPU benchmark on seed `phase5-production-benchmark` measured uplift+K/repose sampling **3,174 ms**, evolution **4,323 ms**, total **7,497 ms**, with 15,068 lakes and 18,441 channel seeds. That is non-vacuous local reference evidence, not reference-machine/GPU acceptance; it misses Gate 5C/R-5J's 1.5 s target. The final GPU producer should replace it behind the client/result boundary. |
+| Startup hardening | The first bathymetry dispatch declared WGSL's reserved identifier `target`. Babylon's `dispatchWhenReady` stopped polling after the failed readiness path but left its Promise pending, so `FlightRenderer.create()` never settled. The shader now uses `targetTexel`; a real-adapter test compiles the bathymetry module; `dispatchBathymetryComputeWhenReady` rejects on compile error, deadline, abort or disposal; and renderer startup places bathymetry behind its own bounded deadline. | A clean default-eroded development reload reached the start screen in **11,098 ms**. A cache-busted navigation against the built production server reached it in **13,255 ms** and entered the cockpit with no current error. These are local functional checks, not cold/reference-machine measurements or Gate 5C's 1.5 s acceptance. |
 | Evolution debug surface | `TerrainDebugOverlay` now previews macro flow accumulation, lake mask, drainage base levels, double-angle fabric and erodibility from the live canonical result. | The required debugging surface exists. No flown/captured overlay review or tuning evidence is recorded here, so the visual half of Gate 5C remains open. |
 | `5-4`/`5-6` page evolution | `TerrainErosionCompute`, `TerrainPageErosion`, the client/protocol/Worker and `TerrainPageAtlas` implement a deterministic 64-texel-halo page pass with bounded 16-texel pit breach, fixed MFD/stream-power/talus counts, full runway-earthworks erosion exclusion, exact stored overlap, final atlas upload and L0 collision publication. `generateTerrainErodedPage` also supplies deterministic, strictly-downhill, acyclic receiver overrides that divert drainage around the earthworks perimeter. | **Material deviations:** production is the CPU-worker reference; exactly **one page is in flight** so stale flight-path work cannot fill the queue. Pages seed height and accumulation directly from the canonical macro plus band-limited fine detail, **not** from a resident-parent convergence chain. The production runway mask and perimeter-drain policy are live and focused tests cover legality; the multi-frame GPU DAG, parent-chain proof and measured per-page cost remain open. |
 | `5-2` height authority | `terrainAuthority.ts`, simulation protocol/client plumbing and the renderer publisher implement the worker-side complete-stencil L0 Catmull-Rom ring, cell-centred macro fallback, analytic recovery, split counters, one-shot macro transfer and completed-L0 page transfer. `TerrainConsumerAuthority.ts` adapts the same ladder to rich height/normal/slope samples used by detail and wildlife while retaining analytic climate/material fields. | Implements the live L0 → macro → analytic ladder for physics and ecology consumers. The old render-side collision proxy is no longer the fallback counter; diagnostics read the simulation worker's authority counters. Final on-adapter parity/flight acceptance remains governed by the exit checklist. |
@@ -563,32 +564,30 @@ runtime wiring only. It does not tick Gate 5A–5E or the phase exit above.
 | `5-9`/`5-12` inland water | `ChannelNetwork` deterministically extracts a monotone graph with exported hydraulics from the canonical macro result. Eroded `HydrologySystem` builds and retains graph geometry without entering legacy paging. Riparian/channel exclusion is present in the vegetation density path. | **Material deviations:** the current reference builds one retained world mesh; river cover follows the graph segments directly rather than the planned arc-length resampling/delta expansion, and lake components use a conservative convex boundary plus centre-fan triangulation rather than marching squares, Douglas-Peucker and ear clipping with holes. Depth-driven shoreline trimming keeps the conservative cover safe, but those are not geometry-completion evidence. **Compatibility deviation:** the historical tracer/generator remains public and live only for explicit analytic worlds; eroded worlds do not call it. Graph legality and conversion have focused tests, but confluence/delta flights, no-tree-in-river flown evidence and the planned full tracer deletion are not claimed. |
 | `5-10`/`5-11` water depth | `BathymetryClipmap` owns two toroidal 1024² R16F levels (16 and 128 m/texel), uploads macro height to a read-only GPU buffer, and uses the shared depth substrate in both ocean and inland-water shaders for Beer-Lambert volume colour, shoreline alpha, underwater response and air-to-water refracted bed coordinates. | **Material deviations:** eroded bathymetry currently samples/blends the canonical **macro** authority at cell centres; it does not overlay resident L0 page erosion. The refracted bed albedo is a deterministic analytic mineral proxy rather than the terrain material arrays. Analytic height mode remains exact. Coast/lake visual review, timings and the sanctioned water rebaseline remain open. |
 
-**Verification and acceptance evidence.** On this final candidate tree,
-`npm run verify` is green: ESLint reports zero errors (one existing unused-
-constant warning), TypeScript passes, all **92** Node test files pass with
-**700 passed / 1 skipped**, and the production build completes. The complete
-Chromium WebGPU project is also green via `npm run test:gpu`: **28 files / 50
-tests**. The run fixed and now pins the Phase-5 final-publication boundary in
-the direct splat/occlusion fixtures and keeps the Phase-4 cold-streaming
-fixture explicitly analytic; it converged to 319/320 nodes at L2 with 36
-resident pages.
+**Verification and acceptance evidence.** On the corrected candidate,
+`npm run verify` is green: ESLint reports zero errors and one existing warning,
+TypeScript passes, all **92** Node files pass with **703 passed / 1 skipped**,
+and the production build completes. The complete Chromium WebGPU project is
+green via `npm run test:gpu`: **28 files / 50 tests**, including the new
+bathymetry compile gate. A cache-busted navigation against that built server
+reached the default-eroded start screen in **13,255 ms** and then the cockpit
+with no current error.
 
 The performance capture, either sanctioned Phase-5 rebaseline, the appended
 dendritic/valley/lake shots, the named coast/confluence/delta flights and the
-three-run runway re-pin remain unperformed. The 7,497 ms value above is the
-only recorded production-shape startup timing and is explicitly a local
-CPU-reference measurement that fails the planned load target; no Phase-5
+three-run runway re-pin remain unperformed. The 7,497 ms production-shape CPU
+algorithm benchmark, 11,098 ms development reload and 13,255 ms production
+navigation are local diagnostics; none is a cold/reference-machine or final-GPU
+acceptance measurement, and all exceed the planned 1.5 s load target. No Phase-5
 per-page, reference-GPU or steady-frame timing has been inferred from declared
 iteration counts or budget seeds. Those are the remaining gate evidence, not
 documentation polish.
 
 **Branch hand-off.** The requested local
-`jazonshou/Phase-3.5-Implementation` branch was created at the prerequisite-
-complete Phase-4.5 base and now carries this Phase-5 working tree. Its remote
-counterpart was a strict ancestor with no divergent commits (15 commits behind
-the prerequisite base), so no history rewrite or conflict resolution was
-needed. The local branch tracks that remote; no commit or push is represented
-by this record.
+`jazonshou/Phase-3.5-Implementation` branch now points at the committed Phase-5
+candidate and carries this startup correction as working-tree changes. It
+tracks `origin/jazonshou/Phase-3.5-Implementation`, which is one commit behind;
+no fix commit or push is represented by this record.
 
 ---
 
@@ -724,6 +723,7 @@ records why the attractive 347 → 186 draw model was not accepted.
 | 2026-08-20 | `5-3` implementation | CPU-worker macro evolution is the current correctness reference; the canonical client/result boundary is the replacement seam for the final GPU pass | Keeps the 1024² uplift sampling and global evolution off the main thread. A local production-shape run measured 7,497 ms total and misses the 1.5 s target; it is reference evidence for the CPU implementation, not final-GPU/reference-machine acceptance. |
 | 2026-08-20 | `5-4` implementation | Admit one CPU-worker page at a time and seed every page directly from canonical macro height/accumulation plus band-limited detail | Prevents stale flight-path queue growth and removes resident-parent arrival order from deterministic output. This deviates from the planned parent chain and does not close the future multi-frame GPU DAG. |
 | 2026-08-20 | `5-10` implementation | Eroded bathymetry samples the cell-centred macro authority with the 16-texel rim blend; analytic worlds ignore it | A single read-only macro upload preserves deterministic toroidal strips. Resident L0 overlay remains a named refinement; no consumer may invent a separate height authority. |
+| 2026-08-20 | `5-10` startup hardening | Bathymetry compute readiness is bounded, abortable and compile-error-reporting; renderer startup owns an outer deadline | The reserved WGSL identifier `target` made Babylon stop polling while leaving `dispatchWhenReady` pending. Rename it to `targetTexel`, compile the module on a real adapter, and never await Babylon's resolve-only helper on a startup-critical path. |
 | 2026-08-20 | `5-A` compatibility | Keep historical carve proxies, rain-shadow shear and tracer for explicit analytic worlds; exclude them from eroded uplift/runtime | `worldEvolution: "analytic"` is a real compatibility promise. Eroded worlds use the canonical graph and never retrace the historical kernel. |
 | 2026-08-20 | Performance reservation | Keep target-GPU macro/scratch/channel-graph memory reserved while the CPU-worker reference is live | Prevents later work consuming the final producer's headroom twice. These declared rows are not measured live GPU inventory or timing evidence. |
 | — | `5-1` | Minimum meshed lake area (proposed 0.04 km²) | *pin from the first flown lake review* |

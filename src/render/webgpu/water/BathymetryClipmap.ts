@@ -35,6 +35,124 @@ export const BATHYMETRY_LEVEL_COUNT = 2;
 export const BATHYMETRY_TEXTURE_BYTES_PER_TEXEL = 2;
 
 const BATHYMETRY_WORKGROUP_EDGE = 8;
+export const BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS = 30_000;
+const BATHYMETRY_COMPUTE_POLL_MILLISECONDS = 16;
+
+export interface BathymetryComputeDispatchPort {
+  readonly name: string;
+  onCompiled: ComputeShader["onCompiled"];
+  onError: ComputeShader["onError"];
+  dispatch(x: number, y?: number, z?: number): boolean;
+}
+
+export interface BathymetryComputeDispatchOptions {
+  readonly timeoutMilliseconds?: number;
+  readonly pollMilliseconds?: number;
+  readonly signals?: readonly AbortSignal[];
+}
+
+function bathymetryAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Bounded replacement for Babylon's resolve-only `dispatchWhenReady` retry.
+ * A WGSL compile error, timeout, startup abort, or owner disposal must settle
+ * the caller and remove every timer/listener it installed.
+ */
+export function dispatchBathymetryComputeWhenReady(
+  shader: BathymetryComputeDispatchPort,
+  x: number,
+  y: number,
+  z: number,
+  options: BathymetryComputeDispatchOptions = {},
+): Promise<void> {
+  const timeoutMilliseconds = options.timeoutMilliseconds
+    ?? BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS;
+  const pollMilliseconds = options.pollMilliseconds
+    ?? BATHYMETRY_COMPUTE_POLL_MILLISECONDS;
+  if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds < 0) {
+    return Promise.reject(new RangeError("Bathymetry compute timeout must be non-negative"));
+  }
+  if (!Number.isFinite(pollMilliseconds) || pollMilliseconds < 0) {
+    return Promise.reject(new RangeError("Bathymetry compute poll interval must be non-negative"));
+  }
+  const signals = options.signals ?? [];
+  if (signals.some((signal) => signal.aborted)) {
+    return Promise.reject(bathymetryAbortError(`Dispatch of ${shader.name} was cancelled`));
+  }
+
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const previousCompiled = shader.onCompiled;
+    const previousError = shader.onError;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    const cleanup = (): void => {
+      if (timer !== null) clearTimeout(timer);
+      for (const signal of signals) signal.removeEventListener("abort", onAbort);
+      if (shader.onCompiled === onCompiled) shader.onCompiled = previousCompiled;
+      if (shader.onError === onError) shader.onError = previousError;
+    };
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = (): void => {
+      finish(bathymetryAbortError(`Dispatch of ${shader.name} was cancelled`));
+    };
+    const onCompiled: NonNullable<ComputeShader["onCompiled"]> = (effect): void => {
+      previousCompiled?.(effect);
+    };
+    const onError: NonNullable<ComputeShader["onError"]> = (effect, errors): void => {
+      try {
+        previousError?.(effect, errors);
+      } finally {
+        finish(new Error(
+          `Unable to compile ${shader.name}: ${errors || "unknown WGSL error"}`,
+        ));
+      }
+    };
+    const poll = (): void => {
+      if (settled) return;
+      if (signals.some((signal) => signal.aborted)) {
+        onAbort();
+        return;
+      }
+      try {
+        if (shader.dispatch(x, y, z)) {
+          finish();
+          return;
+        }
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      // `dispatch()` can synchronously report a compile error through the
+      // callback above while still returning false. Do not install a timer
+      // after that callback has already completed cleanup.
+      if (settled) return;
+      if (performance.now() - startedAt >= timeoutMilliseconds) {
+        finish(new Error(
+          `Timed out dispatching ${shader.name} after ${timeoutMilliseconds} ms`,
+        ));
+        return;
+      }
+      timer = setTimeout(poll, pollMilliseconds);
+    };
+
+    shader.onCompiled = onCompiled;
+    shader.onError = onError;
+    for (const signal of signals) signal.addEventListener("abort", onAbort, { once: true });
+    poll();
+  });
+}
 
 export interface BathymetryLevelDefinition {
   readonly level: 0 | 1;
@@ -289,11 +407,11 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
     -bathymetryParams.water.z,
     bathymetryParams.water.z,
   );
-  let target = vec2i(
+  let targetTexel = vec2i(
     positiveMod(globalTexel.x, ${BATHYMETRY_CLIPMAP_EDGE}),
     positiveMod(globalTexel.y, ${BATHYMETRY_CLIPMAP_EDGE}),
   );
-  textureStore(bathymetryTarget, target, vec4f(bedDelta, 0.0, 0.0, 0.0));
+  textureStore(bathymetryTarget, targetTexel, vec4f(bedDelta, 0.0, 0.0, 0.0));
 }
 `;
 
@@ -344,6 +462,7 @@ export class BathymetryClipmap {
   private authorityRevision = 0;
   private updating = false;
   private disposed = false;
+  private readonly lifetimeController = new AbortController();
 
   constructor(
     private readonly scene: Scene,
@@ -391,8 +510,12 @@ export class BathymetryClipmap {
     };
   }
 
-  async initialize(observerX: number, observerZ: number): Promise<void> {
-    await this.recenter(observerX, observerZ);
+  async initialize(
+    observerX: number,
+    observerZ: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.recenter(observerX, observerZ, signal);
   }
 
   /**
@@ -421,7 +544,11 @@ export class BathymetryClipmap {
   }
 
   /** Returns true when at least one texture update was submitted. */
-  async recenter(observerX: number, observerZ: number): Promise<boolean> {
+  async recenter(
+    observerX: number,
+    observerZ: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     if (this.disposed || this.updating) return false;
     if (!Number.isFinite(observerX) || !Number.isFinite(observerZ)) {
       throw new RangeError("Bathymetry observer coordinates must be finite");
@@ -464,18 +591,26 @@ export class BathymetryClipmap {
     try {
       for (const entry of work) {
         for (const rectangle of entry.rectangles) {
-          await this.dispatch(entry.runtime, rectangle);
+          await this.dispatch(entry.runtime, rectangle, signal);
         }
         entry.runtime.originTexelX = entry.nextOriginX;
         entry.runtime.originTexelZ = entry.nextOriginZ;
       }
       if (authorityRevision === this.authorityRevision) this.authorityDirty = false;
       return true;
+    } catch (error) {
+      // A render-loop recenter may be in flight when its owner is disposed.
+      // Disposal is a completed lifecycle transition, not an unhandled frame
+      // error; explicit startup cancellation still propagates to the caller.
+      if (this.disposed && error instanceof Error && error.name === "AbortError") {
+        return false;
+      }
+      throw error;
     } finally {
       this.updating = false;
       if (authorityRevision !== this.authorityRevision) {
-        // An authority swap while dispatchWhenReady yielded must not publish a
-        // half-analytic/half-eroded placement as resident.
+        // An authority swap while the bounded readiness dispatch yielded must
+        // not publish a half-analytic/half-eroded placement as resident.
         this.authorityDirty = true;
       }
     }
@@ -503,6 +638,7 @@ export class BathymetryClipmap {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.lifetimeController.abort();
     for (const level of this.levels) level.texture?.dispose();
     this.paramsBuffer?.dispose();
     this.pageBuffer?.dispose();
@@ -517,6 +653,7 @@ export class BathymetryClipmap {
   private async dispatch(
     runtime: BathymetryLevelRuntime,
     rectangle: BathymetryTexelRect,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!this.engine || !runtime.texture) return;
     this.ensureCompute();
@@ -550,10 +687,16 @@ export class BathymetryClipmap {
     shader.setStorageBuffer("bathymetryParams", paramsBuffer);
     shader.setStorageBuffer("bathymetryMacroHeight", macroHeightBuffer);
     shader.setStorageTexture("bathymetryTarget", runtime.texture);
-    await shader.dispatchWhenReady(
+    await dispatchBathymetryComputeWhenReady(
+      shader,
       Math.ceil(rectangle.width / BATHYMETRY_WORKGROUP_EDGE),
       Math.ceil(rectangle.height / BATHYMETRY_WORKGROUP_EDGE),
       1,
+      {
+        signals: signal
+          ? [this.lifetimeController.signal, signal]
+          : [this.lifetimeController.signal],
+      },
     );
   }
 

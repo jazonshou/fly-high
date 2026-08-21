@@ -4,15 +4,18 @@ import { describe, expect, it } from "vitest";
 import {
   BathymetryClipmap,
   BATHYMETRY_CLIPMAP_EDGE,
+  BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS,
   BATHYMETRY_FAR_TEXEL_METERS,
   BATHYMETRY_LEVELS,
   BATHYMETRY_NEAR_TEXEL_METERS,
   BATHYMETRY_UPDATE_WGSL,
   bathymetryClipmapBytes,
   bathymetryUpdateRectangles,
+  dispatchBathymetryComputeWhenReady,
   sampleBathymetryMacroHeight,
   sampleBathymetryTerrainAuthority,
   toroidalBathymetryTexel,
+  type BathymetryComputeDispatchPort,
 } from "../src/render/webgpu/water/BathymetryClipmap";
 import {
   EVOLUTION_ANALYTIC_BLEND_METERS,
@@ -57,6 +60,18 @@ function macroFixture(): TerrainMacroEvolutionExport {
   return cachedMacroFixture;
 }
 
+function fakeComputeDispatch(
+  dispatch: (shader: BathymetryComputeDispatchPort) => boolean,
+): BathymetryComputeDispatchPort {
+  const shader: BathymetryComputeDispatchPort = {
+    name: "bathymetry-fixture",
+    onCompiled: null,
+    onError: null,
+    dispatch: () => dispatch(shader),
+  };
+  return shader;
+}
+
 describe("Phase 5 bathymetry clipmap", () => {
   it("pins the two tier-independent R16F levels and their memory", () => {
     expect(BATHYMETRY_LEVELS.map((level) => level.texelMeters)).toEqual([
@@ -68,7 +83,60 @@ describe("Phase 5 bathymetry clipmap", () => {
       131_072,
     ]);
     expect(bathymetryClipmapBytes()).toBe(4 * 1_024 * 1_024);
+    expect(BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS).toBe(30_000);
     expect(BATHYMETRY_UPDATE_WGSL).toContain("texture_storage_2d<r16float, write>");
+  });
+
+  it("rejects a WGSL compile error instead of leaving startup pending", async () => {
+    const shader = fakeComputeDispatch((candidate) => {
+      candidate.onError?.(
+        null as never,
+        "reserved keyword 'target'",
+      );
+      return false;
+    });
+
+    await expect(dispatchBathymetryComputeWhenReady(shader, 1, 1, 1))
+      .rejects.toThrow("reserved keyword 'target'");
+    expect(shader.onCompiled).toBeNull();
+    expect(shader.onError).toBeNull();
+  });
+
+  it("rejects a compute readiness timeout and clears its callbacks", async () => {
+    let dispatches = 0;
+    const shader = fakeComputeDispatch(() => {
+      dispatches += 1;
+      return false;
+    });
+
+    await expect(dispatchBathymetryComputeWhenReady(shader, 1, 1, 1, {
+      timeoutMilliseconds: 0,
+      pollMilliseconds: 0,
+    })).rejects.toThrow("Timed out dispatching bathymetry-fixture after 0 ms");
+    expect(dispatches).toBe(1);
+    expect(shader.onCompiled).toBeNull();
+    expect(shader.onError).toBeNull();
+  });
+
+  it("settles and stops polling when owner disposal aborts an in-flight dispatch", async () => {
+    const lifetime = new AbortController();
+    let dispatches = 0;
+    const shader = fakeComputeDispatch(() => {
+      dispatches += 1;
+      return false;
+    });
+    const pending = dispatchBathymetryComputeWhenReady(shader, 1, 1, 1, {
+      timeoutMilliseconds: 60_000,
+      pollMilliseconds: 60_000,
+      signals: [lifetime.signal],
+    });
+
+    expect(dispatches).toBe(1);
+    lifetime.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(dispatches).toBe(1);
+    expect(shader.onCompiled).toBeNull();
+    expect(shader.onError).toBeNull();
   });
 
   it("wraps negative coordinates without a signed-remainder seam", () => {

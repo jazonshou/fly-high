@@ -577,9 +577,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       const bathymetry = new BathymetryClipmap(scene, options.world);
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
-      await bathymetry.initialize(
-        options.world.airport?.centerX ?? 0,
-        options.world.airport?.centerZ ?? 0,
+      await awaitRendererStartup(
+        bathymetry.initialize(
+          options.world.airport?.centerX ?? 0,
+          options.world.airport?.centerZ ?? 0,
+          options.signal,
+        ),
+        options.signal,
+        "bathymetry clipmap",
+        SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       const aircraft = createWebGpuAircraft(scene, options.aircraft);
       cleanup.push(() => aircraft.dispose());

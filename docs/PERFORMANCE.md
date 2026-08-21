@@ -118,6 +118,24 @@ measured 3,174 ms sampling uplift/erodibility/repose plus 4,323 ms evolution,
 reference-machine nor final-GPU acceptance measurement. No measured per-page
 erosion cost is claimed here.
 
+The default-eroded startup critical path is longer than the macro algorithm
+alone. `FlightRenderer.create()` starts and awaits macro evolution, initializes
+the bathymetry clipmap from that authority, then completes scene readiness and
+terrain pre-warm; only after the renderer resolves does the game construct the
+simulation client and begin its frame loop. A bathymetry WGSL declaration used
+the reserved word `target`; Babylon stopped polling its failed
+`dispatchWhenReady` path but left the Promise pending, so this sequence could
+hold the load screen forever without surfacing an error. The declaration is now
+`targetTexel`, the module is compiled by a real-adapter test, bathymetry compute
+readiness rejects on compile error, timeout, abort or disposal, and the renderer
+owns an outer startup deadline. A clean default-eroded development reload
+reached the start screen in **11,098 ms**; a cache-busted navigation against the
+built production server reached it in **13,255 ms** and then entered the cockpit
+with no current error. Full Node/build verification and all **28 files / 50
+tests** in the Chromium WebGPU suite pass. These timings are local functional
+checks, not cold/reference-machine measurements, and do not satisfy the 1.5 s
+target.
+
 Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. The ACES/FXAA post stack is the same across quality profiles.
 
 ## Terrain and world paging
@@ -463,7 +481,13 @@ Three things this says, and one it does not:
 ## Capture harness
 
 `npm run perf:capture` renders the committed shot list against
-`tests/perf/baseline`. Two notes that matter when reading its output:
+`tests/perf/baseline`. Notes that matter when reading its output:
+
+- The steady capture begins after renderer creation and therefore cannot catch
+  a startup Promise that never settles. Cold default-eroded time-to-ready,
+  startup-stage timings, timeout and console-error status are a separate
+  measurement; the 11,098 ms development reload and 13,255 ms built-server
+  navigation above are diagnostic evidence, not that acceptance result.
 
 - `VITE_PERF_SHOTS=name[,name]` runs a subset. A full capture is ~4–6 minutes,
   which is the wrong feedback loop for diagnosing one bad shot; the filter
