@@ -42,6 +42,13 @@ Everything below is grounded in a **fresh 16-shot `perf:capture` run on the bran
 
 ### 2.1 The committed baseline is stale — do not quote it
 
+> **Superseded 2026-08-25.** The baseline was rebaselined on that date from a reviewed 16-shot candidate
+> (`tests/perf/artifacts/rebaseline-candidates/2026-08-25T14-17-59.537Z`) taken on the reference host at the
+> branch tip. `tests/perf/baseline/` now describes the CURRENT build and is quotable again; every number in
+> §2.2 below describes the pre-rebaseline comparison and is kept as the record of why the churn was
+> sanctioned. All five defect frames named in the appendix were reviewed against the new capture before
+> promotion and none of the defects survive. See D-11.
+
 `git log --follow` on every file in `tests/perf/baseline/` terminates at **`e8b90b1` "Implement Phase 4.5"**.
 `git diff e8b90b1 7f09f8a -- tests/perf/baseline/` is empty; the blobs are bit-identical at both ends. The
 committed `report.json` is byte-identical to the 15:39 post-fix rebaseline.
@@ -607,6 +614,7 @@ Record every departure from this plan here, with the reason and the evidence tha
 | D-8 | G0-2 | Ocean visibility gate CANCELLED. | Ablation: disabling all 44 ocean dispatches moves P95 1.1-1.6 ms, not the ~20 ms assumed. | 2026-08-21 |
 | D-9 | §4.3 | "No shot has ever exceeded 47.8 fps" finally explained. | Not a ceiling — vsync quantisation on a 120 Hz surface. The no-render floor is 121.3 fps. | 2026-08-21 |
 | D-10 | Sequencing | C-1 promoted ahead of D-1. | The dominant term is CPU/GPU serialisation, which draw-count work does not address. | 2026-08-21 |
+| D-11 | §2.1 | Committed baseline REBASELINED, and the CI perf gate split into enforced/reported halves. | Turning the perf job into a PR gate made the stale baseline a hard CI failure (`reference-viewport` SSIM 0.6284 — *identical* on the reference host and on GitHub's runner, so a stale baseline, not a host artifact). The tip now clears the tier-1 contract on all sixteen shots at ~120 fps / 9.0-9.5 ms p95, and all five Workstream-A defect frames are clean, so the churn point was sanctioned and promoted. The hosted runner still cannot be held to the delivery rows — ~44 fps, 783 ms worst frame, detail Worker absent — so `VITE_PERF_UNPINNED_HOST=1` reports those rows there while every host-independent gate keeps asserting. | 2026-08-25 |
 
 ---
 

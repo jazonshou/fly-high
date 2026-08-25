@@ -153,6 +153,71 @@ describe("perf-capture baseline policy", () => {
     expect(drainBody).not.toContain("simulationTime +=");
   });
 
+  it("enforces frame delivery only on the pinned reference adapter", () => {
+    // A hosted runner renders the same pixels as the reference machine and
+    // delivers them roughly three times slower, so gating it against the
+    // tier-1 contract measures the runner rather than the diff. The split is
+    // load-bearing in one direction only: a shrinking set of ENFORCED gates
+    // is how this file stops being a regression instrument, so name both
+    // halves here and let a future edit that moves a gate across the line
+    // fail loudly.
+    expect(driver).toContain('import.meta.env.VITE_PERF_UNPINNED_HOST === "1"');
+    expect(driver).toContain(
+      "VITE_PERF_UNPINNED_HOST and VITE_PERF_REBASELINE are mutually exclusive",
+    );
+    // The local commands stay strict; only the workflow declares its host.
+    expect(packageJson.scripts["perf:capture"]).not.toContain("VITE_PERF_UNPINNED_HOST");
+    expect(packageJson.scripts["perf:capture:ci"]).not.toContain("VITE_PERF_UNPINNED_HOST");
+    expect(rendererWorkflow).toContain('VITE_PERF_UNPINNED_HOST: "1"');
+
+    /** True when this assertion's failure is downgraded on an unpinned host. */
+    const isDeliveryGated = (message: string): boolean => {
+      const index = driver.indexOf(message);
+      expect(index, `${message} is no longer asserted by the driver`).toBeGreaterThan(-1);
+      const assertion = driver.lastIndexOf("expect(", index);
+      return driver
+        .slice(Math.max(0, assertion - "gateDelivery(() => ".length), assertion)
+        .includes("gateDelivery(() => ");
+    };
+
+    // Host-dependent: what the machine could deliver in the time it had.
+    for (const message of [
+      "strict tier-1 medium/balanced frame-delivery gate failed",
+      "measured fps fell below the committed floor",
+      "more hitch frames than the committed ceiling",
+      "worst frame exceeded the committed ceiling",
+      "p999 frame exceeded the committed ceiling",
+      "more pages pending generation than the committed ceiling",
+    ]) {
+      expect(isDeliveryGated(message), `${message} must follow the host`).toBe(true);
+    }
+
+    // Host-independent: what was drawn, whether the renderer erred, and
+    // whether the scene had settled. These gate on every adapter, always.
+    for (const message of [
+      "diverged from the committed baseline",
+      "RGB/chroma diverged",
+      "nearby terrain/foliage diverged",
+      "a local visual regression was diluted",
+      "screenshot is blank or lacks local visual structure",
+      "renderPixels must match the medium/balanced scale pin",
+      "WebGPU reported uncaptured errors during the capture",
+      "The renderer logged console errors during the capture",
+      "Babylon logged errors during the capture",
+      "consecutive-frame SSIM fell below the committed floor",
+      "frame-to-frame luminance jumped above the committed ceiling",
+      "detail generation/presentation was still pending at capture",
+      "terrain remained pending after the fixed final-pose drain",
+      "detail remained pending after the fixed final-pose drain",
+      "more resident page slots than the atlas holds",
+    ]) {
+      expect(isDeliveryGated(message), `${message} must hold on every host`).toBe(false);
+    }
+
+    // Exactly the six wrappers enumerated above; nothing else may be relaxed.
+    expect([...driver.matchAll(/gateDelivery\(/g)]).toHaveLength(6);
+  });
+
   it("keeps GPU and non-mutating perf gates wired to automatic CI with artifacts", () => {
     expect(rendererWorkflow).toContain("pull_request:");
     expect(rendererWorkflow).toContain("npm run test:gpu");

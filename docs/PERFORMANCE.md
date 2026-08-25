@@ -438,46 +438,75 @@ p95 with them disabled: a 4.7 ms p95 tax and 38% throughput loss. Gameplay now
 uses the interval-minus-CPU governor signal; timestamp observation is an
 explicit create-time diagnostic only.
 
-The following is the complete reviewable same-host WebGPU candidate written at
-`tests/perf/artifacts/rebaseline-candidates/2026-08-25T04-26-48.235Z` on Apple
+The following is the **committed baseline** in `tests/perf/baseline/`, promoted
+2026-08-25 from the reviewed candidate at
+`tests/perf/artifacts/rebaseline-candidates/2026-08-25T14-17-59.537Z` on Apple
 Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames per
 shot after deterministic residency drain. The normal shots use the shipped
 0.86 render scale; `reference-viewport` retains its 1.485 Mpx scale-1
 cap-stress contract.
 
+That promotion is the sanctioned churn point for the Phase-5 and Gate-0 visual
+work: the previous images dated from `e8b90b1` (Phase 4.5) and still carried
+every defect `RESOLUTION_PLAN.md` §Workstream A catalogued — the teal quad over
+dry land, the cyan rectangles on the headland, the smeared trunks, the uniform
+flat brown ground and the mid-field splat blocks. All five frames were reviewed
+against the new capture before promotion and none of the defects survive. A
+re-run against the promoted set scores SSIM 1.0000 on all thirteen comparing
+shots, so the capture is reproducible on the reference host, not merely close.
+
 | Shot | raw wall FPS | interval p95 | >16.67 ms | >27.4 ms | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `approach-500ft` | 117.33 | 10.8 ms | 0 | 0 | 12.2 ms |
-| `slant-10km` | 119.90 | 9.6 ms | 0 | 0 | 12.2 ms |
-| `high-10000ft-down` | 120.02 | 9.8 ms | 0 | 0 | 10.5 ms |
-| `reference-viewport` | 103.43 | 12.7 ms | 0 | 0 | 14.0 ms |
-| `cruise-horizon` | 119.93 | 9.3 ms | 0 | 0 | 10.4 ms |
-| `winter-noon` | 119.74 | 10.3 ms | 0 | 0 | 12.3 ms |
-| `night` | 119.75 | 9.7 ms | 0 | 0 | 11.8 ms |
-| `motion-banked-turn` | 94.94 | 12.9 ms | 3 | 0 | 18.7 ms |
-| `page-thrash-turn` | 102.43 | 12.2 ms | 0 | 0 | 13.1 ms |
-| `cdlod-transition` | 119.90 | 9.8 ms | 0 | 0 | 10.7 ms |
-| `cruise-sun-30` | 119.89 | 10.0 ms | 0 | 0 | 11.0 ms |
-| `forest-500ft-sunbehind` | 105.09 | 12.4 ms | 0 | 0 | 13.4 ms |
-| `coast-10km-lowsun` | 119.88 | 9.9 ms | 0 | 0 | 11.6 ms |
-| `ground-2m-lowsun` | 110.24 | 11.1 ms | 0 | 0 | 13.1 ms |
-| `canopy-1200ft` | 105.03 | 12.1 ms | 0 | 0 | 13.9 ms |
-| `runway-on-approach` | 102.73 | 11.9 ms | 0 | 0 | 13.7 ms |
+| `approach-500ft` | 120.01 | 9.5 ms | 0 | 0 | 9.9 ms |
+| `slant-10km` | 119.87 | 9.1 ms | 0 | 0 | 10.9 ms |
+| `high-10000ft-down` | 120.04 | 9.0 ms | 0 | 0 | 10.0 ms |
+| `reference-viewport` | 120.02 | 9.3 ms | 0 | 0 | 9.9 ms |
+| `cruise-horizon` | 119.86 | 9.0 ms | 0 | 0 | 11.6 ms |
+| `winter-noon` | 120.02 | 9.5 ms | 0 | 0 | 10.1 ms |
+| `night` | 120.00 | 9.3 ms | 0 | 0 | 9.7 ms |
+| `motion-banked-turn` | 120.00 | 9.3 ms | 1 | 0 | 18.1 ms |
+| `page-thrash-turn` | 119.80 | 9.2 ms | 0 | 0 | 11.7 ms |
+| `cdlod-transition` | 120.03 | 9.1 ms | 0 | 0 | 12.0 ms |
+| `cruise-sun-30` | 120.02 | 9.1 ms | 0 | 0 | 11.1 ms |
+| `forest-500ft-sunbehind` | 120.01 | 9.3 ms | 0 | 0 | 9.7 ms |
+| `coast-10km-lowsun` | 119.89 | 9.1 ms | 0 | 0 | 10.2 ms |
+| `ground-2m-lowsun` | 120.00 | 9.4 ms | 0 | 0 | 9.8 ms |
+| `canopy-1200ft` | 120.04 | 9.3 ms | 0 | 0 | 10.0 ms |
+| `runway-on-approach` | 120.01 | 9.2 ms | 0 | 0 | 9.6 ms |
 
 All sixteen clear the strict FPS, p95, hitch-count and maximum-frame contract:
-the minimum wall throughput is 94.94 FPS, the worst p95 is 12.9 ms, there are
-no intervals over 27.4 ms and no hitches. Every final terrain/detail pending
-count is zero. The raw-device validation listener, Babylon/console gates, GPU
-drain, black/uniform-frame policy and temporal checks all passed before the
-candidate was written. Independent review of every image found the formerly
-black approach populated, the high-altitude terrain free of categorical
-altitude lobes and Rock screen-door pattern, continuous winter snow, a straight
-analytic runway edge, and continuous close-tree bark/crowns.
+the minimum wall throughput is 119.80 FPS, the worst p95 is 9.5 ms, the worst
+single frame is 18.1 ms, and there are no intervals over 27.4 ms and no
+hitches. Every final terrain/detail pending count is zero. The raw-device
+validation listener, Babylon/console gates, GPU drain, black/uniform-frame
+policy and temporal checks all passed before the candidate was written.
+Independent review of every image found the formerly black approach populated,
+the high-altitude terrain free of categorical altitude lobes and Rock
+screen-door pattern, continuous winter snow, a straight analytic runway edge,
+and continuous close-tree bark/crowns.
 
-The candidate is review evidence, not an automatic baseline mutation. The
-committed baseline remains byte-for-byte untouched; deliberate promotion is a
-separate action after review, and performance ceilings cannot be rebaselined
+A candidate is review evidence, never an automatic baseline mutation: the
+capture has no write path into `tests/perf/baseline`, promotion is a separate
+deliberate action after review, and performance ceilings cannot be rebaselined
 downward.
+
+### Where this contract is enforced
+
+The table above is a **reference-adapter** contract, and only the reference
+adapter is held to it. A GitHub-hosted macOS runner renders the identical
+frame — `reference-viewport` scored the same SSIM to four decimals on both
+machines — but delivers it at roughly a third of the rate, and its detail
+Worker does not come up at all, so every chunk is synthesised inline. Gating
+that host against these rows would measure the runner rather than the change.
+
+So the renderer workflow sets `VITE_PERF_UNPINNED_HOST=1`, which reports the
+delivery rows instead of asserting them and names every row it declined to
+gate. Everything independent of host speed still gates there, and that is most
+of the instrument's value: uncaptured GPU errors, Babylon/console errors,
+blank-or-structureless frames, the render-scale pin, the settling fences, the
+resident-slot capacity bound, the temporal-stability floors and every SSIM
+comparison. A local `npm run perf:capture` never sets the flag and stays fully
+strict, and a rebaseline candidate is refused outright on an unpinned host.
 
 ## Capture harness
 

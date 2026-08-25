@@ -1075,6 +1075,13 @@ export interface PerfCaptureReport {
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;
+    /**
+     * Whether the frame-delivery rows in this report were CONTRACT or merely
+     * DIAGNOSTIC. False on any host that is not the pinned reference adapter
+     * (`VITE_PERF_UNPINNED_HOST=1`), where fps/p95/hitch figures describe the
+     * runner. The visual, renderer-error and settling gates hold either way.
+     */
+    readonly deliveryGatesEnforced: boolean;
   };
   readonly shots: readonly PerfCaptureShotReport[];
 }

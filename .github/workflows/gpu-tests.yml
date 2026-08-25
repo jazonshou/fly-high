@@ -58,12 +58,23 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      # A hosted runner is not the pinned reference adapter: it renders the
+      # same pixels (reference-viewport scores an identical SSIM here and on
+      # the M3 Pro) but delivers them at roughly a third of the frame rate,
+      # and its detail Worker does not come up at all. So the visual,
+      # renderer-error and settling gates run here and the frame-delivery
+      # contract does not; docs/PERFORMANCE.md scopes that contract to the
+      # reference adapter, and the run prints every row it declined to gate.
       - name: Run focused PR capture
         if: github.event_name == 'pull_request'
+        env:
+          VITE_PERF_UNPINNED_HOST: "1"
         run: npm run perf:capture:ci
 
       - name: Run full capture
         if: github.event_name != 'pull_request'
+        env:
+          VITE_PERF_UNPINNED_HOST: "1"
         run: npm run perf:capture
 
       - name: Prove committed baselines were not mutated

@@ -65,6 +65,30 @@ const CANDIDATE_ROOT = `${ARTIFACT_DIR}/rebaseline-candidates`;
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
 /** Diagnostic only; normal captures match shipping's observer-free path. */
 const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
+/**
+ * `VITE_PERF_UNPINNED_HOST=1` — this run is NOT on the pinned reference
+ * adapter, so the frame-DELIVERY contracts are reported instead of enforced.
+ *
+ * The split is not a convenience. `docs/PERFORMANCE.md` defines the tier-1
+ * contract — 60 raw wall-clock fps, p95 <= 16.67 ms, <= 5 intervals over
+ * 27.4 ms, none over 50 ms — "on the pinned reference adapter", and a hosted
+ * CI runner is not that adapter: the same commit that measures 120 fps /
+ * 9.2 ms p95 here measures ~44 fps / 22.6 ms p50 / a 783 ms worst frame on
+ * GitHub's macOS runner, which also silently loses the detail Worker and
+ * synthesises every chunk inline. Gating a virtualised GPU against a
+ * reference-adapter contract measures the runner, not the diff.
+ *
+ * Everything that does NOT depend on how fast the host is stays gated there,
+ * and that is the majority of this file's value: uncaptured GPU errors,
+ * renderer/console errors, blank-or-structureless frames, the render-scale
+ * pin, the settling fences, and every SSIM comparison. SSIM in particular is
+ * host-independent by measurement, not by assumption — `reference-viewport`
+ * scored an identical 0.6284 on this M3 Pro and on the hosted runner while
+ * both were still comparing against the then-stale Phase-4.5 baseline.
+ *
+ * A LOCAL `npm run perf:capture` never sets this and stays fully strict.
+ */
+const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
 const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 
 /**
@@ -86,6 +110,12 @@ if (SHOT_FILTER.length > 0 && REBASELINE) {
   throw new Error(
     "VITE_PERF_SHOTS and VITE_PERF_REBASELINE are mutually exclusive: a "
     + "partial capture cannot produce a reviewable rebaseline candidate.",
+  );
+}
+if (UNPINNED_HOST && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_UNPINNED_HOST and VITE_PERF_REBASELINE are mutually exclusive: a "
+    + "baseline candidate may only be generated on the pinned reference adapter.",
   );
 }
 if (
@@ -813,6 +843,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
         renderingMode: "balanced",
         pinnedRenderScale: TIER1_CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
+        // Whether the frame-delivery numbers below were contract or diagnostic.
+        deliveryGatesEnforced: !UNPINNED_HOST,
       },
       shots: shotReports,
     };
@@ -839,6 +871,26 @@ describe("perf capture (1A-1c / 2Z)", () => {
       loggerErrors,
       "Babylon logged errors during the capture (Z-1 gate)",
     ).toEqual([]);
+
+    /**
+     * Delivery contracts, run as assertions on the reference adapter and as
+     * a report everywhere else. Wrapping the ORIGINAL assertion (rather than
+     * recomputing a boolean) keeps one authority for each contract and one
+     * wording for each failure, so the note an unpinned host prints is the
+     * exact sentence the reference adapter would have failed with.
+     */
+    const unpinnedDeliveryNotes: string[] = [];
+    const gateDelivery = (assertion: () => void): void => {
+      if (!UNPINNED_HOST) {
+        assertion();
+        return;
+      }
+      try {
+        assertion();
+      } catch (error) {
+        unpinnedDeliveryNotes.push(error instanceof Error ? error.message : String(error));
+      }
+    };
 
     for (let index = 0; index < shotReports.length; index += 1) {
       const definition = SELECTED_SHOTS[index]!;
@@ -900,7 +952,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
       }
       // The tier-1 medium/balanced delivery contract is intentionally raw:
       // no percentile trimming may hide a freeze or a run that averages 59.9.
-      expect(
+      gateDelivery(() => expect(
         tier1BalancedPerformanceFailures({
           wallClockFps: shot.wallClockFps,
           frameIntervalMsP95: shot.frameIntervalMsP95,
@@ -908,29 +960,29 @@ describe("perf capture (1A-1c / 2Z)", () => {
           maxFrameMs: shot.maxFrameMs,
         }),
         `${shot.name}: strict tier-1 medium/balanced frame-delivery gate failed`,
-      ).toEqual([]);
+      ).toEqual([]));
 
       // Z-2: retain the historical per-shot gate as a diagnostic regression
       // contract in addition to (never instead of) the strict tier-1 gate.
       const ceilings = definition.ceilings;
       if (ceilings !== null) {
-        expect(
+        gateDelivery(() => expect(
           shot.fps,
           `${shot.name}: measured fps fell below the committed floor`,
-        ).toBeGreaterThanOrEqual(ceilings.minFps);
-        expect(
+        ).toBeGreaterThanOrEqual(ceilings.minFps));
+        gateDelivery(() => expect(
           shot.hitchCount,
           `${shot.name}: more hitch frames than the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.hitchCount);
-        expect(
+        ).toBeLessThanOrEqual(ceilings.hitchCount));
+        gateDelivery(() => expect(
           shot.maxFrameMs,
           `${shot.name}: worst frame exceeded the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.maxFrameMs);
+        ).toBeLessThanOrEqual(ceilings.maxFrameMs));
         if (shot.p999FrameMs !== null) {
-          expect(
+          gateDelivery(() => expect(
             shot.p999FrameMs,
             `${shot.name}: p999 frame exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(ceilings.p999FrameMs);
+          ).toBeLessThanOrEqual(ceilings.p999FrameMs));
         }
       }
       // 4-10 (assertion 84b): page residency under streaming load. The
@@ -943,15 +995,30 @@ describe("perf capture (1A-1c / 2Z)", () => {
         `${shot.name}: detail generation/presentation was still pending at capture`,
       ).toBe(0);
       if (residency) {
-        expect(
+        // Queue DEPTH is what the wall-clock compute meter admits per frame,
+        // so it follows the host the same way the delivery rows do.
+        gateDelivery(() => expect(
           shot.pendingTerrainPages,
           `${shot.name}: more pages pending generation than the committed ceiling`,
-        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages);
+        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages));
+        // Atlas OCCUPANCY is a capacity bound. It stays hard on every host.
         expect(
           shot.residentTerrainPages,
           `${shot.name}: more resident page slots than the atlas holds`,
         ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
       }
+    }
+
+    // Never silent. An unpinned run states every contract it declined to
+    // enforce, so "green on CI" can never be read as "met the tier-1 bar".
+    if (UNPINNED_HOST) {
+      console.info(
+        `frame-delivery contracts were NOT enforced (VITE_PERF_UNPINNED_HOST=1): `
+        + `${unpinnedDeliveryNotes.length} would have failed on the pinned reference adapter`
+        + (unpinnedDeliveryNotes.length === 0
+          ? ""
+          : `\n${unpinnedDeliveryNotes.map((note) => `  - ${note}`).join("\n")}`),
+      );
     }
 
     if (REBASELINE) {
