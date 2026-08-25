@@ -33,6 +33,7 @@ import {
 import { viewScaleFromFov } from "@/src/render/webgpu/clouds/CloudReprojection";
 import {
   buildOceanFftDispatches,
+  shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
@@ -929,7 +930,10 @@ class SpectralOceanCompute {
     this.cascades.forEach((cascade, cascadeIndex) => {
       cascade.elapsedSecondsSinceDerivation += deltaSeconds;
       const cascadeConfig = this.config.cascades[cascadeIndex];
-      if (!cascadeConfig || this.frameIndex % cascadeConfig.updateEveryNFrames !== 0) return;
+      if (!cascadeConfig || !shouldUpdateOceanCascade(
+        this.frameIndex,
+        cascadeConfig.updateEveryNFrames,
+      )) return;
       const foamDecay = Math.exp(
         -Math.LN2 * cascade.elapsedSecondsSinceDerivation
           / this.config.foamHalfLifeSeconds,

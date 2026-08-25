@@ -1,11 +1,15 @@
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import {
+  TERRAIN_CORNER_MORPH_BITS,
+  TERRAIN_CORNER_MORPH_LEVELS,
+  TERRAIN_CORNER_MORPH_PACKED_MAX,
   TERRAIN_NODES_PER_SLOT_EDGE,
   TERRAIN_NODE_GRID_RESOLUTION,
   terrainNodeSpanMeters,
 } from "./TerrainSpineContract";
 import {
   createWorldPageAddress,
+  parentWorldPageAddress,
   type WorldPageAddress,
 } from "@/src/render/webgpu/world/pageKey";
 
@@ -63,6 +67,21 @@ export interface TerrainNodeSelectionInput {
   readonly deviationFor: (address: WorldPageAddress) => number | null;
 }
 
+/**
+ * Optional operation-count instrumentation for the synchronized-boundary
+ * pass. Wall-clock microbenchmarks are machine-dependent; these two counters
+ * pin the algorithmic bound that keeps the selector safe to run every frame.
+ */
+export interface TerrainNodeSelectionDiagnostics {
+  cornerLeafQueries: number;
+  cornerLeafLevelProbes: number;
+}
+
+/** Four corners × three other quadrants, plus two probes on each of four sides. */
+export const TERRAIN_CORNER_SYNC_MAX_LEAF_QUERIES_PER_NODE = 20;
+/** A 2:1 touching-neighbour partition can contain only L-1, L, or L+1 at a point. */
+export const TERRAIN_CORNER_SYNC_MAX_LEVEL_PROBES_PER_QUERY = 3;
+
 export interface TerrainNode {
   readonly address: WorldPageAddress;
   readonly subNodeX: number;
@@ -73,8 +92,148 @@ export interface TerrainNode {
   readonly level: number;
   /** 0 = fully at this level, 1 = exactly the parent's lattice. */
   readonly morphK: number;
+  /**
+   * Quantized morph weights at (x0z0, x1z0, x0z1, x1z1).
+   *
+   * Interior vertices use `morphK`. Boundary vertices interpolate these four
+   * locally synchronized values, which is what makes two independently
+   * selected thin instances describe one shared edge instead of two nearby
+   * curves. A mixed L/L+1 corner is represented as 1 on the fine node and 0
+   * on the coarse node: both then sample the exact L+1 surface.
+   */
+  readonly cornerMorphK: TerrainNodeCornerMorphs;
   readonly maxDeviationMeters: number;
   readonly distanceMeters: number;
+}
+
+/** Corner order used by the CPU record and WGSL decoder. */
+export type TerrainNodeCornerMorphs = readonly [number, number, number, number];
+
+/** Round once on the CPU so both sides of an edge receive bit-identical K. */
+export function quantizeTerrainCornerMorphK(value: number): number {
+  const finite = Number.isFinite(value) ? value : 0;
+  return Math.round(Math.min(1, Math.max(0, finite)) * TERRAIN_CORNER_MORPH_LEVELS)
+    / TERRAIN_CORNER_MORPH_LEVELS;
+}
+
+/** Pack x0z0, x1z0, x0z1, x1z1 into B.w without relying on NaN bit payloads. */
+export function packTerrainCornerMorphs(corners: TerrainNodeCornerMorphs): number {
+  let packed = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const quantized = Math.round(
+      quantizeTerrainCornerMorphK(corners[index]!) * TERRAIN_CORNER_MORPH_LEVELS,
+    );
+    packed += quantized * 2 ** (index * TERRAIN_CORNER_MORPH_BITS);
+  }
+  return packed;
+}
+
+/** CPU mirror of the vertex shader's exact integer decoder. */
+export function unpackTerrainCornerMorphs(packed: number): TerrainNodeCornerMorphs {
+  if (!Number.isSafeInteger(packed) || packed < 0 || packed > TERRAIN_CORNER_MORPH_PACKED_MAX) {
+    throw new RangeError("Packed terrain corner morphs must be a 24-bit non-negative integer");
+  }
+  const values: [number, number, number, number] = [0, 0, 0, 0];
+  for (let index = 0; index < 4; index += 1) {
+    values[index] = Math.floor(packed / 2 ** (index * TERRAIN_CORNER_MORPH_BITS))
+      % (TERRAIN_CORNER_MORPH_LEVELS + 1)
+      / TERRAIN_CORNER_MORPH_LEVELS;
+  }
+  return values;
+}
+
+/**
+ * Effective morph for one grid vertex. Strictly interior vertices retain the
+ * unquantized per-node K; only the four shared boundary curves use the packed
+ * synchronization contract. A missing parent always wins and returns zero,
+ * so an unavailable coarse slot can never pull a boundary down to sea level.
+ */
+export function terrainNodeVertexMorphK(
+  nodeMorphK: number,
+  corners: TerrainNodeCornerMorphs,
+  gridX: number,
+  gridZ: number,
+  parentResident = true,
+): number {
+  if (!parentResident) return 0;
+  const quads = TERRAIN_NODE_GRID_RESOLUTION - 1;
+  const x = Math.min(quads, Math.max(0, gridX));
+  const z = Math.min(quads, Math.max(0, gridZ));
+  // Return decoded endpoints verbatim. Computing `a + (b-a)*1` can differ by
+  // one ULP from `b`, which would let four incident edges disagree at their
+  // supposedly bit-identical corner.
+  if (x === 0 && z === 0) return corners[0];
+  if (x === quads && z === 0) return corners[1];
+  if (x === 0 && z === quads) return corners[2];
+  if (x === quads && z === quads) return corners[3];
+  if (x === 0) return corners[0] + (corners[2] - corners[0]) * (z / quads);
+  if (x === quads) return corners[1] + (corners[3] - corners[1]) * (z / quads);
+  if (z === 0) return corners[0] + (corners[1] - corners[0]) * (x / quads);
+  if (z === quads) return corners[2] + (corners[3] - corners[2]) * (x / quads);
+  return Math.min(1, Math.max(0, nodeMorphK));
+}
+
+/**
+ * Resolve the one transient the selector cannot see: a selected node whose
+ * own fine page is still generating (or was evicted after selection).
+ *
+ * If one same-level participant at a world corner lacks its fine page, it
+ * samples its parent field for every K. Raising every participant at that
+ * corner to K=1 makes the resident peers sample that exact same field too.
+ * Both endpoints of their shared edge are resolved from the same incident
+ * set, so the whole line remains identical. Mixed-level corners already use
+ * fine=1/coarse=0 and need no residency amendment.
+ *
+ * The amendment is applied only when every participant has a resident parent.
+ * `TerrainClipmapSystem` guarantees that for selected non-root nodes by
+ * selecting children only from a resident candidate, touching all selected
+ * parents before any new admission, and writing the records in that frame.
+ * Keeping the guard here makes arbitrary unit-test callers memory-safe too.
+ */
+export function resolveTerrainResidentCornerMorphs(
+  nodes: readonly TerrainNode[],
+  slotFor: (address: WorldPageAddress) => number,
+): readonly TerrainNodeCornerMorphs[] {
+  const resolved = nodes.map((node): [number, number, number, number] => [
+    node.cornerMorphK[0],
+    node.cornerMorphK[1],
+    node.cornerMorphK[2],
+    node.cornerMorphK[3],
+  ]);
+  const ownSlots = nodes.map((node) => slotFor(node.address));
+  const parentSlots = nodes.map((node) => slotFor(
+    parentWorldPageAddress(node.address) ?? node.address,
+  ));
+  const vertices = new Map<string, Array<{
+    readonly nodeIndex: number;
+    readonly corner: number;
+  }>>();
+  const add = (nodeIndex: number, corner: number, x: number, z: number): void => {
+    const key = `${x}:${z}`;
+    const entries = vertices.get(key) ?? [];
+    entries.push({ nodeIndex, corner });
+    vertices.set(key, entries);
+  };
+  nodes.forEach((node, nodeIndex) => {
+    const x1 = node.originX + node.spanMeters;
+    const z1 = node.originZ + node.spanMeters;
+    add(nodeIndex, 0, node.originX, node.originZ);
+    add(nodeIndex, 1, x1, node.originZ);
+    add(nodeIndex, 2, node.originX, z1);
+    add(nodeIndex, 3, x1, z1);
+  });
+
+  for (const entries of vertices.values()) {
+    const firstLevel = nodes[entries[0]!.nodeIndex]!.level;
+    const sameLevel = entries.every(
+      (entry) => nodes[entry.nodeIndex]!.level === firstLevel,
+    );
+    const fineMissing = entries.some((entry) => ownSlots[entry.nodeIndex]! < 0);
+    const parentsResident = entries.every((entry) => parentSlots[entry.nodeIndex]! >= 0);
+    if (!sameLevel || !fineMissing || !parentsResident) continue;
+    for (const entry of entries) resolved[entry.nodeIndex]![entry.corner] = 1;
+  }
+  return resolved;
 }
 
 /** Screen-space error, in pixels, of a deviation at a distance. */
@@ -137,6 +296,10 @@ interface Candidate {
   readonly measured: boolean;
   /** Screen-space error in pixels, the priority queue's key. */
   readonly errorPixels: number;
+  /** Per-frame transition value, filled after the final leaf set is known. */
+  morphK: number;
+  /** Index in the nearest-first emitted array, filled with `morphK`. */
+  emittedIndex: number;
 }
 
 function makeCandidate(
@@ -177,15 +340,29 @@ function makeCandidate(
       distanceMeters,
       input.pixelsPerMeterAtUnitDistance,
     ),
+    morphK: 0,
+    emittedIndex: -1,
   };
 }
 
-/** The four edge-adjacent neighbours; diagonals do not share an edge. */
-const EDGE_NEIGHBOUR_OFFSETS: readonly (readonly [number, number])[] = Object.freeze([
+/**
+ * Every cell touching a node, including diagonals.
+ *
+ * Edge-only 2:1 balancing permits an L node and an L+2 node to meet at one
+ * corner through two L+1 edge neighbours. The fine node can sample only its
+ * immediate parent, so no two-level corner encoding can make those positions
+ * equal. Balancing all eight neighbours keeps every incident corner within
+ * one level and makes the four-factor record sufficient by construction.
+ */
+const TOUCHING_NEIGHBOUR_OFFSETS: readonly (readonly [number, number])[] = Object.freeze([
   Object.freeze([1, 0] as const),
   Object.freeze([-1, 0] as const),
   Object.freeze([0, 1] as const),
   Object.freeze([0, -1] as const),
+  Object.freeze([1, 1] as const),
+  Object.freeze([1, -1] as const),
+  Object.freeze([-1, 1] as const),
+  Object.freeze([-1, -1] as const),
 ]);
 
 /**
@@ -240,7 +417,7 @@ function createErrorHeap(): {
 
 /**
  * Select the drawn node set: a GLOBAL screen-space-error priority queue under
- * a hard budget, with a 2:1 neighbour-level clamp (`4.5-A1`).
+ * a hard budget, with a 2:1 touching-neighbour clamp (`4.5-A1`).
  *
  * **This amends one bullet of recorded deviation D17** — "selection is
  * breadth-first by level, nearest-first inside a level" — and only that
@@ -264,17 +441,22 @@ function createErrorHeap(): {
  * guarantees seam identity across ONE level of difference; a pure max-error
  * queue makes >1-level adjacencies common, and with skirts deleted a two-level
  * seam is a hole in the ground. So a node may only be split once every
- * edge-adjacent same-level neighbour EXISTS in the tree, which is the standard
- * 2:1 restricted-quadtree invariant — and because a split is only ever applied
- * with its whole forced-split closure, the invariant holds by construction
- * rather than by a repair pass (assertion 108).
+ * touching same-level neighbour EXISTS in the tree. Including diagonals is
+ * load-bearing now that corners carry synchronized morph values: edge-only
+ * balance admits a two-level corner, but a node has only its immediate parent
+ * page and cannot meet a grandparent surface there. Because a split is only
+ * ever applied with its whole forced-split closure, the invariant holds by
+ * construction rather than by a repair pass (assertion 108).
  *
  * The two rules the queue inherits unchanged: nothing below
  * `finestResidentLevel` is ever selected, and an UNMEASURED page is never
  * split — including inside a forced closure, where the alternative would be
  * spending the budget on a guess to fix a seam.
  */
-export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNode[] {
+export function selectTerrainNodes(
+  input: TerrainNodeSelectionInput,
+  diagnostics?: TerrainNodeSelectionDiagnostics,
+): TerrainNode[] {
   const finest = Math.max(0, input.finestResidentLevel);
   const coarsest = Math.max(finest, input.coarsestLevel);
   const budget = Math.max(1, Math.floor(input.nodeBudget));
@@ -358,7 +540,7 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
       planned.add(node.key);
       ordered.push(node);
       if (ordered.length > maximumSplits) return null;
-      for (const [dx, dz] of EDGE_NEIGHBOUR_OFFSETS) {
+      for (const [dx, dz] of TOUCHING_NEIGHBOUR_OFFSETS) {
         const chain = chainToExist(node.level, node.nodeX + dx, node.nodeZ + dz, planned);
         if (chain === null) continue;
         for (const ancestor of chain) work.push(ancestor);
@@ -419,10 +601,219 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
     (first, second) => first.distanceMeters - second.distanceMeters,
   );
 
-  return emitted.map((candidate) => {
+  const morphFor = (candidate: Candidate): number => {
+    if (candidate.level >= input.coarsestLevel) return 0;
     const splitDistance = candidate.deviationMeters > 0
       ? (candidate.deviationMeters * input.pixelsPerMeterAtUnitDistance) / input.pixelThreshold
       : 0;
+    return terrainNodeMorphK(candidate.distanceMeters, splitDistance);
+  };
+  for (let index = 0; index < emitted.length; index += 1) {
+    const candidate = emitted[index]!;
+    candidate.morphK = morphFor(candidate);
+    candidate.emittedIndex = index;
+  }
+
+  /**
+   * Numeric leaf lookup for the boundary pass.
+   *
+   * The previous implementation rebuilt string-keyed vertex/participant maps,
+   * allocated arrays through spreads, and searched every LOD level for every
+   * corner and half-edge sample. At tier 1 that was ~60,000 string constructions
+   * per frame and 2.8 ms in the pure selector alone. The root ring gives every
+   * level a small collision-free local integer lattice, and the already-proved
+   * 2:1 touching-neighbour invariant bounds a point query to L-1/L/L+1.
+   */
+  interface NumericLeafLevel {
+    readonly minimumX: number;
+    readonly minimumZ: number;
+    readonly width: number;
+    readonly spanMeters: number;
+    readonly leaves: Map<number, Candidate>;
+  }
+  const numericLeaves: Array<NumericLeafLevel | undefined> = new Array(coarsest + 1);
+  for (let level = finest; level <= coarsest; level += 1) {
+    const factor = 2 ** (coarsest - level);
+    numericLeaves[level] = {
+      minimumX: (rootX - reach) * factor,
+      minimumZ: (rootZ - reach) * factor,
+      width: (reach * 2 + 1) * factor,
+      spanMeters: terrainNodeSpanMeters(level),
+      leaves: new Map<number, Candidate>(),
+    };
+  }
+  for (const candidate of emitted) {
+    const level = numericLeaves[candidate.level]!;
+    const localX = candidate.nodeX - level.minimumX;
+    const localZ = candidate.nodeZ - level.minimumZ;
+    level.leaves.set(localZ * level.width + localX, candidate);
+  }
+
+  let cornerLeafQueries = 0;
+  let cornerLeafLevelProbes = 0;
+  const leafAtBalancedWorld = (
+    sampleX: number,
+    sampleZ: number,
+    ownerLevel: number,
+  ): Candidate | null => {
+    cornerLeafQueries += 1;
+    const firstLevel = Math.max(finest, ownerLevel - 1);
+    const lastLevel = Math.min(coarsest, ownerLevel + 1);
+    for (let levelIndex = firstLevel; levelIndex <= lastLevel; levelIndex += 1) {
+      cornerLeafLevelProbes += 1;
+      const level = numericLeaves[levelIndex]!;
+      const localX = Math.floor(sampleX / level.spanMeters) - level.minimumX;
+      const localZ = Math.floor(sampleZ / level.spanMeters) - level.minimumZ;
+      if (localX < 0 || localZ < 0 || localX >= level.width || localZ >= level.width) continue;
+      const leaf = level.leaves.get(localZ * level.width + localX);
+      if (leaf) return leaf;
+    }
+    return null;
+  };
+
+  const cornerMorphs = new Float64Array(emitted.length * 4);
+  const forcedCorners = new Int8Array(emitted.length * 4);
+  forcedCorners.fill(-1);
+  const resolveCorner = (
+    candidate: Candidate,
+    x: number,
+    z: number,
+    ownerQuadrant: number,
+  ): number => {
+    let minimumLevel = candidate.level;
+    let maximumLevel = candidate.level;
+    let maximumMorph = candidate.morphK;
+    // The owner is known and seeded above. Only the other three quadrants need
+    // a lookup; a coarse participant returned twice is harmless for min/max.
+    for (let quadrant = 0; quadrant < 4; quadrant += 1) {
+      if (quadrant === ownerQuadrant) continue;
+      const participant = leafAtBalancedWorld(
+        x + ((quadrant & 1) === 0 ? -0.25 : 0.25),
+        z + ((quadrant & 2) === 0 ? -0.25 : 0.25),
+        candidate.level,
+      );
+      if (!participant || participant === candidate) continue;
+      minimumLevel = Math.min(minimumLevel, participant.level);
+      maximumLevel = Math.max(maximumLevel, participant.level);
+      maximumMorph = Math.max(maximumMorph, participant.morphK);
+    }
+    if (maximumLevel - minimumLevel > 1) {
+      throw new Error(
+        `Terrain touching-neighbour balance failed at (${x}, ${z}): `
+        + `levels ${minimumLevel}..${maximumLevel}`,
+      );
+    }
+    if (maximumLevel === minimumLevel) return quantizeTerrainCornerMorphK(maximumMorph);
+    // Target the exact coarser surface at a mixed corner. The fine node's
+    // parent and the coarse node's own fine page are the same level.
+    return candidate.level < maximumLevel ? 1 : 0;
+  };
+
+  for (const candidate of emitted) {
+    const base = candidate.emittedIndex * 4;
+    const x0 = candidate.originX;
+    const z0 = candidate.originZ;
+    const x1 = x0 + candidate.spanMeters;
+    const z1 = z0 + candidate.spanMeters;
+    // Quadrants are (-x,-z), (+x,-z), (-x,+z), (+x,+z). A node owns the
+    // quadrant pointing into its interior at each respective corner.
+    cornerMorphs[base] = resolveCorner(candidate, x0, z0, 3);
+    cornerMorphs[base + 1] = resolveCorner(candidate, x1, z0, 2);
+    cornerMorphs[base + 2] = resolveCorner(candidate, x0, z1, 1);
+    cornerMorphs[base + 3] = resolveCorner(candidate, x1, z1, 0);
+  }
+
+  /**
+   * A far-plane cut may retain only one child along half of a coarse edge.
+   * Sample both half interiors and force both coarse endpoints when either is
+   * mixed; scalar state preserves the former contradiction checks without a
+   * per-side Map/array allocation.
+   */
+  const forceSide = (
+    candidate: Candidate,
+    firstCorner: number,
+    secondCorner: number,
+    firstX: number,
+    firstZ: number,
+    secondX: number,
+    secondZ: number,
+  ): void => {
+    const first = leafAtBalancedWorld(firstX, firstZ, candidate.level);
+    const second = leafAtBalancedWorld(secondX, secondZ, candidate.level);
+    let minimumLevel = candidate.level;
+    let maximumLevel = candidate.level;
+    let hasSameLevel = false;
+    let hasMixedLevel = false;
+    if (first && first !== candidate) {
+      minimumLevel = Math.min(minimumLevel, first.level);
+      maximumLevel = Math.max(maximumLevel, first.level);
+      if (first.level === candidate.level) hasSameLevel = true;
+      else hasMixedLevel = true;
+    }
+    if (second && second !== candidate && second !== first) {
+      minimumLevel = Math.min(minimumLevel, second.level);
+      maximumLevel = Math.max(maximumLevel, second.level);
+      if (second.level === candidate.level) hasSameLevel = true;
+      else hasMixedLevel = true;
+    }
+    if (!hasMixedLevel) return;
+    if (hasSameLevel) {
+      throw new Error(`Terrain side mixes same-level and split neighbours for ${candidate.key}`);
+    }
+    if (maximumLevel - minimumLevel > 1) {
+      throw new Error(`Terrain side balance failed for ${candidate.key}`);
+    }
+    const target = candidate.level === minimumLevel ? 1 : 0;
+    const base = candidate.emittedIndex * 4;
+    const firstOffset = base + firstCorner;
+    const secondOffset = base + secondCorner;
+    const previousFirst = forcedCorners[firstOffset]!;
+    const previousSecond = forcedCorners[secondOffset]!;
+    if ((previousFirst >= 0 && previousFirst !== target)
+      || (previousSecond >= 0 && previousSecond !== target)) {
+      throw new Error(`Terrain corner has contradictory edge targets for ${candidate.key}`);
+    }
+    forcedCorners[firstOffset] = target;
+    forcedCorners[secondOffset] = target;
+    cornerMorphs[firstOffset] = target;
+    cornerMorphs[secondOffset] = target;
+  };
+  for (const candidate of emitted) {
+    const x0 = candidate.originX;
+    const z0 = candidate.originZ;
+    const x1 = x0 + candidate.spanMeters;
+    const z1 = z0 + candidate.spanMeters;
+    const quarter = candidate.spanMeters * 0.25;
+    const threeQuarter = candidate.spanMeters * 0.75;
+    forceSide(
+      candidate, 0, 2,
+      x0 - 0.25, z0 + quarter,
+      x0 - 0.25, z0 + threeQuarter,
+    );
+    forceSide(
+      candidate, 1, 3,
+      x1 + 0.25, z0 + quarter,
+      x1 + 0.25, z0 + threeQuarter,
+    );
+    forceSide(
+      candidate, 0, 1,
+      x0 + quarter, z0 - 0.25,
+      x0 + threeQuarter, z0 - 0.25,
+    );
+    forceSide(
+      candidate, 2, 3,
+      x0 + quarter, z1 + 0.25,
+      x0 + threeQuarter, z1 + 0.25,
+    );
+  }
+
+  if (diagnostics) {
+    diagnostics.cornerLeafQueries = cornerLeafQueries;
+    diagnostics.cornerLeafLevelProbes = cornerLeafLevelProbes;
+  }
+
+  return emitted.map((candidate) => {
+    const cornerBase = candidate.emittedIndex * 4;
     return Object.freeze({
       address: candidate.address,
       subNodeX: candidate.subNodeX,
@@ -431,10 +822,13 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
       originZ: candidate.originZ,
       spanMeters: candidate.spanMeters,
       level: candidate.level,
-      // The coarsest level has no parent to morph into.
-      morphK: candidate.level >= input.coarsestLevel
-        ? 0
-        : terrainNodeMorphK(candidate.distanceMeters, splitDistance),
+      morphK: candidate.morphK,
+      cornerMorphK: Object.freeze([
+        cornerMorphs[cornerBase]!,
+        cornerMorphs[cornerBase + 1]!,
+        cornerMorphs[cornerBase + 2]!,
+        cornerMorphs[cornerBase + 3]!,
+      ]) as TerrainNodeCornerMorphs,
       maxDeviationMeters: candidate.deviationMeters,
       distanceMeters: candidate.distanceMeters,
     });
@@ -451,7 +845,7 @@ export function selectTerrainNodes(input: TerrainNodeSelectionInput): TerrainNod
  *
  * `terrainNodeA = (slotIndex, subIndex, level, provisionalAxis)`, where `subIndex`
  * is `subNodeX + subNodeZ*8 + parityX*64 + parityZ*128`
- * `terrainNodeB = (morphK, parentSlotIndex, channelLane, maxDeviation)`, where
+ * `terrainNodeB = (morphK, parentSlotIndex, channelLane, packedCornerMorphs)`, where
  * `channelLane` is `channelSlotIndex * 32 + level` — the same packing `3-2`'s
  * `atlasSlot` vertex lane used, because the fragment needs the page EXTENT to
  * normalise its position into channel-atlas UV and a shared material cannot
@@ -541,6 +935,12 @@ export interface TerrainNodeWriteInput {
   /** Channel-atlas slot, or -1 when the page holds no channel slot. */
   readonly channelSlotFor: (address: WorldPageAddress) => number;
   /**
+   * Full-selection residency resolution shared by beauty and every shadow
+   * subset. Omit only in isolated callers; the writer then resolves its own
+   * node list defensively.
+   */
+  readonly cornerMorphsFor?: (node: TerrainNode) => TerrainNodeCornerMorphs;
+  /**
    * `4.5-A3`: an axis the shader must shade with verbatim, or
    * `TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT` to have it walked per vertex.
    */
@@ -567,7 +967,11 @@ export function writeTerrainNodeBuffers(
   // but a stale matrix left behind a shrinking node set would draw a node that
   // is no longer selected if the count is ever raised without a rewrite.
   matrices.fill(0, count * 16);
-  input.nodes.slice(0, count).forEach((node, index) => {
+  const writtenNodes = input.nodes.slice(0, count);
+  const residentCornerMorphs = input.cornerMorphsFor
+    ? writtenNodes.map((node) => input.cornerMorphsFor!(node))
+    : resolveTerrainResidentCornerMorphs(writtenNodes, input.slotFor);
+  writtenNodes.forEach((node, index) => {
     const scale = node.spanMeters;
     const base = index * 16;
     // Column-major, matching Babylon's Matrix.m layout: scale on the
@@ -581,13 +985,7 @@ export function writeTerrainNodeBuffers(
     matrices[base + 15] = 1;
 
     const slot = input.slotFor(node.address);
-    const parentAddress = node.level < 30
-      ? createWorldPageAddress(
-        node.level + 1,
-        Math.floor(node.address.x / 2),
-        Math.floor(node.address.z / 2),
-      )
-      : node.address;
+    const parentAddress = parentWorldPageAddress(node.address) ?? node.address;
     const parentSlot = input.slotFor(parentAddress);
     const laneBase = index * TERRAIN_NODE_LANE_STRIDE;
     laneA[laneBase] = slot;
@@ -608,7 +1006,10 @@ export function writeTerrainNodeBuffers(
     // -1 when the page holds no channel slot: the fragment falls back to the
     // provisional per-node splat, which is the co-residency rule `4-2` states.
     laneB[laneBase + 2] = channelSlot >= 0 ? channelSlot * 32 + node.level : -1;
-    laneB[laneBase + 3] = node.maxDeviationMeters;
+    // Four six-bit corner factors occupy one exact 24-bit integer. Packing as
+    // arithmetic f32 (not a NaN bitcast) survives vertex fetch and every
+    // adapter's canonicalization rules unchanged.
+    laneB[laneBase + 3] = packTerrainCornerMorphs(residentCornerMorphs[index]!);
   });
   return target;
 }

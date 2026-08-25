@@ -265,8 +265,8 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       const buildMaterial = (
         name: string,
         samplesAtlas: boolean,
-        radialAspect: number,
         bandFades = true,
+        opaqueCrown = false,
       ) => {
         const material = new PBRMaterial(name, scene);
         material.albedoColor = new Color3(0.4, 0.5, 0.35);
@@ -274,7 +274,6 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         material.roughness = 0.9;
         const plugin = new DetailInstanceMaterialPlugin(material);
         plugin.setTimeSeconds(1.5);
-        plugin.setRadialAspect(radialAspect);
         // Production parity: FlightRenderer registers every detail material
         // with BOTH receiver registries — their plugins ride along here so
         // the varying/input budget the rig proves is the shipping one.
@@ -289,13 +288,20 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         if (bandFades) plugin.setBandFades(400, 1_400, 8_000);
         if (samplesAtlas) {
           plugin.setFoliageAtlas(atlas.texture);
-          // Production crown materials are double-sided and render in the
-          // alpha-test bucket (WorldDetailRuntime.createBatches, R-2E) —
-          // the rig must match or half the sail cards cull and the bucket's
-          // pipeline permutation goes untested.
-          material.backFaceCulling = false;
-          material.twoSidedLighting = true;
-          material.transparencyMode = Material.MATERIAL_ALPHATEST;
+          if (opaqueCrown) {
+            // Near closed crowns compile a distinct no-discard, one-sided
+            // opaque pipeline. Alpha=1 on the old card material is not
+            // equivalent and would fail to exercise early-Z behavior.
+            plugin.setOpaqueCrown(true);
+            material.backFaceCulling = true;
+            material.twoSidedLighting = false;
+            material.transparencyMode = Material.MATERIAL_OPAQUE;
+          } else {
+            // Mid cards remain double-sided in the alpha-test bucket.
+            material.backFaceCulling = false;
+            material.twoSidedLighting = true;
+            material.transparencyMode = Material.MATERIAL_ALPHATEST;
+          }
         }
         material.shadowDepthWrapper = new ShadowDepthWrapper(material, scene, {
           remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
@@ -307,20 +313,18 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       crown.material = buildMaterial(
         "compile-crown-material",
         true,
-        Math.max(prototype.crown.boundingRadius, 0.05),
+        true,
+        true,
       );
       crown.useVertexColors = true;
       crown.receiveShadows = true;
-      // 2-14: drawn mid-crossfade so the dither path proves pixels, not
-      // just compilation — a quarter of the canopy dithers away and the
-      // visibility floor must still clear.
+      // Closed near crown uses the vertex-area transition, never dither.
       uploadOneInstance(crown, scene, 0 / 127, false);
 
       const trunk = buildPrototypeMesh("compile-trunk", prototype.trunk, scene);
       trunk.material = buildMaterial(
         "compile-trunk-material",
         false,
-        Math.max(prototype.trunk.boundingRadius, 0.005),
       );
       trunk.useVertexColors = true;
       trunk.receiveShadows = true;
@@ -334,7 +338,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         buildShrubPrototype("juniper", 0, 7),
         scene,
       );
-      shrub.material = buildMaterial("compile-shrub-material", true, 0.6, false);
+      shrub.material = buildMaterial("compile-shrub-material", true, false);
       shrub.useVertexColors = true;
       shrub.receiveShadows = true;
       // 2-14: the INCOMING comparison path (survive bayer >= 1 - fade).
@@ -347,7 +351,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         buildGrassPatchPrototype(7, "grass"),
         scene,
       );
-      grass.material = buildMaterial("compile-grass-material", true, 1, false);
+      grass.material = buildMaterial("compile-grass-material", true, false);
       grass.useVertexColors = true;
       grass.receiveShadows = true;
       uploadOneInstance(grass, scene, 1, false);

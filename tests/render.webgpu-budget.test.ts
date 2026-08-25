@@ -165,10 +165,10 @@ describe("performance budget (1A-2)", () => {
     });
     expect(withAtlases.foliageAtlasMiB).toBe(9);
     expect(withAtlases.impostorAtlasMiB).toBe(18);
-    // 2-17 moved the impostor base to 9.33 MiB (foliage 5.33 since 2-12);
-    // the perturbation adds (9 − 5.33) + (18 − 9.33) ≈ 12.3 MiB before the
+    // Opaque near crowns moved foliage to 6 MiB; the perturbation adds
+    // (9 − 6) + (18 − 9.33) ≈ 11.7 MiB before the
     // estimate fudge.
-    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 11);
+    expect(withAtlases.totalMiB).toBeGreaterThan(base.totalMiB + 10.5);
 
     const withCloudVolumes = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
@@ -322,6 +322,23 @@ describe("startup render invariants (1A-2)", () => {
     });
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(/GPU timing/);
+  });
+
+  it("allows only an explicit observer-cost capture to leave supported timing off", () => {
+    expect(collectStartupInvariantFailures({
+      timestampQuerySupported: true,
+      gpuTimingEnabled: false,
+      gpuTimingRequired: false,
+      requestedFeatures: [],
+      grantedFeatures: [],
+    })).toEqual([]);
+    expect(collectStartupInvariantFailures({
+      timestampQuerySupported: false,
+      gpuTimingEnabled: true,
+      gpuTimingRequired: false,
+      requestedFeatures: [],
+      grantedFeatures: [],
+    })).toHaveLength(1);
   });
 
   it("fails when a requested feature was not granted", () => {

@@ -36,6 +36,7 @@ import {
 } from "../src/render/webgpu/atmosphere/StarField";
 import {
   rodFractionForAdaptedLuminance,
+  shouldRunScotopicPass,
   PHOTOPIC_THRESHOLD_CD_M2,
   SCOTOPIC_THRESHOLD_CD_M2,
   SCOTOPIC_TINT,
@@ -482,6 +483,9 @@ describe("scotopic vision (7-2)", () => {
       Math.sqrt(SCOTOPIC_THRESHOLD_CD_M2 * PHOTOPIC_THRESHOLD_CD_M2),
     );
     expect(mid).toBeCloseTo(0.5, 1);
+    expect(shouldRunScotopicPass(0)).toBe(false);
+    expect(shouldRunScotopicPass(0.001)).toBe(false);
+    expect(shouldRunScotopicPass(0.001_001)).toBe(true);
   });
 
   it("weights the rod response toward the blue-green, away from red", () => {

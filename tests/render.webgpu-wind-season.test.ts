@@ -145,6 +145,32 @@ describe("three-band wind plugin surface (2-13)", () => {
 });
 
 describe("seasonal crown (2-13a)", () => {
+  it("changes only appearance, never deterministic stem identity or placement", () => {
+    const deepWinterDay = findDayWithWinterFraction(1);
+    const summer = collectTrees(171);
+    const winter = collectTrees(deepWinterDay);
+    const placementSignature = (tree: (typeof summer)[number]) => ({
+      id: tree.id,
+      species: tree.species,
+      x: tree.x,
+      y: tree.y,
+      z: tree.z,
+      yawRadians: tree.yawRadians,
+      heightMeters: tree.heightMeters,
+      crownRadiusMeters: tree.crownRadiusMeters,
+      trunkRadiusMeters: tree.trunkRadiusMeters,
+      windPhaseRadians: tree.windPhaseRadians,
+      windResponse: tree.windResponse,
+      standAge: tree.standAge,
+      selection: tree.selection,
+    });
+
+    expect(winter.map(placementSignature)).toEqual(summer.map(placementSignature));
+    expect(winter.some((tree, index) => (
+      tree.color.some((channel, channelIndex) => channel !== summer[index]!.color[channelIndex])
+    ))).toBe(true);
+  });
+
   it("holds the tuned midsummer world at the reference day", () => {
     const trees = collectTrees(171);
     expect(trees.length).toBeGreaterThan(200);

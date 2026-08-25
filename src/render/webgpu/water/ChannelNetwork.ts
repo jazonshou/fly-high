@@ -58,6 +58,10 @@ interface Corner {
   readonly z: number;
 }
 
+/** Immediate safety gate until fine-page shore contours own lake geometry. */
+export const MINIMUM_MACRO_LAKE_WET_TEXELS = 2;
+export const MAXIMUM_MACRO_LAKE_HULL_OVERFILL_RATIO = 1.02;
+
 const DEFAULT_LAYOUT: ChannelNetworkGridLayout = Object.freeze({
   width: EVOLUTION_DOMAIN_TEXELS,
   height: EVOLUTION_DOMAIN_TEXELS,
@@ -304,6 +308,44 @@ function convexLakeCover(
     vertices[index * 2 + 1] = hull[index]!.z;
   }
   return vertices;
+}
+
+/** Shoelace area of an interleaved X/Z polygon. */
+export function lakePolygonAreaSquareMeters(verticesXZ: ArrayLike<number>): number {
+  const vertexCount = Math.floor(verticesXZ.length / 2);
+  if (vertexCount < 3) return 0;
+  let twiceArea = 0;
+  for (let index = 0; index < vertexCount; index += 1) {
+    const next = (index + 1) % vertexCount;
+    twiceArea += verticesXZ[index * 2]! * verticesXZ[next * 2 + 1]!
+      - verticesXZ[next * 2]! * verticesXZ[index * 2 + 1]!;
+  }
+  return Math.abs(twiceArea) * 0.5;
+}
+
+/**
+ * Whether a coarse macro mask safely supports a rendered polygon. A single
+ * wet texel is exactly the reported 512 m square failure. Convex covers of
+ * concave/diagonal masks are also rejected when they add meaningful dry area;
+ * those lakes remain wet terrain until a fine shoreline is available.
+ */
+export function macroLakeHasRenderableWetSupport(
+  wetTexelCount: number,
+  texelSizeMeters: number,
+  declaredSurfaceAreaM2: number,
+  verticesXZ: ArrayLike<number>,
+): boolean {
+  if (!Number.isSafeInteger(wetTexelCount) || wetTexelCount < MINIMUM_MACRO_LAKE_WET_TEXELS) {
+    return false;
+  }
+  if (!Number.isFinite(texelSizeMeters) || texelSizeMeters <= 0) return false;
+  if (!Number.isFinite(declaredSurfaceAreaM2) || declaredSurfaceAreaM2 <= 0) return false;
+  const texelArea = texelSizeMeters * texelSizeMeters;
+  if (declaredSurfaceAreaM2 < texelArea) return false;
+  const wetMaskArea = wetTexelCount * texelArea;
+  const polygonArea = lakePolygonAreaSquareMeters(verticesXZ);
+  return polygonArea > 0
+    && polygonArea <= wetMaskArea * MAXIMUM_MACRO_LAKE_HULL_OVERFILL_RATIO;
 }
 
 function collectLakeComponent(
@@ -581,9 +623,18 @@ export class ChannelNetwork {
         layout,
         claimedLakeTexels,
       );
+      const verticesXZ = convexLakeCover(component, outletIndex, macro, layout);
+      if (!macroLakeHasRenderableWetSupport(
+        component.length,
+        layout.texelSizeMeters,
+        lake.surfaceAreaM2,
+        verticesXZ,
+      )) {
+        continue;
+      }
       lakePolygons.push(Object.freeze({
         polygonRef,
-        verticesXZ: convexLakeCover(component, outletIndex, macro, layout),
+        verticesXZ,
       }));
       lakes.push(Object.freeze({
         lakeId: lake.lakeId,

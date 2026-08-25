@@ -52,11 +52,12 @@ import type { TerrainSlotKey } from "./TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
   createTerrainNodeBuffers,
-  TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
+  resolveTerrainResidentCornerMorphs,
   selectTerrainNodes,
   writeTerrainNodeBuffers,
   type TerrainNode,
   type TerrainNodeBuffers,
+  type TerrainNodeCornerMorphs,
 } from "./TerrainQuadtree";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
@@ -306,6 +307,11 @@ export function attachTerrainSurfacePlugin(
     remappedVariables: ["vNormalW", "vertexOutputs.vNormalW"],
   });
   return plugin;
+}
+
+/** The retired categorical lane now carries one compatibility-safe value. */
+export function terrainFallbackMaterialAxis(): number {
+  return TERRAIN_PROVISIONAL_AXIS.fallbackAxis;
 }
 
 /**
@@ -1175,7 +1181,16 @@ export class TerrainClipmapSystem {
       this.heightAtlas.residency.slotIndexOf(invariantSlotKey(address));
     const channelSlotFor = (address: WorldPageAddress): number =>
       this.channelAtlas.residency.slotIndexOf(invariantSlotKey(address));
-    const provisionalAxisFor = (node: TerrainNode): number => this.provisionalAxisFor(node);
+    const provisionalAxisFor = (): number => terrainFallbackMaterialAxis();
+    // Resolve streaming fallbacks ONCE from the complete beauty partition.
+    // Recomputing on a cascade's distance-filtered subset can omit the evicted
+    // edge peer and make its packed boundary differ from beauty (and from the
+    // other cascades), even though all passes execute the same vertex shader.
+    const resolvedCorners = resolveTerrainResidentCornerMorphs(this.nodes, slotFor);
+    const cornersByNode = new Map<TerrainNode, TerrainNodeCornerMorphs>();
+    this.nodes.forEach((node, index) => cornersByNode.set(node, resolvedCorners[index]!));
+    const cornerMorphsFor = (node: TerrainNode): TerrainNodeCornerMorphs =>
+      cornersByNode.get(node) ?? node.cornerMorphK;
     writeTerrainNodeBuffers({
       nodes: this.nodes,
       originX: this.originX,
@@ -1183,6 +1198,7 @@ export class TerrainClipmapSystem {
       slotFor,
       channelSlotFor,
       provisionalAxisFor,
+      cornerMorphsFor,
     }, this.beautyBuffers);
 
     const cascades = this.casterMeshes.length;
@@ -1204,6 +1220,7 @@ export class TerrainClipmapSystem {
         slotFor,
         channelSlotFor,
         provisionalAxisFor,
+        cornerMorphsFor,
       }, this.casterBuffers[cascade]!);
     }
 
@@ -1223,30 +1240,6 @@ export class TerrainClipmapSystem {
       updateTerrainNodeBuffers(this.casterMeshes[cascade]!, this.casterBuffers[cascade]!);
     }
   }
-
-
-  /**
-   * The CPU half of `4.5-A3`'s provisional axis: the grass guard, and nothing
-   * else.
-   *
-   * The altitude walk itself moved into the vertex shader, where it runs
-   * against the height that shader has just displaced to — so a node with no
-   * channel slot shades a continuous gradient at vertex spacing instead of one
-   * packed constant across up to `512·2^L` m of ground. What the shader cannot
-   * know is whether the height it sampled MEANS anything: a node with no
-   * resident height slot reads zero, and zero at sea level is sand under every
-   * node the streamer has not reached — a desert wherever the atlas is behind.
-   * Residency is a lifecycle fact and the lifecycle lives here, so that one
-   * decision stays on the CPU.
-   */
-  private provisionalAxisFor(node: TerrainNode): number {
-    const hasTexels = this.heightAtlas.residency.slotIndexOf(invariantSlotKey(node.address)) >= 0;
-    return hasTexels
-      ? TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT
-      : TERRAIN_PROVISIONAL_AXIS.fallbackAxis;
-  }
-
-
   /**
    * Every terrain compute client, admitted through ONE plan (`4.5-B2(c)`).
    *

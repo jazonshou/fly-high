@@ -16,6 +16,11 @@ export interface StartupInvariantInput {
   readonly timestampQuerySupported: boolean;
   /** The engine's `enableGPUTimingMeasurements` state after startup. */
   readonly gpuTimingEnabled: boolean;
+  /**
+   * Whether support must imply continuous timing. Defaults to true; the only
+   * false caller is a pinned observer-cost capture that labels the opt-out.
+   */
+  readonly gpuTimingRequired?: boolean;
   /** Features the renderer asked the device for. */
   readonly requestedFeatures: readonly string[];
   /** Features the device actually granted. */
@@ -66,10 +71,13 @@ export function collectStartupInvariantFailures(
 ): readonly string[] {
   const failures: string[] = [];
 
-  // The adaptive governor's GPU signal exists exactly when timestamp queries
-  // do. Enabled-without-support would silently report garbage; disabled-with-
-  // support silently blinds Governor A and every perf capture.
-  if (input.gpuTimingEnabled !== input.timestampQuerySupported) {
+  // Enabled-without-support always reports garbage. Disabled-with-support is
+  // normally forbidden because it blinds Governor A and perf capture; a
+  // pinned, explicitly labelled observer-cost A/B may waive only that half.
+  const gpuTimingMismatch = input.gpuTimingEnabled
+    ? !input.timestampQuerySupported
+    : input.timestampQuerySupported && (input.gpuTimingRequired ?? true);
+  if (gpuTimingMismatch) {
     failures.push(
       `GPU timing measurements are ${input.gpuTimingEnabled ? "enabled" : "disabled"} but `
       + `timestamp-query is ${input.timestampQuerySupported ? "supported" : "unsupported"}; `

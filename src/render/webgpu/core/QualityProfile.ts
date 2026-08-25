@@ -48,8 +48,16 @@ export interface WebGpuQualityProfile {
   readonly frameTargetMs: number;
   /** R-21: the tier's rendered-density law (the one vegetation authority). */
   readonly renderedDensityLaw: RenderedDensityLaw;
-  /** 2-12: cap on crown-geometry variants per species (Low keeps three). */
+  /** 2-12: cap on crown-geometry variants per selected prototype species. */
   readonly treeVariantCap: number;
+  /**
+   * Tier 0/1 collapse authored species into conifer, broadleaf and willow
+   * prototype families. Per-instance dimensions, tint, lean and wind remain
+   * intact; only the mesh prototype is shared. This is the draw-call lever:
+   * the old five-variant, seven-species tier-1 path submitted roughly two
+   * hundred vegetation draws and missed 60 fps by a wide margin.
+   */
+  readonly treePrototypeMode: "families" | "species";
   /**
    * 2-16: grass draw radius — THE first tier knob per §5.3, because grass
    * is the renderer's largest single triangle consumer. The 1/d density
@@ -216,7 +224,8 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
-      treeVariantCap: 3,
+      treeVariantCap: 1,
+      treePrototypeMode: "families",
       grassRadiusMeters: 90,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
@@ -269,14 +278,19 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
-      // 2Z free win (PRE_PHASE_4_REALIGNMENT.md §3): 2×, was 4×. At the
-      // reference viewport 4× MSAA is ~69 MiB of framebuffer, and the
-      // alpha-tested foliage Phase 2 makes dominant gets no MSAA benefit
-      // (alpha-to-coverage is off) — the cheapest ~34 MiB in the programme.
-      msaaSamples: 2,
+      // Tier 1 is the strict playability contract. Closed opaque crowns make
+      // early-Z useful, but a 2× multisampled half-float beauty target still
+      // duplicates its dominant colour/depth traffic. FXAA is already the
+      // renderer's sample-count-1 path, so Balanced spends this row on frame
+      // cadence rather than hardware MSAA; higher tiers retain multisampling.
+      msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
-      treeVariantCap: 5,
+      // Playability is the tier-1 contract. Yaw, scale, lean, colour and wind
+      // retain stem-level variation; one mesh variant per prototype family
+      // removes the dominant species×variant×band submission multiplier.
+      treeVariantCap: 1,
+      treePrototypeMode: "families",
       // `4.5-C1`'s A/B left this at §5.3's Balanced row. §7 ranks
       // `grassRadiusMeters` 150 → 90-110 as the next lever after vegetation
       // shadow casting, at "~7 ms extra in ground-level shots"; measured at
@@ -348,6 +362,7 @@ export function resolveWebGpuQualityProfile(
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
       treeVariantCap: 5,
+      treePrototypeMode: "species",
       grassRadiusMeters: 220,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
@@ -404,6 +419,7 @@ export function resolveWebGpuQualityProfile(
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
     treeVariantCap: 5,
+    treePrototypeMode: "species",
     grassRadiusMeters: 320,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
@@ -440,6 +456,11 @@ export function isUsableFrameTiming(milliseconds: number): boolean {
   return Number.isFinite(milliseconds)
     && milliseconds >= MIN_TIMING_MILLISECONDS
     && milliseconds <= MAX_TIMING_MILLISECONDS;
+}
+
+/** A hitch is a frame slower than twice the tier's controllable target. */
+export function hitchThresholdMilliseconds(profile: Pick<WebGpuQualityProfile, "frameTargetMs">): number {
+  return profile.frameTargetMs * 2;
 }
 
 /** Return a timing only while its asynchronously produced sample is still current. */

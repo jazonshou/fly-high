@@ -81,6 +81,7 @@ export type RenderGovernorMode =
   | "gpu-resolution"
   | "cpu-work"
   | "gpu-work"
+  | "frame-pacing"
   | "balanced"
   | "holding"
   | "no-gpu-timing"
@@ -173,6 +174,8 @@ export interface RenderDiagnostics {
   renderPixels: number;
   topPassesByCpuMs: readonly PassCpuTiming[];
   pendingTerrainPages: number;
+  /** Detail cells or atomic presentation chunks that can still change the frame. */
+  pendingDetailWork: number;
   /** Terrain generation workers currently busy (1B-4). */
   /** 4-4: the CPU worker pool is gone; this is GPU compute dispatches in flight. */
   terrainComputeDispatches: number;

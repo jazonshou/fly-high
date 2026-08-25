@@ -66,6 +66,9 @@ describe("hemi-octahedral mapping (2-17)", () => {
 });
 
 describe("impostor bake (2-17)", () => {
+  it("pins the crown albedo shared by opaque hulls, cards and the far bake", () => {
+    expect(DETAIL_CROWN_ALBEDO).toEqual([0.86, 0.89, 0.82]);
+  });
   it("bakes non-trivial coverage for every species and view row", () => {
     for (const species of IMPOSTOR_SPECIES) {
       const stats = layerStats(impostorLayerIndex(species, 0));
@@ -74,21 +77,18 @@ describe("impostor bake (2-17)", () => {
     }
   });
 
-  it("keeps impostor mean colour coherent with the card LOD (exit criterion)", () => {
+  it("keeps impostor mean colour coherent with the opaque crown LOD", () => {
     // The impostor is baked from the SAME atlas texels, material albedo and
     // occlusion math the card fragment uses, so its covered-mean colour must
-    // sit inside the card path's analytic envelope: atlas-layer covered mean
+    // sit inside the opaque-hull path's analytic envelope: dense atlas-layer covered mean
     // × crown albedo × occlusion ∈ [0.42, 1]. Gross drift here is a wrong
     // layer, a lost albedo multiply, or a broken occlusion bake — the three
     // ways an LOD transition reads as a brightness pop.
     const foliage = planFoliageAtlas("impostor-test");
     for (const species of IMPOSTOR_SPECIES) {
-      const crownLayer = species === "pine" || species === "cedar"
-        ? FOLIAGE_LAYERS.needlePine
-        : species === "spruce" ? FOLIAGE_LAYERS.needleSpruce
-        : species === "oak" ? FOLIAGE_LAYERS.broadleafOak
-        : species === "maple" ? FOLIAGE_LAYERS.broadleafMaple
-        : FOLIAGE_LAYERS.broadleafBirch;
+      const crownLayer = species === "pine" || species === "cedar" || species === "spruce"
+        ? FOLIAGE_LAYERS.crownConiferDense
+        : FOLIAGE_LAYERS.crownBroadleafDense;
       const mip0 = foliage.layerChains[crownLayer]![0]!;
       const sum = [0, 0, 0];
       let covered = 0;
@@ -101,13 +101,13 @@ describe("impostor bake (2-17)", () => {
       }
       const impostor = layerStats(impostorLayerIndex(species, 0)).mean;
       for (let channel = 0; channel < 3; channel += 1) {
-        const cardTexel = (sum[channel]! / covered) * DETAIL_CROWN_ALBEDO[channel]!;
+        const crownTexel = (sum[channel]! / covered) * DETAIL_CROWN_ALBEDO[channel]!;
         // The impostor mean mixes crown texels (dominant) with bark; its
         // green channel especially must track the crown envelope.
         expect(impostor[channel]!, `${species} ch${channel}`)
-          .toBeGreaterThan(cardTexel * 0.42 * 0.55);
+          .toBeGreaterThan(crownTexel * 0.42 * 0.55);
         expect(impostor[channel]!, `${species} ch${channel}`)
-          .toBeLessThan(cardTexel * 1.45 + 0.08);
+          .toBeLessThan(crownTexel * 1.45 + 0.08);
       }
     }
   });

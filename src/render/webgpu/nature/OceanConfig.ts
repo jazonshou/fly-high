@@ -234,6 +234,35 @@ export function buildOceanFftDispatches(resolution: number): readonly OceanFftDi
   return Object.freeze(passes);
 }
 
+/**
+ * Deterministic phase for one ocean cascade's fixed update cadence.
+ *
+ * The first two cascades update every frame. Slower power-of-two cadences are
+ * placed into the light half of the faster schedule instead of all landing on
+ * frame zero. This preserves each cascade's exact update frequency while
+ * preventing the 1/1/2/4 tier-1 schedule from launching all four FFTs in one
+ * frame (and likewise prevents the tier-2 /8 cascade joining that burst).
+ */
+export function oceanCascadeUpdatePhase(updateEveryNFrames: number): number {
+  if (!Number.isSafeInteger(updateEveryNFrames) || updateEveryNFrames < 1) {
+    throw new RangeError("Ocean update cadence must be a positive integer");
+  }
+  if (updateEveryNFrames === 1) return 0;
+  return Math.max(0, Math.floor(updateEveryNFrames / 2) - 1);
+}
+
+/** True when a cascade is due on this absolute ocean frame. */
+export function shouldUpdateOceanCascade(
+  frameIndex: number,
+  updateEveryNFrames: number,
+): boolean {
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
+    throw new RangeError("Ocean frame index must be a non-negative integer");
+  }
+  return frameIndex % updateEveryNFrames
+    === oceanCascadeUpdatePhase(updateEveryNFrames);
+}
+
 function uniformBuffer(byteLength: number): { buffer: ArrayBuffer; view: DataView } {
   const buffer = new ArrayBuffer(byteLength);
   return { buffer, view: new DataView(buffer) };

@@ -33,6 +33,7 @@ import {
   packOceanEvolutionUniforms,
   packOceanFftUniforms,
   packOceanInitializationUniforms,
+  shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
 } from "../src/render/webgpu/nature/OceanConfig";
 import {
@@ -166,6 +167,38 @@ describe("spectral ocean foundations", () => {
     expect(() => computeDispatch2D(10, 10, [0, 8, 1])).toThrow(/workgroupSize/);
   });
 
+  it("phase-spreads slow ocean cascades without changing their cadence", () => {
+    const updatesPerFrame = (
+      cadences: readonly number[],
+      frameCount: number,
+    ): number[] => Array.from({ length: frameCount }, (_, frameOffset) => {
+      const frameIndex = frameOffset + 1;
+      return cadences.filter((cadence) => (
+        shouldUpdateOceanCascade(frameIndex, cadence)
+      )).length;
+    });
+
+    const tierOneCadences = [1, 1, 2, 4];
+    const tierTwoCadences = [1, 1, 2, 4, 8];
+    const tierOne = updatesPerFrame(tierOneCadences, 4);
+    const tierTwo = updatesPerFrame(tierTwoCadences, 8);
+
+    expect(tierOne).toEqual([3, 3, 2, 3]);
+    expect(tierTwo).toEqual([3, 3, 3, 3, 3, 3, 2, 3]);
+    expect(Math.max(...tierOne)).toBe(3);
+    expect(Math.max(...tierTwo)).toBe(3);
+    expect(tierOne.reduce((sum, count) => sum + count, 0)).toBe(11);
+    expect(tierTwo.reduce((sum, count) => sum + count, 0)).toBe(23);
+
+    for (let cadence = 1; cadence <= 16; cadence += 1) {
+      const frameCount = cadence * 3;
+      const hits = Array.from({ length: frameCount }, (_, frameIndex) => (
+        shouldUpdateOceanCascade(frameIndex, cadence)
+      )).filter(Boolean).length;
+      expect(hits).toBe(3);
+    }
+  });
+
   it("packs uniform buffers exactly as declared by WGSL", () => {
     const config = resolveSpectralOceanConfig({ resolution: 128, seed: 17 });
     const initialization = packOceanInitializationUniforms(config, 1);
@@ -273,6 +306,18 @@ describe("spectral ocean foundations", () => {
         storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" },
       },
     ]);
+  });
+
+  it("keeps cloud diagnostics out of the per-pixel raymarch", () => {
+    // The old diagnostic made every invocation whose ray entered the cloud
+    // slab contend on one global atomic, then mapped that buffer every 60
+    // frames. It did not influence an output texel and had no runtime
+    // consumer, so shipping must not pay for it merely to expose an unused
+    // counter.
+    expect(CLOUD_RAYMARCH_SHADER.code).not.toContain("density_counter");
+    expect(CLOUD_RAYMARCH_SHADER.code).not.toContain("atomicAdd");
+    expect(CLOUD_RAYMARCH_SHADER.bindings.map((binding) => binding.name))
+      .not.toContain("density_counter");
   });
 });
 

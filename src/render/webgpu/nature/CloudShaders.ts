@@ -168,9 +168,6 @@ struct CloudRaymarchParams {
 @group(0) @binding(8) var atmosphere_transmittance_lut: texture_2d<f32>;
 @group(0) @binding(9) var raymarch_cloud: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(10) var raymarch_aux: texture_storage_2d<rgba16float, write>;
-// 2-5: density-sample counter — the adaptive march's whole justification is
-// a measured number, not an impression (assertion 39).
-@group(0) @binding(11) var<storage, read_write> density_counter: array<atomic<u32>>;
 
 ${CLOUD_RAYMARCH_DENSITY_WGSL}
 
@@ -392,7 +389,6 @@ fn raymarchVolumetricClouds(@builtin(global_invocation_id) invocation: vec3<u32>
   var radiance = vec3<f32>(0.0);
   var weighted_distance = 0.0;
   var accumulated_opacity = 0.0;
-  var density_samples = 0u;
   var was_skipping = false;
   let maximum_steps = min(u32(params.march.z), CLOUD_MAX_VIEW_STEPS);
   // 2-5: strides grow linearly with ray distance (×2 at the configured
@@ -412,7 +408,6 @@ fn raymarchVolumetricClouds(@builtin(global_invocation_id) invocation: vec3<u32>
     let skip_stride = params.march.y * 2.0 * stride_scale;
     let world_position = camera_position + ray_direction * distance;
     let density = sampleCloudDensity(world_position, true);
-    density_samples += 1u;
     if (density <= 1e-4) {
       // 2-5: empty space — advance by the long stride and keep striding
       // until density reappears.
@@ -454,8 +449,6 @@ fn raymarchVolumetricClouds(@builtin(global_invocation_id) invocation: vec3<u32>
     transmittance *= sample_transmittance;
     distance += max(step_length, fine_step);
   }
-  atomicAdd(&density_counter[0], density_samples);
-
   let representative_distance = select(
     0.0,
     weighted_distance / max(accumulated_opacity, 1e-5),
@@ -749,7 +742,6 @@ export const CLOUD_RAYMARCH_SHADER: NatureShaderModule = Object.freeze({
     Object.freeze({ group: 0, binding: 8, name: "atmosphere_transmittance_lut", kind: "sampled-texture", viewDimension: "2d", sampleType: "float" }),
     Object.freeze({ group: 0, binding: 9, name: "raymarch_cloud", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
     Object.freeze({ group: 0, binding: 10, name: "raymarch_aux", kind: "storage-texture", viewDimension: "2d", storageFormat: "rgba16float" }),
-    Object.freeze({ group: 0, binding: 11, name: "density_counter", kind: "storage-buffer" }),
   ]),
 });
 

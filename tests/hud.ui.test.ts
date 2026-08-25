@@ -135,6 +135,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
         { name: "volumetric-cloud-integration", p95Ms: 1.2 },
       ],
       pendingTerrainPages: 5,
+      pendingDetailWork: 0,
       terrainComputeDispatches: 4,
       estimatedGpuMemoryMiB: 402.4,
       inventoriedGpuMemoryMiB: 312.9,

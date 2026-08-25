@@ -64,6 +64,71 @@ describe("adaptive governor (1A-6b)", () => {
     expect(state.cpuWorkLevel).toBeGreaterThan(0);
   });
 
+  it("acts on failed frame pacing even when both component counters look calm", () => {
+    const pacingBound: GovernorSignals = {
+      gpuP95Ms: 10,
+      cpuP95Ms: 6.6,
+      intervalP95Ms: 37.5,
+    };
+    const initial = createGovernorState(config);
+    const state = nextGovernorDecision(initial, pacingBound, config);
+
+    expect(state.mode).toBe("frame-pacing");
+    expect(state.renderScale).toBeLessThan(initial.renderScale);
+    expect(state.pendingProbe?.preStepGpuP95Ms).toBe(37.5);
+    expect(state.pendingProbe?.metric).toBe("interval");
+  });
+
+  it("holds a healthy 60 Hz cadence when component counters are calm", () => {
+    const healthy: GovernorSignals = {
+      gpuP95Ms: 8,
+      cpuP95Ms: 6,
+      intervalP95Ms: 16.67,
+    };
+    const initial = createGovernorState(config);
+    const state = nextGovernorDecision(initial, healthy, config);
+
+    expect(state.renderScale).toBe(initial.renderScale);
+    expect(state.pendingProbe).toBeNull();
+    expect(state.gpuWorkLevel).toBe(0);
+  });
+
+  it("undoes a scale probe when its timing source changes", () => {
+    const initial = createGovernorState(config);
+    const pacingStep = nextGovernorDecision(initial, {
+      gpuP95Ms: 10,
+      cpuP95Ms: 6.6,
+      intervalP95Ms: 37.5,
+    }, config);
+    expect(pacingStep.pendingProbe?.metric).toBe("interval");
+
+    const timestampWindow = nextGovernorDecision(pacingStep, {
+      gpuP95Ms: 20,
+      cpuP95Ms: 6,
+      intervalP95Ms: 21,
+    }, config);
+    expect(timestampWindow.renderScale).toBe(initial.renderScale);
+    expect(timestampWindow.pendingProbe).toBeNull();
+    expect(timestampWindow.mode).toBe("holding");
+  });
+
+  it("never recovers work while pilot-visible frame pacing is over budget", () => {
+    const initial = Object.freeze({
+      ...createGovernorState(config),
+      gpuWorkLevel: 2,
+      cpuWorkLevel: 2,
+    }) as GovernorState;
+    const pacingBound: GovernorSignals = {
+      gpuP95Ms: 8,
+      cpuP95Ms: 7,
+      intervalP95Ms: 24,
+    };
+    const state = runWindows(initial, pacingBound, 8);
+
+    expect(state.gpuWorkLevel).toBeGreaterThanOrEqual(initial.gpuWorkLevel);
+    expect(state.cpuWorkLevel).toBe(initial.cpuWorkLevel);
+  });
+
   it("lowers resolution while GPU-bound and stops after two ineffective steps", () => {
     // GPU pegged at 20 ms and completely insensitive to resolution.
     const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 6, intervalP95Ms: 21 };

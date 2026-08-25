@@ -70,6 +70,71 @@ function rowDifference(layer: Uint8Array, edge: number, top: number, bottom: num
   return total / (edge * 4);
 }
 
+/**
+ * Largest pair of mirrored diagonal Fourier lines in one scalar texture field.
+ *
+ * A single geological fracture family may legitimately put energy at `(kx,ky)`.
+ * A woven/screen-door pattern requires a second coherent family at `(kx,-ky)`,
+ * so the weaker member of each mirrored pair is the discriminator. Power is
+ * normalised by total variance: a unit cosine measures 0.5, while uncorrelated
+ * texture noise is O(1 / texelCount), independent of byte contrast.
+ */
+function maximumCrossedSpectralPower(values: readonly number[], edge: number): number {
+  const texels = edge * edge;
+  const mean = values.reduce((sum, value) => sum + value, 0) / texels;
+  let varianceEnergy = 0;
+  for (const value of values) varianceEnergy += (value - mean) ** 2;
+  if (varianceEnergy <= 1e-9) return 0;
+
+  const powerAt = (frequencyX: number, frequencyY: number): number => {
+    let cosine = 0;
+    let sine = 0;
+    for (let y = 0; y < edge; y += 1) {
+      for (let x = 0; x < edge; x += 1) {
+        const phase = (2 * Math.PI * (frequencyX * x + frequencyY * y)) / edge;
+        const centred = values[y * edge + x]! - mean;
+        cosine += centred * Math.cos(phase);
+        sine += centred * Math.sin(phase);
+      }
+    }
+    return (cosine * cosine + sine * sine) / (texels * varianceEnergy);
+  };
+
+  let maximum = 0;
+  // Axial frequencies cannot form a crossed pair. Stop short of Nyquist,
+  // where +k and -k are the same discrete line rather than two families.
+  for (let frequencyX = 1; frequencyX < edge / 2; frequencyX += 1) {
+    for (let frequencyY = 1; frequencyY < edge / 2; frequencyY += 1) {
+      maximum = Math.max(
+        maximum,
+        Math.min(
+          powerAt(frequencyX, frequencyY),
+          powerAt(frequencyX, -frequencyY),
+        ),
+      );
+    }
+  }
+  return maximum;
+}
+
+function decodedAlbedoLuminance(level: Uint8Array): number[] {
+  const values: number[] = [];
+  for (let index = 0; index < level.length; index += 4) {
+    // Array A stores sqrt(linear albedo); mirror the shipping shader's decode.
+    const red = (level[index]! / 255) ** 2;
+    const green = (level[index + 1]! / 255) ** 2;
+    const blue = (level[index + 2]! / 255) ** 2;
+    values.push(0.2126 * red + 0.7152 * green + 0.0722 * blue);
+  }
+  return values;
+}
+
+function heightValues(level: Uint8Array): number[] {
+  const values: number[] = [];
+  for (let index = 3; index < level.length; index += 4) values.push(level[index]! / 255);
+  return values;
+}
+
 describe("terrain material array synthesis (3-1)", () => {
   it("assertion 53: every height channel has mean 0.5 ± 0.02", () => {
     // Without this, 3-6's height blend has one layer winning every comparison
@@ -245,6 +310,54 @@ describe("terrain material array synthesis (3-1)", () => {
         + `is in a smooth gradient, not in texel-scale structure`,
       ).toBeGreaterThan(0.1);
     });
+  });
+
+  it("keeps coarse rock mips free of a crossed fracture lattice", () => {
+    // Prove the discriminator itself before applying it to the recipe. One
+    // directional family has no mirrored partner; adding the opposite family
+    // creates a textbook screen-door and concentrates a quarter of its variance
+    // in each line.
+    const controlEdge = 32;
+    const singleFamily: number[] = [];
+    const crossedFamilies: number[] = [];
+    for (let y = 0; y < controlEdge; y += 1) {
+      for (let x = 0; x < controlEdge; x += 1) {
+        const positive = Math.cos((2 * Math.PI * (7 * x + 3 * y)) / controlEdge);
+        const negative = Math.cos((2 * Math.PI * (7 * x - 3 * y)) / controlEdge);
+        singleFamily.push(positive);
+        crossedFamilies.push(positive + negative);
+      }
+    }
+    expect(maximumCrossedSpectralPower(singleFamily, controlEdge)).toBeLessThan(1e-10);
+    expect(maximumCrossedSpectralPower(crossedFamilies, controlEdge)).toBeGreaterThan(0.24);
+
+    const rock = plans.albedoHeight.layerChains[SurfaceMaterial.Rock]!;
+    // The overlapping-family recipe measured albedo 0.00985/0.02089/0.03708
+    // and height 0.01524/0.02239/0.03394 at mips 2/3/4. The limits sit between
+    // that known screen-door and the mutually-exclusive result; albedo guards
+    // mip2, where height's reduction is deliberately small.
+    const limits = [
+      { mip: 2, albedo: 0.007, height: 0.018 },
+      { mip: 3, albedo: 0.014, height: 0.0195 },
+      { mip: 4, albedo: 0.033, height: 0.029 },
+    ] as const;
+    for (const limit of limits) {
+      const { mip } = limit;
+      const edge = EDGE >> mip;
+      const albedoPower = maximumCrossedSpectralPower(
+        decodedAlbedoLuminance(rock[mip]!),
+        edge,
+      );
+      const heightPower = maximumCrossedSpectralPower(heightValues(rock[mip]!), edge);
+      expect(
+        albedoPower,
+        `Rock mip${mip} albedo crossed-family power ${albedoPower.toFixed(5)}`,
+      ).toBeLessThan(limit.albedo);
+      expect(
+        heightPower,
+        `Rock mip${mip} height crossed-family power ${heightPower.toFixed(5)}`,
+      ).toBeLessThan(limit.height);
+    }
   });
 
   it("is a pure function of seed, material and edge", () => {

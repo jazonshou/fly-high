@@ -1,6 +1,10 @@
 import { clamp, lerp } from "@/src/world/noise";
 import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "@/src/world/seed";
 import { FOLIAGE_LAYERS } from "./FoliageAtlas";
+import {
+  detailPrototypeBoundsFromPositions,
+  type DetailPrototypeBounds,
+} from "./instanceFormat";
 import type { ClutterKind, RockVariant, ShrubSpecies, TreeSpecies } from "./types";
 
 /**
@@ -47,6 +51,8 @@ export interface PrototypeGeometry {
   readonly boundingRadius: number;
   /** Highest vertex y (prototype heights are normalized to ~1). */
   readonly boundingHeight: number;
+  /** Exact authored xyz envelope used by generator-side instance culling. */
+  readonly localBounds: DetailPrototypeBounds;
 }
 
 export interface TreePrototype {
@@ -232,17 +238,18 @@ function finalizeGeometry(acc: GeometryAccumulator): PrototypeGeometry {
   if (vertexCount > 65_535) {
     throw new RangeError(`Prototype exceeds Uint16 indexing (${vertexCount} vertices)`);
   }
+  const positions = Float32Array.from(acc.positions);
   let boundingRadius = 0;
   let boundingHeight = 0;
   for (let i = 0; i < vertexCount; i += 1) {
-    const x = acc.positions[i * 3]!;
-    const y = acc.positions[i * 3 + 1]!;
-    const z = acc.positions[i * 3 + 2]!;
+    const x = positions[i * 3]!;
+    const y = positions[i * 3 + 1]!;
+    const z = positions[i * 3 + 2]!;
     boundingRadius = Math.max(boundingRadius, Math.hypot(x, z));
     boundingHeight = Math.max(boundingHeight, y);
   }
   return {
-    positions: Float32Array.from(acc.positions),
+    positions,
     normals: Float32Array.from(acc.normals),
     uvs: Float32Array.from(acc.uvs),
     tangents: Float32Array.from(acc.tangents),
@@ -252,6 +259,7 @@ function finalizeGeometry(acc: GeometryAccumulator): PrototypeGeometry {
     triangleCount: acc.indices.length / 3,
     boundingRadius,
     boundingHeight,
+    localBounds: detailPrototypeBoundsFromPositions(positions),
   };
 }
 
@@ -298,6 +306,7 @@ export function mergePrototypeGeometry(parts: readonly PrototypeGeometry[]): Pro
   return {
     positions, normals, uvs, tangents, colors, atlasLayer, indices,
     triangleCount, boundingRadius, boundingHeight,
+    localBounds: detailPrototypeBoundsFromPositions(positions),
   };
 }
 
@@ -550,11 +559,10 @@ interface TreeSpeciesSpec {
   readonly crownBase: number;
   readonly crownTop: number;
   readonly crownRadius: number;
-  readonly quadCount: number;
   readonly crownLayer: number;
+  readonly nearCrownLayer: number;
   readonly barkLayer: number;
   readonly fork: boolean;
-  readonly drooping: boolean;
 }
 
 /**
@@ -565,38 +573,47 @@ interface TreeSpeciesSpec {
 const TREE_SPECIES_SPECS: Readonly<Record<TreeSpecies, TreeSpeciesSpec>> = Object.freeze({
   pine: {
     conifer: true, trunkRadius: 0.10, taper: 0.70, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.34, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.34, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   cedar: {
     conifer: true, trunkRadius: 0.12, taper: 0.74, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.38, quadCount: 50, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.38, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   spruce: {
     conifer: true, trunkRadius: 0.11, taper: 0.70, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.30, quadCount: 44, crownLayer: FOLIAGE_LAYER_INDEX.needleSpruce,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.30, crownLayer: FOLIAGE_LAYER_INDEX.needleSpruce,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   oak: {
     conifer: false, trunkRadius: 0.20, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.50, quadCount: 54, crownLayer: FOLIAGE_LAYER_INDEX.broadleafOak,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.50, crownLayer: FOLIAGE_LAYER_INDEX.broadleafOak,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
   maple: {
     conifer: false, trunkRadius: 0.18, taper: 1.05, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.48, quadCount: 52, crownLayer: FOLIAGE_LAYER_INDEX.broadleafMaple,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.48, crownLayer: FOLIAGE_LAYER_INDEX.broadleafMaple,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
   birch: {
     conifer: false, trunkRadius: 0.10, taper: 0.95, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.36, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBirch, fork: false, drooping: false,
+    crownRadius: 0.36, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBirch, fork: false,
   },
   willow: {
     conifer: false, trunkRadius: 0.22, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.55, quadCount: 56, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.55, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    // Willow deliberately shares the fine narrow-leaf colour family but
+    // receives its own hanging multi-lobe silhouette below.
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
 });
 
@@ -608,114 +625,269 @@ function trunkRadiusAt(spec: TreeSpeciesSpec, t: number): number {
   return Math.max(profile * flare, spec.trunkRadius * 0.05);
 }
 
-function buildCrownQuads(
+/** Area-weighted smooth normals for a final, already-deformed indexed hull. */
+function smoothIndexedNormals(
+  positions: readonly Vec3[],
+  faces: readonly number[],
+): readonly Vec3[] {
+  const sums = new Float64Array(positions.length * 3);
+  for (let face = 0; face < faces.length; face += 3) {
+    const ia = faces[face]!;
+    const ib = faces[face + 1]!;
+    const ic = faces[face + 2]!;
+    const a = positions[ia]!;
+    const b = positions[ib]!;
+    const c = positions[ic]!;
+    const weighted = cross3(
+      { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z },
+      { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z },
+    );
+    for (const index of [ia, ib, ic]) {
+      sums[index * 3] = sums[index * 3]! + weighted.x;
+      sums[index * 3 + 1] = sums[index * 3 + 1]! + weighted.y;
+      sums[index * 3 + 2] = sums[index * 3 + 2]! + weighted.z;
+    }
+  }
+  return positions.map((_, index) => norm3(
+    sums[index * 3]!,
+    sums[index * 3 + 1]!,
+    sums[index * 3 + 2]!,
+  ));
+}
+
+/**
+ * One connected 80-triangle broadleaf hull. Four independent 20-triangle
+ * balls had the same cost but exposed four coarse polygon silhouettes — the
+ * repeated "broccoli" shape visible from both the ground and the air. A
+ * subdivision-one icosphere spends those triangles on one coherent outline;
+ * restrained low-frequency deformation supplies lobing without splitting the
+ * crown into intersecting shells.
+ */
+function emitBroadleafCrownHull(
+  acc: GeometryAccumulator,
+  spec: TreeSpeciesSpec,
+  species: TreeSpecies,
+  radialScale: number,
+  heightScale: number,
+  layer: number,
+  rng: RandomSource,
+): void {
+  const { vertices, faces } = buildIcosphere(1);
+  const base = acc.positions.length / 3;
+  const rotation = rng() * TWO_PI;
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
+  const lobePhase = rng() * TWO_PI;
+  const detailPhase = rng() * TWO_PI;
+  const willow = species === "willow";
+  const span = (spec.crownTop - spec.crownBase) * heightScale;
+  const centre: Vec3 = {
+    x: (rng() - 0.5) * spec.crownRadius * radialScale * 0.08,
+    y: spec.crownBase + span * (willow ? 0.49 : 0.54),
+    z: (rng() - 0.5) * spec.crownRadius * radialScale * 0.08,
+  };
+  const radiusX = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
+  const radiusY = span * (willow ? 0.51 : 0.49) * (0.95 + rng() * 0.08);
+  const radiusZ = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
+  const deformed: Vec3[] = vertices.map((source) => {
+    const direction = {
+      x: source.x * cosine - source.z * sine,
+      y: source.y,
+      z: source.x * sine + source.z * cosine,
+    };
+    const azimuth = Math.atan2(direction.z, direction.x);
+    const equatorWeight = Math.max(0, 1 - direction.y * direction.y);
+    const lobeCount = willow ? 5 : 4;
+    const lobeWave = Math.sin(azimuth * lobeCount + lobePhase) * (willow ? 0.1 : 0.075)
+      + Math.sin(azimuth * (lobeCount + 2) + detailPhase) * 0.035;
+    const radialDeformation = 1 + equatorWeight * lobeWave;
+    const droop = willow
+      ? -span * equatorWeight
+        * (0.055 + 0.025 * Math.sin(azimuth * 3 + lobePhase))
+      : 0;
+    return {
+      x: centre.x + direction.x * radiusX * radialDeformation,
+      y: centre.y + direction.y * radiusY + droop,
+      z: centre.z + direction.z * radiusZ * radialDeformation,
+    };
+  });
+  const normals = smoothIndexedNormals(deformed, faces);
+  for (let index = 0; index < vertices.length; index += 1) {
+    const source = vertices[index]!;
+    const direction = {
+      x: source.x * cosine - source.z * sine,
+      y: source.y,
+      z: source.x * sine + source.z * cosine,
+    };
+    const position = deformed[index]!;
+    const normal = normals[index]!;
+    const [u, v] = sphericalUv(direction);
+    const tangent = sphericalTangent(direction, normal);
+    const occlusion = clamp(0.65 + direction.y * 0.25, 0.46, 0.9);
+    pushVertex(
+      acc,
+      position.x, position.y, position.z,
+      normal.x, normal.y, normal.z,
+      u, v,
+      tangent.x, tangent.y, tangent.z, 1,
+      layer,
+      occlusion,
+    );
+  }
+  for (let index = 0; index < faces.length; index += 1) {
+    acc.indices.push(base + faces[index]!);
+  }
+}
+
+/** One closed eight-sided conifer skirt: opaque sides plus a bottom cap. */
+function emitConiferWhorl(
+  acc: GeometryAccumulator,
+  centerX: number,
+  centerZ: number,
+  baseY: number,
+  apexY: number,
+  radiusX: number,
+  radiusZ: number,
+  rotation: number,
+  layer: number,
+): void {
+  const sides = 8;
+  for (let side = 0; side < sides; side += 1) {
+    const angleA = rotation + (side / sides) * TWO_PI;
+    const angleB = rotation + ((side + 1) / sides) * TWO_PI;
+    const a: Vec3 = {
+      x: centerX + Math.cos(angleA) * radiusX,
+      y: baseY,
+      z: centerZ + Math.sin(angleA) * radiusZ,
+    };
+    const b: Vec3 = {
+      x: centerX + Math.cos(angleB) * radiusX,
+      y: baseY,
+      z: centerZ + Math.sin(angleB) * radiusZ,
+    };
+    const apex: Vec3 = { x: centerX, y: apexY, z: centerZ };
+    const height = Math.max(apexY - baseY, 1e-5);
+    const smoothSideNormal = (angle: number): Vec3 => norm3(
+      Math.cos(angle) / Math.max(radiusX, 1e-5),
+      1 / height,
+      Math.sin(angle) / Math.max(radiusZ, 1e-5),
+    );
+    const tangentAt = (angle: number): Vec3 => norm3(
+      -Math.sin(angle) * radiusX,
+      0,
+      Math.cos(angle) * radiusZ,
+    );
+    const sideBase = acc.positions.length / 3;
+    for (const [point, normal, tangent, u, v] of [
+      [a, smoothSideNormal(angleA), tangentAt(angleA), side / sides, 1],
+      [apex, UP, tangentAt((angleA + angleB) * 0.5), (side + 0.5) / sides, 0],
+      [b, smoothSideNormal(angleB), tangentAt(angleB), (side + 1) / sides, 1],
+    ] as const) {
+      pushVertex(
+        acc,
+        point.x, point.y, point.z,
+        normal.x, normal.y, normal.z,
+        u, v,
+        tangent.x, tangent.y, tangent.z, 1,
+        layer,
+        0.68 + 0.2 * (1 - v),
+      );
+    }
+    acc.indices.push(sideBase, sideBase + 1, sideBase + 2);
+
+    const capBase = acc.positions.length / 3;
+    const capTangent = { x: 1, y: 0, z: 0 };
+    for (const [point, u, v] of [
+      [{ x: centerX, y: baseY, z: centerZ }, 0.5, 0.5],
+      [a, Math.cos(angleA) * 0.5 + 0.5, Math.sin(angleA) * 0.5 + 0.5],
+      [b, Math.cos(angleB) * 0.5 + 0.5, Math.sin(angleB) * 0.5 + 0.5],
+    ] as const) {
+      pushVertex(
+        acc,
+        point.x, point.y, point.z,
+        0, -1, 0,
+        u, v,
+        capTangent.x, capTangent.y, capTangent.z, 1,
+        layer,
+        0.5,
+      );
+    }
+    acc.indices.push(capBase, capBase + 1, capBase + 2);
+  }
+}
+
+/**
+ * Near trees use closed species-shaped foliage, not intersecting alpha
+ * cards. That restores coherent close silhouettes and lets the GPU use an
+ * opaque, back-face-culled early-Z pipeline.
+ */
+function buildClosedNearCrown(
   spec: TreeSpeciesSpec,
   species: TreeSpecies,
   rng: RandomSource,
   radialScale: number,
   heightScale: number,
-  quadCount: number,
-  quadSizeMultiplier = 1,
-): FoliageQuad[] {
-  const drooping = species === "willow";
-  const span = spec.crownTop - spec.crownBase;
-  const centerY = spec.conifer
-    ? spec.crownBase + span * 0.45
-    : (spec.crownBase + spec.crownTop) / 2;
-  const centerYScaled = spec.crownBase + (centerY - spec.crownBase) * heightScale;
-  const quads: FoliageQuad[] = [];
-  for (let i = 0; i < quadCount; i += 1) {
-    let px: number;
-    let py: number;
-    let pz: number;
-    if (spec.conifer) {
-      // Cone envelope: wide at the crown base, closing to the leader.
-      const t = spec.crownBase + span * Math.pow(rng(), 0.75);
-      const envelope = spec.crownRadius
-        * Math.pow(1 - (t - spec.crownBase) / span, 0.85) + 0.02;
-      const phi = rng() * TWO_PI;
-      const radial = (0.4 + 0.6 * Math.sqrt(rng())) * envelope;
-      px = Math.cos(phi) * radial;
-      py = t;
-      pz = Math.sin(phi) * radial;
-    } else {
-      // Ellipsoid envelope; willow attaches on the upper shell and hangs.
-      const semiY = span / 2;
-      const phi = rng() * TWO_PI;
-      const yDir = drooping ? 0.15 + 0.85 * rng() : 1 - 1.9 * rng();
-      const horizontal = Math.sqrt(Math.max(0, 1 - yDir * yDir));
-      const shell = 0.4 + 0.6 * Math.sqrt(rng());
-      px = Math.cos(phi) * horizontal * shell * spec.crownRadius;
-      py = centerY + yDir * shell * semiY;
-      pz = Math.sin(phi) * horizontal * shell * spec.crownRadius;
-      if (drooping) py -= 0.1 + rng() * 0.25;
+): PrototypeGeometry {
+  const acc = createAccumulator();
+  const span = (spec.crownTop - spec.crownBase) * heightScale;
+  if (spec.conifer) {
+    const radiusFactors = [1, 0.82, 0.62, 0.4] as const;
+    const baseFactors = [0, 0.22, 0.44, 0.64] as const;
+    const heightFactors = [0.43, 0.4, 0.37, 0.34] as const;
+    for (let whorl = 0; whorl < radiusFactors.length; whorl += 1) {
+      const baseY = spec.crownBase + span * baseFactors[whorl]!;
+      const radius = spec.crownRadius * radialScale * radiusFactors[whorl]!
+        * (0.94 + rng() * 0.12);
+      emitConiferWhorl(
+        acc,
+        (rng() - 0.5) * radius * 0.1,
+        (rng() - 0.5) * radius * 0.1,
+        baseY,
+        Math.min(spec.crownBase + span, baseY + span * heightFactors[whorl]!),
+        radius,
+        radius * (0.9 + rng() * 0.2),
+        rng() * TWO_PI,
+        spec.nearCrownLayer,
+      );
     }
-    // The variant silhouette knob: envelope aspect via anisotropic scaling
-    // of the quad centres about the crown base.
-    px *= radialScale;
-    pz *= radialScale;
-    py = spec.crownBase + (py - spec.crownBase) * heightScale;
-    // Orientation mix (2-12): shelves alone (normals blended 60% toward up)
-    // read as stacked wafers from the horizon-level views every capture shot
-    // uses — the crown all but vanished at grazing angles. 55% of cards now
-    // stand upright ("sails", normal horizontal-outward) to carry the side
-    // silhouette while the remaining shelves keep the top-down canopy solid.
-    const outward = norm3(px, py - centerYScaled, pz);
-    const sail = rng() < 0.55;
-    const normal = sail
-      ? norm3(
-          outward.x + (rng() - 0.5) * 0.35,
-          (rng() - 0.5) * 0.25,
-          outward.z + (rng() - 0.5) * 0.35,
-        )
-      : norm3(
-          outward.x * 0.4 + (rng() - 0.5) * 0.2,
-          outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.2,
-          outward.z * 0.4 + (rng() - 0.5) * 0.2,
-        );
-    let tangent = cross3(UP, normal);
-    const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
-    tangent = tangentLength > 1e-4
-      ? norm3(tangent.x, tangent.y, tangent.z)
-      : { x: 1, y: 0, z: 0 };
-    const bitangent = cross3(normal, tangent);
-    // Per-quad half-extent 0.18–0.34 of the crown radius: cards overlap
-    // heavily, which is what makes the interior occlusion bake read. The
-    // multiplier lets the mid band trade card count for card area.
-    const size = (0.18 + rng() * 0.16) * spec.crownRadius * quadSizeMultiplier;
-    quads.push({
-      center: { x: px, y: py, z: pz },
-      normal,
-      tangent,
-      bitangent,
-      halfWidth: drooping ? size * 0.7 : size,
-      halfHeight: drooping ? size * 1.4 : size,
-      layer: spec.crownLayer,
-    });
+    return finalizeGeometry(acc);
   }
-  return quads;
+
+  emitBroadleafCrownHull(
+    acc,
+    spec,
+    species,
+    radialScale,
+    heightScale,
+    spec.nearCrownLayer,
+    rng,
+  );
+  return finalizeGeometry(acc);
 }
 
 /**
  * R-21's per-plant triangle allowances, made geometry (2-12): the density
- * law prices a near-band plant at 180 triangles, a mid-band plant at 48 and
+ * law prices both near and mid plants at 180 triangles and
  * a far-band plant at 8 — and the first 2-12 capture proved the price list
  * is not advisory (every band drawing near geometry integrated to 4.7× the
  * budget and the frame went from 13 ms to 29 ms of GPU). Each band gets its
- * own prototype; 2-14 replaces the mid standin with its authored card tier
- * and 2-17 replaces the far standin with octahedral impostors.
+ * own prototype; near/mid share the exact same opaque crown geometry so their
+ * hard range handoff cannot shrink, overlap or reshape the silhouette. Far
+ * uses an octahedral impostor.
  */
 export type TreePrototypeBand = "near" | "mid" | "far";
 
 /**
  * Trunk (swept generalized cylinder, 8 sides, 5 rings, root flare, one
- * primary fork for oak/maple/willow) plus a crown of 40–60 outward-tilted
- * foliage quads, both with baked sky occlusion. Heights normalized to 1.0.
+ * primary fork for oak/maple/willow) plus closed, species-shaped crown
+ * geometry. Heights normalized to 1.0.
  *
- * `band` selects the density law's cost tier: "near" is the full prototype;
- * "mid" decimates to a 12-quad crown over a 4-side fork-free trunk (≤48
- * triangles); "far" is three crossed vertical cards (6 triangles, crown
- * layer only — at 1.4 km a trunk subtends under a pixel).
+ * `band` selects the density law's cost tier: near/mid share the exact full
+ * trunk, fork, and 60–80-triangle opaque crown, so their hard handoff cannot
+ * change topology or silhouette. Far is three crossed vertical cards (6
+ * triangles, crown layer only — at 1.4 km a trunk subtends under a pixel).
+ * The extra mid vertices replace the measured two-sided alpha-card fragment
+ * bottleneck.
  */
 export function buildTreePrototype(
   species: TreeSpecies,
@@ -738,14 +910,6 @@ export function buildTreePrototype(
     * (1 + (knobRng() - 0.5) * 0.01);
   const radialScale = aspect;
   const heightScale = 1 / Math.sqrt(aspect);
-  // Forked species cap at 45 quads and a 4-side fork: R-21 prices a near
-  // plant at 180 triangles, and the original 60-quad + 6-side-fork worst
-  // case integrated to 220.
-  const quadCount = Math.round(clamp(
-    spec.quadCount + (knobRng() - 0.5) * 12,
-    40,
-    spec.fork ? 45 : 60,
-  ));
   const leanAngle = (1 + knobRng() * 3) * DEG;
   const leanAzimuth = knobRng() * TWO_PI;
   const forkAngle = (20 + knobRng() * 15) * DEG;
@@ -790,19 +954,15 @@ export function buildTreePrototype(
   }
 
   const trunkAcc = createAccumulator();
-  const midBand = band === "mid";
-  // Mid trunk: 3 rings, 4 sides, no fork — 16 triangles under the band's
-  // 48-triangle allowance, leaving 32 for the crown.
-  const ringTs = midBand ? [0, 0.3, 1] : TRUNK_RING_TS;
-  const trunkRings: TubeRing[] = ringTs.map((t) => ({
+  const trunkRings: TubeRing[] = TRUNK_RING_TS.map((t) => ({
     center: { x: leanX * t * t, y: t, z: leanZ * t * t },
     axis: norm3(2 * leanX * t, 1, 2 * leanZ * t),
     radius: trunkRadiusAt(spec, t),
     v: t * 3,
   }));
-  sweepTube(trunkAcc, trunkRings, midBand ? 4 : 8, 2, spec.barkLayer);
+  sweepTube(trunkAcc, trunkRings, 8, 2, spec.barkLayer);
 
-  if (spec.fork && !midBand) {
+  if (spec.fork) {
     const direction = norm3(
       Math.sin(forkAngle) * Math.cos(forkAzimuth),
       Math.cos(forkAngle),
@@ -823,26 +983,10 @@ export function buildTreePrototype(
     sweepTube(trunkAcc, forkRings, 4, 2, spec.barkLayer);
   }
 
-  const crownAcc = createAccumulator();
-  // Mid crown: 12 quads (24 triangles) — with the 16-triangle trunk, 40 of
-  // the band's 48-triangle allowance.
-  const bandQuadCount = midBand ? 12 : quadCount;
-  // Mid cards are ~1.8× wider: a quarter of the cards at three times the
-  // area keeps the crown's visual mass while honoring the allowance.
-  const quads = buildCrownQuads(
-    spec, species, placementRng, radialScale, heightScale, bandQuadCount,
-    midBand ? 1.8 : 1,
-  );
-  const owners: number[] = [];
-  for (let i = 0; i < quads.length; i += 1) {
-    emitFoliageQuad(crownAcc, quads[i]!, owners, i);
-  }
-
-  const disks = quads.map(quadDisk);
-  bakeSkyOcclusion(crownAcc, disks, owners);
-  bakeSkyOcclusion(trunkAcc, disks);
-
-  return { trunk: finalizeGeometry(trunkAcc), crown: finalizeGeometry(crownAcc) };
+  return {
+    trunk: finalizeGeometry(trunkAcc),
+    crown: buildClosedNearCrown(spec, species, placementRng, radialScale, heightScale),
+  };
 }
 
 // ---------------------------------------------------------------------------

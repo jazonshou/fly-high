@@ -224,6 +224,66 @@ export function landCoverWeightOf(
 }
 
 /**
+ * One categorical material basis shared by the two resident season buckets.
+ *
+ * The atlas has one id texture and two weight textures. Storing the low
+ * season's ids beside the high season's independently ordered weights assigns
+ * those weights to the wrong materials as soon as (for example) snow enters
+ * winter's top four. Select a joint basis by each material's strongest share
+ * in either bucket, then project and renormalise both buckets onto it. The GPU
+ * bake below mirrors this function exactly.
+ */
+export interface SeasonalLandCoverWeights {
+  readonly ids: readonly SurfaceMaterialId[];
+  readonly lowWeights: readonly number[];
+  readonly highWeights: readonly number[];
+}
+
+export function alignSeasonalLandCoverWeights(
+  low: LandCoverWeights,
+  high: LandCoverWeights,
+): SeasonalLandCoverWeights {
+  const lowByMaterial = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  const highByMaterial = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  for (let slot = 0; slot < LAND_COVER_TOP_MATERIALS; slot += 1) {
+    const lowId = low.ids[slot];
+    const highId = high.ids[slot];
+    if (lowId !== undefined) {
+      lowByMaterial[lowId] = lowByMaterial[lowId]! + (low.weights[slot] ?? 0);
+    }
+    if (highId !== undefined) {
+      highByMaterial[highId] = highByMaterial[highId]! + (high.weights[slot] ?? 0);
+    }
+  }
+
+  const scores = lowByMaterial.map((weight, id) => Math.max(weight, highByMaterial[id]!));
+  const ids: SurfaceMaterialId[] = [];
+  for (let slot = 0; slot < LAND_COVER_TOP_MATERIALS; slot += 1) {
+    let bestIndex = 0;
+    let bestValue = -1;
+    for (let id = 0; id < SURFACE_MATERIAL_COUNT; id += 1) {
+      if (scores[id]! > bestValue) {
+        bestIndex = id;
+        bestValue = scores[id]!;
+      }
+    }
+    scores[bestIndex] = -1;
+    ids.push(bestIndex as SurfaceMaterialId);
+  }
+
+  const project = (source: readonly number[]): number[] => {
+    const projected = ids.map((id) => source[id] ?? 0);
+    const total = projected.reduce((sum, weight) => sum + weight, 0);
+    return total > 0 ? projected.map((weight) => weight / total) : projected;
+  };
+  return {
+    ids,
+    lowWeights: project(lowByMaterial),
+    highWeights: project(highByMaterial),
+  };
+}
+
+/**
  * `R-27`'s consumers contract, as data.
  *
  * `chooseTreeSpecies`, `chooseShrubSpecies` and the wildlife habitat rules all
@@ -513,6 +573,58 @@ fn splatSupersample(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> Land
   return result;
 }
 
+struct SeasonalLandCoverWeights {
+  ids: vec4f,
+  weightsLo: vec4f,
+  weightsHi: vec4f,
+};
+
+/** Give both season buckets one categorical id basis before storing them. */
+fn splatAlignSeasonalWeights(
+  lo: LandCoverWeights,
+  hi: LandCoverWeights,
+) -> SeasonalLandCoverWeights {
+  var loByMaterial: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  var hiByMaterial: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  var scores: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+    loByMaterial[index] = 0.0;
+    hiByMaterial[index] = 0.0;
+  }
+  for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
+    let loId = u32(lo.ids[slot]);
+    let hiId = u32(hi.ids[slot]);
+    loByMaterial[loId] = loByMaterial[loId] + lo.weights[slot];
+    hiByMaterial[hiId] = hiByMaterial[hiId] + hi.weights[slot];
+  }
+  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+    scores[index] = max(loByMaterial[index], hiByMaterial[index]);
+  }
+
+  var result: SeasonalLandCoverWeights;
+  var totalLo = 0.0;
+  var totalHi = 0.0;
+  for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
+    var bestIndex = 0u;
+    var bestValue = -1.0;
+    for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+      if (scores[index] > bestValue) {
+        bestIndex = index;
+        bestValue = scores[index];
+      }
+    }
+    scores[bestIndex] = -1.0;
+    result.ids[slot] = f32(bestIndex);
+    result.weightsLo[slot] = loByMaterial[bestIndex];
+    result.weightsHi[slot] = hiByMaterial[bestIndex];
+    totalLo = totalLo + result.weightsLo[slot];
+    totalHi = totalHi + result.weightsHi[slot];
+  }
+  if (totalLo > 0.0) { result.weightsLo = result.weightsLo / totalLo; }
+  if (totalHi > 0.0) { result.weightsHi = result.weightsHi / totalHi; }
+  return result;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn bakeSplat(
   @builtin(global_invocation_id) id: vec3<u32>,
@@ -527,15 +639,16 @@ fn bakeSplat(
   let localZ = job.placement.y + (f32(id.y) + 0.5) * job.shape.x;
   let texel = vec2i(job.slots.xy) + vec2i(i32(id.x), i32(id.y));
 
-  // Ids are stored as unorm over the ten-material axis, so a filtered fetch
-  // between two texels lands between two ADJACENT materials on the ecotone
-  // axis — which is exactly what the axis was ordered for.
+  // Ids are categorical values encoded as unorm over the ten-material axis.
+  // The surface shader loads them exactly; it never filters between ids.
+  // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
   let lo = splatSupersample(job, localX, localZ, job.placement.z);
-  textureStore(splatId, texel, lo.ids * scale);
-  textureStore(splatWeightLo, texel, lo.weights);
   let hi = splatSupersample(job, localX, localZ, job.placement.w);
-  textureStore(splatWeightHi, texel, hi.weights);
+  let aligned = splatAlignSeasonalWeights(lo, hi);
+  textureStore(splatId, texel, aligned.ids * scale);
+  textureStore(splatWeightLo, texel, aligned.weightsLo);
+  textureStore(splatWeightHi, texel, aligned.weightsHi);
 
 }
 `;

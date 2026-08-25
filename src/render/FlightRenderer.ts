@@ -26,6 +26,7 @@ import {
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import {
   rodFractionForAdaptedLuminance,
+  shouldRunScotopicPass,
   ScotopicVisionPass,
 } from "./webgpu/atmosphere/ScotopicVision";
 import {
@@ -44,6 +45,11 @@ import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
+import {
+  formatGpuUncapturedError,
+  GpuUncapturedErrorGuard,
+} from "./webgpu/core/GpuUncapturedErrorGuard";
+import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
 import {
   FrameGraphBudgetProbe,
   PassTimingHistory,
@@ -67,6 +73,7 @@ import {
   frameTimingPercentile,
   frameTimingPercentile95,
   freshFrameTiming,
+  hitchThresholdMilliseconds,
   isUsableFrameTiming,
   resolveWebGpuQualityProfile,
   type WebGpuQualityProfile,
@@ -96,8 +103,9 @@ import {
 } from "@/src/workers/terrainAuthority";
 import { attributePresentFrame } from "./frameAttribution";
 import {
+  cameraBankFollow,
   cameraPresentationResponse,
-  shouldStabilizeCameraHorizon,
+  orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
 
@@ -236,11 +244,25 @@ export interface FlightRendererOptions {
   signal?: AbortSignal;
   onDeviceLost?: (reason: string) => void;
   /**
+   * A raw WebGPU validation/internal error rejects work asynchronously, so it
+   * does not pass through render()'s synchronous try/catch and need not lose
+   * the device. Treat the first event as terminal rather than continuing to
+   * report rAF FPS over a rejected, black frame.
+   */
+  onGpuUncapturedError?: (reason: string) => void;
+  /**
    * Z-1: pin the render scale and disable both governors. The perf capture
-   * passes 1.0 so `renderPixels === width × height` and no governor state can
-   * rewrite pixels mid-run; interactive sessions leave it unset.
+   * pins either the shipping tier scale or an explicit cap-stress scale, and
+   * no governor state can rewrite pixels mid-run. Interactive sessions leave
+   * it unset.
    */
   pinnedRenderScale?: number;
+  /**
+   * Capture-only timestamp-query diagnostic. Normal gameplay and captures do
+   * not pay Babylon's continuous resolve/submit/map overhead; `true` is
+   * accepted only together with `pinnedRenderScale`.
+   */
+  captureGpuTiming?: boolean;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -266,6 +288,7 @@ const SCOTOPIC_MID_GREY_TARGET = 0.16;
 export class FlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly engine: WebGPUEngine;
+  private readonly gpuUncapturedErrorGuard: GpuUncapturedErrorGuard;
   /** 2-13: the world definition, kept for per-frame wind-field sampling. */
   private readonly worldDefinition: WorldDefinition;
   private readonly scene: Scene;
@@ -303,6 +326,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
+  private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
   private readonly cpuFrameDurations: number[] = [];
@@ -338,7 +362,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
-  private readonly pinnedRenderScale: number | null;
+  private pinnedRenderScale: number | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
@@ -353,12 +377,15 @@ export class FlightRenderer implements FlightRenderingSystem {
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
   private lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
+  /** Monotonic label for metrics cleared together by resetTimingWindow(). */
+  private timingWindowEpoch = 0;
   private deviceLost = false;
   private disposed = false;
 
   private constructor(
     options: FlightRendererOptions,
     engine: WebGPUEngine,
+    gpuUncapturedErrorGuard: GpuUncapturedErrorGuard,
     scene: Scene,
     camera: UniversalCamera,
     aircraft: AircraftVisual,
@@ -386,6 +413,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphereResources = atmosphereResources;
     this.domElement = options.canvas;
     this.engine = engine;
+    this.gpuUncapturedErrorGuard = gpuUncapturedErrorGuard;
     this.scene = scene;
     this.camera = camera;
     this.aircraft = aircraft;
@@ -469,7 +497,16 @@ export class FlightRenderer implements FlightRenderingSystem {
     );
     if (!capability.supported) throw new Error(capability.reason ?? "WebGPU is unavailable.");
     throwIfRendererStartupAborted(options.signal);
-    const timestampQueries = capability.features.has("timestamp-query");
+    // Opting out at device creation is load-bearing. Babylon records the next
+    // frame's timestamp into a command encoder as `endFrame()` returns, so
+    // disabling its timer later destroys a query set still referenced by that
+    // unsent encoder. A controlled no-observer capture must never create it.
+    const timestampQuerySupported = capability.features.has("timestamp-query");
+    const gpuTimingEnabled = gpuTimingEnabledAtStartup({
+      timestampQuerySupported,
+      captureGpuTiming: options.captureGpuTiming,
+      pinnedCapture: options.pinnedRenderScale !== undefined,
+    });
     if (!capability.features.has("texture-formats-tier1")) {
       throw new Error(
         "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
@@ -477,7 +514,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     const requiredFeatures: GPUFeatureName[] = [
       "texture-formats-tier1",
-      ...(timestampQueries ? ["timestamp-query" as const] : []),
+      ...(gpuTimingEnabled ? ["timestamp-query" as const] : []),
     ];
     const engine = await awaitRendererStartup(
       WebGPUEngine.CreateAsync(options.canvas, {
@@ -498,15 +535,29 @@ export class FlightRenderer implements FlightRenderingSystem {
       30_000,
       (lateEngine) => lateEngine.dispose(),
     );
-    const cleanup: Array<() => void> = [() => engine.dispose()];
+    // Install the authoritative raw-device channel before constructing any
+    // scene resource or compiling any pipeline. Babylon only logs these
+    // asynchronous failures; without this guard a rejected whole-frame submit
+    // can leave the canvas black while the rAF/FPS counter stays healthy.
+    const gpuUncapturedErrorGuard = new GpuUncapturedErrorGuard(
+      engine._device,
+      (failure) => options.onGpuUncapturedError?.(
+        formatGpuUncapturedError(failure),
+      ),
+    );
+    const cleanup: Array<() => void> = [
+      () => engine.dispose(),
+      () => gpuUncapturedErrorGuard.dispose(),
+    ];
     try {
       throwIfRendererStartupAborted(options.signal);
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
-      engine.enableGPUTimingMeasurements = timestampQueries;
+      engine.enableGPUTimingMeasurements = gpuTimingEnabled;
       assertStartupInvariants({
-        timestampQuerySupported: timestampQueries,
+        timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        gpuTimingRequired: gpuTimingEnabled,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
         // 4-0: assert the limits the renderer DECLARES, not the ones it hopes
@@ -657,10 +708,6 @@ export class FlightRenderer implements FlightRenderingSystem {
       const atmosphereResources = new AtmosphereGpuResources(
         scene,
         camera,
-        (mesh) =>
-          mesh === atmosphere.skyMesh
-          || mesh.name === "volumetric-cloud-shell"
-          || mesh.material?.disableDepthWrite === true,
       );
       cleanup.push(() => atmosphereResources.dispose());
       const clouds = new VolumetricCloudSystem(
@@ -808,8 +855,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       // the post-process chain exist: the aerial hook needs linear HDR at
       // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
       assertStartupInvariants({
-        timestampQuerySupported: timestampQueries,
+        timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        gpuTimingRequired: gpuTimingEnabled,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
         imageProcessingAppliedByPostProcess:
@@ -827,6 +875,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "WebGPU scene startup",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
       // the load screen. Babylon 9.21 calls `createComputePipeline`
@@ -845,6 +894,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // 2-10: the planar-reflection capture is retired — the environment
       // probe covers water reflections; the receiver contract stays bound to
@@ -853,6 +903,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       const renderer = new FlightRenderer(
         options,
         engine,
+        gpuUncapturedErrorGuard,
         scene,
         camera,
         aircraft,
@@ -982,6 +1033,7 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   render(state: FlightVisualState, deltaSeconds: number): void {
     if (this.disposed) return;
+    this.gpuUncapturedErrorGuard.throwIfFailed();
     if (this.deviceLost) {
       throw new Error("The WebGPU device was lost; rendering cannot continue");
     }
@@ -1096,6 +1148,105 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /**
+   * Capture-only synchronization point. Tight deterministic warm-up loops can
+   * submit far faster than the adapter consumes work; resetting counters does
+   * not drain that queue, so the first measured rAF previously inherited up
+   * to seconds of old GPU work. Production never calls this blocking fence.
+   */
+  async waitForGpuIdleForCapture(): Promise<void> {
+    if (this.disposed || this.deviceLost) return;
+    await this.engine._device.queue.onSubmittedWorkDone();
+  }
+
+  /**
+   * Capture-only snapshot of the bounded detail builder. Counters are
+   * cumulative so the harness can take two cheap snapshots outside the timed
+   * loop instead of sampling diagnostics on every frame and perturbing p95.
+   */
+  getDetailPresentationDiagnosticsForCapture() {
+    return this.detail.presentationRebuildDiagnostics;
+  }
+
+  /** Constant-time frame correlation companion to the full detail snapshot. */
+  getDetailPresentationMarkerForCapture() {
+    return this.detail.presentationCaptureMarker;
+  }
+
+  /**
+   * Installs the capture harness's authoritative WebGPU validation-error
+   * channel. Browser-native `uncapturederror` events are not guaranteed to
+   * call the page's patched `console.error`, so relying on console/Babylon
+   * logging alone can let a rejected whole-frame submit look like a fast black
+   * frame. The returned cleanup is idempotent and keeps the private device
+   * itself out of the capture driver.
+   */
+  addGpuUncapturedErrorListenerForCapture(
+    listener: (event: GPUUncapturedErrorEvent) => void,
+  ): () => void {
+    if (this.disposed) throw new Error("Cannot observe GPU errors on a disposed renderer");
+    const device = this.engine._device;
+    device.addEventListener("uncapturederror", listener);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      device.removeEventListener("uncapturederror", listener);
+    };
+  }
+
+  /**
+   * Provenance for the current timing window. A GPU percentile without its
+   * resolved-sample count is not comparable to a 240-frame wall-clock window:
+   * Babylon permits only one whole-frame timestamp readback in flight, so the
+   * two sample counts are intentionally not assumed to match.
+   */
+  getGpuTimingStatusForCapture(): {
+    readonly enabled: boolean;
+    readonly epoch: number;
+    readonly sampleCount: number;
+    readonly latestSampleAgeFrames: number | null;
+  } {
+    return {
+      enabled: this.engine.enableGPUTimingMeasurements,
+      epoch: this.timingWindowEpoch,
+      sampleCount: this.diagnosticGpuDurations.length,
+      latestSampleAgeFrames: Number.isFinite(this.lastGpuTimingFrameIndex)
+        ? Math.max(0, this.frameIndex - this.lastGpuTimingFrameIndex)
+        : null,
+    };
+  }
+
+  /** Internal raster size used when the capture driver resolves to CSS pixels. */
+  getCaptureRenderSize(): { readonly width: number; readonly height: number } {
+    return {
+      width: this.engine.getRenderWidth(),
+      height: this.engine.getRenderHeight(),
+    };
+  }
+
+  /**
+   * Capture-only switch between the shipping DPR-1 workload and the
+   * high-DPR/cap-equivalent reference workload. It is intentionally refused
+   * for interactive renderers, where the adaptive governor owns this state.
+   */
+  setPinnedRenderScaleForCapture(scale: number): void {
+    if (this.pinnedRenderScale === null) {
+      throw new Error("Capture render scale can only change on a pinned renderer");
+    }
+    if (!Number.isFinite(scale) || scale < 0.1 || scale > 2) {
+      throw new RangeError("Capture render scale must be finite and in [0.1, 2]");
+    }
+    if (Math.abs(scale - this.pinnedRenderScale) <= 1e-6) return;
+    this.pinnedRenderScale = scale;
+    this.governorConfig = this.resolveGovernorConfig();
+    this.governorState = createGovernorState(this.governorConfig);
+    this.renderScale = this.governorState.renderScale;
+    this.applyRenderScale();
+    this.resetTimingWindow();
+    this.graph.invalidateHistory("capture render-scale change");
+  }
+
+  /**
    * Z-4: a best-effort inventory of what is actually allocated — textures by
    * size×format, geometry by vertex stride and indices. It cannot see MSAA
    * resolve targets, pipelines or driver overhead, so it is a FLOOR, used to
@@ -1159,17 +1310,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Z-2: aggregate over the rolling rings, not the governor's consumable
     // window (R-4 — the old path read null whenever the window had just been
     // consumed, which was every committed capture).
-    // 4× the frame target (2-17 re-pin; 3× at 2-8, 2× originally): each
-    // re-pin has chased the same failure mode — the threshold sitting
-    // INSIDE the workload's vsync-quantization band, where frames
-    // oscillating between adjacent vsync multiples masquerade as hitch
-    // trains. With the full Gate-2C vegetation stack a typical heavy-shot
-    // frame sits at 33–46 ms (4–5.5 vsyncs at 120 Hz) against a 41 ms 3×
-    // threshold — 190–236 "hitches" per 240 frames on identical builds,
-    // pure quantization. At 4× (54.8 ms) a typical frame is invisible and
-    // every real stall observed this phase (teleport re-stream 600–1300 ms,
-    // GC, compositor) still counts. The sustained rate belongs to minFps.
-    const hitchThresholdMs = this.profile.frameTargetMs * 4;
+    // The threshold is a product contract, not something a slower workload
+    // may redefine until its own misses disappear. A tier-1 frame above
+    // 27.4 ms is a visible missed delivery and must remain visible here.
+    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {
@@ -1236,6 +1380,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
+      pendingDetailWork: this.detail.pendingWorkItems,
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
@@ -1286,6 +1431,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Detach before any GPU owner is torn down. Disposal-time validation
+    // noise must not terminalize an already disposed renderer or its next
+    // replacement in React development lifecycles.
+    this.gpuUncapturedErrorGuard.dispose();
     // Dispose every resource even if a device-loss edge case makes one GPU
     // owner throw. The array is intentionally listed in reverse execution
     // order because releaseRendererResources unwinds from the end.
@@ -1433,6 +1582,23 @@ export class FlightRenderer implements FlightRenderingSystem {
     const snapshot = this.atmosphere.snapshot;
     const adapted = snapshot.adaptedLuminanceCdM2;
     const rodFraction = rodFractionForAdaptedLuminance(adapted);
+    const scotopicActive = shouldRunScotopicPass(rodFraction);
+    if (scotopicActive !== this.scotopic.enabled) {
+      if (scotopicActive) {
+        // Scotopic returns to slot zero and owns the multisampled scene
+        // target; ACES becomes a single-sample consumer again.
+        this.scotopic.setSamples(this.profile.msaaSamples);
+        this.toneMap.samples = 1;
+        this.scotopic.setEnabled(this.camera, true);
+      } else {
+        // In photopic daylight the scotopic shader is a half-float copy.
+        // Detach it and transfer first-pass/MSAA ownership to the already
+        // half-float, ratio-one ACES pass. RGB input and output are unchanged.
+        this.toneMap.samples = this.profile.msaaSamples;
+        this.scotopic.setSamples(1);
+        this.scotopic.setEnabled(this.camera, false);
+      }
+    }
     // The rod pathway's saturated response has to land somewhere sensible
     // AFTER the one exposure curve, so its display gain is that curve's
     // reciprocal times a mid-grey target. Computed here, on the CPU, so the
@@ -1537,20 +1703,30 @@ export class FlightRenderer implements FlightRenderingSystem {
       response,
       this.cameraTarget,
     );
-    if (shouldStabilizeCameraHorizon(this.cameraMode, this.reducedMotion)) {
-      this.desiredCameraUp.copyFromFloats(0, 1, 0);
-    } else {
-      // Cockpit and non-stabilized exterior views retain physical roll. The
-      // exterior rig eases toward it; cockpit response is exactly one.
-      this.desiredCameraUp.copyFrom(this.up);
-    }
+    // Exterior views communicate a turn without attaching the horizon to
+    // every physics/interpolation correction. This restores the restrained
+    // 18% chase / 30% cinematic bank used by the playable renderer; cockpit
+    // remains physically attached and reduced-motion exterior views stay level.
+    Vector3.LerpToRef(
+      Vector3.UpReadOnly,
+      this.up,
+      cameraBankFollow(this.cameraMode, this.reducedMotion),
+      this.desiredCameraUp,
+    );
+    this.desiredCameraUp.normalize();
     smoothCameraVectorToRef(
       this.camera.upVector,
       this.desiredCameraUp,
       response,
       this.camera.upVector,
     );
-    this.camera.upVector.normalize();
+    this.cameraTarget.subtractToRef(this.camera.position, this.cameraViewDirection);
+    orthogonalizeCameraUpToRef(
+      this.camera.upVector,
+      this.cameraViewDirection,
+      this.up,
+      this.camera.upVector,
+    );
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
   }
@@ -1707,11 +1883,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    if (this.toneMap.samples !== this.profile.msaaSamples) {
-      this.toneMap.samples = this.profile.msaaSamples;
-      this.camera.detachPostProcess(this.fxaa);
-      if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
-    }
+    // Whichever pass is first owns the multisampled scene target. Daylight
+    // bypasses scotopic; twilight/night restores it at slot zero.
+    this.scotopic.setSamples(this.scotopic.enabled ? this.profile.msaaSamples : 1);
+    this.toneMap.samples = this.scotopic.enabled ? 1 : this.profile.msaaSamples;
+    this.camera.detachPostProcess(this.fxaa);
+    if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
@@ -1908,6 +2085,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   private resetTimingWindow(): void {
+    this.timingWindowEpoch += 1;
     this.resetTimingSamples();
     this.diagnosticIntervalDurations.length = 0;
     this.diagnosticCpuDurations.length = 0;

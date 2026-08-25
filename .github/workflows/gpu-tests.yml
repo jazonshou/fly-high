@@ -1,13 +1,20 @@
-name: GPU tests
+name: Renderer GPU and performance gates
 
 # The tests/gpu project compiles real shaders and checks CPU/GPU parity, so it
-# needs a working WebGPU adapter. vitest.gpu.config.ts launches Chromium with
-# `--use-angle=metal`, which means a macOS runner. Kept out of the required CI
-# path deliberately: it is slower, it depends on a Playwright browser download,
-# and adapter availability on hosted runners is not guaranteed. Run it at gate
-# boundaries and before merging renderer work.
+# needs a working WebGPU adapter. Both projects launch Chromium with Metal, so
+# they run as separate macOS jobs: shader/parity failures return quickly while
+# the longer fixed-scene performance capture retains its own artifacts.
 on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 8 * * 1"
   workflow_dispatch:
+
+concurrency:
+  group: renderer-gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -33,3 +40,41 @@ jobs:
 
       - name: Run WebGPU tests
         run: npm run test:gpu
+
+  perf:
+    name: Tier-1 frame delivery and visual capture (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run focused PR capture
+        if: github.event_name == 'pull_request'
+        run: npm run perf:capture:ci
+
+      - name: Run full capture
+        if: github.event_name != 'pull_request'
+        run: npm run perf:capture
+
+      - name: Prove committed baselines were not mutated
+        if: always()
+        run: git diff --exit-code -- tests/perf/baseline
+
+      - name: Upload capture report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tests/perf/artifacts/
+          if-no-files-found: warn
+          retention-days: 14

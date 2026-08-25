@@ -7,7 +7,7 @@ fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It kee
 - WebGPU, Web Workers, and a hardware-accelerated adapter are required. Startup requests a high-performance adapter and rejects a software/fallback adapter.
 - There is **no WebGL fallback and no Canvas fallback**. An unsupported device receives a startup error rather than a reduced renderer.
 - The engine runs with compatibility mode disabled, a right-handed scene, reversed-Z depth, MSAA on the offscreen beauty target per tier, a 0.08 m near plane, and a 45 km far plane (1C-4: the shared aerial perspective is ≥95% opaque beyond it).
-- The optional `timestamp-query` feature enables GPU timing in diagnostics. It is not required for rendering.
+- Continuous `timestamp-query` observers are disabled in gameplay: a controlled reference capture measured a 4.7 ms p95 observer tax and only 49 resolved samples in 240 frames. A pinned diagnostic capture can request them explicitly before device creation; they are never required for rendering.
 - Device loss is terminal for the current renderer instance. Simulation/rendering pause and the user must reload to recreate the adapter, device, and every GPU resource.
 - WebGPU normally requires a secure browser context; local development at `localhost` is accepted.
 
@@ -22,7 +22,7 @@ The game-owned frame graph declares system order while Babylon owns WebGPU comma
 | 3 | `shared-planar-water-reflection` | Retired (2-10): the sky environment probe carries water reflections; the receiver contract and lake-plane hysteresis survive for a future lake capture (5-12). |
 | 4 | `spectral-ocean-compute` | Ocean compute dispatches, bathymetry toroidal-strip updates, and river/lake material updates. |
 | 5 | `volumetric-cloud-integration` | Low-resolution cloud integration, temporal resolve, and world-space transmittance projection. |
-| 6 | `hdr-present` | Babylon scene render, the scotopic (rod-vision) pass, half-float ACES image processing, final FXAA, and presentation. |
+| 6 | `hdr-present` | Babylon scene render, the scotopic (rod-vision) pass when required, half-float ACES image processing, final FXAA, and presentation. |
 
 The renderer makes its floating-origin decision immediately before frame-graph execution. Camera cuts, floating-origin shifts, display resizes, atmosphere/profile changes, and dynamic-resolution changes invalidate the cloud system's temporal history through the graph. Floating-origin rebases occur on a 2,048 m grid after either horizontal camera-relative component reaches 4,096 m. Absolute world coordinates remain in the simulation and deterministic generators; only render-facing positions are rebased.
 
@@ -32,7 +32,7 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 
 | System | Generation/simulation | GPU presentation |
 | --- | --- | --- |
-| Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots | Simulation-time presentation with a worker-clock EMA, monotone interpolation and at most 50 ms velocity/body-rate coasting; procedural aircraft meshes |
+| Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots; independent fixed 120 Hz control/action pump | Simulation-time presentation with a recent-minimum, queue-delay-resistant worker-clock estimate, fixed 1/60 s presentation delay, monotone pause/resume floor and at most 50 ms velocity/body-rate coasting; procedural aircraft meshes |
 | Terrain | Analytic worlds use the GPU kernel. Eroded worlds eagerly build the canonical 1024² macro field in a CPU Worker, then run the deterministic bounded page reference in a second CPU Worker with one page in flight; the simulation Worker samples L0 → macro → analytic recovery. | Completed r32float atlas pages feed the CDLOD ground; eroded worker bytes upload through the same atlas and become visible only at final publication. |
 | World-page contract | CPU page keys, quantized payload validation, lifecycle/cache metadata, velocity priority, and the canonical flow/lake/soil/shore fields | Defines heterogeneous upload/residency boundaries; it does not itself issue draw work |
 | Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, normals, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and probe-fed environment reflections (the planar capture is retired, 2-10) |
@@ -71,7 +71,7 @@ audit is why it now carries all four tiers):
 | Initial/internal render-scale ceiling | 0.72 | 0.86 | 1.00 | 1.00 |
 | Absolute pixel cap (1A-6a) | 1.0 Mpx | 1.5 Mpx | 2.4 Mpx | 4.0 Mpx |
 | Device-pixel-ratio ceiling | 1 | 1.5 | 2 | 2 |
-| MSAA samples (offscreen beauty target) | 1 | 2 | 2 | 4 |
+| MSAA samples (offscreen beauty target) | 1 | 1 | 4 | 4 |
 | CDLOD node budget (`4-5`, re-tuned at `4.5-A1`) | 224 | 320 | 448 | 640 |
 | CDLOD split threshold, pixels (`4-5`) | 4 | 3 | 2 | 1.5 |
 | Finest streamed page level (`4-0`) | 1 | 0 | 0 | 0 |
@@ -227,8 +227,9 @@ presentation spine and changes the height authority behind it:
   on its first dispatch.
 - **The runway is not a mesh.** A three-zone cut/fill earthworks profile
   (`terrain/RunwayEarthworks.ts`) shapes the ground, the collision fast path
-  evaluates the same profile, and the pavement, markings, rubber and ragged
-  edge are painted by the airport's analytic SDF in the same fragment shader.
+  evaluates the same profile, and the pavement, markings and rubber are
+  painted inside the airport's analytic SDF in the same fragment shader. The
+  visual pavement edge is that exact SDF, matching the tyre-friction boundary.
 - `src/render/webgpu/world/` remains the one page-identity, payload,
   lifecycle, cache-metadata and streaming-priority authority; the terrain atlas
   consumes it verbatim rather than keeping a second residency map.
@@ -290,7 +291,8 @@ World detail is deterministic and page-owned rather than attached to transient t
 - Default detail cells are 512 m. Terrain biome, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
 - Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
-- Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because matrix/color/wind thin-instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting bounds independently, so one visible tree no longer submits every offscreen resident instance. Unchanged chunk buffers survive incremental neighboring-cell generation; changed chunks publish immutable replacement buffers and retire the previous revision after a short WebGPU-safe grace window.
+- Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
+- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
 - `densityField.ts` owns a 7.2 × 5.4 km forest-fraction field in addition to the continuous stand field. Its 260 m glades reach a 0.02 authored-density floor, thresholded windthrow supplies a genuinely hard edge, and the published edge margin makes generated stems shorter and crowns broader. This changes where and how much forest grows; it deliberately does not change species/stand selection.
 - A floating-origin change immediately translates every live presentation batch by its build-origin delta while the bounded rebuild sweep catches up. The detail shader receives the same offset for pre-world band culling and impostor facing. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
@@ -306,11 +308,11 @@ Gate A adds only small, fixed steady allocations. The worst live aircraft surfac
 
 ## HDR color, FXAA, and resolution
 
-- The scene has no active prepass or TAA pipeline. Engine context antialiasing is disabled; MSAA lives on the offscreen beauty target owned by the tone-map post-process (1B-11), at the per-tier sample counts above. FXAA is the no-MSAA fallback only.
+- The scene has no active prepass or TAA pipeline. Engine context antialiasing is disabled; MSAA lives on the offscreen beauty target owned by the scotopic-vision post-process (1B-11), at the per-tier sample counts above. FXAA is the sample-count-1 fallback.
 - An explicit full-resolution `ImageProcessingPostProcess` uses a half-float texture and the scene's ACES configuration with exposure 1.08 and contrast 1.04.
 - A full-resolution `FxaaPostProcess` follows tone mapping and writes through an unsigned-byte target. There is no active bloom or sharpening stage.
 - The device pixel ratio is capped per tier (1/1.5/2/2) and the total scale product is clamped by the tier's absolute pixel cap (1A-6a) — no display can raise rendered pixels past it.
-- Two governors adapt per 120-frame window (1A-6b, repaired by R-11): Governor A steps resolution only on GPU-bound windows (0.05 down / 0.025 up, floor 0.75), undoes and latches against steps that buy no GPU time, and — when latched or floored — sheds GPU-cost work levers (cloud-shadow cadence, shadow-caster distance, vegetation distance — the planar-reflection cadence rung retired with its system, 2-10). Governor B sheds CPU-cost levers (terrain-page requests, detail generation slice, animal budget) only on CPU-bound windows. No lever is ever recovered while a window is GPU-bound.
+- Two governors adapt per 120-frame window (1A-6b, repaired by R-11): Governor A uses presentation interval minus measured CPU time as its normal GPU/pacing proxy, steps resolution by 0.05 down / 0.025 up to a 0.75 floor, undoes and latches against steps that do not improve the same timing domain, and — when latched or floored — sheds GPU-cost work levers (cloud-shadow cadence, shadow-caster distance, vegetation distance). Governor B sheds CPU-cost levers (terrain-page requests, detail generation slice, animal budget) only on CPU-bound windows. Explicit timestamp captures can substitute a GPU signal, but unlike the old policy normal gameplay does not burn frame time merely to decide how to save it.
 - Diagnostics additionally track a rolling 600-frame window for p95s and the Z-2 hitch metrics (max frame, p999, hitch count against 2× the tier frame target); >250 ms stalls are counted there even though the governors' own p95 ignores them.
 
 ## Diagnostics and regression testing
@@ -318,7 +320,7 @@ Gate A adds only small, fixed steady allocations. The worst live aircraft surfac
 The performance overlay exposes:
 
 - FPS, current frame interval, and start-to-start frame-interval p95.
-- CPU frame time and GPU frame time when `timestamp-query` is available.
+- CPU frame time; explicit diagnostic captures also expose labelled GPU timing epochs and sample freshness.
 - Draw calls, triangles, geometries, and textures.
 - Resident terrain pages and visible detail/wildlife thin instances.
 - Active animals and river/lake counts.
@@ -344,7 +346,11 @@ it is an inference across aggregates, not a field emitted by the runtime.
 
 For performance changes, test a fixed URL seed, camera mode, weather/time preset, altitude, viewport size, device-pixel ratio, scenery quality, and rendering intent. Record the adapter and browser version. Compare at least a 30-second steady sample after terrain/detail residency and shader/pipeline compilation settle; renderer creation, first compute-pipeline compilation, first audio unlock, and a fresh page-streaming burst are not representative steady state.
 
-Suggested acceptance targets are 60 FPS at 1920×1080 on balanced/medium for a modern discrete GPU, and 60 FPS on performance/low or at least 30 FPS on balanced/medium for a modern integrated GPU. These are QA targets, not guaranteed minimums across every WebGPU adapter.
+The required medium/balanced acceptance contract on the pinned reference
+adapter is at least 60 raw wall-clock FPS, frame-interval p95 at most 16.67 ms,
+at most five intervals over 27.4 ms per 240 frames, and no interval over 50 ms.
+There is no 30 FPS medium/balanced escape hatch. Other adapters remain useful
+diagnostics, but cannot lower the reference contract.
 
 ## Night (Gate 7A)
 
@@ -360,10 +366,12 @@ Night is a separate workload, and it is deliberately cheap:
   twilight.
 - **The moon** costs one branch in the sky fragment and one directional
   light. It does not cast shadows (see `7-9`).
-- **Scotopic vision** is one full-screen pass ahead of the tone map. Above
-  civil twilight it early-outs on a uniform branch after a single sample, so
-  daylight pays a copy and nothing else; being first in the chain it owns the
-  offscreen beauty target and therefore MSAA.
+- **Scotopic vision** is one full-screen pass ahead of the tone map only while
+  the resolved rod fraction is nonzero. Photopic daylight detaches the pass
+  entirely and transfers first-pass/MSAA ownership to the existing half-float,
+  ratio-one ACES pass, avoiding a full-resolution copy without changing its
+  input. When night returns, scotopic is reattached at slot zero and retakes
+  the multisampled beauty target before ACES.
 
 **Night is not rendered at photometric scale, and that is a recorded
 decision.** The sun-to-full-moon range is 4.8 × 10⁵ against an fp16 beauty
@@ -419,69 +427,91 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   §5.3's Balanced row; `6-11` owns the re-tier and now has a measurement to
   start from rather than an estimate.
 
-## Measured tier row (`4.5-D4`)
+## Current measured tier row
 
-The G-C question — "does medium/balanced hold a smooth frame at the reference
-viewport" — is not answered by this phase, and saying otherwise would be
-inventing a measurement. Here is what was actually measured and why that is
-the honest statement.
+The earlier 15–20 FPS measurements were traced to continuous Babylon WebGPU
+timestamp observers, not to unmeasured compositor idle. Babylon resolved and
+mapped timestamp buffers through extra submissions while returning only 49
+whole-frame samples in a 240-frame window. A controlled reference A/B measured
+86.92 FPS / 13.6 ms p95 with those observers enabled and 120.25 FPS / 8.9 ms
+p95 with them disabled: a 4.7 ms p95 tax and 38% throughput loss. Gameplay now
+uses the interval-minus-CPU governor signal; timestamp observation is an
+explicit create-time diagnostic only.
 
-**The capture host moved the number further than the code did.** Two runs on
-the same tree four hours apart reported `reference-viewport` at 20.3 fps / 6
-hitches and 18.5 fps / 117. Re-running the *pre-Phase-4.5* tree in a clean
-worktree, back to back with the new one, reported **16.5 fps and 232 hitches**
-against that same pinned 20.3 / 6. Nothing in the tree changed between those
-two numbers. Making the capture host's thermal state a controlled variable is
-still owned by nobody (§5 of the phase plan records it as an open Gate B
-residual).
+The following is the complete reviewable same-host WebGPU candidate written at
+`tests/perf/artifacts/rebaseline-candidates/2026-08-25T04-26-48.235Z` on Apple
+Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames per
+shot after deterministic residency drain. The normal shots use the shipped
+0.86 render scale; `reference-viewport` retains its 1.485 Mpx scale-1
+cap-stress contract.
 
-So every figure below is same-host and back-to-back, and the two reports are
-pinned under `docs/evidence/`:
+| Shot | raw wall FPS | interval p95 | >16.67 ms | >27.4 ms | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `approach-500ft` | 117.33 | 10.8 ms | 0 | 0 | 12.2 ms |
+| `slant-10km` | 119.90 | 9.6 ms | 0 | 0 | 12.2 ms |
+| `high-10000ft-down` | 120.02 | 9.8 ms | 0 | 0 | 10.5 ms |
+| `reference-viewport` | 103.43 | 12.7 ms | 0 | 0 | 14.0 ms |
+| `cruise-horizon` | 119.93 | 9.3 ms | 0 | 0 | 10.4 ms |
+| `winter-noon` | 119.74 | 10.3 ms | 0 | 0 | 12.3 ms |
+| `night` | 119.75 | 9.7 ms | 0 | 0 | 11.8 ms |
+| `motion-banked-turn` | 94.94 | 12.9 ms | 3 | 0 | 18.7 ms |
+| `page-thrash-turn` | 102.43 | 12.2 ms | 0 | 0 | 13.1 ms |
+| `cdlod-transition` | 119.90 | 9.8 ms | 0 | 0 | 10.7 ms |
+| `cruise-sun-30` | 119.89 | 10.0 ms | 0 | 0 | 11.0 ms |
+| `forest-500ft-sunbehind` | 105.09 | 12.4 ms | 0 | 0 | 13.4 ms |
+| `coast-10km-lowsun` | 119.88 | 9.9 ms | 0 | 0 | 11.6 ms |
+| `ground-2m-lowsun` | 110.24 | 11.1 ms | 0 | 0 | 13.1 ms |
+| `canopy-1200ft` | 105.03 | 12.1 ms | 0 | 0 | 13.9 ms |
+| `runway-on-approach` | 102.73 | 11.9 ms | 0 | 0 | 13.7 ms |
 
-| Metric, `reference-viewport` | pre-4.5 control | Phase 4.5 |
-| --- | ---: | ---: |
-| GPU p95 | 13.10 ms | **10.43 ms** |
-| CPU p95 | 6.0 ms | **5.8 ms** |
-| draw calls | 446 | **398** |
-| fps | 16.3 | 15.8 |
-| interval p95 | 67.6 ms | 71.0 ms |
-| triangles | 1.18 M | 1.74 M |
-| resident terrain pages | 25 | **41** |
+All sixteen clear the strict FPS, p95, hitch-count and maximum-frame contract:
+the minimum wall throughput is 94.94 FPS, the worst p95 is 12.9 ms, there are
+no intervals over 27.4 ms and no hitches. Every final terrain/detail pending
+count is zero. The raw-device validation listener, Babylon/console gates, GPU
+drain, black/uniform-frame policy and temporal checks all passed before the
+candidate was written. Independent review of every image found the formerly
+black approach populated, the high-altitude terrain free of categorical
+altitude lobes and Rock screen-door pattern, continuous winter snow, a straight
+analytic runway edge, and continuous close-tree bark/crowns.
 
-Across the whole 16-shot set, mean GPU p95 falls **10.76 → 9.78 ms**; across
-the ten vegetation-heavy shots it falls **14.02 → 12.38 ms**. Both while the
-terrain draws ~47% more triangles and streams ~60% more pages, because
-`4.5-A1` spends its budget where the error is instead of spreading it evenly
-across a level.
-
-Three things this says, and one it does not:
-
-- **Every Gate C change moved its own counter the right way.** Vegetation
-  shadow casting off below tier 2 is worth 48 draw calls and ~2 ms of GPU p95
-  on the shots that were furthest from the bar.
-- **The terrain quality increase is not free at the top end.** The shots that
-  lost frame rate are the terrain-dominated ones that had headroom
-  (`slant-10km` 52 → 44, `coast-10km-lowsun` 55 → 41, `cdlod-transition`
-  50 → 40); every shot that was *below* 30 fps improved its GPU p95. Spending
-  headroom where there is headroom is the trade this phase took deliberately.
-- **The frame is still dominated by something neither timer sees**: ~10 ms of
-  GPU p95 and ~6 ms of CPU p95 against a ~70 ms present-to-present interval.
-  `4.5-C3`'s per-pass aggregates confirm it is not the shadow pass and not
-  terrain compute. Naming it needs the frame-correlatable timestamp source
-  `B-0` requires, and no plan owns that.
-- It does **not** say what the frame rate is on an idle reference machine.
-  `perf:capture`'s committed fps floors are unmet on this host by BOTH trees —
-  `approach-500ft` measures 20.9 (control) and 19.1 (new) against a floor of
-  24 — so the floors were left exactly where they are rather than relaxed to
-  fit a hot laptop. Re-running the capture on an idle machine is the
-  outstanding close-out step, and if `reference-viewport` still misses 30 fps
-  there, that is `6-11`'s documented input rather than a failure of this
-  phase.
+The candidate is review evidence, not an automatic baseline mutation. The
+committed baseline remains byte-for-byte untouched; deliberate promotion is a
+separate action after review, and performance ceilings cannot be rebaselined
+downward.
 
 ## Capture harness
 
 `npm run perf:capture` renders the committed shot list against
 `tests/perf/baseline`. Notes that matter when reading its output:
+
+- A normal capture treats `tests/perf/baseline` as strictly read-only and
+  hard-fails a missing or dimension-mismatched committed image. Diagnostic
+  screenshots and `report.json` are written only to the ignored
+  `tests/perf/artifacts/` directory.
+- `npm run perf:capture:candidate` cannot be filtered. It buffers the exact
+  full canonical shot set, applies the visual, temporal, renderer-error and
+  strict tier-1 performance gates, and only then writes
+  a fresh timestamped directory beneath
+  `tests/perf/artifacts/rebaseline-candidates/` for review. It has no baseline
+  promotion path; copying an approved candidate into the committed set is a
+  separate, deliberate review action.
+- Medium/balanced has one non-negotiable raw frame-delivery gate over each
+  240-frame window: at least 60 wall-clock fps, frame-interval p95 at most
+  16.67 ms, at most five intervals over 27.4 ms, and no interval over 50 ms.
+  The historical trimmed fps and renderer counters remain in the report for
+  diagnosis, but cannot rescue a strict-gate failure.
+- Visual comparison is not a whole-frame grayscale average. The capture gates
+  luma SSIM, independent R/G/B SSIM, RGB SSIM over the lower 60% of the frame,
+  and the least-similar 64 px tile. A stable sky therefore cannot dilute a
+  broken terrain/tree patch, and equal-luminance hue splotches still fail.
+- Baseline similarity cannot certify that either image contains its intended
+  subject. Every screenshot independently needs non-black mean luminance,
+  mean within-tile variance above 0.0001, and at least half of its 32 px tiles
+  at variance 0.00001 or greater. The 10,000 ft downward terrain shot also has
+  a pure camera/world placement contract requiring at least 95% of a 41×23
+  reconstructed cockpit frustum to hit terrain before sea. This rejects both
+  a true black submit and the obsolete uniform open-ocean view even if a stale
+  baseline matches it perfectly.
 
 - The steady capture begins after renderer creation and therefore cannot catch
   a startup Promise that never settles. Cold default-eroded time-to-ready,
@@ -491,8 +521,8 @@ Three things this says, and one it does not:
 
 - `VITE_PERF_SHOTS=name[,name]` runs a subset. A full capture is ~4–6 minutes,
   which is the wrong feedback loop for diagnosing one bad shot; the filter
-  refuses to run alongside `VITE_PERF_REBASELINE` so a partial run can never
-  overwrite the committed set.
+  refuses to run alongside `VITE_PERF_REBASELINE` so a partial run cannot be
+  mistaken for a reviewable candidate.
 - `npm run material:preview` writes a terrain-material contact sheet to
   `tests/perf/artifacts/` — ten materials across, five channels at three
   footprints down. It is the tool the recipes are tuned against; the artifacts

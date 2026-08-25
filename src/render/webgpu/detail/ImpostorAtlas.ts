@@ -73,7 +73,7 @@ export const IMPOSTOR_SPECIES: readonly TreeSpecies[] = [
  * as the crown/bark materials do, so the impostor's mean colour tracks the
  * card LOD by construction. The runtime reads the same constants.
  */
-export const DETAIL_CROWN_ALBEDO: readonly [number, number, number] = [0.62, 0.66, 0.58];
+export const DETAIL_CROWN_ALBEDO: readonly [number, number, number] = [0.86, 0.89, 0.82];
 export const DETAIL_BARK_ALBEDO: readonly [number, number, number] = [0.58, 0.52, 0.46];
 
 /** Baked crown occlusion floor — mirrors the plugin's mix(0.42, 1, occlusion). */

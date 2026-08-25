@@ -7,8 +7,10 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import {
+  TERRAIN_CORNER_MORPH_BITS,
+  TERRAIN_CORNER_MORPH_LEVELS,
+  TERRAIN_CORNER_MORPH_PACKED_MAX,
   TERRAIN_NODE_GRID_RESOLUTION,
-  TERRAIN_PROVISIONAL_AXIS,
 } from "./TerrainSpineContract";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
@@ -75,9 +77,6 @@ import {
  * forgets it later.
  */
 
-/** The material id lane's upper bound, as a WGSL literal. */
-const LAST_MATERIAL_INDEX = SURFACE_MATERIAL_COUNT - 1;
-
 /**
  * `3-4`'s de-tiling rotations: 13.7° for the patch scale and 61.2° for the
  * micro scale.
@@ -94,6 +93,111 @@ export const DETILE_MICRO_DEGREES = 61.2;
 export const DETILE_MACRO_METERS = 2_048;
 export const DETILE_PATCH_METERS = 176;
 export const DETILE_MICRO_METERS = 28;
+
+/**
+ * Page classification is trusted only at its native 4 m channel resolution.
+ * A level-1 channel texel already covers 8 m and higher levels rapidly become
+ * the giant single-colour regions seen from approach altitude. Those levels
+ * fall back to the continuous provisional terrain axis until a material
+ * clipmap provides fine coverage independently of geometry LOD.
+ */
+export const TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS = 4;
+export const TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS = 8;
+
+/** Material microstructure is unresolved once one pixel spans this much ground. */
+export const TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS = 0.5;
+export const TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS = 2;
+
+/** Coarse fallback's continuous alpine transition, mirroring the classifier. */
+export const TERRAIN_FALLBACK_ALPINE_START_METERS = 420;
+export const TERRAIN_FALLBACK_ALPINE_END_METERS = 980;
+export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.55;
+
+/** Pure CPU mirror of the shader's page-classification confidence. */
+export function terrainPageClassificationConfidence(channelTexelMeters: number): number {
+  if (!Number.isFinite(channelTexelMeters) || channelTexelMeters < 0) {
+    throw new RangeError("Terrain channel texel size must be finite and non-negative");
+  }
+  const low = TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS;
+  const high = TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS;
+  const t = Math.min(1, Math.max(0, (channelTexelMeters - low) / (high - low)));
+  const smooth = t * t * (3 - 2 * t);
+  return 1 - smooth;
+}
+
+/** Pure CPU mirror of the shader's material-microstructure footprint fade. */
+export function terrainMaterialDetailWeight(footprintMeters: number): number {
+  if (!Number.isFinite(footprintMeters) || footprintMeters < 0) {
+    throw new RangeError("Terrain footprint must be finite and non-negative");
+  }
+  const low = TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS;
+  const high = TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS;
+  const t = Math.min(1, Math.max(0, (footprintMeters - low) / (high - low)));
+  return 1 - t * t * (3 - 2 * t);
+}
+
+/** Pure CPU mirror of the no-page fallback's continuous Rock cover. */
+export function terrainFallbackRockCover(
+  elevationDriverMeters: number,
+  slope: number,
+): number {
+  if (
+    !Number.isFinite(elevationDriverMeters)
+    || !Number.isFinite(slope)
+    || slope < 0
+    || slope > 1
+  ) {
+    throw new RangeError("Terrain fallback elevation/slope is outside its contract");
+  }
+  const altitudeT = Math.min(1, Math.max(
+    0,
+    (elevationDriverMeters - TERRAIN_FALLBACK_ALPINE_START_METERS)
+      / (TERRAIN_FALLBACK_ALPINE_END_METERS - TERRAIN_FALLBACK_ALPINE_START_METERS),
+  ));
+  const alpine = altitudeT * altitudeT * (3 - 2 * altitudeT)
+    * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH;
+  const slopeT = Math.min(1, Math.max(0, (slope - 0.30) / (0.66 - 0.30)));
+  const slopeRock = slopeT * slopeT * (3 - 2 * slopeT);
+  return Math.max(alpine, slopeRock);
+}
+
+/** Height-gradient scales from atlas-texel space into the unit node mesh. */
+export const TERRAIN_FINE_HEIGHT_GRADIENT_SCALE = TERRAIN_NODE_GRID_RESOLUTION - 1;
+export const TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE =
+  TERRAIN_FINE_HEIGHT_GRADIENT_SCALE / 2;
+
+/**
+ * CPU mirror of the CDLOD vertex shader's macro-normal construction.
+ *
+ * Gradients arrive in metres of rise per atlas texel. The fine page spans
+ * 32 texels across a unit node; its parent spans 16. Babylon subsequently
+ * applies the thin instance's inverse-transpose, proportional to
+ * (1 / span, 1, 1 / span), turning this unit-node normal into the correct
+ * world-space slope before interpolation.
+ */
+export function terrainNodeLocalNormalFromHeightGradients(
+  fineGradient: readonly [number, number],
+  parentGradient: readonly [number, number],
+  morphK: number,
+  fineResident = true,
+): readonly [number, number, number] {
+  const values = [...fineGradient, ...parentGradient, morphK];
+  if (values.some((value) => !Number.isFinite(value)) || morphK < 0 || morphK > 1) {
+    throw new RangeError("Terrain height gradients must be finite and morphK must be in [0, 1]");
+  }
+  const parentX = parentGradient[0] * TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE;
+  const parentZ = parentGradient[1] * TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE;
+  const fineX = fineResident
+    ? fineGradient[0] * TERRAIN_FINE_HEIGHT_GRADIENT_SCALE
+    : parentX;
+  const fineZ = fineResident
+    ? fineGradient[1] * TERRAIN_FINE_HEIGHT_GRADIENT_SCALE
+    : parentZ;
+  const gradientX = fineX + (parentX - fineX) * morphK;
+  const gradientZ = fineZ + (parentZ - fineZ) * morphK;
+  const length = Math.hypot(gradientX, 1, gradientZ);
+  return [-gradientX / length, 1 / length, -gradientZ / length];
+}
 
 /**
  * The phase's first tuning knob. At 1.6 the three scales warp the material UV
@@ -292,6 +396,72 @@ export function heightBlendWeights(keys: readonly number[], depth: number): numb
   return raw.map((value) => value / sum);
 }
 
+export interface TerrainSlopeSnowCover {
+  readonly materialId: typeof SurfaceMaterial.Rock | typeof SurfaceMaterial.Snow;
+  readonly weight: number;
+}
+
+/**
+ * Resolve the mutually exclusive part of slope-exposed rock and seasonal snow.
+ *
+ * Both inputs describe cover of the same surface area. Selecting the larger
+ * input while retaining its full weight made an infinitesimal crossover jump
+ * from almost-opaque snow to almost-opaque dark rock. The signed residual is
+ * continuous: snow owns positive cover, exposed rock owns negative cover, and
+ * at the ownership boundary the third candidate has zero influence.
+ */
+export function resolveTerrainSlopeSnowCover(
+  slopeRock: number,
+  snowCover: number,
+): TerrainSlopeSnowCover {
+  if (
+    !Number.isFinite(slopeRock)
+    || !Number.isFinite(snowCover)
+    || slopeRock < 0
+    || slopeRock > 1
+    || snowCover < 0
+    || snowCover > 1
+  ) {
+    throw new RangeError("Terrain slope-rock and snow cover must be finite values in [0, 1]");
+  }
+  const coverDelta = snowCover - slopeRock;
+  return {
+    materialId: coverDelta > 0 ? SurfaceMaterial.Snow : SurfaceMaterial.Rock,
+    weight: Math.abs(coverDelta),
+  };
+}
+
+/** CPU mirror of the height blend's continuity gate for slope/snow cover. */
+export function terrainCoverHeightBlendWeights(
+  baseKeys: readonly number[],
+  thirdHeight: number,
+  thirdWeight: number,
+  depth: number,
+): number[] {
+  if (
+    baseKeys.length < 1
+    || baseKeys.length > 2
+    || baseKeys.some((value) => !Number.isFinite(value))
+    || !Number.isFinite(thirdHeight)
+    || !Number.isFinite(thirdWeight)
+    || !Number.isFinite(depth)
+    || thirdHeight < 0
+    || thirdHeight > 1
+    || thirdWeight < 0
+    || thirdWeight > 1
+    || depth <= 0
+  ) {
+    throw new RangeError("Terrain cover height-blend inputs are outside their contract");
+  }
+  const thirdKey = thirdWeight > 0 ? thirdWeight * (thirdHeight + 1) : -1e9;
+  const keys = [...baseKeys, thirdKey];
+  const threshold = Math.max(...keys) - depth;
+  const raw = keys.map((key) => Math.max(key - threshold, 0));
+  raw[raw.length - 1]! *= thirdWeight;
+  const sum = Math.max(raw.reduce((total, value) => total + value, 0), 1e-5);
+  return raw.map((value) => value / sum);
+}
+
 /** The snowline altitude the shader blankets above, metres above sea level. */
 export function seasonalSnowlineMeters(
   seaLevelMeters: number,
@@ -311,6 +481,82 @@ const PATCH_SIN = Math.sin((DETILE_PATCH_DEGREES * Math.PI) / 180).toFixed(6);
 const MICRO_COS = Math.cos((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 const MICRO_SIN = Math.sin((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 
+const TERRAIN_MATERIAL_REFERENCE_WGSL = SURFACE_MATERIALS.map((spec) => {
+  const roughness = (spec.roughness[0] + spec.roughness[1]) * 0.5;
+  return `
+  if (materialIndex == ${spec.id}) {
+    return vec4f(${spec.referenceAlbedo.map((value) => value.toFixed(6)).join(", ")}, ${roughness.toFixed(6)});
+  }`;
+}).join("");
+
+/**
+ * Shipping boundary decoder, exported so the real-adapter seam oracle runs
+ * the exact WGSL used by the material rather than a test transcription.
+ */
+export const TERRAIN_BOUNDARY_MORPH_WGSL = /* wgsl */ `
+/** Decode four six-bit UNORM factors from one exactly representable f32 integer. */
+fn terrainSurfaceCornerMorphs(packed: f32) -> vec4f {
+  let bits = u32(round(clamp(packed, 0.0, ${TERRAIN_CORNER_MORPH_PACKED_MAX}.0)));
+  let mask = ${TERRAIN_CORNER_MORPH_LEVELS}u;
+  let scale = 1.0 / ${TERRAIN_CORNER_MORPH_LEVELS}.0;
+  return vec4f(
+    f32(bits & mask),
+    f32((bits >> ${TERRAIN_CORNER_MORPH_BITS}u) & mask),
+    f32((bits >> ${TERRAIN_CORNER_MORPH_BITS * 2}u) & mask),
+    f32((bits >> ${TERRAIN_CORNER_MORPH_BITS * 3}u) & mask)
+  ) * scale;
+}
+
+/**
+ * Interior vertices keep the node's continuous K. Each shared boundary uses
+ * the line through its two synchronized corner factors. The CPU makes those
+ * endpoints identical for same-level peers and complementary (fine=1,
+ * coarse=0) across a 2:1 edge.
+ */
+fn terrainSurfaceVertexMorphK(
+  nodeMorphK: f32,
+  packedCorners: f32,
+  gridPosition: vec2f,
+  parentResident: bool,
+) -> f32 {
+  if (!parentResident) { return 0.0; }
+  let quads = ${TERRAIN_NODE_GRID_RESOLUTION - 1}.0;
+  let onX0 = gridPosition.x < 0.5;
+  let onX1 = gridPosition.x > quads - 0.5;
+  let onZ0 = gridPosition.y < 0.5;
+  let onZ1 = gridPosition.y > quads - 0.5;
+  // 31x31 of the 33x33 grid vertices are strict interior vertices. Their
+  // morph is node-local, so avoid unpacking four boundary-only factors for
+  // the overwhelming majority of vertex invocations.
+  if (!(onX0 || onX1 || onZ0 || onZ1)) {
+    return clamp(nodeMorphK, 0.0, 1.0);
+  }
+  let corners = terrainSurfaceCornerMorphs(packedCorners);
+  // Exact endpoints prevent one-ULP disagreement when incident nodes reach
+  // the same world corner from different edge interpolation directions.
+  if (onX0 && onZ0) { return corners.x; }
+  if (onX1 && onZ0) { return corners.y; }
+  if (onX0 && onZ1) { return corners.z; }
+  if (onX1 && onZ1) {
+    return corners.w;
+  }
+  if (onX0) {
+    return mix(corners.x, corners.z, gridPosition.y / quads);
+  }
+  if (onX1) {
+    return mix(corners.y, corners.w, gridPosition.y / quads);
+  }
+  if (onZ0) {
+    return mix(corners.x, corners.y, gridPosition.x / quads);
+  }
+  if (onZ1) {
+    return mix(corners.z, corners.w, gridPosition.x / quads);
+  }
+  // All strict interior vertices returned before decoding packedCorners.
+  return clamp(nodeMorphK, 0.0, 1.0);
+}
+`;
+
 export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
   CUSTOM_VERTEX_DEFINITIONS: /* wgsl */ `
 #ifdef TERRAIN_SURFACE_CDLOD
@@ -319,7 +565,7 @@ export const TERRAIN_SURFACE_VERTEX_WGSL = Object.freeze({
 // WebGPUCacheRenderPipeline throws "Invalid Format ... size=8", because
 // WebGPU has no vertex format wider than four components.
 //   A = (slotIndex, subNodeX + subNodeZ*8, level, provisionalAxisOverride)
-//   B = (morphK, parentSlotIndex, channelLane, maxDeviation)
+//   B = (morphK, parentSlotIndex, channelLane, packedCornerMorphs)
 attribute terrainNodeA: vec4f;
 attribute terrainNodeB: vec4f;
 // 4-4: vertex-texture displacement. Sampled with textureLoad ONLY — r32float
@@ -328,9 +574,12 @@ attribute terrainNodeB: vec4f;
 // positions anyway.
 var terrainHeightAtlas: texture_2d<f32>;
 
-/** Bilinear height from the atlas, as four textureLoads. */
-fn terrainSampleHeight(slot: f32, texelX: f32, texelZ: f32) -> f32 {
-  if (slot < 0.0) { return 0.0; }
+/**
+ * Bilinear height and its analytic texel-space gradient from the same four
+ * textureLoads. xyz = (height, dH/dTexelX, dH/dTexelZ).
+ */
+fn terrainSampleHeightGradient(slot: f32, texelX: f32, texelZ: f32) -> vec3f {
+  if (slot < 0.0) { return vec3f(0.0); }
   let grid = uniforms.terrainHeightAtlasShape.w;
   let row = floor(slot / grid);
   let slotOrigin = vec2f(slot - row * grid, row) * uniforms.terrainHeightAtlasShape.y
@@ -344,8 +593,12 @@ fn terrainSampleHeight(slot: f32, texelX: f32, texelZ: f32) -> f32 {
   let h11 = textureLoad(terrainHeightAtlas, corner + vec2i(1, 1), 0).r;
   let top = h00 + (h10 - h00) * fraction.x;
   let bottom = h01 + (h11 - h01) * fraction.x;
-  return top + (bottom - top) * fraction.y;
+  let gradientX = mix(h10 - h00, h11 - h01, fraction.y);
+  let gradientZ = mix(h01 - h00, h11 - h10, fraction.x);
+  return vec3f(top + (bottom - top) * fraction.y, gradientX, gradientZ);
 }
+
+${TERRAIN_BOUNDARY_MORPH_WGSL}
 #else
 // 3-2's provisional splat rides the colour attribute the clipmap already
 // allocated. useVertexColors is false on those meshes, so VERTEXCOLOR is
@@ -387,8 +640,10 @@ varying terrainPageLocal: vec2f;
   // ANALYTICALLY. That is what lets skirts be deleted, which is what lets
   // backFaceCulling be true.
   let gridPosition = positionUpdated.xz * quads;
+  let vertexMorphK = terrainSurfaceVertexMorphK(
+    nodeB.x, nodeB.w, gridPosition, nodeB.y >= 0.0);
   let evenLattice = floor(gridPosition * 0.5) * 2.0;
-  let morphed = (gridPosition + (evenLattice - gridPosition) * nodeB.x) / quads;
+  let morphed = (gridPosition + (evenLattice - gridPosition) * vertexMorphK) / quads;
   positionUpdated.x = morphed.x;
   positionUpdated.z = morphed.y;
 
@@ -403,52 +658,63 @@ varying terrainPageLocal: vec2f;
   let subX = subIndex - subZ * 8.0;
 
   let nodeTexel = (vec2f(subX, subZ) + morphed) * quads;
-  let fine = terrainSampleHeight(nodeA.x, nodeTexel.x, nodeTexel.y);
   // The parent page is one level coarser — half the texel density — and this
   // node sits in one quadrant of its parent page's 8x8 node block. At
   // morphK = 1 morphed*quads is even, so morphed*16 is an integer and
   // this load is an EXACT parent texel: the child's edge is the parent's, by
   // construction rather than by tuning.
-  let parentTexel = vec2f(parityX, parityZ) * 128.0
-    + vec2f(subX, subZ) * 16.0
-    + morphed * (quads * 0.5);
-  let coarse = terrainSampleHeight(nodeB.y, parentTexel.x, parentTexel.y);
-  positionUpdated.y = fine + (coarse - fine) * nodeB.x;
+  let fineResident = nodeA.x >= 0.0;
+  let sampledFine = terrainSampleHeightGradient(nodeA.x, nodeTexel.x, nodeTexel.y);
+  // With an exact zero morph and a resident fine page the parent contributes
+  // to neither height nor normal. Avoid four redundant vertex texture loads
+  // in that common near-field case. A missing fine page must still inherit
+  // its parent, and every non-zero synchronized edge factor still samples it.
+  var coarse = sampledFine;
+  if (vertexMorphK > 0.0 || !fineResident) {
+    let parentTexel = vec2f(parityX, parityZ) * 128.0
+      + vec2f(subX, subZ) * 16.0
+      + morphed * (quads * 0.5);
+    coarse = terrainSampleHeightGradient(nodeB.y, parentTexel.x, parentTexel.y);
+  }
+  // A node may survive one publication frame after its fine page is evicted.
+  // Its parent is admitted independently and is the only geometrically
+  // coherent fallback. Returning the helper's zero here made a whole node
+  // collapse to sea level until the fine slot returned.
+  let fine = select(coarse, sampledFine, fineResident);
+  positionUpdated.y = fine.x + (coarse.x - fine.x) * vertexMorphK;
+
+  // The atlas sampler already has the four bilinear corners in registers, so
+  // its analytic gradient supplies a smooth shared-vertex normal at no extra
+  // texture-load cost. Fine texels span 1/32 of a node; parent texels span
+  // 1/16. Select the parent's scale with its fallback, then morph normals by
+  // the same k as height. At k=1 this is exactly the adjacent coarse node's
+  // normal after its 2x larger world matrix is applied, preserving LOD seams.
+  let parentGradient = coarse.yz * (quads * 0.5);
+  let fineGradient = select(parentGradient, sampledFine.yz * quads, fineResident);
+  let nodeGradient = fineGradient + (parentGradient - fineGradient) * vertexMorphK;
+#ifdef NORMAL
+  // Babylon applies the inverse-scale/world transform and normalizes the
+  // result in both PBR and shadow-map vertex pipelines. Pre-normalizing here
+  // is a uniform scalar that cancels at that mandatory final normalize, so it
+  // only repeats a dot/rsqrt for every terrain vertex and cascade.
+  normalUpdated = vec3f(-nodeGradient.x, 1.0, -nodeGradient.y);
+#endif
 }
 #endif
 `,
   CUSTOM_VERTEX_MAIN_END: /* wgsl */ `
 #ifdef TERRAIN_SURFACE_CDLOD
-// 4-5's carry-forward, rebuilt at 4.5-A3: the provisional ecotone axis, walked
-// PER VERTEX from the height this shader just displaced to.
-//
-// It used to be one packed constant per node, computed on the CPU from the
-// page's mean height — so a node with no channel slot shaded as a single
-// material across up to 512*2^L m of ground. That is the "splotches of solid
-// colour" defect wherever the channel atlas is behind, and it is worst exactly
-// where streaming is worst. The walk is the same altitude walk, at vertex
-// spacing (2·2^L m) instead of at page spacing, and it now has ONE derivation
-// site: TERRAIN_PROVISIONAL_AXIS supplies the constants and the CPU lane
-// carries only the guard below.
+// The x lane is retained for buffer-layout compatibility, but categorical
+// fallback ownership moved to the fragment's continuous macro representation.
+// Walking the material axis from height here produced kilometre-scale palette
+// contours at flight altitude even though it avoided the older per-node plate.
 {
-  // Lane A.w >= 0 is the CPU's override: the node has no height texels to walk
-  // (slot -1 reads zero, and zero at sea level is SAND under every unstreamed
-  // node), so it shades the fallback material instead.
-  let axisOverride = vertexInputs.terrainNodeA.w;
-  let aboveSeaLevel = positionUpdated.y - uniforms.terrainSurfaceWetness.y;
-  let walked = select(
-    min(${TERRAIN_PROVISIONAL_AXIS.maxAxis}.0,
-      1.0 + aboveSeaLevel * ${(1 / TERRAIN_PROVISIONAL_AXIS.metersPerStep).toFixed(9)}),
-    0.0,
-    aboveSeaLevel <= ${TERRAIN_PROVISIONAL_AXIS.shoreBandMeters.toFixed(1)},
-  );
-  let axis = select(walked, axisOverride, axisOverride >= 0.0);
   // Lane w is the CHANNEL-atlas lane the fragment addresses page UV with:
   // channelSlot*32 + level, or -1 when the page holds no channel slot. Lane y
   // is -1 for the same reason the page path returns -1: no secondary id is
   // supplied, and 0 would silently mean sand.
   vertexOutputs.terrainSplat = vec4f(
-    axis, -1.0, 0.0, vertexInputs.terrainNodeB.z);
+    ${SurfaceMaterial.Grass}.0, -1.0, 0.0, vertexInputs.terrainNodeB.z);
   let subIndexOut = vertexInputs.terrainNodeA.y
     - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
   let subZOut = floor(subIndexOut * 0.125);
@@ -469,6 +735,184 @@ vertexOutputs.terrainPageLocal = vertexInputs.position.xz;
 `,
 });
 
+/**
+ * Exact sparse categorical gather used by the shipping fragment shader and
+ * the real-adapter regression oracle. Keeping one WGSL definition prevents a
+ * test-only sampler from validating behaviour the renderer does not execute.
+ * Return = (primary id, secondary id, secondary share).
+ */
+export const TERRAIN_SPARSE_SPLAT_GATHER_WGSL = /* wgsl */ `
+fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
+  let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});
+  let base = vec2i(floor(atlasPosition));
+  let fraction = atlasPosition - floor(atlasPosition);
+  let offsets = array<vec2i, 4>(
+    vec2i(0, 0), vec2i(1, 0), vec2i(0, 1), vec2i(1, 1));
+  let cornerWeights = array<f32, 4>(
+    (1.0 - fraction.x) * (1.0 - fraction.y),
+    fraction.x * (1.0 - fraction.y),
+    (1.0 - fraction.x) * fraction.y,
+    fraction.x * fraction.y,
+  );
+  // Keep the ten totals as named scalars. A dynamically indexed private
+  // array made this fragment path spill on otherwise-inexpensive adapters;
+  // the switch retains the exact corner-major/lane-major addition order.
+  var accumulated0 = 0.0;
+  var accumulated1 = 0.0;
+  var accumulated2 = 0.0;
+  var accumulated3 = 0.0;
+  var accumulated4 = 0.0;
+  var accumulated5 = 0.0;
+  var accumulated6 = 0.0;
+  var accumulated7 = 0.0;
+  var accumulated8 = 0.0;
+  var accumulated9 = 0.0;
+  for (var cornerIndex = 0u; cornerIndex < 4u; cornerIndex = cornerIndex + 1u) {
+    let texel = base + offsets[cornerIndex];
+    let ids = textureLoad(terrainSplatId, texel, 0);
+    let weightLo = textureLoad(terrainSplatWeightLo, texel, 0);
+    let weightHi = textureLoad(terrainSplatWeightHi, texel, 0);
+    let weights = mix(weightLo, weightHi, blend) * cornerWeights[cornerIndex];
+    for (var lane = 0u; lane < 4u; lane = lane + 1u) {
+      let materialId = u32(clamp(floor(ids[lane] * idScale + 0.5),
+        0.0, idScale));
+      switch materialId {
+        case 0u: { accumulated0 = accumulated0 + weights[lane]; }
+        case 1u: { accumulated1 = accumulated1 + weights[lane]; }
+        case 2u: { accumulated2 = accumulated2 + weights[lane]; }
+        case 3u: { accumulated3 = accumulated3 + weights[lane]; }
+        case 4u: { accumulated4 = accumulated4 + weights[lane]; }
+        case 5u: { accumulated5 = accumulated5 + weights[lane]; }
+        case 6u: { accumulated6 = accumulated6 + weights[lane]; }
+        case 7u: { accumulated7 = accumulated7 + weights[lane]; }
+        case 8u: { accumulated8 = accumulated8 + weights[lane]; }
+        case 9u: { accumulated9 = accumulated9 + weights[lane]; }
+        default: {}
+      }
+    }
+  }
+
+  var primaryId = 0u;
+  var secondaryId = 0u;
+  var primaryWeight = -1.0;
+  var secondaryWeight = -1.0;
+  var candidateId = 0u;
+  var candidateWeight = accumulated0;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 1u;
+  candidateWeight = accumulated1;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 2u;
+  candidateWeight = accumulated2;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 3u;
+  candidateWeight = accumulated3;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 4u;
+  candidateWeight = accumulated4;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 5u;
+  candidateWeight = accumulated5;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 6u;
+  candidateWeight = accumulated6;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 7u;
+  candidateWeight = accumulated7;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 8u;
+  candidateWeight = accumulated8;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  candidateId = 9u;
+  candidateWeight = accumulated9;
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }
+  secondaryWeight = max(secondaryWeight, 0.0);
+  let secondaryShare = secondaryWeight
+    / max(1e-6, max(primaryWeight, 0.0) + secondaryWeight);
+  return vec3f(f32(primaryId), f32(secondaryId), secondaryShare);
+}
+`;
+
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying terrainSplat: vec4f;
 varying terrainPageLocal: vec2f;
@@ -486,6 +930,12 @@ struct TerrainSurfaceLayer {
   f0: f32,
   diffuseRoughness: f32,
 };
+
+/** xyz = physical mean linear albedo; w = midpoint roughness. */
+fn terrainSurfaceReference(materialIndex: i32) -> vec4f {
+${TERRAIN_MATERIAL_REFERENCE_WGSL}
+  return vec4f(0.118, 0.183, 0.058, 0.89);
+}
 
 fn terrainSurfaceHash(point: vec2f) -> f32 {
   var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
@@ -747,11 +1197,20 @@ fn terrainSurfaceSample(
   }
 
   var layer: TerrainSurfaceLayer;
-  layer.albedo = terrainSurfaceDecodeAlbedo(albedoTexel.rgb) * season.rgb;
-  layer.height = albedoTexel.a;
+  let reference = terrainSurfaceReference(materialIndex);
+  // Once microstructure is smaller than a pixel, converge EVERY patterned
+  // channel to its physical mean. Fading only the normal left albedo joints,
+  // height and cavity repeating through coarse mips; biplanar Rock then
+  // crossed those residual combs into the reported screen-door mountain.
+  layer.albedo = mix(
+    reference.rgb,
+    terrainSurfaceDecodeAlbedo(albedoTexel.rgb),
+    detailWeight,
+  ) * season.rgb;
+  layer.height = mix(0.5, albedoTexel.a, detailWeight);
   layer.normal = worldNormal;
-  layer.roughness = clamp(normalTexel.b + season.a, 0.02, 1.0);
-  layer.cavity = normalTexel.a;
+  layer.roughness = clamp(mix(reference.w, normalTexel.b, detailWeight) + season.a, 0.02, 1.0);
+  layer.cavity = mix(1.0, normalTexel.a, detailWeight);
   layer.f0 = row.z;
   layer.diffuseRoughness = row.w;
   return layer;
@@ -779,49 +1238,33 @@ var terrainSplatWeightLo: texture_2d<f32>;
 var terrainSplatWeightHiSampler: sampler;
 var terrainSplatWeightHi: texture_2d<f32>;
 
+${TERRAIN_SPARSE_SPLAT_GATHER_WGSL}
+
 /**
- * 4-6: the real page splat, cross-faded between the two resident season
- * buckets.
+ * Sparse bilinear page splat. Material identifiers are categorical data: a
+ * filtered texture fetch would manufacture ids that none of the four texels
+ * selected. Load all four neighbours exactly, accumulate their four sparse
+ * weights by id, then choose the strongest two real materials. Season blends
+ * weights over the per-texel shared low/high material basis baked into the id
+ * atlas, so every weight lane names the same material in both season buckets.
  *
- * Ids are stored as unorm over the ten-material axis, and the axis is ordered
- * so that neighbouring biomes are one step apart — so a FILTERED fetch between
- * two texels lands between two materials that actually meet, which is the
- * whole reason 3-0 ordered it that way. 4.5-A2 is where that finally
- * happens: the channel atlas was created NEAREST, so this "filtered" fetch was
- * point-sampling a 2 m grid and every resident page rendered as hard-edged
- * single-material blocks.
- *
- * **Only the PRIMARY lane may be read from a filtered fetch.** Lanes y..w are
- * the classifier's independent 2nd..4th picks per texel, not axis neighbours;
- * filtering them sweeps through unrelated integers, which is the failure the
- * fragment's own comment below documents. Minority cover therefore needs a
- * per-texel textureLoad/gather fetch — 4.5-A2 records that as its own
- * item, and nothing reads lane y today.
- *
- * 4.5-A2 also fixes the latent mix(idLo, idHi, blend): the comment already
- * said to take the LOW bucket's ids, and the mix was masked only because the
- * two buckets differ in how much snow they carry rather than in which material
- * they name. Interpolating an id toward a material neither bucket chose is the
- * same defect as filtering a secondary, one axis over.
+ * Return = (primary id, secondary id, secondary share, page confidence).
  */
-fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
-  let scale = f32(${SURFACE_MATERIAL_COUNT - 1});
-  let primary = textureSampleLevel(
-    terrainSplatId, terrainSplatIdSampler, uv.xy, 0.0).x * scale;
-  let weightLo = textureSampleLevel(
-    terrainSplatWeightLo, terrainSplatWeightLoSampler, uv.xy, 0.0);
-  let weightHi = textureSampleLevel(
-    terrainSplatWeightHi, terrainSplatWeightHiSampler, uv.xy, 0.0);
-  // Cross-fade the WEIGHTS only: how much snow a texel carries moves with the
-  // season, which material it is does not.
-  let weights = mix(weightLo, weightHi, blend);
-  // WGSL has no ternary operator. A max() guard rather than select(), because
-  // select() evaluates both arms and the division would still be by zero.
-  let secondaryWeight = weights.y / max(1e-6, weights.x + weights.y);
-  // y is deliberately -1: "this path supplies no secondary id". The fragment
-  // does not read one (see the block below); a later per-texel fetch is what
-  // would fill it, and 0 would silently mean SAND.
-  return vec3f(primary, -1.0, secondaryWeight);
+fn terrainSurfacePageSplat(uv: vec4f, blend: f32) -> vec4f {
+  let channelTexelMeters = uniforms.terrainPageAtlasGrid.y * exp2(uv.w)
+    / uniforms.terrainPageAtlas.z;
+  let confidence = 1.0 - smoothstep(
+    ${TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS.toFixed(1)},
+    ${TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS.toFixed(1)},
+    channelTexelMeters);
+  // Coarse/unresident pages use the provisional axis. Return before twelve
+  // sparse texture loads so the visual safety fallback also reduces cost.
+  if (confidence < 0.5 || uv.z <= 0.0) {
+    return vec4f(0.0, 0.0, 0.0, 0.0);
+  }
+  let atlasPosition = uv.xy * uniforms.terrainPageAtlas.x - vec2f(0.5);
+  let sparse = terrainSurfaceSparseSplat(atlasPosition, blend);
+  return vec4f(sparse, confidence * uv.z);
 }
 
 /**
@@ -833,8 +1276,8 @@ fn terrainSurfacePageSplat(uv: vec3f, blend: f32) -> vec3f {
  * page EXTENT to normalise its local position and a shared material cannot
  * carry a per-mesh uniform.
  */
-fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec3f {
-  if (lane < 0.0) { return vec3f(0.0, 0.0, 0.0); }
+fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec4f {
+  if (lane < 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
   let slot = floor(lane * ${1 / 32});
   let level = lane - slot * 32.0;
   let extent = uniforms.terrainPageAtlasGrid.y * exp2(level);
@@ -844,7 +1287,7 @@ fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec3f {
   let core = uniforms.terrainPageAtlas.z;
   let inPage = clamp(pageLocal / extent, vec2f(0.0), vec2f(1.0));
   let texel = slotOrigin + vec2f(uniforms.terrainPageAtlas.w) + inPage * core;
-  return vec3f(texel / uniforms.terrainPageAtlas.x, 1.0);
+  return vec4f(texel / uniforms.terrainPageAtlas.x, 1.0, level);
 }
 
 /**
@@ -856,7 +1299,7 @@ fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec3f {
  * is ~1.1 degrees, which is close enough to the sun's real angular diameter
  * that the terminator does not read as a hard line.
  */
-fn terrainSurfaceHorizonShadow(uv: vec3f, sunDirection: vec3f) -> f32 {
+fn terrainSurfaceHorizonShadow(uv: vec4f, sunDirection: vec3f) -> f32 {
   if (uv.z <= 0.0 || sunDirection.y <= 0.0) { return 1.0; }
   let horizontal = max(1e-5, length(sunDirection.xz));
   // The bake marches azimuth s with direction angle (s + 0.5) * pi/4, so the
@@ -898,8 +1341,17 @@ let terrainWorldDdy = dpdy(terrainAbsolutePosition);
 // ground with the aircraft. A derivative footprint stays attached to the
 // surface.
 let terrainFootprint = max(length(terrainWorldDdx.xz), length(terrainWorldDdy.xz));
-let terrainDetailWeight = 1.0 - smoothstep(1.2, 14.0, terrainFootprint);
+let terrainDetailWeight = 1.0 - smoothstep(
+  ${TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS.toFixed(2)},
+  ${TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS.toFixed(2)},
+  terrainFootprint,
+);
 
+// CDLOD's vertex stage derives a smooth macro normal from the same fine/parent
+// height samples and morph used for displacement. Babylon inverse-transforms
+// and interpolates it into normalW. A screen-derivative cross here is constant
+// over each rasterized triangle; using it turned the 33x33 LOD grid into the
+// reported plates of colour through lighting, slope cover and triplanar mode.
 let terrainGeometricNormal = normalize(normalW);
 let terrainSlope = 1.0 - clamp(abs(terrainGeometricNormal.y), 0.0, 1.0);
 
@@ -955,29 +1407,38 @@ let terrainSkyVisibility = 1.0;
 let terrainHorizonShadow = 1.0;
 #endif
 
-// The provisional splat (Class T until 4-6). The primary id is a CONTINUOUS
-// coordinate on the SurfaceMaterial axis: interpolating it across a triangle
-// and bracketing the two integers it lies between gives a smooth material
-// gradient, where flat-interpolating an id would give hard triangle edges at
-// 8 m and rounding it alone would give a hard edge at the midpoint. The axis
-// is ordered so bracketed neighbours are materials that plausibly grade into
-// one another; 4-6 replaces the whole scheme with real splat pages.
+// Fine L0 channel pages own categorical material identity. A coarser page's
+// classifier texel spans 8..256 m and cannot safely invent a categorical
+// patch, while the old emergency altitude walk painted kilometre-wide
+// Grass→Floor→Shrub→Rock colour lobes. The no-page representation therefore
+// starts from one continuous Grass base. Geometric slope, a perturbed alpine
+// driver and seasonal snow add resolved macro cover through the existing third
+// candidate below; material microstructure independently fades by footprint.
+var terrainAxis = ${SurfaceMaterial.Grass}.0;
+var terrainLowerId = ${SurfaceMaterial.Grass}.0;
+var terrainUpperId = ${SurfaceMaterial.Grass}.0;
+var terrainAxisFraction = 0.0;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
-let terrainSplatSource = mix(
-  fragmentInputs.terrainSplat.xyz, terrainPageSplat, terrainPageUv.z);
+// Never interpolate categorical ids. At the native 4 m channel footprint the
+// sparse gather supplies two real ids and their filtered weights. Coarser
+// geometry pages have zero classification confidence and keep the continuous
+// macro fallback instead of painting 8..256 m single-material plates.
+let terrainUsePageSplat = terrainPageSplat.w >= 0.5;
+if (terrainUsePageSplat) {
+  terrainAxis = terrainPageSplat.x;
+  terrainLowerId = terrainPageSplat.x;
+  terrainUpperId = terrainPageSplat.y;
+  terrainAxisFraction = terrainPageSplat.z;
+}
 #else
-let terrainSplatSource = fragmentInputs.terrainSplat.xyz;
+let terrainUsePageSplat = false;
 #endif
-let terrainAxis = clamp(terrainSplatSource.x, 0.0, ${LAST_MATERIAL_INDEX}.0);
-let terrainLowerId = floor(terrainAxis);
-let terrainUpperId = min(terrainLowerId + 1.0, ${LAST_MATERIAL_INDEX}.0);
-let terrainAxisFraction = terrainAxis - terrainLowerId;
 
 // The third candidate is FRAGMENT-DERIVED ONLY.
 //
-// The splat's lanes y and z carry the biome's secondary cover and its weight,
-// written per vertex and reserved for 4-6 — but this shader does not read
-// them, because a secondary id cannot survive interpolation. Bracketing it
+// The provisional splat's lanes y and z carry a secondary cover and its weight,
+// but this shader does not read them because a secondary id cannot survive
+// vertex interpolation. Bracketing it
 // would blend two materials that never meet (the secondaries of climatic
 // neighbours are not adjacent on the ecotone axis, and cannot all be made so
 // without implausible companions), and ROUNDING it paints every intermediate
@@ -986,22 +1447,40 @@ let terrainAxisFraction = terrainAxis - terrainLowerId;
 // "confidence" gate fading the weight at half-integers does not help — the
 // intermediate ids are hit AT the integers, where such a gate is wide open.
 //
-// So the third candidate is whichever of the fragment's own slope and the
-// seasonal snow blanket is stronger. Both are evaluated HERE rather than per
-// vertex, which is the one place this provisional path is strictly better than
-// the classifier feeding it: a cliff gets rock at fragment resolution instead
-// of at 8 m. 4-6's page splat restores real minority cover.
-let terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
+// Resident fine page splats restore their real secondary through the sparse
+// gather above. The third candidate is the mutually exclusive residual of the
+// fragment's slope-exposed/alpine rock and seasonal snow blanket. Both are
+// evaluated HERE rather than per vertex, which is the one place this fallback
+// is strictly better than a coarse categorical page: a cliff gets rock at
+// fragment resolution instead of in an 8..256 m block.
+let terrainCoverNoise =
+    (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 430.0)) - 0.5) * 78.0
+  + (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 95.0)) - 0.5) * 19.0;
+let terrainElevationDriver = terrainAbsolutePosition.y
+  - uniforms.terrainSurfaceWetness.y + terrainCoverNoise;
+var terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
+if (!terrainUsePageSplat) {
+  // This is the altitude term from the real classifier, kept deliberately
+  // weaker than a true cliff. It greys alpine fallback terrain continuously
+  // without walking through four categorical material palettes.
+  terrainSlopeRock = max(
+    terrainSlopeRock,
+    smoothstep(
+      ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
+      ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
+      terrainElevationDriver,
+    ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)},
+  );
+}
 
 
 // 3-10's SEASONAL snow blanket. Two properties, both learned the hard way from
 // the first capture after this plugin landed:
 //
-//  - It is ZERO at the reference day. The land-cover classifier already puts
-//    Snow above the reference snowline, so a fragment blanket at the same
-//    altitude only double-counts; what the classifier cannot express is the
-//    snowline DESCENDING through the winter, and that is all this term does.
-//    Anchored the way R-13 anchors every seasonal term.
+//  - On a trusted L0 page it is ZERO at the reference day: that classifier
+//    already puts Snow above the reference snowline. The coarse/no-page macro
+//    representation has no classifier, so it supplies that reference blanket
+//    itself before adding the seasonal descent.
 //  - Its driver is PERTURBED, not its output. An unperturbed elevation band is
 //    an iso-contour, and iso-contours on a mountain are closed white rings —
 //    which is exactly what the first capture showed. RENDERING_PLAN.md §3.2
@@ -1009,27 +1488,37 @@ let terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
 //    outputs"); it applies just as much to one band.
 let terrainSnowline = uniforms.terrainSurfaceTuning.w;
 let terrainSnowDescent = max(0.0, uniforms.terrainSurfaceWetness.z - terrainSnowline);
+let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.y;
+// Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
+// ground the same way it is applied to canopy and rock.
+let terrainSnowShed = 1.0 - clamp((terrainSlope - 0.5) * 1.7, 0.0, 1.0);
 var terrainSnowCover = 0.0;
+if (!terrainUsePageSplat) {
+  terrainSnowCover = smoothstep(
+    uniforms.terrainSurfaceWetness.z - 120.0,
+    uniforms.terrainSurfaceWetness.z + 120.0,
+    terrainSnowDriver,
+  ) * terrainSnowShed;
+}
 if (terrainSnowDescent > 1.0) {
-  let terrainSnowDriver = terrainAbsolutePosition.y
-    + (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 430.0)) - 0.5) * 78.0
-    + (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 95.0)) - 0.5) * 19.0;
   let terrainSnowBand = smoothstep(terrainSnowline - 120.0, terrainSnowline + 120.0,
     terrainSnowDriver);
-  // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
-  // ground the same way it is applied to canopy and rock.
-  let terrainSnowShed = 1.0 - clamp((terrainSlope - 0.5) * 1.7, 0.0, 1.0);
   // Fade the blanket in with the descent itself, so the first cold week does
   // not switch a hillside white.
-  terrainSnowCover = terrainSnowBand * terrainSnowShed
-    * clamp(terrainSnowDescent / 90.0, 0.0, 1.0);
+  terrainSnowCover = max(
+    terrainSnowCover,
+    terrainSnowBand * terrainSnowShed
+      * clamp(terrainSnowDescent / 90.0, 0.0, 1.0),
+  );
 }
-var terrainThirdId = ${SurfaceMaterial.Rock}.0;
-var terrainThirdWeight = terrainSlopeRock;
-if (terrainSnowCover > terrainThirdWeight) {
-  terrainThirdId = ${SurfaceMaterial.Snow}.0;
-  terrainThirdWeight = terrainSnowCover;
-}
+// Both terms cover the same area. Their signed residual makes the material ID
+// switch only where its influence is exactly zero; the previous max-selection
+// retained ~full weight across the switch and painted a binary charcoal rock
+// polygon into an otherwise continuous winter mountain.
+let terrainCoverDelta = terrainSnowCover - terrainSlopeRock;
+let terrainThirdId = select(
+  ${SurfaceMaterial.Rock}.0, ${SurfaceMaterial.Snow}.0, terrainCoverDelta > 0.0);
+let terrainThirdWeight = abs(terrainCoverDelta);
 
 // 3-6: N-way height blend. k_i = h_i + w_i; b_i = max(k_i - (max k - d), 0),
 // normalised. The transition depth d widens with the footprint so the blend
@@ -1043,16 +1532,18 @@ let terrainBlendDepth = mix(
 #ifdef TERRAIN_SURFACE_THREE_MATERIALS
 let terrainWeight0 = (1.0 - terrainAxisFraction) * (1.0 - terrainThirdWeight);
 let terrainWeight1 = terrainAxisFraction * (1.0 - terrainThirdWeight);
-// A candidate whose weight is negligible is SKIPPED, not sampled and
-// multiplied by zero. Most of the ground sits well inside one biome with the
-// axis fraction at an end and no slope or snow override, so the common
-// fragment fetches one material rather than three — measured as the
-// difference between 51.7 and 57+ fps on the cruise-horizon capture, where
-// distant terrain fills the frame. Legal under non-uniform control flow
-// precisely because every sample carries explicit gradients.
+// Base candidates whose weight is negligible are skipped rather than sampled
+// and multiplied by zero. The slope/snow candidate is sampled for every
+// strictly positive residual and its height-blend contribution is multiplied
+// by that residual below. That gate is what makes its Rock/Snow ownership
+// change continuous at zero instead of allowing a tiny candidate weight to
+// enter with a finite height-driven blend. Most ground still has an exact-zero
+// residual, so the common fragment fetches one material rather than three.
+// Legal under non-uniform control flow precisely because every sample carries
+// explicit gradients.
 let terrainActive0 = terrainWeight0 > 0.004;
 let terrainActive1 = terrainWeight1 > 0.004;
-let terrainActive2 = terrainThirdWeight > 0.004;
+let terrainActive2 = terrainThirdWeight > 0.0;
 var terrainLayer0: TerrainSurfaceLayer;
 var terrainLayer1: TerrainSurfaceLayer;
 var terrainLayer2: TerrainSurfaceLayer;
@@ -1075,7 +1566,7 @@ if (terrainActive2) {
   terrainLayer2 = terrainSurfaceSample(
     i32(terrainThirdId + 0.5), terrainSamplePosition, terrainGeometricNormal,
     terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
-  terrainKey2 = terrainLayer2.height + terrainThirdWeight;
+  terrainKey2 = terrainThirdWeight * (terrainLayer2.height + 1.0);
 }
 let terrainKeyMax = max(terrainKey0, max(terrainKey1, terrainKey2)) - terrainBlendDepth;
 // A skipped candidate's key is far below the threshold, so its blend weight is
@@ -1084,10 +1575,19 @@ let terrainKeyMax = max(terrainKey0, max(terrainKey1, terrainKey2)) - terrainBle
 var terrainBlend0 = max(terrainKey0 - terrainKeyMax, 0.0);
 var terrainBlend1 = max(terrainKey1 - terrainKeyMax, 0.0);
 var terrainBlend2 = max(terrainKey2 - terrainKeyMax, 0.0);
+terrainBlend2 = terrainBlend2 * terrainThirdWeight;
 let terrainBlendSum = max(terrainBlend0 + terrainBlend1 + terrainBlend2, 1e-5);
 terrainBlend0 = terrainBlend0 / terrainBlendSum;
 terrainBlend1 = terrainBlend1 / terrainBlendSum;
 terrainBlend2 = terrainBlend2 / terrainBlendSum;
+if (!terrainUsePageSplat) {
+  // The macro fallback has no texel-scale height evidence to arbitrate. Use
+  // its analytic coverage directly; feeding mean-height layers through the
+  // height winner created a new contour where Rock first entered the blend.
+  terrainBlend0 = 1.0 - terrainThirdWeight;
+  terrainBlend1 = 0.0;
+  terrainBlend2 = terrainThirdWeight;
+}
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0
   + terrainLayer1.albedo * terrainBlend1
   + terrainLayer2.albedo * terrainBlend2;
@@ -1122,18 +1622,23 @@ if (terrainWeight0 > 0.004) {
     terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
   terrainKey0 = terrainLayer0.height + terrainWeight0;
 }
-if (terrainThirdWeight > 0.004) {
+if (terrainThirdWeight > 0.0) {
   terrainLayer2 = terrainSurfaceSample(
     i32(terrainThirdId + 0.5), terrainSamplePosition, terrainGeometricNormal,
     terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
-  terrainKey2 = terrainLayer2.height + terrainThirdWeight;
+  terrainKey2 = terrainThirdWeight * (terrainLayer2.height + 1.0);
 }
 let terrainKeyMax = max(terrainKey0, terrainKey2) - terrainBlendDepth;
 var terrainBlend0 = max(terrainKey0 - terrainKeyMax, 0.0);
 var terrainBlend2 = max(terrainKey2 - terrainKeyMax, 0.0);
+terrainBlend2 = terrainBlend2 * terrainThirdWeight;
 let terrainBlendSum = max(terrainBlend0 + terrainBlend2, 1e-5);
 terrainBlend0 = terrainBlend0 / terrainBlendSum;
 terrainBlend2 = terrainBlend2 / terrainBlendSum;
+if (!terrainUsePageSplat) {
+  terrainBlend0 = 1.0 - terrainThirdWeight;
+  terrainBlend2 = terrainThirdWeight;
+}
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0 + terrainLayer2.albedo * terrainBlend2;
 var terrainNormal = terrainLayer0.normal * terrainBlend0 + terrainLayer2.normal * terrainBlend2;
 var terrainRoughness = terrainLayer0.roughness * terrainBlend0
@@ -1143,6 +1648,11 @@ var terrainF0 = terrainLayer0.f0 * terrainBlend0 + terrainLayer2.f0 * terrainBle
 var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer2.diffuseRoughness * terrainBlend2;
 #endif
+
+// 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
+// colour, and a kilometre-scale brightness ramp across a marking reads as a
+// stain rather than as weather.
+terrainAlbedo *= terrainMacroVariation;
 
 #ifdef TERRAIN_SURFACE_RUNWAY
 // 3-9 paints asphalt, concrete and markings from the analytic airport SDF,
@@ -1154,11 +1664,6 @@ terrainRunwaySurface(
   &terrainF0, &terrainDiffuseRoughness,
 );
 #endif
-
-// 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
-// colour, and a kilometre-scale brightness ramp across a marking reads as a
-// stain rather than as weather.
-terrainAlbedo *= terrainMacroVariation;
 
 // 3-7's wetness response. The driven field is a constant zero until 6-5
 // supplies it from the water side — two instructions today against threading a

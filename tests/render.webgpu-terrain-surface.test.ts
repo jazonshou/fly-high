@@ -10,14 +10,35 @@ import {
   DETILE_PATCH_DEGREES,
   heightBlendWeights,
   meanSeasonalSurfaceAlbedo,
+  resolveTerrainSlopeSnowCover,
   seasonalSnowlineMeters,
   surfaceSeasonalResponse,
+  TERRAIN_FALLBACK_ALPINE_END_METERS,
+  TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH,
+  TERRAIN_FALLBACK_ALPINE_START_METERS,
+  TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
+  TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
+  TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS,
+  TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS,
+  TERRAIN_FINE_HEIGHT_GRADIENT_SCALE,
+  TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE,
   TERRAIN_SURFACE_INJECTION_ANCHORS,
   TERRAIN_SURFACE_INJECTION_TOKENS,
+  TERRAIN_SPARSE_SPLAT_GATHER_WGSL,
   TERRAIN_SURFACE_VERTEX_WGSL,
   TerrainSurfacePlugin,
+  terrainNodeLocalNormalFromHeightGradients,
+  terrainPageClassificationConfidence,
+  terrainCoverHeightBlendWeights,
+  terrainFallbackRockCover,
+  terrainMaterialDetailWeight,
   TRIPLANAR_SLOPE_THRESHOLD,
 } from "../src/render/webgpu/terrain/TerrainSurfacePlugin";
+import { terrainNodeSpanMeters } from "../src/render/webgpu/terrain/TerrainSpineContract";
+import {
+  resolveRunwaySurfaceBinding,
+  RUNWAY_SURFACE_WGSL,
+} from "../src/render/webgpu/terrain/RunwaySurface";
 import {
   linearLuminance,
   SURFACE_MATERIAL_COUNT,
@@ -26,6 +47,7 @@ import {
   surfaceMaterialSpec,
 } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "../src/world";
+import { DEFAULT_AIRPORT } from "../src/world/airport";
 
 /**
  * 3-2/3-3/3-4/3-5/3-6/3-7/3-10 — the terrain surface plugin.
@@ -51,6 +73,12 @@ function shippedPbrFragmentSource(): string {
   return `${main}\n${reflectance0}`;
 }
 
+function shippedTerrainVertexNormalConsumers(): string {
+  const pbr = readFileSync(join(BABYLON_WGSL, "pbr.vertex.js"), "utf8");
+  const shadow = readFileSync(join(BABYLON_WGSL, "shadowMap.vertex.js"), "utf8");
+  return `${pbr}\n${shadow}`;
+}
+
 function fragmentCode(plugin: TerrainSurfacePlugin): Record<string, string> {
   const code = plugin.getCustomCode("fragment", ShaderLanguage.WGSL);
   expect(code).not.toBeNull();
@@ -72,6 +100,18 @@ function withPlugin<T>(body: (plugin: TerrainSurfacePlugin, material: PBRMateria
 }
 
 describe("terrain surface plugin (3-2)", () => {
+  it("keeps the painted runway silhouette on the analytic physics boundary", () => {
+    const pavementDistance = RUNWAY_SURFACE_WGSL.indexOf("let pavementDistance = coarse;");
+    const pavementMask = RUNWAY_SURFACE_WGSL.indexOf(
+      "let paved = terrainRunwayMask(pavementDistance",
+    );
+    expect(pavementDistance).toBeGreaterThan(-1);
+    expect(pavementMask).toBeGreaterThan(pavementDistance);
+    expect(RUNWAY_SURFACE_WGSL).not.toMatch(
+      /pavementDistance\s*=\s*[^;]*terrainSurfaceValue/,
+    );
+    expect(resolveRunwaySurfaceBinding(DEFAULT_AIRPORT).shape[3]).toBe(0);
+  });
   it("R-3B: every regex anchor matches the shipped Babylon WGSL exactly once", () => {
     // The anchors are minified, unversioned, shipped WGSL. A `!regex` that
     // matches NOTHING is silent — which is precisely how the plan's original
@@ -172,6 +212,8 @@ describe("terrain surface plugin (3-2)", () => {
       // wanted back — and, since 3-1 high-passes each layer, the only place
       // world-scale brightness variation now comes from.
       expect(beforeLights).toContain("terrainMacroVariation");
+      expect(beforeLights.indexOf("terrainAlbedo *= terrainMacroVariation"))
+        .toBeLessThan(beforeLights.indexOf("terrainRunwaySurface("));
       // Equal-elevation sine strata painted horizontal scan lines across every
       // hill at medium clipmap range. They must not come back.
       expect(beforeLights).not.toContain("sin(terrainAbsolutePosition.y");
@@ -202,6 +244,156 @@ describe("terrain surface plugin (3-2)", () => {
       // Defect 3: texture-sourced.
       expect(source).toContain("terrainSurfaceFetchNormal");
     });
+  });
+
+  it("derives a shared-vertex macro normal from the same fine/parent height morph", () => {
+    withPlugin((plugin) => {
+      const source = Object.values(fragmentCode(plugin)).join("\n");
+      const definitions = TERRAIN_SURFACE_VERTEX_WGSL.CUSTOM_VERTEX_DEFINITIONS;
+      const position = TERRAIN_SURFACE_VERTEX_WGSL.CUSTOM_VERTEX_UPDATE_POSITION;
+      // The sampler returns height + analytic bilinear gradient from exactly
+      // the same four loads; adding separate neighbour fetches here would turn
+      // a visual fix into a vertex-bandwidth regression.
+      const samplerStart = definitions.indexOf("fn terrainSampleHeightGradient");
+      const samplerEnd = definitions.indexOf("\n}\n#else", samplerStart);
+      const sampler = definitions.slice(samplerStart, samplerEnd);
+      expect(sampler.match(/textureLoad\(/gu)).toHaveLength(4);
+      expect(sampler).toContain("mix(h10 - h00, h11 - h01, fraction.y)");
+      expect(sampler).toContain("mix(h01 - h00, h11 - h10, fraction.x)");
+      expect(position.match(/terrainSampleHeightGradient\(/gu)).toHaveLength(2);
+      expect(definitions).toContain("fn terrainSurfaceCornerMorphs(packed: f32)");
+      expect(definitions).toContain("16777215.0");
+      expect(definitions).toContain("bits >> 6u");
+      expect(definitions).toContain("bits >> 12u");
+      expect(definitions).toContain("bits >> 18u");
+      expect(definitions).toContain("if (!parentResident) { return 0.0; }");
+      const boundaryMorphStart = definitions.indexOf("fn terrainSurfaceVertexMorphK(");
+      const boundaryMorphEnd = definitions.indexOf("\n}\n`", boundaryMorphStart);
+      const boundaryMorph = definitions.slice(
+        boundaryMorphStart,
+        boundaryMorphEnd >= 0 ? boundaryMorphEnd : undefined,
+      );
+      const interiorReturn = boundaryMorph.indexOf(
+        "if (!(onX0 || onX1 || onZ0 || onZ1))",
+      );
+      const packedCornerDecode = boundaryMorph.indexOf(
+        "let corners = terrainSurfaceCornerMorphs(packedCorners);",
+      );
+      expect(interiorReturn).toBeGreaterThanOrEqual(0);
+      expect(packedCornerDecode).toBeGreaterThan(interiorReturn);
+      expect(position).toContain("let vertexMorphK = terrainSurfaceVertexMorphK(");
+      expect(position).toContain("(evenLattice - gridPosition) * vertexMorphK");
+      expect(position).toContain("(coarse.x - fine.x) * vertexMorphK");
+      expect(position).toContain("(parentGradient - fineGradient) * vertexMorphK");
+      // nodeB.x is only the decoder's interior input. Geometry, height and
+      // normals must never bypass the synchronized boundary value.
+      expect(position.match(/nodeB\.x/gu)).toHaveLength(1);
+      expect(position).toContain("sampledFine.yz * quads");
+      expect(position).toContain("coarse.yz * (quads * 0.5)");
+      expect(position).toContain(
+        "normalUpdated = vec3f(-nodeGradient.x, 1.0, -nodeGradient.y)",
+      );
+      expect(position).not.toContain("normalUpdated = normalize(vec3f(-nodeGradient");
+      const consumers = shippedTerrainVertexNormalConsumers();
+      expect(consumers).toContain(
+        "vertexOutputs.vNormalW=normalize(normalWorld*vertexOutputs.vNormalW)",
+      );
+      expect(consumers).toContain("vNormalW=normalize(normWorldSM*vNormalW)");
+
+      const parentLoadBranch = position.indexOf(
+        "if (vertexMorphK > 0.0 || !fineResident)",
+      );
+      const parentLoad = position.indexOf(
+        "coarse = terrainSampleHeightGradient(nodeB.y, parentTexel.x, parentTexel.y)",
+      );
+      expect(parentLoadBranch).toBeGreaterThanOrEqual(0);
+      expect(parentLoad).toBeGreaterThan(parentLoadBranch);
+      expect(position.indexOf("let sampledFine = terrainSampleHeightGradient"))
+        .toBeLessThan(parentLoadBranch);
+
+      // normalW is now the interpolated shared-vertex macro normal. A
+      // dpdx/dpdy cross is constant on each triangle and recreated the user's
+      // solid colour plates through lighting, slope cover and triplanar mode.
+      expect(source).toContain("let terrainGeometricNormal = normalize(normalW)");
+      expect(source).not.toContain("cross(terrainWorldDdx, terrainWorldDdy)");
+      // Screen derivatives remain for texture footprints/explicit gradients.
+      expect(source).toContain("dpdx(terrainAbsolutePosition)");
+      expect(source).toContain("dpdy(terrainAbsolutePosition)");
+
+      const normalAt = source.indexOf("let terrainGeometricNormal = normalize(normalW)");
+      const slopeAt = source.indexOf("let terrainSlope =");
+      const sampleAt = source.indexOf("terrainSamplePosition, terrainGeometricNormal");
+      const runwayAt = source.indexOf("terrainAbsolutePosition, terrainGeometricNormal");
+      expect(normalAt).toBeGreaterThan(0);
+      expect(slopeAt).toBeGreaterThan(normalAt);
+      expect(sampleAt).toBeGreaterThan(slopeAt);
+      expect(runwayAt).toBeGreaterThan(slopeAt);
+    });
+  });
+
+  it("recovers one planar world slope across levels, morph and parent fallback", () => {
+    expect(TERRAIN_FINE_HEIGHT_GRADIENT_SCALE).toBe(32);
+    expect(TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE).toBe(16);
+    const slopeX = 0.37;
+    const slopeZ = -0.21;
+    const expectedLength = Math.hypot(slopeX, 1, slopeZ);
+    const expected = [-slopeX / expectedLength, 1 / expectedLength, -slopeZ / expectedLength];
+    const toWorld = (
+      local: readonly [number, number, number],
+      span: number,
+    ): readonly [number, number, number] => {
+      const x = local[0] / span;
+      const y = local[1];
+      const z = local[2] / span;
+      const length = Math.hypot(x, y, z);
+      return [x / length, y / length, z / length];
+    };
+
+    for (let level = 0; level <= 9; level += 1) {
+      const span = terrainNodeSpanMeters(level);
+      const fineTexelMeters = span / TERRAIN_FINE_HEIGHT_GRADIENT_SCALE;
+      const fine = [slopeX * fineTexelMeters, slopeZ * fineTexelMeters] as const;
+      const parent = [slopeX * fineTexelMeters * 2, slopeZ * fineTexelMeters * 2] as const;
+      for (const morphK of [0, 0.25, 0.7, 1]) {
+        const world = toWorld(
+          terrainNodeLocalNormalFromHeightGradients(fine, parent, morphK),
+          span,
+        );
+        expected.forEach((component, index) => {
+          expect(world[index], `level ${level}, morph ${morphK}, component ${index}`)
+            .toBeCloseTo(component, 12);
+        });
+      }
+
+      // At the endpoint a child using its parent gradient must equal that
+      // level+1 node using the same page as its fine source.
+      const childWorld = toWorld(
+        terrainNodeLocalNormalFromHeightGradients(fine, parent, 1),
+        span,
+      );
+      const grandParent = [parent[0] * 2, parent[1] * 2] as const;
+      const parentWorld = toWorld(
+        terrainNodeLocalNormalFromHeightGradients(parent, grandParent, 0),
+        span * 2,
+      );
+      parentWorld.forEach((component, index) => {
+        expect(childWorld[index], `level ${level} LOD seam component ${index}`)
+          .toBeCloseTo(component, 12);
+      });
+
+      // A temporarily missing fine slot inherits the resident parent's normal
+      // regardless of the stale morph lane, never an up-vector flash.
+      const fallback = toWorld(
+        terrainNodeLocalNormalFromHeightGradients([99, -71], parent, 0.63, false),
+        span,
+      );
+      expected.forEach((component, index) => {
+        expect(fallback[index], `level ${level} fallback component ${index}`)
+          .toBeCloseTo(component, 12);
+      });
+    }
+    expect(() => terrainNodeLocalNormalFromHeightGradients([0, 0], [0, 0], -0.1))
+      .toThrow(RangeError);
   });
 
   it("3-4: rotates at 13.7 and 61.2 degrees, never the deleted build's 36.3", () => {
@@ -321,6 +513,209 @@ describe("terrain surface plugin (3-2)", () => {
     expect(TERRAIN_SURFACE_VERTEX_WGSL.CUSTOM_VERTEX_MAIN_END).toContain(
       "vertexOutputs.terrainSplat = vertexInputs.color;",
     );
+  });
+
+  it("falls back to the resident parent height when a fine CDLOD slot is missing", () => {
+    const source = TERRAIN_SURFACE_VERTEX_WGSL.CUSTOM_VERTEX_UPDATE_POSITION;
+    expect(source).toContain(
+      "let fine = select(coarse, sampledFine, fineResident);",
+    );
+    expect(source).toContain(
+      "coarse = terrainSampleHeightGradient(nodeB.y, parentTexel.x, parentTexel.y);",
+    );
+    expect(source).not.toContain(
+      "let fine = terrainSampleHeightGradient(nodeA.x, nodeTexel.x, nodeTexel.y);",
+    );
+    expect(source.indexOf("coarse = terrainSampleHeightGradient"))
+      .toBeLessThan(source.indexOf("let fine = select(coarse"));
+    expect(source).toContain(
+      "let fineGradient = select(parentGradient, sampledFine.yz * quads, fineResident);",
+    );
+  });
+
+  it("gathers sparse splat weights without filtering categorical material ids", () => {
+    withPlugin((plugin) => {
+      const source = Object.values(fragmentCode(plugin)).join("\n");
+      expect(source).toContain("textureLoad(terrainSplatId, texel, 0)");
+      expect(source).toContain(TERRAIN_SPARSE_SPLAT_GATHER_WGSL);
+      expect(source).toContain("terrainUpperId = terrainPageSplat.y;");
+      expect(source).toContain("terrainAxisFraction = terrainPageSplat.z;");
+      expect(source).not.toMatch(/textureSampleLevel\(\s*terrainSplatId/u);
+      expect(source).not.toContain(
+        "mix(\n  fragmentInputs.terrainSplat.xyz, terrainPageSplat",
+      );
+    });
+
+    const gather = TERRAIN_SPARSE_SPLAT_GATHER_WGSL;
+    // Four corners still issue one exact id and two weight loads each. The
+    // optimization changes only private accumulation and candidate scanning.
+    expect(gather).toContain(
+      "cornerIndex < 4u; cornerIndex = cornerIndex + 1u",
+    );
+    expect(gather.match(/textureLoad\(terrainSplatId, texel, 0\)/gu)).toHaveLength(1);
+    expect(gather.match(/textureLoad\(terrainSplatWeightLo, texel, 0\)/gu)).toHaveLength(1);
+    expect(gather.match(/textureLoad\(terrainSplatWeightHi, texel, 0\)/gu)).toHaveLength(1);
+    expect(gather).toContain("lane < 4u; lane = lane + 1u");
+
+    // Dynamic private-array indexing is the regression this implementation
+    // avoids. Every material has one scalar switch arm and one statically
+    // ordered top-two candidate, with the original strict tie comparison.
+    expect(gather).not.toMatch(/array<f32,\s*10>/u);
+    expect(gather).not.toContain("accumulated[materialId]");
+    expect(gather).not.toContain("accumulated[materialIndex]");
+    let precedingCandidate = -1;
+    for (let materialId = 0; materialId < SURFACE_MATERIAL_COUNT; materialId += 1) {
+      expect(gather).toContain(`var accumulated${materialId} = 0.0;`);
+      expect(gather).toContain(
+        `case ${materialId}u: { accumulated${materialId} = accumulated${materialId} + weights[lane]; }`,
+      );
+      const candidate = gather.indexOf(`candidateWeight = accumulated${materialId};`);
+      expect(candidate, `material ${materialId} top-two candidate`).toBeGreaterThan(
+        precedingCandidate,
+      );
+      precedingCandidate = candidate;
+    }
+    expect(gather.match(/if \(candidateWeight > primaryWeight\)/gu)).toHaveLength(
+      SURFACE_MATERIAL_COUNT,
+    );
+    expect(gather.match(/else if \(candidateWeight > secondaryWeight\)/gu)).toHaveLength(
+      SURFACE_MATERIAL_COUNT,
+    );
+    expect(gather).not.toMatch(/candidateWeight\s*>=/u);
+  });
+
+  it("attenuates classification to zero once a channel texel exceeds the fine footprint", () => {
+    expect(TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS).toBe(4);
+    expect(TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS).toBe(8);
+    expect(terrainPageClassificationConfidence(0)).toBe(1);
+    expect(terrainPageClassificationConfidence(4)).toBe(1);
+    expect(terrainPageClassificationConfidence(6)).toBeCloseTo(0.5, 12);
+    expect(terrainPageClassificationConfidence(8)).toBe(0);
+    expect(terrainPageClassificationConfidence(64)).toBe(0);
+    expect(() => terrainPageClassificationConfidence(Number.NaN)).toThrow(/texel size/u);
+    expect(() => terrainPageClassificationConfidence(-1)).toThrow(/texel size/u);
+
+    withPlugin((plugin) => {
+      const source = Object.values(fragmentCode(plugin)).join("\n");
+      expect(source).toContain("let channelTexelMeters");
+      expect(source).toContain("4.0,\n    8.0,\n    channelTexelMeters");
+      expect(source).toContain("if (confidence < 0.5 || uv.z <= 0.0)");
+      expect(source).toContain("let terrainUsePageSplat = terrainPageSplat.w >= 0.5;");
+    });
+  });
+
+  it("uses a continuous macro fallback and retires sub-pixel material patterns", () => {
+    expect(TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS).toBe(0.5);
+    expect(TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS).toBe(2);
+    expect(terrainMaterialDetailWeight(0)).toBe(1);
+    expect(terrainMaterialDetailWeight(0.5)).toBe(1);
+    expect(terrainMaterialDetailWeight(1.25)).toBeCloseTo(0.5, 12);
+    expect(terrainMaterialDetailWeight(2)).toBe(0);
+    expect(terrainMaterialDetailWeight(20)).toBe(0);
+    expect(() => terrainMaterialDetailWeight(-1)).toThrow(RangeError);
+
+    expect(TERRAIN_FALLBACK_ALPINE_START_METERS).toBe(420);
+    expect(TERRAIN_FALLBACK_ALPINE_END_METERS).toBe(980);
+    expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.55);
+    expect(terrainFallbackRockCover(0, 0)).toBe(0);
+    expect(terrainFallbackRockCover(420, 0)).toBe(0);
+    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.275, 12);
+    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.55, 12);
+    expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
+    expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
+
+    withPlugin((plugin) => {
+      const source = Object.values(fragmentCode(plugin)).join("\n");
+      expect(source).toContain("fn terrainSurfaceReference(materialIndex: i32)");
+      expect(source).toContain("reference.rgb,");
+      expect(source).toContain("layer.height = mix(0.5, albedoTexel.a, detailWeight);");
+      expect(source).toContain("layer.cavity = mix(1.0, normalTexel.a, detailWeight);");
+      expect(source).toContain(
+        "layer.roughness = clamp(mix(reference.w, normalTexel.b, detailWeight)",
+      );
+      expect(source).toContain("0.50,\n  2.00,\n  terrainFootprint");
+      expect(source).toContain(`var terrainAxis = ${SurfaceMaterial.Grass}.0;`);
+      expect(source).toContain("let terrainUsePageSplat = false;");
+      expect(source).toContain("if (!terrainUsePageSplat)");
+      expect(source).toContain("terrainElevationDriver");
+      expect(source).toContain("420.0,\n      980.0,");
+      expect(source).not.toContain("fragmentInputs.terrainSplat.x");
+      expect(source.match(
+        /terrainBlend0 = 1\.0 - terrainThirdWeight;/gu,
+      )).toHaveLength(2);
+      expect(source.match(/terrainBlend2 = terrainThirdWeight;/gu)).toHaveLength(2);
+    });
+  });
+
+  it("keeps the winter snow-to-slope-rock crossover continuous", () => {
+    expect(resolveTerrainSlopeSnowCover(0.8, 0)).toEqual({
+      materialId: SurfaceMaterial.Rock,
+      weight: 0.8,
+    });
+    expect(resolveTerrainSlopeSnowCover(0, 0.8)).toEqual({
+      materialId: SurfaceMaterial.Snow,
+      weight: 0.8,
+    });
+    expect(resolveTerrainSlopeSnowCover(0.8, 0.8)).toEqual({
+      materialId: SurfaceMaterial.Rock,
+      weight: 0,
+    });
+
+    // Sweep through the old winner-takes-all boundary. The owner may change,
+    // but only while its influence is zero; no near-unit cover can jump from
+    // bright snow to dark rock between adjacent samples.
+    const slopeRock = 0.86;
+    const samples = Array.from({ length: 1_721 }, (_, index) =>
+      resolveTerrainSlopeSnowCover(slopeRock, 0.774 + index * 0.0001));
+    for (let index = 1; index < samples.length; index += 1) {
+      const previous = samples[index - 1]!;
+      const current = samples[index]!;
+      expect(Math.abs(current.weight - previous.weight)).toBeLessThanOrEqual(0.000101);
+      if (current.materialId !== previous.materialId) {
+        expect(Math.max(current.weight, previous.weight)).toBeLessThanOrEqual(0.000101);
+      }
+    }
+    expect(() => resolveTerrainSlopeSnowCover(-0.01, 0)).toThrow(RangeError);
+    expect(() => resolveTerrainSlopeSnowCover(0, Number.NaN)).toThrow(RangeError);
+
+    // Adversarial height ordering: a tall third layer used to suppress both
+    // base materials even at epsilon cover, then normalise itself to one. The
+    // zero-gated key and raw blend preserve the base partition through either
+    // side of the Rock/Snow ownership boundary for both material caps.
+    for (const baseKeys of [[0.5], [0.5, 0.5]] as const) {
+      const zero = terrainCoverHeightBlendWeights(baseKeys, 1, 0, 0.06);
+      const negative = terrainCoverHeightBlendWeights(baseKeys, 1, 1e-6, 0.06);
+      const positive = terrainCoverHeightBlendWeights(baseKeys, 1, 1e-6, 0.06);
+      expect(zero.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+      expect(negative.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+      expect(positive.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+      expect(negative).toEqual(positive);
+      expect(negative.at(-1)).toBeLessThan(1e-3);
+      zero.forEach((value, index) => {
+        expect(Math.abs(negative[index]! - value)).toBeLessThan(1e-3);
+      });
+    }
+    expect(() => terrainCoverHeightBlendWeights([], 0.5, 0.2, 0.06))
+      .toThrow(RangeError);
+
+    withPlugin((plugin) => {
+      const source = Object.values(fragmentCode(plugin)).join("\n");
+      expect(source).toContain(
+        "let terrainCoverDelta = terrainSnowCover - terrainSlopeRock;",
+      );
+      expect(source).toContain("terrainCoverDelta > 0.0");
+      expect(source).toContain("let terrainThirdWeight = abs(terrainCoverDelta);");
+      expect(source).not.toContain("terrainSnowCover > terrainThirdWeight");
+      expect(source).not.toContain("terrainSlopeRock) * terrainDetailWeight");
+      expect(source.match(/terrainThirdWeight > 0\.0/gu)).toHaveLength(2);
+      expect(source.match(
+        /terrainBlend2 = terrainBlend2 \* terrainThirdWeight;/gu,
+      )).toHaveLength(2);
+      expect(source.match(
+        /terrainKey2 = terrainThirdWeight \* \(terrainLayer2\.height \+ 1\.0\);/gu,
+      )).toHaveLength(2);
+      expect(source).not.toContain("terrainThirdWeight > 0.004");
+    });
   });
 });
 

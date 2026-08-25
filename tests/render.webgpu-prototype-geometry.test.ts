@@ -60,99 +60,43 @@ function expectInternallyConsistent(name: string, geometry: PrototypeGeometry): 
       .toBeLessThanOrEqual(geometry.boundingRadius + 1e-3);
     expect(y, `${name}: bounding height covers vertex ${i}`)
       .toBeLessThanOrEqual(geometry.boundingHeight + 1e-3);
+    expect(x, `${name}: local min x covers vertex ${i}`)
+      .toBeGreaterThanOrEqual(geometry.localBounds.minimum[0]);
+    expect(y, `${name}: local min y covers vertex ${i}`)
+      .toBeGreaterThanOrEqual(geometry.localBounds.minimum[1]);
+    expect(z, `${name}: local min z covers vertex ${i}`)
+      .toBeGreaterThanOrEqual(geometry.localBounds.minimum[2]);
+    expect(x, `${name}: local max x covers vertex ${i}`)
+      .toBeLessThanOrEqual(geometry.localBounds.maximum[0]);
+    expect(y, `${name}: local max y covers vertex ${i}`)
+      .toBeLessThanOrEqual(geometry.localBounds.maximum[1]);
+    expect(z, `${name}: local max z covers vertex ${i}`)
+      .toBeLessThanOrEqual(geometry.localBounds.maximum[2]);
   }
 }
 
 /**
- * Crown envelope aspect: RMS radial over RMS vertical spread of the QUAD
- * CENTRES (crowns are emitted as sequential 4-vertex quads, so centres are
- * consecutive-vertex averages). Centres measure the envelope silhouette
- * without per-quad corner extents diluting the signal.
+ * Crown envelope aspect: RMS radial over RMS vertical spread of the closed
+ * crown vertices. This remains representation-agnostic (ellipsoid lobes for
+ * broadleaf, closed whorls for conifers).
  */
 function crownAspect(crown: PrototypeGeometry): number {
-  // Every crown carries at least 40 quads and variants of one (species,
-  // seed) share their placement-stream prefix, so measuring the first 40
-  // isolates the envelope-aspect knob from tail-sampling noise.
-  const quadCount = Math.min(crown.positions.length / 12, 40);
-  const centers: Array<readonly [number, number, number]> = [];
-  for (let q = 0; q < quadCount; q += 1) {
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    for (let corner = 0; corner < 4; corner += 1) {
-      const i = q * 4 + corner;
-      cx += crown.positions[i * 3]!;
-      cy += crown.positions[i * 3 + 1]!;
-      cz += crown.positions[i * 3 + 2]!;
-    }
-    centers.push([cx / 4, cy / 4, cz / 4]);
-  }
+  const vertexCount = crown.positions.length / 3;
   let meanY = 0;
-  for (const [, y] of centers) meanY += y;
-  meanY /= centers.length;
+  for (let index = 0; index < vertexCount; index += 1) {
+    meanY += crown.positions[index * 3 + 1]!;
+  }
+  meanY /= vertexCount;
   let radial = 0;
   let vertical = 0;
-  for (const [x, y, z] of centers) {
+  for (let index = 0; index < vertexCount; index += 1) {
+    const x = crown.positions[index * 3]!;
+    const y = crown.positions[index * 3 + 1]!;
+    const z = crown.positions[index * 3 + 2]!;
     radial += x * x + z * z;
     vertical += (y - meanY) * (y - meanY);
   }
-  return Math.sqrt(radial / centers.length) / Math.sqrt(vertical / centers.length);
-}
-
-/**
- * Inner/outer thirds by SHAPE-NORMALIZED distance from the crown centroid
- * (radial and vertical offsets each divided by their own RMS extent), so
- * "interior" means interior for wide and tall crowns alike.
- */
-function occlusionByCrownThirds(crown: PrototypeGeometry): { inner: number; outer: number } {
-  const vertexCount = crown.positions.length / 3;
-  let cx = 0;
-  let cy = 0;
-  let cz = 0;
-  for (let i = 0; i < vertexCount; i += 1) {
-    cx += crown.positions[i * 3]!;
-    cy += crown.positions[i * 3 + 1]!;
-    cz += crown.positions[i * 3 + 2]!;
-  }
-  cx /= vertexCount;
-  cy /= vertexCount;
-  cz /= vertexCount;
-  let radialSq = 0;
-  let verticalSq = 0;
-  for (let i = 0; i < vertexCount; i += 1) {
-    const dx = crown.positions[i * 3]! - cx;
-    const dy = crown.positions[i * 3 + 1]! - cy;
-    const dz = crown.positions[i * 3 + 2]! - cz;
-    radialSq += dx * dx + dz * dz;
-    verticalSq += dy * dy;
-  }
-  const radialRms = Math.sqrt(radialSq / vertexCount);
-  const verticalRms = Math.sqrt(verticalSq / vertexCount);
-  const distances: number[] = [];
-  for (let i = 0; i < vertexCount; i += 1) {
-    const dx = crown.positions[i * 3]! - cx;
-    const dy = crown.positions[i * 3 + 1]! - cy;
-    const dz = crown.positions[i * 3 + 2]! - cz;
-    distances.push(Math.hypot(Math.hypot(dx, dz) / radialRms, dy / verticalRms));
-  }
-  const sorted = [...distances].sort((a, b) => a - b);
-  const innerCut = sorted[Math.floor(sorted.length / 3)]!;
-  const outerCut = sorted[Math.floor((sorted.length * 2) / 3)]!;
-  let innerSum = 0;
-  let innerCount = 0;
-  let outerSum = 0;
-  let outerCount = 0;
-  for (let i = 0; i < vertexCount; i += 1) {
-    const alpha = crown.colors[i * 4 + 3]!;
-    if (distances[i]! <= innerCut) {
-      innerSum += alpha;
-      innerCount += 1;
-    } else if (distances[i]! >= outerCut) {
-      outerSum += alpha;
-      outerCount += 1;
-    }
-  }
-  return { inner: innerSum / innerCount, outer: outerSum / outerCount };
+  return Math.sqrt(radial / vertexCount) / Math.sqrt(vertical / vertexCount);
 }
 
 function uniqueNormalCount(geometry: PrototypeGeometry): number {
@@ -166,17 +110,110 @@ function uniqueNormalCount(geometry: PrototypeGeometry): number {
   return seen.size;
 }
 
+function indexedComponents(geometry: PrototypeGeometry): number {
+  const vertexCount = geometry.positions.length / 3;
+  const neighbours = Array.from({ length: vertexCount }, () => new Set<number>());
+  for (let at = 0; at < geometry.indices.length; at += 3) {
+    const triangle = [
+      geometry.indices[at]!,
+      geometry.indices[at + 1]!,
+      geometry.indices[at + 2]!,
+    ];
+    for (let corner = 0; corner < 3; corner += 1) {
+      neighbours[triangle[corner]!]!.add(triangle[(corner + 1) % 3]!);
+      neighbours[triangle[(corner + 1) % 3]!]!.add(triangle[corner]!);
+    }
+  }
+  const visited = new Set<number>();
+  let components = 0;
+  for (let start = 0; start < vertexCount; start += 1) {
+    if (visited.has(start) || neighbours[start]!.size === 0) continue;
+    components += 1;
+    const pending = [start];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const neighbour of neighbours[current]!) pending.push(neighbour);
+    }
+  }
+  return components;
+}
+
+function indexedEdgeUse(geometry: PrototypeGeometry): readonly number[] {
+  const edges = new Map<string, number>();
+  for (let at = 0; at < geometry.indices.length; at += 3) {
+    const triangle = [
+      geometry.indices[at]!,
+      geometry.indices[at + 1]!,
+      geometry.indices[at + 2]!,
+    ];
+    for (let edge = 0; edge < 3; edge += 1) {
+      const first = triangle[edge]!;
+      const second = triangle[(edge + 1) % 3]!;
+      const key = first < second ? `${first}:${second}` : `${second}:${first}`;
+      edges.set(key, (edges.get(key) ?? 0) + 1);
+    }
+  }
+  return [...edges.values()];
+}
+
+function areaWeightedNormalDots(geometry: PrototypeGeometry): readonly number[] {
+  const vertexCount = geometry.positions.length / 3;
+  const sums = new Float64Array(vertexCount * 3);
+  for (let at = 0; at < geometry.indices.length; at += 3) {
+    const ia = geometry.indices[at]!;
+    const ib = geometry.indices[at + 1]!;
+    const ic = geometry.indices[at + 2]!;
+    const ax = geometry.positions[ia * 3]!;
+    const ay = geometry.positions[ia * 3 + 1]!;
+    const az = geometry.positions[ia * 3 + 2]!;
+    const abx = geometry.positions[ib * 3]! - ax;
+    const aby = geometry.positions[ib * 3 + 1]! - ay;
+    const abz = geometry.positions[ib * 3 + 2]! - az;
+    const acx = geometry.positions[ic * 3]! - ax;
+    const acy = geometry.positions[ic * 3 + 1]! - ay;
+    const acz = geometry.positions[ic * 3 + 2]! - az;
+    const cross = [
+      aby * acz - abz * acy,
+      abz * acx - abx * acz,
+      abx * acy - aby * acx,
+    ] as const;
+    for (const index of [ia, ib, ic]) {
+      sums[index * 3] = sums[index * 3]! + cross[0];
+      sums[index * 3 + 1] = sums[index * 3 + 1]! + cross[1];
+      sums[index * 3 + 2] = sums[index * 3 + 2]! + cross[2];
+    }
+  }
+  const dots: number[] = [];
+  for (let index = 0; index < vertexCount; index += 1) {
+    const length = Math.hypot(sums[index * 3]!, sums[index * 3 + 1]!, sums[index * 3 + 2]!);
+    dots.push(
+      geometry.normals[index * 3]! * sums[index * 3]! / length
+      + geometry.normals[index * 3 + 1]! * sums[index * 3 + 1]! / length
+      + geometry.normals[index * 3 + 2]! * sums[index * 3 + 2]! / length,
+    );
+  }
+  return dots;
+}
+
 describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
   it("holds every triangle budget across species and variants", () => {
     for (const species of TREE_SPECIES) {
       for (let variant = 0; variant < TREE_VARIANT_COUNTS[species]; variant += 1) {
         const { trunk, crown } = buildTreePrototype(species, variant, 31);
-        // 40–60 alpha-tested quads, two triangles each.
-        expect(crown.triangleCount).toBeGreaterThanOrEqual(80);
-        expect(crown.triangleCount).toBeLessThanOrEqual(120);
-        expect(crown.triangleCount % 2).toBe(0);
+        // Closed opaque whorls/hulls: fewer triangles and radically less
+        // fragment overdraw than 40–60 two-sided alpha cards.
+        expect(crown.triangleCount).toBeGreaterThanOrEqual(60);
+        expect(crown.triangleCount).toBeLessThanOrEqual(80);
+        expect(crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
         expect(trunk.triangleCount).toBeGreaterThanOrEqual(48);
         expect(trunk.triangleCount).toBeLessThanOrEqual(140);
+        const mid = buildTreePrototype(species, variant, 31, "mid");
+        expect(mid.trunk).toEqual(trunk);
+        expect(mid.crown).toEqual(crown);
+        expect(mid.trunk.triangleCount + mid.crown.triangleCount).toBeLessThanOrEqual(180);
+        expect(mid.crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
       }
     }
     for (const species of SHRUB_SPECIES) {
@@ -197,6 +234,46 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     const grass = buildGrassPatchPrototype(3);
     expect(grass.triangleCount).toBeGreaterThanOrEqual(40);
     expect(grass.triangleCount).toBeLessThanOrEqual(56);
+  });
+
+  it("builds each broadleaf as one watertight 80-triangle hull with final normals", () => {
+    for (const species of ["oak", "maple", "birch", "willow"] as const) {
+      const crown = buildTreePrototype(species, 0, 31).crown;
+      expect(crown.triangleCount, species).toBe(80);
+      expect(indexedComponents(crown), species).toBe(1);
+      expect(indexedEdgeUse(crown).every((uses) => uses === 2), species).toBe(true);
+      expect(Math.min(...areaWeightedNormalDots(crown)), species).toBeGreaterThan(0.999);
+    }
+  });
+
+  it("smooths conifer side normals while keeping bottom caps separate", () => {
+    const crown = buildTreePrototype("pine", 0, 31).crown;
+    const atPosition = new Map<string, Array<readonly [number, number, number]>>();
+    for (let index = 0; index < crown.positions.length / 3; index += 1) {
+      const key = `${crown.positions[index * 3]!.toFixed(5)}:`
+        + `${crown.positions[index * 3 + 1]!.toFixed(5)}:`
+        + `${crown.positions[index * 3 + 2]!.toFixed(5)}`;
+      const normals = atPosition.get(key) ?? [];
+      normals.push([
+        crown.normals[index * 3]!,
+        crown.normals[index * 3 + 1]!,
+        crown.normals[index * 3 + 2]!,
+      ]);
+      atPosition.set(key, normals);
+    }
+    let rimPositions = 0;
+    for (const normals of atPosition.values()) {
+      const caps = normals.filter((normal) => normal[1] < -0.99);
+      const sides = normals.filter((normal) => normal[1] > -0.5);
+      if (caps.length === 0 || sides.length < 2) continue;
+      rimPositions += 1;
+      const first = sides[0]!;
+      for (const side of sides.slice(1)) {
+        const dot = first[0] * side[0] + first[1] * side[1] + first[2] * side[2];
+        expect(dot).toBeGreaterThan(0.9999);
+      }
+    }
+    expect(rimPositions).toBe(32);
   });
 
   it("rebuilds identically from the same inputs while seeds diverge", () => {
@@ -229,11 +306,13 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     }
   });
 
-  it("bakes darker occlusion into crown interiors than outer tips", () => {
+  it("bakes restrained directional occlusion into closed crowns", () => {
     for (const species of TREE_SPECIES) {
       const { crown } = buildTreePrototype(species, 0, 5);
-      const { inner, outer } = occlusionByCrownThirds(crown);
-      expect(inner, `${species} interior vs tips`).toBeLessThanOrEqual(outer * 0.75);
+      const alpha: number[] = [];
+      for (let index = 3; index < crown.colors.length; index += 4) alpha.push(crown.colors[index]!);
+      expect(Math.min(...alpha), `${species} shaded crown vertices`).toBeLessThanOrEqual(0.62);
+      expect(Math.max(...alpha), `${species} lit crown vertices`).toBeGreaterThanOrEqual(0.8);
     }
     // Shrubs get the same bake; require some interior darkening.
     for (const species of SHRUB_SPECIES) {
@@ -314,6 +393,45 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     }
   });
 
+  it("keeps the primary trunk smooth across ring transitions and its UV seam", () => {
+    for (const species of TREE_SPECIES) {
+      const trunk = buildTreePrototype(species, 0, 31).trunk;
+      // The primary trunk is five rings of nine seam-duplicated vertices.
+      for (let ring = 0; ring < 5; ring += 1) {
+        const first = ring * 9;
+        const repeated = first + 8;
+        for (let component = 0; component < 3; component += 1) {
+          expect(
+            trunk.positions[first * 3 + component],
+            `${species} ring ${ring} seam position component ${component}`,
+          ).toBeCloseTo(trunk.positions[repeated * 3 + component]!, 6);
+          expect(
+            trunk.normals[first * 3 + component],
+            `${species} ring ${ring} seam normal component ${component}`,
+          ).toBeCloseTo(trunk.normals[repeated * 3 + component]!, 6);
+        }
+      }
+      for (let ring = 0; ring < 4; ring += 1) {
+        for (let side = 0; side < 8; side += 1) {
+          const first = ring * 9 + side;
+          const second = (ring + 1) * 9 + side;
+          const dot = Math.min(1, Math.max(-1,
+            trunk.normals[first * 3]! * trunk.normals[second * 3]!
+            + trunk.normals[first * 3 + 1]! * trunk.normals[second * 3 + 1]!
+            + trunk.normals[first * 3 + 2]! * trunk.normals[second * 3 + 2]!,
+          ));
+          // A hard per-ring shading split approaches a 90° change. The
+          // intended root flare is the strongest transition today (<23°),
+          // so 30° preserves its shape while permanently rejecting bands.
+          expect(
+            Math.acos(dot) * 180 / Math.PI,
+            `${species} rings ${ring}-${ring + 1} side ${side}`,
+          ).toBeLessThan(30);
+        }
+      }
+    }
+  });
+
   it("assigns the reconciled foliage-atlas layers per species", () => {
     const layerOf = (geometry: PrototypeGeometry): number => geometry.atlasLayer[0]!;
     const uniformLayer = (geometry: PrototypeGeometry): void => {
@@ -326,11 +444,15 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     const oak = buildTreePrototype("oak", 0, 1);
     const maple = buildTreePrototype("maple", 0, 1);
     const birch = buildTreePrototype("birch", 0, 1);
-    expect(layerOf(pine.crown)).toBe(FOLIAGE_LAYER_INDEX.needlePine);
-    expect(layerOf(spruce.crown)).toBe(FOLIAGE_LAYER_INDEX.needleSpruce);
-    expect(layerOf(oak.crown)).toBe(FOLIAGE_LAYER_INDEX.broadleafOak);
-    expect(layerOf(maple.crown)).toBe(FOLIAGE_LAYER_INDEX.broadleafMaple);
-    expect(layerOf(birch.crown)).toBe(FOLIAGE_LAYER_INDEX.broadleafBirch);
+    expect(layerOf(pine.crown)).toBe(FOLIAGE_LAYER_INDEX.crownConiferDense);
+    expect(layerOf(spruce.crown)).toBe(FOLIAGE_LAYER_INDEX.crownConiferDense);
+    expect(layerOf(oak.crown)).toBe(FOLIAGE_LAYER_INDEX.crownBroadleafDense);
+    expect(layerOf(maple.crown)).toBe(FOLIAGE_LAYER_INDEX.crownBroadleafDense);
+    expect(layerOf(birch.crown)).toBe(FOLIAGE_LAYER_INDEX.crownBroadleafDense);
+    expect(layerOf(buildTreePrototype("pine", 0, 1, "mid").crown))
+      .toBe(FOLIAGE_LAYER_INDEX.crownConiferDense);
+    expect(layerOf(buildTreePrototype("oak", 0, 1, "mid").crown))
+      .toBe(FOLIAGE_LAYER_INDEX.crownBroadleafDense);
     expect(layerOf(pine.trunk)).toBe(FOLIAGE_LAYER_INDEX.barkConifer);
     expect(layerOf(oak.trunk)).toBe(FOLIAGE_LAYER_INDEX.barkBroadleaf);
     expect(layerOf(birch.trunk)).toBe(FOLIAGE_LAYER_INDEX.barkBirch);

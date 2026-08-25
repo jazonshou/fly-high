@@ -28,7 +28,10 @@ import {
   type VolumetricCloudConfig,
 } from "../src/render/webgpu/nature/CloudConfig";
 import { createEnvironmentState } from "../src/render/webgpu/nature/EnvironmentState";
-import { AtmosphereGpuResources } from "../src/render/webgpu/atmosphere/AtmosphereGpuResources";
+import {
+  AtmosphereGpuResources,
+  isCloudRaymarchDepthOccluder,
+} from "../src/render/webgpu/atmosphere/AtmosphereGpuResources";
 import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -75,8 +78,7 @@ function createHarness() {
     adaptedLuminanceCdM2: 6_000,
     sceneKeyLuminanceCdM2: 1_000,
   };
-  const resources = new AtmosphereGpuResources(scene, camera, (mesh) =>
-    mesh.name === "volumetric-cloud-shell");
+  const resources = new AtmosphereGpuResources(scene, camera);
   const clouds = new VolumetricCloudSystem(scene, camera, profile, snapshot, resources);
   cleanups.push(() => {
     clouds.dispose();
@@ -88,6 +90,14 @@ function createHarness() {
 }
 
 describe("cloud runtime policy (1A-6a)", () => {
+  it("limits the prior-frame cloud depth replay to bulk terrain", () => {
+    expect(isCloudRaymarchDepthOccluder({ name: "terrain-cdlod" })).toBe(true);
+    expect(isCloudRaymarchDepthOccluder({ name: "terrain-cdlod-caster-0" })).toBe(false);
+    expect(isCloudRaymarchDepthOccluder({ name: "detail-tree-oak" })).toBe(false);
+    expect(isCloudRaymarchDepthOccluder({ name: "aircraft-fuselage" })).toBe(false);
+    expect(isCloudRaymarchDepthOccluder({ name: "volumetric-cloud-shell" })).toBe(false);
+  });
+
   it("aligns the low-resolution target to multiples of eight", () => {
     expect(resolveCloudRenderSize(1_920, 1_080, 0.25)).toEqual({
       width: 480, height: 272, scale: 0.25,
@@ -322,6 +332,7 @@ describe("adopted cloud runtime lifecycle (2-0)", () => {
       DEFAULT_VOLUMETRIC_CLOUD_CONFIG.shadowWorldSizeMeters,
     );
     expect(statistics.historyValid).toBe(false);
+    expect(statistics).not.toHaveProperty("densitySamplesPerFrame");
   });
 
   it("updates without dispatching when compute is unsupported", () => {

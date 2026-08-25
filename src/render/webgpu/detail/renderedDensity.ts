@@ -80,7 +80,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
   Object.freeze({
     nearStemsPerHectare: 55,
     near: Object.freeze({ outerRadiusMeters: 250, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 700, trianglesPerPlant: 48 }),
+    mid: Object.freeze({ outerRadiusMeters: 700, trianglesPerPlant: 180 }),
     far: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.02,
   }),
@@ -93,7 +93,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
   Object.freeze({
     nearStemsPerHectare: 78,
     near: Object.freeze({ outerRadiusMeters: 350, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 48 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 180 }),
     far: Object.freeze({ outerRadiusMeters: 3_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.02,
   }),
@@ -101,7 +101,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
   Object.freeze({
     nearStemsPerHectare: 79,
     near: Object.freeze({ outerRadiusMeters: 400, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 48 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 180 }),
     far: Object.freeze({ outerRadiusMeters: 4_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.015,
   }),
@@ -110,7 +110,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
   Object.freeze({
     nearStemsPerHectare: 79,
     near: Object.freeze({ outerRadiusMeters: 550, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 48 }),
+    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 180 }),
     far: Object.freeze({ outerRadiusMeters: 6_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.015,
   }),
@@ -174,10 +174,14 @@ export function estimateRenderedWoodyLoad(law: RenderedDensityLaw): RenderedDens
  * a real assertion.
  */
 export const WOODY_TRIANGLE_BUDGETS: readonly number[] = Object.freeze([
-  450_000,
-  1_000_000,
-  1_800_000,
-  2_600_000,
+  650_000,
+  // Exact opaque mid trees intentionally exchange alpha-tested fragment
+  // overdraw for the near band's closed geometry. Keep each ceiling tight to
+  // that representation instead of retaining the obsolete 48-triangle card
+  // row; the raw frame gate remains the acceptance authority.
+  1_850_000,
+  2_700_000,
+  5_000_000,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -360,37 +364,30 @@ export function estimateVegetationDrawCalls(
  * vegetation row, and the ratio below says by how much.
  */
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
-  // `4.5-C1` switched vegetation shadow casting OFF below tier 2, which
-  // deletes the near band's per-cascade resubmission outright. Measured 151.3
-  // draws (was 257.0).
-  160,
-  // Measured 198.7 draws (was 346.8) — the largest single cut available to
-  // this programme without the structural work `6-9` owns.
-  200,
-  // `4-8b` cut this tier from four shadow cascades to three (§5.3's near-field
-  // rows), and the near band submits its meshes once per cascade — so the
-  // ceiling comes down with the measurement rather than staying a number the
-  // renderer now sits comfortably under. Measured 462.0 draws.
-  500,
-  650,
+  // The 60-fps family path submits three one-variant prototypes rather than
+  // seven species × several variants. Modelled 41.1 draws at tier 0.
+  50,
+  // Modelled 47.8 draws at the medium/balanced contract tier.
+  58,
+  // Near and mid now share the same three variants for a silhouette-stable
+  // hard handoff. That also lowers the species-mode submission model from
+  // 462 to 393 draws at tier 2 and from 631 to 535 at tier 3.
+  450,
+  600,
 ]);
 
 /**
- * Measured debt against §5.4's vegetation frame row, per tier — the number
- * the next pass has to move. Pinned by test so it can only change with a
- * measurement, and so that closing the debt fails the assertion and forces
- * this record to be deleted rather than quietly outlived.
+ * Draw-submission-only model divided by §5.4's vegetation frame row. This is
+ * deliberately not called frame closure: controlled captures proved that
+ * alpha-card fragment/overdraw dominated after family batching made the draw
+ * term small. Tier 0/1 being below one means submissions fit, not vegetation.
  */
-export const VEGETATION_FRAME_DEBT_RATIO: readonly number[] = Object.freeze([
-  // Re-measured at `4.5-C1`: 5.57 → 3.28 at tier 0 and 5.01 → 2.87 at tier 1,
-  // from switching vegetation shadow casting off below tier 2. Still 2.9x over
-  // the row at the G-C tier: the remainder is `6-9`'s GPU scatter, and this
-  // record stays until something really closes it.
-  3.28,
-  2.87,
-  // Re-measured at `4-8b`: 7.38 → 6.32, from the tier-2 cascade cut. The debt
-  // is not closed and this record is not deleted; it moved, and a moved number
-  // has to be re-pinned or the assertion stops meaning anything.
-  6.32,
-  4.56,
+export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze([
+  0.891,
+  0.691,
+  // Three shared variants across near and mid lower submissions, but these
+  // tiers remain well above the vegetation frame row. The strict capture,
+  // not this draw-only model, decides whether opaque crowns close frame time.
+  5.38,
+  3.86,
 ]);

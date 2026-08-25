@@ -29,6 +29,7 @@ import { SettingsDialog } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain } from "@/src/world";
 import { DisposableScope } from "./DisposableScope";
 import { SimulationClient } from "./SimulationClient";
+import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
   airborneThrottleForAircraft,
@@ -380,6 +381,7 @@ export function FlightGame() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let animationFrame = 0;
+    let controlPump: FlightControlPump | null = null;
     let disposed = false;
     let rendererTerminal = false;
     let lastFrame = performance.now();
@@ -392,6 +394,19 @@ export function FlightGame() {
         setError(null);
       }
     });
+
+    const stopRendererSafely = (reason: string, userMessage: string): void => {
+      if (disposed || rendererTerminal) return;
+      rendererTerminal = true;
+      cancelAnimationFrame(animationFrame);
+      controlPump?.dispose();
+      controlPump = null;
+      invalidatePendingTransitions();
+      simulationRef.current?.setPaused(true);
+      audioRef.current?.suspend();
+      canvas.dataset.renderFailure = reason;
+      setError(userMessage);
+    };
 
     const initialize = async (): Promise<void> => {
       try {
@@ -406,13 +421,19 @@ export function FlightGame() {
         renderingMode: activeSettings.renderingMode,
         reducedMotion: activeSettings.reducedMotion,
         signal: startupAbortController.signal,
-        onDeviceLost: () => {
-          if (disposed) return;
-          rendererTerminal = true;
-          cancelAnimationFrame(animationFrame);
-          invalidatePendingTransitions();
-          simulationRef.current?.setPaused(true);
-          setError(GRAPHICS_DEVICE_LOST_MESSAGE);
+        onDeviceLost: (reason: string) => {
+          stopRendererSafely(reason, GRAPHICS_DEVICE_LOST_MESSAGE);
+        },
+        onGpuUncapturedError: (reason: string) => {
+          console.error(
+            "Flight renderer stopped after an uncaptured WebGPU error",
+            reason,
+          );
+          stopRendererSafely(
+            reason,
+            `The renderer stopped safely after a WebGPU error: ${reason}. `
+              + "Reload the simulator to rebuild the scene.",
+          );
         },
         ...(world.airport ? { runway: world.airport } : {}),
       };
@@ -486,24 +507,27 @@ export function FlightGame() {
         }
       });
 
+      controlPump = startFlightControlPump({
+        input,
+        simulation,
+        phase: () => phaseRef.current,
+        handleActions,
+        isForeground: () => !disposed && !rendererTerminal && !document.hidden,
+      });
+
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
         lastFrame = now;
-        if (phaseRef.current === "flying") {
-          simulation.setControls(input.getControls(deltaSeconds));
-        }
-        handleActions(input.consumeActions());
         try {
           renderer.render(simulation.getRenderState(now) ?? latestStateRef.current, deltaSeconds);
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";
-          canvas.dataset.renderFailure = reason;
-          rendererTerminal = true;
-          invalidatePendingTransitions();
-          simulation.setPaused(true);
-          setError(`The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`);
+          stopRendererSafely(
+            reason,
+            `The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`,
+          );
           return;
         }
         if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {
@@ -526,12 +550,14 @@ export function FlightGame() {
       startupResources.release(audio);
       startupResources.release(simulation);
       } catch (caught) {
+        controlPump?.dispose();
+        controlPump = null;
         startupResources.dispose();
         const message = caught instanceof Error
           ? caught.message
           : "This browser could not create a hardware WebGPU device.";
         queueMicrotask(() => {
-          if (!disposed) setError(message);
+          if (!disposed && !rendererTerminal) setError(message);
         });
       }
     };
@@ -551,6 +577,8 @@ export function FlightGame() {
       disposed = true;
       startupAbortController.abort();
       cancelAnimationFrame(animationFrame);
+      controlPump?.dispose();
+      controlPump = null;
       document.removeEventListener("visibilitychange", handleVisibility);
       startupResources.dispose();
       const cleanupResources = new DisposableScope();

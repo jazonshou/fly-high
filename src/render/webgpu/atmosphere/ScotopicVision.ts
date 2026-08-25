@@ -86,6 +86,14 @@ export const SCOTOPIC_THRESHOLD_CD_M2 = 0.03;
 /** Adapted luminance above which vision is cone-only. */
 export const PHOTOPIC_THRESHOLD_CD_M2 = 3.0;
 
+/** The shader's daylight-copy threshold, shared with the chain scheduler. */
+export const SCOTOPIC_PASS_THRESHOLD = 0.001;
+
+/** Whether rod vision contributes enough to require the scotopic pass. */
+export function shouldRunScotopicPass(rodFraction: number): boolean {
+  return Number.isFinite(rodFraction) && rodFraction > SCOTOPIC_PASS_THRESHOLD;
+}
+
 /**
  * Rod fraction at an adapted luminance — the mesopic blend, log-interpolated
  * because adaptation is logarithmic in luminance and a linear blend would
@@ -120,7 +128,7 @@ const SCOTOPIC_TINT: vec3f = vec3f(
 fn main(input: FragmentInputs) -> FragmentOutputs {
   var scene = textureSample(textureSampler, textureSamplerSampler, fragmentInputs.vUV).rgb;
   let rod = uniforms.scotopicRodFraction;
-  if (rod <= 0.001) {
+  if (rod <= ${SCOTOPIC_PASS_THRESHOLD}) {
     // Daylight: the pass is a copy, bit-for-bit. Every capture above civil
     // twilight has to be unchanged by this item existing.
     fragmentOutputs.color = vec4f(scene, 1.0);
@@ -200,6 +208,15 @@ export interface ScotopicState {
 /** The scotopic post-process. Construct BEFORE the tone map. */
 export class ScotopicVisionPass {
   readonly postProcess: PostProcess;
+  private attached = true;
+
+  get enabled(): boolean {
+    return this.attached;
+  }
+
+  get samples(): number {
+    return this.postProcess.samples;
+  }
 
   constructor(camera: Camera, engine: AbstractEngine, samples: number) {
     registerShader();
@@ -250,6 +267,24 @@ export class ScotopicVisionPass {
         1 / Math.max(1, this.postProcess.height),
       );
     };
+  }
+
+  setSamples(samples: number): void {
+    this.postProcess.samples = Math.max(1, Math.round(samples));
+  }
+
+  /**
+   * Remove the daylight copy from the camera chain, or restore it at slot 0
+   * before tone mapping when rods contribute again.
+   */
+  setEnabled(camera: Camera, enabled: boolean): void {
+    if (enabled === this.attached) return;
+    if (enabled) {
+      camera.attachPostProcess(this.postProcess, 0);
+    } else {
+      camera.detachPostProcess(this.postProcess);
+    }
+    this.attached = enabled;
   }
 
   dispose(camera: Camera): void {

@@ -23,7 +23,8 @@
  * and NOTHING reads their counters. That is the single largest line item in the
  * frame, bought for nothing.
  *
- * Exactly three counters are consumed anywhere in this renderer:
+ * Exactly three counters are consumed when an explicit timing diagnostic is
+ * active:
  *
  * | counter                                   | consumer                              |
  * |-------------------------------------------|---------------------------------------|
@@ -31,11 +32,11 @@
  * | the shadow render target's                | `gpuPassMs.shadows`                   |
  * | `TerrainPageAtlas` + `PageOcclusionBake`  | `ComputeBudget.observeDispatchCostMs` |
  *
- * {@link withoutDispatchTiming} drops the counter on the dispatches outside that
- * table. Render-target and main-pass timing are untouched, so `gpuFrameMsP95`
- * and the adaptive governor's GPU signal keep working — this is deliberately NOT
- * the "disable the flag" fix that `RenderInvariants` forbids and that would blind
- * Governor A.
+ * Shipping leaves the all-or-nothing observer off and the governor uses its
+ * tested interval-minus-CPU proxy; compute admission falls back to bounded seed
+ * estimates. During an explicit diagnostic, {@link withoutDispatchTiming}
+ * still drops counters outside that table so the observer does not multiply
+ * into dozens of unused dispatch readbacks.
  *
  * Adding a consumer for a dispatch's cost means removing its
  * `withoutDispatchTiming` call, not adding a new mechanism.
@@ -44,6 +45,33 @@
 /** The one field of Babylon's `ComputeShader` this policy touches. */
 interface DispatchTimingCarrier {
   gpuTimeInFrame?: unknown;
+}
+
+export interface GpuTimingStartupInput {
+  readonly timestampQuerySupported: boolean;
+  readonly captureGpuTiming: boolean | undefined;
+  readonly pinnedCapture: boolean;
+}
+
+/**
+ * Resolves the one safe startup-time telemetry switch.
+ *
+ * Babylon records timestamp writes into the *next* frame's command encoder,
+ * then destroys the shared query set when its runtime flag is turned off.
+ * Consequently a late toggle can submit an encoder that references a
+ * destroyed query set. Shipping gameplay starts without continuous Babylon
+ * timing: a controlled reference capture measured a 4.7 ms p95 / 38%
+ * throughput tax for only 49 resolved samples in 240 frames. Pinned
+ * diagnostic captures can explicitly opt in before device creation.
+ */
+export function gpuTimingEnabledAtStartup(input: GpuTimingStartupInput): boolean {
+  if (input.captureGpuTiming === false && !input.pinnedCapture) {
+    throw new Error("GPU timing can only be disabled on a pinned capture renderer");
+  }
+  if (input.captureGpuTiming === true && !input.pinnedCapture) {
+    throw new Error("Continuous GPU timing can only be enabled on a pinned diagnostic capture");
+  }
+  return input.timestampQuerySupported && input.captureGpuTiming === true;
 }
 
 /**

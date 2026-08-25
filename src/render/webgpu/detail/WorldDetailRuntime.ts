@@ -11,25 +11,24 @@ import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guarde
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RENDERED_DENSITY_LAWS,
-  renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
 import { DetailInstanceMaterialPlugin } from "./DetailInstanceMaterialPlugin";
 import {
   DETAIL_INSTANCE_ATTRIBUTES,
-  DETAIL_INSTANCE_RADIAL_MAX,
-  DETAIL_INSTANCE_RADIAL_MIN,
   DETAIL_INSTANCE_STRIDE_BYTES,
   DetailInstanceBounds,
   DetailInstanceWriter,
-  normalAlignedQuaternion,
-  yawQuaternion,
-  type DetailInstanceRecord,
+  detailPrototypeBoundKernel,
+  type DetailBillboardFrameBounds,
+  type DetailPrototypeBoundKernel,
+  type DetailPrototypeBounds,
 } from "./instanceFormat";
 import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
 import {
   createImpostorAtlas,
+  DETAIL_CROWN_ALBEDO,
   impostorBakeFrame,
   impostorLayerIndex,
   IMPOSTOR_SPECIES,
@@ -41,6 +40,10 @@ import {
   type TerrainMacroGrid,
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
+import type {
+  DetailRetainedCellDescriptor,
+  DetailWorkerPresentationResult,
+} from "@/src/workers/detailProtocol";
 import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
 import {
@@ -63,6 +66,20 @@ import {
   detailPresentationChunkCoordinates,
   type DetailPresentationChunkCoordinates,
 } from "./spatialChunks";
+import { treePrototypeSpecies, treeTrunkTint } from "./treePrototypeFamily";
+import {
+  buildPresentationChunk,
+  detailCellMinimumDistanceMeters,
+  detailFadeBandMemberships,
+  detailTreeCanopyRankOrder,
+  DETAIL_CULL_FADE_MARGIN_METERS,
+  DETAIL_FADE_MARGIN_METERS,
+  DETAIL_MEMBERSHIP_SLACK_METERS,
+  GROUND_COVER_EDGE_FADE_METERS,
+  TREE_IMPOSTOR_PROTOTYPE_KEY,
+  type DetailPresentationBuildCatalog,
+  type DetailPresentationChunkStatistics,
+} from "./presentationBuild";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
@@ -77,6 +94,20 @@ import {
   type WorldDetailObserver,
   type WorldDetailStatistics,
 } from "./types";
+
+export {
+  detailCellMinimumDistanceMeters,
+  detailTreeCanopyRankOrder as canopyRankOrder,
+  groundCoverCandidateRange,
+  DETAIL_CULL_FADE_MARGIN_METERS,
+  DETAIL_FADE_MARGIN_METERS,
+  DETAIL_MEMBERSHIP_SLACK_METERS,
+  GROUND_COVER_CANDIDATE_SPACING_METERS,
+  GROUND_COVER_EDGE_FADE_METERS,
+  GROUND_COVER_FULL_DENSITY_SHARE,
+  TREE_IMPOSTOR_PROTOTYPE_KEY,
+} from "./presentationBuild";
+export type { GroundCoverCandidateRange } from "./presentationBuild";
 
 /**
  * The GPU side of one batch: ONE interleaved 32-byte-stride buffer plus the
@@ -94,8 +125,9 @@ interface DetailBatch {
   readonly prototypeKey: string;
   readonly chunkKey: string;
   /** 2-11a: packed 32-byte records built during generation. */
-  readonly writer: DetailInstanceWriter;
-  readonly bounds: DetailInstanceBounds;
+  writer: DetailInstanceWriter;
+  bounds: DetailInstanceBounds;
+  readonly prototypeBoundKernel: DetailPrototypeBoundKernel;
   /**
    * Perf-debt pass: the batch's GPU allocation, reused across rebuilds.
    * Null until the first non-empty upload.
@@ -146,17 +178,13 @@ interface DetailPrototype {
   readonly mesh: Mesh;
   readonly material: PBRMaterial;
   readonly castsShadows: boolean;
+  readonly boundKernel: DetailPrototypeBoundKernel;
 }
 
-interface DetailChunkStatistics {
-  readonly nearCells: number;
-  readonly midCells: number;
-  readonly treeInstances: number;
-  readonly shrubInstances: number;
-  readonly rockInstances: number;
-  readonly clutterInstances: number;
-  readonly groundCoverInstances: number;
-}
+type DetailChunkStatistics = DetailPresentationChunkStatistics;
+type MutableDetailChunkStatistics = {
+  -readonly [Key in keyof DetailChunkStatistics]: DetailChunkStatistics[Key];
+};
 
 interface DetailPresentationChunk {
   readonly coordinates: DetailPresentationChunkCoordinates;
@@ -164,16 +192,109 @@ interface DetailPresentationChunk {
   signature: string;
   revision: number;
   statistics: DetailChunkStatistics;
+  /** Observer snapshot that authored range memberships and ground cover. */
+  observerX: number;
+  observerZ: number;
+  observerSensitive: boolean;
+  /** Fail-closed: stale bytes stay allocated but cannot be submitted. */
+  validitySuppressed: boolean;
 }
 
-interface MutableDetailChunkStatistics {
-  nearCells: number;
-  midCells: number;
-  treeInstances: number;
-  shrubInstances: number;
-  rockInstances: number;
-  clutterInstances: number;
-  groundCoverInstances: number;
+/** CPU-only batch assembled while the previously published chunk stays live. */
+interface StagedDetailBatch {
+  readonly prototypeKey: string;
+  readonly writer: DetailInstanceWriter;
+  readonly bounds: DetailInstanceBounds;
+  readonly prototypeBoundKernel: DetailPrototypeBoundKernel;
+}
+
+interface PooledDetailBuildStorage {
+  readonly writer: DetailInstanceWriter;
+  readonly bounds: DetailInstanceBounds;
+}
+
+interface DetailChunkBuildTarget {
+  readonly coordinates: DetailPresentationChunkCoordinates;
+  readonly residents: readonly ResidentCell[];
+  readonly signature: string;
+  readonly configurationSignature: string;
+  readonly observerSensitive: boolean;
+  readonly buildSource: "inline" | "worker" | "blocked";
+}
+
+interface PendingDetailChunkBuildBase {
+  readonly coordinates: DetailPresentationChunkCoordinates;
+  readonly signature: string;
+  readonly configurationSignature: string;
+  readonly recordOrigin: DetailFloatingOrigin;
+  readonly observerX: number;
+  readonly observerZ: number;
+  readonly observerSensitive: boolean;
+  readonly stagedBatches: Map<string, StagedDetailBatch>;
+}
+
+interface PendingInlineDetailChunkBuild extends PendingDetailChunkBuildBase {
+  readonly source: "inline";
+  readonly iterator: Generator<void, DetailChunkStatistics, void>;
+}
+
+interface PendingWorkerDetailChunkBuild extends PendingDetailChunkBuildBase {
+  readonly source: "worker";
+  readonly residentTokens: readonly number[];
+  readonly residentLods: readonly DetailLod[];
+  buildId: number;
+  queuedResult: DetailWorkerPresentationResult | null;
+  queuedError: Error | null;
+}
+
+type PendingDetailChunkBuild =
+  | PendingInlineDetailChunkBuild
+  | PendingWorkerDetailChunkBuild;
+
+export interface DetailPresentationRebuildBudget {
+  /**
+   * Deterministic hard cap. One unit is a resident, an accepted/expensive
+   * candidate, or one bounded block of cheap rank rejects.
+   */
+  readonly maximumWorkUnits: number;
+  /** Wall-time cap, sampled at a bounded interval to avoid a clock call per stem. */
+  readonly maximumMilliseconds: number;
+}
+
+export interface DetailPresentationRebuildDiagnostics {
+  readonly activeChunkKey: string | null;
+  readonly activeBuildSource: "inline" | "worker" | null;
+  readonly workUnitsLastUpdate: number;
+  readonly millisecondsLastUpdate: number;
+  readonly stagedRecords: number;
+  readonly pooledCpuBatchStorage: number;
+  readonly cancellations: number;
+  readonly publications: number;
+  readonly backloggedChunks: number;
+  readonly suppressedChunks: number;
+  readonly validityEnvelopeMeters: number;
+  readonly pendingObserverDriftMeters: number | null;
+  readonly maximumLiveObserverDriftMeters: number;
+  readonly lastPublicationObserverDriftMeters: number;
+  /** Lifetime totals; capture snapshots deltas, so no per-frame array grows. */
+  readonly buildStarts: number;
+  readonly buildSlices: number;
+  readonly completedSlices: number;
+  readonly timeBudgetStops: number;
+  readonly workBudgetStops: number;
+  readonly workUnitsTotal: number;
+  readonly publishedRecords: number;
+  readonly observerQuantumChanges: number;
+  readonly observerSensitiveBuildStarts: number;
+  readonly residentCellsInSensitiveBuilds: number;
+  readonly workerRetainedCells: number;
+  readonly workerBuildStarts: number;
+  readonly workerResultsQueued: number;
+  readonly workerBuildPublications: number;
+  readonly workerBuildRejections: number;
+  readonly workerBuildTimeouts: number;
+  readonly workerGenerationTimeouts: number;
+  readonly workerFallbacks: number;
 }
 
 interface DesiredCell {
@@ -185,18 +306,35 @@ interface DesiredCell {
   readonly priority: number;
 }
 
-interface ResidentCell {
-  readonly cell: GeneratedDetailCell;
-  /**
-   * Canopy rank of each stem in `cell.trees`, in [0, 1): 0 is the widest
-   * crown in the cell. This — not the placement's uniform `selection` key —
-   * is what the rendered-share thinning compares against. See
-   * {@link canopyRankOrder}.
-   */
-  readonly treeCanopyRank: Float32Array;
+interface ResidentCellBase {
+  readonly key: string;
+  readonly cellX: number;
+  readonly cellZ: number;
+  readonly cellSizeMeters: number;
+  /** Generation-input epoch; a different value means its seasonal appearance is stale. */
+  readonly generation: number;
+  /** Changes whenever the same cell key receives new generated content. */
+  readonly revision: number;
+  /** Current presentation LOD/distance, refreshed from the desired-cell plan. */
   lod: DetailLod;
   distance: number;
 }
+
+interface InlineResidentCell extends ResidentCellBase {
+  readonly source: "inline";
+  readonly cell: GeneratedDetailCell;
+  /** Canopy rank of each stem in `cell.trees`, in [0, 1). */
+  readonly treeCanopyRank: Float32Array;
+}
+
+interface WorkerResidentCell extends ResidentCellBase {
+  readonly source: "worker";
+  readonly descriptor: DetailRetainedCellDescriptor;
+  /** False after release; the descriptor may remain only to protect old GPU chunks. */
+  tokenOwned: boolean;
+}
+
+type ResidentCell = InlineResidentCell | WorkerResidentCell;
 
 /**
  * Rendered-share thinning selects THE CANOPY, not a random sample of the
@@ -221,24 +359,6 @@ interface ResidentCell {
  * the appearance hash (character modifier, lean, geometry variant, view
  * phase), so nothing about how a drawn tree LOOKS moves with this.
  */
-export function canopyRankOrder(
-  trees: readonly { readonly crownRadiusMeters: number; readonly selection: number }[],
-): Float32Array {
-  const order = new Float32Array(trees.length);
-  if (trees.length === 0) return order;
-  const indices = trees.map((_, index) => index);
-  indices.sort((first, second) => {
-    const wide = trees[second]!.crownRadiusMeters - trees[first]!.crownRadiusMeters;
-    if (wide !== 0) return wide;
-    // Deterministic tie-break; equal radii are common at the quantised end.
-    return trees[first]!.selection - trees[second]!.selection;
-  });
-  for (let rank = 0; rank < indices.length; rank += 1) {
-    order[indices[rank]!] = rank / trees.length;
-  }
-  return order;
-}
-
 export interface WorldDetailRuntimeOptions {
   readonly worldSeed: string | number;
   readonly terrainSample: DetailTerrainSampler;
@@ -255,6 +375,15 @@ export interface WorldDetailRuntimeOptions {
   readonly workerWorldSeed?: string | number;
   /** Full live world preserves explicit evolution mode and authored airports in the worker. */
   readonly workerWorld?: Readonly<WorldDefinition>;
+  /** Injectable worker transport for deterministic runtime integration tests. */
+  readonly detailWorkerFactory?: () => Worker;
+  /**
+   * CPU presentation synthesis slice. Primarily a deterministic test seam;
+   * production uses the measured defaults below.
+   */
+  readonly presentationRebuildBudget?: DetailPresentationRebuildBudget;
+  /** Injectable monotonic clock for the presentation-budget contract. */
+  readonly presentationNowMilliseconds?: () => number;
 }
 
 /**
@@ -265,61 +394,25 @@ export interface WorldDetailRuntimeOptions {
 export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
 
 /**
- * 2-14: width of the dither-crossfade window at the near/mid and mid/far
- * boundaries, and of the cull fade at the vegetation edge. Both clear the
- * 128 m generation cell so per-stem fades sweep smoothly across rebuild
- * granularity.
+ * 2-17 close: one chunk is rebuilt at a time, now across bounded update
+ * slices. The sweep takes proportionally longer to converge, which the
+ * membership slack absorbs. Ground-cover work is counted per candidate after
+ * `groundCoverCandidateRange` bounds the scan; cheap canopy-rank misses are
+ * charged in fixed blocks so their rejection scan remains bounded without
+ * consuming the same budget as multi-band record synthesis.
  */
-export const DETAIL_FADE_MARGIN_METERS = 160;
-export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
-
-/**
- * 2-16: ground-cover patch expansion. Candidates sit on a hash-jittered
- * 2 m grid (≈ the plan's 2.5 m² patch footprint); acceptance is the 1/d
- * ramp — full density inside 20% of the grass radius, thinning as
- * (0.2·R)/d beyond it, dither-faded over the last 30 m. At the tier-2
- * 220 m radius the integral is ≈ 13.7k patches ≈ 0.66 M triangles,
- * inside the plan's ≤ 0.9 M Balanced exit budget.
- */
-export const GROUND_COVER_CANDIDATE_SPACING_METERS = 2;
-/**
- * 2-17 close: chunk rebuilds amortized to ONE per update — a rebuild frame
- * carries base render (~30 ms on the capture rig) plus the chunk's append
- * and upload; at three chunks the spike crossed the 41 ms hitch line, at
- * one it stays under. The sweep takes proportionally longer to converge,
- * which the membership slack absorbs.
- */
-export const DETAIL_CHUNK_REBUILDS_PER_UPDATE = 1;
-/**
- * 2-17 close: how far the observer may travel before a stem's band
- * memberships could be wrong — the observer signature quantum must stay
- * below this. Fades themselves are fragment-computed and continuous.
- */
-export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
-export const GROUND_COVER_EDGE_FADE_METERS = 30;
-export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
-
-/**
- * The one far-band prototype since the perf-debt pass. Every species draws
- * through it; the instance record carries which one.
- */
-export const TREE_IMPOSTOR_PROTOTYPE_KEY = "tree-impostor";
-
-/** Row of the plugin's per-species impostor table for a species. */
-function impostorSpeciesSlot(species: TreeSpecies): number {
-  const index = IMPOSTOR_SPECIES.indexOf(species);
-  return index < 0 ? 0 : index;
-}
-
-/** Pure 2D hash for candidate jitter/acceptance (world-position keyed). */
-function groundCoverHash(x: number, z: number, lane: number): number {
-  let h = (Math.imul(Math.round(x * 8), 0x27d4_eb2d)
-    ^ Math.imul(Math.round(z * 8), 0x1656_67b1)
-    ^ Math.imul(lane + 1, 0x9e37_79b9)) >>> 0;
-  h = Math.imul(h ^ (h >>> 15), h | 1);
-  h ^= h + Math.imul(h ^ (h >>> 7), h | 61);
-  return ((h ^ (h >>> 14)) >>> 0) / 4_294_967_296;
-}
+export const DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE = 65_536;
+export const DETAIL_PRESENTATION_REBUILD_MAX_MILLISECONDS_PER_UPDATE = 3;
+const DETAIL_PRESENTATION_REBUILD_CLOCK_INTERVAL_UNITS = 64;
+/** Must remain below the validity envelope used by the membership masks. */
+export const DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS = 64;
+/** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
+export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
+/** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
+export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS = 8_000;
+/** Retained-cell authority must make accepted-cell progress inside the same envelope. */
+export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES = 240;
+export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS = 8_000;
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
   "pine",
@@ -356,18 +449,9 @@ function requireFinite(value: number, label: string): number {
   return value;
 }
 
-function distanceToCell(
-  x: number,
-  z: number,
-  cellX: number,
-  cellZ: number,
-  cellSize: number,
-): number {
-  const minX = cellX * cellSize;
-  const minZ = cellZ * cellSize;
-  const maxX = minX + cellSize;
-  const maxZ = minZ + cellSize;
-  return Math.hypot(Math.max(minX - x, 0, x - maxX), Math.max(minZ - z, 0, z - maxZ));
+/** Saturating diagnostic counter: bounded storage even in a days-long session. */
+function addDiagnosticCount(current: number, increment = 1): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, current + increment);
 }
 
 function profileCellBudget(profile: WebGpuQualityProfile): number {
@@ -387,14 +471,27 @@ export class WorldDetailRuntime {
   private readonly instanceBufferPool: PooledInstanceBuffers[] = [];
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
+  /**
+   * One detached CPU writer/bounds pair per prototype at most. A staged build
+   * consumes it; commit returns the displaced live pair. This restores the
+   * pre-staging growable-buffer reuse without sharing storage with live data.
+   */
+  private readonly detailBuildStoragePool = new Map<string, PooledDetailBuildStorage>();
   private readonly materials = new Set<PBRMaterial>();
   private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
   private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
-  /** 2-12: crown/trunk radius-per-height per species, from the built prototypes. */
-  private readonly crownAspects = new Map<TreeSpecies, number>();
-  private readonly trunkAspects = new Map<TreeSpecies, number>();
-  /** 2-12b: shrub radius-per-height per species, same convention. */
-  private readonly shrubAspects = new Map<ShrubSpecies, number>();
+  /**
+   * Authored X/Z bound for every concrete prototype batch. Instance records
+   * divide their desired world radius by this exact value, including geometry
+   * variant and LOD band; the shader applies the resulting multiplier once.
+   */
+  private readonly prototypeRadialUnits = new Map<string, number>();
+  /** Far impostors are baked from species variant 0 near geometry. */
+  private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
+  /** Per-species shader frame for the one shared camera-facing impostor quad. */
+  private readonly impostorFrames = new Map<TreeSpecies, DetailBillboardFrameBounds>();
+  /** Cloneable metadata consumed by both inline synthesis and the worker-packing seam. */
+  private readonly presentationBuildCatalog: DetailPresentationBuildCatalog;
   /** 2-12: the atlas (null under NullEngine — no raw 2D-array support). */
   private foliageAtlas: FoliageAtlas | null = null;
   /** 2-17: the impostor atlas (same NullEngine guard). */
@@ -410,14 +507,55 @@ export class WorldDetailRuntime {
   private signature = "";
   private density = Number.NaN;
   private cumulativeGeneratedCells = 0;
+  private cellRevision = 0;
   private statisticsValue = ZERO_STATISTICS;
   private batchesDirty = true;
+  /**
+   * Exactly one CPU-only chunk build may exist. Keeping the queue singular
+   * bounds staging memory and preserves the old one-chunk-at-a-time ordering.
+   */
+  private pendingPresentationBuild: PendingDetailChunkBuild | null = null;
+  private readonly presentationRebuildBudget: DetailPresentationRebuildBudget;
+  private readonly presentationNowMilliseconds: () => number;
+  private presentationWorkUnitsLastUpdate = 0;
+  private presentationMillisecondsLastUpdate = 0;
+  private presentationBuildCancellations = 0;
+  private presentationBuildPublications = 0;
+  private presentationBacklogChunks = 0;
+  private presentationBuildStarts = 0;
+  private presentationBuildSlices = 0;
+  private presentationCompletedSlices = 0;
+  private presentationTimeBudgetStops = 0;
+  private presentationWorkBudgetStops = 0;
+  private presentationWorkUnitsTotal = 0;
+  private presentationPublishedRecords = 0;
+  private presentationObserverQuantumChanges = 0;
+  private presentationObserverSensitiveBuildStarts = 0;
+  private presentationResidentCellsInSensitiveBuilds = 0;
+  private presentationWorkerBuildStarts = 0;
+  private presentationWorkerResultsQueued = 0;
+  private presentationWorkerBuildPublications = 0;
+  private presentationWorkerBuildRejections = 0;
+  private presentationWorkerBuildTimeouts = 0;
+  private presentationWorkerGenerationTimeouts = 0;
+  private presentationWorkerFallbacks = 0;
+  /**
+   * Worker-authority progress epochs. Request cancellation/reissue never
+   * changes them; only accepted useful output (or no remaining demand) does.
+   */
+  private workerPresentationProgressUpdate: number | null = null;
+  private workerPresentationProgressMilliseconds: number | null = null;
+  private workerGenerationProgressUpdate: number | null = null;
+  private workerGenerationProgressMilliseconds: number | null = null;
+  private lastPublicationObserverDriftMeters = 0;
   private windTimeSeconds = 0;
   private updateSequence = 0;
   /** 2-14: observer position at the last rebuild, for per-stem fade radii. */
   private observerX = 0;
   private observerZ = 0;
-  /** R-13: the environment clock's day, forwarded to cell generation. */
+  /** Forces frontier target evaluation at the same cadence its signatures promise. */
+  private presentationObserverSignature = "";
+  /** R-13: normalized environment-clock day forwarded to cell generation. */
   private dayOfYear = 0;
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
@@ -427,7 +565,7 @@ export class WorldDetailRuntime {
   private readonly terrainPageAddresses: string[] = [];
   /** Desired keys with a request in flight, mapped to their request ids. */
   private readonly pendingCells = new Map<string, number>();
-  /** Bumped whenever resident cells reset; stale worker results are dropped. */
+  /** Bumped whenever generation inputs change; stale worker results are dropped. */
   private cellEpoch = 0;
   /** `4.5-C1`: the tier datum, refreshed from the profile every update. */
   private vegetationCastsShadows = true;
@@ -447,22 +585,176 @@ export class WorldDetailRuntime {
     ) {
       throw new RangeError("Detail runtime cell size must be between 64 and 4096 metres");
     }
+    const presentationRebuildBudget = options.presentationRebuildBudget ?? {
+      maximumWorkUnits: DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE,
+      maximumMilliseconds: DETAIL_PRESENTATION_REBUILD_MAX_MILLISECONDS_PER_UPDATE,
+    };
+    if (
+      !Number.isSafeInteger(presentationRebuildBudget.maximumWorkUnits)
+      || presentationRebuildBudget.maximumWorkUnits <= 0
+    ) {
+      throw new RangeError("Detail presentation maximumWorkUnits must be a positive integer");
+    }
+    if (
+      !Number.isFinite(presentationRebuildBudget.maximumMilliseconds)
+      || presentationRebuildBudget.maximumMilliseconds <= 0
+    ) {
+      throw new RangeError("Detail presentation maximumMilliseconds must be finite and positive");
+    }
+    this.presentationRebuildBudget = presentationRebuildBudget;
+    this.presentationNowMilliseconds = options.presentationNowMilliseconds
+      ?? (() => (typeof performance === "undefined" ? Date.now() : performance.now()));
     this.createBatches();
+    this.presentationBuildCatalog = this.createPresentationBuildCatalog();
     if (options.workerWorldSeed !== undefined) {
-      this.client = new DetailGenerationClient(
+      const client = new DetailGenerationClient(
         {
           worldSeed: options.workerWorldSeed,
           ...(options.workerWorld ? { world: options.workerWorld } : {}),
           cellSizeMeters: this.cellSizeMeters,
           seaLevelMeters: options.seaLevelMeters ?? 0,
+          presentationCatalog: this.presentationBuildCatalog,
+          ...(options.detailWorkerFactory
+            ? { workerFactory: options.detailWorkerFactory }
+            : {}),
         },
-        () => {
-          // Worker died: fall back to inline generation on the next update.
-          this.client = null;
-          this.pendingCells.clear();
-        },
+        () => this.handleWorkerUnavailable(),
+      );
+      // Construction can fail synchronously before assignment. Never retain
+      // an unavailable client over the fallback state established above.
+      this.client = client.isAvailable ? client : null;
+    }
+  }
+
+  private handleWorkerUnavailable(): void {
+    if (this.disposed) return;
+    this.activateInlineWorkerFallback(false);
+  }
+
+  private activateInlineWorkerFallback(disposeClient: boolean): void {
+    const client = this.client;
+    this.client = null;
+    if (this.pendingPresentationBuild?.source === "worker") {
+      this.releaseStagedBuildStorage(this.pendingPresentationBuild);
+      this.pendingPresentationBuild = null;
+      this.presentationBuildCancellations = addDiagnosticCount(
+        this.presentationBuildCancellations,
       );
     }
+    if (disposeClient) client?.dispose();
+    this.pendingCells.clear();
+    // The failed client has terminated the worker and cleared its token set.
+    // Keep descriptors only as topology placeholders so complete live chunks
+    // remain submitted while desired cells regenerate incrementally inline.
+    for (const resident of this.cells.values()) {
+      if (resident.source === "worker") resident.tokenOwned = false;
+    }
+    this.presentationWorkerFallbacks = addDiagnosticCount(
+      this.presentationWorkerFallbacks,
+    );
+    this.resetWorkerPresentationProgress();
+    this.resetWorkerGenerationProgress();
+    this.batchesDirty = true;
+  }
+
+  private beginWorkerPresentationProgress(): void {
+    if (this.workerPresentationProgressUpdate !== null) return;
+    this.workerPresentationProgressUpdate = this.updateSequence;
+    this.workerPresentationProgressMilliseconds = this.presentationNowMilliseconds();
+  }
+
+  private resetWorkerPresentationProgress(): void {
+    this.workerPresentationProgressUpdate = null;
+    this.workerPresentationProgressMilliseconds = null;
+  }
+
+  private beginWorkerGenerationProgress(): void {
+    if (this.workerGenerationProgressUpdate !== null) return;
+    this.workerGenerationProgressUpdate = this.updateSequence;
+    this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
+  }
+
+  /** An accepted, current descriptor is the only worker-generation progress signal. */
+  private recordWorkerGenerationProgress(): void {
+    this.workerGenerationProgressUpdate = this.updateSequence;
+    this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
+  }
+
+  private resetWorkerGenerationProgress(): void {
+    this.workerGenerationProgressUpdate = null;
+    this.workerGenerationProgressMilliseconds = null;
+  }
+
+  private workerPresentationProgressExpired(): boolean {
+    return this.workerPresentationProgressUpdate !== null
+      && this.workerPresentationProgressMilliseconds !== null
+      && (
+        this.updateSequence - this.workerPresentationProgressUpdate
+          >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES
+        || Math.max(
+          0,
+          this.presentationNowMilliseconds() - this.workerPresentationProgressMilliseconds,
+        ) >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS
+      );
+  }
+
+  private workerGenerationProgressExpired(): boolean {
+    return this.workerGenerationProgressUpdate !== null
+      && this.workerGenerationProgressMilliseconds !== null
+      && (
+        this.updateSequence - this.workerGenerationProgressUpdate
+          >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+        || Math.max(
+          0,
+          this.presentationNowMilliseconds() - this.workerGenerationProgressMilliseconds,
+        ) >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS
+      );
+  }
+
+  private failClosedWorkerAuthorityTimeout(
+    authority: "presentation" | "generation",
+  ): void {
+    if (authority === "presentation") {
+      if (this.pendingPresentationBuild?.source === "worker") {
+        this.client?.cancelPresentation(this.pendingPresentationBuild.buildId);
+      }
+      this.presentationWorkerBuildRejections = addDiagnosticCount(
+        this.presentationWorkerBuildRejections,
+      );
+      this.presentationWorkerBuildTimeouts = addDiagnosticCount(
+        this.presentationWorkerBuildTimeouts,
+      );
+    } else {
+      this.presentationWorkerGenerationTimeouts = addDiagnosticCount(
+        this.presentationWorkerGenerationTimeouts,
+      );
+    }
+    this.activateInlineWorkerFallback(true);
+  }
+
+  private residentIsCurrentAndAccessible(resident: ResidentCell | undefined): boolean {
+    if (!resident || resident.generation !== this.cellEpoch) return false;
+    return resident.source === "inline"
+      || (resident.tokenOwned && this.client !== null);
+  }
+
+  private releaseResidentToken(resident: ResidentCell | undefined): void {
+    if (resident?.source !== "worker" || !resident.tokenOwned) return;
+    // A presentation command that references this token was posted before
+    // any retirement discovered here. Worker message FIFO guarantees the
+    // builder captures its cell reference before the following releaseCell.
+    this.client?.releaseCell(resident.descriptor);
+    resident.tokenOwned = false;
+  }
+
+  private releaseAllResidentTokens(): void {
+    for (const resident of this.cells.values()) this.releaseResidentToken(resident);
+  }
+
+  private replaceResident(key: string, resident: ResidentCell): void {
+    const previous = this.cells.get(key);
+    if (previous !== resident) this.releaseResidentToken(previous);
+    this.cells.set(key, resident);
   }
 
   /**
@@ -529,7 +821,8 @@ export class WorldDetailRuntime {
     };
     let invalidated = false;
     for (const [key, resident] of this.cells) {
-      if (!overlapsPage(resident.cell.cellX, resident.cell.cellZ)) continue;
+      if (!overlapsPage(resident.cellX, resident.cellZ)) continue;
+      this.releaseResidentToken(resident);
       this.cells.delete(key);
       invalidated = true;
     }
@@ -545,16 +838,28 @@ export class WorldDetailRuntime {
   }
 
   /**
-   * R-13: the environment clock's day, forwarded to cell generation. The
-   * density field is deliberately season-invariant today (stems do not move
-   * with the calendar), so a change does not invalidate resident cells —
-   * `2-13a`'s appearance field is the first consumer that reads it.
+   * R-13: refreshes season-baked appearance without removing live detail.
+   * Placement is season-invariant, but crown/shrub/ground-cover colour and
+   * deciduous coverage are authored into each generated cell. Keeping those
+   * cells forever made near/mid foliage retain the old season while the far
+   * impostor changed immediately. A new epoch cancels stale work and lets the
+   * ordinary bounded generator replace residents in place; old cells remain
+   * visible until their replacement arrives, so a clock edit cannot punch a
+   * forest-sized hole or create a one-frame generation spike.
    */
   setDayOfYear(dayOfYear: number): void {
-    this.dayOfYear = dayOfYear;
+    if (!Number.isFinite(dayOfYear)) throw new RangeError("Detail dayOfYear must be finite");
+    const normalizedDay = ((dayOfYear % 365) + 365) % 365;
+    if (normalizedDay !== this.dayOfYear) {
+      this.releaseAllResidentTokens();
+      this.dayOfYear = normalizedDay;
+      this.cellEpoch += 1;
+      this.pendingCells.clear();
+      this.client?.cancelAll();
+    }
     // 2-17a: the impostor buckets cross-fade on the same shed window as the
     // card dissolve (applyFoliageSeason's 0.34–0.7 winterFraction ramp).
-    const winter = seasonalWinterFraction(dayOfYear, this.options.latitudeDegrees ?? 45);
+    const winter = seasonalWinterFraction(normalizedDay, this.options.latitudeDegrees ?? 45);
     const t = Math.min(1, Math.max(0, (winter - 0.34) / 0.36));
     const mix = t * t * (3 - 2 * t);
     for (const plugin of this.instancePlugins) plugin.setImpostorSeason(mix);
@@ -596,6 +901,111 @@ export class WorldDetailRuntime {
 
   get statistics(): WorldDetailStatistics {
     return this.statisticsValue;
+  }
+
+  /** Instrumentation for the bounded CPU-only presentation builder. */
+  get presentationRebuildDiagnostics(): DetailPresentationRebuildDiagnostics {
+    let stagedRecords = 0;
+    if (this.pendingPresentationBuild) {
+      for (const batch of this.pendingPresentationBuild.stagedBatches.values()) {
+        stagedRecords += batch.writer.count;
+      }
+    }
+    const pendingObserverDriftMeters = this.pendingPresentationBuild
+      && (
+        this.pendingPresentationBuild.source === "worker"
+        || this.pendingPresentationBuild.observerSensitive
+      )
+      ? Math.hypot(
+          this.observerX - this.pendingPresentationBuild.observerX,
+          this.observerZ - this.pendingPresentationBuild.observerZ,
+        )
+      : null;
+    let maximumLiveObserverDriftMeters = 0;
+    let suppressedChunks = 0;
+    for (const chunk of this.presentationChunks.values()) {
+      if (chunk.validitySuppressed) suppressedChunks += 1;
+      if (
+        chunk.revision === 0
+        || !chunk.observerSensitive
+        || chunk.validitySuppressed
+      ) continue;
+      maximumLiveObserverDriftMeters = Math.max(
+        maximumLiveObserverDriftMeters,
+        Math.hypot(this.observerX - chunk.observerX, this.observerZ - chunk.observerZ),
+      );
+    }
+    let workerRetainedCells = 0;
+    for (const resident of this.cells.values()) {
+      if (resident.source === "worker" && resident.tokenOwned) workerRetainedCells += 1;
+    }
+    return {
+      activeChunkKey: this.pendingPresentationBuild?.coordinates.key ?? null,
+      activeBuildSource: this.pendingPresentationBuild?.source ?? null,
+      workUnitsLastUpdate: this.presentationWorkUnitsLastUpdate,
+      millisecondsLastUpdate: this.presentationMillisecondsLastUpdate,
+      stagedRecords,
+      pooledCpuBatchStorage: this.detailBuildStoragePool.size,
+      cancellations: this.presentationBuildCancellations,
+      publications: this.presentationBuildPublications,
+      backloggedChunks: this.presentationBacklogChunks,
+      suppressedChunks,
+      validityEnvelopeMeters: DETAIL_MEMBERSHIP_SLACK_METERS,
+      pendingObserverDriftMeters,
+      maximumLiveObserverDriftMeters,
+      lastPublicationObserverDriftMeters: this.lastPublicationObserverDriftMeters,
+      buildStarts: this.presentationBuildStarts,
+      buildSlices: this.presentationBuildSlices,
+      completedSlices: this.presentationCompletedSlices,
+      timeBudgetStops: this.presentationTimeBudgetStops,
+      workBudgetStops: this.presentationWorkBudgetStops,
+      workUnitsTotal: this.presentationWorkUnitsTotal,
+      publishedRecords: this.presentationPublishedRecords,
+      observerQuantumChanges: this.presentationObserverQuantumChanges,
+      observerSensitiveBuildStarts: this.presentationObserverSensitiveBuildStarts,
+      residentCellsInSensitiveBuilds: this.presentationResidentCellsInSensitiveBuilds,
+      workerRetainedCells,
+      workerBuildStarts: this.presentationWorkerBuildStarts,
+      workerResultsQueued: this.presentationWorkerResultsQueued,
+      workerBuildPublications: this.presentationWorkerBuildPublications,
+      workerBuildRejections: this.presentationWorkerBuildRejections,
+      workerBuildTimeouts: this.presentationWorkerBuildTimeouts,
+      workerGenerationTimeouts: this.presentationWorkerGenerationTimeouts,
+      workerFallbacks: this.presentationWorkerFallbacks,
+    };
+  }
+
+  /**
+   * Capture-only constant-time marker for correlating asynchronous worker
+   * delivery and synchronous publication with frame intervals. Keep this
+   * separate from the full diagnostic snapshot, which intentionally walks
+   * resident/chunk state and would perturb the timing loop if sampled every
+   * frame.
+   */
+  get presentationCaptureMarker(): Readonly<{
+    workerResultsQueued: number;
+    publications: number;
+  }> {
+    return {
+      workerResultsQueued: this.presentationWorkerResultsQueued,
+      publications: this.presentationBuildPublications,
+    };
+  }
+
+  /**
+   * Generation plus presentation work that can still change a rendered shot.
+   * Capture settling consumes this instead of mistaking a temporarily stable
+   * instance count for a complete world.
+   */
+  get pendingWorkItems(): number {
+    let missingCells = 0;
+    for (const desired of this.desiredCells) {
+      if (!this.residentIsCurrentAndAccessible(this.cells.get(desired.key))) missingCells += 1;
+    }
+    const presentationWork = this.batchesDirty || this.pendingPresentationBuild !== null
+      ? Math.max(1, this.presentationBacklogChunks)
+      : 0;
+    return missingCells + presentationWork;
   }
 
   update(
@@ -648,6 +1058,27 @@ export class WorldDetailRuntime {
       throw new RangeError("Vegetation density must be between zero and two");
     }
 
+    // `chunkObserverTerm` promises a 64 m frontier cadence. The old global
+    // paging signature only changed every half-cell (256 m in production),
+    // so the term was never evaluated at its documented cadence and a live
+    // snapshot could outrun its 96 m membership envelope while appearing
+    // clean. Track the actual observer on every update and independently
+    // dirty the cheap target scan at the frontier quantum.
+    this.observerX = observer.x;
+    this.observerZ = observer.z;
+    const nextPresentationObserverSignature = [
+      Math.round(observer.x / DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS),
+      Math.round(observer.z / DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS),
+    ].join(":");
+    if (nextPresentationObserverSignature !== this.presentationObserverSignature) {
+      this.presentationObserverSignature = nextPresentationObserverSignature;
+      this.presentationObserverQuantumChanges = addDiagnosticCount(
+        this.presentationObserverQuantumChanges,
+      );
+      this.batchesDirty = true;
+    }
+    if (this.suppressInvalidPresentationChunks()) this.batchesDirty = true;
+
     const speed = Math.hypot(velocityX, velocityZ);
     const lookAheadSeconds = speed > 1 ? Math.min(6, 1_200 / speed) : 0;
     const predictionX = observer.x + velocityX * lookAheadSeconds;
@@ -667,6 +1098,7 @@ export class WorldDetailRuntime {
 
     if (profile.vegetationDensity !== this.density) {
       this.density = profile.vegetationDensity;
+      this.releaseAllResidentTokens();
       this.cells.clear();
       this.cellEpoch += 1;
       this.pendingCells.clear();
@@ -691,6 +1123,22 @@ export class WorldDetailRuntime {
     }
 
     if (this.client !== null) {
+      const missingWorkerCells = this.desiredCells.reduce(
+        (count, desired) => count
+          + (this.residentIsCurrentAndAccessible(this.cells.get(desired.key)) ? 0 : 1),
+        0,
+      );
+      if (missingWorkerCells === 0) {
+        this.resetWorkerGenerationProgress();
+      } else {
+        this.beginWorkerGenerationProgress();
+        if (this.workerGenerationProgressExpired()) {
+          this.failClosedWorkerAuthorityTimeout("generation");
+        }
+      }
+    }
+
+    if (this.client !== null) {
       // 1B-10: generation happens on the worker; the main thread only files
       // requests (streaming-priority ordered by the bounded queue) and
       // applies results as they arrive. The Governor B budget cap survives
@@ -699,9 +1147,13 @@ export class WorldDetailRuntime {
       let admitted = 0;
       for (const desired of this.desiredCells) {
         if (admitted >= requestCap) break;
-        if (this.cells.has(desired.key) || this.pendingCells.has(desired.key)) continue;
+        const resident = this.cells.get(desired.key);
+        if (
+          this.residentIsCurrentAndAccessible(resident)
+          || this.pendingCells.has(desired.key)
+        ) continue;
         const epoch = this.cellEpoch;
-        const requestId = this.client.request(
+        const requestId = this.client.requestRetained(
           {
             key: desired.key,
             generation: epoch,
@@ -711,7 +1163,7 @@ export class WorldDetailRuntime {
             densityMultiplier: profile.vegetationDensity,
             dayOfYear: this.dayOfYear,
           },
-          (cell) => this.onCellGenerated(desired.key, epoch, cell),
+          (descriptor) => this.onRetainedCellGenerated(desired.key, epoch, descriptor),
           () => this.pendingCells.delete(desired.key),
         );
         if (requestId < 0) break;
@@ -729,7 +1181,8 @@ export class WorldDetailRuntime {
       const generationStartedAt = this.nowMilliseconds();
       let generated = 0;
       for (const desired of this.desiredCells) {
-        if (this.cells.has(desired.key)) continue;
+        const current = this.cells.get(desired.key);
+        if (current?.source === "inline" && current.generation === this.cellEpoch) continue;
         const elapsedMilliseconds = generated === 0
           ? 0
           : Math.max(0, this.nowMilliseconds() - generationStartedAt);
@@ -745,9 +1198,16 @@ export class WorldDetailRuntime {
           dayOfYear: this.dayOfYear,
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
         });
-        this.cells.set(desired.key, {
+        this.replaceResident(desired.key, {
+          source: "inline",
+          key: cell.key,
+          cellX: cell.cellX,
+          cellZ: cell.cellZ,
+          cellSizeMeters: cell.cellSizeMeters,
           cell,
-          treeCanopyRank: canopyRankOrder(cell.trees),
+          generation: this.cellEpoch,
+          revision: ++this.cellRevision,
+          treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
           lod: desired.lod,
           distance: desired.distance,
         });
@@ -765,8 +1225,6 @@ export class WorldDetailRuntime {
       );
     }
     if (this.batchesDirty) {
-      this.observerX = observer.x;
-      this.observerZ = observer.z;
       // Stays dirty while the amortized sweep has a backlog.
       this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
     } else {
@@ -806,12 +1264,15 @@ export class WorldDetailRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.pendingPresentationBuild) this.cancelPendingPresentationBuild();
+    this.releaseAllResidentTokens();
     this.client?.dispose();
     this.client = null;
     this.pendingCells.clear();
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
+    this.detailBuildStoragePool.clear();
     for (const batch of this.batches.values()) {
       batch.mesh.dispose(false, false);
       batch.gpu?.shared.dispose();
@@ -827,6 +1288,7 @@ export class WorldDetailRuntime {
     for (const pooled of this.instanceBufferPool) pooled.gpu.shared.dispose();
     this.instanceBufferPool.length = 0;
     this.presentationChunks.clear();
+    this.presentationBacklogChunks = 0;
     for (const prototype of this.prototypes.values()) prototype.mesh.dispose(false, false);
     this.prototypes.clear();
     this.instancePlugins.clear();
@@ -859,14 +1321,14 @@ export class WorldDetailRuntime {
 
     for (let cellZ = minCellZ; cellZ <= maxCellZ; cellZ += 1) {
       for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
-        const distance = distanceToCell(
+        const distance = detailCellMinimumDistanceMeters(
           observer.x,
           observer.z,
           cellX,
           cellZ,
           this.cellSizeMeters,
         );
-        const predictedDistance = distanceToCell(
+        const predictedDistance = detailCellMinimumDistanceMeters(
           predictionX,
           predictionZ,
           cellX,
@@ -887,8 +1349,10 @@ export class WorldDetailRuntime {
     candidates.sort((first, second) => first.priority - second.priority || first.key.localeCompare(second.key));
     this.desiredCells = candidates.slice(0, profileCellBudget(profile));
     this.desiredKeys = new Set(this.desiredCells.map((candidate) => candidate.key));
-    for (const key of this.cells.keys()) {
-      if (!this.desiredKeys.has(key)) this.cells.delete(key);
+    for (const [key, resident] of this.cells) {
+      if (this.desiredKeys.has(key)) continue;
+      this.releaseResidentToken(resident);
+      this.cells.delete(key);
     }
     for (const [key, requestId] of this.pendingCells) {
       if (this.desiredKeys.has(key)) continue;
@@ -897,17 +1361,40 @@ export class WorldDetailRuntime {
     }
   }
 
-  /** Applies one worker-generated cell; stale epochs and keys are dropped. */
-  private onCellGenerated(key: string, epoch: number, cell: GeneratedDetailCell): void {
+  /** Accepts only the lightweight worker descriptor; placement arrays never cross to main. */
+  private onRetainedCellGenerated(
+    key: string,
+    epoch: number,
+    descriptor: DetailRetainedCellDescriptor,
+  ): void {
     this.pendingCells.delete(key);
-    if (this.disposed || epoch !== this.cellEpoch || !this.desiredKeys.has(key)) return;
     const desired = this.desiredCells.find((candidate) => candidate.key === key);
-    this.cells.set(key, {
-      cell,
-      treeCanopyRank: canopyRankOrder(cell.trees),
-      lod: desired?.lod ?? "mid",
-      distance: desired?.distance ?? Number.POSITIVE_INFINITY,
+    if (
+      this.disposed
+      || epoch !== this.cellEpoch
+      || !desired
+      || descriptor.key !== key
+      || descriptor.cellX !== desired.cellX
+      || descriptor.cellZ !== desired.cellZ
+      || descriptor.cellSizeMeters !== this.cellSizeMeters
+    ) {
+      this.client?.releaseCell(descriptor);
+      return;
+    }
+    this.replaceResident(key, {
+      source: "worker",
+      key: descriptor.key,
+      cellX: descriptor.cellX,
+      cellZ: descriptor.cellZ,
+      cellSizeMeters: descriptor.cellSizeMeters,
+      descriptor,
+      tokenOwned: true,
+      generation: epoch,
+      revision: ++this.cellRevision,
+      lod: desired.lod,
+      distance: desired.distance,
     });
+    this.recordWorkerGenerationProgress();
     this.cumulativeGeneratedCells += 1;
     this.batchesDirty = true;
   }
@@ -916,18 +1403,19 @@ export class WorldDetailRuntime {
     floatingOrigin: DetailFloatingOrigin,
     profile: WebGpuQualityProfile,
   ): boolean {
-    let rebuildsThisUpdate = 0;
-    let rebuildBacklog = false;
+    this.presentationWorkUnitsLastUpdate = 0;
+    this.presentationMillisecondsLastUpdate = 0;
     this.lastDensityLaw = profile.renderedDensityLaw;
     this.lastGrassRadius = profile.grassRadiusMeters;
+    this.suppressInvalidPresentationChunks();
     const grouped = new Map<
       string,
       { coordinates: DetailPresentationChunkCoordinates; residents: ResidentCell[] }
     >();
     for (const resident of this.cells.values()) {
       const coordinates = detailPresentationChunkCoordinates(
-        resident.cell.cellX,
-        resident.cell.cellZ,
+        resident.cellX,
+        resident.cellZ,
       );
       const group = grouped.get(coordinates.key);
       if (group) group.residents.push(resident);
@@ -935,7 +1423,11 @@ export class WorldDetailRuntime {
     }
 
     for (const [chunkKey, chunk] of this.presentationChunks) {
-      if (!grouped.has(chunkKey)) this.disposePresentationChunk(chunk);
+      if (grouped.has(chunkKey)) continue;
+      if (this.pendingPresentationBuild?.coordinates.key === chunkKey) {
+        this.cancelPendingPresentationBuild();
+      }
+      this.disposePresentationChunk(chunk);
     }
 
     // Rendered-share thinning: the density field carries the ECOLOGICAL stem
@@ -948,25 +1440,32 @@ export class WorldDetailRuntime {
     // clumps. Selection is a stable per-stem uniform, so shares nest:
     // raising the budget only ever ADDS stems.
     const densityLaw = profile.renderedDensityLaw;
-    const totals: MutableDetailChunkStatistics = {
-      nearCells: 0,
-      midCells: 0,
-      treeInstances: 0,
-      shrubInstances: 0,
-      rockInstances: 0,
-      clutterInstances: 0,
-      groundCoverInstances: 0,
-        };
+    const configurationSignature = [
+      densityLaw.nearStemsPerHectare,
+      densityLaw.near.outerRadiusMeters,
+      densityLaw.mid.outerRadiusMeters,
+      densityLaw.far.outerRadiusMeters,
+      densityLaw.farFloorShare,
+      profile.treeVariantCap,
+      profile.treePrototypeMode,
+      profile.grassRadiusMeters,
+    ].join(":");
+    const targets = new Map<string, DetailChunkBuildTarget>();
 
     for (const group of grouped.values()) {
-      group.residents.sort((first, second) => first.cell.key.localeCompare(second.cell.key));
+      group.residents.sort((first, second) => first.key.localeCompare(second.key));
+      const observerTerm = this.chunkObserverTerm(group.coordinates);
       const signature = [
         floatingOrigin.x,
         floatingOrigin.y,
         floatingOrigin.z,
         densityLaw.nearStemsPerHectare,
         densityLaw.near.outerRadiusMeters,
+        densityLaw.mid.outerRadiusMeters,
+        densityLaw.far.outerRadiusMeters,
+        densityLaw.farFloorShare,
         profile.treeVariantCap,
+        profile.treePrototypeMode,
         profile.grassRadiusMeters,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
@@ -975,9 +1474,18 @@ export class WorldDetailRuntime {
         // residents change, restoring the zero-steady-state-rebuild design;
         // a naive global observer term rebuilt EVERY chunk each quantum and
         // the capture measured it as a saturated hitch train.
-        this.chunkObserverTerm(group.coordinates),
-        ...group.residents.map((resident) => `${resident.cell.key}/${resident.lod}`),
+        observerTerm,
+        ...group.residents.map(
+          (resident) => `${resident.key}/${resident.lod}/${resident.revision}`,
+        ),
       ].join(":");
+      const buildSource = group.residents.every((resident) => resident.source === "inline")
+        ? "inline"
+        : this.client !== null && group.residents.every(
+            (resident) => resident.source === "worker" && resident.tokenOwned,
+          )
+          ? "worker"
+          : "blocked";
       let chunk = this.presentationChunks.get(group.coordinates.key);
       if (!chunk) {
         chunk = {
@@ -985,6 +1493,10 @@ export class WorldDetailRuntime {
           batchKeys: new Set<string>(),
           signature: "",
           revision: 0,
+          observerX: 0,
+          observerZ: 0,
+          observerSensitive: false,
+          validitySuppressed: false,
           statistics: {
             nearCells: 0,
             midCells: 0,
@@ -993,39 +1505,164 @@ export class WorldDetailRuntime {
             rockInstances: 0,
             clutterInstances: 0,
             groundCoverInstances: 0,
-                    },
+          },
         };
         this.presentationChunks.set(group.coordinates.key, chunk);
       }
-      if (chunk.signature !== signature) {
-        // Amortized: at most DETAIL_CHUNK_REBUILDS_PER_UPDATE chunks rebuild
-        // per frame — the 64 m observer quantum otherwise rebuilt every
-        // chunk in ONE update and the capture measured it as a hitch train
-        // (39-147 per 240 frames at approach speeds). Skipped chunks keep
-        // their stale signature and rebuild on the following updates;
-        // batchesDirty stays set so the sweep continues.
-        if (rebuildsThisUpdate >= DETAIL_CHUNK_REBUILDS_PER_UPDATE) {
-          rebuildBacklog = true;
-        } else {
-          rebuildsThisUpdate += 1;
-          chunk.statistics = this.rebuildPresentationChunk(
-            chunk,
-            group.residents,
+      targets.set(group.coordinates.key, {
+        coordinates: group.coordinates,
+        residents: group.residents,
+        signature,
+        configurationSignature,
+        observerSensitive: observerTerm !== "interior",
+        buildSource,
+      });
+      if (observerTerm !== "interior" && chunk.revision > 0 && !chunk.observerSensitive) {
+        // Entering the deliberately padded frontier does not invalidate the
+        // old interior bytes yet. Anchor their newly relevant validity clock
+        // now so the live-snapshot diagnostic covers the transition while a
+        // frontier replacement stages.
+        chunk.observerX = this.observerX;
+        chunk.observerZ = this.observerZ;
+        chunk.observerSensitive = true;
+      }
+    }
+
+    const workerPresentationDemand = this.pendingPresentationBuild?.source === "worker"
+      || [...targets.values()].some((target) => (
+        target.buildSource === "worker"
+        && this.presentationChunks.get(target.coordinates.key)?.signature !== target.signature
+      ));
+    if (workerPresentationDemand) {
+      this.beginWorkerPresentationProgress();
+      const queuedWorkerCompletion = this.pendingPresentationBuild?.source === "worker"
+        && (
+          this.pendingPresentationBuild.queuedResult !== null
+          || this.pendingPresentationBuild.queuedError !== null
+        );
+      if (!queuedWorkerCompletion && this.workerPresentationProgressExpired()) {
+        this.failClosedWorkerAuthorityTimeout("presentation");
+      }
+    } else {
+      this.resetWorkerPresentationProgress();
+    }
+
+    // A staged build is a snapshot. Structural representation changes cancel
+    // CPU staging, while ordinary observer/resident supersession completes
+    // the immutable snapshot and immediately leaves a newer target queued.
+    // The exception is the same hard validity envelope used to author tree
+    // memberships and the grass frontier: a build that has aged beyond it is
+    // canceled and can never become a freshly-published stale chunk.
+    if (this.pendingPresentationBuild) {
+      const pendingBuild = this.pendingPresentationBuild;
+      const currentTarget = targets.get(pendingBuild.coordinates.key);
+      const pendingObserverDrift = Math.hypot(
+        this.observerX - pendingBuild.observerX,
+        this.observerZ - pendingBuild.observerZ,
+      );
+      if (
+        !currentTarget
+        || currentTarget.configurationSignature
+          !== pendingBuild.configurationSignature
+        || currentTarget.observerSensitive
+          !== pendingBuild.observerSensitive
+        || (
+          currentTarget.buildSource !== "blocked"
+          && currentTarget.buildSource !== pendingBuild.source
+        )
+        || pendingBuild.recordOrigin.x !== floatingOrigin.x
+        || pendingBuild.recordOrigin.y !== floatingOrigin.y
+        || pendingBuild.recordOrigin.z !== floatingOrigin.z
+        || (
+          (
+            pendingBuild.source === "worker"
+            || pendingBuild.observerSensitive
+          )
+          && pendingObserverDrift > DETAIL_MEMBERSHIP_SLACK_METERS
+        )
+      ) {
+        this.cancelPendingPresentationBuild();
+      }
+    }
+
+    if (!this.pendingPresentationBuild) {
+      for (const target of targets.values()) {
+        const chunk = this.presentationChunks.get(target.coordinates.key)!;
+        if (chunk.signature === target.signature || target.buildSource === "blocked") continue;
+        const pending = this.createPendingPresentationBuild(
+          target,
+          floatingOrigin,
+          densityLaw,
+          profile.treeVariantCap,
+          profile.treePrototypeMode,
+          profile.grassRadiusMeters,
+        );
+        if (pending) this.pendingPresentationBuild = pending;
+        if (pending || target.buildSource === "worker") break;
+      }
+    }
+
+    if (this.pendingPresentationBuild) {
+      const completed = this.advancePendingPresentationBuild();
+      if (completed) {
+        const completedBuild = this.pendingPresentationBuild;
+        const target = targets.get(completedBuild.coordinates.key);
+        // No asynchronous callback can run inside update(). The structural
+        // guard remains so a future scheduler cannot publish an incompatible
+        // representation; ordinary newer content stays queued after commit.
+        if (
+          target?.configurationSignature
+            === completedBuild.configurationSignature
+          && (
+            completedBuild.source === "inline" && !completedBuild.observerSensitive
+            || Math.hypot(
+              this.observerX - completedBuild.observerX,
+              this.observerZ - completedBuild.observerZ,
+            ) <= DETAIL_MEMBERSHIP_SLACK_METERS
+          )
+        ) {
+          this.publishPendingPresentationBuild(
+            completedBuild,
+            completed,
             floatingOrigin,
-            densityLaw,
-            profile.treeVariantCap,
-            profile.grassRadiusMeters,
           );
-          chunk.signature = signature;
+          if (completedBuild.source === "worker") {
+            this.presentationWorkerBuildPublications = addDiagnosticCount(
+              this.presentationWorkerBuildPublications,
+            );
+            this.resetWorkerPresentationProgress();
+          }
+          this.pendingPresentationBuild = null;
+        } else {
+          // Keep the pending owner installed while cancel releases every
+          // staged CPU pair back to the bounded pool.
+          this.cancelPendingPresentationBuild();
         }
       }
-      totals.nearCells += chunk.statistics.nearCells;
-      totals.midCells += chunk.statistics.midCells;
-      totals.treeInstances += chunk.statistics.treeInstances;
-      totals.shrubInstances += chunk.statistics.shrubInstances;
-      totals.rockInstances += chunk.statistics.rockInstances;
-      totals.clutterInstances += chunk.statistics.clutterInstances;
-      totals.groundCoverInstances += chunk.statistics.groundCoverInstances;
+    }
+
+    const totals: MutableDetailChunkStatistics = {
+      nearCells: 0,
+      midCells: 0,
+      treeInstances: 0,
+      shrubInstances: 0,
+      rockInstances: 0,
+      clutterInstances: 0,
+      groundCoverInstances: 0,
+    };
+    let rebuildBacklogChunks = 0;
+    for (const target of targets.values()) {
+      const chunk = this.presentationChunks.get(target.coordinates.key)!;
+      if (chunk.signature !== target.signature) rebuildBacklogChunks += 1;
+      if (!chunk.validitySuppressed) {
+        totals.nearCells += chunk.statistics.nearCells;
+        totals.midCells += chunk.statistics.midCells;
+        totals.treeInstances += chunk.statistics.treeInstances;
+        totals.shrubInstances += chunk.statistics.shrubInstances;
+        totals.rockInstances += chunk.statistics.rockInstances;
+        totals.clutterInstances += chunk.statistics.clutterInstances;
+        totals.groundCoverInstances += chunk.statistics.groundCoverInstances;
+      }
     }
 
     this.statisticsValue = {
@@ -1041,409 +1678,559 @@ export class WorldDetailRuntime {
       renderedThinInstances: 0,
       activeBatches: 0,
     };
+    this.presentationBacklogChunks = rebuildBacklogChunks;
     this.refreshVisibilityStatistics();
-    return rebuildBacklog;
+    return rebuildBacklogChunks > 0 || this.pendingPresentationBuild !== null;
   }
 
-  private rebuildPresentationChunk(
-    chunk: DetailPresentationChunk,
-    residents: readonly ResidentCell[],
+  private createPendingPresentationBuild(
+    target: DetailChunkBuildTarget,
     floatingOrigin: DetailFloatingOrigin,
     densityLaw: RenderedDensityLaw,
     treeVariantCap: number,
+    treePrototypeMode: WebGpuQualityProfile["treePrototypeMode"],
     grassRadiusMeters: number,
-  ): DetailChunkStatistics {
-    chunk.revision += 1;
-    const nextBatchKeys = new Set<string>();
-    const statistics: MutableDetailChunkStatistics = {
-      nearCells: 0,
-      midCells: 0,
-      treeInstances: 0,
-      shrubInstances: 0,
-      rockInstances: 0,
-      clutterInstances: 0,
-      groundCoverInstances: 0,
-        };
+  ): PendingDetailChunkBuild | null {
+    if (target.buildSource === "blocked") return null;
+    const recordOrigin: DetailFloatingOrigin = {
+      x: floatingOrigin.x,
+      y: floatingOrigin.y,
+      z: floatingOrigin.z,
+    };
+    const stagedBatches = new Map<string, StagedDetailBatch>();
+    const common = {
+      coordinates: target.coordinates,
+      signature: target.signature,
+      configurationSignature: target.configurationSignature,
+      recordOrigin,
+      observerX: this.observerX,
+      observerZ: this.observerZ,
+      observerSensitive: target.observerSensitive,
+      stagedBatches,
+    } satisfies PendingDetailChunkBuildBase;
 
-    for (const resident of residents) {
-      if (resident.lod === "near") statistics.nearCells += 1;
-      else statistics.midCells += 1;
-
-      const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
-      const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
-      // R-21: the law's share curve, keyed on real cell distance. Until 2-14
-      // and 2-17 land their card/impostor bands, mid- and far-band stems draw
-      // with today's mid geometry — the density is final, the geometry per
-      // band arrives with its item.
-      const treeBudgetPerHa = densityLaw.nearStemsPerHectare
-        * renderedShareAtDistance(densityLaw, resident.distance);
-      const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
-      // Shrubs are woody plants: they ride the SAME law falloff as trees
-      // (the pre-law 60-near/6-mid share admitted 137k icosphere shrubs to
-      // 8 km — 11M triangles of sub-pixel blobs, +6-15 ms GPU on every
-      // shot), plus a hard cutoff at the mid boundary: understory at 1.4 km
-      // subtends under half a pixel. 2-12b re-prices the geometry to cards.
-      const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
-      const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
-      const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
-        ? 0
-        : Math.min(1, shrubBudgetPerHa / Math.max(shrubsPerHa, 1e-6));
-
-      for (let treeIndex = 0; treeIndex < resident.cell.trees.length; treeIndex += 1) {
-        const tree = resident.cell.trees[treeIndex]!;
-        // Canopy rank, not the uniform selection key — see canopyRankOrder.
-        if ((resident.treeCanopyRank[treeIndex] ?? 1) > treeShare) continue;
-        const localX = tree.x - floatingOrigin.x;
-        const localY = tree.y - floatingOrigin.y;
-        const localZ = tree.z - floatingOrigin.z;
-        // 2-14: banding by the LAW's radii from the STEM'S OWN distance,
-        // with dither-crossfade margins — a stem inside a margin appears in
-        // BOTH bands with exactly complementary fade bytes (two-LOD
-        // residency; the outgoing side disappears with the next rebuild
-        // past the margin). Also the cull fade at the far edge.
-        const stemDistance = Math.hypot(
-          tree.x - this.observerX,
-          tree.z - this.observerZ,
-        );
-        const memberships = WorldDetailRuntime.fadeBandMemberships(stemDistance, densityLaw);
-        if (memberships.length === 0) continue;
-        const modifierHash = (tree.selection * 137.3) % 1;
-        const modifierBits = modifierHash < 0.55 ? 0
-          : modifierHash < 0.70 ? 1
-          : modifierHash < 0.82 ? 3
-          : modifierHash < 0.92 ? 2
-          : 4;
-        // Per-instance lean of 2-8 degrees composed into the quaternion.
-        const leanRadians = (0.035 + ((tree.selection * 29.3) % 1) * 0.105);
-        const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
-        const quaternion = WorldDetailRuntime.yawLeanQuaternion(
-          tree.yawRadians,
-          leanRadians,
-          leanAzimuth,
-        );
-        const windPhase = tree.windPhaseRadians / (2 * Math.PI);
-        const crownAspect = this.crownAspects.get(tree.species) ?? 0.3;
-        const trunkAspect = this.trunkAspects.get(tree.species) ?? 0.02;
-        const crownBase: DetailInstanceRecord = {
-          x: localX,
-          y: localY,
-          z: localZ,
-          quaternion,
-          heightScaleMeters: tree.heightMeters,
-          radialScale: WorldDetailRuntime.radialMultiplier(
-            tree.crownRadiusMeters,
-            tree.heightMeters,
-            crownAspect,
-          ),
-          fade: 1,
-          variant: modifierBits * 32,
-          tint: tree.color,
-          windPhase,
-          windResponse: clamp(tree.windResponse, 0, 1),
-        };
-        const variantHash = (tree.selection * 71.7) % 1;
-        for (const membership of memberships) {
-          // Geometry variants cap per band (every (species, variant, band)
-          // mesh is a draw per chunk at ~26 µs of GPU each — the 2-12
-          // finding): far keeps ONE per species, mid three, near the
-          // profile's cap. Per-instance scales and tint carry the variety
-          // where the meshes collapse.
-          const bandVariantCap = membership.band === "far" ? 1
-            : membership.band === "mid" ? 3
-            : treeVariantCap;
-          const variantCount = clamp(
-            Math.min(Math.round(TREE_VARIANT_COUNTS[tree.species]), treeVariantCap, bandVariantCap),
-            1,
-            32,
-          );
-          const geometryVariant = Math.min(
-            variantCount - 1,
-            Math.floor(variantHash * variantCount),
-          );
-          // Far band: geometry variants collapse to one mesh, so the
-          // variant byte is FREE — it carries a per-stem hash instead, which
-          // the impostor shader turns into a view-phase offset and a mirror
-          // (the 2-17 exit criterion: no two same-species impostors within
-          // a screen share both silhouette aspect and phase).
-          // The fade lane carries the BAND CODE (0 near / 1 mid / 2 far):
-          // the fragment computes the actual crossfade window from its own
-          // camera range (DETAIL_BAND_FADES).
-          const bandCode = membership.band === "near" ? 0 : membership.band === "mid" ? 1 : 2;
-          const crown: DetailInstanceRecord = {
-            ...crownBase,
-            fade: bandCode / 127,
-            fadeIncoming: false,
-            // Far band: the geometry variants collapse to one mesh, so the
-            // byte is free for identity. High three bits = SPECIES (the
-            // perf-debt pass's per-instance bake-frame index, which is what
-            // lets one mesh serve all seven); low five = 2-17's per-stem
-            // hash, whose bit 0 is the mirror and bits 1-2 the view phase.
-            variant: membership.band === "far"
-              ? impostorSpeciesSlot(tree.species) * 32
-                + Math.floor(((tree.selection * 97.3) % 1) * 32)
-              : geometryVariant + modifierBits * 32,
-          };
-          const crownBatchKey = membership.band === "far" && this.impostorAtlas
-            ? TREE_IMPOSTOR_PROTOTYPE_KEY
-            : `tree-${tree.species}-v${geometryVariant}-crown-${membership.band}`;
-          this.appendInstance(
-            this.getBatch(crownBatchKey, chunk, nextBatchKeys),
-            crown,
-          );
-          // A trunk exists at near and mid — no floating crowns; the far
-          // band's crossed cards carry the whole silhouette, so a trunk
-          // crossfading at the mid/far boundary fades against them.
-          if (membership.band !== "far") {
-            this.appendInstance(
-              this.getBatch(
-                `tree-${tree.species}-v${geometryVariant}-trunk-${membership.band}`,
-                chunk,
-                nextBatchKeys,
-              ),
-              {
-                ...crown,
-                radialScale: WorldDetailRuntime.radialMultiplier(
-                  tree.trunkRadiusMeters,
-                  tree.heightMeters,
-                  trunkAspect,
-                ),
-                windResponse: 0.08,
-              },
-            );
-          }
+    if (target.buildSource === "worker") {
+      const client = this.client;
+      if (!client) return null;
+      const residents = target.residents.map((resident) => {
+        if (resident.source !== "worker" || !resident.tokenOwned) {
+          throw new Error("Worker detail build mixed inaccessible resident sources");
         }
-        statistics.treeInstances += 1;
-      }
-
-      for (const shrub of resident.cell.shrubs) {
-        if (shrubShare <= 0 || shrub.selection > shrubShare) continue;
-        // 2-12b: card shrubs with the tree pipeline's exact conventions —
-        // geometry variant from the selection hash (both variants inside the
-        // near band, one at mid: every (species, variant) mesh is a draw per
-        // chunk, and mid shrubs are a few pixels), radial aspect from the
-        // built prototype through the shared per-material uniform.
-        const shrubDistance = Math.hypot(
-          shrub.x - this.observerX,
-          shrub.z - this.observerZ,
-        );
-        const shrubEdge = densityLaw.mid.outerRadiusMeters;
-        if (shrubDistance >= shrubEdge) continue;
-        // 2-14: shrubs fade out at their mid-boundary cutoff (nothing fades
-        // in behind them — understory at that range is sub-pixel).
-        const shrubFade = shrubDistance > shrubEdge - DETAIL_FADE_MARGIN_METERS
-          ? (shrubEdge - shrubDistance) / DETAIL_FADE_MARGIN_METERS
-          : 1;
-        const shrubVariantCount = shrubDistance <= densityLaw.near.outerRadiusMeters
-          ? SHRUB_VARIANT_COUNTS[shrub.species]
-          : 1;
-        const shrubVariant = Math.min(
-          shrubVariantCount - 1,
-          Math.floor(((shrub.selection * 71.7) % 1) * shrubVariantCount),
-        );
-        const shrubAspect = this.shrubAspects.get(shrub.species) ?? 0.4;
-        this.appendInstance(
-          this.getBatch(`shrub-${shrub.species}-v${shrubVariant}`, chunk, nextBatchKeys),
-          {
-            x: shrub.x - floatingOrigin.x,
-            y: shrub.y - floatingOrigin.y,
-            z: shrub.z - floatingOrigin.z,
-            quaternion: yawQuaternion(shrub.yawRadians),
-            heightScaleMeters: shrub.heightMeters,
-            radialScale: WorldDetailRuntime.radialMultiplier(
-              shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
-              shrub.heightMeters,
-              shrubAspect,
-            ),
-            fade: shrubFade,
-            fadeIncoming: false,
-            variant: shrubVariant,
-            tint: shrub.color,
-            windPhase: shrub.windPhaseRadians / (2 * Math.PI),
-            windResponse: clamp(shrub.windResponse, 0, 1),
-          },
-        );
-        statistics.shrubInstances += 1;
-      }
-
-      for (const rock of resident.cell.rocks) {
-        // 2-15: small rocks live in the near field, boulders (≥ 2.2 m,
-        // thinned) reach the mid boundary — each with a 2-14 dither fade at
-        // its own edge from the stem's true range.
-        const rockDistance = Math.hypot(
-          rock.x - this.observerX,
-          rock.z - this.observerZ,
-        );
-        const bigRock = rock.radiusMeters >= 2.2 && rock.selection <= 0.22;
-        const rockEdge = bigRock
-          ? densityLaw.mid.outerRadiusMeters
-          : densityLaw.near.outerRadiusMeters;
-        if (rockDistance >= rockEdge) continue;
-        const rockFade = rockDistance > rockEdge - DETAIL_FADE_MARGIN_METERS
-          ? (rockEdge - rockDistance) / DETAIL_FADE_MARGIN_METERS
-          : 1;
-        this.appendInstance(
-          this.getBatch(`rock-${rock.variant}`, chunk, nextBatchKeys),
-          {
-            x: rock.x - floatingOrigin.x,
-            y: rock.y - floatingOrigin.y,
-            z: rock.z - floatingOrigin.z,
-            // ~60% terrain-normal alignment through the format's full
-            // orientation (the reason the quaternion is in the record).
-            quaternion: normalAlignedQuaternion(rock.normal, rock.yawRadians, 0.6),
-            heightScaleMeters: rock.radiusMeters * rock.flattening,
-            // Width recovery: x_world = proto·height·mult·aspect, so
-            // mult = jitter / (1.1 · flattening · 1.4) — inside [0.5, 1.6]
-            // across the 0.45–0.9 flattening spread at material aspect 1.4.
-            radialScale: WorldDetailRuntime.radialMultiplier(
-              rock.radiusMeters * (0.89 + rock.selection * 0.2),
-              rock.radiusMeters * rock.flattening * 1.1,
-              1.4,
-            ),
-            fade: rockFade,
-            fadeIncoming: false,
-            variant: 0,
-            tint: rock.color,
-            windPhase: 0,
-            windResponse: 0,
-          },
-        );
-        statistics.rockInstances += 1;
-      }
-
-      // 2-15: ground clutter — near field only (sub-metre debris is
-      // invisible past the near boundary), aligned hard to the terrain
-      // (logs lie on the ground: 85% blend), faded at the near edge.
-      for (const piece of resident.cell.clutter) {
-        const clutterDistance = Math.hypot(
-          piece.x - this.observerX,
-          piece.z - this.observerZ,
-        );
-        const clutterEdge = densityLaw.near.outerRadiusMeters;
-        if (clutterDistance >= clutterEdge) continue;
-        const clutterFade = clutterDistance > clutterEdge - DETAIL_FADE_MARGIN_METERS
-          ? (clutterEdge - clutterDistance) / DETAIL_FADE_MARGIN_METERS
-          : 1;
-        this.appendInstance(
-          this.getBatch(`clutter-${piece.clutterKind}`, chunk, nextBatchKeys),
-          {
-            x: piece.x - floatingOrigin.x,
-            y: piece.y - floatingOrigin.y,
-            z: piece.z - floatingOrigin.z,
-            quaternion: normalAlignedQuaternion(piece.normal, piece.yawRadians, 0.85),
-            heightScaleMeters: piece.sizeMeters,
-            radialScale: 1,
-            fade: clutterFade,
-            fadeIncoming: false,
-            variant: 0,
-            tint: piece.color,
-            windPhase: 0,
-            windResponse: 0,
-          },
-        );
-        statistics.clutterInstances += 1;
-      }
-
-      // 2-16: ground-cover expansion — the habitat grid says WHAT grows;
-      // the 1/d ramp says how many patches the frame affords at each range
-      // (screen-space blade density roughly constant, the grass radius is
-      // the §5.3 tier knob). Candidate positions are world-hash keyed, so
-      // they never slide with the observer; only acceptance re-thins.
-      const grassRadius = grassRadiusMeters;
-      if (resident.cell.groundCover.length > 0
-        && resident.distance < grassRadius + this.cellSizeMeters) {
-        const cell = resident.cell;
-        const spacing = GROUND_COVER_CANDIDATE_SPACING_METERS;
-        const nodeSpacing = cell.cellSizeMeters / GROUND_COVER_GRID;
-        const fullDensityRadius = grassRadius * GROUND_COVER_FULL_DENSITY_SHARE;
-        const columns = Math.floor(cell.cellSizeMeters / spacing);
-        for (let row = 0; row < columns; row += 1) {
-          for (let column = 0; column < columns; column += 1) {
-            const baseX = cell.minX + (column + 0.5) * spacing;
-            const baseZ = cell.minZ + (row + 0.5) * spacing;
-            const jitterX = (groundCoverHash(baseX, baseZ, 0) - 0.5) * spacing;
-            const jitterZ = (groundCoverHash(baseX, baseZ, 1) - 0.5) * spacing;
-            const x = baseX + jitterX;
-            const z = baseZ + jitterZ;
-            const patchDistance = Math.hypot(x - this.observerX, z - this.observerZ);
-            if (patchDistance >= grassRadius) continue;
-            const ramp = Math.min(1, fullDensityRadius / Math.max(patchDistance, 1));
-            const nodeColumn = Math.min(
-              GROUND_COVER_GRID - 1,
-              Math.max(0, Math.floor((x - cell.minX) / nodeSpacing)),
+        return {
+          token: resident.descriptor.token,
+          lod: resident.lod,
+          distance: resident.distance,
+        };
+      });
+      const build: PendingWorkerDetailChunkBuild = {
+        ...common,
+        source: "worker",
+        residentTokens: residents.map((resident) => resident.token),
+        residentLods: residents.map((resident) => resident.lod),
+        buildId: -1,
+        queuedResult: null,
+        queuedError: null,
+      };
+      const buildId = client.requestPresentation(
+        {
+          residents,
+          floatingOrigin: recordOrigin,
+          densityLaw,
+          treeVariantCap,
+          treePrototypeMode,
+          grassRadiusMeters,
+          observerX: this.observerX,
+          observerZ: this.observerZ,
+        },
+        (result) => {
+          if (build.queuedResult || build.queuedError) {
+            this.presentationWorkerBuildRejections = addDiagnosticCount(
+              this.presentationWorkerBuildRejections,
             );
-            const nodeRow = Math.min(
-              GROUND_COVER_GRID - 1,
-              Math.max(0, Math.floor((z - cell.minZ) / nodeSpacing)),
-            );
-            const node = cell.groundCover[nodeRow * GROUND_COVER_GRID + nodeColumn];
-            if (!node || node.coverage <= 0) continue;
-            if (groundCoverHash(x, z, 2) >= ramp * node.coverage) continue;
-            const heightHash = groundCoverHash(x, z, 3);
-            const grassFade = patchDistance > grassRadius - GROUND_COVER_EDGE_FADE_METERS
-              ? (grassRadius - patchDistance) / GROUND_COVER_EDGE_FADE_METERS
-              : 1;
-            // Bilinear height from the habitat grid — a terrainSample call
-            // per candidate stalled whole frames on every 64 m rebuild.
-            const gridU = clamp((x - cell.minX) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
-            const gridV = clamp((z - cell.minZ) / nodeSpacing - 0.5, 0, GROUND_COVER_GRID - 1);
-            const u0 = Math.floor(gridU);
-            const v0 = Math.floor(gridV);
-            const u1 = Math.min(GROUND_COVER_GRID - 1, u0 + 1);
-            const v1 = Math.min(GROUND_COVER_GRID - 1, v0 + 1);
-            const fu = gridU - u0;
-            const fv = gridV - v0;
-            const heightAt = (row: number, column: number): number =>
-              cell.groundCover[row * GROUND_COVER_GRID + column]?.heightMeters ?? node.heightMeters;
-            const patchHeight =
-              heightAt(v0, u0) * (1 - fu) * (1 - fv)
-              + heightAt(v0, u1) * fu * (1 - fv)
-              + heightAt(v1, u0) * (1 - fu) * fv
-              + heightAt(v1, u1) * fu * fv;
-            this.appendInstance(
-              this.getBatch(`ground-${node.archetype}`, chunk, nextBatchKeys),
-              {
-                x: x - floatingOrigin.x,
-                y: patchHeight - floatingOrigin.y,
-                z: z - floatingOrigin.z,
-                quaternion: yawQuaternion(groundCoverHash(x, z, 4) * 2 * Math.PI),
-                heightScaleMeters: (0.75 + heightHash * 0.5)
-                  * (node.archetype === "reed" ? 1.15
-                    : node.archetype === "heather" ? 0.75
-                    : node.archetype === "fern" ? 0.85 : 0.8),
-                radialScale: 1,
-                fade: grassFade,
-                fadeIncoming: false,
-                variant: 0,
-                tint: [node.color[0], node.color[1], node.color[2], 1],
-                windPhase: groundCoverHash(x, z, 5),
-                windResponse: node.archetype === "heather" ? 0.3
-                  : node.archetype === "fern" ? 0.5 : 0.9,
-              },
-            );
-            statistics.groundCoverInstances += 1;
+            return;
           }
-        }
+          build.queuedResult = result;
+          this.presentationWorkerResultsQueued = addDiagnosticCount(
+            this.presentationWorkerResultsQueued,
+          );
+          this.batchesDirty = true;
+        },
+        (error) => {
+          build.queuedError = error;
+          this.batchesDirty = true;
+        },
+      );
+      if (buildId < 0) {
+        this.presentationWorkerBuildRejections = addDiagnosticCount(
+          this.presentationWorkerBuildRejections,
+        );
+        return null;
       }
-
+      build.buildId = buildId;
+      this.presentationWorkerBuildStarts = addDiagnosticCount(
+        this.presentationWorkerBuildStarts,
+      );
+      this.recordPresentationBuildStart(target);
+      return build;
     }
 
-    // Perf-debt pass: only batches this revision NO LONGER populates are
-    // retired; the rest keep their mesh, their unique geometry and their GPU
-    // instance buffer, and take new bytes in place. (The old code retired
-    // every batch of the chunk on every rebuild — the allocation churn the
-    // 2-17-close ledger recorded as open debt, and a genuine leak besides:
-    // the raw `Buffer`s it published were never disposed, because a
-    // VertexBuffer built over an existing Buffer does not own it.)
+    const residents = target.residents.map((resident) => {
+      if (resident.source !== "inline") {
+        throw new Error("Inline detail build mixed inaccessible resident sources");
+      }
+      return {
+        cell: resident.cell,
+        treeCanopyRank: resident.treeCanopyRank,
+        lod: resident.lod,
+        distance: resident.distance,
+      };
+    });
+    this.recordPresentationBuildStart(target);
+    return {
+      ...common,
+      source: "inline",
+      iterator: buildPresentationChunk(
+        {
+          residents,
+          floatingOrigin: recordOrigin,
+          densityLaw,
+          treeVariantCap,
+          treePrototypeMode,
+          grassRadiusMeters,
+          observerX: this.observerX,
+          observerZ: this.observerZ,
+        },
+        this.presentationBuildCatalog,
+        {
+          appendInstance: (prototypeKey, record, billboardFrame) => {
+            const batch = this.getStagedBatch(prototypeKey, stagedBatches);
+            batch.writer.pushBounded(
+              record,
+              batch.bounds,
+              batch.prototypeBoundKernel,
+              billboardFrame,
+            );
+          },
+        },
+      ),
+    };
+  }
+
+  private recordPresentationBuildStart(target: DetailChunkBuildTarget): void {
+    this.presentationBuildStarts = addDiagnosticCount(this.presentationBuildStarts);
+    if (!target.observerSensitive) return;
+    this.presentationObserverSensitiveBuildStarts = addDiagnosticCount(
+      this.presentationObserverSensitiveBuildStarts,
+    );
+    this.presentationResidentCellsInSensitiveBuilds = addDiagnosticCount(
+      this.presentationResidentCellsInSensitiveBuilds,
+      target.residents.length,
+    );
+  }
+  /**
+   * Snapshot the prototype metadata once, after prototype registration. The
+   * result contains data only, so phase 2 can structured-clone this exact
+   * catalog into a worker instead of defining a second packing schema.
+   */
+  private createPresentationBuildCatalog(): DetailPresentationBuildCatalog {
+    const prototypes: Record<
+      string,
+      DetailPresentationBuildCatalog["prototypes"][string]
+    > = {};
+    for (const [prototypeKey, prototype] of this.prototypes) {
+      const radialUnits = this.prototypeRadialUnits.get(prototypeKey);
+      prototypes[prototypeKey] = radialUnits === undefined
+        ? { boundKernel: prototype.boundKernel }
+        : { radialUnits, boundKernel: prototype.boundKernel };
+    }
+    const impostors: Partial<Record<
+      TreeSpecies,
+      NonNullable<DetailPresentationBuildCatalog["impostors"][TreeSpecies]>
+    >> = {};
+    for (const species of TREE_SPECIES) {
+      const radialUnits = this.impostorRadialUnits.get(species);
+      const frame = this.impostorFrames.get(species);
+      if (radialUnits !== undefined && frame) impostors[species] = { radialUnits, frame };
+    }
+    const trees = Object.fromEntries(TREE_SPECIES.map((species) => [
+      species,
+      {
+        prototypeFamily: treePrototypeSpecies(species, "families"),
+        variantCount: TREE_VARIANT_COUNTS[species],
+        trunkTint: treeTrunkTint(species),
+      },
+    ])) as DetailPresentationBuildCatalog["trees"];
+    const shrubs = Object.fromEntries(SHRUB_SPECIES.map((species) => [
+      species,
+      { variantCount: SHRUB_VARIANT_COUNTS[species] },
+    ])) as DetailPresentationBuildCatalog["shrubs"];
+    return {
+      prototypes,
+      impostors,
+      trees,
+      shrubs,
+      groundCoverGrid: GROUND_COVER_GRID,
+      useImpostors: this.impostorAtlas !== null,
+    };
+  }
+
+  /** Advances inline synthesis or consumes one completed worker snapshot. */
+  private advancePendingPresentationBuild(): DetailChunkStatistics | null {
+    const build = this.pendingPresentationBuild;
+    if (!build) return null;
+    const startedAt = this.presentationNowMilliseconds();
+    if (build.source === "worker") {
+      this.presentationWorkUnitsLastUpdate = 0;
+      this.presentationMillisecondsLastUpdate = 0;
+      if (build.queuedError) {
+        this.failClosedWorkerPresentation(build);
+        return null;
+      }
+      const result = build.queuedResult;
+      if (!result) return null;
+      try {
+        const statistics = this.rehydrateWorkerPresentationResult(build, result);
+        this.presentationBuildSlices = addDiagnosticCount(this.presentationBuildSlices);
+        this.presentationCompletedSlices = addDiagnosticCount(
+          this.presentationCompletedSlices,
+        );
+        this.presentationMillisecondsLastUpdate = Math.max(
+          0,
+          this.presentationNowMilliseconds() - startedAt,
+        );
+        return statistics;
+      } catch {
+        this.failClosedWorkerPresentation(build);
+        return null;
+      }
+    }
+
+    let workUnits = 0;
+    let completed: DetailChunkStatistics | null = null;
+    let stoppedForTime = false;
+    while (workUnits < this.presentationRebuildBudget.maximumWorkUnits) {
+      const result = build.iterator.next();
+      workUnits += 1;
+      if (result.done) {
+        completed = result.value;
+        break;
+      }
+      if (
+        workUnits % DETAIL_PRESENTATION_REBUILD_CLOCK_INTERVAL_UNITS === 0
+        && this.presentationNowMilliseconds() - startedAt
+          >= this.presentationRebuildBudget.maximumMilliseconds
+      ) {
+        stoppedForTime = true;
+        break;
+      }
+    }
+    this.presentationBuildSlices = addDiagnosticCount(this.presentationBuildSlices);
+    this.presentationWorkUnitsTotal = addDiagnosticCount(
+      this.presentationWorkUnitsTotal,
+      workUnits,
+    );
+    if (completed) {
+      this.presentationCompletedSlices = addDiagnosticCount(this.presentationCompletedSlices);
+    } else if (stoppedForTime) {
+      this.presentationTimeBudgetStops = addDiagnosticCount(
+        this.presentationTimeBudgetStops,
+      );
+    } else {
+      this.presentationWorkBudgetStops = addDiagnosticCount(
+        this.presentationWorkBudgetStops,
+      );
+    }
+    this.presentationWorkUnitsLastUpdate = workUnits;
+    this.presentationMillisecondsLastUpdate = Math.max(
+      0,
+      this.presentationNowMilliseconds() - startedAt,
+    );
+    return completed;
+  }
+
+  /**
+   * Rehydrates transferred ownership into the same staging abstraction used
+   * by inline synthesis. Validation is deliberately repeated here even though
+   * the client guards the wire shape: this is the last authority before an
+   * atomic live-GPU publication.
+   */
+  private rehydrateWorkerPresentationResult(
+    build: PendingWorkerDetailChunkBuild,
+    result: DetailWorkerPresentationResult,
+  ): DetailChunkStatistics {
+    if (
+      this.pendingPresentationBuild !== build
+      || result.buildId !== build.buildId
+      || build.signature.length === 0
+      || build.configurationSignature.length === 0
+      || build.residentTokens.length !== build.residentLods.length
+      || new Set(build.residentTokens).size !== build.residentTokens.length
+      || build.residentTokens.some((token) => !Number.isSafeInteger(token) || token <= 0)
+      || Math.hypot(this.observerX - build.observerX, this.observerZ - build.observerZ)
+        > DETAIL_MEMBERSHIP_SLACK_METERS
+      || build.stagedBatches.size !== 0
+    ) {
+      throw new Error("Detail worker presentation result no longer matches its build snapshot");
+    }
+
+    const statistics = result.statistics;
+    for (const value of Object.values(statistics)) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error("Detail worker presentation statistics must be non-negative integers");
+      }
+    }
+    let nearCells = 0;
+    let midCells = 0;
+    for (const lod of build.residentLods) {
+      if (lod === "near") nearCells += 1;
+      else if (lod === "mid") midCells += 1;
+      else throw new Error("Detail worker presentation resident has an invalid LOD");
+    }
+    if (statistics.nearCells !== nearCells || statistics.midCells !== midCells) {
+      throw new Error("Detail worker presentation statistics do not match the resident snapshot");
+    }
+    const authoredInstances = statistics.treeInstances
+      + statistics.shrubInstances
+      + statistics.rockInstances
+      + statistics.clutterInstances
+      + statistics.groundCoverInstances;
+    const maximumPackedRecords = statistics.treeInstances * 6
+      + statistics.shrubInstances
+      + statistics.rockInstances
+      + statistics.clutterInstances
+      + statistics.groundCoverInstances;
+    let packedRecords = 0;
+    for (const batch of result.batches) {
+      packedRecords += batch.count;
+    }
+    if (
+      !Number.isSafeInteger(authoredInstances)
+      || !Number.isSafeInteger(maximumPackedRecords)
+      || !Number.isSafeInteger(packedRecords)
+      || packedRecords < authoredInstances
+      || packedRecords > maximumPackedRecords
+    ) {
+      throw new Error("Detail worker presentation record count does not match authored instances");
+    }
+    if ((authoredInstances === 0) !== (result.batches.length === 0)) {
+      throw new Error("Detail worker presentation batches do not match authored instance statistics");
+    }
+    const transferredBuffers = new Set<ArrayBuffer>();
+    for (const batch of result.batches) {
+      if (
+        !(batch.bytes.buffer instanceof ArrayBuffer)
+        || transferredBuffers.has(batch.bytes.buffer)
+      ) {
+        throw new Error("Detail worker presentation batches must own unique transferred buffers");
+      }
+      transferredBuffers.add(batch.bytes.buffer);
+    }
+
+    const stagedBatches = new Map<string, StagedDetailBatch>();
+    try {
+      for (const batch of result.batches) {
+        if (batch.prototypeKey.length === 0 || stagedBatches.has(batch.prototypeKey)) {
+          throw new Error("Detail worker presentation contains an invalid or duplicate batch key");
+        }
+        const prototype = this.prototypes.get(batch.prototypeKey);
+        if (!prototype) {
+          throw new Error(`Detail worker presentation referenced unknown prototype ${batch.prototypeKey}`);
+        }
+        stagedBatches.set(batch.prototypeKey, {
+          prototypeKey: batch.prototypeKey,
+          writer: DetailInstanceWriter.fromTransferredBytes(batch.bytes, batch.count),
+          bounds: DetailInstanceBounds.fromExtents(batch.minimum, batch.maximum),
+          prototypeBoundKernel: prototype.boundKernel,
+        });
+      }
+    } catch (error) {
+      for (const staged of stagedBatches.values()) {
+        this.releaseDetailBuildStorage(
+          staged.prototypeKey,
+          staged.writer,
+          staged.bounds,
+        );
+      }
+      throw error;
+    }
+    for (const [prototypeKey, staged] of stagedBatches) {
+      build.stagedBatches.set(prototypeKey, staged);
+    }
+    return statistics;
+  }
+
+  /**
+   * A semantically malformed worker result is not retried on the same path:
+   * keep every complete live chunk, terminate the untrusted authority, and
+   * let bounded inline generation replace descriptors cell by cell.
+   */
+  private failClosedWorkerPresentation(build: PendingWorkerDetailChunkBuild): void {
+    if (this.pendingPresentationBuild !== build) return;
+    this.client?.cancelPresentation(build.buildId);
+    this.presentationWorkerBuildRejections = addDiagnosticCount(
+      this.presentationWorkerBuildRejections,
+    );
+    this.activateInlineWorkerFallback(true);
+  }
+
+  private cancelPendingPresentationBuild(): void {
+    const build = this.pendingPresentationBuild;
+    if (!build) return;
+    if (build.source === "worker") this.client?.cancelPresentation(build.buildId);
+    // Staging has no Mesh, VertexBuffer or Buffer. Cancellation is therefore
+    // incapable of shortening the grace period that protects submitted draws.
+    this.releaseStagedBuildStorage(build);
+    this.pendingPresentationBuild = null;
+    this.presentationBuildCancellations = addDiagnosticCount(
+      this.presentationBuildCancellations,
+    );
+  }
+
+  /**
+   * Publishes one complete chunk between renders. Shared batches retain their
+   * meshes and GPU allocations; only their queue-ordered bytes change. Batch
+   * additions/removals become observable in this same synchronous commit.
+   */
+  private publishPendingPresentationBuild(
+    build: PendingDetailChunkBuild,
+    statistics: DetailChunkStatistics,
+    currentOrigin: DetailFloatingOrigin,
+  ): void {
+    const chunk = this.presentationChunks.get(build.coordinates.key);
+    if (!chunk) {
+      this.releaseStagedBuildStorage(build);
+      return;
+    }
+    const nextRevision = chunk.revision + 1;
+    const nextBatchKeys = new Set<string>();
+    let publishedRecords = 0;
+    for (const staged of build.stagedBatches.values()) {
+      publishedRecords += staged.writer.count;
+      const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
+      nextBatchKeys.add(batchKey);
+      const batch = this.batches.get(batchKey)
+        ?? this.createPublishedBatch(staged.prototypeKey, chunk, nextRevision);
+      const displacedWriter = batch.writer;
+      const displacedBounds = batch.bounds;
+      batch.writer = staged.writer;
+      batch.bounds = staged.bounds;
+      batch.filledRevision = nextRevision;
+      this.uploadBatch(batch, build.recordOrigin, currentOrigin);
+      this.releaseDetailBuildStorage(
+        staged.prototypeKey,
+        displacedWriter,
+        displacedBounds,
+      );
+    }
+
+    // Only now is it safe to remove batches absent from the completed target.
+    // Their existing allocations keep the unchanged retirement/pool path.
     for (const batchKey of chunk.batchKeys) {
       if (!nextBatchKeys.has(batchKey)) this.retireBatch(batchKey);
     }
     chunk.batchKeys.clear();
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
-    for (const batchKey of chunk.batchKeys) {
-      const batch = this.batches.get(batchKey);
-      if (batch) this.uploadBatch(batch, floatingOrigin);
+    chunk.revision = nextRevision;
+    chunk.statistics = statistics;
+    chunk.signature = build.signature;
+    chunk.observerX = build.observerX;
+    chunk.observerZ = build.observerZ;
+    chunk.observerSensitive = build.observerSensitive;
+    chunk.validitySuppressed = false;
+    // The staged map must not alias writers that are live after publication.
+    build.stagedBatches.clear();
+    this.lastPublicationObserverDriftMeters = build.observerSensitive
+      ? Math.hypot(this.observerX - build.observerX, this.observerZ - build.observerZ)
+      : 0;
+    this.presentationBuildPublications += 1;
+    this.presentationPublishedRecords = addDiagnosticCount(
+      this.presentationPublishedRecords,
+      publishedRecords,
+    );
+  }
+
+  /**
+   * Prevents a completed but obsolete observer snapshot from being drawn.
+   * This is deliberately not retirement: meshes, CPU writers and WebGPU
+   * buffers keep their existing owners and lifetimes until a valid atomic
+   * publication overwrites them. The dirty/backlog path remains active, so
+   * diagnostics and capture settling cannot mistake suppression for success.
+   */
+  private suppressInvalidPresentationChunks(): boolean {
+    let suppressed = false;
+    for (const chunk of this.presentationChunks.values()) {
+      if (
+        chunk.revision === 0
+        || !chunk.observerSensitive
+        || chunk.validitySuppressed
+        || Math.hypot(this.observerX - chunk.observerX, this.observerZ - chunk.observerZ)
+          <= DETAIL_MEMBERSHIP_SLACK_METERS
+      ) continue;
+      chunk.validitySuppressed = true;
+      for (const batchKey of chunk.batchKeys) {
+        this.batches.get(batchKey)?.mesh.setEnabled(false);
+      }
+      suppressed = true;
     }
-    return statistics;
+    return suppressed;
+  }
+
+  private getStagedBatch(
+    prototypeKey: string,
+    stagedBatches: Map<string, StagedDetailBatch>,
+  ): StagedDetailBatch {
+    const existing = stagedBatches.get(prototypeKey);
+    if (existing) return existing;
+    const prototype = this.prototypes.get(prototypeKey);
+    if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
+    const storage = this.acquireDetailBuildStorage(prototypeKey);
+    const staged: StagedDetailBatch = {
+      prototypeKey,
+      writer: storage.writer,
+      bounds: storage.bounds,
+      prototypeBoundKernel: prototype.boundKernel,
+    };
+    stagedBatches.set(prototypeKey, staged);
+    return staged;
+  }
+
+  private acquireDetailBuildStorage(prototypeKey: string): PooledDetailBuildStorage {
+    const pooled = this.detailBuildStoragePool.get(prototypeKey);
+    if (pooled) {
+      this.detailBuildStoragePool.delete(prototypeKey);
+      pooled.writer.reset();
+      pooled.bounds.reset();
+      return pooled;
+    }
+    return {
+      writer: new DetailInstanceWriter(),
+      bounds: new DetailInstanceBounds(),
+    };
+  }
+
+  private releaseDetailBuildStorage(
+    prototypeKey: string,
+    writer: DetailInstanceWriter,
+    bounds: DetailInstanceBounds,
+  ): void {
+    // One active staged chunk means one spare per prototype is sufficient.
+    // Refuse a second entry explicitly rather than letting structural churn
+    // turn this CPU-only pool into an unbounded cache.
+    if (this.detailBuildStoragePool.has(prototypeKey)) return;
+    writer.reset();
+    bounds.reset();
+    this.detailBuildStoragePool.set(prototypeKey, { writer, bounds });
+  }
+
+  private releaseStagedBuildStorage(build: PendingDetailChunkBuild): void {
+    for (const staged of build.stagedBatches.values()) {
+      this.releaseDetailBuildStorage(
+        staged.prototypeKey,
+        staged.writer,
+        staged.bounds,
+      );
+    }
+    build.stagedBatches.clear();
   }
 
   /**
@@ -1460,7 +2247,11 @@ export class WorldDetailRuntime {
    * mesh appears in. Only GROWTH allocates, and the outgrown allocation
    * waits out the same conservative grace window a retired batch does.
    */
-  private uploadBatch(batch: DetailBatch, floatingOrigin: DetailFloatingOrigin): void {
+  private uploadBatch(
+    batch: DetailBatch,
+    recordOrigin: DetailFloatingOrigin,
+    currentOrigin: DetailFloatingOrigin,
+  ): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     if (count === 0) {
@@ -1487,10 +2278,14 @@ export class WorldDetailRuntime {
       Vector3.FromArray(batch.bounds.minimum()),
       Vector3.FromArray(batch.bounds.maximum()),
     ));
-    batch.builtOrigin.x = floatingOrigin.x;
-    batch.builtOrigin.y = floatingOrigin.y;
-    batch.builtOrigin.z = floatingOrigin.z;
-    batch.mesh.position.set(0, 0, 0);
+    batch.builtOrigin.x = recordOrigin.x;
+    batch.builtOrigin.y = recordOrigin.y;
+    batch.builtOrigin.z = recordOrigin.z;
+    batch.mesh.position.set(
+      recordOrigin.x - currentOrigin.x,
+      recordOrigin.y - currentOrigin.y,
+      recordOrigin.z - currentOrigin.z,
+    );
   }
 
   /** Keeps stale, origin-relative records world-stable during the rebuild sweep. */
@@ -1611,36 +2406,6 @@ export class WorldDetailRuntime {
     };
   }
 
-  private appendInstance(
-    batch: DetailBatch,
-    record: DetailInstanceRecord,
-  ): void {
-    batch.writer.push(record);
-    // The wind extent is an explicit bounds term now, not a scale fudge.
-    batch.bounds.add(record, record.windResponse * record.heightScaleMeters * 0.11);
-  }
-
-  /** Composes yaw with a small lean about a hashed azimuth (2-12). */
-  private static yawLeanQuaternion(
-    yawRadians: number,
-    leanRadians: number,
-    leanAzimuthRadians: number,
-  ): [number, number, number, number] {
-    const [, yy, , yw] = yawQuaternion(yawRadians);
-    const halfLean = leanRadians / 2;
-    const sinLean = Math.sin(halfLean);
-    const lx = Math.cos(leanAzimuthRadians) * sinLean;
-    const lz = Math.sin(leanAzimuthRadians) * sinLean;
-    const lw = Math.cos(halfLean);
-    // q = lean ∘ yaw (yaw = (0, yy, 0, yw)).
-    return [
-      lx * yw + lz * yy,
-      yy * lw,
-      lz * yw - lx * yy,
-      lw * yw,
-    ];
-  }
-
   /**
    * 2-14: which render bands a stem at this range belongs to, with the
    * dither-crossfade fades. Inside a margin the stem carries TWO
@@ -1653,29 +2418,8 @@ export class WorldDetailRuntime {
   static fadeBandMemberships(
     distanceMeters: number,
     law: RenderedDensityLaw,
-  ): ReadonlyArray<{ band: "near" | "mid" | "far" }> {
-    const nearEdge = law.near.outerRadiusMeters;
-    const midEdge = law.mid.outerRadiusMeters;
-    const cullEdge = law.far.outerRadiusMeters;
-    const slack = DETAIL_MEMBERSHIP_SLACK_METERS;
-    if (!Number.isFinite(distanceMeters) || distanceMeters < 0
-      || distanceMeters >= cullEdge + slack) {
-      return [];
-    }
-    const memberships: Array<{ band: "near" | "mid" | "far" }> = [];
-    // Membership is generous by ±slack around each margin: the FADE itself
-    // is computed per fragment from the true camera range, so a stem merely
-    // needs to EXIST in every band whose window it could enter before the
-    // next amortized rebuild — out-of-window stems dither to nothing.
-    if (distanceMeters <= nearEdge + slack) memberships.push({ band: "near" });
-    if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS - slack
-      && distanceMeters <= midEdge + slack) {
-      memberships.push({ band: "mid" });
-    }
-    if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS - slack) {
-      memberships.push({ band: "far" });
-    }
-    return memberships;
+  ) {
+    return detailFadeBandMemberships(distanceMeters, law);
   }
 
   /**
@@ -1688,8 +2432,11 @@ export class WorldDetailRuntime {
     const law = this.lastDensityLaw;
     const minX = coordinates.minCellX * this.cellSizeMeters;
     const minZ = coordinates.minCellZ * this.cellSizeMeters;
-    const maxX = (coordinates.maxCellX + 1) * this.cellSizeMeters;
-    const maxZ = (coordinates.maxCellZ + 1) * this.cellSizeMeters;
+    // `maxCell*` is already exclusive (spatialChunks.ts); adding one here
+    // widened every frontier test by a whole cell and scheduled needless
+    // observer rebuilds, especially for negative chunks.
+    const maxX = coordinates.maxCellX * this.cellSizeMeters;
+    const maxZ = coordinates.maxCellZ * this.cellSizeMeters;
     const nearestX = clamp(this.observerX, minX, maxX);
     const nearestZ = clamp(this.observerZ, minZ, maxZ);
     const minDistance = Math.hypot(nearestX - this.observerX, nearestZ - this.observerZ);
@@ -1699,39 +2446,33 @@ export class WorldDetailRuntime {
       Math.hypot(minX - this.observerX, maxZ - this.observerZ),
       Math.hypot(maxX - this.observerX, maxZ - this.observerZ),
     );
-    const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
-    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64;
+    const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
+      + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
+    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
+      + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
     const edges: readonly (readonly [number, number])[] = [
       [law.near.outerRadiusMeters, pad],
       [law.mid.outerRadiusMeters, pad],
       [law.far.outerRadiusMeters, cullPad],
-      [this.lastGrassRadius, GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS + 64],
+      [
+        this.lastGrassRadius,
+        GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
+          + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS,
+      ],
     ];
     for (const [edge, padding] of edges) {
       if (minDistance - padding <= edge && cornerDistance + padding >= edge) {
-        return `f${Math.round(this.observerX / 64)}:${Math.round(this.observerZ / 64)}`;
+        return `f${Math.round(this.observerX / DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS)}`
+          + `:${Math.round(this.observerZ / DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS)}`;
       }
     }
     return "interior";
   }
 
-  /** Maps a desired world radius onto the [0.5, 1.6] slenderness multiplier. */
-  private static radialMultiplier(
-    radiusMeters: number,
-    heightMeters: number,
-    aspect: number,
-  ): number {
-    return clamp(
-      radiusMeters / Math.max(heightMeters * aspect, 1e-4),
-      DETAIL_INSTANCE_RADIAL_MIN,
-      DETAIL_INSTANCE_RADIAL_MAX,
-    );
-  }
-
-  private getBatch(
+  private createPublishedBatch(
     prototypeKey: string,
     chunk: DetailPresentationChunk,
-    usedBatchKeys: Set<string>,
+    revision: number,
   ): DetailBatch {
     const coordinates = chunk.coordinates;
     // Perf-debt pass: the key no longer carries the chunk revision. It used
@@ -1744,16 +2485,6 @@ export class WorldDetailRuntime {
     // `writeBuffer` is ordered on the queue against the previous submit — so
     // the batch survives and `uploadBatch` writes into it in place.
     const batchKey = `${prototypeKey}@${coordinates.key}`;
-    usedBatchKeys.add(batchKey);
-    const existing = this.batches.get(batchKey);
-    if (existing) {
-      if (existing.filledRevision !== chunk.revision) {
-        existing.filledRevision = chunk.revision;
-        existing.writer.reset();
-        existing.bounds.reset();
-      }
-      return existing;
-    }
     const prototype = this.prototypes.get(prototypeKey);
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
     const mesh = prototype.mesh.clone(
@@ -1798,8 +2529,9 @@ export class WorldDetailRuntime {
       chunkKey: coordinates.key,
       writer: new DetailInstanceWriter(),
       bounds: new DetailInstanceBounds(),
+      prototypeBoundKernel: prototype.boundKernel,
       gpu: null,
-      filledRevision: chunk.revision,
+      filledRevision: revision,
       builtOrigin: { x: 0, y: 0, z: 0 },
     };
     this.batches.set(batchKey, batch);
@@ -1860,11 +2592,11 @@ export class WorldDetailRuntime {
       this.impostorAtlas = createImpostorAtlas(this.scene, this.options.worldSeed);
     }
 
-    // 2-12: card trees from the built prototypes — species-specific trunks
-    // (swept generalised cylinders with root flare and forks) and 40-60
-    // tilted crown quads, with 16-direction baked sky occlusion in vertex
-    // alpha. Prototypes are unit-height with true proportions, so the
-    // per-material radial aspect is the prototype's own crown/trunk radius.
+    // Near trees use species-specific closed crown lobes/whorls and mid trees
+    // use one family-shaped closed hull; far trees retain the impostor.
+    // Prototypes are unit-height with true proportions, so the
+    // instance's radial multiplier is solved against the exact concrete
+    // prototype bound (species, variant and band).
     // Bark stays back-face-culled in its own batch while foliage is
     // two-sided: zero extra draw calls per the plan.
     const prototypeSeed = 7;
@@ -1874,11 +2606,11 @@ export class WorldDetailRuntime {
         1,
         32,
       );
+      this.impostorFrames.set(species, impostorBakeFrame(species, prototypeSeed));
       const crownMaterial = this.createMaterial(
         `detail-foliage-${species}`,
-        new Color3(0.62, 0.66, 0.58),
+        new Color3(...DETAIL_CROWN_ALBEDO),
         0.87,
-        1,
         true,
       );
       this.registerBandFadeMaterial(crownMaterial);
@@ -1891,51 +2623,89 @@ export class WorldDetailRuntime {
       // here (no albedo texture, material alpha 1) — the plugin's atlas
       // discard is the real test; this move is purely about draw order.
       crownMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+      const opaqueCrownMaterial = this.createMaterial(
+        `detail-foliage-${species}-opaque-crown`,
+        new Color3(...DETAIL_CROWN_ALBEDO),
+        0.9,
+        true,
+      );
+      // This is a distinct compiled material, not merely alpha=1 card art:
+      // it contains no fragment discard, is in the opaque queue and is
+      // one-sided, allowing early-Z/back-face rejection to remove the
+      // vegetation fill bottleneck measured in the forest captures.
+      this.materialPlugin(opaqueCrownMaterial)?.setOpaqueCrown(true);
+      this.registerBandFadeMaterial(opaqueCrownMaterial);
+      opaqueCrownMaterial.backFaceCulling = true;
+      opaqueCrownMaterial.twoSidedLighting = false;
+      opaqueCrownMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),
         0.93,
-        1,
         true,
       );
       this.registerBandFadeMaterial(barkMaterial);
       for (let variant = 0; variant < variantCount; variant += 1) {
         const prototype = buildTreePrototype(species, variant, prototypeSeed);
-        const crownAspect = Math.max(prototype.crown.boundingRadius, 0.05);
-        const trunkAspect = Math.max(prototype.trunk.boundingRadius, 0.005);
+        const crownRadiusUnit = Math.max(prototype.crown.boundingRadius, 0.05);
+        const trunkRadiusUnit = Math.max(prototype.trunk.boundingRadius, 0.005);
         if (variant === 0) {
-          this.crownAspects.set(species, crownAspect);
-          this.trunkAspects.set(species, trunkAspect);
-          this.materialPlugin(crownMaterial)?.setRadialAspect(crownAspect);
-          this.materialPlugin(barkMaterial)?.setRadialAspect(trunkAspect);
+          // The far atlas is baked from this exact source geometry.
+          this.impostorRadialUnits.set(species, crownRadiusUnit);
         }
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-crown-near`,
+          crownRadiusUnit,
+        );
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-trunk-near`,
+          trunkRadiusUnit,
+        );
         this.registerBatch(
           `tree-${species}-v${variant}-crown-near`,
           this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-crown`, prototype.crown),
-          crownMaterial,
+          opaqueCrownMaterial,
           true,
+          {
+            ...prototype.crown.localBounds,
+            // DETAIL_OPAQUE_CROWN contracts xz toward zero and y toward
+            // 0.42h for winter thinning.
+            contractionPivotYUnit: 0.42,
+          },
         );
         this.registerBatch(
           `tree-${species}-v${variant}-trunk-near`,
           this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-trunk`, prototype.trunk),
           barkMaterial,
           true,
+          prototype.trunk.localBounds,
         );
-        // Mid and far bands draw the law-priced standins (≤48 and ≤8
-        // triangles per plant): a trunk exists at mid (no floating crowns);
-        // far is crossed cards, crown layer only. 2-14 replaces the mid
-        // standin with its authored card tier, 2-17 the far one with
-        // octahedral impostors.
+        // Mid uses the exact near trunk and opaque crown. The extra vertices
+        // remove the dominant two-sided alpha-card overdraw and make the hard
+        // near/mid handoff topology- and silhouette-identical. Far is the
+        // impostor crown only.
         const midPrototype = buildTreePrototype(species, variant, prototypeSeed, "mid");
         const farPrototype = buildTreePrototype(species, variant, prototypeSeed, "far");
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-crown-mid`,
+          Math.max(midPrototype.crown.boundingRadius, 0.05),
+        );
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-trunk-mid`,
+          Math.max(midPrototype.trunk.boundingRadius, 0.005),
+        );
         this.registerBatch(
           `tree-${species}-v${variant}-crown-mid`,
           this.buildPrototypeMesh(
             `detail-tree-${species}-v${variant}-crown-mid`,
             midPrototype.crown,
           ),
-          crownMaterial,
+          opaqueCrownMaterial,
           false,
+          {
+            ...midPrototype.crown.localBounds,
+            contractionPivotYUnit: 0.42,
+          },
         );
         this.registerBatch(
           `tree-${species}-v${variant}-trunk-mid`,
@@ -1945,10 +2715,15 @@ export class WorldDetailRuntime {
           ),
           barkMaterial,
           false,
+          midPrototype.trunk.localBounds,
         );
         if (variant === 0 && !this.impostorAtlas) {
           // No atlas (NullEngine): the far band keeps 2-12's law-priced
           // crossed cards, one mesh per species.
+          this.prototypeRadialUnits.set(
+            `tree-${species}-v${variant}-crown-far`,
+            Math.max(farPrototype.crown.boundingRadius, 0.05),
+          );
           this.registerBatch(
             `tree-${species}-v${variant}-crown-far`,
             this.buildPrototypeMesh(
@@ -1957,6 +2732,7 @@ export class WorldDetailRuntime {
             ),
             crownMaterial,
             false,
+            farPrototype.crown.localBounds,
           );
         }
       }
@@ -1978,7 +2754,6 @@ export class WorldDetailRuntime {
         "detail-impostor",
         new Color3(1, 1, 1),
         0.95,
-        1,
         false,
       );
       impostorMaterial.backFaceCulling = false;
@@ -2006,7 +2781,16 @@ export class WorldDetailRuntime {
       quadData.indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
       quadData.applyToMesh(quad, false);
       quad.setEnabled(false);
-      this.registerBatch(TREE_IMPOSTOR_PROTOTYPE_KEY, quad, impostorMaterial, false);
+      this.registerBatch(
+        TREE_IMPOSTOR_PROTOTYPE_KEY,
+        quad,
+        impostorMaterial,
+        false,
+        {
+          minimum: [-1, -1, 0],
+          maximum: [1, 1, 0],
+        },
+      );
       // AFTER registerBatch (which forces receive on): impostors must NOT
       // receive shadows — with front_facing (two-sided) and the three blend
       // varyings, the 4-cascade CSM inputs push the fragment past the
@@ -2032,7 +2816,6 @@ export class WorldDetailRuntime {
         `detail-shrub-${species}-material`,
         shrubColors[species],
         0.91,
-        1,
         true,
       );
       material.backFaceCulling = false;
@@ -2040,16 +2823,16 @@ export class WorldDetailRuntime {
       material.transparencyMode = Material.MATERIAL_ALPHATEST;
       for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
         const prototype = buildShrubPrototype(species, variant, prototypeSeed);
-        if (variant === 0) {
-          const aspect = Math.max(prototype.boundingRadius, 0.05);
-          this.shrubAspects.set(species, aspect);
-          this.materialPlugin(material)?.setRadialAspect(aspect);
-        }
+        this.prototypeRadialUnits.set(
+          `shrub-${species}-v${variant}`,
+          Math.max(prototype.boundingRadius, 0.05),
+        );
         this.registerBatch(
           `shrub-${species}-v${variant}`,
           this.buildPrototypeMesh(`detail-shrub-${species}-v${variant}`, prototype),
           material,
           false,
+          prototype.localBounds,
         );
       }
     }
@@ -2064,13 +2847,16 @@ export class WorldDetailRuntime {
     };
     for (const variant of ROCK_VARIANTS) {
       const prototype = buildRockPrototype(variant, prototypeSeed);
+      this.prototypeRadialUnits.set(
+        `rock-${variant}`,
+        Math.max(prototype.boundingRadius, 0.05),
+      );
       this.registerBatch(
         `rock-${variant}`,
         this.buildPrototypeMesh(`detail-rock-${variant}`, prototype),
-        // Aspect 1.4 keeps the width-recovery multiplier inside the record's
-        // [0.5, 1.6] range across the flattening spread (see the appender).
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94, 1.4),
+        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94),
         false,
+        prototype.localBounds,
       );
     }
 
@@ -2085,7 +2871,6 @@ export class WorldDetailRuntime {
         `detail-clutter-${kind}-material`,
         kind === "mossCushion" ? new Color3(0.62, 0.68, 0.56) : new Color3(0.64, 0.6, 0.55),
         0.95,
-        1,
         true,
       );
       if (kind === "branchLitter") {
@@ -2098,6 +2883,7 @@ export class WorldDetailRuntime {
         this.buildPrototypeMesh(`detail-clutter-${kind}`, prototype),
         material,
         false,
+        prototype.localBounds,
       );
     }
 
@@ -2113,7 +2899,6 @@ export class WorldDetailRuntime {
         `detail-ground-${archetype}-material`,
         new Color3(0.85, 0.88, 0.8),
         0.92,
-        1,
         true,
       );
       material.backFaceCulling = false;
@@ -2124,6 +2909,7 @@ export class WorldDetailRuntime {
         this.buildPrototypeMesh(`detail-ground-${archetype}`, prototype),
         material,
         false,
+        prototype.localBounds,
       );
     }
 
@@ -2160,7 +2946,6 @@ export class WorldDetailRuntime {
     name: string,
     albedo: Color3,
     roughness: number,
-    radialAspect: number,
     samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
@@ -2175,7 +2960,6 @@ export class WorldDetailRuntime {
     // carries it (rocks included; their wind response is simply zero).
     const plugin = new DetailInstanceMaterialPlugin(material);
     plugin.setTimeSeconds(this.windTimeSeconds);
-    plugin.setRadialAspect(radialAspect);
     if (samplesFoliageAtlas && this.foliageAtlas) {
       plugin.setFoliageAtlas(this.foliageAtlas.texture);
     }
@@ -2212,6 +2996,7 @@ export class WorldDetailRuntime {
     mesh: Mesh,
     material: PBRMaterial,
     castsShadows: boolean,
+    bounds: DetailPrototypeBounds,
   ): void {
     mesh.material = material;
     mesh.isPickable = false;
@@ -2223,6 +3008,7 @@ export class WorldDetailRuntime {
       mesh,
       material,
       castsShadows,
+      boundKernel: detailPrototypeBoundKernel(bounds),
     });
   }
 }

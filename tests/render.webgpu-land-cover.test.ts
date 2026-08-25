@@ -3,6 +3,7 @@ import {
   LAND_COVER_CLASSIFIER_WGSL,
   LAND_COVER_SPLAT_BAKE_WGSL,
   LAND_COVER_TOP_MATERIALS,
+  alignSeasonalLandCoverWeights,
   classifyLandCover,
   dominantLandCover,
   landCoverHabitat,
@@ -150,6 +151,52 @@ describe("land-cover classifier (4-6)", () => {
     const midsummer = sampleTerrain(world, 812, -1_140, undefined, 171);
     const midwinter = sampleTerrain(world, 812, -1_140, undefined, 15);
     expect(midwinter.biome).toBe(midsummer.biome);
+  });
+
+  it("keeps low/high seasonal weights aligned to one material-id basis", () => {
+    const low = classifyLandCover(at({
+      elevationMeters: 600,
+      slope: 0,
+      moisture: 0,
+      temperature: 0,
+      seasonalTemperatureShift: 0,
+    }));
+    const high = classifyLandCover(at({
+      elevationMeters: 600,
+      slope: 0,
+      moisture: 0,
+      temperature: 0,
+      seasonalTemperatureShift: -0.35,
+    }));
+    // Snow enters winter's top four, so storing low.ids with high.weights by
+    // lane would paint that snow weight as an unrelated summer material.
+    expect(low.ids).not.toContain(SurfaceMaterial.Snow);
+    expect(high.ids).toContain(SurfaceMaterial.Snow);
+
+    const aligned = alignSeasonalLandCoverWeights(low, high);
+    expect(aligned.ids).toHaveLength(LAND_COVER_TOP_MATERIALS);
+    expect(new Set(aligned.ids).size).toBe(LAND_COVER_TOP_MATERIALS);
+    expect(aligned.lowWeights.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+    expect(aligned.highWeights.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+
+    const snowLane = aligned.ids.indexOf(SurfaceMaterial.Snow);
+    expect(snowLane).toBeGreaterThanOrEqual(0);
+    expect(aligned.lowWeights[snowLane]).toBe(0);
+    expect(aligned.highWeights[snowLane]).toBeGreaterThan(0);
+    for (let lane = 0; lane < LAND_COVER_TOP_MATERIALS; lane += 1) {
+      const material = aligned.ids[lane]!;
+      const lowSource = landCoverWeightOf(low, material);
+      const highSource = landCoverWeightOf(high, material);
+      // A non-zero stored lane always belongs to the same material in the
+      // source bucket; weights may only differ by joint-basis renormalisation.
+      expect(aligned.lowWeights[lane]! > 0).toBe(lowSource > 0);
+      expect(aligned.highWeights[lane]! > 0).toBe(highSource > 0);
+    }
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("splatAlignSeasonalWeights");
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("aligned.weightsHi");
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).not.toContain(
+      "textureStore(splatWeightHi, texel, hi.weights)",
+    );
   });
 
   it("gives the R-27 consumers one habitat reading", () => {

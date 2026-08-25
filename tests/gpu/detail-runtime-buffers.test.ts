@@ -13,6 +13,7 @@ import { AerialPerspectiveMaterialPlugin } from "../../src/render/webgpu/atmosph
 import { CloudShadowMaterialPlugin } from "../../src/render/webgpu/clouds/CloudShadowMaterialPlugin";
 import { TerrainBiome } from "../../src/world";
 import { WorldDetailRuntime } from "../../src/render/webgpu/detail/WorldDetailRuntime";
+import { TREE_PROTOTYPE_FAMILY_COUNT } from "../../src/render/webgpu/detail/treePrototypeFamily";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import type { DetailTerrainSample } from "../../src/render/webgpu/detail/types";
 
@@ -153,13 +154,40 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
         if (gpuErrors.length > 0) break;
       }
 
+      // The production runtime now stages dense presentation chunks under a
+      // hard CPU deadline. The traverse/teleport above deliberately outruns
+      // that scheduler, so wait for the returned view to own one complete,
+      // valid presentation before testing the independent rebase lifetime.
+      // A fixed twelve-update assumption made this real-adapter oracle
+      // vacuous after fail-closed stale-chunk suppression was added.
+      for (let settle = 0; settle < 1_200 && runtime.pendingWorkItems > 0; settle += 1) {
+        await step(440, 440, 440, 440);
+        if (gpuErrors.length > 0) break;
+      }
+      expect(runtime.pendingWorkItems, "detail presentation did not settle after the return")
+        .toBe(0);
+      expect(runtime.presentationRebuildDiagnostics.suppressedChunks).toBe(0);
+
       // 67d on-adapter: keep the observer/view fixed while moving the floating
-      // origin. One presentation chunk rebuilds immediately; the remaining
-      // live batches keep their old records and use distinct mesh offsets.
+      // origin. Advance until one staged presentation chunk publishes; the
+      // remaining live batches keep their old records and use distinct mesh
+      // offsets. This deliberately stops with a backlog rather than assuming
+      // a dense chunk can publish in the rebase's first update.
       // That deliberately exercises multiple values of the material-shared
       // detailMeshOffset UBO in one real WebGPU frame.
       const rebaseOrigin = { x: 2_048, y: 0, z: -2_048 };
-      await step(440, 440, 440, 440, rebaseOrigin);
+      const publicationsBeforeRebase = runtime.presentationRebuildDiagnostics.publications;
+      for (let settle = 0; settle < 1_200; settle += 1) {
+        await step(440, 440, 440, 440, rebaseOrigin);
+        if (
+          gpuErrors.length > 0
+          || runtime.presentationRebuildDiagnostics.publications > publicationsBeforeRebase
+        ) break;
+      }
+      expect(runtime.presentationRebuildDiagnostics.publications)
+        .toBeGreaterThan(publicationsBeforeRebase);
+      expect(runtime.pendingWorkItems, "the rebase oracle needs old and new complete chunks")
+        .toBeGreaterThan(0);
       const liveBatches = scene.meshes.filter(
         (mesh): mesh is Mesh => mesh instanceof Mesh
           && typeof mesh.metadata?.detailChunk === "string"
@@ -184,9 +212,14 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
 
       // Non-vacuous: the run has to have actually drawn vegetation, or a
       // lifetime test proves nothing. `activeBatches` is the same counter
-      // the capture reports as `vegetationBatches`.
+      // the capture reports as `vegetationBatches`. This lifetime scene spans
+      // several spatial chunks and includes crown/trunk bands plus shrubs,
+      // rocks, clutter and ground cover, so a global family-count ceiling is
+      // not meaningful here; the pure family-routing tests own that bound.
       expect(runtime.statistics.renderedThinInstances).toBeGreaterThan(0);
-      expect(runtime.statistics.activeBatches).toBeGreaterThan(20);
+      expect(runtime.statistics.activeBatches).toBeGreaterThanOrEqual(
+        TREE_PROTOTYPE_FAMILY_COUNT,
+      );
 
       // ...and the frame must contain PIXELS. An invalid pipeline anywhere
       // in the vegetation stack makes WebGPU reject the whole submit, and

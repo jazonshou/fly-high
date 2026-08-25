@@ -22,16 +22,12 @@ import { SurfaceMaterial } from "./surfaceMaterials";
  * mirror, and the same defence against the drift that gave the ocean and the
  * hydrology two different sun discs.
  *
- * KNOWN INTERIM: the physics runway classifier and the painted pavement edge
- * do not agree to the metre. `isPointOnRunway` (`src/world/airport.ts`) tests
- * the clean rectangle, and that rectangle is what gives the tyres their 1.18
- * friction; the ragged edge below displaces the *painted* boundary by up to
- * `raggedAmplitudeMeters × 1.5` either way. So a wheel can be on visible
- * asphalt with grass friction, or on visible grass with asphalt friction, in a
- * band of about 2 m at the edge of a 34 m runway. Closing it would mean
- * evaluating this noise field in the collision hot path for a band no landing
- * should be in; the §1.3 contract binds the surface HEIGHT, which both
- * authorities do agree on. Recorded rather than fixed.
+ * The painted boundary is the same analytic rectangle `isPointOnRunway`
+ * classifies for tyre friction. Earlier builds displaced the visible edge by
+ * two unfiltered noise octaves (up to two metres), producing the reported
+ * saw-tooth silhouette on approach and a visible/physics disagreement. Wear
+ * belongs in albedo, roughness and rubber inside the pavement, never in the
+ * authoritative runway silhouette.
  *
  * DEVIATION: the apron slab is deleted and NOT replaced. The plan lists it
  * among the deletions and does not ask for a successor, and painting concrete
@@ -60,15 +56,12 @@ export const runwayMarkingProfile = Object.freeze({
   /** Main-gear wheel paths, where the aggregate polishes through. */
   wheelPathOffsetMeters: 4,
   wheelPathHalfWidthMeters: 1.3,
-  /** Amplitude and wavelength of the ragged, grass-invaded pavement edge. */
-  raggedAmplitudeMeters: 1.35,
-  raggedWavelengthMeters: 7.5,
 });
 
 export interface RunwaySurfaceBinding {
   /** (centerX, centerZ, sin(heading), cos(heading)). */
   readonly frame: readonly [number, number, number, number];
-  /** (halfPavedLength, halfPavedWidth, touchdownAlong, raggedAmplitude). */
+  /** (halfPavedLength, halfPavedWidth, touchdownAlong, reserved). */
   readonly shape: readonly [number, number, number, number];
 }
 
@@ -87,7 +80,7 @@ export function resolveRunwaySurfaceBinding(
       halfLength,
       airport.runwayWidth * 0.5,
       Math.max(0, halfLength - runwayMarkingProfile.touchdownFromThresholdMeters),
-      runwayMarkingProfile.raggedAmplitudeMeters,
+      0,
     ],
   };
 }
@@ -189,20 +182,17 @@ fn terrainRunwaySurface(
   let alongWidth = max(abs(dot(worldDdx.xz, alongAxis)), abs(dot(worldDdy.xz, alongAxis)));
   let acrossWidth = max(abs(dot(worldDdx.xz, acrossAxis)), abs(dot(worldDdy.xz, acrossAxis)));
 
-  // Cheap reject: everything past the pavement plus its ragged margin is
-  // ordinary ground, which is most of the frame most of the time.
+  // Cheap reject: everything past the antialiased pavement edge is ordinary
+  // ground, which is most of the frame most of the time.
   let coarse = terrainRunwayRoundedRect(along, across, halfLength, halfWidth);
-  if (coarse > ${(runwayMarkingProfile.raggedAmplitudeMeters * 2).toFixed(2)} + footprint * 2.0) {
+  if (coarse > footprint * 2.0) {
     return;
   }
 
-  // The ragged, grass-invaded edge: the SDF perturbed by a two-scale noise
-  // field along the pavement boundary. A clean rectangle is the giveaway that
-  // a runway was pasted on rather than laid.
-  let raggedScale = ${(1 / runwayMarkingProfile.raggedWavelengthMeters).toFixed(6)};
-  let ragged = (terrainSurfaceValue(vec2f(along, across) * raggedScale) - 0.5) * 2.0
-    + (terrainSurfaceValue(vec2f(across, along) * raggedScale * 3.7) - 0.5);
-  let pavementDistance = coarse + ragged * shape.w;
+  // One pavement authority: the visual mask consumes the exact analytic SDF
+  // used by the runway/physics contract. Surface age is expressed below by
+  // aggregate, wheel paths, rubber and worn paint without moving this edge.
+  let pavementDistance = coarse;
   // The pavement edge runs mostly along the runway, so its normal is across.
   let paved = terrainRunwayMask(pavementDistance, max(acrossWidth, footprint * 0.15));
   if (paved <= 0.002) {

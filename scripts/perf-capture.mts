@@ -16,12 +16,36 @@ export const PERF_CAPTURE_HEIGHT = 720;
 /** Frames rendered before the capture so streaming and temporal state settle. */
 export const PERF_CAPTURE_WARMUP_FRAMES = 240;
 export const PERF_CAPTURE_TILE = 32;
+export const PERF_CAPTURE_COLOR_TILE = 64;
+/**
+ * A screenshot must contain local luminance structure, not merely non-black
+ * pixels. The dim but valid night reference measures 0.000178; the known
+ * uniform `high-10000ft-down` failure measured 0.000006.
+ */
+export const PERF_CAPTURE_MIN_MEAN_TILE_VARIANCE = 0.000_1;
+/** A tile with at least this much local variance carries visible structure. */
+export const PERF_CAPTURE_STRUCTURED_TILE_VARIANCE = 0.000_01;
+/** Local structure must cover the frame rather than hide in one noisy patch. */
+export const PERF_CAPTURE_MIN_STRUCTURED_TILE_FRACTION = 0.5;
 /** SSIM below this against the committed baseline fails the capture. */
 export const PERF_CAPTURE_SSIM_THRESHOLD = 0.985;
+/** Per-channel SSIM catches hue/chroma regressions that luma SSIM cannot see. */
+export const PERF_CAPTURE_RGB_SSIM_THRESHOLD = 0.95;
+/** The lower frame isolates nearby terrain/foliage from a stable sky majority. */
+export const PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD = 0.94;
+/** A local defect cannot hide inside a good whole-frame average. */
+export const PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD = 0.72;
 /** rAF-paced frames measured per shot (Z-1/Z-2): fps and hitch metrics come only from these. */
 export const PERF_CAPTURE_MEASURE_FRAMES = 240;
 /** Consecutive frames read back at the end of a motion shot for temporal metrics (Z-3). */
 export const PERF_CAPTURE_TEMPORAL_FRAMES = 24;
+
+/** The strict tier-1 (medium/balanced) delivery contract. */
+export const PERF_CAPTURE_FRAME_BUDGET_MS = 16.67;
+export const PERF_CAPTURE_HITCH_BUDGET_MS = 27.4;
+export const PERF_CAPTURE_MAX_FRAME_MS = 50;
+export const PERF_CAPTURE_MAX_HITCHES = 5;
+export const PERF_CAPTURE_MIN_WALL_CLOCK_FPS = 60;
 
 export interface PerfCaptureClock {
   readonly dayOfYear: number;
@@ -66,6 +90,8 @@ export interface PerfCaptureShotDefinition {
   /** Z-3: viewport override; defaults to 1280×720 @ DPR 1. */
   readonly viewportWidth?: number;
   readonly viewportHeight?: number;
+  /** Optional DPR/cap-equivalent stress scale; ordinary shots use tier 1's 0.86. */
+  readonly captureRenderScale?: number;
   /**
    * Z-3: heading as the sun bearing off the nose in degrees (0 = flying into
    * the sun, 180 = sun dead astern). Resolved by the driver against the
@@ -82,8 +108,16 @@ export interface PerfCaptureShotDefinition {
    * Minimum acceptable mean luminance. The night shot lowers this: before
    * Gate 7A the night ground is genuinely near-black, and the shot exists to
    * make that measurable, not to pretend otherwise.
-   */
+  */
   readonly minMeanLuminance?: number;
+  /**
+   * Minimum mean within-tile luminance variance. This is an independent
+   * non-vacuity gate: a uniformly grey frame can satisfy mean luminance and
+   * match a stale blank baseline. Defaults to the capture-wide floor above.
+   */
+  readonly minMeanTileVariance?: number;
+  /** Minimum fraction of 32 px tiles carrying local luminance structure. */
+  readonly minStructuredTileFraction?: number;
   /** Motion shots do not diff against a PNG baseline (their gate is temporal). */
   readonly comparesToBaseline?: boolean;
   /**
@@ -92,6 +126,12 @@ export interface PerfCaptureShotDefinition {
    * its own fresh baseline); everything else uses PERF_CAPTURE_SSIM_THRESHOLD.
    */
   readonly ssimThreshold?: number;
+  /** Optional override for whole-frame, per-channel RGB SSIM. */
+  readonly rgbSsimThreshold?: number;
+  /** Optional override for RGB SSIM over the lower 60% of the frame. */
+  readonly lowerFrameRgbSsimThreshold?: number;
+  /** Optional override for the least-similar full 64px tile. */
+  readonly worstTileRgbSsimThreshold?: number;
   /** Z-3: committed floors for the motion shot's temporal-stability metrics. */
   readonly temporalFloors?: {
     readonly minConsecutiveSsim: number;
@@ -120,6 +160,9 @@ export interface PerfCaptureShotDefinition {
  * the 2 m eye-height and 1,200 ft canopy views. Positions are relative to the
  * world's airport so the definitions survive seed changes at sanctioned
  * rebaselines; forest/coast shots locate themselves from the terrain field.
+ * The historical per-shot ceilings below are supplemental diagnostics. They
+ * cannot relax or replace the strict tier-1 raw delivery contract declared at
+ * the top of this file.
  *
  * Floors/ceilings re-pinned 2026-08-18 at the sanctioned Gate 2A rebaseline
  * (three clean quiet-machine runs with the volumetric sky live). Rule:
@@ -202,7 +245,10 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     altitudeAglMeters: null,
     altitudeMslMeters: 3_048,
     offsetXMeters: 2_000,
-    offsetZMeters: -6_000,
+    // The old -6 km placement aimed every reconstructed view ray at open
+    // ocean, so a smooth water/haze frame could masquerade as a terrain gate.
+    // +8 km keeps the entire 45-degree-down frustum over deterministic land.
+    offsetZMeters: 8_000,
     pitchDownDegrees: 45,
     airspeedMetersPerSecond: 92,
     // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
@@ -213,12 +259,11 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 47 },
   },
   {
-    // Z-3: the only configuration where the tier-1 pixel cap binds — i.e.
-    // where Governor A is structurally dead (R-6) and the GPU work ladder is
-    // the only actuator. 1512×982 at scale 1 ≈ the capped 1.5 Mpx the
-    // reference MacBook actually rasterises.
+    // Z-3: the high-DPR/cap-equivalent lane. A deterministic DPR-1 browser at
+    // scale 1 rasterises 1.485 Mpx, matching the tier-1 1.5 Mpx cap without
+    // silently making every ordinary 1280×720 shot 35% heavier than shipping.
     name: "reference-viewport",
-    description: "Approach pose at the 1512×982 reference viewport (tier-1 cap binds)",
+    description: "Approach pose at the 1512×982 reference viewport (shipping tier-1 scale)",
     cameraMode: "chase",
     altitudeAglMeters: 152,
     altitudeMslMeters: null,
@@ -228,6 +273,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     viewportWidth: 1_512,
     viewportHeight: 982,
+    captureRenderScale: 1,
     ssimThreshold: 0.975,
     // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
     // M-series reference machine). Headless rAF pacing is noisy (hitch counts
@@ -569,6 +615,168 @@ export function orientationFromYawPitchBank(
   return multiplyQuaternions(yaw, multiplyQuaternions(pitch, bank));
 }
 
+export type CaptureVector3 = readonly [number, number, number];
+
+export interface CockpitTerrainCoverageInput {
+  readonly aircraftPosition: CaptureVector3;
+  readonly yawDegrees: number;
+  readonly pitchDownDegrees: number;
+  readonly bankDegrees?: number;
+  readonly seaLevelMeters: number;
+  readonly terrainHeightAt: (x: number, z: number) => number;
+  /** Shipping cockpit camera uses a horizontal-fixed 56 degree FOV. */
+  readonly horizontalFovDegrees?: number;
+  readonly viewportWidth?: number;
+  readonly viewportHeight?: number;
+  readonly columns?: number;
+  readonly rows?: number;
+  /** Samples along each ray before its sea-plane intersection. */
+  readonly raySteps?: number;
+}
+
+export interface CockpitTerrainCoverage {
+  readonly sampledRays: number;
+  readonly terrainHits: number;
+  readonly seaHits: number;
+  readonly skyRays: number;
+  readonly terrainHitFraction: number;
+}
+
+function rotateCaptureVector(
+  vector: CaptureVector3,
+  quaternion: CaptureQuaternion,
+): CaptureVector3 {
+  // v' = v + 2w(q.xyz × v) + 2(q.xyz × (q.xyz × v)).
+  const crossX = quaternion.y * vector[2] - quaternion.z * vector[1];
+  const crossY = quaternion.z * vector[0] - quaternion.x * vector[2];
+  const crossZ = quaternion.x * vector[1] - quaternion.y * vector[0];
+  const doubleCrossX = quaternion.y * crossZ - quaternion.z * crossY;
+  const doubleCrossY = quaternion.z * crossX - quaternion.x * crossZ;
+  const doubleCrossZ = quaternion.x * crossY - quaternion.y * crossX;
+  return [
+    vector[0] + 2 * (quaternion.w * crossX + doubleCrossX),
+    vector[1] + 2 * (quaternion.w * crossY + doubleCrossY),
+    vector[2] + 2 * (quaternion.w * crossZ + doubleCrossZ),
+  ];
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+/**
+ * Pure semantic coverage oracle for a cockpit capture. It reconstructs a
+ * regular grid of beauty-camera rays and marches each only as far as the sea
+ * plane. A ray counts as terrain exactly when the analytic terrain rises into
+ * it before water would. This prevents a terrain-named shot from silently
+ * becoming a beautifully stable capture of empty ocean.
+ */
+export function cockpitTerrainCoverage(
+  input: CockpitTerrainCoverageInput,
+): CockpitTerrainCoverage {
+  const viewportWidth = positiveInteger(input.viewportWidth ?? PERF_CAPTURE_WIDTH, "viewportWidth");
+  const viewportHeight = positiveInteger(
+    input.viewportHeight ?? PERF_CAPTURE_HEIGHT,
+    "viewportHeight",
+  );
+  const columns = positiveInteger(input.columns ?? 41, "columns");
+  const rows = positiveInteger(input.rows ?? 23, "rows");
+  const raySteps = positiveInteger(input.raySteps ?? 256, "raySteps");
+  const horizontalFovDegrees = input.horizontalFovDegrees ?? 56;
+  const finiteScalars = [
+    ...input.aircraftPosition,
+    input.yawDegrees,
+    input.pitchDownDegrees,
+    input.bankDegrees ?? 0,
+    input.seaLevelMeters,
+    horizontalFovDegrees,
+  ];
+  if (!finiteScalars.every(Number.isFinite)) {
+    throw new RangeError("Cockpit terrain coverage inputs must be finite");
+  }
+  if (horizontalFovDegrees <= 0 || horizontalFovDegrees >= 179) {
+    throw new RangeError("horizontalFovDegrees must be in (0, 179)");
+  }
+
+  const orientation = orientationFromYawPitchBank(
+    input.yawDegrees,
+    input.pitchDownDegrees,
+    input.bankDegrees ?? 0,
+  );
+  const forward = rotateCaptureVector([1, 0, 0], orientation);
+  const up = rotateCaptureVector([0, 1, 0], orientation);
+  const horizontal = rotateCaptureVector([0, 0, 1], orientation);
+  // Keep this paired with FlightRenderer's cockpit rig: 1.15 m through the
+  // nose and 1.12 m above the aircraft origin.
+  const cameraX = input.aircraftPosition[0] + forward[0] * 1.15 + up[0] * 1.12;
+  const cameraY = input.aircraftPosition[1] + forward[1] * 1.15 + up[1] * 1.12;
+  const cameraZ = input.aircraftPosition[2] + forward[2] * 1.15 + up[2] * 1.12;
+  const horizontalScale = Math.tan((horizontalFovDegrees * Math.PI) / 360);
+  const verticalScale = horizontalScale * viewportHeight / viewportWidth;
+
+  let terrainHits = 0;
+  let seaHits = 0;
+  let skyRays = 0;
+  for (let row = 0; row < rows; row += 1) {
+    const screenY = rows === 1 ? 0 : 1 - (2 * row) / (rows - 1);
+    for (let column = 0; column < columns; column += 1) {
+      const screenX = columns === 1 ? 0 : -1 + (2 * column) / (columns - 1);
+      const unnormalizedX = forward[0]
+        + horizontal[0] * screenX * horizontalScale
+        + up[0] * screenY * verticalScale;
+      const unnormalizedY = forward[1]
+        + horizontal[1] * screenX * horizontalScale
+        + up[1] * screenY * verticalScale;
+      const unnormalizedZ = forward[2]
+        + horizontal[2] * screenX * horizontalScale
+        + up[2] * screenY * verticalScale;
+      const inverseLength = 1 / Math.hypot(unnormalizedX, unnormalizedY, unnormalizedZ);
+      const directionX = unnormalizedX * inverseLength;
+      const directionY = unnormalizedY * inverseLength;
+      const directionZ = unnormalizedZ * inverseLength;
+      if (directionY >= 0) {
+        skyRays += 1;
+        continue;
+      }
+      const seaDistance = (input.seaLevelMeters - cameraY) / directionY;
+      if (seaDistance <= 0) {
+        skyRays += 1;
+        continue;
+      }
+
+      let hitTerrain = false;
+      for (let step = 0; step <= raySteps; step += 1) {
+        const distance = seaDistance * step / raySteps;
+        const x = cameraX + directionX * distance;
+        const y = cameraY + directionY * distance;
+        const z = cameraZ + directionZ * distance;
+        const terrainHeight = input.terrainHeightAt(x, z);
+        if (!Number.isFinite(terrainHeight)) {
+          throw new RangeError("terrainHeightAt must return a finite height");
+        }
+        if (y <= terrainHeight) {
+          hitTerrain = true;
+          break;
+        }
+      }
+      if (hitTerrain) terrainHits += 1;
+      else seaHits += 1;
+    }
+  }
+
+  const sampledRays = rows * columns;
+  return {
+    sampledRays,
+    terrainHits,
+    seaHits,
+    skyRays,
+    terrainHitFraction: terrainHits / sampledRays,
+  };
+}
+
 /** The world-space horizontal heading vector for a yaw angle (yaw 0 → +x). */
 export function headingVectorFromYaw(yawDegrees: number): { x: number; z: number } {
   const yaw = (yawDegrees * Math.PI) / 180;
@@ -631,9 +839,12 @@ export interface TemporalStability {
 }
 
 /**
- * Sustained frame rate from per-frame intervals, robust to sparse stalls.
+ * Legacy sustained frame-rate diagnostic, robust to sparse stalls.
  *
- * Each Z-2 gate owns one failure mode: `maxFrameMs`/`p999FrameMs`/
+ * This still backs the historical per-shot `minFps` rows, but it is not the
+ * tier-1 delivery gate: `rawFrameIntervalMetrics` and
+ * `tier1BalancedPerformanceFailures` retain and reject every stall. Within
+ * the legacy Z-2 rows, `maxFrameMs`/`p999FrameMs`/
  * `hitchCount` own SPIKES, `minFps` owns the SUSTAINED rate. A wall-clock
  * mean re-counts a handful of one-off stalls (page streaming, GC, headless
  * compositor scheduling — measured ~1.5 s of stalls inside an 8 s window on
@@ -702,42 +913,128 @@ export interface TileStatistics {
   readonly meanLuminance: number;
   /** Mean of per-tile luminance variance. */
   readonly meanVariance: number;
+  /** Fraction of tiles whose local variance reaches the structure threshold. */
+  readonly structuredTileFraction: number;
   /** Per-tile means, row-major, rounded for a stable JSON diff. */
   readonly tileMeans: readonly number[];
+}
+
+export interface PerfCaptureImageContentThresholds {
+  readonly minMeanLuminance?: number;
+  readonly minMeanTileVariance?: number;
+  readonly minStructuredTileFraction?: number;
+}
+
+/**
+ * Independent screenshot non-vacuity gate. Baseline similarity is not enough:
+ * an old blank reference and a new blank render can have perfect SSIM.
+ */
+export function perfCaptureImageContentFailures(
+  statistics: Pick<
+    TileStatistics,
+    "meanLuminance" | "meanVariance" | "structuredTileFraction"
+  >,
+  thresholds: PerfCaptureImageContentThresholds = {},
+): string[] {
+  const minMeanLuminance = thresholds.minMeanLuminance ?? 0.01;
+  const minMeanTileVariance = thresholds.minMeanTileVariance
+    ?? PERF_CAPTURE_MIN_MEAN_TILE_VARIANCE;
+  const minStructuredTileFraction = thresholds.minStructuredTileFraction
+    ?? PERF_CAPTURE_MIN_STRUCTURED_TILE_FRACTION;
+  if (!Number.isFinite(minMeanLuminance) || minMeanLuminance < 0) {
+    throw new RangeError("Minimum mean luminance must be a finite non-negative number");
+  }
+  if (!Number.isFinite(minMeanTileVariance) || minMeanTileVariance < 0) {
+    throw new RangeError("Minimum mean tile variance must be a finite non-negative number");
+  }
+  if (
+    !Number.isFinite(minStructuredTileFraction)
+    || minStructuredTileFraction < 0
+    || minStructuredTileFraction > 1
+  ) {
+    throw new RangeError("Minimum structured tile fraction must be in [0, 1]");
+  }
+
+  const failures: string[] = [];
+  if (!Number.isFinite(statistics.meanLuminance)
+    || statistics.meanLuminance <= minMeanLuminance) {
+    failures.push(
+      `mean luminance ${statistics.meanLuminance.toFixed(6)} is not above `
+      + `${minMeanLuminance.toFixed(6)}`,
+    );
+  }
+  if (!Number.isFinite(statistics.meanVariance)
+    || statistics.meanVariance <= minMeanTileVariance) {
+    failures.push(
+      `mean per-tile luminance variance ${statistics.meanVariance.toFixed(6)} is not above `
+      + `${minMeanTileVariance.toFixed(6)}`,
+    );
+  }
+  if (
+    !Number.isFinite(statistics.structuredTileFraction)
+    || statistics.structuredTileFraction < minStructuredTileFraction
+  ) {
+    failures.push(
+      `structured tile fraction ${statistics.structuredTileFraction.toFixed(4)} is below `
+      + `${minStructuredTileFraction.toFixed(4)} (tile variance threshold `
+      + `${PERF_CAPTURE_STRUCTURED_TILE_VARIANCE.toFixed(6)})`,
+    );
+  }
+  return failures;
 }
 
 export interface PerfCaptureShotReport {
   readonly name: string;
   readonly description: string;
   readonly ssimAgainstBaseline: number | null;
+  /** Mean SSIM over independent R/G/B planes; detects equal-luma hue shifts. */
+  readonly rgbSsimAgainstBaseline: number | null;
+  /** RGB SSIM over the lower 60%, where nearby terrain and foliage live. */
+  readonly lowerFrameRgbSsimAgainstBaseline: number | null;
+  /** Lowest RGB SSIM among full 64px tiles; prevents sky/global dilution. */
+  readonly worstTileRgbSsimAgainstBaseline: number | null;
   readonly tiles: TileStatistics;
-  /**
-   * Z-1: frames ÷ wall-clock over the rAF-paced measurement phase — a real
-   * frame rate, not a macrotask-yield artefact.
-   */
+  /** Legacy 5%-trimmed sustained-rate diagnostic; never the strict fps gate. */
   readonly fps: number;
+  /** Untrimmed frames / elapsed wall time over every measured interval. */
+  readonly wallClockFps: number;
   /** B-0: present-to-present p95, before attribution into overlapping streams. */
-  readonly frameIntervalMsP95: number | null;
+  readonly frameIntervalMsP95: number;
+  /** Frames missing a 60 fps delivery slot, using the explicit 16.67 ms budget. */
+  readonly framesOver16_67Ms: number;
+  /** User-visible hitch frames, using the explicit 2 × tier target (27.4 ms). */
+  readonly framesOver27_4Ms: number;
   readonly cpuFrameMsP95: number;
   readonly gpuFrameMsP95: number | null;
+  /** Timestamp-query provenance for this shot's measurement epoch. */
+  readonly gpuTiming: {
+    readonly enabled: boolean;
+    readonly epoch: number;
+    /** Fresh whole-frame timestamp results resolved during the measured window. */
+    readonly sampleCount: number;
+    readonly latestSampleAgeFrames: number | null;
+  };
   /** B-0: compositor/present residual; null without frame-correlated GPU timing. */
   readonly presentWaitMsP95: number | null;
-  /** Z-2 hitch metrics over the measurement phase only. */
-  readonly maxFrameMs: number | null;
+  /** Raw worst interval over the measurement phase; no stalls are trimmed. */
+  readonly maxFrameMs: number;
   readonly p999FrameMs: number | null;
   readonly hitchCount: number;
   readonly drawCalls: number;
   /**
-   * Vegetation batches surviving frustum culling — the vegetation frame
-   * row's real currency (2-12: ~26 µs per draw, `Δgpu` linear in `Δdraws`).
-   * Added by the vegetation perf-debt pass so the row can be measured
-   * rather than asserted.
+   * Vegetation batches surviving frustum culling. This measures submission
+   * overhead only; alpha-tested fragment coverage, overdraw and geometry can
+   * dominate even after batches collapse, so it never closes the vegetation
+   * frame row by itself.
    */
   readonly vegetationBatches: number;
   readonly triangles: number;
   readonly residentTerrainPages: number;
   readonly pendingTerrainPages: number;
+  /** Detail generation/presentation backlog remaining when the shot was read. */
+  readonly pendingDetailWork: number;
   readonly renderPixels: number;
+  readonly renderScale: number;
   readonly viewportWidth: number;
   readonly viewportHeight: number;
   readonly estimatedGpuMemoryMiB: number;
@@ -768,7 +1065,101 @@ export interface PerfCaptureReport {
   readonly measureFrames: number;
   /** Mean milliseconds to generate one 512 m tile at resolution 65. */
   readonly pageGenerationMs: number;
+  /** Provenance needed to distinguish DPR/cap and adapter-specific results. */
+  readonly captureEnvironment: {
+    readonly adapter: string;
+    readonly devicePixelRatio: number;
+    readonly userAgent: string;
+    readonly quality: "medium";
+    readonly renderingMode: "balanced";
+    readonly pinnedRenderScale: number;
+    /** Whether Babylon's continuous timestamp-query observers were enabled. */
+    readonly gpuTimingEnabled: boolean;
+  };
   readonly shots: readonly PerfCaptureShotReport[];
+}
+
+export interface RawFrameIntervalMetrics {
+  readonly wallClockFps: number;
+  readonly frameIntervalMsP95: number;
+  readonly framesOver16_67Ms: number;
+  readonly framesOver27_4Ms: number;
+  readonly maxFrameMs: number;
+}
+
+export interface Tier1BalancedPerfSample {
+  readonly wallClockFps: number;
+  readonly frameIntervalMsP95: number;
+  readonly framesOver27_4Ms: number;
+  readonly maxFrameMs: number;
+}
+
+/**
+ * Raw presentation metrics. Nothing is trimmed: a freeze is part of the
+ * player's elapsed time and must remain visible to the strict playability gate.
+ */
+export function rawFrameIntervalMetrics(
+  intervalsMs: readonly number[],
+): RawFrameIntervalMetrics {
+  if (intervalsMs.length === 0) {
+    throw new RangeError("Frame interval metrics need at least one interval");
+  }
+  for (const interval of intervalsMs) {
+    if (!Number.isFinite(interval) || interval <= 0) {
+      throw new RangeError("Frame intervals must be finite positive numbers");
+    }
+  }
+  const sorted = [...intervalsMs].sort((a, b) => a - b);
+  const percentile = (value: number): number => {
+    const index = Math.max(0, Math.ceil(sorted.length * value) - 1);
+    return sorted[Math.min(sorted.length - 1, index)]!;
+  };
+  const elapsedMs = intervalsMs.reduce((sum, interval) => sum + interval, 0);
+  return {
+    wallClockFps: intervalsMs.length / (elapsedMs / 1_000),
+    frameIntervalMsP95: percentile(0.95),
+    framesOver16_67Ms: intervalsMs.filter(
+      (interval) => interval > PERF_CAPTURE_FRAME_BUDGET_MS,
+    ).length,
+    framesOver27_4Ms: intervalsMs.filter(
+      (interval) => interval > PERF_CAPTURE_HITCH_BUDGET_MS,
+    ).length,
+    maxFrameMs: sorted[sorted.length - 1]!,
+  };
+}
+
+/** Human-readable strict tier-1 failures, shared by the driver and unit tests. */
+export function tier1BalancedPerformanceFailures(
+  sample: Tier1BalancedPerfSample,
+): string[] {
+  const failures: string[] = [];
+  if (!Number.isFinite(sample.wallClockFps)
+    || sample.wallClockFps < PERF_CAPTURE_MIN_WALL_CLOCK_FPS) {
+    failures.push(
+      `wall-clock fps ${sample.wallClockFps.toFixed(2)} is below ${PERF_CAPTURE_MIN_WALL_CLOCK_FPS}`,
+    );
+  }
+  if (!Number.isFinite(sample.frameIntervalMsP95)
+    || sample.frameIntervalMsP95 > PERF_CAPTURE_FRAME_BUDGET_MS) {
+    failures.push(
+      `frame-interval p95 ${sample.frameIntervalMsP95.toFixed(2)} ms exceeds `
+      + `${PERF_CAPTURE_FRAME_BUDGET_MS} ms`,
+    );
+  }
+  if (!Number.isInteger(sample.framesOver27_4Ms)
+    || sample.framesOver27_4Ms < 0
+    || sample.framesOver27_4Ms > PERF_CAPTURE_MAX_HITCHES) {
+    failures.push(
+      `${sample.framesOver27_4Ms} frames exceeded ${PERF_CAPTURE_HITCH_BUDGET_MS} ms; `
+      + `maximum is ${PERF_CAPTURE_MAX_HITCHES}`,
+    );
+  }
+  if (!Number.isFinite(sample.maxFrameMs) || sample.maxFrameMs > PERF_CAPTURE_MAX_FRAME_MS) {
+    failures.push(
+      `maximum frame ${sample.maxFrameMs.toFixed(2)} ms exceeds ${PERF_CAPTURE_MAX_FRAME_MS} ms`,
+    );
+  }
+  return failures;
 }
 
 /** Rec. 709 luma from an RGBA byte buffer. */
@@ -802,6 +1193,7 @@ export function tileStatistics(
   const rows = Math.floor(height / tileEdge);
   const tileMeans: number[] = [];
   let varianceSum = 0;
+  let structuredTiles = 0;
   for (let tileRow = 0; tileRow < rows; tileRow += 1) {
     for (let tileColumn = 0; tileColumn < columns; tileColumn += 1) {
       let sum = 0;
@@ -816,8 +1208,10 @@ export function tileStatistics(
       }
       const count = tileEdge * tileEdge;
       const mean = sum / count;
+      const variance = Math.max(0, sumSquares / count - mean * mean);
       tileMeans.push(Math.round(mean * 10_000) / 10_000);
-      varianceSum += Math.max(0, sumSquares / count - mean * mean);
+      varianceSum += variance;
+      if (variance >= PERF_CAPTURE_STRUCTURED_TILE_VARIANCE) structuredTiles += 1;
     }
   }
   const tileCount = Math.max(1, tileMeans.length);
@@ -828,6 +1222,7 @@ export function tileStatistics(
     meanLuminance:
       Math.round((tileMeans.reduce((a, b) => a + b, 0) / tileCount) * 10_000) / 10_000,
     meanVariance: Math.round((varianceSum / tileCount) * 1_000_000) / 1_000_000,
+    structuredTileFraction: Math.round((structuredTiles / tileCount) * 10_000) / 10_000,
     tileMeans,
   };
 }
@@ -883,4 +1278,136 @@ export function meanSsim(
     }
   }
   return windows > 0 ? total / windows : 1;
+}
+
+export interface PixelRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+function normalizedPixelRegion(
+  imageWidth: number,
+  imageHeight: number,
+  region?: PixelRegion,
+): PixelRegion {
+  const value = region ?? { x: 0, y: 0, width: imageWidth, height: imageHeight };
+  if (
+    !Number.isSafeInteger(value.x)
+    || !Number.isSafeInteger(value.y)
+    || !Number.isSafeInteger(value.width)
+    || !Number.isSafeInteger(value.height)
+    || value.x < 0
+    || value.y < 0
+    || value.width <= 0
+    || value.height <= 0
+    || value.x + value.width > imageWidth
+    || value.y + value.height > imageHeight
+  ) {
+    throw new RangeError("RGB SSIM region must be a positive integer rectangle inside the image");
+  }
+  return value;
+}
+
+function channelSsimInRegion(
+  first: Uint8ClampedArray | Uint8Array,
+  second: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  channel: 0 | 1 | 2,
+  region: PixelRegion,
+  window: number,
+): number {
+  if (first.length !== second.length || first.length !== width * height * 4) {
+    throw new RangeError("RGB SSIM inputs must be equal-size RGBA buffers");
+  }
+  if (!Number.isSafeInteger(window) || window <= 0) {
+    throw new RangeError("RGB SSIM window must be a positive integer");
+  }
+  const c1 = 0.01 * 0.01;
+  const c2 = 0.03 * 0.03;
+  let total = 0;
+  let windows = 0;
+  for (let top = region.y; top + window <= region.y + region.height; top += window) {
+    for (let left = region.x; left + window <= region.x + region.width; left += window) {
+      let sumA = 0;
+      let sumB = 0;
+      let sumAa = 0;
+      let sumBb = 0;
+      let sumAb = 0;
+      for (let y = 0; y < window; y += 1) {
+        for (let x = 0; x < window; x += 1) {
+          const offset = ((top + y) * width + left + x) * 4 + channel;
+          const a = first[offset]! / 255;
+          const b = second[offset]! / 255;
+          sumA += a;
+          sumB += b;
+          sumAa += a * a;
+          sumBb += b * b;
+          sumAb += a * b;
+        }
+      }
+      const count = window * window;
+      const meanA = sumA / count;
+      const meanB = sumB / count;
+      const varianceA = Math.max(0, sumAa / count - meanA * meanA);
+      const varianceB = Math.max(0, sumBb / count - meanB * meanB);
+      const covariance = sumAb / count - meanA * meanB;
+      total += (
+        (2 * meanA * meanB + c1) * (2 * covariance + c2)
+      ) / (
+        (meanA * meanA + meanB * meanB + c1) * (varianceA + varianceB + c2)
+      );
+      windows += 1;
+    }
+  }
+  return windows > 0 ? total / windows : 1;
+}
+
+/**
+ * Per-channel RGB SSIM. Unlike Rec.709-luma SSIM, an equal-luminance hue
+ * replacement cannot pass this comparison unnoticed.
+ */
+export function meanRgbSsim(
+  first: Uint8ClampedArray | Uint8Array,
+  second: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  region?: PixelRegion,
+  window = 8,
+): number {
+  const resolvedRegion = normalizedPixelRegion(width, height, region);
+  return (
+    channelSsimInRegion(first, second, width, height, 0, resolvedRegion, window)
+    + channelSsimInRegion(first, second, width, height, 1, resolvedRegion, window)
+    + channelSsimInRegion(first, second, width, height, 2, resolvedRegion, window)
+  ) / 3;
+}
+
+/** Lowest local RGB SSIM, so a broken ground/tree patch cannot hide under a good sky. */
+export function worstTileRgbSsim(
+  first: Uint8ClampedArray | Uint8Array,
+  second: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  tileEdge = PERF_CAPTURE_COLOR_TILE,
+): number {
+  if (!Number.isSafeInteger(tileEdge) || tileEdge < 8 || tileEdge % 8 !== 0) {
+    throw new RangeError("RGB SSIM tile edge must be a positive multiple of eight");
+  }
+  let worst = 1;
+  let tiles = 0;
+  for (let top = 0; top + tileEdge <= height; top += tileEdge) {
+    for (let left = 0; left + tileEdge <= width; left += tileEdge) {
+      worst = Math.min(worst, meanRgbSsim(first, second, width, height, {
+        x: left,
+        y: top,
+        width: tileEdge,
+        height: tileEdge,
+      }));
+      tiles += 1;
+    }
+  }
+  return tiles > 0 ? worst : meanRgbSsim(first, second, width, height);
 }

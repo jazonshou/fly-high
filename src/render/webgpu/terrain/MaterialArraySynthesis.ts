@@ -889,23 +889,26 @@ const synthesizeRock: Recipe = (context) => {
       // the face reads as one printed pattern.
       const phaseA = block.cellHash;
       const phaseB = hash2(Math.floor(block.cellHash * 4096), 17, seed + 62);
-      // Curved, not straight: two perfectly periodic 0.4 m band families
-      // intersecting is a lattice, and a lattice this fine moirés into a
-      // metre-scale quilt at grazing angles.
-      const crustA = periodicCurvedBands(u, v, dipA[0], dipA[1], phaseA, 5, 1.4, seed + 601);
-      const crustB = periodicCurvedBands(u, v, dipB[0], dipB[1], phaseB, 6, 1.6, seed + 602);
-      // Half-plane bands: a joint is an edge, not a sine. Take the near side
-      // of each band's step and let the two families intersect.
-      const jointA = smoothstep(0.0, 0.055, crustA) * smoothstep(0.16, 0.105, crustA);
-      const jointB = smoothstep(0.0, 0.05, crustB) * smoothstep(0.14, 0.095, crustB);
-      // Both families are exactly periodic, so at full strength everywhere
-      // they intersect into a regular diamond lattice — which the contact
-      // sheet showed reading as woven mesh rather than jointed rock. Real
-      // jointing is developed in patches: mask each family with its own
-      // low-frequency field so a given block shows one, both, or neither.
-      const developA = smoothstep(0.3, 0.62, periodicFbm(u, v, 3, 3, 0.55, seed + 68));
-      const developB = smoothstep(0.34, 0.66, periodicFbm(u, v, 3, 3, 0.55, seed + 69));
-      const joint = saturate(jointA * developA + jointB * developB * 0.8);
+      // One fracture family per irregular block. Even curved and independently
+      // masked ±dip families still overlap wherever both masks are non-zero;
+      // their crossings survive the mip chain as the reported woven/screen-door
+      // lattice. Real joint sets change orientation across blocks. Choosing the
+      // family from the block identity preserves both populations across the
+      // tile while making their supports mutually exclusive at every texel.
+      const useFamilyA = hash2(Math.floor(block.cellHash * 4096), 31, seed + 70) < 0.5;
+      const fractureCrust = useFamilyA
+        ? periodicCurvedBands(u, v, dipA[0], dipA[1], phaseA, 5, 1.4, seed + 601)
+        : periodicCurvedBands(u, v, dipB[0], dipB[1], phaseB, 6, 1.6, seed + 602);
+      // Half-plane bands: a joint is an edge, not a sine. The B family remains
+      // slightly weaker, but is never added to A inside the same block.
+      const jointBand = useFamilyA
+        ? smoothstep(0.0, 0.055, fractureCrust) * smoothstep(0.16, 0.105, fractureCrust)
+        : smoothstep(0.0, 0.05, fractureCrust)
+          * smoothstep(0.14, 0.095, fractureCrust) * 0.8;
+      const develop = useFamilyA
+        ? smoothstep(0.3, 0.62, periodicFbm(u, v, 3, 3, 0.55, seed + 68))
+        : smoothstep(0.34, 0.66, periodicFbm(u, v, 3, 3, 0.55, seed + 69));
+      const joint = jointBand * develop;
       const bed = periodicCurvedBands(
         u, v, bedding[0], bedding[1], hash2(3, 5, seed + 63), 4, 1.2, seed + 603);
       const bedStep = smoothstep(0.44, 0.5, bed) * smoothstep(0.62, 0.52, bed);

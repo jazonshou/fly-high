@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   TerrainClipmapSystem,
+  terrainFallbackMaterialAxis,
   terrainWorldRevision,
   type TerrainComputeFactory,
 } from "../src/render/webgpu/terrain/TerrainClipmapSystem";
@@ -14,6 +15,8 @@ import {
 } from "../src/render/webgpu/terrain/TerrainEvolutionContract";
 import { ComputeBudget } from "../src/render/webgpu/core/ComputeBudget";
 import {
+  TERRAIN_CORNER_MORPH_LEVELS,
+  TERRAIN_CORNER_MORPH_PACKED_MAX,
   TERRAIN_NODES_PER_SLOT_EDGE,
   TERRAIN_NODE_GRID_RESOLUTION,
   TERRAIN_PROVISIONAL_AXIS,
@@ -24,19 +27,32 @@ import {
 import {
   buildTerrainNodeGrid,
   createTerrainNodeBuffers,
+  packTerrainCornerMorphs,
   packTerrainNodeSubIndex,
+  quantizeTerrainCornerMorphK,
+  resolveTerrainResidentCornerMorphs,
+  TERRAIN_CORNER_SYNC_MAX_LEAF_QUERIES_PER_NODE,
+  TERRAIN_CORNER_SYNC_MAX_LEVEL_PROBES_PER_QUERY,
   TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
   selectTerrainNodes,
   terrainNodeMorphK,
+  terrainNodeVertexMorphK,
   terrainScreenSpaceError,
+  unpackTerrainCornerMorphs,
   writeTerrainNodeBuffers,
   type TerrainNode,
+  type TerrainNodeCornerMorphs,
+  type TerrainNodeSelectionDiagnostics,
   type TerrainNodeSelectionInput,
 } from "../src/render/webgpu/terrain/TerrainQuadtree";
-import { createWorldPageAddress } from "../src/render/webgpu/world/pageKey";
+import {
+  createWorldPageAddress,
+  parentWorldPageAddress,
+} from "../src/render/webgpu/world/pageKey";
 import {
   SURFACE_MATERIAL_COUNT,
   SurfaceMaterial,
+  SURFACE_MATERIALS_BY_BIOME,
 } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "../src/render/webgpu/world/pageGeometry";
 import { rankWorldPageStreamingCandidates } from "../src/render/webgpu/world/streamingPriority";
@@ -92,8 +108,311 @@ describe("terrain world revision (5-0/5-A)", () => {
   });
 });
 
+describe("terrain provisional material fallback", () => {
+  it("keeps the retired categorical lane on the macro fallback's Grass base", () => {
+    expect(terrainFallbackMaterialAxis()).toBe(TERRAIN_PROVISIONAL_AXIS.fallbackAxis);
+    expect(terrainFallbackMaterialAxis()).toBe(SurfaceMaterial.Grass);
+  });
+});
+
 function select(overrides: Partial<TerrainNodeSelectionInput> = {}): TerrainNode[] {
   return selectTerrainNodes({ ...BASE_SELECTION, ...overrides });
+}
+
+interface SharedTerrainEdge {
+  readonly first: number;
+  readonly second: number;
+  /** `x` means x is fixed and z is the edge tangent; vice versa for `z`. */
+  readonly fixedAxis: "x" | "z";
+  readonly fixed: number;
+  readonly tangentStart: number;
+  readonly tangentEnd: number;
+}
+
+function sharedTerrainEdges(nodes: readonly TerrainNode[]): SharedTerrainEdge[] {
+  const edges: SharedTerrainEdge[] = [];
+  for (let first = 0; first < nodes.length; first += 1) {
+    const a = nodes[first]!;
+    const ax1 = a.originX + a.spanMeters;
+    const az1 = a.originZ + a.spanMeters;
+    for (let second = first + 1; second < nodes.length; second += 1) {
+      const b = nodes[second]!;
+      const bx1 = b.originX + b.spanMeters;
+      const bz1 = b.originZ + b.spanMeters;
+      const z0 = Math.max(a.originZ, b.originZ);
+      const z1 = Math.min(az1, bz1);
+      if ((ax1 === b.originX || bx1 === a.originX) && z1 > z0) {
+        edges.push({
+          first,
+          second,
+          fixedAxis: "x",
+          fixed: ax1 === b.originX ? ax1 : bx1,
+          tangentStart: z0,
+          tangentEnd: z1,
+        });
+      }
+      const x0 = Math.max(a.originX, b.originX);
+      const x1 = Math.min(ax1, bx1);
+      if ((az1 === b.originZ || bz1 === a.originZ) && x1 > x0) {
+        edges.push({
+          first,
+          second,
+          fixedAxis: "z",
+          fixed: az1 === b.originZ ? az1 : bz1,
+          tangentStart: x0,
+          tangentEnd: x1,
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+function edgeGridPosition(
+  node: TerrainNode,
+  edge: SharedTerrainEdge,
+  tangent: number,
+): readonly [number, number] {
+  const quads = TERRAIN_NODE_GRID_RESOLUTION - 1;
+  const worldX = edge.fixedAxis === "x" ? edge.fixed : tangent;
+  const worldZ = edge.fixedAxis === "z" ? edge.fixed : tangent;
+  return [
+    ((worldX - node.originX) / node.spanMeters) * quads,
+    ((worldZ - node.originZ) / node.spanMeters) * quads,
+  ];
+}
+
+interface TerrainVertexState {
+  readonly morphK: number;
+  readonly x: number;
+  readonly z: number;
+  readonly height: number;
+  readonly normal: readonly [number, number, number];
+}
+
+/** Nested synthetic LOD fields: endpoint equality is independent of terrain content. */
+function syntheticTerrainField(
+  level: number,
+  x: number,
+  z: number,
+): { readonly height: number; readonly gradientX: number; readonly gradientZ: number } {
+  const phaseX = x * 0.00037 + level * 0.41;
+  const phaseZ = z * 0.00029 - level * 0.23;
+  return {
+    height: level * 13 + x * 0.0017 - z * 0.0011
+      + Math.sin(phaseX) * 7 + Math.cos(phaseZ) * 5,
+    gradientX: 0.0017 + Math.cos(phaseX) * 7 * 0.00037,
+    gradientZ: -0.0011 - Math.sin(phaseZ) * 5 * 0.00029,
+  };
+}
+
+function terrainVertexState(
+  node: TerrainNode,
+  corners: TerrainNodeCornerMorphs,
+  gridX: number,
+  gridZ: number,
+  fineResident = true,
+): TerrainVertexState {
+  const quads = TERRAIN_NODE_GRID_RESOLUTION - 1;
+  const morphK = terrainNodeVertexMorphK(node.morphK, corners, gridX, gridZ, true);
+  const evenX = Math.floor(gridX * 0.5) * 2;
+  const evenZ = Math.floor(gridZ * 0.5) * 2;
+  const morphedX = gridX + (evenX - gridX) * morphK;
+  const morphedZ = gridZ + (evenZ - gridZ) * morphK;
+  const x = node.originX + (morphedX / quads) * node.spanMeters;
+  const z = node.originZ + (morphedZ / quads) * node.spanMeters;
+  const parent = syntheticTerrainField(node.level + 1, x, z);
+  const sampledFine = syntheticTerrainField(node.level, x, z);
+  const fine = fineResident ? sampledFine : parent;
+  const height = fine.height + (parent.height - fine.height) * morphK;
+  const gradientX = fine.gradientX + (parent.gradientX - fine.gradientX) * morphK;
+  const gradientZ = fine.gradientZ + (parent.gradientZ - fine.gradientZ) * morphK;
+  const length = Math.hypot(gradientX, 1, gradientZ);
+  return {
+    morphK,
+    x,
+    z,
+    height,
+    normal: [-gradientX / length, 1 / length, -gradientZ / length],
+  };
+}
+
+interface TerrainContinuityResult {
+  readonly edges: number;
+  readonly comparisons: number;
+  readonly maxMorphError: number;
+  readonly maxPositionError: number;
+  readonly maxHeightError: number;
+  readonly maxNormalError: number;
+}
+
+function terrainContinuityResult(
+  nodes: readonly TerrainNode[],
+  corners: readonly TerrainNodeCornerMorphs[] = nodes.map((node) => node.cornerMorphK),
+  fineResident: (node: TerrainNode) => boolean = () => true,
+): TerrainContinuityResult {
+  let comparisons = 0;
+  let maxMorphError = 0;
+  let maxPositionError = 0;
+  let maxHeightError = 0;
+  let maxNormalError = 0;
+  const compare = (
+    firstIndex: number,
+    firstGrid: readonly [number, number],
+    secondIndex: number,
+    secondGrid: readonly [number, number],
+    morphError: number,
+  ): void => {
+    const firstNode = nodes[firstIndex]!;
+    const secondNode = nodes[secondIndex]!;
+    const first = terrainVertexState(
+      firstNode, corners[firstIndex]!, firstGrid[0], firstGrid[1], fineResident(firstNode),
+    );
+    const second = terrainVertexState(
+      secondNode, corners[secondIndex]!, secondGrid[0], secondGrid[1], fineResident(secondNode),
+    );
+    comparisons += 1;
+    maxMorphError = Math.max(maxMorphError, morphError);
+    maxPositionError = Math.max(
+      maxPositionError,
+      Math.abs(first.x - second.x),
+      Math.abs(first.z - second.z),
+    );
+    maxHeightError = Math.max(maxHeightError, Math.abs(first.height - second.height));
+    maxNormalError = Math.max(
+      maxNormalError,
+      ...first.normal.map((value, index) => Math.abs(value - second.normal[index]!)),
+    );
+  };
+
+  const edges = sharedTerrainEdges(nodes);
+  for (const edge of edges) {
+    const firstNode = nodes[edge.first]!;
+    const secondNode = nodes[edge.second]!;
+    if (firstNode.level === secondNode.level) {
+      // All 33 real edge vertices, including odd interiors where the old
+      // per-node K produced different XZ and height on the two sides.
+      for (let step = 0; step <= 32; step += 1) {
+        const tangent = edge.tangentStart
+          + ((edge.tangentEnd - edge.tangentStart) * step) / 32;
+        const firstGrid = edgeGridPosition(firstNode, edge, tangent);
+        const secondGrid = edgeGridPosition(secondNode, edge, tangent);
+        const firstK = terrainNodeVertexMorphK(
+          firstNode.morphK, corners[edge.first]!, firstGrid[0], firstGrid[1], true,
+        );
+        const secondK = terrainNodeVertexMorphK(
+          secondNode.morphK, corners[edge.second]!, secondGrid[0], secondGrid[1], true,
+        );
+        compare(edge.first, firstGrid, edge.second, secondGrid, Math.abs(firstK - secondK));
+      }
+      continue;
+    }
+
+    const fineIndex = firstNode.level < secondNode.level ? edge.first : edge.second;
+    const coarseIndex = fineIndex === edge.first ? edge.second : edge.first;
+    const fineNode = nodes[fineIndex]!;
+    const coarseNode = nodes[coarseIndex]!;
+    // Fine odd vertices collapse onto their previous even vertex at K=1.
+    // Compare the 17 unique positions to the real coarse edge vertices.
+    for (let step = 0; step <= 32; step += 2) {
+      const tangent = edge.tangentStart
+        + ((edge.tangentEnd - edge.tangentStart) * step) / 32;
+      const fineGrid = edgeGridPosition(fineNode, edge, tangent);
+      const coarseGrid = edgeGridPosition(coarseNode, edge, tangent);
+      const fineK = terrainNodeVertexMorphK(
+        fineNode.morphK, corners[fineIndex]!, fineGrid[0], fineGrid[1], true,
+      );
+      const coarseK = terrainNodeVertexMorphK(
+        coarseNode.morphK, corners[coarseIndex]!, coarseGrid[0], coarseGrid[1], true,
+      );
+      if (Math.max(Math.abs(1 - fineK), Math.abs(coarseK)) > 1e-10) {
+        throw new Error(JSON.stringify({
+          edge,
+          fine: { level: fineNode.level, originX: fineNode.originX, originZ: fineNode.originZ,
+            corners: corners[fineIndex], grid: fineGrid, k: fineK },
+          coarse: { level: coarseNode.level, originX: coarseNode.originX,
+            originZ: coarseNode.originZ, corners: corners[coarseIndex], grid: coarseGrid,
+            k: coarseK },
+        }));
+      }
+      compare(
+        fineIndex,
+        fineGrid,
+        coarseIndex,
+        coarseGrid,
+        Math.max(Math.abs(1 - fineK), Math.abs(coarseK)),
+      );
+    }
+  }
+
+  // Edge-only checks miss two leaves that meet diagonally at one point. The
+  // selector balances all touching neighbours because a two-level corner
+  // would require a grandparent page the fine node does not carry.
+  const cornerEntries = new Map<string, Array<{
+    readonly nodeIndex: number;
+    readonly grid: readonly [number, number];
+  }>>();
+  nodes.forEach((node, nodeIndex) => {
+    const entries = [
+      [node.originX, node.originZ, 0, 0],
+      [node.originX + node.spanMeters, node.originZ, 32, 0],
+      [node.originX, node.originZ + node.spanMeters, 0, 32],
+      [node.originX + node.spanMeters, node.originZ + node.spanMeters, 32, 32],
+    ] as const;
+    for (const [x, z, gridX, gridZ] of entries) {
+      const key = `${x}:${z}`;
+      const incident = cornerEntries.get(key) ?? [];
+      incident.push({ nodeIndex, grid: [gridX, gridZ] });
+      cornerEntries.set(key, incident);
+    }
+  });
+  for (const entries of cornerEntries.values()) {
+    if (entries.length < 2) continue;
+    const levels = entries.map((entry) => nodes[entry.nodeIndex]!.level);
+    const minimumLevel = Math.min(...levels);
+    const maximumLevel = Math.max(...levels);
+    const first = entries[0]!;
+    for (let index = 1; index < entries.length; index += 1) {
+      const second = entries[index]!;
+      const firstNode = nodes[first.nodeIndex]!;
+      const secondNode = nodes[second.nodeIndex]!;
+      const firstK = terrainNodeVertexMorphK(
+        firstNode.morphK,
+        corners[first.nodeIndex]!,
+        first.grid[0],
+        first.grid[1],
+        true,
+      );
+      const secondK = terrainNodeVertexMorphK(
+        secondNode.morphK,
+        corners[second.nodeIndex]!,
+        second.grid[0],
+        second.grid[1],
+        true,
+      );
+      const morphError = maximumLevel === minimumLevel
+        ? Math.abs(firstK - secondK)
+        : Math.max(
+            Math.abs(firstK - (firstNode.level === minimumLevel ? 1 : 0)),
+            Math.abs(secondK - (secondNode.level === minimumLevel ? 1 : 0)),
+          );
+      compare(
+        first.nodeIndex,
+        first.grid,
+        second.nodeIndex,
+        second.grid,
+        morphError,
+      );
+    }
+  }
+  return {
+    edges: edges.length,
+    comparisons,
+    maxMorphError,
+    maxPositionError,
+    maxHeightError,
+    maxNormalError,
+  };
 }
 
 describe("CDLOD node selection (4-5)", () => {
@@ -214,7 +533,53 @@ describe("CDLOD node record (4-5)", () => {
     // the CPU's only remaining say in the fallback.
     expect(TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT).toBeLessThan(0);
     expect(TERRAIN_PROVISIONAL_AXIS.fallbackAxis).toBe(SurfaceMaterial.Grass);
-    expect(TERRAIN_PROVISIONAL_AXIS.maxAxis).toBe(SURFACE_MATERIAL_COUNT - 1);
+    expect(TERRAIN_PROVISIONAL_AXIS.maxAxis).toBe(SurfaceMaterial.Snow);
+    const biomePrimaries = new Set<number>(
+      Object.values(SURFACE_MATERIALS_BY_BIOME).map((mix) => mix.primary),
+    );
+    expect(Math.max(...biomePrimaries)).toBeLessThanOrEqual(
+      TERRAIN_PROVISIONAL_AXIS.maxAxis,
+    );
+    for (
+      let materialId = TERRAIN_PROVISIONAL_AXIS.maxAxis + 1;
+      materialId < SURFACE_MATERIAL_COUNT;
+      materialId += 1
+    ) {
+      expect(biomePrimaries.has(materialId)).toBe(false);
+    }
+  });
+
+  it("packs four quantized corner morphs into one exact f32 integer", () => {
+    expect(TERRAIN_CORNER_MORPH_PACKED_MAX).toBe(2 ** 24 - 1);
+    let random = 0x6d2b79f5;
+    const next = (): number => {
+      random = Math.imul(random ^ (random >>> 15), 1 | random);
+      random ^= random + Math.imul(random ^ (random >>> 7), 61 | random);
+      return ((random ^ (random >>> 14)) >>> 0) / 2 ** 32;
+    };
+    const cases: TerrainNodeCornerMorphs[] = [
+      [0, 0, 0, 0],
+      [1, 1, 1, 1],
+      [0, 1, 0, 1],
+    ];
+    for (let index = 0; index < 2_048; index += 1) {
+      cases.push([next(), next(), next(), next()]);
+    }
+    for (const corners of cases) {
+      const packed = packTerrainCornerMorphs(corners);
+      // Every possible payload is <= 2^24-1, the largest consecutive integer
+      // an IEEE-754 f32 and WGSL vertex input can represent exactly.
+      expect(packed).toBeGreaterThanOrEqual(0);
+      expect(packed).toBeLessThanOrEqual(TERRAIN_CORNER_MORPH_PACKED_MAX);
+      expect(Math.fround(packed)).toBe(packed);
+      const decoded = unpackTerrainCornerMorphs(Math.fround(packed));
+      for (let corner = 0; corner < 4; corner += 1) {
+        const quantized = quantizeTerrainCornerMorphK(corners[corner]!);
+        expect(decoded[corner]).toBe(quantized);
+        expect(Math.abs(decoded[corner]! - corners[corner]!))
+          .toBeLessThanOrEqual(0.5 / TERRAIN_CORNER_MORPH_LEVELS + Number.EPSILON);
+      }
+    }
   });
 
   it("writes a matrix per node and two stride-4 lanes", () => {
@@ -249,6 +614,8 @@ describe("CDLOD node record (4-5)", () => {
       expect(buffers.laneA[index * 4 + 1]).toBeLessThan(256);
       // Lane B's third slot is the CHANNEL lane, packed `slot * 32 + level`.
       expect(buffers.laneB[index * 4 + 2]).toBe(5 * 32 + nodes[index]!.level);
+      expect(buffers.laneB[index * 4 + 3])
+        .toBe(packTerrainCornerMorphs(nodes[index]!.cornerMorphK));
     }
   });
 
@@ -267,6 +634,10 @@ describe("CDLOD node record (4-5)", () => {
     for (let index = 0; index < nodes.length; index += 1) {
       expect(buffers.laneB[index * 4]).toBe(0);
       expect(buffers.laneB[index * 4 + 1]).toBe(-1);
+      const corners = unpackTerrainCornerMorphs(buffers.laneB[index * 4 + 3]!);
+      // The shader's final guard is memory-safe even for a malformed caller:
+      // packed edge K cannot address the unavailable parent slot.
+      expect(terrainNodeVertexMorphK(nodes[index]!.morphK, corners, 0, 17, false)).toBe(0);
     }
   });
 
@@ -283,6 +654,234 @@ describe("CDLOD node record (4-5)", () => {
     expect(Math.max(...xs)).toBe(1);
     const ys = Array.from({ length: edge * edge }, (_, index) => grid.positions![index * 3 + 1]!);
     expect(Math.max(...ys)).toBe(0);
+  });
+});
+
+describe("CDLOD synchronized boundary morphs", () => {
+  it("keeps the per-frame corner pass O(nodes) with at most three numeric level probes", () => {
+    const diagnostics: TerrainNodeSelectionDiagnostics = {
+      cornerLeafQueries: 0,
+      cornerLeafLevelProbes: 0,
+    };
+    const nodes = selectTerrainNodes({
+      ...BASE_SELECTION,
+      nodeBudget: 320,
+      // Saturate the tier-1 node budget so this guard covers the shipping
+      // worst case rather than a small, easy partition.
+      deviationFor: () => 1_000,
+    }, diagnostics);
+
+    // A split costs three nodes and its whole 2:1 closure must fit, so the
+    // selector can finish a couple of slots below the literal capacity.
+    expect(nodes.length).toBeGreaterThanOrEqual(300);
+    expect(diagnostics.cornerLeafQueries).toBe(
+      nodes.length * TERRAIN_CORNER_SYNC_MAX_LEAF_QUERIES_PER_NODE,
+    );
+    expect(diagnostics.cornerLeafLevelProbes).toBeLessThanOrEqual(
+      diagnostics.cornerLeafQueries * TERRAIN_CORNER_SYNC_MAX_LEVEL_PROBES_PER_QUERY,
+    );
+    expect(diagnostics.cornerLeafLevelProbes).toBeGreaterThan(
+      diagnostics.cornerLeafQueries,
+    );
+  });
+
+  it("closes the exact adjacent-node counterexample while preserving interior K", () => {
+    const nodes = select();
+    const byCell = (level: number, x: number, z: number): TerrainNode | undefined =>
+      nodes.find((node) => node.level === level
+        && node.originX / node.spanMeters === x
+        && node.originZ / node.spanMeters === z);
+    const first = byCell(8, 0, -2);
+    const second = byCell(8, 1, -2);
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    // This is the release-blocking selector output: the two nodes legitimately
+    // retain very different interior transition weights.
+    expect(Math.abs(first!.morphK - second!.morphK)).toBeGreaterThan(0.9);
+    // Their complete shared edge nevertheless has one bit-identical K.
+    for (let gridZ = 0; gridZ <= 32; gridZ += 1) {
+      expect(terrainNodeVertexMorphK(first!.morphK, first!.cornerMorphK, 32, gridZ))
+        .toBe(terrainNodeVertexMorphK(second!.morphK, second!.cornerMorphK, 0, gridZ));
+    }
+    const result = terrainContinuityResult(nodes);
+    expect(result.edges).toBeGreaterThan(0);
+    expect(result.maxMorphError).toBe(0);
+    expect(result.maxPositionError).toBeLessThan(1e-9);
+    expect(result.maxHeightError).toBeLessThan(1e-9);
+    expect(result.maxNormalError).toBeLessThan(1e-12);
+  });
+
+  it("keeps XZ, endpoint height, and normals identical over randomized legal partitions", () => {
+    let randomState = 0x9e3779b9;
+    const random = (): number => {
+      randomState ^= randomState << 13;
+      randomState ^= randomState >>> 17;
+      randomState ^= randomState << 5;
+      return (randomState >>> 0) / 2 ** 32;
+    };
+    let edgeCount = 0;
+    let comparisonCount = 0;
+    let mixedPartitions = 0;
+    for (let iteration = 0; iteration < 48; iteration += 1) {
+      const salt = Math.floor(random() * 0x7fffffff);
+      const residency = new Map<string, number | null>();
+      const deviationFor = (address: { level: number; x: number; z: number }): number | null => {
+        const key = `${address.level}:${address.x}:${address.z}`;
+        const existing = residency.get(key);
+        if (existing !== undefined) return existing;
+        let hash = salt ^ Math.imul(address.level + 17, 0x45d9f3b);
+        hash ^= Math.imul(address.x, 0x27d4eb2d);
+        hash ^= Math.imul(address.z, 0x165667b1);
+        hash = (hash ^ (hash >>> 16)) >>> 0;
+        const measured = hash % 13 !== 0;
+        const value = measured
+          ? (0.04 + ((hash >>> 8) % 500) / 1_000) * 2 ** address.level
+          : null;
+        residency.set(key, value);
+        return value;
+      };
+      const coarsestLevel = 8 + Math.floor(random() * 2);
+      const nodes = selectTerrainNodes({
+        ...BASE_SELECTION,
+        cameraX: (random() - 0.5) * 70_000,
+        cameraY: 20 + random() * 8_000,
+        cameraZ: (random() - 0.5) * 70_000,
+        nodeBudget: 96 + Math.floor(random() * 320),
+        finestResidentLevel: random() < 0.25 ? 1 : 0,
+        coarsestLevel,
+        deviationFor,
+      });
+
+      // Executable parent-residency proof: every emitted non-root child could
+      // only exist after the exact parent page returned measured stats.
+      for (const node of nodes) {
+        if (node.level >= coarsestLevel) continue;
+        const parent = parentWorldPageAddress(node.address)!;
+        const parentKey = `${parent.level}:${parent.x}:${parent.z}`;
+        expect(residency.get(parentKey), `parent of L${node.level} ${parentKey}`)
+          .not.toBeNull();
+        expect(residency.has(parentKey)).toBe(true);
+      }
+
+      const result = terrainContinuityResult(nodes);
+      edgeCount += result.edges;
+      comparisonCount += result.comparisons;
+      if (new Set(nodes.map((node) => node.level)).size > 1) mixedPartitions += 1;
+      expect(result.maxMorphError, `iteration ${iteration}`).toBe(0);
+      expect(result.maxPositionError, `iteration ${iteration}`).toBeLessThan(1e-8);
+      expect(result.maxHeightError, `iteration ${iteration}`).toBeLessThan(1e-8);
+      expect(result.maxNormalError, `iteration ${iteration}`).toBeLessThan(1e-12);
+    }
+    expect(edgeCount).toBeGreaterThan(1_000);
+    expect(comparisonCount).toBeGreaterThan(20_000);
+    expect(mixedPartitions).toBeGreaterThan(20);
+  }, 120_000);
+
+  it("promotes both edge endpoints under one legal fine-page eviction", () => {
+    const nodes = select({ cameraY: 150, nodeBudget: 320 });
+    const edges = sharedTerrainEdges(nodes);
+    const keyFor = (address: { level: number; x: number; z: number }): string =>
+      `${address.level}:${address.x}:${address.z}`;
+    const protectedParents = new Set(nodes
+      .filter((node) => node.level < BASE_SELECTION.coarsestLevel)
+      .map((node) => keyFor(parentWorldPageAddress(node.address)!)));
+    const candidates = new Map<string, { same: number; crossFine: number }>();
+    for (const edge of edges) {
+      const first = nodes[edge.first]!;
+      const second = nodes[edge.second]!;
+      for (const node of [first, second]) {
+        const key = keyFor(node.address);
+        if (protectedParents.has(key)) continue;
+        const score = candidates.get(key) ?? { same: 0, crossFine: 0 };
+        if (first.level === second.level) score.same += 1;
+        else if (node.level === Math.min(first.level, second.level)) score.crossFine += 1;
+        candidates.set(key, score);
+      }
+    }
+    const missingKey = [...candidates].find(([, score]) => score.same > 0 && score.crossFine > 0)?.[0];
+    expect(missingKey, "a legal unprotected fine page touching same- and cross-level edges")
+      .toBeDefined();
+    const slotFor = (address: { level: number; x: number; z: number }): number =>
+      keyFor(address) === missingKey ? -1 : 7;
+    const resolved = resolveTerrainResidentCornerMorphs(nodes, slotFor);
+    const buffers = writeTerrainNodeBuffers({
+      nodes,
+      originX: 0,
+      originZ: 0,
+      slotFor,
+      channelSlotFor: () => -1,
+      provisionalAxisFor: () => TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
+    }, createTerrainNodeBuffers(nodes.length));
+    const decoded = nodes.map((_, index) =>
+      unpackTerrainCornerMorphs(buffers.laneB[index * 4 + 3]!));
+    expect(decoded).toEqual(resolved);
+
+    let affectedSameEdges = 0;
+    let affectedCrossEdges = 0;
+    for (const edge of edges) {
+      const first = nodes[edge.first]!;
+      const second = nodes[edge.second]!;
+      const firstMissing = keyFor(first.address) === missingKey;
+      const secondMissing = keyFor(second.address) === missingKey;
+      if (!firstMissing && !secondMissing) continue;
+      if (first.level === second.level) {
+        affectedSameEdges += 1;
+        // Interior samples prove both endpoints were promoted and linear K is
+        // one across the complete edge, not merely equal at its corners.
+        for (const step of [1, 7, 16, 25, 31]) {
+          const tangent = edge.tangentStart
+            + ((edge.tangentEnd - edge.tangentStart) * step) / 32;
+          const firstGrid = edgeGridPosition(first, edge, tangent);
+          const secondGrid = edgeGridPosition(second, edge, tangent);
+          expect(terrainNodeVertexMorphK(
+            first.morphK, decoded[edge.first]!, firstGrid[0], firstGrid[1], true,
+          )).toBe(1);
+          expect(terrainNodeVertexMorphK(
+            second.morphK, decoded[edge.second]!, secondGrid[0], secondGrid[1], true,
+          )).toBe(1);
+        }
+      } else {
+        affectedCrossEdges += 1;
+      }
+    }
+    expect(affectedSameEdges).toBeGreaterThan(0);
+    expect(affectedCrossEdges).toBeGreaterThan(0);
+
+    // Shadow cascades draw distance-filtered subsets. They must consume the
+    // full beauty partition's residency resolution rather than recomputing a
+    // corner after the missing peer has been filtered out.
+    const promotedResidentIndex = nodes.findIndex((node, index) =>
+      keyFor(node.address) !== missingKey
+      && resolved[index]!.some((value, corner) => value !== node.cornerMorphK[corner]));
+    expect(promotedResidentIndex).toBeGreaterThanOrEqual(0);
+    const promotedNode = nodes[promotedResidentIndex]!;
+    const shadowBuffers = writeTerrainNodeBuffers({
+      nodes: [promotedNode],
+      originX: 0,
+      originZ: 0,
+      slotFor,
+      channelSlotFor: () => -1,
+      provisionalAxisFor: () => TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
+      cornerMorphsFor: (node) => resolved[nodes.indexOf(node)]!,
+    }, createTerrainNodeBuffers(1));
+    expect(unpackTerrainCornerMorphs(shadowBuffers.laneB[3]!))
+      .toEqual(resolved[promotedResidentIndex]);
+
+    for (let index = 0; index < nodes.length; index += 1) {
+      if (decoded[index]!.some((morphK) => morphK > 0)) {
+        expect(buffers.laneB[index * 4 + 1], `parent slot for node ${index}`)
+          .toBeGreaterThanOrEqual(0);
+      }
+    }
+    const result = terrainContinuityResult(
+      nodes,
+      decoded,
+      (node) => keyFor(node.address) !== missingKey,
+    );
+    expect(result.maxMorphError).toBe(0);
+    expect(result.maxPositionError).toBeLessThan(1e-9);
+    expect(result.maxHeightError).toBeLessThan(1e-9);
+    expect(result.maxNormalError).toBeLessThan(1e-12);
   });
 });
 

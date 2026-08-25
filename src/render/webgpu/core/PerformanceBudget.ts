@@ -277,9 +277,9 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
     2: 200_000,
     3: 240_000,
   }),
-  // 2-12: the atlas's first sampler went live — measured bytes across all
-  // 16 layers and their coverage-preserving mip chains.
-  foliageAtlasMiB: 5.33,
+  // Card/bark layers plus broadleaf/conifer opaque near-crown layers, with
+  // complete mip chains: 18 × 256² × rgba8 × 4/3 = 6.0 MiB.
+  foliageAtlasMiB: 6,
   // 2-17: 7 species × 2 season buckets × 2 arrays (albedo, normal+depth) of
   // 256² rgba8 with full mip chains — measured from the CPU bake. 64² tiles
   // are the recorded decision (the plan's 128² sketch did not close against

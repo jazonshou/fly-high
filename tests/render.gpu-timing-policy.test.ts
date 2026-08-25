@@ -3,6 +3,7 @@ import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  gpuTimingEnabledAtStartup,
   hasDispatchTiming,
   withoutDispatchTiming,
 } from "@/src/render/webgpu/core/GpuTimingPolicy";
@@ -48,6 +49,65 @@ function computeShaderSites(): Array<{ file: string; wrapped: boolean }> {
 }
 
 describe("G0-2 GPU dispatch timing policy", () => {
+  describe("capture observer-cost policy", () => {
+    it("keeps costly continuous telemetry off by default", () => {
+      expect(gpuTimingEnabledAtStartup({
+        timestampQuerySupported: true,
+        captureGpuTiming: undefined,
+        pinnedCapture: false,
+      })).toBe(false);
+      expect(gpuTimingEnabledAtStartup({
+        timestampQuerySupported: false,
+        captureGpuTiming: undefined,
+        pinnedCapture: false,
+      })).toBe(false);
+    });
+
+    it("permits either diagnostic state only on pinned capture renderers", () => {
+      expect(gpuTimingEnabledAtStartup({
+        timestampQuerySupported: true,
+        captureGpuTiming: true,
+        pinnedCapture: true,
+      })).toBe(true);
+      expect(gpuTimingEnabledAtStartup({
+        timestampQuerySupported: true,
+        captureGpuTiming: false,
+        pinnedCapture: true,
+      })).toBe(false);
+      expect(() => gpuTimingEnabledAtStartup({
+        timestampQuerySupported: true,
+        captureGpuTiming: false,
+        pinnedCapture: false,
+      })).toThrow(/pinned capture renderer/);
+      expect(() => gpuTimingEnabledAtStartup({
+        timestampQuerySupported: true,
+        captureGpuTiming: true,
+        pinnedCapture: false,
+      })).toThrow(/pinned diagnostic capture/);
+    });
+
+    it("locks Babylon's global timer once, before any scene work is encoded", () => {
+      const source = readFileSync(
+        join(projectRoot, "src/render/FlightRenderer.ts"),
+        "utf8",
+      );
+      const assignments = source.match(/engine\.enableGPUTimingMeasurements\s*=/gu) ?? [];
+
+      // Babylon's setter tears down its shared timestamp query set. Calling it
+      // after a frame has been encoded can leave the next unsent encoder
+      // referencing a destroyed query set; WebGPU then rejects the whole
+      // submit, which presents as a random black frame. The renderer may pick
+      // the value at startup, but it must never toggle it while live.
+      expect(assignments).toHaveLength(1);
+      const assignment = source.indexOf(
+        "engine.enableGPUTimingMeasurements = gpuTimingEnabled",
+      );
+      const firstScene = source.indexOf("const scene = new Scene(engine)");
+      expect(assignment).toBeGreaterThan(0);
+      expect(firstScene).toBeGreaterThan(assignment);
+    });
+  });
+
   describe("withoutDispatchTiming", () => {
     it("clears the counter and returns the same instance", () => {
       const shader = { gpuTimeInFrame: { counter: { count: 0, current: 0 } } };

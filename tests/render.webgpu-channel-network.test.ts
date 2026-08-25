@@ -10,6 +10,7 @@ import {
 import {
   ChannelNetwork,
   channelGraphToHydrologyGeometry,
+  macroLakeHasRenderableWetSupport,
   type ChannelNetworkGridLayout,
 } from "../src/render/webgpu/water/ChannelNetwork";
 
@@ -214,6 +215,43 @@ describe("terrain channel network (5-9)", () => {
     expect(serialized.graph.lakePolygons[0]!.verticesXZ.buffer).not.toBe(
       graph.lakePolygons[0]!.verticesXZ.buffer,
     );
+  });
+
+  it("does not render a one-macro-cell square or a convex cover over a concave mask", () => {
+    const layout = { width: 5, height: 5, texelSizeMeters: 100, originX: 50, originZ: 50 };
+    const count = layout.width * layout.height;
+    const outlet = at(2, 2, layout.width);
+    const lakeMask = new Uint8Array(count);
+    lakeMask[outlet] = 1;
+    const flow = new Float32Array(count);
+    flow[outlet] = 500;
+    const graph = new ChannelNetwork().extract(fixtureMacro(layout, {
+      flowAccumulationAreaM2: flow,
+      lakeMask,
+      channelSeedTexelIndices: Uint32Array.of(outlet),
+      lakes: [{
+        lakeId: 3,
+        spillElevationMeters: 90,
+        outletTexel: { x: 2, z: 2 },
+        maximumDepthMeters: 10,
+        // Deliberately above the legacy global threshold: the wet support,
+        // not metadata alone, must decide whether a polygon is safe.
+        surfaceAreaM2: 40_000,
+      }],
+    }), { layout });
+    expect(graph.nodes.some((node) => node.termination === "lake")).toBe(true);
+    expect(graph.lakes).toEqual([]);
+    expect(graph.lakePolygons).toEqual([]);
+    expect(channelGraphToHydrologyGeometry(graph).lakes).toEqual([]);
+
+    const twoByTwoHull = Float32Array.of(0, 0, 200, 0, 200, 200, 0, 200);
+    expect(macroLakeHasRenderableWetSupport(4, 100, 40_000, twoByTwoHull)).toBe(true);
+    // Three wet cells in an L have 30,000 m² of support, while this convex
+    // square covers 40,000 m² and would visibly flood the missing corner.
+    expect(macroLakeHasRenderableWetSupport(3, 100, 40_000, twoByTwoHull)).toBe(false);
+    expect(macroLakeHasRenderableWetSupport(1, 512, 262_144, Float32Array.of(
+      0, 0, 512, 0, 512, 512, 0, 512,
+    ))).toBe(false);
   });
 
   it("derives the same deterministic graph from the canonical export alone", () => {
