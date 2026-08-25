@@ -48,6 +48,7 @@ import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/Terr
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
 import {
   buildClutterPrototype,
+  buildCrownFringePrototype,
   buildGrassPatchPrototype,
   buildRockPrototype,
   buildShrubPrototype,
@@ -1047,6 +1048,11 @@ export class WorldDetailRuntime {
     // stale records remain valid because their mesh carries the uniform
     // built-origin -> current-origin translation in the meantime.
     this.compensateBatchOrigins(floatingOrigin);
+    // Fix-pack F1: the crown cluster field samples world space through this
+    // offset — without it the shading pattern popped on every origin rebase.
+    for (const plugin of this.instancePlugins) {
+      plugin.setWorldOrigin(floatingOrigin.x, floatingOrigin.z);
+    }
     if (!Number.isFinite(profile.vegetationDistance) || profile.vegetationDistance <= 0) {
       throw new RangeError("Vegetation distance must be finite and greater than zero");
     }
@@ -2679,6 +2685,22 @@ export class WorldDetailRuntime {
           barkMaterial,
           true,
           prototype.trunk.localBounds,
+        );
+        // Fix-pack F3: the near-band silhouette fringe rides the previously
+        // dormant alpha-card crown material over the opaque hull. Near band
+        // only — mid and far keep the hull/impostor look the frame can
+        // afford, and the hull has already filled depth when these draw.
+        const fringe = buildCrownFringePrototype(species, variant, prototypeSeed);
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-fringe-near`,
+          Math.max(fringe.boundingRadius, 0.05),
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-fringe-near`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-fringe`, fringe),
+          crownMaterial,
+          true,
+          fringe.localBounds,
         );
         // Mid uses the exact near trunk and opaque crown. The extra vertices
         // remove the dominant two-sided alpha-card overdraw and make the hard

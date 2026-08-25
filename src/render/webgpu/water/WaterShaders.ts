@@ -226,6 +226,79 @@ export const WATER_FRESNEL_SCHLICK_WGSL = /* wgsl */ `fn fresnelSchlick(cosTheta
 }`;
 
 /**
+ * Fix-pack W1/W2: the near-field capillary band and the sub-grid spectrum
+ * tail, shared by every water surface.
+ *
+ * Below the finest cascade's Nyquist (1.0 m at tier 1) the rendered spectrum
+ * simply ended: near pixels magnified 0.5 m slope texels into playdough, and
+ * because the moment texture holds exactly `s²` at mip 0 the Toksvig variance
+ * was identically ZERO up close — roughness collapsed to the floor and the
+ * probe reflected at mip 0. Glass. This block supplies (a) two wind-advected
+ * procedural ripple octaves (~0.42 m and ~0.16 m), world-locked so descending
+ * toward the surface produces real optical flow — the altitude cue — and
+ * (b) the unresolved mean-square slope of everything the pixel cannot carry,
+ * for the caller to fold into GGX roughness exactly like a faded cascade.
+ * Octaves fade on their own pixel-footprint Nyquist and hand their energy to
+ * the roughness term as they go, the 2-8 discipline.
+ *
+ * Returns (slope.x, slope.z, unresolvedMeanSquareSlope), slopes in the
+ * `normalize(vec3f(slope.x, 1, slope.y))` convention both call sites use.
+ */
+export const WATER_CAPILLARY_DETAIL_WGSL = /* wgsl */ `fn waterDetailHash(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+fn waterDetailGrad(point: vec2f) -> vec3f {
+  let cell = floor(point);
+  let local = fract(point);
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  let slope = 6.0 * local * (vec2f(1.0) - local);
+  let a = waterDetailHash(cell);
+  let b = waterDetailHash(cell + vec2f(1.0, 0.0));
+  let c = waterDetailHash(cell + vec2f(0.0, 1.0));
+  let d = waterDetailHash(cell + vec2f(1.0));
+  return vec3f(
+    mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
+    mix(b - a, d - c, blend.y) * slope.x,
+    mix(c - a, d - b, blend.x) * slope.y,
+  );
+}
+
+fn waterCapillaryDetail(worldXZ: vec2f, windVelocity: vec2f, time: f32) -> vec3f {
+  let footprint = max(length(dpdx(worldXZ)), length(dpdy(worldXZ)));
+  // Floor 0.1, not higher: a calm lake should stay glassier than a windy sea
+  // — the unresolved-tail fold scales with this.
+  let wind01 = clamp(length(windVelocity) * 0.09, 0.1, 1.0);
+  // Wrapped so the advected noise coordinate cannot grow into f32
+  // quantization over a long session; the once-per-~68-min phase snap is a
+  // single-frame ripple reseed, invisible against wave motion.
+  let drift = windVelocity * (time - floor(time / 4096.0) * 4096.0);
+  var slope = vec2f(0.0);
+  // The tail below the finest octave here is NEVER resolved at any range.
+  var unresolved = 0.014 * wind01;
+  // Drift factors are far below 1: capillary PHASE speed is ~0.3-0.5 m/s
+  // regardless of the wind that raised the ripples, and advecting the fine
+  // lattice at full wind moved it more than half a noise cell per 60 fps
+  // frame above ~5 m/s of wind — temporal aliasing shimmer, not motion.
+  let fadeA = 1.0 - smoothstep(0.05, 0.21, footprint);
+  if (fadeA > 0.001) {
+    let gradA = waterDetailGrad((worldXZ - drift * 0.22) * 2.4);
+    slope += vec2f(gradA.y, gradA.z) * 0.14 * wind01 * fadeA;
+  }
+  unresolved += 0.020 * wind01 * (1.0 - fadeA * fadeA);
+  let fadeB = 1.0 - smoothstep(0.02, 0.08, footprint);
+  if (fadeB > 0.001) {
+    let rotated = mat2x2f(0.848, 0.53, -0.53, 0.848) * (worldXZ - drift * 0.11);
+    let gradB = waterDetailGrad(rotated * 6.1 + vec2f(13.7, 41.3));
+    slope += vec2f(gradB.y, gradB.z) * 0.10 * wind01 * fadeB;
+  }
+  unresolved += 0.016 * wind01 * (1.0 - fadeB * fadeB);
+  return vec3f(slope, unresolved);
+}`;
+
+/**
  * 2-9: the ONE sun specular lobe for every water surface — solid-angle
  * correct via Karis's representative-point method. The sun is a disc of
  * angular radius θ, not a delta light: the GGX alpha widens by θ/2 and the

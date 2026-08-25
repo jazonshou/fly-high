@@ -27,9 +27,9 @@ describe("aircraft picker", () => {
     expect(markup.match(/name="aircraft"/g)).toHaveLength(2);
     expect(values).toEqual(["trainer", "jet"]);
     expect(markup).toContain("Aster T-20");
-    expect(markup).toContain("Vesper J-45");
+    expect(markup).toContain("F-22 Raptor");
     expect(markup).toContain("Trainer");
-    expect(markup).toContain("Fast jet");
+    expect(markup).toContain("Air dominance fighter");
   });
 
   it("reflects the controlled selection without producing a second checked radio", () => {

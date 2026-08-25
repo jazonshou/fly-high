@@ -71,6 +71,7 @@ import {
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
+  WATER_CAPILLARY_DETAIL_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SUN_SPECULAR_WGSL,
@@ -194,6 +195,8 @@ ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
 
+${WATER_CAPILLARY_DETAIL_WGSL}
+
 ${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
@@ -206,7 +209,45 @@ ${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
-  let geometricNormal = normalize(input.surfaceNormal);
+  // Fix-pack W3: the wave gradient is re-evaluated PER FRAGMENT. The vertex
+  // normal was interpolated from meshes with almost no interior vertices — a
+  // lake is a centre fan — so interior pixels received a near-constant
+  // normal and read as glass. The phases reuse the vertex shader's exact
+  // formulas at the fragment's own world position; the vertex keeps owning
+  // displacement.
+  let fragmentFlow = normalize(input.flowDirection + vec2f(0.00001, 0.0));
+  let fragmentWind = normalize(uniforms.windDirection + vec2f(0.00001, 0.0));
+  let fragmentShoreAttenuation = 1.0 - input.waterInfo.z * 0.68;
+  let fragmentFlowFrequency = mix(0.16, 0.055, input.waterInfo.y);
+  let fragmentWindFrequency = mix(0.22, 0.095, input.waterInfo.y);
+  let fragmentFlowAmplitude = (0.025 + min(input.flowSpeed, 5.0) * 0.014)
+    * fragmentShoreAttenuation;
+  let fragmentWindAmplitude = (0.018 + min(uniforms.windSpeed, 24.0) * 0.0028)
+    * mix(0.48, 1.0, input.waterInfo.y) * fragmentShoreAttenuation;
+  let fragmentFlowPhase = dot(input.absoluteWorldXZ, fragmentFlow) * fragmentFlowFrequency
+    - uniforms.time * (0.8 + input.flowSpeed * 1.7);
+  let fragmentCrossPhase = dot(input.absoluteWorldXZ, vec2f(-fragmentFlow.y, fragmentFlow.x))
+    * fragmentFlowFrequency * 1.74 + uniforms.time * 0.63;
+  let fragmentWindPhase = dot(input.absoluteWorldXZ, fragmentWind) * fragmentWindFrequency
+    - uniforms.time * (0.55 + uniforms.windSpeed * 0.075);
+  let fragmentGradient = cos(fragmentFlowPhase) * fragmentFlowAmplitude
+      * fragmentFlowFrequency * fragmentFlow
+    + cos(fragmentCrossPhase) * fragmentFlowAmplitude * 0.32 * fragmentFlowFrequency * 1.74
+      * vec2f(-fragmentFlow.y, fragmentFlow.x)
+    + cos(fragmentWindPhase) * fragmentWindAmplitude * fragmentWindFrequency * fragmentWind;
+  // Fix-pack W2: the shared capillary band + sub-grid tail (see
+  // WATER_CAPILLARY_DETAIL_WGSL) — rivers and lakes were the worst "glass up
+  // close" offenders.
+  let capillary = waterCapillaryDetail(
+    input.absoluteWorldXZ,
+    uniforms.windDirection * uniforms.windSpeed,
+    uniforms.time,
+  );
+  let geometricNormal = normalize(vec3f(
+    -fragmentGradient.x + capillary.x,
+    1.0,
+    -fragmentGradient.y + capillary.y,
+  ));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
   let normal = select(geometricNormal, -geometricNormal, cameraBelow);
@@ -215,8 +256,17 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let nDotL = max(dot(normal, light), 0.0);
   let lakeFactor = clamp(input.waterInfo.y, 0.0, 1.0);
   let depth = waterDepthFromBathymetry(input.worldPosition.y, input.absoluteWorldXZ);
-  let roughness = clamp(
+  // Fix-pack W1: fold the capillary band's unresolved energy into the GGX
+  // lobe in alpha space, the 2-8 discipline — near water keeps micro-facet
+  // sparkle instead of collapsing to a mirror.
+  let baseRoughness = clamp(
     mix(0.14, 0.09, lakeFactor) + input.flowSpeed * 0.008 + uniforms.windSpeed * 0.0016,
+    0.075,
+    0.28,
+  );
+  let baseAlpha = baseRoughness * baseRoughness;
+  let roughness = clamp(
+    sqrt(sqrt(baseAlpha * baseAlpha + min(capillary.z, 0.25))),
     0.075,
     0.28,
   );

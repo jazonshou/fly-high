@@ -528,6 +528,15 @@ export class AtmosphereSystem {
     this.shadows.shadowMaxZ = profile.shadowDistance;
     this.shadows.bias = 0.00035;
     this.shadows.normalBias = 0.035;
+    // Fix-pack T8: cast depth from BACK faces. The 0.035 m normal bias is far
+    // below a cascade texel's slope error on a mountainside (0.5–3 m texels at
+    // the shipped map sizes), so lit steep faces self-shadowed into black
+    // stripes at low sun. Recording the caster's far side instead removes
+    // self-comparison on every lit face; residual acne moves to faces already
+    // dark from N·L. Casters here are closed volumes (terrain heightfield
+    // sheet, lofted aircraft, closed crown hulls), which is the case this
+    // technique is standard for.
+    this.shadows.forceBackFacesOnly = true;
     this.shadows.filter = ShadowGenerator.FILTER_PCF;
     this.shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 

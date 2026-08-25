@@ -67,6 +67,7 @@ import {
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
+  WATER_CAPILLARY_DETAIL_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SUN_SPECULAR_WGSL,
@@ -418,6 +419,8 @@ ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
 
+${WATER_CAPILLARY_DETAIL_WGSL}
+
 ${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
@@ -465,6 +468,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); }
   if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); }
   if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); }
+  // Fix-pack W1/W2: the capillary band below cascade 0's Nyquist plus the
+  // sub-grid spectrum tail — see WATER_CAPILLARY_DETAIL_WGSL. The tail term
+  // is what stops near-field roughness collapsing to the mip-0 glass floor.
+  let capillary = waterCapillaryDetail(input.oceanCoordinate, uniforms.cloudWind, uniforms.time);
+  slopeSum += capillary.xy;
+  slopeVariance += capillary.z;
   let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;

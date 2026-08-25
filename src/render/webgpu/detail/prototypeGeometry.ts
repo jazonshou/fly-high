@@ -689,7 +689,12 @@ function emitBroadleafCrownHull(
   const radiusX = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
   const radiusY = span * (willow ? 0.51 : 0.49) * (0.95 + rng() * 0.08);
   const radiusZ = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
-  const deformed: Vec3[] = vertices.map((source) => {
+  // Fix-pack F2: per-vertex radial jitter on top of the lobe waves. The
+  // 42-vertex hull is unique-vertex indexed, so independent per-vertex noise
+  // stays watertight; without it the deformation was band-limited to the two
+  // harmonics and every crown read as the same smooth pebble.
+  const vertexJitter = vertices.map(() => 0.96 + rng() * 0.08);
+  const deformed: Vec3[] = vertices.map((source, vertexIndex) => {
     const direction = {
       x: source.x * cosine - source.z * sine,
       y: source.y,
@@ -698,9 +703,10 @@ function emitBroadleafCrownHull(
     const azimuth = Math.atan2(direction.z, direction.x);
     const equatorWeight = Math.max(0, 1 - direction.y * direction.y);
     const lobeCount = willow ? 5 : 4;
-    const lobeWave = Math.sin(azimuth * lobeCount + lobePhase) * (willow ? 0.1 : 0.075)
-      + Math.sin(azimuth * (lobeCount + 2) + detailPhase) * 0.035;
-    const radialDeformation = 1 + equatorWeight * lobeWave;
+    const lobeWave = Math.sin(azimuth * lobeCount + lobePhase) * (willow ? 0.11 : 0.09)
+      + Math.sin(azimuth * (lobeCount + 2) + detailPhase) * 0.05;
+    const radialDeformation =
+      (1 + equatorWeight * lobeWave) * vertexJitter[vertexIndex]!;
     const droop = willow
       ? -span * equatorWeight
         * (0.055 + 0.025 * Math.sin(azimuth * 3 + lobePhase))
@@ -752,18 +758,26 @@ function emitConiferWhorl(
   layer: number,
 ): void {
   const sides = 8;
+  // Fix-pack F2: per-corner radius and droop, as integer harmonics of the
+  // corner ANGLE so adjacent sides (and the bottom cap, which reuses the same
+  // corner objects) agree exactly — an even 8-gon skirt read as machined.
+  const skirtRadius = (angle: number): number => 1
+    + 0.11 * Math.sin(angle * 3 + rotation * 5.1)
+    + 0.07 * Math.sin(angle * 5 + rotation * 9.7);
+  const skirtDroop = (angle: number): number => (apexY - baseY)
+    * 0.055 * (0.5 + 0.5 * Math.sin(angle * 3 + rotation * 7.3));
   for (let side = 0; side < sides; side += 1) {
     const angleA = rotation + (side / sides) * TWO_PI;
     const angleB = rotation + ((side + 1) / sides) * TWO_PI;
     const a: Vec3 = {
-      x: centerX + Math.cos(angleA) * radiusX,
-      y: baseY,
-      z: centerZ + Math.sin(angleA) * radiusZ,
+      x: centerX + Math.cos(angleA) * radiusX * skirtRadius(angleA),
+      y: baseY - skirtDroop(angleA),
+      z: centerZ + Math.sin(angleA) * radiusZ * skirtRadius(angleA),
     };
     const b: Vec3 = {
-      x: centerX + Math.cos(angleB) * radiusX,
-      y: baseY,
-      z: centerZ + Math.sin(angleB) * radiusZ,
+      x: centerX + Math.cos(angleB) * radiusX * skirtRadius(angleB),
+      y: baseY - skirtDroop(angleB),
+      z: centerZ + Math.sin(angleB) * radiusZ * skirtRadius(angleB),
     };
     const apex: Vec3 = { x: centerX, y: apexY, z: centerZ };
     const height = Math.max(apexY - baseY, 1e-5);
@@ -1017,6 +1031,84 @@ const SHRUB_SPECIES_SPECS: Readonly<Record<ShrubSpecies, ShrubSpeciesSpec>> = Ob
     stemsMin: 3, stemsMax: 5, tiltMin: 0.45, tiltMax: 0.9, quadSize: 0.26,
   },
 });
+
+/**
+ * Fix-pack F3: the near-band silhouette fringe — a sparse shell of tilted
+ * alpha-tested leaf/needle cards over the closed crown hull, riding the same
+ * instance records as the opaque crown batch. The hull fills depth first
+ * (R-2E order bounds the cards' overdraw to roughly the silhouette ring), and
+ * the cards give the 80-triangle hull the ragged leaf-textured outline it
+ * cannot carry itself at close range. Unit-height like every tree prototype.
+ */
+export function buildCrownFringePrototype(
+  species: TreeSpecies,
+  variant: number,
+  seed: number,
+): PrototypeGeometry {
+  const spec = TREE_SPECIES_SPECS[species];
+  const variantCount = TREE_VARIANT_COUNTS[species];
+  const variantIndex = wrapVariant(variant, variantCount);
+  const rng = createRandom(`tree/${species}/fringe/${variantIndex}/${seed}`);
+  const acc = createAccumulator();
+  const owners: number[] = [];
+  const disks: OccluderDisk[] = [];
+  // Mirror the hull's variant aspect frame (buildTreePrototype's knob): the
+  // shell must sit ON the variant's crown envelope, not the species default —
+  // an aspect-1.18 hull is 8% shorter than the default and the unscaled
+  // fringe floated above it.
+  const aspect = lerp(0.82, 1.18, variantCount > 1 ? variantIndex / (variantCount - 1) : 0.5);
+  const radialAspect = aspect;
+  const heightAspect = 1 / Math.sqrt(aspect);
+  const span = (spec.crownTop - spec.crownBase) * heightAspect;
+  // Sized against measurement: 12/10 cards at 0.30–0.46 halfWidth cost ~4 ms
+  // of p95 on forest shots (two-sided alpha fragments outside the hull's
+  // early-Z shadow); 8/6 at 0.26–0.38 keeps the ragged silhouette for ~half.
+  const cardCount = spec.conifer ? 6 : 8;
+  const goldenAngle = 2.399963229728653;
+  for (let card = 0; card < cardCount; card += 1) {
+    const t = (card + 0.5) / cardCount;
+    // Vertical stratification over the crown; broadleaf clusters toward the
+    // equator of the ellipsoid, conifers spread down the cone.
+    const y01 = spec.conifer
+      ? t * 0.92
+      : 0.08 + 0.84 * (0.5 - 0.5 * Math.cos(Math.PI * t));
+    const yLocal = spec.crownBase * heightAspect + span * y01;
+    const azimuth = card * goldenAngle + rng() * 0.9;
+    const envelope = spec.conifer
+      ? 1 - 0.62 * y01
+      : Math.sqrt(Math.max(0.15, 1 - (2 * y01 - 1) ** 2));
+    const radial = spec.crownRadius * radialAspect * envelope * (0.86 + rng() * 0.28);
+    const center: Vec3 = {
+      x: Math.cos(azimuth) * radial,
+      y: yLocal,
+      z: Math.sin(azimuth) * radial,
+    };
+    // Outward-facing with a random pitch so cards read as boughs, not shingles.
+    const pitch = (rng() - 0.35) * 0.9;
+    const cosPitch = Math.cos(pitch);
+    const normal = norm3(
+      Math.cos(azimuth) * cosPitch,
+      Math.sin(pitch),
+      Math.sin(azimuth) * cosPitch,
+    );
+    const tangent = norm3(-Math.sin(azimuth), 0, Math.cos(azimuth));
+    const bitangent = norm3(
+      normal.y * tangent.z - normal.z * tangent.y,
+      normal.z * tangent.x - normal.x * tangent.z,
+      normal.x * tangent.y - normal.y * tangent.x,
+    );
+    const halfWidth = spec.crownRadius * radialAspect * (0.26 + rng() * 0.12);
+    const halfHeight = halfWidth * (0.8 + rng() * 0.5);
+    const quad: FoliageQuad = {
+      center, normal, tangent, bitangent, halfWidth, halfHeight,
+      layer: spec.crownLayer,
+    };
+    emitFoliageQuad(acc, quad, owners, card);
+    disks.push(quadDisk(quad));
+  }
+  bakeSkyOcclusion(acc, disks, owners);
+  return finalizeGeometry(acc);
+}
 
 /**
  * 12–18 foliage quads on a short multi-stem skeleton (3–5 stems), with the

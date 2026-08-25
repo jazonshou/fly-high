@@ -427,6 +427,21 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   §5.3's Balanced row; `6-11` owns the re-tier and now has a measurement to
   start from rather than an estimate.
 
+## Visual fix-pack (2026-08-25)
+
+The four flight-test reports of 2026-08-25 (plastic foliage/ground, plastic
+close-up water, smooth/tearing mountains, the fighter's look and feel) landed
+as `VISUAL_FIXPACK_PLAN.md`, with the representational decisions recorded in
+ARCHITECTURE.md's decision log (fix-pack rows). The cost discipline: every
+addition is ALU-only or measured against the reference host before shipping —
+the terrain meso band, water capillary band and crown cluster shading are
+noise-function work inside existing passes; the one draw-count addition (the
+near-band crown fringe) was measured at ~4 ms of p95 at its first size and
+shipped at half that size for ~0 ms. The capture set gains `water-25ft`, the
+first shot that puts the camera near the water. The measured tier row below
+was re-taken at the fix-pack close — same host, same contract, all sixteen
+prior shots plus the new one.
+
 ## Current measured tier row
 
 The earlier 15–20 FPS measurements were traced to continuous Babylon WebGPU
@@ -440,11 +455,13 @@ explicit create-time diagnostic only.
 
 The following is the **committed baseline** in `tests/perf/baseline/`, promoted
 2026-08-25 from the reviewed candidate at
-`tests/perf/artifacts/rebaseline-candidates/2026-08-25T14-17-59.537Z` on Apple
-Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames per
-shot after deterministic residency drain. The normal shots use the shipped
+`tests/perf/artifacts/rebaseline-candidates/2026-08-25T17-16-00.193Z` (the
+visual fix-pack close — this supersedes the same-day 14-17-59 promotion) on
+Apple Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames
+per shot after deterministic residency drain. The normal shots use the shipped
 0.86 render scale; `reference-viewport` retains its 1.485 Mpx scale-1
-cap-stress contract.
+cap-stress contract. The set now carries seventeen shots — `water-25ft` is the
+fix-pack's near-water gate.
 
 That promotion is the sanctioned churn point for the Phase-5 and Gate-0 visual
 work: the previous images dated from `e8b90b1` (Phase 4.5) and still carried
@@ -457,27 +474,30 @@ shots, so the capture is reproducible on the reference host, not merely close.
 
 | Shot | raw wall FPS | interval p95 | >16.67 ms | >27.4 ms | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `approach-500ft` | 120.01 | 9.5 ms | 0 | 0 | 9.9 ms |
-| `slant-10km` | 119.87 | 9.1 ms | 0 | 0 | 10.9 ms |
-| `high-10000ft-down` | 120.04 | 9.0 ms | 0 | 0 | 10.0 ms |
-| `reference-viewport` | 120.02 | 9.3 ms | 0 | 0 | 9.9 ms |
-| `cruise-horizon` | 119.86 | 9.0 ms | 0 | 0 | 11.6 ms |
-| `winter-noon` | 120.02 | 9.5 ms | 0 | 0 | 10.1 ms |
-| `night` | 120.00 | 9.3 ms | 0 | 0 | 9.7 ms |
-| `motion-banked-turn` | 120.00 | 9.3 ms | 1 | 0 | 18.1 ms |
-| `page-thrash-turn` | 119.80 | 9.2 ms | 0 | 0 | 11.7 ms |
-| `cdlod-transition` | 120.03 | 9.1 ms | 0 | 0 | 12.0 ms |
-| `cruise-sun-30` | 120.02 | 9.1 ms | 0 | 0 | 11.1 ms |
-| `forest-500ft-sunbehind` | 120.01 | 9.3 ms | 0 | 0 | 9.7 ms |
-| `coast-10km-lowsun` | 119.89 | 9.1 ms | 0 | 0 | 10.2 ms |
-| `ground-2m-lowsun` | 120.00 | 9.4 ms | 0 | 0 | 9.8 ms |
-| `canopy-1200ft` | 120.04 | 9.3 ms | 0 | 0 | 10.0 ms |
-| `runway-on-approach` | 120.01 | 9.2 ms | 0 | 0 | 9.6 ms |
+| `approach-500ft` | 120.9 | 9.1 ms | 0 | 0 | 9.7 ms |
+| `slant-10km` | 120.8 | 9.1 ms | 0 | 0 | 10.4 ms |
+| `high-10000ft-down` | 120.9 | 9.4 ms | 0 | 0 | 9.9 ms |
+| `reference-viewport` | 120.9 | 9.1 ms | 0 | 0 | 9.8 ms |
+| `cruise-horizon` | 120.6 | 9.0 ms | 0 | 0 | 10.1 ms |
+| `winter-noon` | 120.8 | 9.1 ms | 0 | 0 | 13.1 ms |
+| `night` | 120.7 | 9.1 ms | 0 | 0 | 9.5 ms |
+| `motion-banked-turn` | 121.7 | 9.2 ms | 1 | 0 | 17.7 ms |
+| `page-thrash-turn` | 120.8 | 9.0 ms | 0 | 0 | 10.3 ms |
+| `cdlod-transition` | 120.6 | 8.9 ms | 0 | 0 | 12.0 ms |
+| `cruise-sun-30` | 120.7 | 8.9 ms | 0 | 0 | 11.3 ms |
+| `forest-500ft-sunbehind` | 120.7 | 9.0 ms | 0 | 0 | 12.6 ms |
+| `coast-10km-lowsun` | 120.8 | 8.9 ms | 0 | 0 | 9.9 ms |
+| `ground-2m-lowsun` | 120.9 | 9.3 ms | 0 | 0 | 9.7 ms |
+| `canopy-1200ft` | 120.8 | 9.1 ms | 0 | 0 | 9.8 ms |
+| `runway-on-approach` | 121.2 | 9.3 ms | 0 | 0 | 13.1 ms |
+| `water-25ft` | 120.7 | 9.1 ms | 0 | 0 | 9.6 ms |
 
-All sixteen clear the strict FPS, p95, hitch-count and maximum-frame contract:
-the minimum wall throughput is 119.80 FPS, the worst p95 is 9.5 ms, the worst
-single frame is 18.1 ms, and there are no intervals over 27.4 ms and no
-hitches. Every final terrain/detail pending count is zero. The raw-device
+All seventeen clear the strict FPS, p95, hitch-count and maximum-frame
+contract — WITH the whole visual fix-pack live (terrain meso band, crown
+cluster shading + fringe, water capillary band, the F-22): the minimum wall
+throughput is 120.6 FPS, the worst p95 is 9.4 ms (pre-fix-pack worst:
+9.5 ms), the worst single frame is 17.7 ms, and there are no intervals over
+27.4 ms and no hitches. Every final terrain/detail pending count is zero. The raw-device
 validation listener, Babylon/console gates, GPU drain, black/uniform-frame
 policy and temporal checks all passed before the candidate was written.
 Independent review of every image found the formerly black approach populated,

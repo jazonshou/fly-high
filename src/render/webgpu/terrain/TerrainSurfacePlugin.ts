@@ -105,8 +105,14 @@ export const TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS = 4;
 export const TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS = 8;
 
 /** Material microstructure is unresolved once one pixel spans this much ground. */
-export const TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS = 0.5;
-export const TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS = 2;
+// Fix-pack T2: the original 0.5→2 m band, keyed to the MAJOR derivative axis,
+// converged every patterned channel to a flat per-material constant within a
+// few hundred metres of slant range at flight grazing angles — the reported
+// plastic/clay ground. The fade now keys on the anisotropy-limited footprint
+// (the minor axis the 16× sampler actually resolves) and runs to 10 m, where
+// the 512-texel arrays' own mip chain has already converged to the mean.
+export const TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS = 1.5;
+export const TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS = 10;
 
 /** Coarse fallback's continuous alpine transition, mirroring the classifier. */
 export const TERRAIN_FALLBACK_ALPINE_START_METERS = 420;
@@ -221,8 +227,11 @@ export const HEIGHT_BLEND_DEPTH_FAR = 0.5;
 /**
  * Maximum footprint anisotropy the surface sampler will ask for, matched to
  * the arrays' `anisotropicFilteringLevel`. See `terrainSurfaceLimitAnisotropy`.
+ * Fix-pack T3: this claimed to match the sampler and did not — the arrays are
+ * uploaded at 16× (`SURFACE_ARRAY_ANISOTROPY`), so the 12 here inflated the
+ * minor axis beyond what the hardware needed and blurred the mid-range.
  */
-export const DEFAULT_ANISOTROPY_LIMIT = 12;
+export const DEFAULT_ANISOTROPY_LIMIT = 16;
 
 /** `3-5`: triplanar engages above this slope (`1 − |n.y|`). */
 export const TRIPLANAR_SLOPE_THRESHOLD = 0.22;
@@ -958,6 +967,25 @@ fn terrainSurfaceValue2(point: vec2f) -> vec2f {
   return vec2f(terrainSurfaceValue(point), terrainSurfaceValue(point + vec2f(37.7, 19.3)));
 }
 
+// Fix-pack T1: value noise with its analytic gradient (w.r.t. the SCALED
+// point), for the meso-band normal perturbation. Same lattice and smoothstep
+// as terrainSurfaceValue, so the value lane matches it exactly.
+fn terrainSurfaceValueGrad(point: vec2f) -> vec3f {
+  let cell = floor(point);
+  let local = fract(point);
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  let slope = 6.0 * local * (vec2f(1.0) - local);
+  let a = terrainSurfaceHash(cell);
+  let b = terrainSurfaceHash(cell + vec2f(1.0, 0.0));
+  let c = terrainSurfaceHash(cell + vec2f(0.0, 1.0));
+  let d = terrainSurfaceHash(cell + vec2f(1.0));
+  return vec3f(
+    mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
+    mix(b - a, d - c, blend.y) * slope.x,
+    mix(c - a, d - b, blend.x) * slope.y,
+  );
+}
+
 // 3-4 — three decorrelated rotated world scales, each warping the next, each
 // faded by the derivative footprint so a scale finer than the pixel stops
 // contributing instead of aliasing. Rotations are 13.7 deg and 61.2 deg,
@@ -1096,16 +1124,22 @@ fn terrainSurfaceSample(
     weights = weights / max(weights.x + weights.y + weights.z, 1e-4);
 #ifndef TERRAIN_SURFACE_TRIPLANAR
     // 2-axis fast path: mandatory from Balanced up (§7 R3), not a High-only
-    // optimisation. Drop the weakest plane and renormalise.
+    // optimisation. Fix-pack T8: subtracting the weakest weight from all three
+    // zeroes exactly one plane while staying CONTINUOUS as the interpolated
+    // normal rotates — the previous hard drop switched the retained pair at a
+    // C0 edge, drawing lines along ridges where the ordering flips. The
+    // weakest plane's weight is exactly zero, so its fetches stay skipped.
     let weakest = min(weights.x, min(weights.y, weights.z));
-    if (weights.x <= weakest) {
-      weights.x = 0.0;
-    } else if (weights.y <= weakest) {
-      weights.y = 0.0;
+    weights = weights - vec3f(weakest);
+    let weightSum = weights.x + weights.y + weights.z;
+    // All three pow-4 weights equal (|n| along the body diagonal) zeroes the
+    // subtraction outright; 1e-4 division noise then normalizes a zero
+    // blended normal into NaN. Equal thirds is the correct limit there.
+    if (weightSum <= 1e-4) {
+      weights = vec3f(1.0 / 3.0);
     } else {
-      weights.z = 0.0;
+      weights = weights / weightSum;
     }
-    weights = weights / max(weights.x + weights.y + weights.z, 1e-4);
 #endif
     // Sign-flipped per-plane UVs. Untreated, the projection mirrors across
     // each axis and produces a visible reflection seam down every ridge.
@@ -1188,7 +1222,12 @@ fn terrainSurfaceSample(
     let tangentNormal = terrainSurfaceDecodeNormal(normalTexel.xy);
     let tangent = terrainSurfaceTangent(geometricNormal);
     let bitangent = cross(tangent, geometricNormal);
-    let rise = 1.0 / max(tangentNormal.z, 0.15);
+    // Fix-pack T8: the 0.15 floor amplified stored slopes up to 6.7×, which on
+    // already-steep geometry pushed the composed normal past the horizon —
+    // black texels along every synthesized crack/joint line. 0.32 caps the
+    // amplification at ~3×; the hemisphere clamp at composition is the second
+    // half of the fix.
+    let rise = 1.0 / max(tangentNormal.z, 0.32);
     worldNormal = normalize(
       geometricNormal
       + tangent * (tangentNormal.x * rise * detailWeight)
@@ -1295,11 +1334,12 @@ fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec4f {
  *
  * The stored value is sin(horizonElevation) and the sun direction is a unit
  * vector toward the sun, so sunDirection.y is sin(sunElevation) and the
- * comparison is one subtraction — no trigonometry per fragment. The soft band
- * is ~1.1 degrees, which is close enough to the sun's real angular diameter
- * that the terminator does not read as a hard line.
+ * comparison is one subtraction — no trigonometry per fragment. Fix-pack T8:
+ * the soft band is floored at ~1.7° and the compared elevation carries a
+ * per-fragment spatial jitter — the narrow fixed band drew the coarse
+ * horizon field's iso-contours as stripes on close slopes at low sun.
  */
-fn terrainSurfaceHorizonShadow(uv: vec4f, sunDirection: vec3f) -> f32 {
+fn terrainSurfaceHorizonShadow(uv: vec4f, sunDirection: vec3f, jitter: f32) -> f32 {
   if (uv.z <= 0.0 || sunDirection.y <= 0.0) { return 1.0; }
   let horizontal = max(1e-5, length(sunDirection.xz));
   // The bake marches azimuth s with direction angle (s + 0.5) * pi/4, so the
@@ -1318,8 +1358,13 @@ fn terrainSurfaceHorizonShadow(uv: vec4f, sunDirection: vec3f) -> f32 {
   let lowIndex = u32(low);
   let highIndex = u32(low + 1.0) % 8u;
   let horizonSin = mix(slots[lowIndex], slots[highIndex], blend);
-  let band = uniforms.terrainPageAtlasGrid.w;
-  return smoothstep(horizonSin - band, horizonSin + band, sunDirection.y);
+  // Fix-pack T8: the terminator of the 4 m-texel horizon field drew banded
+  // iso-contour lines on close slopes around low sun. A wider soft band plus a
+  // per-fragment spatial jitter of the compared elevation breaks the contour
+  // into unstructured penumbra instead of stripes.
+  let band = max(uniforms.terrainPageAtlasGrid.w, 0.03);
+  let jitteredSun = sunDirection.y + (jitter - 0.5) * band * 0.9;
+  return smoothstep(horizonSin - band, horizonSin + band, jitteredSun);
 }
 #endif
 `;
@@ -1340,7 +1385,18 @@ let terrainWorldDdy = dpdy(terrainAbsolutePosition);
 // measures vertex normals to be worst and slid the detail ring across the
 // ground with the aircraft. A derivative footprint stays attached to the
 // surface.
-let terrainFootprint = max(length(terrainWorldDdx.xz), length(terrainWorldDdy.xz));
+let terrainFootprintMajor = max(length(terrainWorldDdx.xz), length(terrainWorldDdy.xz));
+let terrainFootprintMinor = min(length(terrainWorldDdx.xz), length(terrainWorldDdy.xz));
+// Fix-pack T2: fade on the footprint the 16× anisotropic sampler actually
+// resolves — the minor axis, floored at major/16 — not the raw major axis.
+// At flight grazing angles the major axis crosses any threshold within a few
+// hundred metres while the minor axis (the direction the eye resolves) stays
+// small for kilometres; keying on the major axis was the single largest term
+// in the reported clay-smooth ground.
+let terrainFootprint = max(
+  terrainFootprintMinor,
+  terrainFootprintMajor * ${(1 / 16).toFixed(6)},
+);
 let terrainDetailWeight = 1.0 - smoothstep(
   ${TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS.toFixed(2)},
   ${TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS.toFixed(2)},
@@ -1357,7 +1413,11 @@ let terrainSlope = 1.0 - clamp(abs(terrainGeometricNormal.y), 0.0, 1.0);
 
 // 3-4: one warped position feeds every projection, so the de-tiling cannot
 // disagree between planes.
-let terrainWarp = terrainSurfaceDetileWarp(terrainAbsolutePosition.xz, terrainFootprint);
+// The de-tile warp keeps the MAJOR-axis footprint its per-scale fades were
+// tuned against — T2's anisotropy-limited footprint belongs to the material
+// detail fade only, and feeding it here re-engaged the 28 m micro warp far
+// past its own Nyquist at grazing angles.
+let terrainWarp = terrainSurfaceDetileWarp(terrainAbsolutePosition.xz, terrainFootprintMajor);
 // The macro and patch scales also carry the world-scale brightness variation
 // the layers themselves no longer do: 3-1 high-passes each material so its
 // tiling period cannot show at range, which leaves the hundred-metre and
@@ -1396,7 +1456,8 @@ let terrainOcclusionTexel = textureSampleLevel(
 // keeps it at 1 rather than plunging the ground into darkness.
 let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
 let terrainHorizonShadow = terrainSurfaceHorizonShadow(
-  terrainPageUv, uniforms.terrainSunDirection.xyz);
+  terrainPageUv, uniforms.terrainSunDirection.xyz,
+  terrainSurfaceHash(terrainAbsolutePosition.xz * 0.37));
 // 4-6: the real classifier's output replaces the provisional lanes wherever a
 // channel page is resident. Where one is not, the co-residency rule applies
 // and the Phase 3 provisional splat is what the fragment gets.
@@ -1649,6 +1710,69 @@ var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer2.diffuseRoughness * terrainBlend2;
 #endif
 
+// Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
+// kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
+// look at every flying distance. Two rotationally-decorrelated octaves (71 m
+// and 23 m) and an altitude-keyed strata octave supply the missing band as
+// ALU-only structure: a world-space normal perturbation, a tonal/hue
+// modulation and a roughness delta, faded by the MAJOR footprint axis so the
+// band converges before it can alias. Strata engage on steep faces only, so
+// runway and meadow flats keep their surveyed look.
+// Per-octave Nyquist fades on the FULL 3D derivative: the horizontal-only
+// footprint let the 9 m altitude-keyed strata alias at full amplitude on
+// distant near-vertical cliffs (small ddx.xz, large ddx.y), and one shared
+// 18→110 m fade held the 23 m octave at ~full weight past one period per
+// pixel. Each octave now converges at roughly a quarter of its own
+// wavelength per pixel.
+let terrainFootprint3D = max(length(terrainWorldDdx), length(terrainWorldDdy));
+let terrainMesoWeightA = 1.0 - smoothstep(9.0, 34.0, terrainFootprint3D);
+let terrainMesoWeightB = 1.0 - smoothstep(3.0, 11.0, terrainFootprint3D);
+let terrainStrataWeight = 1.0 - smoothstep(1.2, 4.5, terrainFootprint3D);
+if (terrainMesoWeightA > 0.001) {
+  let terrainMesoA = terrainSurfaceValueGrad(
+    terrainAbsolutePosition.xz * ${(1 / 71).toFixed(9)} + vec2f(7.7, 51.2));
+  let terrainMesoB = terrainSurfaceValueGrad(
+    (mat2x2f(0.883, 0.469, -0.469, 0.883) * terrainAbsolutePosition.xz)
+      * ${(1 / 23).toFixed(9)} + vec2f(29.1, 3.4));
+  // The gradient came back in ROTATED coordinates; carry it to world space
+  // through the transpose so the perturbation field stays curl-free and
+  // aligned with its own value field.
+  let terrainMesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
+    * vec2f(terrainMesoB.y, terrainMesoB.z);
+  let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
+  let terrainStrata = terrainSurfaceValueGrad(vec2f(
+    terrainAbsolutePosition.y * ${(1 / 9).toFixed(9)},
+    (terrainAbsolutePosition.x + terrainAbsolutePosition.z) * ${(1 / 97).toFixed(9)}));
+  // Along-strike break-up: without it every slope at the same altitude carries
+  // the same band and the mountains read as contour-line stripes.
+  let terrainStrataBreak = terrainSteep * (0.25 + 0.75 * terrainMesoA.x)
+    * terrainStrataWeight;
+  let terrainMesoSlope = (
+    vec2f(terrainMesoA.y, terrainMesoA.z) * 0.42 * terrainMesoWeightA
+    + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
+  ) * (0.4 + 0.9 * terrainSteep);
+  let terrainStrataSlope = terrainStrata.y * terrainStrataBreak * 0.45;
+  terrainNormal = normalize(terrainNormal)
+    + vec3f(-terrainMesoSlope.x, -terrainStrataSlope, -terrainMesoSlope.y);
+  let terrainMesoTone = (terrainMesoA.x - 0.5) * 0.26 * terrainMesoWeightA
+    + (terrainMesoB.x - 0.5) * 0.16 * terrainMesoWeightB
+    + (terrainStrata.x - 0.5) * 0.22 * terrainStrataBreak;
+  let terrainMesoHue = mix(
+    vec3f(0.962, 0.988, 1.034),
+    vec3f(1.038, 1.008, 0.955),
+    mix(0.5, terrainMesoB.x, terrainMesoWeightB),
+  );
+  terrainAlbedo *= terrainMesoHue * (1.0 + terrainMesoTone) * terrainMesoWeightA
+    + vec3f(1.0) * (1.0 - terrainMesoWeightA);
+  terrainRoughness = clamp(
+    terrainRoughness
+      + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA
+      + (terrainStrata.x - 0.5) * 0.10 * terrainStrataBreak,
+    0.02,
+    1.0,
+  );
+}
+
 // 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
 // colour, and a kilometre-scale brightness ramp across a marking reads as a
 // stain rather than as weather.
@@ -1687,6 +1811,14 @@ terrainAlbedo = mix(terrainAlbedo, terrainAlbedo * vec3f(0.26, 0.40, 0.44), terr
 
 surfaceAlbedo = terrainAlbedo;
 normalW = normalize(terrainNormal);
+// Fix-pack T8: no composed normal may cross the geometric horizon — a normal
+// past 90° to every light reads as a black line along whatever feature
+// produced it (the reported artifact). Pull offenders back toward the
+// geometric normal continuously instead of letting them wrap.
+let terrainNormalAgreement = dot(normalW, terrainGeometricNormal);
+normalW = normalize(
+  normalW + terrainGeometricNormal * max(0.0, 0.12 - terrainNormalAgreement) * 4.0,
+);
 // Consumed by the regex injections below, which land after this hook: AO at
 // the ambientOcclusionBlock call and roughness/F0 at their declarations.
 var terrainSurfaceRoughness = clamp(terrainRoughness, 0.02, 1.0);

@@ -239,9 +239,11 @@ describe("crossfade shader surface (2-17 close)", () => {
       expect(position).toContain("detailLocal.x * detailDenseScale");
       expect(position).toContain("detailLocal.z * detailDenseScale");
       expect(position).toContain("* sqrt(detailDenseScale)");
-      expect(position).toContain(
-        "#if defined(DETAIL_FOLIAGE_ATLAS) && !defined(DETAIL_OPAQUE_CROWN)",
-      );
+      // Fix-pack F2 re-pin: flutter now reaches opaque crowns at reduced
+      // amplitude instead of being compiled out — a rigid hull in wind read
+      // as plastic. The amplitude split is the new pinned surface.
+      expect(position).toContain("let detailFlutterAmplitude = 0.0035;");
+      expect(position).toContain("let detailFlutterAmplitude = 0.006;");
       expect(position).toContain("let detailBarkSelector = floor(");
       expect(position).toContain("clamp(vertexInputs.instanceTint.a, 0.0, 1.0) * 2.0");
       expect(position).toContain("detailAtlasLayerOut = 5.0 + detailBarkSelector");

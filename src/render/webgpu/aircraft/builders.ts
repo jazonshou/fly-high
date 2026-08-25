@@ -58,6 +58,13 @@ export interface LoftSection {
   readonly zRadius: number;
   readonly yOffset?: number;
   readonly zOffset?: number;
+  /**
+   * Superellipse exponent. 2 (the default) is the classic ellipse every
+   * existing aircraft lofts with; higher values square the section off toward
+   * a rounded rectangle — the chined, flat-wide fuselage a fifth-generation
+   * fighter needs, which a pure ellipse cannot express (fix-pack A1).
+   */
+  readonly squareness?: number;
 }
 
 export interface AirfoilWingOptions {
@@ -291,13 +298,24 @@ export class AircraftBuildContext {
       if (!(section.yRadius > 0) || !(section.zRadius > 0)) {
         throw new RangeError("Aircraft loft radii must be positive");
       }
+      const squareness = section.squareness ?? 2;
+      if (!(squareness >= 2)) {
+        throw new RangeError("Aircraft loft squareness must be at least 2");
+      }
+      const shapeExponent = 2 / squareness;
       for (let radial = 0; radial <= radialSegments; radial += 1) {
         const phase = radial / radialSegments;
         const angle = phase * Math.PI * 2;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        // Superellipse: |cos|^(2/n)·sign(cos). At n = 2 this is exactly the
+        // ellipse the pre-fix-pack loft produced.
+        const yShape = Math.sign(cosine) * Math.abs(cosine) ** shapeExponent;
+        const zShape = Math.sign(sine) * Math.abs(sine) ** shapeExponent;
         positions.push(
           section.x,
-          (section.yOffset ?? 0) + Math.cos(angle) * section.yRadius,
-          (section.zOffset ?? 0) + Math.sin(angle) * section.zRadius,
+          (section.yOffset ?? 0) + yShape * section.yRadius,
+          (section.zOffset ?? 0) + zShape * section.zRadius,
         );
         uvs.push((section.x - minimumX) / length, phase);
       }

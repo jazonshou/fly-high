@@ -105,8 +105,10 @@ describe("fast jet flight model", () => {
     const cleanDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 0, 0);
     const gearDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 1, 0);
     const brakeDrag = calculateDragCoefficient(0, FAST_JET.clZero, 0, FAST_JET, 0, 1);
-    expect(gearDrag).toBeGreaterThan(cleanDrag + 0.04);
-    expect(brakeDrag).toBeGreaterThan(cleanDrag + 0.15);
+    // Re-pinned for the F-22: the coefficients shrank with the 3x larger
+    // reference wing, so the absolute drag force still grew.
+    expect(gearDrag).toBeGreaterThan(cleanDrag + 0.015);
+    expect(brakeDrag).toBeGreaterThan(cleanDrag + 0.12);
 
     const simulator = new FlightSimulator({
       aircraft: FAST_JET,
@@ -120,9 +122,10 @@ describe("fast jet flight model", () => {
     });
     advance(simulator, 1, () => ({ ...DEFAULT_CONTROLS, gear: 1, throttle: 0 }));
     expect(simulator.state.actuators.gear).toBeCloseTo(FAST_JET.gearCycleRate, 2);
+    // Full travel takes 1/0.35 = 2.86 s for the heavier F-22 undercarriage.
     advance(simulator, 2, () => ({ ...DEFAULT_CONTROLS, gear: 1, throttle: 0 }));
     expect(simulator.state.actuators.gear).toBe(1);
-    advance(simulator, 2.5, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0 }));
+    advance(simulator, 3, () => ({ ...DEFAULT_CONTROLS, gear: 0, throttle: 0 }));
     expect(simulator.state.actuators.gear).toBe(0);
 
     const parked = new FlightSimulator({
@@ -140,7 +143,8 @@ describe("fast jet flight model", () => {
     const simulator = new FlightSimulator({
       aircraft: FAST_JET,
       spawn: {
-        position: { x: 0, y: 0.68, z: 0 },
+        // The F-22 belly point sits 1.0 m below the CG.
+        position: { x: 0, y: 1.04, z: 0 },
         velocity: { x: 0, y: -1.2, z: 68 },
         pitch: 0,
         controls: { ...DEFAULT_CONTROLS, gear: 0, throttle: 0 },
@@ -174,7 +178,9 @@ describe("fast jet flight model", () => {
 
     expect(braking.state.onGround).toBe(false);
     expect(braking.state.actuators.brake).toBe(1);
-    expect(braking.telemetry().airspeed).toBeLessThan(clean.telemetry().airspeed - 12);
+    // Re-pinned: 0.14 of speed-brake drag on the 78 m^2 wing against 24 t
+    // takes roughly 9 m/s more off in two seconds than the clean airframe.
+    expect(braking.telemetry().airspeed).toBeLessThan(clean.telemetry().airspeed - 8);
   });
 
   it("has linear throttle response, density lapse, and bounded inlet loss", () => {
@@ -186,7 +192,8 @@ describe("fast jet flight model", () => {
     const beyondModelEnvelope = calculateEngineThrust(FAST_JET, 1, 1.225, 800);
     const nearVacuum = calculateEngineThrust(FAST_JET, 1, 0.01225, 0);
 
-    expect(seaLevelStatic).toBeCloseTo(42_000, 8);
+    // Two F119s at military power.
+    expect(seaLevelStatic).toBeCloseTo(232_000, 8);
     expect(halfThrottle).toBeCloseTo(seaLevelStatic * 0.5, 8);
     expect(halfDensityStatic / seaLevelStatic).toBeCloseTo(0.5 ** 0.72, 8);
     expect(transonicEntry / seaLevelStatic).toBeCloseTo(0.9466666667, 8);
@@ -209,9 +216,12 @@ describe("fast jet flight model", () => {
     expect(jet.state.crashed).toBe(false);
     expect(trainerTelemetry.airspeed).toBeGreaterThan(50);
     expect(trainerTelemetry.airspeed).toBeLessThan(70);
-    expect(jetTelemetry.airspeed).toBeGreaterThan(210);
-    expect(jetTelemetry.airspeed).toBeLessThan(260);
-    expect(jetTelemetry.airspeed).toBeGreaterThan(trainerTelemetry.airspeed * 3.3);
+    // Re-pinned for the F-22's thrust: 30 s of 0.9 throttle from the 155 m/s
+    // spawn reaches the low 290s while still climbing toward its transonic
+    // ceiling (the wave-drag test pins the actual ceiling).
+    expect(jetTelemetry.airspeed).toBeGreaterThan(270);
+    expect(jetTelemetry.airspeed).toBeLessThan(320);
+    expect(jetTelemetry.airspeed).toBeGreaterThan(trainerTelemetry.airspeed * 4);
   });
 
   it("stays controllable across the menu-Scenic to neutral-Direct handoff", () => {
@@ -305,7 +315,10 @@ describe("fast jet flight model", () => {
         ...DEFAULT_CONTROLS,
         throttle: 1,
         trim: 0.015,
-        pitch: liftoffTime === null && groundSpeed > 62 ? 0.3 : 0,
+        // The stabilators are powerful and the tail clears the runway by
+        // only ~9 degrees, so rotation is a gentle 0.1 command from 72 m/s
+        // and the jet flies itself off near 105 m/s.
+        pitch: liftoffTime === null && groundSpeed > 72 ? 0.1 : 0,
       });
       if (
         liftoffTime === null &&
@@ -326,9 +339,9 @@ describe("fast jet flight model", () => {
 
     expect(liftoffTime).not.toBeNull();
     expect(liftoffTime ?? 99).toBeLessThan(15);
-    expect(liftoffDistance ?? 9_999).toBeLessThan(650);
-    expect(liftoffAirspeed ?? 0).toBeGreaterThan(75);
-    expect(liftoffAirspeed ?? 999).toBeLessThan(100);
+    expect(liftoffDistance ?? 9_999).toBeLessThan(750);
+    expect(liftoffAirspeed ?? 0).toBeGreaterThan(90);
+    expect(liftoffAirspeed ?? 999).toBeLessThan(115);
     expect(simulator.state.crashed).toBe(false);
     expect(simulator.state.onGround).toBe(false);
     expect(simulator.state.peakImpactSpeed).toBeLessThan(1);
@@ -337,12 +350,15 @@ describe("fast jet flight model", () => {
     expect(Math.abs(simulator.telemetry().pitch)).toBeLessThan((18 * Math.PI) / 180);
   });
 
-  it("supports a gentle gear-down landing, combined braking, and a second takeoff", () => {
+  it("supports a firm gear-down landing, combined braking, and a second takeoff", () => {
     const simulator = new FlightSimulator({
       aircraft: FAST_JET,
       spawn: {
-        position: { x: 0, y: 1.54, z: -30 },
-        velocity: { x: 0, y: -1.15, z: 78 },
+        // Mains hang 2.09 m below the CG at 3 degrees of pitch; the wheels
+        // start ~0.6 m above the runway with a genuine ~3 m/s sink so the
+        // 900 kN/m oleos absorb a firm service touchdown, not a greaser.
+        position: { x: 0, y: 2.7, z: -30 },
+        velocity: { x: 0, y: -2.9, z: 78 },
         pitch: (3 * Math.PI) / 180,
         controls: { ...DEFAULT_CONTROLS, throttle: 0.08, flaps: 1, gear: 1 },
       },
@@ -352,6 +368,7 @@ describe("fast jet flight model", () => {
     let touchdownTime: number | null = null;
     let stoppedTime: number | null = null;
     let secondLiftoffTime: number | null = null;
+    let reboundAgl = 0;
 
     for (let index = 0; index < Math.round(45 / FIXED_TIME_STEP); index += 1) {
       const telemetry = simulator.telemetry();
@@ -366,13 +383,17 @@ describe("fast jet flight model", () => {
           throttle: 1,
           flaps: 0.5,
           gear: 1,
-          pitch: telemetry.groundSpeed > 75 ? 0.2 : 0,
+          pitch: telemetry.groundSpeed > 80 ? 0.22 : 0,
         };
       }
       simulator.step(FIXED_TIME_STEP, controls);
 
       if (touchdownTime === null && simulator.state.onGround) {
         touchdownTime = simulator.state.time;
+      }
+      if (touchdownTime !== null && stoppedTime === null) {
+        // A bounced landing would push the wheels back off the runway.
+        reboundAgl = Math.max(reboundAgl, simulator.telemetry().altitudeAgl);
       }
       if (
         touchdownTime !== null &&
@@ -398,7 +419,9 @@ describe("fast jet flight model", () => {
     expect(secondLiftoffTime).not.toBeNull();
     expect(simulator.state.crashed).toBe(false);
     expect(simulator.state.onGround).toBe(false);
-    expect(simulator.state.peakImpactSpeed).toBeLessThan(3);
+    expect(simulator.state.peakImpactSpeed).toBeGreaterThan(2);
+    expect(simulator.state.peakImpactSpeed).toBeLessThan(4.5);
+    expect(reboundAgl).toBeLessThan(0.25);
     expect(simulator.state.actuators.gear).toBeGreaterThanOrEqual(0.98);
   });
 
@@ -421,7 +444,9 @@ describe("fast jet flight model", () => {
     expect(simulator.state.onGround).toBe(true);
     expect(simulator.telemetry().altitudeAgl).toBe(0);
     expect(simulator.state.peakImpactSpeed).toBeGreaterThan(8.5);
-    expect(simulator.state.position.y).toBeCloseTo(5.866, 3);
+    // Wreck placement: the 9.55 m nose (plus the crash clearance) rests on
+    // the runway with the fuselage vertical.
+    expect(simulator.state.position.y).toBeCloseTo(9.556, 3);
     expect(simulator.state.velocity).toEqual({ x: 0, y: 0, z: 0 });
     expect(simulator.state.angularVelocity).toEqual({ x: 0, y: 0, z: 0 });
   });
@@ -485,11 +510,68 @@ describe("fast jet flight model", () => {
     expect(maximumRollRate).toBeLessThanOrEqual(4.26);
     expect(maximumYawRate).toBeLessThanOrEqual(2.36);
     expect(maximumPitchRate).toBeLessThanOrEqual(3.11);
-    expect(maximumRateChange).toBeLessThan(12);
-    expect(simulator.state.dynamics.airspeed).toBeLessThanOrEqual(350);
-    expect(Math.abs(simulator.state.velocity.x)).toBeLessThanOrEqual(350);
-    expect(Math.abs(simulator.state.velocity.y)).toBeLessThanOrEqual(350);
-    expect(Math.abs(simulator.state.velocity.z)).toBeLessThanOrEqual(350);
+    // The F-22's Iyy/Ixx spread makes crossed-rate gyroscopic pitch terms
+    // larger than the old sport jet's; the aero torque clamps still bound
+    // every axis, so the structural ceiling moves only slightly.
+    expect(maximumRateChange).toBeLessThan(14);
+    // The translational guard sits at 520 m/s, above the whole envelope.
+    expect(simulator.state.dynamics.airspeed).toBeLessThanOrEqual(520);
+    expect(Math.abs(simulator.state.velocity.x)).toBeLessThanOrEqual(520);
+    expect(Math.abs(simulator.state.velocity.y)).toBeLessThanOrEqual(520);
+    expect(Math.abs(simulator.state.velocity.z)).toBeLessThanOrEqual(520);
+  });
+
+  it("runs into transonic wave drag instead of the old 480 m/s ceiling", () => {
+    const levelAcceleration = (altitude: number, seconds: number): number => {
+      const simulator = new FlightSimulator({
+        aircraft: FAST_JET,
+        spawn: {
+          position: { x: 0, y: altitude, z: 0 },
+          heading: Math.PI / 2,
+          pitch: (2 * Math.PI) / 180,
+          airspeed: 150,
+          controls: { ...DEFAULT_CONTROLS, throttle: 1, gear: 0 },
+        },
+        controls: { ...DEFAULT_CONTROLS, throttle: 1, gear: 0 },
+        environment: { wind: { x: 0, y: 0, z: 0 } },
+      });
+      for (let step = 0; step < Math.round(seconds / FIXED_TIME_STEP); step += 1) {
+        const telemetry = simulator.telemetry();
+        // Simple altitude-hold pilot: full throttle, pitch against vertical
+        // speed, pitch rate, and altitude error.
+        const pitch = Math.min(
+          0.6,
+          Math.max(
+            -0.6,
+            -0.004 * telemetry.verticalSpeed -
+              1.1 * simulator.state.angularVelocity.z -
+              0.0004 * (simulator.state.position.y - altitude),
+          ),
+        );
+        simulator.step(FIXED_TIME_STEP, {
+          ...DEFAULT_CONTROLS,
+          throttle: 1,
+          gear: 0,
+          pitch,
+        });
+      }
+      expect(simulator.state.crashed).toBe(false);
+      expect(Math.abs(simulator.state.position.y - altitude)).toBeLessThan(150);
+      expect(Math.abs(simulator.telemetry().verticalSpeed)).toBeLessThan(2);
+      return simulator.telemetry().airspeed;
+    };
+
+    // Sea level: the wave-drag hump caps the dash near Mach 1.07. Without
+    // the term the same thrust pushes past 480 m/s, which is wrong.
+    const seaLevel = levelAcceleration(50, 180);
+    expect(seaLevel).toBeGreaterThan(340);
+    expect(seaLevel).toBeLessThan(380);
+
+    // High altitude: falling dynamic pressure and the post-hump wave-drag
+    // decay let the jet supercruise near Mach 1.45 true.
+    const tropopause = levelAcceleration(10_000, 240);
+    expect(tropopause).toBeGreaterThan(425);
+    expect(tropopause).toBeLessThan(470);
   });
 
   it("preserves the trainer propeller-thrust baseline", () => {

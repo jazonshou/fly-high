@@ -12,6 +12,7 @@ export {
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
 export { DirectPitchRetention } from "./pitchRetention";
+export { JetStabilityAugmentation } from "./stabilityAugmentation";
 export {
   DEFAULT_CONTROLS,
   DEFAULT_ENVIRONMENT,

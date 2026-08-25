@@ -65,6 +65,14 @@ export interface TerrainNodeSelectionInput {
    * ground nobody can see.
    */
   readonly deviationFor: (address: WorldPageAddress) => number | null;
+  /**
+   * Fix-pack T6: the measured [min, max] height of a page's slot, when
+   * resident. Without it the vertical distance term is the camera's height
+   * above SEA LEVEL, so nodes under a 2,500 m peak are never closer than
+   * 2,500 m and mountains under-split exactly where the eye is. Returns null
+   * for unmeasured pages, which fall back to the sea-level term.
+   */
+  readonly heightRangeFor?: (address: WorldPageAddress) => readonly [number, number] | null;
 }
 
 /**
@@ -228,9 +236,21 @@ export function resolveTerrainResidentCornerMorphs(
     const sameLevel = entries.every(
       (entry) => nodes[entry.nodeIndex]!.level === firstLevel,
     );
+    if (!sameLevel) continue;
+    // Fix-pack T8: the complementary transient. A node whose PARENT page is
+    // missing renders its whole lattice at K=0 (the buffer write zeroes its
+    // morph), while same-level peers at the shared corner may still carry
+    // raised factors for the shared edge — an open T-junction for the frames
+    // residency lags, flashing sky or dark far terrain through as lines.
+    // Force every same-level participant at that corner to K=0 so the edge
+    // agrees on the fine lattice until the parent arrives.
+    const parentMissing = entries.some((entry) => parentSlots[entry.nodeIndex]! < 0);
+    if (parentMissing) {
+      for (const entry of entries) resolved[entry.nodeIndex]![entry.corner] = 0;
+      continue;
+    }
     const fineMissing = entries.some((entry) => ownSlots[entry.nodeIndex]! < 0);
-    const parentsResident = entries.every((entry) => parentSlots[entry.nodeIndex]! >= 0);
-    if (!sameLevel || !fineMissing || !parentsResident) continue;
+    if (!fineMissing) continue;
     for (const entry of entries) resolved[entry.nodeIndex]![entry.corner] = 1;
   }
   return resolved;
@@ -269,13 +289,16 @@ function distanceToNode(
   originX: number,
   originZ: number,
   span: number,
+  verticalMeters: number,
 ): number {
   const dx = Math.max(originX - input.cameraX, 0, input.cameraX - (originX + span));
   const dz = Math.max(originZ - input.cameraZ, 0, input.cameraZ - (originZ + span));
   // 3D: an aircraft at 10,000 ft over a node is far from it, and a 2D
   // distance would split the ground directly below to its finest level for
-  // the whole cruise.
-  return Math.sqrt(dx * dx + dz * dz + input.cameraY * input.cameraY);
+  // the whole cruise. The vertical term is the distance to the node's
+  // MEASURED height interval where one exists (fix-pack T6), and the
+  // camera's height above sea level where it does not.
+  return Math.sqrt(dx * dx + dz * dz + verticalMeters * verticalMeters);
 }
 
 interface Candidate {
@@ -312,11 +335,23 @@ function makeCandidate(
   const span = terrainNodeSpanMeters(level);
   const originX = nodeX * span;
   const originZ = nodeZ * span;
-  const distanceMeters = distanceToNode(input, originX, originZ, span);
-  if (distanceMeters > input.farPlaneMeters) return null;
   const pageX = Math.floor(nodeX / TERRAIN_NODES_PER_SLOT_EDGE);
   const pageZ = Math.floor(nodeZ / TERRAIN_NODES_PER_SLOT_EDGE);
   const address = createWorldPageAddress(level, pageX, pageZ);
+  const heightRange = input.heightRangeFor?.(address) ?? null;
+  const verticalMeters =
+    heightRange !== null
+      && Number.isFinite(heightRange[0])
+      && Number.isFinite(heightRange[1])
+      && heightRange[1] >= heightRange[0]
+      ? Math.max(
+        heightRange[0] - input.cameraY,
+        0,
+        input.cameraY - heightRange[1],
+      )
+      : input.cameraY;
+  const distanceMeters = distanceToNode(input, originX, originZ, span, verticalMeters);
+  if (distanceMeters > input.farPlaneMeters) return null;
   const deviation = input.deviationFor(address);
   // A page with no measurement yet is treated as flat, so it is drawn
   // coarse and never split — never skipped.

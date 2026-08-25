@@ -288,7 +288,12 @@ describe("rebuilt light-trainer handling", () => {
     expect(retention.target).not.toBeNull();
     expect((retention.target ?? 0) * RAD_TO_DEG).toBeLessThan(-12);
     expect(retainedPitch * RAD_TO_DEG).toBeLessThan(-10);
-    expect(Math.abs(retainedPitch - selectedPitch) * RAD_TO_DEG).toBeLessThan(3.5);
+    // Re-pinned for the release-bounce fix: the settle target leads the
+    // release attitude by the carried pitch rate, so the nose coasts a few
+    // degrees beyond the release-instant attitude and stays there instead of
+    // being dragged back through it (the reported bounce).
+    expect(retainedPitch).toBeLessThanOrEqual(selectedPitch + 0.5 * DEG_TO_RAD);
+    expect(Math.abs(retainedPitch - selectedPitch) * RAD_TO_DEG).toBeLessThan(10);
   });
 
   it("retains a pilot-selected nose-up attitude without a preset climb target", () => {
@@ -320,9 +325,15 @@ describe("rebuilt light-trainer handling", () => {
       current.telemetry(),
     ));
     expect(simulator.telemetry().pitch * RAD_TO_DEG).toBeGreaterThan(4);
+    // Re-pinned for the release-bounce fix: the rate-led settle target lets
+    // the nose coast a few degrees above the release attitude and hold there
+    // rather than bouncing back down through it.
+    expect(simulator.telemetry().pitch).toBeGreaterThanOrEqual(
+      selectedPitch - 0.5 * DEG_TO_RAD,
+    );
     expect(
       Math.abs(simulator.telemetry().pitch - selectedPitch) * RAD_TO_DEG,
-    ).toBeLessThan(4);
+    ).toBeLessThan(8);
   });
 
   it("snaps a runway spawn onto preloaded tricycle gear and stays parked", () => {

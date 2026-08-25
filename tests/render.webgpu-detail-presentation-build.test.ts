@@ -513,17 +513,17 @@ describe("pure detail presentation build", () => {
             "ground-fern",
           ],
           "name": "ground-cover candidate bounds across a negative cell edge",
-          "packedFingerprint": "d67d5ca5f674b215d950c7f9b9245e8e1049d7ebc0cdd06ec2d5c88613ae1080",
+          "packedFingerprint": "03998d81d84572b2ed06f55edbedac67cb168daeab4a806abb68fefdb155c200",
           "statistics": {
             "clutterInstances": 4,
-            "groundCoverInstances": 51,
+            "groundCoverInstances": 93,
             "midCells": 0,
             "nearCells": 1,
             "rockInstances": 3,
             "shrubInstances": 3,
             "treeInstances": 7,
           },
-          "workUnits": 343,
+          "workUnits": 595,
         },
       ]
     `);

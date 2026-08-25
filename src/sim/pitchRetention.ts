@@ -7,6 +7,25 @@ const ATTITUDE_GAIN = 2.15;
 const BODY_RATE_DAMPING = 0.68;
 const AUTHORITY_REGULARIZATION = 0.12;
 const TRIM_TARGET_RADIANS_PER_UNIT = (25 * Math.PI) / 180;
+/**
+ * On release the airframe still carries pitch rate (keyboard input decays at
+ * 2.8/s and the elevator actuator at 7/s), so freezing the release-instant
+ * attitude guarantees a momentum overshoot followed by a pull-back - the
+ * reported bounce. The capture instead leads the attitude by the rate:
+ * d(noseVertical)/dt = pitchRate * pitchAuthority for a pure body-pitch rate,
+ * so the target is where the nose will coast to as the rate decays.
+ */
+const SETTLE_LEAD_SECONDS = 0.35;
+/**
+ * The attitude-error term fades in over this period after capture so the
+ * holder shepherds the nose toward the settle target instead of snatching at
+ * it while rates are still high. Rate damping runs at full strength from the
+ * first frame - it opposes the bounce. `apply` runs exactly once per fixed
+ * 120 Hz simulation step (the worker calls it inside its fixed-step loop), so
+ * engagement time advances by a fixed 1/120 per airborne call.
+ */
+const ENGAGE_RAMP_SECONDS = 0.5;
+const ENGAGE_STEP_SECONDS = 1 / 120;
 
 interface PitchRetentionFrame {
   noseVertical: number;
@@ -60,12 +79,14 @@ export class DirectPitchRetention {
   private targetNoseVertical: number | null = null;
   private pilotWasCommanding = false;
   private lastRequestedTrim: number | null = null;
+  private engagementSeconds = 0;
 
   /** Disarms retention. Pause/resume intentionally does not call this. */
   reset(): void {
     this.targetNoseVertical = null;
     this.pilotWasCommanding = false;
     this.lastRequestedTrim = null;
+    this.engagementSeconds = 0;
   }
 
   apply(
@@ -95,7 +116,18 @@ export class DirectPitchRetention {
     }
 
     if (this.pilotWasCommanding) {
-      this.targetNoseVertical = frame.noseVertical;
+      // Rate-led settle target: capture where the nose will coast to given
+      // its current body pitch rate, not where it happens to point right now.
+      const releasePitchRate = Number.isFinite(state.angularVelocity.z)
+        ? state.angularVelocity.z
+        : 0;
+      this.targetNoseVertical = clamp(
+        frame.noseVertical +
+          releasePitchRate * frame.pitchAuthority * SETTLE_LEAD_SECONDS,
+        -1,
+        1,
+      );
+      this.engagementSeconds = 0;
       this.pilotWasCommanding = false;
       this.lastRequestedTrim = requested.trim;
     } else if (this.targetNoseVertical === null) {
@@ -130,8 +162,20 @@ export class DirectPitchRetention {
     const pitchRate = Number.isFinite(state.angularVelocity.z)
       ? state.angularVelocity.z
       : 0;
+    // Only the attitude-error term ramps; rate damping opposes the bounce and
+    // acts at full strength from the capture frame onward.
+    const holdAuthority = clamp(
+      this.engagementSeconds / ENGAGE_RAMP_SECONDS,
+      0,
+      1,
+    );
+    this.engagementSeconds = Math.min(
+      ENGAGE_RAMP_SECONDS,
+      this.engagementSeconds + ENGAGE_STEP_SECONDS,
+    );
     out.pitch = clamp(
-      noseError * ATTITUDE_GAIN * allocation - pitchRate * BODY_RATE_DAMPING,
+      noseError * ATTITUDE_GAIN * allocation * holdAuthority -
+        pitchRate * BODY_RATE_DAMPING,
       -0.72,
       0.72,
     );

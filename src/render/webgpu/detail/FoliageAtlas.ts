@@ -695,13 +695,17 @@ function synthesizeDenseCrown(
           + Math.sin(x * 0.13 - y * 0.29 + phaseY) * 0.25
         : Math.sin(x * 0.22 + phaseX) * Math.sin(y * 0.2 + phaseY) * 0.45;
       const grain = texelNoise(x, y, grainSeed) - 0.5;
+      // Fix-pack F1: contrast raised (±0.13 → ±0.2 clamp, stronger macro/leaf
+      // terms). "Restrained" was right for tint stability but left the hull a
+      // near-flat tone; the cluster shading needs texture-level clump
+      // structure to anchor against.
       const value = clamp(
-        style.value + macro * 0.07 + leaf * 0.11 + directional * 0.025 + grain * 0.018,
-        style.value - 0.13,
-        style.value + 0.13,
+        style.value + macro * 0.12 + leaf * 0.16 + directional * 0.04 + grain * 0.025,
+        style.value - 0.2,
+        style.value + 0.2,
       );
-      const hue = style.hue + leaf * 0.012 + grain * 0.004;
-      const saturation = clamp(style.saturation + macro * 0.05, 0, 1);
+      const hue = style.hue + leaf * 0.018 + macro * 0.01 + grain * 0.005;
+      const saturation = clamp(style.saturation + macro * 0.08 - leaf * 0.04, 0, 1);
       const color = hsvToRgb(hue, saturation, value);
       const at = (y * edge + x) * 4;
       rgba[at] = color[0];
@@ -720,7 +724,9 @@ function synthesizeDenseBroadleaf(raster: FoliageRaster, random: RandomSource, s
 
 function synthesizeDenseConifer(raster: FoliageRaster, random: RandomSource, seed: number): void {
   synthesizeDenseCrown(raster, random, seed, {
-    hue: 0.4, saturation: 0.57, value: 0.37, needleGrain: true,
+    // Fix-pack F1: 0.37 → 0.42 — under the cluster tone modulation the old
+    // value read as black blobs from the air.
+    hue: 0.4, saturation: 0.55, value: 0.42, needleGrain: true,
   });
 }
 

@@ -337,6 +337,14 @@ export class TerrainClipmapSystem {
   private readonly surfacePlugin: TerrainSurfacePlugin;
   private readonly cloudShadowPlugin: CloudShadowMaterialPlugin;
   private materialArrays: SurfaceMaterialArrays | null = null;
+  /**
+   * Fix-pack T8: GPU resources retired while a submitted command buffer (or a
+   * recorded render bundle) may still reference them. Destroying one in the
+   * same frame invalidates the whole submit — a black frame at a suspiciously
+   * high frame rate, the class this repo has now recorded four times. Entries
+   * drain a few frames later, when nothing in flight can hold them.
+   */
+  private deferredDisposals: Array<{ retiredAtFrame: number; dispose: () => void }> = [];
   /** False under NullEngine, where a TEXTURE_2D_ARRAY upload cannot be expressed. */
   private canBuildArrays = false;
   /** The edge the arrays SHOULD have; the build runs until they do. */
@@ -590,8 +598,33 @@ export class TerrainClipmapSystem {
     // does not consume the fragment texturing this recompile changes, so the
     // casters have nothing to gain from the reset either.
     this.beautyMesh.resetDrawCache();
-    previous?.albedoHeight.dispose();
-    previous?.normalMaterial.dispose();
+    if (previous) {
+      // Deferred, not same-frame: the frame that swapped the arrays may have
+      // already recorded draws against the old pair (see deferredDisposals).
+      this.deferredDisposals.push({
+        retiredAtFrame: this.frameIndex,
+        dispose: () => {
+          previous.albedoHeight.dispose();
+          previous.normalMaterial.dispose();
+        },
+      });
+    }
+  }
+
+  /** Drain retirements that are safely past any in-flight frame. */
+  private drainDeferredDisposals(): void {
+    if (this.deferredDisposals.length === 0) return;
+    const safe = this.frameIndex - 4;
+    let index = 0;
+    while (index < this.deferredDisposals.length) {
+      const entry = this.deferredDisposals[index]!;
+      if (entry.retiredAtFrame <= safe) {
+        entry.dispose();
+        this.deferredDisposals.splice(index, 1);
+      } else {
+        index += 1;
+      }
+    }
   }
 
   /**
@@ -664,9 +697,18 @@ export class TerrainClipmapSystem {
     if (atlasReshaped) {
       // A slot index addresses a different texel in a reshaped atlas, so
       // residency cannot survive the change — dropping it is correct, not
-      // lazy.
-      this.heightAtlas.dispose();
-      this.channelAtlas.dispose();
+      // lazy. Fix-pack T8: the DISPOSAL is deferred like the material-array
+      // swap's — a frame that already recorded draws against the old atlas
+      // textures must not have them destroyed under its submit.
+      const retiredHeightAtlas = this.heightAtlas;
+      const retiredChannelAtlas = this.channelAtlas;
+      this.deferredDisposals.push({
+        retiredAtFrame: this.frameIndex,
+        dispose: () => {
+          retiredHeightAtlas.dispose();
+          retiredChannelAtlas.dispose();
+        },
+      });
       this.heightAtlas = new TerrainPageAtlas(this.scene, profile, {
         kind: "height",
         worldRevision: this.worldRevision,
@@ -782,6 +824,7 @@ export class TerrainClipmapSystem {
     if (this.disposed) return;
     this.stepMaterialArrayBuild();
     this.frameIndex = frameIndex;
+    this.drainDeferredDisposals();
     this.streamingObserver = {
       positionX: observer.x,
       positionY: observer.y ?? 0,
@@ -804,6 +847,12 @@ export class TerrainClipmapSystem {
         const slot = this.heightAtlas.residency.get(invariantSlotKey(address));
         return slot && slot.lifecycle.state === "resident"
           ? slot.stats.maxDeviationFromParent
+          : null;
+      },
+      heightRangeFor: (address) => {
+        const slot = this.heightAtlas.residency.get(invariantSlotKey(address));
+        return slot && slot.lifecycle.state === "resident"
+          ? [slot.stats.minHeightMeters, slot.stats.maxHeightMeters]
           : null;
       },
     });
@@ -834,6 +883,8 @@ export class TerrainClipmapSystem {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const entry of this.deferredDisposals) entry.dispose();
+    this.deferredDisposals = [];
     this.materialArrayBuild = null;
     this.synthesisClient?.dispose();
     this.synthesisClient = null;

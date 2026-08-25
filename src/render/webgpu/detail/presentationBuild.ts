@@ -27,10 +27,22 @@ import type {
 
 export const DETAIL_FADE_MARGIN_METERS = 160;
 export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
-export const GROUND_COVER_CANDIDATE_SPACING_METERS = 2;
+// Fix-pack F4: 2 m / 0.2 gave at most one 1.4 m blade patch per 4–11 m² even
+// at point-blank range — the reported smooth green sheet between patches.
+// Three coordinated moves, sized against the 2-16 closed-form integral
+// (π·f·(2R−f)/s² · 48 ≤ 0.9 M at the tier-2 220 m radius, which these
+// constants land at ~0.89 M): finer candidates, the full-density share, and
+// a near-camera acceptance boost that raises effective coverage toward its
+// cap of 1 inside ~28 m — under the integral's worst case by construction,
+// so the budget formula is untouched. The spacing MUST divide the 512 m cell
+// exactly (512 = 1.6 · 320): the candidate grid is anchored per cell, and a
+// non-divisor spacing leaves a bare remainder stripe along every cell edge.
+export const GROUND_COVER_CANDIDATE_SPACING_METERS = 1.6;
 export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
 export const GROUND_COVER_EDGE_FADE_METERS = 30;
-export const GROUND_COVER_FULL_DENSITY_SHARE = 0.2;
+export const GROUND_COVER_FULL_DENSITY_SHARE = 0.17;
+export const GROUND_COVER_NEAR_BOOST_RADIUS_METERS = 28;
+export const GROUND_COVER_NEAR_BOOST_FACTOR = 0.8;
 export const TREE_IMPOSTOR_PROTOTYPE_KEY = "tree-impostor";
 
 /** Cheap hash/rank rejects grouped into one still-bounded scheduler step. */
@@ -463,6 +475,24 @@ export function* buildPresentationChunk(
           throw new Error(`Missing impostor bounds frame for ${tree.species}`);
         }
         sink.appendInstance(crownBatchKey, crown, billboardFrame);
+        if (membership.band === "near") {
+          // Fix-pack F3: the alpha-card silhouette fringe rides the same
+          // record as the opaque crown, scaled against its own prototype
+          // bound so the shell tracks the hull in world space.
+          const fringeBatchKey =
+            `tree-${prototypeSpecies}-v${geometryVariant}-fringe-near`;
+          const fringeRadius = catalog.prototypes[fringeBatchKey]?.radialUnits;
+          if (fringeRadius !== undefined) {
+            sink.appendInstance(fringeBatchKey, {
+              ...crown,
+              radialScale: detailRadialScaleForWorldRadius(
+                tree.crownRadiusMeters,
+                tree.heightMeters,
+                fringeRadius,
+              ),
+            });
+          }
+        }
         if (membership.band !== "far") {
           const trunkBatchKey =
             `tree-${prototypeSpecies}-v${geometryVariant}-trunk-${membership.band}`;
@@ -647,7 +677,11 @@ export function* buildPresentationChunk(
           );
           const node = cell.groundCover[nodeRow * catalog.groundCoverGrid + nodeColumn];
           if (!node || node.coverage <= 0) continue;
-          if (groundCoverHash(x, z, 2) >= ramp * node.coverage) continue;
+          const nearBoost = 1 + GROUND_COVER_NEAR_BOOST_FACTOR
+            * Math.max(0, 1 - patchDistance / GROUND_COVER_NEAR_BOOST_RADIUS_METERS);
+          if (groundCoverHash(x, z, 2) >= Math.min(1, ramp * node.coverage * nearBoost)) {
+            continue;
+          }
           const heightHash = groundCoverHash(x, z, 3);
           const grassFade = patchDistance > grassRadius - GROUND_COVER_EDGE_FADE_METERS
             ? (grassRadius - patchDistance) / GROUND_COVER_EDGE_FADE_METERS

@@ -459,9 +459,11 @@ const NORMAL_RMS_SLOPE: Readonly<Record<SurfaceMaterialId, number>> = Object.fre
   // ripple, which lives in the height channel.
   [SurfaceMaterial.Sand]: 0.22,
   // Rounded stones: every texel is on the flank of something.
-  [SurfaceMaterial.Gravel]: 0.6,
-  [SurfaceMaterial.Rock]: 0.5,
-  [SurfaceMaterial.Snow]: 0.18,
+  // Fix-pack T5: gravel and rock raised — at the old strengths the close-up
+  // ground still read smoother than the reference the fix-pack answers to.
+  [SurfaceMaterial.Gravel]: 0.68,
+  [SurfaceMaterial.Rock]: 0.62,
+  [SurfaceMaterial.Snow]: 0.2,
   [SurfaceMaterial.Asphalt]: 0.3,
   [SurfaceMaterial.Concrete]: 0.16,
 });
@@ -1235,8 +1237,14 @@ function flattenLowFrequency(
 
 /** Radius of the local mean the high-pass measures against, as a fraction of the edge. */
 const LOW_FREQUENCY_RADIUS_FRACTION = 6;
-/** How much of each layer's own low frequency survives. */
-const LOW_FREQUENCY_KEEP = 0.28;
+/**
+ * How much of each layer's own low frequency survives. Fix-pack T5: 0.28 →
+ * 0.32 — the T1 meso band now carries the non-repeating structure at range,
+ * so the tiles can keep a little more of their own metre-scale character.
+ * 0.38 was tried first and pushed Rock's mip-4 crossed-fracture power past
+ * the anti-moiré ceiling (0.0342 vs 0.033); 0.32 clears it.
+ */
+const LOW_FREQUENCY_KEEP = 0.32;
 
 /**
  * Assertion 53's producer: re-centre the height channel on 0.5 without

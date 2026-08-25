@@ -191,19 +191,32 @@ export interface ChaseCameraProfile {
   distance: number;
   height: number;
   fieldOfView: number;
+  /** Metres ahead of the aircraft the camera aims — speed pushes it forward. */
+  aimAhead: number;
 }
 
 export function chaseCameraProfile(
   aircraft: AircraftKind,
   airspeed: number,
-  out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0 },
+  out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
   const jet = aircraft === "jet";
-  const baseDistance = jet ? 14.3 : 13.5;
-  const speedThreshold = jet ? 145 : 45;
-  out.distance = baseDistance + Math.max(0, Math.min(2.2, (airspeed - speedThreshold) * 0.012));
-  out.height = jet ? 5 : 5.1;
-  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - (jet ? 140 : 38)) * 0.035));
+  if (jet) {
+    // Fix-pack A5: the F-22 is a 19 m airframe and the speed response is the
+    // point — at combat speed the camera drops back and the aim point leads,
+    // so the jet visibly sits further ahead in frame and the world streams
+    // past it. The old +2.2 m cap read as a static rig.
+    const speedExcess = Math.max(0, airspeed - 150);
+    out.distance = 24 + Math.min(14, speedExcess * 0.08);
+    out.height = 7.2 + Math.min(2.4, speedExcess * 0.014);
+    out.fieldOfView = 62 + Math.max(0, Math.min(10, (airspeed - 140) * 0.06));
+    out.aimAhead = 18 + Math.min(24, speedExcess * 0.11);
+    return out;
+  }
+  out.distance = 13.5 + Math.max(0, Math.min(2.2, (airspeed - 45) * 0.012));
+  out.height = 5.1;
+  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - 38) * 0.035));
+  out.aimAhead = 16;
   return out;
 }
 
@@ -341,6 +354,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
   private readonly latitudeDegrees: number;
+  /** Fix-pack A5: the chase rig's ground clamp samples the terrain directly. */
+  private readonly cameraTerrainSample: TerrainSampleFunction;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
   private skyProbeAltitudeMeters = 0;
@@ -438,6 +453,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
+    this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
@@ -1658,9 +1674,13 @@ export class FlightRenderer implements FlightRenderingSystem {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
     if (this.cameraMode === "cockpit") {
+      // Per-kind eye point: the F-22's cockpit sits 4.9 m ahead of the CG on
+      // an 18.92 m airframe; the trainer keeps its original offsets.
+      const eyeForward = this.aircraft.kind === "jet" ? 4.9 : 1.15;
+      const eyeUp = this.aircraft.kind === "jet" ? 1.18 : 1.12;
       this.desiredCamera.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(1.15))
-        .addInPlace(this.up.scale(1.12));
+        .addInPlace(this.forward.scale(eyeForward))
+        .addInPlace(this.up.scale(eyeUp));
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(400));
       // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
@@ -1680,8 +1700,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.desiredCamera.copyFrom(aircraftPosition)
         .subtractInPlace(this.forward.scale(profile.distance))
         .addInPlace(this.up.scale(profile.height));
+      // Fix-pack A5: the F-22 rig reaches 24–38 m behind the aircraft, which
+      // in a pitched-up pass near the ground can put the un-collided chase
+      // camera under the terrain. Clamp the desired position above the
+      // surface; the shared response smooths the ride over it.
+      const cameraGround = this.cameraTerrainSample(
+        this.desiredCamera.x + this.originX,
+        this.desiredCamera.z + this.originZ,
+      ).height;
+      if (this.desiredCamera.y < cameraGround + 2.5) {
+        this.desiredCamera.y = cameraGround + 2.5;
+      }
       this.desiredCameraTarget.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(16))
+        .addInPlace(this.forward.scale(profile.aimAhead))
         .addInPlace(this.up.scale(1.25));
       fieldOfView = profile.fieldOfView;
     }

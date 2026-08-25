@@ -270,6 +270,21 @@ let detailCrownPivot = detailHeight * 0.42;
 detailLocal.y = detailCrownPivot
   + (detailLocal.y - detailCrownPivot)
     * sqrt(detailDenseScale);
+// Fix-pack F2: per-instance silhouette wobble. With tier 1's single variant
+// per family, every crown in a stand shared one hull silhouette — the
+// copy-paste forest. Two azimuth harmonics keyed to the instance's phase
+// byte reshape the hull radially per stem at zero geometry cost. Scaling
+// x/z only is watertight by construction: shared vertices share azimuth,
+// and on-axis vertices are unmoved.
+let detailWobbleAzimuth = atan2(detailLocal.z, detailLocal.x);
+let detailWobble = 1.0
+  + 0.085 * sin(detailWobbleAzimuth * 3.0 + detailWindPhaseRadians * 2.317)
+  + 0.05 * sin(detailWobbleAzimuth * 7.0 + detailWindPhaseRadians * 5.61);
+detailLocal = vec3f(
+  detailLocal.x * detailWobble,
+  detailLocal.y,
+  detailLocal.z * detailWobble,
+);
 #endif
 #endif
 // 2-13 — three-band wind, WORLD space (the absorbed single band bent in
@@ -305,16 +320,26 @@ detailSwayed += vec3f(detailWindDir.x, 0.0, detailWindDir.y)
 detailSwayed += vec3f(detailWindCross.x, 0.0, detailWindCross.y)
   * cos(detailBranchAngle * 0.83 + vertexInputs.instanceState.y * 3.1)
   * detailBranchBend * 0.58;
-#if defined(DETAIL_FOLIAGE_ATLAS) && !defined(DETAIL_OPAQUE_CROWN)
-// Band 3 — leaf flutter: high-frequency card jitter, spatially decorrelated
-// through the card's local position so one crown shimmers rather than
-// shifting as a block. Gust speeds the flutter, never the amplitude.
+#ifdef DETAIL_FOLIAGE_ATLAS
+// Band 3 — leaf flutter: high-frequency jitter, spatially decorrelated
+// through the local position so one crown shimmers rather than shifting as a
+// block. Gust speeds the flutter, never the amplitude. Fix-pack F2: opaque
+// hulls flutter too, at reduced amplitude — a rigid blob in wind was part of
+// the reported plastic look — the vertex jitter is what a closed surface can
+// afford without cracking (shared vertices share local position, so the
+// displacement agrees along every edge).
+#ifdef DETAIL_OPAQUE_CROWN
+let detailFlutterAmplitude = 0.0035;
+#else
+let detailFlutterAmplitude = 0.006;
+#endif
 let detailFlutterPhase = dot(detailLocal.xz, vec2f(12.9898, 78.233))
   + detailLocal.y * 4.1 + detailWindPhaseRadians;
 let detailFlutter = sin(uniforms.detailWindTime
   * (7.0 + 3.0 * uniforms.detailWind.w) + detailFlutterPhase);
 detailSwayed += vec3f(detailWindDir.x, 0.35, detailWindDir.y)
-  * detailFlutter * detailWindResponse * detailWindStrength * detailHeight * 0.006;
+  * detailFlutter * detailWindResponse * detailWindStrength
+  * detailHeight * detailFlutterAmplitude;
 #endif
 positionUpdated = detailSwayed + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
@@ -449,6 +474,33 @@ fn detailImpostorFrame() -> vec4f {
 }
 #endif
 
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: world-locked value noise with analytic gradient for the
+// leaf-cluster shading on closed crown hulls. Same construction as the
+// terrain surface's — a hash lattice under a smoothstep bilinear.
+fn detailClusterHash(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+fn detailClusterGrad(point: vec2f) -> vec3f {
+  let cell = floor(point);
+  let local = fract(point);
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  let slope = 6.0 * local * (vec2f(1.0) - local);
+  let a = detailClusterHash(cell);
+  let b = detailClusterHash(cell + vec2f(1.0, 0.0));
+  let c = detailClusterHash(cell + vec2f(0.0, 1.0));
+  let d = detailClusterHash(cell + vec2f(1.0));
+  return vec3f(
+    mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
+    mix(b - a, d - c, blend.y) * slope.x,
+    mix(c - a, d - b, blend.x) * slope.y,
+  );
+}
+#endif
+
 // 2-14 — ordered 8×8 Bayer threshold in [1/128, 127/128], the standard
 // bit-interleave construction.
 fn detailBayer8(pixel: vec2u) -> f32 {
@@ -552,6 +604,26 @@ let detailFadeByteDecoded = fract(fragmentInputs.detailAtlasData.z) * 512.0;
 #else
 let detailFadeByteDecoded = fragmentInputs.detailFadeByte;
 #endif
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: the leaf-cluster field, shared by the albedo modulation below
+// and the shading-normal perturbation before lights. Two octaves (~0.74 m and
+// ~0.27 m) over a sheared plane, WORLD-locked through detailWorldOrigin
+// (vPositionW is floating-origin-rebased — without the offset the whole
+// canopy's pattern popped on every 2,048 m origin move), each octave faded
+// by its own pixel-footprint Nyquist so mid-band crowns converge to the
+// texture instead of carrying per-pixel shimmer.
+let detailClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+let detailClusterFootprint = max(
+  length(dpdx(detailClusterCoord)), length(dpdy(detailClusterCoord)));
+let detailClusterFadeA = 1.0 - smoothstep(0.15, 0.55, detailClusterFootprint);
+let detailClusterFadeB = 1.0 - smoothstep(0.06, 0.2, detailClusterFootprint);
+let detailClusterA = detailClusterGrad(detailClusterCoord * 1.35);
+let detailClusterB = detailClusterGrad(detailClusterCoord * 3.7 + vec2f(17.1, 3.3));
+let detailClusterMix = 0.5
+  + (detailClusterA.x - 0.5) * 0.62 * detailClusterFadeA
+  + (detailClusterB.x - 0.5) * 0.38 * detailClusterFadeB;
+#endif
 #ifndef DETAIL_OPAQUE_CROWN
 #ifdef DETAIL_BAND_FADES
 if (!detailBandWindow(
@@ -585,7 +657,11 @@ if (fragmentInputs.detailAtlasData.z >= 0.0) {
   // Closed near crowns compile a genuinely opaque pipeline: no alpha test,
   // no seasonal screen-door dissolve, and no fragment LOD dither. The
   // vertex-stage band window performs the hard range cull instead.
-  surfaceAlbedo = surfaceAlbedo * detailCard.rgb;
+  // Fix-pack F1: the cluster field modulates tone — lit clumps against dark
+  // crevices — which the deliberately restrained dense layer cannot supply
+  // alone; the companion normal perturbation lands before lights.
+  surfaceAlbedo = surfaceAlbedo * detailCard.rgb
+    * (0.84 + 0.32 * detailClusterMix);
 #else
   let detailAtlasLayer = floor(max(fragmentInputs.detailAtlasData.z, 0.0));
   // Bark (5..7) and dense near-crown layers (16..17) texture closed geometry,
@@ -626,6 +702,28 @@ surfaceAlbedo = surfaceAlbedo * fragmentInputs.detailInstanceTint.rgb;
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_LIGHTS: `
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: the closed hull's smooth interpolated normal is why crowns
+// read as playdough — N·L varies only at icosphere-vertex frequency. Perturb
+// the shading normal with the same world-locked cluster field the albedo
+// modulation uses (recomputed here — the hook scopes are separate), so the
+// hull lights as thousands of leaf clumps facing every direction.
+let crownClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+let crownClusterFootprint = max(
+  length(dpdx(crownClusterCoord)), length(dpdy(crownClusterCoord)));
+let crownClusterFadeA = 1.0 - smoothstep(0.15, 0.55, crownClusterFootprint);
+let crownClusterFadeB = 1.0 - smoothstep(0.06, 0.2, crownClusterFootprint);
+let crownClusterA = detailClusterGrad(crownClusterCoord * 1.35);
+let crownClusterB = detailClusterGrad(crownClusterCoord * 3.7 + vec2f(17.1, 3.3));
+let crownClusterSlope = vec2f(crownClusterA.y, crownClusterA.z) * 0.4 * crownClusterFadeA
+  + vec2f(crownClusterB.y, crownClusterB.z) * 0.3 * crownClusterFadeB;
+normalW = normalize(normalW + vec3f(
+  crownClusterSlope.x,
+  (crownClusterA.x - 0.5) * 0.5 * crownClusterFadeA,
+  crownClusterSlope.y,
+));
+#endif
 #ifdef DETAIL_IMPOSTOR
 // 2-17's DEFERRED NORMAL HOOKUP, closed by the perf-debt pass. The
 // normal+depth array was baked and uploaded and then never sampled, so
@@ -750,6 +848,8 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private windDirectionZ = 0.70710678;
   private windStrength = 0.25;
   private windGust = 0;
+  private worldOriginX = 0;
+  private worldOriginZ = 0;
 
   constructor(material: PBRMaterial) {
     // enable=false at super: registerForExtraEvents must be set BEFORE
@@ -981,6 +1081,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         { name: "detailWindTime", size: 1, type: "float" },
         { name: "detailMeshOffset", size: 4, type: "vec4" },
         { name: "detailWind", size: 4, type: "vec4" },
+        { name: "detailWorldOrigin", size: 4, type: "vec4" },
         { name: "detailImpostorSeason", size: 1, type: "float" },
         { name: "detailBandRadii", size: 4, type: "vec4" },
         { name: "detailKeyLight", size: 4, type: "vec4" },
@@ -995,8 +1096,25 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     };
   }
 
+  /**
+   * Fix-pack F1: the crown cluster field must be WORLD-locked. vPositionW is
+   * floating-origin-rebased, so without this offset every crown's shading
+   * pattern jumped on each 2,048 m origin move.
+   */
+  setWorldOrigin(x: number, z: number): void {
+    this.worldOriginX = Number.isFinite(x) ? x : 0;
+    this.worldOriginZ = Number.isFinite(z) ? z : 0;
+  }
+
   override bindForSubMesh(uniformBuffer: UniformBuffer): void {
     uniformBuffer.updateFloat("detailWindTime", this.timeSeconds);
+    uniformBuffer.updateFloat4(
+      "detailWorldOrigin",
+      this.worldOriginX,
+      this.worldOriginZ,
+      0,
+      0,
+    );
     uniformBuffer.updateFloat4(
       "detailWind",
       this.windDirectionX,

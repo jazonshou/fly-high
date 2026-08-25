@@ -37,6 +37,15 @@ export interface AircraftPaintRecipe {
   readonly metallic: number;
   readonly sootStrength?: number;
   readonly wearStrength?: number;
+  /**
+   * Scales the panel-line and seam darkening/relief (default 1; rivets keep
+   * full strength — they gate on panel PROXIMITY, not the line intensity).
+   * Fix-pack A1: the 64² maps stretch ~5× further over the F-22's 19 m
+   * airframe than the trainer's, so its recipes turn the grid down rather
+   * than reading as a quilt; the trainer omits the field and stays
+   * byte-identical.
+   */
+  readonly panelStrength?: number;
 }
 
 export interface AircraftSurfaceSynthesis {
@@ -138,6 +147,7 @@ export function synthesizeAircraftSurface(
   const horizontalPanels = [0.2, 0.49, 0.76] as const;
   const sootStrength = clamp01(recipe.sootStrength ?? 0.82);
   const wearStrength = clamp01(recipe.wearStrength ?? 0.72);
+  const panelStrength = clamp01(recipe.panelStrength ?? 1);
 
   for (let y = 0; y < edge; y += 1) {
     for (let x = 0; x < edge; x += 1) {
@@ -153,8 +163,8 @@ export function synthesizeAircraftSurface(
         distanceToNearest(warpedU, verticalPanels),
         distanceToNearest(warpedV, horizontalPanels),
       );
-      const panelLine = 1 - smoothstep(0.004, 0.012, panelDistance);
-      const seam = 1 - smoothstep(0.003, 0.009, Math.abs(warpedU - 0.63));
+      const panelLine = (1 - smoothstep(0.004, 0.012, panelDistance)) * panelStrength;
+      const seam = (1 - smoothstep(0.003, 0.009, Math.abs(warpedU - 0.63))) * panelStrength;
       const nearVerticalPanel = distanceToNearest(warpedU, verticalPanels) < 0.012;
       const nearHorizontalPanel = distanceToNearest(warpedV, horizontalPanels) < 0.012;
       const rivetPhase = nearVerticalPanel ? fract(v * 30) : fract(u * 30);

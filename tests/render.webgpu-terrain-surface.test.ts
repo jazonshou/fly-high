@@ -605,12 +605,16 @@ describe("terrain surface plugin (3-2)", () => {
   });
 
   it("uses a continuous macro fallback and retires sub-pixel material patterns", () => {
-    expect(TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS).toBe(0.5);
-    expect(TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS).toBe(2);
+    // Fix-pack T2 re-pin: the fade now keys on the anisotropy-limited minor
+    // footprint axis and runs 1.5 → 10 m (was 0.5 → 2 m on the major axis),
+    // which converged every patterned channel to a flat constant within a few
+    // hundred metres of slant range at flight grazing angles.
+    expect(TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS).toBe(1.5);
+    expect(TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS).toBe(10);
     expect(terrainMaterialDetailWeight(0)).toBe(1);
-    expect(terrainMaterialDetailWeight(0.5)).toBe(1);
-    expect(terrainMaterialDetailWeight(1.25)).toBeCloseTo(0.5, 12);
-    expect(terrainMaterialDetailWeight(2)).toBe(0);
+    expect(terrainMaterialDetailWeight(1.5)).toBe(1);
+    expect(terrainMaterialDetailWeight(5.75)).toBeCloseTo(0.5, 12);
+    expect(terrainMaterialDetailWeight(10)).toBe(0);
     expect(terrainMaterialDetailWeight(20)).toBe(0);
     expect(() => terrainMaterialDetailWeight(-1)).toThrow(RangeError);
 
@@ -633,7 +637,7 @@ describe("terrain surface plugin (3-2)", () => {
       expect(source).toContain(
         "layer.roughness = clamp(mix(reference.w, normalTexel.b, detailWeight)",
       );
-      expect(source).toContain("0.50,\n  2.00,\n  terrainFootprint");
+      expect(source).toContain("1.50,\n  10.00,\n  terrainFootprint");
       expect(source).toContain(`var terrainAxis = ${SurfaceMaterial.Grass}.0;`);
       expect(source).toContain("let terrainUsePageSplat = false;");
       expect(source).toContain("if (!terrainUsePageSplat)");

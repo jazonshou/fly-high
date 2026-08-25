@@ -43,8 +43,10 @@ describe("water shader extraction (2-8a)", () => {
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "b0cad61d28a2368573d70b710e1a63d23334277a0780f81fe83981f1200a9774",
     );
+    // Re-pinned for fix-pack W1/W2 (capillary band + sub-grid spectrum tail)
+    // — the deliberate-change flow this assertion prescribes.
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "91872d3d1350acaa627171f7468f09824dbd6293045b4383c47cd63692f0707b",
+      "9dfb9dda1374afb774ce17d4a59f4e5c0c832a039fb191431fcfb80886f026eb",
     );
   });
 

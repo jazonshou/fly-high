@@ -954,8 +954,14 @@ describe("CDLOD macro-normal continuity", () => {
         .toBeGreaterThan(70);
       expect(changedFraction, "the macro normal was quantized into triangle-wide plates")
         .toBeGreaterThan(0.3);
+      // Re-pinned 3 → 24 for fix-pack T1: the meso band's strata shading is
+      // DELIBERATE high-frequency tone on steep faces (measured step 17 at
+      // this zoom), which the old absolute-step gate cannot distinguish from
+      // an edge. The plate failure mode this test exists for is still caught:
+      // a face-normal render changes ~13% of pixels and fails the 0.3
+      // changed-fraction floor above, and a raw triangle edge steps > 24.
       expect(largestStep, "a triangle or grid edge remained visible in the macro normal")
-        .toBeLessThanOrEqual(3);
+        .toBeLessThanOrEqual(24);
 
       heightAtlas.dispose();
       arrays.albedoHeight.dispose();
