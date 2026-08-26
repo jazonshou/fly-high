@@ -524,7 +524,21 @@ describe("starter airport terrain", () => {
     // here is an order of magnitude, not the 3x spread between machines.
     const p95SelectionBudgetMs = process.env.CI ? 500 : 150;
     expect(p95SelectionTime).toBeLessThan(p95SelectionBudgetMs);
-  }, 120_000);
+    // A timeout catches a hung test; it is not a performance budget
+    // (vitest.config.ts). The p95 assertion directly above is this sweep's
+    // performance guard, and it is already scaled for shared hardware; the
+    // ceiling here must not quietly be a second, unscaled one. The work is
+    // deliberately large and entirely wall-clock independent: 384 site
+    // selections plus 384 independent dense oracles, ~9.1M full-bandwidth
+    // terrain-kernel evaluations. Vitest's SSR transform turns every
+    // cross-module call in that kernel into a namespace property load, so it
+    // runs ~4.5x slower here than the same code does in the app — ~40 s on an
+    // Apple-silicon laptop, and past 120 s on a shared CI runner sharing four
+    // cores with the rest of the suite. That is the 120 s ceiling reporting
+    // which machine ran the test, exactly what the note above rejects. Ten
+    // minutes is not a claim about how long this should take: it is far
+    // enough above every machine that only a genuine hang can trip it.
+  }, 600_000);
 
   it("keeps explicit custom airport sites exact instead of silently relocating them", () => {
     const custom = createWorld("manual-airport", {
