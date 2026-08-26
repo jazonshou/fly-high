@@ -60,9 +60,9 @@ export interface LoftSection {
   readonly zOffset?: number;
   /**
    * Superellipse exponent. 2 (the default) is the classic ellipse every
-   * existing aircraft lofts with; higher values square the section off toward
-   * a rounded rectangle — the chined, flat-wide fuselage a fifth-generation
-   * fighter needs, which a pure ellipse cannot express (fix-pack A1).
+   * shipped aircraft lofts with, and the loft is bit-identical there; higher
+   * values square the section off toward a rounded rectangle, for a chined
+   * flat-wide fuselage a pure ellipse cannot express.
    */
   readonly squareness?: number;
 }

@@ -506,6 +506,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // the drain fence and this boundary is setup, not gameplay delivery.
       await nextAnimationFrame();
       let previousDetailMarker = renderer.getDetailPresentationMarkerForCapture();
+      const startDetailMarker = previousDetailMarker;
       let previousFrameEnd = performance.now();
       const frameIntervalsMs: number[] = [];
       const renderCallMs: number[] = [];
@@ -614,6 +615,23 @@ describe("perf capture (1A-1c / 2Z)", () => {
           overBudgetWithPublication: overBudgetFrameIndices.filter(
             (index) => detailFrameMarkers[index]?.publicationDuringRender,
           ).length,
+          // Streaming fix-pack counters (cumulative in the marker; printed
+          // as measurement-window deltas). `publishedBytes` proves the byte
+          // budget spread uploads, `createdBatches`/`reboundBatches` prove
+          // structural work stayed off the publication frame, and the
+          // suppression/stale counters prove chunks stayed visible.
+          publishedBytes: previousDetailMarker.publishedBytes
+            - startDetailMarker.publishedBytes,
+          createdBatches: previousDetailMarker.createdBatches
+            - startDetailMarker.createdBatches,
+          reboundBatches: previousDetailMarker.reboundBatches
+            - startDetailMarker.reboundBatches,
+          revealRampsStarted: previousDetailMarker.revealRampsStarted
+            - startDetailMarker.revealRampsStarted,
+          suppressedChunks: previousDetailMarker.suppressedChunks
+            - startDetailMarker.suppressedChunks,
+          staleVisibleChunks: previousDetailMarker.staleVisibleChunks
+            - startDetailMarker.staleVisibleChunks,
         };
         console.info(`${shot.name}: detail frame correlation ${JSON.stringify(markerSummary)}`);
         const sortedIntervals = [...frameIntervalsMs].sort((first, second) => first - second);

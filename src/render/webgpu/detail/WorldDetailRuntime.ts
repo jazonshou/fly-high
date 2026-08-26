@@ -197,8 +197,18 @@ interface DetailPresentationChunk {
   observerX: number;
   observerZ: number;
   observerSensitive: boolean;
-  /** Fail-closed: stale bytes stay allocated but cannot be submitted. */
+  /**
+   * Fail-closed BACKSTOP only: stale bytes stay allocated but cannot be
+   * submitted. Streaming fix-pack: a chunk whose baked observer merely
+   * drifted past the membership slack stays VISIBLE while its replacement
+   * builds — stale-but-visible beats invisible; the fragment band windows
+   * compute fades from the live camera, so staleness only means
+   * slightly-off band memberships. Suppression engages only beyond the
+   * pathological `DETAIL_SUPPRESSION_BACKSTOP_METERS` envelope.
+   */
   validitySuppressed: boolean;
+  /** Diagnostic latch: drifted past the slack but deliberately kept live. */
+  staleVisible: boolean;
 }
 
 /** CPU-only batch assembled while the previously published chunk stays live. */
@@ -251,6 +261,71 @@ interface PendingWorkerDetailChunkBuild extends PendingDetailChunkBuildBase {
 type PendingDetailChunkBuild =
   | PendingInlineDetailChunkBuild
   | PendingWorkerDetailChunkBuild;
+
+/**
+ * One batch of a completed build on its way to the GPU (streaming fix-pack).
+ *
+ * `fits`: the live batch's pooled allocation already holds enough capacity —
+ * the new bytes are written IN PLACE at the flip (one queue-ordered
+ * `writeBuffer`, no rebind, no `resetDrawCache`), which is atomic with the
+ * flip frame's submit.
+ *
+ * `create`/`grow`: a brand-new DISABLED mesh is cloned, bound to a
+ * pooled-or-new allocation and `resetDrawCache`d while it has never
+ * rendered (the 4.5-0-safe window), then its bytes stream in under the
+ * per-update byte budget. The flip enables it; for `grow` the outgrown
+ * live batch retires through the ordinary grace/pool path.
+ */
+interface StagedDetailBatchUpload {
+  readonly batchKey: string;
+  readonly prototypeKey: string;
+  readonly writer: DetailInstanceWriter;
+  readonly bounds: DetailInstanceBounds;
+  /** The writer's exact packed byte range, captured once at staging. */
+  readonly packed: Uint8Array;
+  readonly kind: "fits" | "create" | "grow";
+  /** The disabled staged batch for `create`/`grow`; null until structural work runs. */
+  stagedBatch: DetailBatch | null;
+  structuralDone: boolean;
+  streamedBytes: number;
+}
+
+/**
+ * A completed chunk build being published across frames (streaming
+ * fix-pack, defect D). Structural work (mesh clone + buffer bind +
+ * `resetDrawCache`, all on DISABLED never-rendered meshes) is capped per
+ * update; byte uploads into those disabled buffers stream under a per-update
+ * budget; then ONE cheap atomic flip enables the staged meshes, performs the
+ * in-place `fits` writes, swaps the live batch set and updates counts and
+ * bounds. The old batches stay visible until the flip, so a chunk is never
+ * half-published and never invisible while publication is in progress.
+ *
+ * DESIGN CHOICE (recorded per the fix-pack): the runtime updates ONE live
+ * mesh per batchKey in place, so staging uses per-batch replacement meshes
+ * ONLY where a rebind would otherwise be forced (new batch keys and grown
+ * allocations — the clone+resetDrawCache-bearing cases the 18-22 ms
+ * publication frames were made of), and defers the in-place `writeBuffer`
+ * for same-capacity batches to the flip frame. A whole-replacement-mesh
+ * design was rejected because it reintroduces the per-publication
+ * clone+`makeGeometryUnique` churn the perf-debt pass measured and removed;
+ * an instance-buffer swap-on-flip design was rejected because swapping a
+ * live mesh's vertex buffers requires `resetDrawCache` on a rendered mesh —
+ * the exact same-frame pipeline/bind-group rebuild (and 4.5-0 hazard) this
+ * split exists to avoid. Outgrown and retired allocations always return to
+ * the recycle pool after the grace margin; nothing is destroyed in flight.
+ */
+interface PendingDetailPublication {
+  readonly coordinates: DetailPresentationChunkCoordinates;
+  readonly signature: string;
+  readonly configurationSignature: string;
+  readonly recordOrigin: DetailFloatingOrigin;
+  readonly observerX: number;
+  readonly observerZ: number;
+  readonly observerSensitive: boolean;
+  readonly source: "inline" | "worker";
+  readonly statistics: DetailChunkStatistics;
+  readonly uploads: StagedDetailBatchUpload[];
+}
 
 export interface DetailPresentationRebuildBudget {
   /**
@@ -319,6 +394,14 @@ interface ResidentCellBase {
   /** Current presentation LOD/distance, refreshed from the desired-cell plan. */
   lod: DetailLod;
   distance: number;
+  /**
+   * Streaming fix-pack (defect B): a terrain L0 page publication marks
+   * overlapping residents stale instead of deleting them. The stale record
+   * keeps protecting the live published chunk (the epoch pattern — a page
+   * arrival cannot punch a forest-sized hole) while the ordinary bounded
+   * generator regenerates the cell and replaces it in place.
+   */
+  invalidated: boolean;
 }
 
 interface InlineResidentCell extends ResidentCellBase {
@@ -407,6 +490,40 @@ export const DETAIL_PRESENTATION_REBUILD_MAX_MILLISECONDS_PER_UPDATE = 3;
 const DETAIL_PRESENTATION_REBUILD_CLOCK_INTERVAL_UNITS = 64;
 /** Must remain below the validity envelope used by the membership masks. */
 export const DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS = 64;
+/**
+ * Streaming fix-pack (defect A): the fail-closed suppression BACKSTOP. A
+ * chunk whose baked observer drifts past the 96 m membership slack stays
+ * visible (stale-but-visible beats invisible — the shader band windows read
+ * the live camera, so staleness is only slightly-off band memberships);
+ * only past this pathological envelope is the whole chunk hidden.
+ */
+export const DETAIL_SUPPRESSION_BACKSTOP_METERS = 768;
+/**
+ * Streaming fix-pack (defect D): per-update byte budget for streaming packed
+ * instance records into DISABLED staged buffers ahead of a publication flip.
+ */
+export const DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE = 262_144;
+/**
+ * Streaming fix-pack (defect D): at most this many clone+resetDrawCache-
+ * bearing staged mesh creations per update — the structural work that made
+ * unbudgeted publication frames cost 18-22 ms.
+ */
+export const DETAIL_PUBLICATION_STRUCTURAL_CREATIONS_PER_UPDATE = 1;
+/**
+ * Streaming fix-pack (defect C): a newly created batch mesh reveals its
+ * instances stochastically over this window after its first flip, so a fresh
+ * chunk inside the cull-fade radius grows in rather than popping at full
+ * density. Re-publication of an existing mesh never restarts the ramp.
+ */
+export const DETAIL_REVEAL_RAMP_SECONDS = 0.7;
+/** Update-count fallback for the reveal clock (~0.7 s at 60 Hz), so a stalled simulation clock cannot pin a chunk invisible. */
+const DETAIL_REVEAL_RAMP_UPDATES = 42;
+/**
+ * Streaming fix-pack (defect C): look-ahead distance cap. 2,400 m keeps
+ * high-speed residency requests landing beyond the 3,000 m − 420 m cull-fade
+ * start, so newly resident cells appear through the existing range dither.
+ */
+const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
 /** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
@@ -516,6 +633,24 @@ export class WorldDetailRuntime {
    * bounds staging memory and preserves the old one-chunk-at-a-time ordering.
    */
   private pendingPresentationBuild: PendingDetailChunkBuild | null = null;
+  /**
+   * At most one completed build being published across frames (defect D).
+   * Serial with the build: no new build starts while a publication streams,
+   * which bounds staged GPU memory to one chunk's working set.
+   */
+  private pendingPublication: PendingDetailPublication | null = null;
+  /** Meshes whose reveal value is ramping 0 -> 1 after their first flip. */
+  private readonly revealRamps = new Map<
+    Mesh,
+    { readonly startSeconds: number; readonly startUpdate: number }
+  >();
+  /** Capture-marker cumulative counters (constant-time integer increments). */
+  private capturePublishedBytes = 0;
+  private captureCreatedBatches = 0;
+  private captureReboundBatches = 0;
+  private captureRevealRampsStarted = 0;
+  private captureSuppressedChunks = 0;
+  private captureStaleVisibleChunks = 0;
   private readonly presentationRebuildBudget: DetailPresentationRebuildBudget;
   private readonly presentationNowMilliseconds: () => number;
   private presentationWorkUnitsLastUpdate = 0;
@@ -734,7 +869,9 @@ export class WorldDetailRuntime {
   }
 
   private residentIsCurrentAndAccessible(resident: ResidentCell | undefined): boolean {
-    if (!resident || resident.generation !== this.cellEpoch) return false;
+    if (!resident || resident.invalidated || resident.generation !== this.cellEpoch) {
+      return false;
+    }
     return resident.source === "inline"
       || (resident.tokenOwned && this.client !== null);
   }
@@ -806,8 +943,9 @@ export class WorldDetailRuntime {
   private invalidateTerrainPage(tileX: number, tileZ: number): void {
 
     // Macro-authored cells are already evolved, but the final L0 page owns
-    // local incision/detail and signed shoreline. Retire only overlapping
-    // cells and requests so their next generation uses the complete product.
+    // local incision/detail and signed shoreline. Mark only overlapping
+    // cells stale and cancel their in-flight requests so their next
+    // generation uses the complete product.
     const minimumX = tileX * WORLD_PAGE_BASE_EXTENT_METERS;
     const minimumZ = tileZ * WORLD_PAGE_BASE_EXTENT_METERS;
     const maximumX = minimumX + WORLD_PAGE_BASE_EXTENT_METERS;
@@ -821,10 +959,20 @@ export class WorldDetailRuntime {
         && cellMinimumZ + this.cellSizeMeters > minimumZ;
     };
     let invalidated = false;
-    for (const [key, resident] of this.cells) {
+    for (const resident of this.cells.values()) {
       if (!overlapsPage(resident.cellX, resident.cellZ)) continue;
+      if (resident.invalidated) continue;
+      // Defect B fix — the epoch pattern (`setDayOfYear`), page-scoped:
+      // release the worker token (exactly once; `replaceResident` and every
+      // later release path no-op on `tokenOwned === false`) but KEEP the
+      // stale record resident. The live published chunk keeps drawing the
+      // old trees; `residentIsCurrentAndAccessible` reports the cell as
+      // missing so the ordinary bounded generator regenerates it, and the
+      // replacement swaps in via `replaceResident` with a new revision. The
+      // old code deleted the record here, so the next chunk publication
+      // omitted a 512 m block of trees for the whole regeneration latency.
       this.releaseResidentToken(resident);
-      this.cells.delete(key);
+      resident.invalidated = true;
       invalidated = true;
     }
     for (const desired of this.desiredCells) {
@@ -986,10 +1134,24 @@ export class WorldDetailRuntime {
   get presentationCaptureMarker(): Readonly<{
     workerResultsQueued: number;
     publications: number;
+    publishedBytes: number;
+    createdBatches: number;
+    reboundBatches: number;
+    revealRampsStarted: number;
+    suppressedChunks: number;
+    staleVisibleChunks: number;
   }> {
     return {
       workerResultsQueued: this.presentationWorkerResultsQueued,
       publications: this.presentationBuildPublications,
+      // Streaming fix-pack (defect E): cumulative counters, all bumped by
+      // constant-time integer increments on the paths they measure.
+      publishedBytes: this.capturePublishedBytes,
+      createdBatches: this.captureCreatedBatches,
+      reboundBatches: this.captureReboundBatches,
+      revealRampsStarted: this.captureRevealRampsStarted,
+      suppressedChunks: this.captureSuppressedChunks,
+      staleVisibleChunks: this.captureStaleVisibleChunks,
     };
   }
 
@@ -1003,7 +1165,9 @@ export class WorldDetailRuntime {
     for (const desired of this.desiredCells) {
       if (!this.residentIsCurrentAndAccessible(this.cells.get(desired.key))) missingCells += 1;
     }
-    const presentationWork = this.batchesDirty || this.pendingPresentationBuild !== null
+    const presentationWork = this.batchesDirty
+      || this.pendingPresentationBuild !== null
+      || this.pendingPublication !== null
       ? Math.max(1, this.presentationBacklogChunks)
       : 0;
     return missingCells + presentationWork;
@@ -1035,6 +1199,7 @@ export class WorldDetailRuntime {
         for (const plugin of this.instancePlugins) plugin.setTimeSeconds(this.windTimeSeconds);
       }
     }
+    this.advanceRevealRamps();
     requireFinite(observer.x, "Detail observer x");
     requireFinite(observer.y, "Detail observer y");
     requireFinite(observer.z, "Detail observer z");
@@ -1086,7 +1251,9 @@ export class WorldDetailRuntime {
     if (this.suppressInvalidPresentationChunks()) this.batchesDirty = true;
 
     const speed = Math.hypot(velocityX, velocityZ);
-    const lookAheadSeconds = speed > 1 ? Math.min(6, 1_200 / speed) : 0;
+    const lookAheadSeconds = speed > 1
+      ? Math.min(6, DETAIL_LOOK_AHEAD_DISTANCE_METERS / speed)
+      : 0;
     const predictionX = observer.x + velocityX * lookAheadSeconds;
     const predictionZ = observer.z + velocityZ * lookAheadSeconds;
     const quantization = this.cellSizeMeters * 0.5;
@@ -1188,7 +1355,11 @@ export class WorldDetailRuntime {
       let generated = 0;
       for (const desired of this.desiredCells) {
         const current = this.cells.get(desired.key);
-        if (current?.source === "inline" && current.generation === this.cellEpoch) continue;
+        if (
+          current?.source === "inline"
+          && current.generation === this.cellEpoch
+          && !current.invalidated
+        ) continue;
         const elapsedMilliseconds = generated === 0
           ? 0
           : Math.max(0, this.nowMilliseconds() - generationStartedAt);
@@ -1216,6 +1387,7 @@ export class WorldDetailRuntime {
           treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
           lod: desired.lod,
           distance: desired.distance,
+          invalidated: false,
         });
         this.cumulativeGeneratedCells += 1;
         generated += 1;
@@ -1271,6 +1443,8 @@ export class WorldDetailRuntime {
     if (this.disposed) return;
     this.disposed = true;
     if (this.pendingPresentationBuild) this.cancelPendingPresentationBuild();
+    if (this.pendingPublication) this.cancelPendingPublication();
+    this.revealRamps.clear();
     this.releaseAllResidentTokens();
     this.client?.dispose();
     this.client = null;
@@ -1399,6 +1573,7 @@ export class WorldDetailRuntime {
       revision: ++this.cellRevision,
       lod: desired.lod,
       distance: desired.distance,
+      invalidated: false,
     });
     this.recordWorkerGenerationProgress();
     this.cumulativeGeneratedCells += 1;
@@ -1432,6 +1607,9 @@ export class WorldDetailRuntime {
       if (grouped.has(chunkKey)) continue;
       if (this.pendingPresentationBuild?.coordinates.key === chunkKey) {
         this.cancelPendingPresentationBuild();
+      }
+      if (this.pendingPublication?.coordinates.key === chunkKey) {
+        this.cancelPendingPublication();
       }
       this.disposePresentationChunk(chunk);
     }
@@ -1503,6 +1681,7 @@ export class WorldDetailRuntime {
           observerZ: 0,
           observerSensitive: false,
           validitySuppressed: false,
+          staleVisible: false,
           statistics: {
             nearCells: 0,
             midCells: 0,
@@ -1556,16 +1735,16 @@ export class WorldDetailRuntime {
     // A staged build is a snapshot. Structural representation changes cancel
     // CPU staging, while ordinary observer/resident supersession completes
     // the immutable snapshot and immediately leaves a newer target queued.
-    // The exception is the same hard validity envelope used to author tree
-    // memberships and the grass frontier: a build that has aged beyond it is
-    // canceled and can never become a freshly-published stale chunk.
+    // Defect A fix: observer drift alone NEVER cancels an in-flight build —
+    // at speed the old >96 m cancel/reissue cycle livelocked with the chunk
+    // suppressed throughout. A drifted build finishes, publishes (it is
+    // fresher than what is live), and the chunk's changed observer term
+    // re-dirties it so the sweep converges instead of thrashing. Cancels
+    // remain for disposal, profile/configuration, frontier-classification,
+    // build-source and floating-origin changes.
     if (this.pendingPresentationBuild) {
       const pendingBuild = this.pendingPresentationBuild;
       const currentTarget = targets.get(pendingBuild.coordinates.key);
-      const pendingObserverDrift = Math.hypot(
-        this.observerX - pendingBuild.observerX,
-        this.observerZ - pendingBuild.observerZ,
-      );
       if (
         !currentTarget
         || currentTarget.configurationSignature
@@ -1579,22 +1758,40 @@ export class WorldDetailRuntime {
         || pendingBuild.recordOrigin.x !== floatingOrigin.x
         || pendingBuild.recordOrigin.y !== floatingOrigin.y
         || pendingBuild.recordOrigin.z !== floatingOrigin.z
-        || (
-          (
-            pendingBuild.source === "worker"
-            || pendingBuild.observerSensitive
-          )
-          && pendingObserverDrift > DETAIL_MEMBERSHIP_SLACK_METERS
-        )
       ) {
         this.cancelPendingPresentationBuild();
       }
     }
+    // The same structural guards protect a publication mid-stream; its
+    // content is already main-thread-owned, so worker state and observer
+    // drift are deliberately not conditions here.
+    if (this.pendingPublication) {
+      const currentTarget = targets.get(this.pendingPublication.coordinates.key);
+      if (
+        !currentTarget
+        || currentTarget.configurationSignature
+          !== this.pendingPublication.configurationSignature
+      ) {
+        this.cancelPendingPublication();
+      }
+    }
 
-    if (!this.pendingPresentationBuild) {
+    if (!this.pendingPresentationBuild && !this.pendingPublication) {
+      // Defect A fix: rebuild target selection is nearest-observer-first
+      // (it was Map insertion order), so the most visible chunk is always
+      // the freshest one. Ties break on the stable chunk key so the sweep
+      // stays deterministic.
+      const dirtyTargets: DetailChunkBuildTarget[] = [];
       for (const target of targets.values()) {
         const chunk = this.presentationChunks.get(target.coordinates.key)!;
         if (chunk.signature === target.signature || target.buildSource === "blocked") continue;
+        dirtyTargets.push(target);
+      }
+      dirtyTargets.sort((first, second) =>
+        this.chunkMinimumDistanceMeters(first.coordinates)
+          - this.chunkMinimumDistanceMeters(second.coordinates)
+        || first.coordinates.key.localeCompare(second.coordinates.key));
+      for (const target of dirtyTargets) {
         const pending = this.createPendingPresentationBuild(
           target,
           floatingOrigin,
@@ -1603,8 +1800,13 @@ export class WorldDetailRuntime {
           profile.treePrototypeMode,
           profile.grassRadiusMeters,
         );
-        if (pending) this.pendingPresentationBuild = pending;
-        if (pending || target.buildSource === "worker") break;
+        if (pending) {
+          this.pendingPresentationBuild = pending;
+          break;
+        }
+        // Worker backpressure: wait for the nearest chunk's slot to free
+        // rather than spending it on a farther, less visible one.
+        if (target.buildSource === "worker") break;
       }
     }
 
@@ -1616,28 +1818,21 @@ export class WorldDetailRuntime {
         // No asynchronous callback can run inside update(). The structural
         // guard remains so a future scheduler cannot publish an incompatible
         // representation; ordinary newer content stays queued after commit.
+        // Defect A fix: the old >96 m observer-drift rejection is gone — a
+        // completed drifted snapshot is fresher than whatever is live, so it
+        // proceeds to publication and the chunk's changed observer term
+        // leaves it dirty for the converging sweep.
         if (
           target?.configurationSignature
             === completedBuild.configurationSignature
-          && (
-            completedBuild.source === "inline" && !completedBuild.observerSensitive
-            || Math.hypot(
-              this.observerX - completedBuild.observerX,
-              this.observerZ - completedBuild.observerZ,
-            ) <= DETAIL_MEMBERSHIP_SLACK_METERS
-          )
         ) {
-          this.publishPendingPresentationBuild(
-            completedBuild,
-            completed,
-            floatingOrigin,
-          );
           if (completedBuild.source === "worker") {
-            this.presentationWorkerBuildPublications = addDiagnosticCount(
-              this.presentationWorkerBuildPublications,
-            );
+            // The worker produced accepted useful output; the publication
+            // streaming that follows is main-thread work and must not be
+            // chargeable to the worker authority watchdog.
             this.resetWorkerPresentationProgress();
           }
+          this.createPendingPublication(completedBuild, completed);
           this.pendingPresentationBuild = null;
         } else {
           // Keep the pending owner installed while cancel releases every
@@ -1646,6 +1841,11 @@ export class WorldDetailRuntime {
         }
       }
     }
+
+    // Defect D fix: advance (and possibly flip) the staged publication in
+    // the same update, so a publication with no structural or streaming work
+    // — the steady-state in-place rebuild — still commits synchronously.
+    if (this.pendingPublication) this.advancePendingPublication(floatingOrigin);
 
     const totals: MutableDetailChunkStatistics = {
       nearCells: 0,
@@ -1686,7 +1886,9 @@ export class WorldDetailRuntime {
     };
     this.presentationBacklogChunks = rebuildBacklogChunks;
     this.refreshVisibilityStatistics();
-    return rebuildBacklogChunks > 0 || this.pendingPresentationBuild !== null;
+    return rebuildBacklogChunks > 0
+      || this.pendingPresentationBuild !== null
+      || this.pendingPublication !== null;
   }
 
   private createPendingPresentationBuild(
@@ -1972,8 +2174,9 @@ export class WorldDetailRuntime {
       || build.residentTokens.length !== build.residentLods.length
       || new Set(build.residentTokens).size !== build.residentTokens.length
       || build.residentTokens.some((token) => !Number.isSafeInteger(token) || token <= 0)
-      || Math.hypot(this.observerX - build.observerX, this.observerZ - build.observerZ)
-        > DETAIL_MEMBERSHIP_SLACK_METERS
+      // Defect A fix: observer drift is deliberately NOT validated here. At
+      // speed a result routinely arrives >96 m stale; that is ordinary
+      // supersession (publish, then converge), not a malformed worker.
       || build.stagedBatches.size !== 0
     ) {
       throw new Error("Detail worker presentation result no longer matches its build snapshot");
@@ -2093,40 +2296,188 @@ export class WorldDetailRuntime {
   }
 
   /**
-   * Publishes one complete chunk between renders. Shared batches retain their
-   * meshes and GPU allocations; only their queue-ordered bytes change. Batch
-   * additions/removals become observable in this same synchronous commit.
+   * Turns a completed build into a cross-frame staged publication (defect D
+   * fix). Ownership of the staged CPU writers moves from the build to the
+   * publication; the build's staged map is cleared so cancellation of either
+   * owner can never double-release a writer.
    */
-  private publishPendingPresentationBuild(
+  private createPendingPublication(
     build: PendingDetailChunkBuild,
     statistics: DetailChunkStatistics,
-    currentOrigin: DetailFloatingOrigin,
   ): void {
     const chunk = this.presentationChunks.get(build.coordinates.key);
     if (!chunk) {
       this.releaseStagedBuildStorage(build);
       return;
     }
+    const uploads: StagedDetailBatchUpload[] = [];
+    for (const staged of build.stagedBatches.values()) {
+      const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
+      const live = this.batches.get(batchKey);
+      const packed = staged.writer.finish();
+      const kind: StagedDetailBatchUpload["kind"] = !live
+        ? "create"
+        : live.gpu !== null && packed.byteLength <= live.gpu.capacityBytes
+          ? "fits"
+          : "grow";
+      uploads.push({
+        batchKey,
+        prototypeKey: staged.prototypeKey,
+        writer: staged.writer,
+        bounds: staged.bounds,
+        packed,
+        kind,
+        stagedBatch: null,
+        // `fits` batches carry no structural work: their bytes land in one
+        // queue-ordered in-place write at the flip.
+        structuralDone: kind === "fits",
+        streamedBytes: 0,
+      });
+    }
+    build.stagedBatches.clear();
+    this.pendingPublication = {
+      coordinates: build.coordinates,
+      signature: build.signature,
+      configurationSignature: build.configurationSignature,
+      recordOrigin: build.recordOrigin,
+      observerX: build.observerX,
+      observerZ: build.observerZ,
+      observerSensitive: build.observerSensitive,
+      source: build.source,
+      statistics,
+      uploads,
+    };
+  }
+
+  /**
+   * One bounded slice of publication work: capped structural creation, then
+   * budget-limited byte streaming into disabled buffers, then — only once
+   * both are complete — the atomic flip.
+   */
+  private advancePendingPublication(currentOrigin: DetailFloatingOrigin): void {
+    const publication = this.pendingPublication;
+    if (!publication) return;
+
+    // Structural phase: clone+bind+resetDrawCache, on DISABLED meshes that
+    // have never rendered (the 4.5-0-safe window), at most
+    // DETAIL_PUBLICATION_STRUCTURAL_CREATIONS_PER_UPDATE per update.
+    let creations = 0;
+    for (const upload of publication.uploads) {
+      if (upload.structuralDone) continue;
+      if (creations >= DETAIL_PUBLICATION_STRUCTURAL_CREATIONS_PER_UPDATE) break;
+      const staged = this.createDetailBatchMesh(
+        upload.prototypeKey,
+        publication.coordinates,
+      );
+      if (upload.packed.byteLength > 0) {
+        staged.gpu = this.acquireInstanceCapacity(upload.packed.byteLength);
+        this.bindInstanceBuffers(staged);
+      }
+      upload.stagedBatch = staged;
+      upload.structuralDone = true;
+      creations += 1;
+    }
+
+    // Streaming phase: packed records flow into the disabled staged buffers
+    // under the per-update byte budget. Nothing here is visible — the staged
+    // meshes stay disabled until the flip.
+    let budget = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
+    for (const upload of publication.uploads) {
+      if (upload.kind === "fits" || !upload.structuralDone) continue;
+      const gpu = upload.stagedBatch?.gpu;
+      if (!gpu) continue;
+      while (upload.streamedBytes < upload.packed.byteLength && budget > 0) {
+        const sliceLength = Math.min(
+          budget,
+          upload.packed.byteLength - upload.streamedBytes,
+        );
+        gpu.shared.updateDirectly(
+          upload.packed.subarray(
+            upload.streamedBytes,
+            upload.streamedBytes + sliceLength,
+          ),
+          upload.streamedBytes,
+          undefined,
+          true,
+        );
+        upload.streamedBytes += sliceLength;
+        budget -= sliceLength;
+        this.capturePublishedBytes = addDiagnosticCount(
+          this.capturePublishedBytes,
+          sliceLength,
+        );
+      }
+      if (budget <= 0) break;
+    }
+
+    const ready = publication.uploads.every((upload) =>
+      upload.structuralDone
+      && (upload.kind === "fits" || upload.streamedBytes >= upload.packed.byteLength));
+    if (ready) this.flipPendingPublication(publication, currentOrigin);
+  }
+
+  /**
+   * The atomic flip: enable the staged meshes, perform the queue-ordered
+   * in-place `fits` writes, swap the live batch set, update counts and
+   * bounding info. The chunk is never half-published — everything above is
+   * observable in this one synchronous commit, exactly as the old
+   * single-frame publication was.
+   */
+  private flipPendingPublication(
+    publication: PendingDetailPublication,
+    currentOrigin: DetailFloatingOrigin,
+  ): void {
+    const chunk = this.presentationChunks.get(publication.coordinates.key);
+    if (!chunk) {
+      this.cancelPendingPublication();
+      return;
+    }
     const nextRevision = chunk.revision + 1;
     const nextBatchKeys = new Set<string>();
     let publishedRecords = 0;
-    for (const staged of build.stagedBatches.values()) {
-      publishedRecords += staged.writer.count;
-      const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
-      nextBatchKeys.add(batchKey);
-      const batch = this.batches.get(batchKey)
-        ?? this.createPublishedBatch(staged.prototypeKey, chunk, nextRevision);
-      const displacedWriter = batch.writer;
-      const displacedBounds = batch.bounds;
-      batch.writer = staged.writer;
-      batch.bounds = staged.bounds;
-      batch.filledRevision = nextRevision;
-      this.uploadBatch(batch, build.recordOrigin, currentOrigin);
-      this.releaseDetailBuildStorage(
-        staged.prototypeKey,
-        displacedWriter,
-        displacedBounds,
-      );
+    for (const upload of publication.uploads) {
+      publishedRecords += upload.writer.count;
+      nextBatchKeys.add(upload.batchKey);
+      if (upload.kind === "fits") {
+        const batch = this.batches.get(upload.batchKey);
+        if (!batch) {
+          // Defensive: `fits` implies a live batch existed at staging and
+          // nothing removes one mid-publication; if that ever changes, the
+          // staged writer must still return to the bounded pool.
+          this.releaseDetailBuildStorage(upload.prototypeKey, upload.writer, upload.bounds);
+          continue;
+        }
+        const displacedWriter = batch.writer;
+        const displacedBounds = batch.bounds;
+        batch.writer = upload.writer;
+        batch.bounds = upload.bounds;
+        batch.filledRevision = nextRevision;
+        this.uploadBatch(batch, publication.recordOrigin, currentOrigin);
+        this.releaseDetailBuildStorage(
+          upload.prototypeKey,
+          displacedWriter,
+          displacedBounds,
+        );
+      } else {
+        const staged = upload.stagedBatch;
+        if (!staged) continue;
+        if (upload.kind === "grow") {
+          // The outgrown live batch retires through the ordinary grace/pool
+          // path — RECYCLED, never destroyed in flight (the pool law).
+          this.retireBatch(upload.batchKey);
+        }
+        staged.writer = upload.writer;
+        staged.bounds = upload.bounds;
+        staged.filledRevision = nextRevision;
+        this.batches.set(upload.batchKey, staged);
+        this.finalizeStreamedBatch(staged, publication.recordOrigin, currentOrigin);
+        if (upload.kind === "create" && staged.mesh.isEnabled()) {
+          // Defect C fix: only a mesh created BY this publication ramps —
+          // a `grow` replacement re-publishes existing content and must not
+          // blink the chunk by restarting a reveal.
+          this.startRevealRamp(staged.mesh);
+        }
+      }
     }
 
     // Only now is it safe to remove batches absent from the completed target.
@@ -2137,30 +2488,148 @@ export class WorldDetailRuntime {
     chunk.batchKeys.clear();
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
     chunk.revision = nextRevision;
-    chunk.statistics = statistics;
-    chunk.signature = build.signature;
-    chunk.observerX = build.observerX;
-    chunk.observerZ = build.observerZ;
-    chunk.observerSensitive = build.observerSensitive;
+    chunk.statistics = publication.statistics;
+    chunk.signature = publication.signature;
+    chunk.observerX = publication.observerX;
+    chunk.observerZ = publication.observerZ;
+    chunk.observerSensitive = publication.observerSensitive;
     chunk.validitySuppressed = false;
-    // The staged map must not alias writers that are live after publication.
-    build.stagedBatches.clear();
-    this.lastPublicationObserverDriftMeters = build.observerSensitive
-      ? Math.hypot(this.observerX - build.observerX, this.observerZ - build.observerZ)
+    chunk.staleVisible = false;
+    publication.uploads.length = 0;
+    this.pendingPublication = null;
+    this.lastPublicationObserverDriftMeters = publication.observerSensitive
+      ? Math.hypot(
+          this.observerX - publication.observerX,
+          this.observerZ - publication.observerZ,
+        )
       : 0;
     this.presentationBuildPublications += 1;
+    if (publication.source === "worker") {
+      this.presentationWorkerBuildPublications = addDiagnosticCount(
+        this.presentationWorkerBuildPublications,
+      );
+    }
     this.presentationPublishedRecords = addDiagnosticCount(
       this.presentationPublishedRecords,
       publishedRecords,
     );
+    // Backstop, applied atomically with the flip: if the published snapshot
+    // is already pathologically stale, it must not be enabled for even one
+    // frame; the sweep keeps the chunk dirty and rebuilds it.
+    this.suppressInvalidPresentationChunks();
   }
 
   /**
-   * Prevents a completed but obsolete observer snapshot from being drawn.
-   * This is deliberately not retirement: meshes, CPU writers and WebGPU
+   * Releases a staged publication. Staged meshes have never rendered, so
+   * disposing them is safe; their allocations still return through the pool
+   * (an unreferenced buffer waits out the grace window harmlessly).
+   */
+  private cancelPendingPublication(): void {
+    const publication = this.pendingPublication;
+    if (!publication) return;
+    for (const upload of publication.uploads) {
+      const staged = upload.stagedBatch;
+      if (staged) {
+        staged.mesh.dispose(false, false);
+        if (staged.gpu) this.recycleInstanceBuffers(staged.gpu);
+        staged.gpu = null;
+        this.revealRamps.delete(staged.mesh);
+      }
+      this.releaseDetailBuildStorage(
+        upload.prototypeKey,
+        upload.writer,
+        upload.bounds,
+      );
+    }
+    publication.uploads.length = 0;
+    this.pendingPublication = null;
+    this.presentationBuildCancellations = addDiagnosticCount(
+      this.presentationBuildCancellations,
+    );
+  }
+
+  /**
+   * Finalizes a batch whose bytes were already streamed into its allocation:
+   * everything `uploadBatch` does except the byte upload itself.
+   */
+  private finalizeStreamedBatch(
+    batch: DetailBatch,
+    recordOrigin: DetailFloatingOrigin,
+    currentOrigin: DetailFloatingOrigin,
+  ): void {
+    const count = batch.writer.count;
+    batch.mesh.forcedInstanceCount = 0;
+    if (count === 0 || batch.gpu === null) {
+      batch.mesh.setEnabled(false);
+      return;
+    }
+    // Restore the cached CPU mirror a whole-range `updateDirectly` would
+    // have kept: partial-range streamed writes null Babylon's `Buffer._data`,
+    // and `getVertexBuffer(...).getData()` readbacks rely on it.
+    (batch.gpu.shared as unknown as { _data: unknown })._data = batch.writer.finish();
+    batch.mesh.setEnabled(true);
+    batch.mesh.forcedInstanceCount = count;
+    batch.mesh.setBoundingInfo(new BoundingInfo(
+      Vector3.FromArray(batch.bounds.minimum()),
+      Vector3.FromArray(batch.bounds.maximum()),
+    ));
+    batch.builtOrigin.x = recordOrigin.x;
+    batch.builtOrigin.y = recordOrigin.y;
+    batch.builtOrigin.z = recordOrigin.z;
+    batch.mesh.position.set(
+      recordOrigin.x - currentOrigin.x,
+      recordOrigin.y - currentOrigin.y,
+      recordOrigin.z - currentOrigin.z,
+    );
+  }
+
+  /** Starts a newly created mesh's stochastic vertex-stage reveal (defect C). */
+  private startRevealRamp(mesh: Mesh): void {
+    const metadata = (mesh.metadata ?? (mesh.metadata = {})) as Record<string, unknown>;
+    metadata["detailReveal"] = 0;
+    this.revealRamps.set(mesh, {
+      startSeconds: this.windTimeSeconds,
+      startUpdate: this.updateSequence,
+    });
+    this.captureRevealRampsStarted = addDiagnosticCount(this.captureRevealRampsStarted);
+  }
+
+  /**
+   * Ramps every revealing mesh's `detailReveal` 0 -> 1. The simulation clock
+   * drives it (capture reruns stay pixel-comparable); the update-count term
+   * is a fallback so a stalled clock cannot pin a chunk invisible.
+   */
+  private advanceRevealRamps(): void {
+    if (this.revealRamps.size === 0) return;
+    for (const [mesh, start] of this.revealRamps) {
+      const timeShare =
+        (this.windTimeSeconds - start.startSeconds) / DETAIL_REVEAL_RAMP_SECONDS;
+      const updateShare =
+        (this.updateSequence - start.startUpdate) / DETAIL_REVEAL_RAMP_UPDATES;
+      const reveal = Math.max(timeShare, updateShare);
+      const metadata = mesh.metadata as Record<string, unknown> | null;
+      if (reveal >= 1 || mesh.isDisposed() || !metadata) {
+        if (!mesh.isDisposed() && metadata) metadata["detailReveal"] = 1;
+        this.revealRamps.delete(mesh);
+      } else {
+        metadata["detailReveal"] = Math.max(0, reveal);
+      }
+    }
+  }
+
+  /**
+   * Fail-closed BACKSTOP for a pathologically stale observer snapshot
+   * (defect A fix: the policy is stale-but-visible). A chunk whose baked
+   * observer merely drifted past the 96 m membership slack stays enabled
+   * and RENDERING while its replacement build is pending or queued — the
+   * fragment band windows already compute fades from the LIVE camera
+   * position, and near/mid share identical hull geometry, so the visible
+   * error of a stale snapshot is minor; the old whole-chunk suppression at
+   * 96 m was the "trees jump in and out" defect. Only past
+   * `DETAIL_SUPPRESSION_BACKSTOP_METERS` is the chunk hidden. Suppression
+   * remains deliberately not retirement: meshes, CPU writers and WebGPU
    * buffers keep their existing owners and lifetimes until a valid atomic
-   * publication overwrites them. The dirty/backlog path remains active, so
-   * diagnostics and capture settling cannot mistake suppression for success.
+   * publication overwrites them, and the dirty/backlog path remains active.
    */
   private suppressInvalidPresentationChunks(): boolean {
     let suppressed = false;
@@ -2169,14 +2638,29 @@ export class WorldDetailRuntime {
         chunk.revision === 0
         || !chunk.observerSensitive
         || chunk.validitySuppressed
-        || Math.hypot(this.observerX - chunk.observerX, this.observerZ - chunk.observerZ)
-          <= DETAIL_MEMBERSHIP_SLACK_METERS
       ) continue;
-      chunk.validitySuppressed = true;
-      for (const batchKey of chunk.batchKeys) {
-        this.batches.get(batchKey)?.mesh.setEnabled(false);
+      const drift = Math.hypot(
+        this.observerX - chunk.observerX,
+        this.observerZ - chunk.observerZ,
+      );
+      if (drift > DETAIL_SUPPRESSION_BACKSTOP_METERS) {
+        chunk.validitySuppressed = true;
+        chunk.staleVisible = false;
+        this.captureSuppressedChunks = addDiagnosticCount(this.captureSuppressedChunks);
+        for (const batchKey of chunk.batchKeys) {
+          this.batches.get(batchKey)?.mesh.setEnabled(false);
+        }
+        suppressed = true;
+      } else if (drift > DETAIL_MEMBERSHIP_SLACK_METERS) {
+        if (!chunk.staleVisible) {
+          chunk.staleVisible = true;
+          this.captureStaleVisibleChunks = addDiagnosticCount(
+            this.captureStaleVisibleChunks,
+          );
+        }
+      } else if (chunk.staleVisible) {
+        chunk.staleVisible = false;
       }
-      suppressed = true;
     }
     return suppressed;
   }
@@ -2271,6 +2755,10 @@ export class WorldDetailRuntime {
       // `_data` reference whenever a partial range is written, and that
       // reference is what `getVertexBuffer(...).getData()` reads back.
       batch.gpu.shared.updateDirectly(packed, 0, undefined, true);
+      this.capturePublishedBytes = addDiagnosticCount(
+        this.capturePublishedBytes,
+        packed.byteLength,
+      );
     } else {
       if (batch.gpu !== null) this.recycleInstanceBuffers(batch.gpu);
       batch.gpu = this.acquireInstanceBuffers(packed);
@@ -2311,11 +2799,26 @@ export class WorldDetailRuntime {
    * on a small batch and then unavailable to the batch that needs it.
    */
   private acquireInstanceBuffers(packed: Uint8Array): DetailInstanceGpuBuffers {
+    const gpu = this.acquireInstanceCapacity(packed.byteLength);
+    gpu.shared.updateDirectly(packed, 0, undefined, true);
+    this.capturePublishedBytes = addDiagnosticCount(
+      this.capturePublishedBytes,
+      packed.byteLength,
+    );
+    return gpu;
+  }
+
+  /**
+   * Takes a pooled allocation of at least `byteLength`, or makes one, WITHOUT
+   * writing content — the streamed-publication path fills it slice by slice
+   * under the per-update byte budget while its owner mesh stays disabled.
+   */
+  private acquireInstanceCapacity(byteLength: number): DetailInstanceGpuBuffers {
     let bestIndex = -1;
     for (let index = 0; index < this.instanceBufferPool.length; index += 1) {
       const entry = this.instanceBufferPool[index]!;
       if (entry.reusableAfterUpdate > this.updateSequence) continue;
-      if (entry.gpu.capacityBytes < packed.byteLength) continue;
+      if (entry.gpu.capacityBytes < byteLength) continue;
       if (
         bestIndex < 0
         || entry.gpu.capacityBytes < this.instanceBufferPool[bestIndex]!.gpu.capacityBytes
@@ -2325,18 +2828,16 @@ export class WorldDetailRuntime {
     }
     if (bestIndex >= 0) {
       const [entry] = this.instanceBufferPool.splice(bestIndex, 1);
-      entry!.gpu.shared.updateDirectly(packed, 0, undefined, true);
       return entry!.gpu;
     }
     // Grow with headroom so a slowly filling chunk does not reallocate on
     // every rebuild; the record is 32 bytes, so the slack is cheap.
     const capacityBytes = Math.max(
       DETAIL_INSTANCE_STRIDE_BYTES,
-      Math.ceil((packed.byteLength * 1.5) / DETAIL_INSTANCE_STRIDE_BYTES)
+      Math.ceil((byteLength * 1.5) / DETAIL_INSTANCE_STRIDE_BYTES)
         * DETAIL_INSTANCE_STRIDE_BYTES,
     );
     const backing = new Uint8Array(capacityBytes);
-    backing.set(packed);
     return {
       shared: new Buffer(
         this.scene.getEngine(),
@@ -2377,6 +2878,7 @@ export class WorldDetailRuntime {
       );
     }
     batch.mesh.resetDrawCache(undefined, true);
+    this.captureReboundBatches = addDiagnosticCount(this.captureReboundBatches);
   }
 
   /** Returns an allocation to the pool; nothing is destroyed in flight. */
@@ -2434,6 +2936,19 @@ export class WorldDetailRuntime {
    * the 64 m-quantized observer so memberships and baked edge fades
    * re-bake as the frontier sweeps; interior chunks carry a constant.
    */
+  /** Distance from the live observer to the chunk's XZ rectangle (0 inside). */
+  private chunkMinimumDistanceMeters(
+    coordinates: DetailPresentationChunkCoordinates,
+  ): number {
+    const minX = coordinates.minCellX * this.cellSizeMeters;
+    const minZ = coordinates.minCellZ * this.cellSizeMeters;
+    const maxX = coordinates.maxCellX * this.cellSizeMeters;
+    const maxZ = coordinates.maxCellZ * this.cellSizeMeters;
+    const nearestX = clamp(this.observerX, minX, maxX);
+    const nearestZ = clamp(this.observerZ, minZ, maxZ);
+    return Math.hypot(nearestX - this.observerX, nearestZ - this.observerZ);
+  }
+
   private chunkObserverTerm(coordinates: DetailPresentationChunkCoordinates): string {
     const law = this.lastDensityLaw;
     const minX = coordinates.minCellX * this.cellSizeMeters;
@@ -2475,12 +2990,16 @@ export class WorldDetailRuntime {
     return "interior";
   }
 
-  private createPublishedBatch(
+  /**
+   * Builds a DISABLED batch mesh for a staged publication. Deliberately NOT
+   * registered in `this.batches` — the staged mesh joins the live set only
+   * at the publication flip, so shadow-caster enumeration, visibility
+   * statistics and origin compensation never see a half-published batch.
+   */
+  private createDetailBatchMesh(
     prototypeKey: string,
-    chunk: DetailPresentationChunk,
-    revision: number,
+    coordinates: DetailPresentationChunkCoordinates,
   ): DetailBatch {
-    const coordinates = chunk.coordinates;
     // Perf-debt pass: the key no longer carries the chunk revision. It used
     // to, so every rebuild published a whole new set of meshes — a clone, a
     // `makeGeometryUnique` copy of the prototype geometry and a fresh GPU
@@ -2527,8 +3046,12 @@ export class WorldDetailRuntime {
       detailChunkMaxCellX: coordinates.maxCellX,
       detailChunkMaxCellZ: coordinates.maxCellZ,
       detailCastsShadow: prototype.castsShadows,
+      // Defect C: 1 = fully revealed. Only a flip that first creates the
+      // mesh sets 0 and ramps; every other binding site is unaffected.
+      detailReveal: 1,
     };
-    const batch: DetailBatch = {
+    this.captureCreatedBatches = addDiagnosticCount(this.captureCreatedBatches);
+    return {
       mesh,
       castsShadows: prototype.castsShadows,
       prototypeKey,
@@ -2537,17 +3060,16 @@ export class WorldDetailRuntime {
       bounds: new DetailInstanceBounds(),
       prototypeBoundKernel: prototype.boundKernel,
       gpu: null,
-      filledRevision: revision,
+      filledRevision: 0,
       builtOrigin: { x: 0, y: 0, z: 0 },
     };
-    this.batches.set(batchKey, batch);
-    return batch;
   }
 
   private retireBatch(batchKey: string): void {
     const batch = this.batches.get(batchKey);
     if (!batch) return;
     batch.mesh.setEnabled(false);
+    this.revealRamps.delete(batch.mesh);
     this.batches.delete(batchKey);
     this.retiredBatches.push({
       batch,
@@ -2772,10 +3294,14 @@ export class WorldDetailRuntime {
       // variant byte now. The far band spans more presentation chunks than
       // near and mid combined, so this is the pass's single largest
       // draw-call cut — seven draws per far chunk became one.
+      // Roughness matches the opaque crown hull (0.90) exactly: the mid->far
+      // handoff is a hard per-stem swap, and any specular-response difference
+      // between the two representations reads as a per-tree material change
+      // at the ring.
       const impostorMaterial = this.createMaterial(
         "detail-impostor",
         new Color3(1, 1, 1),
-        0.95,
+        0.9,
         false,
       );
       impostorMaterial.backFaceCulling = false;

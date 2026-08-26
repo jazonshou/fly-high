@@ -376,6 +376,8 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 > **Implementation reconciliation, 2026-08-20.** A Phase-5 implementation candidate is operative but phase acceptance remains open. It currently uses deterministic CPU-worker reference macro/page erosion (one page in flight, seeded directly from the macro), and eroded bathymetry samples the macro rather than an L0-page overlay; analytic compatibility retains the historical proxy carves and tracer. A reserved WGSL identifier exposed Babylon's non-settling `dispatchWhenReady` failure path during game load; bathymetry startup is now real-adapter-compiled, bounded and abortable. The built default-eroded game reached the start screen in a local 13,255 ms navigation and entered the cockpit; this is neither cold/reference evidence nor the 1.5 s acceptance target. Final GPU replacement, reference performance, visual flights, captures and rebaselines remain open. See [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §14.1 for the exact live surface and deviations; this note does not revise the historical requirements below.
 
+> **CLOSED AS RE-SCOPED 2026-08-26. The close record is [`PHASE_5_EXECUTION_PLAN.md`](PHASE_5_EXECUTION_PLAN.md) §14.2 — read it before planning anything against this table.** `RESOLUTION_PLAN.md` (binding, 2026-08-21) reversed `5-A`'s activation — G0-1, commit `26ee76e`, put `DEFAULT_WORLD_EVOLUTION` back to `"analytic"` — and re-scoped the production GPU erosion passes to a separate post-close workstream ("ship on `analytic` and treat the GPU port as a separate later workstream"). What closed is a complete, deterministic, test-covered **CPU-worker reference** of the whole evolution chain behind the final producer boundaries, selectable with `worldEvolution: "eroded"`, with the **analytic default shipping** — so audit root cause #2 is closed as *available*, not as *shipped*. §14.2 gives the gate-by-gate verdicts (no gate closed on its original terms), an eleven-row carried-work register, and the ledger note: the **57.25 d line item is not discharged**, the production-GPU remainder is unplanned and unpriced, and the per-gate day split was never tracked. §5.3's tier-dependent erosion-scope row is struck in that close (D11); the erosion **compute-cap** row stays, as D11's one permitted tier lever.
+
 **Goal.** Break the `h = f(x, z)` contract. This is audit root cause #2 and the single largest realism change in the program.
 
 **What you will see.** From cruise, the world stops reading as crumpled cloth. Dendritic drainage networks at every scale. Continuous ridge divides that do not dead-end, because a ridge is now literally the boundary between two catchments. Trunk valleys with a downstream end. V-notched headwaters, alluvial fans, talus cones, floodplains. Smooth alluvial valley floors under angular rock crests. Gullies and rills on hillsides at 500 ft. Continental spines instead of isolated round lumps, and the pervasive 35° world grain replaced by a fabric that turns with each mountain range. A real continental shelf and abyssal plain instead of a flat −105 m floor.
@@ -772,7 +774,19 @@ boundary test fails by name. Worse, a tier-dependent spacing would make the
 | CDLOD pixel threshold | 4.0 | 3.0 | 2.0 | 1.5 |
 | CDLOD node budget | 160 | 240 | 320 | 448 |
 | Height / channel atlas slots | 144 / 100 | 196 / 196 | 256 / 256 | 256 / 256 |
-| Erosion scope | macro (L8) only | macro + pages L ≤ 3 | all pages | all pages, +50% iterations |
+<!-- 5-A close (PHASE_5_EXECUTION_PLAN.md §4 D11, struck 2026-08-26 per its
+§14.2 exit checklist): STRUCK, scope row and Ultra's "+50% iterations" together.
+Erosion output is world content, not a graphics setting — a tier-dependent scope
+would make the §1.3 collision surface a function of quality, the same rule that
+struck the Ultra 1 m L0 row above. Iteration counts, halo, seeds and operators
+are world constants, asserted by "keeps iteration/halo configuration
+world-constant and tier-independent" in
+tests/render.webgpu-terrain-evolution.test.ts, which also forbids a `tier` key in
+either production config object. Tiers keep exactly ONE erosion lever: the
+admission pacing in the row below (`erosionCompute`, a live ComputeBudget row) —
+a Low-tier machine converges the same pages more slowly, never to different
+content. -->
+| ~~Erosion scope~~ | ~~macro (L8) only~~ | ~~macro + pages L ≤ 3~~ | ~~all pages~~ | ~~all pages, +50% iterations~~ |
 | Erosion compute cap | 0.2 ms | 0.4 ms | 0.7 ms | 1.2 ms |
 | Terrain compute cap | 0.4 ms | 0.7 ms | 1.0 ms | 1.6 ms |
 <!-- 4-8b: PCSS STRUCK at High and Ultra. `computeShadowWithCSMPCSS` needs a

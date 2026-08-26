@@ -19,6 +19,9 @@ import {
   canopyRankOrder,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE,
+  DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE,
+  DETAIL_PUBLICATION_STRUCTURAL_CREATIONS_PER_UPDATE,
+  DETAIL_SUPPRESSION_BACKSTOP_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import { DETAIL_INSTANCE_STRIDE_BYTES } from "../src/render/webgpu/detail/instanceFormat";
@@ -381,6 +384,17 @@ describe("WebGPU world-detail spatial presentation", () => {
         profile,
       );
     }
+    // Drain the presentation pipeline completely: publication now stages
+    // structural work and byte uploads across updates, so a batch set
+    // captured mid-stream is not a stable baseline for the checks below.
+    for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+      runtime.update(
+        { x: 0, y: 120, z: 0 },
+        { x: 0, y: 0, z: 0 },
+        profile,
+      );
+    }
+    expect(runtime.pendingWorkItems).toBe(0);
     expect(() => scene.render()).not.toThrow();
     runtime.update(
       { x: 0, y: 120, z: 0 },
@@ -494,6 +508,13 @@ describe("WebGPU world-detail spatial presentation", () => {
       )),
     );
     runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, profile);
+    // The quality round-trip above re-dirtied chunks; settle again so the
+    // rebase below starts from a fully published batch set.
+    for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+      runtime.update({ x: 0, y: 120, z: 0 }, { x: 0, y: 0, z: 0 }, profile);
+    }
+    expect(runtime.pendingWorkItems).toBe(0);
+    const rebaseBaselineMeshes = chunkMeshes(scene);
 
     // 2-11a: with the packed record there are no per-instance matrices —
     // retention is buffer identity, rebase is decoded from the record bytes.
@@ -508,7 +529,7 @@ describe("WebGPU world-detail spatial presentation", () => {
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       return [view.getFloat32(0, true), view.getFloat32(4, true), view.getFloat32(8, true)];
     };
-    const retainedMesh = meshes.find((mesh) => mesh.forcedInstanceCount > 1);
+    const retainedMesh = rebaseBaselineMeshes.find((mesh) => mesh.forcedInstanceCount > 1);
     expect(retainedMesh).toBeDefined();
     const retainedBuffer = retainedMesh?.getVertexBuffer("instancePosition");
     runtime.update(
@@ -519,7 +540,7 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(retainedMesh?.getVertexBuffer("instancePosition")).toBe(retainedBuffer);
 
     const beforeRebase = firstInstanceLocal(retainedMesh);
-    const beforeWorldByBatch = new Map(meshes.map((batchMesh) => {
+    const beforeWorldByBatch = new Map(rebaseBaselineMeshes.map((batchMesh) => {
       const local = firstInstanceLocal(batchMesh);
       return [
         `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`,
@@ -541,7 +562,7 @@ describe("WebGPU world-detail spatial presentation", () => {
       profile,
     );
     const immediateMeshes = chunkMeshes(scene);
-    expect(immediateMeshes.length).toBe(meshes.length);
+    expect(immediateMeshes.length).toBe(rebaseBaselineMeshes.length);
     for (const batchMesh of immediateMeshes) {
       const key = `${batchMesh.metadata.detailBatch}@${batchMesh.metadata.detailChunk}`;
       const beforeWorld = beforeWorldByBatch.get(key);
@@ -927,6 +948,10 @@ describe("WebGPU world-detail spatial presentation", () => {
         readonly prototypeKey: string;
         readonly writer: { finish(): Uint8Array };
       }>;
+      readonly presentationChunks: Map<string, {
+        readonly observerX: number;
+        readonly observerZ: number;
+      }>;
       observerX: number;
       observerZ: number;
       rebuildBatches(
@@ -996,8 +1021,12 @@ describe("WebGPU world-detail spatial presentation", () => {
         .toBe(DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE);
 
       // 0.0075 ms per 64 generator steps pessimistically charges the sampled
-      // clock while still giving a span-8 chunk enough bounded slices to
-      // replace its predecessor before the aircraft can travel 96 m.
+      // clock. Under the streaming publication pipeline the FIRST publication
+      // additionally pays its structural crawl (one staged mesh per update)
+      // and its byte-budgeted upload stream, so the window is longer than the
+      // old single-frame-publication fixture used; the drift bounds below are
+      // the new policy's: stale-but-VISIBLE inside the 768 m backstop, with
+      // full convergence once the observer holds still.
       clockCostPerSample = 0.0075;
       const metersPerAxisPerFrame = 92 / Math.SQRT2 / 60;
       let observedTimeBudget = false;
@@ -1005,7 +1034,8 @@ describe("WebGPU world-detail spatial presentation", () => {
       let maximumObservedLiveDrift = 0;
       let maximumObservedPublicationDrift = 0;
       let firstPublicationFrame: number | null = null;
-      for (let frame = 1; frame <= 180; frame += 1) {
+      const totalFrames = 300;
+      for (let frame = 1; frame <= totalFrames; frame += 1) {
         internals.observerX = 2_048 + frame * metersPerAxisPerFrame;
         internals.observerZ = 2_048 + frame * metersPerAxisPerFrame;
         internals.rebuildBatches(origin, profile);
@@ -1022,47 +1052,53 @@ describe("WebGPU world-detail spatial presentation", () => {
           && diagnostics.workUnitsLastUpdate
             < DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE;
         expect(diagnostics.pendingObserverDriftMeters ?? 0)
-          .toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+          .toBeLessThanOrEqual(DETAIL_SUPPRESSION_BACKSTOP_METERS);
         expect(diagnostics.maximumLiveObserverDriftMeters)
-          .toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+          .toBeLessThanOrEqual(DETAIL_SUPPRESSION_BACKSTOP_METERS);
         expect(diagnostics.lastPublicationObserverDriftMeters)
-          .toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+          .toBeLessThanOrEqual(DETAIL_SUPPRESSION_BACKSTOP_METERS);
+        // Nothing at 92 m/s may come near the backstop, so nothing may
+        // suppress — the fixture that starved a chunk to prove suppression
+        // lives in its own case below.
         expect(diagnostics.suppressedChunks).toBe(0);
         if (diagnostics.publications > 0) {
           firstPublicationFrame ??= frame;
-          // Both authored membership and the independently observer-bounded
-          // grass frontier remain live; a retirement hole cannot satisfy the
-          // drift assertions by making the offending chunk disappear.
+          // Both authored membership and the observer-bounded grass frontier
+          // remain live; a retirement hole cannot satisfy the drift
+          // assertions by making the offending chunk disappear.
           expect(runtime.statistics.treeInstances).toBeGreaterThan(0);
           expect(runtime.statistics.groundCoverInstances).toBeGreaterThan(0);
-          let groundCoverInCurrentFrontier = 0;
+          // The published records are exact against the observer that
+          // AUTHORED them (the chunk's baked observer): the builder rejects
+          // any patch at or beyond the grass radius, and populates the edge
+          // fade rim. Live-camera staleness is bounded separately by the
+          // publication-drift assertions above.
+          const bakedChunk = internals.presentationChunks.get("0:0")!;
+          let groundCoverInBakedFrontier = 0;
           for (const batch of internals.batches.values()) {
             if (!batch.prototypeKey.startsWith("ground-")) continue;
             const bytes = batch.writer.finish();
             const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
             for (let offset = 0; offset < bytes.byteLength; offset += DETAIL_INSTANCE_STRIDE_BYTES) {
               const distance = Math.hypot(
-                view.getFloat32(offset, true) - internals.observerX,
-                view.getFloat32(offset + 8, true) - internals.observerZ,
+                view.getFloat32(offset, true) - bakedChunk.observerX,
+                view.getFloat32(offset + 8, true) - bakedChunk.observerZ,
               );
-              // A snapshot can trail inside the documented 96 m envelope,
-              // but it may neither lose the current fade frontier entirely
-              // nor contain a patch outside radius + envelope.
-              expect(distance).toBeLessThanOrEqual(
-                profile.grassRadiusMeters + DETAIL_MEMBERSHIP_SLACK_METERS + 0.01,
-              );
+              expect(distance).toBeLessThanOrEqual(profile.grassRadiusMeters + 0.01);
               if (
                 distance >= profile.grassRadiusMeters - GROUND_COVER_EDGE_FADE_METERS
                 && distance < profile.grassRadiusMeters
-              ) groundCoverInCurrentFrontier += 1;
+              ) groundCoverInBakedFrontier += 1;
             }
           }
-          expect(groundCoverInCurrentFrontier).toBeGreaterThan(0);
+          expect(groundCoverInBakedFrontier).toBeGreaterThan(0);
           representedFrames += 1;
         }
       }
       expect(observedTimeBudget).toBe(true);
-      expect(runtime.presentationRebuildDiagnostics.publications).toBeGreaterThanOrEqual(3);
+      expect(runtime.presentationRebuildDiagnostics.publications).toBeGreaterThanOrEqual(2);
+      // Defect A: motion alone must cancel NOTHING — the old drift cancel is
+      // the livelock this policy removed.
       expect(runtime.presentationRebuildDiagnostics.cancellations).toBe(0);
       const cumulative = runtime.presentationRebuildDiagnostics;
       expect(cumulative.buildSlices).toBe(
@@ -1071,11 +1107,27 @@ describe("WebGPU world-detail spatial presentation", () => {
       expect(cumulative.observerSensitiveBuildStarts).toBeGreaterThan(0);
       expect(cumulative.residentCellsInSensitiveBuilds)
         .toBeGreaterThanOrEqual(cumulative.observerSensitiveBuildStarts);
-      expect(representedFrames).toBeGreaterThan(100);
+      expect(representedFrames).toBeGreaterThan(40);
       expect(firstPublicationFrame).not.toBeNull();
-      expect(maximumObservedLiveDrift).toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(maximumObservedLiveDrift).toBeLessThanOrEqual(DETAIL_SUPPRESSION_BACKSTOP_METERS);
       expect(maximumObservedPublicationDrift)
+        .toBeLessThanOrEqual(DETAIL_SUPPRESSION_BACKSTOP_METERS);
+
+      // Re-dirty convergence: hold the observer still and drain. The sweep
+      // must re-bake the chunk against the final observer — stale-visible is
+      // a transition state, never a steady state.
+      clockCostPerSample = 0;
+      let converged = false;
+      for (let pass = 0; pass < 512; pass += 1) {
+        if (!internals.rebuildBatches(origin, profile)) {
+          converged = true;
+          break;
+        }
+      }
+      expect(converged).toBe(true);
+      expect(runtime.presentationRebuildDiagnostics.maximumLiveObserverDriftMeters)
         .toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(runtime.presentationRebuildDiagnostics.suppressedChunks).toBe(0);
     } finally {
       runtime.dispose();
       scene.dispose();
@@ -1083,7 +1135,7 @@ describe("WebGPU world-detail spatial presentation", () => {
     }
   });
 
-  it("fail-closes stale live chunks when a deliberately starved rebuild crosses 96 m", () => {
+  it("keeps >96 m stale chunks visible and fail-closes only past the 768 m backstop", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const camera = new FreeCamera("starved-detail", new Vector3(64, 120, 64), scene);
@@ -1116,10 +1168,11 @@ describe("WebGPU world-detail spatial presentation", () => {
       readonly presentationChunks: Map<string, {
         readonly batchKeys: Set<string>;
         readonly revision: number;
-        readonly observerX: number;
+        observerX: number;
         readonly observerZ: number;
         readonly observerSensitive: boolean;
         readonly validitySuppressed: boolean;
+        readonly staleVisible: boolean;
       }>;
       readonly batchesDirty: boolean;
       readonly cells: Map<string, { readonly generation: number }>;
@@ -1159,20 +1212,49 @@ describe("WebGPU world-detail spatial presentation", () => {
       });
       expect(liveOwners.length).toBeGreaterThan(0);
 
-      // One unit per update is intentionally too slow. Crossing the hard
-      // envelope must hide the old complete snapshot rather than drawing it
-      // stale or destroying any allocation it may still own.
+      // One unit per update is intentionally too slow, so the rebuild cannot
+      // catch up. Defect A policy: crossing the 96 m membership slack keeps
+      // the old complete snapshot VISIBLE (stale-but-visible beats invisible
+      // — the shader band windows read the live camera) while the chunk
+      // stays dirty and diagnosable.
       budget.maximumWorkUnits = 1;
       const staleObserver = {
         x: chunk!.observerX + DETAIL_MEMBERSHIP_SLACK_METERS + 1,
         y: 120,
         z: chunk!.observerZ,
       };
+      const staleVisibleBefore = runtime.presentationCaptureMarker.staleVisibleChunks;
+      runtime.update(staleObserver, origin, profile);
+      expect(chunk!.validitySuppressed).toBe(false);
+      expect(chunk!.staleVisible).toBe(true);
+      expect(runtime.presentationRebuildDiagnostics.suppressedChunks).toBe(0);
+      expect(runtime.presentationCaptureMarker.staleVisibleChunks)
+        .toBeGreaterThan(staleVisibleBefore);
+      // The diagnostic now truthfully reports the stale live drift instead
+      // of a suppression hiding it.
+      expect(runtime.presentationRebuildDiagnostics.maximumLiveObserverDriftMeters)
+        .toBeGreaterThan(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(runtime.pendingWorkItems).toBeGreaterThan(0);
+      for (const owner of liveOwners) {
+        const batch = internals.batches.get(owner.batchKey)!;
+        expect(batch.mesh.isEnabled()).toBe(true);
+        expect(batch.mesh).toBe(owner.mesh);
+        expect(batch.writer).toBe(owner.writer);
+        expect(batch.gpu?.shared).toBe(owner.gpu);
+      }
+
+      // The 768 m BACKSTOP is the surviving fail-closed path. Rewind the
+      // chunk's baked observer past it (residency and the desired-cell plan
+      // stay untouched, isolating pure suppression): the chunk must hide
+      // without destroying or retiring any allocation it may still own.
+      const suppressedBefore = runtime.presentationCaptureMarker.suppressedChunks;
+      chunk!.observerX = staleObserver.x - (DETAIL_SUPPRESSION_BACKSTOP_METERS + 1);
       runtime.update(staleObserver, origin, profile);
       expect(chunk!.validitySuppressed).toBe(true);
+      expect(chunk!.staleVisible).toBe(false);
       expect(runtime.presentationRebuildDiagnostics.suppressedChunks).toBeGreaterThan(0);
-      expect(runtime.presentationRebuildDiagnostics.maximumLiveObserverDriftMeters)
-        .toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(runtime.presentationCaptureMarker.suppressedChunks)
+        .toBeGreaterThan(suppressedBefore);
       expect(runtime.pendingWorkItems).toBeGreaterThan(0);
       for (const owner of liveOwners) {
         const batch = internals.batches.get(owner.batchKey)!;
@@ -1361,6 +1443,391 @@ describe("WebGPU world-detail spatial presentation", () => {
       drained.dispose();
       slicedScene.dispose();
       drainedScene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("publishes a >96 m drifted inline build without cancel and re-dirties to convergence", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("drift-detail", new Vector3(64, 120, 64), scene);
+    camera.setTarget(new Vector3(64, 0, 1_000));
+    scene.activeCamera = camera;
+    const budget = {
+      maximumWorkUnits: 1_000_000,
+      maximumMilliseconds: 1_000_000,
+    };
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "staged-detail-drift-publish",
+      terrainSample: forestTerrain,
+      cellSizeMeters: 128,
+      presentationRebuildBudget: budget,
+    });
+    const profile = {
+      ...resolveWebGpuQualityProfile("medium", "balanced"),
+      vegetationDistance: 300,
+      vegetationDensity: 1,
+      grassRadiusMeters: 1,
+    };
+    const internals = runtime as unknown as {
+      readonly batches: Map<string, { readonly mesh: Mesh }>;
+      readonly presentationChunks: Map<string, {
+        readonly batchKeys: Set<string>;
+        readonly observerX: number;
+        readonly observerZ: number;
+        readonly staleVisible: boolean;
+        readonly validitySuppressed: boolean;
+      }>;
+      readonly pendingPresentationBuild: {
+        readonly coordinates: { readonly key: string };
+      } | null;
+    };
+    const origin0 = { x: 0, y: 0, z: 0 };
+    const origin1 = { x: 256, y: 0, z: 0 };
+    const homeObserver = { x: 64, y: 120, z: 64 };
+
+    try {
+      for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+        runtime.update(homeObserver, origin0, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+
+      // An origin rebase dirties every chunk; a starved budget holds the
+      // nearest chunk's build in flight across updates.
+      budget.maximumWorkUnits = 64;
+      const cancellationsBefore = runtime.presentationRebuildDiagnostics.cancellations;
+      const publicationsBefore = runtime.presentationRebuildDiagnostics.publications;
+      runtime.update(homeObserver, origin1, profile);
+      expect(internals.pendingPresentationBuild).not.toBeNull();
+      const buildChunkKey = internals.pendingPresentationBuild!.coordinates.key;
+      const chunk = internals.presentationChunks.get(buildChunkKey)!;
+      const liveMeshes = [...chunk.batchKeys].map(
+        (batchKey) => internals.batches.get(batchKey)!.mesh,
+      );
+      expect(liveMeshes.length).toBeGreaterThan(0);
+
+      // Drift the observer far past the 96 m membership slack while the
+      // build is in flight. OLD policy: cancel + suppress (the "trees jump
+      // in and out" livelock). NEW policy: zero cancels, the old snapshot
+      // keeps DRAWING, the build completes and publishes.
+      const driftedObserver = { x: homeObserver.x + 130, y: 120, z: 64 };
+      budget.maximumWorkUnits = 1_000_000;
+      for (
+        let pass = 0;
+        pass < 64
+          && runtime.presentationRebuildDiagnostics.publications === publicationsBefore;
+        pass += 1
+      ) {
+        runtime.update(driftedObserver, origin1, profile);
+        expect(runtime.presentationRebuildDiagnostics.cancellations)
+          .toBe(cancellationsBefore);
+        for (const mesh of liveMeshes) expect(mesh.isEnabled()).toBe(true);
+      }
+      expect(runtime.presentationRebuildDiagnostics.publications)
+        .toBeGreaterThan(publicationsBefore);
+      expect(runtime.presentationRebuildDiagnostics.lastPublicationObserverDriftMeters)
+        .toBeGreaterThan(DETAIL_MEMBERSHIP_SLACK_METERS);
+      // The drifted snapshot immediately re-dirties: its baked observer term
+      // no longer matches the live one, so the sweep continues to converge.
+      expect(runtime.pendingWorkItems).toBeGreaterThan(0);
+
+      for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+        runtime.update(driftedObserver, origin1, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+      expect(runtime.presentationRebuildDiagnostics.cancellations).toBe(cancellationsBefore);
+      const settledChunk = internals.presentationChunks.get(buildChunkKey)!;
+      expect(Math.hypot(
+        settledChunk.observerX - driftedObserver.x,
+        settledChunk.observerZ - driftedObserver.z,
+      )).toBeLessThanOrEqual(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(settledChunk.staleVisible).toBe(false);
+      expect(settledChunk.validitySuppressed).toBe(false);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("keeps trees resident and visible through a terrain L0 page publication until replaced", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("terrain-detail", new Vector3(64, 120, 64), scene);
+    camera.setTarget(new Vector3(64, 0, 1_000));
+    scene.activeCamera = camera;
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-terrain-invalidate",
+      terrainSample: forestTerrain,
+      cellSizeMeters: 128,
+      presentationRebuildBudget: {
+        maximumWorkUnits: 1_000_000,
+        maximumMilliseconds: 1_000_000,
+      },
+    });
+    const profile = {
+      ...resolveWebGpuQualityProfile("medium", "balanced"),
+      vegetationDistance: 300,
+      vegetationDensity: 1,
+      grassRadiusMeters: 1,
+    };
+    const observer = { x: 64, y: 120, z: 64 };
+    const origin = { x: 0, y: 0, z: 0 };
+    const internals = runtime as unknown as {
+      readonly cells: Map<string, {
+        readonly generation: number;
+        readonly revision: number;
+        readonly invalidated: boolean;
+      }>;
+      readonly batches: Map<string, {
+        readonly mesh: Mesh;
+        readonly writer: { readonly count: number };
+      }>;
+    };
+
+    try {
+      for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+        runtime.update(observer, origin, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+      const residentCountBefore = internals.cells.size;
+      expect(residentCountBefore).toBeGreaterThan(0);
+      const revisionsBefore = new Map(
+        [...internals.cells].map(([key, resident]) => [key, resident.revision]),
+      );
+      const generatedBefore = runtime.statistics.generatedCells;
+      const authoredInstances = (statistics: typeof runtime.statistics): number =>
+        statistics.treeInstances + statistics.shrubInstances + statistics.rockInstances
+        + statistics.clutterInstances + statistics.groundCoverInstances;
+      const instancesBefore = authoredInstances(runtime.statistics);
+      expect(instancesBefore).toBeGreaterThan(0);
+      const enabledBatches = [...internals.batches.values()].filter(
+        (batch) => batch.mesh.isEnabled() && batch.writer.count > 0,
+      );
+      expect(enabledBatches.length).toBeGreaterThan(0);
+
+      // Defect B: the L0 page arrival marks overlapping residents STALE but
+      // keeps them (and every byte they published) serving until each
+      // regenerated replacement lands — the old delete-on-invalidate punched
+      // a 512 m hole into the forest for the whole regeneration latency.
+      runtime.publishTerrainPage({
+        level: 0,
+        tileX: 0,
+        tileZ: 0,
+        heights: new Float32Array(4),
+      });
+      expect(internals.cells.size).toBe(residentCountBefore);
+      const invalidatedKeys = [...internals.cells]
+        .filter(([, resident]) => resident.invalidated)
+        .map(([key]) => key);
+      expect(invalidatedKeys.length).toBeGreaterThan(0);
+      expect(invalidatedKeys.length).toBeLessThan(residentCountBefore);
+      expect(runtime.pendingWorkItems).toBeGreaterThan(0);
+      for (const batch of enabledBatches) expect(batch.mesh.isEnabled()).toBe(true);
+
+      runtime.update(observer, origin, profile);
+      for (const batch of enabledBatches) expect(batch.mesh.isEnabled()).toBe(true);
+      expect(authoredInstances(runtime.statistics)).toBe(instancesBefore);
+
+      for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+        runtime.update(observer, origin, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+      expect(internals.cells.size).toBe(residentCountBefore);
+      for (const key of invalidatedKeys) {
+        const resident = internals.cells.get(key)!;
+        expect(resident.invalidated).toBe(false);
+        expect(resident.revision).toBeGreaterThan(revisionsBefore.get(key)!);
+      }
+      expect(runtime.statistics.generatedCells)
+        .toBe(generatedBefore + invalidatedKeys.length);
+      // Regeneration is deterministic against the unchanged sampler, so the
+      // world converges back to exactly the pre-invalidation population.
+      expect(authoredInstances(runtime.statistics)).toBe(instancesBefore);
+      // A page with no overlapping residents invalidates nothing.
+      const generatedAfter = runtime.statistics.generatedCells;
+      runtime.publishTerrainPage({
+        level: 0,
+        tileX: 4,
+        tileZ: 4,
+        heights: new Float32Array(4),
+      });
+      for (let pass = 0; pass < 8; pass += 1) runtime.update(observer, origin, profile);
+      expect(runtime.statistics.generatedCells).toBe(generatedAfter);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("ramps reveal only for newly created batch meshes, never on re-publication", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("reveal-detail", new Vector3(64, 120, 64), scene);
+    camera.setTarget(new Vector3(64, 0, 1_000));
+    scene.activeCamera = camera;
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-reveal-ramp",
+      terrainSample: forestTerrain,
+      cellSizeMeters: 128,
+      presentationRebuildBudget: {
+        maximumWorkUnits: 1_000_000,
+        maximumMilliseconds: 1_000_000,
+      },
+    });
+    const profile = {
+      ...resolveWebGpuQualityProfile("medium", "balanced"),
+      vegetationDistance: 300,
+      vegetationDensity: 1,
+      grassRadiusMeters: 1,
+    };
+    const observer = { x: 64, y: 120, z: 64 };
+    const origin0 = { x: 0, y: 0, z: 0 };
+    const origin1 = { x: 512, y: 0, z: 0 };
+    const internals = runtime as unknown as {
+      readonly batches: Map<string, { readonly mesh: Mesh }>;
+    };
+    const reveal = (mesh: Mesh): unknown =>
+      (mesh.metadata as { detailReveal?: unknown }).detailReveal;
+
+    try {
+      for (
+        let pass = 0;
+        pass < 512 && runtime.presentationCaptureMarker.publications === 0;
+        pass += 1
+      ) {
+        runtime.update(observer, origin0, profile);
+      }
+      // The first flip created every one of its meshes: all ramp from 0.
+      expect(runtime.presentationCaptureMarker.publications).toBeGreaterThan(0);
+      expect(runtime.presentationCaptureMarker.revealRampsStarted).toBeGreaterThan(0);
+      const rampedMeshes = [...internals.batches.values()]
+        .filter((batch) => batch.mesh.isEnabled())
+        .map((batch) => batch.mesh);
+      expect(rampedMeshes.length).toBeGreaterThan(0);
+      for (const mesh of rampedMeshes) {
+        expect(reveal(mesh)).toBeLessThan(1);
+      }
+      // The ramp completes within the update-count fallback window even when
+      // the NullEngine clock never advances.
+      for (let pass = 0; pass < 64; pass += 1) runtime.update(observer, origin0, profile);
+      for (const mesh of rampedMeshes) {
+        if (mesh.isDisposed()) continue;
+        expect(reveal(mesh)).toBe(1);
+      }
+
+      for (let pass = 0; pass < 1_024 && runtime.pendingWorkItems > 0; pass += 1) {
+        runtime.update(observer, origin0, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+      // Ramps started by the final publications may still be running; give
+      // them the fallback window so the baseline below is fully revealed.
+      for (let pass = 0; pass < 64; pass += 1) runtime.update(observer, origin0, profile);
+      const rampsAfterSettle = runtime.presentationCaptureMarker.revealRampsStarted;
+      const createdAfterSettle = runtime.presentationCaptureMarker.createdBatches;
+      const settledMeshes = [...internals.batches.values()]
+        .filter((batch) => batch.mesh.isEnabled())
+        .map((batch) => batch.mesh);
+      expect(settledMeshes.length).toBeGreaterThan(0);
+
+      // A full re-publication of every chunk (origin rebase) reuses each
+      // mesh in place: no new meshes, and — the defect C guard — NO ramp
+      // restarts, or every rebuild would blink whole chunks.
+      for (let pass = 0; pass < 1_024 && (pass === 0 || runtime.pendingWorkItems > 0); pass += 1) {
+        runtime.update(observer, origin1, profile);
+      }
+      expect(runtime.pendingWorkItems).toBe(0);
+      expect(runtime.presentationCaptureMarker.revealRampsStarted).toBe(rampsAfterSettle);
+      expect(runtime.presentationCaptureMarker.createdBatches).toBe(createdAfterSettle);
+      for (const mesh of settledMeshes) {
+        expect(mesh.isDisposed()).toBe(false);
+        expect(reveal(mesh)).toBe(1);
+      }
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("stages publication under the structural and byte budgets, then flips atomically", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("staged-flip-detail", new Vector3(64, 120, 64), scene);
+    camera.setTarget(new Vector3(64, 0, 1_000));
+    scene.activeCamera = camera;
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-staged-flip",
+      terrainSample: forestTerrain,
+      cellSizeMeters: 128,
+      presentationRebuildBudget: {
+        maximumWorkUnits: 1_000_000,
+        maximumMilliseconds: 1_000_000,
+      },
+    });
+    // A real grass disc drives the packed byte volume up so the streaming
+    // budget is exercised, not just the structural cap.
+    const profile = {
+      ...resolveWebGpuQualityProfile("medium", "balanced"),
+      vegetationDistance: 300,
+      vegetationDensity: 1,
+      grassRadiusMeters: 150,
+    };
+    const observer = { x: 64, y: 120, z: 64 };
+    const origin = { x: 0, y: 0, z: 0 };
+    const internals = runtime as unknown as {
+      readonly batches: Map<string, unknown>;
+      readonly pendingPublication: { readonly uploads: readonly unknown[] } | null;
+    };
+    const authoredInstances = (statistics: typeof runtime.statistics): number =>
+      statistics.treeInstances + statistics.shrubInstances + statistics.rockInstances
+      + statistics.clutterInstances + statistics.groundCoverInstances;
+
+    try {
+      let stagedUpdates = 0;
+      let streamingUpdates = 0;
+      let flipped = false;
+      let previous = runtime.presentationCaptureMarker;
+      for (let pass = 0; pass < 2_048 && !flipped; pass += 1) {
+        runtime.update(observer, origin, profile);
+        const marker = runtime.presentationCaptureMarker;
+        const createdDelta = marker.createdBatches - previous.createdBatches;
+        const bytesDelta = marker.publishedBytes - previous.publishedBytes;
+        // The structural law: at most one clone+resetDrawCache-bearing mesh
+        // creation per update, always.
+        expect(createdDelta)
+          .toBeLessThanOrEqual(DETAIL_PUBLICATION_STRUCTURAL_CREATIONS_PER_UPDATE);
+        if (marker.publications === 0) {
+          // Staging is invisible by construction: while nothing has flipped,
+          // the live batch set stays empty, nothing renders, and streamed
+          // bytes obey the per-update budget.
+          expect(internals.batches.size).toBe(0);
+          expect(chunkMeshes(scene)).toHaveLength(0);
+          expect(authoredInstances(runtime.statistics)).toBe(0);
+          expect(bytesDelta).toBeLessThanOrEqual(DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE);
+          if (internals.pendingPublication !== null) stagedUpdates += 1;
+          if (bytesDelta > 0) streamingUpdates += 1;
+        } else {
+          // The flip: the entire batch set became live in ONE update, and it
+          // is exactly the set of meshes the staging phase created.
+          flipped = true;
+          expect(marker.publications).toBe(1);
+          expect(internals.batches.size).toBeGreaterThan(1);
+          expect(internals.batches.size).toBe(marker.createdBatches);
+          expect(chunkMeshes(scene).length).toBeGreaterThan(0);
+          expect(authoredInstances(runtime.statistics)).toBeGreaterThan(0);
+        }
+        previous = marker;
+      }
+      expect(flipped).toBe(true);
+      // The publication genuinely spanned updates (structural cap) and
+      // genuinely streamed bytes ahead of the flip.
+      expect(stagedUpdates).toBeGreaterThan(1);
+      expect(streamingUpdates).toBeGreaterThanOrEqual(1);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
       engine.dispose();
     }
   });

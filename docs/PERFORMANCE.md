@@ -455,8 +455,9 @@ explicit create-time diagnostic only.
 
 The following is the **committed baseline** in `tests/perf/baseline/`, promoted
 2026-08-25 from the reviewed candidate at
-`tests/perf/artifacts/rebaseline-candidates/2026-08-25T17-16-00.193Z` (the
-visual fix-pack close — this supersedes the same-day 14-17-59 promotion) on
+`tests/perf/artifacts/rebaseline-candidates/2026-08-26T17-55-18.868Z` (the
+2026-08-26 polish-pass close: lit impostors, the streaming stale-visible/staged-
+publication policy, and the reverted Vesper J-45) on
 Apple Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames
 per shot after deterministic residency drain. The normal shots use the shipped
 0.86 render scale; `reference-viewport` retains its 1.485 Mpx scale-1
@@ -474,29 +475,29 @@ shots, so the capture is reproducible on the reference host, not merely close.
 
 | Shot | raw wall FPS | interval p95 | >16.67 ms | >27.4 ms | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `approach-500ft` | 120.9 | 9.1 ms | 0 | 0 | 9.7 ms |
-| `slant-10km` | 120.8 | 9.1 ms | 0 | 0 | 10.4 ms |
-| `high-10000ft-down` | 120.9 | 9.4 ms | 0 | 0 | 9.9 ms |
-| `reference-viewport` | 120.9 | 9.1 ms | 0 | 0 | 9.8 ms |
-| `cruise-horizon` | 120.6 | 9.0 ms | 0 | 0 | 10.1 ms |
-| `winter-noon` | 120.8 | 9.1 ms | 0 | 0 | 13.1 ms |
-| `night` | 120.7 | 9.1 ms | 0 | 0 | 9.5 ms |
-| `motion-banked-turn` | 121.7 | 9.2 ms | 1 | 0 | 17.7 ms |
-| `page-thrash-turn` | 120.8 | 9.0 ms | 0 | 0 | 10.3 ms |
-| `cdlod-transition` | 120.6 | 8.9 ms | 0 | 0 | 12.0 ms |
-| `cruise-sun-30` | 120.7 | 8.9 ms | 0 | 0 | 11.3 ms |
-| `forest-500ft-sunbehind` | 120.7 | 9.0 ms | 0 | 0 | 12.6 ms |
-| `coast-10km-lowsun` | 120.8 | 8.9 ms | 0 | 0 | 9.9 ms |
-| `ground-2m-lowsun` | 120.9 | 9.3 ms | 0 | 0 | 9.7 ms |
-| `canopy-1200ft` | 120.8 | 9.1 ms | 0 | 0 | 9.8 ms |
-| `runway-on-approach` | 121.2 | 9.3 ms | 0 | 0 | 13.1 ms |
-| `water-25ft` | 120.7 | 9.1 ms | 0 | 0 | 9.6 ms |
+| `approach-500ft` | 120.8 | 9.2 ms | 0 | 0 | 9.7 ms |
+| `slant-10km` | 120.6 | 9.0 ms | 0 | 0 | 11.5 ms |
+| `high-10000ft-down` | 120.6 | 9.1 ms | 0 | 0 | 9.5 ms |
+| `reference-viewport` | 121.2 | 9.3 ms | 0 | 0 | 11.6 ms |
+| `cruise-horizon` | 120.6 | 9.1 ms | 0 | 0 | 9.5 ms |
+| `winter-noon` | 120.7 | 9.1 ms | 0 | 0 | 9.7 ms |
+| `night` | 120.9 | 9.1 ms | 0 | 0 | 11.9 ms |
+| `motion-banked-turn` | 121.4 | 9.1 ms | 1 | 0 | 17.6 ms |
+| `page-thrash-turn` | 120.8 | 9.0 ms | 0 | 0 | 9.8 ms |
+| `cdlod-transition` | 120.6 | 9.0 ms | 0 | 0 | 9.3 ms |
+| `cruise-sun-30` | 120.9 | 9.3 ms | 0 | 0 | 12.4 ms |
+| `forest-500ft-sunbehind` | 121.0 | 9.2 ms | 0 | 0 | 9.8 ms |
+| `coast-10km-lowsun` | 120.7 | 9.2 ms | 0 | 0 | 11.4 ms |
+| `ground-2m-lowsun` | 120.9 | 9.3 ms | 0 | 0 | 9.8 ms |
+| `canopy-1200ft` | 120.7 | 9.0 ms | 0 | 0 | 9.5 ms |
+| `runway-on-approach` | 121.1 | 9.2 ms | 0 | 0 | 10.8 ms |
+| `water-25ft` | 120.9 | 9.4 ms | 0 | 0 | 9.9 ms |
 
 All seventeen clear the strict FPS, p95, hitch-count and maximum-frame
 contract — WITH the whole visual fix-pack live (terrain meso band, crown
 cluster shading + fringe, water capillary band, the F-22): the minimum wall
 throughput is 120.6 FPS, the worst p95 is 9.4 ms (pre-fix-pack worst:
-9.5 ms), the worst single frame is 17.7 ms, and there are no intervals over
+9.5 ms), the worst single frame is 17.6 ms, and there are no intervals over
 27.4 ms and no hitches. Every final terrain/detail pending count is zero. The raw-device
 validation listener, Babylon/console gates, GPU drain, black/uniform-frame
 policy and temporal checks all passed before the candidate was written.

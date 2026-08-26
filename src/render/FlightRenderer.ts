@@ -202,15 +202,22 @@ export function chaseCameraProfile(
 ): ChaseCameraProfile {
   const jet = aircraft === "jet";
   if (jet) {
-    // Fix-pack A5: the F-22 is a 19 m airframe and the speed response is the
-    // point — at combat speed the camera drops back and the aim point leads,
-    // so the jet visibly sits further ahead in frame and the world streams
-    // past it. The old +2.2 m cap read as a static rig.
-    const speedExcess = Math.max(0, airspeed - 150);
-    out.distance = 24 + Math.min(14, speedExcess * 0.08);
-    out.height = 7.2 + Math.min(2.4, speedExcess * 0.014);
-    out.fieldOfView = 62 + Math.max(0, Math.min(10, (airspeed - 140) * 0.06));
-    out.aimAhead = 18 + Math.min(24, speedExcess * 0.11);
+    // The speed response is the point: the "jet should sit further ahead at
+    // speed" report is answered by pulling the rig back AND pushing the aim
+    // point forward, so the aircraft slides forward in frame and the world
+    // streams past it. The old fixed +2.2 m cap read as a static rig.
+    //
+    // Sized for the ~11 m Vesper J-45 (not the 19 m airframe the fix-pack
+    // briefly flew): the base rig is the original 14.3 m / 5.0 m, and the
+    // response opens above 145 m/s — the J-45's ~260 m/s ceiling gives a
+    // 115 m/s working band, so the slopes are set to reach their caps right
+    // at the top of the envelope (0.07·115 = 8.05 ≥ 8; 0.12·115 = 13.8 ≈ 14;
+    // 0.05·120 = 6.0 = 6 measured from the 140 m/s FOV knee).
+    const speedExcess = Math.max(0, airspeed - 145);
+    out.distance = 14.3 + Math.min(8, speedExcess * 0.07);
+    out.height = 5;
+    out.fieldOfView = 62 + Math.max(0, Math.min(6, (airspeed - 140) * 0.05));
+    out.aimAhead = 16 + Math.min(14, speedExcess * 0.12);
     return out;
   }
   out.distance = 13.5 + Math.max(0, Math.min(2.2, (airspeed - 45) * 0.012));
@@ -354,7 +361,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
   private readonly latitudeDegrees: number;
-  /** Fix-pack A5: the chase rig's ground clamp samples the terrain directly. */
+  /** The chase rig's ground clamp samples the terrain directly. */
   private readonly cameraTerrainSample: TerrainSampleFunction;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
@@ -917,7 +924,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
-        options,
+        // The camera's ground clamp must track the terrain the player SEES:
+        // in eroded worlds that is the consumer authority's surface, not the
+        // analytic pre-erosion kernel — clamping against an invisible ridge
+        // shoved the chase camera upward with no visual justification.
+        { ...options, terrainSample: consumerTerrainSample },
         engine,
         gpuUncapturedErrorGuard,
         scene,
@@ -1674,13 +1685,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
     if (this.cameraMode === "cockpit") {
-      // Per-kind eye point: the F-22's cockpit sits 4.9 m ahead of the CG on
-      // an 18.92 m airframe; the trainer keeps its original offsets.
-      const eyeForward = this.aircraft.kind === "jet" ? 4.9 : 1.15;
-      const eyeUp = this.aircraft.kind === "jet" ? 1.18 : 1.12;
+      // Both airframes seat the pilot at the same offsets from the CG: the
+      // J-45's tandem canopy and the trainer's cabin both sit 1.15 m forward
+      // and 1.12 m up, so no per-kind eye point is warranted here.
       this.desiredCamera.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(eyeForward))
-        .addInPlace(this.up.scale(eyeUp));
+        .addInPlace(this.forward.scale(1.15))
+        .addInPlace(this.up.scale(1.12));
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(400));
       // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
@@ -1700,14 +1710,27 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.desiredCamera.copyFrom(aircraftPosition)
         .subtractInPlace(this.forward.scale(profile.distance))
         .addInPlace(this.up.scale(profile.height));
-      // Fix-pack A5: the F-22 rig reaches 24–38 m behind the aircraft, which
-      // in a pitched-up pass near the ground can put the un-collided chase
-      // camera under the terrain. Clamp the desired position above the
-      // surface; the shared response smooths the ride over it.
-      const cameraGround = this.cameraTerrainSample(
-        this.desiredCamera.x + this.originX,
-        this.desiredCamera.z + this.originZ,
-      ).height;
+      // The chase rig trails the aircraft by up to 22 m and is not collided,
+      // so a pitched-up pass near the ground can otherwise place the camera
+      // under the terrain. Clamp the desired position above the surface for
+      // both aircraft; the shared response smooths the ride over it.
+      // Ground clamp, de-kinked: sample under the camera AND along its path
+      // ~0.35 s ahead, clamping against the higher of the two. The single
+      // instantaneous max produced a rate discontinuity at every sharp ridge
+      // — the camera surged up at the face and dropped off the crest — which
+      // at speed read as a vertical jerk. The look-ahead starts the rise
+      // early and releases it gradually; the shared exponential response
+      // does the rest.
+      const cameraWorldX = this.desiredCamera.x + this.originX;
+      const cameraWorldZ = this.desiredCamera.z + this.originZ;
+      const aheadMeters = Math.min(120, state.airspeed * 0.35);
+      const cameraGround = Math.max(
+        this.cameraTerrainSample(cameraWorldX, cameraWorldZ).height,
+        this.cameraTerrainSample(
+          cameraWorldX + this.forward.x * aheadMeters,
+          cameraWorldZ + this.forward.z * aheadMeters,
+        ).height,
+      );
       if (this.desiredCamera.y < cameraGround + 2.5) {
         this.desiredCamera.y = cameraGround + 2.5;
       }
@@ -1881,6 +1904,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       Math.abs(state.position.x - this.originX) < FLOATING_ORIGIN_THRESHOLD
       && Math.abs(state.position.z - this.originZ) < FLOATING_ORIGIN_THRESHOLD
     ) return false;
+    const previousOriginX = this.originX;
+    const previousOriginZ = this.originZ;
     this.originX = Math.round(state.position.x / FLOATING_ORIGIN_GRID) * FLOATING_ORIGIN_GRID;
     this.originZ = Math.round(state.position.z / FLOATING_ORIGIN_GRID) * FLOATING_ORIGIN_GRID;
     this.terrain.setFloatingOrigin(this.originX, this.originZ);
@@ -1895,7 +1920,20 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.originX,
       this.originZ,
     );
-    this.cameraCut = true;
+    // Fix-pack polish: NO camera cut. The cut existed only because the
+    // camera's smoothed position and target are stored origin-relative and
+    // were never carried across the rebase — cutting snapped the smoother's
+    // steady-state tracking lag (~v/7 ≈ 28 m at 200 m/s) in ONE frame, a
+    // camera teleport every 4,096 m flown that the user felt as "sudden
+    // jerks out of nowhere" at a perfect frame rate. Translating the rig by
+    // the origin delta keeps the smoother's state exactly continuous; the
+    // cloud history invalidation below is unchanged.
+    const originDeltaX = previousOriginX - this.originX;
+    const originDeltaZ = previousOriginZ - this.originZ;
+    this.camera.position.x += originDeltaX;
+    this.camera.position.z += originDeltaZ;
+    this.cameraTarget.x += originDeltaX;
+    this.cameraTarget.z += originDeltaZ;
     this.graph.invalidateHistory("floating origin shifted");
     return true;
   }

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES,
+  DETAIL_MEMBERSHIP_SLACK_METERS,
   DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES,
   WorldDetailRuntime,
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
@@ -461,18 +462,33 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       bridge.flush();
       expect(bridge.heldPresentationEvents).toHaveLength(1);
 
+      // Defect A fix: drifting >96 m past the in-flight build NO LONGER
+      // cancels it — the old cancel/reissue cycle livelocked at speed with
+      // the chunk suppressed throughout. The build survives untouched and
+      // nothing publishes until its delivery arrives.
       const beyondEnvelope = { ...observer, x: observer.x + 300 };
       runtime.update(beyondEnvelope, ORIGIN, quality);
       expect(bridge.commands.some((command) => command.type === "cancelPresentation"))
-        .toBe(true);
+        .toBe(false);
       expect(runtime.presentationRebuildDiagnostics.publications).toBe(oldPublications);
       expect(publishedSnapshot(runtime).batches).toEqual(oldSnapshot.batches);
 
-      // The client has forgotten the canceled build id; delivery after the
-      // cancellation is harmless and cannot rehydrate or publish it.
+      // Delivery of the drifted result PUBLISHES it — fresher than what is
+      // live — records the >96 m publication drift truthfully, and leaves
+      // the chunk dirty so the sweep converges on the current observer.
       bridge.releaseHeldPresentations();
-      runtime.update(beyondEnvelope, ORIGIN, quality);
-      expect(runtime.presentationRebuildDiagnostics.publications).toBe(oldPublications);
+      for (
+        let pass = 0;
+        pass < 64
+          && runtime.presentationRebuildDiagnostics.publications === oldPublications;
+        pass += 1
+      ) {
+        runtime.update(beyondEnvelope, ORIGIN, quality);
+      }
+      expect(runtime.presentationRebuildDiagnostics.publications).toBe(oldPublications + 1);
+      expect(runtime.presentationRebuildDiagnostics.lastPublicationObserverDriftMeters)
+        .toBeGreaterThan(DETAIL_MEMBERSHIP_SLACK_METERS);
+      expect(runtime.pendingWorkItems).toBeGreaterThan(0);
 
       // Settle the current observer, then inject a wire-valid result whose
       // packed records are truncated relative to its authored statistics.
@@ -621,7 +637,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     }
   });
 
-  it("times out held presentation authority across repeated >96 m cancellation and reissue", () => {
+  it("times out held presentation authority under >96 m motion without drift-cancel churn", () => {
     const world = createWorld("detail-runtime-worker-watchdog", { airport: false });
     const quality = profile(170);
     const selected = richCell(world, quality.vegetationDensity);
@@ -658,17 +674,19 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
         runtime.update(movingObserver, ORIGIN, quality);
         bridge.flush();
         if (internals(runtime).client === null) break;
-        // Drop the transport-held payload without delivering it. The next
-        // >96 m observer jump cancels its build id and posts another request.
+        // Drop any transport-held payload without delivering it. Defect A
+        // fix: the >96 m observer motion no longer cancels/reissues — the
+        // one held build stays pending until the authority watchdog expires.
         bridge.heldPresentationEvents.length = 0;
       }
       expect(internals(runtime).client).toBeNull();
       expect(runtime.presentationRebuildDiagnostics.workerBuildTimeouts).toBe(1);
       expect(runtime.presentationRebuildDiagnostics.workerFallbacks).toBeGreaterThan(0);
-      expect(bridge.commands.filter((command) => command.type === "buildPresentation").length)
-        .toBeGreaterThan(2);
+      // Exactly ONE cancel: the watchdog's fail-close. Motion contributed
+      // zero cancel/reissue churn (the old policy posted a pair per >96 m
+      // swing, which is what livelocked real flights).
       expect(bridge.commands.filter((command) => command.type === "cancelPresentation").length)
-        .toBeGreaterThan(2);
+        .toBe(1);
       expect(runtime.presentationRebuildDiagnostics.publications).toBe(oldPublications);
       expect(state.presentationChunks.get(targetChunkKey)!.revision).toBe(oldRevision);
       expect(publishedSnapshot(runtime).batches.filter(

@@ -15,12 +15,22 @@ const DEG_TO_RAD = Math.PI / 180;
  * Damping-ratio fit from successive yaw-rate peak magnitudes (logarithmic
  * decrement over half periods): delta = ln(|p_i| / |p_i+1|),
  * zeta = delta / sqrt(pi^2 + delta^2).
+ *
+ * Peaks below 5% of the trace's own amplitude are discarded rather than fitted.
+ * A well-damped trace falls into the fixed-step integrator's residue within
+ * two or three half periods, and ratios taken down there are noise, not decay:
+ * including them made the measured zeta at 120 m/s non-monotonic in the damper
+ * gain (a k_r that damps the mode harder scored *lower*), which is the signature
+ * of fitting noise. With the relative floor the fit is monotonic in gain across
+ * the whole sweep.
  */
 function fitDampingRatio(samples: number[]): number {
+  const amplitude = Math.max(...samples.map((value) => Math.abs(value)));
+  const noiseFloor = Math.max(1e-4, amplitude * 0.05);
   const peaks: number[] = [];
   for (let index = 1; index < samples.length - 1; index += 1) {
     const value = samples[index]!;
-    if (Math.abs(value) < 1e-4) continue;
+    if (Math.abs(value) < noiseFloor) continue;
     const previous = samples[index - 1]!;
     const next = samples[index + 1]!;
     if ((value > previous && value >= next) || (value < previous && value <= next)) {
@@ -46,9 +56,23 @@ function fitDampingRatio(samples: number[]): number {
   return delta / Math.sqrt(Math.PI * Math.PI + delta * delta);
 }
 
-function betaPerturbationYawRates(useAugmentation: boolean): number[] {
+/**
+ * The J-45's speed band, with enough throttle at each point that the airframe
+ * holds roughly the release speed through the 12-second trace instead of
+ * decelerating out of the flight condition being measured.
+ */
+const DUTCH_ROLL_POINTS = [
+  { speed: 120, throttle: 0.25, floor: 0.45 },
+  { speed: 200, throttle: 0.5, floor: 0.5 },
+  { speed: 260, throttle: 0.85, floor: 0.5 },
+] as const;
+
+function betaPerturbationYawRates(
+  useAugmentation: boolean,
+  speed: number,
+  throttle: number,
+): number[] {
   const beta = 5 * DEG_TO_RAD;
-  const speed = 200;
   const simulator = new FlightSimulator({
     aircraft: FAST_JET,
     spawn: {
@@ -58,19 +82,19 @@ function betaPerturbationYawRates(useAugmentation: boolean): number[] {
       // Same speed, rotated 5 degrees toward the starboard wing: pure
       // sideslip with no initial rates.
       velocity: { x: speed * Math.cos(beta), y: 0, z: -speed * Math.sin(beta) },
-      controls: { ...DEFAULT_CONTROLS, throttle: 0.4, gear: 0 },
+      controls: { ...DEFAULT_CONTROLS, throttle, gear: 0 },
     },
-    controls: { ...DEFAULT_CONTROLS, throttle: 0.4, gear: 0 },
+    controls: { ...DEFAULT_CONTROLS, throttle, gear: 0 },
     environment: { wind: { x: 0, y: 0, z: 0 } },
   });
   const augmentation = new JetStabilityAugmentation();
   const requested: FlightControls = {
     ...DEFAULT_CONTROLS,
-    throttle: 0.4,
+    throttle,
     gear: 0,
   };
   const yawRates: number[] = [];
-  for (let step = 0; step < Math.round(10 / FIXED_TIME_STEP); step += 1) {
+  for (let step = 0; step < Math.round(12 / FIXED_TIME_STEP); step += 1) {
     const commanded = useAugmentation
       ? augmentation.apply(
           { ...requested },
@@ -87,15 +111,25 @@ function betaPerturbationYawRates(useAugmentation: boolean): number[] {
 }
 
 describe("jet stability augmentation", () => {
-  it("damps a sideslip perturbation to at least the fix-pack dutch-roll floor", () => {
-    const augmented = fitDampingRatio(betaPerturbationYawRates(true));
-    const unaugmented = fitDampingRatio(betaPerturbationYawRates(false));
+  it.each(DUTCH_ROLL_POINTS)(
+    "damps a sideslip perturbation past the dutch-roll floor at $speed m/s",
+    ({ speed, throttle, floor }) => {
+      const augmented = fitDampingRatio(
+        betaPerturbationYawRates(true, speed, throttle),
+      );
+      const unaugmented = fitDampingRatio(
+        betaPerturbationYawRates(false, speed, throttle),
+      );
 
-    // Closed loop must clear zeta 0.35; the same flight without the damper
-    // must be measurably worse, proving the fit actually sees the SAS.
-    expect(augmented).toBeGreaterThanOrEqual(0.35);
-    expect(unaugmented).toBeLessThan(augmented - 0.08);
-  });
+      // The J-45 airframe alone sits at zeta ~0.163 at every speed (the
+      // "drunk" report); the damper must lift it over 0.45 at the worst
+      // corner and over 0.5 across the cruise band, and the unaugmented run
+      // must be measurably worse so the fit is provably seeing the SAS.
+      expect(augmented).toBeGreaterThanOrEqual(floor);
+      expect(unaugmented).toBeLessThan(0.25);
+      expect(unaugmented).toBeLessThan(augmented - 0.2);
+    },
+  );
 
   it("washes out the rudder in a held banked turn instead of fighting it", () => {
     const simulator = new FlightSimulator({

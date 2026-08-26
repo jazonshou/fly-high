@@ -222,8 +222,15 @@ function rasterizeGeometry(
     let nz = abx * acy - aby * acx;
     const nLength = Math.hypot(nx, ny, nz) || 1;
     nx /= nLength; ny /= nLength; nz /= nLength;
-    // Double-sided: flip toward the camera.
-    if (nx * dx + ny * dy + nz * dz > 0) {
+    // Double-sided: flip toward the camera. `d` points TOWARD the bake camera
+    // (the depth test at the tile keeps the LARGEST p·d), so a camera-facing
+    // normal has POSITIVE dot with it — flip only the negatives. The original
+    // `> 0` comparison flipped exactly the normals that were already correct:
+    // 0.0% of covered texels faced the camera, the far band's direct-sun term
+    // collapsed to ~0 and its sky irradiance to ~0.46 of the hull's, and every
+    // distant tree read as a dark shell with a view-locked environment sheen —
+    // the reported "dark/reflective" far forest.
+    if (nx * dx + ny * dy + nz * dz < 0) {
       nx = -nx; ny = -ny; nz = -nz;
     }
 
@@ -268,7 +275,12 @@ function rasterizeGeometry(
         tile.normalDepth[out] = Math.round((nx * 0.5 + 0.5) * 255);
         tile.normalDepth[out + 1] = Math.round((ny * 0.5 + 0.5) * 255);
         tile.normalDepth[out + 2] = Math.round((nz * 0.5 + 0.5) * 255);
-        tile.normalDepth[out + 3] = Math.round(Math.min(1, Math.max(0, depth)) * 255);
+        // COVERAGE, not depth: the runtime reads only .xyz (depth was never
+        // sampled), and a coverage alpha is what lets alphaDilate spread real
+        // normals into the uncovered texels — un-dilated, box mips blended
+        // encoded-black (-1,-1,-1) into every level and distant trees darkened
+        // progressively with mip distance.
+        tile.normalDepth[out + 3] = 255;
       }
     }
   }
@@ -340,7 +352,10 @@ function bakeSpeciesLayer(
       tile, originX, originY, layerEdge, extent, centerY,
     );
   }
-  return { albedo: alphaDilate(albedo, layerEdge, 6), normalDepth };
+  return {
+    albedo: alphaDilate(albedo, layerEdge, 6),
+    normalDepth: alphaDilate(normalDepth, layerEdge, 6),
+  };
 }
 
 /** The pure half: every layer of both arrays, mipped and packed. */

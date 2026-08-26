@@ -2,7 +2,7 @@ import type { AircraftKind } from "@/src/sim";
 
 const AIRCRAFT_OPTIONS = [
   { value: "trainer", name: "Aster T-20", description: "Trainer" },
-  { value: "jet", name: "F-22 Raptor", description: "Air dominance fighter" },
+  { value: "jet", name: "Vesper J-45", description: "Fast jet" },
 ] as const satisfies readonly {
   value: AircraftKind;
   name: string;

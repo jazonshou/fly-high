@@ -40,10 +40,10 @@ export interface AircraftPaintRecipe {
   /**
    * Scales the panel-line and seam darkening/relief (default 1; rivets keep
    * full strength — they gate on panel PROXIMITY, not the line intensity).
-   * Fix-pack A1: the 64² maps stretch ~5× further over the F-22's 19 m
-   * airframe than the trainer's, so its recipes turn the grid down rather
-   * than reading as a quilt; the trainer omits the field and stays
-   * byte-identical.
+   * The 64² maps are stretched over whatever surface a recipe is bound to, so
+   * a large airframe can turn the grid down rather than reading as a quilt.
+   * No shipped recipe currently sets it; every recipe that omits the field is
+   * byte-identical to the pre-`panelStrength` synthesis.
    */
   readonly panelStrength?: number;
 }

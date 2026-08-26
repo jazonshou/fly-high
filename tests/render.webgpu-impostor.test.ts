@@ -112,6 +112,53 @@ describe("impostor bake (2-17)", () => {
     }
   });
 
+  it("bakes camera-facing normals in every view tile, surviving the mips", () => {
+    // The bake shipped with its double-sided orientation test INVERTED: 0.0%
+    // of covered normal texels faced the bake camera, the far band's diffuse
+    // collapsed to ~0.13-0.22 of the mid hull's, and the unchanged
+    // environment specular became a view-locked sheen — the reported
+    // "dark/reflective distant trees". The albedo-only calibration test above
+    // passed throughout, which is why this assertion exists: it reads the
+    // NORMAL array, per view tile, against that tile's own bake direction,
+    // at mip 0 and again at mip 2 (where un-dilated encoded-black used to
+    // drag the mean normal down with distance).
+    const checkFacing = (mip: number, floor: number): void => {
+      for (const species of IMPOSTOR_SPECIES) {
+        const layer = impostorLayerIndex(species, 0);
+        const normals = PLANS.normalDepth.layerChains[layer]![mip]!;
+        const layerEdge = IMPOSTOR_LAYER_EDGE >> mip;
+        const tileEdge = layerEdge / IMPOSTOR_VIEW_GRID;
+        let covered = 0;
+        let facing = 0;
+        for (let gridY = 0; gridY < IMPOSTOR_VIEW_GRID; gridY += 1) {
+          for (let gridX = 0; gridX < IMPOSTOR_VIEW_GRID; gridX += 1) {
+            const [dx, dy, dz] = hemiOctahedralDirection(
+              (gridX + 0.5) / IMPOSTOR_VIEW_GRID,
+              (gridY + 0.5) / IMPOSTOR_VIEW_GRID,
+            );
+            for (let py = 0; py < tileEdge; py += 1) {
+              for (let px = 0; px < tileEdge; px += 1) {
+                const index = ((gridY * tileEdge + py) * layerEdge
+                  + gridX * tileEdge + px) * 4;
+                if (normals[index + 3]! < 128) continue;
+                covered += 1;
+                const nx = normals[index]! / 127.5 - 1;
+                const ny = normals[index + 1]! / 127.5 - 1;
+                const nz = normals[index + 2]! / 127.5 - 1;
+                if (nx * dx + ny * dy + nz * dz > 0) facing += 1;
+              }
+            }
+          }
+        }
+        expect(covered, `${species} mip${mip} coverage`).toBeGreaterThan(80);
+        expect(facing / Math.max(covered, 1), `${species} mip${mip}`)
+          .toBeGreaterThan(floor);
+      }
+    };
+    checkFacing(0, 0.95);
+    checkFacing(2, 0.85);
+  });
+
   it("sheds deciduous bare buckets while conifers hold byte-identically (2-17a)", () => {
     for (const species of ["oak", "maple", "birch", "willow"] as const) {
       const leafed = layerStats(impostorLayerIndex(species, 0));

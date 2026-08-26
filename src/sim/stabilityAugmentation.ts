@@ -12,8 +12,10 @@ const MIN_ENGAGE_INDICATED_AIRSPEED = 30;
 /**
  * Washout high-pass time constant. Steady coordinated-turn yaw rate washes
  * out with tau = 1.2 s, so the damper fights the dutch-roll oscillation
- * (omega_n 2-4.3 rad/s, omega*tau >= 2.5) at nearly full gain while a held
- * turn sees the rudder contribution decay to nothing.
+ * (omega_n 2.16-3.82 rad/s on the J-45, so omega*tau >= 2.59 and the
+ * high-pass passes >= 93% of the mode) at nearly full gain while a held turn
+ * sees the rudder contribution decay to nothing. Re-checked against the
+ * J-45's measured omega_n: the fit does not call for a longer constant.
  */
 const WASHOUT_TIME_CONSTANT_SECONDS = 1.2;
 /**
@@ -23,30 +25,61 @@ const WASHOUT_TIME_CONSTANT_SECONDS = 1.2;
  */
 const FILTER_STEP_SECONDS = 1 / 120;
 /**
- * Yaw-damper gain, derived from the F-22 coefficients via the two-DOF
- * dutch-roll model (see the FAST_JET comment in aircraft.ts):
- *   added damping = qS*b*Cn_dr*k_r/Iyy per unit washed yaw rate.
- * At 200 m/s sea level qS*b*Cn_dr/Iyy = 9.72, and lifting 2*zeta*omega_n
- * from the open loop to zeta 0.5 would need k_r ~ 0.11 in that sketch. The
- * full nonlinear model loses damping to roll coupling the sketch ignores,
- * and the fix-pack's hard floor is zeta >= 0.45 at BOTH 120 and 250 m/s;
- * rate-feedback authority scales with dynamic pressure, so the 120 m/s
- * corner sizes the gain (together with the airframe's Cnr, see aircraft.ts).
- * Measured closed-loop zeta with this gain: 0.47 at 120 m/s, 0.60 at 200,
- * 0.67 at 250, 0.73 at 300 - the 200 m/s point sits above the plan's
- * "about 0.5" because the 120 m/s floor binds first.
+ * Yaw-damper gain, re-derived for the Vesper J-45's coefficients (Cn_beta
+ * 0.13, Cn_r -0.38, Cn_dr 0.082, Iyy 54,000, b 9.6 m, S 25.8 m^2) via the
+ * two-DOF dutch-roll model, then sized against the full nonlinear model.
+ *
+ * Two-DOF sketch (beta_dot = Ybeta'*beta - r; r_dot = Nbeta*beta + Nr'*r):
+ *   N_dr = qS*b*Cn_dr/Iyy is the rudder yaw authority, so washed-rate
+ *   feedback adds k_r*N_dr*H(omega) to 2*zeta*omega_n, where H is the
+ *   washout high-pass gain omega*tau/sqrt(1 + (omega*tau)^2).
+ * At the binding 120 m/s corner (2,000 m, rho 0.968, q 6,971 Pa):
+ *   N_dr = 6971*25.8*9.6*0.082/54000 = 2.62 s^-2 per unit rudder
+ *   omega_n = 2.16 rad/s measured, H(2.16, tau 1.2) = 0.93
+ *   open loop 2*zeta*omega_n = 2*0.163*2.16 = 0.70 s^-1
+ *   lifting that to zeta 0.45 needs k_r = 1.24/(2.62*0.93) = 0.51.
+ * The sketch ignores roll coupling, and the J-45 couples hard: Cl_beta 0.052
+ * into Ixx 11,900 is a far smaller roll inertia than the yaw inertia driving
+ * the mode. Measured in the full model (5-degree sideslip release, log
+ * decrement over peaks above 5% of the initial amplitude), k_r 0.51 delivers
+ * only zeta 0.385 at 120 m/s. The nonlinear fit sizes the gain at 1.1, where
+ * the 120 m/s response has also reached its plateau (1.4 buys nothing) so the
+ * choice is not on a knife edge.
+ *
+ * Measured open/closed-loop zeta with k_r 1.1 and k_p 0.12, at 2,000 m:
+ *   120 m/s: 0.163 -> 0.487
+ *   160 m/s: 0.164 -> 0.571
+ *   200 m/s: 0.164 -> 0.623
+ *   230 m/s: 0.163 -> 0.651
+ *   260 m/s: 0.163 -> 0.675
+ * (open-loop zeta is nearly speed-invariant at fixed density and scales with
+ * sqrt(rho) at altitude, which is exactly why a rate damper rather than more
+ * airframe Cn_r is the right instrument; closed loop clears the zeta >= 0.45
+ * floor at 120 m/s and the >= 0.5 floor across the 200-260 m/s cruise band.)
+ *
+ * This is ~5x the gain the F-22 build carried because that airframe was given
+ * Cn_r -0.70 (open-loop zeta 0.32) while the J-45 keeps its original -0.38
+ * (open-loop zeta 0.163) - the damper has to supply roughly twice as much.
+ * The 0.35 limit is never reached by the mode itself: it corresponds to a
+ * washed yaw rate of 18 deg/s, and the measured dutch-roll peak at 120 m/s is
+ * 8 deg/s, so the limit only bounds a violent departure.
  */
-const YAW_DAMPER_GAIN = 0.20;
+const YAW_DAMPER_GAIN = 1.1;
 const YAW_DAMPER_LIMIT = 0.35;
-/** Small roll-rate damper taking the edge off dutch-roll coupling into roll. */
-const ROLL_DAMPER_GAIN = 0.08;
+/**
+ * Small roll-rate damper taking the edge off dutch-roll coupling into roll.
+ * At 200 m/s it adds 0.12*qS*b*Cl_da/Ixx = 4.3 s^-1 on top of the airframe's
+ * own 7.2 s^-1 of roll damping - a ~60% increase on a neutral stick only, and
+ * worth ~0.02 of closed-loop zeta at every speed.
+ */
+const ROLL_DAMPER_GAIN = 0.12;
 const ROLL_DAMPER_LIMIT = 0.2;
 
 /**
  * Washout-filtered yaw damper plus roll-rate damper for the jet's default
  * Direct (unassisted) mode. The dutch roll is otherwise underdamped enough
- * (open-loop zeta 0.34 at sea level, falling with sqrt(rho) at altitude) that
- * every rudder or gust input rings visibly - the "drunk" report.
+ * (open-loop zeta 0.163, falling with sqrt(rho) at altitude) that every
+ * rudder or gust input rings visibly - the "drunk" report.
  *
  * Like DirectPitchRetention this is pure state-in/controls-out, engages only
  * airborne with meaningful airspeed, and never touches an axis the pilot is

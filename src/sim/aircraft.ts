@@ -151,130 +151,87 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
 });
 
 /**
- * The F-22 Raptor at combat weight. Geometry, mass properties, and dry thrust
- * are in the real aircraft's class (18.92 m airframe, 13.56 m span, AR 2.36
- * delta, two F119s at military power). Moment coefficients are tuned for a
- * stable but agile sim airframe rather than copied from any flight manual.
- *
- * Lateral-directional derivation (two-DOF dutch-roll approximation,
- * beta_dot = Ybeta'*beta - r; r_dot = Nbeta*beta + Nr'*r, sea level):
- *   Nbeta = qS*b*Cnbeta/Iyy, Nr' = qS*b^2*Cnr/(2*V*Iyy),
- *   Ybeta' = -qS*Cybeta/(m*V)
- * Measured in the full nonlinear model (5-degree beta release, log-decrement
- * fit of the yaw-rate trace at 1,000 m; roll coupling costs ~0.05 of zeta
- * versus the two-DOF sketch):
- *   at 120 m/s: omega_n = 2.16 rad/s, zeta_open = 0.32, zeta_closed = 0.47
- *   at 200 m/s: omega_n = 3.42 rad/s, zeta_open = 0.35, zeta_closed = 0.60
- *   at 250 m/s: omega_n = 4.26 rad/s, zeta_open = 0.36, zeta_closed = 0.67
- *   at 300 m/s: omega_n = 5.10 rad/s, zeta_open = 0.37, zeta_closed = 0.73
- * (open-loop zeta is nearly speed-invariant at fixed density and scales with
- * sqrt(rho) at altitude, which is why the washout yaw damper in
- * stabilityAugmentation.ts exists; closed loop clears the fix-pack's
- * zeta >= 0.45 floor at every checked speed.)
+ * A fictional single-engine sport jet. Its dimensions and wing loading are in
+ * the class of a compact advanced trainer, while the intentionally generous
+ * dry thrust makes the speed difference immediately legible in a browser game.
  */
 export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   kind: "jet",
-  name: "F-22 Raptor",
+  name: "Vesper J-45",
   propulsion: "jet",
-  mass: 24_000,
-  wingArea: 78.04,
-  wingSpan: 13.56,
-  meanChord: 5.76,
-  inertia: Object.freeze({ x: 38_000, y: 240_000, z: 205_000 }),
+  mass: 5_850,
+  wingArea: 25.8,
+  wingSpan: 9.6,
+  meanChord: 2.7,
+  inertia: Object.freeze({ x: 11_900, y: 54_000, z: 47_500 }),
   // Shaft power/efficiency are not used by the jet thrust branch. Keeping the
   // fields explicit avoids optional values in the hot simulation loop.
   maxEnginePower: 0,
-  // Two F119 engines at military (dry) power.
-  maxStaticThrust: 232_000,
+  maxStaticThrust: 42_000,
   propellerEfficiency: 0,
   // Jet engine telemetry is percent N2 rather than literal crankshaft RPM.
   idleRpm: 35,
   maxRpm: 100,
-  clZero: 0.05,
-  // Low-aspect-ratio (AR 2.36) delta: shallow lift slope, late stall.
-  clAlpha: 3.8,
-  positiveStallAngle: (25 * Math.PI) / 180,
-  negativeStallAngle: (-18 * Math.PI) / 180,
-  // No conventional flaps on the real aircraft; a small flaperon increment is
-  // retained for landing playability.
-  flapLift: 0.3,
-  cdZero: 0.021,
-  // 1/(pi*AR*e) with AR 2.36 and e 0.85 gives 0.159 for the wing alone. The
-  // chined body and LEX-like vortex lift carry a meaningful share of lift at
-  // low alpha in this single-coefficient model, so the effective installed
-  // value is set lower; 0.13 keeps approach drag manageable in playtesting.
-  inducedDrag: 0.13,
-  stallDrag: 0.65,
-  flapDrag: 0.04,
-  gearDrag: 0.02,
-  speedBrakeDrag: 0.14,
+  clZero: 0.2,
+  clAlpha: 4.55,
+  positiveStallAngle: (17 * Math.PI) / 180,
+  negativeStallAngle: (-15 * Math.PI) / 180,
+  flapLift: 0.72,
+  cdZero: 0.0185,
+  inducedDrag: 0.041,
+  stallDrag: 0.74,
+  flapDrag: 0.085,
+  gearDrag: 0.042,
+  speedBrakeDrag: 0.16,
   retractableGear: true,
-  gearCycleRate: 0.35,
-  // Wave-drag hump begins just below Mach 1; see waveDragCoefficient in
-  // simulation.ts for the shared shape (0.17-Mach rise, supersonic decay).
-  transonicOnsetMach: 0.95,
-  transonicDragRise: 0.02,
-  sideForceBeta: 0.9,
-  sideForceRudder: 0.12,
-  pitchMomentZero: 0.016,
-  // Relaxed static stability by fighter standards but firmly sim-stable.
-  pitchMomentAlpha: -0.35,
-  // Full-span stabilators.
-  pitchMomentElevator: 0.65,
-  // Re-derived, not copied: the damping term multiplies meanChord/(2V) and
-  // meanChord went 2.7 -> 5.76. Normalized pitch damping S*c^2*|Cmq|/Izz is
-  // 78.04*33.18*4.5/205000 = 0.057, matching the old jet's 0.060.
-  pitchDamping: -4.5,
-  rollMomentAileron: 0.12,
-  // Positive beta is motion toward the starboard wing. Dihedral effect raises
-  // that wing and therefore produces +X torque (a pilot-negative/left bank).
-  rollMomentBeta: 0.035,
-  rollDamping: -0.42,
-  yawMomentRudder: 0.09,
-  yawMomentBeta: 0.11,
-  // Raised from the plan's -0.55 sketch: the widely-spaced canted fins and
-  // aft deck damp yaw strongly, and the measured 120 m/s closed-loop dutch
-  // roll cannot reach the mandated zeta 0.45 on damper gain alone (yaw-rate
-  // feedback authority scales with dynamic pressure and fades exactly where
-  // the mode is worst).
-  yawDamping: -0.7,
-  // Extended geometry, body frame (+X forward, +Y up, +Z port, CG origin):
-  // mains at x -0.85 with a 3.26 m track, nose at x 5.19 (wheelbase 6.04 m).
-  // Spring/damper rates carry 24 t at ~0.11 m static main compression.
+  gearCycleRate: 0.42,
+  // The J-45 tops out near 260 m/s (M 0.76 at sea level) and never reaches a
+  // critical Mach number; Infinity/0 leaves the wave-drag term inert, keeping
+  // this airframe's drag identical to the pre-wave-drag build.
+  transonicOnsetMach: Number.POSITIVE_INFINITY,
+  transonicDragRise: 0,
+  sideForceBeta: 0.78,
+  sideForceRudder: 0.14,
+  pitchMomentZero: 0.004,
+  pitchMomentAlpha: -0.61,
+  pitchMomentElevator: 0.46,
+  pitchDamping: -15.2,
+  rollMomentAileron: 0.088,
+  rollMomentBeta: 0.052,
+  rollDamping: -0.74,
+  yawMomentRudder: 0.082,
+  yawMomentBeta: 0.13,
+  yawDamping: -0.38,
   gear: Object.freeze([
     Object.freeze({
-      position: Object.freeze({ x: -0.85, y: -2.05, z: -1.63 }),
-      retractedPosition: Object.freeze({ x: -0.7, y: -0.6, z: -0.7 }),
-      springRate: 900_000,
-      dampingRate: 95_000,
+      position: Object.freeze({ x: -0.72, y: -1.46, z: -1.72 }),
+      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: -0.62 }),
+      springRate: 285_000,
+      dampingRate: 31_000,
     }),
     Object.freeze({
-      position: Object.freeze({ x: -0.85, y: -2.05, z: 1.63 }),
-      retractedPosition: Object.freeze({ x: -0.7, y: -0.6, z: 0.7 }),
-      springRate: 900_000,
-      dampingRate: 95_000,
+      position: Object.freeze({ x: -0.72, y: -1.46, z: 1.72 }),
+      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: 0.62 }),
+      springRate: 285_000,
+      dampingRate: 31_000,
     }),
     Object.freeze({
-      position: Object.freeze({ x: 5.19, y: -2.0, z: 0 }),
-      retractedPosition: Object.freeze({ x: 4.7, y: -0.5, z: 0 }),
-      springRate: 520_000,
-      dampingRate: 55_000,
-      maxSteeringAngle: (20 * Math.PI) / 180,
+      position: Object.freeze({ x: 3.72, y: -1.32, z: 0 }),
+      retractedPosition: Object.freeze({ x: 3.35, y: -0.42, z: 0 }),
+      springRate: 190_000,
+      dampingRate: 23_000,
+      maxSteeringAngle: (18 * Math.PI) / 180,
     }),
   ]),
-  // Authoritative extremities of the 18.92 m airframe; the visual rebuild
-  // conforms to these. Nose tip, canopy bow, belly, wingtips, nozzles, fins.
   airframeContactPoints: Object.freeze([
-    Object.freeze({ x: 9.55, y: 0.1, z: 0 }),
-    Object.freeze({ x: 9.55, y: -0.35, z: 0 }),
-    Object.freeze({ x: 3.4, y: 1.35, z: 0 }),
-    Object.freeze({ x: 0, y: -1.0, z: 0 }),
-    Object.freeze({ x: -2.2, y: 0, z: 6.78 }),
-    Object.freeze({ x: -2.2, y: 0, z: -6.78 }),
-    Object.freeze({ x: -9.3, y: 0.15, z: 0 }),
-    Object.freeze({ x: -9.3, y: -0.6, z: 0 }),
-    Object.freeze({ x: -7.3, y: 2.95, z: 1.35 }),
-    Object.freeze({ x: -7.3, y: 2.95, z: -1.35 }),
+    Object.freeze({ x: 5.86, y: 0.25, z: 0 }),
+    Object.freeze({ x: 5.86, y: -0.25, z: 0 }),
+    Object.freeze({ x: 1.15, y: 1.2, z: 0 }),
+    Object.freeze({ x: 0, y: -0.64, z: 0 }),
+    Object.freeze({ x: -0.3, y: 0.05, z: 4.83 }),
+    Object.freeze({ x: -0.3, y: 0.05, z: -4.83 }),
+    Object.freeze({ x: -4.74, y: 2.21, z: 0 }),
+    Object.freeze({ x: -5.33, y: 0, z: 0 }),
   ]),
 });
 

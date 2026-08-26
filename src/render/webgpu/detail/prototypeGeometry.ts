@@ -1107,6 +1107,24 @@ export function buildCrownFringePrototype(
     disks.push(quadDisk(quad));
   }
   bakeSkyOcclusion(acc, disks, owners);
+  // Tone-match the hull: the shell sits on the OUTSIDE of the crown with only
+  // 6-8 self-occluders, so its baked sky occlusion is near unity while the
+  // hull it dresses runs the analytic clamp(0.65 + dirY·0.25, 0.46, 0.9) ramp
+  // — near trees read systematically LIGHTER than the same trees at mid range
+  // (part of the reported fake transition). Multiplying the hull's ramp in
+  // makes the fringe inherit the crown's vertical shading.
+  const crownMid = spec.crownBase * heightAspect + span * 0.5;
+  const crownHalf = Math.max(span * 0.5, 1e-4);
+  const vertexCount = acc.positions.length / 3;
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const directionY = clamp(
+      (acc.positions[vertex * 3 + 1]! - crownMid) / crownHalf,
+      -1,
+      1,
+    );
+    const hullRamp = clamp(0.65 + directionY * 0.25, 0.46, 0.9);
+    acc.colors[vertex * 4 + 3] = acc.colors[vertex * 4 + 3]! * hullRamp;
+  }
   return finalizeGeometry(acc);
 }
 

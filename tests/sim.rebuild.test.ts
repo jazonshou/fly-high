@@ -291,7 +291,9 @@ describe("rebuilt light-trainer handling", () => {
     // Re-pinned for the release-bounce fix: the settle target leads the
     // release attitude by the carried pitch rate, so the nose coasts a few
     // degrees beyond the release-instant attitude and stays there instead of
-    // being dragged back through it (the reported bounce).
+    // being dragged back through it (the reported bounce). Measured 7.3
+    // degrees of coast on this airframe; the assert keeps the direction
+    // exact and bounds the magnitude.
     expect(retainedPitch).toBeLessThanOrEqual(selectedPitch + 0.5 * DEG_TO_RAD);
     expect(Math.abs(retainedPitch - selectedPitch) * RAD_TO_DEG).toBeLessThan(10);
   });
@@ -327,7 +329,7 @@ describe("rebuilt light-trainer handling", () => {
     expect(simulator.telemetry().pitch * RAD_TO_DEG).toBeGreaterThan(4);
     // Re-pinned for the release-bounce fix: the rate-led settle target lets
     // the nose coast a few degrees above the release attitude and hold there
-    // rather than bouncing back down through it.
+    // rather than bouncing back down through it. Measured 4.9 degrees.
     expect(simulator.telemetry().pitch).toBeGreaterThanOrEqual(
       selectedPitch - 0.5 * DEG_TO_RAD,
     );

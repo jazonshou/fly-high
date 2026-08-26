@@ -122,6 +122,10 @@ fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
 fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f, switchSeed: f32) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
   let nearSwitch = uniforms.detailBandRadii.x - 80.0;
+  // Code 3: the near-band crown fringe. Same hard vertex cull as near, but
+  // the FRAGMENT dissolves it over the preceding 80 m (detailBandWindow), so
+  // the cards never vanish in one frame at the switch radius.
+  if (bandCode > 2.5) { return bandRange >= nearSwitch; }
   // Mid and far are not identical representations (family hull vs species
   // impostor), so a shared radial threshold makes an entire forest ring pop
   // in one frame. Both records carry the same stable wind-phase seed: use it
@@ -393,6 +397,20 @@ vertexOutputs.detailInstanceTint = vertexInputs.instanceTint
 vertexOutputs.detailFadeByte = floor(vertexInputs.instanceState.x * 255.0 + 0.5);
 #endif
 #endif
+// Streaming fix-pack (defect C) — stochastic reveal for NEWLY CREATED batch
+// meshes. detailMeshOffset.w is the mesh's reveal value: 1 everywhere by
+// default (steady-state meshes skip this entirely), ramped 0 -> 1 over
+// ~0.7 s by the runtime after a mesh's first publication flip. The
+// per-instance threshold reuses the stable wind-phase byte
+// (instanceState.z), scrambled so reveal order is uncorrelated with sway
+// phase; the constant offset keeps zero-phase records (rocks, clutter) from
+// all appearing in the first revealed frame. The collapse rides the
+// existing vertex kill — NO fragment discard may implement this on the
+// opaque-crown path, whose early-Z is the perf keystone.
+if (uniforms.detailMeshOffset.w < 1.0
+  && fract(vertexInputs.instanceState.z * 157.31 + 0.371) > uniforms.detailMeshOffset.w) {
+  positionUpdated = vec3f(0.0, -100000.0, 0.0);
+}
 `,
   CUSTOM_VERTEX_UPDATE_NORMAL: `
 #if defined(NORMAL) && !defined(DETAIL_IMPOSTOR)
@@ -539,6 +557,19 @@ fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
 // boundary. Near/mid fragments therefore survive wholesale; far fragments
 // dither only through the outer 420 m cull edge.
 fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3f) -> bool {
+  // Code 3 — the crown fringe's dither dissolve over the last 80 m of the
+  // near band. Without it every stem's fringe cards popped off in one frame
+  // at the 270 m switch (the reported "trees jump").
+  if (bandCode > 2.5) {
+    let fringeRange = distance(positionW.xz, scene.vEyePosition.xz);
+    let fringeEdge = uniforms.detailBandRadii.x - 80.0;
+    let fringeFade = clamp((fringeEdge - fringeRange) / 80.0, 0.0, 1.0);
+    if (fringeFade >= 1.0) { return true; }
+    if (fringeFade <= 0.0) { return false; }
+    let fringeHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
+    let fringeOffset = vec2u(u32(fringeHash * 5.0), u32(fract(fringeHash * 7.0) * 5.0));
+    return detailBayer8(vec2u(pixel) + fringeOffset) < fringeFade;
+  }
   if (bandCode < 1.5) { return true; }
   let bandRange = distance(positionW.xz, scene.vEyePosition.xz);
   let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
@@ -769,18 +800,33 @@ var impostorNormalWorld = vec3f(
   impostorNormalTexel.y,
   -impostorNormalTexel.x * impostorNormalSin + impostorNormalTexel.z * impostorNormalCos,
 );
+let impostorNormalEyeVector = scene.vEyePosition.xyz - fragmentInputs.vPositionW;
+let impostorNormalFlatEye = normalize(vec2f(impostorNormalEyeVector.x, impostorNormalEyeVector.z));
 if (fract(impostorNormalVariant / 2.0) >= 0.5) {
-  let impostorNormalEye = scene.vEyePosition.xyz - fragmentInputs.vPositionW;
-  let impostorNormalFlat = normalize(vec2f(impostorNormalEye.x, impostorNormalEye.z));
-  let impostorNormalRight = vec3f(-impostorNormalFlat.y, 0.0, impostorNormalFlat.x);
+  let impostorNormalRight = vec3f(-impostorNormalFlatEye.y, 0.0, impostorNormalFlatEye.x);
   impostorNormalWorld -= 2.0 * dot(impostorNormalWorld, impostorNormalRight) * impostorNormalRight;
 }
+// The soften-toward base is the CAMERA-FACING billboard normal, not the quad's
+// authored normal: the vertex stage billboards positions only, so normalW
+// arrives as world ±Z — a world-constant direction that biased 25% of every
+// far tree's shading toward a heading unrelated to sun, camera or crown.
+let impostorBillboardNormal = normalize(vec3f(
+  impostorNormalFlatEye.x,
+  max(impostorNormalEyeVector.y, 0.0) * 0.001 + 0.25,
+  impostorNormalFlatEye.y,
+));
 let impostorNormalLength = length(impostorNormalWorld);
 if (impostorNormalLength > 0.25) {
   // Softened toward the billboard normal: a ≤20 px sprite carrying a raw
   // leaf-facet normal would flicker as the view crosses tile boundaries,
   // and 2-14's whole crossfade design exists to keep that from happening.
-  normalW = normalize(mix(normalW, impostorNormalWorld / impostorNormalLength, 0.75));
+  normalW = normalize(mix(
+    impostorBillboardNormal,
+    impostorNormalWorld / impostorNormalLength,
+    0.75,
+  ));
+} else {
+  normalW = impostorBillboardNormal;
 }
 #endif
 `,
@@ -804,6 +850,20 @@ if (detailBacklit > 0.0) {
     (fragmentInputs.detailAtlasData.w - floor(fragmentInputs.detailAtlasData.w)) * 2.0;
   finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
     * (detailBacklit * mix(0.15, 1.0, clamp(detailBacklitOcclusion, 0.0, 1.0)));
+}
+#endif
+#ifdef DETAIL_IMPOSTOR
+// Fix-pack polish: the far band gets the SAME wrap-transmission response as
+// the crowns it hands off to — the term was gated on the atlas define the
+// impostor material never sets, so every backlit stand stepped from glowing
+// mid hulls to flat far sprites at the handoff ring. The bake folds
+// per-texel occlusion into the sprite's ALBEDO already, so a mid-level
+// constant stands in for the per-fragment occlusion gate.
+let impostorBacklit = uniforms.detailKeyLight.w
+  * pow(clamp(-dot(viewDirectionW, uniforms.detailKeyLight.xyz), 0.0, 1.0), 4.0);
+if (impostorBacklit > 0.0) {
+  finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
+    * (impostorBacklit * 0.6);
 }
 #endif
 `,
@@ -1021,13 +1081,27 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     // Unlike bindForSubMesh, Babylon invokes the hard-bind hook even when a
     // shared material/effect remains cached. The offset is mesh-dependent,
     // so every batch draw must refresh it through this unconditional path.
-    const meshOffset = subMesh?.getMesh().position;
+    //
+    // The `.w` lane carries the mesh's REVEAL value (streaming fix-pack,
+    // defect C): the runtime ramps a newly created batch mesh's
+    // `metadata.detailReveal` 0 -> 1 over ~0.7 s after its first publication
+    // flip, and the vertex stage collapses instances whose per-stem hash
+    // exceeds it. The lane was verified unused before being repurposed —
+    // every WGSL consumer reads `uniforms.detailMeshOffset.xyz` only, and
+    // this call was the single binding site (writing a literal 0). The
+    // default is 1 (fully revealed) so meshes without a ramp — prototypes,
+    // NullEngine paths, steady-state batches — are bit-for-bit unaffected.
+    const mesh = subMesh?.getMesh();
+    const meshOffset = mesh?.position;
+    const reveal = (
+      mesh?.metadata as { detailReveal?: unknown } | null | undefined
+    )?.detailReveal;
     uniformBuffer.updateFloat4(
       "detailMeshOffset",
       meshOffset?.x ?? 0,
       meshOffset?.y ?? 0,
       meshOffset?.z ?? 0,
-      0,
+      typeof reveal === "number" ? reveal : 1,
     );
   }
 

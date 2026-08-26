@@ -50,14 +50,16 @@ const MAX_GEAR_COMPRESSION = 0.22;
 const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
-// Numerical translational safety envelope. The F-22 sustains ~470 m/s TAS at
-// altitude and a full-throttle steep dive can carry it past 520, so the guard
-// sits well above anything gravity plus the wave-drag polar can reach; it
-// exists only to bound NaN/injection failures, never to shape flight.
+// Numerical translational safety envelope. This is a NaN/injection guard, not
+// a flight-shaping limit: it sits far above anything gravity plus the drag
+// polar can reach for either aircraft, so the aerodynamics — never the clamp —
+// decide top speed.
 const MAX_TRANSLATIONAL_SPEED = 750;
 // Wave-drag hump shape shared by every aircraft that declares a transonic
 // onset: a smoothstep^2 rise over 0.17 Mach to the peak, then the classic
-// supersonic decay of the wave-drag coefficient beyond the hump.
+// supersonic decay of the wave-drag coefficient beyond the hump. No shipped
+// aircraft currently declares one (both sit far below their critical Mach),
+// so the term is inert; it stays for the next airframe that needs it.
 const TRANSONIC_PEAK_MACH_OFFSET = 0.17;
 const TRANSONIC_SUPERSONIC_DECAY = 5.5;
 const SEA_LEVEL_SPEED_OF_SOUND = 340.29;
@@ -267,8 +269,9 @@ export function standardAirDensity(altitudeMetres: number): number {
  * Incremental transonic wave-drag coefficient. Mach is inferred from density
  * through the ISA troposphere relation T/T0 = (rho/rho0)^(1/4.256), so the
  * term needs no separate temperature model and honours test density
- * overrides. Aircraft with `transonicDragRise` 0 (the trainer) return exactly
- * 0, keeping their drag bit-identical to the pre-wave-drag model.
+ * overrides. Aircraft with `transonicDragRise` 0 — currently both of them —
+ * return exactly 0, keeping their drag bit-identical to the pre-wave-drag
+ * model.
  */
 function waveDragCoefficient(
   aircraft: AircraftDefinition,

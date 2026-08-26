@@ -23,13 +23,20 @@ interface ReleaseTrace {
   peak: number;
   /** Direction reversals of the post-release trace above the noise floor. */
   reversals: number;
+  /** Body pitch rate still carried at the release instant, rad/s. */
+  releasePitchRate: number;
+  /** Angle of attack at release, radians. */
+  releaseAngleOfAttack: number;
+  /** Highest angle of attack anywhere in the manoeuvre, radians. */
+  peakAngleOfAttack: number;
   samples: number[];
 }
 
 /**
- * Flies the fix-pack's reported bounce scenario: trimmed flight at 150 m/s,
- * a pitch command held long enough to build real pitch rate, then a release
- * to neutral with `DirectPitchRetention` holding the aircraft afterwards.
+ * Flies the reported bounce scenario on the Vesper J-45: trimmed flight at
+ * 150 m/s, a pitch command held long enough to build real pitch rate, then a
+ * release to neutral with `DirectPitchRetention` holding the aircraft
+ * afterwards.
  */
 function flyPitchRelease(): ReleaseTrace {
   const throttle = 0.15;
@@ -62,23 +69,34 @@ function flyPitchRelease(): ReleaseTrace {
     simulator.step(FIXED_TIME_STEP, commanded);
   };
 
-  // A full-scale pull held for the plan's 1.5 s drives this stabilator-heavy
-  // airframe deep past the stall with the nose already falling at release,
-  // which hides the bounce entirely. 0.42 s releases just before the stall
-  // with +1.26 rad/s of pitch rate in hand - the user-visible tap-and-release
-  // case the fix-pack report describes.
+  // A long full-scale pull drives the airframe past the stall with the nose
+  // already falling at release, which hides the bounce entirely. A half-scale
+  // pull held 0.42 s instead releases the J-45 at 8.7 degrees alpha - well
+  // inside its 17-degree stall - with +0.72 rad/s of pitch rate still in
+  // hand: the user-visible tap-and-release case the report describes.
   for (let step = 0; step < Math.round(2 / FIXED_TIME_STEP); step += 1) {
     applyStep(0);
   }
+  let peakAngleOfAttack = 0;
   for (let step = 0; step < Math.round(0.42 / FIXED_TIME_STEP); step += 1) {
     applyStep(0.5);
+    peakAngleOfAttack = Math.max(
+      peakAngleOfAttack,
+      simulator.telemetry().angleOfAttack,
+    );
   }
 
   const released = noseVertical(simulator);
+  const releasePitchRate = simulator.state.angularVelocity.z;
+  const releaseAngleOfAttack = simulator.telemetry().angleOfAttack;
   const samples: number[] = [];
   for (let step = 0; step < Math.round(8 / FIXED_TIME_STEP); step += 1) {
     applyStep(0);
     samples.push(noseVertical(simulator));
+    peakAngleOfAttack = Math.max(
+      peakAngleOfAttack,
+      simulator.telemetry().angleOfAttack,
+    );
   }
 
   const settleWindow = samples.slice(-Math.round(1 / FIXED_TIME_STEP));
@@ -112,7 +130,16 @@ function flyPitchRelease(): ReleaseTrace {
     }
   }
 
-  return { released, settled, peak, reversals, samples };
+  return {
+    released,
+    settled,
+    peak,
+    reversals,
+    releasePitchRate,
+    releaseAngleOfAttack,
+    peakAngleOfAttack,
+    samples,
+  };
 }
 
 describe("pitch release settle behaviour", () => {
@@ -120,6 +147,13 @@ describe("pitch release settle behaviour", () => {
     const trace = flyPitchRelease();
     const totalExcursion = trace.peak - trace.released;
     const overshoot = trace.peak - trace.settled;
+
+    // Guard the scenario itself: a release with no pitch rate left, or one
+    // taken past the stall, cannot exhibit the bounce and would make the
+    // assertions below vacuous if the airframe or the setup ever drifts.
+    expect(trace.releasePitchRate).toBeGreaterThan(0.4);
+    expect(trace.peakAngleOfAttack).toBeLessThan(FAST_JET.positiveStallAngle);
+    expect(trace.releaseAngleOfAttack).toBeGreaterThan(0);
 
     // The nose must genuinely coast forward after release rather than being
     // yanked back to the release-instant attitude.

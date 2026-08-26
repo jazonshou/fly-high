@@ -490,6 +490,10 @@ export function* buildPresentationChunk(
                 tree.heightMeters,
                 fringeRadius,
               ),
+              // Band code 3: the fringe's own window — near-band vertex cull
+              // with an 80 m fragment dither dissolve, so the cards never pop
+              // off in one frame at the 270 m switch.
+              fade: 3 / 127,
             });
           }
         }
