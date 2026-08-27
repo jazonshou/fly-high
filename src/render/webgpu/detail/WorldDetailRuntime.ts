@@ -3149,12 +3149,23 @@ export class WorldDetailRuntime {
       const crownMaterial = this.createMaterial(
         `detail-foliage-${species}`,
         new Color3(...DETAIL_CROWN_ALBEDO),
-        0.87,
+        0.94,
         true,
       );
       this.registerBandFadeMaterial(crownMaterial);
       crownMaterial.backFaceCulling = false;
       crownMaterial.twoSidedLighting = true;
+      // Wave T: the card shell is now the whole visible canopy, and its
+      // dome-blended top cards face the sky — at full specular they mirrored
+      // the sky probe as a teal sheen across every crown top in the noon
+      // captures. Leaves are rough dielectrics; kill the sheen.
+      crownMaterial.specularIntensity = 0.4;
+      // Wave P: the shaded card faces are ambient-dominated, and full-strength
+      // sky irradiance lifted their blue channel to ~0.8×green (terrain sits
+      // at ~0.64) — the residual cold cast after the specular cut. Real
+      // canopies self-shadow far more than a card shell can; trim the probe
+      // and let the sun carry the tone.
+      crownMaterial.environmentIntensity = 0.62;
       // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
       // AFTER opaque terrain and trunks have filled the depth buffer, so
       // early-Z kills every canopy fragment behind a ridge or a trunk before
@@ -3177,6 +3188,9 @@ export class WorldDetailRuntime {
       opaqueCrownMaterial.backFaceCulling = true;
       opaqueCrownMaterial.twoSidedLighting = false;
       opaqueCrownMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
+      // Wave P: same probe trim as the card shell — the interior core peeks
+      // through card gaps and must not read bluer than the cards over it.
+      opaqueCrownMaterial.environmentIntensity = 0.62;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),
@@ -3317,19 +3331,22 @@ export class WorldDetailRuntime {
       // variant byte now. The far band spans more presentation chunks than
       // near and mid combined, so this is the pass's single largest
       // draw-call cut — seven draws per far chunk became one.
-      // Roughness matches the opaque crown hull (0.90) exactly: the mid->far
-      // handoff is a hard per-stem swap, and any specular-response difference
-      // between the two representations reads as a per-tree material change
-      // at the ring.
+      // The mid->far handoff is a hard per-stem swap, and any lighting-
+      // response difference between the two representations reads as a
+      // per-tree material change at the ring — so this material mirrors the
+      // CARD SHELL's response exactly (roughness 0.94, specular 0.4, probe
+      // 0.62), since wave T made the cards the dominant visible surface.
       const impostorMaterial = this.createMaterial(
         "detail-impostor",
         new Color3(1, 1, 1),
-        0.9,
+        0.94,
         false,
       );
       impostorMaterial.backFaceCulling = false;
       impostorMaterial.twoSidedLighting = true;
       impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+      impostorMaterial.specularIntensity = 0.4;
+      impostorMaterial.environmentIntensity = 0.62;
       this.registerBandFadeMaterial(impostorMaterial);
       this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
         this.impostorAtlas.albedo,

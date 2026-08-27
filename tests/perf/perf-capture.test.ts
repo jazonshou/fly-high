@@ -311,6 +311,25 @@ describe("perf capture (1A-1c / 2Z)", () => {
         });
         return found ?? fallback;
       }
+      if (shot.locate === "grassland") {
+        // Open grass with a guaranteed-clear lens: terrain sampling alone
+        // cannot see scattered trees/ferns (two blind landings put one across
+        // the camera), but the airport clearance culls ALL detail vegetation
+        // except ground-cover blades — so the mown surround is the one place
+        // a standing-height blade shot is deterministic. Require solid
+        // clearance influence, off the runway itself, on flat grassland.
+        const found = locateShotOffset((x, z) => {
+          for (const [dx, dz] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60]] as const) {
+            const sample = sampleTerrain(world, airportX + x + dx, airportZ + z + dz);
+            if (sample.biomeName !== "grassland") return false;
+            if (sample.slope > 0.08) return false;
+            if (sample.isRunway) return false;
+            if (sample.airportInfluence < 0.35 || sample.airportInfluence > 0.85) return false;
+          }
+          return true;
+        }, { stepMeters: 120, maxRadiusMeters: 3_000 });
+        return found ?? fallback;
+      }
       // Coast: over water with land ~3 km ahead on the +x heading.
       const found = locateShotOffset((x, z) => {
         const here = sampleTerrainHeight(world, airportX + x, airportZ + z);

@@ -447,3 +447,55 @@ for both compute passes and the plugin.
 `T-3..6` (atlas, runtime, impostor, shrubs) → capture A/B + tune → `G-1..4` →
 capture A/B + tune → `P-1..5`. The viewer lands first because every later
 judgment ("does this look real at 2 m?") is made inside it.
+
+---
+
+## 9. Implementation record (2026-08-27)
+
+Waves V, T, and G landed (`5620cc6`, `9af949f`). Deviations from the plan
+above, recorded per the working rules:
+
+- **T-2 wind lanes deferred.** The plan put branch wind phase/flex in the
+  prototype vertex-colour RG lanes. Deferred: vertex colours multiply PBR
+  albedo when a colour buffer exists, so repurposing RG risks tinting; the
+  existing three-band wind (trunk bend + branch flex + card flutter) reads
+  acceptably on skeletal bark. Revisit only if captures show rigid limbs.
+- **T-0 band structure kept at three bands.** Instead of a fourth "hero"
+  band, near meshes the full skeleton and mid meshes the same skeleton
+  decimated — the near/mid switch stays inside the existing band machinery
+  (new card band code 4 only).
+- **Law floors widened.** `renderedShareAtDistance` now applies the far
+  floor through the MID band (the shrunken near radius otherwise inverted
+  the density profile); floors 0.02/0.015 → 0.045/0.035.
+- **G-1 domain tile is CPU-baked**, not a GPU pass over the terrain atlas:
+  same consumer authority, no cross-system GPU wiring, NullEngine-testable,
+  amortised at 1.5 ms/frame. The attribute channel reads the classifier at
+  the reference day (species-stay-climatic); seasonal blade tinting is an
+  open follow-up alongside the winter shed.
+- **G-2/G-3 shipped the "no-compaction" rung deliberately**: every lattice
+  lane writes its record every frame (blade or degenerate zero) — no
+  atomics, counters, or indirect draws. The vertex-load estimator in
+  `groundCoverLaw.ts` is the honest cost model and is test-pinned per tier.
+  Compaction + indirect is the recorded next rung if capture numbers demand.
+- **Two GPU landmines burned a debugging session** and are pinned in code
+  comments: packed u32 blade fields must travel as `uint32x4` vertex
+  attributes (float-attribute NaN canonicalization scrambled every packed
+  lane while the float root positions arrived intact), and any plugin using
+  `forcedInstanceCount` must force `INSTANCES`/`THIN_INSTANCES` off (the
+  recorded 2-12-close discovery, hit again verbatim).
+- **The teal-canopy chase (wave P), recorded because the first diagnosis was
+  wrong:** noon captures showed sea-green crowns, worst on conifers. Cutting
+  card specular (0.4) barely moved it — pixel statistics showed the cast was
+  (a) albedo: spruce needles were authored at hue 0.42 and the dense conifer
+  crown at 0.40 (literally teal before lighting), and (b) diffuse sky
+  irradiance lifting shaded card faces' blue channel to ~0.8×green (terrain
+  sits at ~0.64). Fix: conifer hues warmed to 0.30–0.33, broadleafs to
+  0.275–0.285, `DETAIL_CROWN_ALBEDO` warmed, and `environmentIntensity`
+  trimmed to 0.62 on card shell + interior core + impostor material (the
+  impostor mirrors the card shell's full lighting response — roughness,
+  specular, probe — per the handoff rule). Verified by pixel ratio: crown
+  B/G 0.67 vs terrain 0.70, zero cyan pixels, all sun angles checked.
+- **Known polish debt (open):** denser leaf-spray art (T-3) remains the
+  main lever on canopy richness; ring width steps at blade-ring boundaries;
+  the 4 m attribute-tile quantisation shows as density blocks near clearance
+  edges; far-field forest→splat folding remains the recorded non-goal.

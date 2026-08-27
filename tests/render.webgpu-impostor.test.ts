@@ -67,7 +67,9 @@ describe("hemi-octahedral mapping (2-17)", () => {
 
 describe("impostor bake (2-17)", () => {
   it("pins the crown albedo shared by opaque hulls, cards and the far bake", () => {
-    expect(DETAIL_CROWN_ALBEDO).toEqual([0.86, 0.89, 0.82]);
+    // Wave P warmed this (0.86,0.89,0.82 -> 0.92,0.91,0.8) as part of the
+    // teal-canopy fix: red lifted over green to counter blue sky irradiance.
+    expect(DETAIL_CROWN_ALBEDO).toEqual([0.92, 0.91, 0.8]);
   });
   it("bakes non-trivial coverage for every species and view row", () => {
     for (const species of IMPOSTOR_SPECIES) {

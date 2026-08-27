@@ -357,7 +357,7 @@ function synthesizeBroadleafOak(raster: FoliageRaster, random: RandomSource): vo
     const centerY = margin + random() * (raster.edge - 2 * margin);
     const angle = random() * Math.PI * 2;
     const color = hsvToRgb(
-      0.295 + (random() - 0.5) * 0.05,
+      0.28 + (random() - 0.5) * 0.05,
       0.52 + (random() - 0.5) * 0.18,
       0.4 + (random() - 0.5) * 0.16,
     );
@@ -417,7 +417,7 @@ function synthesizeBroadleafBirch(raster: FoliageRaster, random: RandomSource): 
     const centerY = margin + random() * (raster.edge - 2 * margin);
     const angle = random() * Math.PI * 2;
     const color = hsvToRgb(
-      0.3 + (random() - 0.5) * 0.05,
+      0.285 + (random() - 0.5) * 0.05,
       0.5 + (random() - 0.5) * 0.16,
       0.5 + (random() - 0.5) * 0.16,
     );
@@ -465,7 +465,7 @@ function synthesizeNeedlePine(raster: FoliageRaster, random: RandomSource): void
           const tipX = baseX + Math.cos(angle + bend * 0.4) * length;
           const tipY = baseY + Math.sin(angle + bend * 0.4) * length;
           const color = hsvToRgb(
-            0.36 + (random() - 0.5) * 0.05,
+            0.3 + (random() - 0.5) * 0.05,
             0.5 + (random() - 0.5) * 0.14,
             0.3 + (random() - 0.5) * 0.1,
           );
@@ -488,7 +488,10 @@ function synthesizeNeedleSpruce(raster: FoliageRaster, random: RandomSource): vo
     let x = 24 + random() * (raster.edge - 48);
     let y = 24 + random() * (raster.edge - 48);
     let heading = random() * Math.PI * 2;
-    const baseHue = 0.42 + (random() - 0.5) * 0.04;
+    // Wave P: 0.42 sat on the teal side of green and, under blue sky
+    // irradiance, rendered as sea-green spires in the noon captures. Real
+    // spruce keeps only a slight cool cast over pine.
+    const baseHue = 0.33 + (random() - 0.5) * 0.04;
     const segmentLength = 13 + random() * 5;
     for (let segment = 0; segment < 6; segment += 1) {
       heading += (random() - 0.5) * 0.36;
@@ -718,15 +721,17 @@ function synthesizeDenseCrown(
 
 function synthesizeDenseBroadleaf(raster: FoliageRaster, random: RandomSource, seed: number): void {
   synthesizeDenseCrown(raster, random, seed, {
-    hue: 0.29, saturation: 0.54, value: 0.45, needleGrain: false,
+    hue: 0.275, saturation: 0.54, value: 0.48, needleGrain: false,
   });
 }
 
 function synthesizeDenseConifer(raster: FoliageRaster, random: RandomSource, seed: number): void {
   synthesizeDenseCrown(raster, random, seed, {
-    // Fix-pack F1: 0.37 → 0.42 — under the cluster tone modulation the old
-    // value read as black blobs from the air.
-    hue: 0.4, saturation: 0.55, value: 0.42, needleGrain: true,
+    // Fix-pack F1 raised VALUE (0.37 → 0.42) because the old tone read as
+    // black blobs from the air — that stays. Wave P warms HUE (0.4 → 0.325):
+    // 0.4 is sea-green, and with blue sky irradiance on the card shell the
+    // noon captures read whole conifers as teal.
+    hue: 0.325, saturation: 0.55, value: 0.42, needleGrain: true,
   });
 }
 

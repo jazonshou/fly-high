@@ -45,8 +45,22 @@ struct GroundBlade {
 @group(0) @binding(2) var groundHeightTile: texture_2d<f32>;
 @group(0) @binding(3) var groundAttributeTile: texture_2d<f32>;
 
+// Integer hash, NOT the sin-fract idiom: cells here are WORLD-anchored ids
+// that reach ~1e5 a few kilometres out, where sin's f32 argument reduction
+// and fract-of-1e11 collapse to banded near-constants — the field rendered
+// as perfect lattice ROWS with uniform density and height (seen in the
+// first grove-forest-2m capture). The airport neighbourhood masked it: its
+// small cell ids kept the sin hash healthy at every earlier test site.
 fn groundHash2(cell: vec2f, salt: f32) -> f32 {
-  return fract(sin(dot(cell, vec2f(127.1, 311.7)) + salt * 74.7) * 43758.5453123);
+  var h = (u32(i32(cell.x)) * 0x27d4eb2du)
+    ^ (u32(i32(cell.y)) * 0x165667b1u)
+    ^ (u32(i32(salt * 8.0)) * 0x9e3779b9u);
+  h = h ^ (h >> 15u);
+  h = h * 0x2c1b3c6du;
+  h = h ^ (h >> 12u);
+  h = h * 0x297a2d39u;
+  h = h ^ (h >> 15u);
+  return f32(h) * 2.3283064365386963e-10;
 }
 
 fn groundHeightAt(world: vec2f) -> f32 {

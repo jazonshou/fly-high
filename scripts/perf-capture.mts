@@ -99,7 +99,7 @@ export interface PerfCaptureShotDefinition {
    */
   readonly relativeSunBearingDegrees?: number;
   /** Z-3: locate the shot over a terrain feature instead of a fixed offset. */
-  readonly locate?: "fixed" | "forest" | "coast";
+  readonly locate?: "fixed" | "forest" | "grassland" | "coast";
   /** Z-3: "motion" runs a scripted banked turn and asserts temporal stability. */
   readonly kind?: "still" | "motion";
   /** Bank angle used by motion shots, degrees. */
@@ -613,6 +613,44 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 18.5 },
     relativeSunBearingDegrees: 20,
     locate: "coast",
+    ceilings: null,
+  },
+  {
+    // Vegetation overhaul (wave P): the terrain-viewer money shot — a
+    // standing eye inside closed forest, where the skeletal trees' branch
+    // structure, leaf-card canopies and the blade field all read at once.
+    // This is the regime the whole overhaul exists for, and the shot that
+    // gates it from now on.
+    name: "grove-forest-2m",
+    description: "Standing inside closed forest, ~2 m eye height, afternoon sun",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 1.7,
+    altitudeMslMeters: null,
+    offsetXMeters: -4_000,
+    offsetZMeters: 3_000,
+    pitchDownDegrees: 2,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 15.5 },
+    relativeSunBearingDegrees: 140,
+    locate: "forest",
+    ceilings: null,
+  },
+  {
+    // Wave G's own gate: open grassland at eye height with the compute blade
+    // field at full density, sun raking so blade shading and the terrain
+    // colour harmonisation both show.
+    name: "grove-meadow-2m",
+    description: "Standing in open mown grass, eye height, raking sun",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 1.7,
+    altitudeMslMeters: null,
+    offsetXMeters: -1_450,
+    offsetZMeters: 900,
+    pitchDownDegrees: 6,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 17.5 },
+    relativeSunBearingDegrees: 60,
+    locate: "grassland",
     ceilings: null,
   },
 ]);
