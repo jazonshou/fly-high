@@ -5,6 +5,7 @@ import {
   SHRUB_VARIANT_COUNTS,
   TREE_VARIANT_COUNTS,
   buildClutterPrototype,
+  buildCrownFringePrototype,
   buildGrassPatchPrototype,
   buildRockPrototype,
   buildShrubPrototype,
@@ -73,30 +74,6 @@ function expectInternallyConsistent(name: string, geometry: PrototypeGeometry): 
     expect(z, `${name}: local max z covers vertex ${i}`)
       .toBeLessThanOrEqual(geometry.localBounds.maximum[2]);
   }
-}
-
-/**
- * Crown envelope aspect: RMS radial over RMS vertical spread of the closed
- * crown vertices. This remains representation-agnostic (ellipsoid lobes for
- * broadleaf, closed whorls for conifers).
- */
-function crownAspect(crown: PrototypeGeometry): number {
-  const vertexCount = crown.positions.length / 3;
-  let meanY = 0;
-  for (let index = 0; index < vertexCount; index += 1) {
-    meanY += crown.positions[index * 3 + 1]!;
-  }
-  meanY /= vertexCount;
-  let radial = 0;
-  let vertical = 0;
-  for (let index = 0; index < vertexCount; index += 1) {
-    const x = crown.positions[index * 3]!;
-    const y = crown.positions[index * 3 + 1]!;
-    const z = crown.positions[index * 3 + 2]!;
-    radial += x * x + z * z;
-    vertical += (y - meanY) * (y - meanY);
-  }
-  return Math.sqrt(radial / vertexCount) / Math.sqrt(vertical / vertexCount);
 }
 
 function uniqueNormalCount(geometry: PrototypeGeometry): number {
@@ -201,19 +178,35 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
   it("holds every triangle budget across species and variants", () => {
     for (const species of TREE_SPECIES) {
       for (let variant = 0; variant < TREE_VARIANT_COUNTS[species]; variant += 1) {
-        const { trunk, crown } = buildTreePrototype(species, variant, 31);
-        // Closed opaque whorls/hulls: fewer triangles and radically less
-        // fragment overdraw than 40–60 two-sided alpha cards.
+        // Wave T: a tree is bark skeleton + interior core + leaf-card shell,
+        // and the law prices the whole near composition at 1,500 triangles
+        // (measured 824–1,376 across the species) and mid at 340.
+        const { trunk, crown, envelopeRadius } = buildTreePrototype(species, variant, 31);
+        const cards = buildCrownFringePrototype(species, variant, 31, "near");
+        // The interior core keeps the closed-hull construction and stays on
+        // the opaque dense layers.
         expect(crown.triangleCount).toBeGreaterThanOrEqual(60);
         expect(crown.triangleCount).toBeLessThanOrEqual(80);
         expect(crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
-        expect(trunk.triangleCount).toBeGreaterThanOrEqual(48);
-        expect(trunk.triangleCount).toBeLessThanOrEqual(140);
+        // The bark part carries the trunk and two branch levels now.
+        expect(trunk.triangleCount).toBeGreaterThanOrEqual(400);
+        expect(trunk.triangleCount).toBeLessThanOrEqual(1_150);
+        expect(
+          trunk.triangleCount + crown.triangleCount + cards.triangleCount,
+          `${species} v${variant} near total`,
+        ).toBeLessThanOrEqual(1_500);
         const mid = buildTreePrototype(species, variant, 31, "mid");
-        expect(mid.trunk).toEqual(trunk);
-        expect(mid.crown).toEqual(crown);
-        expect(mid.trunk.triangleCount + mid.crown.triangleCount).toBeLessThanOrEqual(180);
+        const cardsMid = buildCrownFringePrototype(species, variant, 31, "mid");
+        // Mid meshes the SAME skeleton (identical envelope — the shared
+        // radial contract) at reduced detail; it is no longer byte-identical
+        // to near.
+        expect(mid.envelopeRadius).toBe(envelopeRadius);
+        expect(
+          mid.trunk.triangleCount + mid.crown.triangleCount + cardsMid.triangleCount,
+          `${species} v${variant} mid total`,
+        ).toBeLessThanOrEqual(340);
         expect(mid.crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
+        expect(cards.atlasLayer.every((layer) => layer >= 0 && layer <= 4)).toBe(true);
       }
     }
     for (const species of SHRUB_SPECIES) {
@@ -290,29 +283,57 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
       .not.toEqual(Array.from(buildRockPrototype("dark", 1).positions));
   });
 
-  it("keeps crown silhouettes pairwise distinct across variants (aspect ≥ 5%)", () => {
+  it("keeps variants pairwise distinct as full topological re-rolls", () => {
+    // Wave T replaced the old per-variant aspect knob with a full skeleton
+    // re-roll per variant: branch layout, card placement, and envelope all
+    // differ. The guarantee is structural distinctness, not a fixed aspect
+    // spread — assert every variant pair differs in bark geometry AND card
+    // placement, and that the species' variant set is not silhouette-flat.
     for (const species of TREE_SPECIES) {
       const count = TREE_VARIANT_COUNTS[species];
-      const aspects: number[] = [];
+      const barks: Float32Array[] = [];
+      const cards: Float32Array[] = [];
+      const envelopes: number[] = [];
       for (let variant = 0; variant < count; variant += 1) {
-        aspects.push(crownAspect(buildTreePrototype(species, variant, 17).crown));
+        const prototype = buildTreePrototype(species, variant, 17);
+        barks.push(prototype.trunk.positions);
+        cards.push(buildCrownFringePrototype(species, variant, 17, "near").positions);
+        envelopes.push(prototype.envelopeRadius);
       }
-      for (let a = 0; a < aspects.length; a += 1) {
-        for (let b = a + 1; b < aspects.length; b += 1) {
-          const relative = Math.abs(aspects[a]! - aspects[b]!) / Math.max(aspects[a]!, aspects[b]!);
-          expect(relative, `${species} variants ${a}/${b}`).toBeGreaterThanOrEqual(0.05);
+      for (let a = 0; a < count; a += 1) {
+        for (let b = a + 1; b < count; b += 1) {
+          expect(
+            Array.from(barks[a]!),
+            `${species} bark variants ${a}/${b}`,
+          ).not.toEqual(Array.from(barks[b]!));
+          expect(
+            Array.from(cards[a]!),
+            `${species} card variants ${a}/${b}`,
+          ).not.toEqual(Array.from(cards[b]!));
         }
       }
+      const spread = (Math.max(...envelopes) - Math.min(...envelopes)) / Math.max(...envelopes);
+      expect(spread, `${species} envelope spread`).toBeGreaterThan(0.01);
     }
   });
 
-  it("bakes restrained directional occlusion into closed crowns", () => {
+  it("bakes restrained directional occlusion into cores and card shells", () => {
     for (const species of TREE_SPECIES) {
+      // Wave T: the interior core is DARK by design (it reads as the
+      // canopy's shadowed interior behind the card shell) while the cards
+      // carry the lit exterior with real baked sky occlusion.
       const { crown } = buildTreePrototype(species, 0, 5);
       const alpha: number[] = [];
       for (let index = 3; index < crown.colors.length; index += 4) alpha.push(crown.colors[index]!);
-      expect(Math.min(...alpha), `${species} shaded crown vertices`).toBeLessThanOrEqual(0.62);
-      expect(Math.max(...alpha), `${species} lit crown vertices`).toBeGreaterThanOrEqual(0.8);
+      expect(Math.min(...alpha), `${species} shaded core vertices`).toBeLessThanOrEqual(0.45);
+      expect(Math.max(...alpha), `${species} core stays interior-dark`).toBeLessThanOrEqual(0.75);
+      const cards = buildCrownFringePrototype(species, 0, 5, "near");
+      const cardAlpha: number[] = [];
+      for (let index = 3; index < cards.colors.length; index += 4) {
+        cardAlpha.push(cards.colors[index]!);
+      }
+      expect(Math.max(...cardAlpha), `${species} lit card vertices`).toBeGreaterThanOrEqual(0.7);
+      expect(Math.min(...cardAlpha), `${species} occluded card vertices`).toBeLessThan(0.6);
     }
     // Shrubs get the same bake; require some interior darkening.
     for (const species of SHRUB_SPECIES) {

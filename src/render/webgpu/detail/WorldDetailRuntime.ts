@@ -604,6 +604,12 @@ export class WorldDetailRuntime {
    * variant and LOD band; the shader applies the resulting multiplier once.
    */
   private readonly prototypeRadialUnits = new Map<string, number>();
+  /**
+   * Wave G: when the compute blade system is live (WebGPU), the presentation
+   * build stops emitting grass-archetype card patches — blades carry that
+   * archetype. Engine-static, so chunk signatures need no new term.
+   */
+  private readonly groundCoverBladesActive: boolean;
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -713,6 +719,9 @@ export class WorldDetailRuntime {
     private readonly scene: Scene,
     private readonly options: WorldDetailRuntimeOptions,
   ) {
+    this.groundCoverBladesActive =
+      (scene.getEngine().getCaps() as { supportComputeShaders?: boolean })
+        .supportComputeShaders === true;
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
       !Number.isFinite(this.cellSizeMeters) ||
@@ -1947,6 +1956,7 @@ export class WorldDetailRuntime {
           treeVariantCap,
           treePrototypeMode,
           grassRadiusMeters,
+          groundCoverBladesActive: this.groundCoverBladesActive,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -2005,6 +2015,7 @@ export class WorldDetailRuntime {
           treeVariantCap,
           treePrototypeMode,
           grassRadiusMeters,
+          groundCoverBladesActive: this.groundCoverBladesActive,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3175,19 +3186,22 @@ export class WorldDetailRuntime {
       this.registerBandFadeMaterial(barkMaterial);
       for (let variant = 0; variant < variantCount; variant += 1) {
         const prototype = buildTreePrototype(species, variant, prototypeSeed);
-        const crownRadiusUnit = Math.max(prototype.crown.boundingRadius, 0.05);
-        const trunkRadiusUnit = Math.max(prototype.trunk.boundingRadius, 0.005);
+        // Wave T: EVERY part of a tree (bark skeleton, interior core, card
+        // shell) registers the shared skeleton envelope as its radial
+        // contract, so the presentation build maps all parts with one world
+        // scale and they stay exactly aligned.
+        const envelopeUnit = Math.max(prototype.envelopeRadius, 0.05);
         if (variant === 0) {
           // The far atlas is baked from this exact source geometry.
-          this.impostorRadialUnits.set(species, crownRadiusUnit);
+          this.impostorRadialUnits.set(species, envelopeUnit);
         }
         this.prototypeRadialUnits.set(
           `tree-${species}-v${variant}-crown-near`,
-          crownRadiusUnit,
+          envelopeUnit,
         );
         this.prototypeRadialUnits.set(
           `tree-${species}-v${variant}-trunk-near`,
-          trunkRadiusUnit,
+          envelopeUnit,
         );
         this.registerBatch(
           `tree-${species}-v${variant}-crown-near`,
@@ -3208,14 +3222,13 @@ export class WorldDetailRuntime {
           true,
           prototype.trunk.localBounds,
         );
-        // Fix-pack F3: the near-band silhouette fringe rides the previously
-        // dormant alpha-card crown material over the opaque hull. Near band
-        // only — mid and far keep the hull/impostor look the frame can
-        // afford, and the hull has already filled depth when these draw.
-        const fringe = buildCrownFringePrototype(species, variant, prototypeSeed);
+        // Wave T: the leaf-cluster card shell is the visible canopy at both
+        // geometry bands (the interior core pre-fills depth behind it, so the
+        // early-Z keystone survives the cards carrying the look).
+        const fringe = buildCrownFringePrototype(species, variant, prototypeSeed, "near");
         this.prototypeRadialUnits.set(
           `tree-${species}-v${variant}-fringe-near`,
-          Math.max(fringe.boundingRadius, 0.05),
+          envelopeUnit,
         );
         this.registerBatch(
           `tree-${species}-v${variant}-fringe-near`,
@@ -3224,19 +3237,29 @@ export class WorldDetailRuntime {
           true,
           fringe.localBounds,
         );
-        // Mid uses the exact near trunk and opaque crown. The extra vertices
-        // remove the dominant two-sided alpha-card overdraw and make the hard
-        // near/mid handoff topology- and silhouette-identical. Far is the
-        // impostor crown only.
+        const fringeMid = buildCrownFringePrototype(species, variant, prototypeSeed, "mid");
+        this.prototypeRadialUnits.set(
+          `tree-${species}-v${variant}-fringe-mid`,
+          envelopeUnit,
+        );
+        this.registerBatch(
+          `tree-${species}-v${variant}-fringe-mid`,
+          this.buildPrototypeMesh(`detail-tree-${species}-v${variant}-fringe-mid`, fringeMid),
+          crownMaterial,
+          false,
+          fringeMid.localBounds,
+        );
+        // Mid meshes the SAME skeleton at reduced detail, so the near/mid
+        // handoff keeps the silhouette. Far is the impostor crown only.
         const midPrototype = buildTreePrototype(species, variant, prototypeSeed, "mid");
         const farPrototype = buildTreePrototype(species, variant, prototypeSeed, "far");
         this.prototypeRadialUnits.set(
           `tree-${species}-v${variant}-crown-mid`,
-          Math.max(midPrototype.crown.boundingRadius, 0.05),
+          envelopeUnit,
         );
         this.prototypeRadialUnits.set(
           `tree-${species}-v${variant}-trunk-mid`,
-          Math.max(midPrototype.trunk.boundingRadius, 0.005),
+          envelopeUnit,
         );
         this.registerBatch(
           `tree-${species}-v${variant}-crown-mid`,

@@ -75,44 +75,52 @@ export interface RenderedDensityLaw {
  * at tier 2, and the far band's submitted chunk count falls with the square
  * of its radius (that is where the draw calls were).
  */
+/**
+ * **Re-derived by the vegetation overhaul (wave T).** A near tree is no
+ * longer a 180-triangle hull-and-pole: it is a full skeletal tree — bark
+ * tubes for the trunk and two branch levels, an interior canopy core, and a
+ * leaf-cluster card shell — measured at 824–1,376 triangles across the seven
+ * species (priced 1,500 with margin). Mid meshes the SAME skeleton decimated
+ * (130–334 measured, priced 340). What pays for the ~8× richer near tree is
+ * the near radius: 250/350/400/550 → 110/150/170/240 m. The mid band — now a
+ * real silhouette-preserving skeletal mesh rather than an identical copy of
+ * near — carries the 100 m–1 km range the old law spent full geometry on.
+ */
 export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freeze([
-  // Tier 0 — vegetationDistance 2,000 m, 1.2 ms row.
+  // Tier 0 — vegetationDistance 2,000 m, 1.2 ms row. Mid 700 → 640 m keeps
+  // the tier's draw-submission model at or under its frame row now that each
+  // band submits three tree parts.
   Object.freeze({
     nearStemsPerHectare: 55,
-    near: Object.freeze({ outerRadiusMeters: 250, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 700, trianglesPerPlant: 180 }),
+    near: Object.freeze({ outerRadiusMeters: 110, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 640, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.02,
+    farFloorShare: 0.045,
   }),
   // Tier 1 — the G-target. vegetationDistance 3,000 m, 1.8 ms row.
-  // 70 -> 78 stems/ha at the perf-debt pass: with canopy-rank thinning the
-  // drawn stand's crown cover measures 0.532 at 70/ha and 0.551 at 78/ha
-  // against Gate 2C's 0.55 criterion. The +11% near stems are paid for many
-  // times over by the band radii moving to §5.3's (total rendered stems fall
-  // 19,445 -> 15,441), so the count row still moves DOWN in this commit.
   Object.freeze({
     nearStemsPerHectare: 78,
-    near: Object.freeze({ outerRadiusMeters: 350, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 180 }),
+    near: Object.freeze({ outerRadiusMeters: 150, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 3_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.02,
+    farFloorShare: 0.045,
   }),
   // Tier 2 — vegetationDistance 4,000 m, 1.9 ms row.
   Object.freeze({
     nearStemsPerHectare: 79,
-    near: Object.freeze({ outerRadiusMeters: 400, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 180 }),
+    near: Object.freeze({ outerRadiusMeters: 170, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 4_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.015,
+    farFloorShare: 0.035,
   }),
-  // Tier 3 — same near cap as tier 2 with the 3.6 ms row's slack spent on a
-  // deeper near and card band, not more stems.
+  // Tier 3 — the 3.6 ms row's slack goes to a deeper near and card band,
+  // not more stems.
   Object.freeze({
     nearStemsPerHectare: 79,
-    near: Object.freeze({ outerRadiusMeters: 550, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 180 }),
+    near: Object.freeze({ outerRadiusMeters: 240, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 6_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.015,
+    farFloorShare: 0.035,
   }),
 ]);
 
@@ -123,7 +131,10 @@ export function renderedShareAtDistance(law: RenderedDensityLaw, distanceMeters:
   }
   if (distanceMeters <= law.near.outerRadiusMeters) return 1;
   const falloff = (law.near.outerRadiusMeters / distanceMeters) ** 2;
-  if (distanceMeters <= law.mid.outerRadiusMeters) return falloff;
+  // Wave T: the floor applies through the MID band too. The near radius
+  // shrank to pay for skeletal trees, and a floor that only starts past the
+  // mid boundary let the 0.7–1.1 km ring thin to near-bare while cheaper
+  // far impostors held MORE density beyond it — an inverted profile.
   return Math.max(falloff, law.farFloorShare);
 }
 
@@ -364,16 +375,15 @@ export function estimateVegetationDrawCalls(
  * vegetation row, and the ratio below says by how much.
  */
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
-  // The 60-fps family path submits three one-variant prototypes rather than
-  // seven species × several variants. Modelled 41.1 draws at tier 0.
+  // Wave T: each tree band submits THREE parts (bark skeleton, interior
+  // core, leaf-cluster card shell). Modelled 45.7 draws at tier 0.
   50,
-  // Modelled 47.8 draws at the medium/balanced contract tier.
+  // Modelled 53.3 draws at the medium/balanced contract tier.
   58,
-  // Near and mid now share the same three variants for a silhouette-stable
-  // hard handoff. That also lowers the species-mode submission model from
-  // 462 to 393 draws at tier 2 and from 631 to 535 at tier 3.
-  450,
-  600,
+  // Species mode models 507.6 draws at tier 2 and 665.9 at tier 3 with the
+  // third tree part; re-pinned as the regression guard the renderer meets.
+  515,
+  675,
 ]);
 
 /**
@@ -383,11 +393,12 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
  * term small. Tier 0/1 being below one means submissions fit, not vegetation.
  */
 export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze([
-  0.891,
-  0.691,
-  // Three shared variants across near and mid lower submissions, but these
+  0.991,
+  0.77,
+  // The third tree part raises the species-mode submission model; these
   // tiers remain well above the vegetation frame row. The strict capture,
-  // not this draw-only model, decides whether opaque crowns close frame time.
-  5.38,
-  3.86,
+  // not this draw-only model, decides whether skeletal trees close frame
+  // time.
+  6.947,
+  4.809,
 ]);

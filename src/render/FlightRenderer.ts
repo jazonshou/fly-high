@@ -80,6 +80,7 @@ import {
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { WorldDetailRuntime } from "./webgpu/detail";
+import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
@@ -329,6 +330,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly bathymetry: BathymetryClipmap;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
+  private readonly groundCover: GroundCoverSystem;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   private readonly fxaa: FxaaPostProcess;
@@ -426,6 +428,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
+    groundCover: GroundCoverSystem,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
@@ -454,6 +457,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.bathymetry = bathymetry;
     this.airport = airport;
     this.detail = detail;
+    this.groundCover = groundCover;
     this.wildlife = wildlife;
     this.toneMap = toneMap;
     this.fxaa = fxaa;
@@ -693,6 +697,12 @@ export class FlightRenderer implements FlightRenderingSystem {
         workerWorld: options.world,
       });
       cleanup.push(() => detail.dispose());
+      // Wave G: the blade system reads the SAME consumer sampler as detail
+      // and the camera clamp, so blades stand on the rendered surface.
+      const groundCover = new GroundCoverSystem(scene, {
+        terrainSample: consumerTerrainSample,
+      });
+      cleanup.push(() => groundCover.dispose());
       if (evolutionResult.mode === "eroded") {
         detail.publishTerrainMacro(
           terrainMacroGridFromEvolution(evolutionResult.evolution),
@@ -766,6 +776,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
+      groundCover.addPbrMaterials((material) => {
+        cloudShadowReceivers.registerMaterial(material);
+      });
       wildlife.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
@@ -777,6 +790,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       aerialReceivers.registerMeshes(aircraft.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       detail.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      groundCover.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
       wildlife.addPbrMaterials((material) => {
@@ -949,6 +965,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         bathymetry,
         airport,
         detail,
+        groundCover,
         wildlife,
         toneMap,
         fxaa,
@@ -1424,7 +1441,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
-      pendingDetailWork: this.detail.pendingWorkItems,
+      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
@@ -1896,6 +1913,21 @@ export class FlightRenderer implements FlightRenderingSystem {
       // the capture pins simulationTime so reruns are pixel-comparable.
       state.simulationTime,
     );
+    // Wave G: blades follow the CAMERA (they exist for the near-ground eye),
+    // not the aircraft observer — in the terrain viewer the two coincide.
+    this.groundCover.update({
+      cameraWorldX: this.cameraWorld.x,
+      cameraWorldY: this.cameraWorld.y,
+      cameraWorldZ: this.cameraWorld.z,
+      floatingOriginX: this.originX,
+      floatingOriginZ: this.originZ,
+      law: this.governedProfileCache.groundCoverLaw,
+      windDirectionX: wind.x,
+      windDirectionZ: wind.z,
+      windStrength01: wind.speed / MAX_WIND_SPEED,
+      windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
+      simulationTimeSeconds: state.simulationTime,
+    });
     this.wildlife.update(
       {
         x: state.position.x,

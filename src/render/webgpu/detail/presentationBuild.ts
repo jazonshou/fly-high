@@ -25,7 +25,7 @@ import type {
  * traversal order, selection, or the generator's bounded work units.
  */
 
-export const DETAIL_FADE_MARGIN_METERS = 160;
+export const DETAIL_FADE_MARGIN_METERS = 100;
 export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
 // Fix-pack F4: 2 m / 0.2 gave at most one 1.4 m blade patch per 4–11 m² even
 // at point-blank range — the reported smooth green sheet between patches.
@@ -168,6 +168,8 @@ export interface DetailPresentationBuildInput {
   readonly treeVariantCap: number;
   readonly treePrototypeMode: "families" | "species";
   readonly grassRadiusMeters: number;
+  /** Wave G: the compute blade system replaces the grass-archetype patches. */
+  readonly groundCoverBladesActive?: boolean;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -475,12 +477,14 @@ export function* buildPresentationChunk(
           throw new Error(`Missing impostor bounds frame for ${tree.species}`);
         }
         sink.appendInstance(crownBatchKey, crown, billboardFrame);
-        if (membership.band === "near") {
-          // Fix-pack F3: the alpha-card silhouette fringe rides the same
-          // record as the opaque crown, scaled against its own prototype
-          // bound so the shell tracks the hull in world space.
+        if (membership.band !== "far") {
+          // Wave T: the leaf-cluster card shell is the tree's visible canopy
+          // at BOTH geometry bands. Every tree part registers the skeleton's
+          // shared envelope as its radial contract, so one desired radius
+          // (the stem's crown radius) maps bark, core, and cards with one
+          // world scale and the parts stay exactly aligned.
           const fringeBatchKey =
-            `tree-${prototypeSpecies}-v${geometryVariant}-fringe-near`;
+            `tree-${prototypeSpecies}-v${geometryVariant}-fringe-${membership.band}`;
           const fringeRadius = catalog.prototypes[fringeBatchKey]?.radialUnits;
           if (fringeRadius !== undefined) {
             sink.appendInstance(fringeBatchKey, {
@@ -490,25 +494,25 @@ export function* buildPresentationChunk(
                 tree.heightMeters,
                 fringeRadius,
               ),
-              // Band code 3: the fringe's own window — near-band vertex cull
-              // with an 80 m fragment dither dissolve, so the cards never pop
-              // off in one frame at the 270 m switch.
-              fade: 3 / 127,
+              // Band code 3 near / 4 mid: each shell owns its window with a
+              // dithered handoff at the shared near-switch edge, so the card
+              // swap never pops in one frame.
+              fade: (membership.band === "near" ? 3 : 4) / 127,
             });
           }
-        }
-        if (membership.band !== "far") {
           const trunkBatchKey =
             `tree-${prototypeSpecies}-v${geometryVariant}-trunk-${membership.band}`;
           sink.appendInstance(trunkBatchKey, {
             ...crown,
             radialScale: detailRadialScaleForWorldRadius(
-              tree.trunkRadiusMeters,
+              tree.crownRadiusMeters,
               tree.heightMeters,
               requiredPrototypeRadialUnits(catalog, trunkBatchKey),
             ),
             tint: treeCatalog.trunkTint,
-            windResponse: 0.08,
+            // The bark part now carries real branches: stiffer than the card
+            // shell riding their tips, but no longer a rigid pole.
+            windResponse: 0.3,
           });
         }
       }
@@ -681,6 +685,10 @@ export function* buildPresentationChunk(
           );
           const node = cell.groundCover[nodeRow * catalog.groundCoverGrid + nodeColumn];
           if (!node || node.coverage <= 0) continue;
+          // Wave G: the compute blade system carries the grass archetype
+          // wherever it is live; the card patches keep the structured
+          // archetypes (fern/heather/reed) whose forms blades cannot carry.
+          if (input.groundCoverBladesActive && node.archetype === "grass") continue;
           const nearBoost = 1 + GROUND_COVER_NEAR_BOOST_FACTOR
             * Math.max(0, 1 - patchDistance / GROUND_COVER_NEAR_BOOST_RADIUS_METERS);
           if (groundCoverHash(x, z, 2) >= Math.min(1, ramp * node.coverage * nearBoost)) {

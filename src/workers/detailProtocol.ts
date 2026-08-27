@@ -47,6 +47,8 @@ export interface DetailWorkerPresentationBuildInput {
   readonly treeVariantCap: number;
   readonly treePrototypeMode: "families" | "species";
   readonly grassRadiusMeters: number;
+  /** Wave G: the compute blade system replaces grass-archetype patches. */
+  readonly groundCoverBladesActive?: boolean;
   readonly observerX: number;
   readonly observerZ: number;
 }

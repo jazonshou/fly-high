@@ -59,13 +59,13 @@ function bandWindow(
 describe("band memberships (2-17 close)", () => {
   it("covers every band whose window a stem could enter within the slack", () => {
     const nearEdge = LAW.near.outerRadiusMeters;
-    // Pure-near membership holds only where the mid window cannot open
-    // within one slack of camera travel: nearEdge − margin − slack.
-    const interior = WorldDetailRuntime.fadeBandMemberships(
-      LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS - DETAIL_MEMBERSHIP_SLACK_METERS - 5,
-      LAW,
-    );
-    expect(interior.map((entry) => entry.band)).toEqual(["near"]);
+    // Wave T shrank the near band below margin + slack (150 m vs 100 + 96 at
+    // tier 1), so there is no longer a pure-near interior: every near stem
+    // also carries a mid membership whose window the vertex stage keeps
+    // closed until the switch. The double-buffered records are a few hundred
+    // 32-byte rows; the arbitration is the band window, not the membership.
+    const interior = WorldDetailRuntime.fadeBandMemberships(5, LAW);
+    expect(interior.map((entry) => entry.band)).toEqual(["near", "mid"]);
 
     const inMargin = WorldDetailRuntime.fadeBandMemberships(
       nearEdge - DETAIL_FADE_MARGIN_METERS * 0.5,

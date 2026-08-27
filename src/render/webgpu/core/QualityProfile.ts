@@ -1,4 +1,8 @@
 import {
+  GROUND_COVER_LAWS,
+} from "@/src/render/webgpu/detail/groundCoverLaw";
+import type { GroundCoverLaw } from "@/src/render/webgpu/detail/groundCoverLaw";
+import {
   RENDERED_DENSITY_LAWS,
   type RenderedDensityLaw,
 } from "@/src/render/webgpu/detail/renderedDensity";
@@ -48,6 +52,8 @@ export interface WebGpuQualityProfile {
   readonly frameTargetMs: number;
   /** R-21: the tier's rendered-density law (the one vegetation authority). */
   readonly renderedDensityLaw: RenderedDensityLaw;
+  /** Wave G: the tier's ground-cover blade law (rings, densities, gate). */
+  readonly groundCoverLaw: GroundCoverLaw;
   /** 2-12: cap on crown-geometry variants per selected prototype species. */
   readonly treeVariantCap: number;
   /**
@@ -224,6 +230,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
+      groundCoverLaw: GROUND_COVER_LAWS[0]!,
       treeVariantCap: 1,
       treePrototypeMode: "families",
       grassRadiusMeters: 90,
@@ -286,6 +293,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
+      groundCoverLaw: GROUND_COVER_LAWS[1]!,
       // Playability is the tier-1 contract. Yaw, scale, lean, colour and wind
       // retain stem-level variation; one mesh variant per prototype family
       // removes the dominant species×variant×band submission multiplier.
@@ -361,6 +369,7 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
+      groundCoverLaw: GROUND_COVER_LAWS[2]!,
       treeVariantCap: 5,
       treePrototypeMode: "species",
       grassRadiusMeters: 220,
@@ -418,6 +427,7 @@ export function resolveWebGpuQualityProfile(
     msaaSamples: 4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
+      groundCoverLaw: GROUND_COVER_LAWS[3]!,
     treeVariantCap: 5,
     treePrototypeMode: "species",
     grassRadiusMeters: 320,

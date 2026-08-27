@@ -110,8 +110,11 @@ describe("rendered-density law (R-21)", () => {
   it("keeps §5.3's published band radii", () => {
     // The three vegetation rows the realignment added to §5.3 precisely
     // because they "sat outside every cut ladder". If a later pass wants
-    // different radii it moves this table and the plan together.
-    const cardTreeLodRadius = [700, 1_100, 1_500, 2_000];
+    // different radii it moves this table and the plan together. Wave T
+    // moved tier 0's card radius 700 → 640 m: each band now submits three
+    // tree parts, and the smaller card band is what keeps tier 0's
+    // draw-submission model at its frame row.
+    const cardTreeLodRadius = [640, 1_100, 1_500, 2_000];
     const impostorRadius = [2_000, 3_000, 4_000, 6_000];
     RENDERED_DENSITY_LAWS.forEach((law, tier) => {
       expect(law.mid.outerRadiusMeters, `tier ${tier} card radius`)
@@ -181,9 +184,11 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     );
     const shrubMeshes = Object.values(SHRUB_VARIANT_COUNTS).reduce((a, b) => a + b, 0);
     return {
-      // Crown and trunk are separate materials, so separate draws.
-      near: nearVariants * 2,
-      mid: midVariants * 2,
+      // Wave T: three parts per tree per band — bark skeleton (opaque), the
+      // interior core (opaque crown), and the leaf-cluster card shell
+      // (alpha-test) — each its own material bucket, so its own draw.
+      near: nearVariants * 3,
+      mid: midVariants * 3,
       far: 1,
       // Shrub variants + three rock lithologies + four clutter kinds + four
       // ground-cover archetypes, all near-band only.
@@ -266,14 +271,17 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     // the measured rejection beside it so a later pass cannot treat the
     // arithmetic as proof of a real GPU win.
     const { profile, counts, estimate } = estimateForTier("medium", "balanced");
+    // Wave T: a tree band is three parts. The priced (and still rejected)
+    // merge folds the interior core into the bark batch — both opaque — so
+    // the merged model drops one part in three, not one in two.
     const merged = estimateVegetationDrawCalls({
       law: profile.renderedDensityLaw,
       chunkEdgeMeters: CHUNK_EDGE_METERS,
-      nearMeshesPerChunk: counts.near / 2,
-      midMeshesPerChunk: counts.mid / 2,
+      nearMeshesPerChunk: (counts.near * 2) / 3,
+      midMeshesPerChunk: (counts.mid * 2) / 3,
       farMeshesPerChunk: counts.far,
       understoryMeshesPerChunk: counts.understory,
-      shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near / 2 : 0,
+      shadowMeshesPerChunk: profile.vegetationCastsShadows ? (counts.near * 2) / 3 : 0,
       shadowCascades: profile.shadowCascades,
     });
     expect(merged.total).toBeLessThan(estimate.total);
@@ -293,7 +301,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     });
     expect(Object.values(coreGpuImprovementsMs).every((delta) => delta >= 2)).toBe(false);
     expect(Object.values(coreGpuImprovementsMs).every((delta) => delta < 0)).toBe(true);
-    expect(counts.near % 2, "split crown/trunk mesh count remains live").toBe(0);
+    expect(counts.near % 3, "three-part tree mesh count remains live").toBe(0);
   });
 
   it("pins what the far-band merge was worth", () => {

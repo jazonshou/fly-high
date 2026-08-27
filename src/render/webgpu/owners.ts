@@ -709,6 +709,46 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "format returning; 2-12..2-17 extend the RECORD, never fork it.",
   },
   {
+    // Wave T: the tree skeleton generator — ONE skeleton per (species,
+    // variant, seed) feeds every mesh detail level and the leaf-card shell.
+    artifact: "tree-skeleton-generator",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/treeSkeleton.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: ["buildTreeSkeleton", "estimateSkeletonTriangles"],
+    notes:
+      "All tree RNG lives here in one named stream; meshing consumes zero "
+      + "RNG so near and mid silhouettes agree by construction.",
+  },
+  {
+    // Wave G: the ground-cover blade law — ring densities, lattice sizing
+    // and the altitude gate; the compute system and the budget test read it.
+    artifact: "ground-cover-law",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/groundCoverLaw.ts"],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: ["GROUND_COVER_LAWS", "estimateGroundCoverVertexLoad"],
+    notes:
+      "A second blades-per-square-metre constant outside this file is the "
+      + "R-21 failure class applied to grass.",
+  },
+  {
+    // Wave G: the per-frame compute blade system, its WGSL and its material
+    // plugin — placement is a pure function of world position.
+    artifact: "ground-cover-blades",
+    owner: "vegetation",
+    definitionSites: [
+      "src/render/webgpu/detail/GroundCoverSystem.ts",
+      "src/render/webgpu/detail/groundCoverWgsl.ts",
+      "src/render/webgpu/detail/GroundCoverMaterialPlugin.ts",
+    ],
+    consumers: ["vegetation"],
+    notes:
+      "Blades stand on the consumer authority's rendered surface and wear "
+      + "the classifier's harmonised ground albedo; no streaming state "
+      + "exists anywhere in the path.",
+  },
+  {
     // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
     // thinning all read these bands; nothing re-derives a density ceiling.
     artifact: "rendered-density-law",

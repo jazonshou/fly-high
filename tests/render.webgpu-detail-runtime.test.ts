@@ -1493,8 +1493,10 @@ describe("WebGPU world-detail spatial presentation", () => {
       expect(runtime.pendingWorkItems).toBe(0);
 
       // An origin rebase dirties every chunk; a starved budget holds the
-      // nearest chunk's build in flight across updates.
-      budget.maximumWorkUnits = 64;
+      // nearest chunk's build in flight across updates. (16, not 64: wave
+      // T's law thins the 150–300 m ring harder, so this fixture's chunk
+      // builds in ~50 units and a 64-unit budget no longer starves it.)
+      budget.maximumWorkUnits = 16;
       const cancellationsBefore = runtime.presentationRebuildDiagnostics.cancellations;
       const publicationsBefore = runtime.presentationRebuildDiagnostics.publications;
       runtime.update(homeObserver, origin1, profile);

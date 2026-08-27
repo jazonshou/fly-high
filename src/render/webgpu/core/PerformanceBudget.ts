@@ -204,6 +204,13 @@ export interface DynamicAllocationInputs {
   readonly foliageAtlasMiB: number;
   /** Octahedral impostor atlas (`2-17`); 0 until it exists. */
   readonly impostorAtlasMiB: number;
+  /**
+   * Wave G ground-cover blades: per-ring STORAGE|VERTEX buffers plus the
+   * CPU-baked domain tile. Per-tier because the blade law's lattice sizes
+   * are; pinned against `groundCoverBufferBytes(GROUND_COVER_LAWS[tier])`
+   * by the vegetation suite so the row moves when the law moves.
+   */
+  readonly groundCoverMiB: Readonly<Record<PerformanceTier, number>>;
   /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
   readonly cloudVolumesMiB: number;
   /**
@@ -285,6 +292,14 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // are the recorded decision (the plan's 128² sketch did not close against
   // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px).
   impostorAtlasMiB: 9.33,
+  // Wave G: blade record buffers (32 B x lattice lanes across three rings)
+  // plus the 256-metre domain tile (256 squared r32float + 64 squared rgba8).
+  groundCoverMiB: Object.freeze({
+    0: 1.4,
+    1: 3.6,
+    2: 6.0,
+    3: 9.4,
+  }),
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
   cloudVolumesMiB: (128 ** 3 * 4 + 32 ** 3 * 4 + 512 ** 2 * 4) / 1_048_576,
   // 3-0/3-1: two RGBA8 arrays (albedo+height, normal+material) of
@@ -352,8 +367,11 @@ export function mipChainByteFactor(edge: number): number {
  * buffers. 2-10 retired the planar-reflection mirror this allowance also
  * covered — each tier gives back the mirror's ~0.2-1 MiB.
  */
+// Tier 0's row funds wave G's ground-cover blades (the policy: a new
+// vegetation allocation is paid for in the same commit): the allowance was
+// carrying 6.7 MiB of slack against Gate A's 1.286 MiB measured actual.
 const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
-  0: 8,
+  0: 6.5,
   1: 9,
   2: 11,
   3: 13,
@@ -399,6 +417,7 @@ export interface GpuMemoryEstimateMiB {
   readonly detailInstancesMiB: number;
   readonly foliageAtlasMiB: number;
   readonly impostorAtlasMiB: number;
+  readonly groundCoverMiB: number;
   readonly otherDetailMiB: number;
   readonly materialArraysMiB: number;
   readonly miscMiB: number;
@@ -532,6 +551,7 @@ export function estimateGpuMemoryBreakdown(
     (inputs.detailInstanceBudget[tier] * inputs.detailInstanceBytes) / MIB;
   const foliageAtlasMiB = inputs.foliageAtlasMiB;
   const impostorAtlasMiB = inputs.impostorAtlasMiB;
+  const groundCoverMiB = inputs.groundCoverMiB[tier];
   const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
   const materialArraysMiB =
     (inputs.materialArrayCount
@@ -545,8 +565,8 @@ export function estimateGpuMemoryBreakdown(
     (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB
       + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
       + macroEvolutionMiB + erosionScratchMiB + bathymetryClipmapMiB + channelGraphMiB
-      + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + otherDetailMiB
-      + materialArraysMiB + miscMiB)
+      + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + groundCoverMiB
+      + otherDetailMiB + materialArraysMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
 
   return Object.freeze({
@@ -565,6 +585,7 @@ export function estimateGpuMemoryBreakdown(
     detailInstancesMiB,
     foliageAtlasMiB,
     impostorAtlasMiB,
+    groundCoverMiB,
     otherDetailMiB,
     materialArraysMiB,
     miscMiB,

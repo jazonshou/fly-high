@@ -121,18 +121,22 @@ fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
 // rebuild asynchronously.
 fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f, switchSeed: f32) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
-  let nearSwitch = uniforms.detailBandRadii.x - 80.0;
-  // Code 3: the near-band crown fringe. Same hard vertex cull as near, but
-  // the FRAGMENT dissolves it over the preceding 80 m (detailBandWindow), so
+  let nearSwitch = uniforms.detailBandRadii.x - 50.0;
+  let farSwitchHash = fract(switchSeed);
+  let farSwitch = uniforms.detailBandRadii.y - 100.0 + farSwitchHash * 100.0;
+  // Code 4: the MID-band leaf-card shell (wave T). Lives between the near
+  // switch and the per-stem far switch; the fragment dissolves the near edge so
+  // the near/mid card handoff and the impostor handoff both stay gradual.
+  if (bandCode > 3.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
+  // Code 3: the near-band card shell. Same hard vertex cull as near, but
+  // the FRAGMENT dissolves it over the preceding 50 m (detailBandWindow), so
   // the cards never vanish in one frame at the switch radius.
   if (bandCode > 2.5) { return bandRange >= nearSwitch; }
-  // Mid and far are not identical representations (family hull vs species
+  // Mid and far are not identical representations (skeletal mesh vs species
   // impostor), so a shared radial threshold makes an entire forest ring pop
   // in one frame. Both records carry the same stable wind-phase seed: use it
   // to distribute each stem's hard handoff across the existing 160 m
   // residency overlap. Tint is seasonal and must not move an LOD boundary.
-  let farSwitchHash = fract(switchSeed);
-  let farSwitch = uniforms.detailBandRadii.y - 160.0 + farSwitchHash * 160.0;
   let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
   if (bandCode < 0.5) { return bandRange >= nearSwitch; }
   if (bandCode < 1.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
@@ -557,13 +561,30 @@ fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
 // boundary. Near/mid fragments therefore survive wholesale; far fragments
 // dither only through the outer 420 m cull edge.
 fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3f) -> bool {
-  // Code 3 — the crown fringe's dither dissolve over the last 80 m of the
-  // near band. Without it every stem's fringe cards popped off in one frame
-  // at the 270 m switch (the reported "trees jump").
+  // Code 4 — the mid-band card shell (wave T): dither IN over the 50 m after
+  // the near switch (exact complement of code 3's dither OUT, same Bayer and
+  // hash, so the near/mid card handoff covers every pixel exactly once). The
+  // far edge is the vertex window's per-stem hashed switch, same as mid bark.
+  if (bandCode > 3.5) {
+    let cardRange = distance(positionW.xz, scene.vEyePosition.xz);
+    let nearEdge = uniforms.detailBandRadii.x - 50.0;
+    let inFade = clamp((nearEdge - cardRange) / 50.0, 0.0, 1.0);
+    let cardHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
+    let cardOffset = vec2u(u32(cardHash * 5.0), u32(fract(cardHash * 7.0) * 5.0));
+    if (inFade > 0.0) {
+      // Complement of code 3's survival: threshold >= fade keeps the pixels
+      // the outgoing near cards released.
+      return detailBayer8(vec2u(pixel) + cardOffset) >= inFade;
+    }
+    return true;
+  }
+  // Code 3 — the near card shell's dither dissolve over the last 50 m of the
+  // near band. Without it every stem's cards popped off in one frame at the
+  // switch radius (the reported "trees jump").
   if (bandCode > 2.5) {
     let fringeRange = distance(positionW.xz, scene.vEyePosition.xz);
-    let fringeEdge = uniforms.detailBandRadii.x - 80.0;
-    let fringeFade = clamp((fringeEdge - fringeRange) / 80.0, 0.0, 1.0);
+    let fringeEdge = uniforms.detailBandRadii.x - 50.0;
+    let fringeFade = clamp((fringeEdge - fringeRange) / 50.0, 0.0, 1.0);
     if (fringeFade >= 1.0) { return true; }
     if (fringeFade <= 0.0) { return false; }
     let fringeHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);

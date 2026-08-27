@@ -9,6 +9,7 @@ import {
 } from "../core/TextureArrayMips";
 import { planFoliageAtlas, FOLIAGE_ATLAS_EDGE } from "./FoliageAtlas";
 import {
+  buildCrownFringePrototype,
   buildTreePrototype,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
@@ -300,8 +301,17 @@ export function impostorBakeFrame(species: TreeSpecies, seed = 7): {
   readonly centerYUnit: number;
 } {
   const prototype = buildTreePrototype(species, 0, seed, "near");
-  const height = Math.max(prototype.crown.boundingHeight, prototype.trunk.boundingHeight);
-  const radius = Math.max(prototype.crown.boundingRadius, prototype.trunk.boundingRadius);
+  const cards = buildCrownFringePrototype(species, 0, seed, "near");
+  const height = Math.max(
+    prototype.crown.boundingHeight,
+    prototype.trunk.boundingHeight,
+    cards.boundingHeight,
+  );
+  const radius = Math.max(
+    prototype.crown.boundingRadius,
+    prototype.trunk.boundingRadius,
+    cards.boundingRadius,
+  );
   return {
     extentUnit: Math.max(radius, height / 2) * 1.08,
     centerYUnit: height / 2,
@@ -315,6 +325,7 @@ function bakeSpeciesLayer(
   seed: number,
 ): { albedo: Uint8Array; normalDepth: Uint8Array } {
   const prototype = buildTreePrototype(species, 0, seed, "near");
+  const cards = buildCrownFringePrototype(species, 0, seed, "near");
   const layerEdge = IMPOSTOR_LAYER_EDGE;
   const albedo = new Uint8Array(layerEdge * layerEdge * 4);
   const normalDepth = new Uint8Array(layerEdge * layerEdge * 4);
@@ -343,6 +354,14 @@ function bakeSpeciesLayer(
     // trunks stand in winter.
     rasterizeGeometry(
       prototype.crown, DETAIL_CROWN_ALBEDO, foliage, direction,
+      bare && DECIDUOUS_IMPOSTORS.has(species) ? IMPOSTOR_BARE_LEAF_FRACTION : 1,
+      tile, originX, originY, layerEdge, extent, centerY,
+    );
+    // Wave T: the leaf-cluster card shell is the visible canopy surface —
+    // without it the impostor bakes only the dark interior core and the far
+    // band reads as a different (and much darker) forest.
+    rasterizeGeometry(
+      cards, DETAIL_CROWN_ALBEDO, foliage, direction,
       bare && DECIDUOUS_IMPOSTORS.has(species) ? IMPOSTOR_BARE_LEAF_FRACTION : 1,
       tile, originX, originY, layerEdge, extent, centerY,
     );
