@@ -12,7 +12,7 @@ export interface QuaternionState extends Vec3State {
   w: number;
 }
 
-export type CameraMode = "chase" | "cockpit" | "cinematic";
+export type CameraMode = "chase" | "cockpit" | "cinematic" | "freefly";
 export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
 export type TimeOfDayPreset = "dawn" | "day" | "golden";

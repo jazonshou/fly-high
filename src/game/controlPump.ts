@@ -5,7 +5,7 @@ export const CONTROL_PUMP_HZ = 120;
 export const CONTROL_PUMP_STEP_SECONDS = 1 / CONTROL_PUMP_HZ;
 const CONTROL_PUMP_INTERVAL_MILLISECONDS = 1_000 / CONTROL_PUMP_HZ;
 
-export type ControlPumpPhase = "menu" | "flying" | "paused";
+export type ControlPumpPhase = "menu" | "flying" | "paused" | "viewer";
 
 export interface ControlPumpInput {
   getControls(deltaSeconds: number): ControlState;

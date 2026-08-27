@@ -13,6 +13,7 @@ export interface MutablePresentationVector {
  */
 export function cameraBankFollow(cameraMode: CameraMode, reducedMotion: boolean): number {
   if (cameraMode === "cockpit") return 1;
+  if (cameraMode === "freefly") return 0;
   if (reducedMotion) return 0;
   return cameraMode === "cinematic" ? 0.3 : 0.18;
 }
@@ -32,7 +33,8 @@ export function cameraPresentationResponse(
   deltaSeconds: number,
   reducedMotion: boolean,
 ): number {
-  if (cameraCut || cameraMode === "cockpit") return 1;
+  // Free-fly is a direct rig like cockpit: mouse-look must not lag.
+  if (cameraCut || cameraMode === "cockpit" || cameraMode === "freefly") return 1;
   const delta = Math.max(0, Number.isFinite(deltaSeconds) ? deltaSeconds : 0);
   return 1 - Math.exp(-delta * (reducedMotion ? 12 : 7));
 }

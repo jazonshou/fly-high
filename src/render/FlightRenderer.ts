@@ -372,6 +372,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private quality: QualityLevel;
   private renderingMode: RenderingMode;
   private cameraMode: CameraMode = "chase";
+  /** Beta terrain viewer: aircraft hidden, free-fly camera rig active. */
+  private viewerMode = false;
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
@@ -972,6 +974,21 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     this.aircraft.setCockpitView(mode === "cockpit");
     this.graph.invalidateHistory("camera mode changed");
+  }
+
+  setViewerMode(enabled: boolean): void {
+    if (enabled === this.viewerMode) return;
+    this.viewerMode = enabled;
+    // Disabling the root disables every aircraft mesh, which removes them
+    // from the beauty pass and the shadow render lists alike; the visual and
+    // its registrations are otherwise untouched so leaving the viewer is a
+    // pure re-enable.
+    this.aircraft.root.setEnabled(!enabled);
+    this.setCameraMode(enabled ? "freefly" : "chase");
+  }
+
+  sampleGroundHeight(x: number, z: number): number {
+    return this.cameraTerrainSample(x, z).height;
   }
 
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
@@ -1580,13 +1597,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     Vector3.TransformNormalToRef(Vector3.Up(), this.bodyMatrix, this.up);
     this.forward.normalize();
     this.up.normalize();
-    this.aircraft.root.position.set(
-      state.position.x - this.originX,
-      state.position.y,
-      state.position.z - this.originZ,
-    );
-    this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
-    this.aircraft.update(state, this.currentDeltaSeconds);
+    if (!this.viewerMode) {
+      this.aircraft.root.position.set(
+        state.position.x - this.originX,
+        state.position.y,
+        state.position.z - this.originZ,
+      );
+      this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+      this.aircraft.update(state, this.currentDeltaSeconds);
+    }
     this.updateCamera(state);
     this.cameraWorld.set(
       this.camera.position.x + this.originX,
@@ -1684,7 +1703,18 @@ export class FlightRenderer implements FlightRenderingSystem {
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
-    if (this.cameraMode === "cockpit") {
+    if (this.cameraMode === "freefly") {
+      // The synthetic viewer state's position IS the camera; its orientation
+      // already produced this.forward/this.up in updatePresentation. The rig
+      // is direct (response 1, bank follow 0) so mouse-look never lags.
+      this.desiredCamera.set(
+        state.position.x - this.originX,
+        state.position.y,
+        state.position.z - this.originZ,
+      );
+      this.desiredCameraTarget.copyFrom(this.desiredCamera)
+        .addInPlace(this.forward.scale(200));
+    } else if (this.cameraMode === "cockpit") {
       // Both airframes seat the pilot at the same offsets from the CG: the
       // J-45's tandem canopy and the trainer's cabin both sit 1.15 m forward
       // and 1.12 m up, so no per-kind eye point is warranted here.

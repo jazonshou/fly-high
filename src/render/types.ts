@@ -20,6 +20,18 @@ export interface TerrainAuthorityPublisher {
 export interface FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   setCameraMode(mode: CameraMode): void;
+  /**
+   * Beta terrain viewer: hides the aircraft and switches to the free-fly
+   * camera rig. The caller keeps feeding `render()` a synthetic
+   * `FlightVisualState` whose position IS the camera, so streaming, the
+   * floating origin, and shading all follow the viewer without new seams.
+   */
+  setViewerMode(enabled: boolean): void;
+  /**
+   * Rendered-surface height at (x, z) from the same consumer authority the
+   * chase-camera ground clamp reads — for the viewer's own ground clamp.
+   */
+  sampleGroundHeight(x: number, z: number): number;
   setQuality(quality: QualityLevel): void;
   setRenderingMode(mode: RenderingMode): void;
   setReducedMotion(reducedMotion: boolean): void;
