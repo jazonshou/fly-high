@@ -7,7 +7,7 @@ import {
   pageTexelSizeMeters,
 } from "@/src/render/webgpu/world/pageGeometry";
 import type { WorldPageKey } from "@/src/render/webgpu/world/pageKey";
-import { SURFACE_MATERIAL_COUNT, SurfaceMaterial } from "./surfaceMaterials";
+import { SurfaceMaterial } from "./surfaceMaterials";
 import {
   WORLD_PAGE_GPU_CHANNELS,
   worldPageChannelBytesPerTexel,
@@ -211,6 +211,14 @@ export const TERRAIN_CHANNEL_FAMILIES: readonly WorldPageChannelDescriptor[] = O
   ),
 );
 
+/** Contracted channel families whose producers land later in the active phase. */
+export const TERRAIN_PLANNED_CHANNEL_FAMILIES: readonly WorldPageChannelDescriptor[] =
+  Object.freeze(
+    WORLD_PAGE_GPU_CHANNELS.filter(
+      (channel) => channel.name !== "height" && channel.plannedBy !== undefined,
+    ),
+  );
+
 /** Bytes one channel-atlas texel occupies, across every live family. */
 export function terrainChannelBytesPerTexel(
   residentSeasonBuckets: number = SEASON_BUCKETS_RESIDENT,
@@ -221,6 +229,14 @@ export function terrainChannelBytesPerTexel(
     bytes += family.seasonKeyed ? perTexel * residentSeasonBuckets : perTexel;
   }
   return bytes;
+}
+
+/** Bytes already reserved for planned channel families in the phase budget. */
+export function terrainPlannedChannelBytesPerTexel(): number {
+  return TERRAIN_PLANNED_CHANNEL_FAMILIES.reduce(
+    (bytes, family) => bytes + worldPageChannelBytesPerTexel(family),
+    0,
+  );
 }
 
 /** Bytes one height-atlas texel occupies. */
@@ -293,23 +309,31 @@ export const TERRAIN_NODE_ATTRIBUTE_A = "terrainNodeA";
 export const TERRAIN_NODE_ATTRIBUTE_B = "terrainNodeB";
 export const TERRAIN_NODE_ATTRIBUTE_STRIDE = 4;
 
+/** Four six-bit morph fields fill one exactly representable 24-bit f32 integer. */
+export const TERRAIN_CORNER_MORPH_BITS = 6;
+export const TERRAIN_CORNER_MORPH_LEVELS = (1 << TERRAIN_CORNER_MORPH_BITS) - 1;
+export const TERRAIN_CORNER_MORPH_PACKED_MAX = 2 ** (TERRAIN_CORNER_MORPH_BITS * 4) - 1;
+
 /** Lane meanings, as data, so the CPU writer and the WGSL reader cannot drift. */
 export const TERRAIN_NODE_LANES = Object.freeze({
   a: Object.freeze(["slotIndex", "subNodeX", "subNodeZ", "level"] as const),
-  b: Object.freeze(["morphK", "parentSlotIndex", "texelSize", "maxDeviation"] as const),
+  b: Object.freeze([
+    "morphK",
+    "parentSlotIndex",
+    "channelLane",
+    "packedCornerMorphs",
+  ] as const),
 });
 
 /**
  * `4.5-A3`: the PROVISIONAL ecotone axis — the material a node shades with
  * while its page holds no channel (splat) slot.
  *
- * Stated here because it now has exactly two consumers that must agree and
- * only one derivation site: the WGSL vertex path walks these constants against
- * the just-displaced height, and `TerrainClipmapSystem` reads only
- * `fallbackAxis` for the guard below. Before this item the walk lived on the
- * CPU against the page's mean height, which made the fallback ONE material per
- * node — a solid block up to `512·2^L` m across, which is what the reported
- * "splotches of solid colour" were wherever a channel slot was missing.
+ * The categorical altitude walk is retired: per-node values made solid plates
+ * and per-vertex values made kilometre-scale palette contours. The shader now
+ * owns a continuous Grass/alpine-Rock/snow macro fallback. These historic
+ * bounds remain as a fail-safe if an axis is ever prototyped again; importantly
+ * it still cannot walk into dry grass, gravel, asphalt or concrete.
  *
  * `fallbackAxis` is GRASS and not sand, and the reason is worth keeping: a
  * node with no resident HEIGHT slot samples zero, and zero read as "at sea
@@ -323,8 +347,13 @@ export const TERRAIN_PROVISIONAL_AXIS = Object.freeze({
   shoreBandMeters: 2,
   /** Metres of elevation per step along the ecotone axis. */
   metersPerStep: 380,
-  /** Last index on the axis; the axis is clamped into it. */
-  maxAxis: SURFACE_MATERIAL_COUNT - 1,
+  /**
+   * Last NATURAL material on the ecotone axis. Dry grass, gravel, asphalt and
+   * concrete are categorical secondary/painted surfaces at ids 6..9, not
+   * altitude successors to snow. Letting the provisional height walk reach
+   * them painted coarse high mountains with gravel and asphalt lobes.
+   */
+  maxAxis: SurfaceMaterial.Snow as number,
   /** What a node with no height texels to walk shades with. */
   fallbackAxis: SurfaceMaterial.Grass as number,
 });
@@ -500,11 +529,13 @@ export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
     "terrainSurfaceNormal",
     // Phase 4's page atlases.
     "terrainHeightAtlas",
-    "terrainSplatIdAtlas",
-    "terrainSplatWeightAtlas",
     "terrainOcclusionAtlas",
     "terrainHorizonAtlasA",
     "terrainHorizonAtlasB",
+    // X5: one season-invariant id texture plus two weight buckets.
+    "terrainSplatId",
+    "terrainSplatWeightLo",
+    "terrainSplatWeightHi",
   ] as const),
 });
 

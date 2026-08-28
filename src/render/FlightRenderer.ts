@@ -26,6 +26,7 @@ import {
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import {
   rodFractionForAdaptedLuminance,
+  shouldRunScotopicPass,
   ScotopicVisionPass,
 } from "./webgpu/atmosphere/ScotopicVision";
 import {
@@ -42,9 +43,13 @@ import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
-import { NullTerrainCollisionMirror } from "./webgpu/terrain/TerrainCollisionMirror";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
+import {
+  formatGpuUncapturedError,
+  GpuUncapturedErrorGuard,
+} from "./webgpu/core/GpuUncapturedErrorGuard";
+import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
 import {
   FrameGraphBudgetProbe,
   PassTimingHistory,
@@ -68,31 +73,58 @@ import {
   frameTimingPercentile,
   frameTimingPercentile95,
   freshFrameTiming,
+  hitchThresholdMilliseconds,
   isUsableFrameTiming,
   resolveWebGpuQualityProfile,
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { WorldDetailRuntime } from "./webgpu/detail";
+import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
+import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
+import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
+import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
+import {
+  TerrainConsumerAuthority,
+  terrainConsumerSampleFromAuthority,
+} from "./webgpu/terrain/TerrainConsumerAuthority";
+import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
+import {
+  resolveSunShadowCascadeLayout,
+  type SunShadowCascadeLayout,
+} from "./webgpu/water/SunShadowReceiver";
+
+/** Wave R: the per-frame snapshot is reused, never reallocated. */
+type MutableDetailSunShadowSnapshot = {
+  -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
+};
+import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
+import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
-import type { FlightRenderingSystem } from "./types";
+import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
+import {
+  type TerrainPagePublication,
+} from "@/src/workers/terrainAuthority";
 import { attributePresentFrame } from "./frameAttribution";
 import {
+  cameraBankFollow,
   cameraPresentationResponse,
-  shouldStabilizeCameraHorizon,
+  orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
 const SCENE_STARTUP_TIMEOUT_MILLISECONDS = 45_000;
+/** CPU-worker reference path; the future measured GPU pass keeps this boundary. */
+const TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS = 180_000;
 const MIN_GPU_TIMING_SAMPLES = 8;
 const GPU_TIMING_STALE_AFTER_FRAMES = 30;
 /**
@@ -170,19 +202,39 @@ export interface ChaseCameraProfile {
   distance: number;
   height: number;
   fieldOfView: number;
+  /** Metres ahead of the aircraft the camera aims — speed pushes it forward. */
+  aimAhead: number;
 }
 
 export function chaseCameraProfile(
   aircraft: AircraftKind,
   airspeed: number,
-  out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0 },
+  out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
   const jet = aircraft === "jet";
-  const baseDistance = jet ? 14.3 : 13.5;
-  const speedThreshold = jet ? 145 : 45;
-  out.distance = baseDistance + Math.max(0, Math.min(2.2, (airspeed - speedThreshold) * 0.012));
-  out.height = jet ? 5 : 5.1;
-  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - (jet ? 140 : 38)) * 0.035));
+  if (jet) {
+    // The speed response is the point: the "jet should sit further ahead at
+    // speed" report is answered by pulling the rig back AND pushing the aim
+    // point forward, so the aircraft slides forward in frame and the world
+    // streams past it. The old fixed +2.2 m cap read as a static rig.
+    //
+    // Sized for the ~11 m Vesper J-45 (not the 19 m airframe the fix-pack
+    // briefly flew): the base rig is the original 14.3 m / 5.0 m, and the
+    // response opens above 145 m/s — the J-45's ~260 m/s ceiling gives a
+    // 115 m/s working band, so the slopes are set to reach their caps right
+    // at the top of the envelope (0.07·115 = 8.05 ≥ 8; 0.12·115 = 13.8 ≈ 14;
+    // 0.05·120 = 6.0 = 6 measured from the 140 m/s FOV knee).
+    const speedExcess = Math.max(0, airspeed - 145);
+    out.distance = 14.3 + Math.min(8, speedExcess * 0.07);
+    out.height = 5;
+    out.fieldOfView = 62 + Math.max(0, Math.min(6, (airspeed - 140) * 0.05));
+    out.aimAhead = 16 + Math.min(14, speedExcess * 0.12);
+    return out;
+  }
+  out.distance = 13.5 + Math.max(0, Math.min(2.2, (airspeed - 45) * 0.012));
+  out.height = 5.1;
+  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - 38) * 0.035));
+  out.aimAhead = 16;
   return out;
 }
 
@@ -223,11 +275,25 @@ export interface FlightRendererOptions {
   signal?: AbortSignal;
   onDeviceLost?: (reason: string) => void;
   /**
+   * A raw WebGPU validation/internal error rejects work asynchronously, so it
+   * does not pass through render()'s synchronous try/catch and need not lose
+   * the device. Treat the first event as terminal rather than continuing to
+   * report rAF FPS over a rejected, black frame.
+   */
+  onGpuUncapturedError?: (reason: string) => void;
+  /**
    * Z-1: pin the render scale and disable both governors. The perf capture
-   * passes 1.0 so `renderPixels === width × height` and no governor state can
-   * rewrite pixels mid-run; interactive sessions leave it unset.
+   * pins either the shipping tier scale or an explicit cap-stress scale, and
+   * no governor state can rewrite pixels mid-run. Interactive sessions leave
+   * it unset.
    */
   pinnedRenderScale?: number;
+  /**
+   * Capture-only timestamp-query diagnostic. Normal gameplay and captures do
+   * not pay Babylon's continuous resolve/submit/map overhead; `true` is
+   * accepted only together with `pinnedRenderScale`.
+   */
+  captureGpuTiming?: boolean;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -253,6 +319,7 @@ const SCOTOPIC_MID_GREY_TARGET = 0.16;
 export class FlightRenderer implements FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   private readonly engine: WebGPUEngine;
+  private readonly gpuUncapturedErrorGuard: GpuUncapturedErrorGuard;
   /** 2-13: the world definition, kept for per-frame wind-field sampling. */
   private readonly worldDefinition: WorldDefinition;
   private readonly scene: Scene;
@@ -260,15 +327,36 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly graph = new WebGpuFrameGraph();
   private readonly aircraft: AircraftVisual;
   private readonly terrain: TerrainClipmapSystem;
+  private readonly terrainEvolution: TerrainEvolutionRuntime;
+  /** Main-thread copy serving wildlife and inline detail placement. */
+  private readonly terrainConsumerAuthority: TerrainConsumerAuthority | null;
   private readonly atmosphere: AtmosphereSystem;
+  private readonly detailSunShadowMatrices = new Float32Array(64);
+  private readonly detailSunShadowView = new Float32Array(16);
+  private detailSunShadowLayoutKey = "";
+  private detailSunShadowLayout: SunShadowCascadeLayout | null = null;
+  private readonly detailSunShadowSnapshot: MutableDetailSunShadowSnapshot = {
+    matrices: this.detailSunShadowMatrices,
+    view: this.detailSunShadowView,
+    splits: [0, 0, 0, 0],
+    blendStarts: [0, 0, 0, 0],
+    cascadeCount: 0,
+    darkness: 0,
+    bias: 0,
+    shadowMaxZ: 0,
+    valid: false,
+    map: null,
+  };
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
   private readonly aerialReceivers: AerialPerspectiveRegistry;
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
+  private readonly bathymetry: BathymetryClipmap;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
+  private readonly groundCover: GroundCoverSystem;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   private readonly fxaa: FxaaPostProcess;
@@ -286,6 +374,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
+  private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
   private readonly cpuFrameDurations: number[] = [];
@@ -300,6 +389,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
   private readonly latitudeDegrees: number;
+  /** The chase rig's ground clamp samples the terrain directly. */
+  private readonly cameraTerrainSample: TerrainSampleFunction;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
   private skyProbeAltitudeMeters = 0;
@@ -309,6 +400,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private quality: QualityLevel;
   private renderingMode: RenderingMode;
   private cameraMode: CameraMode = "chase";
+  /** Beta terrain viewer: aircraft hidden, free-fly camera rig active. */
+  private viewerMode = false;
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
@@ -316,13 +409,12 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
-  /** Null until 5-2: physics still samples the analytic kernel directly. */
-  private readonly collisionMirror = new NullTerrainCollisionMirror();
+  private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
-  private readonly pinnedRenderScale: number | null;
+  private pinnedRenderScale: number | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
@@ -337,16 +429,21 @@ export class FlightRenderer implements FlightRenderingSystem {
   private lastGpuCounterSampleCount = 0;
   private lastGpuFrameMilliseconds: number | null = null;
   private lastGpuTimingFrameIndex = Number.NEGATIVE_INFINITY;
+  /** Monotonic label for metrics cleared together by resetTimingWindow(). */
+  private timingWindowEpoch = 0;
   private deviceLost = false;
   private disposed = false;
 
   private constructor(
     options: FlightRendererOptions,
     engine: WebGPUEngine,
+    gpuUncapturedErrorGuard: GpuUncapturedErrorGuard,
     scene: Scene,
     camera: UniversalCamera,
     aircraft: AircraftVisual,
     terrain: TerrainClipmapSystem,
+    terrainEvolution: TerrainEvolutionRuntime,
+    terrainConsumerAuthority: TerrainConsumerAuthority | null,
     atmosphere: AtmosphereSystem,
     clouds: VolumetricCloudSystem,
     cloudShadowReceivers: CloudShadowReceiverRegistry,
@@ -354,8 +451,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
     hydrology: HydrologySystem,
+    bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
+    groundCover: GroundCoverSystem,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
@@ -367,10 +466,13 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphereResources = atmosphereResources;
     this.domElement = options.canvas;
     this.engine = engine;
+    this.gpuUncapturedErrorGuard = gpuUncapturedErrorGuard;
     this.scene = scene;
     this.camera = camera;
     this.aircraft = aircraft;
     this.terrain = terrain;
+    this.terrainEvolution = terrainEvolution;
+    this.terrainConsumerAuthority = terrainConsumerAuthority;
     this.atmosphere = atmosphere;
     this.clouds = clouds;
     this.cloudShadowReceivers = cloudShadowReceivers;
@@ -378,8 +480,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.skyProbe = skyProbe;
     this.ocean = ocean;
     this.hydrology = hydrology;
+    this.bathymetry = bathymetry;
     this.airport = airport;
     this.detail = detail;
+    this.groundCover = groundCover;
     this.wildlife = wildlife;
     this.toneMap = toneMap;
     this.fxaa = fxaa;
@@ -388,6 +492,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
+    this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
@@ -418,6 +523,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.deviceLost = true;
       options.onDeviceLost?.("The WebGPU device was lost. The renderer must be recreated.");
     });
+    // Ecology is a terrain-authority consumer in its own right. Do not make
+    // its final-page feed depend on the simulation publisher being attached.
+    if (this.terrainConsumerAuthority) {
+      this.terrain.setCollisionPagePublisher(
+        (page) => this.publishTerrainConsumerPage(page),
+      );
+      this.terrain.setAuxPagePublisher(
+        (page) => this.publishTerrainConsumerAuxPage(page),
+      );
+    }
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
   }
@@ -437,8 +552,25 @@ export class FlightRenderer implements FlightRenderingSystem {
     );
     if (!capability.supported) throw new Error(capability.reason ?? "WebGPU is unavailable.");
     throwIfRendererStartupAborted(options.signal);
-    const timestampQueries = capability.features.has("timestamp-query");
-    const requiredFeatures: GPUFeatureName[] = timestampQueries ? ["timestamp-query"] : [];
+    // Opting out at device creation is load-bearing. Babylon records the next
+    // frame's timestamp into a command encoder as `endFrame()` returns, so
+    // disabling its timer later destroys a query set still referenced by that
+    // unsent encoder. A controlled no-observer capture must never create it.
+    const timestampQuerySupported = capability.features.has("timestamp-query");
+    const gpuTimingEnabled = gpuTimingEnabledAtStartup({
+      timestampQuerySupported,
+      captureGpuTiming: options.captureGpuTiming,
+      pinnedCapture: options.pinnedRenderScale !== undefined,
+    });
+    if (!capability.features.has("texture-formats-tier1")) {
+      throw new Error(
+        "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
+      );
+    }
+    const requiredFeatures: GPUFeatureName[] = [
+      "texture-formats-tier1",
+      ...(gpuTimingEnabled ? ["timestamp-query" as const] : []),
+    ];
     const engine = await awaitRendererStartup(
       WebGPUEngine.CreateAsync(options.canvas, {
         // 1B-11: the hand-built post chain forces an offscreen target, so
@@ -458,15 +590,29 @@ export class FlightRenderer implements FlightRenderingSystem {
       30_000,
       (lateEngine) => lateEngine.dispose(),
     );
-    const cleanup: Array<() => void> = [() => engine.dispose()];
+    // Install the authoritative raw-device channel before constructing any
+    // scene resource or compiling any pipeline. Babylon only logs these
+    // asynchronous failures; without this guard a rejected whole-frame submit
+    // can leave the canvas black while the rAF/FPS counter stays healthy.
+    const gpuUncapturedErrorGuard = new GpuUncapturedErrorGuard(
+      engine._device,
+      (failure) => options.onGpuUncapturedError?.(
+        formatGpuUncapturedError(failure),
+      ),
+    );
+    const cleanup: Array<() => void> = [
+      () => engine.dispose(),
+      () => gpuUncapturedErrorGuard.dispose(),
+    ];
     try {
       throwIfRendererStartupAborted(options.signal);
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
-      engine.enableGPUTimingMeasurements = timestampQueries;
+      engine.enableGPUTimingMeasurements = gpuTimingEnabled;
       assertStartupInvariants({
-        timestampQuerySupported: timestampQueries,
+        timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        gpuTimingRequired: gpuTimingEnabled,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
         // 4-0: assert the limits the renderer DECLARES, not the ones it hopes
@@ -496,6 +642,13 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.activeCamera = camera;
 
       const profile = resolveWebGpuQualityProfile(options.quality, options.renderingMode);
+      const terrainEvolution = new TerrainEvolutionRuntime();
+      cleanup.push(() => terrainEvolution.dispose());
+      // Start the eager macro pass as early as possible. It runs in its own
+      // worker while the main thread constructs the first device resources,
+      // but eroded pages, water and graph hydrology do not become visible
+      // until this one canonical result is ready.
+      const terrainEvolutionPromise = terrainEvolution.initialize(options.world);
       const atmosphere = new AtmosphereSystem(
         scene,
         camera,
@@ -505,6 +658,41 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      const evolutionResult = await awaitRendererStartup(
+        terrainEvolutionPromise,
+        options.signal,
+        "terrain macro evolution",
+        TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
+      );
+      terrain.setMacroEvolution(evolutionResult.evolution);
+      let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
+      let consumerTerrainSample = options.terrainSample;
+      if (evolutionResult.mode === "eroded") {
+        terrainConsumerAuthority = new TerrainConsumerAuthority();
+        // This view is retained on the main thread. Simulation and detail
+        // receive separate copies because both worker posts detach them.
+        terrainConsumerAuthority.publishMacro(
+          terrainMacroGridFromEvolution(evolutionResult.evolution, false),
+        );
+        consumerTerrainSample = terrainConsumerSampleFromAuthority(
+          options.world,
+          options.terrainSample,
+          terrainConsumerAuthority,
+        );
+      }
+      const bathymetry = new BathymetryClipmap(scene, options.world);
+      cleanup.push(() => bathymetry.dispose());
+      bathymetry.setMacroEvolution(evolutionResult.evolution);
+      await awaitRendererStartup(
+        bathymetry.initialize(
+          options.world.airport?.centerX ?? 0,
+          options.world.airport?.centerZ ?? 0,
+          options.signal,
+        ),
+        options.signal,
+        "bathymetry clipmap",
+        SCENE_STARTUP_TIMEOUT_MILLISECONDS,
+      );
       const aircraft = createWebGpuAircraft(scene, options.aircraft);
       cleanup.push(() => aircraft.dispose());
       for (const mesh of aircraft.meshes) {
@@ -528,15 +716,27 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
-        terrainSample: options.terrainSample,
+        terrainSample: consumerTerrainSample,
         seaLevelMeters: options.world.seaLevel,
         latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
+        workerWorld: options.world,
       });
       cleanup.push(() => detail.dispose());
+      // Wave G: the blade system reads the SAME consumer sampler as detail
+      // and the camera clamp, so blades stand on the rendered surface.
+      const groundCover = new GroundCoverSystem(scene, {
+        terrainSample: consumerTerrainSample,
+      });
+      cleanup.push(() => groundCover.dispose());
+      if (evolutionResult.mode === "eroded") {
+        detail.publishTerrainMacro(
+          terrainMacroGridFromEvolution(evolutionResult.evolution),
+        );
+      }
       const wildlife = new WildlifeSystem(scene, {
         worldSeed: options.world.seed,
-        terrainSample: options.terrainSample,
+        terrainSample: consumerTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
       const hydrology = await HydrologySystem.create(
@@ -550,7 +750,19 @@ export class FlightRenderer implements FlightRenderingSystem {
           centerX: airportDefinition?.centerX ?? 0,
           centerZ: airportDefinition?.centerZ ?? 0,
           atmosphere: atmosphere.snapshot,
+          bathymetry,
           windDirectionRadians: options.world.prevailingWindRadians,
+          // wave R fix 8: the world definition owns the wind for BOTH water
+          // surfaces. Inland water took its direction from here and its speed
+          // from the atmosphere's cloud-layer wind, which can disagree 3x.
+          windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
+          ...(evolutionResult.mode === "eroded"
+            ? {
+              graphHydrology: channelGraphToHydrologyGeometry(
+                evolutionResult.channelGraph,
+              ),
+            }
+            : {}),
         },
         options.signal,
       );
@@ -561,10 +773,6 @@ export class FlightRenderer implements FlightRenderingSystem {
       const atmosphereResources = new AtmosphereGpuResources(
         scene,
         camera,
-        (mesh) =>
-          mesh === atmosphere.skyMesh
-          || mesh.name === "volumetric-cloud-shell"
-          || mesh.material?.disableDepthWrite === true,
       );
       cleanup.push(() => atmosphereResources.dispose());
       const clouds = new VolumetricCloudSystem(
@@ -586,6 +794,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.world.prevailingWindRadians,
         options.world.prevailingWindSpeed,
         options.signal,
+        bathymetry,
       );
       cleanup.push(() => ocean.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
@@ -595,6 +804,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       cloudShadowReceivers.registerMeshes(aircraft.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       detail.addPbrMaterials((material) => {
+        cloudShadowReceivers.registerMaterial(material);
+      });
+      groundCover.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
       wildlife.addPbrMaterials((material) => {
@@ -608,6 +820,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       aerialReceivers.registerMeshes(aircraft.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       detail.addPbrMaterials((material) => {
+        aerialReceivers.registerMaterial(material);
+      });
+      groundCover.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
       wildlife.addPbrMaterials((material) => {
@@ -711,8 +926,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       // the post-process chain exist: the aerial hook needs linear HDR at
       // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
       assertStartupInvariants({
-        timestampQuerySupported: timestampQueries,
+        timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
+        gpuTimingRequired: gpuTimingEnabled,
         requestedFeatures: requiredFeatures,
         grantedFeatures: engine.enabledExtensions,
         imageProcessingAppliedByPostProcess:
@@ -730,6 +946,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "WebGPU scene startup",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
       // the load screen. Babylon 9.21 calls `createComputePipeline`
@@ -748,18 +965,26 @@ export class FlightRenderer implements FlightRenderingSystem {
         "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // 2-10: the planar-reflection capture is retired — the environment
       // probe covers water reflections; the receiver contract stays bound to
       // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
-        options,
+        // The camera's ground clamp must track the terrain the player SEES:
+        // in eroded worlds that is the consumer authority's surface, not the
+        // analytic pre-erosion kernel — clamping against an invisible ridge
+        // shoved the chase camera upward with no visual justification.
+        { ...options, terrainSample: consumerTerrainSample },
         engine,
+        gpuUncapturedErrorGuard,
         scene,
         camera,
         aircraft,
         terrain,
+        terrainEvolution,
+        terrainConsumerAuthority,
         atmosphere,
         clouds,
         cloudShadowReceivers,
@@ -767,8 +992,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         skyProbe,
         ocean,
         hydrology,
+        bathymetry,
         airport,
         detail,
+        groundCover,
         wildlife,
         toneMap,
         fxaa,
@@ -794,6 +1021,55 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     this.aircraft.setCockpitView(mode === "cockpit");
     this.graph.invalidateHistory("camera mode changed");
+  }
+
+  setViewerMode(enabled: boolean): void {
+    if (enabled === this.viewerMode) return;
+    this.viewerMode = enabled;
+    // Disabling the root disables every aircraft mesh, which removes them
+    // from the beauty pass and the shadow render lists alike; the visual and
+    // its registrations are otherwise untouched so leaving the viewer is a
+    // pure re-enable.
+    this.aircraft.root.setEnabled(!enabled);
+    this.setCameraMode(enabled ? "freefly" : "chase");
+  }
+
+  sampleGroundHeight(x: number, z: number): number {
+    return this.cameraTerrainSample(x, z).height;
+  }
+
+  setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
+    this.terrainAuthorityPublisher = publisher;
+    if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
+    this.terrain.setCollisionPagePublisher(
+      publisher || needsEvolvedConsumers
+        ? (page) => this.publishTerrainConsumerPage(page)
+        : null,
+    );
+  }
+
+  /** Copy before either worker detaches its transfer-owned publication. */
+  private publishTerrainConsumerPage(page: TerrainPagePublication): void {
+    const authority = this.terrainConsumerAuthority;
+    if (authority) {
+      authority.publish({ ...page, heights: page.heights.slice() });
+      this.detail.publishTerrainPage({ ...page, heights: page.heights.slice() });
+    }
+    // Keep the original for the simulation worker and transfer it last.
+    this.terrainAuthorityPublisher?.publishTerrainPage(page);
+  }
+
+  /** Aux hydrology remains render/detail-only; simulation receives no copy. */
+  private publishTerrainConsumerAuxPage(page: TerrainAuxPagePublication): void {
+    const authority = this.terrainConsumerAuthority;
+    if (!authority) return;
+    authority.publishAuxPage({
+      ...page,
+      shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
+    });
+    // Transfer the producer-owned buffer only after retaining the main-thread copy.
+    this.detail.publishTerrainAuxPage(page);
   }
 
   setQuality(quality: QualityLevel): void {
@@ -848,6 +1124,7 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   render(state: FlightVisualState, deltaSeconds: number): void {
     if (this.disposed) return;
+    this.gpuUncapturedErrorGuard.throwIfFailed();
     if (this.deviceLost) {
       throw new Error("The WebGPU device was lost; rendering cannot continue");
     }
@@ -897,11 +1174,76 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /** Z-1: governor config, with the scale range collapsed when pinned. */
+  /**
+   * Wave Q: one frame's CSM state for the detail system's far-band shadow
+   * receiver — documented Babylon reads only, mirroring the water adapter
+   * (bindSunShadowReceiver), reusing its public split formula.
+   */
+  private buildDetailSunShadowSnapshot(): DetailSunShadowSnapshot | null {
+    const shadows = this.atmosphere.shadows;
+    const shadowMap = shadows.getShadowMap();
+    const cascadeCount = Math.min(4, shadows.numCascades);
+    if (
+      !this.scene.shadowsEnabled
+      || !shadows.getLight().shadowEnabled
+      || shadowMap === null
+      || cascadeCount <= 0
+    ) {
+      return null;
+    }
+    const matrices = this.detailSunShadowMatrices;
+    let lastMatrix: Matrix | null = null;
+    for (let cascade = 0; cascade < 4; cascade += 1) {
+      const matrix: Matrix | null = cascade < cascadeCount
+        ? shadows.getCascadeTransformMatrix(cascade) ?? lastMatrix
+        : lastMatrix;
+      if (matrix) {
+        matrix.copyToArray(matrices, cascade * 16);
+        lastMatrix = matrix;
+      }
+    }
+    this.camera.getViewMatrix().copyToArray(this.detailSunShadowView);
+    // Steady-frame path allocates nothing: the split formula's inputs are
+    // constant between quality/governor changes, so the layout is memoized
+    // on them and the snapshot object itself is reused (its array fields
+    // are the persistent scratch buffers above).
+    const layoutKey = `${cascadeCount}:${shadows.lambda}:${shadows.minDistance}:`
+      + `${shadows.maxDistance}:${shadows.shadowMaxZ}:`
+      + `${shadows.cascadeBlendPercentage}:${this.camera.minZ}:${this.camera.maxZ}`;
+    if (this.detailSunShadowLayoutKey !== layoutKey) {
+      this.detailSunShadowLayoutKey = layoutKey;
+      this.detailSunShadowLayout = resolveSunShadowCascadeLayout({
+        cameraMinZ: this.camera.minZ,
+        cameraMaxZ: this.camera.maxZ,
+        cascadeCount,
+        lambda: shadows.lambda,
+        minDistance: shadows.minDistance,
+        maxDistance: shadows.maxDistance,
+        shadowMaxZ: shadows.shadowMaxZ,
+        cascadeBlendPercentage: shadows.cascadeBlendPercentage,
+      });
+    }
+    const layout = this.detailSunShadowLayout!;
+    const snapshot = this.detailSunShadowSnapshot;
+    snapshot.splits = layout.splits;
+    snapshot.blendStarts = layout.blendStarts;
+    snapshot.cascadeCount = layout.cascadeCount;
+    snapshot.darkness = shadows.getDarkness();
+    snapshot.bias = shadows.bias;
+    snapshot.shadowMaxZ = shadows.shadowMaxZ;
+    snapshot.valid = true;
+    snapshot.map = shadowMap;
+    return snapshot;
+  }
+
   private resolveGovernorConfig(): GovernorConfig {
     const config = governorConfigForProfile(this.profile);
     if (this.pinnedRenderScale === null) return config;
     return Object.freeze({
       ...config,
+      // Wave R: pinning freezes every lever, not just the scale — see the
+      // GovernorConfig.frozen contract.
+      frozen: true,
       scaleCeiling: this.pinnedRenderScale,
       scaleFloor: this.pinnedRenderScale,
     });
@@ -959,6 +1301,105 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   resetPerformanceWindow(): void {
     this.resetTimingWindow();
+  }
+
+  /**
+   * Capture-only synchronization point. Tight deterministic warm-up loops can
+   * submit far faster than the adapter consumes work; resetting counters does
+   * not drain that queue, so the first measured rAF previously inherited up
+   * to seconds of old GPU work. Production never calls this blocking fence.
+   */
+  async waitForGpuIdleForCapture(): Promise<void> {
+    if (this.disposed || this.deviceLost) return;
+    await this.engine._device.queue.onSubmittedWorkDone();
+  }
+
+  /**
+   * Capture-only snapshot of the bounded detail builder. Counters are
+   * cumulative so the harness can take two cheap snapshots outside the timed
+   * loop instead of sampling diagnostics on every frame and perturbing p95.
+   */
+  getDetailPresentationDiagnosticsForCapture() {
+    return this.detail.presentationRebuildDiagnostics;
+  }
+
+  /** Constant-time frame correlation companion to the full detail snapshot. */
+  getDetailPresentationMarkerForCapture() {
+    return this.detail.presentationCaptureMarker;
+  }
+
+  /**
+   * Installs the capture harness's authoritative WebGPU validation-error
+   * channel. Browser-native `uncapturederror` events are not guaranteed to
+   * call the page's patched `console.error`, so relying on console/Babylon
+   * logging alone can let a rejected whole-frame submit look like a fast black
+   * frame. The returned cleanup is idempotent and keeps the private device
+   * itself out of the capture driver.
+   */
+  addGpuUncapturedErrorListenerForCapture(
+    listener: (event: GPUUncapturedErrorEvent) => void,
+  ): () => void {
+    if (this.disposed) throw new Error("Cannot observe GPU errors on a disposed renderer");
+    const device = this.engine._device;
+    device.addEventListener("uncapturederror", listener);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      device.removeEventListener("uncapturederror", listener);
+    };
+  }
+
+  /**
+   * Provenance for the current timing window. A GPU percentile without its
+   * resolved-sample count is not comparable to a 240-frame wall-clock window:
+   * Babylon permits only one whole-frame timestamp readback in flight, so the
+   * two sample counts are intentionally not assumed to match.
+   */
+  getGpuTimingStatusForCapture(): {
+    readonly enabled: boolean;
+    readonly epoch: number;
+    readonly sampleCount: number;
+    readonly latestSampleAgeFrames: number | null;
+  } {
+    return {
+      enabled: this.engine.enableGPUTimingMeasurements,
+      epoch: this.timingWindowEpoch,
+      sampleCount: this.diagnosticGpuDurations.length,
+      latestSampleAgeFrames: Number.isFinite(this.lastGpuTimingFrameIndex)
+        ? Math.max(0, this.frameIndex - this.lastGpuTimingFrameIndex)
+        : null,
+    };
+  }
+
+  /** Internal raster size used when the capture driver resolves to CSS pixels. */
+  getCaptureRenderSize(): { readonly width: number; readonly height: number } {
+    return {
+      width: this.engine.getRenderWidth(),
+      height: this.engine.getRenderHeight(),
+    };
+  }
+
+  /**
+   * Capture-only switch between the shipping DPR-1 workload and the
+   * high-DPR/cap-equivalent reference workload. It is intentionally refused
+   * for interactive renderers, where the adaptive governor owns this state.
+   */
+  setPinnedRenderScaleForCapture(scale: number): void {
+    if (this.pinnedRenderScale === null) {
+      throw new Error("Capture render scale can only change on a pinned renderer");
+    }
+    if (!Number.isFinite(scale) || scale < 0.1 || scale > 2) {
+      throw new RangeError("Capture render scale must be finite and in [0.1, 2]");
+    }
+    if (Math.abs(scale - this.pinnedRenderScale) <= 1e-6) return;
+    this.pinnedRenderScale = scale;
+    this.governorConfig = this.resolveGovernorConfig();
+    this.governorState = createGovernorState(this.governorConfig);
+    this.renderScale = this.governorState.renderScale;
+    this.applyRenderScale();
+    this.resetTimingWindow();
+    this.graph.invalidateHistory("capture render-scale change");
   }
 
   /**
@@ -1025,17 +1466,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Z-2: aggregate over the rolling rings, not the governor's consumable
     // window (R-4 — the old path read null whenever the window had just been
     // consumed, which was every committed capture).
-    // 4× the frame target (2-17 re-pin; 3× at 2-8, 2× originally): each
-    // re-pin has chased the same failure mode — the threshold sitting
-    // INSIDE the workload's vsync-quantization band, where frames
-    // oscillating between adjacent vsync multiples masquerade as hitch
-    // trains. With the full Gate-2C vegetation stack a typical heavy-shot
-    // frame sits at 33–46 ms (4–5.5 vsyncs at 120 Hz) against a 41 ms 3×
-    // threshold — 190–236 "hitches" per 240 frames on identical builds,
-    // pure quantization. At 4× (54.8 ms) a typical frame is invisible and
-    // every real stall observed this phase (teleport re-stream 600–1300 ms,
-    // GC, compositor) still counts. The sustained rate belongs to minFps.
-    const hitchThresholdMs = this.profile.frameTargetMs * 4;
+    // The threshold is a product contract, not something a slower workload
+    // may redefine until its own misses disappear. A tier-1 frame above
+    // 27.4 ms is a visible missed delivery and must remain visible here.
+    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {
@@ -1066,7 +1500,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       // these fields kept their names because their MEANING survived it —
       // resident pages are resident pages.
       residentTerrainPages: terrain.residentSlots,
-      collisionSamplesServedByFallback: this.collisionMirror.fallbackSampleCount,
+      collisionSamplesServedByFallback:
+        this.currentState?.terrainAuthority?.analyticServed ?? 0,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
       vegetationBatches: this.detail.statistics.activeBatches,
       activeAnimals: wildlife.activeAnimals,
@@ -1101,6 +1536,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
+      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
         cssWidth: Math.max(1, this.domElement.clientWidth),
@@ -1151,6 +1587,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Detach before any GPU owner is torn down. Disposal-time validation
+    // noise must not terminalize an already disposed renderer or its next
+    // replacement in React development lifecycles.
+    this.gpuUncapturedErrorGuard.dispose();
     // Dispose every resource even if a device-loss edge case makes one GPU
     // owner throw. The array is intentionally listed in reverse execution
     // order because releaseRendererResources unwinds from the end.
@@ -1169,6 +1609,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         }
       },
       () => this.terrain.dispose(),
+      () => this.terrainEvolution.dispose(),
+      () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
       () => this.airport?.dispose(),
@@ -1207,6 +1649,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       phase: "water",
       after: ["world-page-visibility"],
       execute: (frame) => {
+        void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         const state = this.currentState;
         this.hydrology.update(
@@ -1266,13 +1709,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     Vector3.TransformNormalToRef(Vector3.Up(), this.bodyMatrix, this.up);
     this.forward.normalize();
     this.up.normalize();
-    this.aircraft.root.position.set(
-      state.position.x - this.originX,
-      state.position.y,
-      state.position.z - this.originZ,
-    );
-    this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
-    this.aircraft.update(state, this.currentDeltaSeconds);
+    if (!this.viewerMode) {
+      this.aircraft.root.position.set(
+        state.position.x - this.originX,
+        state.position.y,
+        state.position.z - this.originZ,
+      );
+      this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+      this.aircraft.update(state, this.currentDeltaSeconds);
+    }
     this.updateCamera(state);
     this.cameraWorld.set(
       this.camera.position.x + this.originX,
@@ -1295,6 +1740,23 @@ export class FlightRenderer implements FlightRenderingSystem {
     const snapshot = this.atmosphere.snapshot;
     const adapted = snapshot.adaptedLuminanceCdM2;
     const rodFraction = rodFractionForAdaptedLuminance(adapted);
+    const scotopicActive = shouldRunScotopicPass(rodFraction);
+    if (scotopicActive !== this.scotopic.enabled) {
+      if (scotopicActive) {
+        // Scotopic returns to slot zero and owns the multisampled scene
+        // target; ACES becomes a single-sample consumer again.
+        this.scotopic.setSamples(this.profile.msaaSamples);
+        this.toneMap.samples = 1;
+        this.scotopic.setEnabled(this.camera, true);
+      } else {
+        // In photopic daylight the scotopic shader is a half-float copy.
+        // Detach it and transfer first-pass/MSAA ownership to the already
+        // half-float, ratio-one ACES pass. RGB input and output are unchanged.
+        this.toneMap.samples = this.profile.msaaSamples;
+        this.scotopic.setSamples(1);
+        this.scotopic.setEnabled(this.camera, false);
+      }
+    }
     // The rod pathway's saturated response has to land somewhere sensible
     // AFTER the one exposure curve, so its display gain is that curve's
     // reciprocal times a mid-grey target. Computed here, on the CPU, so the
@@ -1353,7 +1815,21 @@ export class FlightRenderer implements FlightRenderingSystem {
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
-    if (this.cameraMode === "cockpit") {
+    if (this.cameraMode === "freefly") {
+      // The synthetic viewer state's position IS the camera; its orientation
+      // already produced this.forward/this.up in updatePresentation. The rig
+      // is direct (response 1, bank follow 0) so mouse-look never lags.
+      this.desiredCamera.set(
+        state.position.x - this.originX,
+        state.position.y,
+        state.position.z - this.originZ,
+      );
+      this.desiredCameraTarget.copyFrom(this.desiredCamera)
+        .addInPlace(this.forward.scale(200));
+    } else if (this.cameraMode === "cockpit") {
+      // Both airframes seat the pilot at the same offsets from the CG: the
+      // J-45's tandem canopy and the trainer's cabin both sit 1.15 m forward
+      // and 1.12 m up, so no per-kind eye point is warranted here.
       this.desiredCamera.copyFrom(aircraftPosition)
         .addInPlace(this.forward.scale(1.15))
         .addInPlace(this.up.scale(1.12));
@@ -1376,8 +1852,32 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.desiredCamera.copyFrom(aircraftPosition)
         .subtractInPlace(this.forward.scale(profile.distance))
         .addInPlace(this.up.scale(profile.height));
+      // The chase rig trails the aircraft by up to 22 m and is not collided,
+      // so a pitched-up pass near the ground can otherwise place the camera
+      // under the terrain. Clamp the desired position above the surface for
+      // both aircraft; the shared response smooths the ride over it.
+      // Ground clamp, de-kinked: sample under the camera AND along its path
+      // ~0.35 s ahead, clamping against the higher of the two. The single
+      // instantaneous max produced a rate discontinuity at every sharp ridge
+      // — the camera surged up at the face and dropped off the crest — which
+      // at speed read as a vertical jerk. The look-ahead starts the rise
+      // early and releases it gradually; the shared exponential response
+      // does the rest.
+      const cameraWorldX = this.desiredCamera.x + this.originX;
+      const cameraWorldZ = this.desiredCamera.z + this.originZ;
+      const aheadMeters = Math.min(120, state.airspeed * 0.35);
+      const cameraGround = Math.max(
+        this.cameraTerrainSample(cameraWorldX, cameraWorldZ).height,
+        this.cameraTerrainSample(
+          cameraWorldX + this.forward.x * aheadMeters,
+          cameraWorldZ + this.forward.z * aheadMeters,
+        ).height,
+      );
+      if (this.desiredCamera.y < cameraGround + 2.5) {
+        this.desiredCamera.y = cameraGround + 2.5;
+      }
       this.desiredCameraTarget.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(16))
+        .addInPlace(this.forward.scale(profile.aimAhead))
         .addInPlace(this.up.scale(1.25));
       fieldOfView = profile.fieldOfView;
     }
@@ -1399,20 +1899,30 @@ export class FlightRenderer implements FlightRenderingSystem {
       response,
       this.cameraTarget,
     );
-    if (shouldStabilizeCameraHorizon(this.cameraMode, this.reducedMotion)) {
-      this.desiredCameraUp.copyFromFloats(0, 1, 0);
-    } else {
-      // Cockpit and non-stabilized exterior views retain physical roll. The
-      // exterior rig eases toward it; cockpit response is exactly one.
-      this.desiredCameraUp.copyFrom(this.up);
-    }
+    // Exterior views communicate a turn without attaching the horizon to
+    // every physics/interpolation correction. This restores the restrained
+    // 18% chase / 30% cinematic bank used by the playable renderer; cockpit
+    // remains physically attached and reduced-motion exterior views stay level.
+    Vector3.LerpToRef(
+      Vector3.UpReadOnly,
+      this.up,
+      cameraBankFollow(this.cameraMode, this.reducedMotion),
+      this.desiredCameraUp,
+    );
+    this.desiredCameraUp.normalize();
     smoothCameraVectorToRef(
       this.camera.upVector,
       this.desiredCameraUp,
       response,
       this.camera.upVector,
     );
-    this.camera.upVector.normalize();
+    this.cameraTarget.subtractToRef(this.camera.position, this.cameraViewDirection);
+    orthogonalizeCameraUpToRef(
+      this.camera.upVector,
+      this.cameraViewDirection,
+      this.up,
+      this.camera.upVector,
+    );
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
   }
@@ -1484,6 +1994,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       [keySnapshot.sunColor.r, keySnapshot.sunColor.g, keySnapshot.sunColor.b],
       keySnapshot.sunIlluminanceNormalized,
     );
+    // Wave Q: the far band's hand-packed CSM receiver, on the same
+    // forward-the-snapshot pattern. Impostors start inside the cascade
+    // reach at every tier but cannot take Babylon's shadow varyings
+    // (16-fragment-input limit), so the detail plugin samples the
+    // atmosphere's own depth map from these matrices instead.
+    this.detail.setSunShadow(this.buildDetailSunShadowSnapshot());
     this.detail.update(
       {
         x: state.position.x,
@@ -1498,6 +2014,21 @@ export class FlightRenderer implements FlightRenderingSystem {
       // the capture pins simulationTime so reruns are pixel-comparable.
       state.simulationTime,
     );
+    // Wave G: blades follow the CAMERA (they exist for the near-ground eye),
+    // not the aircraft observer — in the terrain viewer the two coincide.
+    this.groundCover.update({
+      cameraWorldX: this.cameraWorld.x,
+      cameraWorldY: this.cameraWorld.y,
+      cameraWorldZ: this.cameraWorld.z,
+      floatingOriginX: this.originX,
+      floatingOriginZ: this.originZ,
+      law: this.governedProfileCache.groundCoverLaw,
+      windDirectionX: wind.x,
+      windDirectionZ: wind.z,
+      windStrength01: wind.speed / MAX_WIND_SPEED,
+      windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
+      simulationTimeSeconds: state.simulationTime,
+    });
     this.wildlife.update(
       {
         x: state.position.x,
@@ -1536,6 +2067,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       Math.abs(state.position.x - this.originX) < FLOATING_ORIGIN_THRESHOLD
       && Math.abs(state.position.z - this.originZ) < FLOATING_ORIGIN_THRESHOLD
     ) return false;
+    const previousOriginX = this.originX;
+    const previousOriginZ = this.originZ;
     this.originX = Math.round(state.position.x / FLOATING_ORIGIN_GRID) * FLOATING_ORIGIN_GRID;
     this.originZ = Math.round(state.position.z / FLOATING_ORIGIN_GRID) * FLOATING_ORIGIN_GRID;
     this.terrain.setFloatingOrigin(this.originX, this.originZ);
@@ -1550,7 +2083,20 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.originX,
       this.originZ,
     );
-    this.cameraCut = true;
+    // Fix-pack polish: NO camera cut. The cut existed only because the
+    // camera's smoothed position and target are stored origin-relative and
+    // were never carried across the rebase — cutting snapped the smoother's
+    // steady-state tracking lag (~v/7 ≈ 28 m at 200 m/s) in ONE frame, a
+    // camera teleport every 4,096 m flown that the user felt as "sudden
+    // jerks out of nowhere" at a perfect frame rate. Translating the rig by
+    // the origin delta keeps the smoother's state exactly continuous; the
+    // cloud history invalidation below is unchanged.
+    const originDeltaX = previousOriginX - this.originX;
+    const originDeltaZ = previousOriginZ - this.originZ;
+    this.camera.position.x += originDeltaX;
+    this.camera.position.z += originDeltaZ;
+    this.cameraTarget.x += originDeltaX;
+    this.cameraTarget.z += originDeltaZ;
     this.graph.invalidateHistory("floating origin shifted");
     return true;
   }
@@ -1569,11 +2115,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    if (this.toneMap.samples !== this.profile.msaaSamples) {
-      this.toneMap.samples = this.profile.msaaSamples;
-      this.camera.detachPostProcess(this.fxaa);
-      if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
-    }
+    // Whichever pass is first owns the multisampled scene target. Daylight
+    // bypasses scotopic; twilight/night restores it at slot zero.
+    this.scotopic.setSamples(this.scotopic.enabled ? this.profile.msaaSamples : 1);
+    this.toneMap.samples = this.scotopic.enabled ? 1 : this.profile.msaaSamples;
+    this.camera.detachPostProcess(this.fxaa);
+    if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");
@@ -1770,6 +2317,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   private resetTimingWindow(): void {
+    this.timingWindowEpoch += 1;
     this.resetTimingSamples();
     this.diagnosticIntervalDurations.length = 0;
     this.diagnosticCpuDurations.length = 0;

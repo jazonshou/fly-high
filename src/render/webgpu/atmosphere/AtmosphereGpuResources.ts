@@ -50,6 +50,19 @@ export const SKY_AMBIENT_LUT_WIDTH = 64;
 export const SKY_AMBIENT_LUT_HEIGHT = 32;
 
 /**
+ * The cloud march needs bulk ground depth, not a second rendering of every
+ * opaque object. Its result is composited through the current main depth, so
+ * detail/aircraft/wildlife pixels are already rejected there; including them
+ * in this prior-frame map only replays their geometry and leaves stale holes
+ * in cloud history after either the camera or object moves.
+ */
+export function isCloudRaymarchDepthOccluder(
+  mesh: Pick<AbstractMesh, "name">,
+): boolean {
+  return mesh.name === "terrain-cdlod";
+}
+
+/**
  * One texel = sky radiance for a view direction at elevation `u·2−1` and
  * horizontal azimuth `v·2π` relative to the sun, using the shared aerial
  * perspective integral — the identical closed form the sky dome renders and
@@ -117,7 +130,6 @@ export class AtmosphereGpuResources {
   constructor(
     private readonly scene: Scene,
     camera: Camera,
-    excludedFromDepth: (mesh: AbstractMesh) => boolean,
   ) {
     // D-4's first GPU upload: the CPU bake is the tested truth; the texture
     // is a verbatim rgba16float copy of it, uploaded once (the atmosphere
@@ -187,9 +199,9 @@ export class AtmosphereGpuResources {
     this.skyAmbientLut.wrapV = Texture.WRAP_ADDRESSMODE;
 
     // The march clips against real scene depth (R-18): a dedicated depth
-    // pass over the opaque scene storing CAMERA-SPACE Z in metres (clear
-    // value 0 = sky, unambiguous). Sky, shells and other non-occluders are
-    // excluded through the caller's predicate.
+    // pass over bulk terrain storing CAMERA-SPACE Z in metres (clear value 0
+    // = sky, unambiguous). The final scene depth rejects clouds behind all
+    // other opaque geometry, so replaying that geometry here is redundant.
     this.depthRenderer = new DepthRenderer(
       scene,
       Constants.TEXTURETYPE_FLOAT,
@@ -200,7 +212,7 @@ export class AtmosphereGpuResources {
       "cloud-scene-depth",
     );
     const depthMap = this.depthRenderer.getDepthMap();
-    depthMap.renderListPredicate = (mesh) => !excludedFromDepth(mesh);
+    depthMap.renderListPredicate = isCloudRaymarchDepthOccluder;
     scene.customRenderTargets.push(depthMap);
   }
 

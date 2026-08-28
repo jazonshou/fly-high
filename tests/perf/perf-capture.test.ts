@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
+import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import {
   createWorld,
   sampleTerrain,
@@ -14,20 +15,28 @@ import {
   PERF_CAPTURE_DEFAULT_CLOCK,
   PERF_CAPTURE_HEIGHT,
   PERF_CAPTURE_MEASURE_FRAMES,
+  PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
+  PERF_CAPTURE_RGB_SSIM_THRESHOLD,
   PERF_CAPTURE_SEED,
   PERF_CAPTURE_SHOTS,
   PERF_CAPTURE_SSIM_THRESHOLD,
   PERF_CAPTURE_TEMPORAL_FRAMES,
+  PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
   PERF_CAPTURE_WARMUP_FRAMES,
   PERF_CAPTURE_WIDTH,
   headingVectorFromYaw,
   locateShotOffset,
   luminanceFromRgba,
+  meanRgbSsim,
   meanSsim,
   orientationFromYawPitchBank,
+  perfCaptureImageContentFailures,
+  rawFrameIntervalMetrics,
   sustainedFpsFromFrameIntervals,
   temporalStability,
+  tier1BalancedPerformanceFailures,
   tileStatistics,
+  worstTileRgbSsim,
   yawForSunBearing,
   type PerfCaptureReport,
   type PerfCaptureShotDefinition,
@@ -39,26 +48,56 @@ import {
 /**
  * 1A-1c, rebuilt by Gate 2Z — the perf-capture driver. Boots the real
  * renderer against the fixed baseline world and captures the shot list plus
- * the numeric report. Z-1: the render scale is pinned to 1.0 (no letterbox,
- * no governor), the measurement loop is rAF-paced so fps is a frame rate,
+ * the numeric report. Z-1: the render scale is pinned to the shipping
+ * medium/balanced profile (no governor), the measurement loop is rAF-paced so fps is a frame rate,
  * and any renderer console error fails the capture. Z-2: per-shot hitch
  * metrics asserted against committed ceilings. Z-3: per-shot clocks and
  * viewports, feature-located shots, and a temporal-stability motion scene.
- * Baselines live in tests/perf/baseline (committed); per-run artifacts go to
- * tests/perf/artifacts (ignored). See vitest.perf.config.ts for the policy.
+ * Baselines live in tests/perf/baseline (committed and read-only); per-run
+ * artifacts go to tests/perf/artifacts (ignored). A rebaseline run buffers a
+ * complete candidate until all validations pass, then writes it only beneath
+ * the ignored artifact directory. See vitest.perf.config.ts for the policy.
  */
 
 const BASELINE_DIR = "tests/perf/baseline";
 const ARTIFACT_DIR = "tests/perf/artifacts";
+const CANDIDATE_ROOT = `${ARTIFACT_DIR}/rebaseline-candidates`;
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
+/** Diagnostic only; normal captures match shipping's observer-free path. */
+const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
+/**
+ * `VITE_PERF_UNPINNED_HOST=1` — this run is NOT on the pinned reference
+ * adapter, so the frame-DELIVERY contracts are reported instead of enforced.
+ *
+ * The split is not a convenience. `docs/PERFORMANCE.md` defines the tier-1
+ * contract — 60 raw wall-clock fps, p95 <= 16.67 ms, <= 5 intervals over
+ * 27.4 ms, none over 50 ms — "on the pinned reference adapter", and a hosted
+ * CI runner is not that adapter: the same commit that measures 120 fps /
+ * 9.2 ms p95 here measures ~44 fps / 22.6 ms p50 / a 783 ms worst frame on
+ * GitHub's macOS runner, which also silently loses the detail Worker and
+ * synthesises every chunk inline. Gating a virtualised GPU against a
+ * reference-adapter contract measures the runner, not the diff.
+ *
+ * Everything that does NOT depend on how fast the host is stays gated there,
+ * and that is the majority of this file's value: uncaptured GPU errors,
+ * renderer/console errors, blank-or-structureless frames, the render-scale
+ * pin, the settling fences, and every SSIM comparison. SSIM in particular is
+ * host-independent by measurement, not by assumption — `reference-viewport`
+ * scored an identical 0.6284 on this M3 Pro and on the hosted runner while
+ * both were still comparing against the then-stale Phase-4.5 baseline.
+ *
+ * A LOCAL `npm run perf:capture` never sets this and stays fully strict.
+ */
+const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
+const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 
 /**
  * Comma-separated shot names to run, for diagnosis. A full capture is ~4
  * minutes of wall clock, which is the wrong feedback loop for "why is this
  * one shot black" — and that question has now come up twice (2-12's five
  * on-adapter-only failures, and the perf-debt pass's black approach shot).
- * Rebaselining is refused while a filter is active: a partial run must never
- * be able to overwrite the committed set.
+ * Candidate generation is refused while a filter is active: reviewers must
+ * always receive the exact full canonical set in canonical order.
  */
 const SHOT_FILTER = String(import.meta.env.VITE_PERF_SHOTS ?? "")
   .split(",")
@@ -70,7 +109,24 @@ const SELECTED_SHOTS = SHOT_FILTER.length === 0
 if (SHOT_FILTER.length > 0 && REBASELINE) {
   throw new Error(
     "VITE_PERF_SHOTS and VITE_PERF_REBASELINE are mutually exclusive: a "
-    + "partial capture must never overwrite the committed baseline set.",
+    + "partial capture cannot produce a reviewable rebaseline candidate.",
+  );
+}
+if (UNPINNED_HOST && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_UNPINNED_HOST and VITE_PERF_REBASELINE are mutually exclusive: a "
+    + "baseline candidate may only be generated on the pinned reference adapter.",
+  );
+}
+if (
+  REBASELINE
+  && (
+    SELECTED_SHOTS.length !== PERF_CAPTURE_SHOTS.length
+    || SELECTED_SHOTS.some((shot, index) => shot.name !== PERF_CAPTURE_SHOTS[index]?.name)
+  )
+) {
+  throw new Error(
+    "A rebaseline candidate requires the exact full canonical shot set in canonical order.",
   );
 }
 if (SHOT_FILTER.length > 0 && SELECTED_SHOTS.length !== SHOT_FILTER.length) {
@@ -79,15 +135,39 @@ if (SHOT_FILTER.length > 0 && SELECTED_SHOTS.length !== SHOT_FILTER.length) {
   );
 }
 
-async function readBaselineLuminance(
+interface BaselinePixels {
+  readonly rgba: Uint8ClampedArray;
+  readonly luminance: Float32Array;
+}
+
+/** Stable, useful assertion text for the browser-native WebGPU error event. */
+function serializeGpuUncapturedError(event: GPUUncapturedErrorEvent): string {
+  const error = event.error;
+  const named = error as GPUError & { readonly name?: unknown };
+  const name = typeof named.name === "string" ? named.name : null;
+  return JSON.stringify({
+    type: error.constructor?.name || "GPUError",
+    ...(name ? { name } : {}),
+    message: error.message,
+  });
+}
+
+async function readBaselinePixels(
   name: string,
   width: number,
   height: number,
-): Promise<Float32Array | null> {
+  required: boolean,
+): Promise<BaselinePixels | null> {
   let base64: string;
   try {
     base64 = await commands.readFile(`${BASELINE_DIR}/${name}.png`, "base64");
-  } catch {
+  } catch (error) {
+    if (required) {
+      throw new Error(
+        `Required committed baseline ${name}.png is missing or unreadable`,
+        { cause: error },
+      );
+    }
     return null;
   }
   const image = new Image();
@@ -98,8 +178,12 @@ async function readBaselineLuminance(
   image.src = `data:image/png;base64,${base64}`;
   await loaded;
   if (image.naturalWidth !== width || image.naturalHeight !== height) {
-    // A shot's viewport changed: treat the old baseline as absent so the
-    // capture re-baselines it (a sanctioned-churn event, visible in review).
+    if (required) {
+      throw new Error(
+        `Required committed baseline ${name}.png is ${image.naturalWidth}x${image.naturalHeight}; `
+        + `the shot requires ${width}x${height}`,
+      );
+    }
     return null;
   }
   const canvas = document.createElement("canvas");
@@ -108,7 +192,10 @@ async function readBaselineLuminance(
   const context = canvas.getContext("2d")!;
   context.drawImage(image, 0, 0);
   const data = context.getImageData(0, 0, width, height).data;
-  return luminanceFromRgba(data, width, height);
+  return {
+    rgba: data,
+    luminance: luminanceFromRgba(data, width, height),
+  };
 }
 
 /** Three decimals is plenty for an aggregate nothing is gated on. */
@@ -122,12 +209,16 @@ function nextAnimationFrame(): Promise<number> {
 
 describe("perf capture (1A-1c / 2Z)", () => {
   let renderer: FlightRenderer | null = null;
+  let removeGpuUncapturedErrorListener: (() => void) | null = null;
+  const gpuUncapturedErrors: string[] = [];
   const consoleErrors: string[] = [];
   const loggerErrors: string[] = [];
   const originalConsoleError = console.error;
   const originalLoggerError = Logger.Error;
 
   afterAll(() => {
+    removeGpuUncapturedErrorListener?.();
+    removeGpuUncapturedErrorListener = null;
     console.error = originalConsoleError;
     Logger.Error = originalLoggerError;
     renderer?.dispose();
@@ -166,10 +257,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
       quality: "medium",
       renderingMode: "balanced",
       reducedMotion: false,
-      // Z-1: deterministic pixels — no governor may rewrite the target.
-      pinnedRenderScale: 1,
+      // Z-1: deterministic shipping pixels — no governor may rewrite the
+      // target, but the capture must not silently replace medium's 0.86 with
+      // a 35%-larger scale-1 workload.
+      pinnedRenderScale: TIER1_CAPTURE_PROFILE.renderScale,
+      captureGpuTiming: GPU_TIMING_ENABLED,
       ...(world.airport ? { runway: world.airport } : {}),
     });
+    // This is the authoritative rejected-submit channel. A WebGPU validation
+    // error is a device event, not necessarily a call through the page's
+    // patched console, and the exact black-frame regression rendered quickly.
+    // Install it before any shot streaming/rendering work begins and retain it
+    // until after every candidate/publication assertion has run.
+    removeGpuUncapturedErrorListener = renderer.addGpuUncapturedErrorListenerForCapture(
+      (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
+    );
 
     // 4-9: `generateTerrainTile` is deleted with the CPU render path. What
     // this row measured — the CPU cost of building one page — no longer
@@ -209,6 +311,55 @@ describe("perf capture (1A-1c / 2Z)", () => {
         });
         return found ?? fallback;
       }
+      if (shot.locate === "grassland") {
+        // Open grass with a guaranteed-clear lens: terrain sampling alone
+        // cannot see scattered trees/ferns (two blind landings put one across
+        // the camera), but the airport clearance culls ALL detail vegetation
+        // except ground-cover blades — so the mown surround is the one place
+        // a standing-height blade shot is deterministic. Require solid
+        // clearance influence, off the runway itself, on flat grassland.
+        const found = locateShotOffset((x, z) => {
+          for (const [dx, dz] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60]] as const) {
+            const sample = sampleTerrain(world, airportX + x + dx, airportZ + z + dz);
+            if (sample.biomeName !== "grassland") return false;
+            if (sample.slope > 0.08) return false;
+            if (sample.isRunway) return false;
+            if (sample.airportInfluence < 0.35 || sample.airportInfluence > 0.85) return false;
+          }
+          return true;
+        }, { stepMeters: 120, maxRadiusMeters: 3_000 });
+        return found ?? fallback;
+      }
+      if (shot.locate === "mountain") {
+        // A steep high face 400-900 m ahead on the +x heading, with the
+        // camera spot itself standable (moderate slope, above water).
+        const found = locateShotOffset((x, z) => {
+          const here = sampleTerrain(world, airportX + x, airportZ + z);
+          if (here.height < world.seaLevel + 5 || here.slope > 0.3) return false;
+          let steep = 0;
+          for (const ahead of [400, 650, 900] as const) {
+            const face = sampleTerrain(world, airportX + x + ahead, airportZ + z);
+            if (face.slope > 0.4 && face.height > here.height + 180) steep += 1;
+          }
+          return steep >= 2;
+        }, { stepMeters: 400, maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
+      if (shot.locate === "cliff") {
+        // A steep face 120-280 m ahead — close enough that the rock texture
+        // fills the frame at material-detail range.
+        const found = locateShotOffset((x, z) => {
+          const here = sampleTerrain(world, airportX + x, airportZ + z);
+          if (here.height < world.seaLevel + 5 || here.slope > 0.3) return false;
+          let steep = 0;
+          for (const ahead of [120, 200, 280] as const) {
+            const face = sampleTerrain(world, airportX + x + ahead, airportZ + z);
+            if (face.slope > 0.45 && face.height > here.height + 60) steep += 1;
+          }
+          return steep >= 2;
+        }, { stepMeters: 300, maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
       // Coast: over water with land ~3 km ahead on the +x heading.
       const found = locateShotOffset((x, z) => {
         const here = sampleTerrainHeight(world, airportX + x, airportZ + z);
@@ -220,19 +371,29 @@ describe("perf capture (1A-1c / 2Z)", () => {
     };
 
     const shotReports: PerfCaptureShotReport[] = [];
+    const candidateScreenshots: Array<{ readonly name: string; readonly pngBase64: string }> = [];
     let simulationTime = 0;
     for (const shot of SELECTED_SHOTS) {
       const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
       const viewportHeight = shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
-      if (canvas.width !== viewportWidth || canvas.height !== viewportHeight) {
-        canvas.width = viewportWidth;
-        canvas.height = viewportHeight;
+      if (
+        canvas.style.width !== `${viewportWidth}px`
+        || canvas.style.height !== `${viewportHeight}px`
+      ) {
+        // Babylon owns the backing-store dimensions once hardware scaling is
+        // active. Writing canvas.width/height here replaced its scaled colour
+        // attachment without rebuilding the scaled depth attachment, making
+        // the next WebGPU render pass invalid. Resize only the CSS viewport;
+        // FlightRenderer's observer resizes every attachment coherently.
         canvas.style.width = `${viewportWidth}px`;
         canvas.style.height = `${viewportHeight}px`;
         // Let the renderer's ResizeObserver see the new content box.
         await nextAnimationFrame();
         await nextAnimationFrame();
       }
+      const captureRenderScale = shot.captureRenderScale
+        ?? TIER1_CAPTURE_PROFILE.renderScale;
+      renderer.setPinnedRenderScaleForCapture(captureRenderScale);
 
       // R-15: the clock is per shot and applied inside the loop.
       const clock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
@@ -287,6 +448,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
           const diagnostics = renderer.getDiagnostics();
           if (
             diagnostics.pendingTerrainPages === 0
+            && diagnostics.pendingDetailWork === 0
             && diagnostics.visibleInstances === lastVisibleInstances
           ) {
             stableChecks += 1;
@@ -297,26 +459,74 @@ describe("perf capture (1A-1c / 2Z)", () => {
           lastVisibleInstances = diagnostics.visibleInstances;
         }
       }
+      // Counter reset is not a queue drain. The streaming loop above can
+      // submit much faster than the GPU consumes work, so fence it before
+      // the paced temporal settle or the first measured frame inherits an
+      // arbitrary backlog.
+      await renderer.waitForGpuIdleForCapture();
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.
       // The settle then rebuilds all temporal state (cloud history, foam
       // decay) at these exact instants.
-      simulationTime = 500 + shotReports.length * 120;
+      //
+      // Wave R: the phase keys on the shot's index in the CANONICAL list,
+      // not its position in the selected subset. Baselines come from full
+      // runs (where the two indices coincide, so no baseline moved with
+      // this change) — but a VITE_PERF_SHOTS subset used to renumber the
+      // shots and pin a DIFFERENT wind/wave phase than the baseline's.
+      // From altitude that phase error is sub-pixel; at the 2 m shots the
+      // whole blade-and-leaf field sways by pixels, and CI's fixed 5-shot
+      // subset failed ground-2m-lowsun's SSIM deterministically (0.929, an
+      // exact reproduction locally at subset index 0) while every full run
+      // on the same code passed.
+      const canonicalShotIndex = PERF_CAPTURE_SHOTS.findIndex(
+        (candidate) => candidate.name === shot.name,
+      );
+      simulationTime = 500 + canonicalShotIndex * 120;
       for (let settle = 0; settle < 150; settle += 1) {
+        await nextAnimationFrame();
         simulationTime += 1 / 60;
         renderer.render({ ...state, simulationTime }, 1 / 60);
-        if (settle % 4 === 3) await new Promise((resolve) => setTimeout(resolve, 0));
       }
+      await renderer.waitForGpuIdleForCapture();
+      // A few ordinary paced, unmeasured frames rebuild compositor cadence
+      // after the explicit queue fence.
+      for (let drain = 0; drain < 4; drain += 1) {
+        await nextAnimationFrame();
+        simulationTime += 1 / 60;
+        renderer.render({ ...state, simulationTime }, 1 / 60);
+      }
+      await renderer.waitForGpuIdleForCapture();
 
       // Z-1/Z-2: the measurement phase. rAF-paced so frame intervals are
       // real presentation intervals; the timing window is reset first so the
       // tight streaming loop above cannot masquerade as hitches.
       renderer.resetPerformanceWindow();
+      const detailPresentationBefore = renderer.getDetailPresentationDiagnosticsForCapture();
       const copy = document.createElement("canvas");
       copy.width = viewportWidth;
       copy.height = viewportHeight;
       const copyContext = copy.getContext("2d", { willReadFrequently: true })!;
+      copyContext.imageSmoothingEnabled = true;
+      copyContext.imageSmoothingQuality = "high";
+      const captureRaster = renderer.getCaptureRenderSize();
+      const resolvePresentedFrame = (): void => {
+        // Hardware scaling renders into the upper-left internal raster of the
+        // swapchain canvas. Resolve that raster to the canonical CSS-sized
+        // artifact; copying the whole backing store leaves transparent bands.
+        copyContext.drawImage(
+          canvas,
+          0,
+          0,
+          captureRaster.width,
+          captureRaster.height,
+          0,
+          0,
+          viewportWidth,
+          viewportHeight,
+        );
+      };
       const temporalFrames: Float32Array[] = [];
       const isMotion = shot.kind === "motion";
       const bankDegrees = shot.bankDegrees ?? 0;
@@ -328,12 +538,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
       let motionYawDegrees = yawDegrees;
       let motionX = positionX;
       let motionZ = positionZ;
-      let previousFrameEnd = performance.now();
-      const frameIntervalsMs: number[] = [];
-      for (let frame = 0; frame < PERF_CAPTURE_MEASURE_FRAMES; frame += 1) {
-        await nextAnimationFrame();
+      let lastFrameState: FlightVisualState = { ...state, simulationTime };
+      const advanceFrameState = (): FlightVisualState => {
         simulationTime += 1 / 60;
-        let frameState = { ...state, simulationTime };
+        let frameState: FlightVisualState = { ...state, simulationTime };
         if (isMotion) {
           motionYawDegrees += (turnRateRadPerSecond * (180 / Math.PI)) / 60;
           const motionHeading = headingVectorFromYaw(motionYawDegrees);
@@ -354,45 +562,288 @@ describe("perf capture (1A-1c / 2Z)", () => {
             ),
           };
         }
-        renderer.render(frameState, 1 / 60);
+        lastFrameState = frameState;
+        return frameState;
+      };
+      // Align the first interval to a fresh rAF boundary; time spent between
+      // the drain fence and this boundary is setup, not gameplay delivery.
+      await nextAnimationFrame();
+      let previousDetailMarker = renderer.getDetailPresentationMarkerForCapture();
+      const startDetailMarker = previousDetailMarker;
+      let previousFrameEnd = performance.now();
+      const frameIntervalsMs: number[] = [];
+      const renderCallMs: number[] = [];
+      const detailFrameMarkers: Array<{
+        workerResultBeforeRender: boolean;
+        publicationDuringRender: boolean;
+      }> = [];
+      for (let frame = 0; frame < PERF_CAPTURE_MEASURE_FRAMES; frame += 1) {
+        await nextAnimationFrame();
+        const beforeRenderMarker = renderer.getDetailPresentationMarkerForCapture();
+        const renderStarted = performance.now();
+        renderer.render(advanceFrameState(), 1 / 60);
         const frameEnd = performance.now();
+        const afterRenderMarker = renderer.getDetailPresentationMarkerForCapture();
+        detailFrameMarkers.push({
+          workerResultBeforeRender:
+            beforeRenderMarker.workerResultsQueued > previousDetailMarker.workerResultsQueued,
+          publicationDuringRender:
+            afterRenderMarker.publications > beforeRenderMarker.publications,
+        });
+        previousDetailMarker = afterRenderMarker;
+        renderCallMs.push(frameEnd - renderStarted);
         frameIntervalsMs.push(frameEnd - previousFrameEnd);
         previousFrameEnd = frameEnd;
-        if (
-          isMotion
-          && frame >= PERF_CAPTURE_MEASURE_FRAMES - PERF_CAPTURE_TEMPORAL_FRAMES
-        ) {
-          // Readback must share the task with the render that produced it.
-          copyContext.drawImage(canvas, 0, 0);
-          const rgba = copyContext.getImageData(0, 0, viewportWidth, viewportHeight).data;
-          temporalFrames.push(luminanceFromRgba(rgba, viewportWidth, viewportHeight));
-        }
       }
+      const timedDiagnostics = renderer.getDiagnostics();
+      const detailPresentationAfter = renderer.getDetailPresentationDiagnosticsForCapture();
+      if (isMotion) {
+        console.info(
+          `${shot.name}: CPU pass diagnostic `
+          + JSON.stringify(timedDiagnostics.topPassesByCpuMs),
+        );
+        const detailPresentationDelta = {
+          buildStarts: detailPresentationAfter.buildStarts
+            - detailPresentationBefore.buildStarts,
+          buildSlices: detailPresentationAfter.buildSlices
+            - detailPresentationBefore.buildSlices,
+          completedSlices: detailPresentationAfter.completedSlices
+            - detailPresentationBefore.completedSlices,
+          timeBudgetStops: detailPresentationAfter.timeBudgetStops
+            - detailPresentationBefore.timeBudgetStops,
+          workBudgetStops: detailPresentationAfter.workBudgetStops
+            - detailPresentationBefore.workBudgetStops,
+          workUnitsTotal: detailPresentationAfter.workUnitsTotal
+            - detailPresentationBefore.workUnitsTotal,
+          publications: detailPresentationAfter.publications
+            - detailPresentationBefore.publications,
+          publishedRecords: detailPresentationAfter.publishedRecords
+            - detailPresentationBefore.publishedRecords,
+          observerQuantumChanges: detailPresentationAfter.observerQuantumChanges
+            - detailPresentationBefore.observerQuantumChanges,
+          observerSensitiveBuildStarts: detailPresentationAfter.observerSensitiveBuildStarts
+            - detailPresentationBefore.observerSensitiveBuildStarts,
+          residentCellsInSensitiveBuilds:
+            detailPresentationAfter.residentCellsInSensitiveBuilds
+            - detailPresentationBefore.residentCellsInSensitiveBuilds,
+          workerBuildStarts: detailPresentationAfter.workerBuildStarts
+            - detailPresentationBefore.workerBuildStarts,
+          workerResultsQueued: detailPresentationAfter.workerResultsQueued
+            - detailPresentationBefore.workerResultsQueued,
+          workerBuildPublications: detailPresentationAfter.workerBuildPublications
+            - detailPresentationBefore.workerBuildPublications,
+          workerBuildRejections: detailPresentationAfter.workerBuildRejections
+            - detailPresentationBefore.workerBuildRejections,
+          workerBuildTimeouts: detailPresentationAfter.workerBuildTimeouts
+            - detailPresentationBefore.workerBuildTimeouts,
+          workerGenerationTimeouts: detailPresentationAfter.workerGenerationTimeouts
+            - detailPresentationBefore.workerGenerationTimeouts,
+          workerFallbacks: detailPresentationAfter.workerFallbacks
+            - detailPresentationBefore.workerFallbacks,
+          cancellations: detailPresentationAfter.cancellations
+            - detailPresentationBefore.cancellations,
+          endingActiveBuildSource: detailPresentationAfter.activeBuildSource,
+          endingWorkerRetainedCells: detailPresentationAfter.workerRetainedCells,
+          endingPendingDetailWork: timedDiagnostics.pendingDetailWork,
+          endingBackloggedChunks: detailPresentationAfter.backloggedChunks,
+          endingActiveChunkKey: detailPresentationAfter.activeChunkKey,
+        };
+        console.info(
+          `${shot.name}: detail presentation diagnostic `
+          + JSON.stringify(detailPresentationDelta),
+        );
+      }
+      const gpuTiming = renderer.getGpuTimingStatusForCapture();
       // Sustained rate, robust to sparse stalls — spikes are gated separately
       // by maxFrameMs / p999FrameMs / hitchCount.
       const measuredFps = sustainedFpsFromFrameIntervals(frameIntervalsMs);
+      // The strict playability gate never trims. A freeze consumes the player's
+      // wall time even if it is rare, so it remains in every metric below.
+      const rawTiming = rawFrameIntervalMetrics(frameIntervalsMs);
+      if (isMotion) {
+        const overBudgetFrameIndices = frameIntervalsMs
+          .map((interval, index) => (interval > 1_000 / 60 ? index : -1))
+          .filter((index) => index >= 0);
+        const markerSummary = {
+          workerResultFrames: detailFrameMarkers
+            .map((marker, index) => (marker.workerResultBeforeRender ? index : -1))
+            .filter((index) => index >= 0),
+          publicationFrames: detailFrameMarkers
+            .map((marker, index) => (marker.publicationDuringRender ? index : -1))
+            .filter((index) => index >= 0),
+          overBudgetFrames: overBudgetFrameIndices,
+          overBudgetWithWorkerResult: overBudgetFrameIndices.filter(
+            (index) => detailFrameMarkers[index]?.workerResultBeforeRender,
+          ).length,
+          overBudgetWithPublication: overBudgetFrameIndices.filter(
+            (index) => detailFrameMarkers[index]?.publicationDuringRender,
+          ).length,
+          // Streaming fix-pack counters (cumulative in the marker; printed
+          // as measurement-window deltas). `publishedBytes` proves the byte
+          // budget spread uploads, `createdBatches`/`reboundBatches` prove
+          // structural work stayed off the publication frame, and the
+          // suppression/stale counters prove chunks stayed visible.
+          publishedBytes: previousDetailMarker.publishedBytes
+            - startDetailMarker.publishedBytes,
+          createdBatches: previousDetailMarker.createdBatches
+            - startDetailMarker.createdBatches,
+          reboundBatches: previousDetailMarker.reboundBatches
+            - startDetailMarker.reboundBatches,
+          revealRampsStarted: previousDetailMarker.revealRampsStarted
+            - startDetailMarker.revealRampsStarted,
+          suppressedChunks: previousDetailMarker.suppressedChunks
+            - startDetailMarker.suppressedChunks,
+          staleVisibleChunks: previousDetailMarker.staleVisibleChunks
+            - startDetailMarker.staleVisibleChunks,
+        };
+        console.info(`${shot.name}: detail frame correlation ${JSON.stringify(markerSummary)}`);
+        const sortedIntervals = [...frameIntervalsMs].sort((first, second) => first - second);
+        const percentile = (fraction: number): number => sortedIntervals[
+          Math.min(
+            sortedIntervals.length - 1,
+            Math.max(0, Math.ceil(sortedIntervals.length * fraction) - 1),
+          )
+        ]!;
+        const sortedRenderCalls = [...renderCallMs].sort((first, second) => first - second);
+        const renderPercentile = (fraction: number): number => sortedRenderCalls[
+          Math.min(
+            sortedRenderCalls.length - 1,
+            Math.max(0, Math.ceil(sortedRenderCalls.length * fraction) - 1),
+          )
+        ]!;
+        const overBudget = frameIntervalsMs.flatMap((intervalMs, frame) =>
+          intervalMs > 16.67 ? [{ frame, intervalMs: Math.round(intervalMs * 100) / 100 }] : []);
+        const histogram = [8.5, 12, 16.67, 20, 27.4].map((ceilingMs, index, ceilings) => ({
+          band: index === 0 ? `<=${ceilingMs}` : `>${ceilings[index - 1]}..<=${ceilingMs}`,
+          count: frameIntervalsMs.filter((intervalMs) =>
+            intervalMs <= ceilingMs && (index === 0 || intervalMs > ceilings[index - 1]!)).length,
+        }));
+        histogram.push({
+          band: ">27.4",
+          count: frameIntervalsMs.filter((intervalMs) => intervalMs > 27.4).length,
+        });
+        console.info(`${shot.name}: motion interval diagnostic ${JSON.stringify({
+          percentilesMs: {
+            p50: Math.round(percentile(0.5) * 100) / 100,
+            p75: Math.round(percentile(0.75) * 100) / 100,
+            p90: Math.round(percentile(0.9) * 100) / 100,
+            p95: Math.round(percentile(0.95) * 100) / 100,
+            p99: Math.round(percentile(0.99) * 100) / 100,
+          },
+          histogram,
+          overBudget,
+          renderCallMs: {
+            p95: Math.round(renderPercentile(0.95) * 100) / 100,
+            max: Math.round(sortedRenderCalls[sortedRenderCalls.length - 1]! * 100) / 100,
+          },
+        })}`);
+      }
+      if (rawTiming.maxFrameMs > 50) {
+        const worstFrameIndex = frameIntervalsMs.indexOf(rawTiming.maxFrameMs);
+        const maxRenderCallMs = Math.max(...renderCallMs);
+        const maxRenderCallFrameIndex = renderCallMs.indexOf(maxRenderCallMs);
+        console.info(
+          `${shot.name}: worst interval ${rawTiming.maxFrameMs.toFixed(2)} ms at frame `
+          + `${worstFrameIndex}; synchronous render ${renderCallMs[worstFrameIndex]!.toFixed(2)} ms; `
+          + `max synchronous render ${maxRenderCallMs.toFixed(2)} ms at frame `
+          + `${maxRenderCallFrameIndex}`,
+        );
+      }
+
+      // Temporal screenshots are deliberately a second, untimed loop.
+      // drawImage/getImageData are synchronous GPU readbacks; doing 23 of
+      // them between measured frames previously contaminated p95 and max.
+      if (isMotion) {
+        for (let frame = 0; frame < PERF_CAPTURE_TEMPORAL_FRAMES; frame += 1) {
+          await nextAnimationFrame();
+          renderer.render(advanceFrameState(), 1 / 60);
+          resolvePresentedFrame();
+          const rgba = copyContext.getImageData(0, 0, viewportWidth, viewportHeight).data;
+          temporalFrames.push(luminanceFromRgba(rgba, viewportWidth, viewportHeight));
+        }
+
+        // The temporal loop is still moving the observer and can legitimately
+        // enqueue the final terrain/detail frontier after the timed window has
+        // ended. Hold the exact final pose and let that work publish before the
+        // canonical screenshot is read. Requiring consecutive empty frames
+        // catches a worker result which publishes one chunk and queues the next.
+        // Always execute the full fixed count: frame-index/delta-driven systems
+        // must receive the same number of updates on fast and slow machines.
+        // Keep simulationTime fixed so this drain cannot select a different
+        // visual moment merely because one machine needed more worker turns.
+        const maxPostMotionDrainFrames = 600;
+        const requiredStableDrainFrames = 30;
+        let stableDrainFrames = 0;
+        for (let frame = 0; frame < maxPostMotionDrainFrames; frame += 1) {
+          await nextAnimationFrame();
+          renderer.render(lastFrameState, 1 / 60);
+          const drainDiagnostics = renderer.getDiagnostics();
+          if (
+            drainDiagnostics.pendingTerrainPages === 0
+            && drainDiagnostics.pendingDetailWork === 0
+          ) {
+            stableDrainFrames += 1;
+          } else {
+            stableDrainFrames = 0;
+          }
+        }
+        await renderer.waitForGpuIdleForCapture();
+        const finalDrainDiagnostics = renderer.getDiagnostics();
+        expect(
+          stableDrainFrames,
+          `${shot.name}: final-pose streaming work did not remain drained`,
+        ).toBeGreaterThanOrEqual(requiredStableDrainFrames);
+        expect(
+          finalDrainDiagnostics.pendingTerrainPages,
+          `${shot.name}: terrain remained pending after the fixed final-pose drain`,
+        ).toBe(0);
+        expect(
+          finalDrainDiagnostics.pendingDetailWork,
+          `${shot.name}: detail remained pending after the fixed final-pose drain`,
+        ).toBe(0);
+      }
 
       // Final frame and readback must share one task: the presented WebGPU
       // buffer is cleared once the compositor consumes it.
-      simulationTime += 1 / 60;
-      renderer.render({ ...state, simulationTime }, 1 / 60);
-      copyContext.drawImage(canvas, 0, 0);
+      renderer.render(lastFrameState, 1 / 60);
+      resolvePresentedFrame();
       const pngBase64 = copy.toDataURL("image/png").split(",")[1]!;
       const rgba = copyContext.getImageData(0, 0, viewportWidth, viewportHeight).data;
       const luminance = luminanceFromRgba(rgba, viewportWidth, viewportHeight);
 
-      const diagnostics = renderer.getDiagnostics();
+      const sceneDiagnostics = renderer.getDiagnostics();
       const comparesToBaseline = shot.comparesToBaseline ?? true;
-      const baseline = REBASELINE || !comparesToBaseline
+      const baseline = !comparesToBaseline
         ? null
-        : await readBaselineLuminance(shot.name, viewportWidth, viewportHeight);
+        : await readBaselinePixels(
+            shot.name,
+            viewportWidth,
+            viewportHeight,
+            !REBASELINE,
+          );
       const ssim = baseline === null
         ? null
-        : meanSsim(baseline, luminance, viewportWidth, viewportHeight);
+        : meanSsim(baseline.luminance, luminance, viewportWidth, viewportHeight);
+      const rgbSsim = baseline === null
+        ? null
+        : meanRgbSsim(baseline.rgba, rgba, viewportWidth, viewportHeight);
+      const lowerFrameY = Math.floor(viewportHeight * 0.4);
+      const lowerFrameRgbSsim = baseline === null
+        ? null
+        : meanRgbSsim(baseline.rgba, rgba, viewportWidth, viewportHeight, {
+            x: 0,
+            y: lowerFrameY,
+            width: viewportWidth,
+            height: viewportHeight - lowerFrameY,
+          });
+      const worstTileSsim = baseline === null
+        ? null
+        : worstTileRgbSsim(baseline.rgba, rgba, viewportWidth, viewportHeight);
 
-      await commands.writeFile(`${ARTIFACT_DIR}/${shot.name}.png`, pngBase64, "base64");
-      if (comparesToBaseline && (REBASELINE || baseline === null)) {
-        await commands.writeFile(`${BASELINE_DIR}/${shot.name}.png`, pngBase64, "base64");
+      if (REBASELINE) {
+        candidateScreenshots.push({ name: shot.name, pngBase64 });
+      } else {
+        await commands.writeFile(`${ARTIFACT_DIR}/${shot.name}.png`, pngBase64, "base64");
       }
 
       let temporal: TemporalStability | undefined;
@@ -404,40 +855,59 @@ describe("perf capture (1A-1c / 2Z)", () => {
         name: shot.name,
         description: shot.description,
         ssimAgainstBaseline: ssim === null ? null : Math.round(ssim * 10_000) / 10_000,
+        rgbSsimAgainstBaseline: rgbSsim === null
+          ? null
+          : Math.round(rgbSsim * 10_000) / 10_000,
+        lowerFrameRgbSsimAgainstBaseline: lowerFrameRgbSsim === null
+          ? null
+          : Math.round(lowerFrameRgbSsim * 10_000) / 10_000,
+        worstTileRgbSsimAgainstBaseline: worstTileSsim === null
+          ? null
+          : Math.round(worstTileSsim * 10_000) / 10_000,
         tiles: tileStatistics(luminance, viewportWidth, viewportHeight),
         fps: Math.round(measuredFps * 10) / 10,
-        frameIntervalMsP95: diagnostics.frameIntervalP95Ms,
-        cpuFrameMsP95: diagnostics.cpuP95Ms ?? diagnostics.cpuFrameTime,
-        gpuFrameMsP95: diagnostics.gpuP95Ms,
-        presentWaitMsP95: diagnostics.presentWaitP95Ms,
-        maxFrameMs: diagnostics.maxFrameMs === null
+        wallClockFps: rawTiming.wallClockFps,
+        frameIntervalMsP95: rawTiming.frameIntervalMsP95,
+        framesOver16_67Ms: rawTiming.framesOver16_67Ms,
+        framesOver27_4Ms: rawTiming.framesOver27_4Ms,
+        cpuFrameMsP95: timedDiagnostics.cpuP95Ms ?? timedDiagnostics.cpuFrameTime,
+        gpuFrameMsP95: timedDiagnostics.gpuP95Ms,
+        gpuTiming,
+        presentWaitMsP95: timedDiagnostics.presentWaitP95Ms,
+        maxFrameMs: rawTiming.maxFrameMs,
+        p999FrameMs: timedDiagnostics.p999FrameMs === null
           ? null
-          : Math.round(diagnostics.maxFrameMs * 10) / 10,
-        p999FrameMs: diagnostics.p999FrameMs === null
-          ? null
-          : Math.round(diagnostics.p999FrameMs * 10) / 10,
-        hitchCount: diagnostics.hitchCount,
-        drawCalls: diagnostics.drawCalls,
-        vegetationBatches: diagnostics.vegetationBatches,
-        triangles: diagnostics.triangles,
-        residentTerrainPages: diagnostics.residentTerrainPages,
-        pendingTerrainPages: diagnostics.pendingTerrainPages,
-        renderPixels: diagnostics.renderPixels,
+          : Math.round(timedDiagnostics.p999FrameMs * 10) / 10,
+        hitchCount: timedDiagnostics.hitchCount,
+        drawCalls: sceneDiagnostics.drawCalls,
+        vegetationBatches: sceneDiagnostics.vegetationBatches,
+        triangles: sceneDiagnostics.triangles,
+        residentTerrainPages: sceneDiagnostics.residentTerrainPages,
+        pendingTerrainPages: sceneDiagnostics.pendingTerrainPages,
+        pendingDetailWork: sceneDiagnostics.pendingDetailWork,
+        renderPixels: sceneDiagnostics.renderPixels,
+        renderScale: sceneDiagnostics.renderScale,
         viewportWidth,
         viewportHeight,
-        estimatedGpuMemoryMiB: Math.round(diagnostics.estimatedGpuMemoryMiB * 10) / 10,
-        inventoriedGpuMemoryMiB: Math.round(diagnostics.inventoriedGpuMemoryMiB * 10) / 10,
+        estimatedGpuMemoryMiB: Math.round(sceneDiagnostics.estimatedGpuMemoryMiB * 10) / 10,
+        inventoriedGpuMemoryMiB: Math.round(sceneDiagnostics.inventoriedGpuMemoryMiB * 10) / 10,
         // 4.5-C3: uncorrelated per-pass aggregates. Never compared against a
         // ceiling — they exist so the interval-versus-GPU gap is inspectable.
         gpuPassMs: {
-          mainPass: round3(diagnostics.gpuPassMs.mainPass),
-          shadows: round3(diagnostics.gpuPassMs.shadows),
-          terrainCompute: round3(diagnostics.gpuPassMs.terrainCompute),
-          total: round3(diagnostics.gpuPassMs.total),
+          mainPass: round3(timedDiagnostics.gpuPassMs.mainPass),
+          shadows: round3(timedDiagnostics.gpuPassMs.shadows),
+          terrainCompute: round3(timedDiagnostics.gpuPassMs.terrainCompute),
+          total: round3(timedDiagnostics.gpuPassMs.total),
         },
         ...(temporal ? { temporal } : {}),
       });
     }
+
+    // Validation errors are delivered asynchronously. Make every shot submit
+    // complete, then yield one task so `uncapturederror` reaches the dedicated
+    // listener before any visual/performance assertion or candidate write.
+    await renderer.waitForGpuIdleForCapture();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const report: PerfCaptureReport = {
       seed: PERF_CAPTURE_SEED,
@@ -446,38 +916,110 @@ describe("perf capture (1A-1c / 2Z)", () => {
       warmupFrames: PERF_CAPTURE_WARMUP_FRAMES,
       measureFrames: PERF_CAPTURE_MEASURE_FRAMES,
       pageGenerationMs: Math.round(pageGenerationMs * 100) / 100,
+      captureEnvironment: {
+        adapter: renderer.getDiagnostics().adapter,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        userAgent: navigator.userAgent,
+        quality: "medium",
+        renderingMode: "balanced",
+        pinnedRenderScale: TIER1_CAPTURE_PROFILE.renderScale,
+        gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
+        // Whether the frame-delivery numbers below were contract or diagnostic.
+        deliveryGatesEnforced: !UNPINNED_HOST,
+      },
       shots: shotReports,
     };
-    await commands.writeFile(
-      `${ARTIFACT_DIR}/report.json`,
-      `${JSON.stringify(report, null, 2)}\n`,
-    );
-    if (REBASELINE || shotReports.every((shot) => shot.ssimAgainstBaseline === null)) {
+    if (!REBASELINE) {
       await commands.writeFile(
-        `${BASELINE_DIR}/report.json`,
+        `${ARTIFACT_DIR}/report.json`,
         `${JSON.stringify(report, null, 2)}\n`,
       );
     }
 
     expect(shotReports).toHaveLength(SELECTED_SHOTS.length);
+    // Renderer errors invalidate every pixel and timing metric. Surface them
+    // before SSIM/performance assertions so a broken render pass cannot be
+    // misdiagnosed as an ordinary visual or frame-rate regression.
+    expect(
+      gpuUncapturedErrors,
+      "WebGPU reported uncaptured errors during the capture (rejected-submit/black-frame gate)",
+    ).toEqual([]);
+    expect(
+      consoleErrors,
+      "The renderer logged console errors during the capture (Z-1 gate)",
+    ).toEqual([]);
+    expect(
+      loggerErrors,
+      "Babylon logged errors during the capture (Z-1 gate)",
+    ).toEqual([]);
+
+    /**
+     * Delivery contracts, run as assertions on the reference adapter and as
+     * a report everywhere else. Wrapping the ORIGINAL assertion (rather than
+     * recomputing a boolean) keeps one authority for each contract and one
+     * wording for each failure, so the note an unpinned host prints is the
+     * exact sentence the reference adapter would have failed with.
+     */
+    const unpinnedDeliveryNotes: string[] = [];
+    const gateDelivery = (assertion: () => void): void => {
+      if (!UNPINNED_HOST) {
+        assertion();
+        return;
+      }
+      try {
+        assertion();
+      } catch (error) {
+        unpinnedDeliveryNotes.push(error instanceof Error ? error.message : String(error));
+      }
+    };
+
     for (let index = 0; index < shotReports.length; index += 1) {
       const definition = SELECTED_SHOTS[index]!;
       const shot = shotReports[index]!;
-      // Z-1: the pinned scale must hold — the render target is exactly the
-      // canvas, no letterbox, no black tiles.
+      // Z-1: the pinned shipping scale must hold. Rendered dimensions round
+      // independently, so permit only a small integer-size tolerance.
+      const expectedRenderPixels = shot.viewportWidth * shot.viewportHeight
+        * shot.renderScale ** 2;
       expect(
-        shot.renderPixels,
-        `${shot.name}: renderPixels must equal the shot viewport (Z-1 pin)`,
-      ).toBe(shot.viewportWidth * shot.viewportHeight);
-      expect(shot.tiles.meanLuminance).toBeGreaterThan(
-        definition.minMeanLuminance ?? 0.01,
+        Math.abs(shot.renderPixels - expectedRenderPixels) / expectedRenderPixels,
+        `${shot.name}: renderPixels must match the medium/balanced scale pin`,
+      ).toBeLessThan(0.01);
+      expect(shot.renderScale).toBeCloseTo(
+        definition.captureRenderScale ?? TIER1_CAPTURE_PROFILE.renderScale,
+        6,
       );
-      if (shot.ssimAgainstBaseline !== null) {
+      expect(
+        perfCaptureImageContentFailures(shot.tiles, definition),
+        `${shot.name}: screenshot is blank or lacks local visual structure`,
+      ).toEqual([]);
+      if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
         expect(
           shot.ssimAgainstBaseline,
           `${shot.name} diverged from the committed baseline — a regression unless this is `
-          + "a sanctioned churn point (then rerun with perf:capture:rebaseline)",
+          + "a sanctioned churn point (then generate and review a perf:capture:candidate)",
         ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD);
+      }
+      if (shot.rgbSsimAgainstBaseline !== null && !REBASELINE) {
+        expect(
+          shot.rgbSsimAgainstBaseline,
+          `${shot.name}: RGB/chroma diverged from the committed baseline`,
+        ).toBeGreaterThanOrEqual(
+          definition.rgbSsimThreshold ?? PERF_CAPTURE_RGB_SSIM_THRESHOLD,
+        );
+        expect(
+          shot.lowerFrameRgbSsimAgainstBaseline,
+          `${shot.name}: nearby terrain/foliage diverged even if the sky remained stable`,
+        ).toBeGreaterThanOrEqual(
+          definition.lowerFrameRgbSsimThreshold
+            ?? PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
+        );
+        expect(
+          shot.worstTileRgbSsimAgainstBaseline,
+          `${shot.name}: a local visual regression was diluted by the whole-frame score`,
+        ).toBeGreaterThanOrEqual(
+          definition.worstTileRgbSsimThreshold
+            ?? PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
+        );
       }
       if (definition.temporalFloors && shot.temporal) {
         expect(
@@ -489,28 +1031,39 @@ describe("perf capture (1A-1c / 2Z)", () => {
           `${shot.name}: frame-to-frame luminance jumped above the committed ceiling`,
         ).toBeLessThanOrEqual(definition.temporalFloors.maxMeanLuminanceDelta);
       }
-      // Z-2: the committed per-shot performance gate.
+      // The tier-1 medium/balanced delivery contract is intentionally raw:
+      // no percentile trimming may hide a freeze or a run that averages 59.9.
+      gateDelivery(() => expect(
+        tier1BalancedPerformanceFailures({
+          wallClockFps: shot.wallClockFps,
+          frameIntervalMsP95: shot.frameIntervalMsP95,
+          framesOver27_4Ms: shot.framesOver27_4Ms,
+          maxFrameMs: shot.maxFrameMs,
+        }),
+        `${shot.name}: strict tier-1 medium/balanced frame-delivery gate failed`,
+      ).toEqual([]));
+
+      // Z-2: retain the historical per-shot gate as a diagnostic regression
+      // contract in addition to (never instead of) the strict tier-1 gate.
       const ceilings = definition.ceilings;
       if (ceilings !== null) {
-        expect(
+        gateDelivery(() => expect(
           shot.fps,
           `${shot.name}: measured fps fell below the committed floor`,
-        ).toBeGreaterThanOrEqual(ceilings.minFps);
-        expect(
+        ).toBeGreaterThanOrEqual(ceilings.minFps));
+        gateDelivery(() => expect(
           shot.hitchCount,
           `${shot.name}: more hitch frames than the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.hitchCount);
-        if (shot.maxFrameMs !== null) {
-          expect(
-            shot.maxFrameMs,
-            `${shot.name}: worst frame exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(ceilings.maxFrameMs);
-        }
+        ).toBeLessThanOrEqual(ceilings.hitchCount));
+        gateDelivery(() => expect(
+          shot.maxFrameMs,
+          `${shot.name}: worst frame exceeded the committed ceiling`,
+        ).toBeLessThanOrEqual(ceilings.maxFrameMs));
         if (shot.p999FrameMs !== null) {
-          expect(
+          gateDelivery(() => expect(
             shot.p999FrameMs,
             `${shot.name}: p999 frame exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(ceilings.p999FrameMs);
+          ).toBeLessThanOrEqual(ceilings.p999FrameMs));
         }
       }
       // 4-10 (assertion 84b): page residency under streaming load. The
@@ -518,11 +1071,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // outruns the compute meter visible as a rising queue rather than as a
       // hitch nobody can attribute.
       const residency = definition.residencyCeilings;
+      expect(
+        shot.pendingDetailWork,
+        `${shot.name}: detail generation/presentation was still pending at capture`,
+      ).toBe(0);
       if (residency) {
-        expect(
+        // Queue DEPTH is what the wall-clock compute meter admits per frame,
+        // so it follows the host the same way the delivery rows do.
+        gateDelivery(() => expect(
           shot.pendingTerrainPages,
           `${shot.name}: more pages pending generation than the committed ceiling`,
-        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages);
+        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages));
+        // Atlas OCCUPANCY is a capacity bound. It stays hard on every host.
         expect(
           shot.residentTerrainPages,
           `${shot.name}: more resident page slots than the atlas holds`,
@@ -530,14 +1090,44 @@ describe("perf capture (1A-1c / 2Z)", () => {
       }
     }
 
-    // Z-1: the renderer must not have logged an error during the run.
-    expect(
-      consoleErrors,
-      "The renderer logged console errors during the capture (Z-1 gate)",
-    ).toEqual([]);
-    expect(
-      loggerErrors,
-      "Babylon logged errors during the capture (Z-1 gate)",
-    ).toEqual([]);
+    // Never silent. An unpinned run states every contract it declined to
+    // enforce, so "green on CI" can never be read as "met the tier-1 bar".
+    if (UNPINNED_HOST) {
+      console.info(
+        `frame-delivery contracts were NOT enforced (VITE_PERF_UNPINNED_HOST=1): `
+        + `${unpinnedDeliveryNotes.length} would have failed on the pinned reference adapter`
+        + (unpinnedDeliveryNotes.length === 0
+          ? ""
+          : `\n${unpinnedDeliveryNotes.map((note) => `  - ${note}`).join("\n")}`),
+      );
+    }
+
+    if (REBASELINE) {
+      expect(
+        candidateScreenshots.map(({ name }) => name),
+        "A rebaseline candidate must contain the exact full canonical shot set",
+      ).toEqual(PERF_CAPTURE_SHOTS.map(({ name }) => name));
+
+      // Candidate output is deliberately the final operation. A visual,
+      // temporal, performance, residency, or renderer-error failure above
+      // leaves no newly generated candidate that could be mistaken for an
+      // approved baseline. Each validated run gets a fresh directory, so a
+      // failed retry cannot make an older candidate look newly generated. The
+      // committed baseline directory has no write path.
+      const candidateId = new Date().toISOString().replaceAll(":", "-");
+      const candidateDir = `${CANDIDATE_ROOT}/${candidateId}`;
+      for (const screenshot of candidateScreenshots) {
+        await commands.writeFile(
+          `${candidateDir}/${screenshot.name}.png`,
+          screenshot.pngBase64,
+          "base64",
+        );
+      }
+      await commands.writeFile(
+        `${candidateDir}/report.json`,
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
+      console.info(`Reviewable rebaseline candidate written to ${candidateDir}`);
+    }
   }, 1_500_000);
 });

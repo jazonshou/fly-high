@@ -50,6 +50,19 @@ const MAX_GEAR_COMPRESSION = 0.22;
 const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
+// Numerical translational safety envelope. This is a NaN/injection guard, not
+// a flight-shaping limit: it sits far above anything gravity plus the drag
+// polar can reach for either aircraft, so the aerodynamics — never the clamp —
+// decide top speed.
+const MAX_TRANSLATIONAL_SPEED = 750;
+// Wave-drag hump shape shared by every aircraft that declares a transonic
+// onset: a smoothstep^2 rise over 0.17 Mach to the peak, then the classic
+// supersonic decay of the wave-drag coefficient beyond the hump. No shipped
+// aircraft currently declares one (both sit far below their critical Mach),
+// so the term is inert; it stays for the next airframe that needs it.
+const TRANSONIC_PEAK_MACH_OFFSET = 0.17;
+const TRANSONIC_SUPERSONIC_DECAY = 5.5;
+const SEA_LEVEL_SPEED_OF_SOUND = 340.29;
 // The coefficient model remains valid through a stall, but at very high true
 // airspeed in thin air it can otherwise request non-structural frame-to-frame
 // accelerations and reach the old numerical safety clamp of 20 rad/s. These
@@ -250,6 +263,35 @@ function calculateGroundSpawnPose(
 export function standardAirDensity(altitudeMetres: number): number {
   // A bounded exponential atmosphere is sufficient at the light trainer's envelope.
   return SEA_LEVEL_DENSITY * Math.exp(-clamp(altitudeMetres, -500, 20_000) / 8_500);
+}
+
+/**
+ * Incremental transonic wave-drag coefficient. Mach is inferred from density
+ * through the ISA troposphere relation T/T0 = (rho/rho0)^(1/4.256), so the
+ * term needs no separate temperature model and honours test density
+ * overrides. Aircraft with `transonicDragRise` 0 — currently both of them —
+ * return exactly 0, keeping their drag bit-identical to the pre-wave-drag
+ * model.
+ */
+function waveDragCoefficient(
+  aircraft: AircraftDefinition,
+  airspeed: number,
+  airDensity: number,
+): number {
+  const rise = aircraft.transonicDragRise;
+  if (!(rise > 0)) return 0;
+  const speedOfSound =
+    SEA_LEVEL_SPEED_OF_SOUND * (airDensity / SEA_LEVEL_DENSITY) ** 0.1175;
+  const mach = airspeed / Math.max(1, speedOfSound);
+  const onset = aircraft.transonicOnsetMach;
+  if (!(mach > onset)) return 0;
+  const peakMach = onset + TRANSONIC_PEAK_MACH_OFFSET;
+  if (mach < peakMach) {
+    const progress = (mach - onset) / TRANSONIC_PEAK_MACH_OFFSET;
+    const smooth = progress * progress * (3 - 2 * progress);
+    return rise * smooth * smooth;
+  }
+  return rise / (1 + TRANSONIC_SUPERSONIC_DECAY * (mach - peakMach));
 }
 
 function terrainAt(
@@ -506,9 +548,21 @@ function sanitizeState(state: FlightState): void {
   state.position.x = clamp(finiteOr(state.position.x, 0), -1e9, 1e9);
   state.position.y = clamp(finiteOr(state.position.y, 1_000), -10_000, 100_000);
   state.position.z = clamp(finiteOr(state.position.z, 0), -1e9, 1e9);
-  state.velocity.x = clamp(finiteOr(state.velocity.x, 0), -350, 350);
-  state.velocity.y = clamp(finiteOr(state.velocity.y, 0), -350, 350);
-  state.velocity.z = clamp(finiteOr(state.velocity.z, 0), -350, 350);
+  state.velocity.x = clamp(
+    finiteOr(state.velocity.x, 0),
+    -MAX_TRANSLATIONAL_SPEED,
+    MAX_TRANSLATIONAL_SPEED,
+  );
+  state.velocity.y = clamp(
+    finiteOr(state.velocity.y, 0),
+    -MAX_TRANSLATIONAL_SPEED,
+    MAX_TRANSLATIONAL_SPEED,
+  );
+  state.velocity.z = clamp(
+    finiteOr(state.velocity.z, 0),
+    -MAX_TRANSLATIONAL_SPEED,
+    MAX_TRANSLATIONAL_SPEED,
+  );
   state.angularVelocity.x = clamp(
     finiteOr(state.angularVelocity.x, 0),
     -MAX_BODY_ANGULAR_RATE.x,
@@ -911,7 +965,7 @@ function integrateSubstep(
   scratch.relativeWorld.y = state.velocity.y - finiteOr(environment.wind?.y, 0);
   scratch.relativeWorld.z = state.velocity.z - finiteOr(environment.wind?.z, 0);
   inverseRotateVectorInto(scratch.relativeBody, state.orientation, scratch.relativeWorld);
-  const airspeed = clamp(length3(scratch.relativeBody), 0, 350);
+  const airspeed = clamp(length3(scratch.relativeBody), 0, MAX_TRANSLATIONAL_SPEED);
   normalizeInto(
     scratch.velocityDirectionBody,
     scratch.relativeBody,
@@ -950,14 +1004,17 @@ function integrateSubstep(
     ? state.actuators.brake * (state.onGround ? 0.62 : 0.12)
     : 0;
   const liftCoefficient = baseLiftCoefficient * (1 - speedBrakeLiftDump);
-  const dragCoefficient = calculateDragCoefficient(
-    angleOfAttack,
-    liftCoefficient,
-    state.actuators.flaps,
-    aircraft,
-    state.actuators.gear,
-    state.actuators.brake,
-  );
+  // Adding the (possibly zero) wave-drag term after the base polar keeps the
+  // trainer bit-identical: x + 0 is exact for every positive float.
+  const dragCoefficient =
+    calculateDragCoefficient(
+      angleOfAttack,
+      liftCoefficient,
+      state.actuators.flaps,
+      aircraft,
+      state.actuators.gear,
+      state.actuators.brake,
+    ) + waveDragCoefficient(aircraft, airspeed, airDensity);
   const liftForce = dynamicPressure * aircraft.wingArea * liftCoefficient;
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;
 

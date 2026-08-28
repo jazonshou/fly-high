@@ -28,7 +28,9 @@ import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain } from "@/src/world";
 import { DisposableScope } from "./DisposableScope";
+import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
+import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
   airborneThrottleForAircraft,
@@ -49,7 +51,16 @@ import {
 } from "./transitionGate";
 import "./flight.css";
 
-type GamePhase = "menu" | "flying" | "paused";
+type GamePhase = "menu" | "flying" | "paused" | "viewer";
+
+interface ViewerStats {
+  x: number;
+  y: number;
+  z: number;
+  agl: number;
+  airspeed: number;
+  cruise: number;
+}
 
 const GRAPHICS_DEVICE_LOST_MESSAGE =
   "The WebGPU device was lost. Reload to recreate the adapter, device, and all GPU resources.";
@@ -59,6 +70,7 @@ const CAMERA_LABELS: Record<CameraMode, string> = {
   chase: "CHASE CAM",
   cockpit: "COCKPIT",
   cinematic: "ORBIT CAM",
+  freefly: "FREE CAM",
 };
 
 const CONTROL_MODE_LABELS: Record<GameSettings["flightMode"], string> = {
@@ -98,6 +110,8 @@ export function FlightGame() {
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
+  const freeFlyRef = useRef<FreeFlyController | null>(null);
+  const [viewerStats, setViewerStats] = useState<ViewerStats | null>(null);
   const [phase, setPhase] = useState<GamePhase>("menu");
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -196,6 +210,48 @@ export function FlightGame() {
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [unlockAudio, updatePhase]);
+
+  /**
+   * Beta terrain viewer: freeze the attract flight, hide the aircraft, and
+   * hand the renderer's state seam to the free-fly rig. Everything is
+   * additive — leaving the viewer resumes the menu attract exactly.
+   */
+  const enterViewer = useCallback(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || phaseRef.current !== "menu" || settingsOpenRef.current) return;
+    invalidatePendingTransitions();
+    audioRef.current?.suspend();
+    simulationRef.current?.setPaused(true);
+    freeFlyRef.current?.dispose();
+    freeFlyRef.current = new FreeFlyController({
+      canvas: renderer.domElement,
+      groundHeight: (x, z) => renderer.sampleGroundHeight(x, z),
+      initialState: latestStateRef.current,
+    });
+    renderer.setViewerMode(true);
+    updatePhase("viewer");
+  }, [invalidatePendingTransitions, updatePhase]);
+
+  const exitViewer = useCallback(() => {
+    if (phaseRef.current !== "viewer") return;
+    freeFlyRef.current?.dispose();
+    freeFlyRef.current = null;
+    setViewerStats(null);
+    rendererRef.current?.setViewerMode(false);
+    simulationRef.current?.setPaused(false);
+    updatePhase("menu");
+  }, [updatePhase]);
+
+  useEffect(() => {
+    if (phase !== "viewer") return;
+    const handleViewerKeyDown = (event: KeyboardEvent) => {
+      // The first Escape while pointer-locked is consumed by the browser to
+      // release the lock; this handler sees the second one.
+      if (event.key === "Escape") exitViewer();
+    };
+    window.addEventListener("keydown", handleViewerKeyDown);
+    return () => window.removeEventListener("keydown", handleViewerKeyDown);
+  }, [phase, exitViewer]);
 
   /** Starts a deliberate new flight at the chosen spawn. */
   const startNewFlight = useCallback(
@@ -380,6 +436,7 @@ export function FlightGame() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let animationFrame = 0;
+    let controlPump: FlightControlPump | null = null;
     let disposed = false;
     let rendererTerminal = false;
     let lastFrame = performance.now();
@@ -392,6 +449,19 @@ export function FlightGame() {
         setError(null);
       }
     });
+
+    const stopRendererSafely = (reason: string, userMessage: string): void => {
+      if (disposed || rendererTerminal) return;
+      rendererTerminal = true;
+      cancelAnimationFrame(animationFrame);
+      controlPump?.dispose();
+      controlPump = null;
+      invalidatePendingTransitions();
+      simulationRef.current?.setPaused(true);
+      audioRef.current?.suspend();
+      canvas.dataset.renderFailure = reason;
+      setError(userMessage);
+    };
 
     const initialize = async (): Promise<void> => {
       try {
@@ -406,13 +476,19 @@ export function FlightGame() {
         renderingMode: activeSettings.renderingMode,
         reducedMotion: activeSettings.reducedMotion,
         signal: startupAbortController.signal,
-        onDeviceLost: () => {
-          if (disposed) return;
-          rendererTerminal = true;
-          cancelAnimationFrame(animationFrame);
-          invalidatePendingTransitions();
-          simulationRef.current?.setPaused(true);
-          setError(GRAPHICS_DEVICE_LOST_MESSAGE);
+        onDeviceLost: (reason: string) => {
+          stopRendererSafely(reason, GRAPHICS_DEVICE_LOST_MESSAGE);
+        },
+        onGpuUncapturedError: (reason: string) => {
+          console.error(
+            "Flight renderer stopped after an uncaptured WebGPU error",
+            reason,
+          );
+          stopRendererSafely(
+            reason,
+            `The renderer stopped safely after a WebGPU error: ${reason}. `
+              + "Reload the simulator to rebuild the scene.",
+          );
         },
         ...(world.airport ? { runway: world.airport } : {}),
       };
@@ -455,6 +531,7 @@ export function FlightGame() {
         initialAttractMode,
         activeSettings.aircraft,
       ));
+      renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);
       renderer.setAtmosphere(
         {
@@ -485,24 +562,42 @@ export function FlightGame() {
         }
       });
 
+      controlPump = startFlightControlPump({
+        input,
+        simulation,
+        phase: () => phaseRef.current,
+        handleActions,
+        isForeground: () => !disposed && !rendererTerminal && !document.hidden,
+      });
+
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
         lastFrame = now;
-        if (phaseRef.current === "flying") {
-          simulation.setControls(input.getControls(deltaSeconds));
+        const freeFly = phaseRef.current === "viewer" ? freeFlyRef.current : null;
+        const frameState = freeFly
+          ? freeFly.update(now)
+          : simulation.getRenderState(now) ?? latestStateRef.current;
+        if (freeFly && now - lastUiUpdateRef.current > 150) {
+          lastUiUpdateRef.current = now;
+          setViewerStats({
+            x: frameState.position.x,
+            y: frameState.position.y,
+            z: frameState.position.z,
+            agl: frameState.altitudeAgl,
+            airspeed: frameState.airspeed,
+            cruise: freeFly.speedMetersPerSecond,
+          });
         }
-        handleActions(input.consumeActions());
         try {
-          renderer.render(simulation.getRenderState(now) ?? latestStateRef.current, deltaSeconds);
+          renderer.render(frameState, deltaSeconds);
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";
-          canvas.dataset.renderFailure = reason;
-          rendererTerminal = true;
-          invalidatePendingTransitions();
-          simulation.setPaused(true);
-          setError(`The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`);
+          stopRendererSafely(
+            reason,
+            `The renderer stopped safely: ${reason}. Reload the simulator to rebuild the scene.`,
+          );
           return;
         }
         if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {
@@ -525,12 +620,14 @@ export function FlightGame() {
       startupResources.release(audio);
       startupResources.release(simulation);
       } catch (caught) {
+        controlPump?.dispose();
+        controlPump = null;
         startupResources.dispose();
         const message = caught instanceof Error
           ? caught.message
           : "This browser could not create a hardware WebGPU device.";
         queueMicrotask(() => {
-          if (!disposed) setError(message);
+          if (!disposed && !rendererTerminal) setError(message);
         });
       }
     };
@@ -550,6 +647,10 @@ export function FlightGame() {
       disposed = true;
       startupAbortController.abort();
       cancelAnimationFrame(animationFrame);
+      controlPump?.dispose();
+      controlPump = null;
+      freeFlyRef.current?.dispose();
+      freeFlyRef.current = null;
       document.removeEventListener("visibilitychange", handleVisibility);
       startupResources.dispose();
       const cleanupResources = new DisposableScope();
@@ -601,7 +702,7 @@ export function FlightGame() {
       />
       <div className="flight-vignette" aria-hidden="true" />
 
-      {phase !== "menu" ? (
+      {phase === "flying" || phase === "paused" ? (
         <Hud
           state={visualState}
           aircraft={settings.aircraft}
@@ -655,6 +756,44 @@ export function FlightGame() {
               <small>Settings</small>
               <span aria-hidden="true">⚙</span>
             </button>
+            <button
+              className="seed-action viewer-action"
+              type="button"
+              onClick={enterViewer}
+              aria-label="Enter the beta terrain viewer: a free-flying camera with no aircraft"
+            >
+              <small>Beta</small>
+              <strong>Terrain Viewer</strong>
+              <span aria-hidden="true">⛰</span>
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {phase === "viewer" ? (
+        <section className="viewer-hud" aria-label="Terrain viewer overlay">
+          <div className="viewer-hud__stats" role="status">
+            <span className="viewer-hud__tag">TERRAIN VIEWER · BETA</span>
+            {viewerStats ? (
+              <>
+                <span>
+                  {Math.round(viewerStats.x)} , {Math.round(viewerStats.z)} ·{" "}
+                  {Math.round(viewerStats.y)} m MSL · {Math.round(viewerStats.agl)} m AGL
+                </span>
+                <span>
+                  {viewerStats.airspeed.toFixed(0)} m/s · cruise {viewerStats.cruise.toFixed(0)} m/s
+                </span>
+              </>
+            ) : null}
+            {diagnostics ? (
+              <span>
+                {Math.round(diagnostics.fps)} fps · {diagnostics.drawCalls} draws ·{" "}
+                {(diagnostics.triangles / 1_000_000).toFixed(2)} Mtri
+              </span>
+            ) : null}
+          </div>
+          <div className="viewer-hud__help">
+            Click to look · WASD move · Space/C up/down · Shift sprint · Scroll speed · Esc exit
           </div>
         </section>
       ) : null}

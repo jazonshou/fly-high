@@ -9,6 +9,7 @@ import {
 } from "../core/TextureArrayMips";
 import { planFoliageAtlas, FOLIAGE_ATLAS_EDGE } from "./FoliageAtlas";
 import {
+  buildCrownFringePrototype,
   buildTreePrototype,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
@@ -73,7 +74,7 @@ export const IMPOSTOR_SPECIES: readonly TreeSpecies[] = [
  * as the crown/bark materials do, so the impostor's mean colour tracks the
  * card LOD by construction. The runtime reads the same constants.
  */
-export const DETAIL_CROWN_ALBEDO: readonly [number, number, number] = [0.62, 0.66, 0.58];
+export const DETAIL_CROWN_ALBEDO: readonly [number, number, number] = [0.92, 0.91, 0.8];
 export const DETAIL_BARK_ALBEDO: readonly [number, number, number] = [0.58, 0.52, 0.46];
 
 /** Baked crown occlusion floor — mirrors the plugin's mix(0.42, 1, occlusion). */
@@ -166,6 +167,7 @@ function rasterizeGeometry(
   layerEdge: number,
   extent: number,
   centerY: number,
+  sidedness: "two-sided" | "cull-back",
 ): void {
   const [dx, dy, dz] = viewDirection;
   // View basis: right ⟂ dir in the horizontal-ish plane, up completes it.
@@ -210,22 +212,32 @@ function rasterizeGeometry(
     const a = project(ia);
     const b = project(ib);
     const c = project(ic);
-    // Face normal in world space.
+    // Face normal in world space — used for sidedness only. Wave R: the
+    // STORED normal is the geometry's authored vertex normal (the cards'
+    // 0.65 dome blend, the core's smoothed outward hull, the bark tube's
+    // outward normal) so the sprite shades under the SAME normal model as
+    // the geometry bands it replaces. Baking flat face normals flipped
+    // toward the bake camera made the whole far band's response view-locked:
+    // near-maximally lit with the sun anywhere behind the camera, up to 46%
+    // dark with the sun opposed — the tone line that survived every
+    // constant re-tune. Sidedness mirrors the runtime materials: one-sided
+    // parts (core hull, bark — backFaceCulling true) cull here too; the
+    // two-sided card shell keeps the whole-normal flip Babylon's
+    // twoSidedLighting applies on back faces.
     const abx = positions[ib * 3]! - positions[ia * 3]!;
     const aby = positions[ib * 3 + 1]! - positions[ia * 3 + 1]!;
     const abz = positions[ib * 3 + 2]! - positions[ia * 3 + 2]!;
     const acx = positions[ic * 3]! - positions[ia * 3]!;
     const acy = positions[ic * 3 + 1]! - positions[ia * 3 + 1]!;
     const acz = positions[ic * 3 + 2]! - positions[ia * 3 + 2]!;
-    let nx = aby * acz - abz * acy;
-    let ny = abz * acx - abx * acz;
-    let nz = abx * acy - aby * acx;
-    const nLength = Math.hypot(nx, ny, nz) || 1;
-    nx /= nLength; ny /= nLength; nz /= nLength;
-    // Double-sided: flip toward the camera.
-    if (nx * dx + ny * dy + nz * dz > 0) {
-      nx = -nx; ny = -ny; nz = -nz;
-    }
+    let fnx = aby * acz - abz * acy;
+    let fny = abz * acx - abx * acz;
+    let fnz = abx * acy - aby * acx;
+    const fnLength = Math.hypot(fnx, fny, fnz) || 1;
+    fnx /= fnLength; fny /= fnLength; fnz /= fnLength;
+    const faceToward = fnx * dx + fny * dy + fnz * dz;
+    if (sidedness === "cull-back" && faceToward < 0) continue;
+    const normalFlip = sidedness === "two-sided" && faceToward < 0 ? -1 : 1;
 
     const minX = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0]) * edge));
     const maxX = Math.min(edge - 1, Math.ceil(Math.max(a[0], b[0], c[0]) * edge));
@@ -265,10 +277,24 @@ function rasterizeGeometry(
         tile.albedo[out + 1] = Math.round(Math.min(1, g * materialAlbedo[1] * shade) * 255);
         tile.albedo[out + 2] = Math.round(Math.min(1, bch * materialAlbedo[2] * shade) * 255);
         tile.albedo[out + 3] = 255;
+        const vertexNormals = geometry.normals;
+        let nx = (vertexNormals[ia * 3]! * w0 + vertexNormals[ib * 3]! * w1
+          + vertexNormals[ic * 3]! * w2) * normalFlip;
+        let ny = (vertexNormals[ia * 3 + 1]! * w0 + vertexNormals[ib * 3 + 1]! * w1
+          + vertexNormals[ic * 3 + 1]! * w2) * normalFlip;
+        let nz = (vertexNormals[ia * 3 + 2]! * w0 + vertexNormals[ib * 3 + 2]! * w1
+          + vertexNormals[ic * 3 + 2]! * w2) * normalFlip;
+        const nLength = Math.hypot(nx, ny, nz) || 1;
+        nx /= nLength; ny /= nLength; nz /= nLength;
         tile.normalDepth[out] = Math.round((nx * 0.5 + 0.5) * 255);
         tile.normalDepth[out + 1] = Math.round((ny * 0.5 + 0.5) * 255);
         tile.normalDepth[out + 2] = Math.round((nz * 0.5 + 0.5) * 255);
-        tile.normalDepth[out + 3] = Math.round(Math.min(1, Math.max(0, depth)) * 255);
+        // COVERAGE, not depth: the runtime reads only .xyz (depth was never
+        // sampled), and a coverage alpha is what lets alphaDilate spread real
+        // normals into the uncovered texels — un-dilated, box mips blended
+        // encoded-black (-1,-1,-1) into every level and distant trees darkened
+        // progressively with mip distance.
+        tile.normalDepth[out + 3] = 255;
       }
     }
   }
@@ -287,9 +313,18 @@ export function impostorBakeFrame(species: TreeSpecies, seed = 7): {
   readonly extentUnit: number;
   readonly centerYUnit: number;
 } {
-  const prototype = buildTreePrototype(species, 0, seed, "near");
-  const height = Math.max(prototype.crown.boundingHeight, prototype.trunk.boundingHeight);
-  const radius = Math.max(prototype.crown.boundingRadius, prototype.trunk.boundingRadius);
+  const prototype = buildTreePrototype(species, 0, seed, "mid");
+  const cards = buildCrownFringePrototype(species, 0, seed, "mid");
+  const height = Math.max(
+    prototype.crown.boundingHeight,
+    prototype.trunk.boundingHeight,
+    cards.boundingHeight,
+  );
+  const radius = Math.max(
+    prototype.crown.boundingRadius,
+    prototype.trunk.boundingRadius,
+    cards.boundingRadius,
+  );
   return {
     extentUnit: Math.max(radius, height / 2) * 1.08,
     centerYUnit: height / 2,
@@ -302,7 +337,14 @@ function bakeSpeciesLayer(
   foliage: MippedTextureArrayPlan,
   seed: number,
 ): { albedo: Uint8Array; normalDepth: Uint8Array } {
-  const prototype = buildTreePrototype(species, 0, seed, "near");
+  // Wave R: the bake composites the MID budget — the band the impostor
+  // actually replaces. Baking the near budget shipped 5-13% darker sprites
+  // (denser cards self-occlude more in the occlusion lane, ~2x more dark
+  // bark area); re-baking from the mid parts measures impostor/geometry
+  // albedo at exactly 1.000 for all seven species. The frame above must
+  // switch bands in lockstep or the billboard framing desyncs.
+  const prototype = buildTreePrototype(species, 0, seed, "mid");
+  const cards = buildCrownFringePrototype(species, 0, seed, "mid");
   const layerEdge = IMPOSTOR_LAYER_EDGE;
   const albedo = new Uint8Array(layerEdge * layerEdge * 4);
   const normalDepth = new Uint8Array(layerEdge * layerEdge * 4);
@@ -333,14 +375,28 @@ function bakeSpeciesLayer(
       prototype.crown, DETAIL_CROWN_ALBEDO, foliage, direction,
       bare && DECIDUOUS_IMPOSTORS.has(species) ? IMPOSTOR_BARE_LEAF_FRACTION : 1,
       tile, originX, originY, layerEdge, extent, centerY,
+      "cull-back",
+    );
+    // Wave T: the leaf-cluster card shell is the visible canopy surface —
+    // without it the impostor bakes only the dark interior core and the far
+    // band reads as a different (and much darker) forest.
+    rasterizeGeometry(
+      cards, DETAIL_CROWN_ALBEDO, foliage, direction,
+      bare && DECIDUOUS_IMPOSTORS.has(species) ? IMPOSTOR_BARE_LEAF_FRACTION : 1,
+      tile, originX, originY, layerEdge, extent, centerY,
+      "two-sided",
     );
     rasterizeGeometry(
       prototype.trunk, DETAIL_BARK_ALBEDO, foliage, direction,
       1,
       tile, originX, originY, layerEdge, extent, centerY,
+      "cull-back",
     );
   }
-  return { albedo: alphaDilate(albedo, layerEdge, 6), normalDepth };
+  return {
+    albedo: alphaDilate(albedo, layerEdge, 6),
+    normalDepth: alphaDilate(normalDepth, layerEdge, 6),
+  };
 }
 
 /** The pure half: every layer of both arrays, mipped and packed. */

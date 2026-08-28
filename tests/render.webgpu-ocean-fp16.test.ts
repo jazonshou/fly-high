@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildOceanFftDispatches, resolveSpectralOceanConfig } from "../src/render/webgpu/nature/OceanConfig";
+import {
+  buildOceanFftDispatches,
+  oceanTransformNormalizationScale,
+  resolveSpectralOceanConfig,
+} from "../src/render/webgpu/nature/OceanConfig";
 
 /**
  * 1B-13, assertion 28 — fp16 FFT intermediate bounds, on a CPU mirror of the
@@ -166,12 +170,20 @@ function evolve(
   return { a, b };
 }
 
-/** Mirrors stockhamInverseFft including the per-axis normalisation schedule. */
+/**
+ * Mirrors stockhamInverseFft including the per-axis normalisation schedule.
+ *
+ * wave R: `normalizationScale` is the factor the shader's last stage of each
+ * axis applies. It is `oceanTransformNormalizationScale(patchLength)` in the
+ * shipping chain and 1/N in the pre-wave-R one, which the deficit test below
+ * still exercises as its negative control.
+ */
 function runFftChain(
   resolution: number,
   a: Float64Array,
   b: Float64Array,
-): { stageMaxima: number[]; heights: Float64Array } {
+  normalizationScale: number,
+): { stageMaxima: number[]; heights: Float64Array; displacements: Float64Array } {
   const passes = buildOceanFftDispatches(resolution);
   let sourceA = a.slice();
   let sourceB = b.slice();
@@ -194,7 +206,7 @@ function runFftChain(
         const texel = (transformIndex: number) => pass.axis === "horizontal"
           ? transformIndex + line * resolution
           : line + transformIndex * resolution;
-        const normalization = pass.normalize ? 1 / resolution : 1;
+        const normalization = pass.normalize ? normalizationScale : 1;
         for (const [source, destination] of [
           [sourceA, destinationA],
           [sourceB, destinationB],
@@ -229,10 +241,53 @@ function runFftChain(
     stageMaxima.push(maximum);
   }
   const heights = new Float64Array(resolution * resolution);
+  // wave R: (displacementX, displacementZ) per texel, the pair the derivation
+  // shader differences into the horizontal Jacobian that drives foam.
+  const displacements = new Float64Array(resolution * resolution * 2);
   for (let index = 0; index < heights.length; index += 1) {
     heights[index] = sourceA[index * 4]!;
+    displacements[index * 2] = sourceA[index * 4 + 2]!;
+    displacements[index * 2 + 1] = sourceB[index * 4]!;
   }
-  return { stageMaxima, heights };
+  return { stageMaxima, heights, displacements };
+}
+
+/**
+ * wave R: the derivation shader's horizontal Jacobian, texel for texel —
+ * central differences over one texel each way, then
+ * `(1 + dDx/dx)(1 + dDz/dz) - (dDz/dx)(dDx/dz)`. Foam is
+ * `clamp((foamThreshold - jacobian) * foamGain, 0, 1)` on this field, so the
+ * fraction of texels below a threshold IS the whitecap coverage.
+ */
+function jacobianField(
+  displacements: Float64Array,
+  resolution: number,
+  texelLengthMeters: number,
+): Float64Array {
+  const inverseWidth = 0.5 / Math.max(texelLengthMeters, 1e-5);
+  const wrap = (value: number): number => ((value % resolution) + resolution) % resolution;
+  const field = new Float64Array(resolution * resolution);
+  for (let y = 0; y < resolution; y += 1) {
+    for (let x = 0; x < resolution; x += 1) {
+      const at = (column: number, row: number): number => (wrap(column) + wrap(row) * resolution) * 2;
+      const left = at(x - 1, y);
+      const right = at(x + 1, y);
+      const down = at(x, y - 1);
+      const up = at(x, y + 1);
+      const dxDx = (displacements[right]! - displacements[left]!) * inverseWidth;
+      const dzDx = (displacements[right + 1]! - displacements[left + 1]!) * inverseWidth;
+      const dxDz = (displacements[up]! - displacements[down]!) * inverseWidth;
+      const dzDz = (displacements[up + 1]! - displacements[down + 1]!) * inverseWidth;
+      field[x + y * resolution] = (1 + dxDx) * (1 + dzDz) - dzDx * dxDz;
+    }
+  }
+  return field;
+}
+
+function fractionBelow(field: Float64Array, threshold: number): number {
+  let below = 0;
+  for (const value of field) if (value < threshold) below += 1;
+  return below / field.length;
 }
 
 describe("fp16 ocean FFT (1B-13, assertion 28)", () => {
@@ -271,7 +326,11 @@ describe("fp16 ocean FFT (1B-13, assertion 28)", () => {
   const energeticIndex = energies.indexOf(Math.max(...energies));
   const params = paramsFor(energeticIndex);
 
-  it("normalises the last stage of each axis (per-axis 1/N)", () => {
+  const scaleFor = (cascadeIndex: number): number => oceanTransformNormalizationScale(
+    config.cascades[cascadeIndex]!.patchLengthMeters,
+  );
+
+  it("normalises the last stage of each axis", () => {
     const passes = buildOceanFftDispatches(256);
     const stages = Math.log2(256);
     expect(passes).toHaveLength(stages * 2);
@@ -283,31 +342,170 @@ describe("fp16 ocean FFT (1B-13, assertion 28)", () => {
 
   it("keeps every intermediate stage inside fp16's usable range", () => {
     const { a, b } = evolve(params, 7.3, config.choppiness);
-    const { stageMaxima, heights } = runFftChain(256, a, b);
+    const { stageMaxima, heights } = runFftChain(256, a, b, scaleFor(energeticIndex));
     for (const [stage, maximum] of stageMaxima.entries()) {
       expect(maximum, `stage ${stage} upper bound`).toBeLessThan(60_000);
       expect(maximum, `stage ${stage} lower bound`).toBeGreaterThan(1e-3);
     }
-    // Sanity: the surface came out — non-degenerate wave heights (the most
-    // energetic cascade at these settings is the short-wave one, so peaks
-    // are centimetre-scale).
+    // wave R widened this from the single most energetic cascade to ALL of
+    // them, because it can now: with the cell measure in place the smallest
+    // stage magnitude across every cascade rises from 3.6e-5 — under fp16's
+    // 6.1e-5 smallest normal, i.e. cascade 0's whole transform was living in
+    // subnormals — to 6.8e-2, while the largest is unchanged at 77.2.
+    for (let index = 0; index < config.cascades.length; index += 1) {
+      const cascade = config.cascades[index]!;
+      // The kilometre-patch cascades sit outside the JONSWAP peak at this
+      // fetch and legitimately flush to nothing; only bound the ones the
+      // spectrum actually fills.
+      const evolved = evolve(paramsFor(index), 7.3, config.choppiness);
+      const { stageMaxima: maxima } = runFftChain(256, evolved.a, evolved.b, scaleFor(index));
+      const smallest = Math.min(...maxima);
+      const largest = Math.max(...maxima);
+      expect(largest, `cascade ${index} (L=${cascade.patchLengthMeters}) upper bound`)
+        .toBeLessThan(60_000);
+      if (largest > 1e-3) {
+        expect(smallest, `cascade ${index} (L=${cascade.patchLengthMeters}) lower bound`)
+          .toBeGreaterThan(6.1e-5);
+      }
+    }
+    // Sanity: the surface came out. wave R restored the spectral cell measure
+    // the chain never applied, so these are metres of real sea rather than the
+    // centimetre-scale field the 1/N² convention produced.
     let peak = 0;
     for (const height of heights) peak = Math.max(peak, Math.abs(height));
-    expect(peak).toBeGreaterThan(0.002);
+    expect(peak).toBeGreaterThan(0.05);
     expect(peak).toBeLessThan(50);
   });
 
-  it("would lose the signal band if 1/N² were folded into the first pass", () => {
-    // The trap the plan warns about, demonstrated: early full normalisation
-    // pushes intermediates below fp16's smallest normal territory.
+  it("splits the scale across the axes rather than folding it into the first pass", () => {
+    // The trap the plan warns about: normalising up front drags every early
+    // stage down by the WHOLE factor instead of half of it. wave R made the
+    // factor a per-cascade physical constant rather than 1/N², so the trap is
+    // no longer a fixed 1/65,536 — it is stated relatively here, against the
+    // shipping split, which is what the schedule actually protects.
+    const scale = scaleFor(energeticIndex);
+    const split = runFftChain(256, ...(() => {
+      const { a, b } = evolve(params, 7.3, config.choppiness);
+      return [a, b] as const;
+    })(), scale);
     const { a, b } = evolve(params, 7.3, config.choppiness);
     for (let index = 0; index < a.length; index += 1) {
-      a[index]! /= 256 * 256;
-      b[index]! /= 256 * 256;
+      a[index]! *= scale * scale;
+      b[index]! *= scale * scale;
     }
-    const { stageMaxima } = runFftChain(256, a, b);
-    // Undo the double-normalisation the chain itself applies for comparison:
-    // the first stages now carry the fully normalised (tiny) magnitudes.
-    expect(stageMaxima[0]!).toBeLessThan(1e-3);
+    const early = runFftChain(256, a, b, 1);
+    expect(early.stageMaxima[0]!).toBeLessThan(split.stageMaxima[0]! * scale * 1.001);
+    // Both orderings land on the same output — it is only the intermediates,
+    // and therefore only fp16, that care.
+    let difference = 0;
+    for (let index = 0; index < early.heights.length; index += 1) {
+      difference = Math.max(difference, Math.abs(early.heights[index]! - split.heights[index]!));
+    }
+    expect(difference).toBeLessThan(1e-9);
+  });
+
+  it("would leave cascade 0 in fp16 subnormals under the retired 1/N convention", () => {
+    // wave R's measured defect, kept as a negative control. Before the cell
+    // measure landed, the per-axis factor was 1/N and the finest cascade's
+    // whole transform lived at ~3.6e-5 — under fp16's 6.1e-5 smallest normal,
+    // where the format has four or five bits of mantissa left. That is why the
+    // near-field sea rendered as a mirror with a normal map painted on it.
+    const retired = runFftChain(
+      256,
+      ...(() => {
+        const { a, b } = evolve(paramsFor(0), 7.3, config.choppiness);
+        return [a, b] as const;
+      })(),
+      1 / 256,
+    );
+    expect(Math.min(...retired.stageMaxima)).toBeLessThan(6.1e-5);
+    const restored = runFftChain(
+      256,
+      ...(() => {
+        const { a, b } = evolve(paramsFor(0), 7.3, config.choppiness);
+        return [a, b] as const;
+      })(),
+      scaleFor(0),
+    );
+    expect(Math.min(...restored.stageMaxima)).toBeGreaterThan(6.1e-5);
+    // ...and the sea it produced was centimetres, not metres.
+    let retiredPeak = 0;
+    let restoredPeak = 0;
+    for (let index = 0; index < retired.heights.length; index += 1) {
+      retiredPeak = Math.max(retiredPeak, Math.abs(retired.heights[index]!));
+      restoredPeak = Math.max(restoredPeak, Math.abs(restored.heights[index]!));
+    }
+    expect(retiredPeak).toBeLessThan(0.001);
+    expect(restoredPeak).toBeGreaterThan(0.05);
+  });
+
+  it("carries the spectral cell measure, so the sea is metres and foam is reachable", () => {
+    // wave R, the measurement behind both the normalisation change and the
+    // foam retune. `h0 = g * sqrt(0.5 * Psi)` stores a spectral DENSITY; the
+    // discrete sum needs the per-cell variance `Psi * dk^2`, and the +/-k
+    // pairing doubles it, so the transform scale is `dk / sqrt(2)`. The
+    // shipped chain used 1/N² — no cell measure at all.
+    const windSpeed = 11;
+    const windy = resolveSpectralOceanConfig({ resolution: 256, windSpeedMetersPerSecond: windSpeed });
+    const windyParams = (cascadeIndex: number): SpectrumParams => ({
+      ...paramsFor(cascadeIndex),
+      windSpeed,
+      spectrumScale: windy.cascades[cascadeIndex]!.spectrumScale,
+    });
+
+    let heightVariance = 0;
+    const coverage: number[] = [];
+    for (let index = 0; index < windy.cascades.length; index += 1) {
+      const cascade = windy.cascades[index]!;
+      const { a, b } = evolve(windyParams(index), 7.3, windy.choppiness);
+      const { heights, displacements } = runFftChain(
+        256,
+        a,
+        b,
+        oceanTransformNormalizationScale(cascade.patchLengthMeters),
+      );
+      let sum = 0;
+      for (const height of heights) sum += height * height;
+      heightVariance += sum / heights.length;
+      const jacobian = jacobianField(displacements, 256, cascade.patchLengthMeters / 256);
+      coverage.push(fractionBelow(jacobian, windy.foamThreshold));
+      // The pre-wave-R threshold is unreachable at ANY amplitude that renders
+      // as a sea: it asks the Jacobian to fall from a mean of 1 to 0.22.
+      expect(fractionBelow(jacobian, 0.22)).toBe(0);
+    }
+
+    // A real sea at 11 m/s over a 120 km fetch: significant wave height (4
+    // sigma) of a couple of metres, against the 0.02 m the shipped chain
+    // produced. The band is wide because spectrumScale is art-directed.
+    const significantWaveHeight = 4 * Math.sqrt(heightVariance);
+    expect(significantWaveHeight).toBeGreaterThan(1);
+    expect(significantWaveHeight).toBeLessThan(5);
+
+    // Sparse whitecaps, not a rash and not nothing. Monahan's law puts real
+    // whitecap coverage near 1.4% at this wind speed.
+    const wettest = Math.max(...coverage);
+    expect(wettest).toBeGreaterThan(0.002);
+    expect(wettest).toBeLessThan(0.09);
+
+    // And it responds to wind: halve the wind and the coverage collapses.
+    const calm = resolveSpectralOceanConfig({ resolution: 256, windSpeedMetersPerSecond: 3.5 });
+    const calmCoverage = calm.cascades.map((cascade, index) => {
+      const { a, b } = evolve(
+        { ...paramsFor(index), windSpeed: 3.5, spectrumScale: cascade.spectrumScale },
+        7.3,
+        calm.choppiness,
+      );
+      const { displacements } = runFftChain(
+        256,
+        a,
+        b,
+        oceanTransformNormalizationScale(cascade.patchLengthMeters),
+      );
+      return fractionBelow(
+        jacobianField(displacements, 256, cascade.patchLengthMeters / 256),
+        calm.foamThreshold,
+      );
+    });
+    expect(Math.max(...calmCoverage)).toBeLessThan(wettest * 0.75);
   });
 });

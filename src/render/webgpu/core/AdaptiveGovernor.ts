@@ -27,6 +27,7 @@ export type GovernorMode =
   | "gpu-resolution"
   | "cpu-work"
   | "gpu-work"
+  | "frame-pacing"
   | "balanced"
   | "holding"
   | "no-gpu-timing";
@@ -41,6 +42,8 @@ export interface GovernorSignals {
 export interface GovernorConfig {
   /** 13.7 ms on the 60 fps tiers, 30 ms on Ultra. */
   readonly gpuTargetMs: number;
+  /** Pilot-visible cadence: 60 Hz on tiers 0-2, 30 Hz on Ultra. */
+  readonly presentationTargetMs: number;
   readonly scaleCeiling: number;
   /** Floor raised 0.62 → 0.75: below it the image degrades faster than the frame time improves. */
   readonly scaleFloor: number;
@@ -49,6 +52,17 @@ export interface GovernorConfig {
   readonly upCooldownFrames: number;
   /** Windows before a resolution-insensitive latch re-arms (~30 s). */
   readonly insensitiveRearmWindows: number;
+  /**
+   * Wave R: a pinned capture freezes the WHOLE governor, not just the render
+   * scale. Z-1's rule is "deterministic shipping pixels — no governor may
+   * rewrite the target", but only the scale was ever pinned: on a slow
+   * capture host (the CI runner's ~28 ms frames) the work ladders still
+   * walked — compute budget, cloud-shadow cadence, shadow caster distance,
+   * vegetation distance — and the CI render diverged from the committed
+   * baseline (ground-2m-lowsun SSIM 0.93, dusk shadows + pulled-in tree
+   * line). Frozen, the governor measures but never steps.
+   */
+  readonly frozen?: boolean;
 }
 
 export function governorConfigForProfile(profile: {
@@ -57,6 +71,7 @@ export function governorConfigForProfile(profile: {
 }): GovernorConfig {
   return Object.freeze({
     gpuTargetMs: profile.tier === 3 ? 30 : 13.7,
+    presentationTargetMs: profile.tier === 3 ? 1_000 / 30 : 1_000 / 60,
     scaleCeiling: profile.renderScale,
     scaleFloor: Math.min(0.75, profile.renderScale),
     windowFrames: 120,
@@ -193,6 +208,8 @@ export function gpuWorkLeverName(level: number): string | null {
 interface PendingScaleProbe {
   readonly preStepGpuP95Ms: number;
   readonly preStepScale: number;
+  /** Effectiveness samples must stay in one timing domain. */
+  readonly metric: "gpu" | "interval";
 }
 
 export interface GovernorState {
@@ -252,38 +269,74 @@ const CPU_CALM_WINDOWS_REQUIRED = 4;
 const GPU_HOT_WINDOWS_REQUIRED = 2;
 const GPU_CALM_WINDOWS_REQUIRED = 4;
 
-type Classification = "gpu-bound" | "cpu-bound" | "balanced" | "unknown";
+type Classification = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
 
 interface ResolvedSignals {
   readonly gpuMs: number | null;
   readonly synthesised: boolean;
   readonly classification: Classification;
+  readonly metric: "gpu" | "interval" | null;
 }
 
-function resolveSignals(signals: GovernorSignals): ResolvedSignals {
+function resolveSignals(
+  signals: GovernorSignals,
+  gpuTargetMs: number,
+  presentationTargetMs: number,
+): ResolvedSignals {
   const cpu = signals.cpuP95Ms;
   let gpu = signals.gpuP95Ms;
   let synthesised = false;
+  let metric: "gpu" | "interval" = "gpu";
   if (gpu === null) {
     if (signals.intervalP95Ms === null || cpu === null) {
-      return { gpuMs: null, synthesised: false, classification: "unknown" };
+      return { gpuMs: null, synthesised: false, classification: "unknown", metric: null };
     }
     // No timestamp queries: infer the GPU's share from the presentation
     // cadence. A tiny remainder means the CPU is the whole story — the case
     // the deleted ratchet used to answer by lowering resolution.
     const proxy = Math.max(0, signals.intervalP95Ms - cpu);
     if (proxy < MIN_GPU_PROXY_MS) {
-      return { gpuMs: null, synthesised: true, classification: "cpu-bound" };
+      return { gpuMs: null, synthesised: true, classification: "cpu-bound", metric: null };
     }
     gpu = proxy;
     synthesised = true;
+    metric = "interval";
+  }
+  // Timestamp queries measure submitted GPU work, not the pilot-visible time
+  // between presented frames. Browser scheduling, queue back-pressure, and
+  // uninstrumented work can therefore leave both component counters looking
+  // calm while presentation misses several refreshes. The interval is the
+  // outcome the governor exists to protect: when it is hot and neither
+  // measured component explains it, use it as a conservative presentation
+  // proxy. Resolution effectiveness feedback will quickly undo/latch a step
+  // that cannot improve cadence, after which the GPU-work ladder takes over.
+  const interval = signals.intervalP95Ms;
+  const componentCeiling = Math.max(cpu ?? 0, gpu ?? 0);
+  if (
+    interval !== null
+    // A healthy 60 Hz presentation stream is ~16.67 ms even though the
+    // submitted-GPU budget is 13.7 ms. Keep a small scheduler tolerance so
+    // ordinary vsync quantisation cannot start a downscale probe.
+    && interval > presentationTargetMs * 1.02
+    && componentCeiling <= gpuTargetMs * DOWN_TRIGGER_RATIO
+  ) {
+    return {
+      gpuMs: interval,
+      synthesised: true,
+      classification: "pacing-bound",
+      metric: "interval",
+    };
   }
   if (cpu === null) {
-    return { gpuMs: gpu, synthesised, classification: "gpu-bound" };
+    return { gpuMs: gpu, synthesised, classification: "gpu-bound", metric };
   }
-  if (gpu > cpu * GPU_BOUND_RATIO) return { gpuMs: gpu, synthesised, classification: "gpu-bound" };
-  if (cpu > gpu * GPU_BOUND_RATIO) return { gpuMs: gpu, synthesised, classification: "cpu-bound" };
-  return { gpuMs: gpu, synthesised, classification: "balanced" };
+  if (gpu > cpu * GPU_BOUND_RATIO) {
+    return { gpuMs: gpu, synthesised, classification: "gpu-bound", metric };
+  }
+  if (cpu > gpu * GPU_BOUND_RATIO) {
+    return { gpuMs: gpu, synthesised, classification: "cpu-bound", metric };
+  }
+  return { gpuMs: gpu, synthesised, classification: "balanced", metric };
 }
 
 /**
@@ -297,7 +350,14 @@ export function nextGovernorDecision(
   signals: GovernorSignals,
   config: GovernorConfig,
 ): GovernorState {
-  const resolved = resolveSignals(signals);
+  // A frozen (pinned-capture) governor holds its initial state forever —
+  // every lever and the scale stay at the profile's shipping values.
+  if (config.frozen) return state;
+  const resolved = resolveSignals(
+    signals,
+    config.gpuTargetMs,
+    config.presentationTargetMs,
+  );
   let next: GovernorState = {
     ...state,
     framesSinceScaleChange: state.framesSinceScaleChange + config.windowFrames,
@@ -320,8 +380,23 @@ export function nextGovernorDecision(
 
   // Evaluate the outstanding anti-ratchet probe before considering another
   // step: did the previous downward step actually buy GPU time?
-  if (next.pendingProbe !== null && resolved.gpuMs !== null) {
+  if (next.pendingProbe !== null) {
     const probe = next.pendingProbe;
+    if (resolved.gpuMs === null || resolved.metric !== probe.metric) {
+      // The pre/post windows came from unrelated clocks (for example an
+      // interval pacing proxy followed by a timestamp-query sample). Undo the
+      // experimental scale change; accepting that comparison can manufacture
+      // a fake improvement and leave image quality reduced indefinitely.
+      return Object.freeze({
+        ...next,
+        renderScale: probe.preStepScale,
+        framesSinceScaleChange: 0,
+        pendingProbe: null,
+        ineffectiveDownSteps: 0,
+        restoreScale: null,
+        mode: "holding",
+      });
+    }
     const improvement =
       (probe.preStepGpuP95Ms - resolved.gpuMs) / Math.max(probe.preStepGpuP95Ms, 1e-6);
     if (improvement < MIN_STEP_IMPROVEMENT) {
@@ -352,7 +427,10 @@ export function nextGovernorDecision(
     return Object.freeze({ ...next, mode: "no-gpu-timing" });
   }
 
-  if (resolved.classification === "gpu-bound") {
+  if (
+    resolved.classification === "gpu-bound"
+    || resolved.classification === "pacing-bound"
+  ) {
     // R-11 invariant: while GPU-bound, no ladder ever recovers. The only
     // question is which lever, if any, sheds.
     const gpu = resolved.gpuMs!;
@@ -368,8 +446,14 @@ export function nextGovernorDecision(
           ...next,
           renderScale: lowered,
           framesSinceScaleChange: 0,
-          pendingProbe: { preStepGpuP95Ms: gpu, preStepScale: next.renderScale },
-          mode: resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
+          pendingProbe: {
+            preStepGpuP95Ms: gpu,
+            preStepScale: next.renderScale,
+            metric: resolved.metric!,
+          },
+          mode: resolved.classification === "pacing-bound"
+            ? "frame-pacing"
+            : resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
           cpuHotWindows: 0,
           cpuCalmWindows: 0,
           gpuHotWindows: 0,
@@ -390,7 +474,7 @@ export function nextGovernorDecision(
           gpuCalmWindows: 0,
           cpuHotWindows: 0,
           cpuCalmWindows: 0,
-          mode: "gpu-work",
+          mode: resolved.classification === "pacing-bound" ? "frame-pacing" : "gpu-work",
         });
       }
       return Object.freeze({
@@ -398,7 +482,7 @@ export function nextGovernorDecision(
         gpuHotWindows: hot,
         gpuCalmWindows: 0,
         cpuHotWindows: 0,
-        mode: "gpu-work",
+        mode: resolved.classification === "pacing-bound" ? "frame-pacing" : "gpu-work",
       });
     }
     if (
@@ -412,7 +496,9 @@ export function nextGovernorDecision(
         renderScale: Math.min(config.scaleCeiling, next.renderScale + UP_STEP),
         framesSinceScaleChange: 0,
         pendingProbe: null,
-        mode: resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
+        mode: resolved.classification === "pacing-bound"
+          ? "frame-pacing"
+          : resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
         cpuHotWindows: 0,
         cpuCalmWindows: 0,
         gpuHotWindows: 0,

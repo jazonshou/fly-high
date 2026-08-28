@@ -352,6 +352,7 @@ describe("fast jet flight model", () => {
     let touchdownTime: number | null = null;
     let stoppedTime: number | null = null;
     let secondLiftoffTime: number | null = null;
+    let reboundAgl = 0;
 
     for (let index = 0; index < Math.round(45 / FIXED_TIME_STEP); index += 1) {
       const telemetry = simulator.telemetry();
@@ -373,6 +374,10 @@ describe("fast jet flight model", () => {
 
       if (touchdownTime === null && simulator.state.onGround) {
         touchdownTime = simulator.state.time;
+      }
+      if (touchdownTime !== null && stoppedTime === null) {
+        // A bounced landing would push the wheels back off the runway.
+        reboundAgl = Math.max(reboundAgl, simulator.telemetry().altitudeAgl);
       }
       if (
         touchdownTime !== null &&
@@ -399,6 +404,9 @@ describe("fast jet flight model", () => {
     expect(simulator.state.crashed).toBe(false);
     expect(simulator.state.onGround).toBe(false);
     expect(simulator.state.peakImpactSpeed).toBeLessThan(3);
+    // The oleos absorb the touchdown instead of throwing the aircraft back
+    // into the air: the wheels stay on the runway from touchdown to a stop.
+    expect(reboundAgl).toBeLessThan(0.25);
     expect(simulator.state.actuators.gear).toBeGreaterThanOrEqual(0.98);
   });
 

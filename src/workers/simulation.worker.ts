@@ -7,6 +7,7 @@ import {
   DirectPitchRetention,
   FIXED_TIME_STEP,
   FlightSimulator,
+  JetStabilityAugmentation,
   type FlightControls,
   type AircraftKind,
   type SpawnOptions,
@@ -21,7 +22,11 @@ import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "@/src/game/spawn";
-import { sampleGroundContact, sampleGroundHeight } from "@/src/sim/terrainGrid";
+import {
+  sampleGroundContact,
+  sampleGroundHeight,
+  setGroundHeightMirror,
+} from "@/src/sim/terrainGrid";
 import type {
   ControlState,
   FlightMode,
@@ -35,8 +40,11 @@ import {
   type SimulationEvent,
   type SpawnKind,
 } from "./protocol";
+import { TerrainAuthority } from "./terrainAuthority";
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
+const terrainAuthority = new TerrainAuthority();
+setGroundHeightMirror(terrainAuthority);
 
 let world: WorldDefinition | null = null;
 let simulator: FlightSimulator | null = null;
@@ -60,6 +68,7 @@ const collisionTarget: TerrainCollisionSample = {
 };
 const assistedTarget: FlightControls = { ...DEFAULT_CONTROLS };
 const directPitchRetention = new DirectPitchRetention();
+const jetStabilityAugmentation = new JetStabilityAugmentation();
 
 function post(event: SimulationEvent): void {
   workerScope.postMessage(event);
@@ -97,6 +106,7 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
     },
   });
   directPitchRetention.reset();
+  jetStabilityAugmentation.reset();
   accumulator = 0;
   lastTime = performance.now();
   lastSnapshotTime = 0;
@@ -149,9 +159,19 @@ function assistedControls(): FlightControls {
     telemetry,
     groundHeadingTarget ?? undefined,
   );
-  return selectedMode === "unassisted"
-    ? directPitchRetention.apply(selectedControls, controls, sim.state, telemetry)
-    : selectedControls;
+  if (selectedMode !== "unassisted") return selectedControls;
+  const retained = directPitchRetention.apply(
+    selectedControls,
+    controls,
+    sim.state,
+    telemetry,
+  );
+  // The jet's dutch-roll dampers share the Direct-mode doctrine: they run
+  // only on pilot-neutral axes and only for the jet. The trainer's control
+  // path is untouched.
+  return aircraftKind === "jet"
+    ? jetStabilityAugmentation.apply(retained, controls, sim.state, telemetry)
+    : retained;
 }
 
 function visualState(): FlightVisualState {
@@ -187,6 +207,7 @@ function visualState(): FlightVisualState {
     crashed: snapshot.crashed,
     touchdown: simulator.state.peakImpactSpeed,
     simulationTime: snapshot.time,
+    terrainAuthority: terrainAuthority.countersSnapshot(),
   };
 }
 
@@ -238,6 +259,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // The main thread already resolved and certified the public seed. Reuse
       // that structured-cloneable world so worker startup cannot repeat the
       // synchronous airport search or select a different fallback region.
+      terrainAuthority.clear();
       world = command.world;
       aircraftKind = command.aircraft;
       mode = command.mode;
@@ -247,17 +269,29 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       reset(command.spawn, airborneStartAgl);
       return;
     }
+    if (command.type === "terrainPage") {
+      terrainAuthority.publish(command.page);
+      return;
+    }
+    if (command.type === "terrainMacro") {
+      terrainAuthority.publishMacro(command.macro);
+      return;
+    }
     if (command.type === "controls") controls = { ...command.controls };
     else if (command.type === "mode") {
       // Applying an unrelated settings change re-sends the selected mode. Keep
       // an armed pilot-selected target unless the assistance mode truly changes.
-      if (command.mode !== mode) directPitchRetention.reset();
+      if (command.mode !== mode) {
+        directPitchRetention.reset();
+        jetStabilityAugmentation.reset();
+      }
       mode = command.mode;
     }
     else if (command.type === "weather") weather = command.weather;
     else if (command.type === "attract") {
       attractMode = command.enabled;
       directPitchRetention.reset();
+      jetStabilityAugmentation.reset();
     }
     else if (command.type === "handoff") {
       // Atomic handoff: no timer tick can observe the selected mode while demo
@@ -265,6 +299,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       mode = command.mode;
       attractMode = false;
       directPitchRetention.reset();
+      jetStabilityAugmentation.reset();
     } else if (command.type === "returnToAttract") {
       // End-flight is one state transition: no timer tick can observe a new
       // airborne state without the menu controller that is meant to own it.

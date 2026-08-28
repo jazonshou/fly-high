@@ -57,8 +57,7 @@ describe("adopted cloud modules on a real adapter (assertion 36)", () => {
         adaptedLuminanceCdM2: 6_000,
         sceneKeyLuminanceCdM2: 1_000,
       };
-      const resources = new AtmosphereGpuResources(scene, camera, (mesh) =>
-        mesh.name === "volumetric-cloud-shell");
+      const resources = new AtmosphereGpuResources(scene, camera);
       const clouds = new VolumetricCloudSystem(scene, camera, profile, snapshot, resources);
       try {
         expect(clouds.statistics.computeSupported).toBe(true);

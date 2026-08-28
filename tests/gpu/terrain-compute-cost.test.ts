@@ -3,6 +3,7 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Scene } from "@babylonjs/core/scene";
+import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import { COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { GlobalHeightPyramid } from "../../src/render/webgpu/terrain/GlobalHeightPyramid";
@@ -70,6 +71,17 @@ async function withScene<T>(run: (engine: WebGPUEngine, scene: Scene) => Promise
   let scene: Scene | null = null;
   try {
     await engine.initAsync();
+    // Babylon silently DROPS an unsupported entry from
+    // `deviceDescriptor.requiredFeatures` rather than letting `requestDevice`
+    // reject, so the constructor above is not proof the counter exists. The
+    // caller has already refused to run without adapter support; if the device
+    // still came up without it, fail loudly instead of measuring zeros.
+    if (!engine.enabledExtensions.includes("timestamp-query")) {
+      throw new Error(
+        "The adapter advertises timestamp-query but the device did not enable it; "
+        + "every dispatch timing below would read as an unmeasured zero",
+      );
+    }
     engine.enableGPUTimingMeasurements = true;
     engine.runRenderLoop(() => {});
     scene = new Scene(engine);
@@ -83,7 +95,26 @@ async function withScene<T>(run: (engine: WebGPUEngine, scene: Scene) => Promise
 }
 
 describe("terrain compute dispatch cost (4.5-B2a)", () => {
-  it("measures each client's per-page cost and holds the pinned seeds", async () => {
+  it("measures each client's per-page cost and holds the pinned seeds", async (context) => {
+    // `timestamp-query` is OPTIONAL in WebGPU and a virtualised adapter need
+    // not expose it — GitHub's hosted macOS runners are the case that found
+    // this. Because Babylon filters the unsupported feature out of the device
+    // descriptor instead of failing, the engine comes up without the counter,
+    // `enableGPUTimingMeasurements` logs "Could not create a
+    // WebGPUDurationMeasure", every sample stays null, and `time()` falls
+    // through to its empty-sample 0 — which was then compared against the
+    // pinned seeds as though a GPU had produced it.
+    //
+    // Gate on the ADAPTER's own answer, never on a zero reading. An adapter
+    // that CAN time a dispatch and suddenly measures nothing is precisely the
+    // regression these assertions exist to catch, and must keep failing here.
+    const capability = await inspectWebGpuCapabilities();
+    if (!capability.features.has("timestamp-query")) {
+      context.skip(
+        "this adapter exposes no timestamp-query, so there is no per-dispatch "
+        + "counter to read; the pinned seeds stay unverified on this host",
+      );
+    }
     const measured = await withScene(async (engine, scene) => {
       const base = resolveWebGpuQualityProfile("medium", "balanced");
       const profile = { ...base, heightAtlasSlots: SLOTS, channelAtlasSlots: SLOTS };

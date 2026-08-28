@@ -292,17 +292,18 @@ function validateHydrology(
     addIssue(issues, path, "invalid-type", "must be an object");
     return;
   }
-  if (value.format !== "rg16snorm-flow+r16uint-depth+r16sint-shore+r16uint-discharge") {
+  if (value.format !== "r16uint-log-flow+r16uint-lake-depth+r8unorm-soil+r16sint-shore-v2") {
     addIssue(issues, `${path}.format`, "invalid-format", "has an unsupported hydrology packing");
   }
-  requireTypedArray(value, "flowXZ", Int16Array, texelCount * 2, path, issues);
-  requireTypedArray(value, "waterDepth", Uint16Array, texelCount, path, issues);
+  requireTypedArray(value, "flowAccum", Uint16Array, texelCount, path, issues);
+  requireTypedArray(value, "lakeDepth", Uint16Array, texelCount, path, issues);
+  requireTypedArray(value, "soilDepth", Uint8Array, texelCount, path, issues);
   requireTypedArray(value, "shoreDistance", Int16Array, texelCount, path, issues);
-  requireTypedArray(value, "discharge", Uint16Array, texelCount, path, issues);
-  requireFiniteNumber(value, "depthMetersPerUnit", path, issues, 0);
+  requireFiniteNumber(value, "lakeDepthMetersPerUnit", path, issues, Number.MIN_VALUE);
+  requireFiniteNumber(value, "soilDepthMaxMeters", path, issues, Number.MIN_VALUE);
   requireFiniteNumber(value, "shoreDistanceMetersPerUnit", path, issues, Number.MIN_VALUE);
-  requireFiniteNumber(value, "dischargeLog2Bias", path, issues);
-  requireFiniteNumber(value, "dischargeLog2PerUnit", path, issues, 0);
+  requireFiniteNumber(value, "flowAccumLog2Bias", path, issues);
+  requireFiniteNumber(value, "flowAccumLog2PerUnit", path, issues, Number.MIN_VALUE);
 }
 
 /** Deep runtime validation intended for worker, network, and persistent-cache boundaries. */

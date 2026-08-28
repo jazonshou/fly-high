@@ -1,3 +1,7 @@
+import type {
+  TerrainHeightAuthorityCounters,
+} from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+
 export interface Vec3State {
   x: number;
   y: number;
@@ -8,7 +12,7 @@ export interface QuaternionState extends Vec3State {
   w: number;
 }
 
-export type CameraMode = "chase" | "cockpit" | "cinematic";
+export type CameraMode = "chase" | "cockpit" | "cinematic" | "freefly";
 export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
 export type TimeOfDayPreset = "dawn" | "day" | "golden";
@@ -51,6 +55,13 @@ export interface FlightVisualState {
   crashed: boolean;
   touchdown: number;
   simulationTime: number;
+  /**
+   * `5-2`: worker-side terrain-authority service counters, cumulative from
+   * the latest macro publication (the first fully provisioned authority).
+   * Optional so recorded fixtures and non-worker simulations remain source
+   * compatible; live worker snapshots always include it.
+   */
+  terrainAuthority?: TerrainHeightAuthorityCounters;
 }
 
 export interface ControlState {
@@ -70,6 +81,7 @@ export type RenderGovernorMode =
   | "gpu-resolution"
   | "cpu-work"
   | "gpu-work"
+  | "frame-pacing"
   | "balanced"
   | "holding"
   | "no-gpu-timing"
@@ -162,6 +174,8 @@ export interface RenderDiagnostics {
   renderPixels: number;
   topPassesByCpuMs: readonly PassCpuTiming[];
   pendingTerrainPages: number;
+  /** Detail cells or atomic presentation chunks that can still change the frame. */
+  pendingDetailWork: number;
   /** Terrain generation workers currently busy (1B-4). */
   /** 4-4: the CPU worker pool is gone; this is GPU compute dispatches in flight. */
   terrainComputeDispatches: number;

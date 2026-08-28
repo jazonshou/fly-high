@@ -3,6 +3,7 @@ import { WebGpuFrameGraph } from "../src/render/webgpu/core/FrameGraph";
 import {
   frameTimingPercentile95,
   freshFrameTiming,
+  hitchThresholdMilliseconds,
   isUsableFrameTiming,
   resolveWebGpuQualityProfile,
 } from "../src/render/webgpu/core/QualityProfile";
@@ -57,6 +58,8 @@ describe("WebGPU quality profiles", () => {
       oceanResolution: 128,
       cloudResolutionScale: 0.45,
       cloudPrimarySteps: 60,
+      treeVariantCap: 1,
+      treePrototypeMode: "families",
     });
   });
 
@@ -149,5 +152,10 @@ describe("WebGPU quality profiles", () => {
     expect(freshFrameTiming(12.5, 100, 130, 30)).toBe(12.5);
     expect(freshFrameTiming(12.5, 100, 131, 30)).toBeNull();
     expect(freshFrameTiming(0, 100, 100, 30)).toBeNull();
+  });
+
+  it("keeps the hitch threshold at twice the declared frame target", () => {
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    expect(hitchThresholdMilliseconds(profile)).toBeCloseTo(27.4, 8);
   });
 });

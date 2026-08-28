@@ -267,6 +267,73 @@ describe("Babylon WebGPU hydrology presentation", () => {
     );
   });
 
+  it("lets inland roughness vary instead of sitting on its cap (wave R fix 2)", () => {
+    // Rivers and lakes arrived at EXACTLY 0.28 on every pixel: the capillary
+    // tail alone exceeded the cap, so the variance the Toksvig fold exists to
+    // express had nowhere to go and every surface rendered with one micro-facet
+    // distribution. The cap moves to 0.45 (still glossier than the open sea's
+    // 0.5) and the tail becomes a field driven by the resolved wave slope.
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).not.toContain("0.28,");
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("0.45,");
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("length(fragmentGradient),");
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("capillary.unresolvedMeanSquareSlope");
+    // wave R fix 7: the glint jitter reaches the sun lobe only.
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("sunSpecular(glintNormal");
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain("reflect(-view, normal)");
+  });
+
+  it("takes its wind speed from the world, not the cloud layer (wave R fix 8)", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("hydrology-wind-camera", new Vector3(0, 300, -600), scene);
+    const speeds: number[] = [];
+    const capture = (system: HydrologySystem) => {
+      const material = (system as unknown as {
+        material: { setFloat(name: string, value: number): void };
+      }).material;
+      const original = material.setFloat.bind(material);
+      material.setFloat = (name: string, value: number) => {
+        if (name === "windSpeed") speeds.push(value);
+        original(name, value);
+      };
+    };
+    // The atmosphere snapshot's windSpeed is a cloud-layer number and can
+    // disagree with the world's prevailing wind by 3x; the world wins.
+    const worldWind = ATMOSPHERE.windSpeed * 3 + 1;
+    const system = new HydrologySystem(scene, camera, {
+      atmosphere: ATMOSPHERE,
+      worldSeed: 4_242,
+      terrainSample: slopedTerrain(),
+      seaLevel: 0,
+      centerX: 0,
+      centerZ: 0,
+      windDirectionRadians: 0.6,
+      windSpeedMetersPerSecond: worldWind,
+    });
+    capture(system);
+    system.setAtmosphere(ATMOSPHERE);
+    expect(speeds.at(-1)).toBe(worldWind);
+
+    // Absent the option (every pre-wave-R caller and test) the atmosphere is
+    // still the fallback, so nothing that did not opt in changes behaviour.
+    const fallback = new HydrologySystem(scene, camera, {
+      atmosphere: ATMOSPHERE,
+      worldSeed: 4_242,
+      terrainSample: slopedTerrain(),
+      seaLevel: 0,
+      centerX: 0,
+      centerZ: 0,
+    });
+    capture(fallback);
+    fallback.setAtmosphere(ATMOSPHERE);
+    expect(speeds.at(-1)).toBe(ATMOSPHERE.windSpeed);
+
+    system.dispose();
+    fallback.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
+
   it("builds bounded combined meshes, rebases, reports statistics, and disposes idempotently", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);

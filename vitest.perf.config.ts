@@ -6,16 +6,21 @@ import { defineConfig } from "vitest/config";
  * The perf-capture project (1A-1c).
  *
  * `npm run perf:capture` boots the real FlightRenderer in WebGPU-capable
- * headless Chromium, renders three fixed shots (fixed seed, camera, weather,
- * clock; DPR 1; 1280×720), and writes screenshots plus a numeric report to
+ * headless Chromium, renders the sixteen canonical shots (fixed seed, camera,
+ * weather, clock, and viewport per definition), and writes screenshots plus a numeric report to
  * tests/perf/artifacts, comparing against the committed baselines in
- * tests/perf/baseline. `npm run perf:capture:rebaseline` rewrites the
- * baselines — only at the four sanctioned churn points (1B-2, 1B-3, 1B-9,
- * the 1C-4/5/6 atmosphere rebaseline); any other baseline change is a
- * regression until proven otherwise.
+ * tests/perf/baseline. The baseline directory is always read-only. A missing
+ * or dimension-mismatched committed image is a hard failure.
  *
- * Local, real GPU. Run at gate boundaries and before any baseline-churning
- * merge. Deliberately excluded from `npm run verify` and `npm test`.
+ * `npm run perf:capture:candidate` runs the exact full canonical set, buffers
+ * every image until all visual/performance/renderer validations pass, then
+ * writes only a fresh timestamped directory beneath
+ * tests/perf/artifacts/rebaseline-candidates for human review. It never
+ * promotes or rewrites a committed baseline.
+ *
+ * Real GPU. A focused tier-1 set runs on renderer PRs; the full set runs on
+ * main and on schedule. Deliberately excluded from `npm run verify` and the
+ * Node-only `npm test` command.
  */
 export default defineConfig({
   resolve: {
@@ -27,7 +32,7 @@ export default defineConfig({
     include: ["tests/perf/**/*.test.ts"],
     passWithNoTests: false,
     reporters: ["default"],
-    // 2Z grew the shot list from three to thirteen; streaming dominates.
+    // 2Z and later terrain phases grew the shot list to sixteen; streaming dominates.
     testTimeout: 1_500_000,
     hookTimeout: 120_000,
     browser: {

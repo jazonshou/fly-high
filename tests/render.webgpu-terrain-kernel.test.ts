@@ -53,7 +53,7 @@ describe("terrain height kernel WGSL (4-1)", () => {
     // …and they are injected, not retyped: the source of each is the module
     // that owns it, so a drift there fails this test rather than shipping.
     expect(TERRAIN_KERNEL_CONSTANTS.RIDGED_OCTAVE_BAND_LIMIT_MEAN).toBe(0.4491);
-    expect(TERRAIN_KERNEL_CONSTANTS.MAX_TERRAIN_HEIGHT).toBe(2_200);
+    expect(TERRAIN_KERNEL_CONSTANTS.MAX_TERRAIN_HEIGHT).toBe(4_500);
   });
 
   it("enumerates the lattices one evaluation costs", () => {

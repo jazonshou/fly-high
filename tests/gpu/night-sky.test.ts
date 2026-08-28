@@ -188,6 +188,17 @@ describe("the night sky on a real adapter (Gate 7A)", () => {
       expect(darkDisc, "no terminator — the disc is uniformly lit").toBeGreaterThan(100);
 
       scotopic = new ScotopicVisionPass(camera, engine, profile.msaaSamples);
+      // Post-process pipeline creation is asynchronous on WebGPU. Under the
+      // full serial adapter suite it can take longer than the four historical
+      // warm-up frames, and reading before `isReady()` returns the cleared
+      // swapchain even though the same test passes in isolation. Wait for the
+      // pipeline contract explicitly; once ready, a black frame still fails
+      // the pixel assertions below rather than being retried away.
+      for (let warmup = 0; warmup < 120 && !scotopic.postProcess.isReady(); warmup += 1) {
+        await renderFrames(scene, 1);
+      }
+      expect(scotopic.postProcess.isReady(), "the scotopic pipeline never became ready")
+        .toBe(true);
       // Daylight first: the scotopic pass must be a pass-through, so a
       // night-only feature cannot quietly change every daytime capture.
       scotopic.setState({

@@ -1,6 +1,10 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
 import type { WorldDefinition } from "@/src/world";
+import type {
+  TerrainMacroGrid,
+  TerrainPagePublication,
+} from "@/src/workers/terrainAuthority";
 import {
   DEFAULT_AIRBORNE_START_AGL,
   type SimulationCommand,
@@ -13,7 +17,59 @@ type ErrorListener = (message: string) => void;
 
 /** Heavy frames may coast briefly, but never predict far enough to invent a manoeuvre. */
 export const MAX_VISUAL_EXTRAPOLATION_SECONDS = 0.05;
-const WORKER_CLOCK_OFFSET_EMA_ALPHA = 0.1;
+/** Present one normal 60 Hz worker snapshot behind the estimated simulation clock. */
+export const VISUAL_PRESENTATION_DELAY_SECONDS = 1 / 60;
+const CLOCK_OFFSET_WINDOW_SAMPLES = 32;
+/** A genuine worker-clock slowdown changes phase gradually instead of freezing presentation. */
+const CLOCK_OFFSET_UPWARD_SLEW_SECONDS_PER_SECOND = 0.1;
+
+/**
+ * Estimate main-clock minus simulation-clock without treating queue latency as
+ * clock phase. Arrival delay can only increase a sample, so the recent minimum
+ * is the useful NTP-style observation. A persistent increase is admitted at a
+ * bounded rate; transient delayed/bursted messages cannot move the clock.
+ */
+class WorkerClockOffsetEstimator {
+  private readonly samples: number[] = [];
+  private estimateSeconds: number | null = null;
+  private lastObservedAtSeconds: number | null = null;
+
+  get valueSeconds(): number | null {
+    return this.estimateSeconds;
+  }
+
+  reset(receivedAtSeconds: number, simulationTime: number): void {
+    const sample = receivedAtSeconds - simulationTime;
+    this.samples.length = 0;
+    this.samples.push(sample);
+    this.estimateSeconds = sample;
+    this.lastObservedAtSeconds = receivedAtSeconds;
+  }
+
+  observe(receivedAtSeconds: number, simulationTime: number): void {
+    const sample = receivedAtSeconds - simulationTime;
+    this.samples.push(sample);
+    if (this.samples.length > CLOCK_OFFSET_WINDOW_SAMPLES) this.samples.shift();
+    const recentFloor = Math.min(...this.samples);
+    if (this.estimateSeconds === null) {
+      this.estimateSeconds = recentFloor;
+      this.lastObservedAtSeconds = receivedAtSeconds;
+      return;
+    }
+
+    const elapsed = Math.max(
+      0,
+      receivedAtSeconds - (this.lastObservedAtSeconds ?? receivedAtSeconds),
+    );
+    this.lastObservedAtSeconds = receivedAtSeconds;
+    this.estimateSeconds = recentFloor <= this.estimateSeconds
+      ? recentFloor
+      : Math.min(
+          recentFloor,
+          this.estimateSeconds + elapsed * CLOCK_OFFSET_UPWARD_SLEW_SECONDS_PER_SECOND,
+        );
+  }
+}
 
 export class SimulationClient {
   private readonly worker: Worker;
@@ -22,8 +78,13 @@ export class SimulationClient {
   private previousState: FlightVisualState | null = null;
   private latestState: FlightVisualState | null = null;
   private renderState: FlightVisualState | null = null;
-  /** Main-thread seconds minus simulation seconds, smoothed across message jitter. */
-  private workerClockOffsetSeconds: number | null = null;
+  private readonly workerClockOffset = new WorkerClockOffsetEstimator();
+  /** A pause changes main-minus-simulation phase without starting a new simulation epoch. */
+  private resetClockOnNextState = false;
+  /** Presentation freezes immediately when the worker is paused. */
+  private presentationPaused = false;
+  /** Resume holds the predicted pose until authority catches its displayed time. */
+  private resumePresentationFloorSeconds: number | null = null;
   /** The sampled simulation clock may coast or pause, but never move backwards. */
   private lastSampledSimulationTime: number | null = null;
 
@@ -86,38 +147,112 @@ export class SimulationClient {
 
   /** Atomically rebuilds the live menu flight with demo assistance enabled. */
   returnToAttract(airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
+    this.clearPresentationPause();
     this.send({ type: "returnToAttract", airborneStartAgl });
   }
 
   setPaused(paused: boolean): void {
+    if (paused) {
+      this.presentationPaused = true;
+      if (!this.renderState && this.latestState) {
+        this.renderState = cloneVisualState(this.latestState);
+        this.lastSampledSimulationTime = this.latestState.simulationTime;
+      }
+    } else {
+      if (this.presentationPaused) {
+        this.resumePresentationFloorSeconds = this.renderState?.simulationTime
+          ?? this.lastSampledSimulationTime
+          ?? this.latestState?.simulationTime
+          ?? null;
+      }
+      this.presentationPaused = false;
+      this.resetClockOnNextState = true;
+    }
     this.send({ type: "pause", paused });
   }
 
+  /**
+   * Transfer one final L0 atlas core to the worker-owned collision ring.
+   * The supplied typed array is detached; callers must provide a dedicated
+   * readback buffer rather than the renderer's own working view.
+   */
+  publishTerrainPage(page: TerrainPagePublication): void {
+    this.send(
+      { type: "terrainPage", page },
+      page.heights.buffer instanceof ArrayBuffer ? [page.heights.buffer] : [],
+    );
+  }
+
+  /** Transfer the once-per-world macro fallback to the simulation worker. */
+  publishTerrainMacro(macro: TerrainMacroGrid): void {
+    this.send(
+      { type: "terrainMacro", macro },
+      macro.heights.buffer instanceof ArrayBuffer ? [macro.heights.buffer] : [],
+    );
+  }
+
   reset(spawn: SpawnKind, airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
+    this.clearPresentationPause();
     this.send({ type: "reset", spawn, airborneStartAgl });
   }
 
   /** Recovers over the Worker's authoritative crash X/Z, never renderer-local coordinates. */
   restartAfterCrash(airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
+    this.clearPresentationPause();
     this.send({ type: "restartAfterCrash", airborneStartAgl });
   }
 
   getRenderState(timestamp = performance.now()): FlightVisualState | null {
     const latest = this.latestState;
     const previous = this.previousState;
+    const workerClockOffsetSeconds = this.workerClockOffset.valueSeconds;
     if (!latest) return null;
+    if (this.presentationPaused) {
+      if (!this.renderState) this.renderState = cloneVisualState(latest);
+      this.lastSampledSimulationTime = this.renderState.simulationTime;
+      return this.renderState;
+    }
+    if (this.resetClockOnNextState) {
+      // Simulation time is stopped while paused, so the old wall-clock phase
+      // is knowingly invalid on resume. Preserve the pose the player actually
+      // saw; replacing it with the older authority snapshot visibly rewound
+      // up to the full 50 ms coast allowance.
+      if (!this.renderState) this.renderState = cloneVisualState(latest);
+      this.lastSampledSimulationTime = Math.max(
+        this.lastSampledSimulationTime ?? this.renderState.simulationTime,
+        this.renderState.simulationTime,
+      );
+      return this.renderState;
+    }
+    if (
+      this.resumePresentationFloorSeconds !== null
+      && latest.simulationTime < this.resumePresentationFloorSeconds
+    ) {
+      if (!this.renderState) this.renderState = cloneVisualState(latest);
+      this.lastSampledSimulationTime = this.resumePresentationFloorSeconds;
+      return this.renderState;
+    }
+    if (this.resumePresentationFloorSeconds !== null) {
+      this.resumePresentationFloorSeconds = null;
+    }
     if (
       !previous
-      || this.workerClockOffsetSeconds === null
+      || workerClockOffsetSeconds === null
     ) {
       this.lastSampledSimulationTime = latest.simulationTime;
       this.renderState = cloneVisualState(latest);
       return this.renderState;
     }
     if (previous.simulationTime === latest.simulationTime) {
+      const estimatedWorkerTime = timestamp / 1_000 - workerClockOffsetSeconds;
+      const delayedTargetTime = estimatedWorkerTime - VISUAL_PRESENTATION_DELAY_SECONDS;
       const targetTime = Math.min(
         latest.simulationTime + MAX_VISUAL_EXTRAPOLATION_SECONDS,
-        Math.max(this.lastSampledSimulationTime ?? latest.simulationTime, latest.simulationTime),
+        Math.max(
+          this.lastSampledSimulationTime ?? latest.simulationTime,
+          latest.simulationTime,
+          delayedTargetTime,
+        ),
       );
       this.renderState = targetTime > latest.simulationTime
         ? extrapolateFlightState(
@@ -130,8 +265,8 @@ export class SimulationClient {
       return this.renderState;
     }
     const snapshotDuration = Math.max(1 / 240, latest.simulationTime - previous.simulationTime);
-    const estimatedWorkerTime = timestamp / 1_000 - this.workerClockOffsetSeconds;
-    const delayedTargetTime = estimatedWorkerTime - snapshotDuration;
+    const estimatedWorkerTime = timestamp / 1_000 - workerClockOffsetSeconds;
+    const delayedTargetTime = estimatedWorkerTime - VISUAL_PRESENTATION_DELAY_SECONDS;
     const monotoneTargetTime = Math.max(
       this.lastSampledSimulationTime ?? previous.simulationTime,
       delayedTargetTime,
@@ -167,8 +302,13 @@ export class SimulationClient {
     this.errorListener = null;
   }
 
-  private send(command: SimulationCommand): void {
-    this.worker.postMessage(command);
+  private send(command: SimulationCommand, transferables: Transferable[] = []): void {
+    this.worker.postMessage(command, transferables);
+  }
+
+  private clearPresentationPause(): void {
+    this.presentationPaused = false;
+    this.resumePresentationFloorSeconds = null;
   }
 
   private readonly handleMessage = (event: MessageEvent<SimulationEvent>): void => {
@@ -179,19 +319,22 @@ export class SimulationClient {
     const receivedAtSeconds = performance.now() / 1_000;
     const state = event.data.state;
     const clockRestarted = event.data.type === "ready"
+      || this.resetClockOnNextState
       || (this.latestState !== null && state.simulationTime < this.latestState.simulationTime);
     if (clockRestarted) {
+      const preserveResumeFloor = this.resetClockOnNextState
+        && this.resumePresentationFloorSeconds !== null;
       this.previousState = state;
-      this.workerClockOffsetSeconds = receivedAtSeconds - state.simulationTime;
-      this.lastSampledSimulationTime = state.simulationTime;
-      this.renderState = null;
+      this.workerClockOffset.reset(receivedAtSeconds, state.simulationTime);
+      this.resetClockOnNextState = false;
+      if (!preserveResumeFloor) {
+        this.resumePresentationFloorSeconds = null;
+        this.lastSampledSimulationTime = state.simulationTime;
+        this.renderState = null;
+      }
     } else {
       this.previousState = this.latestState ?? state;
-      const offsetSample = receivedAtSeconds - state.simulationTime;
-      this.workerClockOffsetSeconds = this.workerClockOffsetSeconds === null
-        ? offsetSample
-        : this.workerClockOffsetSeconds
-          + (offsetSample - this.workerClockOffsetSeconds) * WORKER_CLOCK_OFFSET_EMA_ALPHA;
+      this.workerClockOffset.observe(receivedAtSeconds, state.simulationTime);
     }
     this.latestState = state;
     this.stateListener?.(state);
@@ -295,6 +438,9 @@ export function interpolateFlightState(
   result.onGround = useSecondFlags ? second.onGround : first.onGround;
   result.stalled = useSecondFlags ? second.stalled : first.stalled;
   result.crashed = useSecondFlags ? second.crashed : first.crashed;
+  const terrainAuthority = second.terrainAuthority ?? first.terrainAuthority;
+  if (terrainAuthority) result.terrainAuthority = terrainAuthority;
+  else delete result.terrainAuthority;
   return result;
 }
 
@@ -320,6 +466,7 @@ export function extrapolateFlightState(
   const orientation = result.orientation;
   const angularVelocity = result.angularVelocity;
   Object.assign(result, state);
+  if (!state.terrainAuthority) delete result.terrainAuthority;
   result.position = position;
   result.velocity = velocity;
   result.orientation = orientation;

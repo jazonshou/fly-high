@@ -3,7 +3,12 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { Scene } from "@babylonjs/core/scene";
-import { DetailInstanceMaterialPlugin } from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
+import {
+  DETAIL_TREE_BARK_AUTHORED_V_REPEATS,
+  DETAIL_TREE_BARK_REPEAT_METERS,
+  DetailInstanceMaterialPlugin,
+  detailMetricTreeBarkV,
+} from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
 import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensity";
 import {
   DETAIL_CULL_FADE_MARGIN_METERS,
@@ -13,13 +18,12 @@ import {
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
 
 /**
- * 2-14 / 2-17-close — the LOD crossfade's pure surfaces. Fades are
- * FRAGMENT-computed from the stem's true camera range (the baked form
- * forced every chunk to rebuild on an observer quantum, measured as a
- * hitch train at approach speeds): the three thresholds partition the
- * dither square exactly — near owns [0, fNear), mid [fNear, fMid), far
- * [fMid, fCull) — so complementarity is STRUCTURAL: no range, no dither
- * level, can light two bands or none inside the vegetated field.
+ * 2-14 / 2-17-close — the LOD ownership surface. The shader evaluates the
+ * stem's true camera range (the baked form forced every chunk to rebuild on
+ * an observer quantum, measured as a hitch train). Near and mid share exact
+ * opaque crown geometry and hard-switch halfway through their residency
+ * overlap. Far hard-switches at the next boundary and dithers only through
+ * the outer cull margin.
  */
 
 const LAW = RENDERED_DENSITY_LAWS[2]!;
@@ -37,26 +41,31 @@ function bayer8(x: number, y: number): number {
 
 /** TS mirror of the WGSL `detailBandWindow` thresholds (margins inline in
  * the shader as literals — pinned below against these constants). */
-function bandWindow(bandCode: 0 | 1 | 2, range: number): [number, number] {
+function bandWindow(
+  bandCode: 0 | 1 | 2,
+  range: number,
+  farSwitchUnit = 0.5,
+): [number, number] {
   const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
-  const fNear = clamp01((LAW.near.outerRadiusMeters - range) / DETAIL_FADE_MARGIN_METERS);
-  const fMid = clamp01((LAW.mid.outerRadiusMeters - range) / DETAIL_FADE_MARGIN_METERS);
+  const nearSwitch = LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2;
+  const farSwitch = LAW.mid.outerRadiusMeters
+    - DETAIL_FADE_MARGIN_METERS + farSwitchUnit * DETAIL_FADE_MARGIN_METERS;
   const fCull = clamp01((LAW.far.outerRadiusMeters - range) / DETAIL_CULL_FADE_MARGIN_METERS);
-  if (bandCode === 0) return [0, fNear];
-  if (bandCode === 1) return [fNear, fMid];
-  return [fMid, fCull];
+  if (bandCode === 0) return range < nearSwitch ? [0, 1] : [0, 0];
+  if (bandCode === 1) return range >= nearSwitch && range < farSwitch ? [0, 1] : [0, 0];
+  return range >= farSwitch ? [0, fCull] : [0, 0];
 }
 
 describe("band memberships (2-17 close)", () => {
   it("covers every band whose window a stem could enter within the slack", () => {
     const nearEdge = LAW.near.outerRadiusMeters;
-    // Pure-near membership holds only where the mid window cannot open
-    // within one slack of camera travel: nearEdge − margin − slack.
-    const interior = WorldDetailRuntime.fadeBandMemberships(
-      LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS - DETAIL_MEMBERSHIP_SLACK_METERS - 5,
-      LAW,
-    );
-    expect(interior.map((entry) => entry.band)).toEqual(["near"]);
+    // Wave T shrank the near band below margin + slack (150 m vs 100 + 96 at
+    // tier 1), so there is no longer a pure-near interior: every near stem
+    // also carries a mid membership whose window the vertex stage keeps
+    // closed until the switch. The double-buffered records are a few hundred
+    // 32-byte rows; the arbitration is the band window, not the membership.
+    const interior = WorldDetailRuntime.fadeBandMemberships(5, LAW);
+    expect(interior.map((entry) => entry.band)).toEqual(["near", "mid"]);
 
     const inMargin = WorldDetailRuntime.fadeBandMemberships(
       nearEdge - DETAIL_FADE_MARGIN_METERS * 0.5,
@@ -85,6 +94,20 @@ describe("band memberships (2-17 close)", () => {
     // stay valid across a full quantum of travel.
     expect(DETAIL_MEMBERSHIP_SLACK_METERS).toBeGreaterThan(64);
   });
+
+  it("reuses immutable categorical membership sets across rebuilds", () => {
+    const distance = LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS * 0.5;
+    const first = WorldDetailRuntime.fadeBandMemberships(distance, LAW);
+    const second = WorldDetailRuntime.fadeBandMemberships(distance, LAW);
+    expect(second).toBe(first);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(first.every((membership) => Object.isFrozen(membership))).toBe(true);
+
+    const outside = LAW.far.outerRadiusMeters + DETAIL_MEMBERSHIP_SLACK_METERS + 1;
+    expect(WorldDetailRuntime.fadeBandMemberships(outside, LAW)).toBe(
+      WorldDetailRuntime.fadeBandMemberships(outside, LAW),
+    );
+  });
 });
 
 describe("band-window fades (2-17 close)", () => {
@@ -98,11 +121,9 @@ describe("band-window fades (2-17 close)", () => {
     expect(seen.size).toBe(64);
   });
 
-  it("partitions every dither level to exactly one band at every range", () => {
-    // The structural guarantee the baked complement approximated: at any
-    // camera range inside the vegetated field, the three band windows tile
-    // [0, 1) with no overlap and no gap — every pixel shows exactly one
-    // LOD, continuously, with no quantization slack at all.
+  it("assigns every pixel to exactly one band before the outer cull fade", () => {
+    // At any camera range inside the fully populated field, exactly one LOD
+    // owns the entire stem: no overlapping opaque hulls and no coverage gap.
     for (let range = 5; range < LAW.far.outerRadiusMeters - DETAIL_CULL_FADE_MARGIN_METERS;
       range += 7) {
       for (let level = 0; level < 64; level += 1) {
@@ -114,6 +135,30 @@ describe("band-window fades (2-17 close)", () => {
         }
         expect(survivors, `range ${range} level ${level}`).toBe(1);
       }
+    }
+  });
+
+  it("hard-switches at the centres of both residency overlaps", () => {
+    const nearSwitch = LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2;
+    const farSwitch = LAW.mid.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2;
+    expect(bandWindow(0, nearSwitch - 0.001)).toEqual([0, 1]);
+    expect(bandWindow(1, nearSwitch - 0.001)).toEqual([0, 0]);
+    expect(bandWindow(0, nearSwitch)).toEqual([0, 0]);
+    expect(bandWindow(1, nearSwitch)).toEqual([0, 1]);
+    expect(bandWindow(1, farSwitch - 0.001)).toEqual([0, 1]);
+    expect(bandWindow(2, farSwitch - 0.001)).toEqual([0, 0]);
+    expect(bandWindow(1, farSwitch)).toEqual([0, 0]);
+    expect(bandWindow(2, farSwitch)).toEqual([0, 1]);
+  });
+
+  it("stagger-switches mid/far stems across the full overlap without gaps", () => {
+    const overlapStart = LAW.mid.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS;
+    for (const switchUnit of [0, 0.1, 0.33, 0.5, 0.9, 0.999]) {
+      const switchRange = overlapStart + switchUnit * DETAIL_FADE_MARGIN_METERS;
+      expect(bandWindow(1, switchRange - 0.001, switchUnit)).toEqual([0, 1]);
+      expect(bandWindow(2, switchRange - 0.001, switchUnit)).toEqual([0, 0]);
+      expect(bandWindow(1, switchRange, switchUnit)).toEqual([0, 0]);
+      expect(bandWindow(2, switchRange, switchUnit)).toEqual([0, 1]);
     }
   });
 
@@ -129,6 +174,19 @@ describe("band-window fades (2-17 close)", () => {
 });
 
 describe("crossfade shader surface (2-17 close)", () => {
+  it("keeps live-tree bark at a two-metre vertical repeat", () => {
+    expect(DETAIL_TREE_BARK_AUTHORED_V_REPEATS).toBe(3);
+    expect(DETAIL_TREE_BARK_REPEAT_METERS).toBe(2);
+    for (const height of [2, 8, 24, 40]) {
+      const repeats = detailMetricTreeBarkV(
+        DETAIL_TREE_BARK_AUTHORED_V_REPEATS,
+        height,
+      );
+      expect(height / repeats).toBeCloseTo(DETAIL_TREE_BARK_REPEAT_METERS, 12);
+    }
+    expect(() => detailMetricTreeBarkV(1, -1)).toThrow(RangeError);
+  });
+
   it("carries the band-window helper with margins matching the constants", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
@@ -142,7 +200,6 @@ describe("crossfade shader surface (2-17 close)", () => {
       // The WGSL inlines the margins as literals — they must mirror the
       // runtime constants or the shader and appender disagree about where
       // memberships are needed.
-      expect(definitions).toContain(`/ ${DETAIL_FADE_MARGIN_METERS.toFixed(1)}`);
       expect(definitions).toContain(`/ ${DETAIL_CULL_FADE_MARGIN_METERS.toFixed(1)}`);
       const albedo = fragment["CUSTOM_FRAGMENT_UPDATE_ALBEDO"]!;
       expect(albedo).toContain("detailBandWindow");
@@ -150,6 +207,51 @@ describe("crossfade shader surface (2-17 close)", () => {
       expect(albedo).toContain("detailDitherSurvives");
       expect(albedo).toContain("detailLeafHash");
       expect(albedo).toContain("i32(floor(max(fragmentInputs.detailAtlasData.z, 0.0)))");
+      expect(albedo).toContain("let detailOpaqueSurface = (detailAtlasLayer >= 5.0");
+      expect(albedo).toContain("detailAtlasLayer >= 16.0 && detailAtlasLayer <= 17.0");
+      expect(albedo).toContain("if (!detailOpaqueSurface)");
+      expect(definitions).toContain("leafed.rgb * leafed.a");
+      expect(definitions).toContain("bare.rgb * bare.a");
+      expect(definitions).toContain("uniforms.detailImpostorSeason > seasonSelector");
+      expect(albedo).toContain("impostorVariantByteForSeason");
+      expect(albedo).not.toContain("dot(\n  fragmentInputs.detailInstanceTint.rgb");
+      expect(albedo).toContain("#ifndef DETAIL_OPAQUE_CROWN");
+      const vertex = plugin.getCustomCode("vertex", ShaderLanguage.WGSL)!;
+      const vertexDefinitions = vertex["CUSTOM_VERTEX_DEFINITIONS"]!;
+      expect(vertexDefinitions).toContain(
+        `- ${(DETAIL_FADE_MARGIN_METERS / 2).toFixed(1)}`,
+      );
+      expect(vertexDefinitions).toContain(
+        `- ${DETAIL_FADE_MARGIN_METERS.toFixed(1)} + farSwitchHash`,
+      );
+      expect(vertexDefinitions).toContain("let farSwitchHash = fract(switchSeed)");
+      expect(vertexDefinitions).not.toContain("dot(tintRgb");
+      const position = vertex["CUSTOM_VERTEX_UPDATE_POSITION"]!;
+      expect(position).not.toContain("detailOpaqueBandScale");
+      // WGSL swizzles are values, not assignable l-values. A direct
+      // `detailLocal.xz = ...` made the opaque-crown vertex module invalid,
+      // rejected the frame submit, and left the live game black while its
+      // JavaScript FPS counter continued to report 120. Keep the scale as an
+      // explicit vector reconstruction so the CPU suite catches that exact
+      // whole-frame failure before the real-adapter compile gate runs.
+      expect(position).not.toMatch(/detailLocal\.xz\s*=/);
+      expect(position).toContain("detailLocal = vec3f(");
+      expect(position).toContain("detailLocal.x * detailDenseScale");
+      expect(position).toContain("detailLocal.z * detailDenseScale");
+      expect(position).toContain("* sqrt(detailDenseScale)");
+      // Fix-pack F2 re-pin: flutter now reaches opaque crowns at reduced
+      // amplitude instead of being compiled out — a rigid hull in wind read
+      // as plastic. The amplitude split is the new pinned surface.
+      expect(position).toContain("let detailFlutterAmplitude = 0.0035;");
+      expect(position).toContain("let detailFlutterAmplitude = 0.006;");
+      expect(position).toContain("let detailBarkSelector = floor(");
+      expect(position).toContain("clamp(vertexInputs.instanceTint.a, 0.0, 1.0) * 2.0");
+      expect(position).toContain("detailAtlasLayerOut = 5.0 + detailBarkSelector");
+      expect(position).toContain("detailAtlasUvOut.y = detailAtlasUvOut.y * detailHeight");
+      expect(position).toContain("/ 6.0");
+      const normal = vertex["CUSTOM_VERTEX_UPDATE_NORMAL"]!;
+      expect(normal).toContain("detailNormalDenseY = sqrt(detailDenseScale)");
+      expect(normal).toContain("detailNormalRadial * detailNormalDenseY");
     } finally {
       scene.dispose();
       engine.dispose();

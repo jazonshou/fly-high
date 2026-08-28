@@ -1,4 +1,8 @@
 import {
+  GROUND_COVER_LAWS,
+} from "@/src/render/webgpu/detail/groundCoverLaw";
+import type { GroundCoverLaw } from "@/src/render/webgpu/detail/groundCoverLaw";
+import {
   RENDERED_DENSITY_LAWS,
   type RenderedDensityLaw,
 } from "@/src/render/webgpu/detail/renderedDensity";
@@ -19,6 +23,25 @@ export const CAMERA_FAR_PLANE_METERS = 45_000;
  * mandatory Balanced fast path); triplanar blends all three.
  */
 export type TerrainTriplanarMode = "planar" | "biplanar" | "triplanar";
+
+/**
+ * wave R: the ocean presentation disk's lattice, moved here from a
+ * `profile.tier` table in `water/SpectralOceanSystem.ts` (the tier rule's
+ * grandfathered ocean reader, now retired).
+ *
+ * A camera-centred radial grid spends vertices where wave displacement is
+ * visible and lets cells grow smoothly toward the hazed horizon, rather than
+ * wasting a uniform 80 km grid. `nearStepMeters` is the radial step of the
+ * innermost rings and is now load-bearing twice over: it sets how short a wave
+ * the mesh can carry at all (wave R's mesh-Nyquist cascade fade reads it), and
+ * the disk's world position is quantised to a multiple of it so residual
+ * lattice aliasing stays glued to the WORLD instead of to the viewer.
+ */
+export interface OceanPresentationTopology {
+  readonly radialRings: number;
+  readonly angularSegments: number;
+  readonly nearStepMeters: number;
+}
 
 export interface WebGpuQualityProfile {
   readonly tier: 0 | 1 | 2 | 3;
@@ -48,8 +71,18 @@ export interface WebGpuQualityProfile {
   readonly frameTargetMs: number;
   /** R-21: the tier's rendered-density law (the one vegetation authority). */
   readonly renderedDensityLaw: RenderedDensityLaw;
-  /** 2-12: cap on crown-geometry variants per species (Low keeps three). */
+  /** Wave G: the tier's ground-cover blade law (rings, densities, gate). */
+  readonly groundCoverLaw: GroundCoverLaw;
+  /** 2-12: cap on crown-geometry variants per selected prototype species. */
   readonly treeVariantCap: number;
+  /**
+   * Tier 0/1 collapse authored species into conifer, broadleaf and willow
+   * prototype families. Per-instance dimensions, tint, lean and wind remain
+   * intact; only the mesh prototype is shared. This is the draw-call lever:
+   * the old five-variant, seven-species tier-1 path submitted roughly two
+   * hundred vegetation draws and missed 60 fps by a wide margin.
+   */
+  readonly treePrototypeMode: "families" | "species";
   /**
    * 2-16: grass draw radius — THE first tier knob per §5.3, because grass
    * is the renderer's largest single triangle consumer. The 1/d density
@@ -137,6 +170,12 @@ export interface WebGpuQualityProfile {
   readonly shadowDistance: number;
   readonly oceanResolution: 128 | 256;
   readonly oceanCascades: number;
+  /**
+   * wave R: the ocean presentation lattice. Data, not a `profile.tier` branch,
+   * per the tier rule — this row is why `SpectralOceanSystem.ts` could leave
+   * the boundary test's grandfathered-reader list.
+   */
+  readonly oceanPresentation: OceanPresentationTopology;
   readonly cloudResolutionScale: number;
   /**
    * Absolute ceiling on cloud-integration pixels (2-6). Clamped alongside
@@ -216,7 +255,9 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
-      treeVariantCap: 3,
+      groundCoverLaw: GROUND_COVER_LAWS[0]!,
+      treeVariantCap: 1,
+      treePrototypeMode: "families",
       grassRadiusMeters: 90,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
@@ -249,6 +290,17 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 900,
       oceanResolution: 128,
       oceanCascades: 3,
+      // wave R deliberately left Low's lattice ALONE. Shrinking the near step
+      // without adding rings is not free: the rings spent close in are rings
+      // the quintic ramp no longer has, so the step at 20-30 m grows. Measured
+      // on the harness, 1 m -> 0.5 m at 96 rings moves cascade 0's mesh fade
+      // end 29.9 m -> 23.3 m, i.e. it takes MORE near chop away than the first
+      // two metres of finer lattice give back. Low keeps 1 m.
+      oceanPresentation: {
+        radialRings: 96,
+        angularSegments: 128,
+        nearStepMeters: 1,
+      },
       cloudResolutionScale: 0.25,
       maxCloudPixels: 350_000,
       cloudPrimarySteps: 40,
@@ -269,14 +321,20 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
       maxDevicePixelRatio: 1.5,
-      // 2Z free win (PRE_PHASE_4_REALIGNMENT.md §3): 2×, was 4×. At the
-      // reference viewport 4× MSAA is ~69 MiB of framebuffer, and the
-      // alpha-tested foliage Phase 2 makes dominant gets no MSAA benefit
-      // (alpha-to-coverage is off) — the cheapest ~34 MiB in the programme.
-      msaaSamples: 2,
+      // Tier 1 is the strict playability contract. Closed opaque crowns make
+      // early-Z useful, but a 2× multisampled half-float beauty target still
+      // duplicates its dominant colour/depth traffic. FXAA is already the
+      // renderer's sample-count-1 path, so Balanced spends this row on frame
+      // cadence rather than hardware MSAA; higher tiers retain multisampling.
+      msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
-      treeVariantCap: 5,
+      groundCoverLaw: GROUND_COVER_LAWS[1]!,
+      // Playability is the tier-1 contract. Yaw, scale, lean, colour and wind
+      // retain stem-level variation; one mesh variant per prototype family
+      // removes the dominant species×variant×band submission multiplier.
+      treeVariantCap: 1,
+      treePrototypeMode: "families",
       // `4.5-C1`'s A/B left this at §5.3's Balanced row. §7 ranks
       // `grassRadiusMeters` 150 → 90-110 as the next lever after vegetation
       // shadow casting, at "~7 ms extra in ground-level shots"; measured at
@@ -315,6 +373,18 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 1_400,
       oceanResolution: 128,
       oceanCascades: 4,
+      // wave R: 144 rings / 0.75 m -> 200 rings / 0.25 m. At 0.75 m the near
+      // lattice could not carry ANY of cascade 0's 1-8 m band without
+      // aliasing, and the radial step passed the band's own half-wavelength
+      // (4 m) at 44 m from the eye — the measured source of the reported
+      // "plastic tubes". At 0.25 m/200 rings that radius moves to 49.5 m and
+      // the innermost 7.5 m genuinely resolves half-metre waves. Cost: 27,649
+      // -> 38,401 vertices and 55,104 -> 76,608 triangles on one disk.
+      oceanPresentation: {
+        radialRings: 200,
+        angularSegments: 192,
+        nearStepMeters: 0.25,
+      },
       cloudResolutionScale: 0.45,
       maxCloudPixels: 700_000,
       cloudPrimarySteps: 60,
@@ -347,7 +417,9 @@ export function resolveWebGpuQualityProfile(
       msaaSamples: 4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
+      groundCoverLaw: GROUND_COVER_LAWS[2]!,
       treeVariantCap: 5,
+      treePrototypeMode: "species",
       grassRadiusMeters: 220,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
@@ -372,6 +444,14 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 1_800,
       oceanResolution: 256,
       oceanCascades: 5,
+      // wave R: strictly denser than tier 1 on every axis. 240 rings keeps the
+      // disk inside 16-bit indices (61,441 vertices against the 65,535 limit),
+      // which is worth more than the four extra rings 256 would buy.
+      oceanPresentation: {
+        radialRings: 240,
+        angularSegments: 256,
+        nearStepMeters: 0.2,
+      },
       // Temporal reconstruction provides the stability return at this tier. Keep
       // the fully integrated per-frame ray march below a brute-force cost cliff.
       cloudResolutionScale: 0.6,
@@ -403,7 +483,9 @@ export function resolveWebGpuQualityProfile(
     msaaSamples: 4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
+      groundCoverLaw: GROUND_COVER_LAWS[3]!,
     treeVariantCap: 5,
+    treePrototypeMode: "species",
     grassRadiusMeters: 320,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
@@ -420,6 +502,13 @@ export function resolveWebGpuQualityProfile(
     shadowDistance: 2_400,
     oceanResolution: 256,
     oceanCascades: 5,
+    // wave R: Ultra matches tier 2's lattice, as it matches every other ocean
+    // row (§5.3's remaining Ultra ocean rows belong to a later phase).
+    oceanPresentation: {
+      radialRings: 240,
+      angularSegments: 256,
+      nearStepMeters: 0.2,
+    },
     cloudResolutionScale: 0.7,
     maxCloudPixels: 1_600_000,
     cloudPrimarySteps: 96,
@@ -440,6 +529,11 @@ export function isUsableFrameTiming(milliseconds: number): boolean {
   return Number.isFinite(milliseconds)
     && milliseconds >= MIN_TIMING_MILLISECONDS
     && milliseconds <= MAX_TIMING_MILLISECONDS;
+}
+
+/** A hitch is a frame slower than twice the tier's controllable target. */
+export function hitchThresholdMilliseconds(profile: Pick<WebGpuQualityProfile, "frameTargetMs">): number {
+  return profile.frameTargetMs * 2;
 }
 
 /** Return a timing only while its asynchronously produced sample is still current. */

@@ -3,8 +3,53 @@ import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines"
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
-import { DETAIL_INSTANCE_ATTRIBUTES } from "./instanceFormat";
+import {
+  DETAIL_INSTANCE_ATTRIBUTES,
+  DETAIL_INSTANCE_RADIAL_MAX,
+  DETAIL_INSTANCE_RADIAL_MIN,
+} from "./instanceFormat";
+import {
+  TREE_BARK_LAYER_MIN,
+  TREE_BARK_LAYER_SPAN,
+} from "./treePrototypeFamily";
+
+/**
+ * Wave Q: one frame's CSM state for the far band's hand-packed shadow
+ * receiver. Assembled by the renderer from the atmosphere's generator (the
+ * only CSM owner) and forwarded through WorldDetailRuntime unchanged.
+ */
+export interface DetailSunShadowSnapshot {
+  /** Four cascade transform matrices, packed row-after-row (64 floats). */
+  readonly matrices: Float32Array;
+  /** The render camera's view matrix (16 floats). */
+  readonly view: Float32Array;
+  readonly splits: readonly [number, number, number, number];
+  readonly blendStarts: readonly [number, number, number, number];
+  readonly cascadeCount: number;
+  readonly darkness: number;
+  /** The generator's receiver-side depth bias (CascadedShadowGenerator.bias). */
+  readonly bias: number;
+  readonly shadowMaxZ: number;
+  readonly valid: boolean;
+  /** The generator's depth map; bound as a depth-comparison array. */
+  readonly map: RenderTargetTexture | null;
+}
+
+/** World-space scale of one vertical bark-tile repeat on live tree trunks. */
+export const DETAIL_TREE_BARK_REPEAT_METERS = 2;
+/** sweepTube authors three normalized-height repeats before instance scaling. */
+export const DETAIL_TREE_BARK_AUTHORED_V_REPEATS = 3;
+
+/** CPU mirror of the tree-bark vertex transform, used by contract tests. */
+export function detailMetricTreeBarkV(authoredV: number, treeHeightMeters: number): number {
+  if (!Number.isFinite(authoredV) || !Number.isFinite(treeHeightMeters) || treeHeightMeters < 0) {
+    throw new RangeError("Tree bark UV inputs must be finite and height non-negative");
+  }
+  return authoredV * treeHeightMeters
+    / (DETAIL_TREE_BARK_AUTHORED_V_REPEATS * DETAIL_TREE_BARK_REPEAT_METERS);
+}
 
 /**
  * 2-11a — decodes the 32-byte instance record and builds the world transform
@@ -65,9 +110,11 @@ varying detailFadeByte: f32;
 #endif
 #endif
 #ifdef DETAIL_IMPOSTOR
-// 2-17: the billboard quad's own lanes. Impostor meshes do not receive
-// shadows (they live past 1.4 km), which frees the cascade varyings these
-// consume. detailImpostorA = (quadU, quadV, fadeByte, weightA);
+// 2-17: the billboard quad's own lanes. Impostor meshes cannot take
+// Babylon's CSM varyings (16-fragment-input limit — and at every tier they
+// START inside the cascade reach, so they DO need sun shadow: the wave-Q
+// hand-packed receiver below the frame decoder supplies it varying-free),
+// which frees the cascade varyings these consume. detailImpostorA = (quadU, quadV, fadeByte, weightA);
 // detailImpostorB = (tileA.uv, tileB.uv); detailImpostorC = (tileC.uv,
 // weightB, mirror).
 #ifndef DETAIL_FOLIAGE_ATLAS
@@ -91,24 +138,34 @@ fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
 }
 
 #ifdef DETAIL_BAND_FADES
-// 2-17 close — TRUE when the instance's band window is empty at this
-// camera range: the membership slack keeps stems resident in neighbouring
-// bands, and without this vertex-stage kill every empty-window duplicate
-// still rasterized its full card set to per-fragment discards (measured as
-// a near-field hitch train). Margins mirror the fragment helper.
-fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f) -> bool {
+// TRUE when the instance does not own this camera range. Near and mid use a
+// hard handoff halfway through the residency overlap: they share the exact
+// same closed crown geometry, so a hard switch preserves the silhouette and
+// avoids both opaque overlap and fragment discard. Far retains only the
+// outer cull fade. Membership slack keeps both sides resident while chunks
+// rebuild asynchronously.
+fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f, switchSeed: f32) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
-  let fNear = clamp((uniforms.detailBandRadii.x - bandRange) / 160.0, 0.0, 1.0);
-  let fMid = clamp((uniforms.detailBandRadii.y - bandRange) / 160.0, 0.0, 1.0);
+  let nearSwitch = uniforms.detailBandRadii.x - 50.0;
+  let farSwitchHash = fract(switchSeed);
+  let farSwitch = uniforms.detailBandRadii.y - 100.0 + farSwitchHash * 100.0;
+  // Code 4: the MID-band leaf-card shell (wave T). Lives between the near
+  // switch and the per-stem far switch; the fragment dissolves the near edge so
+  // the near/mid card handoff and the impostor handoff both stay gradual.
+  if (bandCode > 3.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
+  // Code 3: the near-band card shell. Same hard vertex cull as near, but
+  // the FRAGMENT dissolves it over the preceding 50 m (detailBandWindow), so
+  // the cards never vanish in one frame at the switch radius.
+  if (bandCode > 2.5) { return bandRange >= nearSwitch; }
+  // Mid and far are not identical representations (skeletal mesh vs species
+  // impostor), so a shared radial threshold makes an entire forest ring pop
+  // in one frame. Both records carry the same stable wind-phase seed: use it
+  // to distribute each stem's hard handoff across the existing 160 m
+  // residency overlap. Tint is seasonal and must not move an LOD boundary.
   let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
-  var lo = 0.0;
-  var hi = fNear;
-  if (bandCode >= 1.5) {
-    lo = fMid; hi = fCull;
-  } else if (bandCode >= 0.5) {
-    lo = fNear; hi = fMid;
-  }
-  return hi <= lo;
+  if (bandCode < 0.5) { return bandRange >= nearSwitch; }
+  if (bandCode < 1.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
+  return bandRange < farSwitch || fCull <= 0.0;
 }
 #endif
 `,
@@ -147,13 +204,18 @@ let impostorFlatLength = max(length(impostorFlat), 1e-3);
 impostorFlat = impostorFlat / impostorFlatLength;
 let impostorRight = vec3f(-impostorFlat.y, 0.0, impostorFlat.x);
 let impostorMirror = select(1.0, -1.0, fract(impostorVariantByte / 2.0) >= 0.5);
-let impostorRadial = (0.5 + vertexInputs.instanceScale.y * 1.1) * 0.85 + 0.15;
+// The record already accounts for the baked source prototype's radial bound.
+// Apply it exactly once; the atlas square's empty margin does not change the
+// visible silhouette's source-prototype radius.
+let impostorRadial = ${DETAIL_INSTANCE_RADIAL_MIN.toFixed(1)}
+  + vertexInputs.instanceScale.y
+    * ${(DETAIL_INSTANCE_RADIAL_MAX - DETAIL_INSTANCE_RADIAL_MIN).toFixed(1)};
 positionUpdated = vec3f(0.0, 0.0, 0.0)
   + impostorRight * (positionUpdated.x * impostorScale * impostorRadial)
   + vec3f(0.0, positionUpdated.y * impostorScale + impostorCenter, 0.0)
   + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
-if (detailBandWindowEmpty(2.0, detailInstancePositionW)) {
+if (detailBandWindowEmpty(2.0, detailInstancePositionW, vertexInputs.instanceState.z)) {
   positionUpdated = vec3f(0.0, -100000.0, 0.0);
 }
 #endif
@@ -190,10 +252,12 @@ vertexOutputs.detailImpostorC = vec4f(cornerC * 0.25, weightB, impostorVariantBy
 vertexOutputs.detailInstanceTint = vertexInputs.instanceTint;
 #else
 let detailHeight = vertexInputs.instanceScale.x * 48.0;
-// radialScale is a slenderness MULTIPLIER over [0.5, 1.6]; the prototype's
-// own radius-per-height lives in the per-material aspect uniform (a trunk
-// batch and a crown batch decode the same record differently on purpose).
-let detailRadial = (0.5 + vertexInputs.instanceScale.y * 1.1) * uniforms.detailRadialAspect;
+// One radial convention: worldRadius = authored prototype radius * height *
+// decoded multiplier. The CPU divides the desired radius by the exact
+// prototype bound; applying another per-material aspect here would square it.
+let detailRadial = ${DETAIL_INSTANCE_RADIAL_MIN.toFixed(1)}
+  + vertexInputs.instanceScale.y
+    * ${(DETAIL_INSTANCE_RADIAL_MAX - DETAIL_INSTANCE_RADIAL_MIN).toFixed(1)};
 let detailOrientation = normalize(vertexInputs.instanceOrientation);
 // Prototypes are unit-height; radial scale is a fraction of height.
 let detailTip = clamp(positionUpdated.y, 0.0, 1.0);
@@ -216,6 +280,45 @@ if (detailModifierBits == 2.0 || detailModifierBits == 4.0) {
   let detailBreak = detailHeight * 0.72;
   detailLocal.y = min(detailLocal.y, detailBreak + (detailLocal.y - detailBreak) * 0.06);
 }
+#ifdef DETAIL_OPAQUE_CROWN
+// Dense closed crowns cannot seasonally shed with fragment discards without
+// forfeiting the early-Z path that exists to make them playable. Deciduous
+// broadleaf layer 16 instead contracts coherently toward the branch/trunk
+// centre; conifer layer 17 stays evergreen. The character "thinned" modifier
+// similarly changes the silhouette rather than punching screen-door holes.
+let detailDenseLayer = floor(max(vertexInputs.atlasLayer, 0.0));
+var detailDenseScale = 1.0;
+if (detailDenseLayer == 16.0) {
+  detailDenseScale = max(0.08, clamp(vertexInputs.instanceTint.a, 0.0, 1.0));
+}
+if (detailModifierBits == 3.0) { detailDenseScale = detailDenseScale * 0.76; }
+// WGSL swizzles are values, not assignable l-values. Rebuild the vector so
+// this opaque-crown permutation cannot invalidate the whole scene pipeline.
+detailLocal = vec3f(
+  detailLocal.x * detailDenseScale,
+  detailLocal.y,
+  detailLocal.z * detailDenseScale,
+);
+let detailCrownPivot = detailHeight * 0.42;
+detailLocal.y = detailCrownPivot
+  + (detailLocal.y - detailCrownPivot)
+    * sqrt(detailDenseScale);
+// Fix-pack F2: per-instance silhouette wobble. With tier 1's single variant
+// per family, every crown in a stand shared one hull silhouette — the
+// copy-paste forest. Two azimuth harmonics keyed to the instance's phase
+// byte reshape the hull radially per stem at zero geometry cost. Scaling
+// x/z only is watertight by construction: shared vertices share azimuth,
+// and on-axis vertices are unmoved.
+let detailWobbleAzimuth = atan2(detailLocal.z, detailLocal.x);
+let detailWobble = 1.0
+  + 0.085 * sin(detailWobbleAzimuth * 3.0 + detailWindPhaseRadians * 2.317)
+  + 0.05 * sin(detailWobbleAzimuth * 7.0 + detailWindPhaseRadians * 5.61);
+detailLocal = vec3f(
+  detailLocal.x * detailWobble,
+  detailLocal.y,
+  detailLocal.z * detailWobble,
+);
+#endif
 #endif
 // 2-13 — three-band wind, WORLD space (the absorbed single band bent in
 // pre-rotation local axes, so a tree's sway direction spun with its yaw).
@@ -251,30 +354,60 @@ detailSwayed += vec3f(detailWindCross.x, 0.0, detailWindCross.y)
   * cos(detailBranchAngle * 0.83 + vertexInputs.instanceState.y * 3.1)
   * detailBranchBend * 0.58;
 #ifdef DETAIL_FOLIAGE_ATLAS
-// Band 3 — leaf flutter: high-frequency card jitter, spatially decorrelated
-// through the card's local position so one crown shimmers rather than
-// shifting as a block. Gust speeds the flutter, never the amplitude.
+// Band 3 — leaf flutter: high-frequency jitter, spatially decorrelated
+// through the local position so one crown shimmers rather than shifting as a
+// block. Gust speeds the flutter, never the amplitude. Fix-pack F2: opaque
+// hulls flutter too, at reduced amplitude — a rigid blob in wind was part of
+// the reported plastic look — the vertex jitter is what a closed surface can
+// afford without cracking (shared vertices share local position, so the
+// displacement agrees along every edge).
+#ifdef DETAIL_OPAQUE_CROWN
+let detailFlutterAmplitude = 0.0035;
+#else
+let detailFlutterAmplitude = 0.006;
+#endif
 let detailFlutterPhase = dot(detailLocal.xz, vec2f(12.9898, 78.233))
   + detailLocal.y * 4.1 + detailWindPhaseRadians;
 let detailFlutter = sin(uniforms.detailWindTime
   * (7.0 + 3.0 * uniforms.detailWind.w) + detailFlutterPhase);
 detailSwayed += vec3f(detailWindDir.x, 0.35, detailWindDir.y)
-  * detailFlutter * detailWindResponse * detailWindStrength * detailHeight * 0.006;
+  * detailFlutter * detailWindResponse * detailWindStrength
+  * detailHeight * detailFlutterAmplitude;
 #endif
 positionUpdated = detailSwayed + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
 if (detailBandWindowEmpty(
   floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0,
   detailInstancePositionW,
+  vertexInputs.instanceState.z,
 )) { positionUpdated = vec3f(0.0, -100000.0, 0.0); }
 #endif
 #ifdef DETAIL_FOLIAGE_ATLAS
 // Baked crown occlusion rides the prototype's vertex-colour alpha; a dead
 // top bleaches upward.
+var detailAtlasUvOut = vertexInputs.uv;
+var detailAtlasLayerOut = vertexInputs.atlasLayer;
+#if defined(DETAIL_BAND_FADES) && !defined(DETAIL_OPAQUE_CROWN)
+// Tier-1 families share trunk geometry, not bark identity. Opaque tree bark
+// owns the tint alpha lane, so decode its stable conifer/broadleaf/birch
+// selector here without adding a material or draw. Tree bark also repeats in
+// world metres: the authored V carries three repeats over unit height, so
+// height / (3 * repeatMetres) removes the otherwise enormous 6-10 m streaks
+// on mature trunks. Other bark consumers (logs/stumps) have no band define
+// and retain their authored UVs.
+if (detailAtlasLayerOut >= ${TREE_BARK_LAYER_MIN.toFixed(1)}
+  && detailAtlasLayerOut <= ${(TREE_BARK_LAYER_MIN + TREE_BARK_LAYER_SPAN).toFixed(1)}) {
+  let detailBarkSelector = floor(
+    clamp(vertexInputs.instanceTint.a, 0.0, 1.0) * ${TREE_BARK_LAYER_SPAN.toFixed(1)} + 0.5);
+  detailAtlasLayerOut = ${TREE_BARK_LAYER_MIN.toFixed(1)} + detailBarkSelector;
+  detailAtlasUvOut.y = detailAtlasUvOut.y * detailHeight
+    / ${(DETAIL_TREE_BARK_AUTHORED_V_REPEATS * DETAIL_TREE_BARK_REPEAT_METERS).toFixed(1)};
+}
+#endif
 vertexOutputs.detailAtlasData = vec4f(
-  vertexInputs.uv.x,
-  vertexInputs.uv.y,
-  vertexInputs.atlasLayer + floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 512.0,
+  detailAtlasUvOut.x,
+  detailAtlasUvOut.y,
+  detailAtlasLayerOut + floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 512.0,
   detailModifierBits + clamp(vertexInputs.color.a, 0.0, 1.0) * 0.5,
 );
 var detailTintOut = vertexInputs.instanceTint;
@@ -293,13 +426,35 @@ vertexOutputs.detailInstanceTint = vertexInputs.instanceTint
 vertexOutputs.detailFadeByte = floor(vertexInputs.instanceState.x * 255.0 + 0.5);
 #endif
 #endif
+// Streaming fix-pack (defect C) — stochastic reveal for NEWLY CREATED batch
+// meshes. detailMeshOffset.w is the mesh's reveal value: 1 everywhere by
+// default (steady-state meshes skip this entirely), ramped 0 -> 1 over
+// ~0.7 s by the runtime after a mesh's first publication flip. The
+// per-instance threshold reuses the stable wind-phase byte
+// (instanceState.z), scrambled so reveal order is uncorrelated with sway
+// phase; the constant offset keeps zero-phase records (rocks, clutter) from
+// all appearing in the first revealed frame. The collapse rides the
+// existing vertex kill — NO fragment discard may implement this on the
+// opaque-crown path, whose early-Z is the perf keystone.
+if (uniforms.detailMeshOffset.w < 1.0
+  && fract(vertexInputs.instanceState.z * 157.31 + 0.371) > uniforms.detailMeshOffset.w) {
+  positionUpdated = vec3f(0.0, -100000.0, 0.0);
+}
 `,
   CUSTOM_VERTEX_UPDATE_NORMAL: `
 #if defined(NORMAL) && !defined(DETAIL_IMPOSTOR)
-let detailNormalRadial = (0.5 + vertexInputs.instanceScale.y * 1.1)
-  * uniforms.detailRadialAspect;
+let detailNormalRadial = ${DETAIL_INSTANCE_RADIAL_MIN.toFixed(1)}
+  + vertexInputs.instanceScale.y
+    * ${(DETAIL_INSTANCE_RADIAL_MAX - DETAIL_INSTANCE_RADIAL_MIN).toFixed(1)};
+var detailNormalDenseY = 1.0;
+#ifdef DETAIL_OPAQUE_CROWN
+// Position scales are (radial*dense, sqrt(dense), radial*dense).
+// After dropping the common inverse factor, the inverse-transpose normal
+// scale is (1, radial*sqrt(dense), 1).
+detailNormalDenseY = sqrt(detailDenseScale);
+#endif
 normalUpdated = detailRotateByQuaternion(
-  normalize(normalUpdated * vec3f(1.0, detailNormalRadial, 1.0)),
+  normalize(normalUpdated * vec3f(1.0, detailNormalRadial * detailNormalDenseY, 1.0)),
   normalize(vertexInputs.instanceOrientation),
 );
 #endif
@@ -335,17 +490,138 @@ fn detailImpostorTileUv(tileOrigin: vec2f, quadUv: vec2f) -> vec2f {
 // One view's sample, season-blended between the leafed and bare layers.
 // The layer pair arrives per INSTANCE now (the species rides the variant
 // byte), so a single material serves every species.
-fn detailImpostorSample(tileOrigin: vec2f, quadUv: vec2f, layers: vec2f) -> vec4f {
+fn detailImpostorSample(
+  tileOrigin: vec2f,
+  quadUv: vec2f,
+  layers: vec2f,
+  seasonSelector: f32,
+) -> vec4f {
   let uv = detailImpostorTileUv(tileOrigin, quadUv);
   let leafed = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.x));
   let bare = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.y));
-  return mix(leafed, bare, uniforms.detailImpostorSeason);
+  // The bake is straight-alpha with RGB dilation. Convert each bucket to
+  // premultiplied form BEFORE any view blend, otherwise silhouette
+  // disagreement leaves coloured RGB at low alpha and the final unpremultiply
+  // produces bright fringes. Season changes pick one whole distant stem at a
+  // stable per-instance threshold instead of making every deciduous pixel in
+  // the world vanish together when a global alpha mix crosses 0.5.
+  let leafedPremultiplied = vec4f(leafed.rgb * leafed.a, leafed.a);
+  let barePremultiplied = vec4f(bare.rgb * bare.a, bare.a);
+  return select(
+    leafedPremultiplied,
+    barePremultiplied,
+    uniforms.detailImpostorSeason > seasonSelector,
+  );
 }
 
 // The per-fragment species row, decoded from the interpolated variant byte.
 fn detailImpostorFrame() -> vec4f {
   let variant = floor(fragmentInputs.detailImpostorC.w + 0.5);
   return uniforms.detailImpostorSpecies[i32(floor(variant / 32.0))];
+}
+
+// Wave Q (tree-cutoff fix): a hand-packed CSM receiver for the far band.
+// Impostors begin 260-400 m INSIDE the cascade reach at every tier, and
+// with receiveShadows the geometry bands have while the impostor cannot
+// (Babylon's CSM varyings overflow the 16-fragment-input limit on this
+// bundle — the compile-test contract), the mid->far handoff was a binary
+// full-shadow -> no-shadow cliff across every dusk forest. This is the
+// water system's receiver (SunShadowReceiver.ts) recomputed entirely in
+// the fragment stage from vPositionW: zero extra fragment inputs.
+#ifdef DETAIL_SUN_SHADOW
+var detailSunShadowMapSampler: sampler_comparison;
+var detailSunShadowMap: texture_depth_2d_array;
+
+fn detailSunShadowCascade(cascade: i32, world: vec3f) -> f32 {
+  let projected = uniforms.detailSunShadowMatrices[cascade] * vec4f(world, 1.0);
+  let clip = projected.xyz / max(abs(projected.w), 0.000001);
+  let uv = clip.xy * 0.5 + vec2f(0.5);
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0
+    || clip.z < 0.0 || clip.z > 1.0) {
+    return 1.0;
+  }
+  // Wave R: the generator's own depth bias, missing from the first landing.
+  // Babylon applies normalBias caster-side (the terrain depth is already
+  // pushed), but bias is receiver-side — without it a billboard's base
+  // fragments sit coplanar with the terrain caster sheet and, with the
+  // generator's darkness at 0, any acne is FULL BLACK.
+  let compared = textureSampleCompareLevel(
+    detailSunShadowMap,
+    detailSunShadowMapSampler,
+    uv,
+    cascade,
+    clamp(clip.z - uniforms.detailSunShadowBias.x, 0.0, 0.99999994),
+  );
+  return mix(uniforms.detailSunShadowParams.y, 1.0, compared);
+}
+
+fn detailSunShadowVectorValue(values: vec4f, index: i32) -> f32 {
+  if (index == 0) { return values.x; }
+  if (index == 1) { return values.y; }
+  if (index == 2) { return values.z; }
+  return values.w;
+}
+
+fn detailSunShadow(world: vec3f) -> f32 {
+  if (uniforms.detailSunShadowParams.z < 0.5) { return 1.0; }
+  let viewDepth = max(-(uniforms.detailSunShadowView * vec4f(world, 1.0)).z, 0.0);
+  let cascadeCount = i32(uniforms.detailSunShadowParams.x + 0.5);
+  var cascade = 0;
+  if (viewDepth > uniforms.detailSunShadowSplits.x) { cascade = 1; }
+  if (viewDepth > uniforms.detailSunShadowSplits.y) { cascade = 2; }
+  if (viewDepth > uniforms.detailSunShadowSplits.z) { cascade = 3; }
+  if (viewDepth > uniforms.detailSunShadowSplits.w) { cascade = 4; }
+  if (cascade >= cascadeCount) { return 1.0; }
+  var current = detailSunShadowCascade(cascade, world);
+  // Wave R: cascade blend (the water receiver's :130-137 shape) — the
+  // geometry bands get Babylon's blended cascades, and an unblended manual
+  // term made terrain-shadow edges change hardness at the handoff ring.
+  if (cascade < cascadeCount - 1) {
+    let blendStart = detailSunShadowVectorValue(uniforms.detailSunShadowBlendStarts, cascade);
+    let split = detailSunShadowVectorValue(uniforms.detailSunShadowSplits, cascade);
+    if (viewDepth > blendStart && split > blendStart) {
+      let next = detailSunShadowCascade(cascade + 1, world);
+      current = mix(
+        current,
+        next,
+        clamp((viewDepth - blendStart) / (split - blendStart), 0.0, 1.0),
+      );
+    }
+  }
+  // Unlike Babylon's hard stop at shadowMaxZ, fade the term out over the
+  // last stretch so the cascade boundary never draws its own line on the
+  // forest — the exact artifact this receiver exists to remove.
+  let maxZ = uniforms.detailSunShadowParams.w;
+  let fade = smoothstep(maxZ * 0.82, maxZ, viewDepth);
+  return mix(current, 1.0, fade);
+}
+#endif
+#endif
+
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: world-locked value noise with analytic gradient for the
+// leaf-cluster shading on closed crown hulls. Same construction as the
+// terrain surface's — a hash lattice under a smoothstep bilinear.
+fn detailClusterHash(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+fn detailClusterGrad(point: vec2f) -> vec3f {
+  let cell = floor(point);
+  let local = fract(point);
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  let slope = 6.0 * local * (vec2f(1.0) - local);
+  let a = detailClusterHash(cell);
+  let b = detailClusterHash(cell + vec2f(1.0, 0.0));
+  let c = detailClusterHash(cell + vec2f(0.0, 1.0));
+  let d = detailClusterHash(cell + vec2f(1.0));
+  return vec3f(
+    mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
+    mix(b - a, d - c, blend.y) * slope.x,
+    mix(c - a, d - b, blend.x) * slope.y,
+  );
 }
 #endif
 
@@ -382,33 +658,50 @@ fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
 }
 
 #ifdef DETAIL_BAND_FADES
-// 2-17 close — tree-band fades computed from the FRAGMENT'S OWN camera
-// range, not baked bytes: the baked form forced every chunk to rebuild on
-// a 64 m observer quantum (measured as a hitch train at approach speeds).
-// The three thresholds partition the dither square exactly — near owns
-// [0, fNear), mid owns [fNear, fMid), far owns [fMid, fCull) — so
-// complementarity is structural and fades are continuous with camera
-// motion. detailBandRadii = (nearEdge, midEdge, cullEdge, 0); the margin
-// literals mirror DETAIL_FADE_MARGIN_METERS / DETAIL_CULL_FADE_MARGIN_
-// METERS and are pinned by test.
+// The vertex helper owns the hard switch from the stem centre. Re-evaluating
+// that edge per fragment clips half a billboard as its centre crosses the
+// boundary. Near/mid fragments therefore survive wholesale; far fragments
+// dither only through the outer 420 m cull edge.
 fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3f) -> bool {
-  let bandRange = distance(positionW.xz, scene.vEyePosition.xz);
-  let fNear = clamp((uniforms.detailBandRadii.x - bandRange) / 160.0, 0.0, 1.0);
-  let fMid = clamp((uniforms.detailBandRadii.y - bandRange) / 160.0, 0.0, 1.0);
-  let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
-  var lo = 0.0;
-  var hi = fNear;
-  if (bandCode >= 1.5) {
-    lo = fMid; hi = fCull;
-  } else if (bandCode >= 0.5) {
-    lo = fNear; hi = fMid;
+  // Code 4 — the mid-band card shell (wave T): dither IN over the 50 m after
+  // the near switch (exact complement of code 3's dither OUT, same Bayer and
+  // hash, so the near/mid card handoff covers every pixel exactly once). The
+  // far edge is the vertex window's per-stem hashed switch, same as mid bark.
+  if (bandCode > 3.5) {
+    let cardRange = distance(positionW.xz, scene.vEyePosition.xz);
+    let nearEdge = uniforms.detailBandRadii.x - 50.0;
+    let inFade = clamp((nearEdge - cardRange) / 50.0, 0.0, 1.0);
+    let cardHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
+    let cardOffset = vec2u(u32(cardHash * 5.0), u32(fract(cardHash * 7.0) * 5.0));
+    if (inFade > 0.0) {
+      // Complement of code 3's survival: threshold >= fade keeps the pixels
+      // the outgoing near cards released.
+      return detailBayer8(vec2u(pixel) + cardOffset) >= inFade;
+    }
+    return true;
   }
-  if (lo >= 1.0 || hi <= 0.0) { return false; }
-  if (lo <= 0.0 && hi >= 1.0) { return true; }
+  // Code 3 — the near card shell's dither dissolve over the last 50 m of the
+  // near band. Without it every stem's cards popped off in one frame at the
+  // switch radius (the reported "trees jump").
+  if (bandCode > 2.5) {
+    let fringeRange = distance(positionW.xz, scene.vEyePosition.xz);
+    let fringeEdge = uniforms.detailBandRadii.x - 50.0;
+    let fringeFade = clamp((fringeEdge - fringeRange) / 50.0, 0.0, 1.0);
+    if (fringeFade >= 1.0) { return true; }
+    if (fringeFade <= 0.0) { return false; }
+    let fringeHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
+    let fringeOffset = vec2u(u32(fringeHash * 5.0), u32(fract(fringeHash * 7.0) * 5.0));
+    return detailBayer8(vec2u(pixel) + fringeOffset) < fringeFade;
+  }
+  if (bandCode < 1.5) { return true; }
+  let bandRange = distance(positionW.xz, scene.vEyePosition.xz);
+  let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
+  if (fCull <= 0.0) { return false; }
+  if (fCull >= 1.0) { return true; }
   let hash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
   let offset = vec2u(u32(hash * 5.0), u32(fract(hash * 7.0) * 5.0));
   let threshold = detailBayer8(vec2u(pixel) + offset);
-  return threshold >= lo && threshold < hi;
+  return threshold < fCull;
 }
 #endif
 `,
@@ -437,12 +730,19 @@ let impostorQuadUv = vec2f(
   1.0 - fragmentInputs.detailImpostorA.y,
 );
 let impostorLayers = detailImpostorFrame().zw;
+// Low five variant bits are the stable per-stem identity hash. Tint is not:
+// seasonal colour transforms change it, which would reshuffle which distant
+// trees are leafed every time a cell regenerates.
+let impostorVariantByteForSeason = floor(fragmentInputs.detailImpostorC.w + 0.5);
+let impostorSeasonSelector = (
+  impostorVariantByteForSeason - floor(impostorVariantByteForSeason / 32.0) * 32.0 + 0.5
+) / 32.0;
 let impostorSampleA = detailImpostorSample(
-  fragmentInputs.detailImpostorB.xy, impostorQuadUv, impostorLayers);
+  fragmentInputs.detailImpostorB.xy, impostorQuadUv, impostorLayers, impostorSeasonSelector);
 let impostorSampleB = detailImpostorSample(
-  fragmentInputs.detailImpostorB.zw, impostorQuadUv, impostorLayers);
+  fragmentInputs.detailImpostorB.zw, impostorQuadUv, impostorLayers, impostorSeasonSelector);
 let impostorSampleC = detailImpostorSample(
-  fragmentInputs.detailImpostorC.xy, impostorQuadUv, impostorLayers);
+  fragmentInputs.detailImpostorC.xy, impostorQuadUv, impostorLayers, impostorSeasonSelector);
 let impostorWeightA = clamp(fragmentInputs.detailImpostorA.w, 0.0, 1.0);
 let impostorWeightB = clamp(fragmentInputs.detailImpostorC.z, 0.0, 1.0);
 let impostorWeightC = clamp(1.0 - impostorWeightA - impostorWeightB, 0.0, 1.0);
@@ -458,6 +758,27 @@ let detailFadeByteDecoded = fract(fragmentInputs.detailAtlasData.z) * 512.0;
 #else
 let detailFadeByteDecoded = fragmentInputs.detailFadeByte;
 #endif
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: the leaf-cluster field, shared by the albedo modulation below
+// and the shading-normal perturbation before lights. Two octaves (~0.74 m and
+// ~0.27 m) over a sheared plane, WORLD-locked through detailWorldOrigin
+// (vPositionW is floating-origin-rebased — without the offset the whole
+// canopy's pattern popped on every 2,048 m origin move), each octave faded
+// by its own pixel-footprint Nyquist so mid-band crowns converge to the
+// texture instead of carrying per-pixel shimmer.
+let detailClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+let detailClusterFootprint = max(
+  length(dpdx(detailClusterCoord)), length(dpdy(detailClusterCoord)));
+let detailClusterFadeA = 1.0 - smoothstep(0.15, 0.55, detailClusterFootprint);
+let detailClusterFadeB = 1.0 - smoothstep(0.06, 0.2, detailClusterFootprint);
+let detailClusterA = detailClusterGrad(detailClusterCoord * 1.35);
+let detailClusterB = detailClusterGrad(detailClusterCoord * 3.7 + vec2f(17.1, 3.3));
+let detailClusterMix = 0.5
+  + (detailClusterA.x - 0.5) * 0.62 * detailClusterFadeA
+  + (detailClusterB.x - 0.5) * 0.38 * detailClusterFadeB;
+#endif
+#ifndef DETAIL_OPAQUE_CROWN
 #ifdef DETAIL_BAND_FADES
 if (!detailBandWindow(
   floor(detailFadeByteDecoded / 2.0),
@@ -472,6 +793,7 @@ if (!detailDitherSurvives(
   fragmentInputs.detailInstanceTint.rgb,
 )) { discard; }
 #endif
+#endif
 #ifdef DETAIL_FOLIAGE_ATLAS
 let detailModifierDecoded = floor(fragmentInputs.detailAtlasData.w);
 let detailOcclusionDecoded = (fragmentInputs.detailAtlasData.w - detailModifierDecoded) * 2.0;
@@ -485,25 +807,47 @@ let detailCard = textureSample(
   i32(floor(max(fragmentInputs.detailAtlasData.z, 0.0))),
 );
 if (fragmentInputs.detailAtlasData.z >= 0.0) {
+#ifdef DETAIL_OPAQUE_CROWN
+  // Closed near crowns compile a genuinely opaque pipeline: no alpha test,
+  // no seasonal screen-door dissolve, and no fragment LOD dither. The
+  // vertex-stage band window performs the hard range cull instead.
+  // Fix-pack F1: the cluster field modulates tone — lit clumps against dark
+  // crevices — which the deliberately restrained dense layer cannot supply
+  // alone; the companion normal perturbation lands before lights.
+  surfaceAlbedo = surfaceAlbedo * detailCard.rgb
+    * (0.84 + 0.32 * detailClusterMix);
+#else
+  let detailAtlasLayer = floor(max(fragmentInputs.detailAtlasData.z, 0.0));
+  // Bark (5..7) and dense near-crown layers (16..17) texture closed geometry,
+  // so their detail is albedo, never cut-outs. The old shared foliage path
+  // alpha-tested and seasonally dissolved bark as if it were a leaf card,
+  // punching literal vertical holes through nearby trunks. Keep the sample
+  // unconditional for WGSL derivatives, then confine coverage/dissolve to
+  // genuinely card-based foliage.
+  let detailOpaqueSurface = (detailAtlasLayer >= 5.0 && detailAtlasLayer <= 7.0)
+    || (detailAtlasLayer >= 16.0 && detailAtlasLayer <= 17.0);
   // 2-12: the shipping alpha test (Castano coverage preserved per mip in
   // the atlas bake); a thinned-crown modifier raises the threshold so the
   // canopy loses texels, not quads.
-  var detailAlphaTest = 0.5;
-  if (detailModifierDecoded == 3.0) { detailAlphaTest = 0.72; }
-  if (detailCard.a < detailAlphaTest) { discard; }
-  // 2-13a: the tint's ALPHA lane is the seasonal leaf fraction, shed by a
-  // uv-cell DISSOLVE — a threshold lift cannot drop painted leaves (their
-  // interiors carry alpha ≈ 1; measured 17.1% → 16.3% coverage at 0.86).
-  // 40-cell quantisation drops leaf-sized clumps; the impostor bake runs
-  // the same rule (ImpostorAtlas.leafDissolveSurvives).
-  let detailLeafFraction = clamp(fragmentInputs.detailInstanceTint.a, 0.0, 1.0);
-  if (detailLeafFraction < 0.999) {
-    let detailLeafCell = floor(fragmentInputs.detailAtlasData.xy * 40.0);
-    let detailLeafHash = fract(
-      sin(detailLeafCell.x * 127.1 + detailLeafCell.y * 311.7) * 43758.5453);
-    if (detailLeafHash > detailLeafFraction) { discard; }
+  if (!detailOpaqueSurface) {
+    var detailAlphaTest = 0.5;
+    if (detailModifierDecoded == 3.0) { detailAlphaTest = 0.72; }
+    if (detailCard.a < detailAlphaTest) { discard; }
+    // 2-13a: the tint's ALPHA lane is the seasonal leaf fraction, shed by a
+    // uv-cell DISSOLVE — a threshold lift cannot drop painted leaves (their
+    // interiors carry alpha ≈ 1; measured 17.1% → 16.3% coverage at 0.86).
+    // 40-cell quantisation drops leaf-sized clumps; the impostor bake runs
+    // the same rule (ImpostorAtlas.leafDissolveSurvives).
+    let detailLeafFraction = clamp(fragmentInputs.detailInstanceTint.a, 0.0, 1.0);
+    if (detailLeafFraction < 0.999) {
+      let detailLeafCell = floor(fragmentInputs.detailAtlasData.xy * 40.0);
+      let detailLeafHash = fract(
+        sin(detailLeafCell.x * 127.1 + detailLeafCell.y * 311.7) * 43758.5453);
+      if (detailLeafHash > detailLeafFraction) { discard; }
+    }
   }
   surfaceAlbedo = surfaceAlbedo * detailCard.rgb;
+#endif
 }
 // Baked crown occlusion — interior leaves go dark, sunlit tips stay bright.
 surfaceAlbedo = surfaceAlbedo * mix(0.42, 1.0, detailOcclusionDecoded);
@@ -512,6 +856,28 @@ surfaceAlbedo = surfaceAlbedo * fragmentInputs.detailInstanceTint.rgb;
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_LIGHTS: `
+#ifdef DETAIL_OPAQUE_CROWN
+// Fix-pack F1: the closed hull's smooth interpolated normal is why crowns
+// read as playdough — N·L varies only at icosphere-vertex frequency. Perturb
+// the shading normal with the same world-locked cluster field the albedo
+// modulation uses (recomputed here — the hook scopes are separate), so the
+// hull lights as thousands of leaf clumps facing every direction.
+let crownClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+let crownClusterFootprint = max(
+  length(dpdx(crownClusterCoord)), length(dpdy(crownClusterCoord)));
+let crownClusterFadeA = 1.0 - smoothstep(0.15, 0.55, crownClusterFootprint);
+let crownClusterFadeB = 1.0 - smoothstep(0.06, 0.2, crownClusterFootprint);
+let crownClusterA = detailClusterGrad(crownClusterCoord * 1.35);
+let crownClusterB = detailClusterGrad(crownClusterCoord * 3.7 + vec2f(17.1, 3.3));
+let crownClusterSlope = vec2f(crownClusterA.y, crownClusterA.z) * 0.4 * crownClusterFadeA
+  + vec2f(crownClusterB.y, crownClusterB.z) * 0.3 * crownClusterFadeB;
+normalW = normalize(normalW + vec3f(
+  crownClusterSlope.x,
+  (crownClusterA.x - 0.5) * 0.5 * crownClusterFadeA,
+  crownClusterSlope.y,
+));
+#endif
 #ifdef DETAIL_IMPOSTOR
 // 2-17's DEFERRED NORMAL HOOKUP, closed by the perf-debt pass. The
 // normal+depth array was baked and uploaded and then never sampled, so
@@ -557,18 +923,26 @@ var impostorNormalWorld = vec3f(
   impostorNormalTexel.y,
   -impostorNormalTexel.x * impostorNormalSin + impostorNormalTexel.z * impostorNormalCos,
 );
+let impostorNormalEyeVector = scene.vEyePosition.xyz - fragmentInputs.vPositionW;
+let impostorNormalFlatEye = normalize(vec2f(impostorNormalEyeVector.x, impostorNormalEyeVector.z));
 if (fract(impostorNormalVariant / 2.0) >= 0.5) {
-  let impostorNormalEye = scene.vEyePosition.xyz - fragmentInputs.vPositionW;
-  let impostorNormalFlat = normalize(vec2f(impostorNormalEye.x, impostorNormalEye.z));
-  let impostorNormalRight = vec3f(-impostorNormalFlat.y, 0.0, impostorNormalFlat.x);
+  let impostorNormalRight = vec3f(-impostorNormalFlatEye.y, 0.0, impostorNormalFlatEye.x);
   impostorNormalWorld -= 2.0 * dot(impostorNormalWorld, impostorNormalRight) * impostorNormalRight;
 }
+// Wave R: the atlas now stores the geometry bands' OWN authored normals
+// (dome-blended cards, smoothed core hull, outward bark), so the sprite is
+// the mid band's normal model verbatim and needs no runtime reshaping. The
+// wave-Q billboard mix and sky tilt existed to compensate view-locked FACE
+// normals from the old bake — with the sun anywhere behind the camera the
+// far band lit near-maximally while the mid band's dome distribution did
+// not, a tone line at the handoff that survived every constant re-tune.
+// Degenerate (dilated/mip-blended) texels fall back to straight up, the
+// dome distribution's own mean.
 let impostorNormalLength = length(impostorNormalWorld);
 if (impostorNormalLength > 0.25) {
-  // Softened toward the billboard normal: a ≤20 px sprite carrying a raw
-  // leaf-facet normal would flicker as the view crosses tile boundaries,
-  // and 2-14's whole crossfade design exists to keep that from happening.
-  normalW = normalize(mix(normalW, impostorNormalWorld / impostorNormalLength, 0.75));
+  normalW = impostorNormalWorld / impostorNormalLength;
+} else {
+  normalW = vec3f(0.0, 1.0, 0.0);
 }
 #endif
 `,
@@ -594,14 +968,47 @@ if (detailBacklit > 0.0) {
     * (detailBacklit * mix(0.15, 1.0, clamp(detailBacklitOcclusion, 0.0, 1.0)));
 }
 #endif
+#ifdef DETAIL_IMPOSTOR
+// Wave Q (tree-cutoff fix): the hand-packed CSM term. Multiplying here
+// mirrors the terrain horizon-shadow hook — direct diffuse and specular
+// only; ambient/irradiance are untouched.
+#ifdef DETAIL_SUN_SHADOW
+// Wave R: lifted 0.3 m — the billboard's base fragments are coplanar with
+// the terrain caster sheet, and a coplanar comparison is a coin flip even
+// with the bias above.
+let impostorSunShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
+finalDiffuse *= impostorSunShadow;
+#ifdef SPECULARTERM
+finalSpecularScaled *= impostorSunShadow;
+#endif
+#else
+let impostorSunShadow = 1.0;
+#endif
+// Fix-pack polish: the far band gets the SAME wrap-transmission response as
+// the crowns it hands off to — the term was gated on the atlas define the
+// impostor material never sets, so every backlit stand stepped from glowing
+// mid hulls to flat far sprites at the handoff ring. The bake folds
+// per-texel occlusion into the sprite's ALBEDO already, so a mid-level
+// constant stands in for the per-fragment occlusion gate. Wave R re-derived
+// the constant from the MID card shells' measured area-weighted occlusion
+// (mix(0.15,1,A) spans 0.37 oak .. 0.72 cedar): 0.55 is the population
+// mean, replacing wave Q's 0.45 guess. The wrap is sun transmission, so it
+// carries the shadow term like the direct lobe.
+let impostorBacklit = uniforms.detailKeyLight.w
+  * pow(clamp(-dot(viewDirectionW, uniforms.detailKeyLight.xyz), 0.0, 1.0), 4.0);
+if (impostorBacklit > 0.0) {
+  finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
+    * (impostorBacklit * 0.55 * impostorSunShadow);
+}
+#endif
 `,
 });
 
 /** Builds the instance world transform and tint from the 32-byte record. */
 export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private timeSeconds = 0;
-  private radialAspect = 1;
   private foliageAtlas: BaseTexture | null = null;
+  private opaqueCrown = false;
   /** 2-17: impostor albedo + normal/depth arrays, and the species table. */
   private impostorAtlas: BaseTexture | null = null;
   private impostorNormalAtlas: BaseTexture | null = null;
@@ -614,6 +1021,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     DETAIL_IMPOSTOR_SPECIES_SLOTS * 4,
   );
   private impostorSeasonMix = 0;
+  private sunShadow: DetailSunShadowSnapshot | null = null;
   /**
    * 2-12's translucency term: the frame's key light, forwarded from
    * `AtmosphereSystem`'s snapshot by the runtime. `w` is the strength
@@ -636,6 +1044,8 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private windDirectionZ = 0.70710678;
   private windStrength = 0.25;
   private windGust = 0;
+  private worldOriginX = 0;
+  private worldOriginZ = 0;
 
   constructor(material: PBRMaterial) {
     // enable=false at super: registerForExtraEvents must be set BEFORE
@@ -652,18 +1062,18 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       // string (DETAIL_BAND_FADES was missing — every tree compiled the
       // legacy fade path and read band codes as ~zero fades: an invisible
       // forest of 1%-dither speckle).
-      { DETAIL_FOLIAGE_ATLAS: false, DETAIL_IMPOSTOR: false, DETAIL_BAND_FADES: false },
+      {
+        DETAIL_FOLIAGE_ATLAS: false,
+        DETAIL_IMPOSTOR: false,
+        DETAIL_BAND_FADES: false,
+        DETAIL_OPAQUE_CROWN: false,
+      },
       true,
       false,
     );
     this.doNotSerialize = true;
     this.registerForExtraEvents = true;
     this._enable(true);
-  }
-
-  /** The prototype's authored radius-per-height at multiplier 1. */
-  setRadialAspect(value: number): void {
-    this.radialAspect = Number.isFinite(value) && value > 0 ? value : 1;
   }
 
   /**
@@ -673,6 +1083,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
    */
   setFoliageAtlas(texture: BaseTexture): void {
     this.foliageAtlas = texture;
+    this.markAllDefinesAsDirty();
+  }
+
+  /** Compiles the closed near-crown path with no fragment discard. */
+  setOpaqueCrown(enabled = true): void {
+    if (enabled === this.opaqueCrown) return;
+    this.opaqueCrown = enabled;
     this.markAllDefinesAsDirty();
   }
 
@@ -760,7 +1177,12 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   override prepareDefines(defines: MaterialDefines): void {
     defines["DETAIL_FOLIAGE_ATLAS"] = this.foliageAtlas !== null;
     defines["DETAIL_IMPOSTOR"] = this.impostorAtlas !== null;
+    // Wave Q: the CSM receiver compiles only when a depth map can actually
+    // be bound — a declared-but-unbound depth sampler is a createBindGroup
+    // crash, not a silent fallback.
+    defines["DETAIL_SUN_SHADOW"] = this.impostorAtlas !== null && this.sunShadow?.map != null;
     defines["DETAIL_BAND_FADES"] = this.bandFadesEnabled;
+    defines["DETAIL_OPAQUE_CROWN"] = this.opaqueCrown;
     // forcedInstanceCount routes the draw through Babylon's thin-instance
     // path, which compiles PBR with INSTANCES/THIN_INSTANCES and rebuilds
     // finalWorld from world0..world3 instance attributes. No matrix buffer
@@ -779,6 +1201,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (!samplers.includes("foliageAtlas")) samplers.push("foliageAtlas");
     if (!samplers.includes("impostorAlbedo")) samplers.push("impostorAlbedo");
     if (!samplers.includes("impostorNormalDepth")) samplers.push("impostorNormalDepth");
+    if (!samplers.includes("detailSunShadowMap")) samplers.push("detailSunShadowMap");
   }
 
   override hardBindForSubMesh(
@@ -796,16 +1219,37 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (this.impostorNormalAtlas) {
       uniformBuffer.setTexture("impostorNormalDepth", this.impostorNormalAtlas);
     }
+    // Wave Q: the CSM depth array, impostor material only. Depth-comparison
+    // textures bind through the effect (the water receiver's route) — the
+    // uniform-buffer setTexture path would pair a filtering sampler with a
+    // depth texture, which WebGPU validation rejects.
+    if (this.impostorAtlas && this.sunShadow?.map) {
+      subMesh?.effect?.setDepthStencilTexture("detailSunShadowMap", this.sunShadow.map);
+    }
     // Unlike bindForSubMesh, Babylon invokes the hard-bind hook even when a
     // shared material/effect remains cached. The offset is mesh-dependent,
     // so every batch draw must refresh it through this unconditional path.
-    const meshOffset = subMesh?.getMesh().position;
+    //
+    // The `.w` lane carries the mesh's REVEAL value (streaming fix-pack,
+    // defect C): the runtime ramps a newly created batch mesh's
+    // `metadata.detailReveal` 0 -> 1 over ~0.7 s after its first publication
+    // flip, and the vertex stage collapses instances whose per-stem hash
+    // exceeds it. The lane was verified unused before being repurposed —
+    // every WGSL consumer reads `uniforms.detailMeshOffset.xyz` only, and
+    // this call was the single binding site (writing a literal 0). The
+    // default is 1 (fully revealed) so meshes without a ramp — prototypes,
+    // NullEngine paths, steady-state batches — are bit-for-bit unaffected.
+    const mesh = subMesh?.getMesh();
+    const meshOffset = mesh?.position;
+    const reveal = (
+      mesh?.metadata as { detailReveal?: unknown } | null | undefined
+    )?.detailReveal;
     uniformBuffer.updateFloat4(
       "detailMeshOffset",
       meshOffset?.x ?? 0,
       meshOffset?.y ?? 0,
       meshOffset?.z ?? 0,
-      0,
+      typeof reveal === "number" ? reveal : 1,
     );
   }
 
@@ -819,6 +1263,18 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
 
   setTimeSeconds(value: number): void {
     this.timeSeconds = Number.isFinite(value) ? value : 0;
+  }
+
+  /**
+   * Wave Q: the frame's CSM snapshot for the far band, on the same
+   * forward-the-snapshot pattern as the key light and the wind. Null (or
+   * valid: false) disarms the receiver — the WGSL returns 1.0 unshadowed.
+   */
+  setSunShadow(snapshot: DetailSunShadowSnapshot | null): void {
+    const next = snapshot && snapshot.valid ? snapshot : null;
+    const hadMap = this.sunShadow?.map != null;
+    this.sunShadow = next;
+    if ((next?.map != null) !== hadMap) this.markAllDefinesAsDirty();
   }
 
   /**
@@ -857,9 +1313,9 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     return {
       ubo: [
         { name: "detailWindTime", size: 1, type: "float" },
-        { name: "detailRadialAspect", size: 1, type: "float" },
         { name: "detailMeshOffset", size: 4, type: "vec4" },
         { name: "detailWind", size: 4, type: "vec4" },
+        { name: "detailWorldOrigin", size: 4, type: "vec4" },
         { name: "detailImpostorSeason", size: 1, type: "float" },
         { name: "detailBandRadii", size: 4, type: "vec4" },
         { name: "detailKeyLight", size: 4, type: "vec4" },
@@ -870,13 +1326,37 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
           type: "vec4",
           arraySize: DETAIL_IMPOSTOR_SPECIES_SLOTS,
         },
+        // Wave Q: the far band's hand-packed CSM receiver (define-independent
+        // layout, the house rule — only the impostor material samples them).
+        { name: "detailSunShadowMatrices", size: 16, type: "mat4", arraySize: 4 },
+        { name: "detailSunShadowView", size: 16, type: "mat4" },
+        { name: "detailSunShadowSplits", size: 4, type: "vec4" },
+        { name: "detailSunShadowBlendStarts", size: 4, type: "vec4" },
+        { name: "detailSunShadowParams", size: 4, type: "vec4" },
+        { name: "detailSunShadowBias", size: 4, type: "vec4" },
       ],
     };
   }
 
+  /**
+   * Fix-pack F1: the crown cluster field must be WORLD-locked. vPositionW is
+   * floating-origin-rebased, so without this offset every crown's shading
+   * pattern jumped on each 2,048 m origin move.
+   */
+  setWorldOrigin(x: number, z: number): void {
+    this.worldOriginX = Number.isFinite(x) ? x : 0;
+    this.worldOriginZ = Number.isFinite(z) ? z : 0;
+  }
+
   override bindForSubMesh(uniformBuffer: UniformBuffer): void {
     uniformBuffer.updateFloat("detailWindTime", this.timeSeconds);
-    uniformBuffer.updateFloat("detailRadialAspect", this.radialAspect);
+    uniformBuffer.updateFloat4(
+      "detailWorldOrigin",
+      this.worldOriginX,
+      this.worldOriginZ,
+      0,
+      0,
+    );
     uniformBuffer.updateFloat4(
       "detailWind",
       this.windDirectionX,
@@ -907,6 +1387,35 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       0,
     );
     uniformBuffer.updateFloatArray("detailImpostorSpecies", this.impostorSpecies);
+    const sunShadow = this.sunShadow;
+    if (sunShadow) {
+      uniformBuffer.updateMatrices("detailSunShadowMatrices", sunShadow.matrices);
+      uniformBuffer.updateMatrices("detailSunShadowView", sunShadow.view);
+      uniformBuffer.updateFloat4(
+        "detailSunShadowSplits",
+        sunShadow.splits[0],
+        sunShadow.splits[1],
+        sunShadow.splits[2],
+        sunShadow.splits[3],
+      );
+      uniformBuffer.updateFloat4(
+        "detailSunShadowBlendStarts",
+        sunShadow.blendStarts[0],
+        sunShadow.blendStarts[1],
+        sunShadow.blendStarts[2],
+        sunShadow.blendStarts[3],
+      );
+      uniformBuffer.updateFloat4(
+        "detailSunShadowParams",
+        sunShadow.cascadeCount,
+        sunShadow.darkness,
+        1,
+        sunShadow.shadowMaxZ,
+      );
+      uniformBuffer.updateFloat4("detailSunShadowBias", sunShadow.bias, 0, 0, 0);
+    } else {
+      uniformBuffer.updateFloat4("detailSunShadowParams", 0, 0, 0, 0);
+    }
   }
 
   override getCustomCode(

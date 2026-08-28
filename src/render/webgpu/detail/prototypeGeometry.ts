@@ -1,6 +1,15 @@
 import { clamp, lerp } from "@/src/world/noise";
 import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "@/src/world/seed";
 import { FOLIAGE_LAYERS } from "./FoliageAtlas";
+import {
+  detailPrototypeBoundsFromPositions,
+  type DetailPrototypeBounds,
+} from "./instanceFormat";
+import {
+  buildTreeSkeleton,
+  type SkeletonMeshBudget,
+  type TreeSkeleton,
+} from "./treeSkeleton";
 import type { ClutterKind, RockVariant, ShrubSpecies, TreeSpecies } from "./types";
 
 /**
@@ -47,11 +56,20 @@ export interface PrototypeGeometry {
   readonly boundingRadius: number;
   /** Highest vertex y (prototype heights are normalized to ~1). */
   readonly boundingHeight: number;
+  /** Exact authored xyz envelope used by generator-side instance culling. */
+  readonly localBounds: DetailPrototypeBounds;
 }
 
 export interface TreePrototype {
   readonly trunk: PrototypeGeometry;
   readonly crown: PrototypeGeometry;
+  /**
+   * Wave T: the SHARED radial contract for every part of this tree — the
+   * skeleton's horizontal envelope including card extents. All tree batches
+   * (bark, core, cards) register THIS as their `radialUnits`, so one world
+   * scale maps every part and the parts stay exactly aligned.
+   */
+  readonly envelopeRadius: number;
 }
 
 /** 5 variants for the three commonest species, 3 for the rest (2-12). */
@@ -124,7 +142,6 @@ interface Vec3 {
 
 const UP: Vec3 = { x: 0, y: 1, z: 0 };
 const TWO_PI = Math.PI * 2;
-const DEG = Math.PI / 180;
 
 function norm3(x: number, y: number, z: number): Vec3 {
   const length = Math.hypot(x, y, z);
@@ -232,17 +249,18 @@ function finalizeGeometry(acc: GeometryAccumulator): PrototypeGeometry {
   if (vertexCount > 65_535) {
     throw new RangeError(`Prototype exceeds Uint16 indexing (${vertexCount} vertices)`);
   }
+  const positions = Float32Array.from(acc.positions);
   let boundingRadius = 0;
   let boundingHeight = 0;
   for (let i = 0; i < vertexCount; i += 1) {
-    const x = acc.positions[i * 3]!;
-    const y = acc.positions[i * 3 + 1]!;
-    const z = acc.positions[i * 3 + 2]!;
+    const x = positions[i * 3]!;
+    const y = positions[i * 3 + 1]!;
+    const z = positions[i * 3 + 2]!;
     boundingRadius = Math.max(boundingRadius, Math.hypot(x, z));
     boundingHeight = Math.max(boundingHeight, y);
   }
   return {
-    positions: Float32Array.from(acc.positions),
+    positions,
     normals: Float32Array.from(acc.normals),
     uvs: Float32Array.from(acc.uvs),
     tangents: Float32Array.from(acc.tangents),
@@ -252,6 +270,7 @@ function finalizeGeometry(acc: GeometryAccumulator): PrototypeGeometry {
     triangleCount: acc.indices.length / 3,
     boundingRadius,
     boundingHeight,
+    localBounds: detailPrototypeBoundsFromPositions(positions),
   };
 }
 
@@ -298,6 +317,7 @@ export function mergePrototypeGeometry(parts: readonly PrototypeGeometry[]): Pro
   return {
     positions, normals, uvs, tangents, colors, atlasLayer, indices,
     triangleCount, boundingRadius, boundingHeight,
+    localBounds: detailPrototypeBoundsFromPositions(positions),
   };
 }
 
@@ -550,11 +570,10 @@ interface TreeSpeciesSpec {
   readonly crownBase: number;
   readonly crownTop: number;
   readonly crownRadius: number;
-  readonly quadCount: number;
   readonly crownLayer: number;
+  readonly nearCrownLayer: number;
   readonly barkLayer: number;
   readonly fork: boolean;
-  readonly drooping: boolean;
 }
 
 /**
@@ -565,157 +584,514 @@ interface TreeSpeciesSpec {
 const TREE_SPECIES_SPECS: Readonly<Record<TreeSpecies, TreeSpeciesSpec>> = Object.freeze({
   pine: {
     conifer: true, trunkRadius: 0.10, taper: 0.70, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.34, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.34, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   cedar: {
     conifer: true, trunkRadius: 0.12, taper: 0.74, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.38, quadCount: 50, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.38, crownLayer: FOLIAGE_LAYER_INDEX.needlePine,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   spruce: {
     conifer: true, trunkRadius: 0.11, taper: 0.70, crownBase: 0.25, crownTop: 1,
-    crownRadius: 0.30, quadCount: 44, crownLayer: FOLIAGE_LAYER_INDEX.needleSpruce,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false, drooping: false,
+    crownRadius: 0.30, crownLayer: FOLIAGE_LAYER_INDEX.needleSpruce,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownConiferDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkConifer, fork: false,
   },
   oak: {
     conifer: false, trunkRadius: 0.20, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.50, quadCount: 54, crownLayer: FOLIAGE_LAYER_INDEX.broadleafOak,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.50, crownLayer: FOLIAGE_LAYER_INDEX.broadleafOak,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
   maple: {
     conifer: false, trunkRadius: 0.18, taper: 1.05, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.48, quadCount: 52, crownLayer: FOLIAGE_LAYER_INDEX.broadleafMaple,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.48, crownLayer: FOLIAGE_LAYER_INDEX.broadleafMaple,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
   birch: {
     conifer: false, trunkRadius: 0.10, taper: 0.95, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.36, quadCount: 46, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBirch, fork: false, drooping: false,
+    crownRadius: 0.36, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBirch, fork: false,
   },
   willow: {
     conifer: false, trunkRadius: 0.22, taper: 1.10, crownBase: 0.45, crownTop: 1.05,
-    crownRadius: 0.55, quadCount: 56, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
-    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true, drooping: false,
+    crownRadius: 0.55, crownLayer: FOLIAGE_LAYER_INDEX.broadleafBirch,
+    // Willow deliberately shares the fine narrow-leaf colour family but
+    // receives its own hanging multi-lobe silhouette below.
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
 });
 
-const TRUNK_RING_TS: readonly number[] = [0, 0.08, 0.3, 0.62, 1];
+// ---------------------------------------------------------------------------
+// Wave T: skeletal trees. ONE skeleton per (species, variant, seed) feeds
+// both mesh detail levels and the leaf-card shell, so near and mid agree on
+// silhouette by construction and the card shell sits exactly on the branch
+// tips it grew from. All RNG lives in treeSkeleton.ts; everything below is a
+// pure function of the skeleton plus a detail budget.
+// ---------------------------------------------------------------------------
 
-function trunkRadiusAt(spec: TreeSpeciesSpec, t: number): number {
-  const profile = spec.trunkRadius * Math.pow(Math.max(0, 1 - t), spec.taper);
-  const flare = 1 + 0.6 * Math.exp(-t / 0.06);
-  return Math.max(profile * flare, spec.trunkRadius * 0.05);
+const TREE_SKELETON_CACHE = new Map<string, TreeSkeleton>();
+
+function treeSkeletonFor(species: TreeSpecies, variant: number, seed: number): TreeSkeleton {
+  const key = `${species}/${variant}/${seed}`;
+  const cached = TREE_SKELETON_CACHE.get(key);
+  if (cached) return cached;
+  if (TREE_SKELETON_CACHE.size > 96) TREE_SKELETON_CACHE.clear();
+  const skeleton = buildTreeSkeleton(species, variant, seed);
+  TREE_SKELETON_CACHE.set(key, skeleton);
+  return skeleton;
 }
 
-function buildCrownQuads(
+/** Near: the full skeleton. Mid: primaries only, halved rings, 1-in-5 cards. */
+export const NEAR_TREE_MESH_BUDGET: SkeletonMeshBudget = Object.freeze({
+  trunkSides: 8, branchSides: 5, twigSides: 3,
+  minimumMeshRadius: 0.0008, ringStride: 1, twigShare: 1,
+  cardStride: 1, cardScale: 1,
+});
+export const MID_TREE_MESH_BUDGET: SkeletonMeshBudget = Object.freeze({
+  trunkSides: 5, branchSides: 3, twigSides: 3,
+  minimumMeshRadius: 0.004, ringStride: 2, twigShare: 0,
+  cardStride: 4, cardScale: 2.2,
+});
+
+/**
+ * Bark tubes for every skeleton stem the budget admits. A child stem's base
+ * ring sits ON its parent's centre line (the skeleton grows children from the
+ * parent axis), so the junction is hidden inside the parent tube; the first
+ * interior ring carries a 1.28× collar so limbs read as swelling out of the
+ * bole rather than poked into it.
+ */
+function sweepSkeletonBark(
+  acc: GeometryAccumulator,
+  skeleton: TreeSkeleton,
+  budget: SkeletonMeshBudget,
+  barkLayer: number,
+): void {
+  let twigCounter = 0;
+  for (const stem of skeleton.stems) {
+    if (stem.radii[0]! < budget.minimumMeshRadius) continue;
+    if (stem.level >= 2) {
+      if (budget.twigShare <= 0) continue;
+      twigCounter += 1;
+      if ((twigCounter * budget.twigShare) % 1 >= budget.twigShare) continue;
+    }
+    const sides = stem.level === 0
+      ? budget.trunkSides
+      : stem.level === 1 ? budget.branchSides : budget.twigSides;
+    const last = stem.points.length - 1;
+    const rings: TubeRing[] = [];
+    let arc = 0;
+    for (let index = 0; index <= last; index += 1) {
+      if (index > 0) {
+        const a = stem.points[index - 1]!;
+        const b = stem.points[index]!;
+        arc += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+      }
+      if (index !== 0 && index !== last && (index - 1) % budget.ringStride !== 0) continue;
+      const collar = stem.level > 0 && index === 0 ? 1.28 : 1;
+      rings.push({
+        center: stem.points[index]!,
+        axis: stem.axes[index]!,
+        radius: stem.radii[index]! * collar,
+        v: (stem.vStart + arc) * 3,
+      });
+    }
+    if (rings.length < 2) continue;
+    sweepTube(acc, rings, sides, stem.level === 0 ? 2 : 1, barkLayer);
+  }
+  // Cheap canopy shading for bark: limbs inside the crown envelope darken
+  // toward the interior (the plugin maps A through mix(0.42, 1, A)).
+  const span = Math.max(skeleton.crownTopY - skeleton.crownBaseY, 1e-3);
+  const vertexCount = acc.positions.length / 3;
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const px = acc.positions[vertex * 3]!;
+    const py = acc.positions[vertex * 3 + 1]!;
+    const pz = acc.positions[vertex * 3 + 2]!;
+    const inCanopy = clamp((py - skeleton.crownBaseY) / (span * 0.4), 0, 1);
+    const interior = 1 - clamp(
+      Math.hypot(px - skeleton.crownCenter.x, pz - skeleton.crownCenter.z)
+        / Math.max(skeleton.envelopeRadius, 1e-3),
+      0,
+      1,
+    );
+    acc.colors[vertex * 4 + 3] = clamp(0.9 - inCanopy * interior * 0.42, 0.45, 0.92);
+  }
+}
+
+/**
+ * Leaf-cluster cards at the skeleton's anchors. Normals are dome-blended
+ * toward a sphere whose origin sits at the canopy BOTTOM (a centroid origin
+ * gives every card below it a downward normal — the black-underside bug), so
+ * a cloud of flat cards shades like one volume. Each card's four vertices
+ * carry the blended normal individually.
+ */
+function emitSkeletonCards(
+  acc: GeometryAccumulator,
+  skeleton: TreeSkeleton,
+  budget: SkeletonMeshBudget,
+  layer: number,
+  owners: number[],
+  disks: OccluderDisk[],
+): void {
+  const domeOrigin: Vec3 = {
+    x: skeleton.crownCenter.x,
+    y: skeleton.crownBaseY - (skeleton.crownTopY - skeleton.crownBaseY) * 0.45,
+    z: skeleton.crownCenter.z,
+  };
+  const share = 1 / budget.cardStride;
+  let ownerId = 0;
+  for (const anchor of skeleton.anchors) {
+    if (budget.cardStride > 1 && anchor.pick >= share) continue;
+    const normal = norm3(anchor.nx, anchor.ny, anchor.nz);
+    let tangent = cross3(UP, normal);
+    if (Math.hypot(tangent.x, tangent.y, tangent.z) < 1e-4) tangent = { x: 1, y: 0, z: 0 };
+    tangent = norm3(tangent.x, tangent.y, tangent.z);
+    const bitangent = cross3(normal, tangent);
+    const halfWidth = skeleton.cardHalfWidth * anchor.size * budget.cardScale;
+    const elongation = 0.72 + ((anchor.pick * 7.13) % 1) * 0.5;
+    const halfHeight = halfWidth * elongation;
+    const center: Vec3 = { x: anchor.x, y: anchor.y, z: anchor.z };
+    const quad: FoliageQuad = {
+      center, normal, tangent, bitangent, halfWidth, halfHeight, layer,
+    };
+    const base = acc.positions.length / 3;
+    emitFoliageQuad(acc, quad, owners, ownerId);
+    disks.push(quadDisk(quad));
+    // Dome-blend the four vertex normals in place (emitFoliageQuad wrote the
+    // flat card normal); tangents stay the card frame.
+    for (let corner = 0; corner < 4; corner += 1) {
+      const vertex = base + corner;
+      const dome = norm3(
+        acc.positions[vertex * 3]! - domeOrigin.x,
+        acc.positions[vertex * 3 + 1]! - domeOrigin.y,
+        acc.positions[vertex * 3 + 2]! - domeOrigin.z,
+      );
+      const blended = norm3(
+        lerp(normal.x, dome.x, 0.65),
+        lerp(normal.y, dome.y, 0.65),
+        lerp(normal.z, dome.z, 0.65),
+      );
+      acc.normals[vertex * 3] = blended.x;
+      acc.normals[vertex * 3 + 1] = blended.y;
+      acc.normals[vertex * 3 + 2] = blended.z;
+    }
+    ownerId += 1;
+  }
+}
+
+/**
+ * The interior canopy core: the pre-overhaul opaque hull, shrunk inside the
+ * card shell and darkened. It pre-fills depth behind the cards (the early-Z
+ * keystone the 60fps push established) and reads as the canopy's own
+ * shadowed interior wherever the card shell opens.
+ */
+function buildCanopyCoreFromSkeleton(
+  skeleton: TreeSkeleton,
+  spec: TreeSpeciesSpec,
+  species: TreeSpecies,
+  rng: RandomSource,
+): PrototypeGeometry {
+  const span = skeleton.crownTopY - skeleton.crownBaseY;
+  const coreSpec: TreeSpeciesSpec = {
+    ...spec,
+    crownBase: skeleton.crownBaseY + span * 0.1,
+    crownTop: skeleton.crownTopY - span * 0.08,
+    crownRadius: Math.max(skeleton.envelopeRadius * 0.62, 0.05),
+  };
+  const core = buildClosedNearCrown(coreSpec, species, rng, 1, 1);
+  // Darken: the core is interior foliage by definition. 0.78 rather than a
+  // deeper cut — the first capture showed the canopy reading near-black when
+  // the interior showed through sparse card coverage.
+  const colors = core.colors;
+  for (let vertex = 0; vertex < colors.length / 4; vertex += 1) {
+    colors[vertex * 4 + 3] = colors[vertex * 4 + 3]! * 0.78;
+  }
+  return core;
+}
+
+/** Area-weighted smooth normals for a final, already-deformed indexed hull. */
+function smoothIndexedNormals(
+  positions: readonly Vec3[],
+  faces: readonly number[],
+): readonly Vec3[] {
+  const sums = new Float64Array(positions.length * 3);
+  for (let face = 0; face < faces.length; face += 3) {
+    const ia = faces[face]!;
+    const ib = faces[face + 1]!;
+    const ic = faces[face + 2]!;
+    const a = positions[ia]!;
+    const b = positions[ib]!;
+    const c = positions[ic]!;
+    const weighted = cross3(
+      { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z },
+      { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z },
+    );
+    for (const index of [ia, ib, ic]) {
+      sums[index * 3] = sums[index * 3]! + weighted.x;
+      sums[index * 3 + 1] = sums[index * 3 + 1]! + weighted.y;
+      sums[index * 3 + 2] = sums[index * 3 + 2]! + weighted.z;
+    }
+  }
+  return positions.map((_, index) => norm3(
+    sums[index * 3]!,
+    sums[index * 3 + 1]!,
+    sums[index * 3 + 2]!,
+  ));
+}
+
+/**
+ * One connected 80-triangle broadleaf hull. Four independent 20-triangle
+ * balls had the same cost but exposed four coarse polygon silhouettes — the
+ * repeated "broccoli" shape visible from both the ground and the air. A
+ * subdivision-one icosphere spends those triangles on one coherent outline;
+ * restrained low-frequency deformation supplies lobing without splitting the
+ * crown into intersecting shells.
+ */
+function emitBroadleafCrownHull(
+  acc: GeometryAccumulator,
+  spec: TreeSpeciesSpec,
+  species: TreeSpecies,
+  radialScale: number,
+  heightScale: number,
+  layer: number,
+  rng: RandomSource,
+): void {
+  const { vertices, faces } = buildIcosphere(1);
+  const base = acc.positions.length / 3;
+  const rotation = rng() * TWO_PI;
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
+  const lobePhase = rng() * TWO_PI;
+  const detailPhase = rng() * TWO_PI;
+  const willow = species === "willow";
+  const span = (spec.crownTop - spec.crownBase) * heightScale;
+  const centre: Vec3 = {
+    x: (rng() - 0.5) * spec.crownRadius * radialScale * 0.08,
+    y: spec.crownBase + span * (willow ? 0.49 : 0.54),
+    z: (rng() - 0.5) * spec.crownRadius * radialScale * 0.08,
+  };
+  const radiusX = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
+  const radiusY = span * (willow ? 0.51 : 0.49) * (0.95 + rng() * 0.08);
+  const radiusZ = spec.crownRadius * radialScale * (0.91 + rng() * 0.1);
+  // Fix-pack F2: per-vertex radial jitter on top of the lobe waves. The
+  // 42-vertex hull is unique-vertex indexed, so independent per-vertex noise
+  // stays watertight; without it the deformation was band-limited to the two
+  // harmonics and every crown read as the same smooth pebble.
+  const vertexJitter = vertices.map(() => 0.96 + rng() * 0.08);
+  const deformed: Vec3[] = vertices.map((source, vertexIndex) => {
+    const direction = {
+      x: source.x * cosine - source.z * sine,
+      y: source.y,
+      z: source.x * sine + source.z * cosine,
+    };
+    const azimuth = Math.atan2(direction.z, direction.x);
+    const equatorWeight = Math.max(0, 1 - direction.y * direction.y);
+    const lobeCount = willow ? 5 : 4;
+    const lobeWave = Math.sin(azimuth * lobeCount + lobePhase) * (willow ? 0.11 : 0.09)
+      + Math.sin(azimuth * (lobeCount + 2) + detailPhase) * 0.05;
+    const radialDeformation =
+      (1 + equatorWeight * lobeWave) * vertexJitter[vertexIndex]!;
+    const droop = willow
+      ? -span * equatorWeight
+        * (0.055 + 0.025 * Math.sin(azimuth * 3 + lobePhase))
+      : 0;
+    return {
+      x: centre.x + direction.x * radiusX * radialDeformation,
+      y: centre.y + direction.y * radiusY + droop,
+      z: centre.z + direction.z * radiusZ * radialDeformation,
+    };
+  });
+  const normals = smoothIndexedNormals(deformed, faces);
+  for (let index = 0; index < vertices.length; index += 1) {
+    const source = vertices[index]!;
+    const direction = {
+      x: source.x * cosine - source.z * sine,
+      y: source.y,
+      z: source.x * sine + source.z * cosine,
+    };
+    const position = deformed[index]!;
+    const normal = normals[index]!;
+    const [u, v] = sphericalUv(direction);
+    const tangent = sphericalTangent(direction, normal);
+    const occlusion = clamp(0.65 + direction.y * 0.25, 0.46, 0.9);
+    pushVertex(
+      acc,
+      position.x, position.y, position.z,
+      normal.x, normal.y, normal.z,
+      u, v,
+      tangent.x, tangent.y, tangent.z, 1,
+      layer,
+      occlusion,
+    );
+  }
+  for (let index = 0; index < faces.length; index += 1) {
+    acc.indices.push(base + faces[index]!);
+  }
+}
+
+/** One closed eight-sided conifer skirt: opaque sides plus a bottom cap. */
+function emitConiferWhorl(
+  acc: GeometryAccumulator,
+  centerX: number,
+  centerZ: number,
+  baseY: number,
+  apexY: number,
+  radiusX: number,
+  radiusZ: number,
+  rotation: number,
+  layer: number,
+): void {
+  const sides = 8;
+  // Fix-pack F2: per-corner radius and droop, as integer harmonics of the
+  // corner ANGLE so adjacent sides (and the bottom cap, which reuses the same
+  // corner objects) agree exactly — an even 8-gon skirt read as machined.
+  const skirtRadius = (angle: number): number => 1
+    + 0.11 * Math.sin(angle * 3 + rotation * 5.1)
+    + 0.07 * Math.sin(angle * 5 + rotation * 9.7);
+  const skirtDroop = (angle: number): number => (apexY - baseY)
+    * 0.055 * (0.5 + 0.5 * Math.sin(angle * 3 + rotation * 7.3));
+  for (let side = 0; side < sides; side += 1) {
+    const angleA = rotation + (side / sides) * TWO_PI;
+    const angleB = rotation + ((side + 1) / sides) * TWO_PI;
+    const a: Vec3 = {
+      x: centerX + Math.cos(angleA) * radiusX * skirtRadius(angleA),
+      y: baseY - skirtDroop(angleA),
+      z: centerZ + Math.sin(angleA) * radiusZ * skirtRadius(angleA),
+    };
+    const b: Vec3 = {
+      x: centerX + Math.cos(angleB) * radiusX * skirtRadius(angleB),
+      y: baseY - skirtDroop(angleB),
+      z: centerZ + Math.sin(angleB) * radiusZ * skirtRadius(angleB),
+    };
+    const apex: Vec3 = { x: centerX, y: apexY, z: centerZ };
+    const height = Math.max(apexY - baseY, 1e-5);
+    const smoothSideNormal = (angle: number): Vec3 => norm3(
+      Math.cos(angle) / Math.max(radiusX, 1e-5),
+      1 / height,
+      Math.sin(angle) / Math.max(radiusZ, 1e-5),
+    );
+    const tangentAt = (angle: number): Vec3 => norm3(
+      -Math.sin(angle) * radiusX,
+      0,
+      Math.cos(angle) * radiusZ,
+    );
+    const sideBase = acc.positions.length / 3;
+    for (const [point, normal, tangent, u, v] of [
+      [a, smoothSideNormal(angleA), tangentAt(angleA), side / sides, 1],
+      [apex, UP, tangentAt((angleA + angleB) * 0.5), (side + 0.5) / sides, 0],
+      [b, smoothSideNormal(angleB), tangentAt(angleB), (side + 1) / sides, 1],
+    ] as const) {
+      pushVertex(
+        acc,
+        point.x, point.y, point.z,
+        normal.x, normal.y, normal.z,
+        u, v,
+        tangent.x, tangent.y, tangent.z, 1,
+        layer,
+        0.68 + 0.2 * (1 - v),
+      );
+    }
+    acc.indices.push(sideBase, sideBase + 1, sideBase + 2);
+
+    const capBase = acc.positions.length / 3;
+    const capTangent = { x: 1, y: 0, z: 0 };
+    for (const [point, u, v] of [
+      [{ x: centerX, y: baseY, z: centerZ }, 0.5, 0.5],
+      [a, Math.cos(angleA) * 0.5 + 0.5, Math.sin(angleA) * 0.5 + 0.5],
+      [b, Math.cos(angleB) * 0.5 + 0.5, Math.sin(angleB) * 0.5 + 0.5],
+    ] as const) {
+      pushVertex(
+        acc,
+        point.x, point.y, point.z,
+        0, -1, 0,
+        u, v,
+        capTangent.x, capTangent.y, capTangent.z, 1,
+        layer,
+        0.5,
+      );
+    }
+    acc.indices.push(capBase, capBase + 1, capBase + 2);
+  }
+}
+
+/**
+ * Near trees use closed species-shaped foliage, not intersecting alpha
+ * cards. That restores coherent close silhouettes and lets the GPU use an
+ * opaque, back-face-culled early-Z pipeline.
+ */
+function buildClosedNearCrown(
   spec: TreeSpeciesSpec,
   species: TreeSpecies,
   rng: RandomSource,
   radialScale: number,
   heightScale: number,
-  quadCount: number,
-  quadSizeMultiplier = 1,
-): FoliageQuad[] {
-  const drooping = species === "willow";
-  const span = spec.crownTop - spec.crownBase;
-  const centerY = spec.conifer
-    ? spec.crownBase + span * 0.45
-    : (spec.crownBase + spec.crownTop) / 2;
-  const centerYScaled = spec.crownBase + (centerY - spec.crownBase) * heightScale;
-  const quads: FoliageQuad[] = [];
-  for (let i = 0; i < quadCount; i += 1) {
-    let px: number;
-    let py: number;
-    let pz: number;
-    if (spec.conifer) {
-      // Cone envelope: wide at the crown base, closing to the leader.
-      const t = spec.crownBase + span * Math.pow(rng(), 0.75);
-      const envelope = spec.crownRadius
-        * Math.pow(1 - (t - spec.crownBase) / span, 0.85) + 0.02;
-      const phi = rng() * TWO_PI;
-      const radial = (0.4 + 0.6 * Math.sqrt(rng())) * envelope;
-      px = Math.cos(phi) * radial;
-      py = t;
-      pz = Math.sin(phi) * radial;
-    } else {
-      // Ellipsoid envelope; willow attaches on the upper shell and hangs.
-      const semiY = span / 2;
-      const phi = rng() * TWO_PI;
-      const yDir = drooping ? 0.15 + 0.85 * rng() : 1 - 1.9 * rng();
-      const horizontal = Math.sqrt(Math.max(0, 1 - yDir * yDir));
-      const shell = 0.4 + 0.6 * Math.sqrt(rng());
-      px = Math.cos(phi) * horizontal * shell * spec.crownRadius;
-      py = centerY + yDir * shell * semiY;
-      pz = Math.sin(phi) * horizontal * shell * spec.crownRadius;
-      if (drooping) py -= 0.1 + rng() * 0.25;
+): PrototypeGeometry {
+  const acc = createAccumulator();
+  const span = (spec.crownTop - spec.crownBase) * heightScale;
+  if (spec.conifer) {
+    const radiusFactors = [1, 0.82, 0.62, 0.4] as const;
+    const baseFactors = [0, 0.22, 0.44, 0.64] as const;
+    const heightFactors = [0.43, 0.4, 0.37, 0.34] as const;
+    for (let whorl = 0; whorl < radiusFactors.length; whorl += 1) {
+      const baseY = spec.crownBase + span * baseFactors[whorl]!;
+      const radius = spec.crownRadius * radialScale * radiusFactors[whorl]!
+        * (0.94 + rng() * 0.12);
+      emitConiferWhorl(
+        acc,
+        (rng() - 0.5) * radius * 0.1,
+        (rng() - 0.5) * radius * 0.1,
+        baseY,
+        Math.min(spec.crownBase + span, baseY + span * heightFactors[whorl]!),
+        radius,
+        radius * (0.9 + rng() * 0.2),
+        rng() * TWO_PI,
+        spec.nearCrownLayer,
+      );
     }
-    // The variant silhouette knob: envelope aspect via anisotropic scaling
-    // of the quad centres about the crown base.
-    px *= radialScale;
-    pz *= radialScale;
-    py = spec.crownBase + (py - spec.crownBase) * heightScale;
-    // Orientation mix (2-12): shelves alone (normals blended 60% toward up)
-    // read as stacked wafers from the horizon-level views every capture shot
-    // uses — the crown all but vanished at grazing angles. 55% of cards now
-    // stand upright ("sails", normal horizontal-outward) to carry the side
-    // silhouette while the remaining shelves keep the top-down canopy solid.
-    const outward = norm3(px, py - centerYScaled, pz);
-    const sail = rng() < 0.55;
-    const normal = sail
-      ? norm3(
-          outward.x + (rng() - 0.5) * 0.35,
-          (rng() - 0.5) * 0.25,
-          outward.z + (rng() - 0.5) * 0.35,
-        )
-      : norm3(
-          outward.x * 0.4 + (rng() - 0.5) * 0.2,
-          outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.2,
-          outward.z * 0.4 + (rng() - 0.5) * 0.2,
-        );
-    let tangent = cross3(UP, normal);
-    const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
-    tangent = tangentLength > 1e-4
-      ? norm3(tangent.x, tangent.y, tangent.z)
-      : { x: 1, y: 0, z: 0 };
-    const bitangent = cross3(normal, tangent);
-    // Per-quad half-extent 0.18–0.34 of the crown radius: cards overlap
-    // heavily, which is what makes the interior occlusion bake read. The
-    // multiplier lets the mid band trade card count for card area.
-    const size = (0.18 + rng() * 0.16) * spec.crownRadius * quadSizeMultiplier;
-    quads.push({
-      center: { x: px, y: py, z: pz },
-      normal,
-      tangent,
-      bitangent,
-      halfWidth: drooping ? size * 0.7 : size,
-      halfHeight: drooping ? size * 1.4 : size,
-      layer: spec.crownLayer,
-    });
+    return finalizeGeometry(acc);
   }
-  return quads;
+
+  emitBroadleafCrownHull(
+    acc,
+    spec,
+    species,
+    radialScale,
+    heightScale,
+    spec.nearCrownLayer,
+    rng,
+  );
+  return finalizeGeometry(acc);
 }
 
 /**
  * R-21's per-plant triangle allowances, made geometry (2-12): the density
- * law prices a near-band plant at 180 triangles, a mid-band plant at 48 and
+ * law prices both near and mid plants at 180 triangles and
  * a far-band plant at 8 — and the first 2-12 capture proved the price list
  * is not advisory (every band drawing near geometry integrated to 4.7× the
  * budget and the frame went from 13 ms to 29 ms of GPU). Each band gets its
- * own prototype; 2-14 replaces the mid standin with its authored card tier
- * and 2-17 replaces the far standin with octahedral impostors.
+ * own prototype; near/mid share the exact same opaque crown geometry so their
+ * hard range handoff cannot shrink, overlap or reshape the silhouette. Far
+ * uses an octahedral impostor.
  */
 export type TreePrototypeBand = "near" | "mid" | "far";
 
 /**
- * Trunk (swept generalized cylinder, 8 sides, 5 rings, root flare, one
- * primary fork for oak/maple/willow) plus a crown of 40–60 outward-tilted
- * foliage quads, both with baked sky occlusion. Heights normalized to 1.0.
+ * Wave T: a real skeletal tree. The bark part carries the trunk and every
+ * meshable branch as swept tubes (opaque, back-face-culled — early-Z
+ * friendly); the crown part is the shrunken interior core; the visible
+ * canopy surface is the leaf-cluster card shell from
+ * `buildCrownFringePrototype`, grown from the SAME skeleton.
  *
- * `band` selects the density law's cost tier: "near" is the full prototype;
- * "mid" decimates to a 12-quad crown over a 4-side fork-free trunk (≤48
- * triangles); "far" is three crossed vertical cards (6 triangles, crown
- * layer only — at 1.4 km a trunk subtends under a pixel).
+ * `band` selects the density law's cost tier: near meshes the full skeleton,
+ * mid meshes trunk + primaries with halved ring counts (same skeleton, so the
+ * silhouettes agree across the switch). Far is three crossed vertical cards
+ * (the NullEngine fallback; the live far band is the octahedral impostor).
  */
 export function buildTreePrototype(
   species: TreeSpecies,
@@ -726,35 +1102,11 @@ export function buildTreePrototype(
   const spec = TREE_SPECIES_SPECS[species];
   const variantCount = TREE_VARIANT_COUNTS[species];
   const variantIndex = wrapVariant(variant, variantCount);
-  // Two named streams: the variant index perturbs the KNOB stream (crown
-  // envelope aspect ±18%, quad count, fork angle, lean base) while quad
-  // placement draws from a per-(species, seed) stream shared across
-  // variants — so the aspect knob is a clean, measurable silhouette
-  // difference rather than resampling noise.
   const knobRng = createRandom(`tree/${species}/variant/${variantIndex}/${seed}`);
   const placementRng = createRandom(`tree/${species}/placement/${seed}`);
-
   const aspect = lerp(0.82, 1.18, variantCount > 1 ? variantIndex / (variantCount - 1) : 0.5)
     * (1 + (knobRng() - 0.5) * 0.01);
   const radialScale = aspect;
-  const heightScale = 1 / Math.sqrt(aspect);
-  // Forked species cap at 45 quads and a 4-side fork: R-21 prices a near
-  // plant at 180 triangles, and the original 60-quad + 6-side-fork worst
-  // case integrated to 220.
-  const quadCount = Math.round(clamp(
-    spec.quadCount + (knobRng() - 0.5) * 12,
-    40,
-    spec.fork ? 45 : 60,
-  ));
-  const leanAngle = (1 + knobRng() * 3) * DEG;
-  const leanAzimuth = knobRng() * TWO_PI;
-  const forkAngle = (20 + knobRng() * 15) * DEG;
-  const forkAzimuth = knobRng() * TWO_PI;
-  const forkT = 0.55 + knobRng() * 0.1;
-  const forkLength = 0.45 * (0.9 + knobRng() * 0.2);
-
-  const leanX = Math.tan(leanAngle) * Math.cos(leanAzimuth);
-  const leanZ = Math.tan(leanAngle) * Math.sin(leanAzimuth);
 
   if (band === "far") {
     // Three crossed vertical cards spanning the whole silhouette, crown
@@ -786,63 +1138,23 @@ export function buildTreePrototype(
         card,
       );
     }
-    return { trunk: finalizeGeometry(createAccumulator()), crown: finalizeGeometry(farAcc) };
+    const farCrown = finalizeGeometry(farAcc);
+    return {
+      trunk: finalizeGeometry(createAccumulator()),
+      crown: farCrown,
+      envelopeRadius: Math.max(farCrown.boundingRadius, 0.05),
+    };
   }
 
-  const trunkAcc = createAccumulator();
-  const midBand = band === "mid";
-  // Mid trunk: 3 rings, 4 sides, no fork — 16 triangles under the band's
-  // 48-triangle allowance, leaving 32 for the crown.
-  const ringTs = midBand ? [0, 0.3, 1] : TRUNK_RING_TS;
-  const trunkRings: TubeRing[] = ringTs.map((t) => ({
-    center: { x: leanX * t * t, y: t, z: leanZ * t * t },
-    axis: norm3(2 * leanX * t, 1, 2 * leanZ * t),
-    radius: trunkRadiusAt(spec, t),
-    v: t * 3,
-  }));
-  sweepTube(trunkAcc, trunkRings, midBand ? 4 : 8, 2, spec.barkLayer);
-
-  if (spec.fork && !midBand) {
-    const direction = norm3(
-      Math.sin(forkAngle) * Math.cos(forkAzimuth),
-      Math.cos(forkAngle),
-      Math.sin(forkAngle) * Math.sin(forkAzimuth),
-    );
-    const start: Vec3 = { x: leanX * forkT * forkT, y: forkT, z: leanZ * forkT * forkT };
-    const forkRadius = 0.55 * trunkRadiusAt(spec, forkT);
-    const forkRings: TubeRing[] = [0, 0.33, 0.66, 1].map((s) => ({
-      center: {
-        x: start.x + direction.x * s * forkLength,
-        y: start.y + direction.y * s * forkLength,
-        z: start.z + direction.z * s * forkLength,
-      },
-      axis: direction,
-      radius: Math.max(forkRadius * Math.pow(1 - s, 0.8), 0.012),
-      v: (forkT + s * forkLength) * 3,
-    }));
-    sweepTube(trunkAcc, forkRings, 4, 2, spec.barkLayer);
-  }
-
-  const crownAcc = createAccumulator();
-  // Mid crown: 12 quads (24 triangles) — with the 16-triangle trunk, 40 of
-  // the band's 48-triangle allowance.
-  const bandQuadCount = midBand ? 12 : quadCount;
-  // Mid cards are ~1.8× wider: a quarter of the cards at three times the
-  // area keeps the crown's visual mass while honoring the allowance.
-  const quads = buildCrownQuads(
-    spec, species, placementRng, radialScale, heightScale, bandQuadCount,
-    midBand ? 1.8 : 1,
-  );
-  const owners: number[] = [];
-  for (let i = 0; i < quads.length; i += 1) {
-    emitFoliageQuad(crownAcc, quads[i]!, owners, i);
-  }
-
-  const disks = quads.map(quadDisk);
-  bakeSkyOcclusion(crownAcc, disks, owners);
-  bakeSkyOcclusion(trunkAcc, disks);
-
-  return { trunk: finalizeGeometry(trunkAcc), crown: finalizeGeometry(crownAcc) };
+  const skeleton = treeSkeletonFor(species, variantIndex, seed);
+  const budget = band === "near" ? NEAR_TREE_MESH_BUDGET : MID_TREE_MESH_BUDGET;
+  const barkAcc = createAccumulator();
+  sweepSkeletonBark(barkAcc, skeleton, budget, spec.barkLayer);
+  return {
+    trunk: finalizeGeometry(barkAcc),
+    crown: buildCanopyCoreFromSkeleton(skeleton, spec, species, placementRng),
+    envelopeRadius: Math.max(skeleton.envelopeRadius, 0.05),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -873,6 +1185,51 @@ const SHRUB_SPECIES_SPECS: Readonly<Record<ShrubSpecies, ShrubSpeciesSpec>> = Ob
     stemsMin: 3, stemsMax: 5, tiltMin: 0.45, tiltMax: 0.9, quadSize: 0.26,
   },
 });
+
+/**
+ * Wave T: the leaf-cluster card shell — now the tree's VISIBLE canopy. Cards
+ * grow from the shared skeleton's terminal-stem anchors (same skeleton as the
+ * bark and core, so the shell sits exactly on the branch tips), with
+ * dome-blended normals, per-card sky occlusion baked against the whole card
+ * set, and the interior-core tone ramp multiplied in so cards and core read
+ * as one canopy. `band` selects card density: near keeps every anchor, mid
+ * keeps ~1 in 5 at 1.9x size (deliberately under the sqrt(5) coverage
+ * compensation — full compensation reads as balloon leaves at range).
+ */
+export function buildCrownFringePrototype(
+  species: TreeSpecies,
+  variant: number,
+  seed: number,
+  band: "near" | "mid" = "near",
+): PrototypeGeometry {
+  const spec = TREE_SPECIES_SPECS[species];
+  const variantIndex = wrapVariant(variant, TREE_VARIANT_COUNTS[species]);
+  const skeleton = treeSkeletonFor(species, variantIndex, seed);
+  const budget = band === "near" ? NEAR_TREE_MESH_BUDGET : MID_TREE_MESH_BUDGET;
+  const acc = createAccumulator();
+  const owners: number[] = [];
+  const disks: OccluderDisk[] = [];
+  emitSkeletonCards(acc, skeleton, budget, spec.crownLayer, owners, disks);
+  bakeSkyOcclusion(acc, disks, owners);
+  // A SOFTENED version of the core's vertical ramp so shell and core still
+  // shade as one canopy without compounding into near-black: the cards
+  // already carry real baked occlusion, and the first capture measured the
+  // full ramp × bake product reading as a black canopy. Range [0.78, 1.0].
+  const span = Math.max(skeleton.crownTopY - skeleton.crownBaseY, 1e-3);
+  const crownMid = skeleton.crownBaseY + span * 0.5;
+  const crownHalf = Math.max(span * 0.5, 1e-4);
+  const vertexCount = acc.positions.length / 3;
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const directionY = clamp(
+      (acc.positions[vertex * 3 + 1]! - crownMid) / crownHalf,
+      -1,
+      1,
+    );
+    const hullRamp = clamp(0.89 + directionY * 0.11, 0.78, 1);
+    acc.colors[vertex * 4 + 3] = acc.colors[vertex * 4 + 3]! * hullRamp;
+  }
+  return finalizeGeometry(acc);
+}
 
 /**
  * 12–18 foliage quads on a short multi-stem skeleton (3–5 stems), with the

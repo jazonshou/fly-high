@@ -24,7 +24,7 @@ import {
 
 const ATLAS_SEED = "foliage-atlas-test-seed";
 
-// The plan is the expensive shared fixture (16 layers synthesized, dilated,
+// The plan is the expensive shared fixture (all layers synthesized, dilated,
 // and reduced through the coverage kernel); build it once for the file.
 const atlasPlan = planFoliageAtlas(ATLAS_SEED);
 
@@ -176,12 +176,97 @@ describe("WebGPU foliage atlas and array mips", () => {
     expect(otherLayer).not.toEqual(first);
   });
 
-  it("gives every layer non-trivial mip-0 coverage", () => {
+  it("keeps bark opaque while card layers retain non-trivial cutout coverage", () => {
     for (const layerName of FOLIAGE_LAYER_NAMES) {
       const base = atlasPlan.layerChains[FOLIAGE_LAYERS[layerName]]![0]!;
       const coverage = alphaCoverage(base, FOLIAGE_ALPHA_TEST_THRESHOLD);
+      if (layerName.startsWith("bark") || layerName.endsWith("Dense")) {
+        expect(coverage, `${layerName} coverage ${coverage.toFixed(4)}`).toBe(1);
+        continue;
+      }
       expect(coverage, `${layerName} coverage ${coverage.toFixed(4)}`).toBeGreaterThan(0.05);
       expect(coverage, `${layerName} coverage ${coverage.toFixed(4)}`).toBeLessThan(0.95);
+    }
+  });
+
+  it("keeps live-tree bark continuous around each repeated ring at every mip", () => {
+    for (const seed of [ATLAS_SEED, "bark-wrap-regression-seed"] as const) {
+      for (const layerName of ["barkConifer", "barkBroadleaf", "barkBirch"] as const) {
+        // Opaque bark's production coverage kernel reduces identically to a
+        // box chain. Reuse the full-plan fixture for its seed and exercise a
+        // second seed without rebuilding unrelated card layers.
+        const chain = seed === ATLAS_SEED
+          ? atlasPlan.layerChains[FOLIAGE_LAYERS[layerName]]!
+          : buildMipChain(synthesizeFoliageLayer(layerName, seed), FOLIAGE_ATLAS_EDGE, "box");
+        for (let level = 0; level < chain.length - 1; level += 1) {
+          const rgba = chain[level]!;
+          const edge = FOLIAGE_ATLAS_EDGE >> level;
+          const edgeDifference = (
+            axis: "horizontal" | "vertical",
+            firstCoordinate: number,
+            secondCoordinate: number,
+          ): number => {
+            let total = 0;
+            for (let across = 0; across < edge; across += 1) {
+              const first = axis === "vertical"
+                ? (firstCoordinate * edge + across) * 4
+                : (across * edge + firstCoordinate) * 4;
+              const second = axis === "vertical"
+                ? (secondCoordinate * edge + across) * 4
+                : (across * edge + secondCoordinate) * 4;
+              for (let channel = 0; channel < 3; channel += 1) {
+                total += Math.abs(rgba[first + channel]! - rgba[second + channel]!);
+              }
+            }
+            return total / (edge * 3);
+          };
+          for (const axis of ["horizontal", "vertical"] as const) {
+            const internal = Array.from(
+              { length: edge - 1 },
+              (_, coordinate) => edgeDifference(axis, coordinate, coordinate + 1),
+            ).sort((a, b) => a - b);
+            const internalP95 = internal[Math.ceil(internal.length * 0.95) - 1]!;
+            const wrapDifference = edgeDifference(axis, edge - 1, 0);
+            // Mip 0's opposing texels meet exactly. Repeated byte-rounded box
+            // reduction can introduce a two-byte drift at the smallest levels,
+            // but the wrap must never be materially stronger than ordinary
+            // bark variation within that same image.
+            if (level === 0) {
+              expect(
+                wrapDifference,
+                `${seed}/${layerName} ${axis} base wrap`,
+              ).toBe(0);
+            } else {
+              expect(
+                wrapDifference,
+                `${seed}/${layerName} ${axis} mip ${level} wrap ${wrapDifference.toFixed(3)} vs internal p95 ${internalP95.toFixed(3)}`,
+              ).toBeLessThanOrEqual(internalP95 + 2);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps dense near-crown layers opaque with restrained fine-scale texture", () => {
+    const denseLayers = FOLIAGE_LAYER_NAMES.filter((name) => name.endsWith("Dense"));
+    expect(denseLayers).toHaveLength(2);
+    for (const layerName of denseLayers) {
+      const rgba = atlasPlan.layerChains[FOLIAGE_LAYERS[layerName]]![0]!;
+      let minimum = 255;
+      let maximum = 0;
+      let alphaMinimum = 255;
+      for (let at = 0; at < rgba.length; at += 4) {
+        const luminance = rgba[at]! * 0.2126 + rgba[at + 1]! * 0.7152 + rgba[at + 2]! * 0.0722;
+        minimum = Math.min(minimum, luminance);
+        maximum = Math.max(maximum, luminance);
+        alphaMinimum = Math.min(alphaMinimum, rgba[at + 3]!);
+      }
+      expect(alphaMinimum, `${layerName} alpha`).toBe(255);
+      expect(maximum - minimum, `${layerName} tonal texture`).toBeGreaterThan(20);
+      // Prevent a future broad high-contrast colour field from recreating
+      // the user's near-tree "splotches" under a different implementation.
+      expect(maximum - minimum, `${layerName} tonal restraint`).toBeLessThan(90);
     }
   });
 

@@ -1,5 +1,3 @@
-import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
-import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import { Camera as BabylonCamera } from "@babylonjs/core/Cameras/camera";
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
@@ -54,6 +52,7 @@ import {
   type CloudRenderSize,
   type CloudShadowSchedule,
 } from "./runtimePolicy";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 /**
  * The volumetric cloud runtime, rebuilt by 2-0 (cloud shader adoption).
@@ -209,7 +208,7 @@ function computeFromModule(scene: Scene, module: NatureShaderModule): ComputeSha
   if (!entryPoint || entryPoint.stage !== "compute") {
     throw new RangeError(`${module.label} does not declare a compute entry point`);
   }
-  const shader = new ComputeShader(
+  const shader = withoutDispatchTiming(new ComputeShader(
     module.label,
     scene.getEngine(),
     { computeSource: module.code },
@@ -222,7 +221,7 @@ function computeFromModule(scene: Scene, module: NatureShaderModule): ComputeSha
         ]),
       ),
     },
-  );
+  ));
   shader.onError = (_effect, errors) => {
     throw new Error(`${module.label} failed to compile: ${errors}`);
   };
@@ -256,8 +255,6 @@ export interface CloudRuntimeStatistics {
   readonly shadowWorldSize: number;
   readonly shadowUpdateEveryNFrames: number;
   readonly raymarchDispatchCount: number;
-  /** 2-5: measured density samples per frame (assertion 39's number). */
-  readonly densitySamplesPerFrame: number;
   readonly temporalResolveDispatchCount: number;
   readonly shadowDispatchCount: number;
   readonly historyGeneration: number;
@@ -277,8 +274,6 @@ interface CloudComputePipeline {
   readonly linearSampler: TextureSampler;
   /** 2-1: the GPU-baked noise volumes and weather map. */
   readonly bake: CloudVolumeBake;
-  /** 2-5: one atomic u32 accumulating density samples (assertion 39). */
-  readonly densityCounter: StorageBuffer;
   raymarchCloud: RawTexture;
   raymarchAux: RawTexture;
   resolvedCloud: [RawTexture, RawTexture];
@@ -329,9 +324,6 @@ export class VolumetricCloudSystem {
   private frameIndex = 0;
   private lastShadowFrame = -1;
   private raymarchDispatchCount = 0;
-  /** 2-5: last measured density samples per frame (60-frame window mean). */
-  private densitySamplesPerFrame = 0;
-  private densityReadbackPending = false;
   private temporalResolveDispatchCount = 0;
   private shadowDispatchCount = 0;
   private historyGeneration = 0;
@@ -457,8 +449,6 @@ export class VolumetricCloudSystem {
       shadowParams: paramsBuffer(scene, "cloud-shadow-params", SHADOW_PARAMS_VEC4S),
       linearSampler,
       bake,
-      // The pipeline exists only when compute does, i.e. on WebGPU.
-      densityCounter: new StorageBuffer(scene.getEngine() as WebGPUEngine, 4),
       raymarchCloud: storageTexture(scene, "cloud-raymarch-cloud", width, height),
       raymarchAux: storageTexture(scene, "cloud-raymarch-aux", width, height),
       resolvedCloud: [
@@ -509,7 +499,6 @@ export class VolumetricCloudSystem {
   private bindSizedComputeResources(pipeline: CloudComputePipeline): void {
     pipeline.raymarchCompute.setStorageTexture("raymarch_cloud", pipeline.raymarchCloud);
     pipeline.raymarchCompute.setStorageTexture("raymarch_aux", pipeline.raymarchAux);
-    pipeline.raymarchCompute.setStorageBuffer("density_counter", pipeline.densityCounter);
     pipeline.temporalCompute.setTexture("current_cloud", pipeline.raymarchCloud, false);
     pipeline.temporalCompute.setTexture("current_aux", pipeline.raymarchAux, false);
     // Initial ping-pong bindings: update() rebinds per frame, but isReady()
@@ -533,7 +522,6 @@ export class VolumetricCloudSystem {
       shadowWorldSize: this.config.shadowWorldSizeMeters,
       shadowUpdateEveryNFrames: this.shadowSchedule.updateEveryNFrames,
       raymarchDispatchCount: this.raymarchDispatchCount,
-      densitySamplesPerFrame: this.densitySamplesPerFrame,
       temporalResolveDispatchCount: this.temporalResolveDispatchCount,
       shadowDispatchCount: this.shadowDispatchCount,
       historyGeneration: this.historyGeneration,
@@ -771,21 +759,6 @@ export class VolumetricCloudSystem {
     );
     pipeline.raymarchCompute.dispatch(groupsX, groupsY, 1);
     this.raymarchDispatchCount += 1;
-    if (this.raymarchDispatchCount % 60 === 0 && !this.densityReadbackPending) {
-      this.densityReadbackPending = true;
-      pipeline.densityCounter
-        .read()
-        .then((view) => {
-          const total = new Uint32Array(view.buffer, view.byteOffset, 1)[0] ?? 0;
-          this.densitySamplesPerFrame = Math.round(total / 60);
-          pipeline.densityCounter.update(new Uint32Array([0]));
-          this.densityReadbackPending = false;
-        })
-        .catch(() => {
-          this.densityReadbackPending = false;
-        });
-    }
-
     // 2. Temporal resolve into the write half of the ping-pong.
     const writeIndex = (1 - this.historyReadIndex) as 0 | 1;
     const cameraCut = !this.historyValid || !this.previousStateValid;
@@ -989,7 +962,6 @@ export class VolumetricCloudSystem {
         texture.dispose();
       }
       pipeline.shadowMap.dispose();
-      pipeline.densityCounter.dispose();
     }
   }
 }

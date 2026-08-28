@@ -15,9 +15,10 @@ import {
  *
  * INVARIANT THIS FILE OWNS: every card the detail renderer draws — leaves,
  * needles, bark, grass, fern, heather, reed, shrub foliage and ground
- * litter — samples ONE 256² RGBA `Texture2DArray` whose sixteen layer
+ * litter — samples ONE 256² RGBA `Texture2DArray` whose append-only layer
  * indices are stable and whose texels are a pure function of the world
- * seed. Alpha is coverage. Two treatments are non-negotiable on the
+ * seed. Alpha is coverage for card layers; bark and closed near-crown
+ * surfaces are opaque. Two treatments are non-negotiable on the
  * alpha-tested path and both live behind `synthesizeFoliageLayer`: colour
  * is dilated into the transparent margin before mipping (otherwise every
  * leaf grows a dark halo at range) and every mip level is
@@ -58,6 +59,11 @@ export const FOLIAGE_LAYERS = Object.freeze({
   juniperScale: 13,
   sageLeaf: 14,
   litterTwig: 15,
+  // Closed near-crown surfaces. These are deliberately dense, opaque
+  // albedo textures rather than card art with its transparent background.
+  // Append-only: existing card/bark indices are part of prototype data.
+  crownBroadleafDense: 16,
+  crownConiferDense: 17,
 } as const);
 
 export type FoliageLayerName = keyof typeof FOLIAGE_LAYERS;
@@ -351,7 +357,7 @@ function synthesizeBroadleafOak(raster: FoliageRaster, random: RandomSource): vo
     const centerY = margin + random() * (raster.edge - 2 * margin);
     const angle = random() * Math.PI * 2;
     const color = hsvToRgb(
-      0.295 + (random() - 0.5) * 0.05,
+      0.28 + (random() - 0.5) * 0.05,
       0.52 + (random() - 0.5) * 0.18,
       0.4 + (random() - 0.5) * 0.16,
     );
@@ -411,7 +417,7 @@ function synthesizeBroadleafBirch(raster: FoliageRaster, random: RandomSource): 
     const centerY = margin + random() * (raster.edge - 2 * margin);
     const angle = random() * Math.PI * 2;
     const color = hsvToRgb(
-      0.3 + (random() - 0.5) * 0.05,
+      0.285 + (random() - 0.5) * 0.05,
       0.5 + (random() - 0.5) * 0.16,
       0.5 + (random() - 0.5) * 0.16,
     );
@@ -459,7 +465,7 @@ function synthesizeNeedlePine(raster: FoliageRaster, random: RandomSource): void
           const tipX = baseX + Math.cos(angle + bend * 0.4) * length;
           const tipY = baseY + Math.sin(angle + bend * 0.4) * length;
           const color = hsvToRgb(
-            0.36 + (random() - 0.5) * 0.05,
+            0.3 + (random() - 0.5) * 0.05,
             0.5 + (random() - 0.5) * 0.14,
             0.3 + (random() - 0.5) * 0.1,
           );
@@ -482,7 +488,10 @@ function synthesizeNeedleSpruce(raster: FoliageRaster, random: RandomSource): vo
     let x = 24 + random() * (raster.edge - 48);
     let y = 24 + random() * (raster.edge - 48);
     let heading = random() * Math.PI * 2;
-    const baseHue = 0.42 + (random() - 0.5) * 0.04;
+    // Wave P: 0.42 sat on the teal side of green and, under blue sky
+    // irradiance, rendered as sea-green spires in the noon captures. Real
+    // spruce keeps only a slight cool cast over pine.
+    const baseHue = 0.33 + (random() - 0.5) * 0.04;
     const segmentLength = 13 + random() * 5;
     for (let segment = 0; segment < 6; segment += 1) {
       heading += (random() - 0.5) * 0.36;
@@ -523,9 +532,9 @@ function synthesizeBarkConifer(
   random: RandomSource,
   noiseSeed: number,
 ): void {
-  // Conifer bark: red-brown plates, ridges stretched vertically; the deepest
-  // furrow cores (a fixed percentile) dip below the alpha test so trunks
-  // read fissured rather than shrink-wrapped.
+  // Conifer bark: red-brown plates, ridges stretched vertically. Furrows are
+  // dark albedo on a closed cylinder; alpha must stay opaque or the foliage
+  // material turns texture cracks into holes through the trunk.
   const { edge, rgba } = raster;
   const warpSeed = mixSeed(noiseSeed, 1);
   const crackSeed = mixSeed(noiseSeed, 2);
@@ -554,7 +563,7 @@ function synthesizeBarkConifer(
       rgba[at] = color[0];
       rgba[at + 1] = color[1];
       rgba[at + 2] = color[2];
-      rgba[at + 3] = cracked ? 92 : 255;
+      rgba[at + 3] = 255;
     }
   }
 }
@@ -592,7 +601,8 @@ function synthesizeBarkBroadleaf(
       rgba[at] = color[0];
       rgba[at + 1] = color[1];
       rgba[at + 2] = color[2];
-      rgba[at + 3] = cracked ? 96 : 255;
+      // Bark fissures are albedo, never geometric coverage.
+      rgba[at + 3] = 255;
     }
   }
 }
@@ -627,7 +637,8 @@ function synthesizeBarkBirch(
       rgba[at] = color[0];
       rgba[at + 1] = color[1];
       rgba[at + 2] = color[2];
-      rgba[at + 3] = chipped ? 90 : 255;
+      // Peeling/chipped detail belongs in RGB; trunks are closed geometry.
+      rgba[at + 3] = 255;
     }
   }
   for (let lenticel = 0; lenticel < 46; lenticel += 1) {
@@ -648,6 +659,80 @@ function synthesizeBarkBirch(
       235,
     );
   }
+}
+
+interface DenseCrownStyle {
+  readonly hue: number;
+  readonly saturation: number;
+  readonly value: number;
+  readonly needleGrain: boolean;
+}
+
+/**
+ * Subtle, fully opaque surface colour for the closed near-crown geometry.
+ * The old near tree mapped sparse card art onto dozens of intersecting
+ * planes, so the transparent background became most of the tree and the
+ * remaining leaves read as dark shreds. Closed lobes need a different
+ * texture contract: leaf-scale tonal grain, no large colour islands, and no
+ * coverage channel at all. Instance tint still supplies stand/species/season
+ * variation, so this layer intentionally stays restrained.
+ */
+function synthesizeDenseCrown(
+  raster: FoliageRaster,
+  random: RandomSource,
+  noiseSeed: number,
+  style: DenseCrownStyle,
+): void {
+  const macroSeed = mixSeed(noiseSeed, 71);
+  const leafSeed = mixSeed(noiseSeed, 72);
+  const grainSeed = mixSeed(noiseSeed, 73);
+  const phaseX = random() * Math.PI * 2;
+  const phaseY = random() * Math.PI * 2;
+  const { edge, rgba } = raster;
+  for (let y = 0; y < edge; y += 1) {
+    for (let x = 0; x < edge; x += 1) {
+      const macro = fbm2D(macroSeed, x * 0.028, y * 0.028, 3) - 0.5;
+      const leaf = fbm2D(leafSeed, x * 0.15, y * 0.15, 2) - 0.5;
+      const directional = style.needleGrain
+        ? Math.sin(x * 0.32 + y * 0.09 + phaseX) * 0.5
+          + Math.sin(x * 0.13 - y * 0.29 + phaseY) * 0.25
+        : Math.sin(x * 0.22 + phaseX) * Math.sin(y * 0.2 + phaseY) * 0.45;
+      const grain = texelNoise(x, y, grainSeed) - 0.5;
+      // Fix-pack F1: contrast raised (±0.13 → ±0.2 clamp, stronger macro/leaf
+      // terms). "Restrained" was right for tint stability but left the hull a
+      // near-flat tone; the cluster shading needs texture-level clump
+      // structure to anchor against.
+      const value = clamp(
+        style.value + macro * 0.12 + leaf * 0.16 + directional * 0.04 + grain * 0.025,
+        style.value - 0.2,
+        style.value + 0.2,
+      );
+      const hue = style.hue + leaf * 0.018 + macro * 0.01 + grain * 0.005;
+      const saturation = clamp(style.saturation + macro * 0.08 - leaf * 0.04, 0, 1);
+      const color = hsvToRgb(hue, saturation, value);
+      const at = (y * edge + x) * 4;
+      rgba[at] = color[0];
+      rgba[at + 1] = color[1];
+      rgba[at + 2] = color[2];
+      rgba[at + 3] = 255;
+    }
+  }
+}
+
+function synthesizeDenseBroadleaf(raster: FoliageRaster, random: RandomSource, seed: number): void {
+  synthesizeDenseCrown(raster, random, seed, {
+    hue: 0.275, saturation: 0.54, value: 0.48, needleGrain: false,
+  });
+}
+
+function synthesizeDenseConifer(raster: FoliageRaster, random: RandomSource, seed: number): void {
+  synthesizeDenseCrown(raster, random, seed, {
+    // Fix-pack F1 raised VALUE (0.37 → 0.42) because the old tone read as
+    // black blobs from the air — that stays. Wave P warms HUE (0.4 → 0.325):
+    // 0.4 is sea-green, and with blue sky irradiance on the card shell the
+    // noon captures read whole conifers as teal.
+    hue: 0.325, saturation: 0.55, value: 0.42, needleGrain: true,
+  });
 }
 
 function synthesizeGrassBlade(raster: FoliageRaster, random: RandomSource): void {
@@ -1059,11 +1144,62 @@ const SYNTHESIZERS: Readonly<Record<FoliageLayerName, FoliageSynthesizer>> = Obj
   juniperScale: synthesizeJuniperScale,
   sageLeaf: synthesizeSageLeaf,
   litterTwig: synthesizeLitterTwig,
+  crownBroadleafDense: synthesizeDenseBroadleaf,
+  crownConiferDense: synthesizeDenseConifer,
 });
 
 // ---------------------------------------------------------------------------
 // Atlas assembly.
 // ---------------------------------------------------------------------------
+
+/**
+ * Bark is sampled with repeat addressing around and along a closed trunk.
+ * The procedural noise above is intentionally non-periodic, so joining its
+ * opposite edges directly would turn the texture boundary into a physical
+ * stripe (a horizontal ring for V) every two metres. Heal a restrained band
+ * on both axes on the CPU: the outer texels meet exactly, while a smooth
+ * falloff keeps the texture's interior detail intact. This has no per-frame
+ * cost and happens before mip generation so every sampled level inherits the
+ * continuous edge.
+ */
+const BARK_TILE_BLEND_TEXELS = FOLIAGE_ATLAS_EDGE / 16;
+
+function blendBarkTileAxis(rgba: Uint8Array, edge: number, vertical: boolean): void {
+  const source = new Uint8Array(rgba);
+  for (let distance = 0; distance < BARK_TILE_BLEND_TEXELS; distance += 1) {
+    const seamWeight = 1 - smoothstep(
+      0,
+      1,
+      distance / (BARK_TILE_BLEND_TEXELS - 1),
+    );
+    for (let across = 0; across < edge; across += 1) {
+      const firstTexel = vertical
+        ? distance * edge + across
+        : across * edge + distance;
+      const secondTexel = vertical
+        ? (edge - 1 - distance) * edge + across
+        : across * edge + edge - 1 - distance;
+      const first = firstTexel * 4;
+      const second = secondTexel * 4;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const firstValue = source[first + channel]!;
+        const secondValue = source[second + channel]!;
+        const midpoint = (firstValue + secondValue) * 0.5;
+        rgba[first + channel] = Math.round(
+          firstValue + (midpoint - firstValue) * seamWeight,
+        );
+        rgba[second + channel] = Math.round(
+          secondValue + (midpoint - secondValue) * seamWeight,
+        );
+      }
+    }
+  }
+}
+
+function makeBarkTileable(rgba: Uint8Array, edge: number): void {
+  blendBarkTileAxis(rgba, edge, true);
+  blendBarkTileAxis(rgba, edge, false);
+}
 
 /**
  * One synthesized, alpha-dilated 256²×4 RGBA layer — a pure function of
@@ -1078,10 +1214,11 @@ export function synthesizeFoliageLayer(layer: FoliageLayerName, seed: WorldSeed)
     rgba: new Uint8Array(FOLIAGE_ATLAS_EDGE * FOLIAGE_ATLAS_EDGE * 4),
   };
   SYNTHESIZERS[layer](raster, createRandom(layerSeed), hashSeed(layerSeed));
+  if (layer.startsWith("bark")) makeBarkTileable(raster.rgba, raster.edge);
   return alphaDilate(raster.rgba, FOLIAGE_ATLAS_EDGE, FOLIAGE_DILATION_PASSES);
 }
 
-/** All sixteen layers in `FOLIAGE_LAYERS` index order. Pure. */
+/** Every append-only layer in `FOLIAGE_LAYERS` index order. Pure. */
 export function synthesizeFoliageLayers(seed: WorldSeed): Uint8Array[] {
   return FOLIAGE_LAYER_NAMES.map((layer) => synthesizeFoliageLayer(layer, seed));
 }

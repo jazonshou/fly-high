@@ -75,44 +75,52 @@ export interface RenderedDensityLaw {
  * at tier 2, and the far band's submitted chunk count falls with the square
  * of its radius (that is where the draw calls were).
  */
+/**
+ * **Re-derived by the vegetation overhaul (wave T).** A near tree is no
+ * longer a 180-triangle hull-and-pole: it is a full skeletal tree — bark
+ * tubes for the trunk and two branch levels, an interior canopy core, and a
+ * leaf-cluster card shell — measured at 824–1,376 triangles across the seven
+ * species (priced 1,500 with margin). Mid meshes the SAME skeleton decimated
+ * (130–334 measured, priced 340). What pays for the ~8× richer near tree is
+ * the near radius: 250/350/400/550 → 110/150/170/240 m. The mid band — now a
+ * real silhouette-preserving skeletal mesh rather than an identical copy of
+ * near — carries the 100 m–1 km range the old law spent full geometry on.
+ */
 export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freeze([
-  // Tier 0 — vegetationDistance 2,000 m, 1.2 ms row.
+  // Tier 0 — vegetationDistance 2,000 m, 1.2 ms row. Mid 700 → 640 m keeps
+  // the tier's draw-submission model at or under its frame row now that each
+  // band submits three tree parts.
   Object.freeze({
     nearStemsPerHectare: 55,
-    near: Object.freeze({ outerRadiusMeters: 250, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 700, trianglesPerPlant: 48 }),
+    near: Object.freeze({ outerRadiusMeters: 110, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 640, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.02,
+    farFloorShare: 0.045,
   }),
   // Tier 1 — the G-target. vegetationDistance 3,000 m, 1.8 ms row.
-  // 70 -> 78 stems/ha at the perf-debt pass: with canopy-rank thinning the
-  // drawn stand's crown cover measures 0.532 at 70/ha and 0.551 at 78/ha
-  // against Gate 2C's 0.55 criterion. The +11% near stems are paid for many
-  // times over by the band radii moving to §5.3's (total rendered stems fall
-  // 19,445 -> 15,441), so the count row still moves DOWN in this commit.
   Object.freeze({
     nearStemsPerHectare: 78,
-    near: Object.freeze({ outerRadiusMeters: 350, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 48 }),
+    near: Object.freeze({ outerRadiusMeters: 150, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 3_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.02,
+    farFloorShare: 0.045,
   }),
   // Tier 2 — vegetationDistance 4,000 m, 1.9 ms row.
   Object.freeze({
     nearStemsPerHectare: 79,
-    near: Object.freeze({ outerRadiusMeters: 400, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 48 }),
+    near: Object.freeze({ outerRadiusMeters: 170, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 4_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.015,
+    farFloorShare: 0.035,
   }),
-  // Tier 3 — same near cap as tier 2 with the 3.6 ms row's slack spent on a
-  // deeper near and card band, not more stems.
+  // Tier 3 — the 3.6 ms row's slack goes to a deeper near and card band,
+  // not more stems.
   Object.freeze({
     nearStemsPerHectare: 79,
-    near: Object.freeze({ outerRadiusMeters: 550, trianglesPerPlant: 180 }),
-    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 48 }),
+    near: Object.freeze({ outerRadiusMeters: 240, trianglesPerPlant: 1_500 }),
+    mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 6_000, trianglesPerPlant: 8 }),
-    farFloorShare: 0.015,
+    farFloorShare: 0.035,
   }),
 ]);
 
@@ -123,7 +131,10 @@ export function renderedShareAtDistance(law: RenderedDensityLaw, distanceMeters:
   }
   if (distanceMeters <= law.near.outerRadiusMeters) return 1;
   const falloff = (law.near.outerRadiusMeters / distanceMeters) ** 2;
-  if (distanceMeters <= law.mid.outerRadiusMeters) return falloff;
+  // Wave T: the floor applies through the MID band too. The near radius
+  // shrank to pay for skeletal trees, and a floor that only starts past the
+  // mid boundary let the 0.7–1.1 km ring thin to near-bare while cheaper
+  // far impostors held MORE density beyond it — an inverted profile.
   return Math.max(falloff, law.farFloorShare);
 }
 
@@ -174,10 +185,14 @@ export function estimateRenderedWoodyLoad(law: RenderedDensityLaw): RenderedDens
  * a real assertion.
  */
 export const WOODY_TRIANGLE_BUDGETS: readonly number[] = Object.freeze([
-  450_000,
-  1_000_000,
-  1_800_000,
-  2_600_000,
+  650_000,
+  // Exact opaque mid trees intentionally exchange alpha-tested fragment
+  // overdraw for the near band's closed geometry. Keep each ceiling tight to
+  // that representation instead of retaining the obsolete 48-triangle card
+  // row; the raw frame gate remains the acceptance authority.
+  1_850_000,
+  2_700_000,
+  5_000_000,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -360,37 +375,30 @@ export function estimateVegetationDrawCalls(
  * vegetation row, and the ratio below says by how much.
  */
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
-  // `4.5-C1` switched vegetation shadow casting OFF below tier 2, which
-  // deletes the near band's per-cascade resubmission outright. Measured 151.3
-  // draws (was 257.0).
-  160,
-  // Measured 198.7 draws (was 346.8) — the largest single cut available to
-  // this programme without the structural work `6-9` owns.
-  200,
-  // `4-8b` cut this tier from four shadow cascades to three (§5.3's near-field
-  // rows), and the near band submits its meshes once per cascade — so the
-  // ceiling comes down with the measurement rather than staying a number the
-  // renderer now sits comfortably under. Measured 462.0 draws.
-  500,
-  650,
+  // Wave T: each tree band submits THREE parts (bark skeleton, interior
+  // core, leaf-cluster card shell). Modelled 45.7 draws at tier 0.
+  50,
+  // Modelled 53.3 draws at the medium/balanced contract tier.
+  58,
+  // Species mode models 507.6 draws at tier 2 and 665.9 at tier 3 with the
+  // third tree part; re-pinned as the regression guard the renderer meets.
+  515,
+  675,
 ]);
 
 /**
- * Measured debt against §5.4's vegetation frame row, per tier — the number
- * the next pass has to move. Pinned by test so it can only change with a
- * measurement, and so that closing the debt fails the assertion and forces
- * this record to be deleted rather than quietly outlived.
+ * Draw-submission-only model divided by §5.4's vegetation frame row. This is
+ * deliberately not called frame closure: controlled captures proved that
+ * alpha-card fragment/overdraw dominated after family batching made the draw
+ * term small. Tier 0/1 being below one means submissions fit, not vegetation.
  */
-export const VEGETATION_FRAME_DEBT_RATIO: readonly number[] = Object.freeze([
-  // Re-measured at `4.5-C1`: 5.57 → 3.28 at tier 0 and 5.01 → 2.87 at tier 1,
-  // from switching vegetation shadow casting off below tier 2. Still 2.9x over
-  // the row at the G-C tier: the remainder is `6-9`'s GPU scatter, and this
-  // record stays until something really closes it.
-  3.28,
-  2.87,
-  // Re-measured at `4-8b`: 7.38 → 6.32, from the tier-2 cascade cut. The debt
-  // is not closed and this record is not deleted; it moved, and a moved number
-  // has to be re-pinned or the assertion stops meaning anything.
-  6.32,
-  4.56,
+export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze([
+  0.991,
+  0.77,
+  // The third tree part raises the species-mode submission model; these
+  // tiers remain well above the vegetation frame row. The strict capture,
+  // not this draw-only model, decides whether skeletal trees close frame
+  // time.
+  6.947,
+  4.809,
 ]);

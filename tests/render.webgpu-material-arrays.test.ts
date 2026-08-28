@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -70,6 +70,71 @@ function rowDifference(layer: Uint8Array, edge: number, top: number, bottom: num
   return total / (edge * 4);
 }
 
+/**
+ * Largest pair of mirrored diagonal Fourier lines in one scalar texture field.
+ *
+ * A single geological fracture family may legitimately put energy at `(kx,ky)`.
+ * A woven/screen-door pattern requires a second coherent family at `(kx,-ky)`,
+ * so the weaker member of each mirrored pair is the discriminator. Power is
+ * normalised by total variance: a unit cosine measures 0.5, while uncorrelated
+ * texture noise is O(1 / texelCount), independent of byte contrast.
+ */
+function maximumCrossedSpectralPower(values: readonly number[], edge: number): number {
+  const texels = edge * edge;
+  const mean = values.reduce((sum, value) => sum + value, 0) / texels;
+  let varianceEnergy = 0;
+  for (const value of values) varianceEnergy += (value - mean) ** 2;
+  if (varianceEnergy <= 1e-9) return 0;
+
+  const powerAt = (frequencyX: number, frequencyY: number): number => {
+    let cosine = 0;
+    let sine = 0;
+    for (let y = 0; y < edge; y += 1) {
+      for (let x = 0; x < edge; x += 1) {
+        const phase = (2 * Math.PI * (frequencyX * x + frequencyY * y)) / edge;
+        const centred = values[y * edge + x]! - mean;
+        cosine += centred * Math.cos(phase);
+        sine += centred * Math.sin(phase);
+      }
+    }
+    return (cosine * cosine + sine * sine) / (texels * varianceEnergy);
+  };
+
+  let maximum = 0;
+  // Axial frequencies cannot form a crossed pair. Stop short of Nyquist,
+  // where +k and -k are the same discrete line rather than two families.
+  for (let frequencyX = 1; frequencyX < edge / 2; frequencyX += 1) {
+    for (let frequencyY = 1; frequencyY < edge / 2; frequencyY += 1) {
+      maximum = Math.max(
+        maximum,
+        Math.min(
+          powerAt(frequencyX, frequencyY),
+          powerAt(frequencyX, -frequencyY),
+        ),
+      );
+    }
+  }
+  return maximum;
+}
+
+function decodedAlbedoLuminance(level: Uint8Array): number[] {
+  const values: number[] = [];
+  for (let index = 0; index < level.length; index += 4) {
+    // Array A stores sqrt(linear albedo); mirror the shipping shader's decode.
+    const red = (level[index]! / 255) ** 2;
+    const green = (level[index + 1]! / 255) ** 2;
+    const blue = (level[index + 2]! / 255) ** 2;
+    values.push(0.2126 * red + 0.7152 * green + 0.0722 * blue);
+  }
+  return values;
+}
+
+function heightValues(level: Uint8Array): number[] {
+  const values: number[] = [];
+  for (let index = 3; index < level.length; index += 4) values.push(level[index]! / 255);
+  return values;
+}
+
 describe("terrain material array synthesis (3-1)", () => {
   it("assertion 53: every height channel has mean 0.5 ± 0.02", () => {
     // Without this, 3-6's height blend has one layer winning every comparison
@@ -120,6 +185,21 @@ describe("terrain material array synthesis (3-1)", () => {
         + `${boxRoughness.toFixed(1)}`,
       ).toBeGreaterThan(1);
     });
+    // Re-derived twice: once for the Rock retune (`facetTone` 0.16 → 0.32 in
+    // the height channel), and again for the reversed-`smoothstep` pass, which
+    // gave Gravel a stone dome it had never had (see `synthesizeGravel` — the
+    // dome term had been evaluating to zero at every texel). Both are exactly
+    // the kind of change that moves this margin. Measured at this seed and
+    // edge, mip3 Toksvig-minus-box mean roughness, before the two passes → now:
+    //
+    //   Sand 2.551 → 2.551      Grass 3.648 → 3.648    ForestFloor 5.469 → 4.887
+    //   Shrub 3.441 → 3.441     Rock 10.406 → 10.480   Snow 4.867 → 4.906
+    //   DryGrass 3.645 → 3.645  Gravel 13.059 → 14.398 Asphalt 3.270 → 3.180
+    //   Concrete 1.371 → 1.375
+    //
+    // Concrete is the tightest against the > 1 bound above and is essentially
+    // unmoved; Rock and Gravel keep an order of magnitude over the > 3 bound.
+    // Neither pin moves.
     for (const id of [SurfaceMaterial.Rock, SurfaceMaterial.Gravel]) {
       const chain = plans.normalMaterial.layerChains[id]!;
       const box = buildMipChain(chain[0]!, EDGE, "box");
@@ -245,6 +325,167 @@ describe("terrain material array synthesis (3-1)", () => {
         + `is in a smooth gradient, not in texel-scale structure`,
       ).toBeGreaterThan(0.1);
     });
+  });
+
+  it("keeps coarse rock mips free of a crossed fracture lattice", () => {
+    // Prove the discriminator itself before applying it to the recipe. One
+    // directional family has no mirrored partner; adding the opposite family
+    // creates a textbook screen-door and concentrates a quarter of its variance
+    // in each line.
+    const controlEdge = 32;
+    const singleFamily: number[] = [];
+    const crossedFamilies: number[] = [];
+    for (let y = 0; y < controlEdge; y += 1) {
+      for (let x = 0; x < controlEdge; x += 1) {
+        const positive = Math.cos((2 * Math.PI * (7 * x + 3 * y)) / controlEdge);
+        const negative = Math.cos((2 * Math.PI * (7 * x - 3 * y)) / controlEdge);
+        singleFamily.push(positive);
+        crossedFamilies.push(positive + negative);
+      }
+    }
+    expect(maximumCrossedSpectralPower(singleFamily, controlEdge)).toBeLessThan(1e-10);
+    expect(maximumCrossedSpectralPower(crossedFamilies, controlEdge)).toBeGreaterThan(0.24);
+
+    const rock = plans.albedoHeight.layerChains[SurfaceMaterial.Rock]!;
+    // Re-derived for the Rock albedo retune, which roughly halved this layer's
+    // albedo contrast (p99/p01 3.21 → 1.70 in decoded linear luminance). This
+    // statistic is normalised by the layer's OWN variance, so cutting the
+    // variance RAISES every reading without any lattice appearing: the fixed
+    // point of the procedure is to re-run the rows, never to edit one number.
+    //
+    // The retune also changed what the control means, and that has to be
+    // written down. The old control was "the recipe with the per-block family
+    // exclusion removed, so both ±dip families are summed at every texel".
+    // Its screen-door came from a DEFECT in the band shape, not from the
+    // summing: `jointBand` used the reversed-argument `smoothstep(0.16, 0.105,
+    // …)` form, which that helper's `Math.max(1e-6, high − low)` denominator
+    // turns into a hard step at 0.16 — so each family was an 84%-coverage
+    // half-plane, and the COMPLEMENT of the union of two such half-planes is a
+    // regular diamond lattice of holes. That was the screen-door. With the band
+    // at the ~10% crease it is drawn as (`MaterialArraySynthesis.ts`,
+    // `synthesizeRock`), summing the two families only sparsely crosses them,
+    // so that control no longer produces the artefact. Both rows, measured at
+    // this seed and edge:
+    //
+    //                            mip2      mip3      mip4
+    //   albedo  shipped        0.00807   0.01193   0.03255
+    //           +excl.removed  0.00823   0.01322   0.03153
+    //           screen-door    0.01012   0.01409   0.02655
+    //   height  shipped        0.00964   0.01197   0.01256
+    //           +excl.removed  0.00853   0.01068   0.01620
+    //           screen-door    0.01033   0.01256   0.02137
+    //
+    // `screen-door` is the exclusion-removed control evaluated on the PRE-FIX
+    // half-plane band — i.e. the configuration that actually produced the
+    // reported woven lattice, and the row the superseded numbers below were
+    // measured against (it reproduces them exactly, which is what validates
+    // this construction).
+    //
+    // Three cells — albedo mip2 and mip3, height mip4 — keep a limit placed
+    // between `shipped` and `screen-door`, so they still fail the artefact.
+    //
+    // The other three cannot, and pretending otherwise would be worse than
+    // saying so. Height mip2 and mip3 now separate by only 7% and 5%, which is
+    // inside this statistic's own seed-to-seed spread, so no limit between the
+    // rows would be a test of anything; both are set 20% above `shipped`
+    // instead, and the screen-door row passes them. The reason the separation
+    // collapsed is the same one that made the exclusion-removed control stop
+    // working: with the joint band at its intended width, two crossing line
+    // families meet at sparse POINTS and scatter their energy across harmonics
+    // instead of standing on one mirrored pair. The artefact this assertion was
+    // written for was a property of the defect, and the defect is fixed.
+    //
+    // What still holds the height channel honest is the cross-material floor:
+    // at mip2, Rock reads 0.00964 against 0.0147 (Sand), 0.0205 (Grass), 0.0221
+    // (ForestFloor), 0.0142 (Shrub), 0.0173 (DryGrass), 0.0149 (Asphalt) and
+    // 0.0196 (Concrete) — Rock is quieter than seven of the nine materials that
+    // have no fracture family at all, which is the statement "no crossed
+    // lattice" actually cashes out to.
+    //
+    // The sixth, mip4 albedo, is the weakest of all. At mip4 the level is 8x8 and
+    // this statistic is a max over the nine mirrored pairs 64 texels admit,
+    // whose flat-spectrum expectation is already ~0.022. Measured across the
+    // nine materials that have no fracture family at all, mip4 albedo runs
+    // 0.0099 (Snow) to 0.0506 (Sand), with Asphalt 0.0442 and ForestFloor
+    // 0.0270 — Rock's 0.0322 is inside that band. Over eight seeds the winning
+    // pair wanders — (3,1), (1,2), (2,2), (2,3), (1,1) — and Rock's own reading
+    // ranges 0.0076–0.0454 after the retune and 0.0148–0.0302 before it, the
+    // pre-retune recipe exceeding its own committed 0.02 limit at two of those
+    // seeds. The cell is a gross-lattice tripwire (the synthetic crossed
+    // control at the top of this test measures > 0.24), not a discriminator;
+    // 0.04 is set from the no-fracture-family band above. mip2 and mip3, where
+    // the level is 32x32 and 16x16, are where this assertion has its teeth.
+    //
+    // (Superseded: albedo 0.0085/0.0128/0.04 and height 0.011/0.014/0.02,
+    // against a shipped row of albedo 0.00609/0.01081/0.03222 and height
+    // 0.00890/0.01075/0.01274 — the Rock albedo retune, before this file's
+    // `bedStep` was un-degenerated. Before those: albedo 0.0092/0.0118/0.02 and
+    // height 0.0103/0.0132/0.0307; and before those, albedo 0.007/0.014/0.033
+    // and height 0.018/0.0195/0.029.)
+    const limits = [
+      { mip: 2, albedo: 0.009, height: 0.0116 },
+      { mip: 3, albedo: 0.013, height: 0.0144 },
+      { mip: 4, albedo: 0.04, height: 0.0164 },
+    ] as const;
+    for (const limit of limits) {
+      const { mip } = limit;
+      const edge = EDGE >> mip;
+      const albedoPower = maximumCrossedSpectralPower(
+        decodedAlbedoLuminance(rock[mip]!),
+        edge,
+      );
+      const heightPower = maximumCrossedSpectralPower(heightValues(rock[mip]!), edge);
+      expect(
+        albedoPower,
+        `Rock mip${mip} albedo crossed-family power ${albedoPower.toFixed(5)}`,
+      ).toBeLessThan(limit.albedo);
+      expect(
+        heightPower,
+        `Rock mip${mip} height crossed-family power ${heightPower.toFixed(5)}`,
+      ).toBeLessThan(limit.height);
+    }
+  });
+
+  it("never calls smoothstep with a reversed pair", () => {
+    // The bug this guards is the most expensive one this module has had, and
+    // it was invisible at every call site. `smoothstep(low, high, value)` used
+    // to clamp its denominator with `Math.max(1e-6, high - low)`; a call whose
+    // `high` was BELOW its `low` therefore got a 1e-6 span and became a hard
+    // step UP at `low` — the complement of the falling edge it reads as, with a
+    // knife edge instead of a ramp. Ten call sites were written that way. Rock
+    // drew its joints as 84%-coverage half-planes (albedo p99/p01 3.21, cavity
+    // median 0.325); gravel, asphalt and concrete drew their aggregate as the
+    // gaps BETWEEN stones, so stones and matrix had swapped every property; the
+    // sward opened bare soil in its DENSEST patches, which is the camouflage
+    // blotching `synthesizeSward`'s own comment says it was rewritten to remove.
+    //
+    // Two guards, because neither is sufficient alone. The helper now throws on
+    // a reversed pair, which catches the computed forms a source scan cannot
+    // see — gravel's was `smoothstep(stoneRadius, stoneRadius * 0.35, f1)` —
+    // and every synthesis in this file exercises it. This scan catches the
+    // literal form at review time, with a message that names the fix, rather
+    // than as a thrown error from inside a worker.
+    const source = readFileSync(
+      join(__dirname, "..", "src/render/webgpu/terrain/MaterialArraySynthesis.ts"),
+      "utf8",
+    );
+    // Strip comments first: the prose above each fix quotes the broken calls.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+    const reversed: string[] = [];
+    for (const match of code.matchAll(/smoothstep\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,/g)) {
+      if (Number(match[2]) <= Number(match[1])) reversed.push(match[0]);
+    }
+    expect(
+      reversed,
+      `reversed smoothstep(low, high, ...) call sites — write 1 - smoothstep(low, high, x) `
+      + `for a falling edge: ${reversed.join(", ")}`,
+    ).toEqual([]);
+    // And the degenerate denominator itself must not come back.
+    expect(code, "smoothstep must not clamp its denominator").not.toContain("Math.max(1e-6, high");
+    // The scan is only worth having if it can see the recipes at all.
+    expect(code.match(/smoothstep\(/g)?.length ?? 0).toBeGreaterThan(20);
   });
 
   it("is a pure function of seed, material and edge", () => {

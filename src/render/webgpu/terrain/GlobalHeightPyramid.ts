@@ -17,6 +17,7 @@ import {
   TERRAIN_HEIGHT_PYRAMID_SPAN_METERS,
   TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS,
 } from "./TerrainSpineContract";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 /**
  * The coarse global height field (`4-7`).
@@ -131,7 +132,7 @@ export class GlobalHeightPyramid {
     const engine = this.engine as WebGPUEngine;
     this.paramsBuffer ??= new StorageBuffer(engine, 16);
     this.pageBuffer ??= new StorageBuffer(engine, TERRAIN_KERNEL_PAGE_BYTES);
-    this.shader ??= new ComputeShader(
+    this.shader ??= withoutDispatchTiming(new ComputeShader(
       "terrain-global-height-pyramid",
       engine,
       { computeSource: GLOBAL_HEIGHT_PYRAMID_WGSL },
@@ -143,7 +144,7 @@ export class GlobalHeightPyramid {
           pyramidTarget: { group: 0, binding: 2 },
         },
       },
-    );
+    ));
     const originX = (texelX - TERRAIN_HEIGHT_PYRAMID_EDGE / 2)
       * TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS;
     const originZ = (texelZ - TERRAIN_HEIGHT_PYRAMID_EDGE / 2)

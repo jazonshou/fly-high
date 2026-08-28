@@ -92,7 +92,26 @@ export const DEFAULT_SPECTRAL_OCEAN_CONFIG: SpectralOceanConfig = Object.freeze(
   directionalSpread: 6,
   surfaceTensionOverDensity: 7.4e-5,
   choppiness: 1.15,
-  foamThreshold: 0.22,
+  // wave R: 0.22 -> 0.88, measured. The breaking test is
+  // `clamp((foamThreshold - jacobian) * foamGain, 0, 1)` on a horizontal
+  // Jacobian whose mean is 1. A CPU harness that reproduces the whole GPU
+  // chain (hash, JONSWAP, evolution, inverse transform, central differences)
+  // puts that Jacobian's standard deviation at 0.048-0.075 per cascade once
+  // the spectrum carries its cell measure, so 0.22 asked for a -12 to -16
+  // sigma excursion: foam was unreachable dead code at every wind speed.
+  // At 0.88 the harness measures instantaneous coverage above 0.2 opacity of
+  // 0.02% at 3.5 m/s, 0.22% at 7 m/s and 0.68% at 11 m/s — sparse, and rising
+  // steeply with wind, which is what Monahan's law asks for (0.29% and 1.37%
+  // at the latter two). The 2.8 s foam memory below multiplies those, so the
+  // rendered coverage lands in the Monahan band rather than under it.
+  foamThreshold: 0.88,
+  // Deliberately UNCHANGED by wave R. The gain is the ramp, not the trigger:
+  // at 2.4 a whitecap reaches ~0.42 opacity at the steepest Jacobian the
+  // spectrum produces (min 0.73 at 11 m/s), so caps are pale rather than
+  // blazing. Raising it whitens the caps AND multiplies the covered area,
+  // which the memory term already multiplies once; it is the knob to reach for
+  // if a capture shows the caps too grey, and it should be measured, not
+  // guessed (harness: gain 5.5 takes 11 m/s coverage 0.68% -> 3.34%).
   foamGain: 2.4,
   foamHalfLifeSeconds: 2.8,
   cascades: DEFAULT_CASCADES,
@@ -202,6 +221,35 @@ export interface OceanFftDispatch {
   readonly destinationSlot: "ping" | "pong";
 }
 
+/**
+ * wave R: the per-axis scale the inverse transform applies at its last stage.
+ *
+ * The initial spectrum stores `h0 = g * sqrt(0.5 * Psi(k))`, where `Psi` is a
+ * spectral DENSITY in m^4. Turning a density into the per-cell variance the
+ * discrete sum needs multiplies it by the cell measure `dk^2 = (2*pi/L)^2`,
+ * and Tessendorf's +/-k pairing (`h0(k)` and `conj(h0(-k))` both land in one
+ * real field) doubles the variance again — so the physical transform scale is
+ * `dk / sqrt(2)`, split evenly across the two axes.
+ *
+ * The shipped chain used a plain `1/N` per axis instead, i.e. the inverse-DFT
+ * convention with no cell measure at all. Measured on the CPU mirror in
+ * `tests/render.webgpu-ocean-fp16.test.ts`, that made the whole rendered sea
+ * three orders of magnitude too small — peak wave height 1.4e-4 m on cascade
+ * 0 and 2.9e-2 m on cascade 2 at 12 m/s of wind, a mirror rather than a sea,
+ * with cascade 0's transform output living in fp16 SUBNORMALS. It is also why
+ * foam could not be reached at any threshold.
+ *
+ * This scale is strictly kinder to fp16 than `1/N` was: it never touches the
+ * un-normalised stages, where the chain's maximum magnitude actually occurs
+ * (77.2 at 12 m/s, unchanged, against fp16's 65,504), and it lifts the
+ * smallest stage magnitudes from 3.6e-5 — below fp16's smallest normal — to
+ * 7.3e-2.
+ */
+export function oceanTransformNormalizationScale(patchLengthMeters: number): number {
+  assertPositive(patchLengthMeters, "ocean.patchLengthMeters");
+  return Math.sqrt((2 * Math.PI) / patchLengthMeters / Math.SQRT2);
+}
+
 /** Dispatch sequence for the two-texture, two-complex-fields Stockham kernel. */
 export function buildOceanFftDispatches(resolution: number): readonly OceanFftDispatch[] {
   if (!isPowerOfTwo(resolution) || resolution < 2) {
@@ -232,6 +280,35 @@ export function buildOceanFftDispatches(resolution: number): readonly OceanFftDi
     }
   }
   return Object.freeze(passes);
+}
+
+/**
+ * Deterministic phase for one ocean cascade's fixed update cadence.
+ *
+ * The first two cascades update every frame. Slower power-of-two cadences are
+ * placed into the light half of the faster schedule instead of all landing on
+ * frame zero. This preserves each cascade's exact update frequency while
+ * preventing the 1/1/2/4 tier-1 schedule from launching all four FFTs in one
+ * frame (and likewise prevents the tier-2 /8 cascade joining that burst).
+ */
+export function oceanCascadeUpdatePhase(updateEveryNFrames: number): number {
+  if (!Number.isSafeInteger(updateEveryNFrames) || updateEveryNFrames < 1) {
+    throw new RangeError("Ocean update cadence must be a positive integer");
+  }
+  if (updateEveryNFrames === 1) return 0;
+  return Math.max(0, Math.floor(updateEveryNFrames / 2) - 1);
+}
+
+/** True when a cascade is due on this absolute ocean frame. */
+export function shouldUpdateOceanCascade(
+  frameIndex: number,
+  updateEveryNFrames: number,
+): boolean {
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
+    throw new RangeError("Ocean frame index must be a non-negative integer");
+  }
+  return frameIndex % updateEveryNFrames
+    === oceanCascadeUpdatePhase(updateEveryNFrames);
 }
 
 function uniformBuffer(byteLength: number): { buffer: ArrayBuffer; view: DataView } {
@@ -290,22 +367,31 @@ export function packOceanEvolutionUniforms(
   return buffer;
 }
 
-/** Binary layout matching `OceanFftParams` in OceanShaders.ts. */
+/**
+ * Binary layout matching `OceanFftParams` in OceanShaders.ts.
+ *
+ * wave R turned the trailing u32 flag into a f32 scale in its own std140 slot
+ * (offset 16): the normalisation is no longer `1/N` but a per-cascade
+ * physical constant, so the pass has to carry the number rather than a
+ * boolean. Non-normalising passes pass 1.
+ */
 export function packOceanFftUniforms(
   resolution: number,
   stage: number,
   axis: "horizontal" | "vertical",
-  normalize: boolean,
+  normalizationScale: number,
 ): ArrayBuffer {
   const stages = Math.log2(resolution);
   if (!isPowerOfTwo(resolution) || !Number.isSafeInteger(stage) || stage < 0 || stage >= stages) {
     throw new RangeError("Invalid FFT resolution or stage");
   }
-  const { buffer, view } = uniformBuffer(16);
+  assertPositive(normalizationScale, "ocean.fftNormalizationScale");
+  const { buffer, view } = uniformBuffer(32);
   view.setUint32(0, resolution, true);
   view.setUint32(4, stage, true);
   view.setUint32(8, axis === "horizontal" ? 0 : 1, true);
-  view.setUint32(12, normalize ? 1 : 0, true);
+  view.setUint32(12, 0, true);
+  view.setFloat32(16, normalizationScale, true);
   return buffer;
 }
 

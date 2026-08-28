@@ -67,8 +67,12 @@ import {
 import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
+  WATER_BATHYMETRY_DECLARATIONS_WGSL,
+  WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
+  WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SUN_SPECULAR_WGSL,
@@ -76,6 +80,8 @@ import {
   type WaterReflectedSkyParameters,
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { BathymetryClipmap } from "./BathymetryClipmap";
+import type { ChannelHydrologyGeometry } from "./ChannelNetwork";
 
 const HYDROLOGY_SHADER_NAME = "aerolithHydrologyWater";
 
@@ -141,6 +147,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
     + cos(windPhase) * windAmplitude * windFrequency * wind;
   var displacedWorld = baseWorld;
   displacedWorld.y += waveHeight;
+  displacedWorld.y -= dot(baseWorld.xz, baseWorld.xz) / (2.0 * 6371000.0);
   vertexOutputs.position = uniforms.viewProjection * displacedWorld;
   vertexOutputs.worldPosition = displacedWorld.xyz;
   vertexOutputs.absoluteWorldXZ = absoluteXZ;
@@ -178,6 +185,7 @@ uniform time: f32;
 uniform regionOpacity: f32;
 uniform environmentValid: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
+${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
@@ -187,6 +195,12 @@ ${AERIAL_PERSPECTIVE_WGSL}
 ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
+
+${WATER_DETAIL_NOISE_WGSL}
+
+${WATER_CAPILLARY_DETAIL_WGSL}
+
+${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
@@ -198,20 +212,87 @@ ${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
-  let normal = normalize(input.surfaceNormal);
+  // Fix-pack W3: the wave gradient is re-evaluated PER FRAGMENT. The vertex
+  // normal was interpolated from meshes with almost no interior vertices — a
+  // lake is a centre fan — so interior pixels received a near-constant
+  // normal and read as glass. The phases reuse the vertex shader's exact
+  // formulas at the fragment's own world position; the vertex keeps owning
+  // displacement.
+  let fragmentFlow = normalize(input.flowDirection + vec2f(0.00001, 0.0));
+  let fragmentWind = normalize(uniforms.windDirection + vec2f(0.00001, 0.0));
+  let fragmentShoreAttenuation = 1.0 - input.waterInfo.z * 0.68;
+  let fragmentFlowFrequency = mix(0.16, 0.055, input.waterInfo.y);
+  let fragmentWindFrequency = mix(0.22, 0.095, input.waterInfo.y);
+  let fragmentFlowAmplitude = (0.025 + min(input.flowSpeed, 5.0) * 0.014)
+    * fragmentShoreAttenuation;
+  let fragmentWindAmplitude = (0.018 + min(uniforms.windSpeed, 24.0) * 0.0028)
+    * mix(0.48, 1.0, input.waterInfo.y) * fragmentShoreAttenuation;
+  let fragmentFlowPhase = dot(input.absoluteWorldXZ, fragmentFlow) * fragmentFlowFrequency
+    - uniforms.time * (0.8 + input.flowSpeed * 1.7);
+  let fragmentCrossPhase = dot(input.absoluteWorldXZ, vec2f(-fragmentFlow.y, fragmentFlow.x))
+    * fragmentFlowFrequency * 1.74 + uniforms.time * 0.63;
+  let fragmentWindPhase = dot(input.absoluteWorldXZ, fragmentWind) * fragmentWindFrequency
+    - uniforms.time * (0.55 + uniforms.windSpeed * 0.075);
+  let fragmentGradient = cos(fragmentFlowPhase) * fragmentFlowAmplitude
+      * fragmentFlowFrequency * fragmentFlow
+    + cos(fragmentCrossPhase) * fragmentFlowAmplitude * 0.32 * fragmentFlowFrequency * 1.74
+      * vec2f(-fragmentFlow.y, fragmentFlow.x)
+    + cos(fragmentWindPhase) * fragmentWindAmplitude * fragmentWindFrequency * fragmentWind;
+  // Fix-pack W2: the shared capillary band + sub-grid tail (see
+  // WATER_CAPILLARY_DETAIL_WGSL) — rivers and lakes were the worst "glass up
+  // close" offenders.
+  let capillary = waterCapillaryDetail(
+    input.absoluteWorldXZ,
+    uniforms.windDirection * uniforms.windSpeed,
+    uniforms.time,
+    // wave R: the resolved wave slope this fragment already carries, so the
+    // unresolved tail — and therefore roughness — becomes a field rather than
+    // a constant. Rivers and lakes were the worst offenders: their roughness
+    // sat exactly on the 0.28 cap everywhere.
+    length(fragmentGradient),
+  );
+  let geometricNormal = normalize(vec3f(
+    -fragmentGradient.x + capillary.slope.x,
+    1.0,
+    -fragmentGradient.y + capillary.slope.y,
+  ));
+  // wave R fix 7: the glint-only jitter, sun lobe alone.
+  let glintNormalUp = normalize(vec3f(
+    -fragmentGradient.x + capillary.slope.x + capillary.glintSlope.x,
+    1.0,
+    -fragmentGradient.y + capillary.slope.y + capillary.glintSlope.y,
+  ));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
+  let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
+  let normal = select(geometricNormal, -geometricNormal, cameraBelow);
+  let glintNormal = select(glintNormalUp, -glintNormalUp, cameraBelow);
   let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.001);
   let nDotL = max(dot(normal, light), 0.0);
   let lakeFactor = clamp(input.waterInfo.y, 0.0, 1.0);
-  let depth = max(input.waterInfo.x, 0.04);
-  let roughness = clamp(
+  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.absoluteWorldXZ);
+  // Fix-pack W1: fold the capillary band's unresolved energy into the GGX
+  // lobe in alpha space, the 2-8 discipline — near water keeps micro-facet
+  // sparkle instead of collapsing to a mirror.
+  // wave R: cap 0.28 -> 0.45 on both clamps. Inland water arrived pinned
+  // EXACTLY at 0.28 across every river and lake pixel — the capillary tail
+  // alone exceeded the cap — so the variance the fold exists to express had
+  // nowhere to go and every surface rendered with one micro-facet
+  // distribution. 0.45 keeps inland water glossier than the open sea (0.5)
+  // while leaving the field room to move.
+  let baseRoughness = clamp(
     mix(0.14, 0.09, lakeFactor) + input.flowSpeed * 0.008 + uniforms.windSpeed * 0.0016,
     0.075,
-    0.28,
+    0.45,
+  );
+  let baseAlpha = baseRoughness * baseRoughness;
+  let roughness = clamp(
+    sqrt(sqrt(baseAlpha * baseAlpha + min(capillary.unresolvedMeanSquareSlope, 0.25))),
+    0.075,
+    0.45,
   );
   let f0 = vec3f(0.0204);
-  let fresnel = fresnelSchlick(nDotV, f0);
+  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
 
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -240,18 +321,19 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  let absorption = mix(vec3f(0.42, 0.105, 0.055), vec3f(0.28, 0.075, 0.038), lakeFactor);
-  let depthTransmittance = exp(-absorption * depth);
-  let riverBed = vec3f(0.095, 0.105, 0.075);
-  let lakeBed = vec3f(0.025, 0.065, 0.064);
-  let bed = mix(riverBed, lakeBed, lakeFactor);
-  let volumeScatter = mix(vec3f(0.025, 0.17, 0.15), vec3f(0.012, 0.105, 0.13), lakeFactor)
-    * (1.0 - depthTransmittance);
-  let transmitted = bed * depthTransmittance + volumeScatter;
+  let transmitted = waterVolumeRadiance(
+    input.absoluteWorldXZ,
+    input.worldPosition.y,
+    depth,
+    normal,
+    view,
+    cameraBelow,
+    directSunVisibility,
+  );
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
   // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
   // the old gain-of-four multiply.
-  color += sunSpecular(normal, view, light, roughness, uniforms.sunAngularRadius, f0)
+  color += sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, f0)
     * uniforms.sunColor * directSunVisibility;
 
   let flowCrest = pow(max(
@@ -281,6 +363,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     directSunVisibility,
   );
   color = mix(color, foamColor, foam);
+  if (cameraBelow) {
+    color = applyUnderwaterBeerLambert(
+      color,
+      distance(uniforms.cameraPosition, input.worldPosition),
+      directSunVisibility,
+    );
+  }
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
   // around them — inland water no longer punches through the haze.
   color = applyAerialPerspective(
@@ -289,10 +378,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     distance(uniforms.cameraPosition, input.worldPosition),
     -view,
   );
-  // Alpha now represents shallow transmission and region crossfade, not a
-  // constant translucent plastic sheet. Even shallow water retains enough
-  // optical density to read as a surface from flight altitude.
-  let alpha = clamp(mix(0.88, 0.995, 1.0 - exp(-depth * 0.82)) + foam * 0.01, 0.86, 0.995);
+  let alpha = max(waterShorelineAlpha(depth), foam);
   fragmentOutputs.color = vec4f(
     max(color, vec3f(0.0)),
     alpha * clamp(uniforms.regionOpacity, 0.0, 1.0),
@@ -362,8 +448,11 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       0,
       1,
     );
-    const depth = 0.22 + point.widthMeters * 0.075;
-    for (const lane of [-1, 0, 1] as const) {
+    // `5-12`: five lanes give the conservative cover enough transverse
+    // resolution for bathymetry-driven per-pixel shoreline trim. Hydraulic
+    // depth is exported by the graph and sampled from the bed; this mesh no
+    // longer invents it from ribbon width.
+    for (const lane of [-1, -0.5, 0, 0.5, 1] as const) {
       const shore = Math.abs(lane);
       arrays.positions.push(
         point.x + rightX * halfWidth * lane,
@@ -373,13 +462,13 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       arrays.normals.push(0, 1, 0);
       arrays.uvs.push(distanceAlong / 16, lane * 0.5 + 0.5);
       arrays.flowData.push(flow[0], flow[1], point.flowSpeedMetersPerSecond, whitewater);
-      arrays.waterData.push(depth * (1 - shore * 0.8), 0, shore, 0);
+      arrays.waterData.push(0, 0, shore, 0);
     }
   }
   for (let index = 0; index < river.points.length - 1; index += 1) {
-    const row = baseVertex + index * 3;
-    const nextRow = row + 3;
-    for (let lane = 0; lane < 2; lane += 1) {
+    const row = baseVertex + index * 5;
+    const nextRow = row + 5;
+    for (let lane = 0; lane < 4; lane += 1) {
       const a = row + lane;
       const b = nextRow + lane;
       const c = a + 1;
@@ -433,9 +522,8 @@ function buildMesh(
   mesh.setVerticesData("waterData", arrays.waterData, false, 4);
   mesh.isPickable = false;
   mesh.receiveShadows = true;
-  // Preserve opaque depth by sharing the main group; transparent meshes are
-  // already drawn after opaque geometry by Babylon's rendering manager.
-  mesh.renderingGroupId = 0;
+  mesh.renderingGroupId = 1;
+  mesh.alphaIndex = 1;
   return {
     mesh,
     vertexCount: arrays.positions.length / 3,
@@ -443,15 +531,40 @@ function buildMesh(
   };
 }
 
+/**
+ * Static hydrology exported from the canonical terrain-evolution graph. A
+ * complete generation result can preserve producer diagnostics; the compact
+ * geometry form is promoted to a result without consulting analytic terrain.
+ */
+export type HydrologyGraphSource = HydrologyGenerationResult | ChannelHydrologyGeometry;
+
 export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly atmosphere: AtmosphereSnapshot;
+  /** Shared terrain-depth substrate used by both inland and ocean materials. */
+  readonly bathymetry?: BathymetryClipmap;
   /** Prevailing flow direction (towards), clockwise from world north. */
   readonly windDirectionRadians?: number;
+  /**
+   * wave R fix 8: the prevailing wind SPEED, from the same world definition
+   * that supplies `windDirectionRadians`. Inland water used to take its
+   * direction from the world and its speed from the atmosphere snapshot,
+   * whose `windSpeed` is a cloud-layer number that can differ by 3x — so the
+   * ripple amplitude, the drift and the roughness were driven by a wind the
+   * direction had never agreed to. Falls back to the atmosphere snapshot when
+   * absent, which keeps every pre-wave-R caller and test behaving as before.
+   */
+  readonly windSpeedMetersPerSecond?: number;
   /** Enables off-main-thread generation from the deterministic built-in world. */
   readonly workerWorldSeed?: WorldSeed;
   readonly paging?: HydrologyPagingOptions;
-  /** Test/custom-world injection point. HydrologySystem assumes ownership. */
+  /** Analytic-mode test/custom-world injection point. HydrologySystem assumes ownership. */
   readonly generationClient?: HydrologyGenerationClientLike;
+  /**
+   * Canonical, already-eroded river/lake geometry. When present this is a
+   * static world data source: no legacy downhill tracing, worker construction,
+   * or regional paging is performed.
+   */
+  readonly graphHydrology?: HydrologyGraphSource;
 }
 
 export interface HydrologySystemStatistics {
@@ -512,18 +625,67 @@ function generationTimeoutError(milliseconds: number): Error {
   return new Error(`Hydrology region generation timed out after ${milliseconds} ms`);
 }
 
+function isHydrologyGenerationResult(
+  source: HydrologyGraphSource,
+): source is HydrologyGenerationResult {
+  return "config" in source && "bounds" in source && "statistics" in source;
+}
+
+function resultFromGraphHydrology(
+  source: HydrologyGraphSource,
+  config: HydrologyGenerationConfig,
+): HydrologyGenerationResult {
+  if (isHydrologyGenerationResult(source)) return source;
+  const riverPointCount = source.rivers.reduce(
+    (sum, river) => sum + river.points.length,
+    0,
+  );
+  const halfExtent = config.extentMeters * 0.5;
+  return Object.freeze({
+    config,
+    bounds: Object.freeze({
+      minX: config.centerX - halfExtent,
+      maxX: config.centerX + halfExtent,
+      minZ: config.centerZ - halfExtent,
+      maxZ: config.centerZ + halfExtent,
+    }),
+    rivers: source.rivers,
+    lakes: source.lakes,
+    statistics: Object.freeze({
+      terrainSampleCount: 0,
+      haloSourceCellCount: 0,
+      maximumDirectionalTraceSamples: 0,
+      candidateSourceCount: 0,
+      tracedSourceCount: 0,
+      riverCount: source.rivers.length,
+      lakeCount: source.lakes.length,
+      rawRiverPointCount: riverPointCount,
+      splinePointCount: riverPointCount,
+      totalRiverLengthMeters: source.rivers.reduce(
+        (sum, river) => sum + river.lengthMeters,
+        0,
+      ),
+      totalLakeAreaSquareMeters: source.lakes.reduce(
+        (sum, lake) => sum + lake.areaSquareMeters,
+        0,
+      ),
+    }),
+  });
+}
+
 /**
- * Deterministic endless rivers and lakes. Overlapping regions are generated in
- * a worker ahead of the observer and swapped only when complete. Geometry stays
- * in absolute CPU coordinates while each resident root follows floating-origin
- * rebases and the shader reconstructs absolute x/z for phase-stable ripples.
+ * Rivers and lakes for the eroded world, with explicit analytic parity mode.
+ * Canonical graph geometry remains resident without a generation client;
+ * analytic geometry retains the legacy worker paging path. Geometry stays in
+ * absolute CPU coordinates while resident roots follow floating-origin rebases.
  */
 export class HydrologySystem implements PlanarReflectionReceiver {
   private readonly material: ShaderMaterial;
   private readonly scene: Scene;
   private readonly generationConfig: HydrologyGenerationConfig;
   private readonly pagingConfig: HydrologyPagingConfig;
-  private readonly generationClient: HydrologyGenerationClientLike;
+  private readonly generationClient: HydrologyGenerationClientLike | null;
+  private readonly graphMode: boolean;
   private readonly cloudShadowCenterLocal = Vector2.Zero();
   private readonly cloudShadowSunDirection = Vector3.Up();
   private currentRegion: HydrologyRegionRuntime | null = null;
@@ -545,6 +707,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private originX = 0;
   private originZ = 0;
   private disposed = false;
+  private readonly bathymetry: BathymetryClipmap | null;
+  /** wave R fix 8: null when no world wind was supplied (see the option). */
+  private worldWindSpeedMetersPerSecond: number | null = null;
 
   constructor(
     scene: Scene,
@@ -555,25 +720,36 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     registerHydrologyShaders();
     const {
       atmosphere,
+      bathymetry,
       windDirectionRadians,
+      windSpeedMetersPerSecond,
       workerWorldSeed,
       paging,
       generationClient,
+      graphHydrology,
       ...generationOptions
     } = options;
+    this.bathymetry = bathymetry ?? null;
     this.scene = scene;
-    this.generationConfig = resolveHydrologyConfig(generationOptions);
+    const resolvedGenerationConfig = resolveHydrologyConfig(generationOptions);
+    this.generationConfig = graphHydrology !== undefined
+      && isHydrologyGenerationResult(graphHydrology)
+      ? graphHydrology.config
+      : resolvedGenerationConfig;
+    this.graphMode = graphHydrology !== undefined;
     this.pagingConfig = resolveHydrologyPagingConfig(
       this.generationConfig.centerX,
       this.generationConfig.centerZ,
       this.generationConfig.extentMeters,
       paging,
     );
-    this.generationClient = generationClient ?? new HydrologyGenerationClient({
-      worldSeed: generationOptions.worldSeed,
-      terrainSample: generationOptions.terrainSample,
-      ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
-    });
+    this.generationClient = this.graphMode
+      ? null
+      : generationClient ?? new HydrologyGenerationClient({
+        worldSeed: generationOptions.worldSeed,
+        terrainSample: generationOptions.terrainSample,
+        ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
+      });
     this.material = new ShaderMaterial(
       "hydrology-water-material",
       scene,
@@ -596,6 +772,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "time",
           "regionOpacity",
           "environmentValid",
+          "bathymetryNearPlacement",
+          "bathymetryFarPlacement",
+          "bathymetrySeaLevel",
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
@@ -606,6 +785,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           PLANAR_REFLECTION_SAMPLER,
           SUN_SHADOW_SAMPLER,
           "environmentCube",
+          "bathymetryNear",
+          "bathymetryFar",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -614,13 +795,15 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.backFaceCulling = false;
     this.material.transparencyMode = Material.MATERIAL_ALPHABLEND;
     this.material.alphaMode = Constants.ALPHA_COMBINE;
-    this.material.disableDepthWrite = false;
+    this.material.disableDepthWrite = true;
     this.material.setVector2("hydrologyWorldOrigin", Vector2.Zero());
     const windRadians = windDirectionRadians ?? 1;
     this.material.setVector2(
       "windDirection",
       new Vector2(Math.sin(windRadians), Math.cos(windRadians)).normalize(),
     );
+    // wave R fix 8: one wind owner — see HydrologySystemOptions.
+    this.worldWindSpeedMetersPerSecond = windSpeedMetersPerSecond ?? null;
     this.material.setFloat("time", 0);
     this.material.setFloat("regionOpacity", 1);
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
@@ -634,6 +817,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
     this.material.setTexture(
@@ -642,7 +826,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     );
     this.setAtmosphere(atmosphere);
 
-    if (initializeSynchronously) {
+    if (graphHydrology !== undefined) {
+      const hydrology = resultFromGraphHydrology(graphHydrology, this.generationConfig);
+      this.currentRegion = this.buildRegion(this.initialSelection(), hydrology);
+    } else if (initializeSynchronously) {
       const hydrology = generateHydrology(generationOptions);
       this.currentRegion = this.buildRegion(this.initialSelection(), hydrology);
     }
@@ -656,7 +843,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   ): Promise<HydrologySystem> {
     const system = new HydrologySystem(scene, camera, options, false);
     try {
-      await system.requestRegion(system.initialSelection(), signal);
+      if (!system.graphMode) {
+        await system.requestRegion(system.initialSelection(), signal);
+      }
       return system;
     } catch (error) {
       system.dispose();
@@ -742,7 +931,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
-    this.material.setFloat("windSpeed", atmosphere.windSpeed);
+    this.material.setFloat(
+      "windSpeed",
+      this.worldWindSpeedMetersPerSecond ?? atmosphere.windSpeed,
+    );
   }
 
   /**
@@ -770,7 +962,13 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.lastTimeSeconds = timeSeconds;
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", cameraLocalPosition);
+    this.bathymetry?.bind(this.material);
     this.updateTransition(timeSeconds);
+    // Graph geometry describes the canonical eroded world, not a crop of an
+    // analytic field. It remains resident and must never enter legacy paging.
+    if (this.graphMode) return;
+    const generationClient = this.generationClient;
+    if (!generationClient) return;
     const resolvedObserver: HydrologyPagingObserver = observer ?? {
       x: cameraLocalPosition.x + this.originX,
       z: cameraLocalPosition.z + this.originZ,
@@ -780,12 +978,12 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const selection = selectHydrologyRegion(resolvedObserver, this.pagingConfig);
     if (selection.key === this.currentRegion?.selection.key) {
       if (this.pendingRegionKey && this.pendingRegionKey !== selection.key) {
-        this.generationClient.cancel(this.pendingRequestId);
+        generationClient.cancel(this.pendingRequestId);
       }
       return;
     }
     if (selection.key === this.pendingRegionKey) return;
-    if (this.pendingRegionKey) this.generationClient.cancel(this.pendingRequestId);
+    if (this.pendingRegionKey) generationClient.cancel(this.pendingRequestId);
     void this.requestRegion(selection).catch((error: unknown) => {
       if (error instanceof Error && error.name === "AbortError") return;
       console.warn(`Unable to page hydrology region ${selection.key}`, error);
@@ -811,13 +1009,13 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       activeRegionCenterZ: this.currentRegion?.selection.centerZ ?? null,
       residentRegionCount: regions.length,
       generationPending: this.pendingRegionKey !== null,
-      queuedGenerationCount: this.generationClient.queuedCount,
+      queuedGenerationCount: this.generationClient?.queuedCount ?? 0,
       pagingRequestCount: this.pagingRequestCount,
       regionSwapCount: this.regionSwapCount,
       failedGenerationCount: this.failedGenerationCount,
       discardedGenerationCount: this.discardedGenerationCount,
       lastGenerationMilliseconds: this.lastGenerationMilliseconds,
-      usingMainThreadFallback: this.generationClient.isUsingFallback,
+      usingMainThreadFallback: this.generationClient?.isUsingFallback ?? false,
       lastGenerationUsedWorker: this.lastGenerationUsedWorker,
       currentRegionOpacity: this.currentRegion?.opacity ?? 0,
       previousRegionOpacity: this.previousRegion?.opacity ?? 0,
@@ -828,7 +1026,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.generationClient.dispose();
+    this.generationClient?.dispose();
     if (this.previousRegion) disposeRegion(this.previousRegion);
     if (this.currentRegion) disposeRegion(this.currentRegion);
     this.previousRegion = null;
@@ -957,6 +1155,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     signal?: AbortSignal,
   ): Promise<void> {
     if (this.disposed) return Promise.reject(new Error("Hydrology system is disposed"));
+    if (this.graphMode) return Promise.resolve();
+    const generationClient = this.generationClient;
+    if (!generationClient) return Promise.resolve();
     const generation = ++this.requestGeneration;
     this.pagingRequestCount += 1;
     this.pendingRegionKey = selection.key;
@@ -965,7 +1166,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         timedOut = true;
-        this.generationClient.cancel(this.pendingRequestId);
+        generationClient.cancel(this.pendingRequestId);
       }, timeoutMilliseconds);
       const clearPending = (): void => {
         clearTimeout(timeout);
@@ -973,7 +1174,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
         this.pendingRegionKey = null;
         this.pendingRequestId = -1;
       };
-      this.pendingRequestId = this.generationClient.request(
+      this.pendingRequestId = generationClient.request(
         {
           key: selection.key,
           generation,
@@ -1036,6 +1237,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
 }
 
 export {
+  // The tracer/generator stay public while explicit analytic parity mode is
+  // supported. Graph-backed eroded worlds do not call either API.
   generateHydrology,
   traceDownhillPath,
   resolveHydrologyConfig,

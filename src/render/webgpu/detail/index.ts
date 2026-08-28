@@ -7,9 +7,18 @@ export {
   DETAIL_PRESENTATION_CHUNK_CELL_SPAN,
   detailPresentationChunkCoordinates,
 } from "./spatialChunks";
-export { WorldDetailRuntime } from "./WorldDetailRuntime";
+export {
+  detailCellMinimumDistanceMeters,
+  groundCoverCandidateRange,
+  WorldDetailRuntime,
+} from "./WorldDetailRuntime";
 export { DEFAULT_DETAIL_CELL_SIZE_METERS } from "./types";
-export type { WorldDetailRuntimeOptions } from "./WorldDetailRuntime";
+export type {
+  DetailPresentationRebuildBudget,
+  DetailPresentationRebuildDiagnostics,
+  GroundCoverCandidateRange,
+  WorldDetailRuntimeOptions,
+} from "./WorldDetailRuntime";
 export type { DetailGenerationBudget } from "./generationBudget";
 export type {
   DetailCellGenerationOptions,

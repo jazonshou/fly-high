@@ -15,20 +15,22 @@ import {
 import { terrainPageGenerationWgsl } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
 import { RUNWAY_EARTHWORKS_WGSL } from "../../src/render/webgpu/terrain/RunwayEarthworks";
 import { RUNWAY_SDF_WGSL } from "../../src/render/webgpu/terrain/RunwaySurface";
+import { BATHYMETRY_UPDATE_WGSL } from "../../src/render/webgpu/water/BathymetryClipmap";
 
 /**
- * Every Phase 4 compute module, compiled on a real adapter and REPORTING its
- * error.
+ * Every terrain/bathymetry compute module through Phase 5, compiled on a real
+ * adapter and REPORTING its error.
  *
- * This file exists because `dispatchWhenReady` retries forever and cannot be
- * cancelled: a WGSL error in any of these turns the test that uses it into an
+ * This file exists because `dispatchWhenReady` polls for roughly thirty
+ * seconds, then leaves its resolve-only Promise pending and cannot be
+ * cancelled. A WGSL error in any of these turns the test that uses it into an
  * eight-minute timeout with the actual message buried in a browser console
  * line. Running the compiles first, with `onError` captured, turns that into a
  * one-second failure that names the file and the line. (Two reserved-keyword
  * collisions — `target` — were found exactly this way.)
  */
-describe("Phase 4 terrain compute modules compile (4-1, 4-3, 4-7)", () => {
-  it("compiles the kernel, the page generator, the pyramid and the occlusion bake", async () => {
+describe("terrain and bathymetry compute modules compile (4-1, 4-3, 4-7, 5-10)", () => {
+  it("compiles the terrain generators, channel bakes and bathymetry update", async () => {
     const canvas = document.createElement("canvas");
     canvas.width = 64;
     canvas.height = 64;
@@ -37,6 +39,9 @@ describe("Phase 4 terrain compute modules compile (4-1, 4-3, 4-7)", () => {
       antialias: false,
       enableAllFeatures: false,
       setMaximumLimits: false,
+      deviceDescriptor: {
+        requiredFeatures: ["texture-formats-tier1"] as GPUFeatureName[],
+      },
     });
     try {
       await engine.initAsync();
@@ -62,6 +67,7 @@ describe("Phase 4 terrain compute modules compile (4-1, 4-3, 4-7)", () => {
           ].join("\n"),
           "bakeSplat",
         ],
+        ["bathymetry-clipmap-update", BATHYMETRY_UPDATE_WGSL, "updateBathymetry"],
       ] as const;
       for (const [name, source, entryPoint] of modules) {
         const errors: string[] = [];

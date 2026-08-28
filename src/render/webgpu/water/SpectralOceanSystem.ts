@@ -15,7 +15,10 @@ import { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
-import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import type {
+  OceanPresentationTopology,
+  WebGpuQualityProfile,
+} from "@/src/render/webgpu/core/QualityProfile";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
@@ -33,6 +36,8 @@ import {
 import { viewScaleFromFov } from "@/src/render/webgpu/clouds/CloudReprojection";
 import {
   buildOceanFftDispatches,
+  oceanTransformNormalizationScale,
+  shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
@@ -61,9 +66,13 @@ import {
 import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
+  WATER_BATHYMETRY_DECLARATIONS_WGSL,
   WATER_CREST_SSS_WGSL,
+  WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
+  WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SUN_SPECULAR_WGSL,
@@ -71,10 +80,20 @@ import {
   type WaterReflectedSkyParameters,
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { BathymetryClipmap } from "./BathymetryClipmap";
+import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
 const OCEAN_PRESENTATION_RADIUS_METERS = 40_000;
+/**
+ * wave R: the same 16x the terrain material arrays upload at
+ * (`terrain/MaterialArrayUpload.ts`'s `SURFACE_ARRAY_ANISOTROPY`). Water is
+ * the most grazing surface in the scene, so it needs the taps at least as
+ * much; the constant is repeated rather than imported because water may not
+ * reach into terrain/.
+ */
+const OCEAN_SLOPE_ANISOTROPY = 16;
 const COMPUTE_PIPELINE_TIMEOUT_MILLISECONDS = 30_000;
 
 function abortError(message: string): Error {
@@ -160,49 +179,82 @@ function waitForComputeReady(
   });
 }
 
-export interface OceanPresentationTopology {
-  readonly radialRings: number;
-  readonly angularSegments: number;
-  readonly nearStepMeters: number;
+export type { OceanPresentationTopology };
+
+/**
+ * The disk's radius as a function of ring index. Ring 0 is the centre vertex;
+ * the first `radialRings` steps are `nearStepMeters` apart and the quintic
+ * term carries the rest of the way to the 40 km presentation radius.
+ * The 40 km radius is reconciled with the 45 km far plane (1C-4): a disk wider
+ * than the far plane is clipped and loses its horizon.
+ */
+function oceanRingRadius(topology: OceanPresentationTopology, ring: number): number {
+  const curvedRadius = Math.max(
+    0,
+    OCEAN_PRESENTATION_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
+  );
+  const normalized = ring / topology.radialRings;
+  return topology.nearStepMeters * ring + curvedRadius * normalized ** 5;
 }
 
 /**
- * A camera-centred radial grid spends vertices where wave displacement is
- * visible and lets cells grow smoothly toward the hazed horizon. This avoids
- * wasting a uniform 80 km grid while retaining one crack-free water surface.
- * The 40 km presentation radius is reconciled with the 45 km far plane
- * (1C-4): a disk wider than the far plane is clipped and loses its horizon.
+ * wave R fix 4: the radius at which the disk's own RADIAL step passes half of
+ * `wavelengthMeters` — beyond it the lattice cannot carry that wave at all and
+ * summing it into vertices produces aliasing, not waves.
+ *
+ * The cascade fade before wave R keyed only on PIXEL Nyquist, so at tier 1
+ * cascade 0 (1-8 m waves) was displacing vertices out to ~4.4 km on a lattice
+ * whose radial step passed the band's half-wavelength at 44 m. That residual,
+ * glued to the viewer because the disk was positioned continuously, is the
+ * reported "plastic tubes". The angular step is the looser constraint
+ * throughout the near field (4 m of arc only at ~122 m at tier 1, against 49 m
+ * radially), so the radial step is the binding one and the only one taken here.
+ *
+ * The band's MAXIMUM wavelength is the right argument, matching
+ * `updateCascadeFadeRadii`'s pixel formula: a fade end is the range beyond
+ * which NOTHING in the band is representable, not the range where the finest
+ * member starts to alias. (Keying on the minimum would return 0 for cascade 0
+ * at every tier — half of 1 m is below every tier's near step — and delete the
+ * near chop outright.) Returns 0 when the lattice cannot carry the band
+ * anywhere, and the full radius when it can carry it everywhere.
  */
-export function oceanPresentationTopology(
-  profile: Pick<WebGpuQualityProfile, "tier">,
-): OceanPresentationTopology {
-  if (profile.tier === 0) {
-    return { radialRings: 96, angularSegments: 128, nearStepMeters: 1 };
-  }
-  if (profile.tier === 1) {
-    return { radialRings: 144, angularSegments: 192, nearStepMeters: 0.75 };
-  }
-  return { radialRings: 192, angularSegments: 256, nearStepMeters: 0.5 };
+export function oceanMeshCascadeFadeRadius(
+  topology: OceanPresentationTopology,
+  wavelengthMeters: number,
+): number {
+  const halfWavelength = wavelengthMeters * 0.5;
+  if (halfWavelength <= topology.nearStepMeters) return 0;
+  const curvedRadius = Math.max(
+    0,
+    OCEAN_PRESENTATION_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
+  );
+  if (curvedRadius <= 0) return OCEAN_PRESENTATION_RADIUS_METERS;
+  // d(radius)/d(ring) = nearStep + 5 * curvedRadius * ring^4 / rings^5, solved
+  // for the ring where that reaches the half wavelength. The continuous
+  // derivative is the right instrument: the discrete step between two adjacent
+  // rings differs from it by O(1/rings).
+  const ring = Math.min(
+    topology.radialRings,
+    (
+      (halfWavelength - topology.nearStepMeters)
+      * topology.radialRings ** 5
+      / (5 * curvedRadius)
+    ) ** 0.25,
+  );
+  return oceanRingRadius(topology, ring);
 }
 
 function createOceanPresentationMesh(
   scene: Scene,
   profile: WebGpuQualityProfile,
 ): Mesh {
-  const topology = oceanPresentationTopology(profile);
+  const topology = profile.oceanPresentation;
   const vertexCount = 1 + topology.radialRings * topology.angularSegments;
   const positions = new Float32Array(vertexCount * 3);
 
   let vertex = 1;
-  const curvedRadius = Math.max(
-    0,
-    OCEAN_PRESENTATION_RADIUS_METERS
-      - topology.nearStepMeters * topology.radialRings,
-  );
   for (let ring = 1; ring <= topology.radialRings; ring += 1) {
-    const normalized = ring / topology.radialRings;
-    const radius = topology.nearStepMeters * ring
-      + curvedRadius * normalized ** 5;
+    const radius = oceanRingRadius(topology, ring);
     for (let segment = 0; segment < topology.angularSegments; segment += 1) {
       const angle = segment / topology.angularSegments * Math.PI * 2;
       const x = Math.cos(angle) * radius;
@@ -284,7 +336,11 @@ uniform patchLength4: f32;
 uniform cascadeCount: f32;
 uniform cascadeFadeRadii0: vec4f;
 uniform cascadeFadeRadius4: f32;
+uniform cascadeMeshFadeRadii0: vec4f;
+uniform cascadeMeshFadeRadius4: f32;
 uniform cascadeFadeCameraHeight: f32;
+uniform oceanWind: vec2f;
+uniform time: f32;
 uniform planarReflectionViewProjection: mat4x4f;
 var displacement0Sampler: sampler; var displacement0: texture_2d<f32>;
 var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
@@ -299,6 +355,10 @@ varying waveCrest: f32;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
+// wave R fix 3: the SAME ripple lattices the fragment shades with, so the
+// vertex relief and the shaded normal cannot disagree.
+${WATER_DETAIL_NOISE_WGSL}
+
 fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
   let coordinate = fract(worldXZ / patchLength);
   return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
@@ -312,7 +372,13 @@ fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: tex
 // wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
 // xz only, and from altitude the sea straight below is already distant.
 fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
-  return 1.0 - smoothstep(fadeEndDistance * 0.3, fadeEndDistance, slantRange);
+  // wave R floored the end distance. The mesh-Nyquist fade (fix 4) returns 0
+  // for a band the lattice cannot carry ANYWHERE, and smoothstep with equal
+  // edges is undefined in WGSL — a divide by zero in the one place a band is
+  // meant to vanish cleanly. No shipped cascade reaches it (the shortest band
+  // top is 8 m against a 1 m near step), so this is a guard, not a behaviour.
+  let end = max(fadeEndDistance, 0.001);
+  return 1.0 - smoothstep(end * 0.3, end, slantRange);
 }
 
 @vertex
@@ -330,13 +396,45 @@ fn main(input: VertexInputs) -> FragmentInputs {
     cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
   );
   let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
+  // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
+  // Nyquist, min(pixelFadeEnd, meshFadeEnd). A band the radial step cannot
+  // carry is not a wave in the vertex buffer, it is aliasing — and because
+  // the disk is camera-centred that aliasing rode along with the viewer.
+  // The fragment keeps the PIXEL fade (the varyings below): its slope comes
+  // from a mip-filtered textureSampleGrad, whose reconstruction limit is the
+  // pixel and not the lattice, so the band survives there as a correctly
+  // filtered normal — strictly more information than handing it to roughness.
+  let meshFades = vec4f(
+    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)),
+    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.y, uniforms.cascadeMeshFadeRadii0.y)),
+    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.z, uniforms.cascadeMeshFadeRadii0.z)),
+    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.w, uniforms.cascadeMeshFadeRadii0.w)),
+  );
+  let meshFade4 = cascadeFade(slantRange, min(uniforms.cascadeFadeRadius4, uniforms.cascadeMeshFadeRadius4));
   var displacement = vec3f(0.0);
-  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * fades.x;
-  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * fades.y; }
-  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * fades.z; }
-  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * fades.w; }
-  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * fade4; }
-  var displaced = vec4f(vertexInputs.position + displacement, 1.0);
+  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
+  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
+  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
+  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
+  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
+  // wave R fix 3: real relief below the spectrum's finest cascade. 2.8 cm at
+  // the 0.42 m octave and 1.0 cm at the 0.16 m octave, world-locked and
+  // wind-advected exactly as the fragment's octaves A and B are, so the
+  // surface immediately under the aircraft has geometry instead of a flat
+  // plane wearing a normal map. Gated on slant range to the rings whose step
+  // can carry it: at tier 1 the step is under 0.5 m out to ~7.5 m and under
+  // 1 m out to ~13 m, so the band 6-26 m is where it hands over.
+  var detailHeight = 0.0;
+  let detailFade = 1.0 - smoothstep(6.0, 26.0, slantRange);
+  if (detailFade > 0.001) {
+    let detailWind = waterRippleWind(uniforms.oceanWind, worldXZ, 0.0);
+    let detailDrift = waterRippleDrift(uniforms.oceanWind, uniforms.time);
+    let rippleA = waterRippleGradA(worldXZ, detailDrift);
+    let rippleB = waterRippleGradB(worldXZ, detailDrift);
+    detailHeight = ((rippleA.x - 0.5) * 0.028 + (rippleB.x - 0.5) * 0.010)
+      * detailWind * detailFade;
+  }
+  var displaced = vec4f(vertexInputs.position + displacement + vec3f(0.0, detailHeight, 0.0), 1.0);
   // 1C-7: drop the surface with the Earth's curvature (camera-centred local
   // frame, R = 6371 km). Without this the flat disk's vanishing line sits at
   // eye level and the sea reads as a plate instead of a horizon.
@@ -385,13 +483,21 @@ uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
 uniform cloudCoverage: f32;
-uniform cloudWind: vec2f;
+// wave R fix 8: ONE wind. This used to be the atmosphere's cloud-layer wind
+// while the spectrum was raised by world.prevailingWindSpeed — the two can
+// disagree by 3x, so the ripples drifted and roughened for a wind the waves
+// had never heard of. The world definition is the simulation authority (it is
+// what src/world/wind.ts flies the aircraft in), so the ocean's own resolved
+// config wind now drives ripples, gusts and foam advection as well as the
+// spectrum.
+uniform oceanWind: vec2f;
 uniform time: f32;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
 uniform cascadeCount: f32;
 uniform environmentValid: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
+${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 var slopeFoam0Sampler: sampler; var slopeFoam0: texture_2d<f32>;
 var slopeFoam1Sampler: sampler; var slopeFoam1: texture_2d<f32>;
 var slopeFoam2Sampler: sampler; var slopeFoam2: texture_2d<f32>;
@@ -411,6 +517,12 @@ ${AERIAL_PERSPECTIVE_WGSL}
 ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
+
+${WATER_DETAIL_NOISE_WGSL}
+
+${WATER_CAPILLARY_DETAIL_WGSL}
+
+${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
@@ -457,14 +569,40 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); }
   if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); }
   if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); }
-  let normal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
+  // Fix-pack W1/W2: the capillary band below cascade 0's Nyquist plus the
+  // sub-grid spectrum tail — see WATER_CAPILLARY_DETAIL_WGSL. The tail term
+  // is what stops near-field roughness collapsing to the mip-0 glass floor.
+  let capillary = waterCapillaryDetail(
+    input.oceanCoordinate,
+    uniforms.oceanWind,
+    uniforms.time,
+    // wave R: the RESOLVED slope magnitude makes the unresolved tail a field.
+    // Taken before the capillary slopes are added, so the octaves cannot feed
+    // their own roughness back into themselves.
+    length(slopeSum),
+  );
+  slopeSum += capillary.slope;
+  slopeVariance += capillary.unresolvedMeanSquareSlope;
+  let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
+  // wave R fix 7: the sun lobe alone sees the finest jitter. Putting it in the
+  // shared normal would boil the reflected sky and the Fresnel term; the sun
+  // is a 0.0047 rad disc, and this is what turns its smeared streak back into
+  // discrete twinkling glints in the near field.
+  let glintNormalUp = normalize(vec3f(
+    slopeSum.x + capillary.glintSlope.x,
+    1.0,
+    slopeSum.y + capillary.glintSlope.y,
+  ));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
+  let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
+  let normal = select(geometricNormal, -geometricNormal, cameraBelow);
+  let glintNormal = select(glintNormalUp, -glintNormalUp, cameraBelow);
   let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.0);
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
-  let fresnel = fresnelSchlick(nDotV, vec3f(0.0204));
+  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
     input.sunShadowClip0,
@@ -474,10 +612,16 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.sunShadowViewDepth,
   );
   let directSunVisibility = cloudShadow * sunShadow;
+  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate);
   let baseRoughness = 0.075 + foamAmount * 0.2;
-  let alpha = baseRoughness * baseRoughness;
-  let alphaSquared = alpha * alpha + min(slopeVariance, 0.25);
-  let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.34);
+  let microAlpha = baseRoughness * baseRoughness;
+  let alphaSquared = microAlpha * microAlpha + min(slopeVariance, 0.25);
+  // wave R: cap 0.34 -> 0.5. The old ceiling truncated the variance the
+  // Toksvig fold produces — every open-sea pixel arrived pinned at 0.328-0.34,
+  // which is exactly the constant-roughness plastic look. A fully unresolved
+  // sea at 11 m/s carries a mean-square slope near 0.06 (Cox-Munk), i.e. GGX
+  // roughness ~0.49, so 0.5 is the physical ceiling rather than an artistic one.
+  let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.5);
   // 2-9: the sky reflection comes from the shared environment probe (the
   // rendered sky, clouds and haze included), roughness-mapped to its mips;
   // the analytic zenith/horizon mix remains only as the not-yet-valid
@@ -497,10 +641,17 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  // 2-8 Toksvig (roughness computed above, before the environment-mip
-  // lookup): the slope detail a mip footprint filtered away comes back as
-  // microfacet roughness — the mechanism that stops the distant sea boiling.
-  let deepAbsorption = vec3f(0.002, 0.032, 0.052);
+  // 5-11: the body is now the same real bed + Beer-Lambert + one-scatter
+  // model used by inland water, rather than an additive deep-blue constant.
+  let transmitted = waterVolumeRadiance(
+    input.oceanCoordinate,
+    input.worldPosition.y,
+    depth,
+    normal,
+    view,
+    cameraBelow,
+    directSunVisibility,
+  );
   let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
     * nDotL * (0.1 + 0.12 * directSunVisibility);
   let horizonScatter = vec3f(0.008, 0.055, 0.064) * pow(1.0 - nDotV, 2.0);
@@ -514,17 +665,31 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     directSunVisibility,
     ${OCEAN_CREST_SSS_INTENSITY_WGSL},
   );
-  let bodyColor = deepAbsorption + subsurfaceScatter + horizonScatter + crestGlow;
+  let bodyColor = transmitted + subsurfaceScatter + horizonScatter + crestGlow;
   // 2-9: the one solid-angle-correct sun lobe (Karis), shared with inland
   // water — the sun's angular radius replaced the 2.6 gain.
-  let sunGlitter = sunSpecular(normal, view, light, roughness, uniforms.sunAngularRadius, vec3f(0.0204))
+  let sunGlitter = sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, vec3f(0.0204))
     * uniforms.sunColor * directSunVisibility;
   var water = mix(bodyColor, reflected, fresnel);
   water += sunGlitter;
   // 2-9: lit foam with an advected Worley break-up — foam is a Lambertian
   // surface, not paint, and it drifts downwind.
-  let foamMask = foamBreakup(input.oceanCoordinate, uniforms.cloudWind * uniforms.time * 0.6);
-  let foam = clamp(foamAmount * 1.18, 0.0, 1.0) * mix(0.35, 1.0, foamMask);
+  let foamMask = foamBreakup(input.oceanCoordinate, uniforms.oceanWind * uniforms.time * 0.6);
+  // wave R fix 6: the SHORE band. Whitecaps alone leave every coastline a
+  // clean geometric edge; surf is where the open sea meets a beach. Keyed on
+  // the depth this fragment already sampled, following the hydrology
+  // surface's shoreFoam precedent. The bathymetry texel is 16 m, so a tight
+  // band would step in 16 m blocks — this one is deliberately WIDE (peaking
+  // near 1 m of depth and gone by 7.5 m) and broken up by a coarse Worley
+  // advected with the wind, which is what hides the texel grid. It rises from
+  // zero AT the waterline so it can never paint foam over dry land, where the
+  // ocean disk is drawn but transparent.
+  let shoreBand = smoothstep(0.0, 1.1, depth) * (1.0 - smoothstep(1.2, 7.5, depth));
+  let shoreBreakup = foamWorley(
+    (input.oceanCoordinate - uniforms.oceanWind * uniforms.time * 0.35) * 0.055,
+  );
+  let shoreFoam = shoreBand * smoothstep(0.12, 0.72, shoreBreakup) * 0.62;
+  let foam = clamp(max(foamAmount * 1.18, shoreFoam), 0.0, 1.0) * mix(0.35, 1.0, foamMask);
   let foamColor = litFoamColor(
     ${OCEAN_FOAM_ALBEDO_WGSL},
     normal,
@@ -535,10 +700,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     directSunVisibility,
   );
   water = mix(water, foamColor, foam);
+  if (cameraBelow) {
+    water = applyUnderwaterBeerLambert(water, cameraDistance, directSunVisibility);
+  }
   // 1C-4: the shared aerial perspective — the ocean fades on the same curve
   // as terrain, closing the audit's hard tear at every distant coastline.
   water = applyAerialPerspective(water, input.worldPosition.y, cameraDistance, -view);
-  fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), 1.0);
+  let shorelineAlpha = max(waterShorelineAlpha(depth), foam);
+  fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), shorelineAlpha);
 }
 `;
 
@@ -609,13 +778,13 @@ function createCompute(
   entryPoint: string,
   names: readonly string[],
 ): ComputeShader {
-  return new ComputeShader(name, engine, { computeSource: source }, {
+  return withoutDispatchTiming(new ComputeShader(name, engine, { computeSource: source }, {
     entryPoint,
     bindingsMapping: Object.fromEntries(names.map((bindingName, binding) => [
       bindingName,
       { group: 0, binding },
     ])),
-  });
+  }));
 }
 
 function createInitializationUniforms(
@@ -675,12 +844,16 @@ function createFftUniforms(
   resolution: number,
   stage: number,
   axis: "horizontal" | "vertical",
-  normalize: boolean,
+  normalizationScale: number,
 ): UniformBuffer {
   const buffer = new UniformBuffer(engine, undefined, false, `ocean-fft-${axis}-${stage}`);
   buffer.addUniform("params", 4);
+  // wave R: the normalisation is a per-cascade f32 in its own std140 slot
+  // (offset 16), not a 1/N flag — see oceanTransformNormalizationScale.
+  buffer.addUniform("normalization", 1);
   buffer.create();
-  buffer.updateUInt4("params", resolution, stage, axis === "horizontal" ? 0 : 1, normalize ? 1 : 0);
+  buffer.updateUInt4("params", resolution, stage, axis === "horizontal" ? 0 : 1, 0);
+  buffer.updateFloat("normalization", normalizationScale);
   buffer.update();
   return buffer;
 }
@@ -771,8 +944,18 @@ class SpectralOceanCompute {
       // 2-8: slope + second-moment outputs carry mip chains (trilinear) so the
       // fragment's textureSampleGrad picks a correctly filtered footprint and
       // the moment mips recover slope variance for Toksvig roughness.
+      // wave R: 16x anisotropy, matching terrain's SURFACE_ARRAY_ANISOTROPY.
+      // The whole point of Fix-pack T2's anisotropy-limited footprint (now
+      // mirrored in waterCapillaryDetail) is that the MINOR axis is what the
+      // eye resolves at a grazing water surface — which is only true if the
+      // sampler is actually taking anisotropic taps. At 1x the trilinear
+      // fallback smears the major axis and the capillary band's new reach
+      // would have bought a blur instead of detail.
       const slopeFoam = [0, 1].map((index) => rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-slope-foam${index}-${cascadeIndex}`, Texture.TRILINEAR_SAMPLINGMODE, true)) as [RawTexture, RawTexture];
       const slopeMoment = rgbaStorage(scene, resolution, Constants.TEXTURETYPE_HALF_FLOAT, `ocean-slope-moment-${cascadeIndex}`, Texture.TRILINEAR_SAMPLINGMODE, true);
+      for (const texture of [...slopeFoam, slopeMoment]) {
+        texture.anisotropicFilteringLevel = OCEAN_SLOPE_ANISOTROPY;
+      }
 
       const initializationUniform = createInitializationUniforms(engine, this.config, cascadeIndex);
       const initialization = createCompute(
@@ -801,9 +984,18 @@ class SpectralOceanCompute {
       evolution.setStorageTexture("displacement_z_aux", transformB[0]);
 
       let sourceIndex: 0 | 1 = 0;
+      const patchLengthMeters = this.config.cascades[cascadeIndex]?.patchLengthMeters
+        ?? this.config.cascades[0]!.patchLengthMeters;
+      const normalizationScale = oceanTransformNormalizationScale(patchLengthMeters);
       const fftPasses = buildOceanFftDispatches(resolution).map((pass): FftPass => {
         const outputIndex = (1 - sourceIndex) as 0 | 1;
-        const uniform = createFftUniforms(engine, resolution, pass.stage, pass.axis, pass.normalize);
+        const uniform = createFftUniforms(
+          engine,
+          resolution,
+          pass.stage,
+          pass.axis,
+          pass.normalize ? normalizationScale : 1,
+        );
         const shader = createCompute(
           `ocean-fft-${cascadeIndex}-${pass.axis}-${pass.stage}`,
           engine,
@@ -908,7 +1100,10 @@ class SpectralOceanCompute {
     this.cascades.forEach((cascade, cascadeIndex) => {
       cascade.elapsedSecondsSinceDerivation += deltaSeconds;
       const cascadeConfig = this.config.cascades[cascadeIndex];
-      if (!cascadeConfig || this.frameIndex % cascadeConfig.updateEveryNFrames !== 0) return;
+      if (!cascadeConfig || !shouldUpdateOceanCascade(
+        this.frameIndex,
+        cascadeConfig.updateEveryNFrames,
+      )) return;
       const foamDecay = Math.exp(
         -Math.LN2 * cascade.elapsedSecondsSinceDerivation
           / this.config.foamHalfLifeSeconds,
@@ -990,6 +1185,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     atmosphere: AtmosphereSnapshot,
     windDirectionRadians?: number,
     windSpeedMetersPerSecond?: number,
+    private readonly bathymetry: BathymetryClipmap | null = null,
   ) {
     registerWaterShaders();
     this.profile = profile;
@@ -1016,6 +1212,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "cascadeCount",
           "cascadeFadeRadii0",
           "cascadeFadeRadius4",
+          "cascadeMeshFadeRadii0",
+          "cascadeMeshFadeRadius4",
           "cascadeFadeCameraHeight",
           "cameraPosition",
           "sunDirection",
@@ -1024,9 +1222,12 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "skyZenith",
           "skyHorizon",
           "cloudCoverage",
-          "cloudWind",
+          "oceanWind",
           "time",
           "environmentValid",
+          "bathymetryNearPlacement",
+          "bathymetryFarPlacement",
+          "bathymetrySeaLevel",
           ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
           ...PLANAR_REFLECTION_UNIFORMS,
           ...SUN_SHADOW_UNIFORMS,
@@ -1042,8 +1243,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           PLANAR_REFLECTION_SAMPLER,
           SUN_SHADOW_SAMPLER,
           "environmentCube",
+          "bathymetryNear",
+          "bathymetryFar",
         ],
-        needAlphaBlending: false,
+        needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
       },
     );
@@ -1053,6 +1256,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
     this.material.setTexture(
@@ -1060,8 +1264,9 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       fallbackWaterPlanarTexture(scene),
     );
     this.material.backFaceCulling = false;
-    this.material.transparencyMode = Material.MATERIAL_OPAQUE;
-    this.material.disableDepthWrite = false;
+    this.material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.material.alphaMode = Constants.ALPHA_COMBINE;
+    this.material.disableDepthWrite = true;
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
     this.material.setFloat("planarReflectionPlaneHeight", seaLevel);
     this.material.setFloat("planarReflectionStrength", 0);
@@ -1083,6 +1288,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     windDirectionRadians?: number,
     windSpeedMetersPerSecond?: number,
     signal?: AbortSignal,
+    bathymetry?: BathymetryClipmap,
   ): Promise<SpectralOceanSystem> {
     const ocean = new SpectralOceanSystem(
       scene,
@@ -1093,6 +1299,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       atmosphere,
       windDirectionRadians,
       windSpeedMetersPerSecond,
+      bathymetry ?? null,
     );
     try {
       await ocean.compute.initialize(signal, 0);
@@ -1179,10 +1386,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     );
     this.material.setFloat("sunAngularRadius", atmosphere.sunAngularRadiusRadians);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
-    this.material.setVector2(
-      "cloudWind",
-      atmosphere.windDirection.scale(atmosphere.windSpeed),
-    );
+    // wave R fix 8: the surface wind is deliberately NOT taken from the
+    // atmosphere snapshot here — see updateSurfaceWind.
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
   }
@@ -1202,10 +1407,14 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // conclude that no replacement is needed.
     const topologyChanged = profile.oceanResolution !== this.compute.config.resolution
       || profile.oceanCascades !== this.compute.cascades.length;
-    const previousTopology = oceanPresentationTopology(this.profile);
-    const nextTopology = oceanPresentationTopology(profile);
+    const previousTopology = this.profile.oceanPresentation;
+    const nextTopology = profile.oceanPresentation;
+    // wave R added nearStepMeters to the comparison: it changes every ring
+    // radius, so a profile that keeps the ring counts but moves the near step
+    // still needs a rebuilt disk (and a re-quantised snap).
     const meshChanged = previousTopology.radialRings !== nextTopology.radialRings
-      || previousTopology.angularSegments !== nextTopology.angularSegments;
+      || previousTopology.angularSegments !== nextTopology.angularSegments
+      || previousTopology.nearStepMeters !== nextTopology.nearStepMeters;
     this.profile = profile;
     if (meshChanged) {
       const nextMesh = createOceanPresentationMesh(this.scene, profile);
@@ -1253,14 +1462,28 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     this.lastTimeSeconds = timeSeconds;
     this.compute.update(timeSeconds, deltaSeconds);
     this.bindOutputs();
+    this.bathymetry?.bind(this.material);
+    // wave R fix 5: SNAP the disk to a world lattice. Positioning a
+    // camera-centred mesh continuously means every vertex samples a slightly
+    // different world point each frame, so whatever residual aliasing the
+    // lattice carries is glued to the VIEWER and crawls with them — the
+    // "tubes that follow you". Quantising to a multiple of the near step
+    // freezes it to the world instead. The mesh position and
+    // `oceanWorldOrigin` MUST be quantised together and in the same frame:
+    // the shader's world coordinate is origin + local position, so a snap
+    // applied to one and not the other would slide the wave field under the
+    // geometry.
+    const step = this.profile.oceanPresentation.nearStepMeters;
+    const snappedX = Math.round(cameraWorld.x / step) * step;
+    const snappedZ = Math.round(cameraWorld.z / step) * step;
     this.mesh.position.set(
-      cameraWorld.x - this.originX,
+      snappedX - this.originX,
       this.seaLevel,
-      cameraWorld.z - this.originZ,
+      snappedZ - this.originZ,
     );
     this.material.setVector2(
       "oceanWorldOrigin",
-      new Vector2(cameraWorld.x, cameraWorld.z),
+      new Vector2(snappedX, snappedZ),
     );
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", this.camera.position);
@@ -1287,11 +1510,23 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       this.camera.fovMode === Camera.FOVMODE_HORIZONTAL_FIXED,
     );
     const pixelAngleRadians = (2 * viewScale.x) / renderWidth;
+    const cascadeAt = (cascadeIndex: number) => this.compute.config.cascades[cascadeIndex]
+      ?? this.compute.config.cascades[this.compute.config.cascades.length - 1];
     const fadeEnd = (cascadeIndex: number): number => {
-      const cascade = this.compute.config.cascades[cascadeIndex]
-        ?? this.compute.config.cascades[this.compute.config.cascades.length - 1];
+      const cascade = cascadeAt(cascadeIndex);
       if (!cascade) return OCEAN_PRESENTATION_RADIUS_METERS;
       return cascade.maximumWavelengthMeters / (2 * Math.max(pixelAngleRadians, 1e-6));
+    };
+    // wave R fix 4: the second fade end, from the lattice rather than the
+    // pixel. Cheap and static per profile/config, but recomputed here so the
+    // two radii cannot drift apart.
+    const meshFadeEnd = (cascadeIndex: number): number => {
+      const cascade = cascadeAt(cascadeIndex);
+      if (!cascade) return OCEAN_PRESENTATION_RADIUS_METERS;
+      return oceanMeshCascadeFadeRadius(
+        this.profile.oceanPresentation,
+        cascade.maximumWavelengthMeters,
+      );
     };
     this.material.setVector4("cascadeFadeRadii0", new Vector4(
       fadeEnd(0),
@@ -1300,10 +1535,32 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       fadeEnd(3),
     ));
     this.material.setFloat("cascadeFadeRadius4", fadeEnd(4));
+    this.material.setVector4("cascadeMeshFadeRadii0", new Vector4(
+      meshFadeEnd(0),
+      meshFadeEnd(1),
+      meshFadeEnd(2),
+      meshFadeEnd(3),
+    ));
+    this.material.setFloat("cascadeMeshFadeRadius4", meshFadeEnd(4));
     this.material.setFloat(
       "cascadeFadeCameraHeight",
       Math.max(0, this.camera.globalPosition.y - this.seaLevel),
     );
+  }
+
+  /**
+   * wave R fix 8: the ripple/gust/foam wind, from the ONE authority that also
+   * raised the spectrum — `world.prevailingWind*`, resolved into
+   * `compute.config`. It is not read from the atmosphere snapshot, whose
+   * `windSpeed` is a cloud-layer number derived from the environment's wind
+   * layers and can differ from the world's prevailing wind by 3x.
+   */
+  private updateSurfaceWind(): void {
+    const config = this.compute.config;
+    this.material.setVector2("oceanWind", new Vector2(
+      config.windDirection[0] * config.windSpeedMetersPerSecond,
+      config.windDirection[1] * config.windSpeedMetersPerSecond,
+    ));
   }
 
   dispose(): void {
@@ -1334,11 +1591,11 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private configureMesh(mesh: Mesh): void {
     mesh.isPickable = false;
     mesh.receiveShadows = true;
-    // The ocean is an optically deep, opaque depth-writing surface. Shallow
-    // transmission belongs to inland water, where an estimated bed depth is
-    // available; constant alpha here made coastlines and reflections look like
-    // a translucent plastic sheet.
-    mesh.renderingGroupId = 0;
+    // Depth-aware ocean first, graph-fed inland water second. Both remain in
+    // one transparent group so the terrain bed is already present and shallow
+    // pixels can feather instead of punching an opaque coastline silhouette.
+    mesh.renderingGroupId = 1;
+    mesh.alphaIndex = 0;
     mesh.metadata = {
       ...(mesh.metadata as Record<string, unknown> | null),
       waterSurface: true,
@@ -1374,6 +1631,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   }
 
   private updateMaterialTopology(): void {
+    this.updateSurfaceWind();
     const lengths = this.compute.config.cascades.map(
       (cascade) => cascade.patchLengthMeters,
     );

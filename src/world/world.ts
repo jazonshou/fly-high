@@ -3,9 +3,34 @@ import { resolveGuaranteedAirportRegion } from "./airportSite";
 import { unitFloatFromHash, hashSeed, mixSeed, normalizeSeed } from "./seed";
 import { sampleNaturalTerrainHeight } from "./terrain";
 import type { AirportFootprint, GeneratedAirportSite } from "./airportSite";
-import type { AirportDefinition, WorldDefinition, WorldOptions, WorldSeed } from "./types";
+import type {
+  AirportDefinition,
+  WorldDefinition,
+  WorldEvolution,
+  WorldOptions,
+  WorldSeed,
+} from "./types";
 
 export const DEFAULT_WORLD_SEED = "open-skies";
+/**
+ * `G0-1` (RESOLUTION_PLAN.md §Gate 0): back to the analytic height authority.
+ *
+ * Phase 5 activated `"eroded"` here, and `FlightGame.tsx` takes this default
+ * unconditionally. In that path `TerrainPageGenerator.generate` short-circuits
+ * away from the batched WGSL dispatch (~1.9 ms/page) to ONE page at a time
+ * through a single CPU worker at ~2.1 s (L0) to ~5.5 s (L2+), with a second
+ * full recomputation for any separately-admitted channel slot. Page supply
+ * collapses below demand and every downstream system then correctly does the
+ * right thing with nothing to work on: `deviationFor` returns null, `4.5-A1`
+ * refuses to split an unmeasured node, `terrainSampleHeight` returns 0.0, and
+ * `provisionalAxisFor` falls back to a constant Grass axis — a flat sea-level
+ * grass plate, which is half of the reported "splotches of colour".
+ *
+ * Explicit `"eroded"` worlds are unaffected and stay bit-compatible; this
+ * changes only what a caller that passes no option gets. The GPU erosion port
+ * (plan items 5-3/5-4) is the separate workstream that re-earns this default.
+ */
+export const DEFAULT_WORLD_EVOLUTION: WorldEvolution = "analytic";
 
 /**
  * Mid-latitude default (0-6): temperate seasons and sun paths that match the
@@ -22,6 +47,14 @@ function positiveOrThrow(value: number, label: string): number {
   finiteOrThrow(value, label);
   if (value <= 0) throw new RangeError(`${label} must be greater than zero`);
   return value;
+}
+
+function resolveWorldEvolution(value: WorldOptions["worldEvolution"]): WorldEvolution {
+  const evolution = value ?? DEFAULT_WORLD_EVOLUTION;
+  if (evolution !== "analytic" && evolution !== "eroded") {
+    throw new RangeError('worldEvolution must be "analytic" or "eroded"');
+  }
+  return evolution;
 }
 
 function createAirportFootprint(
@@ -89,6 +122,7 @@ export function createWorld(
   options: WorldOptions = {},
 ): WorldDefinition {
   const normalizedSeed = normalizeSeed(seed);
+  const worldEvolution = resolveWorldEvolution(options.worldEvolution);
   const sourceSeedHash = hashSeed(normalizedSeed);
   const seaLevel = finiteOrThrow(options.seaLevel ?? 0, "seaLevel");
   const latitudeDegrees = finiteOrThrow(
@@ -119,6 +153,7 @@ export function createWorld(
 
   return Object.freeze({
     seed: normalizedSeed,
+    worldEvolution,
     sourceSeedHash,
     seedHash,
     seaLevel,

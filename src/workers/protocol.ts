@@ -6,6 +6,7 @@ import type {
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
 import type { WorldDefinition } from "@/src/world";
+import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 export type SpawnKind = "airborne" | "runway";
 
@@ -38,7 +39,11 @@ export type SimulationCommand =
   | { type: "returnToAttract"; airborneStartAgl: number }
   | { type: "pause"; paused: boolean }
   | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number }
-  | { type: "restartAfterCrash"; airborneStartAgl: number };
+  | { type: "restartAfterCrash"; airborneStartAgl: number }
+  /** Final L0 core from the render atlas; its ArrayBuffer is transferred. */
+  | { type: "terrainPage"; page: TerrainPagePublication }
+  /** Once-per-world macro fallback; its ArrayBuffer is transferred. */
+  | { type: "terrainMacro"; macro: TerrainMacroGrid };
 
 export type SimulationEvent =
   | { type: "ready"; state: FlightVisualState }

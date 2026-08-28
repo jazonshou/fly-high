@@ -4,6 +4,14 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import {
+  TERRAIN_TWI_DRY,
+  TERRAIN_TWI_SLOPE_EPSILON,
+  TERRAIN_TWI_WET,
+  terrainSlopeAngleFromNormalizedSteepness,
+  terrainTopographicWetnessIndex,
+  terrainTopographicWetnessToUnit,
+} from "./TerrainPageHydrology";
 
 /**
  * The land-cover classifier (`4-6`, `4-6b`, `R-27`).
@@ -42,6 +50,11 @@ export interface LandCoverInput {
   readonly elevationMeters: number;
   /** Normalised steepness (1 − normalY): 0 flat, ~0.21 at the angle of repose. */
   readonly slope: number;
+  /**
+   * Real upstream area from the erosion page. When present it supersedes the
+   * pre-erosion moisture proxy for wetness; omission preserves analytic parity.
+   */
+  readonly flowAccumulationAreaM2?: number;
   readonly moisture: number;
   /** Normalised temperature from the climate chain, before the seasonal shift. */
   readonly temperature: number;
@@ -76,6 +89,15 @@ export const LAND_COVER_SOFTMAX_BASE_TEMPERATURE = 0.22;
 const SNOWLINE_REFERENCE_METERS = 1_520;
 const METERS_PER_NORMALIZED_TEMPERATURE = 2_450;
 
+/** One classifier seam: real drainage when available, climatic proxy otherwise. */
+export function landCoverWetness(input: LandCoverInput): number {
+  if (input.flowAccumulationAreaM2 === undefined) return saturate(input.moisture);
+  return terrainTopographicWetnessToUnit(terrainTopographicWetnessIndex(
+    input.flowAccumulationAreaM2,
+    terrainSlopeAngleFromNormalizedSteepness(input.slope),
+  ));
+}
+
 /**
  * The ten suitabilities, in `SurfaceMaterial` order.
  *
@@ -88,11 +110,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const {
     elevationMeters: elevation,
     slope,
-    moisture,
     temperature,
     aspect,
     airportInfluence,
   } = input;
+  const wetness = landCoverWetness(input);
 
   // The snowline descends with the season; the reference day leaves it exactly
   // where Phase 3 tuned it.
@@ -109,8 +131,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // (`smoothstep(1.5, 7, elevation)`), so the ground and the plants agree
   // about where the beach ends.
   const shore = smoothstep(-1, 3, elevation);
-  const dry = 1 - smoothstep(0.28, 0.62, moisture);
-  const wet = smoothstep(0.3, 0.64, moisture);
+  const dry = 1 - smoothstep(0.28, 0.62, wetness);
+  const wet = smoothstep(0.3, 0.64, wetness);
   const warm = smoothstep(0.16, 0.34, temperature);
   const gentle = 1 - smoothstep(0.06, 0.26, slope);
   const steep = smoothstep(0.24, 0.58, slope);
@@ -157,7 +179,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
  * add noise to a boundary whose shape was already uniform.
  */
 export function landCoverSoftmaxTemperature(input: LandCoverInput): number {
-  const sharpening = saturate(input.slope * 2.4) * 0.6 + (1 - saturate(input.moisture)) * 0.25;
+  const sharpening = saturate(input.slope * 2.4) * 0.6
+    + (1 - landCoverWetness(input)) * 0.25;
   return LAND_COVER_SOFTMAX_BASE_TEMPERATURE * (1.35 - sharpening);
 }
 
@@ -198,6 +221,66 @@ export function landCoverWeightOf(
 ): number {
   const index = weights.ids.indexOf(material);
   return index >= 0 ? (weights.weights[index] ?? 0) : 0;
+}
+
+/**
+ * One categorical material basis shared by the two resident season buckets.
+ *
+ * The atlas has one id texture and two weight textures. Storing the low
+ * season's ids beside the high season's independently ordered weights assigns
+ * those weights to the wrong materials as soon as (for example) snow enters
+ * winter's top four. Select a joint basis by each material's strongest share
+ * in either bucket, then project and renormalise both buckets onto it. The GPU
+ * bake below mirrors this function exactly.
+ */
+export interface SeasonalLandCoverWeights {
+  readonly ids: readonly SurfaceMaterialId[];
+  readonly lowWeights: readonly number[];
+  readonly highWeights: readonly number[];
+}
+
+export function alignSeasonalLandCoverWeights(
+  low: LandCoverWeights,
+  high: LandCoverWeights,
+): SeasonalLandCoverWeights {
+  const lowByMaterial = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  const highByMaterial = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  for (let slot = 0; slot < LAND_COVER_TOP_MATERIALS; slot += 1) {
+    const lowId = low.ids[slot];
+    const highId = high.ids[slot];
+    if (lowId !== undefined) {
+      lowByMaterial[lowId] = lowByMaterial[lowId]! + (low.weights[slot] ?? 0);
+    }
+    if (highId !== undefined) {
+      highByMaterial[highId] = highByMaterial[highId]! + (high.weights[slot] ?? 0);
+    }
+  }
+
+  const scores = lowByMaterial.map((weight, id) => Math.max(weight, highByMaterial[id]!));
+  const ids: SurfaceMaterialId[] = [];
+  for (let slot = 0; slot < LAND_COVER_TOP_MATERIALS; slot += 1) {
+    let bestIndex = 0;
+    let bestValue = -1;
+    for (let id = 0; id < SURFACE_MATERIAL_COUNT; id += 1) {
+      if (scores[id]! > bestValue) {
+        bestIndex = id;
+        bestValue = scores[id]!;
+      }
+    }
+    scores[bestIndex] = -1;
+    ids.push(bestIndex as SurfaceMaterialId);
+  }
+
+  const project = (source: readonly number[]): number[] => {
+    const projected = ids.map((id) => source[id] ?? 0);
+    const total = projected.reduce((sum, weight) => sum + weight, 0);
+    return total > 0 ? projected.map((weight) => weight / total) : projected;
+  };
+  return {
+    ids,
+    lowWeights: project(lowByMaterial),
+    highWeights: project(highByMaterial),
+  };
 }
 
 /**
@@ -247,6 +330,8 @@ export const LAND_COVER_CLASSIFIER_WGSL = /* wgsl */ `
 struct LandCoverInput {
   elevationMeters: f32,
   slope: f32,
+  flowAccumulationAreaM2: f32,
+  flowAccumulationValid: f32,
   moisture: f32,
   temperature: f32,
   aspect: f32,
@@ -261,15 +346,28 @@ const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
 const LAND_COVER_SNOWLINE_REFERENCE: f32 = ${SNOWLINE_REFERENCE_METERS}.0;
 const LAND_COVER_METERS_PER_TEMPERATURE: f32 = ${METERS_PER_NORMALIZED_TEMPERATURE}.0;
 
+fn landCoverWetness(input: LandCoverInput) -> f32 {
+  if (input.flowAccumulationValid < 0.5) { return kSaturate(input.moisture); }
+  let normalY = max(0.000001, 1.0 - input.slope);
+  let tanSlope = sqrt(max(0.0, 1.0 / (normalY * normalY) - 1.0));
+  let twi = log(
+    (1.0 + max(0.0, input.flowAccumulationAreaM2))
+      / (tanSlope + ${TERRAIN_TWI_SLOPE_EPSILON}),
+  );
+  let mapped = kSaturate((twi - ${TERRAIN_TWI_DRY}.0) / ${TERRAIN_TWI_WET - TERRAIN_TWI_DRY}.0);
+  return mapped * mapped * (3.0 - 2.0 * mapped);
+}
+
 fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
   let elevation = input.elevationMeters;
   let slope = input.slope;
+  let wetness = landCoverWetness(input);
   let snowline = LAND_COVER_SNOWLINE_REFERENCE
     + input.seasonalTemperatureShift * LAND_COVER_METERS_PER_TEMPERATURE
     + input.aspect * 90.0;
   let shore = kSmoothstep(-1.0, 3.0, elevation);
-  let dry = 1.0 - kSmoothstep(0.28, 0.62, input.moisture);
-  let wet = kSmoothstep(0.3, 0.64, input.moisture);
+  let dry = 1.0 - kSmoothstep(0.28, 0.62, wetness);
+  let wet = kSmoothstep(0.3, 0.64, wetness);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
   let gentle = 1.0 - kSmoothstep(0.06, 0.26, slope);
   let steep = kSmoothstep(0.24, 0.58, slope);
@@ -301,7 +399,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
 
 fn landCoverSoftmaxTemperature(input: LandCoverInput) -> f32 {
   let sharpening = kSaturate(input.slope * 2.4) * 0.6
-    + (1.0 - kSaturate(input.moisture)) * 0.25;
+    + (1.0 - landCoverWetness(input)) * 0.25;
   return LAND_COVER_SOFTMAX_BASE * (1.35 - sharpening);
 }
 
@@ -387,10 +485,10 @@ struct SplatJob {
 
 @group(0) @binding(1) var<storage, read> splatJobs: array<SplatJob>;
 @group(0) @binding(2) var splatHeightAtlas: texture_2d<f32>;
-@group(0) @binding(3) var splatIdLo: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var splatId: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var splatWeightLo: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(5) var splatIdHi: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(6) var splatWeightHi: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(5) var splatWeightHi: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(6) var splatFlowAccumAtlas: texture_2d<f32>;
 
 /** Slope from the page's own texel grid — never a fixed 2 m difference. */
 fn splatSlopeAt(job: SplatJob, heightTexel: vec2f) -> f32 {
@@ -416,6 +514,15 @@ fn splatClassify(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> LandCov
   var input: LandCoverInput;
   input.elevationMeters = elevation;
   input.slope = splatSlopeAt(job, heightTexel);
+  let channelTexel = vec2i(job.slots.xy) + vec2i(vec2f(
+    (localX - job.placement.x) / job.shape.x,
+    (localZ - job.placement.y) / job.shape.x,
+  ));
+  let flowLog2 = max(0.0, textureLoad(splatFlowAccumAtlas, channelTexel, 0).r);
+  input.flowAccumulationAreaM2 = max(0.0, exp2(flowLog2) - 1.0);
+  // A null-created analytic atlas is zero-initialised. Erosion flow starts at
+  // one contributing source cell, so zero is an unambiguous parity sentinel.
+  input.flowAccumulationValid = select(0.0, 1.0, flowLog2 > 0.0);
   input.moisture = terrainMoisture(localX, localZ);
   input.temperature = terrainTemperatureFromClimate(terrainClimate(localX, localZ), elevation);
   input.aspect = 0.0;
@@ -466,6 +573,58 @@ fn splatSupersample(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> Land
   return result;
 }
 
+struct SeasonalLandCoverWeights {
+  ids: vec4f,
+  weightsLo: vec4f,
+  weightsHi: vec4f,
+};
+
+/** Give both season buckets one categorical id basis before storing them. */
+fn splatAlignSeasonalWeights(
+  lo: LandCoverWeights,
+  hi: LandCoverWeights,
+) -> SeasonalLandCoverWeights {
+  var loByMaterial: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  var hiByMaterial: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  var scores: array<f32, ${SURFACE_MATERIAL_COUNT}>;
+  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+    loByMaterial[index] = 0.0;
+    hiByMaterial[index] = 0.0;
+  }
+  for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
+    let loId = u32(lo.ids[slot]);
+    let hiId = u32(hi.ids[slot]);
+    loByMaterial[loId] = loByMaterial[loId] + lo.weights[slot];
+    hiByMaterial[hiId] = hiByMaterial[hiId] + hi.weights[slot];
+  }
+  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+    scores[index] = max(loByMaterial[index], hiByMaterial[index]);
+  }
+
+  var result: SeasonalLandCoverWeights;
+  var totalLo = 0.0;
+  var totalHi = 0.0;
+  for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
+    var bestIndex = 0u;
+    var bestValue = -1.0;
+    for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+      if (scores[index] > bestValue) {
+        bestIndex = index;
+        bestValue = scores[index];
+      }
+    }
+    scores[bestIndex] = -1.0;
+    result.ids[slot] = f32(bestIndex);
+    result.weightsLo[slot] = loByMaterial[bestIndex];
+    result.weightsHi[slot] = hiByMaterial[bestIndex];
+    totalLo = totalLo + result.weightsLo[slot];
+    totalHi = totalHi + result.weightsHi[slot];
+  }
+  if (totalLo > 0.0) { result.weightsLo = result.weightsLo / totalLo; }
+  if (totalHi > 0.0) { result.weightsHi = result.weightsHi / totalHi; }
+  return result;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn bakeSplat(
   @builtin(global_invocation_id) id: vec3<u32>,
@@ -480,16 +639,16 @@ fn bakeSplat(
   let localZ = job.placement.y + (f32(id.y) + 0.5) * job.shape.x;
   let texel = vec2i(job.slots.xy) + vec2i(i32(id.x), i32(id.y));
 
-  // Ids are stored as unorm over the ten-material axis, so a filtered fetch
-  // between two texels lands between two ADJACENT materials on the ecotone
-  // axis — which is exactly what the axis was ordered for.
+  // Ids are categorical values encoded as unorm over the ten-material axis.
+  // The surface shader loads them exactly; it never filters between ids.
+  // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
   let lo = splatSupersample(job, localX, localZ, job.placement.z);
-  textureStore(splatIdLo, texel, lo.ids * scale);
-  textureStore(splatWeightLo, texel, lo.weights);
   let hi = splatSupersample(job, localX, localZ, job.placement.w);
-  textureStore(splatIdHi, texel, hi.ids * scale);
-  textureStore(splatWeightHi, texel, hi.weights);
+  let aligned = splatAlignSeasonalWeights(lo, hi);
+  textureStore(splatId, texel, aligned.ids * scale);
+  textureStore(splatWeightLo, texel, aligned.weightsLo);
+  textureStore(splatWeightHi, texel, aligned.weightsHi);
 
 }
 `;

@@ -7,7 +7,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
-import type { AirportDefinition } from "@/src/world/types";
+import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
 import {
   compareWorldPageCacheEvictionOrder,
   touchWorldPageCacheMetadata,
@@ -20,7 +20,9 @@ import {
 } from "@/src/render/webgpu/world/lifecycle";
 import {
   WORLD_PAGE_BASE_EXTENT_METERS,
+  WORLD_PAGE_CHANNEL_CORE,
   WORLD_PAGE_GUTTER,
+  WORLD_PAGE_HEIGHT_CORE,
 } from "@/src/render/webgpu/world/pageGeometry";
 import {
   createWorldPageKey,
@@ -54,6 +56,20 @@ import {
   terrainTexelSizeMeters,
   type TerrainSlotKey,
 } from "./TerrainSpineContract";
+import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
+import {
+  TerrainPageErosionClient,
+  type TerrainPageErosionExecutor,
+} from "./TerrainPageErosionClient";
+import type { TerrainErodedPage } from "./TerrainPageErosion";
+import type {
+  TerrainPageHydrologyResult,
+  TerrainPageHydrologyUpload,
+} from "./TerrainPageHydrology";
+import {
+  EROSION_HALO_TEXELS,
+  EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS,
+} from "./TerrainErosionCompute";
 
 /**
  * The terrain page atlas (`4-2`).
@@ -107,11 +123,15 @@ export interface TerrainAtlasSlot {
   /** The in-flight generation token, or null once resident. */
   token: WorldPageOperationToken | null;
   /**
-   * `4.5-B1`: the slot's TEXELS are written and it may be drawn, whether or
-   * not its bounds/deviation readback has resolved yet. Never true before the
-   * generation dispatch is submitted, and cleared when the slot is released.
+   * Phase 5 DAG bookkeeping. A submitted page stays unavailable to every
+   * consumer until all generation stages and readbacks complete; this flag
+   * only prevents the scheduler from submitting the same token twice.
    */
-  texelsResident: boolean;
+  generationSubmitted: boolean;
+  /** True once every required Phase-5 auxiliary texture has been uploaded. */
+  hydrologyReady: boolean;
+  /** Prevents duplicate worker requests while a late channel slot catches up. */
+  hydrologySubmitted: boolean;
   /**
    * `4.5-A3(c)`: the season day this slot's season-KEYED families were baked
    * for, or null while none have been.
@@ -130,6 +150,8 @@ export interface TerrainAtlasResidencyOptions {
   readonly worldRevision: string;
   /** Bytes one slot occupies; feeds the cache metadata's eviction ordering. */
   readonly slotByteLength: number;
+  /** Eroded channel slots cannot publish until all four aux fields exist. */
+  readonly requireHydrology?: boolean;
 }
 
 export interface TerrainAtlasRequest {
@@ -188,36 +210,10 @@ export class TerrainAtlasResidency {
     this.frameIndex = frameIndex;
   }
 
-  /**
-   * The slot a page's TEXELS live in, or -1 while there are none.
-   *
-   * `4.5-B1` split this from "stats resident". Drawing a page needs only its
-   * texels, which the generation dispatch writes; the CDLOD split needs its
-   * measured deviation, which arrives a GPU readback later. Gating the draw on
-   * the readback made a page's arrival cost a full round-trip on top of its
-   * dispatch, and a fresh spawn needs about ten sequential rounds of
-   * generate → readback → split to descend from the L9 roots.
-   */
+  /** The slot a fully converged page lives in, or -1 while its DAG is active. */
   slotIndexOf(key: TerrainSlotKey): number {
     const slot = this.slots.get(terrainSlotKeyString(key));
-    return slot && (slot.texelsResident || slot.lifecycle.state === "resident")
-      ? slot.slotIndex
-      : -1;
-  }
-
-  /**
-   * `4.5-B1`: the page's texels are written and it may be DRAWN, while its
-   * bounds and deviation are still in flight.
-   *
-   * Epoch-checked like every other completion: a slot re-admitted for a
-   * different page between the dispatch and this call must not publish the
-   * new page's slot as holding the old page's texels.
-   */
-  publishTexels(key: TerrainSlotKey, token: WorldPageOperationToken): boolean {
-    const slot = this.slots.get(terrainSlotKeyString(key));
-    if (!slot || slot.token !== token || slot.lifecycle.state !== "generating") return false;
-    slot.texelsResident = true;
-    return true;
+    return slot?.lifecycle.state === "resident" ? slot.slotIndex : -1;
   }
 
   get(key: TerrainSlotKey): TerrainAtlasSlot | undefined {
@@ -276,7 +272,9 @@ export class TerrainAtlasResidency {
       stats: UNKNOWN_STATS,
       lastRequiredFrame: this.frameIndex,
       token,
-      texelsResident: false,
+      generationSubmitted: false,
+      hydrologyReady: !this.options.requireHydrology,
+      hydrologySubmitted: false,
       bakedSeasonDay: null,
     };
     this.slots.set(keyString, slot);
@@ -290,10 +288,32 @@ export class TerrainAtlasResidency {
     stats: TerrainSlotStats,
   ): boolean {
     const slot = this.slots.get(terrainSlotKeyString(key));
+    if (slot && this.options.requireHydrology && !slot.hydrologyReady) return false;
     if (!slot || !slot.lifecycle.markGenerated(token)) return false;
     slot.stats = stats;
     slot.token = null;
-    slot.texelsResident = true;
+    slot.generationSubmitted = false;
+    return true;
+  }
+
+  /**
+   * Commit the four aux uploads as one residency prerequisite. The uploader
+   * calls this only after every queue write succeeds, so a partial texture set
+   * is never addressable through `slotIndexOf`.
+   */
+  markHydrologyReady(
+    key: TerrainSlotKey,
+    token: WorldPageOperationToken,
+  ): boolean {
+    const slot = this.slots.get(terrainSlotKeyString(key));
+    if (
+      !slot
+      || slot.token?.epoch !== token.epoch
+      || slot.token.key !== token.key
+      || slot.lifecycle.state !== "generating"
+    ) return false;
+    slot.hydrologyReady = true;
+    slot.hydrologySubmitted = false;
     return true;
   }
 
@@ -317,7 +337,8 @@ export class TerrainAtlasResidency {
       slot.lifecycle.cancelOperation(slot.token);
     }
     slot.token = null;
-    slot.texelsResident = false;
+    slot.generationSubmitted = false;
+    slot.hydrologySubmitted = false;
     this.slots.delete(keyString);
     this.free.push(slot.slotIndex);
   }
@@ -339,7 +360,8 @@ export class TerrainAtlasResidency {
   reclaimStalledGenerating(maxAgeFrames: number): number {
     const stalled = [...this.slots.values()].filter(
       (slot) => slot.lifecycle.state === "generating"
-        && !slot.texelsResident
+        && !slot.generationSubmitted
+        && !slot.hydrologySubmitted
         && this.frameIndex - slot.lastRequiredFrame > maxAgeFrames,
     );
     for (const slot of stalled) this.release(slot.key);
@@ -378,45 +400,61 @@ export type TerrainAtlasKind = "height" | "channel";
 /**
  * Texture indices inside the channel atlas, named once.
  *
- * Seven rgba8 textures per slot: occlusion (sky visibility + bent normal),
- * two horizon textures (eight azimuths), and the season-keyed splat pair for
- * each of the TWO resident buckets. The estimator's channel row is the same
- * accounting from the other direction (12 invariant + 8 per bucket bytes).
+ * Six rgba8 textures hold the Phase-4 shading families. Phase 5 appends four
+ * canonical single-channel aux resources without changing their formats:
+ * flow/log-area R16F, lake depth R16F, soil R8 UNORM and shore R16 SINT.
  */
 export const TERRAIN_CHANNEL_TEXTURES = Object.freeze({
   occlusion: 0,
   horizonA: 1,
   horizonB: 2,
-  splatIdLo: 3,
+  splatId: 3,
   splatWeightLo: 4,
-  splatIdHi: 5,
-  splatWeightHi: 6,
+  splatWeightHi: 5,
+  flowAccum: 6,
+  lakeDepth: 7,
+  soilDepth: 8,
+  shoreDistance: 9,
 });
 
-export const TERRAIN_CHANNEL_TEXTURE_COUNT = 7;
+export const TERRAIN_CHANNEL_TEXTURE_COUNT = 10;
+export const TERRAIN_CHANNEL_BASE_TEXTURE_COUNT = 6;
+/** 6 rgba8 + 2 r16f + 1 r8 + 1 r16sint. */
+export const TERRAIN_CHANNEL_BYTES_PER_TEXEL = 31;
 
 export interface TerrainPageAtlasOptions {
   readonly kind: TerrainAtlasKind;
   readonly worldRevision: string;
-  /** Textures the family occupies per slot (splat is two, height is one). */
+  /** Textures the family occupies per slot (channel atlas is ten, height is one). */
   readonly textureCount?: number;
   readonly bytesPerTexel?: number;
+  /** Gate channel residency on a complete Phase-5 aux upload. */
+  readonly requiresHydrology?: boolean;
+}
+
+export interface TerrainHydrologyAtlasTextures {
+  readonly flowAccum: RawTexture | null;
+  readonly lakeDepth: RawTexture | null;
+  readonly soilDepth: RawTexture | null;
+  readonly shoreDistance: RawTexture | null;
 }
 
 /**
  * One page atlas: residency plus the GPU texture(s) it addresses.
  *
- * The texture is r32float for height and rgba8unorm for channel families, and
- * both are created with the storage flag: a page is WRITTEN by a compute
- * dispatch and READ by the terrain material in the same frame. `R-4B` names
- * the fallback if a driver refuses that combination — a ping-pong pair with a
- * copy, costing one atlas of memory at the tier that needs it.
+ * Height uses r32float; the first six channel families use rgba8unorm storage;
+ * the four Phase-5 hydrology resources use their canonical sampled formats.
+ * Compute-written resources carry the storage flag because a page is WRITTEN
+ * by a dispatch and READ by terrain in the same frame. `R-4B` names the
+ * fallback if a driver refuses that combination — a ping-pong pair with a copy,
+ * costing one atlas of memory at the tier that needs it.
  */
 export class TerrainPageAtlas {
   readonly residency: TerrainAtlasResidency;
   readonly slotEdge: number;
   readonly atlasEdge: number;
   private readonly textures: RawTexture[] = [];
+  private readonly engine: AbstractEngine;
   private disposed = false;
 
   constructor(
@@ -424,14 +462,24 @@ export class TerrainPageAtlas {
     profile: WebGpuQualityProfile,
     private readonly options: TerrainPageAtlasOptions,
   ) {
+    this.engine = scene.getEngine();
     const height = options.kind === "height";
+    const textureCount = options.textureCount ?? 1;
     this.slotEdge = height ? TERRAIN_HEIGHT_SLOT_EDGE : TERRAIN_CHANNEL_SLOT_EDGE;
     const slots = height ? profile.heightAtlasSlots : profile.channelAtlasSlots;
     this.atlasEdge = terrainAtlasEdgeTexels(slots, this.slotEdge);
     this.residency = new TerrainAtlasResidency(slots, {
       worldRevision: options.worldRevision,
-      slotByteLength:
-        this.slotEdge * this.slotEdge * (options.bytesPerTexel ?? 4) * (options.textureCount ?? 1),
+      slotByteLength: this.slotEdge * this.slotEdge * (
+        options.bytesPerTexel === undefined
+          ? (height
+            ? 4
+            : textureCount === TERRAIN_CHANNEL_TEXTURE_COUNT
+              ? TERRAIN_CHANNEL_BYTES_PER_TEXEL
+              : 4 * textureCount)
+          : options.bytesPerTexel * textureCount
+      ),
+      requireHydrology: options.requiresHydrology ?? false,
     });
 
     // NullEngine cannot express a storage texture at all, and the Node suite
@@ -439,13 +487,14 @@ export class TerrainPageAtlas {
     // arrays and the foliage atlas use.
     const engineFlags = scene.getEngine() as { isWebGPU?: boolean };
     if (!engineFlags.isWebGPU) return;
-    for (let index = 0; index < (options.textureCount ?? 1); index += 1) {
-      const texture = height
+    for (let index = 0; index < textureCount; index += 1) {
+      let texture: RawTexture;
+      if (height) {
         // CreateRStorageTexture, not CreateRTexture with a creation flag: the
         // storage variant is the one that adds STORAGE_BINDING usage, and the
         // page is written by a compute dispatch and sampled by the terrain
         // material in the same frame.
-        ? RawTexture.CreateRStorageTexture(
+        texture = RawTexture.CreateRStorageTexture(
           null,
           this.atlasEdge,
           this.atlasEdge,
@@ -458,8 +507,9 @@ export class TerrainPageAtlas {
           // requested.
           Texture.NEAREST_SAMPLINGMODE,
           Constants.TEXTURETYPE_FLOAT,
-        )
-        : RawTexture.CreateRGBAStorageTexture(
+        );
+      } else if (index < TERRAIN_CHANNEL_BASE_TEXTURE_COUNT) {
+        texture = RawTexture.CreateRGBAStorageTexture(
           null,
           this.atlasEdge,
           this.atlasEdge,
@@ -481,6 +531,49 @@ export class TerrainPageAtlas {
           Texture.BILINEAR_SAMPLINGMODE,
           Constants.TEXTURETYPE_UNSIGNED_BYTE,
         );
+      } else if (
+        index === TERRAIN_CHANNEL_TEXTURES.flowAccum
+        || index === TERRAIN_CHANNEL_TEXTURES.lakeDepth
+      ) {
+        // Aux fields are CPU-uploaded and sampled, never compute-written. A
+        // non-storage R texture avoids requiring optional storage-format
+        // features for r16float while preserving the exact atlas schema.
+        texture = RawTexture.CreateRTexture(
+          null,
+          this.atlasEdge,
+          this.atlasEdge,
+          scene,
+          false,
+          false,
+          Texture.NEAREST_SAMPLINGMODE,
+          Constants.TEXTURETYPE_HALF_FLOAT,
+        );
+      } else if (index === TERRAIN_CHANNEL_TEXTURES.soilDepth) {
+        texture = RawTexture.CreateRTexture(
+          null,
+          this.atlasEdge,
+          this.atlasEdge,
+          scene,
+          false,
+          false,
+          Texture.NEAREST_SAMPLINGMODE,
+          Constants.TEXTURETYPE_UNSIGNED_BYTE,
+        );
+      } else if (index === TERRAIN_CHANNEL_TEXTURES.shoreDistance) {
+        texture = new RawTexture(
+          null,
+          this.atlasEdge,
+          this.atlasEdge,
+          Constants.TEXTUREFORMAT_RED_INTEGER,
+          scene,
+          false,
+          false,
+          Texture.NEAREST_SAMPLINGMODE,
+          Constants.TEXTURETYPE_SHORT,
+        );
+      } else {
+        throw new RangeError(`Unknown terrain channel texture index ${index}`);
+      }
       texture.name = `terrain-${options.kind}-atlas-${index}`;
       texture.wrapU = Texture.CLAMP_ADDRESSMODE;
       texture.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -499,6 +592,78 @@ export class TerrainPageAtlas {
 
   get hasTextures(): boolean {
     return this.textures.length > 0;
+  }
+
+  get requiresHydrology(): boolean {
+    return this.options.requiresHydrology ?? false;
+  }
+
+  /** Typed access to the four canonical aux resources for downstream systems. */
+  hydrologyTextures(): TerrainHydrologyAtlasTextures {
+    return {
+      flowAccum: this.texture(TERRAIN_CHANNEL_TEXTURES.flowAccum),
+      lakeDepth: this.texture(TERRAIN_CHANNEL_TEXTURES.lakeDepth),
+      soilDepth: this.texture(TERRAIN_CHANNEL_TEXTURES.soilDepth),
+      shoreDistance: this.texture(TERRAIN_CHANNEL_TEXTURES.shoreDistance),
+    };
+  }
+
+  /**
+   * Upload all four aux resources and only then satisfy the residency gate.
+   * Queue writes may have landed when a later write throws, but the slot stays
+   * generating and therefore remains invisible to every atlas consumer.
+   */
+  uploadHydrology(
+    slot: TerrainAtlasSlot,
+    token: WorldPageOperationToken,
+    page: TerrainPageHydrologyResult,
+  ): boolean {
+    if (this.disposed || this.kind !== "channel" || !this.requiresHydrology) return false;
+    if (
+      slot.token?.epoch !== token.epoch
+      || slot.token.key !== token.key
+      || this.residency.get(slot.key) !== slot
+      || page.address.level !== slot.address.level
+      || page.address.x !== slot.address.x
+      || page.address.z !== slot.address.z
+      || page.coreSize !== WORLD_PAGE_CHANNEL_CORE
+      || page.gutter !== WORLD_PAGE_GUTTER
+      || page.storedEdge !== TERRAIN_CHANNEL_SLOT_EDGE
+    ) return false;
+    const expected = TERRAIN_CHANNEL_SLOT_EDGE * TERRAIN_CHANNEL_SLOT_EDGE;
+    const uploads: readonly [number, ArrayBufferView][] = [
+      [TERRAIN_CHANNEL_TEXTURES.flowAccum, page.upload.flowAccumR16Float],
+      [TERRAIN_CHANNEL_TEXTURES.lakeDepth, page.upload.lakeDepthR16Float],
+      [TERRAIN_CHANNEL_TEXTURES.soilDepth, page.upload.soilDepthR8Unorm],
+      [TERRAIN_CHANNEL_TEXTURES.shoreDistance, page.upload.shoreDistanceR16Sint],
+    ];
+    if (!this.hasTextures || uploads.some(([, values]) => values.byteLength === 0)) return false;
+    const lengths: readonly [keyof TerrainPageHydrologyUpload, number][] = [
+      ["flowAccumR16Float", page.upload.flowAccumR16Float.length],
+      ["lakeDepthR16Float", page.upload.lakeDepthR16Float.length],
+      ["soilDepthR8Unorm", page.upload.soilDepthR8Unorm.length],
+      ["shoreDistanceR16Sint", page.upload.shoreDistanceR16Sint.length],
+    ];
+    for (const [name, length] of lengths) {
+      if (length !== expected) throw new RangeError(`Terrain hydrology ${name} length mismatch`);
+    }
+    const origin = this.slotOrigin(slot.slotIndex);
+    for (const [index, values] of uploads) {
+      const internalTexture = this.texture(index)?.getInternalTexture();
+      if (!internalTexture) throw new Error(`Terrain hydrology atlas texture ${index} is unavailable`);
+      (this.engine as WebGPUEngine).updateTextureData(
+        internalTexture,
+        values,
+        origin.u,
+        origin.v,
+        TERRAIN_CHANNEL_SLOT_EDGE,
+        TERRAIN_CHANNEL_SLOT_EDGE,
+        0,
+        0,
+        false,
+      );
+    }
+    return this.residency.markHydrologyReady(slot.key, token);
   }
 
   /** Texel origin of a slot inside the atlas. */
@@ -577,18 +742,6 @@ export function invariantSlotKey(address: WorldPageAddress): TerrainSlotKey {
 // ---------------------------------------------------------------------------
 // `4-3` — GPU height generation
 // ---------------------------------------------------------------------------
-
-/**
- * `4.5-B1`: whether a page's texels are FINAL the moment its generation
- * dispatch is submitted.
- *
- * True in the analytic-kernel era: one dispatch writes the whole page and
- * nothing revisits it. `5-4`'s erosion makes a page the output of a multi-pass
- * DAG, and D12's convergence rule is explicit that a slot is never sampled
- * mid-erosion and that publish is the DAG's LAST stage — so this flag exists
- * to make the fast path a deletion rather than an argument when that lands.
- */
-const PAGES_ARE_FINAL_AT_DISPATCH = true;
 
 /**
  * Bounds buffers in flight at once (`4.5-B1`).
@@ -859,6 +1012,43 @@ export function encodeOrderableFloat(value: number): number {
 export const TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE =
   TERRAIN_HEIGHT_SLOT_EDGE / PAGE_WORKGROUP_EDGE;
 
+export interface TerrainCollisionPagePublication {
+  readonly level: 0;
+  readonly tileX: number;
+  readonly tileZ: number;
+  /** Ownership passes to the sink; a Worker sender may transfer the buffer. */
+  readonly heights: Float32Array;
+}
+
+export type TerrainCollisionPagePublisher = (
+  page: TerrainCollisionPagePublication,
+) => void;
+
+/** Final render/detail aux product; deliberately separate from simulation. */
+export interface TerrainAuxPagePublication {
+  readonly level: number;
+  readonly tileX: number;
+  readonly tileZ: number;
+  readonly coreSize: typeof WORLD_PAGE_CHANNEL_CORE;
+  readonly gutter: typeof WORLD_PAGE_GUTTER;
+  readonly storedEdge: typeof TERRAIN_CHANNEL_SLOT_EDGE;
+  readonly texelSizeMeters: number;
+  readonly shoreDistanceMetersPerUnit: number;
+  /** Row-major core+gutter; ownership passes to the sink for worker transfer. */
+  readonly shoreDistanceR16Sint: Int16Array;
+}
+
+export type TerrainAuxPagePublisher = (page: TerrainAuxPagePublication) => void;
+
+export interface TerrainPageGeneratorOptions {
+  /** Required for the activated eroded authority; omitted preserves analytic compatibility. */
+  readonly world?: Readonly<WorldDefinition>;
+  /** Owned by the generator after construction. */
+  readonly erosionExecutor?: TerrainPageErosionExecutor;
+  /** Shared channel atlas receiving the worker's upload-native aux fields. */
+  readonly channelAtlas?: TerrainPageAtlas;
+}
+
 /**
  * The host half of `4-3`: one `ComputeShader` created ONCE, with the page
  * uniforms and the job table rebound per batch.
@@ -881,16 +1071,87 @@ export class TerrainPageGenerator {
   private disposed = false;
   private lastBatchSize = 0;
   private lastCostSampleCount = -1;
+  private collisionPagePublisher: TerrainCollisionPagePublisher | null = null;
+  private auxPagePublisher: TerrainAuxPagePublisher | null = null;
+  private readonly world: Readonly<WorldDefinition> | null;
+  private readonly erosionExecutor: TerrainPageErosionExecutor | null;
+  private readonly channelAtlas: TerrainPageAtlas | null;
+  private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
 
   constructor(
     private readonly engine: AbstractEngine,
     private readonly atlas: TerrainPageAtlas,
     private readonly seedHash: number,
     private readonly airport: Readonly<AirportDefinition> | null = null,
-  ) {}
+    options: TerrainPageGeneratorOptions = {},
+  ) {
+    this.world = options.world ?? null;
+    if (this.world && this.world.seedHash !== seedHash) {
+      throw new RangeError("Terrain page generator world does not match its seed hash");
+    }
+    this.erosionExecutor = this.world?.worldEvolution === "eroded"
+      ? options.erosionExecutor ?? new TerrainPageErosionClient(this.world)
+      : null;
+    this.channelAtlas = options.channelAtlas ?? null;
+    if (this.channelAtlas && this.channelAtlas.kind !== "channel") {
+      throw new RangeError("Terrain page generator aux target must be a channel atlas");
+    }
+  }
+
+  /** Attach the simulation worker sink after renderer and worker construction. */
+  setCollisionPagePublisher(publisher: TerrainCollisionPagePublisher | null): void {
+    this.collisionPagePublisher = publisher;
+  }
+
+  /** Attach the render/detail aux sink; these bytes never enter simulation. */
+  setAuxPagePublisher(publisher: TerrainAuxPagePublisher | null): void {
+    this.auxPagePublisher = publisher;
+  }
+
+  /** Install the eager canonical macro authority before eroded pages schedule. */
+  setMacroEvolution(macro: Readonly<TerrainMacroEvolutionExport> | null): void {
+    if (macro && this.world && macro.provenance.worldSeed !== this.world.seed) {
+      throw new RangeError("Terrain macro evolution belongs to a different world");
+    }
+    this.macroEvolution = macro;
+    this.erosionExecutor?.setMacroEvolution(macro);
+  }
+
+  get isReadyForGeneration(): boolean {
+    return this.world?.worldEvolution !== "eroded" || this.macroEvolution !== null;
+  }
 
   get dispatchesInFlight(): number {
     return this.inFlight.length + this.readbacksInFlight;
+  }
+
+  /**
+   * Fill aux fields for channel slots admitted after their height page. The
+   * normal path uploads them from the original erosion result; this recovery
+   * path recomputes rather than retaining a forbidden second page cache.
+   */
+  async ensureHydrology(slots: readonly TerrainAtlasSlot[]): Promise<void> {
+    if (this.disposed || this.world?.worldEvolution !== "eroded") return;
+    const executor = this.erosionExecutor;
+    const atlas = this.channelAtlas;
+    if (!executor || !atlas || !this.macroEvolution) {
+      throw new Error("Terrain hydrology requires the eroded page authority");
+    }
+    for (const slot of slots) {
+      const token = slot.token;
+      if (!token || slot.hydrologyReady || slot.hydrologySubmitted) continue;
+      slot.hydrologySubmitted = true;
+      try {
+        const page = await executor.generate(slot.address);
+        if (!this.uploadHydrologyForSlot(atlas, slot, token, page, true)) {
+          if (atlas.residency.get(slot.key) === slot && slot.token === token) {
+            throw new Error("Terrain hydrology upload was rejected");
+          }
+        }
+      } finally {
+        if (!slot.hydrologyReady) slot.hydrologySubmitted = false;
+      }
+    }
   }
 
   /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
@@ -916,6 +1177,14 @@ export class TerrainPageGenerator {
    */
   async generate(slots: readonly TerrainAtlasSlot[]): Promise<void> {
     if (this.disposed || slots.length === 0 || !this.atlas.hasTextures) return;
+    if (this.world?.worldEvolution === "eroded") {
+      if (!this.macroEvolution || !this.erosionExecutor) return;
+      // One worker executes these heavy deterministic passes serially. Do not
+      // fill its message queue with stale flight-path decisions; wait for the
+      // active page, then let the clipmap re-rank the remaining candidates.
+      if (this.readbacksInFlight === 0) this.generateEroded(slots.slice(0, 1));
+      return;
+    }
     // Never overwrite a bounds buffer whose read has not landed: that is what
     // silently completes a page at zero deviation. See BOUNDS_BUFFER_RING.
     if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return;
@@ -971,6 +1240,7 @@ export class TerrainPageGenerator {
     shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.inFlight = slots;
     this.lastBatchSize = slots.length;
+    for (const slot of slots) slot.generationSubmitted = true;
     try {
       await shader.dispatchWhenReady(
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
@@ -981,36 +1251,142 @@ export class TerrainPageGenerator {
       this.inFlight = [];
     }
 
-    // ---------------------------------------------------------------------
-    // `4.5-B1` — publish the TEXELS now; let the stats arrive a round-trip
-    // later.
-    //
-    // This method used to await the bounds readback before anything became
-    // drawable, so a page's arrival cost a full GPU round-trip on top of its
-    // dispatch and the NEXT batch could not start until it landed. The vertex
-    // shader needs only texels, which the dispatch just wrote; the CDLOD split
-    // needs the deviation, and the never-split-unmeasured rule already
-    // tolerates it arriving late.
-    //
-    // **This fast path is analytic-era only.** It is legal exactly while a
-    // page is FINAL at dispatch. `5-4`/D12's convergence rule says a slot is
-    // never sampled mid-erosion and that publish is the DAG's last stage — so
-    // when erosion lands, `PAGES_ARE_FINAL_AT_DISPATCH` goes false and this
-    // branch is DELETED rather than fought.
-    // ---------------------------------------------------------------------
-    if (PAGES_ARE_FINAL_AT_DISPATCH) {
-      for (const slot of slots) {
-        if (slot.token) this.atlas.residency.publishTexels(slot.key, slot.token);
-      }
-    }
-    // NOT awaited: this batch is drawable now, and the next batch must not
-    // wait a round-trip for numbers only the CDLOD split reads. The copy into
-    // the readback staging buffer is encoded at THIS point in the frame's
-    // command encoder, so a later `update()` of the bounds buffer cannot
-    // overwrite what is being read.
+    // NOT awaited: the next batch may dispatch against a different readback
+    // ring entry. Unlike the analytic-era fast path, however, this page is not
+    // sampleable until collectBounds completes the final publication stage.
     const readback = this.collectBounds(boundsBuffer, slots);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
+  }
+
+  /** Queue worker reference passes; each finalizes independently on return. */
+  private generateEroded(slots: readonly TerrainAtlasSlot[]): void {
+    const executor = this.erosionExecutor;
+    if (!executor) return;
+    this.lastBatchSize = 0;
+    for (const slot of slots) {
+      const token = slot.token;
+      if (!token || slot.generationSubmitted) continue;
+      slot.generationSubmitted = true;
+      this.readbacksInFlight += 1;
+      const finalization = executor.generate(slot.address)
+        .then(async (page) => this.uploadErodedPage(slot, token, page))
+        .catch((error: unknown) => {
+          if (this.disposed || slot.token !== token) return;
+          this.atlas.residency.fail(
+            slot.key,
+            token,
+            error instanceof Error ? error.message : "terrain erosion failed",
+          );
+        })
+        .finally(() => {
+          this.readbacksInFlight -= 1;
+        });
+      this.pendingReadbacks.add(finalization);
+      void finalization.finally(() => this.pendingReadbacks.delete(finalization));
+    }
+  }
+
+  /** Upload transferred final bytes, then reuse the existing L0 readback gate. */
+  private async uploadErodedPage(
+    slot: TerrainAtlasSlot,
+    token: WorldPageOperationToken,
+    page: TerrainErodedPage,
+  ): Promise<void> {
+    if (
+      this.disposed
+      || slot.token !== token
+      || this.atlas.residency.get(slot.key) !== slot
+    ) return;
+    if (
+      page.address.level !== slot.address.level
+      || page.address.x !== slot.address.x
+      || page.address.z !== slot.address.z
+      || page.coreSize !== WORLD_PAGE_HEIGHT_CORE
+      || page.haloTexels !== EROSION_HALO_TEXELS
+      || page.scratchEdge !== EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+      || page.storedEdge !== TERRAIN_HEIGHT_SLOT_EDGE
+      || page.storedHeight.length !== TERRAIN_HEIGHT_SLOT_EDGE * TERRAIN_HEIGHT_SLOT_EDGE
+    ) {
+      throw new RangeError("Terrain erosion worker returned incompatible page geometry");
+    }
+    const texture = this.atlas.texture();
+    const internalTexture = texture?.getInternalTexture();
+    if (!texture || !internalTexture) throw new Error("Terrain height atlas texture is unavailable");
+    const origin = this.atlas.slotOrigin(slot.slotIndex);
+    (this.engine as WebGPUEngine).updateTextureData(
+      internalTexture,
+      page.storedHeight,
+      origin.u,
+      origin.v,
+      TERRAIN_HEIGHT_SLOT_EDGE,
+      TERRAIN_HEIGHT_SLOT_EDGE,
+      0,
+      0,
+      false,
+    );
+    const channelAtlas = this.channelAtlas;
+    let hydrologyUploaded = false;
+    if (channelAtlas) {
+      const channelSlot = channelAtlas.residency.get(invariantSlotKey(page.address));
+      const channelToken = channelSlot?.token;
+      if (channelSlot && channelToken) {
+        hydrologyUploaded = this.uploadHydrologyForSlot(
+          channelAtlas,
+          channelSlot,
+          channelToken,
+          page,
+          false,
+        );
+        if (!hydrologyUploaded) {
+          throw new Error("Terrain erosion result did not complete its aux upload");
+        }
+      }
+    }
+    // publishCompletedSlot performs the final texture readback for L0 when a
+    // collision sink is connected, and changes residency only afterwards.
+    await this.publishCompletedSlot(slot, page.stats);
+    if (hydrologyUploaded && slot.lifecycle.state === "resident") this.publishAuxPage(page);
+  }
+
+  private uploadHydrologyForSlot(
+    atlas: TerrainPageAtlas,
+    slot: TerrainAtlasSlot,
+    token: WorldPageOperationToken,
+    page: TerrainErodedPage,
+    publishImmediately: boolean,
+  ): boolean {
+    const hydrology = page.hydrology;
+    if (!hydrology) throw new Error("Terrain erosion result has no hydrology product");
+    if (
+      page.address.level !== slot.address.level
+      || page.address.x !== slot.address.x
+      || page.address.z !== slot.address.z
+    ) throw new RangeError("Terrain hydrology result belongs to a different page");
+    const uploaded = atlas.uploadHydrology(slot, token, hydrology);
+    if (uploaded && publishImmediately) {
+      if (this.atlas.residency.slotIndexOf(slot.key) < 0) {
+        throw new Error("Terrain aux publication requires resident final height");
+      }
+      this.publishAuxPage(page);
+    }
+    return uploaded;
+  }
+
+  private publishAuxPage(page: TerrainErodedPage): void {
+    const hydrology = page.hydrology;
+    if (!hydrology) return;
+    this.auxPagePublisher?.({
+      level: page.address.level,
+      tileX: page.address.x,
+      tileZ: page.address.z,
+      coreSize: WORLD_PAGE_CHANNEL_CORE,
+      gutter: WORLD_PAGE_GUTTER,
+      storedEdge: TERRAIN_CHANNEL_SLOT_EDGE,
+      texelSizeMeters: hydrology.texelSizeMeters,
+      shoreDistanceMetersPerUnit: hydrology.hydrology.shoreDistanceMetersPerUnit,
+      shoreDistanceR16Sint: hydrology.upload.shoreDistanceR16Sint,
+    });
   }
 
   /**
@@ -1047,27 +1423,78 @@ export class TerrainPageGenerator {
       const read = new Uint32Array(
         view.buffer.slice(view.byteOffset, view.byteOffset + byteLength),
       );
+      const publications: Promise<void>[] = [];
       slots.forEach((slot, index) => {
         if (!slot.token) return;
         const base = index * TERRAIN_PAGE_BOUNDS_SLOTS;
-        this.atlas.residency.complete(slot.key, slot.token, {
+        const stats = {
           minHeightMeters: decodeOrderableFloat(read[base]!),
           maxHeightMeters: decodeOrderableFloat(read[base + 1]!),
           maxDeviationFromParent: decodeOrderableFloat(read[base + 2]!),
-        });
+        };
+        publications.push(this.publishCompletedSlot(slot, stats));
       });
+      await Promise.all(publications);
     } catch {
       for (const slot of slots) {
-        if (slot.token) this.atlas.residency.complete(slot.key, slot.token, UNKNOWN_STATS);
+        if (!slot.token) continue;
+        if (this.collisionPagePublisher && slot.address.level === 0) {
+          this.atlas.residency.fail(slot.key, slot.token, "collision readback failed");
+        } else {
+          this.atlas.residency.complete(slot.key, slot.token, UNKNOWN_STATS);
+        }
       }
     } finally {
       this.readbacksInFlight -= 1;
     }
   }
 
+  /**
+   * Final DAG publication. L0 bytes are copied before residency changes so
+   * simulation and rendering cannot observe different versions of a slot.
+   */
+  private async publishCompletedSlot(
+    slot: TerrainAtlasSlot,
+    stats: TerrainSlotStats,
+  ): Promise<void> {
+    const token = slot.token;
+    if (!token) return;
+    const publisher = this.collisionPagePublisher;
+    if (publisher && slot.address.level === 0) {
+      const texture = this.atlas.texture();
+      if (!texture) return;
+      const origin = this.atlas.slotOrigin(slot.slotIndex);
+      const heights = new Float32Array(WORLD_PAGE_HEIGHT_CORE * WORLD_PAGE_HEIGHT_CORE);
+      const pixels = await texture.readPixels(
+        0,
+        0,
+        heights,
+        false,
+        true,
+        origin.u + WORLD_PAGE_GUTTER,
+        origin.v + WORLD_PAGE_GUTTER,
+        WORLD_PAGE_HEIGHT_CORE,
+        WORLD_PAGE_HEIGHT_CORE,
+      );
+      if (!pixels) throw new Error("Collision height readback returned no data");
+      if (this.disposed || slot.token !== token) return;
+      const published = pixels instanceof Float32Array
+        ? pixels
+        : new Float32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4);
+      publisher({
+        level: 0,
+        tileX: slot.address.x,
+        tileZ: slot.address.z,
+        heights: published,
+      });
+    }
+    this.atlas.residency.complete(slot.key, token, stats);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.erosionExecutor?.dispose();
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
     for (const buffer of this.boundsRing) buffer.dispose();

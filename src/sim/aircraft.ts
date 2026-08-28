@@ -46,6 +46,16 @@ export interface AircraftDefinition {
   retractableGear: boolean;
   /** Full normalized gear travel per second. */
   gearCycleRate: number;
+  /**
+   * Mach number where transonic wave drag begins. `Infinity` disables the
+   * term entirely (the trainer), keeping that aircraft's drag bit-identical.
+   */
+  transonicOnsetMach: number;
+  /**
+   * Peak incremental wave-drag coefficient at the transonic hump. Zero
+   * disables the term.
+   */
+  transonicDragRise: number;
   sideForceBeta: number;
   sideForceRudder: number;
   pitchMomentZero: number;
@@ -92,6 +102,10 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   speedBrakeDrag: 0,
   retractableGear: false,
   gearCycleRate: 0,
+  // The trainer never approaches its critical Mach number; Infinity/0 keeps
+  // its aerodynamic model bit-identical to the pre-wave-drag build.
+  transonicOnsetMach: Number.POSITIVE_INFINITY,
+  transonicDragRise: 0,
   sideForceBeta: 0.68,
   sideForceRudder: 0.12,
   pitchMomentZero: 0.009,
@@ -171,6 +185,11 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   speedBrakeDrag: 0.16,
   retractableGear: true,
   gearCycleRate: 0.42,
+  // The J-45 tops out near 260 m/s (M 0.76 at sea level) and never reaches a
+  // critical Mach number; Infinity/0 leaves the wave-drag term inert, keeping
+  // this airframe's drag identical to the pre-wave-drag build.
+  transonicOnsetMach: Number.POSITIVE_INFINITY,
+  transonicDragRise: 0,
   sideForceBeta: 0.78,
   sideForceRudder: 0.14,
   pitchMomentZero: 0.004,
