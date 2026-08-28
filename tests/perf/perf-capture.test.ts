@@ -345,6 +345,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
         }, { stepMeters: 400, maxRadiusMeters: 20_000 });
         return found ?? fallback;
       }
+      if (shot.locate === "cliff") {
+        // A steep face 120-280 m ahead — close enough that the rock texture
+        // fills the frame at material-detail range.
+        const found = locateShotOffset((x, z) => {
+          const here = sampleTerrain(world, airportX + x, airportZ + z);
+          if (here.height < world.seaLevel + 5 || here.slope > 0.3) return false;
+          let steep = 0;
+          for (const ahead of [120, 200, 280] as const) {
+            const face = sampleTerrain(world, airportX + x + ahead, airportZ + z);
+            if (face.slope > 0.45 && face.height > here.height + 60) steep += 1;
+          }
+          return steep >= 2;
+        }, { stepMeters: 300, maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
       // Coast: over water with land ~3 km ahead on the +x heading.
       const found = locateShotOffset((x, z) => {
         const here = sampleTerrainHeight(world, airportX + x, airportZ + z);

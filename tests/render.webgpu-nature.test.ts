@@ -29,6 +29,7 @@ import {
 } from "../src/render/webgpu/nature/OceanShaders";
 import {
   buildOceanFftDispatches,
+  oceanTransformNormalizationScale,
   packOceanDerivationUniforms,
   packOceanEvolutionUniforms,
   packOceanFftUniforms,
@@ -213,8 +214,19 @@ describe("spectral ocean foundations", () => {
     const evolution = packOceanEvolutionUniforms(config, 2, 12.5);
     expect(evolution.byteLength).toBe(32);
     expect(new DataView(evolution).getFloat32(16, true)).toBe(12.5);
-    const fft = packOceanFftUniforms(128, 6, "vertical", true);
-    expect(Array.from(new Uint32Array(fft))).toEqual([128, 6, 1, 1]);
+    // Pin moved by wave R: the trailing u32 normalise FLAG became an f32
+    // normalisation SCALE in its own std140 slot at offset 16, because the
+    // factor is now the spectrum's per-cascade cell measure rather than 1/N.
+    // The buffer grows 16 -> 32 bytes; the three leading u32s are unchanged.
+    const normalizationScale = oceanTransformNormalizationScale(1_024);
+    const fft = packOceanFftUniforms(128, 6, "vertical", normalizationScale);
+    expect(fft.byteLength).toBe(32);
+    expect(Array.from(new Uint32Array(fft, 0, 4))).toEqual([128, 6, 1, 0]);
+    expect(new DataView(fft).getFloat32(16, true)).toBeCloseTo(normalizationScale, 6);
+    // The scale is sqrt(dk / sqrt(2)) with dk = 2*pi/L: the cell measure that
+    // turns a spectral DENSITY into per-cell variance, split across two axes.
+    expect(normalizationScale ** 2 * Math.SQRT2).toBeCloseTo((2 * Math.PI) / 1_024, 9);
+    expect(() => oceanTransformNormalizationScale(0)).toThrow(/patchLength/);
     const derivation = packOceanDerivationUniforms(config, 0, 1 / 60);
     expect(derivation.byteLength).toBe(32);
     expect(new DataView(derivation).getFloat32(28, true)).toBeLessThan(1);
@@ -232,7 +244,7 @@ describe("spectral ocean foundations", () => {
         updateEveryNFrames: 1,
       }],
     })).toThrow(/Nyquist/);
-    expect(() => packOceanFftUniforms(256, 8, "horizontal", false)).toThrow(/stage/);
+    expect(() => packOceanFftUniforms(256, 8, "horizontal", 1)).toThrow(/stage/);
   });
 
   it("uses a Stockham autosort mapping that agrees with a direct inverse DFT", () => {

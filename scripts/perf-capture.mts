@@ -99,7 +99,7 @@ export interface PerfCaptureShotDefinition {
    */
   readonly relativeSunBearingDegrees?: number;
   /** Z-3: locate the shot over a terrain feature instead of a fixed offset. */
-  readonly locate?: "fixed" | "forest" | "grassland" | "mountain" | "coast";
+  readonly locate?: "fixed" | "forest" | "grassland" | "mountain" | "cliff" | "coast";
   /** Z-3: "motion" runs a scripted banked turn and asserts temporal stability. */
   readonly kind?: "still" | "motion";
   /** Bank angle used by motion shots, degrees. */
@@ -690,6 +690,62 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 17.8 },
     relativeSunBearingDegrees: 140,
     locate: "mountain",
+    ceilings: null,
+  },
+  {
+    // Wave R gate 1: the user's tree-line screenshot geometry — a few
+    // hundred metres up over forest with a HIGH sun behind the camera, the
+    // angle where the impostor band's view-locked response diverged worst
+    // from the geometry bands.
+    name: "forest-line-highsun",
+    description: "High sun behind camera over forest, geometry-to-impostor handoff in frame",
+    cameraMode: "chase",
+    altitudeAglMeters: 320,
+    altitudeMslMeters: null,
+    offsetXMeters: -4_000,
+    offsetZMeters: 3_000,
+    pitchDownDegrees: 14,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 14.5 },
+    relativeSunBearingDegrees: 225,
+    locate: "forest",
+    ceilings: null,
+  },
+  {
+    // Wave R gate 2: the very-close mountainside — the range where the rock
+    // read "black, brown and white camo" before the wave-R material work.
+    name: "cliff-60m",
+    description: "Steep rock face at very close range",
+    cameraMode: "chase",
+    altitudeAglMeters: 120,
+    altitudeMslMeters: null,
+    offsetXMeters: 6_000,
+    offsetZMeters: -5_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 15.5 },
+    relativeSunBearingDegrees: 120,
+    locate: "cliff",
+    ceilings: null,
+  },
+  {
+    // Wave R gate 3: water at standing height — the range where the ocean
+    // read as plastic tubes before the wave-R water work.
+    name: "water-3m",
+    description: "Just above the water surface looking toward shore, low sun ahead",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 4,
+    offsetXMeters: -8_000,
+    offsetZMeters: 0,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 16.5 },
+    // Sun AHEAD: with it astern the first framing showed only the matte
+    // sky-reflection side of the sea — the glint path, sparkle and wave
+    // shading this gate exists to judge were all behind the camera.
+    relativeSunBearingDegrees: 25,
+    locate: "coast",
     ceilings: null,
   },
 ]);

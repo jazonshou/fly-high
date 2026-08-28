@@ -29,6 +29,8 @@ export interface DetailSunShadowSnapshot {
   readonly blendStarts: readonly [number, number, number, number];
   readonly cascadeCount: number;
   readonly darkness: number;
+  /** The generator's receiver-side depth bias (CascadedShadowGenerator.bias). */
+  readonly bias: number;
   readonly shadowMaxZ: number;
   readonly valid: boolean;
   /** The generator's depth map; bound as a depth-comparison array. */
@@ -538,14 +540,26 @@ fn detailSunShadowCascade(cascade: i32, world: vec3f) -> f32 {
     || clip.z < 0.0 || clip.z > 1.0) {
     return 1.0;
   }
+  // Wave R: the generator's own depth bias, missing from the first landing.
+  // Babylon applies normalBias caster-side (the terrain depth is already
+  // pushed), but bias is receiver-side — without it a billboard's base
+  // fragments sit coplanar with the terrain caster sheet and, with the
+  // generator's darkness at 0, any acne is FULL BLACK.
   let compared = textureSampleCompareLevel(
     detailSunShadowMap,
     detailSunShadowMapSampler,
     uv,
     cascade,
-    clamp(clip.z, 0.0, 0.99999994),
+    clamp(clip.z - uniforms.detailSunShadowBias.x, 0.0, 0.99999994),
   );
   return mix(uniforms.detailSunShadowParams.y, 1.0, compared);
+}
+
+fn detailSunShadowVectorValue(values: vec4f, index: i32) -> f32 {
+  if (index == 0) { return values.x; }
+  if (index == 1) { return values.y; }
+  if (index == 2) { return values.z; }
+  return values.w;
 }
 
 fn detailSunShadow(world: vec3f) -> f32 {
@@ -558,7 +572,22 @@ fn detailSunShadow(world: vec3f) -> f32 {
   if (viewDepth > uniforms.detailSunShadowSplits.z) { cascade = 3; }
   if (viewDepth > uniforms.detailSunShadowSplits.w) { cascade = 4; }
   if (cascade >= cascadeCount) { return 1.0; }
-  let current = detailSunShadowCascade(cascade, world);
+  var current = detailSunShadowCascade(cascade, world);
+  // Wave R: cascade blend (the water receiver's :130-137 shape) — the
+  // geometry bands get Babylon's blended cascades, and an unblended manual
+  // term made terrain-shadow edges change hardness at the handoff ring.
+  if (cascade < cascadeCount - 1) {
+    let blendStart = detailSunShadowVectorValue(uniforms.detailSunShadowBlendStarts, cascade);
+    let split = detailSunShadowVectorValue(uniforms.detailSunShadowSplits, cascade);
+    if (viewDepth > blendStart && split > blendStart) {
+      let next = detailSunShadowCascade(cascade + 1, world);
+      current = mix(
+        current,
+        next,
+        clamp((viewDepth - blendStart) / (split - blendStart), 0.0, 1.0),
+      );
+    }
+  }
   // Unlike Babylon's hard stop at shadowMaxZ, fade the term out over the
   // last stretch so the cascade boundary never draws its own line on the
   // forest — the exact artifact this receiver exists to remove.
@@ -900,36 +929,21 @@ if (fract(impostorNormalVariant / 2.0) >= 0.5) {
   let impostorNormalRight = vec3f(-impostorNormalFlatEye.y, 0.0, impostorNormalFlatEye.x);
   impostorNormalWorld -= 2.0 * dot(impostorNormalWorld, impostorNormalRight) * impostorNormalRight;
 }
-// The soften-toward base is the CAMERA-FACING billboard normal, not the quad's
-// authored normal: the vertex stage billboards positions only, so normalW
-// arrives as world ±Z — a world-constant direction that biased 25% of every
-// far tree's shading toward a heading unrelated to sun, camera or crown.
-let impostorBillboardNormal = normalize(vec3f(
-  impostorNormalFlatEye.x,
-  max(impostorNormalEyeVector.y, 0.0) * 0.001 + 0.25,
-  impostorNormalFlatEye.y,
-));
+// Wave R: the atlas now stores the geometry bands' OWN authored normals
+// (dome-blended cards, smoothed core hull, outward bark), so the sprite is
+// the mid band's normal model verbatim and needs no runtime reshaping. The
+// wave-Q billboard mix and sky tilt existed to compensate view-locked FACE
+// normals from the old bake — with the sun anywhere behind the camera the
+// far band lit near-maximally while the mid band's dome distribution did
+// not, a tone line at the handoff that survived every constant re-tune.
+// Degenerate (dilated/mip-blended) texels fall back to straight up, the
+// dome distribution's own mean.
 let impostorNormalLength = length(impostorNormalWorld);
 if (impostorNormalLength > 0.25) {
-  // Softened toward the billboard normal: a ≤20 px sprite carrying a raw
-  // leaf-facet normal would flicker as the view crosses tile boundaries,
-  // and 2-14's whole crossfade design exists to keep that from happening.
-  normalW = normalize(mix(
-    impostorBillboardNormal,
-    impostorNormalWorld / impostorNormalLength,
-    0.75,
-  ));
+  normalW = impostorNormalWorld / impostorNormalLength;
 } else {
-  normalW = impostorBillboardNormal;
+  normalW = vec3f(0.0, 1.0, 0.0);
 }
-// Wave Q (tree-cutoff fix): every term above faces the VIEWER (the bake
-// flips normals toward the bake camera; the billboard base is the flat eye
-// vector), so a far sprite was near-maximally lit whenever the sun stood
-// anywhere behind the camera — while the mid band's crowns spread their
-// normals across the hemisphere. A fixed tilt toward the sky moves the
-// sprite's response toward that omnidirectional average from both sides:
-// it darkens the sun-behind-camera case and lifts the sun-opposed case.
-normalW = normalize(mix(normalW, vec3f(0.0, 1.0, 0.0), 0.3));
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: `
@@ -959,7 +973,10 @@ if (detailBacklit > 0.0) {
 // mirrors the terrain horizon-shadow hook — direct diffuse and specular
 // only; ambient/irradiance are untouched.
 #ifdef DETAIL_SUN_SHADOW
-let impostorSunShadow = detailSunShadow(fragmentInputs.vPositionW);
+// Wave R: lifted 0.3 m — the billboard's base fragments are coplanar with
+// the terrain caster sheet, and a coplanar comparison is a coin flip even
+// with the bias above.
+let impostorSunShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
 finalDiffuse *= impostorSunShadow;
 #ifdef SPECULARTERM
 finalSpecularScaled *= impostorSunShadow;
@@ -972,16 +989,16 @@ let impostorSunShadow = 1.0;
 // impostor material never sets, so every backlit stand stepped from glowing
 // mid hulls to flat far sprites at the handoff ring. The bake folds
 // per-texel occlusion into the sprite's ALBEDO already, so a mid-level
-// constant stands in for the per-fragment occlusion gate. Wave Q lowered
-// the constant 0.6 -> 0.45: the geometry side's per-fragment gate averages
-// below its midpoint on interior-heavy crowns, and the flat 0.6 was one of
-// the terms brightening the whole far band at the handoff ring. The wrap
-// is sun transmission, so it carries the shadow term like the direct lobe.
+// constant stands in for the per-fragment occlusion gate. Wave R re-derived
+// the constant from the MID card shells' measured area-weighted occlusion
+// (mix(0.15,1,A) spans 0.37 oak .. 0.72 cedar): 0.55 is the population
+// mean, replacing wave Q's 0.45 guess. The wrap is sun transmission, so it
+// carries the shadow term like the direct lobe.
 let impostorBacklit = uniforms.detailKeyLight.w
   * pow(clamp(-dot(viewDirectionW, uniforms.detailKeyLight.xyz), 0.0, 1.0), 4.0);
 if (impostorBacklit > 0.0) {
   finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
-    * (impostorBacklit * 0.45 * impostorSunShadow);
+    * (impostorBacklit * 0.55 * impostorSunShadow);
 }
 #endif
 `,
@@ -1316,6 +1333,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         { name: "detailSunShadowSplits", size: 4, type: "vec4" },
         { name: "detailSunShadowBlendStarts", size: 4, type: "vec4" },
         { name: "detailSunShadowParams", size: 4, type: "vec4" },
+        { name: "detailSunShadowBias", size: 4, type: "vec4" },
       ],
     };
   }
@@ -1394,6 +1412,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         1,
         sunShadow.shadowMaxZ,
       );
+      uniformBuffer.updateFloat4("detailSunShadowBias", sunShadow.bias, 0, 0, 0);
     } else {
       uniformBuffer.updateFloat4("detailSunShadowParams", 0, 0, 0, 0);
     }

@@ -634,11 +634,14 @@ describe("terrain surface plugin (3-2)", () => {
 
     expect(TERRAIN_FALLBACK_ALPINE_START_METERS).toBe(420);
     expect(TERRAIN_FALLBACK_ALPINE_END_METERS).toBe(980);
-    expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.55);
+    // Wave R: 0.55 -> 0.85 — the classifier has no vegetated material
+    // above ~900 m, so the weak alpine hand-over left distant fallback
+    // mountains green.
+    expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.85);
     expect(terrainFallbackRockCover(0, 0)).toBe(0);
     expect(terrainFallbackRockCover(420, 0)).toBe(0);
-    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.275, 12);
-    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.55, 12);
+    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425, 12);
+    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85, 12);
     expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
     expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
 

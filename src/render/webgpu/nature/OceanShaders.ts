@@ -225,7 +225,11 @@ struct OceanFftParams {
   resolution: u32,
   stage: u32,
   axis: u32,
-  normalize_result: u32,
+  _padding0: u32,
+  // wave R: a per-cascade f32 scale, not a 1/N flag — see
+  // oceanTransformNormalizationScale in OceanConfig.ts. 1.0 on the passes
+  // that do not normalise.
+  normalization: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: OceanFftParams;
@@ -266,14 +270,12 @@ fn stockhamInverseFft(@builtin(global_invocation_id) invocation: vec3<u32>) {
   let a1 = oceanRotateComplexPair(textureLoad(source_a, coordinate_1, 0), twiddle);
   let b0 = textureLoad(source_b, coordinate_0, 0);
   let b1 = oceanRotateComplexPair(textureLoad(source_b, coordinate_1, 0), twiddle);
-  // Per-axis normalisation (1B-13): 1/N at the last stage of each axis so
-  // fp16 ping-pong intermediates keep the signal band well above the
-  // smallest normal. The product across both axes is the same 1/N².
-  let normalization = select(
-    1.0,
-    1.0 / f32(params.resolution),
-    params.normalize_result != 0u,
-  );
+  // Per-axis normalisation (1B-13): applied at the last stage of each axis so
+  // fp16 ping-pong intermediates keep the signal band well above the smallest
+  // normal. wave R replaced the 1/N factor with the spectrum's own
+  // sqrt(dk/sqrt(2)) — the cell measure the shipped chain never applied,
+  // which left the rendered sea three orders of magnitude too flat.
+  let normalization = params.normalization;
 
   textureStore(
     destination_a,

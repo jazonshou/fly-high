@@ -129,7 +129,12 @@ export const TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS = 10;
 /** Coarse fallback's continuous alpine transition, mirroring the classifier. */
 export const TERRAIN_FALLBACK_ALPINE_START_METERS = 420;
 export const TERRAIN_FALLBACK_ALPINE_END_METERS = 980;
-export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.55;
+// Wave R: 0.55 -> 0.85. The classifier has NO vegetated material above
+// ~900 m (lowland and warmth both die with elevation), so the fallback's
+// grass base was the whole "green mountains at distance" report; a stronger
+// alpine hand-over is the cheap analytic stand-in until the fallback
+// evaluates the classifier's own suitabilities.
+export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.85;
 
 /** Pure CPU mirror of the shader's page-classification confidence. */
 export function terrainPageClassificationConfidence(channelTexelMeters: number): number {
@@ -1462,8 +1467,13 @@ let terrainMacroHue = mix(vec3f(0.952, 1.0, 1.058), vec3f(1.052, 1.004, 0.934), 
 // whole mountainsides, turning its band families into a wallpaper lattice.
 // One low-frequency vertical octave (±7 m over ~183 m) breaks the
 // registration; its slope stays far below the horizontal warps' fades.
+// Wave R: a second, finer octave — the single 183 m octave is effectively
+// constant across a 30 m cliff view, so the 5.9 m V-axis tile repeat still
+// stood in exact register at close range.
 let terrainWarpVertical = (terrainSurfaceValue(
-  terrainAbsolutePosition.xz * ${(1 / 183).toFixed(9)} + vec2f(43.7, 17.3)) - 0.5) * 14.0;
+  terrainAbsolutePosition.xz * ${(1 / 183).toFixed(9)} + vec2f(43.7, 17.3)) - 0.5) * 14.0
+  + (terrainSurfaceValue(
+    terrainAbsolutePosition.xz * ${(1 / 31).toFixed(9)} + vec2f(9.1, 77.3)) - 0.5) * 3.6;
 let terrainSamplePosition = vec3f(
   terrainAbsolutePosition.x + terrainWarp.x,
   terrainAbsolutePosition.y + terrainWarpVertical,
@@ -1560,7 +1570,13 @@ let terrainClassStrength = smoothstep(
 let terrainClassStrength = 0.0;
 #endif
 let terrainClassComplement = 1.0 - terrainClassStrength;
-var terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
+// Wave R: the fragment-derived slope rock also carries the class
+// complement — unscaled, a slope-0.66 face was 100% this override even on a
+// trusted level-0 page, erasing the classifier's Snow/Shrub/Gravel from
+// every close mountainside (the close-range mountain was nothing but the
+// Rock recipe). The classifier owns steep ground where it is trusted; this
+// term is the fallback's cliff answer, exactly like the alpine term below.
+var terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope) * terrainClassComplement;
 // This is the altitude term from the real classifier, kept deliberately
 // weaker than a true cliff. It greys alpine fallback terrain continuously
 // without walking through four categorical material palettes. Wave Q: it
@@ -1626,11 +1642,24 @@ let terrainThirdWeight = abs(terrainCoverDelta);
 // 3-6: N-way height blend. k_i = h_i + w_i; b_i = max(k_i - (max k - d), 0),
 // normalised. The transition depth d widens with the footprint so the blend
 // does not alias at distance.
-let terrainBlendDepth = mix(
+var terrainBlendDepth = mix(
   ${HEIGHT_BLEND_DEPTH_NEAR.toFixed(2)},
   ${HEIGHT_BLEND_DEPTH_FAR.toFixed(2)},
   clamp(terrainFootprint / 3.0, 0.0, 1.0),
 );
+// Wave R: widen the arbitration between candidates whose reference albedos
+// are far apart. At depth 0.06 the near-range Rock/Snow blend was decided
+// per texel by two uncorrelated height fields with a 4.8x albedo ratio — a
+// literal black-and-white speckle band in the slope 0.47-0.55 window above
+// the snowline.
+let terrainThirdReferenceLuma = dot(
+  terrainSurfaceReference(i32(terrainThirdId + 0.5)).rgb,
+  vec3f(0.2126, 0.7152, 0.0722));
+let terrainPrimaryReferenceLuma = dot(
+  terrainSurfaceReference(i32(terrainAxis + 0.5)).rgb,
+  vec3f(0.2126, 0.7152, 0.0722));
+terrainBlendDepth = terrainBlendDepth
+  * (1.0 + 3.0 * abs(terrainThirdReferenceLuma - terrainPrimaryReferenceLuma));
 
 #ifdef TERRAIN_SURFACE_THREE_MATERIALS
 let terrainWeight0 = (1.0 - terrainAxisFraction) * (1.0 - terrainThirdWeight);
@@ -1710,36 +1739,35 @@ var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer1.diffuseRoughness * terrainBlend1
   + terrainLayer2.diffuseRoughness * terrainBlend2;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
-// Wave Q seam feather: page confidence is PIECEWISE-CONSTANT per residency
-// level, so the classified/fallback boundary was a razor-straight polygon
-// edge across the landscape (visible from the canopy the moment coarser
-// pages were accepted). Class strength now fades on confidence PERTURBED by
-// the same cover noise the fallback's drivers use, and the fade target is
-// the fallback's own composition (grass primary + the fragment-derived
-// third candidate, already sampled above) — the seam becomes a ragged
-// hundred-metre ecotone instead of a line.
+// Wave Q seam feather, wave-R re-target: page confidence is
+// PIECEWISE-CONSTANT per residency level, so any binary gate draws a
+// polygon edge; class strength fades on confidence perturbed by the cover
+// noise. Wave R changed WHAT fades: a coarse texel's PRIMARY id is not
+// wrong — only its sub-texel mixture is — so the fade target is the page's
+// own primary (already sampled as layer0) plus the fragment-derived third
+// candidate, never a grass overlay. Fading identity to grass repainted
+// every distant mountain green (measured: a 700 m slope-0.4 face went
+// 0.00 -> 0.73 grass share across the residency ladder while the
+// classifier says Rock 0.91 at every level).
 if (terrainUsePageSplat && terrainClassStrength < 0.996) {
-  let terrainGrassLayer = terrainSurfaceSample(
-    ${SurfaceMaterial.Grass}, terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
   let terrainSeamThird = clamp(terrainThirdWeight, 0.0, 1.0);
   terrainAlbedo = mix(
-    mix(terrainGrassLayer.albedo, terrainLayer2.albedo, terrainSeamThird),
+    mix(terrainLayer0.albedo, terrainLayer2.albedo, terrainSeamThird),
     terrainAlbedo, terrainClassStrength);
   terrainNormal = mix(
-    mix(terrainGrassLayer.normal, terrainLayer2.normal, terrainSeamThird),
+    mix(terrainLayer0.normal, terrainLayer2.normal, terrainSeamThird),
     terrainNormal, terrainClassStrength);
   terrainRoughness = mix(
-    mix(terrainGrassLayer.roughness, terrainLayer2.roughness, terrainSeamThird),
+    mix(terrainLayer0.roughness, terrainLayer2.roughness, terrainSeamThird),
     terrainRoughness, terrainClassStrength);
   terrainCavity = mix(
-    mix(terrainGrassLayer.cavity, terrainLayer2.cavity, terrainSeamThird),
+    mix(terrainLayer0.cavity, terrainLayer2.cavity, terrainSeamThird),
     terrainCavity, terrainClassStrength);
   terrainF0 = mix(
-    mix(terrainGrassLayer.f0, terrainLayer2.f0, terrainSeamThird),
+    mix(terrainLayer0.f0, terrainLayer2.f0, terrainSeamThird),
     terrainF0, terrainClassStrength);
   terrainDiffuseRoughness = mix(
-    mix(terrainGrassLayer.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
+    mix(terrainLayer0.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
     terrainDiffuseRoughness, terrainClassStrength);
 }
 #endif
@@ -1785,29 +1813,27 @@ var terrainF0 = terrainLayer0.f0 * terrainBlend0 + terrainLayer2.f0 * terrainBle
 var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer2.diffuseRoughness * terrainBlend2;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
-// Wave Q seam feather — the two-material path's copy of the block above.
+// Wave Q seam feather, wave-R re-target — the two-material path's copy of
+// the block above (fade the mixture toward the page's own primary).
 if (terrainUsePageSplat && terrainClassStrength < 0.996) {
-  let terrainGrassLayer = terrainSurfaceSample(
-    ${SurfaceMaterial.Grass}, terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
   let terrainSeamThird = clamp(terrainThirdWeight, 0.0, 1.0);
   terrainAlbedo = mix(
-    mix(terrainGrassLayer.albedo, terrainLayer2.albedo, terrainSeamThird),
+    mix(terrainLayer0.albedo, terrainLayer2.albedo, terrainSeamThird),
     terrainAlbedo, terrainClassStrength);
   terrainNormal = mix(
-    mix(terrainGrassLayer.normal, terrainLayer2.normal, terrainSeamThird),
+    mix(terrainLayer0.normal, terrainLayer2.normal, terrainSeamThird),
     terrainNormal, terrainClassStrength);
   terrainRoughness = mix(
-    mix(terrainGrassLayer.roughness, terrainLayer2.roughness, terrainSeamThird),
+    mix(terrainLayer0.roughness, terrainLayer2.roughness, terrainSeamThird),
     terrainRoughness, terrainClassStrength);
   terrainCavity = mix(
-    mix(terrainGrassLayer.cavity, terrainLayer2.cavity, terrainSeamThird),
+    mix(terrainLayer0.cavity, terrainLayer2.cavity, terrainSeamThird),
     terrainCavity, terrainClassStrength);
   terrainF0 = mix(
-    mix(terrainGrassLayer.f0, terrainLayer2.f0, terrainSeamThird),
+    mix(terrainLayer0.f0, terrainLayer2.f0, terrainSeamThird),
     terrainF0, terrainClassStrength);
   terrainDiffuseRoughness = mix(
-    mix(terrainGrassLayer.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
+    mix(terrainLayer0.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
     terrainDiffuseRoughness, terrainClassStrength);
 }
 #endif

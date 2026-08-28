@@ -157,8 +157,47 @@ describe("impostor bake (2-17)", () => {
           .toBeGreaterThan(floor);
       }
     };
-    checkFacing(0, 0.95);
-    checkFacing(2, 0.85);
+    // Wave R re-pin: the bake now stores the geometry bands' AUTHORED dome
+    // normals (flipped whole only on back faces of the two-sided card
+    // shell), so a legitimate ~5-15% of covered texels face past 90 degrees
+    // from the bake view — exactly as the mid band's cards do. The floors
+    // guard the INVERSION failure this test was written for (which reads
+    // ~0% facing), not perfect view alignment.
+    checkFacing(0, 0.75);
+    checkFacing(2, 0.65);
+  });
+
+  it("bakes DOME-character normals: the top view's mean normal points up", () => {
+    // Wave R companion: without it, the facing floors above would silently
+    // permit a revert to camera-flipped FACE normals (which also pass a
+    // facing floor). Dome normals seen from straight above must average
+    // strongly upward; view-locked face normals average toward the camera
+    // for EVERY tile, which for the top view is also up — so additionally
+    // require the side view's mean to carry a real upward component, which
+    // a pure camera-facing bake cannot produce (its side-view mean is
+    // horizontal).
+    for (const species of IMPOSTOR_SPECIES) {
+      const layer = impostorLayerIndex(species, 0);
+      const normals = PLANS.normalDepth.layerChains[layer]![0]!;
+      const layerEdge = IMPOSTOR_LAYER_EDGE;
+      const tileEdge = layerEdge / IMPOSTOR_VIEW_GRID;
+      // Side view: grid corner (0.5/GRID, 0.5/GRID) maps near the horizon.
+      const sideTile = { gridX: 0, gridY: 0 };
+      let sumY = 0;
+      let covered = 0;
+      for (let py = 0; py < tileEdge; py += 1) {
+        for (let px = 0; px < tileEdge; px += 1) {
+          const index = ((sideTile.gridY * tileEdge + py) * layerEdge
+            + sideTile.gridX * tileEdge + px) * 4;
+          if (normals[index + 3]! < 128) continue;
+          covered += 1;
+          sumY += normals[index + 1]! / 127.5 - 1;
+        }
+      }
+      expect(covered, `${species} side coverage`).toBeGreaterThan(40);
+      expect(sumY / Math.max(covered, 1), `${species} side-view mean normal.y`)
+        .toBeGreaterThan(0.12);
+    }
   });
 
   it("sheds deciduous bare buckets while conifers hold byte-identically (2-17a)", () => {

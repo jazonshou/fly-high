@@ -93,7 +93,15 @@ import {
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
-import { resolveSunShadowCascadeLayout } from "./webgpu/water/SunShadowReceiver";
+import {
+  resolveSunShadowCascadeLayout,
+  type SunShadowCascadeLayout,
+} from "./webgpu/water/SunShadowReceiver";
+
+/** Wave R: the per-frame snapshot is reused, never reallocated. */
+type MutableDetailSunShadowSnapshot = {
+  -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
+};
 import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
@@ -325,6 +333,20 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly atmosphere: AtmosphereSystem;
   private readonly detailSunShadowMatrices = new Float32Array(64);
   private readonly detailSunShadowView = new Float32Array(16);
+  private detailSunShadowLayoutKey = "";
+  private detailSunShadowLayout: SunShadowCascadeLayout | null = null;
+  private readonly detailSunShadowSnapshot: MutableDetailSunShadowSnapshot = {
+    matrices: this.detailSunShadowMatrices,
+    view: this.detailSunShadowView,
+    splits: [0, 0, 0, 0],
+    blendStarts: [0, 0, 0, 0],
+    cascadeCount: 0,
+    darkness: 0,
+    bias: 0,
+    shadowMaxZ: 0,
+    valid: false,
+    map: null,
+  };
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
   private readonly aerialReceivers: AerialPerspectiveRegistry;
@@ -730,6 +752,10 @@ export class FlightRenderer implements FlightRenderingSystem {
           atmosphere: atmosphere.snapshot,
           bathymetry,
           windDirectionRadians: options.world.prevailingWindRadians,
+          // wave R fix 8: the world definition owns the wind for BOTH water
+          // surfaces. Inland water took its direction from here and its speed
+          // from the atmosphere's cloud-layer wind, which can disagree 3x.
+          windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
           ...(evolutionResult.mode === "eroded"
             ? {
               graphHydrology: channelGraphToHydrologyGeometry(
@@ -1177,27 +1203,37 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
     }
     this.camera.getViewMatrix().copyToArray(this.detailSunShadowView);
-    const layout = resolveSunShadowCascadeLayout({
-      cameraMinZ: this.camera.minZ,
-      cameraMaxZ: this.camera.maxZ,
-      cascadeCount,
-      lambda: shadows.lambda,
-      minDistance: shadows.minDistance,
-      maxDistance: shadows.maxDistance,
-      shadowMaxZ: shadows.shadowMaxZ,
-      cascadeBlendPercentage: shadows.cascadeBlendPercentage,
-    });
-    return {
-      matrices,
-      view: this.detailSunShadowView,
-      splits: layout.splits,
-      blendStarts: layout.blendStarts,
-      cascadeCount: layout.cascadeCount,
-      darkness: shadows.getDarkness(),
-      shadowMaxZ: shadows.shadowMaxZ,
-      valid: true,
-      map: shadowMap,
-    };
+    // Steady-frame path allocates nothing: the split formula's inputs are
+    // constant between quality/governor changes, so the layout is memoized
+    // on them and the snapshot object itself is reused (its array fields
+    // are the persistent scratch buffers above).
+    const layoutKey = `${cascadeCount}:${shadows.lambda}:${shadows.minDistance}:`
+      + `${shadows.maxDistance}:${shadows.shadowMaxZ}:`
+      + `${shadows.cascadeBlendPercentage}:${this.camera.minZ}:${this.camera.maxZ}`;
+    if (this.detailSunShadowLayoutKey !== layoutKey) {
+      this.detailSunShadowLayoutKey = layoutKey;
+      this.detailSunShadowLayout = resolveSunShadowCascadeLayout({
+        cameraMinZ: this.camera.minZ,
+        cameraMaxZ: this.camera.maxZ,
+        cascadeCount,
+        lambda: shadows.lambda,
+        minDistance: shadows.minDistance,
+        maxDistance: shadows.maxDistance,
+        shadowMaxZ: shadows.shadowMaxZ,
+        cascadeBlendPercentage: shadows.cascadeBlendPercentage,
+      });
+    }
+    const layout = this.detailSunShadowLayout!;
+    const snapshot = this.detailSunShadowSnapshot;
+    snapshot.splits = layout.splits;
+    snapshot.blendStarts = layout.blendStarts;
+    snapshot.cascadeCount = layout.cascadeCount;
+    snapshot.darkness = shadows.getDarkness();
+    snapshot.bias = shadows.bias;
+    snapshot.shadowMaxZ = shadows.shadowMaxZ;
+    snapshot.valid = true;
+    snapshot.map = shadowMap;
+    return snapshot;
   }
 
   private resolveGovernorConfig(): GovernorConfig {

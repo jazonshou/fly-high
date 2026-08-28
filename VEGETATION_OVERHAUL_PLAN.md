@@ -523,3 +523,22 @@ carries the full record. Deviations and open items:
 - Open: `terrain-surface-compile` does not compile the PAGE_CHANNELS
   permutation — a WGSL paren bug in that block sailed through both GPU
   compile tests and only failed in the full capture.
+
+## 11. Wave R — the three "inherently broken" reports (2026-08-28)
+
+Landed; the decision log carries the full record. Notes beyond it:
+
+- The recon pass earned its cost three times over, but two of its claims
+  died on contact with source: the impostor "un-premultiply brightening"
+  (the sample function premultiplies first — the divide is exact) and the
+  Rock cavity attribution to packLayers' openness radius (measured a
+  non-lever; the recipe's own joint coefficient was the term). Verify recon
+  claims against source before coding to them.
+- The reversed-smoothstep class (10 sites, 7 materials) had been shipping
+  since the materials landed. Two agents in sequence found and fixed it
+  because the FIRST was told to measure before changing; the DFT/percentile
+  harness discipline is what surfaced "84% coverage on a 10% crease".
+- The FFT amplitude bug means every prior water tuning decision was made
+  against a mirror. Constants touched since (Fresnel ramps, fade radii,
+  glint gains) were re-derived by the wave-R agent against the restored sea,
+  but any OTHER water constant encountered later should be re-questioned.

@@ -72,6 +72,7 @@ import {
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SUN_SPECULAR_WGSL,
@@ -195,6 +196,8 @@ ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
 
+${WATER_DETAIL_NOISE_WGSL}
+
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
 ${WATER_DEPTH_OPTICS_WGSL}
@@ -242,15 +245,27 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.absoluteWorldXZ,
     uniforms.windDirection * uniforms.windSpeed,
     uniforms.time,
+    // wave R: the resolved wave slope this fragment already carries, so the
+    // unresolved tail — and therefore roughness — becomes a field rather than
+    // a constant. Rivers and lakes were the worst offenders: their roughness
+    // sat exactly on the 0.28 cap everywhere.
+    length(fragmentGradient),
   );
   let geometricNormal = normalize(vec3f(
-    -fragmentGradient.x + capillary.x,
+    -fragmentGradient.x + capillary.slope.x,
     1.0,
-    -fragmentGradient.y + capillary.y,
+    -fragmentGradient.y + capillary.slope.y,
+  ));
+  // wave R fix 7: the glint-only jitter, sun lobe alone.
+  let glintNormalUp = normalize(vec3f(
+    -fragmentGradient.x + capillary.slope.x + capillary.glintSlope.x,
+    1.0,
+    -fragmentGradient.y + capillary.slope.y + capillary.glintSlope.y,
   ));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
   let normal = select(geometricNormal, -geometricNormal, cameraBelow);
+  let glintNormal = select(glintNormalUp, -glintNormalUp, cameraBelow);
   let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.001);
   let nDotL = max(dot(normal, light), 0.0);
@@ -259,16 +274,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // Fix-pack W1: fold the capillary band's unresolved energy into the GGX
   // lobe in alpha space, the 2-8 discipline — near water keeps micro-facet
   // sparkle instead of collapsing to a mirror.
+  // wave R: cap 0.28 -> 0.45 on both clamps. Inland water arrived pinned
+  // EXACTLY at 0.28 across every river and lake pixel — the capillary tail
+  // alone exceeded the cap — so the variance the fold exists to express had
+  // nowhere to go and every surface rendered with one micro-facet
+  // distribution. 0.45 keeps inland water glossier than the open sea (0.5)
+  // while leaving the field room to move.
   let baseRoughness = clamp(
     mix(0.14, 0.09, lakeFactor) + input.flowSpeed * 0.008 + uniforms.windSpeed * 0.0016,
     0.075,
-    0.28,
+    0.45,
   );
   let baseAlpha = baseRoughness * baseRoughness;
   let roughness = clamp(
-    sqrt(sqrt(baseAlpha * baseAlpha + min(capillary.z, 0.25))),
+    sqrt(sqrt(baseAlpha * baseAlpha + min(capillary.unresolvedMeanSquareSlope, 0.25))),
     0.075,
-    0.28,
+    0.45,
   );
   let f0 = vec3f(0.0204);
   let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
@@ -312,7 +333,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
   // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
   // the old gain-of-four multiply.
-  color += sunSpecular(normal, view, light, roughness, uniforms.sunAngularRadius, f0)
+  color += sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, f0)
     * uniforms.sunColor * directSunVisibility;
 
   let flowCrest = pow(max(
@@ -523,6 +544,16 @@ export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly bathymetry?: BathymetryClipmap;
   /** Prevailing flow direction (towards), clockwise from world north. */
   readonly windDirectionRadians?: number;
+  /**
+   * wave R fix 8: the prevailing wind SPEED, from the same world definition
+   * that supplies `windDirectionRadians`. Inland water used to take its
+   * direction from the world and its speed from the atmosphere snapshot,
+   * whose `windSpeed` is a cloud-layer number that can differ by 3x — so the
+   * ripple amplitude, the drift and the roughness were driven by a wind the
+   * direction had never agreed to. Falls back to the atmosphere snapshot when
+   * absent, which keeps every pre-wave-R caller and test behaving as before.
+   */
+  readonly windSpeedMetersPerSecond?: number;
   /** Enables off-main-thread generation from the deterministic built-in world. */
   readonly workerWorldSeed?: WorldSeed;
   readonly paging?: HydrologyPagingOptions;
@@ -677,6 +708,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private originZ = 0;
   private disposed = false;
   private readonly bathymetry: BathymetryClipmap | null;
+  /** wave R fix 8: null when no world wind was supplied (see the option). */
+  private worldWindSpeedMetersPerSecond: number | null = null;
 
   constructor(
     scene: Scene,
@@ -689,6 +722,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       atmosphere,
       bathymetry,
       windDirectionRadians,
+      windSpeedMetersPerSecond,
       workerWorldSeed,
       paging,
       generationClient,
@@ -768,6 +802,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       "windDirection",
       new Vector2(Math.sin(windRadians), Math.cos(windRadians)).normalize(),
     );
+    // wave R fix 8: one wind owner — see HydrologySystemOptions.
+    this.worldWindSpeedMetersPerSecond = windSpeedMetersPerSecond ?? null;
     this.material.setFloat("time", 0);
     this.material.setFloat("regionOpacity", 1);
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
@@ -895,7 +931,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
-    this.material.setFloat("windSpeed", atmosphere.windSpeed);
+    this.material.setFloat(
+      "windSpeed",
+      this.worldWindSpeedMetersPerSecond ?? atmosphere.windSpeed,
+    );
   }
 
   /**

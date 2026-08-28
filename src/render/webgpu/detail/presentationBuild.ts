@@ -430,7 +430,13 @@ export function* buildPresentationChunk(
       for (const membership of memberships) {
         const usesImpostor = membership.band === "far" && catalog.useImpostors;
         const treeCatalog = catalog.trees[tree.species];
-        const prototypeSpecies = usesImpostor || treePrototypeMode === "species"
+        // Wave R: the far band routes through the SAME family collapse as the
+        // geometry bands. It used to stay per-species while tier 1 collapsed
+        // near/mid to three families — so a birch stem sampled broadleafOak
+        // below the handoff ring and broadleafBirch above it, a measured
+        // +28% luminance and hue jump AT the ring, view-independent: the
+        // reported "clear line" between the near and far halves of a forest.
+        const prototypeSpecies = treePrototypeMode === "species"
           ? tree.species
           : treeCatalog.prototypeFamily;
         const bandVariantCap = membership.band === "far" ? 1 : 3;
@@ -451,7 +457,7 @@ export function* buildPresentationChunk(
         const crownBatchKey = usesImpostor
           ? TREE_IMPOSTOR_PROTOTYPE_KEY
           : `tree-${prototypeSpecies}-v${geometryVariant}-crown-${membership.band}`;
-        const impostor = usesImpostor ? catalog.impostors[tree.species] : undefined;
+        const impostor = usesImpostor ? catalog.impostors[prototypeSpecies] : undefined;
         const crownPrototypeRadius = usesImpostor
           ? impostor?.radialUnits
           : catalog.prototypes[crownBatchKey]?.radialUnits;
@@ -468,13 +474,13 @@ export function* buildPresentationChunk(
           fade: bandCode / 127,
           fadeIncoming: false,
           variant: membership.band === "far"
-            ? impostorSpeciesSlot(tree.species) * 32
+            ? impostorSpeciesSlot(prototypeSpecies) * 32
               + Math.floor(((tree.selection * 97.3) % 1) * 32)
             : geometryVariant + modifierBits * 32,
         };
         const billboardFrame = usesImpostor ? impostor?.frame : undefined;
         if (usesImpostor && !billboardFrame) {
-          throw new Error(`Missing impostor bounds frame for ${tree.species}`);
+          throw new Error(`Missing impostor bounds frame for ${prototypeSpecies}`);
         }
         sink.appendInstance(crownBatchKey, crown, billboardFrame);
         if (membership.band !== "far") {

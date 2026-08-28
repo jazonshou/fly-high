@@ -380,8 +380,35 @@ function saturate(value: number): number {
   return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
+/**
+ * Hermite ramp from 0 at `low` to 1 at `high`. **`high` must exceed `low`**, and
+ * this throws when it does not — which is a regression guard, not a nicety.
+ *
+ * The former body clamped the denominator with `Math.max(1e-6, high - low)`.
+ * That looks like a divide-by-zero guard and reads as harmless, but it also
+ * silently accepted a REVERSED pair, and what it then computed was not a
+ * falling edge: with a 1e-6 span, `smoothstep(0.44, 0.2, x)` is a hard step UP
+ * at 0.44. Ten call sites in this file were written as reversed pairs, and
+ * every one of them was therefore drawing the complement of what it reads as,
+ * with a knife edge instead of a ramp. Several inverted their material
+ * outright — gravel's stones and matrix had swapped places, so had asphalt's
+ * and concrete's aggregate, and the sward's `bare` opened soil in the DENSE
+ * patches. The failure is invisible at every call site and visible only in the
+ * output, which is exactly the kind that survives review; the type system
+ * cannot express "ordered pair", so the check is here.
+ *
+ * A falling edge is `1 - smoothstep(low, high, value)`. A band is
+ * `smoothstep(a, b, v) * (1 - smoothstep(c, d, v))`.
+ */
 function smoothstep(low: number, high: number, value: number): number {
-  const t = saturate((value - low) / Math.max(1e-6, high - low));
+  if (!(high > low)) {
+    throw new RangeError(
+      `smoothstep requires high > low, got low=${low}, high=${high}. `
+      + "For a falling edge write 1 - smoothstep(low, high, value): the reversed form "
+      + "degenerates into a hard step UP at low, which is the opposite of the intent.",
+    );
+  }
+  const t = saturate((value - low) / (high - low));
   return t * t * (3 - 2 * t);
 }
 
@@ -514,7 +541,29 @@ function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: 
     context,
     (u, v) => {
       const clump = periodicFbm(u, v, 3, 4, 0.5, seed + 11);
-      const bare = saturate(smoothstep(0.44, 0.2, clump) * (0.18 + bareShare * 0.5));
+      // `1 − smoothstep(0.2, 0.44, clump)`, not `smoothstep(0.44, 0.2, clump)`.
+      // The reversed form degenerates into a hard step at 0.44 (see
+      // `smoothstep`), rising rather than falling, so `bare` was full soil
+      // wherever the clump field was HIGH — the exact inverse of the intent,
+      // AND a hard edge. The blotches the comment above says an earlier draft
+      // was rewritten to remove were therefore still being drawn, with their
+      // boundaries at their sharpest: at seed "fly-high", edge 512, the lit
+      // DryGrass tile was unmistakable camouflage. Fixed, the same field opens
+      // soil gently in the thin patches, which is what the comment describes.
+      //
+      // The amplitude is left at the drawn `0.18 + bareShare * 0.5` — it had
+      // never been exercised, so it is being applied here for the first time —
+      // but it now REINFORCES the straw ramp above instead of opposing it (thin
+      // patches are both darker straw and more visible soil, where before they
+      // were darker straw and LESS soil). At seed "s3", edge 512, that doubles
+      // DryGrass's metre-scale albedo power: |k| <= 4 carries 1.00e-4 against
+      // 5.02e-5 before, which is the tiling-repeat signature
+      // `flattenLowFrequency` exists to suppress. Halving `bare` recovers only
+      // a fifth of it and costs the layer the "~25% bare soil" its reference
+      // note asks for, because the dominant coarse source is not this term but
+      // the clump-driven straw ramp above. Compressing that ramp is the real
+      // fix and is a sward retune, not a mask repair; left for one.
+      const bare = saturate((1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5));
       const sward = mixRgb(
         mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, clump),
         mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, clump),
@@ -676,8 +725,12 @@ const synthesizeForestFloor: Recipe = (context) => {
       const patch = periodicFbm(u, v, 6, 4, 0.5, seed + 24);
       // Concavity: below the local mean is a hollow.
       const concavity = saturate(((smoothed[texel] ?? 0) - (canvas.height[texel] ?? 0)) * 5 + 0.35);
+      // `1 − smoothstep(near, far, f1)`: reversed, this was a hard step that
+      // put moss everywhere OUTSIDE a cushion, so the cushions were angular
+      // cut-outs with knife edges instead of soft pads settling into hollows.
       const cover = saturate(
-        smoothstep(0.62, 0.16, cushion.f1) * smoothstep(0.34, 0.66, patch) * (0.35 + concavity),
+        (1 - smoothstep(0.16, 0.62, cushion.f1)) * smoothstep(0.34, 0.66, patch)
+          * (0.35 + concavity),
       );
       if (cover <= 0.01) continue;
       const tone = cushion.cellHash;
@@ -837,25 +890,61 @@ const synthesizeGravel: Recipe = (context) => {
       const grit = periodicWorley(u, v, gritCells, seed + 52);
       // Each stone gets its own size, so the packing is not a lattice.
       const stoneRadius = mix(0.3, 0.52, stone.cellHash);
-      const body = smoothstep(stoneRadius, stoneRadius * 0.35, stone.f1);
-      const gritBody = smoothstep(0.4, 0.14, grit.f1);
+      // `1 − smoothstep(near, far, f1)`, not `smoothstep(far, near, f1)`. The
+      // reversed form degenerates (see `smoothstep`), and here it did not merely
+      // harden the edge — it INVERTED the material. `body` was 1 wherever
+      // `f1 > stoneRadius`, so the stones were drawn as holes and the matrix as
+      // blobs, each taking the other's colour, gloss and cavity. Worse, the
+      // dome below multiplies `body` by `sqrt(1 − (f1/stoneRadius)²)`, which is
+      // non-zero only INSIDE a stone: the two supports were disjoint, so the
+      // stone relief term evaluated to zero at every texel and the layer's only
+      // height was the grit. That is the fine grey stipple the cliff capture
+      // showed on the mountainsides rather than a river-gravel bed.
+      // The thresholds are widened from the drawn `0.35·r … r` to `r … 1.7·r`.
+      // Read literally, the original masks a core of 0.35·r ≈ 0.1–0.18 cell
+      // units, which is a sparse scatter of dots in a wide matrix, not the
+      // packed bed the reference note describes ("rounded river gravel 2–6 cm
+      // in a fine grit matrix"). Nothing had ever been seen at those numbers —
+      // the degenerate form meant they had never been the mask — so they are
+      // set here to what a bed actually needs.
+      const body = 1 - smoothstep(stoneRadius, stoneRadius * 1.7, stone.f1);
+      const gritBody = 1 - smoothstep(0.35, 0.65, grit.f1);
       const tint = stone.cellHash;
-      const stoneColour = mixRgb([0.13, 0.125, 0.12], [0.34, 0.32, 0.29], tint);
-      const matrixColour = mixRgb([0.1, 0.093, 0.083], [0.19, 0.178, 0.16], grit.cellHash);
+      // Per-stone tone narrowed with the same trade Rock's facets took: the
+      // stones' own gloss and relief below carry "each stone its own", and the
+      // ramps no longer span 3.4x in luminance end to end (p99/p01 3.31 → 1.89).
+      const stoneColour = mixRgb([0.13, 0.125, 0.12], [0.24, 0.228, 0.209], tint);
+      const matrixColour = mixRgb([0.125, 0.116, 0.104], [0.185, 0.173, 0.156], grit.cellHash);
       const colour = mixRgb(matrixColour, stoneColour, body);
       const at = texel * 3;
       canvas.albedo[at] = colour[0];
       canvas.albedo[at + 1] = colour[1];
       canvas.albedo[at + 2] = colour[2];
       // Dome each stone; the matrix sits low and takes the grit's micro-relief.
-      canvas.height[texel] = 0.18 + body * 0.62 * Math.sqrt(Math.max(0, 1 - (stone.f1 / Math.max(1e-4, stoneRadius)) ** 2))
+      //
+      // 0.62 → 0.24, and it costs no visible relief. `packLayers` normalises
+      // this layer's gradient to `NORMAL_RMS_SLOPE`, so the dome's amplitude
+      // does not reach the normal map at all — measured, the stored normal X
+      // has standard deviation 45.8 bytes at 0.24 against 44.7 at 0.62. What it
+      // does reach is the stored height channel (`3-6`'s blend) and the
+      // local-mean openness term in `packLayers`, and at 0.62 a 6-texel stone
+      // against a 17-texel box blur saturated that term both ways: the cavity
+      // went bimodal and its median fell to 0.30. Since the dome had been
+      // evaluating to zero (above), 0.62 had never actually been applied to
+      // anything — the amplitude is set here for the first time.
+      canvas.height[texel] = 0.18 + body * 0.24 * Math.sqrt(Math.max(0, 1 - (stone.f1 / Math.max(1e-4, stoneRadius)) ** 2))
         + gritBody * 0.1 * (1 - body);
       // Per-stone gloss: adjacent stones reading differently is the whole
       // point of a gravel bed, and it is the same rule as rock's per-block
       // variance one scale down.
       canvas.roughness[texel] = mix(0.86, 0.58, body * mix(0.2, 1, tint));
       // Interstices are occluded; the cell-boundary crease is where they are.
-      canvas.cavity[texel] = saturate(0.35 + smoothstep(0.0, 0.22, stone.f2 - stone.f1) * 0.65
+      // The floor rises 0.35 → 0.74 (and the crease's share falls 0.65 → 0.26)
+      // because the interstices are now occluded TWICE: this term, and the
+      // openness term in `packLayers`, which only started reading anything once
+      // the stones had relief. Two independent AO terms over the same creases
+      // multiplied to a stored median of 0.30; one of them is enough.
+      canvas.cavity[texel] = saturate(0.74 + smoothstep(0.0, 0.22, stone.f2 - stone.f1) * 0.26
         * (0.4 + 0.6 * body));
     }
   }
@@ -915,12 +1004,39 @@ const synthesizeRock: Recipe = (context) => {
       const fractureCrust = useFamilyA
         ? periodicCurvedBands(u, v, dipA[0], dipA[1], phaseA, 5, 1.4, seed + 601)
         : periodicCurvedBands(u, v, dipB[0], dipB[1], phaseB, 6, 1.6, seed + 602);
-      // Half-plane bands: a joint is an edge, not a sine. The B family remains
-      // slightly weaker, but is never added to A inside the same block.
+      // Band-limited joints: a joint is an edge, not a sine, but it is also a
+      // LINE and not a half-plane. The B family remains slightly weaker, but is
+      // never added to A inside the same block.
+      //
+      // The falling edge is written as `1 − smoothstep(lo, hi, …)` rather than
+      // as `smoothstep(hi, lo, …)`. The reversed-argument form does not do what
+      // it reads as: `smoothstep` above clamps its denominator with
+      // `Math.max(1e-6, high − low)`, so a call whose `high` is BELOW its `low`
+      // gets a 1e-6 span and degenerates into a hard step at `low` — rising,
+      // not falling. `smoothstep(0.16, 0.105, fractureCrust)` was therefore 1
+      // for every `fractureCrust > 0.16`, and this band was an 84%-coverage
+      // half-plane rather than the ~10% crease it is drawn as. Measured at seed
+      // "fly-high", edge 512: `jointBand` mean 0.782, median 1.0, and the
+      // resulting `joint` mean 0.507 — so `− joint * 0.75` was removing about
+      // half of the cavity channel across the whole layer (stored cavity median
+      // 0.325 against ~0.65 for every vegetated material, p05 0.071), and
+      // `mixRgb(veined, dark, joint * 0.62)` was painting half of every block
+      // toward near-black. Those two were the black/brown/white camo read at
+      // close range, not the facet field.
+      //
+      // Fixed here and ONLY here. Nine further call sites in this file use the
+      // same reversed form — the sward's `bare`, the moss cushion, gravel's
+      // stone body and grit, snow's sastrugi, asphalt's stone body and its
+      // interstitial cavity, concrete's aggregate, and `bedStep` twenty lines
+      // below. Each is its own visual regression with its own pins to re-derive,
+      // and `bedStep` in particular was measured and tuned against its present
+      // behaviour by the bedding fix documented above, so moving it would
+      // re-open that spectral work. None of them is this item; all of them are
+      // worth one.
       const jointBand = useFamilyA
-        ? smoothstep(0.0, 0.055, fractureCrust) * smoothstep(0.16, 0.105, fractureCrust)
+        ? smoothstep(0.0, 0.055, fractureCrust) * (1 - smoothstep(0.105, 0.16, fractureCrust))
         : smoothstep(0.0, 0.05, fractureCrust)
-          * smoothstep(0.14, 0.095, fractureCrust) * 0.8;
+          * (1 - smoothstep(0.095, 0.14, fractureCrust)) * 0.8;
       const develop = useFamilyA
         ? smoothstep(0.3, 0.62, periodicFbm(u, v, 3, 3, 0.55, seed + 68))
         : smoothstep(0.34, 0.66, periodicFbm(u, v, 3, 3, 0.55, seed + 69));
@@ -952,7 +1068,13 @@ const synthesizeRock: Recipe = (context) => {
         + (periodicFbm(u, v, 2, 3, 0.5, seed + 605) - 0.5) * 1.5;
       const bed = periodicCurvedBands(
         u, v, bedding[0], bedding[1], bedPhase, 4, 2.2, seed + 603);
-      const bedStep = smoothstep(0.44, 0.5, bed) * smoothstep(0.62, 0.52, bed) * bedCover;
+      // Falling edge written out, so bedding is the ~0.18-wide band it is drawn
+      // as rather than the 38% half-plane the reversed form produced. The
+      // bedding fix above was measured against that half-plane; re-measured
+      // after this change, the family's line is quieter still (Rock's loudest
+      // mip-0 albedo line 0.0077 → 0.0088, height 0.0127 → 0.0118, both far
+      // under the 0.025 the fix set out to hold).
+      const bedStep = smoothstep(0.44, 0.5, bed) * (1 - smoothstep(0.52, 0.62, bed)) * bedCover;
       // Base frequency 13, not 7. `periodicValue` at frequency N is an N x N
       // random lattice, so its Fourier support is exactly |k| <= N/2 — a base
       // of 7 puts the fbm's LOUDEST octave entirely at 2 m and coarser, which
@@ -989,25 +1111,64 @@ const synthesizeRock: Recipe = (context) => {
 
       // The facet tone rides the existing mineral ramp rather than tinting on
       // top of it, so the patches stay inside the rock palette.
+      //
+      // ROCK'S IDENTITY IS RELIEF AND GLOSS, NOT TONE. The facet field used to
+      // carry 0.8 of the ramp argument, and since `facetTone` spans ±0.70 that
+      // let a single facet traverse the whole palette on its own: measured at
+      // seed "fly-high", edge 512, the layer's gamma-2-decoded linear luminance
+      // ran p99/p01 = 3.21 with the bright decile 2.51x the dark one, against
+      // 1.74 for Grass and 1.08 for Snow. A rock face whose neighbouring facets
+      // differ by 2.5x in albedo is camouflage, not stone.
+      //
+      // Three things narrow it, and the authority they give up is not lost —
+      // it moves to the channels that answer to the sun (see the height and
+      // roughness lines below, which take +0.16 and +0.10 of facet):
+      //   - the ramp itself, from [0.098..0.265] to [0.125..0.215], a 1.70
+      //     luminance ratio end to end instead of 2.63;
+      //   - the facet's authority over that ramp, 0.8 → 0.3;
+      //   - the two tails that reached OUTSIDE the ramp. The bedding vein was
+      //     brighter (0.2715 luminance) than the new ramp's top, so it is
+      //     pulled to just above it; and the joint no longer needs to paint
+      //     itself near-black at 0.62 now that the cavity channel carries the
+      //     crevice honestly — 0.35 keeps it a visible dark line.
+      // Together: p99/p01 1.70, bright/dark decile 1.50.
       const base = mixRgb(
-        [0.098, 0.096, 0.093], [0.265, 0.252, 0.226], saturate(mineral + facetTone * 0.8));
-      const veined = mixRgb(base, [0.288, 0.27, 0.238], saturate(bedStep * 0.45));
-      const colour = mixRgb(veined, [0.062, 0.058, 0.055], joint * 0.62);
+        [0.125, 0.122, 0.117], [0.215, 0.208, 0.190], saturate(mineral + facetTone * 0.3));
+      const veined = mixRgb(base, [0.242, 0.232, 0.212], saturate(bedStep * 0.4));
+      const colour = mixRgb(veined, [0.062, 0.058, 0.055], joint * 0.35);
       const shaded = 0.86 + grain * 0.28;
       const at = texel * 3;
       canvas.albedo[at] = colour[0] * shaded;
       canvas.albedo[at + 1] = colour[1] * shaded;
       canvas.albedo[at + 2] = colour[2] * shaded;
 
+      // Facet relief, 0.16 → 0.32: the other half of the albedo trade above.
+      // A facet that is no longer a different COLOUR has to be a different
+      // PLANE, or the face goes flat — and relief is the honest carrier,
+      // because it is the one the sun angle animates as the aircraft moves.
       canvas.height[texel] = 0.52 + (mineral - 0.5) * 0.32 + crust * 0.22 - joint * 0.3
-        - bedStep * 0.06 + facetTone * 0.16;
+        - bedStep * 0.06 + facetTone * 0.32;
       // The ±0.08 per-block variance the plan names, on top of the crust term.
       const blockGloss = (hash2(Math.floor(block.cellHash * 8192), 29, seed + 67) - 0.5) * 0.16;
-      // A touch of per-facet gloss too: weathering is patchy at this scale, and
-      // it keeps the facets legible under a light that flattens their albedo.
+      // Per-facet gloss, 0.1 → 0.2: weathering is patchy at this scale, and it
+      // is now the term that keeps the facets legible under a light that
+      // flattens their albedo. `fitRoughnessToSpec` renormalises onto the 3-0
+      // band afterwards, so this is a share of the band rather than an absolute
+      // widening — the facets take that share from the block and crust terms.
       canvas.roughness[texel] = saturate(
-        0.58 + blockGloss + facetTone * 0.1 + (crust - 0.5) * 0.2 + joint * 0.14);
-      canvas.cavity[texel] = saturate(1 - joint * 0.75 - bedStep * 0.12 - (1 - crust) * 0.12);
+        0.58 + blockGloss + facetTone * 0.2 + (crust - 0.5) * 0.2 + joint * 0.14);
+      // Cavity, re-balanced once the joint band above stopped being a
+      // half-plane. `joint * 0.75` over a term with median 0.573 is what put
+      // Rock's stored cavity median at 0.325 and its p05 at 0.071 — an ambient
+      // floor near black over most of the layer. With the band at its intended
+      // ~10% coverage the joint is a narrow, genuinely dark crease, so its
+      // weight comes DOWN (0.35: at 0.45 the deep crease pulled p05 back under
+      // 0.25), and the broad, shallow micro-pitting the ridged `crust` field
+      // describes takes over the layer's general occlusion (0.12 → 0.38).
+      // Stored: median 0.596, p05 0.259, against ~0.65 for the vegetated
+      // materials — slightly more closed than a sward, which is what a
+      // fractured face is.
+      canvas.cavity[texel] = saturate(1 - joint * 0.35 - bedStep * 0.12 - (1 - crust) * 0.38);
     }
   }
 };
@@ -1024,9 +1185,20 @@ const synthesizeSnow: Recipe = (context) => {
       const u = (x + 0.5) / edge;
       const texel = y * edge + x;
       const drift = periodicFbm(u, v, 3, 4, 0.55, seed + 71);
+      // Wander 4/1.2 → 6/3.2. Rounding the sastrugi crest (below) turned a
+      // 22%-coverage hard strip into a 48%-coverage smooth ridge, which is the
+      // right shape but a far more coherent one: the family's normalised power
+      // on its own line rose 0.0497 → 0.0715 in albedo and 0.0511 → 0.0781 in
+      // height, which is the moiré risk the bedding fix in `synthesizeRock`
+      // documents, arriving in a second material. The answer there works here —
+      // spread the family over a neighbourhood of bins instead of letting it
+      // stand on one — and it costs no ridge amplitude: at 6/3.2 the loudest
+      // line is 0.0081 / 0.0050 and is no longer this family at all.
       const ridge = periodicCurvedBands(
-        u, v, sastrugiBands, Math.max(1, Math.round(sastrugiBands * 0.3)), 0, 4, 1.2, seed + 72);
-      const sastrugi = smoothstep(0.3, 0.5, ridge) * smoothstep(0.78, 0.56, ridge);
+        u, v, sastrugiBands, Math.max(1, Math.round(sastrugiBands * 0.3)), 0, 6, 3.2, seed + 72);
+      // Falling edge written out. Reversed, this was a hard step at 0.78, so a
+      // sastrugi ridge was a thin bright line rather than a rounded crest.
+      const sastrugi = smoothstep(0.3, 0.5, ridge) * (1 - smoothstep(0.56, 0.78, ridge));
       // Ice grains: a high-frequency sparkle carried in ROUGHNESS, not in
       // albedo. Snow is not a speckled white surface; it is a smooth white
       // surface with facets that catch the sun.
@@ -1060,7 +1232,10 @@ const synthesizeAsphalt: Recipe = (context) => {
       const wear = periodicFbm(u, v, 4, 4, 0.55, seed + 82);
       // Worn asphalt loses its bitumen film and the aggregate shows through.
       const aggregateExposed = saturate(smoothstep(0.4, 0.75, wear));
-      const stoneBody = smoothstep(0.46, 0.2, stone.f1) * aggregateExposed;
+      // `1 − smoothstep(near, far, f1)`: reversed, the aggregate was drawn as
+      // the gaps BETWEEN stones, which is why the wheel paths read as a
+      // reticulated mesh — a cracked-mud web — rather than exposed chippings.
+      const stoneBody = (1 - smoothstep(0.2, 0.46, stone.f1)) * aggregateExposed;
       const bitumen = mixRgb([0.026, 0.027, 0.029], [0.055, 0.056, 0.06], wear);
       const aggregate = mixRgb([0.09, 0.088, 0.084], [0.2, 0.194, 0.182], stone.cellHash);
       const colour = mixRgb(bitumen, aggregate, stoneBody);
@@ -1073,7 +1248,10 @@ const synthesizeAsphalt: Recipe = (context) => {
       // Fresh bitumen keeps a sheen; the wheel paths are matte.
       canvas.roughness[texel] = saturate(0.5 + aggregateExposed * 0.34
         + (stone.cellHash - 0.5) * 0.12 * stoneBody);
-      canvas.cavity[texel] = saturate(1 - smoothstep(0.24, 0.02, stone.f2 - stone.f1) * 0.45);
+      // Occlusion belongs on the cell BOUNDARY, where `f2 − f1` is small. The
+      // reversed form put it everywhere else instead.
+      canvas.cavity[texel] = saturate(
+        1 - (1 - smoothstep(0.02, 0.24, stone.f2 - stone.f1)) * 0.45);
     }
   }
   // Thermal cracking: long, thin, dark, slightly recessed.
@@ -1117,11 +1295,18 @@ const synthesizeConcrete: Recipe = (context) => {
       const texel = y * edge + x;
       const stone = periodicWorley(u, v, aggregateCells, seed + 91);
       const stain = periodicFbm(u, v, 3, 4, 0.55, seed + 92);
+      // Wander 3/1.3 → 4/2.2, for the reason the sastrugi ridge above gives.
+      // Correcting `aggregateBody` cut the aggregate's share of this layer's
+      // variance, which raised the float sweep's NORMALISED power without the
+      // sweep itself changing — 0.0565 → 0.0685 on the (5,3) line in height.
+      // Widening the wander returns it to 0.0162, below where it started.
       const sweep = periodicCurvedBands(
-        u, v, sweepBands, Math.max(1, Math.round(sweepBands * 0.6)), 0, 3, 1.3, seed + 93);
+        u, v, sweepBands, Math.max(1, Math.round(sweepBands * 0.6)), 0, 4, 2.2, seed + 93);
       const sweepShade = 0.5 - 0.5 * Math.cos(sweep * Math.PI * 2);
       const grain = periodicValue(u, v, Math.max(16, Math.round(edge / 2)), seed + 94);
-      const aggregateBody = smoothstep(0.4, 0.22, stone.f1);
+      // `1 − smoothstep(near, far, f1)`; reversed, the aggregate and the paste
+      // had swapped places, as in gravel and asphalt.
+      const aggregateBody = 1 - smoothstep(0.22, 0.4, stone.f1);
       const base = mixRgb([0.2, 0.2, 0.195], [0.34, 0.338, 0.325], stain);
       const colour = mixRgb(base, [0.26, 0.256, 0.245], aggregateBody * 0.6);
       const shade = 0.94 + sweepShade * 0.08 + (grain - 0.5) * 0.07;
@@ -1434,6 +1619,18 @@ function packLayers(
   const slopeScale = measuredRms > 1e-6 ? targetRmsSlope / measuredRms : 0;
 
   // A local-mean openness term, folded into whatever cavity the recipe wrote.
+  //
+  // The edge/64 radius (0.09 m on Rock's 5.9 m tile) was suspected of being the
+  // reason Rock's cavity sat near black: it is the same scale as Rock's `crust`
+  // ridged field, so it would be tracking ridge spikes rather than cavities.
+  // Measured, it is not — and the measurement is worth keeping, because the
+  // obvious widening is a REGRESSION for a material that is not Rock. At seed
+  // "fly-high", edge 512, this factor's median per material barely moves with
+  // the radius (Rock 0.658 at edge/64, 0.648 at edge/16), and carrying that
+  // through synthesis moved Rock's stored cavity median only 0.326 → 0.318,
+  // while Snow's fell 0.557 → 0.431 and Concrete's 0.753 → 0.694. Rock's cavity
+  // was written by its own recipe (see `synthesizeRock`), so it was fixed
+  // there, and this radius — shared by all ten materials — is left alone.
   const openness = boxBlur(canvas.height, edge, Math.max(1, Math.round(edge / 64)));
 
   for (let texel = 0; texel < texels; texel += 1) {

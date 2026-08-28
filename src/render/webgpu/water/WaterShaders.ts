@@ -226,39 +226,56 @@ export const WATER_FRESNEL_SCHLICK_WGSL = /* wgsl */ `fn fresnelSchlick(cosTheta
 }`;
 
 /**
- * Fix-pack W1/W2: the near-field capillary band and the sub-grid spectrum
- * tail, shared by every water surface.
+ * Fix-pack W1/W2, extended by wave R: the near-field capillary lattices and
+ * the world-locked gust field, shared by every water surface AND by the
+ * ocean's VERTEX stage.
  *
- * Below the finest cascade's Nyquist (1.0 m at tier 1) the rendered spectrum
- * simply ended: near pixels magnified 0.5 m slope texels into playdough, and
- * because the moment texture holds exactly `s²` at mip 0 the Toksvig variance
- * was identically ZERO up close — roughness collapsed to the floor and the
- * probe reflected at mip 0. Glass. This block supplies (a) two wind-advected
- * procedural ripple octaves (~0.42 m and ~0.16 m), world-locked so descending
- * toward the surface produces real optical flow — the altitude cue — and
- * (b) the unresolved mean-square slope of everything the pixel cannot carry,
- * for the caller to fold into GGX roughness exactly like a faded cascade.
- * Octaves fade on their own pixel-footprint Nyquist and hand their energy to
- * the roughness term as they go, the 2-8 discipline.
+ * This block is derivative-free on purpose. `waterCapillaryDetail` below needs
+ * `dpdx`/`dpdy` and is fragment-only; the ripple lattices themselves are
+ * ordinary functions of world position, so the ocean vertex shader can
+ * displace with the very same noise the fragment shades with and the two
+ * cannot disagree (wave R fix 3).
  *
- * Returns (slope.x, slope.z, unresolvedMeanSquareSlope), slopes in the
- * `normalize(vec3f(slope.x, 1, slope.y))` convention both call sites use.
+ * Hash choice, wave R: `waterDetailGrad` is fed ABSOLUTE world metres, and a
+ * fract-of-product hash degenerates there — at 1e5 m the product lands where
+ * f32 spacing is ~2e-3 and the lattice collapses into bands (the recorded
+ * incident behind `detail/groundCoverWgsl.ts`'s `groundHash2`). Every hash
+ * here is therefore the integer hash that file uses. The remaining bound is
+ * f32 integer exactness on the cell index itself: the finest octave runs 50
+ * cells/m, so cells stay exact out to ~3e5 m of world coordinate.
  */
-export const WATER_CAPILLARY_DETAIL_WGSL = /* wgsl */ `fn waterDetailHash(point: vec2f) -> f32 {
-  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
-  value += dot(value, value.yzx + vec3f(33.33));
-  return fract((value.x + value.y) * value.z);
+export const WATER_DETAIL_NOISE_WGSL = /* wgsl */ `fn waterDetailHash(cell: vec2f, salt: f32) -> f32 {
+  var h = (u32(i32(cell.x)) * 0x27d4eb2du)
+    ^ (u32(i32(cell.y)) * 0x165667b1u)
+    ^ (u32(i32(salt * 8.0)) * 0x9e3779b9u);
+  h = h ^ (h >> 15u);
+  h = h * 0x2c1b3c6du;
+  h = h ^ (h >> 12u);
+  h = h * 0x297a2d39u;
+  h = h ^ (h >> 15u);
+  return f32(h) * 2.3283064365386963e-10;
+}
+
+fn waterDetailValue(point: vec2f, salt: f32) -> f32 {
+  let cell = floor(point);
+  let local = point - cell;
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  return mix(
+    mix(waterDetailHash(cell, salt), waterDetailHash(cell + vec2f(1.0, 0.0), salt), blend.x),
+    mix(waterDetailHash(cell + vec2f(0.0, 1.0), salt), waterDetailHash(cell + vec2f(1.0), salt), blend.x),
+    blend.y,
+  );
 }
 
 fn waterDetailGrad(point: vec2f) -> vec3f {
   let cell = floor(point);
-  let local = fract(point);
+  let local = point - cell;
   let blend = local * local * (vec2f(3.0) - 2.0 * local);
   let slope = 6.0 * local * (vec2f(1.0) - local);
-  let a = waterDetailHash(cell);
-  let b = waterDetailHash(cell + vec2f(1.0, 0.0));
-  let c = waterDetailHash(cell + vec2f(0.0, 1.0));
-  let d = waterDetailHash(cell + vec2f(1.0));
+  let a = waterDetailHash(cell, 0.0);
+  let b = waterDetailHash(cell + vec2f(1.0, 0.0), 0.0);
+  let c = waterDetailHash(cell + vec2f(0.0, 1.0), 0.0);
+  let d = waterDetailHash(cell + vec2f(1.0), 0.0);
   return vec3f(
     mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
     mix(b - a, d - c, blend.y) * slope.x,
@@ -266,36 +283,163 @@ fn waterDetailGrad(point: vec2f) -> vec3f {
   );
 }
 
-fn waterCapillaryDetail(worldXZ: vec2f, windVelocity: vec2f, time: f32) -> vec3f {
-  let footprint = max(length(dpdx(worldXZ)), length(dpdy(worldXZ)));
-  // Floor 0.1, not higher: a calm lake should stay glassier than a windy sea
-  // — the unresolved-tail fold scales with this.
-  let wind01 = clamp(length(windVelocity) * 0.09, 0.1, 1.0);
-  // Wrapped so the advected noise coordinate cannot grow into f32
-  // quantization over a long session; the once-per-~68-min phase snap is a
-  // single-frame ripple reseed, invisible against wave motion.
-  let drift = windVelocity * (time - floor(time / 4096.0) * 4096.0);
+// wave R: cat's paws. One prevailing wind driving every square metre
+// identically is what pinned ocean roughness to a constant and read as
+// plastic. Two world-locked octaves (57 m and 23 m) modulate the LOCAL wind
+// instead, so gusted lanes and calm lanes coexist in one frame. Both octaves
+// fade toward the mean on the pixel footprint — an unfiltered 23 m field
+// aliases past ~10 m/pixel, and a gust field is not worth a shimmer.
+fn waterGustField(worldXZ: vec2f, footprint: f32) -> f32 {
+  let coarseWeight = 1.15 * (1.0 - smoothstep(10.0, 34.0, footprint));
+  let fineWeight = 0.5 * (1.0 - smoothstep(4.0, 14.0, footprint));
+  let coarse = waterDetailValue(worldXZ * 0.017544, 1.0) - 0.5;
+  let fine = waterDetailValue(worldXZ * 0.043478 + vec2f(19.0, 7.0), 2.0) - 0.5;
+  return clamp(1.0 + coarseWeight * coarse + fineWeight * fine, 0.35, 1.55);
+}
+
+// Wrapped so the advected noise coordinate cannot grow into f32
+// quantization over a long session; the once-per-~68-min phase snap is a
+// single-frame ripple reseed, invisible against wave motion.
+fn waterRippleDrift(windVelocity: vec2f, time: f32) -> vec2f {
+  return windVelocity * (time - floor(time / 4096.0) * 4096.0);
+}
+
+// Floor 0.06, not the pre-wave-R 0.1: a calm gust lane must be able to reach
+// roughness ~0.11 so the surface has somewhere to vary TO. The unresolved-tail
+// fold scales with this, and so does every ripple octave's amplitude.
+fn waterRippleWind(windVelocity: vec2f, worldXZ: vec2f, footprint: f32) -> f32 {
+  return clamp(
+    length(windVelocity) * 0.09 * waterGustField(worldXZ, footprint),
+    0.06,
+    1.0,
+  );
+}
+
+// Drift factors are far below 1: capillary PHASE speed is ~0.3-0.5 m/s
+// regardless of the wind that raised the ripples, and advecting the fine
+// lattice at full wind moved it more than half a noise cell per 60 fps
+// frame above ~5 m/s of wind — temporal aliasing shimmer, not motion.
+fn waterRippleGradA(worldXZ: vec2f, drift: vec2f) -> vec3f {
+  return waterDetailGrad((worldXZ - drift * 0.22) * 2.4);
+}
+
+fn waterRippleGradB(worldXZ: vec2f, drift: vec2f) -> vec3f {
+  let rotated = mat2x2f(0.848, 0.53, -0.53, 0.848) * (worldXZ - drift * 0.11);
+  return waterDetailGrad(rotated * 6.1 + vec2f(13.7, 41.3));
+}
+
+// wave R: the two finest octaves are STRETCHED across the wind. Real
+// capillary ripples are ridges perpendicular to the breeze; the isotropic
+// lattice octaves A and B use reads as blobs once a pixel covers only a few
+// centimetres. Returns the world-axis slope of one anisotropic octave, chain
+// rule included, in the caller's amplitude convention.
+fn waterCapillaryOctave(
+  worldXZ: vec2f,
+  drift: vec2f,
+  windAxis: vec2f,
+  cellsPerMeter: f32,
+  stretch: f32,
+  offset: vec2f,
+) -> vec2f {
+  let across = vec2f(-windAxis.y, windAxis.x);
+  let advected = worldXZ - drift;
+  let lattice = vec2f(dot(advected, windAxis), dot(advected, across) / stretch)
+    * cellsPerMeter + offset;
+  let grad = waterDetailGrad(lattice);
+  return windAxis * grad.y + across * (grad.z / stretch);
+}`;
+
+/**
+ * Fix-pack W1/W2 (extended by wave R): the near-field capillary band and the
+ * sub-grid spectrum tail, shared by every water FRAGMENT.
+ *
+ * Below the finest cascade's Nyquist (1.0 m at tier 1) the rendered spectrum
+ * simply ended: near pixels magnified 0.5 m slope texels into playdough, and
+ * because the moment texture holds exactly `s²` at mip 0 the Toksvig variance
+ * was identically ZERO up close — roughness collapsed to the floor and the
+ * probe reflected at mip 0. Glass. This block supplies (a) four wind-advected
+ * procedural ripple octaves (~0.42 m, ~0.16 m, ~0.06 m and ~0.02 m),
+ * world-locked so descending toward the surface produces real optical flow —
+ * the altitude cue — (b) the unresolved mean-square slope of everything the
+ * pixel cannot carry, for the caller to fold into GGX roughness exactly like
+ * a faded cascade, and (c) a glint-only normal jitter. Octaves fade on their
+ * own pixel-footprint Nyquist and hand their energy to the roughness term as
+ * they go, the 2-8 discipline.
+ *
+ * Slopes are in the `normalize(vec3f(slope.x, 1, slope.y))` convention both
+ * call sites use.
+ */
+export const WATER_CAPILLARY_DETAIL_WGSL = /* wgsl */ `struct WaterSurfaceDetail {
+  slope: vec2f,
+  unresolvedMeanSquareSlope: f32,
+  glintSlope: vec2f,
+}
+
+fn waterCapillaryDetail(
+  worldXZ: vec2f,
+  windVelocity: vec2f,
+  time: f32,
+  resolvedSlope: f32,
+) -> WaterSurfaceDetail {
+  let derivativeX = dpdx(worldXZ);
+  let derivativeY = dpdy(worldXZ);
+  let footprintMajor = max(length(derivativeX), length(derivativeY));
+  let footprintMinor = min(length(derivativeX), length(derivativeY));
+  // wave R, mirroring terrain's Fix-pack T2 (TerrainSurfacePlugin.ts): fade on
+  // the footprint the 16x anisotropic sampler actually resolves — the MINOR
+  // axis, floored at major/16 — not the raw major axis. From a 2-4 m eye the
+  // major axis crosses both octaves' thresholds within 10-20 m while the minor
+  // axis (the direction the eye resolves) stays small for hundreds of metres,
+  // so the ripples died exactly where the reported plastic tubes appear. This
+  // was the single largest term in the near-field defect.
+  let footprint = max(footprintMinor, footprintMajor * ${(1 / 16).toFixed(6)});
+  let wind01 = waterRippleWind(windVelocity, worldXZ, footprint);
+  let drift = waterRippleDrift(windVelocity, time);
+  let windAxis = normalize(windVelocity + vec2f(0.00001, 0.0));
   var slope = vec2f(0.0);
-  // The tail below the finest octave here is NEVER resolved at any range.
-  var unresolved = 0.014 * wind01;
-  // Drift factors are far below 1: capillary PHASE speed is ~0.3-0.5 m/s
-  // regardless of the wind that raised the ripples, and advecting the fine
-  // lattice at full wind moved it more than half a noise cell per 60 fps
-  // frame above ~5 m/s of wind — temporal aliasing shimmer, not motion.
+  var glint = vec2f(0.0);
+  // wave R: the never-resolved tail is a FIELD, not a constant. It scales with
+  // the locally RESOLVED wave slope — a steep flank carries more sub-pixel
+  // structure than a trough — and with the gusted wind, so roughness varies
+  // across the surface instead of pinning every ocean pixel to 0.33-0.34,
+  // which is the definition of plastic. The faded-octave handoffs below keep
+  // the 2-8 energy discipline unchanged: only this base term is a field.
+  let slopeGain = 0.4 + 1.2 * min(resolvedSlope, 1.5);
+  var unresolved = 0.006 * wind01 * slopeGain;
   let fadeA = 1.0 - smoothstep(0.05, 0.21, footprint);
   if (fadeA > 0.001) {
-    let gradA = waterDetailGrad((worldXZ - drift * 0.22) * 2.4);
+    let gradA = waterRippleGradA(worldXZ, drift);
     slope += vec2f(gradA.y, gradA.z) * 0.14 * wind01 * fadeA;
   }
   unresolved += 0.020 * wind01 * (1.0 - fadeA * fadeA);
   let fadeB = 1.0 - smoothstep(0.02, 0.08, footprint);
   if (fadeB > 0.001) {
-    let rotated = mat2x2f(0.848, 0.53, -0.53, 0.848) * (worldXZ - drift * 0.11);
-    let gradB = waterDetailGrad(rotated * 6.1 + vec2f(13.7, 41.3));
+    let gradB = waterRippleGradB(worldXZ, drift);
     slope += vec2f(gradB.y, gradB.z) * 0.10 * wind01 * fadeB;
   }
   unresolved += 0.016 * wind01 * (1.0 - fadeB * fadeB);
-  return vec3f(slope, unresolved);
+  // wave R: two more octaves below B, stretched 3:1 across the wind. Drift
+  // factors stay <= 0.1 for the same temporal-aliasing reason as A and B.
+  let fadeC = 1.0 - smoothstep(0.008, 0.03, footprint);
+  if (fadeC > 0.001) {
+    slope += waterCapillaryOctave(worldXZ, drift * 0.07, windAxis, 16.667, 3.0, vec2f(5.1, 27.9))
+      * 0.085 * wind01 * fadeC;
+  }
+  unresolved += 0.010 * wind01 * (1.0 - fadeC * fadeC);
+  let fadeD = 1.0 - smoothstep(0.003, 0.012, footprint);
+  if (fadeD > 0.001) {
+    slope += waterCapillaryOctave(worldXZ, drift * 0.04, windAxis, 50.0, 3.0, vec2f(71.3, 9.7))
+      * 0.06 * wind01 * fadeD;
+    // wave R: the glint jitter. A ~0.045 m perturbation that reaches the SUN
+    // lobe only — folding it into the environment reflection would boil the
+    // reflected sky, but the sun is a 0.0047 rad disc and this is what breaks
+    // its smeared streak back into discrete twinkling points. Tied to the
+    // finest octave's fade, so it costs nothing past ~20 m.
+    let gradGlint = waterDetailGrad((worldXZ - drift * 0.03) * 22.0 + vec2f(61.7, 5.3));
+    glint = vec2f(gradGlint.y, gradGlint.z) * 0.05 * wind01 * fadeD;
+  }
+  unresolved += 0.006 * wind01 * (1.0 - fadeD * fadeD);
+  return WaterSurfaceDetail(slope, unresolved, glint);
 }`;
 
 /**
@@ -391,12 +535,18 @@ export const WATER_CREST_SSS_WGSL = /* wgsl */ `fn crestSubsurface(crestHeight: 
 
 /**
  * 2-9: environment-cube LOD from water roughness. Calibrated so the
- * roughness floor (0.075) lands at mip 0 and the cap (0.34) at mip 2 —
- * water roughness never exceeds ~0.34, so the probe's box mip chain
- * suffices and no GGX prefilter convolution is needed.
+ * roughness floor (0.075) lands at mip 0 and the cap at mip 2 — water
+ * roughness never exceeds the cap, so the probe's box mip chain suffices and
+ * no GGX prefilter convolution is needed.
+ *
+ * wave R re-calibrated the span 0.265 -> 0.425. The ocean cap moved 0.34 ->
+ * 0.5 (a fully unresolved sea at 11 m/s has a mean-square slope near 0.06 by
+ * Cox-Munk, i.e. GGX roughness ~0.49 — 0.34 was a truncation, not a physical
+ * ceiling), and leaving the old span would have flattened every roughness
+ * above 0.34 onto the same mip.
  */
 export const WATER_ENVIRONMENT_MIP_WGSL = /* wgsl */ `fn environmentRoughnessToMip(roughness: f32) -> f32 {
-  return clamp((roughness - 0.075) * (2.0 / 0.265), 0.0, 2.0);
+  return clamp((roughness - 0.075) * (2.0 / 0.425), 0.0, 2.0);
 }`;
 
 /**

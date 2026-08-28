@@ -24,6 +24,25 @@ export const CAMERA_FAR_PLANE_METERS = 45_000;
  */
 export type TerrainTriplanarMode = "planar" | "biplanar" | "triplanar";
 
+/**
+ * wave R: the ocean presentation disk's lattice, moved here from a
+ * `profile.tier` table in `water/SpectralOceanSystem.ts` (the tier rule's
+ * grandfathered ocean reader, now retired).
+ *
+ * A camera-centred radial grid spends vertices where wave displacement is
+ * visible and lets cells grow smoothly toward the hazed horizon, rather than
+ * wasting a uniform 80 km grid. `nearStepMeters` is the radial step of the
+ * innermost rings and is now load-bearing twice over: it sets how short a wave
+ * the mesh can carry at all (wave R's mesh-Nyquist cascade fade reads it), and
+ * the disk's world position is quantised to a multiple of it so residual
+ * lattice aliasing stays glued to the WORLD instead of to the viewer.
+ */
+export interface OceanPresentationTopology {
+  readonly radialRings: number;
+  readonly angularSegments: number;
+  readonly nearStepMeters: number;
+}
+
 export interface WebGpuQualityProfile {
   readonly tier: 0 | 1 | 2 | 3;
   readonly quality: QualityLevel;
@@ -151,6 +170,12 @@ export interface WebGpuQualityProfile {
   readonly shadowDistance: number;
   readonly oceanResolution: 128 | 256;
   readonly oceanCascades: number;
+  /**
+   * wave R: the ocean presentation lattice. Data, not a `profile.tier` branch,
+   * per the tier rule — this row is why `SpectralOceanSystem.ts` could leave
+   * the boundary test's grandfathered-reader list.
+   */
+  readonly oceanPresentation: OceanPresentationTopology;
   readonly cloudResolutionScale: number;
   /**
    * Absolute ceiling on cloud-integration pixels (2-6). Clamped alongside
@@ -265,6 +290,17 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 900,
       oceanResolution: 128,
       oceanCascades: 3,
+      // wave R deliberately left Low's lattice ALONE. Shrinking the near step
+      // without adding rings is not free: the rings spent close in are rings
+      // the quintic ramp no longer has, so the step at 20-30 m grows. Measured
+      // on the harness, 1 m -> 0.5 m at 96 rings moves cascade 0's mesh fade
+      // end 29.9 m -> 23.3 m, i.e. it takes MORE near chop away than the first
+      // two metres of finer lattice give back. Low keeps 1 m.
+      oceanPresentation: {
+        radialRings: 96,
+        angularSegments: 128,
+        nearStepMeters: 1,
+      },
       cloudResolutionScale: 0.25,
       maxCloudPixels: 350_000,
       cloudPrimarySteps: 40,
@@ -337,6 +373,18 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 1_400,
       oceanResolution: 128,
       oceanCascades: 4,
+      // wave R: 144 rings / 0.75 m -> 200 rings / 0.25 m. At 0.75 m the near
+      // lattice could not carry ANY of cascade 0's 1-8 m band without
+      // aliasing, and the radial step passed the band's own half-wavelength
+      // (4 m) at 44 m from the eye — the measured source of the reported
+      // "plastic tubes". At 0.25 m/200 rings that radius moves to 49.5 m and
+      // the innermost 7.5 m genuinely resolves half-metre waves. Cost: 27,649
+      // -> 38,401 vertices and 55,104 -> 76,608 triangles on one disk.
+      oceanPresentation: {
+        radialRings: 200,
+        angularSegments: 192,
+        nearStepMeters: 0.25,
+      },
       cloudResolutionScale: 0.45,
       maxCloudPixels: 700_000,
       cloudPrimarySteps: 60,
@@ -396,6 +444,14 @@ export function resolveWebGpuQualityProfile(
       shadowDistance: 1_800,
       oceanResolution: 256,
       oceanCascades: 5,
+      // wave R: strictly denser than tier 1 on every axis. 240 rings keeps the
+      // disk inside 16-bit indices (61,441 vertices against the 65,535 limit),
+      // which is worth more than the four extra rings 256 would buy.
+      oceanPresentation: {
+        radialRings: 240,
+        angularSegments: 256,
+        nearStepMeters: 0.2,
+      },
       // Temporal reconstruction provides the stability return at this tier. Keep
       // the fully integrated per-frame ray march below a brute-force cost cliff.
       cloudResolutionScale: 0.6,
@@ -446,6 +502,13 @@ export function resolveWebGpuQualityProfile(
     shadowDistance: 2_400,
     oceanResolution: 256,
     oceanCascades: 5,
+    // wave R: Ultra matches tier 2's lattice, as it matches every other ocean
+    // row (§5.3's remaining Ultra ocean rows belong to a later phase).
+    oceanPresentation: {
+      radialRings: 240,
+      angularSegments: 256,
+      nearStepMeters: 0.2,
+    },
     cloudResolutionScale: 0.7,
     maxCloudPixels: 1_600_000,
     cloudPrimarySteps: 96,
