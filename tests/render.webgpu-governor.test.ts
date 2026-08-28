@@ -38,6 +38,25 @@ function runWindows(
 }
 
 describe("adaptive governor (1A-6b)", () => {
+  it("wave R: a frozen (pinned-capture) governor never moves ANY lever", () => {
+    // Z-1's rule is "deterministic shipping pixels": on a slow capture host
+    // (the CI runner's ~28 ms frames) the unfrozen work ladders walked —
+    // vegetation distance, shadow caster distance, cloud-shadow cadence —
+    // and the CI render diverged from the committed baseline while the fast
+    // reference host, whose governor never stepped, kept matching it.
+    const frozen = Object.freeze({ ...config, frozen: true });
+    const overloaded: GovernorSignals = { gpuP95Ms: 40, cpuP95Ms: 40, intervalP95Ms: 45 };
+    let state = createGovernorState(frozen);
+    const initial = state;
+    for (let window = 0; window < 50; window += 1) {
+      state = nextGovernorDecision(state, overloaded, frozen);
+    }
+    expect(state).toBe(initial);
+    expect(state.renderScale).toBe(initial.renderScale);
+    expect(state.cpuWorkLevel).toBe(0);
+    expect(state.gpuWorkLevel).toBe(0);
+  });
+
   it("leaves renderScale untouched over 50 CPU-bound windows and moves the work ladder", () => {
     const cpuBound: GovernorSignals = { gpuP95Ms: 6, cpuP95Ms: 22, intervalP95Ms: 22 };
     let state = createGovernorState(config);

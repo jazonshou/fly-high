@@ -52,6 +52,17 @@ export interface GovernorConfig {
   readonly upCooldownFrames: number;
   /** Windows before a resolution-insensitive latch re-arms (~30 s). */
   readonly insensitiveRearmWindows: number;
+  /**
+   * Wave R: a pinned capture freezes the WHOLE governor, not just the render
+   * scale. Z-1's rule is "deterministic shipping pixels — no governor may
+   * rewrite the target", but only the scale was ever pinned: on a slow
+   * capture host (the CI runner's ~28 ms frames) the work ladders still
+   * walked — compute budget, cloud-shadow cadence, shadow caster distance,
+   * vegetation distance — and the CI render diverged from the committed
+   * baseline (ground-2m-lowsun SSIM 0.93, dusk shadows + pulled-in tree
+   * line). Frozen, the governor measures but never steps.
+   */
+  readonly frozen?: boolean;
 }
 
 export function governorConfigForProfile(profile: {
@@ -339,6 +350,9 @@ export function nextGovernorDecision(
   signals: GovernorSignals,
   config: GovernorConfig,
 ): GovernorState {
+  // A frozen (pinned-capture) governor holds its initial state forever —
+  // every lever and the scale stay at the profile's shipping values.
+  if (config.frozen) return state;
   const resolved = resolveSignals(
     signals,
     config.gpuTargetMs,

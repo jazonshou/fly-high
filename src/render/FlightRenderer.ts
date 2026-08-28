@@ -1241,6 +1241,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (this.pinnedRenderScale === null) return config;
     return Object.freeze({
       ...config,
+      // Wave R: pinning freezes every lever, not just the scale — see the
+      // GovernorConfig.frozen contract.
+      frozen: true,
       scaleCeiling: this.pinnedRenderScale,
       scaleFloor: this.pinnedRenderScale,
     });
