@@ -469,7 +469,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // would put waves and cloud advection at a different phase every run.
       // The settle then rebuilds all temporal state (cloud history, foam
       // decay) at these exact instants.
-      simulationTime = 500 + shotReports.length * 120;
+      //
+      // Wave R: the phase keys on the shot's index in the CANONICAL list,
+      // not its position in the selected subset. Baselines come from full
+      // runs (where the two indices coincide, so no baseline moved with
+      // this change) — but a VITE_PERF_SHOTS subset used to renumber the
+      // shots and pin a DIFFERENT wind/wave phase than the baseline's.
+      // From altitude that phase error is sub-pixel; at the 2 m shots the
+      // whole blade-and-leaf field sways by pixels, and CI's fixed 5-shot
+      // subset failed ground-2m-lowsun's SSIM deterministically (0.929, an
+      // exact reproduction locally at subset index 0) while every full run
+      // on the same code passed.
+      const canonicalShotIndex = PERF_CAPTURE_SHOTS.findIndex(
+        (candidate) => candidate.name === shot.name,
+      );
+      simulationTime = 500 + canonicalShotIndex * 120;
       for (let settle = 0; settle < 150; settle += 1) {
         await nextAnimationFrame();
         simulationTime += 1 / 60;
