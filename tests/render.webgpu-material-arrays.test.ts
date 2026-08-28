@@ -332,14 +332,38 @@ describe("terrain material array synthesis (3-1)", () => {
     expect(maximumCrossedSpectralPower(crossedFamilies, controlEdge)).toBeGreaterThan(0.24);
 
     const rock = plans.albedoHeight.layerChains[SurfaceMaterial.Rock]!;
-    // The overlapping-family recipe measured albedo 0.00985/0.02089/0.03708
-    // and height 0.01524/0.02239/0.03394 at mips 2/3/4. The limits sit between
-    // that known screen-door and the mutually-exclusive result; albedo guards
-    // mip2, where height's reduction is deliberately small.
+    // All six limits are re-derived against the SAME control the original ones
+    // used: the recipe with the per-block family exclusion removed, so both
+    // ±dip families are summed at every texel and the crossing is a real
+    // screen-door. Re-derived, because this statistic is normalised by the
+    // layer's own variance and the reptile-scale fix-pack changed the
+    // denominator. The bedding stripe it removed was a single family carrying
+    // ~40% of Rock's mip-0 albedo variance and contributing nothing to any
+    // mirrored pair, so it was inflating every reading's denominator and
+    // nothing's numerator; the old numbers, measured with that artefact in the
+    // layer, are not comparable to a layer without it. Measured now, at this
+    // seed and edge:
+    //
+    //                       mip2      mip3      mip4
+    //   albedo  shipped   0.00764   0.00941   0.01666
+    //           control   0.01112   0.01479   0.02441
+    //   height  shipped   0.00778   0.00947   0.02917
+    //           control   0.01375   0.01829   0.03227
+    //
+    // (Superseded: albedo 0.007/0.014/0.033 and height 0.018/0.0195/0.029,
+    // against a control that then measured albedo 0.00985/0.02089/0.03708 and
+    // height 0.01524/0.02239/0.03394.)
+    //
+    // Every limit sits between the two rows, so all six still fail the control
+    // — and four of the six are TIGHTER than the numbers they replace. Only
+    // mip2 albedo and mip4 height moved outward; mip4 is the narrowest of the
+    // three either way, being a max over the nine mirrored pairs an 8x8 level
+    // has. A change to the Rock recipe must re-run BOTH rows rather than edit
+    // one number until it passes.
     const limits = [
-      { mip: 2, albedo: 0.007, height: 0.018 },
-      { mip: 3, albedo: 0.014, height: 0.0195 },
-      { mip: 4, albedo: 0.033, height: 0.029 },
+      { mip: 2, albedo: 0.0092, height: 0.0103 },
+      { mip: 3, albedo: 0.0118, height: 0.0132 },
+      { mip: 4, albedo: 0.02, height: 0.0307 },
     ] as const;
     for (const limit of limits) {
       const { mip } = limit;

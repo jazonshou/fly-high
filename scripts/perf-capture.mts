@@ -99,7 +99,7 @@ export interface PerfCaptureShotDefinition {
    */
   readonly relativeSunBearingDegrees?: number;
   /** Z-3: locate the shot over a terrain feature instead of a fixed offset. */
-  readonly locate?: "fixed" | "forest" | "grassland" | "coast";
+  readonly locate?: "fixed" | "forest" | "grassland" | "mountain" | "coast";
   /** Z-3: "motion" runs a scripted banked turn and asserts temporal stability. */
   readonly kind?: "still" | "motion";
   /** Bank angle used by motion shots, degrees. */
@@ -651,6 +651,45 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 17.5 },
     relativeSunBearingDegrees: 60,
     locate: "grassland",
+    ceilings: null,
+  },
+  {
+    // Wave Q gate 1: the dusk terrain-glint + tree-band-handoff scene. A low
+    // sun ahead rakes rolling forested ground with trees from the near band
+    // out past the impostor switch — the frame that showed the "plastic
+    // ground" Fresnel sheen and the binary bright/dark tree line at
+    // ~1.0-1.1 km before the wave-Q fixes.
+    name: "hills-dusk-glint",
+    description: "Low sun ahead over rolling forested hills, glint and band handoff in frame",
+    cameraMode: "chase",
+    altitudeAglMeters: 250,
+    altitudeMslMeters: null,
+    offsetXMeters: -4_000,
+    offsetZMeters: 3_000,
+    pitchDownDegrees: 6,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.2 },
+    relativeSunBearingDegrees: 205,
+    locate: "forest",
+    ceilings: null,
+  },
+  {
+    // Wave Q gate 2: the close-mountainside scene — the frame that showed
+    // the Rock tile's reptile-scale lattice and the axis-locked strata
+    // streaks. The locate predicate walks to a steep rise ahead of the
+    // camera so the slope fills the frame at texture-resolving range.
+    name: "mountain-close",
+    description: "Steep rocky mountainside filling the frame at close range, low sun",
+    cameraMode: "chase",
+    altitudeAglMeters: 220,
+    altitudeMslMeters: null,
+    offsetXMeters: 6_000,
+    offsetZMeters: -5_000,
+    pitchDownDegrees: 2,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 17.8 },
+    relativeSunBearingDegrees: 140,
+    locate: "mountain",
     ceilings: null,
   },
 ]);

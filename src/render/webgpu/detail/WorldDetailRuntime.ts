@@ -14,7 +14,10 @@ import {
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
-import { DetailInstanceMaterialPlugin } from "./DetailInstanceMaterialPlugin";
+import {
+  DetailInstanceMaterialPlugin,
+  type DetailSunShadowSnapshot,
+} from "./DetailInstanceMaterialPlugin";
 import {
   DETAIL_INSTANCE_ATTRIBUTES,
   DETAIL_INSTANCE_STRIDE_BYTES,
@@ -1054,6 +1057,13 @@ export class WorldDetailRuntime {
   ): void {
     for (const plugin of this.instancePlugins) {
       plugin.setKeyLight(directionX, directionY, directionZ, radiance, strength);
+    }
+  }
+
+  /** Wave Q: forward the frame's CSM snapshot to the far-band receiver. */
+  setSunShadow(snapshot: DetailSunShadowSnapshot | null): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setSunShadow(snapshot);
     }
   }
 
@@ -3191,6 +3201,10 @@ export class WorldDetailRuntime {
       // Wave P: same probe trim as the card shell — the interior core peeks
       // through card gaps and must not read bluer than the cards over it.
       opaqueCrownMaterial.environmentIntensity = 0.62;
+      // Wave Q: specular parity too — this hull kept createMaterial's 1.0
+      // while the cards and impostor run 0.4, so at a grazing dusk sun the
+      // mid band's interior flared against both neighbours at the handoffs.
+      opaqueCrownMaterial.specularIntensity = 0.4;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),

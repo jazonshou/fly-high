@@ -781,18 +781,27 @@ describe("displaced position reaches the fragment stage (4.5-D3)", () => {
       );
 
       // Non-vacuity: the submerged term has to do something at all.
+      const range = Math.abs(dryMean - wetMean);
       expect(
-        Math.abs(dryMean - wetMean),
+        range,
         "the submerged term never fired — this assertion would be vacuous",
       ).toBeGreaterThan(8);
       // The half of the node BELOW the ramp's midpoint reads as the wet
-      // reference and the half above reads as the dry one. Undisplaced,
-      // `vPositionW.y` would be 0 for every fragment and both halves would
-      // read wet.
+      // reference; the half above must NOT. Undisplaced, `vPositionW.y`
+      // would be 0 for every fragment and both halves would read wet —
+      // identical means. Wave Q re-anchored the second assertion: the old
+      // "right ≈ dry reference" form assumed the reference renders share
+      // the high half's SURFACE, but they move sea level by kilometres and
+      // every elevation-above-sea keyed term (alpine rock, the snowline)
+      // moves with it — the comparison sat one percent from flipping, and
+      // wave Q's roughness convergence tipped it. What the guarded defect
+      // actually erases is the LEFT/RIGHT separation, so pin that.
       const towardWet = Math.abs(leftMean - wetMean) < Math.abs(leftMean - dryMean);
-      const towardDry = Math.abs(rightMean - dryMean) < Math.abs(rightMean - wetMean);
       expect(towardWet, "the low half of the ramp did not read as submerged").toBe(true);
-      expect(towardDry, "the high half of the ramp did not read as dry").toBe(true);
+      expect(
+        rightMean - leftMean,
+        "the high half of the ramp read as submerged too — vPositionW.y is flat",
+      ).toBeGreaterThan(range * 0.25);
 
       heightAtlas.dispose();
       arrays.albedoHeight.dispose();

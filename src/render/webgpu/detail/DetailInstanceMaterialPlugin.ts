@@ -3,6 +3,7 @@ import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines"
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import {
   DETAIL_INSTANCE_ATTRIBUTES,
@@ -13,6 +14,26 @@ import {
   TREE_BARK_LAYER_MIN,
   TREE_BARK_LAYER_SPAN,
 } from "./treePrototypeFamily";
+
+/**
+ * Wave Q: one frame's CSM state for the far band's hand-packed shadow
+ * receiver. Assembled by the renderer from the atmosphere's generator (the
+ * only CSM owner) and forwarded through WorldDetailRuntime unchanged.
+ */
+export interface DetailSunShadowSnapshot {
+  /** Four cascade transform matrices, packed row-after-row (64 floats). */
+  readonly matrices: Float32Array;
+  /** The render camera's view matrix (16 floats). */
+  readonly view: Float32Array;
+  readonly splits: readonly [number, number, number, number];
+  readonly blendStarts: readonly [number, number, number, number];
+  readonly cascadeCount: number;
+  readonly darkness: number;
+  readonly shadowMaxZ: number;
+  readonly valid: boolean;
+  /** The generator's depth map; bound as a depth-comparison array. */
+  readonly map: RenderTargetTexture | null;
+}
 
 /** World-space scale of one vertical bark-tile repeat on live tree trunks. */
 export const DETAIL_TREE_BARK_REPEAT_METERS = 2;
@@ -87,9 +108,11 @@ varying detailFadeByte: f32;
 #endif
 #endif
 #ifdef DETAIL_IMPOSTOR
-// 2-17: the billboard quad's own lanes. Impostor meshes do not receive
-// shadows (they live past 1.4 km), which frees the cascade varyings these
-// consume. detailImpostorA = (quadU, quadV, fadeByte, weightA);
+// 2-17: the billboard quad's own lanes. Impostor meshes cannot take
+// Babylon's CSM varyings (16-fragment-input limit — and at every tier they
+// START inside the cascade reach, so they DO need sun shadow: the wave-Q
+// hand-packed receiver below the frame decoder supplies it varying-free),
+// which frees the cascade varyings these consume. detailImpostorA = (quadU, quadV, fadeByte, weightA);
 // detailImpostorB = (tileA.uv, tileB.uv); detailImpostorC = (tileC.uv,
 // weightB, mirror).
 #ifndef DETAIL_FOLIAGE_ATLAS
@@ -494,6 +517,56 @@ fn detailImpostorFrame() -> vec4f {
   let variant = floor(fragmentInputs.detailImpostorC.w + 0.5);
   return uniforms.detailImpostorSpecies[i32(floor(variant / 32.0))];
 }
+
+// Wave Q (tree-cutoff fix): a hand-packed CSM receiver for the far band.
+// Impostors begin 260-400 m INSIDE the cascade reach at every tier, and
+// with receiveShadows the geometry bands have while the impostor cannot
+// (Babylon's CSM varyings overflow the 16-fragment-input limit on this
+// bundle — the compile-test contract), the mid->far handoff was a binary
+// full-shadow -> no-shadow cliff across every dusk forest. This is the
+// water system's receiver (SunShadowReceiver.ts) recomputed entirely in
+// the fragment stage from vPositionW: zero extra fragment inputs.
+#ifdef DETAIL_SUN_SHADOW
+var detailSunShadowMapSampler: sampler_comparison;
+var detailSunShadowMap: texture_depth_2d_array;
+
+fn detailSunShadowCascade(cascade: i32, world: vec3f) -> f32 {
+  let projected = uniforms.detailSunShadowMatrices[cascade] * vec4f(world, 1.0);
+  let clip = projected.xyz / max(abs(projected.w), 0.000001);
+  let uv = clip.xy * 0.5 + vec2f(0.5);
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0
+    || clip.z < 0.0 || clip.z > 1.0) {
+    return 1.0;
+  }
+  let compared = textureSampleCompareLevel(
+    detailSunShadowMap,
+    detailSunShadowMapSampler,
+    uv,
+    cascade,
+    clamp(clip.z, 0.0, 0.99999994),
+  );
+  return mix(uniforms.detailSunShadowParams.y, 1.0, compared);
+}
+
+fn detailSunShadow(world: vec3f) -> f32 {
+  if (uniforms.detailSunShadowParams.z < 0.5) { return 1.0; }
+  let viewDepth = max(-(uniforms.detailSunShadowView * vec4f(world, 1.0)).z, 0.0);
+  let cascadeCount = i32(uniforms.detailSunShadowParams.x + 0.5);
+  var cascade = 0;
+  if (viewDepth > uniforms.detailSunShadowSplits.x) { cascade = 1; }
+  if (viewDepth > uniforms.detailSunShadowSplits.y) { cascade = 2; }
+  if (viewDepth > uniforms.detailSunShadowSplits.z) { cascade = 3; }
+  if (viewDepth > uniforms.detailSunShadowSplits.w) { cascade = 4; }
+  if (cascade >= cascadeCount) { return 1.0; }
+  let current = detailSunShadowCascade(cascade, world);
+  // Unlike Babylon's hard stop at shadowMaxZ, fade the term out over the
+  // last stretch so the cascade boundary never draws its own line on the
+  // forest — the exact artifact this receiver exists to remove.
+  let maxZ = uniforms.detailSunShadowParams.w;
+  let fade = smoothstep(maxZ * 0.82, maxZ, viewDepth);
+  return mix(current, 1.0, fade);
+}
+#endif
 #endif
 
 #ifdef DETAIL_OPAQUE_CROWN
@@ -849,6 +922,14 @@ if (impostorNormalLength > 0.25) {
 } else {
   normalW = impostorBillboardNormal;
 }
+// Wave Q (tree-cutoff fix): every term above faces the VIEWER (the bake
+// flips normals toward the bake camera; the billboard base is the flat eye
+// vector), so a far sprite was near-maximally lit whenever the sun stood
+// anywhere behind the camera — while the mid band's crowns spread their
+// normals across the hemisphere. A fixed tilt toward the sky moves the
+// sprite's response toward that omnidirectional average from both sides:
+// it darkens the sun-behind-camera case and lifts the sun-opposed case.
+normalW = normalize(mix(normalW, vec3f(0.0, 1.0, 0.0), 0.3));
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: `
@@ -874,17 +955,33 @@ if (detailBacklit > 0.0) {
 }
 #endif
 #ifdef DETAIL_IMPOSTOR
+// Wave Q (tree-cutoff fix): the hand-packed CSM term. Multiplying here
+// mirrors the terrain horizon-shadow hook — direct diffuse and specular
+// only; ambient/irradiance are untouched.
+#ifdef DETAIL_SUN_SHADOW
+let impostorSunShadow = detailSunShadow(fragmentInputs.vPositionW);
+finalDiffuse *= impostorSunShadow;
+#ifdef SPECULARTERM
+finalSpecularScaled *= impostorSunShadow;
+#endif
+#else
+let impostorSunShadow = 1.0;
+#endif
 // Fix-pack polish: the far band gets the SAME wrap-transmission response as
 // the crowns it hands off to — the term was gated on the atlas define the
 // impostor material never sets, so every backlit stand stepped from glowing
 // mid hulls to flat far sprites at the handoff ring. The bake folds
 // per-texel occlusion into the sprite's ALBEDO already, so a mid-level
-// constant stands in for the per-fragment occlusion gate.
+// constant stands in for the per-fragment occlusion gate. Wave Q lowered
+// the constant 0.6 -> 0.45: the geometry side's per-fragment gate averages
+// below its midpoint on interior-heavy crowns, and the flat 0.6 was one of
+// the terms brightening the whole far band at the handoff ring. The wrap
+// is sun transmission, so it carries the shadow term like the direct lobe.
 let impostorBacklit = uniforms.detailKeyLight.w
   * pow(clamp(-dot(viewDirectionW, uniforms.detailKeyLight.xyz), 0.0, 1.0), 4.0);
 if (impostorBacklit > 0.0) {
   finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
-    * (impostorBacklit * 0.6);
+    * (impostorBacklit * 0.45 * impostorSunShadow);
 }
 #endif
 `,
@@ -907,6 +1004,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     DETAIL_IMPOSTOR_SPECIES_SLOTS * 4,
   );
   private impostorSeasonMix = 0;
+  private sunShadow: DetailSunShadowSnapshot | null = null;
   /**
    * 2-12's translucency term: the frame's key light, forwarded from
    * `AtmosphereSystem`'s snapshot by the runtime. `w` is the strength
@@ -1062,6 +1160,10 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   override prepareDefines(defines: MaterialDefines): void {
     defines["DETAIL_FOLIAGE_ATLAS"] = this.foliageAtlas !== null;
     defines["DETAIL_IMPOSTOR"] = this.impostorAtlas !== null;
+    // Wave Q: the CSM receiver compiles only when a depth map can actually
+    // be bound — a declared-but-unbound depth sampler is a createBindGroup
+    // crash, not a silent fallback.
+    defines["DETAIL_SUN_SHADOW"] = this.impostorAtlas !== null && this.sunShadow?.map != null;
     defines["DETAIL_BAND_FADES"] = this.bandFadesEnabled;
     defines["DETAIL_OPAQUE_CROWN"] = this.opaqueCrown;
     // forcedInstanceCount routes the draw through Babylon's thin-instance
@@ -1082,6 +1184,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (!samplers.includes("foliageAtlas")) samplers.push("foliageAtlas");
     if (!samplers.includes("impostorAlbedo")) samplers.push("impostorAlbedo");
     if (!samplers.includes("impostorNormalDepth")) samplers.push("impostorNormalDepth");
+    if (!samplers.includes("detailSunShadowMap")) samplers.push("detailSunShadowMap");
   }
 
   override hardBindForSubMesh(
@@ -1098,6 +1201,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     }
     if (this.impostorNormalAtlas) {
       uniformBuffer.setTexture("impostorNormalDepth", this.impostorNormalAtlas);
+    }
+    // Wave Q: the CSM depth array, impostor material only. Depth-comparison
+    // textures bind through the effect (the water receiver's route) — the
+    // uniform-buffer setTexture path would pair a filtering sampler with a
+    // depth texture, which WebGPU validation rejects.
+    if (this.impostorAtlas && this.sunShadow?.map) {
+      subMesh?.effect?.setDepthStencilTexture("detailSunShadowMap", this.sunShadow.map);
     }
     // Unlike bindForSubMesh, Babylon invokes the hard-bind hook even when a
     // shared material/effect remains cached. The offset is mesh-dependent,
@@ -1136,6 +1246,18 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
 
   setTimeSeconds(value: number): void {
     this.timeSeconds = Number.isFinite(value) ? value : 0;
+  }
+
+  /**
+   * Wave Q: the frame's CSM snapshot for the far band, on the same
+   * forward-the-snapshot pattern as the key light and the wind. Null (or
+   * valid: false) disarms the receiver — the WGSL returns 1.0 unshadowed.
+   */
+  setSunShadow(snapshot: DetailSunShadowSnapshot | null): void {
+    const next = snapshot && snapshot.valid ? snapshot : null;
+    const hadMap = this.sunShadow?.map != null;
+    this.sunShadow = next;
+    if ((next?.map != null) !== hadMap) this.markAllDefinesAsDirty();
   }
 
   /**
@@ -1187,6 +1309,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
           type: "vec4",
           arraySize: DETAIL_IMPOSTOR_SPECIES_SLOTS,
         },
+        // Wave Q: the far band's hand-packed CSM receiver (define-independent
+        // layout, the house rule — only the impostor material samples them).
+        { name: "detailSunShadowMatrices", size: 16, type: "mat4", arraySize: 4 },
+        { name: "detailSunShadowView", size: 16, type: "mat4" },
+        { name: "detailSunShadowSplits", size: 4, type: "vec4" },
+        { name: "detailSunShadowBlendStarts", size: 4, type: "vec4" },
+        { name: "detailSunShadowParams", size: 4, type: "vec4" },
       ],
     };
   }
@@ -1240,6 +1369,34 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       0,
     );
     uniformBuffer.updateFloatArray("detailImpostorSpecies", this.impostorSpecies);
+    const sunShadow = this.sunShadow;
+    if (sunShadow) {
+      uniformBuffer.updateMatrices("detailSunShadowMatrices", sunShadow.matrices);
+      uniformBuffer.updateMatrices("detailSunShadowView", sunShadow.view);
+      uniformBuffer.updateFloat4(
+        "detailSunShadowSplits",
+        sunShadow.splits[0],
+        sunShadow.splits[1],
+        sunShadow.splits[2],
+        sunShadow.splits[3],
+      );
+      uniformBuffer.updateFloat4(
+        "detailSunShadowBlendStarts",
+        sunShadow.blendStarts[0],
+        sunShadow.blendStarts[1],
+        sunShadow.blendStarts[2],
+        sunShadow.blendStarts[3],
+      );
+      uniformBuffer.updateFloat4(
+        "detailSunShadowParams",
+        sunShadow.cascadeCount,
+        sunShadow.darkness,
+        1,
+        sunShadow.shadowMaxZ,
+      );
+    } else {
+      uniformBuffer.updateFloat4("detailSunShadowParams", 0, 0, 0, 0);
+    }
   }
 
   override getCustomCode(

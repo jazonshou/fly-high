@@ -499,3 +499,27 @@ above, recorded per the working rules:
   main lever on canopy richness; ring width steps at blade-ring boundaries;
   the 4 m attribute-tile quantisation shows as density blocks near clearance
   edges; far-field forest→splat folding remains the recorded non-goal.
+
+## 10. Wave Q — viewer-reported terrain defects (2026-08-28)
+
+Three defects reported from the viewer (plastic dusk ground, binary tree
+brightness cutoff, reptile-scale mountainsides) were root-caused by a
+three-agent recon pass and fixed at the mechanism level; the decision log
+carries the full record. Deviations and open items:
+
+- The recon's "impostor un-premultiply brightens edges 2×" claim was WRONG —
+  the sample function premultiplies before the view blend, so the divide is
+  exact. Verified in source before touching it; left as is.
+- The first splat widening (binary accept levels 0-2) painted razor-straight
+  page-border seams — visible in the canopy gate shot — and was replaced the
+  same day by log-linear confidence + noise-mottled strength feather. The
+  lesson recorded: any per-page-level binary gate WILL draw its border.
+- 83b's luminance discriminator was re-anchored (left/right separation, not
+  right≈dry) — the references never shared the high half's surface.
+- Open: vegetation has no long-range horizon-shadow term, so scattered far
+  impostors can read lit on horizon-shadowed dusk terrain (organic now, not
+  a line). The terrain's 8-azimuth horizon map is the natural donor if it
+  ever earns a cross-system binding.
+- Open: `terrain-surface-compile` does not compile the PAGE_CHANNELS
+  permutation — a WGSL paren bug in that block sailed through both GPU
+  compile tests and only failed in the full capture.

@@ -18,8 +18,9 @@ import {
   TERRAIN_FALLBACK_ALPINE_START_METERS,
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
-  TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS,
-  TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS,
+  TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL,
+  TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS,
+  TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE,
   TERRAIN_FINE_HEIGHT_GRADIENT_SCALE,
   TERRAIN_PARENT_HEIGHT_GRADIENT_SCALE,
   TERRAIN_SURFACE_INJECTION_ANCHORS,
@@ -584,23 +585,36 @@ describe("terrain surface plugin (3-2)", () => {
     expect(gather).not.toMatch(/candidateWeight\s*>=/u);
   });
 
-  it("attenuates classification to zero once a channel texel exceeds the fine footprint", () => {
-    expect(TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS).toBe(4);
-    expect(TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS).toBe(8);
+  it("attenuates classification linearly per residency level", () => {
+    // Wave Q re-pin (second landing): confidence is linear in log2(texel) —
+    // one CONFIDENCE_LOSS_PER_LEVEL per level above the finest — because a
+    // binary acceptance gate painted a razor-straight page-border seam. The
+    // shader mottles this into a class strength; levels 0-4 classify at
+    // descending strength, level 5+ (128 m texels) falls back entirely.
+    expect(TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS).toBe(4);
+    expect(TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL).toBe(0.2);
+    expect(TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE).toBe(0.1);
     expect(terrainPageClassificationConfidence(0)).toBe(1);
     expect(terrainPageClassificationConfidence(4)).toBe(1);
-    expect(terrainPageClassificationConfidence(6)).toBeCloseTo(0.5, 12);
-    expect(terrainPageClassificationConfidence(8)).toBe(0);
-    expect(terrainPageClassificationConfidence(64)).toBe(0);
+    expect(terrainPageClassificationConfidence(8)).toBeCloseTo(0.8, 12);
+    expect(terrainPageClassificationConfidence(16)).toBeCloseTo(0.6, 12);
+    expect(terrainPageClassificationConfidence(32)).toBeCloseTo(0.4, 12);
+    expect(terrainPageClassificationConfidence(64)).toBeCloseTo(0.2, 12);
+    expect(terrainPageClassificationConfidence(128)).toBe(0);
     expect(() => terrainPageClassificationConfidence(Number.NaN)).toThrow(/texel size/u);
     expect(() => terrainPageClassificationConfidence(-1)).toThrow(/texel size/u);
 
     withPlugin((plugin) => {
       const source = Object.values(fragmentCode(plugin)).join("\n");
       expect(source).toContain("let channelTexelMeters");
-      expect(source).toContain("4.0,\n    8.0,\n    channelTexelMeters");
-      expect(source).toContain("if (confidence < 0.5 || uv.z <= 0.0)");
-      expect(source).toContain("let terrainUsePageSplat = terrainPageSplat.w >= 0.5;");
+      expect(source).toContain("log2(max(channelTexelMeters, 4.0)");
+      expect(source).toContain("if (confidence < 0.1 || uv.z <= 0.0)");
+      expect(source).toContain("let terrainUsePageSplat = terrainPageSplat.w >= 0.1;");
+      // The seam feather itself: class strength mottled by the cover noise,
+      // fading toward the fallback's own composition in both material paths.
+      expect(source).toContain("terrainPageSplat.w + terrainCoverNoise * 0.003");
+      expect(source.match(/terrainClassStrength < 0\.996/gu)).toHaveLength(2);
+      expect(source).toContain("* terrainClassComplement");
     });
   });
 
@@ -642,7 +656,9 @@ describe("terrain surface plugin (3-2)", () => {
       expect(source).toContain("let terrainUsePageSplat = false;");
       expect(source).toContain("if (!terrainUsePageSplat)");
       expect(source).toContain("terrainElevationDriver");
-      expect(source).toContain("420.0,\n      980.0,");
+      // Wave Q: the alpine term left its no-splat if-block (it now scales by
+    // the class complement), so the pinned indentation moved with it.
+    expect(source).toContain("420.0,\n    980.0,");
       expect(source).not.toContain("fragmentInputs.terrainSplat.x");
       expect(source.match(
         /terrainBlend0 = 1\.0 - terrainThirdWeight;/gu,

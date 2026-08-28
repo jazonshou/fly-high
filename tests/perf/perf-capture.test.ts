@@ -330,6 +330,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
         }, { stepMeters: 120, maxRadiusMeters: 3_000 });
         return found ?? fallback;
       }
+      if (shot.locate === "mountain") {
+        // A steep high face 400-900 m ahead on the +x heading, with the
+        // camera spot itself standable (moderate slope, above water).
+        const found = locateShotOffset((x, z) => {
+          const here = sampleTerrain(world, airportX + x, airportZ + z);
+          if (here.height < world.seaLevel + 5 || here.slope > 0.3) return false;
+          let steep = 0;
+          for (const ahead of [400, 650, 900] as const) {
+            const face = sampleTerrain(world, airportX + x + ahead, airportZ + z);
+            if (face.slope > 0.4 && face.height > here.height + 180) steep += 1;
+          }
+          return steep >= 2;
+        }, { stepMeters: 400, maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
       // Coast: over water with land ~3 km ahead on the +x heading.
       const found = locateShotOffset((x, z) => {
         const here = sampleTerrainHeight(world, airportX + x, airportZ + z);

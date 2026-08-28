@@ -872,7 +872,7 @@ const synthesizeGravel: Recipe = (context) => {
  * not the mottle.
  */
 const synthesizeRock: Recipe = (context) => {
-  const { canvas, seed } = context;
+  const { canvas, seed, spec } = context;
   const edge = canvas.edge;
   const blockCells = 6;
   // Dip ±23.2°: integer lattice directions (14, ±6) over the tiling period
@@ -881,6 +881,20 @@ const synthesizeRock: Recipe = (context) => {
   const dipB: readonly [number, number] = [14, -6];
   // Bedding runs across the joints at a shallower angle.
   const bedding: readonly [number, number] = [3, 11];
+  // Mineral facets — the reptile-scale fix-pack's replacement structure. The
+  // band is fixed at both ends: below ~0.4 m a facet is eaten by the 0.39 m
+  // joint spacing and reads as more weave, above ~0.9 m it is removed by
+  // `flattenLowFrequency`, whose 6-of-an-edge radius high-passes at 0.98 m.
+  //
+  // TWO scales, at co-prime cell counts (13 and 7 over the 5.9 m tile). One
+  // Worley layer gives every facet the same size, which is its own weak
+  // lattice — and because a per-cell field's variance lands on that cell
+  // lattice's own frequencies, a single layer also concentrates the variance
+  // in one set of Fourier bins. Two co-prime layers interleave their bins,
+  // which lowers the peak any one line can reach and gives the face the size
+  // range real rock breaks into.
+  const facetCells = cellsForFeature(edge, spec.tilingPeriodMeters, 0.45);
+  const facetCoarseCells = cellsForFeature(edge, spec.tilingPeriodMeters, 0.84);
   for (let y = 0; y < edge; y += 1) {
     const v = (y + 0.5) / edge;
     for (let x = 0; x < edge; x += 1) {
@@ -911,15 +925,73 @@ const synthesizeRock: Recipe = (context) => {
         ? smoothstep(0.3, 0.62, periodicFbm(u, v, 3, 3, 0.55, seed + 68))
         : smoothstep(0.34, 0.66, periodicFbm(u, v, 3, 3, 0.55, seed + 69));
       const joint = jointBand * develop;
+      // Bedding — the reptile-scale lattice, and the one term in this recipe
+      // that was applied at EVERY texel with no mask. A DFT of the decoded
+      // albedo luminance at edge 512 put normalised power 0.069–0.093,
+      // depending on seed, on the single line k = (3, 11): 4.6–5.7x the
+      // runner-up, one coherent 0.517 m stripe family dominating the material.
+      // Crossed with the ±23° joints it closed a ~0.42 x 0.54 m rhombic cell,
+      // and the phase wander rounded those cells into ovals — knit fabric on a
+      // mountainside. Three changes, and they have to be made together, because
+      // any one alone leaves the line standing:
+      //   (a) a patchy coverage mask, exactly as the joints already carry
+      //       `develop`, so bedding is EXPOSED on part of the face — 24% to
+      //       56% of the tile over eight seeds — rather than ruled across all
+      //       of it;
+      //   (b) wander at two scales — a gentle metre-scale bend under the
+      //       existing sub-metre waviness — which spreads the family over a
+      //       neighbourhood of bins instead of standing on one;
+      //   (c) two thirds of the old albedo contrast and three quarters of the
+      //       relief, since a bedding plane is a tone change and the recipe was
+      //       drawing it as a stripe.
+      // Together: 0.0004 on that line, and the layer's loudest remaining
+      // non-DC component is 0.017 (0.026 worst over eight seeds) — a flat
+      // spectrum with no family in it, which is what rock is.
+      const bedCover = smoothstep(0.42, 0.66, periodicFbm(u, v, 5, 4, 0.55, seed + 604));
+      const bedPhase = hash2(3, 5, seed + 63)
+        + (periodicFbm(u, v, 2, 3, 0.5, seed + 605) - 0.5) * 1.5;
       const bed = periodicCurvedBands(
-        u, v, bedding[0], bedding[1], hash2(3, 5, seed + 63), 4, 1.2, seed + 603);
-      const bedStep = smoothstep(0.44, 0.5, bed) * smoothstep(0.62, 0.52, bed);
-      const mineral = periodicFbm(u, v, 7, 5, 0.52, seed + 64);
+        u, v, bedding[0], bedding[1], bedPhase, 4, 2.2, seed + 603);
+      const bedStep = smoothstep(0.44, 0.5, bed) * smoothstep(0.62, 0.52, bed) * bedCover;
+      // Base frequency 13, not 7. `periodicValue` at frequency N is an N x N
+      // random lattice, so its Fourier support is exactly |k| <= N/2 — a base
+      // of 7 puts the fbm's LOUDEST octave entirely at 2 m and coarser, which
+      // is metre-scale blotch that `flattenLowFrequency` then spends its keep
+      // fraction fighting, and which after the bedding fix became the loudest
+      // thing left in the layer. At 13 the same variance is spread over 3.4x
+      // the bins and the dominant octave lands at ~0.45 m, where the mineral
+      // banding of real rock actually is. One octave fewer keeps the finest
+      // scale where it was (104 cells, against 112 before).
+      const mineral = periodicFbm(u, v, 13, 4, 0.52, seed + 64);
+      // Irregular mineral facets. Killing the stripe family is only half the
+      // fix: with the lattice gone the face still needs something at the same
+      // scale, or the residual joint cells are once again the loudest thing
+      // present, and the layer's variance has dropped to where every other
+      // line reads louder than it did. Worley is isotropic — no direction is
+      // preferred, so it cannot ring the way a band family does — and the
+      // per-cell hash is what makes adjacent faces read as different rock
+      // instead of one weave, the same rule as the per-block gloss below, one
+      // scale finer.
+      const facet = periodicWorley(u, v, facetCells, seed + 606);
+      const facetCoarse = periodicWorley(u, v, facetCoarseCells, seed + 609);
+      // Each tone is held nearly FLAT across its cell, with only a hairline
+      // softening at the boundary. An earlier draft faded the tone out toward
+      // the boundary instead, and that is what turns a Voronoi into a field of
+      // rounded pebbles — the reptile-scale read arriving by a second route. A
+      // rock face is angular: the tone belongs to the face, and the seam
+      // between faces is a line, not a gradient.
+      const facetTone = (facet.cellHash - 0.5)
+        * (0.78 + 0.22 * smoothstep(0.0, 0.06, facet.f2 - facet.f1)) * 0.78
+        + (facetCoarse.cellHash - 0.5)
+        * (0.78 + 0.22 * smoothstep(0.0, 0.06, facetCoarse.f2 - facetCoarse.f1)) * 0.62;
       const crust = periodicRidged(u, v, Math.max(12, Math.round(edge / 8)), 4, 0.55, seed + 65);
       const grain = periodicValue(u, v, Math.max(16, Math.round(edge / 3)), seed + 66);
 
-      const base = mixRgb([0.098, 0.096, 0.093], [0.265, 0.252, 0.226], mineral);
-      const veined = mixRgb(base, [0.31, 0.288, 0.252], saturate(bedStep * 0.7));
+      // The facet tone rides the existing mineral ramp rather than tinting on
+      // top of it, so the patches stay inside the rock palette.
+      const base = mixRgb(
+        [0.098, 0.096, 0.093], [0.265, 0.252, 0.226], saturate(mineral + facetTone * 0.8));
+      const veined = mixRgb(base, [0.288, 0.27, 0.238], saturate(bedStep * 0.45));
       const colour = mixRgb(veined, [0.062, 0.058, 0.055], joint * 0.62);
       const shaded = 0.86 + grain * 0.28;
       const at = texel * 3;
@@ -928,11 +1000,14 @@ const synthesizeRock: Recipe = (context) => {
       canvas.albedo[at + 2] = colour[2] * shaded;
 
       canvas.height[texel] = 0.52 + (mineral - 0.5) * 0.32 + crust * 0.22 - joint * 0.3
-        - bedStep * 0.08;
+        - bedStep * 0.06 + facetTone * 0.16;
       // The ±0.08 per-block variance the plan names, on top of the crust term.
       const blockGloss = (hash2(Math.floor(block.cellHash * 8192), 29, seed + 67) - 0.5) * 0.16;
-      canvas.roughness[texel] = saturate(0.58 + blockGloss + (crust - 0.5) * 0.2 + joint * 0.14);
-      canvas.cavity[texel] = saturate(1 - joint * 0.75 - bedStep * 0.18 - (1 - crust) * 0.12);
+      // A touch of per-facet gloss too: weathering is patchy at this scale, and
+      // it keeps the facets legible under a light that flattens their albedo.
+      canvas.roughness[texel] = saturate(
+        0.58 + blockGloss + facetTone * 0.1 + (crust - 0.5) * 0.2 + joint * 0.14);
+      canvas.cavity[texel] = saturate(1 - joint * 0.75 - bedStep * 0.12 - (1 - crust) * 0.12);
     }
   }
 };

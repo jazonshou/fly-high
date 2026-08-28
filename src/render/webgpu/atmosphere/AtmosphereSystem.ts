@@ -703,6 +703,10 @@ export class AtmosphereSystem {
     );
     this.sun.direction.copyFrom(sunDirection).scaleInPlace(-1);
     this.sun.diffuse = palette.sunColor;
+    // Wave Q: Babylon's light.specular defaults to WHITE and PBR ignores it,
+    // but every StandardMaterial in the scene (instruments, markers) takes
+    // its specular tint from it — at dusk they flared white under a red sun.
+    this.sun.specular = palette.sunColor;
     this.sun.intensity = sunIntensity;
     this.ambient.diffuse = skyZenith;
     // R-26: the ground bounce is the sky's own horizon radiance reflected off

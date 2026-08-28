@@ -80,6 +80,7 @@ import {
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { WorldDetailRuntime } from "./webgpu/detail";
+import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
@@ -92,6 +93,7 @@ import {
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
 import { HydrologySystem } from "./webgpu/water/HydrologySystem";
+import { resolveSunShadowCascadeLayout } from "./webgpu/water/SunShadowReceiver";
 import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
@@ -321,6 +323,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Main-thread copy serving wildlife and inline detail placement. */
   private readonly terrainConsumerAuthority: TerrainConsumerAuthority | null;
   private readonly atmosphere: AtmosphereSystem;
+  private readonly detailSunShadowMatrices = new Float32Array(64);
+  private readonly detailSunShadowView = new Float32Array(16);
   private readonly clouds: VolumetricCloudSystem;
   private readonly cloudShadowReceivers: CloudShadowReceiverRegistry;
   private readonly aerialReceivers: AerialPerspectiveRegistry;
@@ -1144,6 +1148,58 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /** Z-1: governor config, with the scale range collapsed when pinned. */
+  /**
+   * Wave Q: one frame's CSM state for the detail system's far-band shadow
+   * receiver — documented Babylon reads only, mirroring the water adapter
+   * (bindSunShadowReceiver), reusing its public split formula.
+   */
+  private buildDetailSunShadowSnapshot(): DetailSunShadowSnapshot | null {
+    const shadows = this.atmosphere.shadows;
+    const shadowMap = shadows.getShadowMap();
+    const cascadeCount = Math.min(4, shadows.numCascades);
+    if (
+      !this.scene.shadowsEnabled
+      || !shadows.getLight().shadowEnabled
+      || shadowMap === null
+      || cascadeCount <= 0
+    ) {
+      return null;
+    }
+    const matrices = this.detailSunShadowMatrices;
+    let lastMatrix: Matrix | null = null;
+    for (let cascade = 0; cascade < 4; cascade += 1) {
+      const matrix: Matrix | null = cascade < cascadeCount
+        ? shadows.getCascadeTransformMatrix(cascade) ?? lastMatrix
+        : lastMatrix;
+      if (matrix) {
+        matrix.copyToArray(matrices, cascade * 16);
+        lastMatrix = matrix;
+      }
+    }
+    this.camera.getViewMatrix().copyToArray(this.detailSunShadowView);
+    const layout = resolveSunShadowCascadeLayout({
+      cameraMinZ: this.camera.minZ,
+      cameraMaxZ: this.camera.maxZ,
+      cascadeCount,
+      lambda: shadows.lambda,
+      minDistance: shadows.minDistance,
+      maxDistance: shadows.maxDistance,
+      shadowMaxZ: shadows.shadowMaxZ,
+      cascadeBlendPercentage: shadows.cascadeBlendPercentage,
+    });
+    return {
+      matrices,
+      view: this.detailSunShadowView,
+      splits: layout.splits,
+      blendStarts: layout.blendStarts,
+      cascadeCount: layout.cascadeCount,
+      darkness: shadows.getDarkness(),
+      shadowMaxZ: shadows.shadowMaxZ,
+      valid: true,
+      map: shadowMap,
+    };
+  }
+
   private resolveGovernorConfig(): GovernorConfig {
     const config = governorConfigForProfile(this.profile);
     if (this.pinnedRenderScale === null) return config;
@@ -1899,6 +1955,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       [keySnapshot.sunColor.r, keySnapshot.sunColor.g, keySnapshot.sunColor.b],
       keySnapshot.sunIlluminanceNormalized,
     );
+    // Wave Q: the far band's hand-packed CSM receiver, on the same
+    // forward-the-snapshot pattern. Impostors start inside the cascade
+    // reach at every tier but cannot take Babylon's shadow varyings
+    // (16-fragment-input limit), so the detail plugin samples the
+    // atmosphere's own depth map from these matrices instead.
+    this.detail.setSunShadow(this.buildDetailSunShadowSnapshot());
     this.detail.update(
       {
         x: state.position.x,

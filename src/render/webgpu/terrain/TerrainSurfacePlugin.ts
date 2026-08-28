@@ -101,8 +101,20 @@ export const DETILE_MICRO_METERS = 28;
  * fall back to the continuous provisional terrain axis until a material
  * clipmap provides fine coverage independently of geometry LOD.
  */
-export const TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS = 4;
-export const TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS = 8;
+// Wave Q (plastic-ground fix, second landing): the original 4->8 m band
+// rejected every page coarser than level 0 — and in flight the finest
+// resident level under the aircraft is 1-2, so the splat was OFF for
+// essentially the whole frame and distant ground was a SINGLE material.
+// The first widening (accept levels 0-2, binary gate) painted its own
+// artifact: page confidence is piecewise-constant per level, so the last
+// accepted level's border drew a razor-straight polygon edge across the
+// landscape. Confidence is now LINEAR IN LOG2(texel) — one fifth lost per
+// level, reaching zero at level 5 (128 m texels) — and the shader turns it
+// into a noise-mottled class STRENGTH, so each level border is a ~0.2 step
+// dissolved into hundred-metre ecotone mottling instead of a line.
+export const TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS = 4;
+export const TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL = 0.2;
+export const TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE = 0.1;
 
 /** Material microstructure is unresolved once one pixel spans this much ground. */
 // Fix-pack T2: the original 0.5→2 m band, keyed to the MAJOR derivative axis,
@@ -124,11 +136,9 @@ export function terrainPageClassificationConfidence(channelTexelMeters: number):
   if (!Number.isFinite(channelTexelMeters) || channelTexelMeters < 0) {
     throw new RangeError("Terrain channel texel size must be finite and non-negative");
   }
-  const low = TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS;
-  const high = TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS;
-  const t = Math.min(1, Math.max(0, (channelTexelMeters - low) / (high - low)));
-  const smooth = t * t * (3 - 2 * t);
-  return 1 - smooth;
+  if (channelTexelMeters <= TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS) return 1;
+  const levels = Math.log2(channelTexelMeters / TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS);
+  return Math.min(1, Math.max(0, 1 - levels * TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL));
 }
 
 /** Pure CPU mirror of the shader's material-microstructure footprint fade. */
@@ -491,7 +501,13 @@ const MICRO_COS = Math.cos((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 const MICRO_SIN = Math.sin((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 
 const TERRAIN_MATERIAL_REFERENCE_WGSL = SURFACE_MATERIALS.map((spec) => {
-  const roughness = (spec.roughness[0] + spec.roughness[1]) * 0.5;
+  // Wave Q (plastic-ground fix): the convergence target at range is the
+  // band's ROUGH end, not its midpoint. As detailWeight fades, the detail
+  // normal flattens to the geometric normal, and the microstructure that
+  // vanished has to be re-expressed as roughness (the Toksvig argument in
+  // TextureArrayMips.ts) — converging to the glossy midpoint under a flat
+  // normal was the "false sharp highlight at range" that file warns about.
+  const roughness = spec.roughness[1];
   return `
   if (materialIndex == ${spec.id}) {
     return vec4f(${spec.referenceAlbedo.map((value) => value.toFixed(6)).join(", ")}, ${roughness.toFixed(6)});
@@ -1292,13 +1308,16 @@ ${TERRAIN_SPARSE_SPLAT_GATHER_WGSL}
 fn terrainSurfacePageSplat(uv: vec4f, blend: f32) -> vec4f {
   let channelTexelMeters = uniforms.terrainPageAtlasGrid.y * exp2(uv.w)
     / uniforms.terrainPageAtlas.z;
-  let confidence = 1.0 - smoothstep(
-    ${TERRAIN_PAGE_SPLAT_FULL_CONFIDENCE_TEXEL_METERS.toFixed(1)},
-    ${TERRAIN_PAGE_SPLAT_ZERO_CONFIDENCE_TEXEL_METERS.toFixed(1)},
-    channelTexelMeters);
+  let confidence = clamp(
+    1.0
+      - (log2(max(channelTexelMeters, ${TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS.toFixed(1)}))
+        - ${Math.log2(TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS).toFixed(1)})
+        * ${TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL.toFixed(1)},
+    0.0,
+    1.0);
   // Coarse/unresident pages use the provisional axis. Return before twelve
   // sparse texture loads so the visual safety fallback also reduces cost.
-  if (confidence < 0.5 || uv.z <= 0.0) {
+  if (confidence < ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)} || uv.z <= 0.0) {
     return vec4f(0.0, 0.0, 0.0, 0.0);
   }
   let atlasPosition = uv.xy * uniforms.terrainPageAtlas.x - vec2f(0.5);
@@ -1424,20 +1443,30 @@ let terrainWarp = terrainSurfaceDetileWarp(terrainAbsolutePosition.xz, terrainFo
 // kilometre structure to be put back HERE, where it does not repeat. The
 // figures are the deleted build's — a camera-stable macro wash it had and the
 // audit was right to want back.
-let terrainMacroVariation = mix(
-  0.84,
-  1.18,
-  terrainSurfaceValue(terrainAbsolutePosition.xz * ${(1 / DETILE_MACRO_METERS).toFixed(9)}
-    + vec2f(11.3, 5.9)),
-) * mix(
-  0.93,
-  1.09,
-  terrainSurfaceValue(terrainAbsolutePosition.xz * ${(1 / DETILE_PATCH_METERS).toFixed(9)}
-    + vec2f(3.1, 27.5)),
-);
+let terrainMacroNoiseA = terrainSurfaceValue(
+  terrainAbsolutePosition.xz * ${(1 / DETILE_MACRO_METERS).toFixed(9)} + vec2f(11.3, 5.9));
+let terrainMacroNoiseB = terrainSurfaceValue(
+  terrainAbsolutePosition.xz * ${(1 / DETILE_PATCH_METERS).toFixed(9)} + vec2f(3.1, 27.5));
+let terrainMacroVariation = mix(0.84, 1.18, terrainMacroNoiseA)
+  * mix(0.93, 1.09, terrainMacroNoiseB);
+// Wave Q (plastic-ground fix): the wash was a pure SCALAR, so distant ground
+// converged to one hue under a brightness ramp — no visible texture. Tie a
+// chromatic swing to the same noises: bright patches read sun-bleached and
+// dry (warm), dark patches read lush/damp (cool) — the correlation real
+// ground has. Runway paint is applied after this and stays unstained.
+let terrainMacroHue = mix(vec3f(0.952, 1.0, 1.058), vec3f(1.052, 1.004, 0.934), terrainMacroNoiseA)
+  * mix(vec3f(0.976, 1.0, 1.026), vec3f(1.026, 1.002, 0.974), terrainMacroNoiseB);
+// Wave Q (reptile-mountain fix): the de-tile warp was horizontal-only, but
+// the two cliff-dominant triplanar planes use world Y as their V axis — so
+// the Rock tile repeated in EXACT register every 5.9 m of altitude across
+// whole mountainsides, turning its band families into a wallpaper lattice.
+// One low-frequency vertical octave (±7 m over ~183 m) breaks the
+// registration; its slope stays far below the horizontal warps' fades.
+let terrainWarpVertical = (terrainSurfaceValue(
+  terrainAbsolutePosition.xz * ${(1 / 183).toFixed(9)} + vec2f(43.7, 17.3)) - 0.5) * 14.0;
 let terrainSamplePosition = vec3f(
   terrainAbsolutePosition.x + terrainWarp.x,
-  terrainAbsolutePosition.y,
+  terrainAbsolutePosition.y + terrainWarpVertical,
   terrainAbsolutePosition.z + terrainWarp.y,
 );
 
@@ -1484,7 +1513,7 @@ var terrainAxisFraction = 0.0;
 // sparse gather supplies two real ids and their filtered weights. Coarser
 // geometry pages have zero classification confidence and keep the continuous
 // macro fallback instead of painting 8..256 m single-material plates.
-let terrainUsePageSplat = terrainPageSplat.w >= 0.5;
+let terrainUsePageSplat = terrainPageSplat.w >= ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)};
 if (terrainUsePageSplat) {
   terrainAxis = terrainPageSplat.x;
   terrainLowerId = terrainPageSplat.x;
@@ -1519,20 +1548,33 @@ let terrainCoverNoise =
   + (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 95.0)) - 0.5) * 19.0;
 let terrainElevationDriver = terrainAbsolutePosition.y
   - uniforms.terrainSurfaceWetness.y + terrainCoverNoise;
+// Wave Q: how much this fragment trusts the page classification over the
+// provisional fallback. Confidence loses a fifth per residency level, and
+// the cover noise mottles the threshold by ~±0.14, so every level border
+// dissolves into ecotone-scale patches instead of a straight page edge.
+// The curve saturates by w ≈ 0.85, so fine pages never pay the feather.
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+let terrainClassStrength = smoothstep(
+  0.05, 0.85, terrainPageSplat.w + terrainCoverNoise * 0.003);
+#else
+let terrainClassStrength = 0.0;
+#endif
+let terrainClassComplement = 1.0 - terrainClassStrength;
 var terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope);
-if (!terrainUsePageSplat) {
-  // This is the altitude term from the real classifier, kept deliberately
-  // weaker than a true cliff. It greys alpine fallback terrain continuously
-  // without walking through four categorical material palettes.
-  terrainSlopeRock = max(
-    terrainSlopeRock,
-    smoothstep(
-      ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
-      ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
-      terrainElevationDriver,
-    ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)},
-  );
-}
+// This is the altitude term from the real classifier, kept deliberately
+// weaker than a true cliff. It greys alpine fallback terrain continuously
+// without walking through four categorical material palettes. Wave Q: it
+// scales by the CLASS COMPLEMENT instead of a binary no-splat gate, so its
+// onset tracks the same feather that hands classification back to the
+// fallback — one continuous ecotone, no page-edge switch.
+terrainSlopeRock = max(
+  terrainSlopeRock,
+  smoothstep(
+    ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
+    ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
+    terrainElevationDriver,
+  ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement,
+);
 
 
 // 3-10's SEASONAL snow blanket. Two properties, both learned the hard way from
@@ -1553,14 +1595,14 @@ let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.
 // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
 // ground the same way it is applied to canopy and rock.
 let terrainSnowShed = 1.0 - clamp((terrainSlope - 0.5) * 1.7, 0.0, 1.0);
-var terrainSnowCover = 0.0;
-if (!terrainUsePageSplat) {
-  terrainSnowCover = smoothstep(
-    uniforms.terrainSurfaceWetness.z - 120.0,
-    uniforms.terrainSurfaceWetness.z + 120.0,
-    terrainSnowDriver,
-  ) * terrainSnowShed;
-}
+// Wave Q: the reference blanket carries the class complement for the same
+// reason as the alpine term above — a trusted classifier already placed
+// Snow, so the macro blanket fades in exactly as classification fades out.
+var terrainSnowCover = smoothstep(
+  uniforms.terrainSurfaceWetness.z - 120.0,
+  uniforms.terrainSurfaceWetness.z + 120.0,
+  terrainSnowDriver,
+) * terrainSnowShed * terrainClassComplement;
 if (terrainSnowDescent > 1.0) {
   let terrainSnowBand = smoothstep(terrainSnowline - 120.0, terrainSnowline + 120.0,
     terrainSnowDriver);
@@ -1667,6 +1709,40 @@ var terrainF0 = terrainLayer0.f0 * terrainBlend0
 var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer1.diffuseRoughness * terrainBlend1
   + terrainLayer2.diffuseRoughness * terrainBlend2;
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+// Wave Q seam feather: page confidence is PIECEWISE-CONSTANT per residency
+// level, so the classified/fallback boundary was a razor-straight polygon
+// edge across the landscape (visible from the canopy the moment coarser
+// pages were accepted). Class strength now fades on confidence PERTURBED by
+// the same cover noise the fallback's drivers use, and the fade target is
+// the fallback's own composition (grass primary + the fragment-derived
+// third candidate, already sampled above) — the seam becomes a ragged
+// hundred-metre ecotone instead of a line.
+if (terrainUsePageSplat && terrainClassStrength < 0.996) {
+  let terrainGrassLayer = terrainSurfaceSample(
+    ${SurfaceMaterial.Grass}, terrainSamplePosition, terrainGeometricNormal,
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+  let terrainSeamThird = clamp(terrainThirdWeight, 0.0, 1.0);
+  terrainAlbedo = mix(
+    mix(terrainGrassLayer.albedo, terrainLayer2.albedo, terrainSeamThird),
+    terrainAlbedo, terrainClassStrength);
+  terrainNormal = mix(
+    mix(terrainGrassLayer.normal, terrainLayer2.normal, terrainSeamThird),
+    terrainNormal, terrainClassStrength);
+  terrainRoughness = mix(
+    mix(terrainGrassLayer.roughness, terrainLayer2.roughness, terrainSeamThird),
+    terrainRoughness, terrainClassStrength);
+  terrainCavity = mix(
+    mix(terrainGrassLayer.cavity, terrainLayer2.cavity, terrainSeamThird),
+    terrainCavity, terrainClassStrength);
+  terrainF0 = mix(
+    mix(terrainGrassLayer.f0, terrainLayer2.f0, terrainSeamThird),
+    terrainF0, terrainClassStrength);
+  terrainDiffuseRoughness = mix(
+    mix(terrainGrassLayer.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
+    terrainDiffuseRoughness, terrainClassStrength);
+}
+#endif
 #else
 // Tier 0's cap is two materials (§5.3), so the axis is rounded to its nearest
 // integer instead of bracketed and only the strongest override survives. This
@@ -1708,6 +1784,33 @@ var terrainCavity = terrainLayer0.cavity * terrainBlend0 + terrainLayer2.cavity 
 var terrainF0 = terrainLayer0.f0 * terrainBlend0 + terrainLayer2.f0 * terrainBlend2;
 var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer2.diffuseRoughness * terrainBlend2;
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+// Wave Q seam feather — the two-material path's copy of the block above.
+if (terrainUsePageSplat && terrainClassStrength < 0.996) {
+  let terrainGrassLayer = terrainSurfaceSample(
+    ${SurfaceMaterial.Grass}, terrainSamplePosition, terrainGeometricNormal,
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+  let terrainSeamThird = clamp(terrainThirdWeight, 0.0, 1.0);
+  terrainAlbedo = mix(
+    mix(terrainGrassLayer.albedo, terrainLayer2.albedo, terrainSeamThird),
+    terrainAlbedo, terrainClassStrength);
+  terrainNormal = mix(
+    mix(terrainGrassLayer.normal, terrainLayer2.normal, terrainSeamThird),
+    terrainNormal, terrainClassStrength);
+  terrainRoughness = mix(
+    mix(terrainGrassLayer.roughness, terrainLayer2.roughness, terrainSeamThird),
+    terrainRoughness, terrainClassStrength);
+  terrainCavity = mix(
+    mix(terrainGrassLayer.cavity, terrainLayer2.cavity, terrainSeamThird),
+    terrainCavity, terrainClassStrength);
+  terrainF0 = mix(
+    mix(terrainGrassLayer.f0, terrainLayer2.f0, terrainSeamThird),
+    terrainF0, terrainClassStrength);
+  terrainDiffuseRoughness = mix(
+    mix(terrainGrassLayer.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
+    terrainDiffuseRoughness, terrainClassStrength);
+}
+#endif
 #endif
 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
@@ -1724,13 +1827,31 @@ var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
 // 18→110 m fade held the 23 m octave at ~full weight past one period per
 // pixel. Each octave now converges at roughly a quarter of its own
 // wavelength per pixel.
-let terrainFootprint3D = max(length(terrainWorldDdx), length(terrainWorldDdy));
+// Wave Q (plastic-ground fix): keyed on the RAW major axis, all three meso
+// octaves were dead by ~2 km of slant range at flight grazing angles — the
+// 10 m-1 km band this block exists to provide vanished exactly where the eye
+// still resolves it (the T2 lesson again). Procedural noise gets no help
+// from the anisotropic sampler, so the full 16x credit would shimmer along
+// the grazing axis; a 4x credit extends the band ~4x in range while each
+// octave still converges within a few periods per pixel on that axis.
+let terrainFootprintMajor3D = max(length(terrainWorldDdx), length(terrainWorldDdy));
+let terrainFootprint3D = max(
+  min(length(terrainWorldDdx), length(terrainWorldDdy)),
+  terrainFootprintMajor3D * 0.25,
+);
 let terrainMesoWeightA = 1.0 - smoothstep(9.0, 34.0, terrainFootprint3D);
 let terrainMesoWeightB = 1.0 - smoothstep(3.0, 11.0, terrainFootprint3D);
 let terrainStrataWeight = 1.0 - smoothstep(1.2, 4.5, terrainFootprint3D);
 if (terrainMesoWeightA > 0.001) {
+  // Wave Q (reptile-mountain fix): meso A sampled the UNROTATED world axes,
+  // quilting mountainsides with soft 71 m axis-aligned rectangles. Rotated
+  // 37 degrees like B's 28, with the gradient carried back through the
+  // transpose below.
   let terrainMesoA = terrainSurfaceValueGrad(
-    terrainAbsolutePosition.xz * ${(1 / 71).toFixed(9)} + vec2f(7.7, 51.2));
+    (mat2x2f(0.798636, 0.601815, -0.601815, 0.798636) * terrainAbsolutePosition.xz)
+      * ${(1 / 71).toFixed(9)} + vec2f(7.7, 51.2));
+  let terrainMesoAGradWorld = mat2x2f(0.798636, -0.601815, 0.601815, 0.798636)
+    * vec2f(terrainMesoA.y, terrainMesoA.z);
   let terrainMesoB = terrainSurfaceValueGrad(
     (mat2x2f(0.883, 0.469, -0.469, 0.883) * terrainAbsolutePosition.xz)
       * ${(1 / 23).toFixed(9)} + vec2f(29.1, 3.4));
@@ -1740,23 +1861,34 @@ if (terrainMesoWeightA > 0.001) {
   let terrainMesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
     * vec2f(terrainMesoB.y, terrainMesoB.z);
   let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
-  let terrainStrata = terrainSurfaceValueGrad(vec2f(
+  // Wave Q (reptile-mountain fix): the strata field was ONE value-noise
+  // octave on (altitude, x+z) — a visible 9 m x 68 m lattice, constant along
+  // the x = -z diagonal, painting long straight streaks across every cliff.
+  // Two octaves at incommensurate scales on a rotated horizontal axis keep
+  // the bedded-rock read without the lattice.
+  let terrainStrataCoordinate = vec2f(
     terrainAbsolutePosition.y * ${(1 / 9).toFixed(9)},
-    (terrainAbsolutePosition.x + terrainAbsolutePosition.z) * ${(1 / 97).toFixed(9)}));
+    (terrainAbsolutePosition.x * 0.829038 + terrainAbsolutePosition.z * 0.559193)
+      * ${(1 / 97).toFixed(9)});
+  let terrainStrataA = terrainSurfaceValueGrad(terrainStrataCoordinate);
+  let terrainStrataB = terrainSurfaceValueGrad(
+    terrainStrataCoordinate * vec2f(2.317, 2.731) + vec2f(13.1, 4.7));
+  let terrainStrataValue = mix(terrainStrataA.x, terrainStrataB.x, 0.35);
+  let terrainStrataSlopeRaw = mix(terrainStrataA.y, terrainStrataB.y * 2.317, 0.35);
   // Along-strike break-up: without it every slope at the same altitude carries
   // the same band and the mountains read as contour-line stripes.
   let terrainStrataBreak = terrainSteep * (0.25 + 0.75 * terrainMesoA.x)
     * terrainStrataWeight;
   let terrainMesoSlope = (
-    vec2f(terrainMesoA.y, terrainMesoA.z) * 0.42 * terrainMesoWeightA
+    terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
     + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
   ) * (0.4 + 0.9 * terrainSteep);
-  let terrainStrataSlope = terrainStrata.y * terrainStrataBreak * 0.45;
+  let terrainStrataSlope = terrainStrataSlopeRaw * terrainStrataBreak * 0.32;
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainMesoSlope.x, -terrainStrataSlope, -terrainMesoSlope.y);
   let terrainMesoTone = (terrainMesoA.x - 0.5) * 0.26 * terrainMesoWeightA
     + (terrainMesoB.x - 0.5) * 0.16 * terrainMesoWeightB
-    + (terrainStrata.x - 0.5) * 0.22 * terrainStrataBreak;
+    + (terrainStrataValue - 0.5) * 0.18 * terrainStrataBreak;
   let terrainMesoHue = mix(
     vec3f(0.962, 0.988, 1.034),
     vec3f(1.038, 1.008, 0.955),
@@ -1767,7 +1899,7 @@ if (terrainMesoWeightA > 0.001) {
   terrainRoughness = clamp(
     terrainRoughness
       + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA
-      + (terrainStrata.x - 0.5) * 0.10 * terrainStrataBreak,
+      + (terrainStrataValue - 0.5) * 0.08 * terrainStrataBreak,
     0.02,
     1.0,
   );
@@ -1776,7 +1908,7 @@ if (terrainMesoWeightA > 0.001) {
 // 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
 // colour, and a kilometre-scale brightness ramp across a marking reads as a
 // stain rather than as weather.
-terrainAlbedo *= terrainMacroVariation;
+terrainAlbedo *= terrainMacroVariation * terrainMacroHue;
 
 #ifdef TERRAIN_SURFACE_RUNWAY
 // 3-9 paints asphalt, concrete and markings from the analytic airport SDF,
@@ -1825,6 +1957,17 @@ var terrainSurfaceRoughness = clamp(terrainRoughness, 0.02, 1.0);
 var terrainSurfaceCavity = clamp(terrainCavity, 0.0, 1.0);
 var terrainSurfaceF0 = clamp(terrainF0, 0.0, 1.0);
 var terrainSurfaceDiffuseRoughness = clamp(terrainDiffuseRoughness, 0.0, 1.0);
+// Wave Q (plastic-ground fix): Babylon leaves Fresnel F90 at 1.0, so a low
+// sun runs a 2-6% dielectric up to FULL WHITE grazing reflectance across
+// both the direct GGX lobe and the sky-IBL lobe — the "wet plastic" dusk
+// landscape. Real ground never gets there: shadowing/masking and multiple
+// scattering on a rough surface eat the Schlick spike. Suppress harder the
+// rougher the surface; smoother materials (snow) keep more of their glance.
+var terrainSurfaceF90 = clamp(
+  terrainSurfaceF0 * (2.0 + 6.0 * (1.0 - terrainSurfaceRoughness)),
+  terrainSurfaceF0,
+  0.5,
+);
 `;
 
 /**
@@ -1861,6 +2004,8 @@ export const TERRAIN_SURFACE_INJECTION_TOKENS = Object.freeze([
   "roughness = terrainSurfaceRoughness;",
   "diffuseRoughness = terrainSurfaceDiffuseRoughness;",
   "specularEnvironmentR0 = vec3f(terrainSurfaceF0);",
+  "reflectivityOut.reflectanceF90 = vec3f(terrainSurfaceF90);",
+  "reflectivityOut.colorReflectanceF90 = vec3f(terrainSurfaceF90);",
 ]);
 
 const FRAGMENT_WGSL = Object.freeze({
@@ -1903,6 +2048,8 @@ diffuseRoughness = terrainSurfaceDiffuseRoughness;
   [TERRAIN_SURFACE_INJECTION_ANCHORS.reflectance]: /* wgsl */ `$1
 specularEnvironmentR0 = vec3f(terrainSurfaceF0);
 reflectanceF0 = terrainSurfaceF0;
+reflectivityOut.reflectanceF90 = vec3f(terrainSurfaceF90);
+reflectivityOut.colorReflectanceF90 = vec3f(terrainSurfaceF90);
 `,
 });
 
