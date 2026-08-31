@@ -4,6 +4,8 @@ import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
+import type { QualityLevel } from "../../src/game/types";
+import type { RenderingMode } from "../../src/settings";
 import {
   createWorld,
   sampleTerrain,
@@ -35,6 +37,8 @@ import {
   sustainedFpsFromFrameIntervals,
   temporalStability,
   inventoriedMemoryFailures,
+  deliveryFailuresAgainst,
+  perfCaptureDeliveryContract,
   tier1BalancedPerformanceFailures,
   tileStatistics,
   worstTileRgbSsim,
@@ -91,6 +95,39 @@ const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
  */
 const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
 const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
+
+/**
+ * `6-11.1` — the four-tier x three-viewport sweep knobs.
+ *
+ * A capture with any of these set is a SWEEP RUN: an archived acceptance report
+ * at one tier and viewport, never a baseline. It cannot compare against
+ * committed baselines (a different tier draws a different world by design, so
+ * every SSIM would be a false failure) and it cannot produce a candidate. The
+ * canonical tier-1 720p configuration is the DEFAULT, so an unqualified
+ * `npm run perf:capture` is bit-for-bit the run it has always been — the sweep
+ * adds a mode, it does not change the standing gate.
+ */
+const SWEEP_QUALITY = String(import.meta.env.VITE_PERF_QUALITY ?? "").trim();
+const SWEEP_MODE = String(import.meta.env.VITE_PERF_MODE ?? "").trim();
+const SWEEP_VIEWPORT = String(import.meta.env.VITE_PERF_VIEWPORT ?? "").trim();
+const IS_SWEEP = SWEEP_QUALITY !== "" || SWEEP_MODE !== "" || SWEEP_VIEWPORT !== "";
+const CAPTURE_QUALITY = (SWEEP_QUALITY === "" ? "medium" : SWEEP_QUALITY) as QualityLevel;
+const CAPTURE_MODE = (SWEEP_MODE === "" ? "balanced" : SWEEP_MODE) as RenderingMode;
+const CAPTURE_PROFILE = resolveWebGpuQualityProfile(CAPTURE_QUALITY, CAPTURE_MODE);
+const DELIVERY = perfCaptureDeliveryContract(CAPTURE_PROFILE.tier);
+const SWEEP_SIZE = ((): { width: number; height: number } | null => {
+  if (SWEEP_VIEWPORT === "") return null;
+  const match = /^(\d+)x(\d+)$/u.exec(SWEEP_VIEWPORT);
+  if (!match) throw new Error(`VITE_PERF_VIEWPORT must be WIDTHxHEIGHT, got "${SWEEP_VIEWPORT}"`);
+  return { width: Number(match[1]), height: Number(match[2]) };
+})();
+if (IS_SWEEP && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_REBASELINE cannot be combined with the sweep knobs "
+    + "(VITE_PERF_QUALITY / VITE_PERF_MODE / VITE_PERF_VIEWPORT): a non-canonical "
+    + "tier or viewport draws a different world by design and can never be a baseline.",
+  );
+}
 
 /**
  * Comma-separated shot names to run, for diagnosis. A full capture is ~4
@@ -268,13 +305,15 @@ describe("perf capture (1A-1c / 2Z)", () => {
       terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
       world,
       seed: world.sourceSeedHash,
-      quality: "medium" as const,
-      renderingMode: "balanced" as const,
+      quality: CAPTURE_QUALITY,
+      renderingMode: CAPTURE_MODE,
       reducedMotion: false,
       // Z-1: deterministic shipping pixels — no governor may rewrite the
       // target, but the capture must not silently replace medium's 0.86 with
-      // a 35%-larger scale-1 workload.
-      pinnedRenderScale: TIER1_CAPTURE_PROFILE.renderScale,
+      // a 35%-larger scale-1 workload. Under the sweep this is the SWEPT
+      // tier's own scale, which is the point: a tier row promises the levers
+      // that tier actually ships, so the governor stays frozen at each.
+      pinnedRenderScale: CAPTURE_PROFILE.renderScale,
       captureGpuTiming: GPU_TIMING_ENABLED,
       ...(world.airport ? { runway: world.airport } : {}),
     });
@@ -412,8 +451,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         );
         activeWorldEvolution = shotWorldEvolution;
       }
-      const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
-      const viewportHeight = shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
+      // 6-11.1: a sweep viewport overrides every shot's own size, so one
+      // sweep run is one resolution across the whole set and the three
+      // viewport columns are comparable to each other.
+      const viewportWidth = SWEEP_SIZE?.width ?? shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
+      const viewportHeight = SWEEP_SIZE?.height ?? shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
       if (
         canvas.style.width !== `${viewportWidth}px`
         || canvas.style.height !== `${viewportHeight}px`
@@ -429,8 +471,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         await nextAnimationFrame();
         await nextAnimationFrame();
       }
-      const captureRenderScale = shot.captureRenderScale
-        ?? TIER1_CAPTURE_PROFILE.renderScale;
+      // 6-11.1: the SWEPT tier's own render scale. Each tier ships a different
+      // scale, and pinning tier 1's across the sweep would measure tier 1's
+      // pixel count with another tier's settings — the one thing a tier row
+      // must not do.
+      const captureRenderScale = shot.captureRenderScale ?? CAPTURE_PROFILE.renderScale;
       renderer.setPinnedRenderScaleForCapture(captureRenderScale);
 
       // R-15: the clock is per shot and applied inside the loop.
@@ -867,7 +912,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const luminance = luminanceFromRgba(rgba, viewportWidth, viewportHeight);
 
       const sceneDiagnostics = renderer.getDiagnostics();
-      const comparesToBaseline = shot.comparesToBaseline ?? true;
+      // 6-11.1: a sweep run never compares to a baseline. A different tier or
+      // viewport draws a different world ON PURPOSE, so every SSIM would be a
+      // false failure and a passing one would be the real surprise.
+      const comparesToBaseline = !IS_SWEEP && (shot.comparesToBaseline ?? true);
       const baseline = !comparesToBaseline
         ? null
         : await readBaselinePixels(
@@ -978,9 +1026,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
         adapter: renderer.getDiagnostics().adapter,
         devicePixelRatio: window.devicePixelRatio || 1,
         userAgent: navigator.userAgent,
-        quality: "medium",
-        renderingMode: "balanced",
-        pinnedRenderScale: TIER1_CAPTURE_PROFILE.renderScale,
+        // 6-11.1: the report must name the configuration it actually measured,
+        // or an archived tier row is indistinguishable from a tier-1 one.
+        quality: CAPTURE_QUALITY,
+        renderingMode: CAPTURE_MODE,
+        tier: CAPTURE_PROFILE.tier,
+        sweep: IS_SWEEP,
+        pinnedRenderScale: CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
         // Whether the frame-delivery numbers below were contract or diagnostic.
         deliveryGatesEnforced: !UNPINNED_HOST,
@@ -1080,14 +1132,26 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const shot = shotReports[index]!;
       // Z-1: the pinned shipping scale must hold. Rendered dimensions round
       // independently, so permit only a small integer-size tolerance.
-      const expectedRenderPixels = shot.viewportWidth * shot.viewportHeight
-        * shot.renderScale ** 2;
+      // 6-11.1: the tier's own pixel CAP bounds this, and above the cap the
+      // renderer scales down regardless of the pinned scale. Without the cap
+      // term this assertion fails on any swept viewport larger than the tier
+      // allows — and it fails describing a scale error rather than the cap,
+      // which is what it actually is.
+      //
+      // Worth knowing beyond the assertion: because the cap binds, the three
+      // viewport columns do NOT measure three resolutions at every tier. At
+      // tier 1 (1.5 Mpx) both 1080p and 1440p render at the cap, so those two
+      // columns are the same workload with different presentation.
+      const expectedRenderPixels = Math.min(
+        shot.viewportWidth * shot.viewportHeight * shot.renderScale ** 2,
+        CAPTURE_PROFILE.maxRenderPixels,
+      );
       expect(
         Math.abs(shot.renderPixels - expectedRenderPixels) / expectedRenderPixels,
         `${shot.name}: renderPixels must match the medium/balanced scale pin`,
       ).toBeLessThan(0.01);
       expect(shot.renderScale).toBeCloseTo(
-        definition.captureRenderScale ?? TIER1_CAPTURE_PROFILE.renderScale,
+        definition.captureRenderScale ?? CAPTURE_PROFILE.renderScale,
         6,
       );
       expect(
@@ -1135,14 +1199,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
       }
       // The tier-1 medium/balanced delivery contract is intentionally raw:
       // no percentile trimming may hide a freeze or a run that averages 59.9.
+      // 6-11.1: judged at THIS tier's own contract. Off the sweep that is
+      // byte-for-byte tier 1's, so the standing gate is unchanged; on it, a
+      // tier-3 run is held to 30 fps rather than failed for not being tier 1.
       gateDelivery(() => expect(
-        tier1BalancedPerformanceFailures({
+        deliveryFailuresAgainst(DELIVERY, {
           wallClockFps: shot.wallClockFps,
           frameIntervalMsP95: shot.frameIntervalMsP95,
           framesOver27_4Ms: shot.framesOver27_4Ms,
           maxFrameMs: shot.maxFrameMs,
         }),
-        `${shot.name}: strict tier-1 medium/balanced frame-delivery gate failed`,
+        `${shot.name}: strict tier-${CAPTURE_PROFILE.tier} `
+        + `${CAPTURE_QUALITY}/${CAPTURE_MODE} frame-delivery gate failed`,
       ).toEqual([]));
 
       // Z-2: retain the historical per-shot gate as a diagnostic regression

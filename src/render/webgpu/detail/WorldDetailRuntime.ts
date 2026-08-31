@@ -1,3 +1,4 @@
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -1075,6 +1076,26 @@ export class WorldDetailRuntime {
   setSunShadow(snapshot: DetailSunShadowSnapshot | null): void {
     for (const plugin of this.instancePlugins) {
       plugin.setSunShadow(snapshot);
+    }
+  }
+
+  /**
+   * `6-11`: forward the terrain's global horizon field to the far-band
+   * receiver, on the same snapshot pattern.
+   *
+   * One field for every plugin, because the field is world-anchored rather
+   * than chunk-anchored — which is exactly the property that lets it reach a
+   * material shared across presentation chunks at all.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
     }
   }
 

@@ -36,6 +36,7 @@ import {
   type SurfaceMaterialSpec,
 } from "./surfaceMaterials";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
+import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
 import {
@@ -1981,42 +1982,28 @@ fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec4f {
   return vec4f(texel / uniforms.terrainPageAtlas.x, 1.0, level);
 }
 
+${HORIZON_FIELD_LOOKUP_WGSL}
+
 /**
  * Sun visibility from the 8-azimuth horizon map.
  *
- * The stored value is sin(horizonElevation) and the sun direction is a unit
- * vector toward the sun, so sunDirection.y is sin(sunElevation) and the
- * comparison is one subtraction — no trigonometry per fragment. Fix-pack T8:
- * the soft band is floored at ~1.7° and the compared elevation carries a
- * per-fragment spatial jitter — the narrow fixed band drew the coarse
- * horizon field's iso-contours as stripes on close slopes at low sun.
+ * '6-11': the arithmetic moved to 'HorizonField''s 'horizonFieldShadow', which
+ * far vegetation composes too — two representations of the same stand must not
+ * disagree about whether the sun is up. What stays here is what is genuinely
+ * this consumer's: the page-atlas FETCH through 3-2's slot lane, the residency
+ * fallback, and the band width.
+ *
+ * Fix-pack T8's band and jitter are unchanged: the soft band is floored at
+ * ~1.7° and the compared elevation carries a per-fragment spatial jitter,
+ * because the narrow fixed band drew the coarse horizon field's iso-contours
+ * as stripes on close slopes at low sun.
  */
 fn terrainSurfaceHorizonShadow(uv: vec4f, sunDirection: vec3f, jitter: f32) -> f32 {
-  if (uv.z <= 0.0 || sunDirection.y <= 0.0) { return 1.0; }
-  let horizontal = max(1e-5, length(sunDirection.xz));
-  // The bake marches azimuth s with direction angle (s + 0.5) * pi/4, so the
-  // lookup index is the angle in those units minus the half-step.
-  let angle = atan2(sunDirection.z / horizontal, sunDirection.x / horizontal);
-  let index = angle * ${(4 / Math.PI).toFixed(9)} - 0.5;
-  let wrapped = index - floor(index * 0.125) * 8.0;
-  let low = floor(wrapped);
-  let blend = wrapped - low;
+  if (uv.z <= 0.0) { return 1.0; }
   let packedA = textureSampleLevel(terrainHorizonAtlasA, terrainHorizonAtlasASampler, uv.xy, 0.0);
   let packedB = textureSampleLevel(terrainHorizonAtlasB, terrainHorizonAtlasBSampler, uv.xy, 0.0);
-  var slots = array<f32, 8>(
-    packedA.x, packedA.y, packedA.z, packedA.w,
-    packedB.x, packedB.y, packedB.z, packedB.w,
-  );
-  let lowIndex = u32(low);
-  let highIndex = u32(low + 1.0) % 8u;
-  let horizonSin = mix(slots[lowIndex], slots[highIndex], blend);
-  // Fix-pack T8: the terminator of the 4 m-texel horizon field drew banded
-  // iso-contour lines on close slopes around low sun. A wider soft band plus a
-  // per-fragment spatial jitter of the compared elevation breaks the contour
-  // into unstructured penumbra instead of stripes.
   let band = max(uniforms.terrainPageAtlasGrid.w, 0.03);
-  let jitteredSun = sunDirection.y + (jitter - 0.5) * band * 0.9;
-  return smoothstep(horizonSin - band, horizonSin + band, jitteredSun);
+  return horizonFieldShadow(packedA, packedB, sunDirection, band, jitter);
 }
 #endif
 `;

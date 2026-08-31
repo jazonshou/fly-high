@@ -1,3 +1,4 @@
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 // Side-effect import: Babylon 9 tree-shakes the thin-instance API, and
 // `Mesh.prototype.thinInstanceSetBuffer` / `thinInstanceCount` do not exist
 // without it. Missing, they are `undefined` rather than an error — the mesh
@@ -68,6 +69,7 @@ import {
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
   TERRAIN_NODE_ATTRIBUTE_STRIDE,
+  TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
@@ -149,6 +151,13 @@ export interface TerrainSplatProducer {
 export interface TerrainHeightPyramidProducer {
   recenter(x: number, z: number): Promise<unknown>;
   readonly isResident: boolean;
+  /**
+   * `6-11`: the global horizon field's bake, admitted separately from the
+   * height recentre because it is ~25x the work and recurs on every 512 m of
+   * travel — the one part of the pyramid a frame may legitimately defer.
+   */
+  readonly needsHorizonBake?: boolean;
+  bakeHorizon?(): Promise<boolean>;
   dispose(): void;
 }
 
@@ -823,6 +832,34 @@ export class TerrainClipmapSystem {
   }
 
   /**
+   * `6-11`: the global horizon field, for consumers outside terrain.
+   *
+   * Null until the first horizon bake completes, and null on a non-WebGPU
+   * engine — a consumer that gets null must fall back to fully lit, which is
+   * today's behaviour and therefore the parity sentinel.
+   */
+  get globalHorizonField(): {
+    readonly layerA: BaseTexture;
+    readonly layerB: BaseTexture;
+    readonly originX: number;
+    readonly originZ: number;
+    readonly spanMeters: number;
+  } | null {
+    const pyramid = this.pyramid as GlobalHeightPyramid | null;
+    if (!pyramid?.isHorizonResident) return null;
+    const layerA = pyramid.horizonTextureA;
+    const layerB = pyramid.horizonTextureB;
+    if (!layerA || !layerB) return null;
+    return {
+      layerA,
+      layerB,
+      originX: pyramid.horizonOriginX,
+      originZ: pyramid.horizonOriginZ,
+      spanMeters: TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
+    };
+  }
+
+  /**
    * `6-5`: the shore sea state and the water's own clock, forwarded from the
    * ocean system on the same snapshot pattern the sun and the cloud shadow
    * use. The terrain has no cascade textures to run the shader's dominant-band
@@ -1479,7 +1516,22 @@ export class TerrainClipmapSystem {
       // evolution contract permits (D11 / assertion 105).
       this.computeBudget.submit(heightClient, heightPending.length);
     }
-    if (channelPending.length > 0) {
+    // `6-11`: the global horizon bake shares the OCCLUSION row rather than
+    // taking one of its own, and the reason is a wall the row table records
+    // rather than a preference: `SubsystemBudgetMs.groundCoverCompute` notes
+    // that tier 2 sums to 13.65 ms against a 13.7 ms target, leaving 0.05 ms
+    // of slack, and that "the next row addition finds the wall". This is that
+    // addition. Sharing costs the table nothing, and the two are honestly the
+    // same family — the same operator over a coarser field.
+    //
+    // It is priced at the channel PAIR's cost, not its own (~0.27 ms scaled
+    // from the occlusion seed's measured 0.301 ms/page at 136² over this
+    // bake's 128²). Over-pricing only ever admits it LESS often, which is the
+    // safe direction for a term that degrades to "last position's field".
+    const horizonOwed = this.pyramid?.needsHorizonBake ?? false;
+    const channelPairCostMs = this.computeBudget.estimatedCostMs("occlusionCompute")
+      + this.computeBudget.estimatedCostMs("splatCompute");
+    if (channelPending.length > 0 || horizonOwed) {
       // A channel slot's TWO bakes are ONE admission: occlusion writes three
       // textures, the splat writes four, both into the same slot, and the slot
       // is published only once both have run — publishing between them puts
@@ -1489,9 +1541,8 @@ export class TerrainClipmapSystem {
       // of work must not jump the queue on the strength of its cheaper half.
       this.computeBudget.submit(
         "occlusionCompute",
-        channelPending.length,
-        this.computeBudget.estimatedCostMs("occlusionCompute")
-          + this.computeBudget.estimatedCostMs("splatCompute"),
+        channelPending.length + (horizonOwed ? 1 : 0),
+        channelPairCostMs,
       );
     }
     if (splatRebakes.length > 0) {
@@ -1500,7 +1551,17 @@ export class TerrainClipmapSystem {
       this.computeBudget.submit("splatCompute", splatRebakes.length);
     }
     this.dispatchPageGeneration(heightPending, erosionDagDemand !== null);
-    this.dispatchChannelBake(channelPending);
+    // Read ONCE — `admitted` settles the client, so a second read would report
+    // a plan this frame has already dispatched against (`6-9`'s rule).
+    let occlusionAdmitted = this.computeBudget.admitted("occlusionCompute");
+    if (horizonOwed && occlusionAdmitted > 0) {
+      // The horizon bake takes the first admission when one is owed. Deferring
+      // a PAGE bake by a frame is invisible by design; deferring the horizon
+      // bake leaves the far field lit for another 512 m of travel.
+      occlusionAdmitted -= 1;
+      void this.pyramid?.bakeHorizon?.().catch(() => undefined);
+    }
+    this.dispatchChannelBake(channelPending, occlusionAdmitted);
     this.dispatchSplatRebake(splatRebakes);
   }
 
@@ -1597,10 +1658,9 @@ export class TerrainClipmapSystem {
     );
   }
 
-  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[]): void {
+  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[], admitted: number): void {
     const bake = this.occlusionBake;
     if (!bake || pending.length === 0) return;
-    const admitted = this.computeBudget.admitted("occlusionCompute");
     if (admitted <= 0) return;
     const batch = this.rankForDispatch(pending).slice(0, admitted);
     this.occlusionInFlight = true;

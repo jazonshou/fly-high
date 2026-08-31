@@ -223,13 +223,44 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
   },
   {
+    // 6-11: the horizon operator itself — the march that turns a height field
+    // into a packed 8-azimuth horizon, and the lookup that turns that packing
+    // plus a sun direction into a visibility scalar.
+    //
+    // It exists as its own artifact because 6-8 declined the vegetation
+    // horizon-shadow term rather than let a second answer to "is this point in
+    // terrain shadow" into the tree, and named the condition: extract the
+    // operator so both consumers run one of it. Two producers compose the
+    // march (the page bake and the global pyramid, with different height
+    // sources through one composition hole) and two consumers compose the
+    // lookup (terrain surface, far impostors). `consumers: "any"` for the
+    // reason the density field's WGSL half has it — a shader-side consumer is
+    // what this exists for.
+    artifact: "horizon-field-operator",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/HorizonField.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "HORIZON_FIELD_MARCH_WGSL",
+      "HORIZON_FIELD_LOOKUP_WGSL",
+      "HORIZON_FIELD_AZIMUTHS_MARCHED",
+      "HORIZON_FIELD_AZIMUTHS_STORED",
+      "HORIZON_FIELD_MARCH_STEPS",
+    ],
+  },
+  {
     // 4-7: the coarse global height field the occlusion bake marches beyond a
     // page, so there is no shadow discontinuity at page edges.
+    // 6-11 added the global horizon layers, baked by the shared operator.
     artifact: "global-height-pyramid",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/GlobalHeightPyramid.ts"],
-    consumers: ["terrain-geometry", "lighting"],
-    ownedSymbols: ["GlobalHeightPyramid", "GLOBAL_HEIGHT_PYRAMID_WGSL"],
+    consumers: ["terrain-geometry", "lighting", "vegetation"],
+    ownedSymbols: [
+      "GlobalHeightPyramid",
+      "GLOBAL_HEIGHT_PYRAMID_WGSL",
+      "GLOBAL_HORIZON_PYRAMID_WGSL",
+    ],
   },
   {
     // 4-7: ONE bake, one owner, one format. Four subsystem designs baked

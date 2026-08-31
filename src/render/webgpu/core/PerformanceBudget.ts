@@ -43,7 +43,18 @@ export interface SubsystemBudgetMs {
    * **This row and its funding are in one commit, deliberately.**
    * `FRAME_BUDGET_MS[2]` summed to 13.60 ms against a 13.7 ms target — 0.10 ms
    * of slack — so adding any positive value at tier 2 would trip the budget
-   * test in the same commit that adds the row. The funding is the shadow cut:
+   * test in the same commit that adds the row.
+   *
+   * That 13.60 is the figure AT THE TIME THIS ROW LANDED and is kept because
+   * it is what the decision was made against. **Re-measured 2026-08-31 the sum
+   * is 13.650 against the same 13.7 target — 0.050 ms, half the slack the
+   * sentence above describes.** Something spent 0.05 ms of tier 2 since Phase 4
+   * and no one revised the number, which is how a figure quoted in prose drifts
+   * from the constants directly beneath it. Tier 2 is now 99.6% committed: any
+   * new row there has to come out of an existing one in the same commit.
+   * Measure before quoting this paragraph; do not quote it as current.
+   *
+   * The funding is the shadow cut:
    * `4-8a` has already halved the maps at tiers 2 and 3 by the time this row
    * exists, and `4-8b` shortens tier 1's cascades before tier 1's `shadows`
    * row moves. A budget row must never assert a spend nothing has delivered

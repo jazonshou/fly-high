@@ -14,6 +14,7 @@ import {
 // terrain's canopy ramp fades in over exactly the window the impostors fade
 // out over, and two literals cannot be made to agree by inspection.
 import { DETAIL_FAR_CULL_FADE_METERS } from "./densityField";
+import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   TREE_BARK_LAYER_MIN,
   TREE_BARK_LAYER_SPAN,
@@ -77,6 +78,24 @@ export function detailMetricTreeBarkV(authoredV: number, treeHeightMeters: numbe
  * instance-format bits — which is a decision, not an accident.
  */
 export const DETAIL_IMPOSTOR_SPECIES_SLOTS = 8;
+
+/**
+ * `6-11`: the far-field horizon terminator's soft band, in sin(elevation).
+ *
+ * DERIVED, not tuned. The band exists to hide the field's own sampling error
+ * (fix-pack T8's lesson: a band narrower than the field's uncertainty draws
+ * the iso-contours as stripes). Adjacent global-horizon texels are 1,024 m
+ * apart, and for a dominant occluder at range D the horizon angle moves by
+ * about 1024/D radians between them — 0.10 at 10 km, 0.05 at 20 km. Bilinear
+ * filtering already removes the first-order part of that, so the residual the
+ * band must cover is the smaller end of the range.
+ *
+ * 0.05 is ~2.9°, against the page field's 0.03 (~1.7°) at 4 m texels. If
+ * `6-11`'s sweep finds the terminator still banded on a dusk forest, this is
+ * the number to widen — and it is a single named constant precisely so that
+ * is a one-line, one-place change.
+ */
+export const DETAIL_HORIZON_SOFT_BAND = 0.05;
 
 /** One species' bake frame: the square the billboard must reconstruct. */
 export interface ImpostorSpeciesFrame {
@@ -531,6 +550,62 @@ fn detailImpostorFrame() -> vec4f {
   let variant = floor(fragmentInputs.detailImpostorC.w + 0.5);
   return uniforms.detailImpostorSpecies[i32(floor(variant / 32.0))];
 }
+
+// '6-11': the far-field horizon receiver, completing 4-8b's trade for
+// vegetation. Beyond 'shadowDistance' the CSM above fades to 1.0 by
+// construction, and until now nothing replaced it — so a stand between
+// 'shadowDistance' and 'vegetationDistance' stayed lit while the ground under
+// it was horizon-shadowed to 45 km.
+//
+// The field is GLOBAL and world-anchored, which is what makes it compatible
+// with a material shared across every presentation chunk: two textures and
+// four floats, no per-chunk lane, no per-chunk uniform, batching untouched.
+#ifdef DETAIL_HORIZON_SHADOW
+var detailHorizonAtlasASampler: sampler;
+var detailHorizonAtlasA: texture_2d<f32>;
+var detailHorizonAtlasBSampler: sampler;
+var detailHorizonAtlasB: texture_2d<f32>;
+
+${HORIZON_FIELD_LOOKUP_WGSL}
+
+// A world-locked spatial hash, for the terminator jitter. Same construction
+// and the same purpose as the terrain surface's: break the field's
+// iso-contour into unstructured penumbra rather than stripes. Spatial, not
+// temporal — a per-frame jitter would crawl across a static forest.
+fn detailHorizonJitter(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+/**
+ * Sun visibility at a world position, from the global 8-azimuth field.
+ *
+ * Outside the field's footprint the sample clamps to the edge texel, which is
+ * why the origin is published per frame and the span is pinned: a stale or
+ * mismatched rectangle would smear one edge's horizon across the far field.
+ * A field that has never been baked binds no texture, so this whole block
+ * compiles out and the fragment keeps today's behaviour — the parity
+ * sentinel, obtained for free rather than through a zero-value branch.
+ */
+fn detailHorizonShadow(worldXZ: vec2f) -> f32 {
+  let uv = (worldXZ - uniforms.detailHorizonField.xy) * uniforms.detailHorizonField.z;
+  let packedA = textureSampleLevel(
+    detailHorizonAtlasA, detailHorizonAtlasASampler, uv, 0.0);
+  let packedB = textureSampleLevel(
+    detailHorizonAtlasB, detailHorizonAtlasBSampler, uv, 0.0);
+  return horizonFieldShadow(
+    packedA,
+    packedB,
+    // The SAME convention the terrain's horizon hook reads: FlightRenderer
+    // feeds 'setKeyLight' and 'terrain.setSunDirection' the one snapshot
+    // direction, which points TOWARD the sun. No second sun uniform.
+    uniforms.detailKeyLight.xyz,
+    uniforms.detailHorizonField.w,
+    detailHorizonJitter(worldXZ * 0.37),
+  );
+}
+#endif
 
 // Wave Q (tree-cutoff fix): a hand-packed CSM receiver for the far band.
 // Impostors begin 260-400 m INSIDE the cascade reach at every tier, and
@@ -990,13 +1065,30 @@ if (detailBacklit > 0.0) {
 // Wave R: lifted 0.3 m — the billboard's base fragments are coplanar with
 // the terrain caster sheet, and a coplanar comparison is a coin flip even
 // with the bias above.
-let impostorSunShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
+let impostorCascadeShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
+#else
+let impostorCascadeShadow = 1.0;
+#endif
+// '6-11': the far-field half. The two terms MULTIPLY rather than select,
+// for the reason the cascade fade exists at all — inside the cascades the
+// horizon field is a coarse agreement with what the CSM already resolves
+// finely, and across the handoff ring a hard switch would draw its own line
+// on the forest. Multiplying lets the CSM fade to 1.0 exactly as the horizon
+// term takes over, which is the same crossfade shape wave R gave the
+// cascade boundary.
+#ifdef DETAIL_HORIZON_SHADOW
+let impostorSunShadow = impostorCascadeShadow * detailHorizonShadow(
+  fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy);
+#else
+let impostorSunShadow = impostorCascadeShadow;
+#endif
+// Direct diffuse and specular only; ambient/irradiance are untouched. This
+// mirrors the terrain horizon-shadow hook exactly — a horizon occludes the
+// SUN, and multiplying it into ambient as well would darken the same stand
+// twice for one occluder.
 finalDiffuse *= impostorSunShadow;
 #ifdef SPECULARTERM
 finalSpecularScaled *= impostorSunShadow;
-#endif
-#else
-let impostorSunShadow = 1.0;
 #endif
 // Fix-pack polish: the far band gets the SAME wrap-transmission response as
 // the crowns it hands off to — the term was gated on the atlas define the
@@ -1036,6 +1128,21 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   );
   private impostorSeasonMix = 0;
   private sunShadow: DetailSunShadowSnapshot | null = null;
+  /**
+   * `6-11`: the global horizon field, and the world rectangle it covers.
+   *
+   * Two textures and four floats — NO per-chunk lane. That is the whole reason
+   * this design works where `6-8`'s declined routes did not: the terrain's
+   * horizon map is addressed through a per-vertex CDLOD slot lane, and detail
+   * materials are shared across every presentation chunk by design, so a
+   * per-chunk page uniform would break the batching the ratchet protects. A
+   * single world-anchored field needs no lane at all.
+   */
+  private horizonAtlasA: BaseTexture | null = null;
+  private horizonAtlasB: BaseTexture | null = null;
+  private horizonOriginX = 0;
+  private horizonOriginZ = 0;
+  private horizonInverseSpan = 0;
   /**
    * 2-12's translucency term: the frame's key light, forwarded from
    * `AtmosphereSystem`'s snapshot by the runtime. `w` is the strength
@@ -1081,6 +1188,12 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         DETAIL_IMPOSTOR: false,
         DETAIL_BAND_FADES: false,
         DETAIL_OPAQUE_CROWN: false,
+        // `6-11`: the far-field horizon receiver. Declared here for the
+        // recorded reason above — an undeclared plugin define survives only
+        // because `MaterialDefines.rebuild()` re-derives its key list from
+        // `Object.keys`, which is a Babylon implementation detail and not a
+        // contract worth resting a compiled shader on.
+        DETAIL_HORIZON_SHADOW: false,
       },
       true,
       false,
@@ -1195,6 +1308,12 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     // be bound — a declared-but-unbound depth sampler is a createBindGroup
     // crash, not a silent fallback.
     defines["DETAIL_SUN_SHADOW"] = this.impostorAtlas !== null && this.sunShadow?.map != null;
+    // `6-11`: same rule as the CSM receiver — compile the sampler only when a
+    // texture can actually be bound, because a declared-but-unbound sampler is
+    // a createBindGroup crash rather than a silent fallback.
+    defines["DETAIL_HORIZON_SHADOW"] = this.impostorAtlas !== null
+      && this.horizonAtlasA !== null
+      && this.horizonAtlasB !== null;
     defines["DETAIL_BAND_FADES"] = this.bandFadesEnabled;
     defines["DETAIL_OPAQUE_CROWN"] = this.opaqueCrown;
     // forcedInstanceCount routes the draw through Babylon's thin-instance
@@ -1216,6 +1335,8 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     if (!samplers.includes("impostorAlbedo")) samplers.push("impostorAlbedo");
     if (!samplers.includes("impostorNormalDepth")) samplers.push("impostorNormalDepth");
     if (!samplers.includes("detailSunShadowMap")) samplers.push("detailSunShadowMap");
+    if (!samplers.includes("detailHorizonAtlasA")) samplers.push("detailHorizonAtlasA");
+    if (!samplers.includes("detailHorizonAtlasB")) samplers.push("detailHorizonAtlasB");
   }
 
   override hardBindForSubMesh(
@@ -1232,6 +1353,12 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     }
     if (this.impostorNormalAtlas) {
       uniformBuffer.setTexture("impostorNormalDepth", this.impostorNormalAtlas);
+    }
+    // `6-11`: plain filterable rgba8, so the ordinary uniform-buffer route
+    // applies — unlike the CSM depth array below.
+    if (this.horizonAtlasA && this.horizonAtlasB) {
+      uniformBuffer.setTexture("detailHorizonAtlasA", this.horizonAtlasA);
+      uniformBuffer.setTexture("detailHorizonAtlasB", this.horizonAtlasB);
     }
     // Wave Q: the CSM depth array, impostor material only. Depth-comparison
     // textures bind through the effect (the water receiver's route) — the
@@ -1292,6 +1419,40 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   }
 
   /**
+   * `6-11`: the global horizon field this frame, or null to disarm.
+   *
+   * Completes `4-8b`'s trade for vegetation. That row shortened the cascades
+   * on the stated grounds that "terrain beyond `shadowDistance` is shadowed by
+   * `4-7`'s horizon map, which reaches 45 km — so the cascades stop being a
+   * distance instrument and become a CONTACT one"
+   * ([QualityProfile.ts:284](src/render/webgpu/core/QualityProfile.ts)). Only
+   * terrain ever received the far-field half, so impostors between
+   * `shadowDistance` and `vegetationDistance` — 1.1 km of every scene at tier
+   * 0, 3.6 km at Ultra — have been unconditionally lit while the ground under
+   * them was horizon-shadowed. This is the missing half, not a new feature.
+   *
+   * `spanMeters` is the field's full world extent; the shader maps world to uv
+   * with one subtract and one multiply.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    const next = layerA !== null && layerB !== null && spanMeters > 0
+      && Number.isFinite(originX) && Number.isFinite(originZ);
+    const had = this.horizonAtlasA !== null && this.horizonAtlasB !== null;
+    this.horizonAtlasA = next ? layerA : null;
+    this.horizonAtlasB = next ? layerB : null;
+    this.horizonOriginX = next ? originX : 0;
+    this.horizonOriginZ = next ? originZ : 0;
+    this.horizonInverseSpan = next ? 1 / spanMeters : 0;
+    if (next !== had) this.markAllDefinesAsDirty();
+  }
+
+  /**
    * 2-13: the frame's wind snapshot — a unit XZ direction, a strength in
    * [0, 1] (speed over MAX_WIND_SPEED) and a gust scalar in [0, 1]. Sampled
    * once per frame from src/world's shared field at the observer; the
@@ -1348,6 +1509,10 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         { name: "detailSunShadowBlendStarts", size: 4, type: "vec4" },
         { name: "detailSunShadowParams", size: 4, type: "vec4" },
         { name: "detailSunShadowBias", size: 4, type: "vec4" },
+        // `6-11`: (horizon origin X, origin Z, 1 / span metres, soft band).
+        // Define-independent layout, the house rule — only the impostor
+        // material samples the field, but the lane exists unconditionally.
+        { name: "detailHorizonField", size: 4, type: "vec4" },
       ],
     };
   }
@@ -1401,6 +1566,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       0,
     );
     uniformBuffer.updateFloatArray("detailImpostorSpecies", this.impostorSpecies);
+    uniformBuffer.updateFloat4(
+      "detailHorizonField",
+      this.horizonOriginX,
+      this.horizonOriginZ,
+      this.horizonInverseSpan,
+      DETAIL_HORIZON_SOFT_BAND,
+    );
     const sunShadow = this.sunShadow;
     if (sunShadow) {
       uniformBuffer.updateMatrices("detailSunShadowMatrices", sunShadow.matrices);

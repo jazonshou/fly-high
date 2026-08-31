@@ -156,6 +156,35 @@ function throwIfRendererStartupAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw rendererAbortError();
 }
 
+/**
+ * `6-11.3` — the startup-stage split, recorded only when someone asks for it.
+ *
+ * `awaitRendererStartup` already names and bounds every startup stage; it just
+ * never said how long any of them took, so "time to ready" was a single opaque
+ * number with no way to attribute a regression. This is opt-in and inert
+ * otherwise: no allocation, no timing, and no behaviour change on the shipping
+ * path unless a harness calls `beginRendererStartupTrace()` first.
+ */
+let rendererStartupTrace: { label: string; milliseconds: number }[] | null = null;
+
+/** Start recording startup-stage durations, discarding any previous trace. */
+export function beginRendererStartupTrace(): void {
+  rendererStartupTrace = [];
+}
+
+/** The stages recorded since `beginRendererStartupTrace`, in completion order. */
+export function readRendererStartupTrace(): readonly {
+  readonly label: string;
+  readonly milliseconds: number;
+}[] {
+  return rendererStartupTrace ?? [];
+}
+
+/** Stop recording and release the trace. */
+export function endRendererStartupTrace(): void {
+  rendererStartupTrace = null;
+}
+
 function awaitRendererStartup<T>(
   promise: Promise<T>,
   signal: AbortSignal | undefined,
@@ -164,6 +193,7 @@ function awaitRendererStartup<T>(
   disposeLateValue?: (value: T) => void,
 ): Promise<T> {
   throwIfRendererStartupAborted(signal);
+  const traceStartedAt = rendererStartupTrace === null ? 0 : performance.now();
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (result: { value: T } | { error: unknown }) => {
@@ -171,6 +201,10 @@ function awaitRendererStartup<T>(
       settled = true;
       clearTimeout(timeout);
       signal?.removeEventListener("abort", onAbort);
+      rendererStartupTrace?.push({
+        label,
+        milliseconds: performance.now() - traceStartedAt,
+      });
       if ("error" in result) reject(result.error);
       else resolve(result.value);
     };
@@ -2083,6 +2117,18 @@ export class FlightRenderer implements FlightRenderingSystem {
     // (16-fragment-input limit), so the detail plugin samples the
     // atmosphere's own depth map from these matrices instead.
     this.detail.setSunShadow(this.buildDetailSunShadowSnapshot());
+    // `6-11`: the far-field half of the same trade. The CSM above reaches
+    // `shadowDistance`; this reaches 45 km, which is where the impostors the
+    // cascades stopped covering actually are. Re-read every frame because the
+    // field re-bakes on observer travel and publishes a new origin with it.
+    const horizonField = this.terrain.globalHorizonField;
+    this.detail.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
     this.detail.update(
       {
         x: state.position.x,

@@ -21,7 +21,7 @@ log, per house rule.
 | **Q2 Memory** | **The vegetation atlases fund Phase 7.** `impostorAtlasMiB` 9.33 and `foliageAtlasMiB` 6.0 ([PerformanceBudget.ts:312-388](src/render/webgpu/core/PerformanceBudget.ts)) are the fidelity rows that pay for cluster/tile-mask buffers, the light-point instance buffer, photometric textures and 7-11's material arrays. | Settles D-16's unbooked surplus in the opposite direction from booking wave T's leaf-spray layers — **6-11 must not book them**. Every allocation is measured against the enforced inventoried assert, not the estimate (§2.4). The ratchet binds: no count row rises without its fidelity row moving in the same commit. |
 | **Q3 Airfield scope** | **Runway, hangars, and an ATC tower.** *"Airport specifics don't matter too much, but it should still look real."* | Taxiway lighting, apron markings and apron floodlighting are **re-scoped away with reason** (D-0) — none of that ground exists and 3-9 declined to build it. A new item **7-15 ATC tower** (3.0 d) is added (D-1); it mounts 7-7's rotating beacon and 7-14's obstruction lights and is the second scale reference on final. "It should still look real" is tested by the §8 acceptance flights, not by a count of fixtures. |
 | **Q4 Night HDR** | **7-4 builds a real scene pre-exposure and a highlight-preserving rod response.** | The largest single change in the phase and the one that moves *every* pixel in *every* shot. It gets its own solitary rebaseline **R7-1**, before any light exists to blame. It reopens `MAX_EXPOSURE`'s derivation and both art-directed night constants — all test-pinned (§5, D-5). 6-11's sweep will deliberately pin nothing downstream of exposure, so this is Phase 7's to move. |
-| **Q5 Which world ships** | **Assume the ANALYTIC world is the shipped default; eroded is reachable by `?world=eroded`.** Recorded on `flight-simulator-d7`'s advice, 2026-08-31. | §8's re-default has six criteria and criterion 5 is Jason's flight verdicts — outside any agent's control — and the Phase 6 plan explicitly sanctions "not yet" as an acceptable outcome rather than a failure. **Every Phase 7 fixture, light and structure must read correctly on analytic terrain first**; eroded is the opt-in path, not the target. **Status, stated precisely:** this is the *current shipped state* and the *safe planning assumption* — **not** a guarantee it will never flip. §8 can still answer yes if D-7 lands, Gate F clears and the other four criteria hold; d7 will say so **before** it lands, not after, and Phase 7 appends eroded night shots at that point and not before. |
+| **Q5 Which world ships** | **The ANALYTIC world is the shipped default. SETTLED, not assumed.** Jason re-flew the eroded world after d7's fixes, found it still badly wrong, and made an executive call on 2026-08-31 to **shelve it for this phase** — §8 resolving **NO**, which the Phase 6 plan explicitly sanctions ("the analytic default ships on and eroded stays a flag — that outcome is acceptable by Q1's own terms and is not a phase failure"). | **Eroded is out of Phase 7's scope entirely.** There is no Gate W dependency, no eroded prerequisite, and no eroded night shot; a future reader should not go looking for one. All 24 + 4 capture shots are `worldEvolution: "analytic"`. **The eroded code is parked behind its `?world=eroded` flag, not removed** — it is shelved with its state recorded, not abandoned, and someone will want to resume it. This was the assumption Phase 7 was already written on, so nothing structural changes; it simply stopped being able to move mid-phase. |
 
 Also standing: **Gate 7A shipped in Phase 2.5** (`46bc24a`) — 7-1 moon, 7-2 scotopic vision,
 7-3 star field are done; Phase 7 is 7B/7C/7D only. Gate 7A's own deviations hand two
@@ -45,27 +45,35 @@ console errors**, and 20–60 s to ready against W-1's ≤1.5 s target. Gate W h
 byte-determinism, seam audits, statistics suites, timing and 24/24 green analytic shots —
 and **not one instrument in the entire gate ever rendered the eroded world into an image a
 human looked at.** W-7's eroded shots were never appended and no eroded baseline was ever
-promoted, so nothing in the gate could have caught it. Accordingly: no row below may be
-closed by citing "Gate W closed", and any future session reading this section should treat a
-gate's green status as a claim to be checked, not as evidence. (Q5 is unaffected and is now
-better justified than when it was written — analytic is what ships, and the eroded path is
-further from default than the §8 criteria alone suggested.)
+promoted, so nothing in the gate could have caught it. **Outcome: Jason re-flew it after
+d7's fixes, found it still badly wrong, and shelved the eroded world for this phase** (Q5) —
+so the lesson here is not "eroded was fixed", it is *the gate's green status was worth
+nothing and only flying it found that out*. Accordingly: no row below may be closed by
+citing "Gate W closed", and any future session reading this section should treat a gate's
+green status as a claim to be checked, not as evidence. This is the same rule §2.10 states
+for Phase 7's own night work, and it is stated twice on purpose.
 
 | # | Condition | Verification | Owner today |
 |---|---|---|---|
 | E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented (**no instrument exists in any form** — no script, no test, no CI step, and `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, so this is build-from-zero, and it must fail on **timeout OR console error**: the failure class it guards hung with *no* error, so an error check alone cannot catch it); 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d) | tier table asserted from profile data in CI; a cold-start gate exists in the perf workflow; the sampler list derived, not hand-maintained | `flight-simulator-d7` |
 | E-2 | **6-12 closed** — documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
 | E-3 | **R1+R2+R3 promoted** as one reviewed pass. The committed baseline has not moved since 2026-08-28 (`6a46742`); the post-D-19 candidate exists on disk only. `tests/perf/baseline/report.json` is still a 17-shot fossil against 24 tracked PNGs and nothing reads it — 6-12 owes a decide-once on recommit-or-delete | `tests/perf/baseline/` mtimes move; 24 shots in the promoted report | `flight-simulator-d7` |
-| E-4 | **D-7's canonical-split fix landed and D-9's bounds re-tightened.** `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](src/render/webgpu/terrain/TerrainPageErosionGpu.ts) and no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`. **d7 has claimed these as Phase 6's — they are not routed to Phase 7** | the criteria constant re-tightened; the world-512 m-block snap present | `flight-simulator-d7` |
+| ~~E-4~~ | **STRUCK 2026-08-31 — shelved with the eroded world, not discharged.** This row required D-7's canonical-split fix and D-9's bounds re-tightening. Both exist only to make the *eroded* page producer's seams sound, and both were entry conditions solely because they blocked §8's re-default. §8 has resolved NO, so **they block nothing in Phase 7** and requiring them would block this phase on work that has been deliberately shelved. **Their state is recorded, not erased**, for whoever resumes the eroded path: `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](src/render/webgpu/terrain/TerrainPageErosionGpu.ts), no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`, and D-9's loosening is therefore still outliving its cause — which is exactly the condition D-9 warned becomes permission if left | n/a — struck | shelved with the eroded path |
 | E-5 | **The horizon-shadow work has landed or been withdrawn.** Status per its own session: **implemented and verified, pending a capture pin and a merge slot** — not landed, not speculative. Worktree `nifty-williamson-2aca66`, branch `claude/nifty-williamson-2aca66`, uncommitted; Node 123 files / 1163 passed, GPU 42 files / 93 passed, typecheck and lint clean. The open item is sequencing (d7 wants it as its own churn point after the R1+R2+R3 promotion) plus an owed §2.3 same-host A/B pin on a quarantined idle host | merged at its sanctioned churn point, with its A/B pin recorded | `nifty-williamson-2aca66` + d7 |
 
-**Gate F is *not* an entry condition, and stating it correctly matters.** The three named
-flights (F-1 10,000 ft dendritic survey, F-2 500 ft headwater-to-delta, F-3 800 ft lake
-circuit) gate **W-7's eroded baseline promotion** and **§8 criterion 5** — they do **not**
-block Phase 6 from closing, and they do not block Phase 7. They block the *eroded world from
-becoming the default*, which is exactly why Q5 tells Phase 7 to build for analytic. Only
-Jason can fly them; no agent can close this, and it should be scheduled with him directly
-rather than waited on.
+**Gate F is discharged by events, not by flying it.** The three named flights (F-1 10,000 ft
+dendritic survey, F-2 500 ft headwater-to-delta, F-3 800 ft lake circuit) existed to gate
+**W-7's eroded baseline promotion** and **§8 criterion 5**. Jason's own flights answered the
+question they were asked to answer — the eroded world is not shippable this phase — so §8
+resolved NO and both gated things are moot. They were never entry conditions for Phase 7 and
+are now not entry conditions for anything. **Retained here as context for whoever resumes
+the eroded path:** the flights remain the right instrument, and the reason they mattered is
+now demonstrated rather than argued — the eroded world was broken in a way that only flying
+it could reveal, and Gate W's entire instrument set was blind to it.
+
+**Phase 6's remaining scope is analytic-only:** 6-11, 6-12 (which now also records the
+shelving), the horizon-shadow merge, and §8 as a one-row decision that has already been
+made. That is what Phase 7 follows on from — **no eroded prerequisites of any kind**.
 
 **E-5's measured deltas, supplied by that session and reproduced here so Phase 7 plans
 against numbers rather than a rumour:** **zero** new `WebGpuQualityProfile` fields, **zero**
@@ -130,6 +138,11 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    7-11's material arrays land in the texture walk, its cluster and light-point buffers in
    the buffer registry, and **the trade arithmetic must sum both**; only the combined number
    is enforced.
+   **The eroded overage is moot.** Shelving the eroded world (Q5) removes the eroded
+   configuration's 527.5 MiB against the 495 ceiling from the picture entirely. The
+   operative number is the **analytic 492.3 MiB, which fits** — so Phase 7's memory question
+   is simpler and safer than when this plan was drafted, and the Q2 trade is sized against a
+   configuration that actually ships rather than hedged across two.
 5. **Draw ceilings are hard on every host.** `night` 160, `runway-on-approach` 169,
    `approach-500ft` 158 ([scripts/perf-capture.mts:188-195](scripts/perf-capture.mts)).
    **~200 light points must be one instanced draw** — this is a design constraint, not an
@@ -695,7 +708,7 @@ still belong to their original items.
 | 3 | **7-4a's pre-exposure moves every pixel and the review cannot keep up.** It reopens three test-pinned constants and rebaselines all 24 shots plus the four new ones | R7-1 is solitary and early, before any light exists to confound it; the monotonicity pin makes the change *measurable* rather than judged only by eye; the night shot's own 0.96 relaxation means the appended shots, not `night`, carry the verdict |
 | 4 | **Draw ceilings fail on CI before the gate closes.** They are asserted hard on every host, outside the delivery row, and 7D adds structure to a pose four shots share | One instanced draw for all light points is a stated design constraint, not a target; 7D's meshes are budgeted per item against `runway-on-approach` 169 and the appended night ceilings; the ceilings are re-pinned only at R7-3/R7-4 |
 | 5 | **Babylon's clustered path changes under a bump.** The integration depends on `IsLightSupported`'s private rules, `_updateBatches`' scene-component hook, and shader-include names | `@babylonjs/core` stays pinned exactly at 9.21.2; a private-API existence test reads the installed sources (6-9's precedent); the guarded-wrapper pattern shows how a throwing construction-time probe beats a silent degradation |
-| 6 | **Phase 6 does not actually close and E-1…E-5 rot.** Phase 7 then builds on an unpromoted baseline and untruthful docs | §1 is a verification checklist with named owners, not an assumption; both owners have confirmed their rows. Gate F is deliberately *not* an entry condition, so the one item with no agent owner cannot block the phase — it only blocks the eroded default, which Q5 already assumes away |
+| 6 | **Phase 6 does not actually close and E-1, E-2, E-3 or E-5 rot.** Phase 7 then builds on an unpromoted baseline and untruthful docs | §1 is a verification checklist with named owners, not an assumption; both owners have confirmed their rows. Gate F is deliberately *not* an entry condition, so the one item with no agent owner cannot block the phase — it only blocks the eroded default, which Q5 already assumes away |
 | 7 | **6-11.4's reconciliation moves the memory ground under Q2's trade.** The honest expectation from its owner is that the *estimate rises toward the inventory* rather than the inventory falling — i.e. the likely outcome is a **ceiling move with a recorded fidelity trade, not a saving** — and the number cannot be invented in advance | Phase 7 does not size its trade against 495/492.3 as a constant. 7-0-b books the trade only after d7 messages the landed `MEMORY_CEILING_MIB[1]` and capture-pin values; until then the trade is a *menu*, not a commitment. The ratchet-down rule (§2.4) applies to whatever the new pin is |
 | 8 | **Phase 7 ships a lighting engine nobody looked at.** The precedent is not hypothetical: Gate W closed an entire workstream on byte-determinism, seam audits, statistics suites, timing and 24/24 green analytic shots, and the eroded world it produced renders as flat page-shaped plates with no relief — silently, zero console errors, because **no instrument in the gate ever rendered it into an image**. A night phase is the most exposed possible case, since its whole subject is invisible to every non-visual metric | §2.10 makes a reviewed night frame a closing condition that outranks every metric, and 7-0-a appends the shots *before* 7B starts so there is something to review from day one. Note the ordering is deliberate: shots first, then engine — the reverse is how Gate W got here |
 | 9 | **The adversarial-review lesson** | Before each gate close, run the adversarial diff review (6+ finders, refutation panel). Every prior phase found real defects the suites missed — Phase 6's own recon refuted 4 of 24 "does not exist" claims *in this document's research*, two of which would have invented days of work. Budget it inside each gate's range |
@@ -776,6 +789,34 @@ still belong to their original items.
   only sub-horizon shot is `night` at −21.5° and the next lowest is `coast-10km-lowsun` at
   +6.5°, so the entire `rodFraction ∈ (0,1)` regime, where 7-4a's hand-over lives, is
   unmeasured. 7-0-a appends `night-beacon-offset` and `dusk-mesopic` for exactly these.
+
+- **D-8 (2026-08-31, before implementation — the eroded world is shelved and entry
+  condition E-4 is struck):** Jason flew the eroded world, found it rendering as flat
+  page-shaped plates with no relief anywhere (reproduced against an analytic control at seed
+  `1s9phln`, silent across four loads with zero console errors, 20–60 s to ready against
+  W-1's ≤1.5 s target), re-flew it after d7's fixes, found it still badly wrong, and made an
+  executive call to shelve it. **§8 resolves NO** — the outcome the Phase 6 plan explicitly
+  sanctions as "acceptable by Q1's own terms and not a phase failure".
+  *Effect on this plan:* Q5 changes from a planning assumption to a settled fact; **E-4 is
+  struck** because D-7's canonical-split fix and D-9's re-tightening exist only to make the
+  eroded page producer's seams sound and blocked nothing but §8's re-default, so requiring
+  them would block Phase 7 on deliberately shelved work; Gate F is discharged by events; and
+  the eroded configuration's 527.5 MiB memory overage leaves the picture, making the Q2
+  trade a single-configuration question against the analytic 492.3 MiB.
+  *What is deliberately NOT done:* **no eroded material is deleted or rewritten anywhere in
+  this plan.** The code is parked behind `?world=eroded`, not removed; E-4's struck row
+  retains the full state (the loosened `worstAbsoluteToleranceMeters: 0.06`, the absent
+  world-block snap, and the fact that D-9's loosening now outlives its cause — precisely the
+  condition D-9 warned becomes permission) so a resumer inherits the truth rather than a
+  gap.
+  *The lesson this phase must carry, and the reason it is stated twice (§1 preamble and
+  §2.10):* Gate W closed on byte-determinism, seam audits, statistics suites, timing and
+  24/24 green analytic shots, and **not one instrument in it ever rendered the eroded world
+  into an image a human looked at** — W-7's eroded shots were never appended and no eroded
+  baseline was ever promoted. A whole workstream's green status was worth nothing, and only
+  flying it found that out. Phase 7 is a *night lighting* phase, which is the most exposed
+  possible case of the same failure: its entire subject matter is invisible to every
+  non-visual metric, and the pass that would hide a black frame is already in the tree.
 
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*

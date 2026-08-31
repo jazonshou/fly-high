@@ -11,6 +11,8 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -387,6 +389,25 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         }),
       );
       impostorPlugin.setImpostorSeason(0.3);
+      // `6-11`: bind the global horizon field so DETAIL_HORIZON_SHADOW is ON
+      // for this permutation. Without this the far-field receiver compiles
+      // out and the whole block would ship never having met an adapter —
+      // which is the 2-12 failure mode this file exists for.
+      //
+      // An all-zero field is the parity sentinel: horizon sin 0 means nothing
+      // occludes the sun, so the term returns 1 and the rasterization
+      // assertion below still reads an unshadowed, chromatic tree.
+      const horizonLayers = [0, 1].map(() => RawTexture.CreateRGBATexture(
+        new Uint8Array(8 * 8 * 4),
+        8,
+        8,
+        scene,
+        false,
+        false,
+        Texture.BILINEAR_SAMPLINGMODE,
+      ));
+      impostorPlugin.setHorizonField(
+        horizonLayers[0]!, horizonLayers[1]!, -4_000, -4_000, 8_000);
       impostorMaterial.backFaceCulling = false;
       impostorMaterial.twoSidedLighting = true;
       impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
@@ -438,6 +459,63 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
 
       expect(gpuErrors, describeGpuErrors()).toEqual([]);
       expect(depthReady, "shadow depth effects never became ready").toBe(true);
+
+      // `6-11`, non-vacuity: a zero-error render proves nothing about a block
+      // that compiled OUT. An undeclared plugin define survives only through
+      // `MaterialDefines.rebuild()`'s Object.keys re-derivation, and the
+      // recorded incident (DETAIL_BAND_FADES) is exactly a define that read
+      // false in silence while every binding stayed correct — an invisible
+      // forest. So assert the far-field receiver reached the adapter.
+      expect(
+        shaderModules.some((record) => record.code.includes("fn detailHorizonShadow(")),
+        "DETAIL_HORIZON_SHADOW never reached a compiled shader — the far-field "
+        + "horizon receiver was stripped, and the zero-error render above is vacuous",
+      ).toBe(true);
+      // And that it runs the SHARED operator rather than a restatement.
+      expect(
+        shaderModules.some((record) => record.code.includes("fn horizonFieldShadow(")),
+        "the impostor shader does not compose HorizonField's lookup",
+      ).toBe(true);
+
+      // `6-11`: the per-stage binding budget, measured on the COMPILED source
+      // rather than declared.
+      //
+      // This assertion exists because a declared budget is not the real one.
+      // The terrain material's hand-maintained `TERRAIN_SAMPLED_BINDINGS` list
+      // is checked only for uniqueness and against 16, and it both lists PBR
+      // samplers the material never binds and omits the shadow and
+      // cloud-shadow projection samplers it does — nothing compares it to a
+      // shader. The detail material had no such list at all, and this item
+      // added two samplers to the heaviest permutation in the project (PBR +
+      // impostor atlases + CSM depth array + cloud shadow + aerial
+      // perspective). Exceeding a per-stage limit is a pipeline-creation
+      // failure, not a graceful fallback, so the count is pinned here where a
+      // real adapter has already compiled it.
+      const impostorFragment = [...shaderModules]
+        .reverse()
+        .find((record) => record.code.includes("fn detailHorizonShadow("));
+      expect(impostorFragment, "no compiled impostor fragment shader was recorded")
+        .toBeDefined();
+      const declarations = impostorFragment!.code;
+      const samplers = declarations.match(/var\s+\w+\s*:\s*sampler(_comparison)?\s*;/g) ?? [];
+      const textures = declarations.match(/var\s+\w+\s*:\s*texture_\w+</g) ?? [];
+      // WebGPU's base limits are 16 sampled textures and 16 samplers per stage.
+      // MEASURED on the reference adapter: this permutation compiles to 7
+      // samplers, of which `6-11` added 2 — so the far-field receiver spends
+      // 2 of 11 remaining slots and leaves 9. Report the margin in the failure
+      // message so a future addition sees the room it is spending rather than
+      // discovering the wall at pipeline creation.
+      expect(
+        samplers.length,
+        `compiled impostor fragment declares ${samplers.length} samplers (limit 16)`,
+      ).toBeLessThanOrEqual(16);
+      expect(
+        textures.length,
+        `compiled impostor fragment declares ${textures.length} sampled textures (limit 16)`,
+      ).toBeLessThanOrEqual(16);
+      // Non-vacuity: a regex that matched nothing would pass both bounds.
+      expect(samplers.length).toBeGreaterThan(3);
+      expect(textures.length).toBeGreaterThan(3);
 
       // Non-vacuity 2: the instance must actually RASTERIZE. A tree that
       // compiles cleanly but draws no pixels (degenerate decode, zero scale,

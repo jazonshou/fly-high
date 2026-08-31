@@ -47,6 +47,63 @@ export const PERF_CAPTURE_MAX_FRAME_MS = 50;
 export const PERF_CAPTURE_MAX_HITCHES = 5;
 export const PERF_CAPTURE_MIN_WALL_CLOCK_FPS = 60;
 
+/**
+ * `6-11.1` — the delivery contract at each TIER's own frame target.
+ *
+ * The constants above are tier 1's and stay exactly as they are: tier 1 is the
+ * shipping default and the standing regression gate, and nothing here may move
+ * it. This table exists so the four-tier sweep can hold each tier to its own
+ * promise instead of to tier 1's, which would fail Ultra for being Ultra.
+ *
+ * Tiers 0–2 share tier 1's contract because §5.3 gives all three the same
+ * 13.7 ms internal frame target — they differ in what they DRAW, not in how
+ * fast they must deliver it. Tier 3 (Ultra) is the exception the table exists
+ * for: `FRAME_TARGET_MS[3]` is 30.0 ms, so it promises 30 fps, and every
+ * threshold scales by the same 2x rather than being re-invented. A tier-3
+ * capture judged at 60 fps would report a failure that is not one.
+ */
+export interface PerfCaptureDeliveryContract {
+  readonly minWallClockFps: number;
+  readonly frameBudgetMs: number;
+  readonly hitchBudgetMs: number;
+  readonly maxHitches: number;
+  readonly maxFrameMs: number;
+}
+
+export function perfCaptureDeliveryContract(tier: number): PerfCaptureDeliveryContract {
+  if (tier === 3) {
+    return {
+      minWallClockFps: 30,
+      frameBudgetMs: 33.34,
+      hitchBudgetMs: PERF_CAPTURE_HITCH_BUDGET_MS * 2,
+      maxHitches: PERF_CAPTURE_MAX_HITCHES,
+      maxFrameMs: PERF_CAPTURE_MAX_FRAME_MS * 2,
+    };
+  }
+  return {
+    minWallClockFps: PERF_CAPTURE_MIN_WALL_CLOCK_FPS,
+    frameBudgetMs: PERF_CAPTURE_FRAME_BUDGET_MS,
+    hitchBudgetMs: PERF_CAPTURE_HITCH_BUDGET_MS,
+    maxHitches: PERF_CAPTURE_MAX_HITCHES,
+    maxFrameMs: PERF_CAPTURE_MAX_FRAME_MS,
+  };
+}
+
+/** The sweep's three viewports (`6-11.1`), smallest first. */
+export const PERF_CAPTURE_SWEEP_VIEWPORTS = Object.freeze([
+  Object.freeze({ name: "720p", width: 1_280, height: 720 }),
+  Object.freeze({ name: "1080p", width: 1_920, height: 1_080 }),
+  Object.freeze({ name: "1440p", width: 2_560, height: 1_440 }),
+]);
+
+/** The sweep's four tiers, as the (quality, mode) pairs that resolve to them. */
+export const PERF_CAPTURE_SWEEP_TIERS = Object.freeze([
+  Object.freeze({ tier: 0, quality: "low" as const, mode: "balanced" as const }),
+  Object.freeze({ tier: 1, quality: "medium" as const, mode: "balanced" as const }),
+  Object.freeze({ tier: 2, quality: "high" as const, mode: "balanced" as const }),
+  Object.freeze({ tier: 3, quality: "high" as const, mode: "ultra" as const }),
+]);
+
 export interface PerfCaptureClock {
   readonly dayOfYear: number;
   readonly solarTimeHours: number;
@@ -754,68 +811,24 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
   },
 
   // -------------------------------------------------------------------------
-  // Gate F — the eroded world, RENDERED. These MUST stay last: the harness
-  // swaps worlds when a shot's `worldEvolution` differs from the active one,
-  // and appending them keeps that swap to at most once per run.
+  // The three `eroded-*` shots that lived here were REMOVED when Jason
+  // terminated the eroded world for this phase (§8 resolved NO; see
+  // PHASE_6_EXECUTION_PLAN.md D-24). They are not "skipped" because a shot with
+  // no committed baseline is FATAL to a normal capture — `readBaselinePixels`
+  // is called with `required = !REBASELINE` — so leaving them would break
+  // `npm run perf:capture` for everyone, and gating them out would still spend
+  // ~17,000 streaming frames per run on a shelved feature.
   //
-  // W-7 left these unwritten and that is the whole reason Gate F failed the way
-  // it did. Nineteen days of erosion work closed green on byte-determinism,
-  // seam audits, CPU-oracle parity, statistics and timing — and not one of
-  // those instruments ever rendered the eroded world into an image a human
-  // looked at. The first person to see it was Jason, flying it. A gate whose
-  // exit criterion says "production-quality" cannot be certified by proxy
-  // measurements alone.
+  // Removal is safe HERE and only here, because temporal phase is keyed by
+  // canonical INDEX (`PERF_CAPTURE_SHOTS.findIndex` by name, then
+  // `simulationTime = 500 + index * 120`). These were the trailing entries, so
+  // deleting them shifts no surviving shot's index and every analytic shot
+  // keeps its exact phase and pixels. The append-only rule still stands for
+  // insertion; this is a truncation of the tail.
   //
-  // Ceilings are deliberately PERMISSIVE for now: these shots exist first to
-  // make the defect visible and reproducible in-harness. They are pinned
-  // properly at the eroded baseline promotion, which is Gate F's own gate and
-  // must not be taken while the world is broken.
+  // To restore them, re-append at the END with `worldEvolution: "eroded"` and
+  // permissive ceilings — D-24 records the definitions.
   // -------------------------------------------------------------------------
-  {
-    name: "eroded-cruise-horizon",
-    description: "ERODED world: 10,000 ft level flight — relief, drainage and horizon",
-    worldEvolution: "eroded",
-    cameraMode: "chase",
-    altitudeAglMeters: null,
-    altitudeMslMeters: 3_048,
-    offsetXMeters: 2_000,
-    offsetZMeters: -6_000,
-    pitchDownDegrees: 10,
-    airspeedMetersPerSecond: 92,
-    clock: { dayOfYear: 171, solarTimeHours: 15 },
-    relativeSunBearingDegrees: 120,
-    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
-  },
-  {
-    name: "eroded-ridge-2000ft",
-    description: "ERODED world: low pass over high ground — the relief the macro pass carved",
-    worldEvolution: "eroded",
-    cameraMode: "chase",
-    altitudeAglMeters: 600,
-    altitudeMslMeters: null,
-    offsetXMeters: 6_000,
-    offsetZMeters: -5_000,
-    pitchDownDegrees: 8,
-    airspeedMetersPerSecond: 0,
-    clock: { dayOfYear: 171, solarTimeHours: 15.5 },
-    relativeSunBearingDegrees: 120,
-    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
-  },
-  {
-    name: "eroded-valley-500ft",
-    description: "ERODED world: low over a drainage — valley floors and channel incision",
-    worldEvolution: "eroded",
-    cameraMode: "chase",
-    altitudeAglMeters: 150,
-    altitudeMslMeters: null,
-    offsetXMeters: -4_000,
-    offsetZMeters: 3_000,
-    pitchDownDegrees: 6,
-    airspeedMetersPerSecond: 0,
-    clock: { dayOfYear: 171, solarTimeHours: 14.5 },
-    relativeSunBearingDegrees: 225,
-    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
-  },
 ]);
 
 export interface CaptureQuaternion {
@@ -1319,8 +1332,11 @@ export interface PerfCaptureReport {
     readonly adapter: string;
     readonly devicePixelRatio: number;
     readonly userAgent: string;
-    readonly quality: "medium";
-    readonly renderingMode: "balanced";
+    readonly quality: string;
+    readonly renderingMode: string;
+    /** `6-11.1`: the tier these numbers describe, and whether this is a sweep run. */
+    readonly tier: number;
+    readonly sweep: boolean;
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;
@@ -1413,6 +1429,51 @@ export function tier1BalancedPerformanceFailures(
   if (!Number.isFinite(sample.maxFrameMs) || sample.maxFrameMs > PERF_CAPTURE_MAX_FRAME_MS) {
     failures.push(
       `maximum frame ${sample.maxFrameMs.toFixed(2)} ms exceeds ${PERF_CAPTURE_MAX_FRAME_MS} ms`,
+    );
+  }
+  return failures;
+}
+
+/**
+ * `6-11.1` — the same contract, evaluated against an arbitrary tier's numbers.
+ *
+ * Deliberately a SEPARATE function rather than a rewrite of
+ * `tier1BalancedPerformanceFailures` with parameters. That function is the
+ * standing gate for the shipping tier and its constants are quoted in
+ * `docs/PERFORMANCE.md`; making it configurable would mean the shipping
+ * contract could be weakened by passing an argument, which is exactly the
+ * property it should not have. The tier-1 path keeps calling the original —
+ * and a test asserts the two agree on tier 1's contract, so this cannot drift
+ * into a second, quietly different definition of "delivered".
+ */
+export function deliveryFailuresAgainst(
+  contract: PerfCaptureDeliveryContract,
+  sample: Tier1BalancedPerfSample,
+): string[] {
+  const failures: string[] = [];
+  if (!Number.isFinite(sample.wallClockFps) || sample.wallClockFps < contract.minWallClockFps) {
+    failures.push(
+      `wall-clock fps ${sample.wallClockFps.toFixed(2)} is below ${contract.minWallClockFps}`,
+    );
+  }
+  if (!Number.isFinite(sample.frameIntervalMsP95)
+    || sample.frameIntervalMsP95 > contract.frameBudgetMs) {
+    failures.push(
+      `frame-interval p95 ${sample.frameIntervalMsP95.toFixed(2)} ms exceeds `
+      + `${contract.frameBudgetMs} ms`,
+    );
+  }
+  if (!Number.isInteger(sample.framesOver27_4Ms)
+    || sample.framesOver27_4Ms < 0
+    || sample.framesOver27_4Ms > contract.maxHitches) {
+    failures.push(
+      `${sample.framesOver27_4Ms} frames exceeded ${contract.hitchBudgetMs} ms; `
+      + `maximum is ${contract.maxHitches}`,
+    );
+  }
+  if (!Number.isFinite(sample.maxFrameMs) || sample.maxFrameMs > contract.maxFrameMs) {
+    failures.push(
+      `maximum frame ${sample.maxFrameMs.toFixed(2)} ms exceeds ${contract.maxFrameMs} ms`,
     );
   }
   return failures;

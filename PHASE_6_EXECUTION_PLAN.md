@@ -72,6 +72,26 @@ rules, after Gate 0:
    ≤ 2% on the affected shots, logged at item close. TerrainSurfacePlugin already
    declares ~9 sampled textures against WebGPU's 16-per-stage base limit — 6-5/6-8's
    new bindings must count them.
+
+   **AMENDED 2026-08-31 — a pin is A→B→A, never A→B.** The two-arm form this rule
+   used to permit *cannot resolve a 2% claim on this host*, and that is measured,
+   not cautionary. Taking the horizon-shadow pin: the second AFTER arm read
+   **−4.27% on `reference-viewport`** against BEFORE — over this rule's own
+   threshold, and on a two-arm pin I would have reported it as a real cost and
+   blocked a clean merge. A third arm, **same tree**, read −0.08%. The same-tree
+   spread across three runs of identical code was **74.0 → 115.1 → 120.1 fps** on
+   that shot; on pixels, `canopy-1200ft` read 0.99820 / 0.99820 / **1.00000**, a
+   same-tree spread larger than any before/after difference.
+   So: **run the AFTER arm twice** (or the BEFORE arm twice — the repeated arm is
+   the control), and **compare the A/B delta against the same-tree spread before
+   reading it as a result**. A delta smaller than the control spread is not a
+   measurement, whatever its sign. Discard any arm that follows a Vite
+   dep-optimizer miss or a failed run: the first arm here read a mean of 106.6 fps
+   against the others' ~120 and would have poisoned the comparison in the
+   flattering direction. This is distinct from, and additional to, D-6/D-18's
+   "never measure under load" — a QUIET host still needs the control arm, because
+   the within-tree variance on some shots exceeds the effect being measured by an
+   order of magnitude.
 3. **All GPU compute admits through `ComputeBudget`** (owners.ts: "every GPU compute
    producer admits through it"), under the existing per-tier caps
    (`erosionCompute` 0.2/0.4/0.7/1.2 ms, [PerformanceBudget.ts:83/96/112/126](src/render/webgpu/core/PerformanceBudget.ts)),
@@ -546,6 +566,27 @@ The rule to write down: **every list that models something must be derived from,
 or asserted against, the thing it models.** Uniqueness and bounds checks are not
 verification — they only prove the list is internally tidy.
 
+**And the half of the rule this phase learned last, which is the stronger half:
+a decorative list has no immune response to REGRESSION either.** The argument
+above is about drift — a list quietly diverging from reality. The sharper point
+is that a list nothing asserts against can be *un-fixed* exactly as quietly as
+it was broken, by an ordinary merge, the day after it is corrected.
+This is not hypothetical. On 2026-08-31, one day after D-22 replaced
+`TERRAIN_SAMPLED_BINDINGS` with a compiled-shader-derived list, a peer session
+rebasing a horizon-shadow branch found its stale copy of
+`TerrainSpineContract.ts` would have restored the six phantom PBR samplers and
+dropped `environmentBrdfSampler` and `shadowTexture`. **Nothing would have
+failed** — the pre-D-22 assertions were uniqueness and a bound, and the reverted
+list satisfies both. It was caught because the peer read the deletion side of
+its own diff, which is diligence, not a mechanism. The regression would have
+reached the tree by the same route the original drift did, and the fix would
+have been undone in silence.
+So the reason to derive from the artifact is not only that it finds the bug:
+**it protects the fix.** A value asserted against the compiled shader cannot be
+reverted without a red test, no matter who merges what. That is the difference
+between a finding and a guarantee, and it is the strongest instance this phase
+produced.
+
 Worth recording alongside it: all three of this phase's deepest defects were
 caught by the same mechanism, and none by careful reasoning. D-18's forest floor
 was caught by *looking at the frame*; D-20's readback by *a guard on an
@@ -596,6 +637,34 @@ Eroded becomes `DEFAULT_WORLD_EVOLUTION` **only if all six hold**:
 If any fails, the analytic default ships on and eroded stays a flag — that outcome is
 **acceptable by Q1's own terms** and is not a phase failure. Either way the decision
 gets a decision-log row and 6-12 re-points the docs to match.
+
+### §8 RESOLVED — **NO**, 2026-08-31. Analytic ships on; eroded stays a flag.
+
+Decided by Jason after re-flying the eroded world post-`fine-band` fix. This is
+the branch above, taken on its own terms — **not a phase failure**. Against the
+six criteria, at the moment of the decision:
+
+| # | criterion | state |
+|---|---|---|
+| 1 | W-8/C-10 resolved | met |
+| 2 | full capture set green, **including eroded shots** | **NOT met.** The eroded shots did not exist until 2026-08-31 (D-23); W-7 left them unwritten, which is the root of the whole failure. |
+| 3 | cold time-to-ready ≤ 1.5 s | **UNKNOWN, and honestly so.** Every measurement taken was in a paint-gated pane and has been retracted (D-23). Throughput is ~31 frames/page with one page in flight, which projects to ~90 s for a working set — but that is a projection, not a measurement. |
+| 4 | inventoried memory under the ceiling | **NOT met.** 527.5 MiB eroded against the 495 pin. (Analytic reads 492.3 and fits, which is why this criterion evaporates on the analytic path.) |
+| 5 | Jason's flight verdicts approve | **NOT met — this is the criterion that decided it.** |
+| 6 | D-7 landed, seam bit-exact | **NOT met**, and now shelved. |
+
+Four of six unmet and one unknown, so the decision is not close and did not turn
+on a judgement call. **Criterion 5 is the one that actually resolved it**, and
+the sequencing is worth recording: 2, 3, 4 and 6 were all knowable without a
+human, and none of them had been established when a human first looked. The gate
+that should have caught this is criterion 2, and criterion 2 was unmeasurable
+because the instrument it names was never built.
+
+Consequences, all recorded in D-24: eroded work stops and the code parks behind
+its flag; `DEFAULT_WORLD_EVOLUTION` is unchanged; the three `eroded-*` shots are
+removed from the capture set; D-7, D-9, the throughput finding, the zero-height
+provisional page, the analytic-pyramid/eroded-atlas horizon mismatch and the
+memory overage become the reviver's reading list. 6-12 re-points the docs.
 
 ---
 
@@ -1486,6 +1555,319 @@ authored.
   broken until it finishes", and it is the behaviour a player actually meets.
   Do not promote an eroded baseline, and do not report Gate F as passed, until a
   live flight in a real browser shows relief.
+
+- **D-24 (2026-08-31, §8 RESOLVED NO — the eroded world is SHELVED, not
+  cancelled, and analytic ships):** Jason re-flew the eroded world after D-23's
+  fix and called it. This is §8's planned branch, taken on its own terms: *"If
+  any fails, the analytic default ships on and eroded stays a flag — that
+  outcome is acceptable by Q1's own terms and is not a phase failure."* The code
+  stays in the tree behind `?world=eroded`. What stops is spending effort on it.
+  **Work stopped, all of it eroded-only:** D-7 (canonical-split lattice
+  snapping), D-9 (re-tighten CPU/GPU parity bounds after D-7), the streaming
+  throughput fix, the provisional analytic-fallback for unwritten pages, the
+  eroded memory overage (527.5 MiB vs the 495 ceiling — an ANALYTIC capture
+  reads 492.3 and fits), W-4's two unmet targets, and all eroded capture work.
+  None of these gate an analytic ship.
+
+  **What Waves 1–3 actually delivered on the shipping path.** Verdicts traced to
+  the mechanism, not inferred from the sequencing table:
+  | item | analytic | mechanism |
+  |---|---|---|
+  | **6-1** flow advection, standing waves, lake chop | **DARK — both halves** | Every 6-1 term sits inside `if (input.waterInfo.w > 0.0)` ([HydrologySystem.ts:314](src/render/webgpu/water/HydrologySystem.ts)). The w lane is written by four builders: `appendRiver` and `appendLake` (analytic) push a literal `0`; only `appendGraphRiver` and `appendGraphLake` push a payload. **The lake-chop half is dark too** — fetch reaches the shader solely through `appendGraphLake`, so an analytic lake has no fetch and no chop. |
+  | **6-2** run-up, streaking, wet sand | **PARTIAL** | The OCEAN half is visible: it lives in `SpectralOceanSystem`/`WaterShaders` with no evolution dependency. The INLAND half (bank run-up, bank normal) is inside the same `waterInfo.w` sentinel and is dark. |
+  | **6-3** shoaling and breaking | **VISIBLE** | Ocean-only by construction ("an inland lake has no continental shelf to shoal across") and driven by `BathymetryClipmap`, which has a first-class analytic path — `if (worldEvolution === "analytic" \|\| macro === null) return analyticHeightMeters`. The `6-3←W-6` row was a sequencing dependency on the eroded OVERLAY, not a data dependency; the analytic seabed predates it. |
+  | **6-5** lake wetness / shore distance | **DARK** | Its fragment block is behind `TERRAIN_SURFACE_HYDROLOGY_CHANNELS`, which requires both hydrology atlases bound, and the channel atlas only requests hydrology when eroded. Compile-time dark, not merely pixel-dark. |
+  | **6-6** ecology channels | **DARK by design** | `soilDepth` is gated on `soilDepthValid`, false analytically, and the analytic path is the pre-6-6 moisture proxy — bit-identical by measurement (D-10). |
+  | **6-7** talus/scree | **VISIBLE** | D-11: the placement law runs in BOTH worlds and corrects a real defect in shipped analytic code (2-15's inverted slope term). |
+  | **6-8** canopy/grass seams | **VISIBLE** | Deliberately no sentinel — a canopy is a vegetation property, not an erosion product. Proven in the R1–R3 frames: litter under closed canopy, grass in glades. |
+  So Wave 1 ships **6-3 whole, 6-2's ocean half, and none of 6-1**; Waves 2–3
+  ship **6-7 and 6-8 whole**. The honest summary is that the water-motion wave
+  landed about half its visible value on the shipping path, and the ecology wave
+  landed nearly all of it.
+
+  **The three `eroded-*` capture shots were REMOVED, not skipped.** Removal is
+  safe *here specifically*: temporal phase is keyed by canonical INDEX
+  (`PERF_CAPTURE_SHOTS.findIndex` by name → `simulationTime = 500 + index*120`),
+  and these were the trailing entries, so no surviving shot's index moves and
+  every analytic shot keeps its exact phase and pixels. The append-only rule
+  still binds for INSERTION; this is a tail truncation. They could not simply be
+  left in place: `readBaselinePixels` is called with `required = !REBASELINE`,
+  so a shot with no committed baseline is fatal to a normal capture, and they
+  were never promoted. Gating them out instead would still have spent ~17,000
+  streaming frames per run on a shelved feature. Their definitions are recorded
+  in this deviation's history for whoever revives the work.
+
+  **The one-sentence account, and it is not a defect description.** The right
+  framing is d6's: ***Gate W's instrument set could not see its own product.***
+  Every instrument the gate had was a proxy — byte-determinism, seam
+  bit-equality, statistics distributions, dispatch timings, and analytic capture
+  shots which *by construction* never render the eroded world. Each was
+  individually sound and each passed honestly. The gate simply had no instrument
+  of the form *look at the thing it makes*, and W-7 — the item that would have
+  added one — is the item that was held for Gate F. That is a structural fact
+  about how the gate was assembled, and it is worth more to a resumer, or to
+  anyone assembling a future gate, than "it rendered flat".
+
+  **Parking record — what a reviver must read first.** The eroded world is ~90%
+  working and cost 19 days. Known state: (0) **D-9's loosening now outlives its
+  cause and is the FIRST thing to re-tighten.** It loosened CPU/GPU page
+  agreement pending D-7, and D-7 is shelved, so a temporary concession has
+  become permanent — which D-9 itself named as the way one becomes permission.
+  Scoped and contained: `worstAbsoluteToleranceMeters: 0.06` lives in the
+  eroded-only `TerrainPageErosionGpu.ts`, asserted at one site in
+  `tests/gpu/terrain-page-erosion-gpu.test.ts`, so it weakens only the shelved
+  producer and touches nothing analytic. No ship risk; re-tighten alongside D-7,
+  whose fix is known (snap the lattice origin to the 512 m world block rather
+  than to the evaluating page's own origin). (1) the `fine-band` admission
+  deadlock
+  is FIXED (D-23) and regression-tested; (2) fill-in is throughput-bound at ~31
+  frames/page with one page in flight, so a real session takes ~90 s to build a
+  working set — the likely reason it still looked broken in flight; (3) an
+  admitted-but-unwritten page renders ZERO HEIGHT rather than the analytic
+  fallback, which is what makes a slow fill look like a broken world and is
+  probably the highest-value single fix; (4) eroded inventoried GPU memory is
+  527.5 MiB against a 495 ceiling; (5) D-7 and D-9 remain open; (6) **the global
+  height pyramid is analytic-only and the page occlusion bake mixes it with
+  eroded page heights** — `GlobalHeightPyramid` bakes from `terrainNaturalHeight`
+  with no eroded path, while `PageOcclusionBake.occlusionHeightAt` reads the
+  eroded height atlas inside the page and falls through to the analytic pyramid
+  beyond it, so an eroded horizon march steps from eroded to analytic heights at
+  the page boundary and marches analytic for the remaining ~44 km. That
+  reintroduces exactly the discontinuity 4-7's pyramid exists to remove, via a
+  data mismatch rather than reach, and it would be worst in the deep valleys
+  erosion exists to carve. Unmeasured and deliberately so; the two resolutions
+  (bake the pyramid from the eroded field, or accept and document the near/far
+  split) are a DECISION, recorded here so it is made once rather than
+  rediscovered. Credit: surfaced by `nifty-williamson`, verified independently.
+  The same property makes the horizon-shadow work structurally free of eroded
+  dependencies, so its 4-8b argument stands unchanged on the shipping path.
+
+  **Remaining Phase 6 scope, analytic only:** 6-11 (four-tier × three-viewport
+  sweep, QR-1, cold-start, memory truth — where the ceiling question is now
+  simply 492.3 against 495 and fits), 6-12 (documentation truth, including this
+  shelving), the horizon-shadow merge with its same-host A/B pin, and one §8 row.
+
+- **D-25 (2026-08-31, the wave-R vegetation horizon-shadow term lands — it is
+  not a late feature, it is the unpaid half of `4-8b`):** `6-8` declined this
+  and routed it to `6-11`. Its reason was sound and survives: the terrain's
+  horizon map is a page-atlas channel addressed through a per-vertex CDLOD slot
+  lane, and `DetailInstanceMaterialPlugin` materials are SHARED across every
+  presentation chunk — that sharing being the draw-call architecture the
+  `RENDERING_PLAN.md:837` ratchet protects — so no per-chunk page uniform can
+  reach the detail path. `6-8` also named the condition under which either
+  route becomes admissible: **extract the horizon operator into a shared WGSL
+  include so both consumers run one operator.** This item is that extraction
+  first and the feature second.
+  **The justification is a conditional licence the tree already took.**
+  `RENDERING_PLAN.md:360` (the `4-8` row): "**Now** it is safe to shorten the
+  distance: the horizon map covers everything beyond. Doing it earlier leaves
+  distant mountains unshadowed for months." `PHASE_4_EXECUTION_PLAN.md:231`
+  states it as a rule — `4-8b` "may only shorten the shadow distance once the
+  horizon map is actually being sampled". §5.4's budget row
+  (`RENDERING_PLAN.md:849`) says *terrain* leaves the far field, and only
+  terrain; `QualityProfile.ts:284` says the cascades "stop being a distance
+  instrument and become a CONTACT one". The licence was taken for every
+  representation and paid for one: impostors sampled no horizon map at all, so
+  from `shadowDistance` out to `vegetationDistance` they were unconditionally
+  lit over horizon-shadowed ground — 1.1 km at tier 0, 1.6 km at tier 1,
+  2.2 km at tier 2, 3.6 km at Ultra, `detailSunShadow` having faded to 1.0 at
+  `maxZ`. The phase booked the payment and only half-paid it.
+  **`6-8`'s recorded cost was wrong in one word.** It priced the pyramid-layers
+  route as "roughly 2-3 ms one-off". `TerrainClipmapSystem`'s channel pump
+  calls `pyramid.recenter()` every frame and the pyramid re-bakes on every
+  512 m of observer travel, so the cost RECURS. A 2-3 ms unsplit dispatch
+  exceeds every tier's compute row, §1.3 forces tiling, a tiled rewrite is a
+  visibly torn terminator, and avoiding the tear forces a second copy to read
+  from — which is what turns the recorded 0.5 MiB into 1.0.
+  **What landed:** `HorizonField.ts` owns the march, the max-of-pairs packing
+  and the consumer lookup — the whole chain from geometry to visibility scalar,
+  because anything left unshared is somewhere two representations can drift.
+  The two things that legitimately differ are holes: the height SOURCE is a
+  textual composition hole (`horizonFieldHeightAt`; WGSL has no closures) and
+  the texture FETCH stays consumer-side (the lookup takes packed texels as
+  values). Two producers compose the march (`PageOcclusionBake`, the new global
+  bake), two consumers compose the lookup (terrain surface, far impostors).
+  Global horizon layers at 128²/1,024 m over the height pyramid's exact span,
+  ONE admitted whole-field dispatch. Coarser is principled: the horizon is a
+  max over a 45 km march, so it is band-limited far below its source by
+  construction. The field's origin publishes only on completion, so it may lag
+  the height pyramid by one recentre — half a texel in a 131 km field, versus
+  flickering the far field to fully lit every 512 m.
+  **Costs.** +0.20 MiB measured (two rgba8 128² textures plus 32 B of
+  registered `StorageBuffer`; my +0.125 estimate missed alignment overhead —
+  the measured number is the one to carry). Detail material +2 samplers
+  (compiled fragment measured at **7 of 16**), +1 vec4 UBO lane, **zero** new
+  inter-stage varyings — the receiver recomputes world position in the fragment
+  stage from `vPositionW` + `detailWorldOrigin`, wave R's trick for the
+  material that had already hit the 16-input limit. `TerrainSurfacePlugin`
+  delta is **zero** on every axis; its change is a pure extraction, and D-22's
+  `terrain-sampler-budget.test.ts` — a compiled-source instrument, not a
+  hand-maintained list — passes unchanged in both permutations. **Zero**
+  `WebGpuQualityProfile` fields, **zero** `SubsystemBudgetMs` rows, **zero**
+  new `ComputeBudgetClient`, so QR-1's surface is untouched.
+  **Why no compute row.** Measured 2026-08-31: tier 0 8.150/13.7, tier 1
+  11.930/13.7, **tier 2 13.650/13.7 — 0.050 ms of slack**, tier 3 27.750/30.0.
+  `SubsystemBudgetMs.groundCoverCompute` warned that "the next row addition
+  finds the wall rather than discovering it"; this was that addition. A new
+  client's row must cover one dispatch at every tier and this bake prices at
+  ~0.27 ms, so no row fits tier 2 without a fidelity trade. The bake therefore
+  SHARES the `occlusionCompute` row: the pump submits one extra dispatch when
+  one is owed and hands it the first admission, priced at the channel PAIR's
+  cost — over-pricing only ever admits it less often, the safe direction for a
+  term that degrades to "last position's field".
+  **THE PIN BOUNDS COST, NOT CORRECTNESS — the two claims are recorded
+  separately and deliberately.** Same-host A/B (run by the 6-11 session on the
+  reference host): **no pixel movement on any of the 24 shots, worst wall-fps
+  delta −1.37% (`motion-banked-turn`), +0.20 MiB, draw calls identical.**
+  *Read that under §1.2's A→B→A amendment, which this run is what produced:*
+  the second AFTER arm read `reference-viewport` at **−4.27%**, over the 2%
+  bar, and a third AFTER on the identical tree put it at −0.08%; same-tree
+  spread on that shot was 74.0 → 115.1 → 120.1 fps. **A reader applying the
+  old two-arm rule to this data reaches the opposite conclusion.** The pin is
+  clean under the corrected method and only under it.
+  **What the pin does NOT establish:** that the feature works. Zero pixel
+  movement is equally consistent with "correctly inert on this shot set" and
+  with "no shot frames the geometry". I measured which, and the easy answer is
+  wrong: sun elevations at 45°N are `hills-dusk-glint` 14.33°,
+  `ground-2m-lowsun` 11.35°, `coast-10km-lowsun` 6.52°, and the baked field's
+  horizon angles run p50 2.5° / p90 10° / p99 27° over 131,072 samples on each
+  of three seeds — so **4.6–5.6% of azimuth-samples occlude
+  `hills-dusk-glint`'s sun and 7.0–8.3% occlude `ground-2m-lowsun`'s.** The
+  geometry IS present; "nothing moved" is not explained by its absence. The
+  remaining explanations — that those shots frame the flat majority, or that
+  the affected impostors are below the 0.0018 same-tree luma variance — are
+  both benign and neither is proven.
+  **So the behaviour is evidenced by tests, not by the capture**, and the
+  chain is deliberately complete: the bake matches a CPU oracle of the same
+  operator to better than rgba8 quantisation (`terrain-horizon-pyramid`);
+  the field ARMS through the real pump under streaming competition, resident
+  before frame 200, which is the failure that would have shipped a feature
+  that silently never fires; the define and the shared lookup reach the
+  COMPILED shader (`foliage-material-compile`); the shipped operator text
+  returns 1.0 on flat ground, 0.0 under a horizon above the sun, 0.5 exactly
+  at grazing, and 1.0 again for the SAME 0.90 horizon under a zenith sun
+  (`horizon-shadow-operator`, on-adapter); and the fragment multiplies it into
+  direct diffuse and specular and nothing else. That last control matters:
+  the first version of the operator test asserted a 52.75° sun clears a 0.90
+  (64.2°) horizon, which is false, and the test caught the error — evidence it
+  discriminates rather than confirms.
+  **Unaffected by D-24's shelving of eroded**, structurally: the height
+  pyramid this field marches bakes `terrainNaturalHeight`, so it only ever
+  described the shipping world. (The eroded-mode trap that follows from the
+  same fact is recorded in D-24 for whoever revives it.)
+  **Evidence.** Node 123 files / 1164 passed; GPU 45 files / 99 passed;
+  typecheck and lint clean, rebased onto `d0a372c`. Mutation-tested: a
+  transposed pyramid mapping and a double-included march each turn their
+  guards red.
+
+- **D-26 (2026-08-31, 6-11 partially landed — everything that is not a
+  measurement; the sweep itself awaits a cold host):** the reference host had
+  been running captures for hours and had fallen from min 117.73 fps this
+  morning to **min 31.0 / median 45.5** — a 2.6x degradation across every shot
+  with the Node suite green throughout. Per §1.2's own A→B→A amendment that is a
+  thermometer, not a measurement, so the tier numbers are deliberately not
+  taken. What landed:
+  1. **Item 4 (`TERRAIN_SAMPLED_BINDINGS`) — DONE**, see D-22.
+  2. **Item 3's harness — BUILT and validated** (`tests/perf/cold-start.test.ts`).
+     Nothing in the project measured startup before it: `perf:capture` boots one
+     renderer and holds it for the whole shot list, so its numbers are a warm
+     steady state and describe none of the first seconds a player meets. It
+     fails on **timeout OR console error**, and neither half is redundant — the
+     `4.5-0` crash hung with no error (an error-only check watches it hang
+     forever), and Gate F's eroded world logged nothing while taking ~90 s (a
+     timeout-only check calls that healthy until it crosses). "Ready" means a
+     frame was PRESENTED, not that `create()` resolved, because a renderer that
+     resolves and cannot draw is the black-frame failure wearing a green hat.
+     Needed a small addition to `FlightRenderer`: an opt-in startup-stage trace,
+     inert unless a harness calls `beginRendererStartupTrace()`.
+     **First reading, on the hot host: total 1,520 ms, first frame 84 ms** —
+     which is already at W-1's ≤1.5 s line before the host is even cold. The
+     number is NOT pinned; the ceiling in the file is a loose hang-catcher until
+     a cold-host figure exists.
+     **The stage split immediately paid for itself:** the six named stages sum
+     to **284 ms of the 1,520**. Roughly **81% of cold start is outside every
+     stage the renderer names** — material synthesis, scene construction and
+     whatever else runs between the awaits. Any startup work aimed at the named
+     stages would be optimising a fifth of the problem. That is the first thing
+     to attribute before anyone tunes startup.
+  3. **Item 5 (memory truth) — RECONCILED, and the estimate model is wrong by a
+     third.** Measured on the current analytic tree: the estimate reads
+     367.5–380.7 MiB while the inventory reads 483.9–492.3, a shortfall of
+     **111–119 MiB at a remarkably consistent 1.29–1.32x**. That consistency is
+     the finding: a ratio this stable across shots with different content is a
+     whole CATEGORY of allocation the model omits, not accumulated drift. The
+     verdict item 5 asks for is therefore *neither* "re-derive the rows" nor
+     "move the ceiling" but: **the estimate is not a usable proxy for the
+     ceiling and the ceiling must be judged on the inventory**, which is now
+     what the capture asserts. Headroom on the measured number is **2.7 MiB
+     (0.5%)** — and with eroded shelved, the 527.5 MiB overage is moot.
+  4. **Sweep infrastructure — BUILT and tested, numbers outstanding.** Tier and
+     viewport knobs; a sweep run cannot compare to baselines or produce a
+     candidate by construction; a tier-aware delivery contract added BESIDE the
+     standing tier-1 gate (tiers 0–2 share tier 1's, since §5.3 gives all three
+     the same 13.7 ms target; tier 3 gets 30 fps / 33.34 ms from
+     `FRAME_TARGET_MS[3]`), with a test pinning both functions to identical
+     tier-1 verdicts across six samples including failures so the generalised
+     one cannot become a quietly weaker definition of "delivered".
+     **Two findings from building it, each of which would have produced a wrong
+     tier table:**
+     - **The tier `maxRenderPixels` caps (1.0 / 1.5 / 2.4 / 4.0 M) mean the
+       three viewport columns are not three resolutions.** At tier 1 both 1080p
+       and 1440p render at the 1.5 M cap — the same workload with different
+       presentation. A published tier table MUST mark which columns are
+       cap-bound or it reports resolution scaling that never happened.
+     - **A viewport sweep needs the browser WINDOW resized, not just the
+       canvas.** Playwright's window is 1280x720 — the canonical size, which is
+       why this never mattered. Asking for 1920x1080 produced a report
+       faithfully recording 1080p while the renderer drew **1333x750**, clamped
+       by layout. The instrument would have published a "1080p row" that was
+       nothing of the kind. Found only because the render-pixel pin failed, and
+       it failed describing a scale error rather than the cap and clamp that
+       were actually responsible — the third time this phase that a pin failing
+       for the "wrong" reason was what exposed the real problem.
+     Recorded against my own change: adding `--window-size` unconditionally
+     measured a lower median than without it (56.6 vs 45.5 on adjacent runs).
+     On a hot host that is two samples and settles nothing, so by the amendment
+     above it is not called a cost — the flag is **sweep-only** instead, leaving
+     the canonical run byte-identical to before the sweep existed. The standing
+     gate is not the place to discover whether a flag is free.
+  5. **The sweep is itself the workload that exhausts the host — so the run is
+     designed against its own confound.** Raised by the PM session and correct:
+     twelve configurations back to back is hours of continuous GPU load, the
+     same pattern that took this machine from 117.73 to 38.7 fps today. Run in
+     tier order, tier 3 would be measured on a hotter machine than tier 0 and a
+     monotonic thermal ramp would read as *"higher tiers cost more"* — the exact
+     conclusion the sweep exists to produce, and invisible in the numbers. This
+     is §1.2's A→B→A lesson one level up, and **strictly worse**: there the
+     variance was noise that averages out; here the drift CORRELATES with the
+     independent variable, and correlated drift does not average out.
+     `scripts/tier-sweep.sh` and `scripts/tier-sweep-analyse.mjs` answer it with
+     three mechanisms, in increasing order of trust: a **balanced tier order**
+     so each third of the run holds each tier about once; **cool-down gaps**;
+     and — the one that actually matters — a **repeated control configuration**
+     run first, middle and last. The first two reduce drift; **only the control
+     detects it.** The analyser refuses to print a tier table at all when the
+     control spread exceeds 5%, which is roughly the smallest tier-to-tier
+     difference the sweep is trying to resolve: if the control moves as far as
+     the effect, no arithmetic recovers the effect, so the honest output is
+     "void, re-run" rather than a table with a caveat nobody carries forward.
+     Both paths are verified against synthetic runs — a 33% control spread
+     voids, a 1.7% spread prints and correctly flags a cap-bound row. Each
+     report is stamped with its sweep label, order and start time, so a tier row
+     never has to have its thermal context reconstructed from file mtimes.
+     **Scope answer:** attempt all twelve rather than pre-emptively cutting to a
+     "safe" subset — the 7-shot delivery subset puts a configuration at ~3–4
+     minutes rather than the full set's ~10, so 15 runs with cool-downs is
+     ~1.5–2 hours, not the projected 2+ hours of solid load. The control design
+     makes the scope question **empirical**: if the host cannot hold twelve in
+     one thermal envelope, the analyser says so from the data and the sweep is
+     re-run in chunks. That is better than guessing the answer in either
+     direction, and per §7.1 these are archived acceptance reports rather than
+     standing gates, so a reduced-but-sound sweep with its scope recorded always
+     beats a complete one that is confounded.
+  **Outstanding and needing only a cold host:** the twelve sweep configurations,
+  QR-1's per-tier headroom decision (which is a measurement), and pinning the
+  cold-start acceptance number.
 
 *(Further deviations land here with evidence, plus a normative row in
 ARCHITECTURE.md's decision log, per house rule.)*

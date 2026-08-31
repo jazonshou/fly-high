@@ -1,5 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  PERF_CAPTURE_FRAME_BUDGET_MS,
+  PERF_CAPTURE_MAX_FRAME_MS,
+  PERF_CAPTURE_MAX_HITCHES,
+  PERF_CAPTURE_MIN_WALL_CLOCK_FPS,
+  deliveryFailuresAgainst,
+  perfCaptureDeliveryContract,
+  tier1BalancedPerformanceFailures,
+} from "../scripts/perf-capture.mts";
 
 const driver = readFileSync(
   new URL("./perf/perf-capture.test.ts", import.meta.url),
@@ -91,7 +100,7 @@ describe("perf-capture baseline policy", () => {
    * Both halves are pinned here.
    */
   it("writes candidate frames before the gates and approves them only after", () => {
-    const strictGate = driver.indexOf("tier1BalancedPerformanceFailures({");
+    const strictGate = driver.indexOf("deliveryFailuresAgainst(DELIVERY, {");
     const imageContentGate = driver.indexOf("perfCaptureImageContentFailures(shot.tiles");
     const gpuErrorGate = driver.indexOf(
       "WebGPU reported uncaptured errors during the capture",
@@ -227,7 +236,11 @@ describe("perf-capture baseline policy", () => {
 
     // Host-dependent: what the machine could deliver in the time it had.
     for (const message of [
-      "strict tier-1 medium/balanced frame-delivery gate failed",
+      // 6-11.1 made this message tier-aware (`strict tier-${tier}
+      // ${quality}/${mode} ...`), so the stable substring is the tail. The
+      // gate itself is unchanged at tier 1 — asserted by the contract-agreement
+      // test below.
+      "frame-delivery gate failed",
       "measured fps fell below the committed floor",
       "more hitch frames than the committed ceiling",
       "worst frame exceeded the committed ceiling",
@@ -276,5 +289,53 @@ describe("perf-capture baseline policy", () => {
     expect(rendererWorkflow).toContain("npm run perf:capture:ci");
     expect(rendererWorkflow).toContain("git diff --exit-code -- tests/perf/baseline");
     expect(rendererWorkflow).toContain("actions/upload-artifact@v4");
+  });
+
+  /**
+   * `6-11.1`: the sweep's generalised contract must not become a SECOND,
+   * quietly different definition of "delivered".
+   *
+   * `deliveryFailuresAgainst` exists so a tier-3 run is judged at 30 fps
+   * instead of being failed for not being tier 1. The risk it introduces is
+   * drift: two functions that both claim to express the delivery contract, one
+   * of which is configurable. This pins them together at tier 1 — the shipping
+   * tier, whose constants `docs/PERFORMANCE.md` quotes — so any future edit to
+   * either that changes a tier-1 verdict fails here.
+   */
+  it("agrees with the standing tier-1 gate on every tier-1 verdict", () => {
+    const tier1 = perfCaptureDeliveryContract(1);
+    expect(tier1.minWallClockFps).toBe(PERF_CAPTURE_MIN_WALL_CLOCK_FPS);
+    expect(tier1.frameBudgetMs).toBe(PERF_CAPTURE_FRAME_BUDGET_MS);
+    expect(tier1.maxFrameMs).toBe(PERF_CAPTURE_MAX_FRAME_MS);
+    expect(tier1.maxHitches).toBe(PERF_CAPTURE_MAX_HITCHES);
+    // Tiers 0 and 2 share tier 1's 13.7 ms internal target, so they share its
+    // delivery contract; only tier 3 (30 ms target) may differ.
+    expect(perfCaptureDeliveryContract(0)).toEqual(tier1);
+    expect(perfCaptureDeliveryContract(2)).toEqual(tier1);
+    expect(perfCaptureDeliveryContract(3).minWallClockFps).toBe(30);
+
+    const samples = [
+      { wallClockFps: 120, frameIntervalMsP95: 9.2, framesOver27_4Ms: 0, maxFrameMs: 12 },
+      { wallClockFps: 59.9, frameIntervalMsP95: 9.2, framesOver27_4Ms: 0, maxFrameMs: 12 },
+      { wallClockFps: 60, frameIntervalMsP95: 16.68, framesOver27_4Ms: 0, maxFrameMs: 12 },
+      { wallClockFps: 60, frameIntervalMsP95: 16.67, framesOver27_4Ms: 6, maxFrameMs: 12 },
+      { wallClockFps: 60, frameIntervalMsP95: 16.67, framesOver27_4Ms: 5, maxFrameMs: 50.1 },
+      { wallClockFps: Number.NaN, frameIntervalMsP95: 9, framesOver27_4Ms: 0, maxFrameMs: 12 },
+    ];
+    let sawFailure = false;
+    for (const sample of samples) {
+      const standing = tier1BalancedPerformanceFailures(sample);
+      const swept = deliveryFailuresAgainst(tier1, sample);
+      expect(swept, `tier-1 verdict diverged for ${JSON.stringify(sample)}`).toEqual(standing);
+      if (standing.length > 0) sawFailure = true;
+    }
+    // Non-vacuity: agreeing on six passes would prove nothing.
+    expect(sawFailure, "no sample exercised a failing verdict").toBe(true);
+
+    // A tier-3 sample that tier 1 rejects must be ACCEPTED at tier 3 — the
+    // whole reason the table exists.
+    const ultra = { wallClockFps: 31, frameIntervalMsP95: 32, framesOver27_4Ms: 0, maxFrameMs: 60 };
+    expect(tier1BalancedPerformanceFailures(ultra).length).toBeGreaterThan(0);
+    expect(deliveryFailuresAgainst(perfCaptureDeliveryContract(3), ultra)).toEqual([]);
   });
 });

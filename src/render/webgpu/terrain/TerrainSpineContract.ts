@@ -595,6 +595,30 @@ export const TERRAIN_HEIGHT_PYRAMID_SPAN_METERS =
   TERRAIN_HEIGHT_PYRAMID_EDGE * TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS;
 
 /**
+ * `6-11`: the GLOBAL horizon field, at half the height pyramid's linear
+ * resolution and over exactly the same span.
+ *
+ * Why coarser than the field it marches. The horizon is a max over a 45 km
+ * march, so it is band-limited far below its source by construction — two
+ * adjacent texels differ only where the FARTHEST occluder differs, which at
+ * this scale means a different ridge, not a different metre. Halving the edge
+ * quarters both the memory (128 KiB for two rgba8 layers, against 512 KiB at
+ * the pyramid's own edge) and the bake (6.3 M texture loads, against 25 M) —
+ * and the bake cost is the binding one, because this field re-bakes on every
+ * 512 m of observer travel, not once.
+ *
+ * Why the span is pinned equal rather than merely similar: the consumer maps
+ * world -> texel by a single divide against a published origin, and a span
+ * mismatch would silently shear that mapping against the height pyramid's.
+ * `tests/render.webgpu-horizon-field.test.ts` asserts the equality.
+ */
+export const TERRAIN_HORIZON_PYRAMID_EDGE = 128;
+export const TERRAIN_HORIZON_PYRAMID_TEXEL_METERS =
+  TERRAIN_HEIGHT_PYRAMID_SPAN_METERS / TERRAIN_HORIZON_PYRAMID_EDGE;
+export const TERRAIN_HORIZON_PYRAMID_SPAN_METERS =
+  TERRAIN_HORIZON_PYRAMID_EDGE * TERRAIN_HORIZON_PYRAMID_TEXEL_METERS;
+
+/**
  * WebGPU's `copyTextureToBuffer` row alignment. A 264-texel r32float row is
  * 1,056 B, which pads to 1,280 — so every readback helper and every `4-1`/`4-3`
  * parity test is asynchronous and unpacks padded rows rather than assuming a
