@@ -176,6 +176,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     consumers: ["terrain-geometry", "terrain-material"],
     ownedSymbols: [
       "TERRAIN_KERNEL_WGSL",
+      "TERRAIN_KERNEL_SCALAR_WGSL",
       "TERRAIN_KERNEL_CONSTANTS",
       "TERRAIN_KERNEL_LATTICES",
       "buildTerrainKernelPageUniform",
@@ -203,7 +204,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "TerrainAuxPagePublisher",
     ],
     notes:
-      "Terrain-material consumes atlases; it does not create them. Phase-5 aux uploads use four heterogeneous resources and publish only after the complete channel slot becomes resident.",
+      "Terrain-material consumes atlases; it does not create them. Phase-5 aux uploads use four heterogeneous resources and publish only after the complete channel slot becomes resident, and 6-6's aux publication carries both CPU-consumed ecology channels (signed shore distance and soil depth) with their decode scales.",
   },
   {
     // 4-3: the false-colour overlay RENDERING_PLAN.md mandates before the
@@ -279,6 +280,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "src/render/webgpu/terrain/TerrainErosionCompute.ts",
       "src/render/webgpu/terrain/TerrainPageErosion.ts",
       "src/render/webgpu/terrain/TerrainPageErosionClient.ts",
+      "src/render/webgpu/terrain/TerrainPageErosionGpu.ts",
       "src/workers/terrainErosionProtocol.ts",
       "src/workers/terrainErosion.worker.ts",
     ],
@@ -286,12 +288,16 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "TerrainErosionCompute",
       "TerrainPageErosionClient",
+      "TerrainPageErosionGpu",
       "generateTerrainErodedPage",
       "isTerrainErosionWorkerEvent",
     ],
     notes:
-      "Deterministic CPU-worker reference implementation for the bounded Phase-5 page DAG; "
-      + "the atlas admits one page at a time and retains the same client boundary for a future GPU producer.",
+      "W-1d: TerrainPageErosionGpu is the producer, a multi-frame GPU DAG amortised under "
+      + "ComputeBudget.erosionCompute; the CPU worker path remains the no-device fallback, the "
+      + "ensureHydrology recovery path and the tolerance oracle. Still ONE page in flight, still "
+      + "behind the same client boundary. The order-dependent MFD stays CPU and round-trips "
+      + "through the worker's erode-stage-* protocol mid-DAG.",
   },
   {
     artifact: "terrain-macro-evolution",
@@ -336,7 +342,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "sampleTerrainMacroLakeField",
     ],
     notes:
-      "The sole producer of quantized flow, lake-depth, soil-depth and signed-shore-distance page fields; products are built before erosion scratch disposal and transferred together. Signed shore distance is live through the bounded detail authority and detail-worker riparian consumer; lake and soil remain exposed future inputs.",
+      "The sole producer of quantized flow, lake-depth, soil-depth and signed-shore-distance page fields; products are built before erosion scratch disposal and transferred together. 6-6 discharged half of register row C-9: soil depth now drives 2-15 clutter density and the forest-floor splat's litter term, and shore distance gained its species/appearance consumers beside the live riparian density law. Lake depth is 6-5's by the recorded split and is the one channel still without a named consumer (asserted by tests/render.webgpu-terrain-page-hydrology.test.ts).",
   },
   {
     artifact: "simulation-terrain-readback",
@@ -590,8 +596,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
     consumers: ["vegetation", "terrain-material"],
-    ownedSymbols: ["densityField", "forestFraction"],
-    notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
+    ownedSymbols: [
+      "densityField",
+      "forestFraction",
+      "riparianVegetationFactors",
+      "soilLitterFactor",
+      "canopyClosure",
+      "canopyHandoff",
+      "canopyRenderedShare",
+      "canopyGrassCover",
+    ],
+    notes:
+      "Terrain-material reads it for the canopy splat channel; it does not "
+      + "reimplement it. 6-6 added two shared ecology laws here for the same "
+      + "reason: the riparian corridor's shape and the soil-depth -> litter "
+      + "mapping are read by terrain (through this one sanctioned entry point) "
+      + "as well as by vegetation, and neither may acquire a second answer. "
+      + "6-8 adds the canopy laws on the same terms: closure, the grass-cover "
+      + "complement, the rendered/terrain split of that closure at a range, "
+      + "and the canopy's measured appearance. The far-band cull window "
+      + "(DETAIL_FAR_CULL_FADE_METERS) lives here too, because the terrain "
+      + "ramp and the impostor dither have to fade over ONE window.",
   },
   {
     // 2-0: the second instance of the payload.ts institutional failure,
@@ -629,11 +654,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "WATER_ENVIRONMENT_MIP_WGSL",
       "waterReflectedSkyWgsl",
       "fallbackWaterEnvironmentCube",
+      // 6-1: composed into the INLAND fragment only (every input is
+      // channel-graph hydraulics), but defined here with the rest of the water
+      // shader library so a second copy cannot appear beside HydrologySystem's
+      // material — the same rule, applied to a block only one surface uses.
+      "WATER_CHANNEL_FLOW_WGSL",
+      "waterChannelGradePayload",
+      "waterLakeFetchPayload",
+      "waterLakeEffectiveFetchMeters",
+      "waterStandingWave",
+      "waterLakeChop",
+      "waterFlowPhase",
+      "waterFlowSpeedGain",
+      "waterFlowCycleSeconds",
     ],
     notes:
       "A second textual fresnelSchlick/sunSpecular/reflectedSky in a water "
       + "material is the drift 2-8a exists to prevent; 2-9 unified the sun "
-      + "lobe, foam, crest SSS and environment-mip helpers here.",
+      + "lobe, foam, crest SSS and environment-mip helpers here. 6-1 added the "
+      + "channel-flow block and its TypeScript parity oracle: the payload "
+      + "encoders are the single authority for what HydrologySystem writes "
+      + "into waterData.w and what the shader decodes from it.",
   },
   {
     // 2-11: the CPU array-mip reducer (Babylon mips only layer 0 of a
@@ -688,6 +729,32 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "exists to catch exactly that.",
   },
   {
+    // 6-7: the talus/scree placement law. 2-15 owns how a rock is DRAWN;
+    // this owns where one rests, how many rest there and how big a block is.
+    artifact: "talus-placement-law",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/talusField.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "talusPlacement",
+      "talusRestWeight",
+      "talusFailureFraction",
+      "talusBlockiness",
+      "talusReposeSteepness",
+      "TalusSupplyProbe",
+      "TALUS_NO_SUPPLY",
+    ],
+    notes:
+      "Class P and season-INVARIANT by design: the permanent-snow burial term "
+      + "keys on the world's reference snowline offset, never on the "
+      + "descending seasonal one, so this file is deliberately not a member of "
+      + "SEASONAL_FIELD_FAMILY. Lithology enters through exactly one owned "
+      + "number — sampleTerrainEvolutionGeology's reposeDegrees — and soil "
+      + "depth through TerrainPageHydrology's terrainSoilDepthMeters, whose "
+      + "analytic fallback is that same law at zero curvature and zero "
+      + "contributing area rather than a second soil model.",
+  },
+  {
     // 2-11a: the ONE instance record every detail batch uploads and the ONE
     // decoder that turns it into a world transform.
     artifact: "detail-instance-format",
@@ -727,10 +794,19 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/groundCoverLaw.ts"],
     consumers: ["vegetation", "performance"],
-    ownedSymbols: ["GROUND_COVER_LAWS", "estimateGroundCoverVertexLoad"],
+    ownedSymbols: [
+      "GROUND_COVER_LAWS",
+      "estimateGroundCoverVertexLoad",
+      "GROUND_COVER_ARCHETYPE_SHAPES",
+      "groundCoverHandoffRadiusMeters",
+      "groundCoverDrawCount",
+    ],
     notes:
       "A second blades-per-square-metre constant outside this file is the "
-      + "R-21 failure class applied to grass.",
+      + "R-21 failure class applied to grass. 6-9 added the archetype shape "
+      + "table (read by BOTH the placement compute and the blade material "
+      + "plugin), the card-path handoff radius, and the conservative "
+      + "draw-count ratchet the GPU cull reads back into.",
   },
   {
     // Wave G: the per-frame compute blade system, its WGSL and its material
@@ -741,12 +817,21 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "src/render/webgpu/detail/GroundCoverSystem.ts",
       "src/render/webgpu/detail/groundCoverWgsl.ts",
       "src/render/webgpu/detail/GroundCoverMaterialPlugin.ts",
+      "src/render/webgpu/detail/indirectDrawCapability.ts",
     ],
     consumers: ["vegetation"],
     notes:
-      "Blades stand on the consumer authority's rendered surface and wear "
+      "Cover stands on the consumer authority's rendered surface and wears "
       + "the classifier's harmonised ground albedo; no streaming state "
-      + "exists anywhere in the path.",
+      + "exists anywhere in the path. 6-9 generalised it beyond grass (the "
+      + "composed archetype law places fern, heather and reed inside the "
+      + "handoff radius, and the card path keeps them outside it), admitted "
+      + "it through ComputeBudget as groundCoverCompute, gave the governor "
+      + "its gate rung, and added the compaction cull: lanes claim slots "
+      + "through a workgroup-reduced atomic, the count returns through a "
+      + "readback ring (the DEFAULT path), and the GPU-written indirect "
+      + "count is an opt-in optimisation over Babylon private state behind "
+      + "one loud assertion (RENDERING_PLAN §7 R4).",
   },
   {
     // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
@@ -794,7 +879,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "toroidalBathymetryTexel",
     ],
     notes:
-      "Two toroidal R16F levels. Eroded mode currently samples the canonical macro authority with its cell-centred 16-texel rim blend; analytic mode remains bit-compatible.",
+      "Two toroidal R16F levels. Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
   },
   {
     // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,
@@ -818,7 +903,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "Ten smooth suitability functions, softmaxed and top-4 renormalised, "
       + "replacing classifyBiome's threshold cascade. dayOfYear is in the "
-      + "signature from the first line (seasonal-family rule). Phase-5 flow accumulation supplies the live TWI wetness input when resident.",
+      + "signature from the first line (seasonal-family rule). Phase-5 flow accumulation supplies the live TWI wetness input when resident, and 6-6 adds the soil-depth litter term on the forest floor through the same optional-input-plus-zero-sentinel shape.",
   },
   {
     // 4-6b (D12): densityField's WGSL half. ONE shared include consumed by
@@ -827,8 +912,22 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityFieldWgsl.ts"],
     consumers: "any",
-    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL"],
-    notes: "Transliteration of densityField.ts; the TS remains the authority.",
+    ownedSymbols: [
+      "VEGETATION_DENSITY_FIELD_WGSL",
+      "VEGETATION_GROUND_COVER_LAW_WGSL",
+      "VEGETATION_CANOPY_HANDOFF_WGSL",
+      "VEGETATION_DENSITY_KERNEL_LATTICES",
+    ],
+    notes:
+      "Transliteration of densityField.ts; the TS remains the authority. 6-8 "
+      + "made it the first LIVE composer (the terrain page splat bake) and "
+      + "added the lattice table it always said the caller would append, plus "
+      + "the canopy-handoff half the terrain material composes. 6-9 split out "
+      + "the ground-cover half (archetype mix, closure, grass cover) as its "
+      + "own export because it needs no lattice and no page uniform: the "
+      + "per-frame ground-cover placement compute composes THAT and the "
+      + "terrain kernel's three scalar helpers, so the field and the splat "
+      + "bake read one archetype law rather than two.",
   },
   {
     // 4-4: renamed from `terrainQueue.ts`/`BoundedTerrainQueue`. It is the

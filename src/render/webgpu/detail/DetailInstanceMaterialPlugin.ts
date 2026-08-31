@@ -10,6 +10,10 @@ import {
   DETAIL_INSTANCE_RADIAL_MAX,
   DETAIL_INSTANCE_RADIAL_MIN,
 } from "./instanceFormat";
+// 6-8: the far band's outer dither window is a SHARED constant now — the
+// terrain's canopy ramp fades in over exactly the window the impostors fade
+// out over, and two literals cannot be made to agree by inspection.
+import { DETAIL_FAR_CULL_FADE_METERS } from "./densityField";
 import {
   TREE_BARK_LAYER_MIN,
   TREE_BARK_LAYER_SPAN,
@@ -82,7 +86,13 @@ export interface ImpostorSpeciesFrame {
   readonly bareLayer: number;
 }
 
-const WGSL_VERTEX_CODE = Object.freeze({
+/**
+ * Exported for QR-4's verdict test (`6-8`): the seasonal contraction lives on
+ * the OPAQUE-CROWN path only, and the halo residual's precondition is a
+ * property of which path sheds how. A test that reasoned about it from prose
+ * would be reasoning about a representation that has changed three times.
+ */
+export const DETAIL_INSTANCE_VERTEX_SOURCE = Object.freeze({
   CUSTOM_VERTEX_DEFINITIONS: `
 attribute instancePosition: vec3f;
 attribute instanceOrientation: vec4f;
@@ -162,7 +172,9 @@ fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f, switchSeed: f32
   // in one frame. Both records carry the same stable wind-phase seed: use it
   // to distribute each stem's hard handoff across the existing 160 m
   // residency overlap. Tint is seasonal and must not move an LOD boundary.
-  let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
+  let fCull = clamp(
+    (uniforms.detailBandRadii.z - bandRange) / ${DETAIL_FAR_CULL_FADE_METERS.toFixed(1)},
+    0.0, 1.0);
   if (bandCode < 0.5) { return bandRange >= nearSwitch; }
   if (bandCode < 1.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
   return bandRange < farSwitch || fCull <= 0.0;
@@ -695,7 +707,9 @@ fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3
   }
   if (bandCode < 1.5) { return true; }
   let bandRange = distance(positionW.xz, scene.vEyePosition.xz);
-  let fCull = clamp((uniforms.detailBandRadii.z - bandRange) / 420.0, 0.0, 1.0);
+  let fCull = clamp(
+    (uniforms.detailBandRadii.z - bandRange) / ${DETAIL_FAR_CULL_FADE_METERS.toFixed(1)},
+    0.0, 1.0);
   if (fCull <= 0.0) { return false; }
   if (fCull >= 1.0) { return true; }
   let hash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
@@ -1423,7 +1437,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
     shaderLanguage = ShaderLanguage.GLSL,
   ): { [pointName: string]: string } | null {
     if (shaderLanguage !== ShaderLanguage.WGSL) return null;
-    if (shaderType === "vertex") return { ...WGSL_VERTEX_CODE };
+    if (shaderType === "vertex") return { ...DETAIL_INSTANCE_VERTEX_SOURCE };
     if (shaderType === "fragment") return { ...WGSL_FRAGMENT_CODE };
     return null;
   }

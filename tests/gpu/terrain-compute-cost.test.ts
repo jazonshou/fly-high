@@ -130,7 +130,8 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       const generator = new TerrainPageGenerator(engine, heightAtlas, SEED_HASH, null);
       const pyramid = new GlobalHeightPyramid(scene, engine, SEED_HASH);
       const occlusion = new PageOcclusionBake(engine, heightAtlas, channelAtlas, pyramid);
-      const splat = new PageSplatBake(engine, heightAtlas, channelAtlas, SEED_HASH, 0, 45, null);
+      const splat = new PageSplatBake(
+        engine, heightAtlas, channelAtlas, SEED_HASH, SEED_HASH, 0, 45, null);
 
       await pyramid.recenter(0, 0);
 

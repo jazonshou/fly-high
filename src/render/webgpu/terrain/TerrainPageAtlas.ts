@@ -3,6 +3,10 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import {
+  registerGpuBufferBytes,
+  releaseGpuBufferBytes,
+} from "@/src/render/webgpu/core/GpuBufferInventory";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
@@ -30,7 +34,10 @@ import {
   type WorldPageAddress,
   type WorldPageKey,
 } from "@/src/render/webgpu/world/pageKey";
-import { WORLD_PAGE_SCHEMA_VERSION } from "@/src/render/webgpu/world/payload";
+import {
+  WORLD_PAGE_SCHEMA_VERSION,
+  decodeWorldPageSoilDepth,
+} from "@/src/render/webgpu/world/payload";
 import {
   RUNWAY_EARTHWORKS_UNIFORM_FLOATS,
   RUNWAY_EARTHWORKS_WGSL,
@@ -60,8 +67,17 @@ import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
 import {
   TerrainPageErosionClient,
   type TerrainPageErosionExecutor,
+  type TerrainPageStagedErosionExecutor,
 } from "./TerrainPageErosionClient";
-import type { TerrainErodedPage } from "./TerrainPageErosion";
+import {
+  terrainErosionAdmissionDependencies,
+  type TerrainErodedPage,
+} from "./TerrainPageErosion";
+import {
+  TerrainErosionCancelledError,
+  TerrainPageErosionGpu,
+  type TerrainErosionGpuPageTiming,
+} from "./TerrainPageErosionGpu";
 import type {
   TerrainPageHydrologyResult,
   TerrainPageHydrologyUpload,
@@ -1034,8 +1050,16 @@ export interface TerrainAuxPagePublication {
   readonly storedEdge: typeof TERRAIN_CHANNEL_SLOT_EDGE;
   readonly texelSizeMeters: number;
   readonly shoreDistanceMetersPerUnit: number;
+  /**
+   * `6-6`: metres per stored unorm unit for the soil-depth channel, taken from
+   * the payload decoder rather than recomputed, so the quantisation has exactly
+   * one definition.
+   */
+  readonly soilDepthMetersPerUnit: number;
   /** Row-major core+gutter; ownership passes to the sink for worker transfer. */
   readonly shoreDistanceR16Sint: Int16Array;
+  /** Row-major core+gutter, same layout; `6-6`'s CPU consumers read this. */
+  readonly soilDepthR8Unorm: Uint8Array;
 }
 
 export type TerrainAuxPagePublisher = (page: TerrainAuxPagePublication) => void;
@@ -1047,6 +1071,14 @@ export interface TerrainPageGeneratorOptions {
   readonly erosionExecutor?: TerrainPageErosionExecutor;
   /** Shared channel atlas receiving the worker's upload-native aux fields. */
   readonly channelAtlas?: TerrainPageAtlas;
+  /**
+   * `W-1d`: force the multi-frame GPU erosion DAG off (`false`) even when the
+   * device could run it, leaving the serial CPU worker as the producer. The
+   * CPU path is the recovery path and the reference oracle; this is the seam
+   * the oracle tests select it through. Omitted means "use the GPU whenever
+   * the engine is a real WebGPU device with textures".
+   */
+  readonly erosionGpu?: boolean;
 }
 
 /**
@@ -1061,6 +1093,9 @@ export class TerrainPageGenerator {
   private jobBuffer: StorageBuffer | null = null;
   private pageBuffer: StorageBuffer | null = null;
   private boundsRing: StorageBuffer[] = [];
+  /** Bytes reported to the renderer's memory-inventory floor (Gate 0-c). */
+  private registeredBufferBytes = 0;
+  private registeredFixedBufferBytes = 0;
   private boundsRingIndex = 0;
   private offsetBuffer: StorageBuffer | null = null;
   private earthworksBuffer: StorageBuffer | null = null;
@@ -1076,6 +1111,8 @@ export class TerrainPageGenerator {
   private readonly world: Readonly<WorldDefinition> | null;
   private readonly erosionExecutor: TerrainPageErosionExecutor | null;
   private readonly channelAtlas: TerrainPageAtlas | null;
+  private readonly erosionGpuEnabled: boolean;
+  private erosionGpu: TerrainPageErosionGpu | null = null;
   private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
 
   constructor(
@@ -1096,6 +1133,84 @@ export class TerrainPageGenerator {
     if (this.channelAtlas && this.channelAtlas.kind !== "channel") {
       throw new RangeError("Terrain page generator aux target must be a channel atlas");
     }
+    this.erosionGpuEnabled = options.erosionGpu ?? true;
+  }
+
+  /**
+   * The multi-frame GPU DAG, or null when this generator produces eroded pages
+   * on the CPU worker (no device, no staged executor, or explicitly disabled).
+   *
+   * Built lazily: the atlas has no textures under NullEngine, and the erosion
+   * client is not staged when a test injects a plain executor.
+   */
+  private erosionProducer(): TerrainPageErosionGpu | null {
+    if (this.erosionGpu) return this.erosionGpu;
+    if (
+      this.disposed
+      || !this.erosionGpuEnabled
+      || !this.world
+      || this.world.worldEvolution !== "eroded"
+      || !this.atlas.hasTextures
+      || !this.engine.isWebGPU
+    ) return null;
+    const executor = this.erosionExecutor as TerrainPageStagedErosionExecutor | null;
+    if (!executor || typeof executor.stagedJob !== "function") return null;
+    this.erosionGpu = new TerrainPageErosionGpu(this.engine, {
+      world: this.world,
+      seedHash: this.seedHash,
+      airport: this.airport,
+      heightAtlas: this.atlas,
+      channelAtlas: this.channelAtlas,
+      executor,
+    });
+    return this.erosionGpu;
+  }
+
+  /** True while a GPU page DAG holds the producer's single in-flight slot. */
+  hasActiveErosionDag(): boolean {
+    return this.erosionGpu?.hasActiveJob ?? false;
+  }
+
+  /**
+   * `W-1d`: this frame's `erosionCompute` demand, in DAG dispatches rather
+   * than pages. Null when this generator is not the GPU producer, in which
+   * case the clipmap falls back to the historical one-demand-per-page shape.
+   */
+  erosionDagDemand(
+    pendingPageCount: number,
+  ): { readonly count: number; readonly costMs: number } | null {
+    const producer = this.erosionProducer();
+    if (!producer) return null;
+    if (!this.macroEvolution) return { count: 0, costMs: 0 };
+    return producer.demand(pendingPageCount);
+  }
+
+  /** `4.5-B2(a)` for the erosion client: the DAG's measured per-dispatch cost. */
+  consumeMeasuredErosionDispatchCostMs(): number | null {
+    return this.erosionGpu?.consumeMeasuredDispatchCostMs() ?? null;
+  }
+
+  /** Diagnostics/report: the last completed GPU page's end-to-end timing. */
+  lastErosionPageTiming(): TerrainErosionGpuPageTiming | null {
+    return this.erosionGpu?.lastCompletedPageTiming ?? null;
+  }
+
+  /**
+   * `W-2`: whether every page in `address`'s parent seed block is resident in
+   * BOTH atlases. The GPU seed pass reads the parents' stored r32f heights and
+   * the channel atlas's f16 log-flow field directly, so both halves must have
+   * converged. Macro-seeded levels have no dependencies and are never gated.
+   */
+  erosionDependenciesResident(address: WorldPageAddress): boolean {
+    const dependencies = terrainErosionAdmissionDependencies(address);
+    if (dependencies.length === 0) return true;
+    const channelAtlas = this.channelAtlas;
+    if (!channelAtlas) return false;
+    return dependencies.every((parent) => {
+      const key = invariantSlotKey(parent);
+      return this.atlas.residency.slotIndexOf(key) >= 0
+        && channelAtlas.residency.get(key)?.hydrologyReady === true;
+    });
   }
 
   /** Attach the simulation worker sink after renderer and worker construction. */
@@ -1129,6 +1244,18 @@ export class TerrainPageGenerator {
    * Fill aux fields for channel slots admitted after their height page. The
    * normal path uploads them from the original erosion result; this recovery
    * path recomputes rather than retaining a forbidden second page cache.
+   *
+   * `W-1d` residual, recorded rather than papered over: this stays on the CPU
+   * reference pass even when the GPU DAG produced the height page. For
+   * MACRO-seeded pages the two agree to the pinned parity tolerance, so the
+   * recovered aux fields are the same hydrology to well under a texel. For a
+   * `W-2` PARENT-seeded page they do not: the CPU reference has no way to read
+   * a resident parent, so a recovered L0 page's flow/soil/shore come from the
+   * macro composition while its heights came from its parents. The channel
+   * slot is admitted with its height slot in the normal path and this recovery
+   * only runs when that admission was REFUSED, so it is rare; closing it
+   * properly means letting the GPU DAG re-run for aux only, which needs a
+   * second in-flight page the v1 producer does not have.
    */
   async ensureHydrology(slots: readonly TerrainAtlasSlot[]): Promise<void> {
     if (this.disposed || this.world?.worldEvolution !== "eroded") return;
@@ -1175,16 +1302,26 @@ export class TerrainPageGenerator {
    * whose slot is re-admitted meanwhile is rejected on its epoch instead of
    * writing bounds into a slot that now holds a different page.
    */
-  async generate(slots: readonly TerrainAtlasSlot[]): Promise<void> {
-    if (this.disposed || slots.length === 0 || !this.atlas.hasTextures) return;
+  async generate(
+    slots: readonly TerrainAtlasSlot[],
+    admittedDispatches = slots.length,
+  ): Promise<void> {
+    if (this.disposed || !this.atlas.hasTextures) return;
     if (this.world?.worldEvolution === "eroded") {
       if (!this.macroEvolution || !this.erosionExecutor) return;
+      const producer = this.erosionProducer();
+      if (producer) {
+        await this.pumpErosionDag(producer, slots, admittedDispatches);
+        return;
+      }
+      if (slots.length === 0) return;
       // One worker executes these heavy deterministic passes serially. Do not
       // fill its message queue with stale flight-path decisions; wait for the
       // active page, then let the clipmap re-rank the remaining candidates.
       if (this.readbacksInFlight === 0) this.generateEroded(slots.slice(0, 1));
       return;
     }
+    if (slots.length === 0) return;
     // Never overwrite a bounds buffer whose read has not landed: that is what
     // silently completes a page at zero deviation. See BOUNDS_BUFFER_RING.
     if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return;
@@ -1257,6 +1394,66 @@ export class TerrainPageGenerator {
     const readback = this.collectBounds(boundsBuffer, slots);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
+  }
+
+  /**
+   * `W-1d`: start a page on the GPU DAG when the producer is idle, then spend
+   * this frame's admitted dispatches on whichever page is in flight.
+   *
+   * The producer holds exactly ONE page at a time in v1, so the ranked pending
+   * set is used only to CHOOSE the next page — never queued — which preserves
+   * the recorded reason the CPU path took `slots.slice(0, 1)`: a queue fills
+   * with flight-path decisions that are stale by the time they run.
+   */
+  private async pumpErosionDag(
+    producer: TerrainPageErosionGpu,
+    slots: readonly TerrainAtlasSlot[],
+    admittedDispatches: number,
+  ): Promise<void> {
+    if (!producer.hasActiveJob && this.readbacksInFlight === 0) {
+      const next = slots.find((slot) =>
+        slot.token !== null
+        && !slot.generationSubmitted
+        && slot.lifecycle.state === "generating"
+        // `W-2`: a parent-seeded page whose block is not resident is skipped,
+        // not failed. The clipmap's admission gate normally keeps it out of
+        // this set entirely; this is the belt-and-braces half, and skipping
+        // lets a page further down the ranking start instead of stalling the
+        // producer behind an unsatisfiable head.
+        && this.erosionDependenciesResident(slot.address));
+      if (next) this.beginErosionDag(producer, next);
+    }
+    if (admittedDispatches > 0) await producer.pump(admittedDispatches);
+  }
+
+  private beginErosionDag(producer: TerrainPageErosionGpu, slot: TerrainAtlasSlot): void {
+    const token = slot.token;
+    if (!token) return;
+    slot.generationSubmitted = true;
+    this.readbacksInFlight += 1;
+    const finalization = producer.beginPage(slot, token)
+      .then(async (page) => this.uploadErodedPage(slot, token, page))
+      .catch((error: unknown) => {
+        if (this.disposed || slot.token !== token) return;
+        if (error instanceof TerrainErosionCancelledError) {
+          // A cancellation is not a failure: the slot either moved on (the
+          // token check above already returned) or the page must simply be
+          // retried once its inputs are back. Failing it would release the
+          // slot and re-admit the same page a frame later, for nothing.
+          slot.generationSubmitted = false;
+          return;
+        }
+        this.atlas.residency.fail(
+          slot.key,
+          token,
+          error instanceof Error ? error.message : "terrain erosion failed",
+        );
+      })
+      .finally(() => {
+        this.readbacksInFlight -= 1;
+      });
+    this.pendingReadbacks.add(finalization);
+    void finalization.finally(() => this.pendingReadbacks.delete(finalization));
   }
 
   /** Queue worker reference passes; each finalizes independently on return. */
@@ -1385,7 +1582,11 @@ export class TerrainPageGenerator {
       storedEdge: TERRAIN_CHANNEL_SLOT_EDGE,
       texelSizeMeters: hydrology.texelSizeMeters,
       shoreDistanceMetersPerUnit: hydrology.hydrology.shoreDistanceMetersPerUnit,
+      // Sample 1 decodes to exactly one unit of depth, so the owned decoder —
+      // not a second `/ 255` written here — supplies the consumer's scale.
+      soilDepthMetersPerUnit: decodeWorldPageSoilDepth(hydrology.hydrology, 1),
       shoreDistanceR16Sint: hydrology.upload.shoreDistanceR16Sint,
+      soilDepthR8Unorm: hydrology.upload.soilDepthR8Unorm,
     });
   }
 
@@ -1494,9 +1695,16 @@ export class TerrainPageGenerator {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Before the executor: cancelling the active DAG posts an `erode-cancel`
+    // that releases the worker's retained multi-megabyte stage state.
+    this.erosionGpu?.dispose();
+    this.erosionGpu = null;
     this.erosionExecutor?.dispose();
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
+    releaseGpuBufferBytes(this.registeredBufferBytes + this.registeredFixedBufferBytes);
+    this.registeredBufferBytes = 0;
+    this.registeredFixedBufferBytes = 0;
     for (const buffer of this.boundsRing) buffer.dispose();
     this.boundsRing = [];
     this.offsetBuffer?.dispose();
@@ -1513,10 +1721,16 @@ export class TerrainPageGenerator {
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
     for (const buffer of this.boundsRing) buffer.dispose();
+    // Gate 0-c: storage buffers are invisible to the renderer's inventory.
+    releaseGpuBufferBytes(this.registeredBufferBytes);
     this.capacity = Math.max(count, 8);
     const engine = this.engine as WebGPUEngine;
     this.jobBuffer = new StorageBuffer(engine, this.capacity * 12 * 4);
     this.pageBuffer = new StorageBuffer(engine, this.capacity * TERRAIN_KERNEL_PAGE_BYTES);
+    this.registeredBufferBytes = this.capacity * 12 * 4
+      + this.capacity * TERRAIN_KERNEL_PAGE_BYTES
+      + BOUNDS_BUFFER_RING * this.capacity * TERRAIN_PAGE_BOUNDS_SLOTS * 4;
+    registerGpuBufferBytes(this.registeredBufferBytes);
     // Default creation flags (READWRITE): passing STORAGE|READ drops WRITE,
     // and then `update()` silently does nothing — the atomics reduce against a
     // zeroed buffer, whose min slot decodes to NaN. Found by measurement.
@@ -1535,6 +1749,8 @@ export class TerrainPageGenerator {
         offsets[index * 4 + 1] = z;
       });
       this.offsetBuffer = new StorageBuffer(engine, offsets.byteLength);
+      registerGpuBufferBytes(offsets.byteLength);
+      this.registeredFixedBufferBytes += offsets.byteLength;
       this.offsetBuffer.update(new Uint8Array(offsets.buffer));
     }
     // Created ONCE with uniforms rebound per batch, per 4-3: a ComputeShader
@@ -1567,7 +1783,11 @@ export class TerrainPageGenerator {
     this.shader.setStorageBuffer("jobs", this.jobBuffer);
     this.shader.setStorageBuffer("pageBounds", this.boundsRing[0]!);
     this.shader.setStorageBuffer("supersample", this.offsetBuffer);
-    this.earthworksBuffer ??= new StorageBuffer(engine, RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
+    if (!this.earthworksBuffer) {
+      this.earthworksBuffer = new StorageBuffer(engine, RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
+      registerGpuBufferBytes(RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
+      this.registeredFixedBufferBytes += RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4;
+    }
     this.earthworksBuffer.update(new Uint8Array(
       packRunwayEarthworksUniform(this.airport, this.seedHash).buffer,
     ));

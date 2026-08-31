@@ -63,12 +63,59 @@ export const PERF_CAPTURE_DEFAULT_CLOCK: PerfCaptureClock = Object.freeze({
  * numbers with headroom, not aspirations — a breach is a performance
  * regression the same way an SSIM drop is a visual one. `null` skips the
  * assertion (used exactly once, when first landing a new shot to measure it).
+ *
+ * Gate 0-a (Phase 6) re-pinned every row from three clean idle-reference-host
+ * runs (2026-08-30, apple metal-3, deliveryGatesEnforced, gpuTiming off;
+ * cross-run spread: fps ±0.5, drawCalls identical, hitches 0 everywhere).
+ * Pinning rules, superseding the 2018-08-18 Z-2 rules because absolute rates
+ * tripled and host thermal drift is ~20%:
+ *   minFps / minWallClockFps = floor(min-across-runs × 0.85)
+ *   maxFrameIntervalMsP95    = ceil(max-across-runs × 1.2, 0.1)
+ *   hitchCount (renderer-ring 2×13.7 ms count, NOT framesOver27_4Ms)
+ *                            = max(2 × measured, 3)
+ *   maxFrameMs               = 50, aligned with the strict tier-1 gate
+ *   p999FrameMs              = min(50, ceil(max-across-runs × 1.5))
+ * Rows move only at PHASE_6_EXECUTION_PLAN.md §9 rebaseline points, by
+ * recorded decision, re-pinned from fresh runs — never loosened in place.
  */
 export interface PerfCaptureShotCeilings {
   readonly maxFrameMs: number;
   readonly p999FrameMs: number;
   readonly hitchCount: number;
   readonly minFps: number;
+  /** Gate 0-a: raw (untrimmed) wall-clock fps floor. */
+  readonly minWallClockFps: number;
+  /** Gate 0-a: raw frame-interval p95 ceiling, milliseconds. */
+  readonly maxFrameIntervalMsP95: number;
+}
+
+/**
+ * Gate 0-c (Phase 6, = 6-11.4a): tolerance for the recorded pre-existing
+ * inventoried-memory overage above the tier-1 estimate ceiling. The gating
+ * estimate reads ~380 MiB while the Babylon texture+geometry inventory floor
+ * measures 489.0 MiB at reference-viewport (the shot where the cap binds) —
+ * only the estimate gates, which is ~100 MiB of false headroom. This assert
+ * catches every NEW allocation against the real number. The tolerance is the
+ * measured 2026-08-30 maximum plus 6 MiB of slack; 6-11.4 reconciles the
+ * estimate model and ratchets this back down.
+ */
+export const PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495;
+
+/** Human-readable inventoried-memory failures, shared by driver and unit tests. */
+export function inventoriedMemoryFailures(
+  inventoriedGpuMemoryMiB: number,
+  ceilingMiB: number = PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB,
+): string[] {
+  if (!Number.isFinite(inventoriedGpuMemoryMiB) || inventoriedGpuMemoryMiB <= 0) {
+    return [`inventoried GPU memory ${inventoriedGpuMemoryMiB} MiB is not a plausible reading`];
+  }
+  if (inventoriedGpuMemoryMiB > ceilingMiB) {
+    return [
+      `inventoried GPU memory ${inventoriedGpuMemoryMiB.toFixed(1)} MiB exceeds the `
+      + `${ceilingMiB} MiB pinned ceiling`,
+    ];
+  }
+  return [];
 }
 
 export interface PerfCaptureShotDefinition {
@@ -139,6 +186,23 @@ export interface PerfCaptureShotDefinition {
   };
   readonly ceilings: PerfCaptureShotCeilings | null;
   /**
+   * Gate 0-a (Phase 6): measured drawCalls ceiling. Host-INDEPENDENT (draw
+   * counts were byte-identical across the three pinning runs), so it lives
+   * outside the nullable delivery row and is asserted hard on every host —
+   * real draw growth the rendered-density model cannot see (conservative
+   * shadow-pass draws, new water meshes) fails here.
+   */
+  readonly drawCallCeiling?: number;
+  /**
+   * W-7 (Phase 6 Gate W): the world this shot captures. Defaults to
+   * "analytic" (the shipping default). Eroded shots must be APPENDED after
+   * every analytic shot — the driver rebuilds the world and renderer at each
+   * mode boundary (dispose-before-create; the 480 MiB wall forbids two
+   * resident worlds), so grouping by mode keeps that to one rebuild per run,
+   * and appending preserves every existing canonical phase index.
+   */
+  readonly worldEvolution?: "analytic" | "eroded";
+  /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.
    *
@@ -160,48 +224,16 @@ export interface PerfCaptureShotDefinition {
  * the 2 m eye-height and 1,200 ft canopy views. Positions are relative to the
  * world's airport so the definitions survive seed changes at sanctioned
  * rebaselines; forest/coast shots locate themselves from the terrain field.
- * The historical per-shot ceilings below are supplemental diagnostics. They
- * cannot relax or replace the strict tier-1 raw delivery contract declared at
- * the top of this file.
+ * The per-shot ceilings below are supplemental diagnostics. They cannot relax
+ * or replace the strict tier-1 raw delivery contract declared at the top of
+ * this file.
  *
- * Floors/ceilings re-pinned 2026-08-18 at the sanctioned Gate 2A rebaseline
- * (three clean quiet-machine runs with the volumetric sky live). Rule:
- * `minFps = floor(min over clean runs) − 2`, never raised above the Z-2
- * value. The pre-cloud floors dated from a cloudless renderer; under the
- * cloud composite, headless rAF pacing settles ~1–4 fps lower at identical
- * GPU cost. Every re-pinned floor still catches the one real regression
- * observed while landing 2A (slant-10km at 26.4 fps before the
- * adaptive-march work). `minFps` gates the TRIMMED sustained rate
- * (`sustainedFpsFromFrameIntervals`); sparse stalls belong to the spike
- * gates below.
+ * Every per-shot ceilings row is pinned by Gate 0-a (2026-08-30) under the
+ * rules recorded in the PerfCaptureShotCeilings docblock. Floors move only at
+ * PHASE_6_EXECUTION_PLAN.md §9 rebaseline points, by recorded decision.
  *
- * Hitch ceilings tightened at the sanctioned 2-8 rebaseline against the 3×
- * frame-target hitch definition (the 2× definition saturated — a typical
- * Phase-2 headless frame sat near 2× the target, so the counts measured
- * scheduler jitter). Rule: `2 × max over the two clean ×3 runs, floor 15,
- * rounded up to 5`. Observed clean counts are 3–39 per 240 frames; the old
- * saturated counts (90–230) breach these ceilings by 3–10×.
- *
- * Floors re-pinned UPWARD at the sanctioned 2-12 rebaseline (three
- * consecutive clean quiet-machine runs with card forests live): the
- * law-priced band prototypes + per-band variant caps left most shots FASTER
- * than the 2B-close baseline (the 17 M-triangle cone system they replace),
- * e.g. cruise-horizon 44.4 → 59.1+ fps — the old floors would have let an
- * 8-fps regression through silently. Same `min(clean runs) − 2` rule.
- *
- * Floors re-pinned MIXED at the sanctioned 2-17 rebaseline (three clean
- * runs within ±0.3 fps, hitch threshold moved 3× → 4× in the same re-pin —
- * the 3× line sat inside the heavy shots' vsync-quantization band and
- * counted 190–236 phantom hitches per 240 frames on identical builds).
- * Far-field shots RISE (coast 45 → 52, cruise-sun 49 → 53: the impostor
- * band replacing crossed cards); near-field airport shots DROP (approach
- * 33 → 24, reference 32 → 21) carrying the full Gate-2C understory —
- * grass, shrubs, clutter, rocks, wind, season, continuous crossfades — at
- * honest capture-rig cost. That drop is RECORDED PERF DEBT against the
- * §5.4 vegetation frame rows (see the 2-17 decision-log row), not an
- * accepted end state: the ladder's remaining rungs (near-field density
- * tuning, buffer reuse, R-21 constant revision) are scheduled work, and
- * these floors exist to catch regressions from THIS state meanwhile.
+ * Retained from the superseded pinning history: canopy-1200ft was the one
+ * shot Phase 3 made slower, re-pinned 27 → 24 at the 2026-08-19 churn point.
  */
 export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.freeze([
   {
@@ -214,12 +246,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 0,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 62,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 20, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 158,
   },
   {
     name: "slant-10km",
@@ -231,12 +260,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 4_000,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 84,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 49 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
+    drawCallCeiling: 140,
   },
   {
     name: "high-10000ft-down",
@@ -251,12 +277,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 8_000,
     pitchDownDegrees: 45,
     airspeedMetersPerSecond: 92,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 47 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12 },
+    drawCallCeiling: 144,
   },
   {
     // Z-3: the high-DPR/cap-equivalent lane. A deterministic DPR-1 browser at
@@ -275,12 +298,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     viewportHeight: 982,
     captureRenderScale: 1,
     ssimThreshold: 0.975,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 30, minFps: 21 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12.2 },
+    drawCallCeiling: 159,
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -295,12 +315,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: -6_000,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 92,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 57 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
+    drawCallCeiling: 137,
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -316,12 +333,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 355, solarTimeHours: 12.5 },
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
+    drawCallCeiling: 158,
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -347,12 +361,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // the jitter; the same per-shot relaxation the resize-path shot uses.
     ssimThreshold: 0.96,
     minMeanLuminance: 0.000_5,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
+    drawCallCeiling: 160,
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -379,12 +390,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
     temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 27 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 21, hitchCount: 3, minFps: 101, minWallClockFps: 99, maxFrameIntervalMsP95: 12 },
+    drawCallCeiling: 163,
   },
   {
     // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
@@ -410,16 +418,19 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
     temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
-    // UNMEASURED on this machine: re-pin at the next sanctioned rebaseline
-    // (`npm run perf:capture:rebaseline` on the reference machine). The
-    // ceilings below are the Phase-4 design intents — the atlas holds 196
-    // slots at tier 1, and a pump that leaves more than 24 pages pending is
-    // admitting faster than the meter retires.
+    // The residency ceilings below remain the Phase-4 DESIGN INTENTS — the
+    // atlas holds 196 slots at tier 1, and a pump that leaves more than 24
+    // pages pending is admitting faster than the meter retires. `4.5-D1`
+    // measured them non-binding (see the next note). Gate 0-a (2026-08-30)
+    // re-pinned only the delivery and draw-call rows; a residency re-pin waits
+    // on the W-7 eroded-capture work, which changes what this scene admits.
     // `4.5-D1`: re-pinned from what the fixed selector actually produces
     // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
     // budget, which was a design intent nothing could fail.
     residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 80, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 19, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 162,
   },
   {
     // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
@@ -452,7 +463,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
     // budget, which was a design intent nothing could fail.
     residencyCeilings: { maxPendingTerrainPages: 24, maxResidentTerrainPages: 88 },
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 60, minFps: 30 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 17, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.2 },
+    drawCallCeiling: 130,
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -467,12 +480,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 92,
     clock: { dayOfYear: 171, solarTimeHours: 15 },
     relativeSunBearingDegrees: 30,
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 53 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 139,
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -489,12 +499,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 16.5 },
     relativeSunBearingDegrees: 180,
     locate: "forest",
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 70, minFps: 26 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 159,
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -510,12 +517,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 84,
     clock: { dayOfYear: 171, solarTimeHours: 19 },
     locate: "coast",
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 15, minFps: 52 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.7 },
+    drawCallCeiling: 135,
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -531,12 +535,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 18.5 },
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 70, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12.6 },
+    drawCallCeiling: 167,
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -552,20 +553,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     clock: { dayOfYear: 171, solarTimeHours: 9.5 },
     locate: "forest",
-    // Z-2 ceilings measured 2026-08-18 (three runs, headless Chromium on the
-    // M-series reference machine). Headless rAF pacing is noisy (hitch counts
-    // varied ±45 between runs), so the hitch ceilings sit ~2.5-3x above the
-    // observed medians — they catch order-of-magnitude regressions, while
-    // minFps and the SSIM gate catch everything gradual.
-    // Re-pinned at Phase 3's sanctioned churn point, 2026-08-19: 27 -> 24.
-    // This is the ONE capture the terrain surface system made slower — GPU p95
-    // 10.86 -> 12.16 ms, fps 29.9 -> 26.6. It is a 45-degree-down cockpit shot
-    // over forest, so most of the frame is NEAR-FIELD TERRAIN between the
-    // trees, which is exactly where ten mipped materials cost most, and there
-    // are no airport meshes in it to pay for them. The other twelve shots got
-    // faster: 3-9 deleted 70 draw calls of runway boxes from every one, and
-    // GPU p95 fell on twelve of thirteen.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 65, minFps: 24 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12 },
+    drawCallCeiling: 157,
   },
   {
     // Phase 3 §10: the scene 3-9 is judged in. Short final over the threshold,
@@ -589,11 +579,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 0,
     pitchDownDegrees: 3,
     airspeedMetersPerSecond: 34,
-    // Pinned from ONE clean run at Phase 3's churn point (fps 23.7, hitch 3,
-    // max 332.6 ms), with the documented margin widened because one run is not
-    // three: this box's run-to-run fps spread on the near-field shots is ~15%.
-    // Re-pin from three clean runs on the reference machine.
-    ceilings: { maxFrameMs: 1_500, p999FrameMs: 1_500, hitchCount: 20, minFps: 19 },
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.4 },
+    drawCallCeiling: 169,
   },
   {
     // Fix-pack W5 (2026-08-25, APPENDED per the rule above): the first shot
@@ -613,7 +601,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 18.5 },
     relativeSunBearingDegrees: 20,
     locate: "coast",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 138,
   },
   {
     // Vegetation overhaul (wave P): the terrain-viewer money shot — a
@@ -633,7 +623,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 15.5 },
     relativeSunBearingDegrees: 140,
     locate: "forest",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 99, minWallClockFps: 98, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 164,
   },
   {
     // Wave G's own gate: open grassland at eye height with the compute blade
@@ -651,7 +643,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 17.5 },
     relativeSunBearingDegrees: 60,
     locate: "grassland",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 17, hitchCount: 3, minFps: 101, minWallClockFps: 99, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 176,
   },
   {
     // Wave Q gate 1: the dusk terrain-glint + tree-band-handoff scene. A low
@@ -671,7 +665,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 18.2 },
     relativeSunBearingDegrees: 205,
     locate: "forest",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
+    drawCallCeiling: 155,
   },
   {
     // Wave Q gate 2: the close-mountainside scene — the frame that showed
@@ -690,7 +686,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 17.8 },
     relativeSunBearingDegrees: 140,
     locate: "mountain",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 12.3 },
+    drawCallCeiling: 181,
   },
   {
     // Wave R gate 1: the user's tree-line screenshot geometry — a few
@@ -709,7 +707,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 14.5 },
     relativeSunBearingDegrees: 225,
     locate: "forest",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.2 },
+    drawCallCeiling: 155,
   },
   {
     // Wave R gate 2: the very-close mountainside — the range where the rock
@@ -726,7 +726,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 15.5 },
     relativeSunBearingDegrees: 120,
     locate: "cliff",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
+    drawCallCeiling: 173,
   },
   {
     // Wave R gate 3: water at standing height — the range where the ocean
@@ -746,7 +748,73 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // shading this gate exists to judge were all behind the camera.
     relativeSunBearingDegrees: 25,
     locate: "coast",
-    ceilings: null,
+    // Gate 0-a floors, pinned 2026-08-30 — see the PerfCaptureShotCeilings docblock.
+    ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.8 },
+    drawCallCeiling: 137,
+  },
+
+  // -------------------------------------------------------------------------
+  // Gate F — the eroded world, RENDERED. These MUST stay last: the harness
+  // swaps worlds when a shot's `worldEvolution` differs from the active one,
+  // and appending them keeps that swap to at most once per run.
+  //
+  // W-7 left these unwritten and that is the whole reason Gate F failed the way
+  // it did. Nineteen days of erosion work closed green on byte-determinism,
+  // seam audits, CPU-oracle parity, statistics and timing — and not one of
+  // those instruments ever rendered the eroded world into an image a human
+  // looked at. The first person to see it was Jason, flying it. A gate whose
+  // exit criterion says "production-quality" cannot be certified by proxy
+  // measurements alone.
+  //
+  // Ceilings are deliberately PERMISSIVE for now: these shots exist first to
+  // make the defect visible and reproducible in-harness. They are pinned
+  // properly at the eroded baseline promotion, which is Gate F's own gate and
+  // must not be taken while the world is broken.
+  // -------------------------------------------------------------------------
+  {
+    name: "eroded-cruise-horizon",
+    description: "ERODED world: 10,000 ft level flight — relief, drainage and horizon",
+    worldEvolution: "eroded",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 3_048,
+    offsetXMeters: 2_000,
+    offsetZMeters: -6_000,
+    pitchDownDegrees: 10,
+    airspeedMetersPerSecond: 92,
+    clock: { dayOfYear: 171, solarTimeHours: 15 },
+    relativeSunBearingDegrees: 120,
+    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
+  },
+  {
+    name: "eroded-ridge-2000ft",
+    description: "ERODED world: low pass over high ground — the relief the macro pass carved",
+    worldEvolution: "eroded",
+    cameraMode: "chase",
+    altitudeAglMeters: 600,
+    altitudeMslMeters: null,
+    offsetXMeters: 6_000,
+    offsetZMeters: -5_000,
+    pitchDownDegrees: 8,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 15.5 },
+    relativeSunBearingDegrees: 120,
+    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
+  },
+  {
+    name: "eroded-valley-500ft",
+    description: "ERODED world: low over a drainage — valley floors and channel incision",
+    worldEvolution: "eroded",
+    cameraMode: "chase",
+    altitudeAglMeters: 150,
+    altitudeMslMeters: null,
+    offsetXMeters: -4_000,
+    offsetZMeters: 3_000,
+    pitchDownDegrees: 6,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 14.5 },
+    relativeSunBearingDegrees: 225,
+    ceilings: { maxFrameMs: 400, p999FrameMs: 200, hitchCount: 400, minFps: 5, minWallClockFps: 5, maxFrameIntervalMsP95: 200 },
   },
 ]);
 
@@ -1156,6 +1224,8 @@ export function perfCaptureImageContentFailures(
 
 export interface PerfCaptureShotReport {
   readonly name: string;
+  /** W-7: the world this shot captured ("analytic" unless the shot pins eroded). */
+  readonly worldEvolution: "analytic" | "eroded";
   readonly description: string;
   readonly ssimAgainstBaseline: number | null;
   /** Mean SSIM over independent R/G/B planes; detects equal-luma hue shifts. */
@@ -1204,6 +1274,14 @@ export interface PerfCaptureShotReport {
   readonly pendingTerrainPages: number;
   /** Detail generation/presentation backlog remaining when the shot was read. */
   readonly pendingDetailWork: number;
+  /**
+   * Frames the pre-capture streaming loop needed before the world settled, and
+   * the ceiling it was allowed. Recorded so the margin can be ASSERTED rather
+   * than discovered: a shot creeping toward its budget is a shot about to be
+   * screenshotted half-built.
+   */
+  readonly streamingFramesUsed: number;
+  readonly streamingFrameBudget: number;
   readonly renderPixels: number;
   readonly renderScale: number;
   readonly viewportWidth: number;

@@ -508,27 +508,58 @@ export const TERRAIN_HEIGHT_PARITY_MEASURED_METERS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 /**
- * Every sampled texture the terrain material binds, by stage, with a running
- * count. Texture VISIBILITY derives from which stage's `CUSTOM_*_DEFINITIONS`
- * carries the declaration, so the count is per-stage and not per-material.
- * The material factory asserts these against
- * `engine.getCaps().maxTexturesImageUnits` (assertion 70c).
+ * Every texture the terrain material SAMPLES, by stage — i.e. declared as a
+ * `texture_*` with a companion `sampler`, which is what the per-stage limit
+ * counts. A `texture_2d<i32>` read by `textureLoad` needs no sampler and is
+ * deliberately absent; that is why 6-6 could add signed shore distance without
+ * moving this budget.
+ *
+ * **These lists are DERIVED FROM THE COMPILED SHADER, not maintained by hand.**
+ * `tests/gpu/terrain-sampler-budget.test.ts` compiles the material in its
+ * shipping permutations and asserts each set exactly, so an entry added or
+ * removed anywhere — by us, by an `#ifdef`, or by a Babylon bump changing which
+ * PBR samplers a material declares — fails there. Edit these only to match a
+ * measurement.
+ *
+ * The previous revision of this constant was wrong in BOTH directions and had
+ * been wrong for some time: it listed six PBR samplers (`albedoSampler`,
+ * `bumpSampler`, `reflectivitySampler`, `reflectionSampler`,
+ * `metallicReflectanceSampler`, `lightmapSampler`) that this material never
+ * declares, listed `terrainHeightAtlas` in the fragment stage where it is
+ * vertex-only, and omitted both `environmentBrdfSampler` and the shadow sampler
+ * a `receiveShadows` mesh compiles in. It survived because the only assertions
+ * on it were uniqueness and a length check against the per-stage cap — both
+ * statements about the list, neither about the shader. Its docstring also
+ * claimed "the material factory asserts these against
+ * `engine.getCaps().maxTexturesImageUnits` (assertion 70c)"; no such assertion
+ * existed anywhere in `src/`, and the only occurrence of that capability name
+ * was inside the claim itself.
+ *
+ * Engine-owned entries are included because the per-stage limit does not care
+ * who owns a binding. `shadowTexture` is normalised: Babylon suffixes it with
+ * the light's index in the scene, which is a property of scene construction
+ * rather than of this material. Exactly one shadow generator ships
+ * (`AtmosphereSystem` builds one for the sun; the moon is deliberately not a
+ * caster), so exactly one appears.
  */
 export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
-  vertex: Object.freeze(["terrainHeightAtlas"] as const),
+  /**
+   * EMPTY, and measured so. The CDLOD vertex stage binds `terrainHeightAtlas`
+   * but reconstructs its bilinear filter from four `textureLoad`s at the texel
+   * corners, so it declares no sampler and spends none of the vertex budget.
+   * The previous revision listed the atlas here, which is what a
+   * declaration-site reading gives you rather than a compiled-source one.
+   */
+  vertex: Object.freeze([] as const),
+  /** The base shipping permutation: page atlases, triplanar, CDLOD, shadows. */
   fragment: Object.freeze([
-    // PBR's own set on the shared terrain material.
-    "albedoSampler",
-    "bumpSampler",
-    "reflectivitySampler",
-    "reflectionSampler",
-    "metallicReflectanceSampler",
-    "lightmapSampler",
+    // Engine-owned, on any shadow-receiving PBR material.
+    "environmentBrdfSampler",
+    "shadowTexture",
     // `3-1`'s material arrays.
     "terrainSurfaceAlbedo",
     "terrainSurfaceNormal",
     // Phase 4's page atlases.
-    "terrainHeightAtlas",
     "terrainOcclusionAtlas",
     "terrainHorizonAtlasA",
     "terrainHorizonAtlasB",
@@ -538,6 +569,19 @@ export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
     "terrainSplatWeightHi",
   ] as const),
 });
+
+/**
+ * 6-5's hydrology permutation costs **ZERO** additional sampled bindings, which
+ * is stronger than the item's own headroom paragraph assumed.
+ *
+ * Both channels are `textureLoad` reads: shore distance is r16sint (which needs
+ * no sampler by rule — an integer texture cannot be filtered) and lake depth is
+ * r16float read at an exact texel. So the widest shipping terrain permutation
+ * has the same fragment set as the base one, and
+ * `tests/gpu/terrain-sampler-budget.test.ts` compiles both to assert exactly
+ * that rather than leaving it as a claim.
+ */
+export const TERRAIN_HYDROLOGY_ADDS_SAMPLED_BINDINGS = 0;
 
 // ---------------------------------------------------------------------------
 // §5.6 — the global height pyramid (`4-7`) and readback alignment

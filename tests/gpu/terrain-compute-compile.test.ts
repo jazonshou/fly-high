@@ -3,11 +3,10 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { GLOBAL_HEIGHT_PYRAMID_WGSL } from "../../src/render/webgpu/terrain/GlobalHeightPyramid";
-import { PAGE_OCCLUSION_WGSL } from "../../src/render/webgpu/terrain/PageOcclusionBake";
 import {
-  LAND_COVER_CLASSIFIER_WGSL,
-  LAND_COVER_SPLAT_BAKE_WGSL,
-} from "../../src/render/webgpu/terrain/LandCoverClassifier";
+  PAGE_OCCLUSION_WGSL,
+  terrainPageSplatWgsl,
+} from "../../src/render/webgpu/terrain/PageOcclusionBake";
 import {
   TERRAIN_KERNEL_WGSL,
   terrainKernelPageBindingWgsl,
@@ -57,16 +56,11 @@ describe("terrain and bathymetry compute modules compile (4-1, 4-3, 4-7, 5-10)",
         ],
         ["global-height-pyramid", GLOBAL_HEIGHT_PYRAMID_WGSL, "bakePyramid"],
         ["page-occlusion", PAGE_OCCLUSION_WGSL, "bakeOcclusion"],
-        [
-          "page-splat",
-          [
-            terrainKernelPageBindingWgsl(0, 0),
-            TERRAIN_KERNEL_WGSL,
-            LAND_COVER_CLASSIFIER_WGSL,
-            LAND_COVER_SPLAT_BAKE_WGSL,
-          ].join("\n"),
-          "bakeSplat",
-        ],
+        // 6-8: composed by its OWNER, not restated here. The list used to be a
+        // second copy, so the item that appended the vegetation density include
+        // to the bake compiled in the renderer and failed in the test whose job
+        // is to catch compile failures.
+        ["page-splat", terrainPageSplatWgsl(), "bakeSplat"],
         ["bathymetry-clipmap-update", BATHYMETRY_UPDATE_WGSL, "updateBathymetry"],
       ] as const;
       for (const [name, source, entryPoint] of modules) {

@@ -36,9 +36,11 @@ import {
 import { viewScaleFromFov } from "@/src/render/webgpu/clouds/CloudReprojection";
 import {
   buildOceanFftDispatches,
+  oceanCausticCurvatureScale,
   oceanTransformNormalizationScale,
   shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
+  type OceanCascadeConfig,
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
 import {
@@ -75,9 +77,14 @@ import {
   WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
+  WATER_SHOALING_WGSL,
+  WATER_SHORE_RUNUP_WGSL,
+  WATER_SHORE_STREAK_WGSL,
   WATER_SUN_SPECULAR_WGSL,
+  waterOceanShoreSwell,
   waterReflectedSkyWgsl,
   type WaterReflectedSkyParameters,
+  type WaterShoreSwell,
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { BathymetryClipmap } from "./BathymetryClipmap";
@@ -303,6 +310,23 @@ function createOceanPresentationMesh(
   return mesh;
 }
 
+/**
+ * `6-2`: a cascade's representative wavelength, the geometric mean of its
+ * band-pass limits.
+ *
+ * This is not a second definition of the quantity — it is the SAME expression
+ * `oceanCausticCurvatureScale` forms internally before inverting it to a
+ * wavenumber, hoisted here because 6-2 needs the wavelength itself (it sets
+ * the swell's period, height and Hunt excursion) and water may not edit
+ * `nature/OceanConfig.ts`. `render.webgpu-water-runup.test.ts` pins the two
+ * against each other across the shipped cascade set so they cannot drift.
+ */
+export function oceanCascadeRepresentativeWavelengthMeters(
+  cascade: OceanCascadeConfig,
+): number {
+  return Math.sqrt(cascade.minimumWavelengthMeters * cascade.maximumWavelengthMeters);
+}
+
 /** Resolves Nyquist-safe bands for the profile before selecting its cascades. */
 export function resolveProfileSpectralOceanConfig(
   profile: Pick<WebGpuQualityProfile, "oceanCascades" | "oceanResolution">,
@@ -495,6 +519,21 @@ uniform time: f32;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
 uniform cascadeCount: f32;
+// 6-4: per cascade, the 1/m of surface curvature one unit of stored Jacobian
+// deviation represents — k/choppiness at the band's representative wavelength.
+// Computed by oceanCausticCurvatureScale from the cascade's own band limits, so
+// re-banding a cascade re-aims its caustic automatically. Zero for cascades the
+// active profile does not run.
+uniform causticCurvatureScales0: vec4f;
+uniform causticCurvatureScale4: f32;
+// 6-2: per cascade, the band's representative wavelength sqrt(min*max) in
+// metres — the SAME quantity oceanCausticCurvatureScale converts to a
+// wavenumber, published raw here because the run-up needs the wavelength
+// itself (it sets the swell's period, its height and its Hunt excursion).
+// Zero for cascades the active profile does not run, which keeps them out of
+// the dominant-band argmax without a count test.
+uniform cascadeWavelengths0: vec4f;
+uniform cascadeWavelength4: f32;
 uniform environmentValid: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
@@ -518,11 +557,29 @@ ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
 
+// 6-4 moved the depth include ABOVE the capillary block: the capillary octaves
+// now hand their curvature to the shared caustic accumulator, and WGSL requires
+// a function to be declared before it is called. Nothing in the depth include
+// depends on the noise or capillary blocks, so the order is free.
+${WATER_DEPTH_OPTICS_WGSL}
+
 ${WATER_DETAIL_NOISE_WGSL}
 
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
-${WATER_DEPTH_OPTICS_WGSL}
+// 6-2: the shared run-up model. Self-contained pure arithmetic — the identical
+// text the inland fragment composes, and the text 6-5 composes into the terrain
+// surface plugin for the wetness field.
+${WATER_SHORE_RUNUP_WGSL}
+
+${WATER_SHORE_STREAK_WGSL}
+
+// 6-3: the shelf. Composed AFTER the run-up block because it builds each
+// band's height with 6-2's own waterShoreBandSwell and reuses its two-pi,
+// minimum-wavelength and beach-slope constants rather than declaring a second
+// set — one wave, one beach, two items. Ocean-only: an inland lake has no
+// continental shelf to shoal across.
+${WATER_SHOALING_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
@@ -557,18 +614,201 @@ fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
+  let light = normalize(uniforms.sunDirection);
+  // 6-2: the pixel footprint, taken here in UNIFORM control flow because the
+  // run-up's own fades live under a depth gate and a derivative built-in may
+  // not be called from non-uniform flow. These are the same two derivatives
+  // waterCapillaryDetail takes internally on the same value, so after inlining
+  // the fragment pays for them once either way (6-1's argument, verbatim), and
+  // the anisotropy limit is wave R fix 1's: fade on the axis the 16x sampler
+  // actually resolves.
+  let runupDerivativeX = dpdx(input.oceanCoordinate);
+  let runupDerivativeY = dpdy(input.oceanCoordinate);
+  let runupFootprint = max(
+    min(length(runupDerivativeX), length(runupDerivativeY)),
+    max(length(runupDerivativeX), length(runupDerivativeY)) * ${(1 / 16).toFixed(6)},
+  );
+  // 5-11 depth, hoisted above the capillary call by 6-4: the caustic beam gates
+  // the capillary block's curvature accumulation, so it has to exist first.
+  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate);
+  let causticBeam = waterRefractedSunBeam(depth, light.y);
   // 2-8: heights add across cascades, so slopes add — the fade-weighted SUM
   // replaces the old weighted average of normal-recovered slopes and its
   // clamped-denominator recovery.
   let baseSample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.x, slopeFoam0, slopeFoam0Sampler);
   let baseMoment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.x, slopeMoment0, slopeMoment0Sampler);
+  // 6-3: each cascade's OWN fade-weighted slope, kept in registers so the
+  // shelf can scale the bands independently. Only the long swell shoals — a
+  // 2 m ripple is deep-water at every depth the gate admits — so a single gain
+  // on the summed slope would be a lie about the short bands. These are stores
+  // of a product the accumulation below already forms, so the unconditional
+  // ALU cost is nil; the cost is eight registers.
+  var cascadeSlopesX = vec4f(0.0);
+  var cascadeSlopesZ = vec4f(0.0);
+  var cascadeSlope4 = vec2f(0.0);
+  cascadeSlopesX.x = baseSample.x * input.cascadeFades.x;
+  cascadeSlopesZ.x = baseSample.y * input.cascadeFades.x;
   var slopeSum = baseSample.xy * input.cascadeFades.x;
   var foamAmount = baseSample.z * input.cascadeFades.x;
   var slopeVariance = cascadeSlopeVariance(baseSample, baseMoment, input.cascadeFades.x);
-  if (uniforms.cascadeCount > 1.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeMoment1, slopeMoment1Sampler); slopeSum += sample.xy * input.cascadeFades.y; foamAmount = max(foamAmount, sample.z * input.cascadeFades.y); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.y); }
-  if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); }
-  if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); }
-  if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); }
+  // 6-4: the stored Jacobian, lane per cascade. These are plain register moves
+  // from samples the shader already takes — no arithmetic happens here, so
+  // water outside the caustic gate pays nothing for them. A cascade the profile
+  // does not run keeps 1.0, the no-convergence identity.
+  var cascadeJacobians = vec4f(1.0);
+  var cascadeJacobian4 = 1.0;
+  cascadeJacobians.x = baseSample.w;
+  // 6-2: each band's own MEAN SQUARE SLOPE, one lane per cascade — one add per
+  // cascade over moments the shader already samples, which is the whole
+  // unconditional cost of the dominant-band rule. It is the mip-filtered
+  // second moment, i.e. the true sea state rather than this pixel's
+  // instantaneous slope, so the swell it implies does not flicker with the
+  // wave that happens to be under the fragment.
+  var cascadeBandMss = vec4f(0.0);
+  var cascadeBandMss4 = 0.0;
+  cascadeBandMss.x = baseMoment.x + baseMoment.y;
+  if (uniforms.cascadeCount > 1.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeMoment1, slopeMoment1Sampler); cascadeSlopesX.y = sample.x * input.cascadeFades.y; cascadeSlopesZ.y = sample.y * input.cascadeFades.y; slopeSum += sample.xy * input.cascadeFades.y; foamAmount = max(foamAmount, sample.z * input.cascadeFades.y); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.y); cascadeJacobians.y = sample.w; cascadeBandMss.y = moment.x + moment.y; }
+  if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); cascadeSlopesX.z = sample.x * input.cascadeFades.z; cascadeSlopesZ.z = sample.y * input.cascadeFades.z; slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); cascadeJacobians.z = sample.w; cascadeBandMss.z = moment.x + moment.y; }
+  if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); cascadeSlopesX.w = sample.x * input.cascadeFades.w; cascadeSlopesZ.w = sample.y * input.cascadeFades.w; slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); cascadeJacobians.w = sample.w; cascadeBandMss.w = moment.x + moment.y; }
+  if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); cascadeSlope4 = sample.xy * input.cascadeFade4; slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); cascadeJacobian4 = sample.w; cascadeBandMss4 = moment.x + moment.y; }
+  // ==========================================================================
+  // 6-3 / 6-2 — THE SHORE BLOCK. One gate, one bed-slope probe, one swell.
+  //
+  // It sits HERE, above the capillary call, for two reasons that are both
+  // physics rather than tidiness: the shoaled slope has to be the resolved
+  // slope the unresolved capillary tail is fitted against, and the whitewater
+  // has to reach foamAmount before baseRoughness reads it — a breaking
+  // wave is rougher, not just whiter. 6-2's run-up moved up with it unchanged;
+  // its inputs (depth, the cascade moments, the fades, the footprint) all
+  // exist by this point, so nothing about it is altered by the move.
+  //
+  // The outer gate is 6-3's binding rule: depth < 60 m, which is also the only
+  // thing open water pays — one compare. The two bathymetry taps and the
+  // dominant-band selection are shared by both items inside it.
+  // ==========================================================================
+  var runupModulation = 1.0;
+  var shelfWhitewater = 0.0;
+  if (depth < WATER_SHOAL_DEPTH_GATE_METERS) {
+    // The beach itself: one 3-tap difference of the unclamped bed delta gives
+    // the slope Hunt's law and the breaker index both need, and the shore
+    // normal the streaks run along. Offshore is DOWN-slope, so the normal is
+    // the negated gradient.
+    let bedSlope = waterBathymetryBedSlope(
+      input.oceanCoordinate,
+      WATER_RUNUP_GRADIENT_STEP_METERS,
+    );
+    let beachSlope = length(bedSlope);
+    let shoreNormal = -normalize(bedSlope + vec2f(0.00001, 0.0));
+    // THE BINDING RULE, executed. The rule itself is one shared function so
+    // that the GPU parity test runs the shipped selection rather than a
+    // reimplementation of it; everything this fragment supplies is the three
+    // per-cascade vectors it already has in registers.
+    let swell = waterDominantShoreSwell(
+      uniforms.cascadeWavelengths0,
+      uniforms.cascadeWavelength4,
+      cascadeBandMss,
+      cascadeBandMss4,
+      input.cascadeFades,
+      input.cascadeFade4,
+    );
+    // 6-3. Every band shoals at its own rate through the full linear
+    // dispersion relation and breaks against its own depth limit; the slope
+    // delta is what the shelf does to the surface, and the whitewater is the
+    // share of the visible wave energy the depth limit has taken away. The
+    // aggregation weight is 6-2's own visible-amplitude-squared, so the band
+    // that wins the run-up's argmax is the band that dominates this sum.
+    let shelf = waterShelfShoaling(
+      uniforms.cascadeWavelengths0,
+      uniforms.cascadeWavelength4,
+      cascadeBandMss,
+      cascadeBandMss4,
+      input.cascadeFades,
+      input.cascadeFade4,
+      cascadeSlopesX,
+      cascadeSlopesZ,
+      cascadeSlope4,
+      depth,
+      beachSlope,
+    );
+    slopeSum += shelf.slopeDelta;
+    shelfWhitewater = shelf.whitewater;
+    let runupGate = 1.0 - smoothstep(
+      WATER_RUNUP_DEPTH_FADE_START_METERS,
+      WATER_RUNUP_DEPTH_GATE_METERS,
+      depth,
+    );
+    if (runupGate > 0.001) {
+      let runupPhase = waterShoreRunupPhase(
+        depth,
+        beachSlope,
+        swell.radianFrequency,
+        uniforms.time,
+      );
+      // The local shallow-water crest spacing this construction produces,
+      // 2 pi sqrt(g h) / omega, is what the pixel has to resolve — the 2-8
+      // discipline applied to the one term here that carries a spatial
+      // frequency. It is also the guard that keeps a near-flat shelf from
+      // printing fine rings at a grazing angle.
+      let crestSpacing = WATER_RUNUP_TWO_PI
+        * sqrt(WATER_RUNUP_GRAVITY * max(depth, 0.02)) / swell.radianFrequency;
+      let resolvedRunup = 1.0 - smoothstep(
+        crestSpacing * WATER_RUNUP_NYQUIST_FADE_LOW,
+        crestSpacing * WATER_RUNUP_NYQUIST_FADE_HIGH,
+        runupFootprint,
+      );
+      // Shore-normal streaking. The lattice axis handed in is the ALONG-shore
+      // one, because waterCapillaryOctave elongates across its axis; the
+      // advection offset is the swash excursion times the front, which is
+      // bounded, so no dual phase is needed here (see the block's docblock).
+      let streakFade = 1.0 - smoothstep(
+        WATER_RUNUP_STREAK_SCALE_METERS * WATER_RUNUP_STREAK_FADE_LOW,
+        WATER_RUNUP_STREAK_SCALE_METERS * WATER_RUNUP_STREAK_FADE_HIGH,
+        runupFootprint,
+      );
+      // 6-3 GATES 6-2. Swash is what a wave does AFTER it breaks, so both the
+      // bore and the streaks are weighted by the breaking fraction: a wave
+      // 6-3 says is still unbroken at 3 m of depth cannot be drawn as a bore
+      // there. Both factors are mean-preserving for ANY weight — mix(1, bore,
+      // w) has cycle mean 1 because bore does, and waterShoreStreak is
+      // 1 + gain (2v - 1) w about a mean-0.5 lattice — so this changes when
+      // and where the surf beats without touching the time-averaged coverage
+      // 6-2 pinned.
+      let streakWeight = streakFade * shelfWhitewater * (1.0 - smoothstep(
+        WATER_RUNUP_STREAK_DEPTH_LOW_METERS,
+        WATER_RUNUP_STREAK_DEPTH_HIGH_METERS,
+        depth,
+      ));
+      var streak = 1.0;
+      if (streakWeight > 0.001) {
+        streak = waterShoreStreak(
+          waterShoreStreakLattice(
+            input.oceanCoordinate,
+            shoreNormal,
+            swell.excursionMeters * waterSwashFront(runupPhase),
+          ),
+          streakWeight,
+        );
+      }
+      // Both factors have a cycle/spatial mean of exactly 1 and they are
+      // independent (one is a function of depth and time, the other of world
+      // position), so the band's time-averaged coverage is unchanged — the
+      // run-up redistributes wave R's foam rather than adding any.
+      let bore = mix(1.0, waterShoreBore(runupPhase), runupGate * resolvedRunup * shelfWhitewater);
+      runupModulation = bore * streak;
+    }
+  }
+  // 6-3: depth-limited breaking IS whitecap coverage — the same quantity the
+  // spectrum's own Jacobian foam measures, arrived at by a different mechanism
+  // — so it enters the SAME accumulator rather than a parallel foam system. It
+  // therefore reaches wave R's composite, rides the same advected Worley
+  // break-up, and (because baseRoughness reads foamAmount) makes the surf zone
+  // rougher as well as whiter. Multiplied by wave R's own waterline ramp so it
+  // can never paint foam onto dry land, where the disk is drawn but
+  // transparent — the same guarantee, expressed the same way.
+  foamAmount = max(
+    foamAmount,
+    shelfWhitewater * WATER_SHOAL_WHITEWATER_COVERAGE * smoothstep(0.0, 1.1, depth),
+  );
   // Fix-pack W1/W2: the capillary band below cascade 0's Nyquist plus the
   // sub-grid spectrum tail — see WATER_CAPILLARY_DETAIL_WGSL. The tail term
   // is what stops near-field roughness collapsing to the mip-0 glass floor.
@@ -580,7 +820,25 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     // Taken before the capillary slopes are added, so the octaves cannot feed
     // their own roughness back into themselves.
     length(slopeSum),
+    causticBeam,
   );
+  // 6-4: the spectral half of the bed caustic. Each cascade's fold is weighted
+  // down once this water column is past that band's focal depth, so the visible
+  // web coarsens with depth instead of the fine bands over-focusing into mud.
+  // Each cascade's own texture fade scales its fold, so a band the pixel cannot
+  // resolve contributes no caustic either — the mip chain drives the stored
+  // Jacobian to its mean of 1 at range, which is the same statement.
+  var caustic = capillary.caustic;
+  if (causticBeam.weight > 0.0) {
+    caustic = waterCausticCascadeBands(
+      caustic,
+      cascadeJacobians,
+      cascadeJacobian4,
+      uniforms.causticCurvatureScales0 * input.cascadeFades,
+      uniforms.causticCurvatureScale4 * input.cascadeFade4,
+      causticBeam,
+    );
+  }
   slopeSum += capillary.slope;
   slopeVariance += capillary.unresolvedMeanSquareSlope;
   let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
@@ -597,7 +855,6 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
   let normal = select(geometricNormal, -geometricNormal, cameraBelow);
   let glintNormal = select(glintNormalUp, -glintNormalUp, cameraBelow);
-  let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.0);
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
@@ -612,7 +869,6 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.sunShadowViewDepth,
   );
   let directSunVisibility = cloudShadow * sunShadow;
-  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate);
   let baseRoughness = 0.075 + foamAmount * 0.2;
   let microAlpha = baseRoughness * baseRoughness;
   let alphaSquared = microAlpha * microAlpha + min(slopeVariance, 0.25);
@@ -651,6 +907,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     view,
     cameraBelow,
     directSunVisibility,
+    caustic,
+    causticBeam,
   );
   let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
     * nDotL * (0.1 + 0.12 * directSunVisibility);
@@ -684,7 +942,15 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // advected with the wind, which is what hides the texel grid. It rises from
   // zero AT the waterline so it can never paint foam over dry land, where the
   // ocean disk is drawn but transparent.
-  let shoreBand = smoothstep(0.0, 1.1, depth) * (1.0 - smoothstep(1.2, 7.5, depth));
+  //
+  // 6-2 turns that static band into SURF, and 6-3 decides where the surf is
+  // — both now live in the shore block above, hoisted there so the shoaled
+  // slope reaches the capillary tail and the whitewater reaches baseRoughness.
+  // runupModulation arrives from it.
+  let shoreBand = min(
+    smoothstep(0.0, 1.1, depth) * (1.0 - smoothstep(1.2, 7.5, depth)) * runupModulation,
+    1.0,
+  );
   let shoreBreakup = foamWorley(
     (input.oceanCoordinate - uniforms.oceanWind * uniforms.time * 0.35) * 0.055,
   );
@@ -1210,6 +1476,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "patchLengths0",
           "patchLength4",
           "cascadeCount",
+          "causticCurvatureScales0",
+          "causticCurvatureScale4",
+          "cascadeWavelengths0",
+          "cascadeWavelength4",
           "cascadeFadeRadii0",
           "cascadeFadeRadius4",
           "cascadeMeshFadeRadii0",
@@ -1643,6 +1913,53 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     });
     this.material.setFloat("patchLength4", lengths[4] ?? lengths.at(-1) ?? 64);
     this.material.setFloat("cascadeCount", this.compute.cascades.length);
+    // 6-4: the Jacobian-to-curvature conversion per cascade. Absent cascades
+    // get ZERO rather than a fallback — their stored Jacobian lane holds the
+    // identity 1.0, and a zero scale keeps the caustic band exactly inert
+    // instead of relying on that identity being exact.
+    const causticScales = this.compute.config.cascades.map((cascade) =>
+      oceanCausticCurvatureScale(cascade, this.compute.config.choppiness));
+    this.material.setVector4("causticCurvatureScales0", {
+      x: causticScales[0] ?? 0,
+      y: causticScales[1] ?? 0,
+      z: causticScales[2] ?? 0,
+      w: causticScales[3] ?? 0,
+    });
+    this.material.setFloat("causticCurvatureScale4", causticScales[4] ?? 0);
+    // 6-2: the same per-cascade representative wavelength, published raw.
+    // Absent cascades get ZERO for the same reason the caustic scales do: a
+    // zero wavelength cannot win the dominant-band argmax, so the run-up needs
+    // no cascade-count test of its own.
+    const wavelengths = this.compute.config.cascades.map(
+      oceanCascadeRepresentativeWavelengthMeters,
+    );
+    this.material.setVector4("cascadeWavelengths0", {
+      x: wavelengths[0] ?? 0,
+      y: wavelengths[1] ?? 0,
+      z: wavelengths[2] ?? 0,
+      w: wavelengths[3] ?? 0,
+    });
+    this.material.setFloat("cascadeWavelength4", wavelengths[4] ?? 0);
     this.updateCascadeFadeRadii();
+  }
+
+  /**
+   * `6-2` produces the shore run-up; `6-5` consumes it on the TERRAIN, which
+   * has no cascade textures to run the shader's dominant-band rule against.
+   * This is that consumer's input: the sea state from the config's own wind and
+   * fetch, through the same two SPM/CEM growth laws 6-1 uses for lake chop.
+   *
+   * 6-5 binds `radianFrequency` and — with the terrain's own surface gradient —
+   * `waterShoreRunupHeight(swell, beachSlope)`, then evaluates the shared
+   * `waterShoreWetness` per pixel. The agreement between this CPU sea state and
+   * the shader's per-pixel band selection is pinned in
+   * `tests/render.webgpu-water-runup.test.ts`, not assumed.
+   */
+  shoreRunupSwell(): WaterShoreSwell {
+    const config = this.compute.config;
+    return waterOceanShoreSwell(
+      config.windSpeedMetersPerSecond,
+      config.fetchLengthMeters,
+    );
   }
 }

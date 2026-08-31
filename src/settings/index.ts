@@ -241,6 +241,21 @@ export function readSeedFromUrl(url?: string): number {
   }
 }
 
+/**
+ * Gate 0-b (Phase 6): opt-in eroded-world access for flight review. The value
+ * is read from the URL only and never persisted — absence of `?world=eroded`
+ * must always yield the shipped default (`DEFAULT_WORLD_EVOLUTION`), so a
+ * shared link opts in exactly one session and nothing sticks.
+ */
+export function readWorldEvolutionFromUrl(url?: string): "eroded" | undefined {
+  const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
+  try {
+    return new URL(source).searchParams.get("world") === "eroded" ? "eroded" : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function seedToString(seed: number): string {
   return (seed >>> 0).toString(36).toUpperCase().padStart(6, "0");
 }

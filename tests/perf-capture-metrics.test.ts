@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB,
+  inventoriedMemoryFailures,
   luminanceFromRgba,
   meanRgbSsim,
   meanSsim,
@@ -265,5 +267,52 @@ describe("color- and locality-aware visual metrics", () => {
       height: 8,
     })).toThrow(RangeError);
     expect(() => worstTileRgbSsim(pixels, pixels, 8, 8, 10)).toThrow(RangeError);
+  });
+});
+
+/**
+ * Gate 0-c (Phase 6): the inventoried-memory assert is the only gate that
+ * sees the REAL Babylon texture+geometry footprint rather than the estimate
+ * model's ~100 MiB of false headroom, so its boundary and its
+ * implausible-reading guard both need a unit test that does not require a GPU.
+ */
+describe("inventoriedMemoryFailures", () => {
+  it("accepts the exact pinned ceiling and everything below it", () => {
+    expect(inventoriedMemoryFailures(PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB)).toEqual([]);
+    expect(inventoriedMemoryFailures(PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB - 0.1))
+      .toEqual([]);
+    expect(inventoriedMemoryFailures(489)).toEqual([]);
+    expect(inventoriedMemoryFailures(0.1)).toEqual([]);
+  });
+
+  it("fails a tenth of a MiB over the ceiling and names the ceiling", () => {
+    const failures = inventoriedMemoryFailures(
+      PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB + 0.1,
+    );
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("exceeds");
+    expect(failures[0]).toContain(String(PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB));
+  });
+
+  it("rejects readings that cannot be a real inventory", () => {
+    // A renderer that reports nothing must fail the gate rather than pass it:
+    // 0 and NaN are what a broken inventory hook returns, not free headroom.
+    for (const reading of [Number.NaN, 0, -5]) {
+      const failures = inventoriedMemoryFailures(reading);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain("not a plausible reading");
+    }
+    expect(inventoriedMemoryFailures(Number.POSITIVE_INFINITY)).toEqual([
+      expect.stringContaining("not a plausible reading"),
+    ]);
+  });
+
+  it("honours an explicit ceiling override", () => {
+    expect(inventoriedMemoryFailures(100.5, 100)).toEqual([
+      expect.stringContaining("exceeds"),
+    ]);
+    expect(inventoriedMemoryFailures(99.9, 100)).toEqual([]);
+    expect(inventoriedMemoryFailures(100, 100)).toEqual([]);
   });
 });

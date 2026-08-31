@@ -28,18 +28,44 @@ import type { WebGpuQualityProfile } from "./QualityProfile";
  */
 
 /**
- * The four compute clients, IN PRIORITY ORDER.
+ * The compute clients, IN PRIORITY ORDER.
  *
  * Height first: without a generated page there is no ground, and every other
- * producer reads the height page this one writes. Erosion last: it runs on
- * geological time (`5-4`), so deferring a dispatch by a frame is invisible by
- * construction — which is exactly what makes it the right thing to defer.
+ * producer reads the height page this one writes. Erosion near the back: it
+ * runs on geological time (`5-4`), so deferring a dispatch by a frame is
+ * invisible by construction — which is exactly what makes it the right thing
+ * to defer.
+ *
+ * `6-9` — **`groundCoverCompute` is last, and the position is load-bearing.**
+ * Wave G shipped the per-frame ground-cover field OUTSIDE this meter (plan
+ * G-1 named the client and never created it), so the one place that is
+ * supposed to know what the frame spends on compute could not see the only
+ * compute client that runs EVERY frame. It is admitted here now, and its
+ * priority is the lowest for a measured reason: the placement kernel writes a
+ * PERSISTENT lane buffer, so a deferred dispatch leaves last frame's records
+ * standing — world-anchored roots on world-anchored ground, a camera-frame
+ * older. Nothing else in this table degrades that gracefully; a deferred
+ * height page is missing ground and a deferred erosion dispatch is a page
+ * that never converges.
+ *
+ * Being last is NOT by itself what makes the ground-cover producer's LATE
+ * declaration safe, and the measurement is worth recording because the
+ * plausible argument is wrong: the terrain pump declares and reads inside
+ * `terrain.update`, which the renderer runs first, and a later `submit`
+ * invalidates the cached plan. Adding a lower-priority client's demand DOES
+ * move an earlier client's admission, because the RESERVATION pass runs for
+ * every client before the surplus pass — so a new reservation legitimately
+ * precedes a higher-priority client's surplus, and occlusion was measured
+ * dropping from two dispatches to one. The fix is in the meter rather than in
+ * the argument: reading an admission SETTLES it (see `ComputeBudget.settled`).
+ * `tests/render.webgpu-compute-budget.test.ts` pins the property directly.
  */
 export const COMPUTE_BUDGET_CLIENTS = [
   "terrainCompute",
   "splatCompute",
   "occlusionCompute",
   "erosionCompute",
+  "groundCoverCompute",
 ] as const;
 
 export type ComputeBudgetClient = (typeof COMPUTE_BUDGET_CLIENTS)[number];
@@ -70,7 +96,7 @@ function clientRowMs(rows: SubsystemBudgetMs, client: ComputeBudgetClient): numb
   return rows[client];
 }
 
-/** Sum of the four compute rows: the cap the meter enforces. */
+/** Sum of every compute row: the cap the meter enforces. */
 export function computeBudgetCapMs(rows: SubsystemBudgetMs, scale = 1): number {
   const total = COMPUTE_BUDGET_CLIENTS.reduce(
     (sum, client) => sum + clientRowMs(rows, client),
@@ -98,10 +124,14 @@ export function planComputeAdmissions(
   requests: readonly ComputeDispatchRequest[],
   rows: SubsystemBudgetMs,
   scale = 1,
+  committed: readonly ComputeAdmission[] = [],
 ): ComputeAdmissionPlan {
   const capMs = computeBudgetCapMs(rows, scale);
+  const settled = new Map<ComputeBudgetClient, ComputeAdmission>();
+  for (const entry of committed) settled.set(entry.client, entry);
   const demand = new Map<ComputeBudgetClient, { count: number; costMs: number }>();
   for (const request of requests) {
+    if (settled.has(request.client)) continue;
     if (!Number.isFinite(request.costMs) || request.costMs < 0) {
       throw new RangeError(`Compute cost for ${request.client} must be finite and non-negative`);
     }
@@ -121,7 +151,13 @@ export function planComputeAdmissions(
 
   const admitted = new Map<ComputeBudgetClient, number>();
   const spentPerClient = new Map<ComputeBudgetClient, number>();
+  // `6-9`: a client whose admission has already been READ is settled — its
+  // dispatches are encoded and its spend is a fact. It is excluded from both
+  // passes and its milliseconds are charged to the cap up front, so a later
+  // client's demand competes for what is genuinely left rather than
+  // re-opening a decision the renderer has already acted on.
   let spentMs = 0;
+  for (const entry of settled.values()) spentMs += entry.admittedMs;
 
   const take = (client: ComputeBudgetClient, ceilingMs: number): void => {
     const entry = demand.get(client);
@@ -150,9 +186,15 @@ export function planComputeAdmissions(
     spentPerClient.set(client, spentHere);
   };
 
-  for (const client of COMPUTE_BUDGET_CLIENTS) take(client, clientRowMs(rows, client));
+  for (const client of COMPUTE_BUDGET_CLIENTS) {
+    if (settled.has(client)) continue;
+    take(client, clientRowMs(rows, client));
+  }
   // Surplus pass: the ceiling is the whole cap, so priority alone decides.
-  for (const client of COMPUTE_BUDGET_CLIENTS) take(client, capMs);
+  for (const client of COMPUTE_BUDGET_CLIENTS) {
+    if (settled.has(client)) continue;
+    take(client, capMs);
+  }
 
   // ---------------------------------------------------------------------
   // `4.5-B2(b)` — the floor of one.
@@ -173,6 +215,10 @@ export function planComputeAdmissions(
   // be authored for it: the cap can be exceeded by exactly one dispatch.
   // ---------------------------------------------------------------------
   for (const client of COMPUTE_BUDGET_CLIENTS) {
+    // A settled client already had its own floor applied in the plan it was
+    // read from; skipping rather than breaking hands the floor to the highest
+    // priority client still being decided.
+    if (settled.has(client)) continue;
     const entry = demand.get(client);
     if (!entry) continue;
     if ((admitted.get(client) ?? 0) > 0 || entry.count <= 0) break;
@@ -184,7 +230,7 @@ export function planComputeAdmissions(
   }
 
   let deferredDispatches = 0;
-  const admissions: ComputeAdmission[] = [];
+  const admissions: ComputeAdmission[] = [...settled.values()];
   for (const [client, entry] of demand) {
     const count = admitted.get(client) ?? 0;
     const requested = count + entry.count;
@@ -246,9 +292,38 @@ export const COMPUTE_DISPATCH_SEED_COST_MS: Readonly<Record<ComputeBudgetClient,
     splatCompute: 0.4,
     // Measured 0.301 ms/page: 16 azimuths × 24 steps over 136² texels.
     occlusionCompute: 0.3,
-    // Erosion does not ship until Phase 5; a placeholder `5-4` must replace
-    // with its own measurement.
-    erosionCompute: 0.4,
+    // `W-1d`, measured: 0.241 ms is ONE dispatch of the multi-frame
+    // page-erosion DAG at the 384² scratch, averaged over the mix a page
+    // actually runs — 37.4 ms of GPU over 155 dispatches (48 seed bands, 16
+    // geology bands, 2 breach, 1 decode, 24 stream-power, 64 talus). The
+    // producer prices each SUBMIT at its current stage's own measured figure
+    // (TERRAIN_EROSION_STAGE_SEED_COST_MS, next to the shaders); this
+    // client-level number is what the meter reports before the producer's
+    // first submit and what the CPU-worker fallback path books against.
+    // Re-measured with a 4x drift alarm by
+    // tests/gpu/terrain-page-erosion-cost.test.ts.
+    erosionCompute: 0.24,
+    // `6-9`, measured: 0.047-0.096 ms is ONE ring's placement dispatch at
+    // tier 1 on the reference adapter (107,592 lanes across the three rings,
+    // 64-lane workgroups, the composed archetype law and the compaction
+    // atomics included), converged through the meter's own smoothing over
+    // ~50 frames and observed across three runs on the same adapter under
+    // load. The band is wide for the same reason the terrain seeds' is: a
+    // dispatch this short has a genuinely noisy timestamp counter.
+    // The field submits one dispatch per ring per frame — three at every tier
+    // — so this is a per-RING figure and the frame's demand is three of them,
+    // 0.14-0.29 ms against the 0.18 ms tier-1 `groundCoverCompute` row. The
+    // row is deliberately not sized for the noisy upper end: exceeding it
+    // costs a DEFERRED outer ring, which keeps last frame's records on
+    // world-anchored ground and is the graceful degradation this client was
+    // put last in the priority order to get. Seeded
+    // deliberately above the measurement so a cold frame under-admits rather
+    // than over-spends, and re-measured with a 4x drift alarm by
+    // tests/gpu/ground-cover-compute.test.ts. The running estimate replaces
+    // it from the dispatch's own timestamp counter — GroundCoverSystem is in
+    // the timing policy's TIMED_ON_PURPOSE list precisely because this meter
+    // consumes it.
+    groundCoverCompute: 0.06,
   });
 
 /**
@@ -266,6 +341,19 @@ export class ComputeBudget {
   private readonly pending: ComputeDispatchRequest[] = [];
   private readonly costEstimateMs = new Map<ComputeBudgetClient, number>();
   private plan: ComputeAdmissionPlan | null = null;
+  /**
+   * `6-9`: clients whose admission has already been READ this frame.
+   *
+   * The renderer's producers do not all declare before any of them reads:
+   * `TerrainClipmapSystem.pumpComputeClients` declares and reads inside
+   * `terrain.update`, and the per-frame ground-cover field runs afterwards.
+   * A late `submit` invalidates the cached plan, and a re-plan that could
+   * move an admission the renderer has ALREADY dispatched against would make
+   * the meter's answer a fiction. Reading an admission therefore settles it:
+   * its dispatch count is fixed for the frame and its milliseconds are
+   * charged to the cap, so a later client competes for what is left.
+   */
+  private readonly settled = new Map<ComputeBudgetClient, ComputeAdmission>();
 
   /**
    * Takes the PROFILE, not a tier, so the tier read stays inside `core/` where
@@ -323,23 +411,37 @@ export class ComputeBudget {
   beginFrame(): void {
     this.pending.length = 0;
     this.plan = null;
+    this.settled.clear();
   }
 
-  /** Declare a demand for this frame. Priced at the client's running estimate. */
+  /**
+   * Declare a demand for this frame. Priced at the client's running estimate.
+   *
+   * A client that has already been READ this frame is settled: its demand is
+   * ignored rather than re-planned, because the renderer has acted on the
+   * answer it was given.
+   */
   submit(client: ComputeBudgetClient, count: number, costMs = this.estimatedCostMs(client)): void {
-    if (count <= 0) return;
+    if (count <= 0 || this.settled.has(client)) return;
     this.pending.push({ client, count: Math.floor(count), costMs });
     this.plan = null;
   }
 
   /** Resolve every submitted demand at once. Idempotent within a frame. */
   resolve(): ComputeAdmissionPlan {
-    this.plan ??= planComputeAdmissions(this.pending, this.rows, this.scale);
+    this.plan ??= planComputeAdmissions(
+      this.pending,
+      this.rows,
+      this.scale,
+      [...this.settled.values()],
+    );
     return this.plan;
   }
 
-  /** Dispatches this frame's plan admits for a client. */
+  /** Dispatches this frame's plan admits for a client. Settles the client. */
   admitted(client: ComputeBudgetClient): number {
-    return this.resolve().admissions.find((entry) => entry.client === client)?.admitted ?? 0;
+    const entry = this.resolve().admissions.find((row) => row.client === client);
+    if (entry && !this.settled.has(client)) this.settled.set(client, entry);
+    return entry?.admitted ?? 0;
   }
 }

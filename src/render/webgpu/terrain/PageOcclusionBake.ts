@@ -3,15 +3,24 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import {
+  registerGpuBufferBytes,
+  releaseGpuBufferBytes,
+} from "@/src/render/webgpu/core/GpuBufferInventory";
+import {
   LAND_COVER_CLASSIFIER_WGSL,
   LAND_COVER_SPLAT_BAKE_WGSL,
 } from "./LandCoverClassifier";
 import {
-  TERRAIN_KERNEL_PAGE_BYTES,
+  TERRAIN_KERNEL_LATTICE_COUNT,
   TERRAIN_KERNEL_WGSL,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  terrainKernelPageBytes,
 } from "./TerrainKernel";
+import {
+  VEGETATION_DENSITY_FIELD_WGSL,
+  VEGETATION_DENSITY_KERNEL_LATTICES,
+} from "../detail/densityFieldWgsl";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   seasonBucketBlend,
@@ -68,6 +77,54 @@ export const PAGE_OCCLUSION_STEPS = 24;
 export const PAGE_OCCLUSION_REACH_METERS = 45_000;
 
 const OCCLUSION_WORKGROUP_EDGE = 8;
+
+/**
+ * `6-8`: the splat bake's page uniform carries the terrain kernel's own
+ * lattices PLUS the vegetation density field's eleven, appended. Every other
+ * consumer of the kernel page uniform is untouched — extras land strictly
+ * after the kernel's own indices, so `terrainKernelPageBytes(0)` is still
+ * `TERRAIN_KERNEL_PAGE_BYTES` byte for byte.
+ */
+const SPLAT_KERNEL_PAGE_BYTES = terrainKernelPageBytes(
+  VEGETATION_DENSITY_KERNEL_LATTICES.length,
+);
+
+/**
+ * Floats per `SplatJob`: five `vec4f` lanes.
+ *
+ * The fifth is the runway frame the rounded-rectangle airport influence needs
+ * (`splatAirportInfluence`). Named rather than repeated so the host's stride,
+ * the buffer size and the inventoried byte count cannot drift from the WGSL
+ * struct — the previous literal `16` appeared in three places.
+ */
+const SPLAT_JOB_FLOATS = 20;
+
+/**
+ * The page-splat bake's composed source — ONE definition.
+ *
+ * Exported because `tests/gpu/terrain-compute-compile.test.ts` used to restate
+ * the module list, so a composition change (6-8 appended the vegetation
+ * density include and its lattice base) compiled in the renderer and failed in
+ * the test that exists to catch compile failures.
+ */
+export function terrainPageSplatWgsl(): string {
+  return [
+    terrainKernelPageBindingWgsl(0, 0, VEGETATION_DENSITY_KERNEL_LATTICES.length),
+    TERRAIN_KERNEL_WGSL,
+    // 6-8: the appended table's base index, derived from the kernel's own
+    // lattice count and never retyped. It is composed here rather than
+    // injected inside the classifier because the classifier is reachable
+    // from src/world/terrain.ts and may not import the kernel.
+    `const SPLAT_VEGETATION_LATTICE_BASE: u32 = ${TERRAIN_KERNEL_LATTICE_COUNT}u;`,
+    // 6-8: the FIRST live composer of the vegetation density include. It was
+    // emitted in 4-6b and pinned only by string tests until now; composing it
+    // here is what makes "one owner for where forest is" true of the ground as
+    // well as of the plants.
+    VEGETATION_DENSITY_FIELD_WGSL,
+    LAND_COVER_CLASSIFIER_WGSL,
+    LAND_COVER_SPLAT_BAKE_WGSL,
+  ].join("\n");
+}
 
 export const PAGE_OCCLUSION_WGSL = /* wgsl */ `
 struct OcclusionJob {
@@ -212,6 +269,8 @@ fn bakeOcclusion(
 export class PageOcclusionBake {
   private shader: ComputeShader | null = null;
   private jobBuffer: StorageBuffer | null = null;
+  /** Bytes reported to the renderer's memory-inventory floor (Gate 0-c). */
+  private registeredBufferBytes = 0;
   private capacity = 0;
   private running = false;
   private disposed = false;
@@ -314,6 +373,8 @@ export class PageOcclusionBake {
     if (this.disposed) return;
     this.disposed = true;
     this.jobBuffer?.dispose();
+    releaseGpuBufferBytes(this.registeredBufferBytes);
+    this.registeredBufferBytes = 0;
     this.jobBuffer = null;
     this.shader = null;
   }
@@ -321,9 +382,13 @@ export class PageOcclusionBake {
   private ensureCapacity(count: number, pyramidTexture: unknown): void {
     if (count <= this.capacity && this.shader) return;
     this.jobBuffer?.dispose();
+    // Gate 0-c: storage buffers are invisible to the renderer's inventory.
+    releaseGpuBufferBytes(this.registeredBufferBytes);
     this.capacity = Math.max(count, 4);
     const engine = this.engine as WebGPUEngine;
     this.jobBuffer = new StorageBuffer(engine, this.capacity * 12 * 4);
+    this.registeredBufferBytes = this.capacity * 12 * 4;
+    registerGpuBufferBytes(this.registeredBufferBytes);
     this.shader ??= new ComputeShader(
       "terrain-page-occlusion",
       engine,
@@ -368,6 +433,8 @@ export class PageOcclusionBake {
 export class PageSplatBake {
   private shader: ComputeShader | null = null;
   private jobBuffer: StorageBuffer | null = null;
+  /** Bytes reported to the renderer's memory-inventory floor (Gate 0-c). */
+  private registeredBufferBytes = 0;
   private pageBuffer: StorageBuffer | null = null;
   private capacity = 0;
   private running = false;
@@ -380,6 +447,21 @@ export class PageSplatBake {
     private readonly heightAtlas: TerrainPageAtlas,
     private readonly channelAtlas: TerrainPageAtlas,
     private readonly seedHash: number,
+    /**
+     * The VEGETATION realisation's seed — `world.sourceSeedHash`, not
+     * `world.seedHash`.
+     *
+     * `6-8` appended the vegetation density field's lattices to the terrain
+     * kernel's page uniform and let them inherit the terrain seed. Those are
+     * different numbers whenever `createWorld`'s guaranteed-airport search
+     * re-seeds the terrain, so the canopy-closure channel this bake writes
+     * described a forest that is not the one `WorldDetailRuntime` plants:
+     * measured at the `grove-forest-2m` site, 0.008 closure baked against
+     * 0.90 standing (2 stems/ha against 630/ha). Splitting the two seeds is
+     * what makes "one closure, read through one entry point" true of the same
+     * WORLD as well as of the same code.
+     */
+    private readonly vegetationSeedHash: number,
     private readonly seaLevelMeters: number,
     private readonly latitudeDegrees: number,
     private readonly airport: Readonly<AirportDefinition> | null,
@@ -417,8 +499,8 @@ export class PageSplatBake {
     if (!shader || !jobBuffer || !pageBuffer) return 0;
 
     const blend = seasonBucketBlend(dayOfYear);
-    const jobs = new Float32Array(bakeable.length * 16);
-    const pages = new Uint8Array(bakeable.length * TERRAIN_KERNEL_PAGE_BYTES);
+    const jobs = new Float32Array(bakeable.length * SPLAT_JOB_FLOATS);
+    const pages = new Uint8Array(bakeable.length * SPLAT_KERNEL_PAGE_BYTES);
     bakeable.forEach((slot, index) => {
       const level = slot.address.level;
       const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
@@ -428,7 +510,7 @@ export class PageSplatBake {
       );
       const channelTexel = terrainChannelTexelSizeMeters(level);
       const heightTexel = terrainTexelSizeMeters(level);
-      const base = index * 16;
+      const base = index * SPLAT_JOB_FLOATS;
       jobs[base] = channelOrigin.u;
       jobs[base + 1] = channelOrigin.v;
       jobs[base + 2] = heightOrigin.u;
@@ -451,16 +533,33 @@ export class PageSplatBake {
       // Airport influence, page-local, so the graded platform is mown grass.
       jobs[base + 12] = this.airport ? this.airport.centerX - bounds.minX : 1e9;
       jobs[base + 13] = this.airport ? this.airport.centerZ - bounds.minZ : 1e9;
-      jobs[base + 14] = this.airport ? 1 / Math.max(1, this.airport.terrainBlendDistance) : 0;
+      // A 1 m blend with no airport: the platform half-extents below are 0 and
+      // the centre is 1e9 away, so the shader's smoothstep saturates and the
+      // influence is 0. Writing 0 here (the old value) made the influence 1
+      // EVERYWHERE in an airport-less world, because the term it scaled
+      // vanished with it.
+      jobs[base + 14] = this.airport ? 1 / Math.max(1, this.airport.terrainBlendDistance) : 1;
       jobs[base + 15] = dayOfYear;
+      // The runway frame and the graded platform's half-extents, so the bake
+      // evaluates `getAirportInfluence`'s rounded rectangle rather than a disc
+      // about the centre. Half-extents match that function's arguments exactly.
+      jobs[base + 16] = this.airport ? Math.sin(this.airport.headingRadians) : 0;
+      jobs[base + 17] = this.airport ? Math.cos(this.airport.headingRadians) : 1;
+      jobs[base + 18] = this.airport
+        ? this.airport.runwayLength * 0.5 + this.airport.endSafetyArea
+        : 0;
+      jobs[base + 19] = this.airport
+        ? this.airport.runwayWidth * 0.5 + this.airport.shoulderWidth
+        : 0;
       pages.set(
         new Uint8Array(buildTerrainKernelPageUniform({
           seedHash: this.seedHash,
+          extraSeedHash: this.vegetationSeedHash,
           originX: bounds.minX,
           originZ: bounds.minZ,
           filterWidthMeters: channelTexel,
-        })),
-        index * TERRAIN_KERNEL_PAGE_BYTES,
+        }, VEGETATION_DENSITY_KERNEL_LATTICES)),
+        index * SPLAT_KERNEL_PAGE_BYTES,
       );
     });
     jobBuffer.update(new Uint8Array(jobs.buffer));
@@ -482,6 +581,8 @@ export class PageSplatBake {
     this.disposed = true;
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
+    releaseGpuBufferBytes(this.registeredBufferBytes);
+    this.registeredBufferBytes = 0;
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.shader = null;
@@ -491,20 +592,20 @@ export class PageSplatBake {
     if (count <= this.capacity && this.shader) return;
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
+    // Gate 0-c: storage buffers are invisible to the renderer's inventory.
+    releaseGpuBufferBytes(this.registeredBufferBytes);
     this.capacity = Math.max(count, 4);
     const engine = this.engine as WebGPUEngine;
-    this.jobBuffer = new StorageBuffer(engine, this.capacity * 16 * 4);
-    this.pageBuffer = new StorageBuffer(engine, this.capacity * TERRAIN_KERNEL_PAGE_BYTES);
+    this.jobBuffer = new StorageBuffer(engine, this.capacity * SPLAT_JOB_FLOATS * 4);
+    this.pageBuffer = new StorageBuffer(engine, this.capacity * SPLAT_KERNEL_PAGE_BYTES);
+    this.registeredBufferBytes = this.capacity * SPLAT_JOB_FLOATS * 4
+      + this.capacity * SPLAT_KERNEL_PAGE_BYTES;
+    registerGpuBufferBytes(this.registeredBufferBytes);
     this.shader ??= new ComputeShader(
       "terrain-page-splat",
       engine,
       {
-        computeSource: [
-          terrainKernelPageBindingWgsl(0, 0),
-          TERRAIN_KERNEL_WGSL,
-          LAND_COVER_CLASSIFIER_WGSL,
-          LAND_COVER_SPLAT_BAKE_WGSL,
-        ].join("\n"),
+        computeSource: terrainPageSplatWgsl(),
       },
       {
         entryPoint: "bakeSplat",
@@ -516,6 +617,8 @@ export class PageSplatBake {
           splatWeightLo: { group: 0, binding: 4 },
           splatWeightHi: { group: 0, binding: 5 },
           splatFlowAccumAtlas: { group: 0, binding: 6 },
+          // 6-6: the soil-depth channel's first GPU consumer.
+          splatSoilDepthAtlas: { group: 0, binding: 7 },
         },
       },
     );
@@ -525,6 +628,10 @@ export class PageSplatBake {
     if (height) this.shader.setTexture("splatHeightAtlas", height, false);
     const flowAccum = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.flowAccum);
     if (flowAccum) this.shader.setTexture("splatFlowAccumAtlas", flowAccum, false);
+    // The aux resources are created for every world; an analytic one is simply
+    // zero-initialised and the bake's sentinel neutralises the litter term.
+    const soilDepth = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.soilDepth);
+    if (soilDepth) this.shader.setTexture("splatSoilDepthAtlas", soilDepth, false);
     for (const [name, index] of [
       ["splatId", TERRAIN_CHANNEL_TEXTURES.splatId],
       ["splatWeightLo", TERRAIN_CHANNEL_TEXTURES.splatWeightLo],

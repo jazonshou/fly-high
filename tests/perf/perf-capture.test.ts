@@ -34,6 +34,7 @@ import {
   rawFrameIntervalMetrics,
   sustainedFpsFromFrameIntervals,
   temporalStability,
+  inventoriedMemoryFailures,
   tier1BalancedPerformanceFailures,
   tileStatistics,
   worstTileRgbSsim,
@@ -237,25 +238,38 @@ describe("perf capture (1A-1c / 2Z)", () => {
       originalLoggerError.call(Logger, message as string, limit);
     }) as typeof Logger.Error;
 
-    const world = createWorld(PERF_CAPTURE_SEED);
-    const airportX = world.airport?.centerX ?? 0;
-    const airportZ = world.airport?.centerZ ?? 0;
+    // W-7: world identity is per-shot (analytic default, eroded shots
+    // appended). These are LET bindings so the placement and terrain-sample
+    // closures below always read the ACTIVE world at call time, and the
+    // renderer/canvas swap at a mode boundary reassigns them all together.
+    let activeWorldEvolution: "analytic" | "eroded" = "analytic";
+    let world = createWorld(PERF_CAPTURE_SEED);
+    let airportX = world.airport?.centerX ?? 0;
+    let airportZ = world.airport?.centerZ ?? 0;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = PERF_CAPTURE_WIDTH;
-    canvas.height = PERF_CAPTURE_HEIGHT;
-    canvas.style.width = `${PERF_CAPTURE_WIDTH}px`;
-    canvas.style.height = `${PERF_CAPTURE_HEIGHT}px`;
-    document.body.appendChild(canvas);
+    const createCaptureCanvas = (): HTMLCanvasElement => {
+      // A fresh canvas per renderer: Babylon engine re-acquisition on a
+      // disposed canvas is unexercised anywhere, and canvases are free.
+      const element = document.createElement("canvas");
+      element.width = PERF_CAPTURE_WIDTH;
+      element.height = PERF_CAPTURE_HEIGHT;
+      element.style.width = `${PERF_CAPTURE_WIDTH}px`;
+      element.style.height = `${PERF_CAPTURE_HEIGHT}px`;
+      document.body.appendChild(element);
+      return element;
+    };
+    let canvas = createCaptureCanvas();
 
-    renderer = await FlightRenderer.create({
+    // Reads the let-bindings at invocation, so the same factory serves both
+    // the initial renderer and any W-7 mode-boundary rebuild.
+    const captureRendererOptions = () => ({
       canvas,
-      aircraft: "trainer",
+      aircraft: "trainer" as const,
       terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
       world,
       seed: world.sourceSeedHash,
-      quality: "medium",
-      renderingMode: "balanced",
+      quality: "medium" as const,
+      renderingMode: "balanced" as const,
       reducedMotion: false,
       // Z-1: deterministic shipping pixels — no governor may rewrite the
       // target, but the capture must not silently replace medium's 0.86 with
@@ -264,6 +278,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
       captureGpuTiming: GPU_TIMING_ENABLED,
       ...(world.airport ? { runway: world.airport } : {}),
     });
+
+    renderer = await FlightRenderer.create(captureRendererOptions());
     // This is the authoritative rejected-submit channel. A WebGPU validation
     // error is a device event, not necessarily a call through the page's
     // patched console, and the exact black-frame regression rendered quickly.
@@ -374,6 +390,28 @@ describe("perf capture (1A-1c / 2Z)", () => {
     const candidateScreenshots: Array<{ readonly name: string; readonly pngBase64: string }> = [];
     let simulationTime = 0;
     for (const shot of SELECTED_SHOTS) {
+      // W-7: a mode boundary rebuilds the world and renderer. Dispose fully
+      // BEFORE creating (two resident worlds would breach the Gate 0-c
+      // inventoried-memory wall); error arrays keep accumulating across the
+      // swap so the run-wide zero-error gates still cover both renderers.
+      // Eroded shots are appended after all analytic shots, so this fires at
+      // most once per run.
+      const shotWorldEvolution = shot.worldEvolution ?? "analytic";
+      if (shotWorldEvolution !== activeWorldEvolution) {
+        removeGpuUncapturedErrorListener?.();
+        removeGpuUncapturedErrorListener = null;
+        renderer.dispose();
+        canvas.remove();
+        world = createWorld(PERF_CAPTURE_SEED, { worldEvolution: shotWorldEvolution });
+        airportX = world.airport?.centerX ?? 0;
+        airportZ = world.airport?.centerZ ?? 0;
+        canvas = createCaptureCanvas();
+        renderer = await FlightRenderer.create(captureRendererOptions());
+        removeGpuUncapturedErrorListener = renderer.addGpuUncapturedErrorListenerForCapture(
+          (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
+        );
+        activeWorldEvolution = shotWorldEvolution;
+      }
       const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
       const viewportHeight = shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
       if (
@@ -436,9 +474,23 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // otherwise reruns diff on whichever pages or cells happened to arrive
       // before the capture. This phase runs as fast as the CPU allows; no
       // timing metric is read from it.
-      const maxStreamingFrames = 6_000;
+      /**
+       * Raised from 6,000 once exhausting it became a LOUD failure rather than
+       * a silent half-built frame (see the `pendingTerrainPages` assertion in
+       * the gate block below).
+       *
+       * The eroded world is what forced this. Its page DAG is ~163 dispatches
+       * amortised at roughly one admitted dispatch per frame, measured at ~31
+       * frames per page with one page in flight, so `eroded-valley-500ft`'s
+       * 168-page working set costs ~5,208 frames — 87% of the old ceiling. The
+       * headroom is for the working sets 6-11's lower tiers and viewports will
+       * ask for; the loop still exits the moment streaming settles, so a larger
+       * cap costs nothing on a shot that finishes early.
+       */
+      const maxStreamingFrames = 24_000;
       let stableChecks = 0;
       let lastVisibleInstances = -1;
+      let streamingFramesUsed = maxStreamingFrames;
       for (let frame = 0; frame < maxStreamingFrames; frame += 1) {
         simulationTime += 1 / 60;
         renderer.render({ ...state, simulationTime }, 1 / 60);
@@ -452,7 +504,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
             && diagnostics.visibleInstances === lastVisibleInstances
           ) {
             stableChecks += 1;
-            if (stableChecks >= 3) break;
+            if (stableChecks >= 3) {
+              streamingFramesUsed = frame + 1;
+              break;
+            }
           } else {
             stableChecks = 0;
           }
@@ -853,6 +908,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
 
       shotReports.push({
         name: shot.name,
+        worldEvolution: shotWorldEvolution,
         description: shot.description,
         ssimAgainstBaseline: ssim === null ? null : Math.round(ssim * 10_000) / 10_000,
         rgbSsimAgainstBaseline: rgbSsim === null
@@ -885,6 +941,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
         residentTerrainPages: sceneDiagnostics.residentTerrainPages,
         pendingTerrainPages: sceneDiagnostics.pendingTerrainPages,
         pendingDetailWork: sceneDiagnostics.pendingDetailWork,
+        streamingFramesUsed,
+        streamingFrameBudget: maxStreamingFrames,
         renderPixels: sceneDiagnostics.renderPixels,
         renderScale: sceneDiagnostics.renderScale,
         viewportWidth,
@@ -934,6 +992,50 @@ describe("perf capture (1A-1c / 2Z)", () => {
         `${ARTIFACT_DIR}/report.json`,
         `${JSON.stringify(report, null, 2)}\n`,
       );
+    }
+
+    /**
+     * Write the reviewable artifacts BEFORE any assertion runs.
+     *
+     * This used to happen at the very end, which meant the first failing gate
+     * threw and the run produced **no images at all** — the instrument withheld
+     * its evidence exactly when something was wrong, and left "go and look at
+     * the frames" impossible without first silencing the gate. Gate F hit this
+     * within minutes: the eroded shots breached a memory ceiling and the run
+     * died before writing a single eroded frame.
+     *
+     * A capture's frames are diagnostic input, not a reward for passing.
+     *
+     * The original ordering existed for a real reason — a failed run must not
+     * leave a candidate that could be mistaken for an approved baseline — and
+     * that property is KEPT, by an explicit status file rather than by
+     * withholding the evidence. The directory is stamped NOT APPROVABLE here
+     * and only restamped once every gate below has passed, so approvability is
+     * something a promoter can read rather than infer from a file's existence.
+     */
+    const candidateId = new Date().toISOString().replaceAll(":", "-");
+    const candidateDir = `${CANDIDATE_ROOT}/${candidateId}`;
+    if (REBASELINE) {
+      for (const screenshot of candidateScreenshots) {
+        await commands.writeFile(
+          `${candidateDir}/${screenshot.name}.png`,
+          screenshot.pngBase64,
+          "base64",
+        );
+      }
+      await commands.writeFile(
+        `${candidateDir}/report.json`,
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
+      await commands.writeFile(
+        `${candidateDir}/STATUS.txt`,
+        "NOT APPROVABLE — the capture's gates had not been evaluated when these\n"
+        + "frames were written. If this file still says NOT APPROVABLE, the run\n"
+        + "FAILED a gate: read the failure, and do not promote this directory.\n"
+        + "The frames are here for diagnosis, which is why they are written\n"
+        + "before the gates rather than after them.\n",
+      );
+      console.info(`Reviewable candidate frames written to ${candidateDir}`);
     }
 
     expect(shotReports).toHaveLength(SELECTED_SHOTS.length);
@@ -1065,7 +1167,36 @@ describe("perf capture (1A-1c / 2Z)", () => {
             `${shot.name}: p999 frame exceeded the committed ceiling`,
           ).toBeLessThanOrEqual(ceilings.p999FrameMs));
         }
+        // Gate 0-a (Phase 6): floors pinned at today's delivery, not the
+        // 60 fps contract minimum — the strict gate alone would let the
+        // phase shed ~45% of current delivery with everything green.
+        gateDelivery(() => expect(
+          shot.wallClockFps,
+          `${shot.name}: wall-clock fps fell below the committed floor`,
+        ).toBeGreaterThanOrEqual(ceilings.minWallClockFps));
+        gateDelivery(() => expect(
+          shot.frameIntervalMsP95,
+          `${shot.name}: frame-interval p95 exceeded the committed ceiling`,
+        ).toBeLessThanOrEqual(ceilings.maxFrameIntervalMsP95));
       }
+      // Gate 0-a: drawCalls is a host-independent counter (byte-identical
+      // across the pinning runs), so it stays hard on every host, outside
+      // the nullable delivery row.
+      if (definition.drawCallCeiling !== undefined) {
+        expect(
+          shot.drawCalls,
+          `${shot.name}: more draw calls than the committed ceiling`,
+        ).toBeLessThanOrEqual(definition.drawCallCeiling);
+      }
+      // Gate 0-c (Phase 6, = 6-11.4a): the Babylon inventory floor is the
+      // real memory number — only the ~380 MiB estimate gates the 480 MiB
+      // ceiling while the inventory reads 489 MiB at the binding shot.
+      // Hard on every host: the settle loop guarantees pendingDetailWork=0,
+      // so allocations converge identically.
+      expect(
+        inventoriedMemoryFailures(shot.inventoriedGpuMemoryMiB),
+        `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
+      ).toEqual([]);
       // 4-10 (assertion 84b): page residency under streaming load. The
       // page-thrash and CDLOD-transition scenes exist to make a pump that
       // outruns the compute meter visible as a rising queue rather than as a
@@ -1075,6 +1206,50 @@ describe("perf capture (1A-1c / 2Z)", () => {
         shot.pendingDetailWork,
         `${shot.name}: detail generation/presentation was still pending at capture`,
       ).toBe(0);
+      /**
+       * Terrain, made symmetric with detail above — a shot's pixels are only
+       * meaningful if the world had finished building when they were read.
+       *
+       * This was previously asserted ONLY inside the motion branch's final-pose
+       * drain, so the 24 static shots recorded `pendingTerrainPages` in the
+       * report and asserted nothing against it. A static shot that exhausted
+       * `maxStreamingFrames` therefore screenshotted a HALF-BUILT world, wrote
+       * the number that proved it into the report, and passed — and Gate F's
+       * eroded shots are exactly the ones close enough to the budget for that
+       * to happen (168 pages × ~31 frames/page = 5,208 of 6,000). The very
+       * first eroded reference images could have been frames of a world that
+       * had not finished streaming.
+       *
+       * The two streaming-stress shots keep their explicit allowance: a rising
+       * queue is the phenomenon they exist to measure. Everything else must be
+       * done, and the failure is loud rather than a number in a report.
+       */
+      if (!residency) {
+        expect(
+          shot.pendingTerrainPages,
+          `${shot.name}: terrain was still streaming when the frame was read — `
+          + "this shot's pixels are of a half-built world. Raise "
+          + "maxStreamingFrames, or reduce the shot's working set.",
+        ).toBe(0);
+      }
+      /**
+       * The margin, asserted rather than discovered.
+       *
+       * Finishing inside the budget is necessary but not reassuring on its own:
+       * the failure above only fires once a shot has ALREADY crossed, and by
+       * then a reviewer is looking at a half-built frame and wondering why the
+       * terrain changed. This fails while there is still room, so the shot that
+       * is creeping toward the cap is caught on the run before the one that
+       * exceeds it.
+       */
+      const streamingUsedFraction = shot.streamingFramesUsed / shot.streamingFrameBudget;
+      expect(
+        streamingUsedFraction,
+        `${shot.name}: used ${shot.streamingFramesUsed} of ${shot.streamingFrameBudget} `
+        + "streaming frames to settle. That is most of the budget, and the next "
+        + "increase in this shot's working set will exhaust it and screenshot a "
+        + "half-built world. Raise the budget now.",
+      ).toBeLessThan(0.75);
       if (residency) {
         // Queue DEPTH is what the wall-clock compute meter admits per frame,
         // so it follows the host the same way the delivery rows do.
@@ -1108,26 +1283,19 @@ describe("perf capture (1A-1c / 2Z)", () => {
         "A rebaseline candidate must contain the exact full canonical shot set",
       ).toEqual(PERF_CAPTURE_SHOTS.map(({ name }) => name));
 
-      // Candidate output is deliberately the final operation. A visual,
-      // temporal, performance, residency, or renderer-error failure above
-      // leaves no newly generated candidate that could be mistaken for an
-      // approved baseline. Each validated run gets a fresh directory, so a
-      // failed retry cannot make an older candidate look newly generated. The
-      // committed baseline directory has no write path.
-      const candidateId = new Date().toISOString().replaceAll(":", "-");
-      const candidateDir = `${CANDIDATE_ROOT}/${candidateId}`;
-      for (const screenshot of candidateScreenshots) {
-        await commands.writeFile(
-          `${candidateDir}/${screenshot.name}.png`,
-          screenshot.pngBase64,
-          "base64",
-        );
-      }
+      // Every gate above passed, so this directory becomes approvable. The
+      // frames themselves were written before the gates ran (see the STATUS
+      // note there); reaching this line is what makes them promotable, and the
+      // stamp says so explicitly rather than leaving it to be inferred from the
+      // directory existing at all. Each run gets a fresh directory, so a failed
+      // retry cannot make an older candidate look newly generated, and the
+      // committed baseline directory still has no write path.
       await commands.writeFile(
-        `${candidateDir}/report.json`,
-        `${JSON.stringify(report, null, 2)}\n`,
+        `${candidateDir}/STATUS.txt`,
+        `APPROVABLE — every capture gate passed on ${candidateId}.\n`
+        + "Reviewed frames may be promoted to tests/perf/baseline/.\n",
       );
-      console.info(`Reviewable rebaseline candidate written to ${candidateDir}`);
+      console.info(`Rebaseline candidate PASSED all gates: ${candidateDir}`);
     }
   }, 1_500_000);
 });

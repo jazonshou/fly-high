@@ -250,6 +250,47 @@ export function oceanTransformNormalizationScale(patchLengthMeters: number): num
   return Math.sqrt((2 * Math.PI) / patchLengthMeters / Math.SQRT2);
 }
 
+/**
+ * 6-4: how much surface curvature one cascade's stored horizontal-displacement
+ * Jacobian represents, in 1/m per unit of `J - 1`.
+ *
+ * The choppy displacement of a narrow band at wavenumber k is the Hilbert
+ * transform of its height scaled by the choppiness — `D = (lambda/k) grad(eta)`
+ * exactly, for a single wave — so the stored Jacobian's first-order part is
+ * `J - 1 = tr(dD/dx) = (lambda/k) lap(eta)`, i.e.
+ * `lap(eta) = (k/lambda) (J - 1)`. That Laplacian is the only property of the
+ * surface that focuses the refracted sun beam, which is why the caustic term
+ * can ride the channel the foam term already uses instead of inventing a
+ * pattern of its own.
+ *
+ * k is taken at the GEOMETRIC MEAN of the cascade's band-pass limits, where a
+ * JONSWAP slope spectrum truncated to that band is centred. The consequence
+ * for the default cascades is physical and severe: the 0.5-8 m cascade
+ * converts at 2.73 while the 512-2048 m cascade converts at 0.0053, so kilometre
+ * swell contributes no caustic at all and the short band carries the whole
+ * term — which is exactly right, since caustic focal length scales as 1/k.
+ *
+ * The choppiness floor bounds the amplification: as choppiness falls the
+ * surface stops displacing horizontally and `J - 1` collapses to fp16 noise
+ * around zero, so without a floor a near-zero choppiness would amplify that
+ * noise instead of correctly reporting no signal.
+ */
+export const OCEAN_CAUSTIC_CHOPPINESS_FLOOR = 0.25;
+
+export function oceanCausticCurvatureScale(
+  cascade: OceanCascadeConfig,
+  choppiness: number,
+): number {
+  assertPositive(cascade.minimumWavelengthMeters, "ocean.cascade.minimumWavelengthMeters");
+  assertPositive(cascade.maximumWavelengthMeters, "ocean.cascade.maximumWavelengthMeters");
+  assertFiniteNumber(choppiness, "ocean.choppiness");
+  const representativeWavelength = Math.sqrt(
+    cascade.minimumWavelengthMeters * cascade.maximumWavelengthMeters,
+  );
+  return (2 * Math.PI) / representativeWavelength
+    / Math.max(choppiness, OCEAN_CAUSTIC_CHOPPINESS_FLOOR);
+}
+
 /** Dispatch sequence for the two-texture, two-complex-fields Stockham kernel. */
 export function buildOceanFftDispatches(resolution: number): readonly OceanFftDispatch[] {
   if (!isPowerOfTwo(resolution) || resolution < 2) {

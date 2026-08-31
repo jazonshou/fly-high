@@ -50,6 +50,27 @@ export interface SubsystemBudgetMs {
    * (the `R-22` failure mode).
    */
   readonly occlusionCompute: number;
+  /**
+   * `6-9`: the per-frame ground-cover placement/compaction dispatches.
+   *
+   * **Wave G's first recorded debt, paid here.** The plan named
+   * `groundCoverCompute` as a `ComputeBudget` client with a matching
+   * `SubsystemBudgetMs` row (G-1) and neither was ever created, so the only
+   * compute client that runs on EVERY frame was the one the frame's compute
+   * meter could not see. Until now the spend was carried implicitly by the
+   * `vegetation` row, which §5.3 defines as "scatter/cull compute +
+   * alpha-tested draws + impostors" — the row always meant to hold it. It is
+   * declared separately now because the meter admits per client, and an
+   * un-metered client cannot be deferred, scaled by the governor, or counted.
+   *
+   * The rows below are per-frame across all three rings (one dispatch each).
+   * **Tier 2 is the tight one**: its published rows already summed to
+   * 13.45 ms against a 13.7 ms target before this row existed, which leaves
+   * 0.05 ms of slack afterwards. That is not this item's to fix — `6-11`
+   * rebuilds the tier table from measurement — but it is recorded here so the
+   * next row addition finds the wall rather than discovering it.
+   */
+  readonly groundCoverCompute: number;
   readonly shadows: number;
   readonly water: number;
   readonly clouds: number;
@@ -83,6 +104,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.2,
       splatCompute: 0.15,
       occlusionCompute: 0.1,
+      groundCoverCompute: 0.1,
       shadows: 0.7,
       water: 1.1,
       clouds: 1.5,
@@ -96,6 +118,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.4,
       splatCompute: 0.25,
       occlusionCompute: 0.2,
+      groundCoverCompute: 0.18,
       // `4-8b` shortened this tier's cascades (2×2048@7000 → 3×1280@1400), so
       // the row may move. The cut is phased with the item that EARNS it: a
       // budget row must never assert a spend nothing has delivered.
@@ -112,6 +135,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.7,
       splatCompute: 0.3,
       occlusionCompute: 0.25,
+      groundCoverCompute: 0.2,
       // `4-8b`'s 3×1536@1800 near field; `4-8a`'s temporary cut is gone.
       shadows: 0.8,
       water: 1.8,
@@ -126,6 +150,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 1.2,
       splatCompute: 0.5,
       occlusionCompute: 0.4,
+      groundCoverCompute: 0.35,
       // `4-8b`'s 4×2048@2400 near field.
       shadows: 1.8,
       water: 4.0,
@@ -209,6 +234,15 @@ export interface DynamicAllocationInputs {
    * CPU-baked domain tile. Per-tier because the blade law's lattice sizes
    * are; pinned against `groundCoverBufferBytes(GROUND_COVER_LAWS[tier])`
    * by the vegetation suite so the row moves when the law moves.
+   *
+   * `6-9` adds two allocations and one row moves: the archetype DRIVER tile
+   * (a second 64² rgba8, 16 KiB) and the compaction counter ring (48 bytes,
+   * registered through `GpuBufferInventory` because a storage buffer is
+   * invisible to the texture/geometry walk). +0.0157 MiB at every tier, which
+   * only tier 2 was too tight to absorb — 6.0 -> 6.02. The blade buffers
+   * themselves are BYTE-IDENTICAL: compaction writes survivors into the same
+   * fixed-capacity lattice buffer rather than into a second compacted one,
+   * which is what keeps a cull off the memory wall entirely.
    */
   readonly groundCoverMiB: Readonly<Record<PerformanceTier, number>>;
   /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
@@ -258,8 +292,8 @@ export interface DynamicAllocationInputs {
   readonly macroEvolutionEdge: number;
   readonly macroEvolutionResidentBytesPerTexel: number;
   /**
-   * `5-4`: final-GPU reservation for six reusable r32float scratch fields.
-   * The current reference scratch is worker CPU memory, not live GPU inventory.
+   * `5-4`/`W-1d`: the page-erosion DAG's six reusable r32 scratch fields, one
+   * page in flight. Measured against `TerrainPageErosionGpu`, not reserved.
    */
   readonly erosionScratchEdge: number;
   readonly erosionScratchFieldCount: number;
@@ -297,7 +331,7 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   groundCoverMiB: Object.freeze({
     0: 1.4,
     1: 3.6,
-    2: 6.0,
+    2: 6.02,
     3: 9.4,
   }),
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
@@ -331,8 +365,15 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // a second time before the measured GPU producer replaces it.
   macroEvolutionEdge: 1_024,
   macroEvolutionResidentBytesPerTexel: 5,
-  // 5-4 final-GPU reservation. Today's worker creates the 384² six-field r32
-  // scratch on CPU; the estimator still protects the intended GPU residency.
+  // 5-4 / W-1d, now MEASURED rather than reserved: the multi-frame GPU page
+  // erosion DAG (TerrainPageErosionGpu) holds exactly one page in flight and
+  // exactly six 384² r32 scratch fields — mask, height A, height B, flow,
+  // erodibility, receivers — with four of them shared across DAG phases
+  // (height B stages the macro seed then the breach surface; flow becomes
+  // repose; receivers become the talus delta). The producer pins this count
+  // as TerrainPageErosionGpu.SCRATCH_FIELD_COUNT and a test holds the two
+  // together. Its uniform buffers (page uniforms, params, earthworks) are a
+  // few kilobytes and ride the estimator's slack factor.
   erosionScratchEdge: 384,
   erosionScratchFieldCount: 6,
   erosionScratchBytesPerTexel: 4,

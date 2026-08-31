@@ -50,6 +50,7 @@ import {
   GpuUncapturedErrorGuard,
 } from "./webgpu/core/GpuUncapturedErrorGuard";
 import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
+import { inventoriedGpuBufferBytes } from "./webgpu/core/GpuBufferInventory";
 import {
   FrameGraphBudgetProbe,
   PassTimingHistory,
@@ -85,6 +86,10 @@ import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
+import {
+  TerrainMacroErosionGpu,
+  TerrainMacroInputsGpu,
+} from "./webgpu/terrain/TerrainMacroErosionGpu";
 import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
 import {
   TerrainConsumerAuthority,
@@ -102,7 +107,10 @@ import {
 type MutableDetailSunShadowSnapshot = {
   -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
 };
-import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
+import {
+  BathymetryClipmap,
+  bathymetryErodedPageOverlaySeamFromAtlas,
+} from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
@@ -642,7 +650,34 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.activeCamera = camera;
 
       const profile = resolveWebGpuQualityProfile(options.quality, options.renderingMode);
-      const terrainEvolution = new TerrainEvolutionRuntime();
+      // W-1a hybrid macro erosion: the engine is already initialized here, so
+      // the eroded path may run its one-shot stream-power/talus GPU leg
+      // between the worker's two CPU stages. Analytic worlds construct no
+      // producer and take the byte-identical single-shot path.
+      const gpuMacroErosion = options.world.worldEvolution === "eroded"
+        ? new TerrainMacroErosionGpu(engine)
+        : null;
+      if (gpuMacroErosion) cleanup.push(() => gpuMacroErosion.dispose());
+      // W-1b: the macro INPUT sampling also runs on this device. The trade is
+      // measured, not assumed — moving sampling here serialises it behind the
+      // synchronous construction below instead of overlapping it in the
+      // worker, so it only wins while that construction is shorter than the
+      // ~1.03 s of worker sampling it would otherwise hide. Instrumented on
+      // the reference host (2026-08-30): the construction below is 13.9 ms,
+      // 74x under the crossover — the "eager start" overlaps essentially
+      // nothing and the worker's ~1,011 ms CPU sampling was serial latency in
+      // all but name. On device that sampling costs ~29 ms and leaves the
+      // worker only its ~344 ms flood/MFD head, turning a ~1,355 ms stage 1
+      // into ~373 ms. Sampling fails open to the worker's CPU pass.
+      const gpuMacroInputs = options.world.worldEvolution === "eroded"
+        ? new TerrainMacroInputsGpu(engine)
+        : null;
+      if (gpuMacroInputs) cleanup.push(() => gpuMacroInputs.dispose());
+      const terrainEvolution = new TerrainEvolutionRuntime(
+        gpuMacroErosion
+          ? { gpuMacroErosion, ...(gpuMacroInputs ? { gpuMacroInputs } : {}) }
+          : {},
+      );
       cleanup.push(() => terrainEvolution.dispose());
       // Start the eager macro pass as early as possible. It runs in its own
       // worker while the main thread constructs the first device resources,
@@ -664,6 +699,11 @@ export class FlightRenderer implements FlightRenderingSystem {
         "terrain macro evolution",
         TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      // The macro pass ran once; return its ~36 MiB of 1024² erosion scratch
+      // and ~12 MiB of sampling scratch before page atlases allocate (dispose
+      // is idempotent under cleanup).
+      gpuMacroErosion?.dispose();
+      gpuMacroInputs?.dispose();
       terrain.setMacroEvolution(evolutionResult.evolution);
       let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
       let consumerTerrainSample = options.terrainSample;
@@ -680,7 +720,19 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainConsumerAuthority,
         );
       }
-      const bathymetry = new BathymetryClipmap(scene, options.world);
+      // W-6 (C-6): eroded bathymetry overlays resident L0 eroded pages inside
+      // its own update dispatch (ARCHITECTURE 5-10 row — water consumers may
+      // not implement this independently). The seam is read-only, resolved
+      // through callbacks because setQuality can rebuild the height atlas,
+      // and wired only in eroded mode so analytic worlds keep the inert
+      // empty-table sentinel.
+      const bathymetry = new BathymetryClipmap(
+        scene,
+        options.world,
+        evolutionResult.mode === "eroded"
+          ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
+          : null,
+      );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
       await awaitRendererStartup(
@@ -727,6 +779,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
         terrainSample: consumerTerrainSample,
+        // `6-9` debt 1: the per-frame field is admitted through the SAME
+        // amortised-compute meter as every other GPU compute producer, which
+        // is what `owners.ts` has claimed since `4-0b` and wave G left false.
+        computeBudget: terrain.computeBudgetMeter,
+        // The detail scatter hashes `String(world.seed)`, which is exactly
+        // `sourceSeedHash` — the field and the cards must key the SAME
+        // realisation or the handoff at the field radius swaps species.
+        seedHash: options.world.sourceSeedHash,
+        seaLevelMeters: options.world.seaLevel,
       });
       cleanup.push(() => groundCover.dispose());
       if (evolutionResult.mode === "eroded") {
@@ -739,6 +800,21 @@ export class FlightRenderer implements FlightRenderingSystem {
         terrainSample: consumerTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
+      // W-1e: the channel graph is awaited HERE — immediately before its only
+      // consumer — rather than inside the evolution runtime's initialize. The
+      // staged producer extracts it in its worker, so everything constructed
+      // since the macro export landed (bathymetry, aircraft, airport, detail,
+      // ground cover, wildlife) overlapped ~250 ms of extraction that used to
+      // block this thread. Renderer-ready semantics are unchanged: hydrology
+      // is still fully built before startup resolves.
+      const channelGraph = evolutionResult.mode === "eroded"
+        ? await awaitRendererStartup(
+          evolutionResult.channelGraph,
+          options.signal,
+          "terrain channel graph",
+          TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
+        )
+        : null;
       const hydrology = await HydrologySystem.create(
         scene,
         camera,
@@ -756,12 +832,8 @@ export class FlightRenderer implements FlightRenderingSystem {
           // surfaces. Inland water took its direction from here and its speed
           // from the atmosphere's cloud-layer wind, which can disagree 3x.
           windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
-          ...(evolutionResult.mode === "eroded"
-            ? {
-              graphHydrology: channelGraphToHydrologyGeometry(
-                evolutionResult.channelGraph,
-              ),
-            }
+          ...(channelGraph
+            ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
         },
         options.signal,
@@ -1067,6 +1139,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     authority.publishAuxPage({
       ...page,
       shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
+      soilDepthR8Unorm: page.soilDepthR8Unorm.slice(),
     });
     // Transfer the producer-owned buffer only after retaining the main-thread copy.
     this.detail.publishTerrainAuxPage(page);
@@ -1450,6 +1523,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       bytes += geometry.getTotalVertices() * strideBytes;
       bytes += geometry.getTotalIndices() * 4;
     }
+    // Storage buffers appear in neither list, and every allocation Phase 6
+    // adds is one. Without this the wall reads byte-identical no matter how
+    // much compute scratch an item allocates.
+    bytes += inventoriedGpuBufferBytes();
     return bytes / 1_048_576;
   }
 
@@ -1651,6 +1728,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       execute: (frame) => {
         void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
+        // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
+        // ocean disk is depth-tested away above the waterline), so the sea
+        // state and the WATER's own clock cross here — same node, same frame,
+        // same `timeSeconds` the spectrum is stepped with, or the sand would
+        // dry out of time with the surf that wetted it.
+        this.terrain.setShoreWetness(this.ocean.shoreRunupSwell(), frame.timeSeconds);
         const state = this.currentState;
         this.hydrology.update(
           frame.timeSeconds,
@@ -2028,6 +2111,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       windStrength01: wind.speed / MAX_WIND_SPEED,
       windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
       simulationTimeSeconds: state.simulationTime,
+      // `6-9`/`P-5`: the GPU ladder's ground-cover rung, the last one on it.
+      gateScale: this.workLeverSettings.groundCoverGateScale,
     });
     this.wildlife.update(
       {

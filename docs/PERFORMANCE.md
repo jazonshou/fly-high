@@ -118,8 +118,11 @@ measured 3,174 ms sampling uplift/erodibility/repose plus 4,323 ms evolution,
 reference-machine nor final-GPU acceptance measurement. No measured per-page
 erosion cost is claimed here.
 
-The default-eroded startup critical path is longer than the macro algorithm
-alone. `FlightRenderer.create()` starts and awaits macro evolution, initializes
+The eroded startup critical path is longer than the macro algorithm alone.
+(This section predates `G0-1`: the shipped default is **analytic**, so the
+figures below measure the opt-in eroded path — reachable with `?world=eroded`
+— not what a default load costs. Phase 6 Gate W has since rebuilt this path;
+its numbers supersede these.) `FlightRenderer.create()` starts and awaits macro evolution, initializes
 the bathymetry clipmap from that authority, then completes scene readiness and
 terrain pre-warm; only after the renderer resolves does the game construct the
 simulation client and begin its frame loop. A bathymetry WGSL declaration used
@@ -128,7 +131,7 @@ the reserved word `target`; Babylon stopped polling its failed
 hold the load screen forever without surfacing an error. The declaration is now
 `targetTexel`, the module is compiled by a real-adapter test, bathymetry compute
 readiness rejects on compile error, timeout, abort or disposal, and the renderer
-owns an outer startup deadline. A clean default-eroded development reload
+owns an outer startup deadline. A clean eroded development reload
 reached the start screen in **11,098 ms**; a cache-busted navigation against the
 built production server reached it in **13,255 ms** and then entered the cockpit
 with no current error. Full Node/build verification and all **28 files / 50
@@ -403,7 +406,11 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   §5.3's published band radii, instance-buffer reuse and recycling) for
   −1,201 draw calls across the capture set, and priced the structural
   remainder in `renderedDensity.ts`: `VEGETATION_DRAW_CEILING` is what the
-  renderer meets and `VEGETATION_FRAME_DEBT_RATIO` is the gap.
+  renderer meets and the submission ratio beside it is the gap. (That ratio is
+  now named `VEGETATION_DRAW_SUBMISSION_RATIO`; the historical
+  `VEGETATION_FRAME_DEBT_RATIO` symbol no longer exists in `src/` or `tests/`,
+  and the ceilings themselves have been re-pinned twice since this pass — read
+  `renderedDensity.ts` for the live values rather than any number quoted here.)
 - **Gate B did not erase that debt by accounting.** A crown/trunk prototype
   merge reduced modeled draws but moved trunks from the opaque depth pre-fill
   into the alpha-test path. All five core sub-30-fps captures regressed by
@@ -564,10 +571,15 @@ strict, and a rebaseline candidate is refused outright on an unpinned host.
   baseline matches it perfectly.
 
 - The steady capture begins after renderer creation and therefore cannot catch
-  a startup Promise that never settles. Cold default-eroded time-to-ready,
-  startup-stage timings, timeout and console-error status are a separate
-  measurement; the 11,098 ms development reload and 13,255 ms built-server
-  navigation above are diagnostic evidence, not that acceptance result.
+  a startup Promise that never settles. Cold time-to-ready, startup-stage
+  timings, timeout and console-error status are a separate measurement; the
+  11,098 ms development reload and 13,255 ms built-server navigation above are
+  diagnostic evidence, not that acceptance result. Phase 6's `6-11` owns the
+  acceptance number and measures it for the **analytic default** that actually
+  ships (the eroded path is reported separately against Gate W's budget); the
+  gate must fail on **timeout or console error**, because the failure class
+  this guards — the `5-10` startup Promise — hung with no error at all, so an
+  error check alone cannot catch it.
 
 - `VITE_PERF_SHOTS=name[,name]` runs a subset. A full capture is ~4–6 minutes,
   which is the wrong feedback loop for diagnosing one bad shot; the filter

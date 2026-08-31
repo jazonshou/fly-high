@@ -35,6 +35,41 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialSpec,
 } from "./surfaceMaterials";
+import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
+// 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
+// through the one sanctioned entry point rather than restating four distances.
+import {
+  CANOPY_DOMINANT_HEIGHT_METERS,
+  CANOPY_SURFACE_ALBEDO,
+  CANOPY_SURFACE_AMBIENT,
+  CANOPY_SURFACE_ROUGHNESS,
+  CANOPY_SURFACE_SPECULAR,
+  CANOPY_UNDER_SHADE_STRENGTH,
+  RIPARIAN_BANK_FADE_END_METERS,
+  RIPARIAN_BANK_FADE_START_METERS,
+  RIPARIAN_BANK_FULL_METERS,
+  RIPARIAN_BANK_NEAR_METERS,
+} from "../detail/densityField";
+// 6-8: the canopy/terrain handoff is vegetation's law too — the same entry
+// point's WGSL half, composed rather than restated.
+import { VEGETATION_CANOPY_HANDOFF_WGSL } from "../detail/densityFieldWgsl";
+// 6-5: the run-up half of the wetness field is 6-2's, composed rather than
+// restated. `WATER_SHORE_RUNUP_WGSL` was written self-contained (no uniform,
+// texture, derivative or external helper — pinned by a call-graph scan and a
+// standalone GPU compile) precisely so it could land in this shader, which has
+// never heard of the water lattice. The TypeScript twins below are the same
+// laws' CPU oracle; terrain re-derives none of them.
+import {
+  WATER_RUNUP_BEACH_SLOPE_MAXIMUM,
+  WATER_RUNUP_BEACH_SLOPE_MINIMUM,
+  WATER_RUNUP_EXCEEDANCE,
+  WATER_SHORE_RUNUP_WGSL,
+  waterRunupClock,
+  waterShoreRunupHeight,
+  waterShoreRunupPhase,
+  waterShoreWetness,
+  type WaterShoreSwell,
+} from "../water/WaterShaders";
 
 /**
  * 3-2 — the terrain surface plugin (owner: terrain-material).
@@ -112,6 +147,25 @@ export const DETILE_MICRO_METERS = 28;
 // level, reaching zero at level 5 (128 m texels) — and the shader turns it
 // into a noise-mottled class STRENGTH, so each level border is a ~0.2 step
 // dissolved into hundred-metre ecotone mottling instead of a line.
+/** A WGSL float literal for every value (`${8}.0` is fine, `${8.5}.0` is not). */
+function terrainWgslFloat(value: number): string {
+  if (!Number.isFinite(value)) throw new RangeError("WGSL constants must be finite");
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+/**
+ * `6-8`: the canopy's measured appearance, injected rather than retyped.
+ *
+ * Every one of these is `densityField.ts`'s — terrain does not get an opinion
+ * about what a canopy looks like, and a retune on the vegetation side moves
+ * the ground with it.
+ */
+const TERRAIN_CANOPY_ALBEDO = CANOPY_SURFACE_ALBEDO.map(terrainWgslFloat).join(", ");
+const TERRAIN_CANOPY_ROUGHNESS = terrainWgslFloat(CANOPY_SURFACE_ROUGHNESS);
+const TERRAIN_CANOPY_SPECULAR = terrainWgslFloat(CANOPY_SURFACE_SPECULAR);
+const TERRAIN_CANOPY_AMBIENT = terrainWgslFloat(CANOPY_SURFACE_AMBIENT);
+const TERRAIN_CANOPY_SHADE = terrainWgslFloat(CANOPY_UNDER_SHADE_STRENGTH);
+
 export const TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS = 4;
 export const TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL = 0.2;
 export const TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE = 0.1;
@@ -180,6 +234,305 @@ export function terrainFallbackRockCover(
   const slopeT = Math.min(1, Math.max(0, (slope - 0.30) / (0.66 - 0.30)));
   const slopeRock = slopeT * slopeT * (3 - 2 * slopeT);
   return Math.max(alpine, slopeRock);
+}
+
+// ---------------------------------------------------------------------------
+// `6-5` — TERRAIN WETNESS: the FIELD.
+//
+// `3-7` shipped the RESPONSE, verbatim and live, in two instructions:
+// `roughness = mix(r, r*0.35 + 0.02, wet)` and `albedo *= mix(1.0, 0.62, wet)`.
+// What it never had was a driven `wet`: the uniform lane carried a constant
+// zero and its setter never had a caller. Everything below is that field.
+//
+// THREE SOURCES, one composed maximum (wetness does not add — a surface is as
+// wet as the wettest reason it has):
+//
+//   1. OCEAN/LAKE PROXIMITY. Under sea level the `3-7` submerged term stays
+//      authoritative and is untouched. ABOVE it, the eroded world's `lakeDepth`
+//      channel finally answers the case the sea-level term structurally cannot:
+//      a lake at 400 m has a bed that is under water and was rendering as dry
+//      SAND (the WATER biome's primary material), because `seaLevel - y` is
+//      hugely negative there. `lakeDepth` is the metres of water column over
+//      this texel, so it IS the lake's own submerged depth, and the signed
+//      shore distance carries the same waterline out onto the dry bank.
+//   2. `6-2`'s WET-SAND RUN-UP PERSISTENCE. `waterShoreWetness` is the seam,
+//      and it is terrain-side for a geometric reason (D-12): the ocean disk is
+//      a plane at sea level with depth write off, so on any beach above the
+//      waterline the terrain fragment is nearer and the disk is depth-tested
+//      away. The water surface *cannot* draw the sheet that runs up the beach
+//      face; only the ground can.
+//   3. CAPILLARY RISE ABOVE THE WATERLINE. Between the swash limit and dry
+//      ground there is a damp band held by capillarity, and it is the term that
+//      keeps a glassy sea (`R = 0`, so source 2 returns exactly 0) from drawing
+//      a knife-edge waterline. ONE height constant serves both waterlines: at
+//      the sea it applies to the freeboard directly; on a lake/river bank the
+//      shore distance is converted to a freeboard through the terrain's own
+//      gradient, which is the same beach slope source 2 already takes.
+//
+// NOT SEASONAL, and recorded as a decision rather than an omission. This field
+// does NOT join `SEASONAL_FIELD_FAMILY` and takes no `dayOfYear` /
+// `EnvironmentClock` in any signature: there is no precipitation model in this
+// project, so every source above is a WATER-BODY proximity term whose driver is
+// a water level and a sea state, not a calendar. §1.8's rule ("any new seasonal
+// field takes the clock in a type position from FIRST write") is exactly why
+// this has to be settled now rather than retrofitted — if a precipitation model
+// ever lands, the honest move is a NEW field that joins the family on its first
+// commit and composes with this one, not a clock threaded through this one.
+// (`TerrainSurfacePlugin.ts` is itself a seasonal-family SITE for `3-10`'s
+// palette; the family is keyed on artifacts, and this artifact is not one.)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capillary rise above a still waterline, metres.
+ *
+ * The capillary fringe over a water table is ~0.1 m in coarse sand, ~0.3-1 m in
+ * fine sand and metres in silt; 0.35 m is a medium sand/silty margin and is the
+ * one number both waterlines use. On a 1:12 beach it is a 4.2 m band; on a
+ * 1:125 dissipative flat it is 44 m of damp sand, which is what those flats
+ * look like.
+ */
+export const TERRAIN_WETNESS_CAPILLARY_RISE_METERS = 0.35;
+/**
+ * Lake-bed submersion ramp, metres of water column to full wetness.
+ *
+ * Mirrors the sea-level term's own 1 m half-width, with one deliberate
+ * difference: the sea's ramp is CENTRED on its waterline because sea level is
+ * an exact number, while a lake's waterline is only known through the macro
+ * lake mask, so the ramp starts at the mask edge (`lakeDepth = 0`) and runs
+ * inward. The bank band (source 3) supplies the outward half continuously.
+ */
+export const TERRAIN_WETNESS_LAKE_SUBMERGED_DEPTH_METERS = 1;
+/** Guard for `slope = |grad h|` at a vertical face; 1e-4 is ~89.994°. */
+export const TERRAIN_WETNESS_MINIMUM_NORMAL_Y = 1e-4;
+
+/**
+ * The freeboard above which the ocean half is EXACTLY zero, from the sea state
+ * alone — one compare that buys back the swash ALU on every inland fragment.
+ *
+ * This is a bound, not a tuning threshold, and it is exact rather than
+ * conservative-by-taste: `waterShoreWetness`'s exceedance factor is
+ * `1 - smoothstep(1, 1.35, freeboard / R)`, which is identically zero at
+ * `freeboard >= 1.35 R`; `R = clamp(slope) * excursion` cannot exceed
+ * `0.35 * excursion` because Hunt's slope clamp caps it; and the capillary
+ * fringe is identically zero past its own rise. So above the maximum of those
+ * two the term cannot be non-zero for ANY slope, and skipping it changes no
+ * pixel — which is what makes it an economy rather than a gate.
+ *
+ * For the shipped sea state (excursion 12.83 m) that is 6.06 m of freeboard:
+ * every fragment of ground higher than that — including every airport, whose
+ * own floor is sea level + 10 m — skips an asin, an exp, a sin and a divide.
+ */
+export function terrainShoreWetnessReachMeters(swashExcursionMeters: number): number {
+  if (!Number.isFinite(swashExcursionMeters)) {
+    throw new RangeError("Swash excursion must be finite");
+  }
+  return Math.max(
+    TERRAIN_WETNESS_CAPILLARY_RISE_METERS,
+    Math.max(0, swashExcursionMeters)
+      * WATER_RUNUP_BEACH_SLOPE_MAXIMUM * WATER_RUNUP_EXCEEDANCE,
+  );
+}
+
+/**
+ * `smoothstep` with the reversed-pair incident's guard: a falling edge is
+ * written `1 - terrainSmoothstepUnit(low, high, x)`, never by swapping the
+ * bounds. The clamped form silently turns a reversed pair into a hard step.
+ */
+function terrainSmoothstepUnit(low: number, high: number, value: number): number {
+  if (!(high > low)) {
+    throw new RangeError("smoothstep bounds must satisfy high > low (write 1 - smoothstep)");
+  }
+  const t = Math.min(1, Math.max(0, (value - low) / (high - low)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The beach slope `tan(beta) = |grad h|`, from the terrain's OWN geometric
+ * normal at full resolution.
+ *
+ * D-12 is explicit that this must NOT be re-derived from the 16 m bathymetry:
+ * that texel is the resolution floor the shore band had to go wide to hide,
+ * and the terrain fragment already carries the real gradient. For a unit
+ * normal `|grad h| = |n.xz| / n.y`, written here from `n.y` alone so the CPU
+ * oracle and the WGSL twin are the same statement.
+ */
+export function terrainBeachSlope(normalY: number): number {
+  if (!Number.isFinite(normalY)) throw new RangeError("Terrain normal y must be finite");
+  const ny = Math.max(normalY, TERRAIN_WETNESS_MINIMUM_NORMAL_Y);
+  return Math.sqrt(Math.max(0, 1 - ny * ny)) / ny;
+}
+
+/**
+ * Source 3. `heightAboveWaterMeters` is the freeboard over whichever waterline
+ * is nearest — sea level for the ocean, the lake surface for a bank. Saturated
+ * at the waterline, dry at the top of the fringe, and continuous through zero
+ * so it joins the submerged term without a seam.
+ */
+export function terrainCapillaryWetness(heightAboveWaterMeters: number): number {
+  if (!Number.isFinite(heightAboveWaterMeters)) {
+    throw new RangeError("Capillary height must be finite");
+  }
+  return 1 - terrainSmoothstepUnit(
+    0,
+    TERRAIN_WETNESS_CAPILLARY_RISE_METERS,
+    heightAboveWaterMeters,
+  );
+}
+
+/** `3-7`'s sea-level submerged fraction, unchanged — the CPU twin of it. */
+export function terrainSeaSubmergedFraction(freeboardMeters: number): number {
+  if (!Number.isFinite(freeboardMeters)) throw new RangeError("Freeboard must be finite");
+  return Math.min(1, Math.max(0, -freeboardMeters * 0.5 + 0.5));
+}
+
+/** Source 1's lake half: metres of water column over this texel, as a fraction. */
+export function terrainLakeSubmergedFraction(lakeDepthMeters: number): number {
+  if (!Number.isFinite(lakeDepthMeters)) throw new RangeError("Lake depth must be finite");
+  return Math.min(
+    1,
+    Math.max(0, lakeDepthMeters / TERRAIN_WETNESS_LAKE_SUBMERGED_DEPTH_METERS),
+  );
+}
+
+/**
+ * Source 1's bank half: the capillary fringe around an inland waterline, with
+ * the signed shore distance converted to a freeboard through the terrain's own
+ * gradient. Inside the water (`shoreDistance <= 0`) the product is negative and
+ * the fringe reads 1, so the band is continuous across the waterline rather
+ * than starting at it.
+ *
+ * The slope uses Hunt's own clamps, so a marsh (flat) reads wet across its
+ * whole flat and a cut bank (steep) reads wet for a hand's width — the physical
+ * behaviour, from the same two numbers `6-2` regressed its run-up on.
+ */
+export function terrainBankWetness(
+  shoreDistanceMeters: number,
+  beachSlope: number,
+): number {
+  if (!Number.isFinite(shoreDistanceMeters) || !Number.isFinite(beachSlope)) {
+    throw new RangeError("Bank wetness inputs must be finite");
+  }
+  const slope = Math.min(
+    WATER_RUNUP_BEACH_SLOPE_MAXIMUM,
+    Math.max(WATER_RUNUP_BEACH_SLOPE_MINIMUM, beachSlope),
+  );
+  return terrainCapillaryWetness(shoreDistanceMeters * slope);
+}
+
+/** Everything `6-5` needs at one fragment; nulls are the unbound channels. */
+export interface TerrainWetnessInput {
+  /** Ground elevation minus STILL water level, positive above the waterline. */
+  readonly freeboardMeters: number;
+  /** `tan(beta)` from the terrain's own geometric normal. */
+  readonly beachSlope: number;
+  /** `6-2`'s Hunt excursion `sqrt(H L0)`; zero for a glassy sea. */
+  readonly swashExcursionMeters: number;
+  /** The swell's single temporal frequency — the phase lock. */
+  readonly radianFrequency: number;
+  /** The wrapped run-up clock, seconds. */
+  readonly runupClockSeconds: number;
+  /** Eroded-only: metres of lake water over this texel. Null = channel unbound. */
+  readonly lakeDepthMeters: number | null;
+  /** Eroded-only: signed metres to the nearest lake edge. Null = unbound. */
+  readonly shoreDistanceMeters: number | null;
+}
+
+/** What the two `3-7` response instructions and the silt tint read. */
+export interface TerrainWetnessField {
+  /** Drives roughness and albedo; exactly [0, 1]. */
+  readonly wetness: number;
+  /** Drives the water-column silt/biofilm tint; exactly [0, 1]. */
+  readonly submerged: number;
+}
+
+/**
+ * The composed field, statement for statement with its WGSL twin below.
+ *
+ * `wetness` is a MAXIMUM, not a sum: ground is as wet as the wettest reason it
+ * has, and a maximum of terms each in [0, 1] cannot leave [0, 1] — which is
+ * what keeps the `3-7` response inside the range it was tuned on without a
+ * saturating clamp hiding a term that ran away.
+ *
+ * `submerged` carries only the two terms that mean "there is a water COLUMN
+ * over this ground" — sea level and lake depth. Wet sand is wet, not tinted:
+ * the silt/biofilm/absorption mix belongs to a bed under water, and applying it
+ * to a swash band would paint the beach green.
+ */
+export function terrainWetnessField(input: TerrainWetnessInput): TerrainWetnessField {
+  const {
+    freeboardMeters,
+    beachSlope,
+    swashExcursionMeters,
+    radianFrequency,
+    runupClockSeconds,
+    lakeDepthMeters,
+    shoreDistanceMeters,
+  } = input;
+  const shore = terrainShoreWetness(
+    freeboardMeters,
+    beachSlope,
+    swashExcursionMeters,
+    radianFrequency,
+    runupClockSeconds,
+  );
+  const seaSubmerged = terrainSeaSubmergedFraction(freeboardMeters);
+  // The eroded-only half. A null channel contributes exactly zero, which is
+  // what makes an analytic world's field the sea-level band alone.
+  const lakeSubmerged = lakeDepthMeters === null
+    ? 0
+    : terrainLakeSubmergedFraction(lakeDepthMeters);
+  const bank = shoreDistanceMeters === null
+    ? 0
+    : terrainBankWetness(shoreDistanceMeters, beachSlope);
+  const submerged = Math.max(seaSubmerged, lakeSubmerged);
+  return {
+    wetness: Math.min(1, Math.max(
+      Math.max(submerged, shore),
+      bank,
+    )),
+    submerged,
+  };
+}
+
+/**
+ * The OCEAN half — sources 2 and 3 at sea level, as one function so the CPU
+ * oracle and the WGSL twin share a shape as well as a result.
+ */
+export function terrainShoreWetness(
+  freeboardMeters: number,
+  beachSlope: number,
+  swashExcursionMeters: number,
+  radianFrequency: number,
+  runupClockSeconds: number,
+): number {
+  if (
+    !Number.isFinite(freeboardMeters)
+    || !Number.isFinite(beachSlope)
+    || !Number.isFinite(radianFrequency)
+    || !Number.isFinite(runupClockSeconds)
+  ) {
+    throw new RangeError("Shore wetness inputs must be finite");
+  }
+  // The exact early-out; see `terrainShoreWetnessReachMeters`.
+  if (freeboardMeters > terrainShoreWetnessReachMeters(swashExcursionMeters)) return 0;
+  const swell: WaterShoreSwell = {
+    waveHeightMeters: 0,
+    wavelengthMeters: 1,
+    radianFrequency,
+    excursionMeters: Math.max(0, swashExcursionMeters),
+  };
+  const swashHeight = waterShoreRunupHeight(swell, beachSlope);
+  // Above the waterline the still-water depth is negative, so the eikonal's
+  // travel time clamps to zero and the whole swash zone beats together: a bore
+  // that has crossed the waterline is one sheet, not a train (D-12).
+  const phase = waterShoreRunupPhase(
+    -freeboardMeters,
+    beachSlope,
+    radianFrequency,
+    runupClockSeconds,
+  );
+  const swash = waterShoreWetness(freeboardMeters, swashHeight, phase, radianFrequency);
+  return Math.max(swash, terrainCapillaryWetness(freeboardMeters));
 }
 
 /** Height-gradient scales from atlas-texel space into the unit node mesh. */
@@ -639,6 +992,39 @@ ${TERRAIN_BOUNDARY_MORPH_WGSL}
 // brackets them; see the contract's note on why that order is load-bearing.
 attribute color: vec4f;
 #endif
+#if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_SURFACE_PAGE_CHANNELS)
+${VEGETATION_CANOPY_HANDOFF_WGSL}
+// 6-8: the canopy-closure channel, in the VERTEX stage.
+//
+// textureLoad, not textureSample: the vertex stage takes no sampler here for
+// the same reason the height atlas does not, and four exact loads give the
+// bilinear the lift needs without a blocky step at every channel texel.
+var terrainSplatWeightLo: texture_2d<f32>;
+
+fn terrainVertexCanopyClosure(lane: f32, pageLocalMeters: vec2f) -> f32 {
+  if (lane < 0.0) { return 0.0; }
+  let slot = floor(lane * ${1 / 32});
+  let level = lane - slot * 32.0;
+  let extent = uniforms.terrainPageAtlasGrid.y * exp2(level);
+  let grid = uniforms.terrainPageAtlasGrid.x;
+  let row = floor(slot / grid);
+  let slotOrigin = vec2f(slot - row * grid, row) * uniforms.terrainPageAtlas.y;
+  let core = uniforms.terrainPageAtlas.z;
+  let inPage = clamp(pageLocalMeters / extent, vec2f(0.0), vec2f(1.0));
+  let atlasPosition = slotOrigin + vec2f(uniforms.terrainPageAtlas.w)
+    + inPage * core - vec2f(0.5);
+  let base = floor(atlasPosition);
+  let fraction = atlasPosition - base;
+  let corner = vec2i(base);
+  let a00 = textureLoad(terrainSplatWeightLo, corner, 0).a;
+  let a10 = textureLoad(terrainSplatWeightLo, corner + vec2i(1, 0), 0).a;
+  let a01 = textureLoad(terrainSplatWeightLo, corner + vec2i(0, 1), 0).a;
+  let a11 = textureLoad(terrainSplatWeightLo, corner + vec2i(1, 1), 0).a;
+  let top = a00 + (a10 - a00) * fraction.x;
+  let bottom = a01 + (a11 - a01) * fraction.x;
+  return clamp(top + (bottom - top) * fraction.y, 0.0, 1.0);
+}
+#endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
 // built page-local and positioned by their world matrix, so this is free —
@@ -713,6 +1099,7 @@ varying terrainPageLocal: vec2f;
   let fine = select(coarse, sampledFine, fineResident);
   positionUpdated.y = fine.x + (coarse.x - fine.x) * vertexMorphK;
 
+
   // The atlas sampler already has the four bilinear corners in registers, so
   // its analytic gradient supplies a smooth shared-vertex normal at no extra
   // texture-load cost. Fine texels span 1/32 of a node; parent texels span
@@ -729,6 +1116,62 @@ varying terrainPageLocal: vec2f;
   // only repeats a dot/rsqrt for every terrain vertex and cascade.
   normalUpdated = vec3f(-nodeGradient.x, 1.0, -nodeGradient.y);
 #endif
+}
+#endif
+`,
+  /**
+   * `6-8` — the canopy's SILHOUETTE, at coarse LOD only.
+   *
+   * A forested ridgeline seen from 4 km is 20 m of canopy sitting on the rock,
+   * and past the impostor radius nothing draws it. The lift rides the SAME
+   * handoff law as the appearance ramp, so geometry and shading hand over
+   * together, times a NYQUIST gate on the node's own level: a lift the vertex
+   * grid can resolve would fight the trees drawn on top of it, and the whole
+   * justification for adding canopy to terrain HEIGHT is that at level 4 and up
+   * (32 m+ between vertices) canopy structure is below the lattice's Nyquist
+   * limit and can only be carried as bulk.
+   *
+   * **The hook is `CUSTOM_VERTEX_UPDATE_WORLDPOS`, not
+   * `CUSTOM_VERTEX_UPDATE_POSITION`, and that is load-bearing in both
+   * directions.** The position hook is emitted BEFORE `instancesVertex`, so
+   * `finalWorld` does not exist there and a camera range would have to
+   * re-derive the thin-instance matrix — mirroring Babylon-internal shipped
+   * WGSL, which the decision log already records as a thing that breaks on a
+   * version bump. Here `worldPos` is in hand. The reason `4-4` warns against
+   * this hook — that it moves geometry while leaving `vPositionW` behind, so
+   * haze and cloud shadows sit at the wrong altitude — is discharged by
+   * reassigning `vPositionW` immediately, which is exactly what that warning
+   * asks for and what the displacement path could not do.
+   *
+   * Cracks: the closure channel is band-limited at a FIXED 60 m rather than per
+   * page (`CANOPY_CLOSURE_FILTER_WIDTH_METERS`), so two nodes at different
+   * levels meeting along an edge read the same continuous field and their lifts
+   * agree to bilinear resampling error rather than to a level-dependent band
+   * weight. That is the property that makes a vertex-stage lift safe where a
+   * per-page baked one would open a seam.
+   */
+  CUSTOM_VERTEX_UPDATE_WORLDPOS: /* wgsl */ `
+#if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_SURFACE_PAGE_CHANNELS)
+{
+  let canopySubIndex = vertexInputs.terrainNodeA.y
+    - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
+  let canopySubZ = floor(canopySubIndex * 0.125);
+  let canopySubX = canopySubIndex - canopySubZ * 8.0;
+  let canopyNodeSpan = 64.0 * exp2(vertexInputs.terrainNodeA.z);
+  let canopyPageLocal = (vec2f(canopySubX, canopySubZ)
+    + vec2f(positionUpdated.x, positionUpdated.z)) * canopyNodeSpan;
+  let terrainCanopyCover = terrainVertexCanopyClosure(
+    vertexInputs.terrainNodeB.z, canopyPageLocal);
+  let canopyNyquist = smoothstep(2.0, 4.0, vertexInputs.terrainNodeA.z);
+  if (terrainCanopyCover > 0.002 && canopyNyquist > 0.0) {
+    let canopyLift = vegetationCanopyLiftMeters(
+      terrainCanopyCover,
+      distance(worldPos.xyz, scene.vEyePosition.xyz),
+      uniforms.terrainCanopyBands,
+    );
+    worldPos.y = worldPos.y + canopyLift * canopyNyquist;
+    vertexOutputs.vPositionW = worldPos.xyz;
+  }
 }
 #endif
 `,
@@ -800,8 +1243,17 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
   for (var cornerIndex = 0u; cornerIndex < 4u; cornerIndex = cornerIndex + 1u) {
     let texel = base + offsets[cornerIndex];
     let ids = textureLoad(terrainSplatId, texel, 0);
-    let weightLo = textureLoad(terrainSplatWeightLo, texel, 0);
-    let weightHi = textureLoad(terrainSplatWeightHi, texel, 0);
+    let storedLo = textureLoad(terrainSplatWeightLo, texel, 0);
+    let storedHi = textureLoad(terrainSplatWeightHi, texel, 0);
+    // 6-8: the ALPHA lane carries canopy closure, not the fourth material
+    // weight — which is redundant, because the bake normalises each bucket's
+    // top-4 vector. Reconstructing it as the residual is exact up to the
+    // other three lanes' 8-bit quantisation, and it makes the vector sum to
+    // exactly 1 where the stored one only did approximately.
+    let weightLo = vec4f(
+      storedLo.xyz, max(0.0, 1.0 - storedLo.x - storedLo.y - storedLo.z));
+    let weightHi = vec4f(
+      storedHi.xyz, max(0.0, 1.0 - storedHi.x - storedHi.y - storedHi.z));
     let weights = mix(weightLo, weightHi, blend) * cornerWeights[cornerIndex];
     for (var lane = 0u; lane < 4u; lane = lane + 1u) {
       let materialId = u32(clamp(floor(ids[lane] * idScale + 0.5),
@@ -1277,6 +1729,87 @@ fn terrainSurfaceSample(
 }
 
 // ---------------------------------------------------------------------------
+// 6-5's WETNESS FIELD, WGSL half. See the TypeScript twins above for the
+// derivation, the three sources and the not-seasonal decision.
+//
+// 6-2's block is composed here rather than restated. It declares no uniform,
+// samples no texture and takes no derivative, which is the property that lets
+// it cross from the water lattice into a terrain shader unchanged; every
+// function it defines carries a water- prefix, so the R-3F collision rule is
+// satisfied the same way 6-8's vegetationCanopyHandoff satisfies it.
+//
+// UNCONDITIONAL, not behind the hydrology define: the ocean half of this field
+// is driven by sea level and a published sea state, both of which exist in an
+// analytic world. Only the lake/bank half needs a page channel.
+// ---------------------------------------------------------------------------
+${WATER_SHORE_RUNUP_WGSL}
+
+// tan(beta) from the terrain's OWN geometric normal at full resolution — never
+// re-derived from the 16 m bathymetry, which is the resolution floor 6-2's
+// shore band had to go wide to hide.
+fn terrainSurfaceBeachSlope(normalY: f32) -> f32 {
+  let ny = max(normalY, ${terrainWgslFloat(TERRAIN_WETNESS_MINIMUM_NORMAL_Y)});
+  return sqrt(max(0.0, 1.0 - ny * ny)) / ny;
+}
+
+// Source 3: the capillary fringe over a waterline. Saturated at the waterline,
+// dry at the top of the fringe, continuous through zero so it joins the
+// submerged term without a seam. Written as 1 - smoothstep(low, high) — never
+// as a reversed pair, which the clamped form turns into a hard step.
+fn terrainSurfaceCapillaryWetness(heightAboveWaterMeters: f32) -> f32 {
+  return 1.0 - smoothstep(
+    0.0,
+    ${terrainWgslFloat(TERRAIN_WETNESS_CAPILLARY_RISE_METERS)},
+    heightAboveWaterMeters);
+}
+
+// Source 1's bank half: the signed shore distance converted to a freeboard by
+// the terrain's own gradient, through Hunt's own slope clamps. Inside the water
+// the product is negative and the fringe reads 1, so the band crosses the
+// waterline continuously instead of starting at it.
+fn terrainSurfaceBankWetness(shoreDistanceMeters: f32, beachSlope: f32) -> f32 {
+  let slope = clamp(
+    beachSlope,
+    WATER_RUNUP_BEACH_SLOPE_MINIMUM,
+    WATER_RUNUP_BEACH_SLOPE_MAXIMUM);
+  return terrainSurfaceCapillaryWetness(shoreDistanceMeters * slope);
+}
+
+// The OCEAN half of the field: 6-2's run-up persistence and the capillary band
+// above still water, from the freeboard this fragment already forms. Returns
+// exactly 0 for a glassy sea beyond the fringe, so an analytic world with no
+// published swell keeps the sea-level band alone with no branch of its own.
+fn terrainSurfaceShoreWetness(
+  freeboardMeters: f32,
+  beachSlope: f32,
+  excursionMeters: f32,
+  radianFrequency: f32,
+  runupClockSeconds: f32,
+) -> f32 {
+  // The EXACT early-out, and the reason the whole term costs an inland
+  // fragment one compare. waterShoreWetness's exceedance factor is identically
+  // zero past 1.35 R; R = clamp(slope) * excursion can never exceed
+  // 0.35 * excursion because Hunt's slope clamp caps it; and the capillary
+  // fringe is identically zero past its own rise. Above the larger of the two
+  // this function cannot return anything but zero, for ANY slope — so this
+  // skips an asin, an exp, a sin and a divide without changing a pixel.
+  let reach = max(
+    ${terrainWgslFloat(TERRAIN_WETNESS_CAPILLARY_RISE_METERS)},
+    max(excursionMeters, 0.0)
+      * WATER_RUNUP_BEACH_SLOPE_MAXIMUM * WATER_RUNUP_EXCEEDANCE);
+  if (freeboardMeters > reach) { return 0.0; }
+  let swell = WaterShoreSwell(0.0, 1.0, radianFrequency, max(excursionMeters, 0.0));
+  let swashHeight = waterShoreRunupHeight(swell, beachSlope);
+  // Above the waterline the still-water depth is negative, the eikonal's
+  // travel time clamps to zero, and the whole swash zone beats together: a
+  // bore that has crossed the waterline is one sheet, not a train.
+  let phase = waterShoreRunupPhase(
+    -freeboardMeters, beachSlope, radianFrequency, runupClockSeconds);
+  let swash = waterShoreWetness(freeboardMeters, swashHeight, phase, radianFrequency);
+  return max(swash, terrainSurfaceCapillaryWetness(freeboardMeters));
+}
+
+// ---------------------------------------------------------------------------
 // 4-7's channel pages, consumed on the CPU TILE MESHES.
 //
 // This is what makes Gate 4B visible one gate before the quadtree exists: the
@@ -1298,7 +1831,102 @@ var terrainSplatWeightLo: texture_2d<f32>;
 var terrainSplatWeightHiSampler: sampler;
 var terrainSplatWeightHi: texture_2d<f32>;
 
+#ifdef TERRAIN_SURFACE_HYDROLOGY_CHANNELS
+// 6-6: the signed shore-distance channel, r16sint, addressed by textureLoad.
+//
+// An INTEGER texture takes no sampler binding, so this costs one sampled-texture
+// slot and no sampler slot — the plugin goes from 8 fragment textures to 9
+// against WebGPU's 16-per-stage base limit, leaving 6-5 and 6-8 the room the
+// section 1.2 count reserved.
+//
+// It is declared behind its own define rather than behind the zero sentinel
+// alone: an analytic world has no hydrology at all, so compiling the binding,
+// the load and the ALU out of the shipping default makes the parity guarantee
+// COST-dark as well as pixel-dark. The page guard below still runs inside an
+// eroded world, where a page can be geometry-resident before its aux upload.
+var terrainShoreDistanceAtlas: texture_2d<i32>;
+
+// The riparian bank band at this fragment, on the density field's own corridor
+// shape. Zero away from water, zero over water (the submerged term owns that),
+// zero on any page without a channel slot.
+fn terrainSurfaceRiparianBand(uv: vec4f) -> f32 {
+  if (uv.z <= 0.0) { return 0.0; }
+  let texel = vec2i(floor(uv.xy * uniforms.terrainPageAtlas.x));
+  let distanceMeters = f32(textureLoad(terrainShoreDistanceAtlas, texel, 0).r)
+    * ${TERRAIN_PAGE_HYDROLOGY_ENCODING.shoreDistanceMetersPerUnit};
+  if (distanceMeters <= 0.0) { return 0.0; }
+  return smoothstep(
+      ${RIPARIAN_BANK_NEAR_METERS.toFixed(2)},
+      ${RIPARIAN_BANK_FULL_METERS.toFixed(2)},
+      distanceMeters)
+    * (1.0 - smoothstep(
+      ${RIPARIAN_BANK_FADE_START_METERS.toFixed(2)},
+      ${RIPARIAN_BANK_FADE_END_METERS.toFixed(2)},
+      distanceMeters));
+}
+
+// 6-5: the lake-depth channel — C-9's last dark row, and its first named
+// consumer in the project's history. r16float in METRES of water column, read
+// by textureLoad with NO companion sampler declared, so it costs one
+// sampled-texture slot and zero sampler slots. The fragment goes from 9 sampled
+// textures to 10 against WebGPU's 16-per-stage base limit and stays at 8
+// samplers; the shipping ANALYTIC build compiles neither, so its count is
+// unchanged at 8 textures / 8 samplers.
+var terrainLakeDepthAtlas: texture_2d<f32>;
+
+// (submerged fraction, bank wetness) at this fragment.
+//
+// x is the lake's OWN submerged term: lakeDepth is metres of water column
+// over this texel, so a lake at 400 m elevation finally reads as a wet bed
+// instead of the dry SAND the WATER biome's primary material paints — the case
+// the sea-level term structurally cannot answer, because (seaLevel - y) is
+// hugely negative up there.
+//
+// y is the bank fringe, from the SAME wet mask: terrainSignedShoreDistance
+// signs its transform on lakeDepth > 0, so the two channels share one
+// waterline by construction and the fringe joins the bed without a seam.
+// Zero on any page without a channel slot, which is the co-residency rule.
+fn terrainSurfaceLakeWetness(uv: vec4f, beachSlope: f32) -> vec2f {
+  if (uv.z <= 0.0) { return vec2f(0.0, 0.0); }
+  let texel = vec2i(floor(uv.xy * uniforms.terrainPageAtlas.x));
+  let depthMeters = textureLoad(terrainLakeDepthAtlas, texel, 0).r;
+  let distanceMeters = f32(textureLoad(terrainShoreDistanceAtlas, texel, 0).r)
+    * ${TERRAIN_PAGE_HYDROLOGY_ENCODING.shoreDistanceMetersPerUnit};
+  return vec2f(
+    clamp(
+      depthMeters / ${terrainWgslFloat(TERRAIN_WETNESS_LAKE_SUBMERGED_DEPTH_METERS)},
+      0.0,
+      1.0),
+    terrainSurfaceBankWetness(distanceMeters, beachSlope),
+  );
+}
+#endif
+
 ${TERRAIN_SPARSE_SPLAT_GATHER_WGSL}
+${VEGETATION_CANOPY_HANDOFF_WGSL}
+
+/**
+ * 6-8: canopy closure at this fragment, from the weight atlas's alpha lane.
+ *
+ * A SINGLE bilinear tap, not the sparse gather's twelve loads, and it is read
+ * at EVERY level rather than behind the page-splat confidence gate. That is
+ * the difference between a categorical channel and a continuous one: filtering
+ * two material ids together manufactures a material neither texel chose, but
+ * filtering two closures together is what closure means. The gate exists to
+ * stop a coarse texel inventing a categorical patch; closure has no such
+ * failure mode, and the far handoff needs it exactly where the gate closes.
+ *
+ * A 1-texel bilinear footprint cannot cross a slot: the page-UV helper clamps
+ * page-local into [0, 1] and the bake writes the full gutter.
+ */
+fn terrainSurfaceCanopyClosure(uv: vec4f) -> f32 {
+  if (uv.z <= 0.0) { return 0.0; }
+  return clamp(
+    textureSampleLevel(
+      terrainSplatWeightLo, terrainSplatWeightLoSampler, uv.xy, 0.0).a,
+    0.0,
+    1.0);
+}
 
 /**
  * Sparse bilinear page splat. Material identifiers are categorical data: a
@@ -1947,25 +2575,125 @@ terrainRunwaySurface(
 );
 #endif
 
-// 3-7's wetness response. The driven field is a constant zero until 6-5
-// supplies it from the water side — two instructions today against threading a
-// new input through a finished shader later — but SUBMERGED ground is the one
-// case that is unambiguous now, and it has to be handled here or the seabed
-// shows through the water as dry land.
+// 3-7's wetness response, driven at last. The two response instructions are
+// verbatim what 3-7 shipped; what changed is that terrainWetness is now a
+// FIELD (6-5) instead of a uniform lane that carried a constant zero.
 //
-// It showed through, in fact: the first capture after this plugin landed
-// turned every lake grey, because the WATER biome's primary is sand (it has to
-// be — beach is its only neighbour on the ecotone axis) and dry sand is the
-// brightest material in the table at 0.42. Wet it, then silt it, and the
-// composite lands near the 0.08 the old water palette used.
+// SUBMERGED ground was the one case 3-7 could answer on its own, and it had to
+// be: the first capture after this plugin landed turned every lake grey,
+// because the WATER biome's primary is sand (it has to be — beach is its only
+// neighbour on the ecotone axis) and dry sand is the brightest material in the
+// table at 0.42. Wet it, then silt it, and the composite lands near the 0.08
+// the old water palette used. That term is untouched here and stays
+// authoritative under the sea.
 let terrainSeaLevel = uniforms.terrainSurfaceWetness.y;
 let terrainSubmerged = clamp((terrainSeaLevel - terrainAbsolutePosition.y) * 0.5 + 0.5, 0.0, 1.0);
-let terrainWetness = max(clamp(uniforms.terrainSurfaceWetness.x, 0.0, 1.0), terrainSubmerged);
+// The freeboard 6-2's contract asks for, formed exactly as its docblock says:
+// ground elevation minus STILL water level, positive above the waterline.
+let terrainFreeboard = terrainAbsolutePosition.y - terrainSeaLevel;
+let terrainBeachSlope = terrainSurfaceBeachSlope(terrainGeometricNormal.y);
+// Sources 2 and 3 at the sea: the run-up's wet-sand persistence and the
+// capillary fringe. Both are analytic — sea level and the published sea state
+// exist in every world — so this half needs no channel and no sentinel.
+let terrainShoreWetness = terrainSurfaceShoreWetness(
+  terrainFreeboard,
+  terrainBeachSlope,
+  uniforms.terrainSurfaceWetness.x,
+  uniforms.terrainSurfaceWetness.w,
+  uniforms.terrainSurfaceShoreClock.x,
+);
+// Source 1's inland half, eroded-only: the lake bed and its bank fringe.
+var terrainLakeWetness = vec2f(0.0, 0.0);
+#ifdef TERRAIN_SURFACE_HYDROLOGY_CHANNELS
+terrainLakeWetness = terrainSurfaceLakeWetness(terrainPageUv, terrainBeachSlope);
+#endif
+// A MAXIMUM, not a sum: ground is as wet as the wettest reason it has, and a
+// maximum of terms each in [0, 1] cannot leave [0, 1].
+let terrainSubmergedTotal = max(terrainSubmerged, terrainLakeWetness.x);
+let terrainWetness = clamp(
+  max(
+    max(terrainSubmergedTotal, terrainShoreWetness),
+    terrainLakeWetness.y,
+  ),
+  0.0,
+  1.0);
 terrainRoughness = mix(terrainRoughness, terrainRoughness * 0.35 + 0.02, terrainWetness);
 terrainAlbedo *= mix(1.0, 0.62, terrainWetness);
 // Silt, biofilm and the water column's own absorption on top of the wetting:
-// a lake bed is not a beach, and red goes first.
-terrainAlbedo = mix(terrainAlbedo, terrainAlbedo * vec3f(0.26, 0.40, 0.44), terrainSubmerged);
+// a lake bed is not a beach, and red goes first. Wet SAND is wet, not tinted —
+// only the two terms that mean "there is a water column over this ground" feed
+// this, or a swash band would paint the beach green.
+terrainAlbedo = mix(
+  terrainAlbedo, terrainAlbedo * vec3f(0.26, 0.40, 0.44), terrainSubmergedTotal);
+
+#ifdef TERRAIN_SURFACE_HYDROLOGY_CHANNELS
+// 6-6, the appearance half of the shore-distance channel: WET LITTER.
+//
+// Forest duff at a water's edge is permanently soaked, and soaked duff is far
+// darker and smoother than the dry needle litter the ForestFloor recipe
+// synthesises. This is deliberately NOT a general ground wetness (that field
+// is 6-5's, and it drives the block above): it is gated on the splat's own
+// forest-floor share, so a gravel bar and a reed flat beside the same stream
+// keep their own materials while the duff under the bankside trees goes dark.
+var terrainForestFloorShare = 0.0;
+if (i32(terrainLowerId) == ${SurfaceMaterial.ForestFloor}) {
+  terrainForestFloorShare = terrainForestFloorShare + (1.0 - terrainAxisFraction);
+}
+if (i32(terrainUpperId) == ${SurfaceMaterial.ForestFloor}) {
+  terrainForestFloorShare = terrainForestFloorShare + terrainAxisFraction;
+}
+let terrainWetLitter = terrainSurfaceRiparianBand(terrainPageUv)
+  * clamp(terrainForestFloorShare, 0.0, 1.0);
+terrainAlbedo *= mix(1.0, 0.68, terrainWetLitter);
+terrainRoughness = mix(terrainRoughness, terrainRoughness * 0.62 + 0.02, terrainWetLitter);
+#endif
+
+// ---------------------------------------------------------------------------
+// 6-8 — the canopy/terrain handoff.
+//
+// One law, two halves, and they are the SAME quantity: the canopy the
+// renderer's own stems do not draw. Near the camera that residual is canopy
+// you stand UNDER, so it takes direct sun out of the ground (QR-2's dappled
+// light, deferred since the fix-pack as "a canopy-closure -> terrain-splat
+// coupling"). Beyond the impostor radius nothing is drawn at all, so the same
+// residual is canopy you LOOK AT and the ground has to be it.
+//
+// Coverage is conserved identically rather than approximately: the deficit is
+// DEFINED as closure minus what geometry supplies, and the two halves are
+// affine in the rendered share, which is continuous everywhere and reaches
+// exactly zero at the impostor band's own cull edge. There is no ring to see
+// because there is no discontinuity to see.
+// ---------------------------------------------------------------------------
+var terrainCanopyShade = 0.0;
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+{
+  let terrainCanopyCover = terrainSurfaceCanopyClosure(terrainPageUv);
+  if (terrainCanopyCover > 0.002) {
+    let canopyRange = distance(fragmentInputs.vPositionW, scene.vEyePosition.xyz);
+    let canopySplit = vegetationCanopyHandoff(
+      terrainCanopyCover,
+      vegetationCanopyRenderedShare(canopyRange, uniforms.terrainCanopyBands),
+    );
+    terrainCanopyShade = canopySplit.shade;
+    // The surface half: the ground becomes the canopy's own material, at the
+    // impostor's measured response rather than at a chosen colour.
+    let canopySurface = canopySplit.surface;
+    terrainAlbedo = mix(
+      terrainAlbedo,
+      vec3f(${TERRAIN_CANOPY_ALBEDO}),
+      canopySurface);
+    terrainRoughness = mix(
+      terrainRoughness, ${TERRAIN_CANOPY_ROUGHNESS}, canopySurface);
+    terrainF0 = mix(terrainF0, terrainF0 * ${TERRAIN_CANOPY_SPECULAR}, canopySurface);
+    // Ambient: a per-fragment material cannot move environmentIntensity, and
+    // AO multiplies the identical term. The canopy's AO factor IS the
+    // impostor material's 0.62 probe trim, so the two representations answer
+    // the sky with the same number.
+    terrainCavity = terrainCavity
+      * mix(1.0, ${TERRAIN_CANOPY_AMBIENT}, canopySurface);
+  }
+}
+#endif
 
 surfaceAlbedo = terrainAlbedo;
 normalW = normalize(terrainNormal);
@@ -2054,9 +2782,16 @@ ${RUNWAY_SURFACE_WGSL}
   // 40 km, where the cascaded shadow map has never reached.
   CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: /* wgsl */ `
 #ifndef UNLIT
-finalDiffuse *= terrainHorizonShadow;
+// 6-8 absorbs QR-2 here, at the horizon shadow's hook and for its reason: a
+// canopy occludes the SUN, and multiplying it into ambient as well would
+// darken the same ground twice for one occluder. The strength is the canopy
+// DEFICIT you stand under — what the near band failed to draw — so ground with
+// a fully rendered stand above it takes nothing, and the term vanishes again
+// past the impostor radius where the surface half takes over.
+let terrainCanopyDirect = 1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE};
+finalDiffuse *= terrainHorizonShadow * terrainCanopyDirect;
 #ifdef SPECULARTERM
-finalSpecularScaled *= terrainHorizonShadow;
+finalSpecularScaled *= terrainHorizonShadow * terrainCanopyDirect;
 #endif
 #endif
 `,
@@ -2101,7 +2836,17 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private runwayFrame: readonly [number, number, number, number] = [0, 0, 0, 1];
   private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
   private detileWarp = DEFAULT_DETILE_WARP;
-  private wetness = 0;
+  /**
+   * `6-5`'s field drivers, replacing `3-7`'s never-driven constant.
+   *
+   * A zero excursion is the glassy-sea default and is exactly what an
+   * un-driven build gets: `waterShoreWetness` returns 0 for it, so the field
+   * collapses to the sea-level submerged band plus the capillary fringe with
+   * no branch of its own.
+   */
+  private swashExcursionMeters = 0;
+  private radianFrequency = 0;
+  private runupClockSeconds = 0;
   private snowlineMeters = TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS;
   private referenceSnowlineMeters = TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS;
   private seaLevelMeters = 0;
@@ -2112,12 +2857,26 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private horizonAtlasA: BaseTexture | null = null;
   private horizonAtlasB: BaseTexture | null = null;
   private splatAtlases: readonly (BaseTexture | null)[] = [null, null, null, null];
+  /** `6-6`: null in every analytic world, which is what removes the define. */
+  private shoreDistanceAtlas: BaseTexture | null = null;
+  /** `6-5`: `lakeDepth`'s first named consumer; null on the same gate. */
+  private lakeDepthAtlas: BaseTexture | null = null;
   private seasonBlend = 0;
   private pageAtlasShape: readonly [number, number, number, number] = [1, 1, 1, 0];
   private pageAtlasGrid: readonly [number, number, number, number] = [1, 512, 1, 0.02];
   private sunDirection: readonly [number, number, number] = [0, 1, 0];
   private heightAtlasTexture: BaseTexture | null = null;
   private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
+  /**
+   * `6-8`: (near band radius, impostor radius, far floor share, canopy height).
+   *
+   * The default is the G-target tier's law, so a material bound before the
+   * clipmap publishes a profile still hands off correctly rather than
+   * collapsing the ramp to "everything is canopy" at zero range.
+   */
+  private canopyBands: readonly [number, number, number, number] = [
+    150, 3_000, 0.045, CANOPY_DOMINANT_HEIGHT_METERS,
+  ];
   private cdlodEnabled = false;
 
   constructor(material: PBRMaterial) {
@@ -2131,6 +2890,13 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         TERRAIN_SURFACE_THREE_MATERIALS: false,
         TERRAIN_SURFACE_RUNWAY: false,
         TERRAIN_SURFACE_PAGE_CHANNELS: false,
+        // 6-6. Declared here as well as set in prepareDefines: a define the
+        // constructor does not list is never registered with the material, so
+        // its #ifdef silently reads false and the block vanishes from a shader
+        // that was supposed to have it. That failure is invisible to
+        // prepareDefines-only tests, which is why the GPU wrapper test asserts
+        // the compiled fragment source.
+        TERRAIN_SURFACE_HYDROLOGY_CHANNELS: false,
         TERRAIN_SURFACE_CDLOD: false,
       },
       true,
@@ -2244,9 +3010,27 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.detileWarp = Number.isFinite(amount) ? Math.max(0, amount) : DEFAULT_DETILE_WARP;
   }
 
-  /** `3-7`'s wetness input; `6-5` supplies the field. */
-  setWetness(value: number): void {
-    this.wetness = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+  /**
+   * `6-5`: the sea state `3-7`'s wetness response has been waiting for.
+   *
+   * This replaces `setWetness`, which carried a scalar constant and never had a
+   * caller. The swell is `SpectralOceanSystem.shoreRunupSwell()` — the CPU twin
+   * of the band the shader's own dominant-cascade rule selects, agreement
+   * pinned rather than assumed (D-12(c)) — and `timeSeconds` must be the WATER's
+   * clock, or the sand would dry out of time with the surf that wetted it.
+   *
+   * The clock is wrapped HERE, in f64, by 6-2's own `waterRunupClock`: the
+   * uniform is f32, and an unwrapped session clock loses phase resolution long
+   * before the 4096 s wrap would be visible against surf.
+   */
+  setShoreWetness(swell: Readonly<WaterShoreSwell>, timeSeconds: number): void {
+    const excursion = swell.excursionMeters;
+    const frequency = swell.radianFrequency;
+    this.swashExcursionMeters = Number.isFinite(excursion) ? Math.max(0, excursion) : 0;
+    this.radianFrequency = Number.isFinite(frequency) ? Math.max(0, frequency) : 0;
+    this.runupClockSeconds = Number.isFinite(timeSeconds)
+      ? waterRunupClock(timeSeconds)
+      : 0;
   }
 
   /**
@@ -2284,6 +3068,20 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     horizonA: BaseTexture | null,
     horizonB: BaseTexture | null,
     splat: readonly (BaseTexture | null)[],
+    /**
+     * `6-6`: the signed shore-distance aux resource, or null. Null is not a
+     * fallback value — it removes the define, and with it the binding, the
+     * load and the wet-litter ALU, which is what keeps the shipping analytic
+     * build byte- AND cost-identical.
+     */
+    shoreDistance: BaseTexture | null,
+    /**
+     * `6-5`: the lake-depth aux resource, or null. Same gate, same reason — and
+     * the two travel together because the shore distance's own wet mask IS
+     * `lakeDepth > 0`, so a build that has one and not the other would be
+     * reading two halves of one waterline from different frames.
+     */
+    lakeDepth: BaseTexture | null,
     shape: {
       readonly atlasEdge: number;
       readonly slotEdge: number;
@@ -2294,10 +3092,14 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     },
   ): void {
     const enabled = occlusion !== null && horizonA !== null && horizonB !== null;
+    const hydrologyEnabled = enabled && shoreDistance !== null && lakeDepth !== null;
+    const hydrologyChanged = hydrologyEnabled !== (this.shoreDistanceAtlas !== null);
     this.occlusionAtlas = occlusion;
     this.horizonAtlasA = horizonA;
     this.horizonAtlasB = horizonB;
     this.splatAtlases = splat;
+    this.shoreDistanceAtlas = hydrologyEnabled ? shoreDistance : null;
+    this.lakeDepthAtlas = hydrologyEnabled ? lakeDepth : null;
     this.pageAtlasShape = [shape.atlasEdge, shape.slotEdge, shape.core, shape.gutter];
     this.pageAtlasGrid = [
       shape.gridEdge,
@@ -2305,7 +3107,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       1,
       this.pageAtlasGrid[3],
     ];
-    if (enabled === (this.occlusionAtlas !== null && this.horizonAtlasA !== null)) {
+    if (
+      hydrologyChanged
+      || enabled === (this.occlusionAtlas !== null && this.horizonAtlasA !== null)
+    ) {
       this.markAllDefinesAsDirty();
     }
   }
@@ -2348,6 +3153,36 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   /**
+   * `6-8`: the tier's vegetation band radii, for the canopy handoff.
+   *
+   * These are the rendered-density law's own numbers, handed down from the
+   * quality profile rather than re-derived here: how far geometry reaches is a
+   * vegetation fact, and the ground's job is only to carry whatever the
+   * geometry does not.
+   */
+  setCanopyBands(
+    nearRadiusMeters: number,
+    impostorRadiusMeters: number,
+    farFloorShare: number,
+  ): void {
+    if (
+      !Number.isFinite(nearRadiusMeters)
+      || !Number.isFinite(impostorRadiusMeters)
+      || !Number.isFinite(farFloorShare)
+      || nearRadiusMeters <= 0
+      || impostorRadiusMeters <= nearRadiusMeters
+    ) {
+      throw new RangeError("Canopy bands need a positive near radius inside the impostor radius");
+    }
+    this.canopyBands = [
+      nearRadiusMeters,
+      impostorRadiusMeters,
+      Math.min(1, Math.max(0, farFloorShare)),
+      CANOPY_DOMINANT_HEIGHT_METERS,
+    ];
+  }
+
+  /**
    * The direction TOWARD the sun, in world space (Babylon's directional light
    * points the other way). Only the horizon shadow reads it.
    */
@@ -2366,6 +3201,16 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     defines["TERRAIN_SURFACE_CDLOD"] = this.cdlodEnabled;
     defines["TERRAIN_SURFACE_PAGE_CHANNELS"] =
       this.occlusionAtlas !== null && this.horizonAtlasA !== null && this.horizonAtlasB !== null;
+    // 6-6: implies PAGE_CHANNELS by construction (setChannelAtlas clears the
+    // shore atlas whenever the channel atlas is absent), so the hydrology block
+    // may use terrainPageUv without a second guard.
+    // 6-5 rides the SAME define rather than adding one: `lakeDepth` and
+    // `shoreDistance` come from one hydrology upload gate and describe one
+    // waterline, so a permutation that has one without the other does not
+    // exist. Declared in the constructor's map above, without which the
+    // `#ifdef` reads false in silence.
+    defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"] =
+      this.shoreDistanceAtlas !== null && this.lakeDepthAtlas !== null;
   }
 
   override getSamplers(samplers: string[]): void {
@@ -2379,6 +3224,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainSplatId",
       "terrainSplatWeightLo",
       "terrainSplatWeightHi",
+      "terrainShoreDistanceAtlas",
+      "terrainLakeDepthAtlas",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
@@ -2427,6 +3274,19 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       const texture = this.splatAtlases[index];
       if (texture) uniformBuffer.setTexture(name, texture);
     });
+    if (this.shoreDistanceAtlas) {
+      // r16sint: no sampler is declared beside it, so this binds a sint
+      // sampled texture that only textureLoad may read — the same discipline
+      // the r32float height atlas follows.
+      uniformBuffer.setTexture("terrainShoreDistanceAtlas", this.shoreDistanceAtlas);
+    }
+    if (this.lakeDepthAtlas) {
+      // r16float, and NO sampler is declared beside it either: the shader only
+      // ever textureLoads it, so this adds a sampled-texture slot and no
+      // sampler slot — the same discipline the shore-distance and height
+      // atlases follow.
+      uniformBuffer.setTexture("terrainLakeDepthAtlas", this.lakeDepthAtlas);
+    }
     if (this.heightAtlasTexture) {
       // r32float: Babylon flips the binding to `unfilterable-float` and its
       // sampler to `non-filtering` automatically, because
@@ -2443,12 +3303,27 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       ubo: [
         { name: "terrainWorldOrigin", size: 2, type: "vec2" },
         { name: "terrainSurfaceTuning", size: 4, type: "vec4" },
+        // 6-5 spent this vec4's two idle lanes rather than adding two: x was
+        // 3-7's never-driven wetness constant and w was reserved-zero. They now
+        // carry the swash excursion and the swell's radian frequency; y (sea
+        // level) and z (the reference snowline) are unchanged, so every
+        // existing reader of this uniform reads exactly what it read before.
         { name: "terrainSurfaceWetness", size: 4, type: "vec4" },
+        // 6-5: the wrapped run-up clock, in seconds. It cannot ride the vec4
+        // above — the excursion and the frequency filled it — and it must be
+        // declared unconditionally, like the runway frame, because Babylon
+        // collects the UBO layout once.
+        { name: "terrainSurfaceShoreClock", size: 4, type: "vec4" },
         // 4-7: (atlasEdge, slotEdge, core, gutter) and
         // (gridEdge, basePageExtent, occlusionStrength, horizonSoftness).
         { name: "terrainPageAtlas", size: 4, type: "vec4" },
         { name: "terrainPageAtlasGrid", size: 4, type: "vec4" },
         { name: "terrainSunDirection", size: 4, type: "vec4" },
+        // 6-8: (near band radius, impostor radius, far floor share, canopy
+        // height). The first three are the tier's rendered-density law; the
+        // fourth is vegetation's own canopy-top constant. Declared
+        // unconditionally for the same reason the runway frame is.
+        { name: "terrainCanopyBands", size: 4, type: "vec4" },
         // 4-4: (atlasEdge, slotEdge, gutter, gridEdge) for the height atlas.
         { name: "terrainHeightAtlasShape", size: 4, type: "vec4" },
         {
@@ -2482,13 +3357,25 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     );
     uniformBuffer.updateFloat4(
       "terrainSurfaceWetness",
-      this.wetness,
+      // x: 6-5's Hunt excursion, sqrt(H L0) in metres. The fragment multiplies
+      // it by its OWN clamped beach slope, because the excursion is slope-free
+      // and only the conversion to an elevation is not.
+      this.swashExcursionMeters,
       // y: sea level, so the submerged half of the wetness response can exist
-      // before 6-5 supplies the driven field.
+      // wherever the field's swash half does not reach.
       this.seaLevelMeters,
       // z: the REFERENCE snowline, so the shader can tell how far the current
       // one has descended and contribute nothing at the reference day.
       this.referenceSnowlineMeters,
+      // w: 6-5's radian frequency — the ONE temporal frequency in the run-up,
+      // and the phase lock that keeps the sand drying in time with the surf.
+      this.radianFrequency,
+    );
+    uniformBuffer.updateFloat4(
+      "terrainSurfaceShoreClock",
+      this.runupClockSeconds,
+      0,
+      0,
       0,
     );
     uniformBuffer.updateFloatArray("terrainMaterialTiling", this.tiling);
@@ -2498,6 +3385,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     // w carries the season cross-fade: one vec4 rather than a second one for
     // a single scalar, and the two are read in the same block.
     uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, this.seasonBlend);
+    uniformBuffer.updateFloat4("terrainCanopyBands", ...this.canopyBands);
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
     uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);

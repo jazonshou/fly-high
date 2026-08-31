@@ -266,6 +266,7 @@ describe("adaptive governor (1A-6b)", () => {
       cloudShadowIntervalFrames: null,
       shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
       vegetationDistanceScale: 1,
+      groundCoverGateScale: 1,
       computeBudgetScale: 1,
     });
     // The GPU ladder touches only render-side fields. (2-10 retired the
@@ -281,11 +282,16 @@ describe("adaptive governor (1A-6b)", () => {
     expect(workLeverSettingsFor(0, 2).computeBudgetScale).toBe(0.35);
     expect(workLeverSettingsFor(0, 2).cloudShadowIntervalFrames).toBeNull();
     expect(workLeverSettingsFor(0, 3).cloudShadowIntervalFrames).toBe(3);
+    // `6-9`/`P-5`: the ground-cover gate is the LAST rung, after vegetation
+    // distance, exactly where the wave-P plan put it — and it is untouched
+    // until every cheaper GPU lever has been spent.
+    expect(workLeverSettingsFor(0, 7).groundCoverGateScale).toBe(1);
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
       computeBudgetScale: 0.35,
       cloudShadowIntervalFrames: 4,
       shadowCasterDistanceMeters: 1_200,
       vegetationDistanceScale: 0.75,
+      groundCoverGateScale: 0.3,
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
       detailCellBudgetMs: 2,
       activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
@@ -295,7 +301,8 @@ describe("adaptive governor (1A-6b)", () => {
     expect(cpuWorkLeverName(CPU_WORK_MAX_LEVEL)).toBe("animal-budget");
     expect(gpuWorkLeverName(1)).toBe("compute-budget");
     expect(gpuWorkLeverName(3)).toBe("cloud-shadow-cadence");
-    expect(gpuWorkLeverName(GPU_WORK_MAX_LEVEL)).toBe("vegetation-distance");
+    expect(gpuWorkLeverName(7)).toBe("vegetation-distance");
+    expect(gpuWorkLeverName(GPU_WORK_MAX_LEVEL)).toBe("ground-cover-gate");
     expect(() => workLeverSettingsFor(CPU_WORK_MAX_LEVEL + 1, 0)).toThrow(RangeError);
     expect(() => workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL + 1)).toThrow(RangeError);
   });

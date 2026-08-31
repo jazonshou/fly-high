@@ -28,9 +28,20 @@ import {
 describe("shared amortised-compute meter (4-0b)", () => {
   const rows = FRAME_BUDGET_MS[1];
 
-  it("caps at the sum of the four compute rows and scales with the governor", () => {
-    const expected =
-      rows.terrainCompute + rows.splatCompute + rows.occlusionCompute + rows.erosionCompute;
+  it("caps at the sum of every compute row and scales with the governor", () => {
+    // `6-9` added a fifth client. The cap is the sum of the CLIENTS' rows, so
+    // this sums them from the client list rather than by hand — a sixth
+    // client added without a row would now fail here instead of quietly
+    // widening the cap.
+    const expected = COMPUTE_BUDGET_CLIENTS.reduce(
+      (sum, client) => sum + rows[client],
+      0,
+    );
+    expect(expected).toBeCloseTo(
+      rows.terrainCompute + rows.splatCompute + rows.occlusionCompute
+        + rows.erosionCompute + rows.groundCoverCompute,
+      9,
+    );
     expect(computeBudgetCapMs(rows)).toBeCloseTo(expected, 9);
     expect(computeBudgetCapMs(rows, 0.5)).toBeCloseTo(expected * 0.5, 9);
     expect(computeBudgetCapMs(rows, 5)).toBeCloseTo(expected, 9);
@@ -227,6 +238,175 @@ describe("shared amortised-compute meter (4-0b)", () => {
     budget.submit("occlusionCompute", 20, 0.1);
     const second = budget.resolve();
     expect(second.spentMs + shared.spentMs).toBeGreaterThan(shared.capMs);
+  });
+});
+
+/**
+ * `6-9` — wave G's first debt. The per-frame ground-cover field ran OUTSIDE
+ * this meter: plan `G-1` named the client, nothing created it, and the one
+ * place that is supposed to know what a frame spends on compute could not see
+ * the only client that dispatches every frame.
+ */
+describe("groundCoverCompute admission (6-9)", () => {
+  const rows = FRAME_BUDGET_MS[1];
+
+  it("is a real client with a real row, ordered LAST", () => {
+    expect(COMPUTE_BUDGET_CLIENTS).toContain("groundCoverCompute");
+    expect(COMPUTE_BUDGET_CLIENTS[COMPUTE_BUDGET_CLIENTS.length - 1])
+      .toBe("groundCoverCompute");
+    for (const tier of [0, 1, 2, 3] as const) {
+      expect(FRAME_BUDGET_MS[tier].groundCoverCompute, `tier ${tier}`).toBeGreaterThan(0);
+    }
+    expect(COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute).toBeGreaterThan(0);
+  });
+
+  it("admits the field's three rings on a calm frame", () => {
+    const plan = planComputeAdmissions(
+      [{
+        client: "groundCoverCompute",
+        count: 3,
+        costMs: COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute,
+      }],
+      rows,
+    );
+    expect(plan.admissions[0]!.admitted).toBe(3);
+    expect(plan.deferredDispatches).toBe(0);
+    // Three rings must fit inside the client's OWN row, not only inside the
+    // shared cap: the reservation pass is what stops a burst of page bakes
+    // from starving the field on a streaming frame.
+    expect(3 * COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute)
+      .toBeLessThanOrEqual(rows.groundCoverCompute + 1e-9);
+  });
+
+  it("defers the field before any higher-priority client, floor included", () => {
+    // Every client over-requests. Ground cover is last, so it is the first to
+    // be deferred — and the floor of one belongs to the HIGHEST-priority
+    // client with demand, never to this one.
+    const plan = planComputeAdmissions(
+      COMPUTE_BUDGET_CLIENTS.map((client) => ({ client, count: 40, costMs: 0.3 })),
+      rows,
+    );
+    const ground = plan.admissions.find((row) => row.client === "groundCoverCompute")!;
+    expect(ground.requested).toBe(40);
+    expect(ground.admitted).toBeLessThan(ground.requested);
+    // `4.5-B2(b)`: the cap may be exceeded by EXACTLY one dispatch, and only
+    // for the highest-priority starved client. If ground cover were taking
+    // the floor the overshoot would be attributed to it instead.
+    expect(plan.spentMs).toBeLessThanOrEqual(plan.capMs + 0.3 + 1e-9);
+  });
+
+  it("takes the anti-starvation floor only when nothing outranks it", () => {
+    // A dispatch priced far above the whole cap: without the floor this
+    // client would admit zero forever, and — because a starved client never
+    // observes a cost — its estimate would never fall. The absorbing state
+    // `4.5-B2(b)` exists to prevent, in the newest client.
+    const cap = computeBudgetCapMs(rows);
+    const alone = planComputeAdmissions(
+      [{ client: "groundCoverCompute", count: 3, costMs: cap * 4 }],
+      rows,
+    );
+    expect(alone.admissions[0]!.admitted).toBe(1);
+    expect(alone.spentMs).toBeGreaterThan(alone.capMs);
+
+    // With a higher-priority client also starved, the floor goes to THAT one
+    // and ground cover waits.
+    const contested = planComputeAdmissions(
+      [
+        { client: "terrainCompute", count: 1, costMs: cap * 4 },
+        { client: "groundCoverCompute", count: 3, costMs: cap * 4 },
+      ],
+      rows,
+    );
+    expect(contested.admissions.find((row) => row.client === "terrainCompute")!.admitted).toBe(1);
+    expect(
+      contested.admissions.find((row) => row.client === "groundCoverCompute")!.admitted,
+    ).toBe(0);
+  });
+
+  it("cannot disturb an already-read admission by declaring late", () => {
+    // The ordering hazard `pumpComputeClients` documents: the renderer runs
+    // `terrain.update` (which declares AND reads) before the ground-cover
+    // update, so this client always submits after a read, and `submit`
+    // invalidates the cached plan.
+    //
+    // Being LAST in the priority order is NOT enough on its own — measured:
+    // the reservation pass runs for every client before the surplus pass, so
+    // a new low-priority RESERVATION precedes a high-priority client's
+    // SURPLUS and occlusion dropped from two dispatches to one. What makes it
+    // safe is that reading an admission SETTLES the client: its count is
+    // frozen and its milliseconds are charged to the cap.
+    const budget = new ComputeBudget(resolveWebGpuQualityProfile("medium", "balanced"));
+    budget.beginFrame();
+    budget.submit("terrainCompute", 4, 0.3);
+    budget.submit("occlusionCompute", 4, 0.2);
+    const terrainFirst = budget.admitted("terrainCompute");
+    const occlusionFirst = budget.admitted("occlusionCompute");
+    const spentFirst = budget.resolve().spentMs;
+
+    budget.submit("groundCoverCompute", 3, 0.06);
+    expect(budget.admitted("terrainCompute")).toBe(terrainFirst);
+    expect(budget.admitted("occlusionCompute")).toBe(occlusionFirst);
+    // And the late client only ever gets what was left over.
+    expect(budget.resolve().spentMs).toBeGreaterThanOrEqual(spentFirst);
+    expect(budget.resolve().spentMs).toBeLessThanOrEqual(budget.capMs + 0.3 + 1e-9);
+  });
+});
+
+/**
+ * `6-9` — wave G's second debt (`P-5`, unimplemented and unrecorded at the
+ * time). The most responsive GPU lever in the renderer had no rung.
+ */
+describe("Governor GPU ladder: the ground-cover rung (6-9 / P-5)", () => {
+  const config = governorConfigForProfile({ tier: 1, renderScale: 0.86 });
+
+  it("sheds the gate LAST, after every cheaper GPU lever", () => {
+    const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
+    let state = createGovernorState(config);
+    state = nextGovernorDecision(state, gpuBound, config);
+    state = observeRenderScaleApplication(state, false, config);
+    const levers: string[] = [];
+    for (let window = 0; window < 40 && state.gpuWorkLevel < GPU_WORK_MAX_LEVEL; window += 1) {
+      const before = state.gpuWorkLevel;
+      state = nextGovernorDecision(state, gpuBound, config);
+      if (state.gpuWorkLevel > before) levers.push(gpuWorkLeverName(state.gpuWorkLevel)!);
+    }
+    expect(state.gpuWorkLevel).toBe(GPU_WORK_MAX_LEVEL);
+    expect(levers[levers.length - 1]).toBe("ground-cover-gate");
+    expect(levers.indexOf("ground-cover-gate"))
+      .toBeGreaterThan(levers.lastIndexOf("vegetation-distance"));
+    // Two notches, like rung 0: one step per 120-frame window, and a single
+    // notch from full to nothing is a cliff at the one pose the whole system
+    // exists for.
+    expect(levers.filter((lever) => lever === "ground-cover-gate")).toHaveLength(2);
+  });
+
+  it("moves the gate monotonically and never above the profile's own", () => {
+    let previous = 1;
+    for (let level = 0; level <= GPU_WORK_MAX_LEVEL; level += 1) {
+      const scale = workLeverSettingsFor(0, level).groundCoverGateScale;
+      expect(scale).toBeLessThanOrEqual(previous);
+      expect(scale).toBeGreaterThan(0);
+      previous = scale;
+    }
+    expect(workLeverSettingsFor(0, 0).groundCoverGateScale).toBe(1);
+    expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL).groundCoverGateScale).toBeLessThan(1);
+  });
+
+  it("recovers only from a calm, non-GPU-bound window (R-11)", () => {
+    const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
+    let state = createGovernorState(config);
+    state = nextGovernorDecision(state, gpuBound, config);
+    state = observeRenderScaleApplication(state, false, config);
+    for (let window = 0; window < 40 && state.gpuWorkLevel < GPU_WORK_MAX_LEVEL; window += 1) {
+      state = nextGovernorDecision(state, gpuBound, config);
+    }
+    expect(workLeverSettingsFor(0, state.gpuWorkLevel).groundCoverGateScale).toBeLessThan(1);
+    const calm: GovernorSignals = { gpuP95Ms: 5, cpuP95Ms: 5, intervalP95Ms: 16 };
+    const top = state.gpuWorkLevel;
+    for (let window = 0; window < 8; window += 1) {
+      state = nextGovernorDecision(state, calm, config);
+    }
+    expect(state.gpuWorkLevel).toBeLessThan(top);
   });
 });
 

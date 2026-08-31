@@ -116,7 +116,9 @@ describe("Phase 5 evolved-height consumers", () => {
       storedEdge: 136,
       texelSizeMeters: 4,
       shoreDistanceMetersPerUnit: 0.25,
+      soilDepthMetersPerUnit: 8 / 255,
       shoreDistanceR16Sint,
+      soilDepthR8Unorm: new Uint8Array(136 * 136),
     });
     expect(authority.sampleShoreDistance(100, 100)).toBeNull();
 

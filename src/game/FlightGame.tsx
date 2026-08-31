@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   loadSettings,
   readSeedFromUrl,
+  readWorldEvolutionFromUrl,
   saveSettings,
   seedToString,
   urlWithSeed,
@@ -122,7 +123,11 @@ export function FlightGame() {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const world = useMemo(() => createWorld(seed), [seed]);
+  const [worldEvolution, setWorldEvolution] = useState<"eroded" | undefined>(undefined);
+  const world = useMemo(
+    () => createWorld(seed, worldEvolution ? { worldEvolution } : {}),
+    [seed, worldEvolution],
+  );
 
   const updatePhase = useCallback((nextPhase: GamePhase) => {
     phaseRef.current = nextPhase;
@@ -404,9 +409,11 @@ export function FlightGame() {
     const loaded = loadSettings();
     settingsRef.current = loaded;
     const urlSeed = readSeedFromUrl();
+    const urlWorldEvolution = readWorldEvolutionFromUrl();
     queueMicrotask(() => {
       setSettings(loaded);
       setSeed(urlSeed);
+      setWorldEvolution(urlWorldEvolution);
       setBootstrapped(true);
     });
     try {

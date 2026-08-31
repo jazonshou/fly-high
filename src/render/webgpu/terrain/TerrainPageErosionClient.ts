@@ -2,12 +2,19 @@ import type { WorldPageAddress } from "@/src/render/webgpu/world/pageKey";
 import type { WorldDefinition } from "@/src/world";
 import {
   isTerrainErosionWorkerEvent,
+  terrainErosionCommandTransferables,
   type TerrainErosionWorkerCommand,
   type TerrainErosionWorkerEvent,
 } from "@/src/workers/terrainErosionProtocol";
 import {
+  finishTerrainErodedPageStage,
   generateTerrainErodedPage,
+  prepareTerrainErosionSeedInputsStage,
+  runTerrainErosionMfdStage,
   type TerrainErodedPage,
+  type TerrainErosionMfdStagePayload,
+  type TerrainErosionSeedInputsStage,
+  type TerrainErosionSeedMode,
 } from "./TerrainPageErosion";
 import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
 import {
@@ -21,9 +28,28 @@ export interface TerrainPageErosionExecutor {
   dispose(): void;
 }
 
+/**
+ * One staged page's worker conversation (`W-1d`). The MFD stage retains state
+ * (worker-side, or on this handle in the inline fallback) that the FINISH
+ * stage consumes; `cancel()` releases it if the page is evicted mid-DAG.
+ */
+export interface TerrainStagedErosionJob {
+  seedInputs(seedMode: TerrainErosionSeedMode): Promise<TerrainErosionSeedInputsStage>;
+  /** Returns the deterministic MFD receiver topology for the GPU passes. */
+  mfd(payload: Omit<TerrainErosionMfdStagePayload, "address">): Promise<Int32Array>;
+  finish(evolvedHeight: Float32Array): Promise<TerrainErodedPage>;
+  cancel(): void;
+}
+
+/** The staged extension the multi-frame GPU page producer drives. */
+export interface TerrainPageStagedErosionExecutor extends TerrainPageErosionExecutor {
+  stagedJob(address: WorldPageAddress): TerrainStagedErosionJob;
+}
+
 type WorkerFactory = () => Worker;
+type TerrainErosionReplyEvent = Exclude<TerrainErosionWorkerEvent, { type: "error" }>;
 type PendingRequest = {
-  readonly resolve: (page: TerrainErodedPage) => void;
+  readonly resolve: (event: TerrainErosionReplyEvent) => void;
   readonly reject: (error: Error) => void;
 };
 
@@ -50,7 +76,7 @@ export interface TerrainPageErosionClientOptions {
  * inline function; that fallback is intentionally slow and is not the normal
  * browser path.
  */
-export class TerrainPageErosionClient implements TerrainPageErosionExecutor {
+export class TerrainPageErosionClient implements TerrainPageStagedErosionExecutor {
   private worker: Worker | null = null;
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
@@ -107,14 +133,139 @@ export class TerrainPageErosionClient implements TerrainPageErosionExecutor {
       this.macroLakes ??= buildTerrainMacroLakeField(macro);
       return this.inlineGenerate(this.world, macro, address, this.macroLakes);
     }
+    const event = await this.request({
+      type: "erode",
+      requestId: this.claimRequestId(),
+      address,
+    });
+    if (event.type !== "page") throw new Error("Terrain erosion worker sent a mismatched reply");
+    return event.page;
+  }
+
+  /**
+   * Open one staged page conversation (`W-1d`). Worker path round-trips the
+   * staged protocol commands; the no-Worker path runs the SAME shared stage
+   * functions inline, retaining the MFD state on this handle.
+   */
+  stagedJob(address: WorldPageAddress): TerrainStagedErosionJob {
+    const jobId = this.claimRequestId();
+    let inlineRetained: {
+      readonly sourceHeight: Float32Array;
+      readonly breachedHeight: Float32Array;
+      readonly receivers: Int32Array;
+      readonly flowAccumulation: Float32Array;
+      readonly erosionMask: Uint8Array;
+    } | null = null;
+    const job: TerrainStagedErosionJob = {
+      seedInputs: async (seedMode) => {
+        this.requireLive();
+        if (!this.worker) {
+          await Promise.resolve();
+          return prepareTerrainErosionSeedInputsStage(this.world, this.macro, address, seedMode);
+        }
+        const event = await this.request({
+          type: "erode-stage-seed-inputs",
+          requestId: this.claimRequestId(),
+          address,
+          seedMode,
+        });
+        if (event.type !== "stage-seed-inputs") {
+          throw new Error("Terrain erosion worker sent a mismatched seed-inputs reply");
+        }
+        return {
+          erosionMask: event.erosionMask,
+          macroHeight: event.macroHeight,
+          macroFlow: event.macroFlow,
+        };
+      },
+      mfd: async (payload) => {
+        this.requireLive();
+        if (!this.worker) {
+          await Promise.resolve();
+          const stage = runTerrainErosionMfdStage(this.world, { ...payload, address });
+          inlineRetained = {
+            sourceHeight: payload.sourceHeight,
+            breachedHeight: stage.breachedHeight,
+            receivers: stage.receivers,
+            flowAccumulation: payload.flowAccumulation,
+            erosionMask: payload.erosionMask,
+          };
+          return Int32Array.from(stage.receivers);
+        }
+        const event = await this.request({
+          type: "erode-stage-mfd",
+          requestId: jobId,
+          address,
+          ...payload,
+        });
+        if (event.type !== "stage-mfd") {
+          throw new Error("Terrain erosion worker sent a mismatched MFD reply");
+        }
+        return event.receivers;
+      },
+      finish: async (evolvedHeight) => {
+        this.requireLive();
+        if (!this.worker) {
+          await Promise.resolve();
+          const retained = inlineRetained;
+          if (!retained) throw new Error("Terrain erosion finish stage has no retained MFD state");
+          inlineRetained = null;
+          const macro = this.macro;
+          if (macro) this.macroLakes ??= buildTerrainMacroLakeField(macro);
+          return finishTerrainErodedPageStage({
+            address,
+            ...retained,
+            evolvedHeight,
+            macroLakes: this.macroLakes,
+          });
+        }
+        const event = await this.request({
+          type: "erode-stage-finish",
+          requestId: jobId,
+          evolvedHeight,
+        });
+        if (event.type !== "page") {
+          throw new Error("Terrain erosion worker sent a mismatched finish reply");
+        }
+        return event.page;
+      },
+      cancel: () => {
+        inlineRetained = null;
+        if (this.disposed || !this.worker) return;
+        try {
+          this.worker.postMessage({
+            type: "erode-cancel",
+            requestId: jobId,
+          } satisfies TerrainErosionWorkerCommand);
+        } catch {
+          this.handleFailure();
+        }
+      },
+    };
+    return job;
+  }
+
+  private requireLive(): void {
+    if (this.disposed) throw new Error("Terrain page erosion client is disposed");
+  }
+
+  private claimRequestId(): number {
     const requestId = this.nextRequestId;
     this.nextRequestId += 1;
-    return new Promise<TerrainErodedPage>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+    return requestId;
+  }
+
+  private request(
+    command: Extract<TerrainErosionWorkerCommand, { requestId: number }>,
+  ): Promise<TerrainErosionReplyEvent> {
+    const worker = this.worker;
+    if (!worker) return Promise.reject(new Error("Terrain page erosion worker is unavailable"));
+    return new Promise<TerrainErosionReplyEvent>((resolve, reject) => {
+      this.pending.set(command.requestId, { resolve, reject });
       try {
-        worker.postMessage({ type: "erode", requestId, address } satisfies TerrainErosionWorkerCommand);
+        worker.postMessage(command, terrainErosionCommandTransferables(command));
       } catch (error) {
-        this.pending.delete(requestId);
+        this.pending.delete(command.requestId);
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
@@ -139,7 +290,7 @@ export class TerrainPageErosionClient implements TerrainPageErosionExecutor {
     if (message.type === "error") {
       request.reject(new Error(message.message));
     } else {
-      request.resolve(message.page);
+      request.resolve(message);
     }
   };
 

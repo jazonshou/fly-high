@@ -49,6 +49,13 @@ export interface DetailWorkerPresentationBuildInput {
   readonly grassRadiusMeters: number;
   /** Wave G: the compute blade system replaces grass-archetype patches. */
   readonly groundCoverBladesActive?: boolean;
+  /**
+   * `6-9`: metres inside which the GPU field carries EVERY ground-cover
+   * archetype, so the card path skips them there and keeps them outside.
+   * 0 (or absent) means the field is inactive and the cards own all of it —
+   * which is the CPU-only path CI's hosted runner always takes.
+   */
+  readonly groundCoverFieldRadiusMeters?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -162,9 +169,20 @@ export function detailWorkerCommandTransferables(
       : [];
   }
   if (command.type === "terrainAux") {
-    return command.page.shoreDistanceR16Sint.buffer instanceof ArrayBuffer
-      ? [command.page.shoreDistanceR16Sint.buffer]
-      : [];
+    // 6-6: both ecology channels transfer, never copy. They are distinct
+    // buffers from the producer, so listing both is safe — a shared buffer
+    // would be transferred twice and throw, which the aux-publication shape
+    // (one typed array per channel) rules out.
+    const buffers: Transferable[] = [];
+    for (const field of [
+      command.page.shoreDistanceR16Sint,
+      command.page.soilDepthR8Unorm,
+    ]) {
+      if (field.buffer instanceof ArrayBuffer && !buffers.includes(field.buffer)) {
+        buffers.push(field.buffer);
+      }
+    }
+    return buffers;
   }
   return [];
 }

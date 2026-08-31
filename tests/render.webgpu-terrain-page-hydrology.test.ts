@@ -218,3 +218,153 @@ describe("terrain page hydrology (5-5)", () => {
     expect(decodeWorldPageFlowAccum(parent, parent.flowAccum[3]!)).toBeCloseTo(1_600, 0);
   });
 });
+
+/**
+ * `6-6` — the consumer-per-channel table, made executable.
+ *
+ * `RENDERING_PLAN`'s 6-6 row states the rule this file's producer is measured
+ * against: **"three channels, each with a named ground-layer consumer, or the
+ * item produces data nothing reads"**. Phase 5 shipped four channels and two of
+ * them — `lakeDepth` and `soilDepth` — had zero consumers anywhere in the tree
+ * (Phase 5 register row **C-9**). A grep found the debt; only a test keeps it
+ * closed, because "nothing reads this" is exactly the defect that a green suite
+ * and a correct-looking screenshot both hide.
+ *
+ * Each row names a channel, the file that consumes it and a source marker that
+ * fails if the consumer is deleted or renamed. `pendingItem` was the ONLY
+ * escape hatch and it was spent on `lakeDepth`, 6-5's by the recorded split of
+ * C-9; **6-5 has now landed and deleted that row**, so the pending list is
+ * asserted EMPTY. C-9 is discharged in full: every channel Phase 5 produces has
+ * a named ground-layer consumer, and the escape hatch stays in the type only so
+ * that a NEW channel arriving without one has somewhere honest to be recorded —
+ * where the emptiness assertion will immediately fail it.
+ */
+const ECOLOGY_CHANNEL_CONSUMERS: readonly {
+  readonly channel: "flowAccum" | "lakeDepth" | "soilDepth" | "shoreDistance";
+  readonly pendingItem?: string;
+  readonly consumers: readonly { readonly file: string; readonly marker: string }[];
+}[] = [
+  {
+    channel: "flowAccum",
+    consumers: [
+      // 4-6's classifier: real drainage supersedes the moisture proxy.
+      {
+        file: "src/render/webgpu/terrain/LandCoverClassifier.ts",
+        marker: "input.flowAccumulationValid = select(0.0, 1.0, flowLog2 > 0.0);",
+      },
+    ],
+  },
+  {
+    channel: "shoreDistance",
+    consumers: [
+      // 5-13, the DENSITY half (live before 6-6).
+      {
+        file: "src/render/webgpu/detail/densityField.ts",
+        marker: "export function riparianVegetationFactors(",
+      },
+      // 6-6, the SPECIES half: reed/fern archetype weight.
+      {
+        file: "src/render/webgpu/detail/generation.ts",
+        marker: "const bank = field.riparianBand;",
+      },
+      // 6-6, the APPEARANCE half: wet-litter darkening in the splat.
+      {
+        file: "src/render/webgpu/terrain/TerrainSurfacePlugin.ts",
+        marker: "fn terrainSurfaceRiparianBand(uv: vec4f) -> f32 {",
+      },
+    ],
+  },
+  {
+    channel: "soilDepth",
+    consumers: [
+      // 6-6: 2-15's clutter density, off the moisture stand-in at last.
+      {
+        file: "src/render/webgpu/detail/generation.ts",
+        marker: "function litterDriver(sample: DetailTerrainSample): number {",
+      },
+      // 6-6: litter depth in the forest-floor splat, baked per page.
+      {
+        file: "src/render/webgpu/terrain/LandCoverClassifier.ts",
+        marker: "fn landCoverLitter(input: LandCoverInput) -> f32 {",
+      },
+      // 6-6: the CPU delivery path the detail worker reads it through.
+      {
+        file: "src/render/webgpu/terrain/TerrainConsumerAuthority.ts",
+        marker: "sampleSoilDepth(x: number, z: number): number | null {",
+      },
+    ],
+  },
+  {
+    channel: "lakeDepth",
+    // 6-5 CLOSED C-9's last row. The recorded split of C-9 assigned lakeDepth's
+    // named consumer to terrain wetness, and this is it: the fragment reads the
+    // channel by textureLoad and turns metres of water column into the lake's
+    // own submerged fraction, which drives both `3-7` response instructions and
+    // the silt tint. `pendingItem` is gone, and the assertion below now
+    // requires the pending list to be EMPTY.
+    consumers: [
+      // 6-5, the field: the lake-bed/bank term in the terrain fragment.
+      {
+        file: "src/render/webgpu/terrain/TerrainSurfacePlugin.ts",
+        marker: "fn terrainSurfaceLakeWetness(uv: vec4f, beachSlope: f32) -> vec2f {",
+      },
+      // 6-5, the binding: the atlas texture that carries it to that fragment.
+      {
+        file: "src/render/webgpu/terrain/TerrainClipmapSystem.ts",
+        marker: "? this.channelAtlas.hydrologyTextures().lakeDepth",
+      },
+    ],
+  },
+];
+
+describe("6-6 ecology channels: no page channel is dark", () => {
+  it("names a live consumer for every produced channel", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const sources = new Map<string, string>();
+    for (const row of ECOLOGY_CHANNEL_CONSUMERS) {
+      for (const consumer of row.consumers) {
+        if (!sources.has(consumer.file)) {
+          sources.set(consumer.file, await readFile(consumer.file, "utf8"));
+        }
+      }
+    }
+    for (const row of ECOLOGY_CHANNEL_CONSUMERS) {
+      if (row.pendingItem !== undefined) continue;
+      expect(
+        row.consumers.length,
+        `Channel "${row.channel}" has no named consumer. The 6-6 rule is `
+        + "\"a named ground-layer consumer, or the item produces data nothing reads\".",
+      ).toBeGreaterThan(0);
+      for (const consumer of row.consumers) {
+        expect(
+          sources.get(consumer.file)!.includes(consumer.marker),
+          `Channel "${row.channel}" lost its consumer in ${consumer.file}: the marker `
+          + `"${consumer.marker}" is gone. Re-point this table at the new consumer, or `
+          + "the channel is dark again.",
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("covers every produced channel exactly once, with no debt left", () => {
+    // The producer's own quantized page names the channels; the table may not
+    // drift from it, so a NEW channel arrives dark-and-failing rather than
+    // dark-and-silent.
+    const page = quantized({
+      area: [1, 1, 1, 1], lake: [0, 0, 0, 0], soil: [1, 1, 1, 1], shore: [1, 1, 1, 1],
+    }) as unknown as Record<string, unknown>;
+    const produced = Object.keys(page).filter(
+      (key) => ArrayBuffer.isView(page[key]),
+    );
+    expect(new Set(ECOLOGY_CHANNEL_CONSUMERS.map((row) => row.channel)))
+      .toEqual(new Set(produced));
+    expect(
+      ECOLOGY_CHANNEL_CONSUMERS.filter((row) => row.pendingItem !== undefined)
+        .map((row) => `${row.channel} -> ${row.pendingItem}`),
+      "C-9 is DISCHARGED: 6-6 took soilDepth and 6-5 took lakeDepth, so every "
+      + "channel Phase 5 produces has a named ground-layer consumer and this "
+      + "list is empty. Anything appearing here is a channel that shipped with "
+      + "nothing reading it — the exact defect the register row recorded.",
+    ).toEqual([]);
+  });
+});

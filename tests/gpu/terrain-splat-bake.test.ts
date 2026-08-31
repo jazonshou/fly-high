@@ -14,7 +14,14 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
 import { TERRAIN_CHANNEL_SLOT_EDGE } from "../../src/render/webgpu/terrain/TerrainSpineContract";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
-import { SURFACE_MATERIAL_COUNT } from "../../src/render/webgpu/terrain/surfaceMaterials";
+import {
+  SURFACE_MATERIAL_COUNT,
+  SurfaceMaterial,
+} from "../../src/render/webgpu/terrain/surfaceMaterials";
+import { terrainHydrologyFloat16Bits } from
+  "../../src/render/webgpu/terrain/TerrainPageHydrology";
+import { encodeTerrainFlowAccumulationLog2 } from
+  "../../src/render/webgpu/terrain/TerrainEvolutionContract";
 import { WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import { createWorld } from "../../src/world";
@@ -61,7 +68,7 @@ const address = createWorldPageAddress(4, 3, -2);
       );
       const pyramid = new GlobalHeightPyramid(scene, engine, world.seedHash);
       const splat = new PageSplatBake(
-        engine, heightAtlas, channelAtlas, world.seedHash,
+        engine, heightAtlas, channelAtlas, world.seedHash, world.sourceSeedHash,
         world.seaLevel, world.latitudeDegrees, world.airport ?? null,
       );
       heightAtlas.residency.beginFrame(1);
@@ -128,6 +135,131 @@ const address = createWorldPageAddress(4, 3, -2);
   }, 240_000);
 
   /**
+   * `6-6`: the soil-depth channel actually reaches the splat.
+   *
+   * `soilDepth` shipped in Phase 5 resident and with zero consumers anywhere
+   * (register row C-9). The CPU suites pin the litter law and its analytic
+   * sentinel; only a real bake can show the GPU half is wired — that the
+   * eighth binding is bound, that the r8unorm load decodes to metres, and that
+   * the forest-floor suitability moves when the channel says the duff is deep.
+   *
+   * Both variants run with the SAME (valid, constant) flow field, so wetness is
+   * held fixed and the only thing that differs between them is soil depth.
+   */
+  it("6-6: deep soil raises the forest-floor share of a baked page", async () => {
+    const world = createWorld("splat-bake");
+    const address = createWorldPageAddress(4, 3, -2);
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, {
+      antialias: false, enableAllFeatures: false, setMaximumLimits: false,
+    });
+    let scene: Scene | null = null;
+    try {
+      await engine.initAsync();
+      engine.runRenderLoop(() => {});
+      scene = new Scene(engine);
+      const base = resolveWebGpuQualityProfile("medium", "balanced");
+      const profile = { ...base, heightAtlasSlots: 4, channelAtlasSlots: 4 };
+      const heightAtlas = new TerrainPageAtlas(scene, profile, {
+        kind: "height", worldRevision: "splat-litter",
+      });
+      const channelAtlas = new TerrainPageAtlas(scene, profile, {
+        kind: "channel", worldRevision: "splat-litter",
+        textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
+      });
+      const generator = new TerrainPageGenerator(
+        engine, heightAtlas, world.seedHash, world.airport ?? null,
+      );
+      const pyramid = new GlobalHeightPyramid(scene, engine, world.seedHash);
+      const splat = new PageSplatBake(
+        engine, heightAtlas, channelAtlas, world.seedHash, world.sourceSeedHash,
+        world.seaLevel, world.latitudeDegrees, world.airport ?? null,
+      );
+      heightAtlas.residency.beginFrame(1);
+      channelAtlas.residency.beginFrame(1);
+      const heightSlot = heightAtlas.residency.request(invariantSlotKey(address), address)!.slot;
+      const channelSlot = channelAtlas.residency.request(invariantSlotKey(address), address)!.slot;
+      await generator.generate([heightSlot]);
+      await generator.settle();
+      await pyramid.recenter(address.x * 512, address.z * 512);
+
+      const edge = TERRAIN_CHANNEL_SLOT_EDGE;
+      const origin = channelAtlas.slotOrigin(channelSlot.slotIndex);
+      const writeChannel = (index: number, values: ArrayBufferView): void => {
+        const internal = channelAtlas.texture(index)!.getInternalTexture()!;
+        (engine as WebGPUEngine).updateTextureData(
+          internal, values, origin.u, origin.v, edge, edge, 0, 0, false,
+        );
+      };
+      // A valid, constant contributing area, chosen so the re-pinned [15, 24]
+      // TWI window reads WET: forest-floor suitability is a product with the
+      // wetness term in it, and at a dry TWI it is exactly zero — where any
+      // litter multiplier is trivially invisible. (That is a real property of
+      // the law, and it is why this fixture pins a wet page.)
+      const flow = new Uint16Array(edge * edge).fill(
+        terrainHydrologyFloat16Bits(encodeTerrainFlowAccumulationLog2(1e8)),
+      );
+      const soil = new Uint8Array(edge * edge);
+
+      const forestFloorShare = async (): Promise<{ sum: number; texels: number }> => {
+        const ids = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatId)!
+          .readPixels(0, 0, undefined, true, false, origin.u, origin.v, edge, edge) as Uint8Array;
+        const weights = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightLo)!
+          .readPixels(0, 0, undefined, true, false, origin.u, origin.v, edge, edge) as Uint8Array;
+        let sum = 0;
+        let texels = 0;
+        for (let row = WORLD_PAGE_GUTTER; row < edge - WORLD_PAGE_GUTTER; row += 1) {
+          for (let column = WORLD_PAGE_GUTTER; column < edge - WORLD_PAGE_GUTTER; column += 1) {
+            const offset = (row * edge + column) * 4;
+            let here = 0;
+            for (let lane = 0; lane < 4; lane += 1) {
+              const id = Math.round((ids[offset + lane]! / 255) * (SURFACE_MATERIAL_COUNT - 1));
+              if (id === SurfaceMaterial.ForestFloor) here += weights[offset + lane]! / 255;
+            }
+            sum += here;
+            if (here > 0) texels += 1;
+          }
+        }
+        return { sum, texels };
+      };
+
+      writeChannel(TERRAIN_CHANNEL_TEXTURES.flowAccum, flow);
+      writeChannel(TERRAIN_CHANNEL_TEXTURES.soilDepth, soil.fill(0));
+      expect(await splat.bake([channelSlot], 171)).toBe(1);
+      const thin = await forestFloorShare();
+
+      // 255/255 * 8 m = the deep end of the encoding, well past the litter ramp.
+      writeChannel(TERRAIN_CHANNEL_TEXTURES.soilDepth, soil.fill(255));
+      expect(await splat.bake([channelSlot], 171)).toBe(1);
+      const deep = await forestFloorShare();
+
+      console.log(
+        `splat litter: forest-floor weight ${thin.sum.toFixed(2)} -> ${deep.sum.toFixed(2)}, `
+        + `texels ${thin.texels} -> ${deep.texels}`,
+      );
+      // The page must actually classify some forest floor, or the comparison
+      // is vacuously satisfied by two zeros.
+      expect(deep.sum).toBeGreaterThan(0.5);
+      expect(deep.sum).toBeGreaterThan(thin.sum);
+      expect(deep.texels).toBeGreaterThanOrEqual(thin.texels);
+
+      splat.dispose();
+      pyramid.dispose();
+      generator.dispose();
+      channelAtlas.dispose();
+      heightAtlas.dispose();
+    } finally {
+      scene?.dispose();
+      engine.stopRenderLoop();
+      engine.dispose();
+      canvas.remove();
+    }
+  }, 240_000);
+
+  /**
    * Assertion 85, carried open through two plans and written at `4.5-D3`.
    *
    * A level-N page and its four children describe the same ground. If the
@@ -175,7 +307,7 @@ const address = createWorldPageAddress(4, 3, -2);
       );
       const pyramid = new GlobalHeightPyramid(scene, engine, world.seedHash);
       const splat = new PageSplatBake(
-        engine, heightAtlas, channelAtlas, world.seedHash,
+        engine, heightAtlas, channelAtlas, world.seedHash, world.sourceSeedHash,
         world.seaLevel, world.latitudeDegrees, world.airport ?? null,
       );
       heightAtlas.residency.beginFrame(1);

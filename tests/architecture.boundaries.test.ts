@@ -165,7 +165,13 @@ describe("architecture boundaries (0-1)", () => {
   });
 
   it("keeps terrain/ off detail/ internals except the density-field entry point", () => {
-    const detailImport = /from\s+["'][^"']*\/detail\/(?!densityField\b)[^"']*["']/u;
+    // `6-8`: the entry point is the density field, and `densityFieldWgsl` is
+    // that same field's WGSL half — the transliteration whose owner row in
+    // `owners.ts` has always read `consumers: "any"`, because a shader-side
+    // consumer is exactly what it exists for. The two rules disagreed only
+    // because nothing on the terrain side had yet needed to COMPOSE the
+    // include; the splat bake does. Everything else in `detail/` stays shut.
+    const detailImport = /from\s+["'][^"']*\/detail\/(?!densityField(?:Wgsl)?\b)[^"']*["']/u;
     for (const file of sourceFiles) {
       if (!file.path.startsWith("src/render/webgpu/terrain/")) continue;
       expect(

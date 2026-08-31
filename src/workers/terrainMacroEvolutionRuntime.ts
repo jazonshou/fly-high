@@ -1,3 +1,12 @@
+import type { TerrainEvolutionProvenance, TerrainMacroEvolutionExport } from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+import {
+  MACRO_EVOLUTION_PRODUCTION_CONFIG,
+  computeMfdFlowAccumulation,
+  finishMacroEvolutionFromEvolvedHeight,
+  priorityFloodOpenRim,
+  toTerrainMacroEvolutionExport,
+} from "@/src/render/webgpu/terrain/TerrainMacroEvolution";
+import type { TerrainMacroEvolutionStage1Fields } from "@/src/workers/terrainMacroEvolutionProtocol";
 import {
   sampleTerrainEvolutionGeology,
   sampleTerrainUpliftHeight,
@@ -133,4 +142,88 @@ export function sampleTerrainMacroEvolutionInputs(
     if (completed === height || completed % stride === 0) onRows?.(completed, height);
   }
   return Object.freeze({ heights, erodibility, reposeDegrees });
+}
+
+export interface TerrainMacroEvolutionStage1GridOptions {
+  readonly width: number;
+  readonly height: number;
+  readonly seaLevel: number;
+}
+
+/**
+ * Hybrid stage 1 (`W-1a`): the deterministic CPU head of the macro pipeline —
+ * first priority flood and first MFD pass over the sampled uplift, plus the
+ * submarine protection mask — producing exactly the inputs the GPU stream
+ * power + talus operators consume. Uses the same reference operators and the
+ * frozen production config `evolveMacroTerrain` uses, so the drainage graph
+ * the GPU erodes against is bit-identical to the single-shot path's.
+ */
+export function deriveTerrainMacroEvolutionStage1Fields(
+  inputs: TerrainMacroEvolutionInputs,
+  options: TerrainMacroEvolutionStage1GridOptions,
+): TerrainMacroEvolutionStage1Fields {
+  const config = MACRO_EVOLUTION_PRODUCTION_CONFIG;
+  const flood = priorityFloodOpenRim(
+    options.width,
+    options.height,
+    inputs.heights,
+    options.seaLevel,
+    config.fillEpsilonMetersPerTexel,
+  );
+  const flow = computeMfdFlowAccumulation(
+    options.width,
+    options.height,
+    flood.filledHeight,
+    flood.floodParent,
+    { slopeExponent: config.mfdSlopeExponent },
+  );
+  const count = options.width * options.height;
+  const erosionMask = new Uint8Array(count);
+  for (let index = 0; index < count; index += 1) {
+    if (inputs.heights[index]! <= options.seaLevel) erosionMask[index] = 1;
+  }
+  return Object.freeze({
+    heights: inputs.heights,
+    erodibility: inputs.erodibility,
+    reposeDegrees: inputs.reposeDegrees,
+    receivers: flow.receivers,
+    flowAccumulation: flow.flowAccumulation,
+    erosionMask,
+  });
+}
+
+export interface TerrainMacroEvolutionStage2Input {
+  readonly width: number;
+  readonly height: number;
+  readonly texelSizeMeters: number;
+  readonly seaLevel: number;
+  /** The GPU-evolved (stream power + talus) macro surface, f32 bits. */
+  readonly evolvedHeightMeters: Float32Array;
+  readonly provenance: TerrainEvolutionProvenance;
+}
+
+/**
+ * Hybrid stage 2 (`W-1a`): the drainage tail — re-flood, re-MFD, lake
+ * discovery, base levels and channel seeds over the already-evolved surface.
+ *
+ * `W-1c` replaced the original `evolveMacroTerrain`-with-zero-iterations
+ * spelling with the reference module's own completion entry point. The old
+ * spelling ran the flood and the MFD gather TWICE over identical data — the
+ * leading pair only ever fed a zero-iteration incision, so its results were
+ * discarded (~0.85 s at production shape). `finishMacroEvolutionFromEvolvedHeight`
+ * is the same code path with that dead pair removed, and is pinned
+ * bit-identical to the zero-iteration spelling by
+ * tests/render.webgpu-terrain-evolution.test.ts.
+ */
+export function completeTerrainMacroEvolutionFromEvolvedHeight(
+  input: TerrainMacroEvolutionStage2Input,
+): TerrainMacroEvolutionExport {
+  const result = finishMacroEvolutionFromEvolvedHeight({
+    width: input.width,
+    height: input.height,
+    texelSizeMeters: input.texelSizeMeters,
+    seaLevel: input.seaLevel,
+    heights: input.evolvedHeightMeters,
+  });
+  return toTerrainMacroEvolutionExport(result, input.seaLevel, input.provenance);
 }

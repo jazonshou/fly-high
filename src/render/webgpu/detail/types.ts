@@ -31,6 +31,13 @@ export interface DetailTerrainSample {
   /** `5-13`: signed metres to the exported wetted edge; <= 0 is water. */
   readonly shoreDistanceMeters?: number;
   /**
+   * `6-6`: metres of soil from the page's soil-depth channel. Omitted means
+   * hydrology has not provisioned this point (every analytic world), and the
+   * `2-15` moisture stand-in stays authoritative — the sentinel that keeps the
+   * shipping analytic build bit-identical.
+   */
+  readonly soilDepthMeters?: number;
+  /**
    * Surface normal for the density field's aspect term (1B-7). Optional; the
    * world-layer TerrainSample carries it. Omitted reads as flat ground.
    */

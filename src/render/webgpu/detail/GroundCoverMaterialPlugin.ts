@@ -1,8 +1,53 @@
 import { MaterialPluginBase } from "@babylonjs/core/Materials/materialPluginBase";
+import {
+  GROUND_COVER_ARCHETYPE_SHAPES,
+  GROUND_COVER_FIELD_ARCHETYPES,
+  groundCoverArchetypeAlbedoTint,
+} from "./groundCoverLaw";
 import type { Material } from "@babylonjs/core/Materials/material";
 import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { Nullable } from "@babylonjs/core/types";
+
+function wgslNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new RangeError("WGSL constants must be finite");
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+/**
+ * `6-9`: the vertex stage's per-archetype table, injected from the one TS
+ * authority so a retune cannot move the placement compute's idea of a fern
+ * without moving the vertex stage's.
+ *
+ * The compute already applied `heightScale`, `widthScale` and `bendBias` into
+ * the record; what remains is what only the vertex stage can do — the width
+ * PROFILE along the ribbon, the wind response, and the pull of the ground's
+ * harmonised albedo toward the archetype's own colour.
+ *
+ * The colour lane is the archetype's tint RELATIVE to the reference row
+ * (`groundCoverArchetypeAlbedoTint`), not the card path's raw tint value: the
+ * blade's base colour is a linear terrain albedo and the raw tints are card
+ * multipliers three times larger than any ground material's albedo. The
+ * vertex stage therefore mixes toward `1` and multiplies, which keeps every
+ * archetype inside the terrain palette and leaves grass (tint `1`, mix `0`)
+ * byte-identical.
+ */
+function archetypeVertexTableWgsl(): string {
+  const branches = GROUND_COVER_FIELD_ARCHETYPES.map((name, code) => {
+    const shape = GROUND_COVER_ARCHETYPE_SHAPES[name];
+    const tint = groundCoverArchetypeAlbedoTint(name);
+    const literal = `GroundArchetypeLook(${wgslNumber(shape.taper)}, `
+      + `${wgslNumber(shape.windResponse)}, ${wgslNumber(shape.colorMix)}, `
+      + `vec3f(${tint.map((value) => wgslNumber(Math.round(value * 1e6) / 1e6)).join(", ")}))`;
+    return code === GROUND_COVER_FIELD_ARCHETYPES.length - 1
+      ? `  // ${name}\n  return ${literal};`
+      : `  // ${name}\n  if (code < ${code + 1}.0) { return ${literal}; }`;
+  });
+  return "struct GroundArchetypeLook {\n"
+    + "  taper: f32,\n  windResponse: f32,\n  colorMix: f32,\n  tint: vec3f,\n};\n"
+    + "fn groundArchetypeLook(code: f32) -> GroundArchetypeLook {\n"
+    + `${branches.join("\n")}\n}`;
+}
 
 /**
  * Wave G — the blade material plugin.
@@ -128,6 +173,7 @@ export class GroundCoverMaterialPlugin extends MaterialPluginBase {
 attribute bladeA: vec4f;
 attribute bladeB: vec4u;
 varying groundTint: vec4f;
+${archetypeVertexTableWgsl()}
 `,
         CUSTOM_VERTEX_UPDATE_POSITION: /* wgsl */ `
 let groundHeight = vertexInputs.bladeA.w;
@@ -147,13 +193,21 @@ if (groundHeight <= 0.002) {
   );
   let groundT = clamp(positionUpdated.y, 0.0, 1.0);
   let groundSide = clamp(positionUpdated.x, -1.0, 1.0);
+  // 6-9: the alpha byte carries the archetype in its top two bits and the
+  // wind phase in the low six. The record stayed 32 bytes; six bits of phase
+  // is 64 distinct gust offsets, which is far more than a field of ribbons
+  // can show, and the alternative was a 50% wider lattice-sized buffer.
+  let groundCodeByte = round(groundAlbedo.a * 255.0);
+  let groundArchetype = floor(groundCodeByte / 64.0);
+  let groundPhase = (groundCodeByte - groundArchetype * 64.0) / 63.0;
+  let groundLook = groundArchetypeLook(groundArchetype);
   // Wind: a travelling gust wave over the field plus per-blade flutter.
   let groundGustPhase = uniforms.groundCamera.w * 1.35
     + dot(groundRoot.xz, vec2f(0.101, 0.083))
-    + groundAlbedo.a * 6.2831853;
+    + groundPhase * 6.2831853;
   let groundFlutter = sin(uniforms.groundCamera.w * (5.5 + 3.0 * uniforms.groundWind.w)
-    + groundAlbedo.a * 12.4);
-  let groundWindAmount = uniforms.groundWind.z
+    + groundPhase * 12.4);
+  let groundWindAmount = uniforms.groundWind.z * groundLook.windResponse
     * (0.4 + 0.35 * sin(groundGustPhase) + 0.1 * groundFlutter);
   let groundLean = vec2f(groundFacing2.x, groundFacing2.y) * groundBendWidth.x
     + uniforms.groundWind.xy * groundWindAmount;
@@ -182,7 +236,11 @@ if (groundHeight <= 0.002) {
   } else {
     groundWidthDir = groundWidthDir / groundWidthLength;
   }
-  let groundWidth = groundBendWidth.y * (1.0 - groundT * 0.82);
+  // 6-9: the width PROFILE is the archetype's silhouette. Grass tapers to a
+  // point (0.82); a fern frond keeps most of its width to the tip (0.34) and
+  // a reed is a stalk (0.2), which is what makes four ribbons read as four
+  // plants rather than four colours of grass.
+  let groundWidth = groundBendWidth.y * (1.0 - groundT * groundLook.taper);
   positionUpdated = groundSpine + groundWidthDir * (groundSide * groundWidth);
   // Curved cross-section normal, blended toward the terrain normal with
   // range so distant grass stops sparkling and matches the ground shading.
@@ -193,7 +251,15 @@ if (groundHeight <= 0.002) {
   let groundNormalBlend = smoothstep(7.0, 42.0, groundRange);
   groundBladeNormal = normalize(mix(groundBladeNormal, groundTerrainNormal, groundNormalBlend));
   normalUpdated = groundBladeNormal;
-  vertexOutputs.groundTint = vec4f(groundAlbedo.rgb, groundT);
+  // The base colour stays the ground's own harmonised albedo — that is what
+  // hides every fade line — re-tinted part of the way toward the archetype's
+  // own hue so a fern reads as a fern without leaving the terrain's palette.
+  // A RATIO, applied multiplicatively: the archetype table's raw entries are
+  // the card path's instance tints, which are ~3x any ground material's
+  // linear albedo, so mixing them in additively made every non-grass ribbon
+  // 2-4x too bright and desaturated toward the tint's own grey.
+  let groundColor = groundAlbedo.rgb * mix(vec3f(1.0), groundLook.tint, groundLook.colorMix);
+  vertexOutputs.groundTint = vec4f(groundColor, groundT);
 }
 `,
       };

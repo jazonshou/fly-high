@@ -68,6 +68,7 @@ import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
   WATER_BATHYMETRY_DECLARATIONS_WGSL,
+  WATER_CHANNEL_FLOW_WGSL,
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FOAM_WGSL,
@@ -75,13 +76,23 @@ import {
   WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
+  WATER_SHORE_RUNUP_WGSL,
   WATER_SUN_SPECULAR_WGSL,
+  waterChannelGradePayload,
+  waterLakeEffectiveFetchMeters,
+  waterLakeFetchPayload,
   waterReflectedSkyWgsl,
   type WaterReflectedSkyParameters,
 } from "./WaterShaders";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { BathymetryClipmap } from "./BathymetryClipmap";
 import type { ChannelHydrologyGeometry } from "./ChannelNetwork";
+import {
+  distanceToRingMeters,
+  earClipRing,
+  refineTriangulation,
+} from "./lakeShoreline";
+import { resampleHydrologyRiverStations } from "./riverResample";
 
 const HYDROLOGY_SHADER_NAME = "aerolithHydrologyWater";
 
@@ -115,7 +126,11 @@ varying surfaceNormal: vec3f;
 varying flowDirection: vec2f;
 varying flowSpeed: f32;
 varying whitewater: f32;
-varying waterInfo: vec3f;
+// 6-1: the w lane is the channel sentinel + payload (grade for rivers, the
+// sqrt-encoded fetch for lakes). Analytic-mode builders push a literal 0 into
+// it and always have, so widening this varying moves no analytic bit: a
+// vec3f interpolant already occupies a full location.
+varying waterInfo: vec4f;
 varying waterUv: vec2f;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
@@ -155,7 +170,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.flowDirection = flow;
   vertexOutputs.flowSpeed = vertexInputs.flowData.z;
   vertexOutputs.whitewater = vertexInputs.flowData.w;
-  vertexOutputs.waterInfo = vertexInputs.waterData.xyz;
+  vertexOutputs.waterInfo = vertexInputs.waterData;
   vertexOutputs.waterUv = vertexInputs.uv;
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * displacedWorld;
 ${sunShadowVertexAssignmentWgsl("displacedWorld")}
@@ -169,7 +184,7 @@ varying surfaceNormal: vec3f;
 varying flowDirection: vec2f;
 varying flowSpeed: f32;
 varying whitewater: f32;
-varying waterInfo: vec3f;
+varying waterInfo: vec4f;
 varying waterUv: vec2f;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
@@ -196,11 +211,25 @@ ${WATER_SHADING_CONSTANTS_WGSL}
 
 ${WATER_FRESNEL_SCHLICK_WGSL}
 
+// 6-4: the depth include comes first so the capillary block can call the
+// shared caustic accumulator it defines (WGSL wants declarations before use).
+// The ocean fragment composes the same blocks in the same order.
+${WATER_DEPTH_OPTICS_WGSL}
+
 ${WATER_DETAIL_NOISE_WGSL}
 
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
-${WATER_DEPTH_OPTICS_WGSL}
+// 6-2: the shared run-up model, composed BEFORE the channel block because the
+// bank run-up calls into it. One definition, composed verbatim into both water
+// fragments (and, from 6-5, into the terrain surface plugin) — the parity test
+// pins that.
+${WATER_SHORE_RUNUP_WGSL}
+
+// 6-1: inland-only. Every input is channel-graph hydraulics, so the ocean
+// composes nothing of this; it reads the shared noise block above rather than
+// redefining any lattice.
+${WATER_CHANNEL_FLOW_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
@@ -212,6 +241,11 @@ ${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
+  let light = normalize(uniforms.sunDirection);
+  // 5-11 depth, hoisted above the capillary call by 6-4: the caustic beam gates
+  // the capillary block's curvature accumulation, so it has to exist first.
+  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.absoluteWorldXZ);
+  let causticBeam = waterRefractedSunBeam(depth, light.y);
   // Fix-pack W3: the wave gradient is re-evaluated PER FRAGMENT. The vertex
   // normal was interpolated from meshes with almost no interior vertices — a
   // lake is a centre fan — so interior pixels received a near-constant
@@ -250,27 +284,129 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     // a constant. Rivers and lakes were the worst offenders: their roughness
     // sat exactly on the 0.28 cap everywhere.
     length(fragmentGradient),
+    causticBeam,
   );
+  // 6-1: the pixel footprint, computed here in UNIFORM control flow. The
+  // channel term runs under the sentinel branch and a derivative built-in may
+  // not be called from non-uniform flow; these are the same two derivatives
+  // waterCapillaryDetail takes internally on the same value, so after inlining
+  // the fragment pays for them once either way. The anisotropy limit is wave
+  // R fix 1's, verbatim: fade on the axis the 16x sampler resolves.
+  let channelDerivativeX = dpdx(input.absoluteWorldXZ);
+  let channelDerivativeY = dpdy(input.absoluteWorldXZ);
+  let channelFootprintMajor = max(length(channelDerivativeX), length(channelDerivativeY));
+  let channelFootprintMinor = min(length(channelDerivativeX), length(channelDerivativeY));
+  let channelFootprint = max(
+    channelFootprintMinor,
+    channelFootprintMajor * ${(1 / 16).toFixed(6)},
+  );
+  // 6-1: the sentinel. waterInfo.w is exactly 0 on every analytic-mode
+  // vertex, so an analytic world executes this compare and nothing inside.
+  // Every accumulator below starts as the pre-6-1 value and is only ever
+  // ADDED to inside the branch, so no add-of-zero runs on the analytic path.
+  var surfaceSlope = capillary.slope;
+  var unresolvedSlope = capillary.unresolvedMeanSquareSlope;
+  var channelCrest = 0.0;
+  var channelCrestWeight = 0.0;
+  var channelStandingPhase = 0.0;
+  var channelStandingCurvature = 0.0;
+  var channelBankRunup = 0.0;
+  if (input.waterInfo.w > 0.0) {
+    // 6-2: the bank normal, exactly — no derivative needed. A lane's bank is
+    // cross-stream on the side its lane coordinate says (uv.y is lane*0.5+0.5,
+    // so 0.5 is the thalweg); a lake ring's is radial, and W-5 writes uv as
+    // 0.5 + direction*0.5*radial precisely so that direction survives to here.
+    let laneSign = select(-1.0, 1.0, input.waterUv.y >= 0.5);
+    let bankNormal = select(
+      vec2f(-fragmentFlow.y, fragmentFlow.x) * laneSign,
+      normalize(input.waterUv - vec2f(0.5) + vec2f(0.00001, 0.0)),
+      input.waterInfo.y >= 0.5,
+    );
+    let channel = waterChannelFlow(
+      input.waterInfo.w,
+      input.waterInfo.y,
+      input.absoluteWorldXZ,
+      fragmentFlow,
+      input.flowSpeed,
+      // W-5 exports uv.x as arcLength / 16 from the reach head: a
+      // world-anchored parameter, continuous along a reach and independent of
+      // the camera and of the floating origin.
+      input.waterUv.x * 16.0,
+      input.waterUv.y,
+      uniforms.windDirection * uniforms.windSpeed,
+      uniforms.time,
+      channelFootprint,
+      input.waterInfo.z,
+      bankNormal,
+    );
+    surfaceSlope += channel.slope;
+    unresolvedSlope += channel.unresolvedMeanSquareSlope;
+    channelCrest = channel.crest;
+    channelCrestWeight = channel.crestWeight;
+    channelStandingPhase = channel.standingPhase;
+    channelStandingCurvature = channel.standingCurvature;
+    channelBankRunup = channel.bankRunup;
+  }
+  // 6-4: inland water carries no spectral Jacobian, so its own three phase
+  // terms supply the long half of the convergence signal directly. Each is
+  // A*sin(k.x): its Laplacian is exactly -A*|k|^2*sin(k.x), the same quantity
+  // the ocean recovers from its stored Jacobian, for the cost of three sines
+  // inside the depth gate. At the metre-scale amplitudes and 30-110 m
+  // wavelengths these carry, their focal depths are kilometres — they are
+  // essentially inert today and exist so that 6-1's advected standing waves
+  // and 6-2's run-up focus light the moment they raise real curvature.
+  var caustic = capillary.caustic;
+  if (causticBeam.weight > 0.0) {
+    let crossFrequency = fragmentFlowFrequency * 1.74;
+    caustic = waterCausticSinusoidBand(
+      caustic,
+      fragmentFlowPhase,
+      fragmentFlowAmplitude * fragmentFlowFrequency * fragmentFlowFrequency,
+      causticBeam,
+    );
+    caustic = waterCausticSinusoidBand(
+      caustic,
+      fragmentCrossPhase,
+      fragmentFlowAmplitude * 0.32 * crossFrequency * crossFrequency,
+      causticBeam,
+    );
+    caustic = waterCausticSinusoidBand(
+      caustic,
+      fragmentWindPhase,
+      fragmentWindAmplitude * fragmentWindFrequency * fragmentWindFrequency,
+      causticBeam,
+    );
+    // 6-1: the standing wave is the first inland term that raises curvature
+    // the 6-4 sinusoid band can see — its Laplacian is exactly
+    // -a k^2 sin(phase), which is the shape this band takes. Zero, and
+    // therefore skipped, everywhere the sentinel is dark.
+    if (channelStandingCurvature > 0.0) {
+      caustic = waterCausticSinusoidBand(
+        caustic,
+        channelStandingPhase,
+        channelStandingCurvature,
+        causticBeam,
+      );
+    }
+  }
   let geometricNormal = normalize(vec3f(
-    -fragmentGradient.x + capillary.slope.x,
+    -fragmentGradient.x + surfaceSlope.x,
     1.0,
-    -fragmentGradient.y + capillary.slope.y,
+    -fragmentGradient.y + surfaceSlope.y,
   ));
   // wave R fix 7: the glint-only jitter, sun lobe alone.
   let glintNormalUp = normalize(vec3f(
-    -fragmentGradient.x + capillary.slope.x + capillary.glintSlope.x,
+    -fragmentGradient.x + surfaceSlope.x + capillary.glintSlope.x,
     1.0,
-    -fragmentGradient.y + capillary.slope.y + capillary.glintSlope.y,
+    -fragmentGradient.y + surfaceSlope.y + capillary.glintSlope.y,
   ));
   let view = normalize(uniforms.cameraPosition - input.worldPosition);
   let cameraBelow = uniforms.cameraPosition.y < input.worldPosition.y;
   let normal = select(geometricNormal, -geometricNormal, cameraBelow);
   let glintNormal = select(glintNormalUp, -glintNormalUp, cameraBelow);
-  let light = normalize(uniforms.sunDirection);
   let nDotV = max(dot(normal, view), 0.001);
   let nDotL = max(dot(normal, light), 0.0);
   let lakeFactor = clamp(input.waterInfo.y, 0.0, 1.0);
-  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.absoluteWorldXZ);
   // Fix-pack W1: fold the capillary band's unresolved energy into the GGX
   // lobe in alpha space, the 2-8 discipline — near water keeps micro-facet
   // sparkle instead of collapsing to a mirror.
@@ -287,7 +423,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let baseAlpha = baseRoughness * baseRoughness;
   let roughness = clamp(
-    sqrt(sqrt(baseAlpha * baseAlpha + min(capillary.unresolvedMeanSquareSlope, 0.25))),
+    sqrt(sqrt(baseAlpha * baseAlpha + min(unresolvedSlope, 0.25))),
     0.075,
     0.45,
   );
@@ -329,6 +465,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     view,
     cameraBelow,
     directSunVisibility,
+    caustic,
+    causticBeam,
   );
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
   // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
@@ -345,8 +483,25 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     dot(input.absoluteWorldXZ, vec2f(-input.flowDirection.y, input.flowDirection.x)) * 0.19
       + uniforms.time * 0.8,
   );
-  let shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;
-  let rapidFoam = clamp(input.whitewater * (0.4 + flowCrest * 0.85), 0.0, 1.0);
+  var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;
+  // 6-2: on W-5's banks the shore lapping generalises into a real run-up — a
+  // swash front that beats at its own driver's period (the boil train on a
+  // lane, the fetch-limited chop on a lake shore) and streaks along the bank
+  // NORMAL rather than downwind. It is exactly 0 under the analytic sentinel,
+  // so this branch never runs in an analytic world and the ramp above keeps
+  // every bit it had (6-1's accumulator discipline, verbatim).
+  if (channelBankRunup > 0.0) {
+    shoreFoam = max(shoreFoam, channelBankRunup);
+  }
+  // 6-1: where the exported grade stands a wave train up against the Stokes
+  // limit, the crest the foam rides stops travelling. The breakup mask below
+  // stays advected on purpose — on a real standing wave the foam streams
+  // THROUGH a crest that does not move.
+  var rapidCrest = flowCrest;
+  if (channelCrestWeight > 0.0) {
+    rapidCrest = mix(flowCrest, channelCrest, channelCrestWeight);
+  }
+  let rapidFoam = clamp(input.whitewater * (0.4 + rapidCrest * 0.85), 0.0, 1.0);
   // 2-9: lit foam, advected with the flow so rapids' foam actually travels.
   let foamMask = foamBreakup(
     input.absoluteWorldXZ,
@@ -397,7 +552,13 @@ interface MeshBuildResult {
   readonly triangleCount: number;
 }
 
-interface MeshArrays {
+/**
+ * The interleaved CPU attribute arrays a water mesh is uploaded from. Exported
+ * only so `W-1e`'s committed benchmark and the graph byte pin can build the
+ * exact production arrays without a Babylon device; nothing outside those
+ * harnesses may construct meshes from it.
+ */
+export interface HydrologyMeshArrays {
   readonly positions: number[];
   readonly normals: number[];
   readonly uvs: number[];
@@ -405,6 +566,8 @@ interface MeshArrays {
   readonly flowData: number[];
   readonly waterData: number[];
 }
+
+type MeshArrays = HydrologyMeshArrays;
 
 function emptyMeshArrays(): MeshArrays {
   return {
@@ -499,6 +662,213 @@ function appendLake(arrays: MeshArrays, lake: HydrologyLake): void {
     const next = centerVertex + 1 + (index + 1) % lake.boundary.length;
     arrays.indices.push(centerVertex, next, current);
   }
+}
+
+/**
+ * W-5 (C-5) — graph-mode river lanes on arc-length stations.
+ *
+ * Replaces the raw 512 m "ribbons": stations subdivide the exported reach
+ * at a width-scaled spacing (see riverResample.ts), Frenet tangents come
+ * from central differences over the stations, and whitewater grade is
+ * recomputed from the stations. Lane layout, uv and flowData/waterData
+ * semantics are the 5-12 contract unchanged: five lanes at
+ * [-1,-0.5,0,0.5,1] x halfWidth, uv.x = arcLength / 16 (a world-anchored
+ * arc-length parameter — 6-1's advection keys phase off it), uv.y the lane
+ * coordinate, waterData.z = |lane| shore proximity. Analytic worlds keep
+ * `appendRiver` byte-identical (Gate W non-regression).
+ */
+function appendGraphRiver(arrays: MeshArrays, river: HydrologyRiver): void {
+  const stations = resampleHydrologyRiverStations(river.points);
+  if (stations.length < 2) return;
+  const baseVertex = arrays.positions.length / 3;
+  for (const station of stations) {
+    const rightX = station.tangentZ;
+    const rightZ = -station.tangentX;
+    const halfWidth = station.widthMeters * 0.5;
+    // 6-1: the channel sentinel + grade payload. Analytic `appendRiver` keeps
+    // pushing a literal 0 here, which is what makes the whole advection term
+    // dark in analytic worlds.
+    const channelPayload = waterChannelGradePayload(station.grade);
+    for (const lane of [-1, -0.5, 0, 0.5, 1] as const) {
+      const shore = Math.abs(lane);
+      arrays.positions.push(
+        station.x + rightX * halfWidth * lane,
+        station.y,
+        station.z + rightZ * halfWidth * lane,
+      );
+      arrays.normals.push(0, 1, 0);
+      arrays.uvs.push(station.arcLengthMeters / 16, lane * 0.5 + 0.5);
+      arrays.flowData.push(
+        station.tangentX,
+        station.tangentZ,
+        station.flowSpeedMetersPerSecond,
+        station.whitewater,
+      );
+      arrays.waterData.push(0, 0, shore, channelPayload);
+    }
+  }
+  for (let index = 0; index < stations.length - 1; index += 1) {
+    const row = baseVertex + index * 5;
+    const nextRow = row + 5;
+    for (let lane = 0; lane < 4; lane += 1) {
+      const a = row + lane;
+      const b = nextRow + lane;
+      const c = a + 1;
+      const d = b + 1;
+      arrays.indices.push(a, b, c, c, b, d);
+    }
+  }
+}
+
+/** Shore proximity decays to zero this far inside a lake (capped by radius). */
+const GRAPH_LAKE_SHORE_BAND_MAXIMUM_METERS = 250;
+/**
+ * Interior refinement never splits below this edge length. With the 250 m
+ * shore band this renders the foam gradient over the last ~24% of a
+ * floor-length edge (~120 m) — deliberately of the same order as the ocean's
+ * wide shore band; per-pixel shoreline detail is the bathymetry's job
+ * (5-12), not this attribute lattice's.
+ */
+const GRAPH_LAKE_INTERIOR_EDGE_FLOOR_METERS = 512;
+/**
+ * Interior edges may grow with distance to the shoreline: an edge is split
+ * while longer than max(floor, grading x min(endpoint shore distances)) and
+ * its triangle is above target area. Shore-adjacent triangles refine to the
+ * floor (the waterData gradient resolution); open-water triangles coarsen
+ * geometrically, so a lake's triangle count scales with its shoreline
+ * length rather than its area. Sizing evidence (seed 333438, ~34,000 km² of
+ * retained lakes): a flat 250 m limit produced 8.4M triangles; this graded
+ * scheme lands at ~540k for the same worlds.
+ */
+const GRAPH_LAKE_INTERIOR_EDGE_GRADING = 1;
+
+/**
+ * W-5 (C-5) — graph-mode lake interiors.
+ *
+ * Replaces the centre fan: the marching-squares/Douglas-Peucker shoreline
+ * ring is ear-clipped (correct coverage of concave shorelines) and midpoint-
+ * refined so interior vertices exist to carry the waterData shore-proximity
+ * gradient (boundary z = 1, interior toward 0 over the shore band) that the
+ * fan expressed with its single centre vertex. Every vertex sits exactly at
+ * `surfaceHeight` — the adapter copies `spillElevationMeters` into it, and
+ * the planar-reflection matcher pairs plane heights within 0.05 m, so no
+ * averaging is permitted anywhere on this path. Fragment shading still
+ * re-derives wave gradients per fragment (fix-pack W3); these vertices are
+ * for attribute interpolation and displacement, not normals.
+ */
+function appendGraphLake(arrays: MeshArrays, lake: HydrologyLake): void {
+  const ringCount = lake.boundary.length;
+  if (ringCount < 3) return;
+  const ringXZ = new Array<number>(ringCount * 2);
+  for (let index = 0; index < ringCount; index += 1) {
+    const point = lake.boundary[index]!;
+    ringXZ[index * 2] = point.x;
+    ringXZ[index * 2 + 1] = point.z;
+  }
+  const earTriangles = earClipRing(ringXZ);
+  if (earTriangles.length === 0) return;
+  const shoreBand = clamp(lake.radiusMeters, 1, GRAPH_LAKE_SHORE_BAND_MAXIMUM_METERS);
+  const positionsXZ = [...ringXZ];
+  // W-1e: the shore-distance memo is a typed pair rather than a sparse
+  // `number[]` whose entries were written out of order past its initial
+  // length (which drops a JS array into dictionary mode). Ring vertices keep
+  // their pinned 0; interior vertices are still computed exactly once.
+  let shoreDistances = new Float64Array(Math.max(ringCount * 2, 16));
+  let shoreReady = new Uint8Array(shoreDistances.length);
+  shoreReady.fill(1, 0, ringCount);
+  const shoreDistanceAt = (index: number): number => {
+    if (index >= shoreReady.length) {
+      let capacity = shoreReady.length;
+      while (capacity <= index) capacity *= 2;
+      const grownDistances = new Float64Array(capacity);
+      grownDistances.set(shoreDistances);
+      shoreDistances = grownDistances;
+      const grownReady = new Uint8Array(capacity);
+      grownReady.set(shoreReady);
+      shoreReady = grownReady;
+    }
+    if (shoreReady[index] === 1) return shoreDistances[index]!;
+    const distance = distanceToRingMeters(
+      positionsXZ[index * 2]!,
+      positionsXZ[index * 2 + 1]!,
+      ringXZ,
+    );
+    shoreDistances[index] = distance;
+    shoreReady[index] = 1;
+    return distance;
+  };
+  const triangles = refineTriangulation(
+    positionsXZ,
+    earTriangles,
+    (a, b) => Math.max(
+      GRAPH_LAKE_INTERIOR_EDGE_FLOOR_METERS,
+      GRAPH_LAKE_INTERIOR_EDGE_GRADING * Math.min(shoreDistanceAt(a), shoreDistanceAt(b)),
+    ),
+  );
+  const baseVertex = arrays.positions.length / 3;
+  const vertexCount = positionsXZ.length / 2;
+  const maximumDepth = Math.max(lake.maximumDepthMeters, 0.08);
+  // 6-1: the lake's own span is the fetch ceiling. `radiusMeters` is the
+  // exported max centre-to-ring distance, so 2x it is the long chord; the
+  // per-vertex nearest-shore distance (already memoised for the shore
+  // gradient, so this costs no new ring walk) shortens it near a bank.
+  const lakeSpanMeters = lake.radiusMeters * 2;
+  for (let index = 0; index < vertexCount; index += 1) {
+    const x = positionsXZ[index * 2]!;
+    const z = positionsXZ[index * 2 + 1]!;
+    const shoreDistance = index < ringCount ? 0 : shoreDistanceAt(index);
+    const shore = index < ringCount
+      ? 1
+      : clamp(1 - shoreDistance / shoreBand, 0, 1);
+    const channelPayload = waterLakeFetchPayload(
+      waterLakeEffectiveFetchMeters(shoreDistance, lakeSpanMeters),
+    );
+    arrays.positions.push(x, lake.surfaceHeight, z);
+    arrays.normals.push(0, 1, 0);
+    // W-1e: one radius per vertex feeds both the normalized direction and the
+    // radial factor — `normalizedDirection` computed the same `Math.hypot`
+    // the radial term computed again, and allocated a tuple to return it.
+    const offsetX = x - lake.centerX;
+    const offsetZ = z - lake.centerZ;
+    const offsetLength = Math.hypot(offsetX, offsetZ);
+    const directionX = offsetLength > 1e-6 ? offsetX / offsetLength : 0;
+    const directionZ = offsetLength > 1e-6 ? offsetZ / offsetLength : 1;
+    const radial = clamp(offsetLength / Math.max(lake.radiusMeters, 1e-6), 0, 1);
+    arrays.uvs.push(0.5 + directionX * 0.5 * radial, 0.5 + directionZ * 0.5 * radial);
+    arrays.flowData.push(lake.flowDirection[0], lake.flowDirection[1], 0.18, 0);
+    arrays.waterData.push(
+      0.08 + (maximumDepth - 0.08) * (1 - shore),
+      1,
+      shore,
+      channelPayload,
+    );
+  }
+  // The ring is CCW; emitting (a, c, b) matches the legacy fan's winding.
+  for (let index = 0; index < triangles.length; index += 3) {
+    arrays.indices.push(
+      baseVertex + triangles[index]!,
+      baseVertex + triangles[index + 2]!,
+      baseVertex + triangles[index + 1]!,
+    );
+  }
+}
+
+/**
+ * `W-1e` harness seam: the graph-mode river and lake attribute arrays exactly
+ * as `buildRegion` produces them, without a Babylon device. Used by
+ * `scripts/channel-extract-benchmark.mts` and by the graph byte pin in
+ * `tests/render.webgpu-hydrology.test.ts`; the renderer path is unchanged and
+ * still goes through `buildMesh`.
+ */
+export function buildGraphHydrologyMeshArrays(
+  rivers: readonly HydrologyRiver[],
+  lakes: readonly HydrologyLake[],
+): { readonly rivers: HydrologyMeshArrays; readonly lakes: HydrologyMeshArrays } {
+  const riverArrays = emptyMeshArrays();
+  for (const river of rivers) appendGraphRiver(riverArrays, river);
+  const lakeArrays = emptyMeshArrays();
+  for (const lake of lakes) appendGraphLake(lakeArrays, lake);
+  return { rivers: riverArrays, lakes: lakeArrays };
 }
 
 function buildMesh(
@@ -1056,11 +1426,19 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const root = new TransformNode(`hydrology-region-${suffix}`, this.scene);
     root.position.set(-this.originX, 0, -this.originZ);
     try {
+      // W-5: canonical graph geometry gets the arc-length/ear-clip builders;
+      // the analytic legacy path keeps appendRiver/appendLake byte-identical
+      // (the Gate W unchanged-SSIM proof depends on it — see the pinned-hash
+      // test in tests/render.webgpu-hydrology.test.ts).
       const riverBuild = buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
-        hydrology.rivers.forEach((river) => appendRiver(arrays, river));
+        hydrology.rivers.forEach((river) => (
+          this.graphMode ? appendGraphRiver(arrays, river) : appendRiver(arrays, river)
+        ));
       });
       const lakeBuild = buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
-        hydrology.lakes.forEach((lake) => appendLake(arrays, lake));
+        hydrology.lakes.forEach((lake) => (
+          this.graphMode ? appendGraphLake(arrays, lake) : appendLake(arrays, lake)
+        ));
       });
       const region: HydrologyRegionRuntime = {
         selection,

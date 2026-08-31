@@ -1,22 +1,40 @@
 import {
   TerrainBiome,
   TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
+  sampleTerrainEvolutionGeology,
   seasonalSnowlineDescentMeters,
   seasonalWinterFraction,
+  type TerrainEvolutionGeologySample,
 } from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
 import {
   classifyLandCover,
   landCoverHabitat,
 } from "@/src/render/webgpu/terrain/LandCoverClassifier";
+import {
+  terrainSlopeAngleFromNormalizedSteepness,
+  terrainSoilDepthMeters,
+  terrainTopographicWetnessIndex,
+} from "@/src/render/webgpu/terrain/TerrainPageHydrology";
 import { hashSeed } from "@/src/world/seed";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
   densityField,
   riparianVegetationFactors,
+  soilLitterFactor,
   type VegetationDensitySample,
 } from "./densityField";
 import { sampleStandField, type StandSample } from "./standField";
+import {
+  TALUS_FACE_SHED_MAX,
+  TALUS_NO_PLACEMENT,
+  TALUS_NO_SUPPLY,
+  talusFailureFraction,
+  talusPlacement,
+  talusRestWeight,
+  type TalusPlacementSample,
+  type TalusSupplyProbe,
+} from "./talusField";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type ClutterKind,
@@ -91,31 +109,124 @@ function airportClearance(sample: DetailTerrainSample): number {
   return 1 - clamp(sample.airportInfluence ?? 0, 0, 1);
 }
 
-function rockProbability(sample: DetailTerrainSample): number {
-  let probability: number;
+/**
+ * `6-7`: the acceptance probability the apron may add on top of the
+ * outcrop/lag population. The clamp at 0.75 is unchanged, so the *structural*
+ * per-cell ceiling (the fixed candidate count) is untouched — a talus apron
+ * spends more of a cell's existing candidates, it does not create candidates.
+ */
+const TALUS_ROCK_DENSITY_GAIN = 0.42;
+
+/** `terrainSlopeAngleFromNormalizedSteepness` is undefined at vertical. */
+const MAX_SLOPE_FOR_ANGLE = 0.98;
+
+/**
+ * `6-7` — the biome lag/outcrop population and the talus apron, kept as two
+ * NAMED terms because they are two different rocks.
+ *
+ * The lag term is `2-15`'s: field stones, glacial erratics, in-situ outcrop
+ * knobs. It is a property of the biome and of exposure, and it survives
+ * unchanged wherever the surface can hold it.
+ *
+ * What `6-7` adds to it is conservation. `2-15`'s `slope · 0.35` grew without
+ * limit toward vertical, so the steeper a face got the MORE loose blocks it
+ * carried — exactly backwards. A face above the local angle of repose is a
+ * failure face; it sheds. {@link TALUS_FACE_SHED_MAX} of the lag population
+ * therefore leaves over-repose ground, and the apron term puts it back below,
+ * where {@link talusPlacement} says it comes to rest. That is why this item
+ * is a REDISTRIBUTION and not a density increase.
+ */
+function rockLagProbability(
+  sample: DetailTerrainSample,
+  reposeDegrees: number,
+): number {
+  let biomeLag: number;
   switch (sample.biome) {
     case TerrainBiome.BEACH:
-      probability = 0.09;
+      biomeLag = 0.09;
       break;
     case TerrainBiome.GRASSLAND:
-      probability = 0.025;
+      biomeLag = 0.025;
       break;
     case TerrainBiome.FOREST:
-      probability = 0.04;
+      biomeLag = 0.04;
       break;
     case TerrainBiome.HIGHLAND:
-      probability = 0.18;
+      biomeLag = 0.18;
       break;
     case TerrainBiome.ALPINE:
-      probability = 0.28;
+      biomeLag = 0.28;
       break;
     case TerrainBiome.SNOW:
-      probability = 0.14;
+      biomeLag = 0.14;
       break;
     default:
+      // Water and paved ground carry no rock population at all. Returning
+      // zero here is what keeps the apron term off them too: every talus
+      // contribution is added INSIDE this guard, downstream of it.
       return 0;
   }
-  return clamp(probability + sample.slope * 0.35, 0, 0.75) * airportClearance(sample);
+  const swept = 1 - TALUS_FACE_SHED_MAX * talusFailureFraction(sample.slope, reposeDegrees);
+  return biomeLag + sample.slope * 0.35 * swept;
+}
+
+function rockProbability(
+  sample: DetailTerrainSample,
+  reposeDegrees: number,
+  talusDensity: number,
+): number {
+  const lag = rockLagProbability(sample, reposeDegrees);
+  if (lag <= 0) return 0;
+  return clamp(lag + TALUS_ROCK_DENSITY_GAIN * talusDensity, 0, 0.75)
+    * airportClearance(sample);
+}
+
+/**
+ * How much of an accepted rock's presence the apron paid for, in [0, 1]. Zero
+ * is a pure `2-15` lag block; one is pure scree. Used only to blend the size
+ * law, so a boulder field grades into the surrounding lag instead of ending
+ * at a contour.
+ */
+function talusApronShare(
+  sample: DetailTerrainSample,
+  reposeDegrees: number,
+  talusDensity: number,
+): number {
+  const apron = TALUS_ROCK_DENSITY_GAIN * talusDensity;
+  if (apron <= 0) return 0;
+  const lag = rockLagProbability(sample, reposeDegrees);
+  return apron / (lag + apron);
+}
+
+/**
+ * `6-7` — the soil-depth input to the scree law, and its analytic fallback.
+ *
+ * Eroded worlds publish `5-5`'s channel and it is read verbatim. Analytic
+ * worlds publish nothing, and the fallback is deliberately NOT a second soil
+ * model: it is `terrainSoilDepthMeters`, the OWNED law, evaluated with the
+ * information an analytic world actually has. Slope it has. Convergence
+ * curvature and contributing area it does not — an analytic world has no flow
+ * field at all — so curvature is planar and the wetness term is the owned TWI
+ * at zero contributing area, which is what "no drainage" means arithmetically
+ * rather than a conceded constant.
+ *
+ * The consequence, stated so it is not mistaken for a bug: analytically the
+ * soil term is nearly saturated on any slope steep enough to hold an apron,
+ * so it gates almost nothing there and the repose/supply terms carry the law
+ * alone. Where a hydrology page exists, curvature and wetness re-enter and
+ * convergent, wet, low-gradient ground stops growing scree. That difference
+ * IS the channel being live.
+ */
+function screeSoilDepthMeters(sample: DetailTerrainSample): number {
+  if (sample.soilDepthMeters !== undefined) return sample.soilDepthMeters;
+  const slopeRadians = terrainSlopeAngleFromNormalizedSteepness(
+    Math.min(sample.slope, MAX_SLOPE_FOR_ANGLE),
+  );
+  return terrainSoilDepthMeters(
+    slopeRadians,
+    0,
+    terrainTopographicWetnessIndex(0, slopeRadians),
+  );
 }
 
 /** 4-6b: the density authority's own empty answer, not a local literal. */
@@ -126,6 +237,9 @@ const ZERO_VEGETATION_DENSITY: VegetationDensitySample = Object.freeze({
   aspect: 0,
   forestEdge: 0,
   groundCover: Object.freeze({ grass: 1, fern: 0, heather: 0, reed: 0, clutter: 0 }),
+  riparianBand: 0,
+  canopyClosure: 0,
+  grassCover: 1,
 });
 
 /**
@@ -848,13 +962,84 @@ function chooseRockVariant(sample: DetailTerrainSample, random: RandomSource): R
   return random() < 0.55 ? "limestone" : random() < 0.82 ? "granite" : "dark";
 }
 
+/**
+ * `6-7` — the upslope supply probe: how much failure face stands above this
+ * point, and how far below it this point is.
+ *
+ * It walks the FALL LINE, re-reading the surface normal at every step so the
+ * path follows the hill rather than a straight bearing taken at the foot. The
+ * uphill direction is `(−normal.x, −normal.z)` normalised, because the height
+ * field's normal is `(−∂h/∂x, 1, −∂h/∂z)` scaled.
+ *
+ * It samples `sampleTerrain` DIRECTLY rather than the cell's 16 m scatter
+ * grid, deliberately. The grid clamps outside the cell's 40 m halo, so a
+ * probe reading it would return a different answer for the same world point
+ * depending on which cell was being generated — a seam in the scree, and a
+ * placement that changes when a page changes owner. The sampler is a pure
+ * function of world position, so this is seamless by construction and is what
+ * the km-out determinism test measures.
+ *
+ * Cost is paid only where scree is possible: `generateRocks` early-outs
+ * before calling this whenever the resting band is empty (flat ground, or a
+ * face already past repose) or when the candidate's acceptance roll cannot be
+ * met even by a saturated apron. A forest or grassland cell therefore probes
+ * nothing at all.
+ */
+const TALUS_PROBE_STEP_METERS = 32;
+const TALUS_PROBE_STEPS = 3;
+
+function probeTalusSupply(
+  x: number,
+  z: number,
+  sample: DetailTerrainSample,
+  reposeDegrees: number,
+  sampleTerrain: DetailCellGenerationOptions["terrainSample"],
+): TalusSupplyProbe {
+  let normalX = sample.normal?.x ?? 0;
+  let normalZ = sample.normal?.z ?? 0;
+  let probeX = x;
+  let probeZ = z;
+  let previousHeight = sample.height;
+  let travelled = 0;
+  let failureReliefMeters = 0;
+  let weightedTravel = 0;
+  for (let step = 0; step < TALUS_PROBE_STEPS; step += 1) {
+    const horizontal = Math.hypot(normalX, normalZ);
+    // Flat ground has no fall line: there is nothing above to supply an apron.
+    if (!(horizontal > 1e-6)) break;
+    probeX -= (normalX / horizontal) * TALUS_PROBE_STEP_METERS;
+    probeZ -= (normalZ / horizontal) * TALUS_PROBE_STEP_METERS;
+    travelled += TALUS_PROBE_STEP_METERS;
+    const upslope = sampleTerrain(probeX, probeZ);
+    if (!validSample(upslope)) break;
+    const rise = upslope.height - previousHeight;
+    previousHeight = upslope.height;
+    normalX = upslope.normal?.x ?? 0;
+    normalZ = upslope.normal?.z ?? 0;
+    // A bench or a col contributes no supply but does not end the walk: the
+    // wall above a shoulder still feeds the apron below it.
+    if (rise <= 0) continue;
+    const contribution = rise * talusFailureFraction(upslope.slope, reposeDegrees);
+    if (contribution <= 0) continue;
+    failureReliefMeters += contribution;
+    weightedTravel += contribution * travelled;
+  }
+  if (failureReliefMeters <= 0) return TALUS_NO_SUPPLY;
+  return {
+    failureReliefMeters,
+    travelMeters: weightedTravel / failureReliefMeters,
+  };
+}
+
 function generateRocks(
   seed: string,
+  seedHash: number,
   key: string,
   minX: number,
   minZ: number,
   cellSize: number,
   density: number,
+  seaLevelMeters: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
   season: FoliageSeason,
 ): readonly DetailRockPlacement[] {
@@ -862,14 +1047,53 @@ function generateRocks(
   const random = createRandom(`${seed}/rocks/${key}`);
   const candidates = Math.min(96, Math.max(12, Math.round((cellSize * cellSize / 2_800) * density)));
   const rocks: DetailRockPlacement[] = [];
+  // `sampleTerrainEvolutionGeology` takes a caller-owned target; one scratch
+  // record per cell keeps the per-candidate lithology read allocation-free.
+  const geology: TerrainEvolutionGeologySample = {
+    fabricCos2: 1, fabricSin2: 0, erodibility: 1, reposeDegrees: 34,
+  };
+  // Season-invariant: the REFERENCE snowline, never the descending seasonal
+  // one. A rock that appeared in October would be the calendar popping stems.
+  const permanentSnowlineMeters = seaLevelMeters + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS;
   for (let index = 0; index < candidates; index += 1) {
     const x = minX + random() * cellSize;
     const z = minZ + random() * cellSize;
     const acceptance = random();
     const sample = sampleTerrain(x, z);
-    if (!validSample(sample) || acceptance >= rockProbability(sample)) continue;
+    if (!validSample(sample)) continue;
+    // Lithology, from the one owned geology sampler. Filter width 0: this is
+    // a per-placement read, the full-bandwidth field, exactly as every other
+    // per-stem field in this file is read.
+    sampleTerrainEvolutionGeology(seedHash, x, z, 0, geology);
+    const reposeDegrees = geology.reposeDegrees;
+    // Two tests that change COST and never the result. An empty resting band
+    // admits no apron at all — `talusPlacement` would return zero density and
+    // zero density blends no grain — and a candidate whose roll a SATURATED
+    // apron could not clear is already decided. Between them, a forest or
+    // grassland cell walks no fall line and reads no soil at all.
+    const talus: TalusPlacementSample =
+      talusRestWeight(sample.slope, reposeDegrees) > 0
+        && acceptance < rockProbability(sample, reposeDegrees, 1)
+        ? talusPlacement({
+          slope: sample.slope,
+          reposeDegrees,
+          soilDepthMeters: screeSoilDepthMeters(sample),
+          probe: probeTalusSupply(x, z, sample, reposeDegrees, sampleTerrain),
+          metersAbovePermanentSnowline: sample.height - permanentSnowlineMeters,
+        })
+        : TALUS_NO_PLACEMENT;
+    if (acceptance >= rockProbability(sample, reposeDegrees, talus.density)) continue;
     const variant = chooseRockVariant(sample, random);
-    const radius = 0.5 + (0.25 + sample.slope * 0.75) * random() * 4.2;
+    const radiusRoll = random();
+    // Fall sorting, applied in proportion to how much of THIS acceptance the
+    // apron paid for. A lag block on the same slope keeps `2-15`'s size law;
+    // a block the apron placed takes the apron's grain, which coarsens with
+    // travel from the face above. Both read the same roll, so the RNG stream
+    // is untouched and a cell with no apron is byte-identical to `2-15`.
+    const lagRadius = 0.5 + (0.25 + sample.slope * 0.75) * radiusRoll * 4.2;
+    const screeRadius = talus.grainRadiusMeters * (0.55 + radiusRoll * 0.9);
+    const apronShare = talusApronShare(sample, reposeDegrees, talus.density);
+    const radius = lagRadius + (screeRadius - lagRadius) * apronShare;
     const tint = 0.78 + random() * 0.3;
     const flattening = 0.45 + random() * 0.45;
     const winter = clamp(season.winterFraction + (random() - 0.5) * 0.04, 0, 1);
@@ -900,6 +1124,30 @@ function generateRocks(
 }
 
 const CLUTTER_KINDS: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
+
+/**
+ * `6-6`: the litter driver, and the one place the soil-depth channel replaces
+ * its stand-in.
+ *
+ * `2-15` shipped `moisture` here with an ARCHITECTURE row calling it "a
+ * soil-depth stand-in until 6-6". This returns the real thing when the page
+ * channel has provisioned this point and the stand-in when it has not, which
+ * is the same optional-input-plus-sentinel shape the splat classifier's
+ * `flowAccumulationValid` uses: an analytic world has no soil channel, the
+ * sample carries no `soilDepthMeters`, and every downstream number is
+ * bit-identical to what it was.
+ *
+ * The real driver is deliberately WEAKER than the stand-in over the measured
+ * soil distribution (crests and rock faces fall to zero litter where the
+ * moisture proxy still granted a bonus), which is how the §5.3 "net stem count
+ * falls" rule is satisfied: the count of placed clutter goes down, the fidelity
+ * of each placement is untouched.
+ */
+function litterDriver(sample: DetailTerrainSample): number {
+  return sample.soilDepthMeters === undefined
+    ? sample.moisture
+    : soilLitterFactor(sample.soilDepthMeters);
+}
 
 export const GROUND_COVER_GRID = 8;
 
@@ -968,9 +1216,19 @@ function buildGroundCoverGrid(
         0,
         1,
       );
+      // 6-6, the species half of the shore-distance channel: reeds are a
+      // water-EDGE species and streamside ferns do not need a closed canopy.
+      // Until now both keyed on the climatic moisture proxy alone, so a reed
+      // bed grew on any wet flat ground and never along a river. The band is
+      // the density field's own corridor shape (`riparianBand`), so placement
+      // and appearance cannot disagree about where the bank is; it is exactly
+      // 0 wherever hydrology has not provisioned the point, which leaves
+      // analytic worlds bit-identical.
+      const bank = field.riparianBand;
       const archetype: import("./types").GroundCoverArchetype =
-        sample.moisture > 0.72 && sample.slope < 0.06 ? "reed"
-        : closure > 0.45 && sample.moisture > 0.5 ? "fern"
+        (sample.moisture > 0.72 || bank > 0.35) && sample.slope < 0.06 ? "reed"
+        : (closure > 0.45 && sample.moisture > 0.5) || (bank > 0.2 && closure > 0.18)
+          ? "fern"
         : closure < 0.2 && exposure > 0.55 ? "heather"
         : "grass";
       // Habitat tint: wet ground deepens green, dry ground bleaches; grass
@@ -1067,11 +1325,18 @@ function scatterClutter(
     });
     // Canopy closure proxy: closed forest carries ~0.05 stems/m².
     const closure = clamp(field.treeStemsPerSquareMeter / 0.05, 0, 1);
+    // 6-6: `litterDriver` is the soil-depth channel where it exists and the
+    // 2-15 moisture stand-in where it does not.
+    const litter = litterDriver(sample);
     const probability = airportClearance(sample)
       * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
-      * (0.06 + closure * 0.5 + sample.moisture * 0.12);
+      * (0.06 + closure * 0.5 + litter * 0.12);
     if (acceptance >= probability) continue;
-    const wetEnough = sample.moisture >= 0.55;
+    // Moss cushions need a substrate to sit on, not just humid air: real soil
+    // depth replaces the moisture gate wherever the channel supplies it.
+    const wetEnough = sample.soilDepthMeters === undefined
+      ? sample.moisture >= 0.55
+      : litter >= 0.55;
     const kind: ClutterKind = kindRoll < 0.2 ? "log"
       : kindRoll < 0.35 ? "stump"
       : kindRoll < 0.8 || !wetEnough ? "branchLitter"
@@ -1162,11 +1427,13 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       : [],
     rocks: generateRocks(
       seed,
+      seedHash,
       key,
       minX,
       minZ,
       cellSizeMeters,
       densityMultiplier,
+      seaLevelMeters,
       options.terrainSample,
       context.season,
     ),

@@ -157,7 +157,11 @@ describe("terrain evolution runtime orchestration", () => {
     if (result.mode !== "eroded") throw new Error("Expected eroded result");
     expect(extracted).toBe(clientResult.evolution);
     expect(result.evolution).toBe(clientResult.evolution);
-    expect(result.channelGraph).toBe(graph);
+    // W-1e: the graph is a promise so a producer that extracts it in its
+    // own worker can resolve the macro product first. This client does not,
+    // so the runtime's own extractor ran synchronously and the promise is
+    // already settled with exactly its output.
+    await expect(result.channelGraph).resolves.toBe(graph);
     expect(result.macroGrid).toBe(clientResult.macroGrid);
     expect(result.elapsedMilliseconds).toBe(900);
     expect(reported).toHaveLength(1);

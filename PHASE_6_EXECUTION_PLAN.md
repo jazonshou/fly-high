@@ -79,9 +79,14 @@ rules, after Gate 0:
    can no longer shed levers to hide an over-cap burst — it shows in p95 directly.
 4. **Memory is at the wall, and the gate is the wrong instrument.** At the binding
    shot (reference-viewport, the shot created because the tier-1 cap binds there),
-   **inventoried** GPU memory is 489.0 MiB against the 480 MiB ceiling while the
-   *gating estimate* reads 380.7 MiB — only the estimate gates, ~100 MiB of false
-   headroom. Gate 0 executes 6-11.4a: a capture-time assert on
+   **inventoried** GPU memory is 489.0 MiB while the tier-1 ceiling the *estimate*
+   is checked against is 480 MiB, and that estimate reads only 380.7 MiB — ~100 MiB
+   of false headroom in the gating instrument. Read that as "the real number already
+   exceeds the declared tier ceiling", NOT as available headroom: those are two
+   different measurements of the same physical thing. **Headroom for a new
+   allocation is measured against Gate 0-c's enforced inventoried assert** —
+   `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495` against a measured 492.3,
+   i.e. **2.7 MiB**, which is the number any new allocation must actually fit in. Gate 0 executes 6-11.4a: a capture-time assert on
    `inventoriedGpuMemoryMiB` (ceiling + small recorded tolerance for the pre-existing
    overage) so Wave 1–3 allocations are caught by the real number, and every item's
    `DYNAMIC_ALLOCATIONS` row is checked against the measured inventory delta at item
@@ -212,12 +217,47 @@ deterministic, capture-pinned — with the actual re-default decided in §8.
 | W-1 | C-1 | GPU macro + page erosion passes (WGSL compute ports of the CPU reference operators), admitted through `ComputeBudget.erosionCompute`; **eroded time-to-ready ≤ 1.5 s** at tier 1 (recorded loads today: 11,098 ms dev / 13,255 ms built; the CPU macro benchmark alone is 7,497 ms); measured per-page GPU cost recorded (the 4.5-B2 ~1.9 ms/page finding is the prior). **Mid-gate checkpoint capture at W-1 close** (§1.1) | 6.0 |
 | W-2 | C-2 | Resident-parent convergence chain + multi-frame page DAG (pages compose from converged parents, never from raw macro) | 2.0 |
 | W-3 | C-3 | Assertions 91 (grid-bytes = page-bytes on adapter) and 93 (analyticServed = 0 below 500 m AGL over `sim.flight`) written and green | 0.5 |
-| W-4 | C-4 | Lloyd-relaxed plate model + post-erosion fine-band masking | 2.0 |
+| W-4 | C-4 | Lloyd-relaxed plate model + post-erosion fine-band masking. **Targets are now measured, not guessed** (W-7's statistics suite): (a) the 24 m/9 m ridged bands move off the *uplift input* (C-4's recorded deviation) onto a *post-erosion* soil-depth-and-curvature mask — one mechanism drives two failures, sub-macro pit density 3.289/km² against < 0.1 and valley:crest 20 m RMS curvature 0.608:1 against ≥ 3:1 (inverted, because ridges keep every band while page erosion planes valley floors); (b) per-plate motion boundaries so range-local gradient anisotropy reaches 2:1 everywhere (76% today, median 2.430:1). Re-verify assertion 96-global after any macro-shape change — it passes with only 11% margin | 2.0 |
 | W-5 | C-5 | Real lake polygons (marching squares → Douglas-Peucker → ear-clip, with holes) + arc-length river resampling with Frenet frames and delta expansion — **the geometry 6-1/6-3 animate**; also retires wave R's "fans and 512 m ribbons" open item. New meshes count against Gate 0's drawCalls ceilings | 2.5 |
 | W-6 | C-6 | Eroded bathymetry overlays resident L0 pages (today it samples the 512 m canonical macro at cell centres — the recorded floor under any surf zone). Water consumers may not work around it independently (ARCHITECTURE 5-10 row) | 1.5 |
 | W-7 | C-7 | Eroded-mode capture. **Includes real harness work, not just a list edit**: no per-shot `worldEvolution` mechanism exists and the harness builds one renderer/world per run — mixed-mode canonical runs need a world teardown/rebuild (or second session) with settle/phase-keying re-derived and no double-resident world at the memory wall. Shots **appended** (append-only; canonical-index keying from `8ec1c45` preserved): dendritic, valley, lake, **plus one eroded motion/page-thrash shot with residencyCeilings** — the static surveys cannot see in-flight page-erosion admission bursts, which is the eroded mode's distinctive steady-state cost. First eroded baseline promoted; assertions 96/97/98 as a real statistics suite; **87 and 88 domain-wide** (88's lake-spill/fill-surface half is C-7's too); the 384-seed audit. Note: once appended, every future full-set rebaseline candidate re-runs and re-reviews these shots — priced-in review inflation | 3.0 |
 | W-8 | C-10 | Erosion-halo composed-reach guard (composed reach 72 texels > 64-texel halo; theorem currently single-operator). **Blocks re-default** — resolved before §8 can say yes | 1.0 |
 | W-9 | C-11 | RESOLUTION_PLAN A-3 TWI wetness window (`TERRAIN_TWI_DRY/WET` re-windowed against real eroded flow statistics, [TerrainPageHydrology.ts:42-43](src/render/webgpu/terrain/TerrainPageHydrology.ts)) | 0.5 |
+
+### Gate W status — **CLOSED 2026-08-30**
+
+| Item | State | Evidence |
+|---|---|---|
+| W-1a GPU stream-power + talus | **landed** | 2,020 → ~100 ms; GPU-vs-GPU byte-deterministic; CPU-oracle tolerance pinned |
+| W-1b GPU input sampling | **landed + wired** | 1,011 → 28.8 ms; 6-seed extraction sweep green; `gpu-macro-v2` provenance family |
+| W-1c CPU legs (bit-preserving) | **landed** | floods 476→151, MFDs 477→170, stage 2 1,844→324 ms; byte-identical at 1024² on two seeds |
+| W-1e eroded startup | **landed** | extraction 3.9× and moved into the macro worker; readiness semantics unchanged |
+| W-1d + W-2 page DAG | **landed** | 34–37 ms/page, 12–19 frames, ~1.4 pages/s vs the CPU path's 0.2–0.5; seed cost measured 0.4 → 0.24 ms; determinism holds across evict/regenerate and across dispatch rates; seam relaxed per D-7 |
+| W-3 assertions 91 + 93 | **landed** | 4-hop byte equality through the real transfer; 31,917 readback-served / 0 analytic below 500 m |
+| W-4 plates + fine-band masking | **landed, 2 targets still unmet** | plate model delivered every gain; the C-4 diagnosis was disproved by ablation (D-8) and the two remaining misses re-routed to their real causes |
+| W-5 lake/river geometry | **landed** | 2,654 → 9,173 lakes meshed; arc-length rivers; analytic path sha-pinned |
+| W-6 bathymetry L0 overlay | **landed** | plus a root-caused pre-existing `writeBuffer` race in the dual-rect path |
+| W-7 statistics + harness | **partial** | statistics suite landed (4 pinned, 3 recorded); per-shot `worldEvolution` machinery landed dormant; eroded shots + baseline promotion held for Gate F |
+| W-8 composed-reach guard | **closed** | 36/36 production page pairs bit-exact + a pinned production-ratio fixture (D-4) |
+| W-9 TWI re-window | **closed** | [4,18] → [15,24] from ~431k measured texels × 2 seeds |
+
+Macro leg measured end to end: **~1,779 → ~825 ms**. Whole-path eroded
+time-to-ready projects to ~1.27–1.5 s (D-5) — at budget, no margin.
+
+**Close evidence (idle host, Wave-1-clean tree):** 24/24 capture shots pass with
+delivery gates ENFORCED — min 112.44 wall fps, worst p95 10.3 ms, zero hitches,
+against the pre-Gate-W floor of 113.4 / 10.2 / zero. The analytic set is
+SSIM-unchanged (23 shots ≥ 0.999 luma; the one below it measures the same on a
+pre-Gate-W control capture, which also settles D-6 finding 4: the W-6 race fix
+has no detectable analytic pixel effect). `npm test` 951 / 114 files;
+`test:gpu` 73 / 36 files; seam audit 32/32 bit-exact; inventoried memory 492.3
+MiB at the binding shot with every allocation site now registering (was 489.0
+with buffers invisible), 2.7 MiB under the ceiling.
+
+**Carried out of Gate W:** D-7's canonical-split fix (blocks re-default),
+D-9's loosened page-parity bounds (re-tighten after D-7), W-4's two unmet
+targets routed to operator reach and to W-2's boundary condition, and Gate F's
+flights — which still gate any eroded baseline promotion (D-1).
 
 Rules: W-1's steady-state page erosion admits under the existing tier caps — no cap may
 be raised for it (shrinking the compute budget is Governor lever 0, and the governor is
@@ -285,6 +325,50 @@ unchanged-SSIM proof otherwise).
 Pins: caustics vanish beyond the depth gate; parity test unchanged; `water-3m` SSIM
 rebaseline at the Wave-1 point only.
 
+### Wave 1 status (2026-08-30)
+
+| Item | State | Notes |
+|---|---|---|
+| 6-4 caustics | **landed + merged** | built on a side branch during Gate W, merged after the close proof; clean 3-way merge, zero conflicts |
+| 6-1 flow advection | **landed** | dual-phase advection at 9 / 1.6 / 0.36 m drifting at 1.0 / 0.85 / 0.7× surface velocity; standing waves λ = 2πv²/g with steepness set by GRADE (the first formulation made torrents break *less* than riffles — caught by measurement and changed); SMB/JONSWAP fetch-limited lake chop; world-locking proven bit-identical from 0.5 s to 20,000 s; analytic byte-identity proven as an exact-zero struct on hardware |
+| 6-2 shoreline run-up | **landed** | see D-12; ocean fragment hash re-pinned deliberately, vertex hash deliberately unchanged as proof it is a fragment-side delta |
+
+Wave 2: **6-6 landed** (see D-10) — C-9's soilDepth half discharged, stem count
+fell as required, analytic byte-identity measured against a reconstructed
+pre-6-6 tree. **6-7 landed** (D-11) — it corrected 2-15's inverted slope term and net rock
+instances fell everywhere. 6-5 waits on 6-2's wetness field.
+| 6-3 shallow-water dispersion | **landed** | see D-13; **Wave 1 complete** |
+
+### Wave 2 and Wave 3 status (2026-08-31) — ALL ITEMS LANDED
+
+| Item | State | Notes |
+|---|---|---|
+| 6-5 terrain wetness | **landed** | D-15; `lakeDepth` consumed at last, **C-9 fully discharged** (the consumer table now asserts zero pending channels) |
+| 6-6 ecology channels | **landed** | D-10; `soilDepth` given its first consumer, stem count fell |
+| 6-7 talus/scree | **landed** | D-11; corrected 2-15's inverted slope term, rock instances fell everywhere |
+| 6-8 canopy handoff | **landed** | D-14; QR-2 and the far ramp proved to be one quantity; QR-4 moot; horizon-shadow declined with reason → 6-11 |
+| 6-9 GPU scatter | **landed** | D-16; both wave-G debts paid, a real ComputeBudget bug fixed, drawn blades −39.6% |
+
+Only **6-11** (four-tier sweep, QR-1, cold start, memory truth) and **6-12**
+(documentation truth) remain, and both are capture-driven — the main session owns
+them because they require a quarantined idle host.
+
+**Owed rebaselines: R1, R2 and R3 are all outstanding.** Waves 1–3 moved analytic
+pixels in three separate areas (ocean surf and caustics; the coast wet strip;
+ground materials, scree and ground cover), each measured by its own item. They
+should be reviewed and promoted together in ONE sanctioned pass rather than three,
+since no capture has been promoted between them.
+
+**A scoping fact R1 must absorb:** 6-1's pixels are **invisible in all 24 current
+shots**. Both water shots are open-ocean analytic views and no current shot frames
+inland water or runs eroded, so flow advection, standing waves and lake chop
+cannot appear until the appended **eroded rapids/lake shot** exists — and eroded
+shots are held for Gate F's verdicts (D-1). Caustics is the opposite: its ocean
+half moves the two water shots now, while its inland half is equally invisible.
+So R1 rebaselines what caustics does to the ocean, and Wave 1's inland work
+stays unpinned until the eroded shot set lands. Do not read "no pixel movement"
+as "no work landed"; read it as "the capture set cannot see this yet".
+
 **Wave 1 rebaseline point** (§9 R1): water shots + appended rapids/surf shots, delivery
 floors re-pinned. Watch-list: wave R's "planar shore reflection" open item is
 **explicitly declined** for Wave 1 (it is an SSR-class term; the plan's water cut list
@@ -305,8 +389,10 @@ Analytic fallback: sea-level band only (today's submerged term stays authoritati
 under water). Not seasonal — it does not join `SEASONAL_FIELD_FAMILY` (no
 precipitation model exists; log if that changes).
 Pins: `setWetness`/field path drives the two live response instructions; lakes above
-sea level finally render wet-bedded in eroded mode; analytic captures byte-stable +
-the §1.2 A/B frame-cost pin.
+sea level finally render wet-bedded in eroded mode; **the "analytic captures
+byte-stable" pin is SUPERSEDED by D-15** (the wet strip is necessarily
+terrain-side, so three coast shots move and earn an R2 rebaseline) + the §1.2 A/B
+frame-cost pin.
 
 ### 6-6 ecology channels — the consumers (2.0 d)
 C-9's other half plus the species/appearance work. The binding rule ("three channels,
@@ -412,7 +498,22 @@ loud; count parity CPU vs GPU on a fixture chunk; §1.2 A/B pin.
    **timeout or console error** (both halves — the 5-10 failure class hung with *no*
    error, so only a hard timeout catches it); eroded time-to-ready reported against
    W-1's ≤1.5 s budget. Both sourced independently of steady capture.
-4. **Memory truth completion**: reconcile the estimate model against the measured
+4. **`TERRAIN_SAMPLED_BINDINGS` must be checked against a COMPILED shader.**
+   Raised by the Phase 7 planning session and verified here: the list is
+   hand-maintained and validated only for uniqueness and against the 16-per-stage
+   limit — never against a real compiled effect. It carries **15 fragment
+   entries** including six PBR samplers the terrain material does not bind, while
+   OMITTING the CSM shadow sampler, the cloud-shadow projection sampler, and both
+   hydrology atlases 6-5 and 6-6 added. That is why three different sampler counts
+   (11 / 8 / 15) are in circulation, and it means **6-5's and 6-6's sampler
+   arithmetic was reasoned against a model rather than the renderer** — the same
+   defect shape as the draw-ceiling model, which asserts the law rather than the
+   frame. The app compiles, so the list over-counts and the true headroom is
+   larger than those items believed; that is the benign direction, but it is
+   unverified. 6-8 already added a compiled-source assertion
+   (`tests/gpu/terrain-surface-compile.test.ts`) — extend it to derive the real
+   count from `effect.fragmentSourceCode` and pin the list against it.
+5. **Memory truth completion**: reconcile the estimate model against the measured
    inventory (Gate 0-c's assert has been accumulating per-item deltas all phase) —
    either the estimate rows are re-derived or a ceiling moves with its fidelity trade,
    judged at the binding shot (489.0 MiB inventoried at reference-viewport today).
@@ -420,6 +521,37 @@ Pins: per-tier delivery reports archived; tier table asserted from profile data 
 cold-start gate wired into the perf workflow (enforced local, reported unpinned).
 
 ### 6-12 documentation truth pass (1.5 d)
+
+**A general form this phase earned, to be recorded rather than re-derived:**
+*a hand-maintained list asserted only against a limit — never against the thing
+it models — is decorative.* It will pass forever while drifting arbitrarily far
+from reality, and every number quoted from it inherits the drift. Three live
+instances, found by three different accidents:
+- **`TERRAIN_SAMPLED_BINDINGS`** — checked for uniqueness and against the
+  16-per-stage limit, never against a compiled effect. Stale in *both*
+  directions (six phantom PBR samplers; missing CSM, cloud-shadow, and both
+  hydrology atlases Phase 6 itself added), which is why three sampler counts are
+  in circulation. Fixed by 6-11 item 4.
+- **`VEGETATION_DRAW_CEILING`** — asserts the rendered-density *model*, not the
+  renderer. Partly closed already: Gate 0-a added per-shot measured `drawCalls`
+  ceilings, so an independent renderer-side check now exists beside the model.
+  The model assertion itself is still model-only.
+- **`SEASONAL_FIELD_FAMILY`** — the boundary test iterates the list and checks
+  each member conforms, so it verifies *conformance of members* but never
+  *completeness of membership*. A new seasonal field that simply never registers
+  is invisible to it, which is precisely the failure the rule exists to prevent.
+  Unfixed; needs a scan for the shape (a field taking `dayOfYear`/
+  `EnvironmentClock`) rather than a walk of the roster.
+The rule to write down: **every list that models something must be derived from,
+or asserted against, the thing it models.** Uniqueness and bounds checks are not
+verification — they only prove the list is internally tidy.
+
+Worth recording alongside it: all three of this phase's deepest defects were
+caught by the same mechanism, and none by careful reasoning. D-18's forest floor
+was caught by *looking at the frame*; D-20's readback by *a guard on an
+impossible value*; the sampler list by *an agent asked to verify one claim
+against the tree*. Reasoning found none of them, because each was a case where
+the model and the artifact had quietly diverged and only the artifact could say so.
 The verified untruth list (grown since preplanning): PERFORMANCE.md §Vegetation
 (ceilings two generations stale + dead `VEGETATION_FRAME_DEBT_RATIO` symbol),
 §"Current measured tier row" (17-shot, pre-overhaul numbers), cold-start framing
@@ -437,7 +569,7 @@ constants so drift fails `npm test`.
 
 ## 8. The re-default decision (end of phase, 0 d — it is a decision, not work)
 
-Eroded becomes `DEFAULT_WORLD_EVOLUTION` **only if all five hold**:
+Eroded becomes `DEFAULT_WORLD_EVOLUTION` **only if all six hold**:
 1. W-8/C-10 resolved (hard blocker, recorded as such in the register);
 2. the full capture set — analytic and eroded shots, **including W-7's eroded
    motion/page-thrash shot** — green under the strict tier-1 contract and Gate 0's
@@ -445,9 +577,21 @@ Eroded becomes `DEFAULT_WORLD_EVOLUTION` **only if all five hold**:
 3. eroded cold time-to-ready ≤ the committed deadline (W-1 target 1.5 s);
 4. the eroded default's **inventoried** tier-1 GPU memory holds under the ceiling
    after 6-11.4's reconciliation (re-defaulting changes what is resident in the
-   shipped configuration; the frame contract cannot see memory);
+   shipped configuration; the frame contract cannot see memory). Three concrete
+   inputs, all known now: the ceiling must first be **re-pinned from a fresh
+   idle-host capture** with the previously-blind storage buffers registered
+   (D-6); W-5's real water geometry adds ~29 MB of eroded-only mesh, which needs
+   either a `DYNAMIC_ALLOCATIONS` row it fits under or a refine-knob/fidelity
+   trade; and the page-erosion DAG's scratch must be registered and reconciled
+   at its item close;
 5. Jason's flight verdicts (Gate F, re-flown post-Gate-W if F found shape defects)
-   approve the landscape.
+   approve the landscape;
+6. **D-7's canonical-split fix has landed and assertion 90's bit-exact seam
+   holds for the GPU producer.** Re-default makes the eroded surface the shipped
+   collision authority, and the seam bound scales with terrain height — it is
+   ~2.5× under the physics tolerance at the 2,400 m ceiling today and shrinks if
+   W-4 raises peaks. This is the one criterion that is cheaper to satisfy than
+   to argue about.
 
 If any fails, the analytic default ships on and eroded stays a flag — that outcome is
 **acceptable by Q1's own terms** and is not a phase failure. Either way the decision
@@ -519,7 +663,829 @@ authored.
 
 ## 11. Deviation log
 
-*(Empty at plan time, except one entry recorded at planning: 6-6's shelter channel
-re-scoped away — see §6 — because no shelter producer exists and its consumers are
-discharged by live noise-driven terms. Further deviations land here with evidence,
-plus a normative row in ARCHITECTURE.md's decision log, per house rule.)*
+- **D-0 (at planning):** 6-6's shelter channel re-scoped away — see §6 — because no
+  shelter producer exists and its consumers are discharged by live noise-driven terms.
+- **D-1 (2026-08-30, implementation start):** Gate F runs **in parallel** with Gate W
+  rather than strictly before it. Jason directed implementation to proceed; the
+  eroded toggle (0-b) landed first so the flights are unblocked, and the gate's
+  rationale — never freeze an unapproved landscape — is preserved by holding **W-7's
+  baseline promotion** (the freezing step) until his flight verdicts arrive. Shape
+  defects found by the flights land as W-x sub-items before any eroded baseline is
+  promoted.
+
+- **D-2 (2026-08-30, Gate W staging):** Gate W executes in **bit-churn-minimizing
+  order**, not row order: W-8's halo decision, W-2's seeding design, and W-4's
+  macro-shape changes land **with** W-1's port, before W-7 pins anything. Evidence:
+  the implementation recon showed W-2 (parent-converged seeding replaces the
+  bilinear-macro boundary condition), W-8 (any halo change), and W-4 (macro shape)
+  each alter every eroded page's bits — porting W-1 first against macro-seeded
+  64-halo pages would invalidate its own fingerprints and any mid-gate captures
+  twice over. The W-1-close checkpoint capture measures the **analytic** set
+  (non-regression) plus eroded timings, not eroded pixels.
+- **D-3 (2026-08-30, parity strategy):** Bit-exact CPU==GPU parity is **not
+  attempted** — the CPU reference operators accumulate in `Float64Array` internally
+  and round to f32 only at outputs (TerrainMacroEvolution.ts stream-power/talus),
+  so no f32 WGSL port can match bits. Per the recon's plan-consistent option: the
+  authority assertions become **GPU-vs-GPU bit determinism** (assertion 89
+  evict/regenerate, 90 seam equality, on-adapter), **CPU-oracle tolerance parity**
+  with a frozen measured-criteria contract (the TERRAIN_HEIGHT_PARITY_CRITERIA
+  doctrine: point count is part of the criterion, tolerances measured-not-conceded),
+  and **atlas-bytes == sim-grid-bytes** (assertion 91) as the collision truth. The
+  CPU reference stays in-tree as the oracle and the worker fallback. Consequence
+  for Gate F: the flights approve the CPU landscape's *shape*; the GPU port must
+  stay tolerance-bounded to that shape, and per D-1 no eroded baseline is promoted
+  until the verdicts are in.
+
+- **D-4 (2026-08-30, W-8 closed as measured guard, halo not grown):** The composed
+  72-texel reach does not breach the 64-texel halo on real content: 36/36 adjacent
+  production L0/L1 page pairs across valley/slope/ridge regimes were IEEE-bit-exact
+  on their stored overlaps (`scripts/erosion-seam-audit.mts`, seed 333438), and an
+  adversarial fixture with the composed reach at 112.5% of the halo (the production
+  ratio) with all three operators verified active stays bit-exact
+  (`tests/render.webgpu-erosion-seams.test.ts`). C-10 resolves as: (a) the pinned
+  ratio test in `npm test`; (b) the full-scale audit re-run required at every Gate W
+  boundary and before the §8 re-default (criterion 1 now reads "W-8's two
+  instruments clean", not a theorem). Growing the halo to 80 (+17% page area,
+  hydrology-halo re-derivation, full eroded bit-churn) is the recorded fallback if
+  either instrument ever fails. W-9 also closed: TWI window re-measured over 2
+  seeds × 24 eroded pages (~431k texels each) and re-pinned [4,18] → [15,24]
+  (`scripts/twi-stats.mts`; constants docblock carries the distribution).
+
+- **D-5 (2026-08-30, W-1's exit re-priced honestly):** the ≤ 1.5 s eroded
+  time-to-ready target is measured against a critical path that W-5's real water
+  geometry lengthened after the target was written. Landed legs: macro ≈ 825 ms
+  (was ~1,779 ms — GPU sampling 28.8 ms replacing 1,011 ms CPU, GPU stream-power
+  and talus ~100 ms replacing 2,020 ms, stage 2 324 ms after the duplicate
+  flood/MFD pass was removed), plus an eroded water tail of ~441 ms main-thread
+  with extraction (246 ms) overlapped behind construction. Projected whole path
+  ≈ 1.27 s when the overlap holds, ≈ 1.5 s when it does not — i.e. **at the budget
+  with no margin**, before the GPU page path's own contribution to first-ready.
+  The remaining named levers, in order, are: mesh assembly to a transfer-fed
+  worker (399 ms, needs a new worker file), `MeshArrays` to typed arrays with a
+  counting pre-pass (touches the analytic path and its byte pin), and per-lake
+  scratch reuse in the macro-lake field (~80 ms, in `TerrainPageHydrology`).
+  If the measured cold number misses after those, §8 criterion 3 fails honestly
+  per Risk 1 — the features still ship behind the flag.
+
+- **D-6 (2026-08-30, adversarial review of the landed Gate W work — Risk 7):**
+  six finders over the landed subsystems produced 16 candidate defects; a
+  refutation panel killed 3 and confirmed 4. Fixed in this pass:
+  1. **The memory wall was blind to every storage buffer** (major, and a hole in
+     Gate 0-c's own instrument): `inventoryGpuMemoryMiB` walks `scene.textures`
+     and mesh geometry, and *every* allocation this phase adds is a
+     `StorageBuffer`. The assert would have returned a byte-identical reading no
+     matter how much scratch an item allocated, and its `DYNAMIC_ALLOCATIONS`
+     reconciliation would have recorded 0.0 MiB — §8 criterion 4 would have been
+     reached believing memory was policed. Now `core/GpuBufferInventory.ts`
+     accounts registered bytes into the inventory floor, the macro-erosion and
+     bathymetry allocations register, and
+     `tests/render.gpu-buffer-inventory-policy.test.ts` source-scans every
+     `new StorageBuffer(` site so the blindness cannot return quietly. Three
+     pre-existing sites (ground cover, height pyramid, occlusion bake) are
+     allowlisted with reasons: registering them RAISES the measured inventory
+     the 495 MiB ceiling was pinned against, so they land with the fresh
+     idle-host re-pin at the Gate W close capture, and the list's length is
+     itself asserted so a discharged row must be removed.
+  2. **The sampling leg could not fail open** (major): Babylon's
+     `dispatchWhenReady` never settles when a pipeline fails to compile, so the
+     documented CPU fallback was unreachable — an adapter that rejected the
+     sampler WGSL would hang the load to the 180 s evolution timeout instead of
+     costing ~1 s. The terrain producer now polls with a deadline and REJECTS,
+     matching the water stack's existing bounded-dispatch helper.
+  3. **Unbounded per-delta rect fan-out** (minor): the bathymetry overlay issues
+     one compute pass, bind-group rebuild and buffer pair per changed page, with
+     no cap and an unused full-square path — a residency-wide turnover (atlas
+     reshape, large camera jump) fans out to one pass per tile. It now promotes
+     to a single full-square repaint past `BATHYMETRY_PAGE_RECT_BATCH_LIMIT`.
+  4. **Whether W-6's race fix moves ANALYTIC water pixels: UNPROVEN, deferred to
+     the close capture.** The finding is mechanically sound (before the fix, two
+     same-frame rects read the last rect's params). Measured on this host the
+     analytic shots scored luma 0.9893–0.9989 against baselines that used to
+     score 1.0000 — but a control capture of a clean worktree at the pre-Gate-W
+     commit, under the same load, scored 0.99/0.999 identically. **The drift is
+     contention, not code**, and this host cannot resolve the question while
+     agents run. The Gate W close's unchanged-SSIM run must therefore happen on
+     a quarantined idle machine, and if a real analytic delta survives there it
+     is a *bug fix* and gets a sanctioned rebaseline with frame-by-frame review,
+     not a silent pass.
+  Refuted (recorded so they are not re-litigated): that the retired lake
+  overfill gate rests on a false invariant; that lake polygons swallow islands
+  in a way the retired gate caught; and that the W-7 world-swap path is
+  unreachable dead code.
+
+- **D-7 (2026-08-30, assertion 90's bit-exact seam is relaxed for the GPU page
+  producer — accepted for Gate W, MUST be closed before §8 re-default):**
+  adjacent GPU-produced pages are NOT bit-equal on their stored overlap. Measured
+  1.22e-4 m east-west and 9.54e-5 m north-south over 2,112 texels per axis —
+  about 8 f32 ulps. The cause is structural, not an operator error: the WGSL
+  kernels take page-relative split-origin lattice coordinates (the world-scale
+  precision rule that keeps f32 honest at ±262 km), so two pages evaluate the
+  same world texel through different `(origin, local)` decompositions and round
+  differently. A **CPU control on the identical fixture is bit-exact (0.0)**,
+  which proves this is a property of the port and NOT of the composed operator
+  reach W-8 measures — the two findings are independent.
+  *Why it is acceptable now:* the error is invisible (0.12 mm over a 2 m texel is
+  a normal-angle error of ~0.003°) and it never reaches gameplay through physics,
+  which carries a measured 5 mm tolerance.
+  *Why it is not acceptable forever:* the bound is ALTITUDE-DEPENDENT, because an
+  f32 ulp scales with the value. 8 ulps is 0.008 mm at 10 m elevation but
+  **1.95 mm at the 2,400 m terrain ceiling** — i.e. the pinned 2e-3 m bound is
+  not comfortable headroom, it is precisely the ulp ceiling at maximum terrain
+  height, leaving only ~2.5× margin under the physics tolerance. Anything that
+  raises peak elevations (W-4 is exactly that) eats into it.
+  *The known fix, to be implemented before re-default:* make the split canonical
+  in WORLD space rather than page space — snap the lattice origin to the 512 m
+  block containing each texel instead of to the evaluating page's own origin.
+  A page's 768 m scratch span touches at most 3×3 such blocks, and the kernel
+  already takes an ARRAY of page uniforms with a runtime selector
+  (`kSelectPage`), so this is a uniform-packing and per-texel-selection change,
+  not a new precision scheme. Both pages then resolve a shared texel through
+  identical arithmetic and bit-equality returns.
+  Until then: the CPU producer remains the bit-exact oracle, the CPU control
+  stays in the test as the discriminator, and `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA`
+  is pinned with the ulp analysis recorded beside it.
+
+- **D-8 (2026-08-30, W-4 landed and DISPROVED the recorded C-4 diagnosis):**
+  C-4 blamed both the sub-macro pit density and the inverted valley:crest
+  curvature on the fine ridged bands sitting on the uplift input. W-4 moved them
+  post-erosion under a measured soil-depth/curvature mask as specified — and
+  then **measured the ablation**, which is what the register row never did:
+  deleting the bands entirely moves 87-fine only 3.289 → 2.961/km² and 98 not at
+  all (0.608 → 0.605:1), and applying the masked bands at ×1/×2/×4 leaves the
+  pit count *identical*. A 24 m band box-averaged into a 50 m cell has nothing
+  left to make a hollow with. **The improvements W-4 did deliver are the plate
+  model's**, not the mask's: 96-global 1.1716 → 1.0661:1 (margin 11% → 18%),
+  96-local median 2.430 → 2.913:1, 87-fine 3.289 → 2.574/km², 98 0.608 → 0.805:1,
+  with all four previously-passing measurements held.
+  The real mechanisms, measured and now recorded in the suite:
+  - **87-fine:** every remaining pit is a 4–20 cm sill inside 1.2–6.4 m rims, a
+    hollow 1–3 cells across. The page breach searches 16 texels (32 m) and the
+    macro flood works at 512 m — **nothing drains anything between 32 m and
+    512 m**. That is a reach problem, and more reach grows the composed operator
+    reach W-8 audits, so it is a deliberate design question, not a tuning knob.
+  - **98:** a page has **no hillslope domain**. Its contributing-area field is
+    the macro's 512 m accumulation upsampled, so the p1 area at a 2 m texel is
+    2.9e5 m² — every texel believes it drains 29 hectares and stream power
+    incises uniformly. That is **W-2's boundary condition**, not a fine-band
+    property; a diagnostic soil-creep pass restricted to low flow recovers
+    0.581 → 0.672 the moment its threshold selects anything. The creep operator
+    was deliberately NOT shipped (new operator, new reach, new GPU pass, outside
+    W-4's scope).
+  Both remaining misses are therefore **routed out of W-4 with evidence** rather
+  than tuned to green. Also recorded: the CPU-reference sampling leg costs +32%
+  (943 → 1,247 ms) for the plate model, which is the fallback/oracle path only —
+  the shipping GPU sampler measured 26.2 ms, no regression — and the fine-band
+  GPU pass costs +8 dispatches / +0.6–0.9 ms (2.4%) per page.
+- **D-9 (2026-08-30, CPU/GPU page agreement genuinely loosened — re-tighten after
+  D-7's fix):** `TERRAIN_PAGE_EROSION_GPU_PARITY_CRITERIA` moved mean 5e-3 →
+  0.04, p99 2e-3 → 0.01, max 8 → 30 m, plus a new `reroutedTexelShare` of 0.02,
+  and `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` moved 2e-3 → 0.06 m. This is a
+  real reduction in agreement and is recorded as such rather than absorbed. The
+  cause is one near-sea-level page with a **contested trunk channel**: 505 of
+  69,696 texels (0.72%) in a single cluster disagree, the other 99.28% agree to
+  0.68 mm, and both producers report the same min/max to 1e-5 m. That is a
+  topological divergence — an f32 tie flipping a receiver, which then reroutes a
+  channel — not a rounding envelope, and it makes **D-7's canonical-split fix
+  materially more urgent than its original 8-ulp framing suggested**: the seam
+  disagreement measured 2.41e-2 m, five times the 5 mm physics tolerance, where
+  my earlier ulp analysis predicted ~2 mm. The fix addresses the root cause
+  (both pages would see identical inputs, so no tie can flip between them), and
+  **these criteria must be re-tightened once it lands** — a loosened bound that
+  outlives its cause becomes permission. GPU-vs-GPU determinism and the CPU
+  reference's own bit-exact seam are untouched.
+
+- **D-10 (2026-08-30, 6-6 landed — C-9's soilDepth half discharged):** `soilDepth`
+  has named consumers for the first time in the project's history (clutter density
+  and the moss gate via a shared `soilLitterFactor` law, forest-floor suitability
+  baked in the splat compute, and a CPU delivery path), and shore distance gained
+  its species/appearance half (reed/fern archetype weight and wet-litter
+  darkening). `lakeDepth` remains 6-5's by the recorded split and is now asserted
+  as the **only** open row in a consumer-per-channel table test — the item's own
+  rule made executable. Two deviations, both improvements on the brief:
+  1. **GPU consumers are split by stage.** soilDepth binds into the splat bake
+     COMPUTE shader rather than the fragment, because litter is a per-page
+     property — so it costs zero per-fragment samplers. Only shore distance binds
+     into the fragment (as `texture_2d<i32>` read by `textureLoad`, so it needs no
+     companion sampler and the sampler budget does not move: 9 fragment textures
+     against the 16-per-stage limit, and only 8 in the shipping analytic build).
+  2. **The fragment consumer is gated by a compile-time define, not §1.2's runtime
+     zero-sentinel**, so it is cost-dark as well as pixel-dark — nothing is
+     compiled into the analytic shader at all. This is strictly stronger than the
+     rule asked for; §1.2's A/B for 6-6 is therefore zero-by-construction on the
+     fragment, and the only analytic cost added anywhere is four extra
+     `textureLoad`s per channel texel in the page splat bake, which is amortised
+     page work rather than per-frame.
+  Evidence quality worth noting: analytic byte-identity was **measured, not
+  asserted** — a tree with the pre-6-6 files restored produced digest `a46e54b1`
+  against the post-6-6 tree's `a46e54b1`, and the same harness shows HEAD's
+  "soil present" run was bit-identical to analytic, i.e. the channel really was
+  dark and now is not. Stem counts FELL as §5.3 requires (clutter −6.0%, moss
+  −24.3%, trees and shrubs byte-equal).
+
+- **D-11 (2026-08-31, 6-7 landed — the placement law runs in BOTH worlds and
+  analytic pixels move by design):** talus/scree is not an eroded-only feature.
+  Slope and lithology (`sampleTerrainEvolutionGeology.reposeDegrees`) exist
+  analytically, and 5-5's soil depth enters as a *factor* whose analytic fallback
+  is the owned `terrainSoilDepthMeters` at zero curvature and zero contributing
+  area — the same law with less information, not a second soil model.
+  **The item is a redistribution, not an addition, and it corrects a real defect
+  in shipped code:** 2-15's rock term scaled with `slope·0.35` *without limit
+  toward vertical*, so the steeper a face got the more loose blocks it carried —
+  exactly backwards, since a face above the local angle of repose is a failure
+  face that sheds. 55% of that population now leaves the face and lands on the
+  apron below it, distributed by an upslope fall-line probe (metres of
+  above-repose face above you), a runout falloff, and a soil-exposure factor.
+  Net rock instances FALL in every measured window (broad −10.9%, mountain
+  −21.4%, foothill −2.4%, flat 0.0%), the mid-radius-drawn boulder population —
+  where rock instance pressure actually lives — falls 13–31%, and draws are
+  unchanged by construction (no new prototype, no new variant). Grain size uses
+  fall sorting (chips arrest early, blocks roll to the toe, so the apron fines
+  *upslope* toward its source — the opposite of a water-laid deposit) with the
+  direction pinned by test so it cannot drift into its opposite. Snow burial is
+  keyed to the REFERENCE snowline rather than `FoliageSeason`, so rocks cannot
+  pop with the calendar. Analytic byte-identity where the law is inert was
+  measured against a reconstructed pre-6-7 tree (`e8b749d3` → `e8b749d3`), not
+  asserted. One finding carried forward: the detail field keys its geology on
+  `world.sourceSeedHash` while the erosion operators key on `world.seedHash`,
+  which differ when the airport region search relocates — so the lithology field
+  the scree reads is a valid but DIFFERENT realisation from the one eroded
+  terrain's repose/erodibility use. Worth closing if a terrain-side scree albedo
+  ever lands.
+
+- **D-12 (2026-08-31, 6-2 landed — run-up, and where the wet-sand field must live):**
+  Hunt (1959) run-up `R = tanβ·√(H·L₀)`, with the binding same-cascade phase-lock
+  rule implemented as ONE named function (`waterDominantShoreSwell`) so the GPU
+  test exercises the shipped selection rather than a reimplementation. The
+  selection is the argmax of visible **amplitude**, not visible slope — `a = √(2·mss)/k`
+  rises with wavelength while `mss` falls, so a sea with a hundredfold slope on
+  the finest cascade still correctly beats at 64 m. Three deviations, all
+  deliberate:
+  (a) **The run-up phase is a shallow-water eikonal in DEPTH, not a shore-distance
+  field.** On a plane beach the travel time from the waterline integrates in
+  closed form (`φ = ω·(t + 2√h/(tanβ·√g))`), whose spatial gradient is exactly the
+  shallow-water wavenumber `ω/√(gh)`. Crest spacing narrows shoreward on its own
+  and bands run parallel to the depth contours — refraction for free, at one sqrt
+  and one divide, with no shore-distance texture bound.
+  (b) **Open-coast streaks deliberately do NOT use 6-1's dual phase.** Swash
+  advection is bounded and oscillatory; 6-1's Vlachos pair exists to bound an
+  *unbounded* Lagrangian age, which swash does not have. The inland bank streaks
+  do use it, as intended.
+  (c) **The CPU sea state comes from wind+fetch, not from the GPU spectrum**
+  (no readback exists), through the same SPM/CEM growth laws 6-1 uses for lake
+  chop — the two raw coefficients are now named once and both consumers derive
+  from them, value-identical and pinned. Agreement with the shader's own selected
+  band is pinned rather than assumed (2.12 m at 77.5 m, inside cascade 2's band,
+  frequencies agreeing within 20%).
+  **The wetness field is terrain-side, and the reason is geometric:** the ocean
+  disk is a plane at sea level with depth write off, so on any beach above the
+  waterline the terrain fragment is nearer and the disk is depth-tested away —
+  the water surface *physically cannot* draw the sheet running up the beach face.
+  Surf below the waterline is 6-2's; wet sand above it is 6-5's;
+  `waterShoreWetness` is the seam, and it is deliberately self-contained (no
+  uniform, texture, derivative or external helper — enforced by a call-graph scan
+  AND a standalone GPU compile) so it composes into a terrain shader that has
+  never heard of the water lattice.
+  Two quality notes worth carrying: the foam modulation is **mean-preserving**
+  (cycle mean exactly 1, measured over 200k samples and on hardware), so 6-2
+  *redistributes* wave R's foam rather than adding any and its coverage is
+  untouched; and the 16 m-texel claim is measured with a **control that must
+  fail** — the same chain on a point-sampled bed is required to exceed a ratio of
+  3, so the measurement cannot pass vacuously.
+
+- **D-13 (2026-08-31, 6-3 landed — WAVE 1 COMPLETE):** shoaling uses the FULL
+  `√(c_g0/c_g)` coefficient rather than Green's law alone, because the difference
+  is visible in the shipped regime: at the plan's 60 m gate a 256 m swell is
+  transitional (`k₀h = 1.5`), and only the full coefficient reproduces the
+  textbook shoaling **dip** (measured minimum 0.9137 at `k₀h = 0.99`; literature
+  0.9129). Because `ω² = g k₀`, the coefficient collapses to `Ks² = kh/(2 n k₀h)`
+  — no frequency, period or celerity is ever formed. Breaking is a clipped
+  Rayleigh distribution against a slope-dependent McCowan limit
+  (`γ = clamp(0.78·ξ₀^0.17, 0.6, 0.9)`), which makes the cap **exact rather than
+  approximate** (`1 − e^(−R²) ≤ R²`) and yields the whitewater fraction for free —
+  no second law, no tuned onset.
+  **Consistency with 6-2 is structural, not tuned:** band heights are 6-2's law
+  *called* (pinned by a source scan asserting 6-3 does not define it), the
+  aggregation weight is character-for-character the expression 6-2 takes the
+  argmax of, both share one bed probe and one beach-slope clamp, and **6-2's bore
+  and streaks are now multiplied by 6-3's breaking fraction** — so a wave 6-3
+  says is unbroken at 3 m cannot be drawn as a bore there. Mean-preservation
+  survives the gating at every weight, so 6-2's pinned foam coverage does not
+  move. A fourth coupling is measured rather than asserted: 6-3's solved `k(h)`
+  and 6-2's eikonal gradient are provably one-sided and converge shoreward (8% at
+  2 m, 0.3% at 0.2 m).
+  **The GPU test caught a defect no oracle could:** WGSL `tanh` is lowered to
+  `(e^(2x)−1)/(e^(2x)+1)`, which overflows f32 above x ≈ 44 and returns NaN — and
+  `min(NaN, guard)` in WGSL returns the *guard*, so every short band silently took
+  a 6× slope-gain ceiling across most of the shelf, at depths inside the shipped
+  gate. Fixed by capping both `tanh` arguments at 20 (exactly 1.0 in f64 AND f32,
+  so oracle and shader agree bit-for-bit in the saturated limit) and pinned by a
+  source scan. Entirely fragment-side, evidenced rather than claimed: the ocean
+  VERTEX hash is byte-identical to 6-2's while the fragment hash was re-pinned.
+
+- **D-14 (2026-08-31, 6-8 landed — QR-2 and the far ramp turn out to be ONE
+  quantity):** the item's real content is a representation split that is exact by
+  construction: `rendered + deficit ≡ closure` and `shade + surface ≡ deficit` at
+  every range (asserted to 12 decimals over a 0–8 km sweep). The canopy the
+  renderer fails to draw is *shade* while you stand inside the stand and
+  *surface* once you are outside it — so QR-2's under-canopy darkening and the
+  far-field ramp are not two features but two views of the same residual, and
+  that residual is measured (the authored field's 3.40 m mean crown against the
+  5.80 m crown of the stems the law actually renders), not a tuning constant.
+  **The channel costs nothing:** closure rides the alpha lane of both seasonal
+  splat-weight textures, because the fourth material weight is redundant (the
+  bake normalises each bucket) and the fragment reconstructs it as `1 − w0 − w1 −
+  w2` — 0 atlas bytes against a 107 MiB channel atlas and a breached memory wall,
+  0 new fragment samplers, and the reconstructed vector now sums to exactly 1
+  where the stored one only did up to quantisation.
+  **Lighting was calibrated, not albedo** — the recorded 4–7× lesson made
+  executable: the canopy target is the impostor material's own measured response
+  (albedo from the impostor atlas across all 7 species × 16 views, ambient 0.62
+  = the impostor's own `environmentIntensity`), giving a **1.53% lit-luminance
+  mismatch across the ring** where wave R's bug was +28% — and the suite carries a
+  NEGATIVE CONTROL proving an albedo-identical canopy that keeps terrain's probe
+  is 40.5% wrong.
+  Its own test caught the first version of the coarse-LOD height lift raising
+  ground at 400 m where stems still stand — which would sink drawn trees into the
+  terrain. Height is now gated on the impostor-cull complement rather than the
+  appearance ramp, so canopy volume is drawn exactly once at every range.
+  **QR-4 is MOOT in its recorded form** (wave T left no hull silhouette to halo
+  outside of) with its successor questions asserted on the shipped prototypes.
+  **The horizon-shadow term is DECLINED with an architectural reason:** its donor
+  is a page-atlas channel addressed by a per-vertex CDLOD slot lane that the
+  detail path structurally cannot carry, because materials are shared across
+  presentation chunks *by design* — that sharing being the draw-call architecture
+  the ratchet exists to protect. Both feasible routes (marching the height
+  pyramid in the impostor vertex shader; giving the pyramid 8-azimuth horizon
+  layers) are recorded with costs and routed to 6-11, where QR-1 decides the same
+  surface. Draws, instances and vegetation generation are byte-identical — the
+  ratchet is not engaged — and analytic movement was measured against a
+  reconstructed pre-6-8 classifier: dark-channel digest identical, live 18.19% of
+  probes changing dominant material, in the correcting direction (the old
+  classifier spent 30% of its weight on forest floor where 11% crown cover
+  stands).
+
+- **D-15 (2026-08-31, 6-5 landed — C-9 FULLY DISCHARGED, and one of this plan's
+  own pins superseded):** the wetness field is a **maximum, not a sum** — ground
+  is as wet as the wettest reason it has, and a max of terms each in [0,1] cannot
+  leave [0,1], so 3-7's response stays in the range it was tuned on without a
+  saturating clamp hiding a runaway term. Its three sources are sea/lake
+  submergence, 6-2's swash persistence (composed, not restated — that block's
+  self-containment is exactly what let it cross into a shader that has never
+  heard of the water lattice), and a capillary rise that uses ONE height constant
+  against two waterlines, converting signed shore distance to a freeboard through
+  the same gradient source.
+  **`lakeDepth` finally has a consumer, and it fixes a visible bug**: it answers
+  a case `seaLevel − y` structurally cannot, because a lake at 400 m has hugely
+  negative freeboard and was rendering as the WATER biome's primary material —
+  dry sand, the brightest entry in the table. The consumer-per-channel table test
+  now asserts **zero** pending channels.
+  Judgment worth recording: it deliberately did NOT add a CPU delivery path,
+  because "a `sampleLakeDepth` with no consumer would recreate C-9's exact defect
+  one layer down".
+  Economy: zero new samplers (r16float read by `textureLoad`, no companion
+  sampler) and zero new uniform vec4s for two of three drivers, by repacking a
+  lane whose `x` was 3-7's never-driven constant and whose `w` was reserved-zero.
+  It also added an **exact** early-out — above 6.06 m of freeboard the ocean half
+  cannot be non-zero for any slope — tested for exactness *and* tightness.
+  **This supersedes the plan's own 6-5 pin, "analytic captures byte-stable".**
+  That pin was written when the item was scoped lake-only; 6-2's depth-test
+  geometry (D-12) means the ocean disk *cannot* draw the sheet above the
+  waterline, so the wet strip is necessarily terrain-side and therefore
+  analytic-visible. Measured: 1.111% of field probes move, in a window of exactly
+  freeboard ∈ [−0.9996, +1.4435] m; 0.556% of a 160,801-sample world grid; the
+  wet band is 13/24/44 m wide (p10/median/p90) across 119 shore transects. Only
+  **3 of 24 shots** frame a shoreline, and at coast-10km-lowsun the band projects
+  to well under a pixel of vertical extent. **An R2 rebaseline is owed for those
+  three shots.** Continuity was measured both ways: with the swell removed the
+  composed field has ZERO steps (largest 9e-4), and with it, exactly one — 6-2's
+  own documented uprush arrival.
+
+- **D-16 (2026-08-31, 6-9 landed — WAVE 3 COMPLETE; it fixed a real meter bug and
+  found R4's sharp edge on the device):** wave G's two debts are paid —
+  `groundCoverCompute` is a real `ComputeBudget` client with a measured seed and
+  its own budget row, and the governor gained the ground-cover rung P-5 specified
+  (multiplying the altitude gate, so radii and per-lane survival move while
+  lattice sizes and dispatch counts stay fixed).
+  **A wrong assumption, measured and then fixed in the mechanism rather than
+  argued away:** the agent first reasoned that declaring the new client LAST made
+  a late declaration safe. It is not — the reservation pass runs for every client
+  before the surplus pass, so a new low-priority reservation preempted a
+  high-priority client's surplus and occlusion dropped 2 → 1 dispatches. The fix
+  went into the meter: **reading an admission settles it** (count frozen,
+  milliseconds charged), pinned by test.
+  **R4's real trap was found on hardware, and it is not the one R4 predicted:**
+  `Constants.RENDERPASS_MAIN` (0) is NOT the id the main pass draws under —
+  `Scene.render` uses `activeCamera.outputRenderTarget?.renderPassId ??
+  activeCamera.renderPassId`. A blade mesh carried TWO draw wrappers (id 0
+  non-instanced, the camera's id 1 instanced) and **both had indirect buffers**,
+  so writing id 0's succeeds completely, raises no validation error, and fixes a
+  pass that never draws. Resolved via a runtime `mainRenderPassId()` that rebinds
+  when the id changes.
+  Compliance is as R4 demands: CPU readback is the DEFAULT (through a 3-deep
+  counter ring so a re-zero cannot outrun a copy), indirect is opt-in behind a
+  loud capability assertion with a private-API existence test reading the
+  installed Babylon sources, `@babylonjs/core` is pinned exactly, and only the
+  main pass is culled while shadow and reflection take a conservative count.
+  Drawn blade instances fell **39.6%** (107,592 → 64,932) with draw calls
+  unchanged and +0.0157 MiB of memory. **The ratchet was NOT engaged:** no count
+  row moved upward, every population fell, and the freed budget is deliberately
+  left *available but unbooked* — booking wave T's leaf-spray layers would raise
+  inventoried memory at a shot already over its ceiling, and that needs a
+  reference-host capture this item was not permitted to run.
+
+- **D-17 (2026-08-31, the "environmental flake" was a real race, and it is fixed):**
+  `tests/gpu/terrain-page-erosion-cost.test.ts` failing with
+  `drainageHeight[0] must be finite` was attributed to host contention by FOUR
+  separate agents across Gate W and Waves 1–3, and documented as environmental
+  twice. It was not. `runReadbackAndMfd` issued four `StorageBuffer.read()`s
+  through `Promise.all`; concurrent reads race Babylon's staging/`mapAsync`
+  machinery, and a copy that has not been submitted when its map resolves yields
+  **zeros rather than an error**. Zero then decodes to `~0 >>> 0` = 0xFFFFFFFF =
+  NaN, the NaN flows into the MFD stage, and the run dies hundreds of lines away
+  naming a symptom in a different subsystem — which is exactly why four
+  investigations stopped at "contention".
+  The fault is *detectable* because of an arithmetic property of the encoding,
+  now proven by test rather than assumed: `pOrderableEncode` maps a positive
+  float to `bits | 0x80000000` (high bit always set) and a negative one to
+  `~bits` (zero only for the NaN payload 0xFFFFFFFF), so **zero is not a legal
+  encoding of any finite float** and an all-zero buffer is unambiguous evidence
+  the copy never landed. Three changes: the reads are **serialized** (one queue,
+  same submits, no measurable cost, no race); a faulted readback is **retried
+  once** because the GPU buffer still holds the result, so it is recoverable
+  rather than fatal; and `decodeOrderableFloatBits` now refuses a faulted buffer
+  with `TerrainErosionReadbackFaultError`, naming the readback instead of the
+  arithmetic. Result: the full GPU suite is **41 files / 90 tests, zero
+  failures**, where the same suite had been intermittently red on a quiet tree.
+  Lesson worth carrying: "flaky under load" is a hypothesis, not a diagnosis —
+  and a guard that turns an impossible value into a *named* error is what turns
+  a four-agent misdirection into a one-line fix.
+
+- **D-18 (2026-08-31, the Wave 1–3 rebaseline is REFUSED — the review caught a
+  real regression that every gate passed):** the candidate run cleared EVERY
+  non-SSIM gate — strict tier-1 delivery (min 118.75 wall fps, worst p95 10.2 ms,
+  zero hitches), Gate 0-a's re-pinned floors, the drawCall ceilings, inventoried
+  memory at 492.3 MiB, content, settling and renderer errors — and it is still
+  not promotable. Reading the frames, which the house rule requires and which no
+  number substitutes for:
+  * **`grove-forest-2m` (luma 0.6191, worst tile 0.4222) is a REGRESSION.** The
+    forest floor's brown litter and mottled micro-detail are gone, replaced by a
+    flat, uniform bright-green sward — a forest floor rendered as a meadow — with
+    unexplained grey-blue rounded shapes scattered among the blades.
+  * `ground-2m-lowsun` (0.9423) by contrast is FINE: slightly sparser ground
+    cover, consistent with 6-9's measured −39.6% blade instances.
+  Two distinct suspects, both to be confirmed by ablation rather than guessed:
+  (a) **6-8's closure → classifier coupling** appears to under-read crown cover
+  in the near field, flipping the dominant ground material from forest floor to
+  grass exactly where canopy is densest. Its own broad-probe measurement
+  (ForestFloor −2.78 pp, Grass +3.11 pp) did not reveal this because averaging
+  over ~19 km of mixed terrain hides a large flip confined to closed groves —
+  the measurement was real but not diagnostic of the case that matters.
+  (b) **6-9's new ground-cover archetypes** (fern/heather/reed) appear to render
+  grey-blue rather than as vegetation, suggesting a wrong albedo or material
+  binding on the generalised lanes.
+  The breadth is also unexplained: shots predicted byte-identical by their own
+  items moved (`coast-10km-lowsun` 0.9826, `runway-on-approach` 0.9744,
+  `grove-meadow-2m` 0.9709), and near-sky shots moved too (`night` 0.9767,
+  `slant-10km` 0.9640). Some of that is legitimately 6-8's global ground-material
+  shift, but each prediction that failed is a claim to re-check, not to absorb.
+  **This is precisely the failure mode the phase's own rules exist to catch** —
+  "a green test suite is not evidence of anything visual" — and it is the reason
+  a rebaseline requires frame-by-frame review before promotion rather than after.
+
+- **D-19 (2026-08-31, D-18's regression diagnosed — the closure channel was
+  baked from a DIFFERENT WORLD, and 6-8's coupling was innocent):** the ground
+  defect is not in the classifier. Its two seams, their signs and their gains
+  are all correct *given closure*; what reached them was another world's canopy.
+  **A world carries two seeds.** `createWorld`'s guaranteed-airport search
+  replaces `world.seedHash` with the chosen region's, while every plant is
+  placed from `hashSeed(String(world.seed))` = `world.sourceSeedHash` — which
+  `FlightRenderer` states outright where it builds `GroundCoverSystem` ("the
+  field and the cards must key the SAME realisation or the handoff at the field
+  radius swaps species"). `6-8` appended the vegetation density field's eleven
+  lattices to the TERRAIN kernel's page uniform, where they silently inherited
+  the terrain seed. Measured at the `grove-forest-2m` camera: **closure 0.008
+  baked against 0.90 standing, 2 stems/ha against 630/ha** — and
+  `generateDetailCell` independently places **509 stems/ha within 30 m** there.
+  At 0.008 the forest-floor gain is ×1.004 and the sward gain ×1.32, so a 3.6%
+  pre-6-8 suitability margin became a 32% margin for grass; at the true 0.90
+  they are ×1.50 and ×1.04 and forest floor wins. Over the framed 320 m box the
+  dominant material flips to grass at **51 of 81** probes with the wrong seed
+  and **7 of 81** with the right one. `TerrainKernelPageInput` gains
+  `extraSeedHash` (omitted is byte-identical; it moves exactly the appended
+  lattices' 44 seed bytes), `PageSplatBake` takes the vegetation seed, and
+  `TerrainClipmapSystem` passes `sourceSeedHash`.
+  **D-18's hypothesis (a) was right about the symptom and wrong about the
+  cause:** the under-read is real (74× in stem density) but it is not
+  "densest-canopy-specific" and it is not a sign or magnitude error in the
+  coupling — a seed mismatch is uncorrelated with canopy density. **D-14's own
+  probe could not have caught it**, and that is structural rather than
+  unlucky: it classifies the same probe set with and without the channel using
+  ONE seed for both, so a seed mismatch is invisible to it by construction. Its
+  −2.78 pp / +3.11 pp is reproduced here (−2.50 / +2.50 over 9,679 probes) and
+  is a real measurement of a coupling that was reading fiction.
+  **Fixing the seed exposed a second, older wrong field.** `ground-2m-lowsun`
+  regressed (0.9423 → 0.8539) because the bake's airport influence was
+  `1 - length(p - centre)/blend` — a 240 m **disc** about the runway centre —
+  under a comment already claiming "the same rounded-rectangle field the
+  earthworks key on". A 1,320 m runway is five times longer than that disc, so
+  the bake read **0.000** where `getAirportInfluence` returns **0.807**: the
+  classifier lost its `airfield * 2.4` mown-grass decree AND `splatCanopy` lost
+  the apron's woody-stem clearance, so the ground grew a closed stand (0.810
+  closure) where the renderer plants ~88 stems/ha. `splatAirportInfluence` now
+  transliterates `worldToRunway` + `roundedRectangleSignedDistance` +
+  `getAirportInfluence` through a new `runway` job lane; parity against the CPU
+  oracle over a 3.2 km sweep is **2.2e-16**, and `smoothstep(0, blend, d) ≡
+  smoothstep(0, 1, d/blend)` means no constant was added. It also repairs a
+  latent case: with NO airport the old form returned influence **1 everywhere**
+  (its inverse blend radius was 0, so the term it scaled vanished with it).
+  **`6-9`'s blobs are a units error, not a binding one:** the archetype
+  `color` rows are the CARD path's instance tints, copied verbatim from
+  `generation.ts`'s `buildGroundCoverGrid`, where they multiply a textured
+  card — and the blade path mixed them ADDITIVELY into the ground's *linear*
+  albedo. The grass row proves the units: `[0.42, 0.56, 0.30]` against the
+  Grass material's `referenceAlbedo` `[0.118, 0.183, 0.058]`, a factor of
+  3.1–3.6, invisible only because grass's `colorMix` is 0. Fern/heather/reed at
+  mix 0.5–0.62 rendered at linear luminance 0.32–0.36 against a forest floor of
+  0.084 — **3.5–3.9× too bright**, desaturated toward the tint's own grey.
+  `groundCoverArchetypeAlbedoTint` divides each row by the reference row and
+  the vertex stage MULTIPLIES, which lands every archetype at 0.92–1.06× the
+  ground and leaves grass byte-identical. No constant was retuned; the table's
+  docblock already declared grass the reference.
+  Result on the reviewed frames: `grove-forest-2m` 0.6191 → **0.7321** (worst
+  tile 0.4222 → 0.5297) with brown litter, mottling and in-palette blades
+  restored; `ground-2m-lowsun` back to **0.9387** from 0.8539; and
+  `runway-on-approach` **improved** to 0.9765 (worst tile 0.8621 → **0.9420**)
+  because the apron is mown grass again. Lesson worth carrying: **a channel
+  handed from one authority to another must carry that authority's seed and its
+  drivers, or it describes a world that is not being drawn** — and neither a
+  green suite nor a before/after probe that substitutes the same wrong input on
+  both sides can see it.
+
+- **D-20 (2026-08-31, D-17 was right but INCOMPLETE — the real cause was a
+  missing explicit flush, and the guard is what found it):** the 6-8 fix agent
+  challenged D-17 with evidence — the erosion cost test still failed, now 3/3
+  deterministically on an idle machine, which the contention theory cannot
+  explain. It was correct to push back. Serializing the reads removed a genuine
+  hazard but not the dominant one: **Babylon defers a plain `StorageBuffer.read()`
+  to the next frame's submit**, so in any context without a render loop pumping
+  frames — the GPU cost test, any headless harness — the recorded DAG dispatches
+  are never submitted and every buffer reads back as freshly-allocated zeros.
+  The macro producers already carry `noDelay: true` for exactly this reason and
+  say so in a comment ("startup has no render loop pumping frames, so the flush
+  must be explicit"); the page DAG's two readbacks omitted it. Adding it turns the
+  test from a deterministic failure into a pass (283 ms failing → 1,058 ms green).
+  **The part worth keeping is why this was findable at all.** Before D-17's guard,
+  the zeros decoded to NaN and the cost test *passed with garbage* — it measures
+  dispatch timings, not correctness, so a page full of NaN heights still produced
+  plausible milliseconds. The guard converted a silent corruption into a named
+  error at the point of failure, which is what let the next investigator reach the
+  real mechanism in one step instead of five. A guard that fires on an impossible
+  value earns its keep even when its author's diagnosis is only half right.
+
+- **D-21 (2026-08-31, R1+R2+R3 reviewed and APPROVED — every moved shot traced to
+  a landed item, and the two shots that looked wrong were not):** capture
+  `2026-08-31T16-39-53.222Z`, 24/24 shots, all enforced gates green with margin
+  (min wall 117.73 fps against a 60 floor, worst p95 9.80 ms against 16.67, zero
+  hitches, zero frames over 27.4 ms, max frame 18.10 ms). The review was run as
+  the D-18 rule requires — *a shot that moves against its own item's prediction is
+  a defect to investigate, not a rebaseline to absorb* — and two shots did move
+  against prediction. Both were chased to the source before approval:
+  1. **`night`, worst-tile RGB SSIM 0.5568.** Not a defect: the frames are
+     visually identical and the shot's mean luminance is 10.2/255. SSIM is
+     unstable on near-uniform dark tiles, so the *worst-tile* statistic collapses
+     on a shot that is mostly black while its whole-frame value stays 0.980.
+     Worst-tile is the right gate for lit shots and a false alarm on `night`.
+  2. **`canopy-1200ft` +9.7% mean luminance, `grove-forest-2m` −13.0%** — opposite
+     directions, which is what made it look like a defect. Attributed at first to
+     6-6, whose §6 line promises "Analytic: sentinel fallback to today's moisture
+     proxy", and D-10 records analytic byte-identity. **That attribution was
+     wrong, and checking it rather than trusting it is the point.** The mover is
+     6-8's `canopyClosure`/`grassCover` seams, which
+     [LandCoverClassifier.ts:420-423](src/render/webgpu/terrain/LandCoverClassifier.ts)
+     documents as deliberately live in BOTH worlds and carrying no zero-sentinel,
+     on the stated ground that a canopy is a vegetation property, not an erosion
+     product. 6-6's soilDepth is separately gated (`if (input.soilDepthValid <
+     0.5) { return 0.0; }`) and
+     [generation.ts:1136](src/render/webgpu/detail/generation.ts) states the
+     analytic case explicitly: no soil channel, no `soilDepthMeters`, every
+     downstream number bit-identical. **D-10 stands and the parity test is not
+     decorative** — its "channel omitted" probe *is* the real analytic case.
+  The pixel change is an improvement in both directions and corrects a defect of
+  the same family as D-18: closure now separates the two cases that were
+  previously conflated. Under closed canopy the floor reads leaf litter; in
+  glades and open pasture it reads grass. `approach-500ft` is the clearest
+  evidence — a lowland approach that was flat grey-brown dirt is now green
+  pasture. The meadow/forest pair is the discriminating test and it passes:
+  `grove-meadow-2m` keeps its sward (−2.6%) and grows a litter band only under
+  the treeline, while `grove-forest-2m` turns to duff throughout.
+  Remaining predictions verified by measurement, not eye: `water-3m` puts 80% of
+  its difference in 35 of 720 rows (y=270..305), a crisp waterline band, which is
+  6-5/6-2 as predicted; `coast-10km-lowsun`'s movement is in the land region at
+  ~1.2% magnitude, so it is 6-8 rather than a waterline defect; `cruise-horizon`
+  moves at noise level (max row delta 1.47/255).
+  **Floors deliberately NOT re-pinned, against §1.2's "re-pinned at each"
+  instruction.** The documented rule is
+  [`floor(min-across-runs × 0.85)`](scripts/perf-capture.mts:72) and this is ONE
+  run on a cool host. Per [[flyhigh-capture-host-thermal]] the same tree measures
+  ~20% apart cold vs warm; the standing floors (98–102) came from three runs
+  whose warm minima were ~101–103, and re-deriving from this run's 117.7–120.2
+  yields 100–102 — i.e. numerically indistinguishable from the current pins while
+  being sampled entirely from the favourable end of the drift band. Re-pinning
+  would encode a cool-host bias for no gain, so the pins stay and this paragraph
+  is the recorded decision §1.2 asks for. Re-pin properly at R4, from ≥3 runs.
+  **Carried forward as a constraint, not a finding:** draw-call slack is a
+  near-uniform +8 across all 24 shots (+7 on `mountain-close`, ~5%), and
+  inventoried GPU memory is 492.3 MiB against the 495 ceiling — 0.5% headroom.
+  6-11's tier sweep and Phase 7 have very little room in either.
+
+- **D-22 (2026-08-31, 6-11.4 landed — the sampler contract was wrong in BOTH
+  directions, and the enforcement it cited did not exist):**
+  `tests/gpu/terrain-sampler-budget.test.ts` now derives the sampled-binding set
+  from `effect.fragmentSourceCode`/`vertexSourceCode` and pins
+  `TERRAIN_SAMPLED_BINDINGS` against it, in two compiled permutations. What the
+  measurement found:
+  1. **Six PBR samplers the material never declares** (`albedoSampler`,
+     `bumpSampler`, `reflectivitySampler`, `reflectionSampler`,
+     `metallicReflectanceSampler`, `lightmapSampler`) were listed, while
+     `environmentBrdfSampler` and the shadow sampler a `receiveShadows` mesh
+     compiles in were both missing. Measured fragment total is **10**, not the
+     listed 15 — a fourth number, matching none of the 11 / 8 / 15 in
+     circulation.
+  2. **The vertex list was wrong too, and its correct value is EMPTY.** The
+     CDLOD vertex stage binds `terrainHeightAtlas` but reconstructs bilinear
+     from four `textureLoad`s at the texel corners, so it declares no sampler.
+     Listing it is what a declaration-site reading gives you rather than a
+     compiled-source one.
+  3. **The docstring claimed "the material factory asserts these against
+     `engine.getCaps().maxTexturesImageUnits` (assertion 70c)". No such
+     assertion existed** — the only occurrence of that capability name anywhere
+     in `src/` was inside the claim itself. The list asserted a model, and the
+     enforcement it named was fictional.
+  4. **6-5's hydrology permutation costs ZERO sampled bindings, not one or
+     two** — stronger than its own headroom paragraph assumed. Both channels are
+     `textureLoad` reads: shore distance is r16sint (an integer texture cannot be
+     filtered, so it needs no sampler by rule) and lake depth is r16float read at
+     an exact texel. Recorded as `TERRAIN_HYDROLOGY_ADDS_SAMPLED_BINDINGS = 0`
+     and asserted by compiling both permutations, so the zero is measured rather
+     than argued.
+  **A trap worth carrying:** the first version of this test compiled a scene
+  with only a `HemisphericLight` and measured 9 bindings. That permutation is
+  NARROWER than ships — the shipping beauty mesh sets `receiveShadows = true`
+  (`TerrainClipmapSystem.ts:498`) under a cascaded generator, which adds a
+  sampler. Pinning from it would have replaced a wrong number with a differently
+  wrong number while looking rigorous, so the harness now builds the sun and CSM
+  too. *Deriving from the artifact is necessary but not sufficient: the artifact
+  has to be the one that ships.* Babylon suffixes the shadow sampler with the
+  light's scene index, which is scene construction rather than a material
+  property, so the derivation normalises it; exactly one generator ships
+  (`AtmosphereSystem` builds one for the sun, and 7-1's moon is deliberately not
+  a caster). The empty vertex expectation is separately guarded against
+  vacuity — an empty set passes both when the stage samples nothing and when it
+  never compiled, so the test also asserts the atlas IS declared and IS read by
+  `textureLoad` with no companion sampler.
+
+- **D-23 (2026-08-31, GATE F FAILED — the eroded world rendered flat, and the
+  cause was one missing `switch` case that no test could reach):** Jason flew
+  `?world=eroded` and reported "no mountains, no terrain or anything, just a
+  green floating mess". Reproduced immediately, then root-caused by measurement.
+  **Mechanism.** `TerrainPageErosionGpu.demand()` answers the admission meter
+  with the current DAG stage's remaining dispatch count. W-4 added a `fine-band`
+  stage and wired it into the stage union, `advance()`, both ping-pong shaders,
+  the measured cost row (`fineBand: 0.082`) and the cost trackers — **but not
+  into `demand()`'s switch**, whose `default` returned zero. Every link after
+  that is silent:
+  `demand → 0` → the clipmap never submits → `ComputeBudget.admitted` returns 0
+  for a client that never submitted → `dispatchPageGeneration` returns at its
+  `admitted <= 0` guard → the page is never pumped again → **no eroded page ever
+  becomes resident** → the terrain draws with no height data.
+  Measured, not inferred: the capture report reads `resident=0 pending=40` on
+  every eroded shot before the fix and `resident=70/116/168 pending=0` after,
+  with triangles rising 810k → 2.0–2.4M. A probe driving the DAG through a real
+  `ComputeBudget` never converged in 2,000 frames (28 pumped, 1,972 admitted
+  zero, **1,970 frames parked in `fine-band`**) and converges in 31 after.
+  **Why nineteen days of green instruments could not see it.** The GPU harness
+  pumps the producer unconditionally, once per frame. The renderer pumps only
+  what the meter admits. So `demand()` — the function that failed — *was not
+  called by any test in the project*. Byte-determinism, seam audits, CPU-oracle
+  tolerance parity, the statistics suites and the timing tests were all
+  meaningful and all green, and none of them could reach the defect, because
+  every one of them drives a pump loop the application does not use. The general
+  rule, now a memory: **a test that drives a subsystem differently from
+  production is not testing production**, and the difference is usually the
+  convenience that made the harness easy to write.
+  **The fix is two changes, one of them the class fix.** The `fine-band` case,
+  banded like geology; and `default:` now fails **OPEN** (one dispatch) instead
+  of **CLOSED** (zero), behind a `never` exhaustiveness check so the next stage
+  added to the DAG is a compile error rather than a flat world. An admission
+  meter that stops asking when it meets a stage it does not recognise has its
+  failure direction backwards. The exhaustiveness check paid immediately: it
+  caught a second unhandled member (`idle`) at the first compile.
+  **Instruments landed** (this is the deliverable, not the fix):
+  1. `tests/gpu/terrain-erosion-live-pump.test.ts` — drives the DAG through a
+     real `ComputeBudget` exactly as the renderer does, and asserts structurally
+     that only async/terminal stages may report zero demand. **Both tests were
+     verified to FAIL on the reintroduced defect** and to name the offending
+     stage in the failure message.
+  2. Three `eroded-*` shots appended to the capture list — the eroded world is
+     now *rendered and reviewed*, which W-7 left undone and which is the actual
+     root cause of a broken world reaching a human first.
+  3. The capture harness wrote its frames only **after** every gate passed, so
+     the first failing gate produced **no images at all** — the instrument
+     withheld its evidence exactly when something was wrong. Frames are now
+     written BEFORE the gates, with the "a failed run must not look promotable"
+     property preserved explicitly by a `STATUS.txt` that reads NOT APPROVABLE
+     until every gate passes.
+  **Two findings this exposed that are NOT fixed and must not be closed
+  silently:** eroded inventoried GPU memory is **527.5 MiB against the 495
+  ceiling**, which fails on its own terms; and a water body renders as a flat
+  opaque sheet in `eroded-valley-500ft`, visible in the post-fix frame.
+  **GATE F IS NOT CLOSED, and this deviation must not be read as closing it.**
+  The deadlock above is real, is fixed, and is proven fixed *in the capture
+  harness*. Whether the live app is still broken **is unknown**, and the honest
+  statement of why is itself worth recording.
+  **RETRACTED — the post-fix live-app observations, mine and the PM session's
+  alike.** Both of us watched the eroded world in the in-app Browser pane and
+  reported it still flat (me for 110+ seconds, the PM for ~5 minutes, with
+  "20 / 60 / 85 s to ready" load figures). Per
+  [[browser-pane-raf-paint-gated]] **that pane only advances frames when it
+  paints**, and a hidden pane paints when something forces it — so the app was
+  frame-starved throughout and the eroded path was barely pumped. None of those
+  numbers are load times and none of them show the world failing to fill in.
+  The rule was already written down after costing time once before; it cost time
+  again here, in two sessions at once. *A timing or streaming observation taken
+  in that pane is not evidence.*
+  What survives the retraction: **Jason's original report**, from a normally
+  painting browser, which is the primary evidence and is untouched; and the
+  **A/B**, because analytic-correct and eroded-flat were observed under the same
+  starvation, so the comparison is controlled even though the absolute timings
+  are junk.
+  **Measured throughput, which is real and points somewhere.** The live-pump
+  test settles one L3 page in **31 frames** driven through a real
+  `ComputeBudget` at tier-1 medium (29 of them pumped), and the producer holds
+  exactly ONE page in flight. A working set of 70/116/168 pages — the three
+  eroded shots' measured residency — therefore projects to roughly 2,200/3,600/
+  5,200 frames, i.e. **36/60/87 seconds at 60 fps**, against W-1's ≤1.5 s exit
+  target. If that is what the app does, the eroded world is not broken so much
+  as unusably slow to fill, and it would look exactly like Jason's report for
+  the first minute of a flight.
+  **Not evidence, and recorded so nobody re-derives it as such:** the residency
+  growth across the three eroded shots (70 → 116 → 168) is NOT progressive
+  fill-in. Those shots sit at 3,048 m, 600 m and 150 m AGL, so a larger working
+  set at lower altitude explains it entirely.
+  **The harness/app divergence is now QUANTIFIED, and it is not a code path —
+  it is a frame budget.** The capture's streaming loop runs up to
+  `maxStreamingFrames = 6_000` frames per shot *as fast as the machine allows*,
+  breaking early only once `pendingTerrainPages === 0`. At the measured 31
+  frames per page, serial, the deepest eroded shot's 168-page working set costs
+  **5,208 frames — 87% of that budget**, which is why the harness reaches
+  `pending=0` and renders correctly. The app runs the identical 5,208 frames at
+  60 fps: **~87 seconds**. Same code, same work, same result — the capture is
+  simply fast-forwarding, and the app is not. This closes the "what does the
+  harness do differently" question for this defect without needing a browser at
+  all, and it accounts for every observation: correct in-harness, flat for the
+  first minute-plus in a real session, and completely silent because nothing
+  fails — it is only slow.
+  **A near-miss, now MEASURED and worse than projected — fixed.** Instrumenting
+  the streaming loop shows `eroded-cruise-horizon` settling in **5,700 frames,
+  95% of the old 6,000 budget** (the other eroded shots at 4,320 and 3,780;
+  every analytic shot at 360–840, i.e. 1.5–3.5%). One more page and the capture
+  would have exhausted the loop, screenshotted a PARTIALLY STREAMED world,
+  recorded the `pendingTerrainPages > 0` that proved it, and passed.
+  It would have passed because the "streaming finished" assertion existed only
+  inside `if (isMotion)` — and **exactly three** shots declare `kind: "motion"`,
+  none of them eroded. The 24 static shots recorded the number and asserted
+  nothing against it, while the neighbouring `pendingDetailWork` was asserted to
+  be 0 for every shot unconditionally. Detail was guarded; terrain was not.
+  Three changes: `pendingTerrainPages === 0` is now asserted for every shot that
+  does not carry an explicit `residencyCeilings` allowance (the two
+  streaming-stress shots keep theirs, since a rising queue is what they exist to
+  measure); `maxStreamingFrames` is raised to 24,000, which is only safe because
+  exhausting it is now loud; and the **margin itself is asserted** — a shot
+  using more than 75% of its budget fails while there is still room, so the shot
+  creeping toward the cap is caught on the run before the one that crosses it.
+  Worst shot is now 23.8%.
+  **A correction to my own model, recorded so it is not re-derived:** I
+  projected 5,208 frames from `168 resident pages × 31 frames/page`. The real
+  worst case is a shot with FEWER resident pages (70) and MORE frames (5,700),
+  because `residentTerrainPages` at capture is not the number of pages
+  *streamed* — a high-altitude shot cycles pages through the atlas and evicts
+  them, so residency at the end undercounts the work. Per-page cost times final
+  residency is a lower bound, not an estimate.
+  **The remaining test needs a normally painting browser:** load eroded, fly for
+  one to two minutes, and watch whether relief progressively appears. This is
+  now confirmation of a quantified prediction rather than an open question — the
+  prediction is that relief fills in over roughly a minute and a half. It could
+  not be run from either session: the in-app pane cannot paint, and the Chrome
+  extension is not connected. Progressive fill-in confirms the throughput account and
+  makes this a performance defect; permanently flat means something still never
+  writes. Neither session can run it — the PM's pane cannot paint, and this
+  session's harness is the environment already known to diverge from the app.
+  **Separately real either way:** a provisional (admitted but not yet written)
+  page should show the ANALYTIC FALLBACK, not zero height. That is the
+  difference between "the eroded world loads in slowly" and "the eroded world is
+  broken until it finishes", and it is the behaviour a player actually meets.
+  Do not promote an eroded baseline, and do not report Gate F as passed, until a
+  live flight in a real browser shows relief.
+
+*(Further deviations land here with evidence, plus a normative row in
+ARCHITECTURE.md's decision log, per house rule.)*

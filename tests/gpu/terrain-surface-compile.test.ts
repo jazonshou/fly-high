@@ -32,6 +32,17 @@ import {
   TerrainSurfacePlugin,
   TRIPLANAR_SLOPE_THRESHOLD,
 } from "@/src/render/webgpu/terrain/TerrainSurfacePlugin";
+import { terrainHydrologyFloat16Bits } from "@/src/render/webgpu/terrain/TerrainPageHydrology";
+import { waterOceanShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
+import {
+  TERRAIN_NODE_ATTRIBUTE_A,
+  TERRAIN_NODE_ATTRIBUTE_B,
+  TERRAIN_NODE_ATTRIBUTE_STRIDE,
+} from "@/src/render/webgpu/terrain/TerrainSpineContract";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Constants } from "@babylonjs/core/Engines/constants";
+import { Matrix } from "@babylonjs/core/Maths/math.vector";
+import "@babylonjs/core/Meshes/thinInstanceMesh";
 import {
   DEFAULT_AIRPORT,
   roundedRectangleSignedDistance,
@@ -397,6 +408,283 @@ describe("every shipped define combination compiles (3-2)", () => {
       arrays.albedoHeight.dispose();
       arrays.normalMaterial.dispose();
     } finally {
+      scene.dispose();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(gpuErrors).toEqual([]);
+  }, 300_000);
+
+  /**
+   * `6-8`: the CDLOD + page-channel permutation, on a real adapter.
+   *
+   * This combination is what the app actually runs and what NO compile test
+   * covered: every test above uses the CPU-tile path, so the vertex-stage
+   * channel read, the canopy handoff include and the fragment canopy block
+   * would have shipped compiled only by the renderer. The house rule that a
+   * `MaterialPluginBase` define missing from the constructor map makes its
+   * `#ifdef` silently read false is exactly why the assertions below read the
+   * COMPILED source rather than the plugin's strings.
+   */
+  it("compiles the CDLOD + page-channel path and lands 6-8's canopy handoff", async () => {
+    const scene = new Scene(engine);
+    scene.clearColor = new Color4(0, 0, 0, 1);
+    const disposables: { dispose(): void }[] = [];
+    try {
+      const camera = new FreeCamera("canopy-camera", new Vector3(0, 40, -40), scene);
+      camera.setTarget(Vector3.Zero());
+      scene.activeCamera = camera;
+      new HemisphericLight("canopy-ambient", Vector3.Up(), scene);
+      const arrays = createSurfaceMaterialArrays(scene, PROBE_SEED, 32);
+      disposables.push(arrays.albedoHeight, arrays.normalMaterial);
+
+      const material = new PBRMaterial("canopy-cdlod", scene);
+      material.metallic = 0;
+      material.backFaceCulling = false;
+      const plugin = new TerrainSurfacePlugin(material);
+      plugin.setArrays(arrays.albedoHeight, arrays.normalMaterial);
+      plugin.setSamplingProfile("triplanar", 3);
+      plugin.setCanopyBands(150, 3_000, 0.045);
+
+      // A 1-slot height atlas and a 1-slot channel atlas: the shapes only have
+      // to be self-consistent for the addressing arithmetic to compile and run.
+      const heightEdge = 264;
+      const heights = new Float32Array(heightEdge * heightEdge).fill(12);
+      const heightAtlas = RawTexture.CreateRTexture(
+        heights, heightEdge, heightEdge, scene, false, false,
+        Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_FLOAT,
+      );
+      disposables.push(heightAtlas);
+      plugin.setHeightAtlas(heightAtlas, {
+        atlasEdge: heightEdge, slotEdge: heightEdge, gutter: 4, gridEdge: 1,
+      });
+
+      const channelEdge = 136;
+      const channelTexels = channelEdge * channelEdge * 4;
+      const makeChannel = (fill: (lane: number) => number): RawTexture => {
+        const bytes = new Uint8Array(channelTexels);
+        for (let index = 0; index < channelTexels; index += 1) bytes[index] = fill(index % 4);
+        const texture = RawTexture.CreateRGBATexture(
+          bytes, channelEdge, channelEdge, scene, false, false,
+          Texture.BILINEAR_SAMPLINGMODE, Constants.TEXTURETYPE_UNSIGNED_BYTE,
+        );
+        disposables.push(texture);
+        return texture;
+      };
+      const occlusion = makeChannel((lane) => (lane === 0 ? 220 : 128));
+      const horizonA = makeChannel(() => 8);
+      const horizonB = makeChannel(() => 8);
+      const splatId = makeChannel(() => 0);
+      // Lanes 0-2 are the normalised weights; lane 3 is 6-8's closure channel.
+      const splatWeightLo = makeChannel((lane) => (lane === 3 ? 235 : 85));
+      const splatWeightHi = makeChannel((lane) => (lane === 3 ? 235 : 85));
+      plugin.setChannelAtlas(
+        occlusion, horizonA, horizonB,
+        [splatId, splatWeightLo, splatWeightHi, null],
+        null,
+        null,
+        {
+          atlasEdge: channelEdge, slotEdge: channelEdge, core: 128, gutter: 4,
+          gridEdge: 1, basePageExtentMeters: 512,
+        },
+      );
+
+      // A thin-instanced node grid: the CDLOD vertex path reads two per-instance
+      // lanes, and without them the shader references attributes that do not
+      // exist. Level 5 puts the node in the Nyquist gate's live range.
+      const quads = 32;
+      const mesh = new Mesh("canopy-node", scene);
+      const data = new VertexData();
+      const positions: number[] = [];
+      const normals: number[] = [];
+      const indices: number[] = [];
+      for (let z = 0; z <= quads; z += 1) {
+        for (let x = 0; x <= quads; x += 1) {
+          positions.push(x / quads, 0, z / quads);
+          normals.push(0, 1, 0);
+        }
+      }
+      for (let z = 0; z < quads; z += 1) {
+        for (let x = 0; x < quads; x += 1) {
+          const base = z * (quads + 1) + x;
+          indices.push(base, base + 1, base + quads + 1);
+          indices.push(base + 1, base + quads + 2, base + quads + 1);
+        }
+      }
+      data.positions = positions;
+      data.normals = normals;
+      data.indices = indices;
+      data.applyToMesh(mesh, false);
+      mesh.useVertexColors = false;
+      mesh.material = material;
+      mesh.thinInstanceSetBuffer("matrix", new Float32Array(Matrix.Identity().toArray()), 16, false);
+      // A = (heightSlot, subNodeX + subNodeZ*8, level, unused);
+      // B = (morphK, parentSlot, channelLane = slot*32 + level, cornerMorphs).
+      mesh.thinInstanceSetBuffer(
+        TERRAIN_NODE_ATTRIBUTE_A, new Float32Array([0, 0, 5, 0]),
+        TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
+      mesh.thinInstanceSetBuffer(
+        TERRAIN_NODE_ATTRIBUTE_B, new Float32Array([0, 0, 5, 0]),
+        TERRAIN_NODE_ATTRIBUTE_STRIDE, false);
+      mesh.thinInstanceCount = 1;
+
+      let ready = false;
+      for (let frame = 0; frame < 240 && !ready; frame += 1) {
+        engine.beginFrame();
+        scene.render();
+        engine.endFrame();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        ready = material.isReady(mesh);
+        if (gpuErrors.length > 0) break;
+      }
+      expect(gpuErrors, "the CDLOD + page-channel path produced GPU errors").toEqual([]);
+      expect(ready, "the CDLOD + page-channel material never compiled").toBe(true);
+
+      const effect = mesh.subMeshes[0]?.effect;
+      expect(effect, "no effect compiled for the CDLOD node").toBeTruthy();
+      const defines = effect!.defines;
+      expect(defines).toMatch(/^#define TERRAIN_SURFACE_CDLOD/mu);
+      expect(defines).toMatch(/^#define TERRAIN_SURFACE_PAGE_CHANNELS/mu);
+
+      // 6-8, asserted on the COMPILED source in both stages.
+      const vertexSource = effect!.vertexSourceCode;
+      expect(vertexSource).toContain("vegetationCanopyLiftMeters");
+      expect(vertexSource).toContain("terrainVertexCanopyClosure");
+      expect(vertexSource).toContain("smoothstep(2.0, 4.0, vertexInputs.terrainNodeA.z)");
+      const fragmentSource = effect!.fragmentSourceCode;
+      expect(fragmentSource).toContain("terrainSurfaceCanopyClosure");
+      expect(fragmentSource).toContain("vegetationCanopyHandoff");
+      expect(fragmentSource).toContain("terrainCanopyShade");
+      // The reconstructed fourth weight, and the closure lane it freed.
+      expect(fragmentSource).toContain("1.0 - storedLo.x - storedLo.y - storedLo.z");
+
+      // ---------------------------------------------------------------------
+      // 6-5, on the COMPILED source, in both directions.
+      //
+      // The ocean half of the wetness field is UNCONDITIONAL — sea level and a
+      // published sea state exist in every world — so 6-2's run-up block and
+      // the shore term must be in this shader even with no hydrology bound.
+      // ---------------------------------------------------------------------
+      expect(defines).not.toMatch(/^#define TERRAIN_SURFACE_HYDROLOGY_CHANNELS/mu);
+      expect(fragmentSource).toContain("fn waterShoreWetness(");
+      expect(fragmentSource).toContain("fn terrainSurfaceShoreWetness(");
+      expect(fragmentSource).toContain("uniforms.terrainSurfaceShoreClock.x");
+      // ...and the eroded-only half must be ABSENT from it: not sentinel-dark
+      // but compiled out, binding and ALU included.
+      expect(fragmentSource).not.toContain("terrainLakeDepthAtlas");
+      expect(fragmentSource).not.toContain("terrainSurfaceLakeWetness");
+      mesh.dispose(false, false);
+      material.dispose(true, false);
+    } finally {
+      for (const item of disposables) item.dispose();
+      scene.dispose();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(gpuErrors).toEqual([]);
+  }, 300_000);
+
+  /**
+   * `6-5`: the hydrology permutation, asserted on the COMPILED fragment source.
+   *
+   * The house rule the previous test states — a define the constructor's map
+   * does not list makes its `#ifdef` read false in SILENCE — is why this reads
+   * `effect.fragmentSourceCode` rather than the plugin's strings, and why it
+   * asserts the block's presence rather than only its absence. 6-6 lost time
+   * to exactly this failure mode.
+   */
+  it("compiles 6-5's lake half only when both hydrology channels are bound", async () => {
+    const scene = new Scene(engine);
+    scene.clearColor = new Color4(0, 0, 0, 1);
+    const disposables: { dispose(): void }[] = [];
+    try {
+      const camera = new FreeCamera("wetness-camera", new Vector3(0, 20, -20), scene);
+      camera.setTarget(Vector3.Zero());
+      scene.activeCamera = camera;
+      new HemisphericLight("wetness-ambient", Vector3.Up(), scene);
+      const arrays = createSurfaceMaterialArrays(scene, PROBE_SEED, 32);
+      disposables.push(arrays.albedoHeight, arrays.normalMaterial);
+
+      const material = new PBRMaterial("wetness-hydrology", scene);
+      material.metallic = 0;
+      material.backFaceCulling = false;
+      const plugin = new TerrainSurfacePlugin(material);
+      plugin.setArrays(arrays.albedoHeight, arrays.normalMaterial);
+      plugin.setSamplingProfile("biplanar", 3);
+      // A shipped sea state, so the ocean half is driven rather than glassy.
+      plugin.setShoreWetness(waterOceanShoreSwell(12, 120_000), 41.5);
+
+      const edge = 136;
+      const rgba = (): RawTexture => {
+        const texture = RawTexture.CreateRGBATexture(
+          new Uint8Array(edge * edge * 4).fill(128), edge, edge, scene, false, false,
+          Texture.BILINEAR_SAMPLINGMODE, Constants.TEXTURETYPE_UNSIGNED_BYTE,
+        );
+        disposables.push(texture);
+        return texture;
+      };
+      // r16sint, exactly as the channel atlas builds it: no companion sampler,
+      // readable only by textureLoad.
+      const shoreTexels = new Int16Array(edge * edge);
+      for (let index = 0; index < shoreTexels.length; index += 1) {
+        shoreTexels[index] = (index % 160) - 60;
+      }
+      const shoreDistance = new RawTexture(
+        shoreTexels, edge, edge, Constants.TEXTUREFORMAT_RED_INTEGER, scene, false, false,
+        Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_SHORT,
+      );
+      disposables.push(shoreDistance);
+      // r16float in metres of water column — 6-5's channel. Half-float bits,
+      // and likewise no companion sampler.
+      const lakeTexels = new Uint16Array(edge * edge);
+      for (let index = 0; index < lakeTexels.length; index += 1) {
+        lakeTexels[index] = terrainHydrologyFloat16Bits((index % 64) * 0.1);
+      }
+      const lakeDepth = RawTexture.CreateRTexture(
+        lakeTexels, edge, edge, scene, false, false,
+        Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_HALF_FLOAT,
+      );
+      disposables.push(lakeDepth);
+
+      const shape = {
+        atlasEdge: edge, slotEdge: edge, core: 128, gutter: 4,
+        gridEdge: 1, basePageExtentMeters: 512,
+      };
+      plugin.setChannelAtlas(
+        rgba(), rgba(), rgba(), [rgba(), rgba(), rgba()],
+        shoreDistance, lakeDepth, shape,
+      );
+
+      const mesh = createSplatQuad(scene, SurfaceMaterial.Sand, SurfaceMaterial.Gravel, 0.2);
+      mesh.material = material;
+      let ready = false;
+      for (let frame = 0; frame < 240 && !ready; frame += 1) {
+        engine.beginFrame();
+        scene.render();
+        engine.endFrame();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        ready = material.isReady(mesh);
+        if (gpuErrors.length > 0) break;
+      }
+      expect(ready, "the hydrology permutation never compiled").toBe(true);
+      expect(gpuErrors, "the hydrology permutation produced GPU errors").toEqual([]);
+
+      const effect = mesh.subMeshes[0]?.effect;
+      expect(effect, "no effect compiled for the hydrology quad").toBeTruthy();
+      // The define SURVIVED into the compiled effect — not merely into
+      // prepareDefines, which cannot see the constructor-map failure.
+      expect(effect!.defines).toMatch(/^#define TERRAIN_SURFACE_HYDROLOGY_CHANNELS/mu);
+      const source = effect!.fragmentSourceCode;
+      expect(source).toContain("terrainLakeDepthAtlas");
+      expect(source).toContain("terrainSurfaceLakeWetness");
+      expect(source).toContain("terrainSubmergedTotal");
+      // And no sampler was declared beside either integer/float channel, which
+      // is what keeps the SAMPLER budget flat while the texture budget moves
+      // from 9 to 10 of the 16-per-stage base limit.
+      expect(source).not.toContain("terrainLakeDepthAtlasSampler");
+      expect(source).not.toContain("terrainShoreDistanceAtlasSampler");
+      mesh.dispose(false, false);
+      material.dispose(true, false);
+    } finally {
+      for (const item of disposables) item.dispose();
       scene.dispose();
     }
     await new Promise((resolve) => setTimeout(resolve, 200));

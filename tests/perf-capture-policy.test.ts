@@ -73,7 +73,24 @@ describe("perf-capture baseline policy", () => {
     expect(driver).toContain("gpuTimingEnabled:");
   });
 
-  it("writes a candidate only after strict and renderer-error validations", () => {
+  /**
+   * Frames BEFORE the gates; approval AFTER them.
+   *
+   * This test used to require the opposite — that no candidate byte was written
+   * until every validation had passed — on the reasoning that a failed run must
+   * not leave something mistakable for an approved baseline. That reasoning is
+   * still right, but the implementation had a serious cost that Gate F made
+   * concrete: the first failing gate threw, and the run produced **no images at
+   * all**. The instrument withheld its evidence at exactly the moment something
+   * was wrong, and "go and look at the frames" required silencing the gate
+   * first. A capture's frames are diagnostic input, not a reward for passing.
+   *
+   * The safety property is now carried explicitly by `STATUS.txt` instead of
+   * implicitly by the absence of files: the directory is stamped NOT APPROVABLE
+   * when the frames are written and restamped only after every gate has passed.
+   * Both halves are pinned here.
+   */
+  it("writes candidate frames before the gates and approves them only after", () => {
     const strictGate = driver.indexOf("tier1BalancedPerformanceFailures({");
     const imageContentGate = driver.indexOf("perfCaptureImageContentFailures(shot.tiles");
     const gpuErrorGate = driver.indexOf(
@@ -81,14 +98,31 @@ describe("perf-capture baseline policy", () => {
     );
     const rendererErrorGate = driver.indexOf("Babylon logged errors during the capture");
     const candidateWrite = driver.indexOf("`${candidateDir}/${screenshot.name}.png`");
+    const notApprovable = driver.indexOf("NOT APPROVABLE —");
+    const approved = driver.indexOf("APPROVABLE — every capture gate passed");
     expect(strictGate).toBeGreaterThan(-1);
     expect(imageContentGate).toBeGreaterThan(-1);
     expect(gpuErrorGate).toBeGreaterThan(-1);
     expect(rendererErrorGate).toBeGreaterThan(-1);
-    expect(candidateWrite).toBeGreaterThan(strictGate);
-    expect(candidateWrite).toBeGreaterThan(imageContentGate);
-    expect(candidateWrite).toBeGreaterThan(gpuErrorGate);
-    expect(candidateWrite).toBeGreaterThan(rendererErrorGate);
+    expect(candidateWrite).toBeGreaterThan(-1);
+    expect(notApprovable, "the candidate is never stamped unapprovable").toBeGreaterThan(-1);
+    expect(approved, "no gate-passed stamp is ever written").toBeGreaterThan(-1);
+
+    // The evidence lands first, so a failing run is diagnosable from its frames.
+    expect(candidateWrite).toBeLessThan(strictGate);
+    expect(candidateWrite).toBeLessThan(imageContentGate);
+    expect(candidateWrite).toBeLessThan(gpuErrorGate);
+    expect(candidateWrite).toBeLessThan(rendererErrorGate);
+    // ...carrying the warning with it, written in the same breath.
+    expect(notApprovable).toBeGreaterThan(candidateWrite);
+    expect(notApprovable).toBeLessThan(strictGate);
+
+    // Approval is the LAST thing, after every gate — this is the half that
+    // keeps a failed run's candidate from looking promotable.
+    expect(approved).toBeGreaterThan(strictGate);
+    expect(approved).toBeGreaterThan(imageContentGate);
+    expect(approved).toBeGreaterThan(gpuErrorGate);
+    expect(approved).toBeGreaterThan(rendererErrorGate);
   });
 
   it("observes the device error channel for the whole rendered shot lifetime", () => {
@@ -121,11 +155,14 @@ describe("perf-capture baseline policy", () => {
     const publicationGate = driver.indexOf(
       "detail generation/presentation was still pending at capture",
     );
-    const candidateWrite = driver.indexOf("`${candidateDir}/${screenshot.name}.png`");
+    // The candidate's FRAMES are now written before the gates so a failing run
+    // is still diagnosable; its APPROVAL is what must follow the publication
+    // gate, and that is the ordering this test cares about.
+    const approved = driver.indexOf("APPROVABLE — every capture gate passed");
     expect(settleGate).toBeGreaterThan(-1);
     expect(shotReport).toBeGreaterThan(settleGate);
     expect(publicationGate).toBeGreaterThan(shotReport);
-    expect(candidateWrite).toBeGreaterThan(publicationGate);
+    expect(approved).toBeGreaterThan(publicationGate);
   });
 
   it("drains motion-created streaming work at the fixed final pose before readback", () => {
@@ -170,6 +207,14 @@ describe("perf-capture baseline policy", () => {
     expect(packageJson.scripts["perf:capture:ci"]).not.toContain("VITE_PERF_UNPINNED_HOST");
     expect(rendererWorkflow).toContain('VITE_PERF_UNPINNED_HOST: "1"');
 
+    // Gate 0-d (Phase 6): the PR subset must cover the water surfaces the
+    // phase's Wave-1 work touches — without these, every water PR merges with
+    // no pixel gate on the surfaces it changes. Remove only at phase close,
+    // by recorded decision (PHASE_6_EXECUTION_PLAN.md §3).
+    for (const shot of ["water-3m", "water-25ft", "coast-10km-lowsun"]) {
+      expect(packageJson.scripts["perf:capture:ci"]).toContain(shot);
+    }
+
     /** True when this assertion's failure is downgraded on an unpinned host. */
     const isDeliveryGated = (message: string): boolean => {
       const index = driver.indexOf(message);
@@ -187,6 +232,9 @@ describe("perf-capture baseline policy", () => {
       "more hitch frames than the committed ceiling",
       "worst frame exceeded the committed ceiling",
       "p999 frame exceeded the committed ceiling",
+      // Gate 0-a (Phase 6): floors pinned at today's delivery levels.
+      "wall-clock fps fell below the committed floor",
+      "frame-interval p95 exceeded the committed ceiling",
       "more pages pending generation than the committed ceiling",
     ]) {
       expect(isDeliveryGated(message), `${message} must follow the host`).toBe(true);
@@ -210,12 +258,16 @@ describe("perf-capture baseline policy", () => {
       "terrain remained pending after the fixed final-pose drain",
       "detail remained pending after the fixed final-pose drain",
       "more resident page slots than the atlas holds",
+      // Gate 0-a/0-c (Phase 6): draw counts and the memory inventory are
+      // arithmetic over the frozen shipping profile, not host speed.
+      "more draw calls than the committed ceiling",
+      "inventoried GPU memory breached the pinned ceiling",
     ]) {
       expect(isDeliveryGated(message), `${message} must hold on every host`).toBe(false);
     }
 
-    // Exactly the six wrappers enumerated above; nothing else may be relaxed.
-    expect([...driver.matchAll(/gateDelivery\(/g)]).toHaveLength(6);
+    // Exactly the eight wrappers enumerated above; nothing else may be relaxed.
+    expect([...driver.matchAll(/gateDelivery\(/g)]).toHaveLength(8);
   });
 
   it("keeps GPU and non-mutating perf gates wired to automatic CI with artifacts", () => {

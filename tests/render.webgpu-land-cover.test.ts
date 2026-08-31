@@ -1,25 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
   LAND_COVER_CLASSIFIER_WGSL,
+  LAND_COVER_FOREST_FLOOR_LITTER_GAIN,
   LAND_COVER_SPLAT_BAKE_WGSL,
   LAND_COVER_TOP_MATERIALS,
   alignSeasonalLandCoverWeights,
   classifyLandCover,
   dominantLandCover,
   landCoverHabitat,
+  landCoverLitter,
   landCoverSoftmaxTemperature,
   landCoverSuitabilities,
   landCoverWetness,
   landCoverWeightOf,
   type LandCoverInput,
 } from "../src/render/webgpu/terrain/LandCoverClassifier";
+import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from
+  "../src/render/webgpu/terrain/TerrainEvolutionContract";
 import {
   SURFACE_MATERIAL_COUNT,
   SurfaceMaterial,
 } from "../src/render/webgpu/terrain/surfaceMaterials";
 import {
   GROUND_COVER_ARCHETYPES,
+  SOIL_LITTER_DEEP_METERS,
+  SOIL_LITTER_THIN_METERS,
   groundCoverWeights,
+  soilLitterFactor,
 } from "../src/render/webgpu/detail/densityField";
 import { VEGETATION_DENSITY_FIELD_WGSL } from "../src/render/webgpu/detail/densityFieldWgsl";
 import { TerrainBiome, createWorld, sampleTerrain } from "../src/world";
@@ -130,7 +137,19 @@ describe("land-cover classifier (4-6)", () => {
     expect(landCoverWetness(dryProxy)).toBe(landCoverWetness(wetProxy));
     expect(landCoverSuitabilities(dryProxy)).toEqual(landCoverSuitabilities(wetProxy));
     expect(classifyLandCover(dryProxy)).toEqual(classifyLandCover(wetProxy));
-    expect(landCoverWetness(dryProxy)).toBeGreaterThan(0.8);
+    // W-9 re-windowed TWI against measured eroded page statistics
+    // (TERRAIN_TWI_DRY/WET docblock): macro seeding gives every eroded texel
+    // >=262k m² of contributing area, so the wetness ramp now spans the REAL
+    // regimes instead of saturating half the world. At the fixture slope:
+    // uplands read dry, a 10 km² stream reads damp, a 100 km² river reads
+    // mid-wet, and only valley-floor-scale accumulation saturates.
+    expect(landCoverWetness(at({ moisture: 0.02, flowAccumulationAreaM2: 1_000_000 }))).toBe(0);
+    expect(landCoverWetness(dryProxy)).toBeGreaterThan(0.1);
+    expect(landCoverWetness(dryProxy)).toBeLessThan(0.5);
+    expect(landCoverWetness(at({ moisture: 0.02, flowAccumulationAreaM2: 100_000_000 })))
+      .toBeGreaterThan(0.4);
+    expect(landCoverWetness(at({ moisture: 0.02, flowAccumulationAreaM2: 2_000_000_000 })))
+      .toBeGreaterThan(0.85);
     // Omitting the erosion field is explicit analytic parity.
     expect(landCoverWetness(at({ moisture: 0.02 }))).toBeCloseTo(0.02, 12);
     expect(landCoverWetness(at({ moisture: 0.98 }))).toBeCloseTo(0.98, 12);
@@ -232,6 +251,96 @@ describe("land-cover classifier (4-6)", () => {
     expect(code).toContain("kSmoothstep(");
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("splatFlowAccumAtlas");
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("exp2(flowLog2) - 1.0");
+  });
+});
+
+/**
+ * `6-6` — the soil-depth channel's forest-floor consumer.
+ *
+ * Phase 5 shipped `soilDepth` resident with ZERO consumers anywhere (register
+ * row C-9). The plan's rule for this item is "a named ground-layer consumer or
+ * the item produces data nothing reads"; the classifier is one of soil's two,
+ * and litter is what it supplies — deep duff is what makes forest floor read as
+ * forest floor rather than as bare ground under trees.
+ */
+describe("6-6 forest-floor litter from the soil-depth channel", () => {
+  it("raises forest floor with soil depth and leaves thin crests alone", () => {
+    const wet = { moisture: 0.85, temperature: 0.7 } as const;
+    const thin = landCoverSuitabilities(at({ ...wet, soilDepthMeters: 0.4 }));
+    const deep = landCoverSuitabilities(at({ ...wet, soilDepthMeters: 6 }));
+    expect(deep[SurfaceMaterial.ForestFloor]!)
+      .toBeGreaterThan(thin[SurfaceMaterial.ForestFloor]!);
+    // Only the floor moves: litter is a property of the duff layer, not a
+    // second climate driver, so no other suitability may respond to it.
+    for (let id = 0; id < SURFACE_MATERIAL_COUNT; id += 1) {
+      if (id === SurfaceMaterial.ForestFloor) continue;
+      expect(deep[id]!).toBe(thin[id]!);
+    }
+    // And it is visible in the classification, not just in the raw score.
+    const deepWeights = classifyLandCover(at({ ...wet, soilDepthMeters: 6 }));
+    const thinWeights = classifyLandCover(at({ ...wet, soilDepthMeters: 0.4 }));
+    expect(landCoverWeightOf(deepWeights, SurfaceMaterial.ForestFloor))
+      .toBeGreaterThan(landCoverWeightOf(thinWeights, SurfaceMaterial.ForestFloor));
+  });
+
+  it("is EXACTLY neutral when the channel is absent (analytic parity)", () => {
+    // The parity contract is bit-level, not "close": the multiplier has to be
+    // exactly 1.0 when soil depth is omitted, or every analytic splat texel
+    // drifts and the shipping default stops being byte-stable.
+    const probes: Partial<LandCoverInput>[] = [
+      {},
+      { moisture: 0.9, temperature: 0.75 },
+      { slope: 0.4, elevationMeters: 900 },
+      { elevationMeters: 5, moisture: 0.2 },
+      { airportInfluence: 1 },
+    ];
+    for (const probe of probes) {
+      const input = at(probe);
+      expect(landCoverLitter(input)).toBe(0);
+      // Zero litter multiplies the floor by exactly 1.0, so an omitted channel
+      // and a channel present at the thin end agree bit for bit.
+      const omitted = landCoverSuitabilities(input);
+      const atThinEnd = landCoverSuitabilities({
+        ...input,
+        soilDepthMeters: SOIL_LITTER_THIN_METERS,
+      });
+      for (let id = 0; id < SURFACE_MATERIAL_COUNT; id += 1) {
+        expect(omitted[id]!).toBe(atThinEnd[id]!);
+      }
+    }
+    // Soil depth 0 is a REAL answer on a near-vertical face, not the sentinel:
+    // it must produce zero litter without being mistaken for "no channel".
+    expect(landCoverLitter(at({ soilDepthMeters: 0 }))).toBe(0);
+    expect(landCoverLitter(at({ soilDepthMeters: 6 }))).toBeGreaterThan(0.9);
+  });
+
+  it("mirrors the litter law into WGSL from the vegetation authority", () => {
+    // Terrain reaches the litter law through the one sanctioned detail entry
+    // point, and the WGSL injects the SAME constants rather than restating
+    // them — the parity failure this item is most exposed to.
+    expect(soilLitterFactor(SOIL_LITTER_THIN_METERS)).toBe(0);
+    expect(soilLitterFactor(SOIL_LITTER_DEEP_METERS)).toBe(1);
+    expect(LAND_COVER_CLASSIFIER_WGSL).toContain("fn landCoverLitter(");
+    expect(LAND_COVER_CLASSIFIER_WGSL).toContain("input.soilDepthValid < 0.5");
+    expect(LAND_COVER_CLASSIFIER_WGSL).toContain(
+      `const LAND_COVER_SOIL_LITTER_THIN: f32 = ${SOIL_LITTER_THIN_METERS};`,
+    );
+    expect(LAND_COVER_CLASSIFIER_WGSL).toContain(
+      `const LAND_COVER_SOIL_LITTER_DEEP: f32 = ${SOIL_LITTER_DEEP_METERS};`,
+    );
+    expect(LAND_COVER_CLASSIFIER_WGSL).toContain(
+      `${LAND_COVER_FOREST_FLOOR_LITTER_GAIN}`,
+    );
+    // The bake binds the channel and rides the atomic-upload sentinel.
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain("splatSoilDepthAtlas");
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
+      "input.soilDepthValid = input.flowAccumulationValid;",
+    );
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
+      `const SPLAT_SOIL_MAX_METERS: f32 = ${
+        TERRAIN_PAGE_HYDROLOGY_ENCODING.soilDepthMaxMeters
+      }.0;`,
+    );
   });
 });
 

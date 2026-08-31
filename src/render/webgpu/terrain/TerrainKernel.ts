@@ -123,9 +123,30 @@ export interface TerrainKernelLattice {
   /** Wavelength the band-limit fade keys on; the octave's own amplitude. */
   readonly wavelengthMeters: number;
   readonly amplitude: number;
+  /**
+   * `6-8`: the shear factor of a `"sheared"` lattice.
+   *
+   * The rain-shadow channel was the only sheared lattice until the vegetation
+   * table arrived, so 0.42 was a literal inside the builder. It defaults to
+   * 0.42, which keeps every pre-existing lattice's split origin byte-identical.
+   */
+  readonly shearFactor?: number;
+  /**
+   * `6-8`: a band-limit half-width this lattice uses INSTEAD of the page's.
+   *
+   * D12 band-limits per page so canopy cover cannot change when a page changes
+   * LOD. A channel read at two levels along one continuous surface needs the
+   * stronger property — the same value at every level — which a per-page width
+   * cannot give. An appended table declares its own width; the terrain kernel's
+   * own lattices declare none and are untouched.
+   */
+  readonly filterWidthMetersOverride?: number;
 }
 
-function fbmRun(
+/** The shear a `"sheared"` lattice uses when it declares none of its own. */
+const DEFAULT_LATTICE_SHEAR = 0.42;
+
+export function terrainKernelFbmRun(
   name: string,
   space: TerrainKernelSpace,
   channel: number,
@@ -134,6 +155,7 @@ function fbmRun(
   lacunarity: number,
   persistence: number,
   divisorZScale = 1,
+  shearFactor = DEFAULT_LATTICE_SHEAR,
 ): TerrainKernelLattice[] {
   const run: TerrainKernelLattice[] = [];
   let frequency = 1;
@@ -152,6 +174,7 @@ function fbmRun(
       offsetZ: 0,
       wavelengthMeters: wavelength,
       amplitude,
+      shearFactor,
     });
     amplitude *= persistence;
     frequency *= lacunarity;
@@ -193,7 +216,7 @@ function ridgedRun(
   return run;
 }
 
-function bareLattice(
+export function terrainKernelBareLattice(
   name: string,
   space: TerrainKernelSpace,
   channel: number,
@@ -202,6 +225,7 @@ function bareLattice(
   wavelengthMeters: number,
   offsetX = 0,
   offsetZ = 0,
+  shearFactor = DEFAULT_LATTICE_SHEAR,
 ): TerrainKernelLattice {
   return {
     name,
@@ -214,6 +238,7 @@ function bareLattice(
     offsetZ,
     wavelengthMeters,
     amplitude: 1,
+    shearFactor,
   };
 }
 
@@ -225,25 +250,25 @@ const FABRIC_COS = 0.819;
 const FABRIC_SIN = 0.574;
 
 /**
- * All 34 lattices, in the order the WGSL indexes them. The base offsets below
+ * All 43 lattices, in the order the WGSL indexes them. The base offsets below
  * are compiled into the emitted source, so a reordering here cannot silently
  * desynchronise the shader from the uniform builder.
  */
 export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.freeze([
-  bareLattice("warpX", "world", 101, WARP_WAVELENGTH_METERS, WARP_WAVELENGTH_METERS,
+  terrainKernelBareLattice("warpX", "world", 101, WARP_WAVELENGTH_METERS, WARP_WAVELENGTH_METERS,
     WARP_WAVELENGTH_METERS),
-  bareLattice("warpZ", "world", 102, WARP_WAVELENGTH_METERS, WARP_WAVELENGTH_METERS,
+  terrainKernelBareLattice("warpZ", "world", 102, WARP_WAVELENGTH_METERS, WARP_WAVELENGTH_METERS,
     WARP_WAVELENGTH_METERS, 19.4, -7.7),
-  ...fbmRun("continental", "warped", 110, 4, 8_600, 2.01, 0.52),
-  ...fbmRun("rolling", "warped", 120, 5, 1_650, 2, 0.48),
-  ...fbmRun("fine", "world", 121, 3, 310, 2.04, 0.46),
-  ...fbmRun("mountainField", "warped", 130, 3, 13_500, 2, 0.55),
+  ...terrainKernelFbmRun("continental", "warped", 110, 4, 8_600, 2.01, 0.52),
+  ...terrainKernelFbmRun("rolling", "warped", 120, 5, 1_650, 2, 0.48),
+  ...terrainKernelFbmRun("fine", "world", 121, 3, 310, 2.04, 0.46),
+  ...terrainKernelFbmRun("mountainField", "warped", 130, 3, 13_500, 2, 0.55),
   ...ridgedRun("ridges", "warped", 131, 5, 2_550),
   ...ridgedRun("localRidges", "warped", 132, 4, 1_050),
-  bareLattice("groundNoise", "warped", 141, 105, 105, 105),
-  bareLattice("soilUndulation", "warped", 144, 43, 43, 43),
+  terrainKernelBareLattice("groundNoise", "warped", 141, 105, 105, 105),
+  terrainKernelBareLattice("soilUndulation", "warped", 144, 43, 43, 43),
   ...ridgedRun("fractureRidges", "rotated", 142, 3, 390, 980),
-  bareLattice("fractureVariation", "rotated", 143, 155, 240, 155),
+  terrainKernelBareLattice("fractureVariation", "rotated", 143, 155, 240, 155),
   ...ridgedRun("talusRidges", "rotated", 145, 2, 120, 280),
   // ——— `4-6`: the climate chain (D5 moved it here from `4-1`) ———
   //
@@ -251,13 +276,13 @@ export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.f
   // terrain-following ones. They ride the same lattice table as the height
   // chain so the split-origin machinery is shared rather than duplicated —
   // which is also what lets one page uniform serve both bakes.
-  ...fbmRun("moistureBroad", "world", 201, 4, 5_200, 2, 0.52),
-  bareLattice("moistureLocal", "world", 202, 850, 850, 850),
+  ...terrainKernelFbmRun("moistureBroad", "world", 201, 4, 5_200, 2, 0.52),
+  terrainKernelBareLattice("moistureLocal", "world", 202, 850, 850, 850),
   // NOTE: the rain-shadow channel's coordinates are (x + z·0.42, z − x·0.42),
   // a shear rather than the geology fabric's rotation. Its split origin is
   // built for the SHEARED frame by the uniform builder's `shear` field.
-  bareLattice("moistureRainShadow", "sheared", 203, 18_000, 9_500, 9_500),
-  ...fbmRun("climate", "world", 211, 3, 11_000, 2, 0.5),
+  terrainKernelBareLattice("moistureRainShadow", "sheared", 203, 18_000, 9_500, 9_500),
+  ...terrainKernelFbmRun("climate", "world", 211, 3, 11_000, 2, 0.5),
 ]);
 
 /** Base indices the emitted WGSL uses; derived so the two cannot disagree. */
@@ -277,14 +302,36 @@ export const TERRAIN_KERNEL_LATTICE_COUNT = TERRAIN_KERNEL_LATTICES.length;
  * Float32 slots the page buffer holds before the seed table. Laid out so the
  * `vec4f` arrays stay 16-byte aligned in the storage address space.
  */
+const KEPT_FLOATS = 4;
+/** Padded to a multiple of four so the buffer stays 16-byte sized. */
+function seedFloatsFor(latticeCount: number): number {
+  return Math.ceil(latticeCount / 4) * 4;
+}
+function seedOffsetFloatsFor(latticeCount: number): number {
+  return latticeCount * 8 + KEPT_FLOATS;
+}
 const ORIGIN_FLOATS = TERRAIN_KERNEL_LATTICE_COUNT * 4;
 const SCALE_FLOATS = TERRAIN_KERNEL_LATTICE_COUNT * 4;
-const KEPT_FLOATS = 4;
-const SEED_OFFSET_FLOATS = ORIGIN_FLOATS + SCALE_FLOATS + KEPT_FLOATS;
-/** Padded to a multiple of four so the buffer stays 16-byte sized. */
-const SEED_FLOATS = Math.ceil(TERRAIN_KERNEL_LATTICE_COUNT / 4) * 4;
+const SEED_OFFSET_FLOATS = seedOffsetFloatsFor(TERRAIN_KERNEL_LATTICE_COUNT);
+const SEED_FLOATS = seedFloatsFor(TERRAIN_KERNEL_LATTICE_COUNT);
 export const TERRAIN_KERNEL_PAGE_FLOATS = SEED_OFFSET_FLOATS + SEED_FLOATS;
 export const TERRAIN_KERNEL_PAGE_BYTES = TERRAIN_KERNEL_PAGE_FLOATS * 4;
+
+/**
+ * `6-8`: the page-uniform size when a consumer APPENDS lattices of its own.
+ *
+ * The vegetation density field is a transliteration on the same split-origin
+ * machinery, and its docblock always said the caller "appends these to the
+ * terrain kernel's own lattice table and passes the base index". This is that
+ * mechanism, arriving with its first consumer. Extra lattices land strictly
+ * after index `TERRAIN_KERNEL_LATTICE_COUNT`, so every existing consumer's
+ * buffer, struct and byte layout are untouched — `extraLatticeCount = 0`
+ * returns exactly `TERRAIN_KERNEL_PAGE_BYTES`.
+ */
+export function terrainKernelPageBytes(extraLatticeCount = 0): number {
+  const count = TERRAIN_KERNEL_LATTICE_COUNT + Math.max(0, extraLatticeCount);
+  return (seedOffsetFloatsFor(count) + seedFloatsFor(count)) * 4;
+}
 
 const HALF_WRAP_PERIOD = NOISE_LATTICE_WRAP_PERIOD_CELLS / 2;
 
@@ -306,6 +353,23 @@ function bandWeight(wavelengthMeters: number, filterWidthMeters: number): number
 
 export interface TerrainKernelPageInput {
   readonly seedHash: number;
+  /**
+   * The seed the APPENDED lattices are keyed on, when it is not the terrain
+   * seed. Omission reads `seedHash`, which is byte-identical.
+   *
+   * **This exists because a world has TWO seeds and they are not the same
+   * number.** `createWorld`'s guaranteed-airport search re-seeds the terrain
+   * (`world.seedHash = region.seedHash`) while every plant in the world is
+   * placed from `hashSeed(String(world.seed))` — `world.sourceSeedHash` —
+   * which `FlightRenderer` states explicitly where it builds
+   * `GroundCoverSystem`: "the field and the cards must key the SAME
+   * realisation or the handoff at the field radius swaps species". A consumer
+   * that appends ANOTHER authority's lattices to this uniform is appending
+   * that authority's seed with them; keying them on the terrain seed bakes a
+   * different world's answer into a terrain channel, which is exactly the
+   * defect `6-8`'s canopy-closure channel shipped with.
+   */
+  readonly extraSeedHash?: number;
   /** Page origin in world metres. Held in f64 here and never sent to the GPU. */
   readonly originX: number;
   readonly originZ: number;
@@ -314,34 +378,44 @@ export interface TerrainKernelPageInput {
 }
 
 /**
- * Build one page's kernel uniform: 34 split origins, 34 scale/weight/amplitude
- * rows, three variance-kept scalars and 34 pre-mixed seeds.
+ * Build one page's kernel uniform: one split origin, one
+ * scale/weight/amplitude row and one pre-mixed seed per lattice, plus three
+ * variance-kept scalars. `6-8` lets a consumer APPEND lattices of its own
+ * (the vegetation density field's eleven); passing none is byte-identical.
  *
  * The seeds are pre-mixed on purpose. `valueNoise2D` calls
  * `mixSeed(seedHash, 0)` once per evaluation and hashes four corners with the
- * result; the mix is a PAGE constant, so hoisting it removes 34 integer
- * hash chains per texel and cannot change the answer (`mixSeed` is exact
+ * result; the mix is a PAGE constant, so hoisting it removes one integer
+ * hash chain per lattice per texel and cannot change the answer (`mixSeed` is exact
  * integer arithmetic on both sides — criterion 1 tests it directly).
  */
 export function buildTerrainKernelPageUniform(
   input: TerrainKernelPageInput,
+  extraLattices: readonly TerrainKernelLattice[] = [],
 ): ArrayBuffer {
-  const buffer = new ArrayBuffer(TERRAIN_KERNEL_PAGE_BYTES);
+  const lattices = extraLattices.length === 0
+    ? TERRAIN_KERNEL_LATTICES
+    : [...TERRAIN_KERNEL_LATTICES, ...extraLattices];
+  const originFloats = lattices.length * 4;
+  const seedOffsetFloats = seedOffsetFloatsFor(lattices.length);
+  const seedFloats = seedFloatsFor(lattices.length);
+  const buffer = new ArrayBuffer((seedOffsetFloats + seedFloats) * 4);
   const floats = new Float32Array(buffer);
-  const seeds = new Uint32Array(buffer, SEED_OFFSET_FLOATS * 4, SEED_FLOATS);
+  const seeds = new Uint32Array(buffer, seedOffsetFloats * 4, seedFloats);
 
   const rotatedOriginX = input.originX * FABRIC_COS + input.originZ * FABRIC_SIN;
   const rotatedOriginZ = -input.originX * FABRIC_SIN + input.originZ * FABRIC_COS;
 
-  TERRAIN_KERNEL_LATTICES.forEach((lattice, index) => {
+  lattices.forEach((lattice, index) => {
     let sourceX = input.originX;
     let sourceZ = input.originZ;
     if (lattice.space === "rotated") {
       sourceX = rotatedOriginX;
       sourceZ = rotatedOriginZ;
     } else if (lattice.space === "sheared") {
-      sourceX = input.originX + input.originZ * 0.42;
-      sourceZ = input.originZ - input.originX * 0.42;
+      const shear = lattice.shearFactor ?? DEFAULT_LATTICE_SHEAR;
+      sourceX = input.originX + input.originZ * shear;
+      sourceZ = input.originZ - input.originX * shear;
     }
     // Everything above this line is f64. Only the SPLIT crosses to f32.
     const originU = wrapOriginCells(sourceX / lattice.divisorX + lattice.offsetX);
@@ -353,20 +427,29 @@ export function buildTerrainKernelPageUniform(
     floats[index * 4 + 2] = cellV;
     floats[index * 4 + 3] = originV - cellV;
 
-    const scaleBase = ORIGIN_FLOATS + index * 4;
+    const scaleBase = originFloats + index * 4;
     floats[scaleBase] = 1 / lattice.divisorX;
     floats[scaleBase + 1] = 1 / lattice.divisorZ;
-    floats[scaleBase + 2] = bandWeight(lattice.wavelengthMeters, input.filterWidthMeters);
+    floats[scaleBase + 2] = bandWeight(
+      lattice.wavelengthMeters,
+      lattice.filterWidthMetersOverride ?? input.filterWidthMeters,
+    );
     floats[scaleBase + 3] = lattice.amplitude;
 
-    const channelSeed = mixSeed(input.seedHash, lattice.channel);
+    // Appended lattices belong to whichever authority supplied them, so they
+    // carry that authority's seed. Absent an override this is `seedHash` for
+    // every index and the buffer is byte-identical.
+    const latticeSeedHash = index < TERRAIN_KERNEL_LATTICE_COUNT
+      ? input.seedHash
+      : input.extraSeedHash ?? input.seedHash;
+    const channelSeed = mixSeed(latticeSeedHash, lattice.channel);
     const octaveSeed = lattice.octaveChannel === null
       ? channelSeed
       : mixSeed(channelSeed, lattice.octaveChannel);
     seeds[index] = mixSeed(octaveSeed, 0) >>> 0;
   });
 
-  const keptBase = ORIGIN_FLOATS + SCALE_FLOATS;
+  const keptBase = originFloats * 2;
   floats[keptBase] = ridgedChannelVarianceKept(5, 2_550, input.filterWidthMeters);
   floats[keptBase + 1] = ridgedChannelVarianceKept(4, 1_050, input.filterWidthMeters);
   floats[keptBase + 2] = ridgedChannelVarianceKept(3, 390, input.filterWidthMeters);
@@ -390,6 +473,39 @@ function wgslFloat(value: number): string {
  * its page binding through `terrainKernelPageBindingWgsl` and includes this
  * text, the same substitution pattern the PBR plugin performs.
  */
+/**
+ * `6-9`: the three scalar helpers, hoisted out of the kernel body so a
+ * consumer that composes a TRANSLITERATED law without the rest of the kernel
+ * gets the same functions rather than a second copy of them.
+ *
+ * `noise.ts`'s `smoothstep` guards `low == high` and the WGSL builtin does
+ * not, which is exactly the kind of difference that produces a shader whose
+ * arithmetic is *nearly* the TypeScript's. There must be one text. The
+ * ground-cover placement compute (`6-9`) composes this plus
+ * `VEGETATION_GROUND_COVER_LAW_WGSL` and nothing else — no page uniform, no
+ * lattice table, no hash layer — because the archetype mix is a pure function
+ * of five driver scalars.
+ */
+export const TERRAIN_KERNEL_SCALAR_WGSL = /* wgsl */ `
+fn kSaturate(value: f32) -> f32 {
+  return min(1.0, max(0.0, value));
+}
+
+fn kClamp(value: f32, low: f32, high: f32) -> f32 {
+  return min(high, max(low, value));
+}
+
+fn kSmoothstep(low: f32, high: f32, value: f32) -> f32 {
+  // NOT smoothstep(): noise.ts guards low == high, the builtin does not.
+  if (low == high) {
+    if (value < low) { return 0.0; }
+    return 1.0;
+  }
+  let t = kSaturate((value - low) / (high - low));
+  return t * t * (3.0 - 2.0 * t);
+}
+`;
+
 export const TERRAIN_KERNEL_WGSL = /* wgsl */ `
 // ---------------------------------------------------------------------------
 // Terrain height kernel — TRANSLITERATION of src/world/{seed,noise,geology,
@@ -440,24 +556,7 @@ fn kLerp(start: f32, end: f32, amount: f32) -> f32 {
   return start + (end - start) * amount;
 }
 
-fn kSaturate(value: f32) -> f32 {
-  return min(1.0, max(0.0, value));
-}
-
-fn kClamp(value: f32, low: f32, high: f32) -> f32 {
-  return min(high, max(low, value));
-}
-
-fn kSmoothstep(low: f32, high: f32, value: f32) -> f32 {
-  // NOT smoothstep(): noise.ts guards low == high, the builtin does not.
-  if (low == high) {
-    if (value < low) { return 0.0; }
-    return 1.0;
-  }
-  let t = kSaturate((value - low) / (high - low));
-  return t * t * (3.0 - 2.0 * t);
-}
-
+${TERRAIN_KERNEL_SCALAR_WGSL}
 fn kRound(value: f32) -> f32 {
   // NOT round(): Math.round is round-half-toward-+inf, WGSL round is
   // round-half-to-even.
@@ -738,13 +837,18 @@ fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
  * the struct layout and `buildTerrainKernelPageUniform`'s byte layout have one
  * definition between them.
  */
-export function terrainKernelPageBindingWgsl(group: number, binding: number): string {
+export function terrainKernelPageBindingWgsl(
+  group: number,
+  binding: number,
+  extraLatticeCount = 0,
+): string {
+  const count = TERRAIN_KERNEL_LATTICE_COUNT + Math.max(0, extraLatticeCount);
   return /* wgsl */ `
 struct TerrainKernelPage {
-  latticeOrigin: array<vec4f, ${TERRAIN_KERNEL_LATTICE_COUNT}>,
-  latticeScale: array<vec4f, ${TERRAIN_KERNEL_LATTICE_COUNT}>,
+  latticeOrigin: array<vec4f, ${count}>,
+  latticeScale: array<vec4f, ${count}>,
   kept: vec4f,
-  seeds: array<u32, ${SEED_FLOATS}>,
+  seeds: array<u32, ${seedFloatsFor(count)}>,
 };
 @group(${group}) @binding(${binding}) var<storage, read> terrainKernelPages: array<TerrainKernelPage>;
 `;

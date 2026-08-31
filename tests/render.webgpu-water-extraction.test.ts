@@ -50,11 +50,52 @@ describe("water shader extraction (2-8a)", () => {
     // glint jitter (fixes 3 and 7), the shore foam band (fix 6) and the single
     // wind owner (fix 8). Deliberate, named, reviewed — which is the flow this
     // assertion exists to force.
+    //
+    // Re-pinned by 6-4 (bed caustics). The VERTEX text moved only because the
+    // shared `waterCapillaryOctave` now also returns its lattice value (the
+    // vertex stage composes the noise block but does not call that helper);
+    // the FRAGMENT gained the caustic beam and accumulator, the per-cascade
+    // Jacobian lanes, the two `causticCurvatureScale` uniforms, and the
+    // depth-include-before-capillary ordering the shared caustic block needs.
+    // Deliberate, named, reviewed — the flow this assertion exists to force.
+    //
+    // Re-pinned by 6-2 (shoreline run-up). FRAGMENT ONLY — the vertex hash
+    // below is deliberately UNCHANGED, which is itself the claim that 6-2 is a
+    // fragment-side delta and moved no displacement, no varying and no mesh
+    // Nyquist fade. The fragment gained: the two `cascadeWavelengths` uniforms
+    // the dominant-band rule reads, one mean-square-slope lane per cascade
+    // (one add each, over moments the shader already samples), the shared
+    // `WATER_SHORE_RUNUP_WGSL` / `WATER_SHORE_STREAK_WGSL` blocks, a pixel
+    // footprint taken in uniform control flow, and the depth-gated run-up
+    // modulation of wave R's shore band. This MOVES PIXELS on `water-3m`,
+    // `water-25ft` and `coast-10km-lowsun` by design — the surf now beats with
+    // the swell — and those shots rebaseline at the Wave-1 point (§9 R1), not
+    // here. Deliberate, named, reviewed: the flow this assertion exists to
+    // force.
+    //
+    // Re-pinned by 6-3 (shallow-water dispersion). FRAGMENT ONLY, and the
+    // vertex hash below is byte-for-byte the one 6-2 left — which is the claim
+    // that 6-3 is a fragment-side delta too, and a load-bearing one here:
+    // shoaling SHORTENS wavelengths, which is exactly the band the mesh-Nyquist
+    // fade refuses to carry, so the plan says shade rather than fight it and
+    // this unchanged hash is the evidence that nothing tried. The FRAGMENT
+    // gained: the shared `WATER_SHOALING_WGSL` block, five per-cascade slope
+    // registers (stores of a product the accumulation already forms), the
+    // depth < 60 m shelf gate that now wraps 6-2's run-up gate, the shoaled
+    // slope delta added to the cascade slope sum, and the depth-limited
+    // whitewater folded into `foamAmount`. 6-2's run-up body moved UP with the
+    // gate — above the capillary call, so the shoaled slope is the resolved
+    // slope the unresolved tail is fitted against and the whitewater reaches
+    // `baseRoughness` — and gained the breaking-fraction weight on its bore
+    // and streaks. This MOVES PIXELS on `water-3m`, `water-25ft` and
+    // `coast-10km-lowsun` by design — the swell now stacks up and breaks where
+    // the depth says it must — and those shots rebaseline at the Wave-1 point
+    // (§9 R1), not here. Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "26e9899e6aeb107c84a642dd8b315b54e8253e058e010b7d1ffd0c934e94ff9d",
+      "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "57bca0f3614fff9153d7ce6ebfd0b12e35111aee21dce5c723243c9d8abe7e7f",
+      "d38e8078db4263b326c8e0ac0ed2f63b50e1f34abfe7bb3875dfbf1d28e59d21",
     );
   });
 

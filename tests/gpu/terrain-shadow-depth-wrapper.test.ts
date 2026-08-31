@@ -25,6 +25,7 @@ import {
   TERRAIN_MORPH_FORBIDDEN_VERTEX_SYMBOLS,
 } from "../../src/render/webgpu/terrain/TerrainSpineContract";
 import { WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
+import { terrainHydrologyFloat16Bits } from "../../src/render/webgpu/terrain/TerrainPageHydrology";
 
 /**
  * Assertion 81 (`4-4`, D7): the REAL terrain material's shadow-map effect
@@ -115,9 +116,38 @@ describe("terrain shadow depth wrapper (4-4)", () => {
         channelTextures.push(texture);
         return texture;
       };
+      // 6-6: a real r16sint shore-distance page too, so this compiles the
+      // hydrology fragment path — the integer textureLoad and the wet-litter
+      // block — on a real adapter as well as the analytic one.
+      const shoreDistanceTexels = new Int16Array(channelEdge * channelEdge);
+      for (let index = 0; index < shoreDistanceTexels.length; index += 1) {
+        shoreDistanceTexels[index] = (index % 200) - 40;
+      }
+      const shoreDistancePage = new RawTexture(
+        shoreDistanceTexels, channelEdge, channelEdge,
+        Constants.TEXTUREFORMAT_RED_INTEGER, scene, false, false,
+        Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_SHORT,
+      );
+      channelTextures.push(shoreDistancePage);
+      // 6-5: and a real r16float lake-depth page, so the lake-bed/bank half of
+      // the wetness field compiles on a real adapter too. Half-float, sampled
+      // by textureLoad with no companion sampler — the sampler budget does not
+      // move, and a driver that refused the combination would fail HERE rather
+      // than in the app.
+      const lakeDepthTexels = new Uint16Array(channelEdge * channelEdge);
+      for (let index = 0; index < lakeDepthTexels.length; index += 1) {
+        lakeDepthTexels[index] = terrainHydrologyFloat16Bits((index % 97) * 0.05);
+      }
+      const lakeDepthPage = RawTexture.CreateRTexture(
+        lakeDepthTexels, channelEdge, channelEdge, scene, false, false,
+        Texture.NEAREST_SAMPLINGMODE, Constants.TEXTURETYPE_HALF_FLOAT,
+      );
+      channelTextures.push(lakeDepthPage);
       plugin.setChannelAtlas(
         channelPage(), channelPage(), channelPage(),
         [channelPage(), channelPage(), channelPage(), channelPage()],
+        shoreDistancePage,
+        lakeDepthPage,
         {
           atlasEdge: channelEdge,
           slotEdge: 136,
@@ -194,6 +224,12 @@ describe("terrain shadow depth wrapper (4-4)", () => {
       const beautyFragment = material.getEffect()?.fragmentSourceCode ?? "";
       expect(beautyFragment).toContain("terrainSurfacePageSplat");
       expect(beautyFragment).toContain("terrainSurfaceHorizonShadow");
+      // 6-6: and so must the HYDROLOGY path — this is the only place an r16sint
+      // sampled texture, its sampler-free binding and the integer textureLoad
+      // meet a real adapter. The equivalent Tint-only check would pass on
+      // invalid WGSL (the adapter-is-not-a-portability-oracle lesson).
+      expect(beautyFragment).toContain("terrainSurfaceRiparianBand");
+      expect(beautyFragment).toContain("terrainWetLitter");
 
       // The BEAUTY effect must carry it too, or the two surfaces disagree —
       // which is the depth-fighting failure a shadow-only check would miss.

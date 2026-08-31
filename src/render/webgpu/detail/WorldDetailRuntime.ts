@@ -84,6 +84,7 @@ import {
   type DetailPresentationBuildCatalog,
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
+import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
@@ -613,6 +614,16 @@ export class WorldDetailRuntime {
    * archetype. Engine-static, so chunk signatures need no new term.
    */
   private readonly groundCoverBladesActive: boolean;
+  /**
+   * `6-9`: metres inside which the GPU field carries EVERY archetype, so the
+   * card path skips them there. 0 whenever the field is inactive, which is
+   * every CPU-only host — CI's hosted runner included.
+   *
+   * Refreshed from the profile rather than fixed at construction because it
+   * is the tier's ground-cover law that decides it, and it joins both build
+   * signatures so a tier change rebuilds the chunks the handoff moved.
+   */
+  private groundCoverFieldRadiusMeters = 0;
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -1607,6 +1618,9 @@ export class WorldDetailRuntime {
     this.presentationMillisecondsLastUpdate = 0;
     this.lastDensityLaw = profile.renderedDensityLaw;
     this.lastGrassRadius = profile.grassRadiusMeters;
+    this.groundCoverFieldRadiusMeters = this.groundCoverBladesActive
+      ? groundCoverHandoffRadiusMeters(profile.groundCoverLaw)
+      : 0;
     this.suppressInvalidPresentationChunks();
     const grouped = new Map<
       string,
@@ -1652,6 +1666,7 @@ export class WorldDetailRuntime {
       profile.treeVariantCap,
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
+      this.groundCoverFieldRadiusMeters,
     ].join(":");
     const targets = new Map<string, DetailChunkBuildTarget>();
 
@@ -1670,6 +1685,7 @@ export class WorldDetailRuntime {
         profile.treeVariantCap,
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
+        this.groundCoverFieldRadiusMeters,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
         // single-edge baked fades actually change with camera range. An
@@ -1967,6 +1983,7 @@ export class WorldDetailRuntime {
           treePrototypeMode,
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
+          groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -2026,6 +2043,7 @@ export class WorldDetailRuntime {
           treePrototypeMode,
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
+          groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },

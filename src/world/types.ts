@@ -35,7 +35,7 @@ export interface AirportDefinition {
 
 export interface WorldOptions {
   seaLevel?: number;
-  /** Defaults to the activated Phase 5 eroded authority. */
+  /** Defaults to `DEFAULT_WORLD_EVOLUTION` ("analytic", G0-1); eroded is opt-in. */
   worldEvolution?: WorldEvolution;
   /** Pass false to generate a world without the starter airport. */
   airport?: false | Partial<AirportDefinition>;

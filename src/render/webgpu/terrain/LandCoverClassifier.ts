@@ -1,9 +1,15 @@
 import { saturate, smoothstep } from "@/src/world/noise";
 import {
+  SOIL_LITTER_DEEP_METERS,
+  SOIL_LITTER_THIN_METERS,
+  soilLitterFactor,
+} from "../detail/densityField";
+import {
   SURFACE_MATERIAL_COUNT,
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 import {
   TERRAIN_TWI_DRY,
   TERRAIN_TWI_SLOPE_EPSILON,
@@ -55,6 +61,24 @@ export interface LandCoverInput {
    * pre-erosion moisture proxy for wetness; omission preserves analytic parity.
    */
   readonly flowAccumulationAreaM2?: number;
+  /**
+   * `6-6`: metres of soil from the page's soil-depth channel. Deep soil is
+   * deep litter, and litter is what makes a forest floor read as forest floor
+   * rather than as bare ground under trees. Omission preserves analytic parity
+   * exactly as `flowAccumulationAreaM2`'s does.
+   */
+  readonly soilDepthMeters?: number;
+  /**
+   * `6-8`: true crown cover of the canopy standing on this texel, from
+   * `densityField`'s `canopyClosure` — the ONE closure, read through the one
+   * sanctioned entry point. Omission reads 0, which leaves every suitability
+   * at its pre-6-8 value; the CPU ecology callers do not supply it, so the
+   * classification the species and wildlife rules read is unmoved and only the
+   * page splat bake (which does supply it) changes.
+   */
+  readonly canopyClosure?: number;
+  /** `6-8`: absolute grass-sward cover, canopy-suppressed. Omission reads 0. */
+  readonly grassCover?: number;
   readonly moisture: number;
   /** Normalised temperature from the climate chain, before the seasonal shift. */
   readonly temperature: number;
@@ -88,6 +112,37 @@ export const LAND_COVER_SOFTMAX_BASE_TEMPERATURE = 0.22;
 /** The snowline's reference altitude; the seasonal shift moves it down. */
 const SNOWLINE_REFERENCE_METERS = 1_520;
 const METERS_PER_NORMALIZED_TEMPERATURE = 2_450;
+
+/**
+ * `6-6`'s litter seam: how much duff the soil column under this texel carries.
+ *
+ * The mapping is `densityField`'s — imported, not restated, because litter is
+ * a vegetation product and terrain reaches vegetation through exactly one
+ * entry point (the boundary test enforces it). Absent soil depth returns the
+ * neutral 0, which leaves every suitability at its pre-6-6 value.
+ */
+export const LAND_COVER_FOREST_FLOOR_LITTER_GAIN = 0.35;
+
+export function landCoverLitter(input: LandCoverInput): number {
+  if (input.soilDepthMeters === undefined) return 0;
+  return soilLitterFactor(input.soilDepthMeters);
+}
+
+/**
+ * `6-8`'s two canopy seams.
+ *
+ * Forest floor was previously inferred from CLIMATE — wet, warm, below the
+ * treeline — which is the recipe for where forest *could* grow, not for where
+ * it stands. The density field already answers the second question, and its
+ * answer includes the glade, windthrow and succession structure that climate
+ * alone cannot express, so a clearing inside a wet warm province classified as
+ * closed forest floor and now classifies as what it is. The grass seam is the
+ * complement: a sward is ground the canopy left open, and `GroundCoverSystem`
+ * stops placing blades at 80 m, so past that the terrain material is the only
+ * thing that can say a meadow is a meadow.
+ */
+export const LAND_COVER_CANOPY_CLOSURE_GAIN = 0.55;
+export const LAND_COVER_GRASS_COVER_GAIN = 0.45;
 
 /** One classifier seam: real drainage when available, climatic proxy otherwise. */
 export function landCoverWetness(input: LandCoverInput): number {
@@ -140,15 +195,27 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const lowland = 1 - smoothstep(320, 900, elevation);
   const airfield = saturate(airportInfluence);
 
+  const closure = saturate(input.canopyClosure ?? 0);
+  const sward = saturate(input.grassCover ?? 0);
+
   const suitability = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
   // Sand: the shore band, and only where it is not steep.
   suitability[SurfaceMaterial.Sand] = (1 - shore) * gentle * 1.35 + 0.02;
-  // Grass: the default lowland cover, and what an airfield is mown to.
+  // Grass: the default lowland cover, and what an airfield is mown to. The
+  // sward gain rides the CLIMATIC term only — an airfield is mown grass by
+  // decree and must not be scaled by whether the wild sward would grow there.
   suitability[SurfaceMaterial.Grass] =
-    shore * lowland * gentle * warm * (0.35 + wet * 0.65) + airfield * 2.4;
-  // Forest floor: wet, warm, below the treeline, off the steepest ground.
+    shore * lowland * gentle * warm * (0.35 + wet * 0.65)
+      * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+    + airfield * 2.4;
+  // Forest floor: wet, warm, below the treeline, off the steepest ground —
+  // and, since 6-6, carrying the litter its soil column can actually support.
+  // A thin-soiled crest under the same climate is duff-free ground and now
+  // classifies that way instead of reading as closed forest floor.
   suitability[SurfaceMaterial.ForestFloor] =
-    shore * wet * warm * (1 - smoothstep(900, 1_350, elevation)) * (1 - steep * 0.8) * 1.1;
+    shore * wet * warm * (1 - smoothstep(900, 1_350, elevation)) * (1 - steep * 0.8) * 1.1
+    * (1 + landCoverLitter(input) * LAND_COVER_FOREST_FLOOR_LITTER_GAIN)
+    * (1 + closure * LAND_COVER_CANOPY_CLOSURE_GAIN);
   // Shrub: the highland band — drier, cooler, tolerant of slope.
   suitability[SurfaceMaterial.Shrub] =
     shore * alpine * (1 - smoothstep(1_150, 1_650, elevation)) * (0.4 + dry * 0.6) * 0.95;
@@ -160,7 +227,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     * (1 - saturate((slope - 0.5) * 2.2))
     * 1.5;
   // Dry grass: the rain-shadow companion to grass, off the ecotone chain.
-  suitability[SurfaceMaterial.DryGrass] = shore * lowland * gentle * dry * warm * 0.8;
+  suitability[SurfaceMaterial.DryGrass] =
+    shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN);
   // Gravel: scree below cliffs and the wave-washed band above sand.
   suitability[SurfaceMaterial.Gravel] =
     shore * (steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2);
@@ -318,6 +386,18 @@ export function landCoverHabitat(weights: LandCoverWeights): LandCoverHabitat {
 // ---------------------------------------------------------------------------
 
 /**
+ * An injected constant that is a valid WGSL float literal for every value.
+ *
+ * `${8}.0` is fine and `${8.5}.0` is `8.5.0`, which is a compile error found
+ * only on a real adapter. Every constant this include injects goes through
+ * here so a future retune of one of them cannot break the shader silently.
+ */
+function wgslConstant(value: number): string {
+  if (!Number.isFinite(value)) throw new RangeError("WGSL constants must be finite");
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+/**
  * The same ten functions, transliterated.
  *
  * Emitted from this file so a change to a suitability moves both halves at
@@ -332,6 +412,17 @@ struct LandCoverInput {
   slope: f32,
   flowAccumulationAreaM2: f32,
   flowAccumulationValid: f32,
+  // 6-6: metres of soil, plus its own zero-sentinel companion. Soil depth is
+  // strictly positive wherever hydrology ran but quantises to 0 on the very
+  // steepest faces, so the value alone cannot carry validity — the flag does.
+  soilDepthMeters: f32,
+  soilDepthValid: f32,
+  // 6-8: the canopy seams. Both exist in ANALYTIC worlds too — a canopy is a
+  // vegetation property, not an erosion product — so neither carries a
+  // zero-sentinel companion. Zero is a real answer here (open ground), and the
+  // bake always supplies a real value.
+  canopyClosure: f32,
+  grassCover: f32,
   moisture: f32,
   temperature: f32,
   aspect: f32,
@@ -345,6 +436,23 @@ const LAND_COVER_TOP: u32 = ${LAND_COVER_TOP_MATERIALS}u;
 const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
 const LAND_COVER_SNOWLINE_REFERENCE: f32 = ${SNOWLINE_REFERENCE_METERS}.0;
 const LAND_COVER_METERS_PER_TEMPERATURE: f32 = ${METERS_PER_NORMALIZED_TEMPERATURE}.0;
+const LAND_COVER_SOIL_LITTER_THIN: f32 = ${wgslConstant(SOIL_LITTER_THIN_METERS)};
+const LAND_COVER_SOIL_LITTER_DEEP: f32 = ${wgslConstant(SOIL_LITTER_DEEP_METERS)};
+const LAND_COVER_FLOOR_LITTER_GAIN: f32 = ${
+  wgslConstant(LAND_COVER_FOREST_FLOOR_LITTER_GAIN)
+};
+const LAND_COVER_CLOSURE_GAIN: f32 = ${wgslConstant(LAND_COVER_CANOPY_CLOSURE_GAIN)};
+const LAND_COVER_SWARD_GAIN: f32 = ${wgslConstant(LAND_COVER_GRASS_COVER_GAIN)};
+
+/** Transliteration of densityField.ts's soilLitterFactor, injected constants. */
+fn landCoverLitter(input: LandCoverInput) -> f32 {
+  if (input.soilDepthValid < 0.5) { return 0.0; }
+  return kSmoothstep(
+    LAND_COVER_SOIL_LITTER_THIN,
+    LAND_COVER_SOIL_LITTER_DEEP,
+    input.soilDepthMeters,
+  );
+}
 
 fn landCoverWetness(input: LandCoverInput) -> f32 {
   if (input.flowAccumulationValid < 0.5) { return kSaturate(input.moisture); }
@@ -374,14 +482,20 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let alpine = kSmoothstep(420.0, 980.0, elevation);
   let lowland = 1.0 - kSmoothstep(320.0, 900.0, elevation);
   let airfield = kSaturate(input.airportInfluence);
+  let closure = kSaturate(input.canopyClosure);
+  let sward = kSaturate(input.grassCover);
 
   var suitability: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   suitability[${SurfaceMaterial.Sand}] = (1.0 - shore) * gentle * 1.35 + 0.02;
   suitability[${SurfaceMaterial.Grass}] =
-    shore * lowland * gentle * warm * (0.35 + wet * 0.65) + airfield * 2.4;
+    shore * lowland * gentle * warm * (0.35 + wet * 0.65)
+      * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+    + airfield * 2.4;
   suitability[${SurfaceMaterial.ForestFloor}] =
     shore * wet * warm * (1.0 - kSmoothstep(900.0, 1350.0, elevation))
-      * (1.0 - steep * 0.8) * 1.1;
+      * (1.0 - steep * 0.8) * 1.1
+      * (1.0 + landCoverLitter(input) * LAND_COVER_FLOOR_LITTER_GAIN)
+      * (1.0 + closure * LAND_COVER_CLOSURE_GAIN);
   suitability[${SurfaceMaterial.Shrub}] =
     shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, elevation))
       * (0.4 + dry * 0.6) * 0.95;
@@ -389,7 +503,8 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   suitability[${SurfaceMaterial.Snow}] =
     kSmoothstep(snowline - 90.0, snowline + 130.0, elevation)
       * (1.0 - kSaturate((slope - 0.5) * 2.2)) * 1.5;
-  suitability[${SurfaceMaterial.DryGrass}] = shore * lowland * gentle * dry * warm * 0.8;
+  suitability[${SurfaceMaterial.DryGrass}] =
+    shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN);
   suitability[${SurfaceMaterial.Gravel}] =
     shore * (steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2);
   suitability[${SurfaceMaterial.Asphalt}] = 0.0;
@@ -481,6 +596,11 @@ struct SplatJob {
   placement: vec4f,
   // (airport influence centre x, centre z, inverse blend radius, day of year)
   airport: vec4f,
+  // (sin heading, cos heading, half length + end safety area,
+  //  half width + shoulder) — the runway frame and the graded platform's own
+  //  half-extents, so the bake can evaluate the SAME rounded-rectangle field
+  //  getAirportInfluence does instead of a circle about the centre.
+  runway: vec4f,
 };
 
 @group(0) @binding(1) var<storage, read> splatJobs: array<SplatJob>;
@@ -489,19 +609,88 @@ struct SplatJob {
 @group(0) @binding(4) var splatWeightLo: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var splatWeightHi: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(6) var splatFlowAccumAtlas: texture_2d<f32>;
+// 6-6: the soil-depth channel, r8unorm over [0, SOIL_MAX]. Bound in the BAKE,
+// not in the surface fragment: litter is a per-page property of the ground, so
+// it belongs where the splat is decided rather than costing every fragment a
+// sampler slot the 16-per-stage budget has to find.
+@group(0) @binding(7) var splatSoilDepthAtlas: texture_2d<f32>;
+const SPLAT_SOIL_MAX_METERS: f32 = ${
+  wgslConstant(TERRAIN_PAGE_HYDROLOGY_ENCODING.soilDepthMaxMeters)
+};
+// 6-8: SPLAT_VEGETATION_LATTICE_BASE is supplied by the COMPOSER, exactly as
+// kSaturate and kSmoothstep are. It cannot be injected from here: this file is
+// reached from src/world/terrain.ts, so importing the kernel's lattice count
+// would close a module cycle (world/terrain -> classifier -> kernel ->
+// world/terrain) and every kernel constant would read undefined at load.
 
-/** Slope from the page's own texel grid — never a fixed 2 m difference. */
-fn splatSlopeAt(job: SplatJob, heightTexel: vec2f) -> f32 {
+/**
+ * Slope and ASPECT from the page's own texel grid — never a fixed 2 m
+ * difference. Lane x is normalised steepness, lane y is the density field's
+ * aspect term (-1 pole-facing ... +1 equator-facing, faded in with slope).
+ *
+ * 6-8 needs the aspect lane because the treeline wanders ±120 m with it, and a
+ * canopy closure that ignored aspect would put forest on the ground the
+ * vegetation path leaves bare. The classifier's own aspect input is
+ * deliberately left at 0 - moving it is a separate change with its own pixels.
+ */
+fn splatSlopeAspect(job: SplatJob, heightTexel: vec2f) -> vec2f {
   let base = vec2i(job.slots.zw) + vec2i(heightTexel);
   let here = textureLoad(splatHeightAtlas, base, 0).r;
   let east = textureLoad(splatHeightAtlas, base + vec2i(1, 0), 0).r;
   let south = textureLoad(splatHeightAtlas, base + vec2i(0, 1), 0).r;
   let gradient = vec2f(east - here, south - here) / job.shape.y;
   let normalY = 1.0 / sqrt(1.0 + dot(gradient, gradient));
-  return 1.0 - normalY;
+  let slope = 1.0 - normalY;
+  let horizontal = length(gradient);
+  var aspect = 0.0;
+  if (horizontal > 1e-6) {
+    aspect = (gradient.y / horizontal) * kSmoothstep(0.015, 0.07, slope);
+  }
+  return vec2f(slope, aspect);
 }
 
-fn splatClassify(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> LandCoverWeights {
+fn splatSlopeAt(job: SplatJob, heightTexel: vec2f) -> f32 {
+  return splatSlopeAspect(job, heightTexel).x;
+}
+
+/**
+ * The airport's graded platform, as the ROUNDED RECTANGLE every other consumer
+ * keys on: airport.ts's worldToRunway + roundedRectangleSignedDistance +
+ * getAirportInfluence, transliterated.
+ *
+ * It used to be "1 - length(p - centre) / blend": a 240 m DISC about the
+ * runway centre, under a comment that already claimed the rounded rectangle.
+ * A 1,320 m runway is five times longer than that disc, so the bake read
+ * influence 0 over most of its own airfield - measured 0.000 against a true
+ * 0.807 at the ground-2m-lowsun camera. That cost the classifier its
+ * "airfield * 2.4" mown-grass decree AND left splatCanopy's clearance at 1,
+ * so the ground believed a closed stand (0.81 closure, ~590 stems/ha) grew on
+ * an apron where the renderer plants ~90/ha. The ground material and the
+ * ground SHAPE now read one field.
+ *
+ * smoothstep(0, blend, d) is exactly smoothstep(0, 1, d/blend), so the job's
+ * inverse blend radius carries the whole band and no second constant is
+ * needed. With no airport the host writes a centre 1e9 away and a 1 m blend,
+ * so the smoothstep saturates and this returns 0. The previous form returned
+ * 1 for that case - the whole world as mown airfield - because its inverse
+ * blend radius was 0 and the radial term vanished with it.
+ */
+fn splatAirportInfluence(job: SplatJob, localX: f32, localZ: f32) -> f32 {
+  let delta = vec2f(localX, localZ) - job.airport.xy;
+  let along = delta.x * job.runway.x + delta.y * job.runway.y;
+  let across = delta.x * job.runway.y - delta.y * job.runway.x;
+  let q = vec2f(abs(along) - job.runway.z, abs(across) - job.runway.w);
+  let platformDistance = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0);
+  return 1.0 - kSmoothstep(0.0, 1.0, platformDistance * job.airport.z);
+}
+
+fn splatClassify(
+  job: SplatJob,
+  localX: f32,
+  localZ: f32,
+  shift: f32,
+  canopy: vec2f,
+) -> LandCoverWeights {
   let heightTexel = vec2f(
     (localX - job.placement.x) / job.shape.y,
     (localZ - job.placement.y) / job.shape.y,
@@ -523,21 +712,74 @@ fn splatClassify(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> LandCov
   // A null-created analytic atlas is zero-initialised. Erosion flow starts at
   // one contributing source cell, so zero is an unambiguous parity sentinel.
   input.flowAccumulationValid = select(0.0, 1.0, flowLog2 > 0.0);
+  // 6-6: soil rides the SAME sentinel, and that is a fact about the producer,
+  // not a convenience — uploadHydrology writes all four aux resources before
+  // it marks the slot ready, so a page with flow has soil and a page without
+  // flow has neither. Soil's own value cannot carry validity: it quantises to
+  // 0 on near-vertical faces, where 0 is a real answer.
+  input.soilDepthMeters =
+    textureLoad(splatSoilDepthAtlas, channelTexel, 0).r * SPLAT_SOIL_MAX_METERS;
+  input.soilDepthValid = input.flowAccumulationValid;
+  input.canopyClosure = canopy.x;
+  input.grassCover = canopy.y;
   input.moisture = terrainMoisture(localX, localZ);
   input.temperature = terrainTemperatureFromClimate(terrainClimate(localX, localZ), elevation);
   input.aspect = 0.0;
   // The airport's graded platform is mown grass (1B-6), and its influence is
   // the same rounded-rectangle field the earthworks key on.
-  input.airportInfluence = kSaturate(
-    1.0 - length(vec2f(localX, localZ) - job.airport.xy) * job.airport.z,
-  );
+  input.airportInfluence = kSaturate(splatAirportInfluence(job, localX, localZ));
   input.dayOfYear = job.airport.w;
   input.seasonalTemperatureShift = shift;
   return classifyLandCover(input);
 }
 
+/**
+ * 6-8: the canopy the ground carries here - (true closure, grass cover).
+ *
+ * Evaluated ONCE per channel texel rather than per supersample, and that is a
+ * property of the channel rather than a saving: the vegetation lattices are
+ * band-limited at a FIXED 60 m (CANOPY_CLOSURE_FILTER_WIDTH_METERS), so four
+ * samples 0.5-32 m apart inside one texel would return four copies of the same
+ * number. The shore-distance driver is left at its neutral out-of-domain value
+ * because the riparian corridor is 6-50 m wide - an order of magnitude below
+ * this channel's own band limit, so it could not survive into it anyway.
+ */
+fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+  let heightTexel = vec2f(
+    (localX - job.placement.x) / job.shape.y,
+    (localZ - job.placement.y) / job.shape.y,
+  );
+  let elevation = textureLoad(
+    splatHeightAtlas,
+    vec2i(job.slots.zw) + vec2i(heightTexel),
+    0,
+  ).r - job.shape.w;
+  let slopeAspect = splatSlopeAspect(job, heightTexel);
+  var drivers: VegetationDensityDrivers;
+  drivers.elevationAboveSeaLevel = elevation;
+  drivers.slope = slopeAspect.x;
+  drivers.moisture = terrainMoisture(localX, localZ);
+  drivers.aspect = slopeAspect.y;
+  // The SAME field the classifier reads, and the same one generation.ts feeds
+  // the density field: the airfield's woody-stem clearance is what keeps the
+  // baked closure equal to the canopy actually planted on the apron.
+  drivers.airportInfluence = kSaturate(splatAirportInfluence(job, localX, localZ));
+  drivers.shoreDistanceMeters = 1e9;
+  // The band limit is hoisted into the appended lattice table's own weights,
+  // so this driver is inert here — the include never reads it.
+  drivers.filterWidthMeters = 0.0;
+  let sample = vegetationDensity(SPLAT_VEGETATION_LATTICE_BASE, localX, localZ, drivers);
+  return vec2f(sample.canopyClosure, sample.grassCover);
+}
+
 /** Average the WEIGHT VECTORS of a 2x2 supersample, not their argmax. */
-fn splatSupersample(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> LandCoverWeights {
+fn splatSupersample(
+  job: SplatJob,
+  localX: f32,
+  localZ: f32,
+  shift: f32,
+  canopy: vec2f,
+) -> LandCoverWeights {
   var accumulated: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
     accumulated[index] = 0.0;
@@ -546,7 +788,7 @@ fn splatSupersample(job: SplatJob, localX: f32, localZ: f32, shift: f32) -> Land
   for (var sample = 0u; sample < 4u; sample = sample + 1u) {
     let dx = select(-step, step, (sample & 1u) == 1u);
     let dz = select(-step, step, (sample & 2u) == 2u);
-    let weights = splatClassify(job, localX + dx, localZ + dz, shift);
+    let weights = splatClassify(job, localX + dx, localZ + dz, shift, canopy);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
       accumulated[u32(weights.ids[slot])] =
         accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
@@ -643,12 +885,29 @@ fn bakeSplat(
   // The surface shader loads them exactly; it never filters between ids.
   // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
-  let lo = splatSupersample(job, localX, localZ, job.placement.z);
-  let hi = splatSupersample(job, localX, localZ, job.placement.w);
+  let canopy = splatCanopy(job, localX, localZ);
+  let lo = splatSupersample(job, localX, localZ, job.placement.z, canopy);
+  let hi = splatSupersample(job, localX, localZ, job.placement.w, canopy);
   let aligned = splatAlignSeasonalWeights(lo, hi);
   textureStore(splatId, texel, aligned.ids * scale);
-  textureStore(splatWeightLo, texel, aligned.weightsLo);
-  textureStore(splatWeightHi, texel, aligned.weightsHi);
-
+  // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in
+  // BOTH season buckets, and costs nothing.
+  //
+  // The fourth material weight is REDUNDANT: splatAlignSeasonalWeights
+  // normalises each bucket, so w3 == 1 − w0 − w1 − w2 exactly and the fragment
+  // reconstructs it (terrainSurfaceSparseSplat). That buys a full 8-bit
+  // continuous channel for zero bytes of atlas — which matters, because the
+  // channel atlas is 107 MiB at tier 1 and the inventoried memory wall is
+  // already breached — and zero new fragment samplers against the
+  // 16-per-stage limit section 1.2 reserves for this item. Closure is
+  // season-INVARIANT, so writing the same value into both buckets survives the
+  // fragment's seasonal mix() unchanged.
+  //
+  // Reconstruction is not lossier than storing w3 was: w0..w2 quantise to
+  // 1/255 each, so the reconstructed w3 carries at most 3 half-ULPs of error
+  // against the stored value's 1, and the reconstructed vector now sums to
+  // exactly 1 where the stored one only did up to quantisation.
+  textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));
+  textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, canopy.x));
 }
 `;
