@@ -79,7 +79,13 @@ function shippedPbrFragmentSource(): string {
     join(BABYLON_WGSL, "ShadersInclude", "pbrBlockReflectance0.js"),
     "utf8",
   );
-  return `${main}\n${reflectance0}`;
+  // `7-4b` adds `sunLightColor`, whose marker lives in the light loop rather
+  // than in `pbr.fragment` — the same reason `pbrBlockReflectance0` is here.
+  const lightFragment = readFileSync(
+    join(BABYLON_WGSL, "ShadersInclude", "lightFragment.js"),
+    "utf8",
+  );
+  return `${main}\n${reflectance0}\n${lightFragment}`;
 }
 
 function shippedTerrainVertexNormalConsumers(): string {

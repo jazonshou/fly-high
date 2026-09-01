@@ -2709,6 +2709,15 @@ var terrainSurfaceF90 = clamp(
   terrainSurfaceF0,
   0.5,
 );
+// 7-4b: computed HERE rather than at final composition, because the sun/moon
+// occlusion now rides each DIRECTIONAL light's own colour inside the light
+// loop instead of multiplying the accumulated sum. 6-8 absorbs QR-2 into it
+// for the horizon shadow's reason: a canopy occludes the SUN, and multiplying
+// it into ambient as well would darken the same ground twice for one occluder.
+// The strength is the canopy DEFICIT you stand under — what the near band
+// failed to draw — so ground with a fully rendered stand above it takes
+// nothing, and the term vanishes past the impostor radius.
+let terrainCanopyDirect = 1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE};
 `;
 
 /**
@@ -2734,6 +2743,37 @@ var terrainSurfaceF90 = clamp(
  * anchor captures itself and the injected code re-emits it.
  */
 export const TERRAIN_SURFACE_INJECTION_ANCHORS = Object.freeze({
+  /**
+   * `7-4b`: the SUN/MOON-ONLY attenuation point.
+   *
+   * Terrain used to multiply the accumulated light SUM by sun-derived
+   * occlusion at final composition, so a runway edge light would have been
+   * dimmed by SUN shadow. `lightFragment` emits `#define CUSTOM_LIGHT{X}_COLOR`
+   * per light index, immediately after `diffuse{X}` is set and BEFORE that
+   * light's contribution is computed — so the occlusion can ride the light's
+   * own colour and never reach the others.
+   *
+   * **The `{X}|\d+` alternation is load-bearing and not defensive.** Injection
+   * runs AFTER include expansion — proven by the fact that this plugin's other
+   * anchors match text that only exists inside includes — so at runtime the
+   * marker reads `CUSTOM_LIGHT0_COLOR` and `\d+` is what matches. But `R-3B`
+   * checks every anchor against the SHIPPED Babylon file, where the marker is
+   * still `CUSTOM_LIGHT{X}_COLOR`; a digits-only anchor matches zero times
+   * there and R-3B fails. The alternation matches once in the shipped file and
+   * once per light at runtime, so the anchor is checkable AND correct.
+   *
+   * `$1` re-emits the marker, `$2` is the light index. Guarding on
+   * `DIRLIGHT{X}` keeps it index-agnostic: a hard-coded slot would break the
+   * moment anyone reorders the sun/ambient/moon construction.
+   *
+   * Both `computeDiffuseLighting` and `computeSpecularLighting` take
+   * `diffuse{X}.rgb`, so attenuating it covers BOTH terms — matching exactly
+   * what the two `finalDiffuse`/`finalSpecularScaled` multiplies used to do.
+   * The clustered path does not: `computeClusteredLighting{X}` reads
+   * `light.vLightDiffuse` from the UBO, so clustered lights are untouched,
+   * which is the whole point.
+   */
+  sunLightColor: String.raw`!(#define CUSTOM_LIGHT(\{X\}|\d+)_COLOR)`,
   ambientOcclusion: String.raw`!(aoOut=ambientOcclusionBlock\([\s\S]*?\);)`,
   roughness: String.raw`!(var roughness: f32=reflectivityOut\.roughness;var diffuseRoughness: f32=reflectivityOut\.diffuseRoughness;)`,
   /**
@@ -2802,11 +2842,18 @@ ${RUNWAY_SURFACE_WGSL}
 // DEFICIT you stand under — what the near band failed to draw — so ground with
 // a fully rendered stand above it takes nothing, and the term vanishes again
 // past the impostor radius where the surface half takes over.
-let terrainCanopyDirect = 1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE};
-finalDiffuse *= terrainHorizonShadow * terrainCanopyDirect;
-#ifdef SPECULARTERM
-finalSpecularScaled *= terrainHorizonShadow * terrainCanopyDirect;
+// 7-4b: the sum-multiply that used to live here is gone. It dimmed EVERY
+// light by sun occlusion, so a runway edge light standing in a ridge's shadow
+// would have been darkened by a shadow the sun casts. The attenuation now
+// rides each directional light's own colour at CUSTOM_LIGHT{X}_COLOR.
 #endif
+`,
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]: /* wgsl */ `$1
+#ifdef DIRLIGHT$2
+diffuse$2 = vec4f(
+  diffuse$2.rgb * terrainHorizonShadow * terrainCanopyDirect,
+  diffuse$2.a,
+);
 #endif
 `,
   [TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion]: /* wgsl */ `$1
