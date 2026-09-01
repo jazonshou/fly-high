@@ -103,23 +103,83 @@ for (let y = Math.floor(SKY.y0 * H); y < Math.floor(SKY.y1 * H); y++) {
 }
 const skyBlue = skyCount ? blueSum / skyCount : 0;
 
-let lampSatSum = 0, lampCount = 0;
+// Lamp chroma is read on the SHOULDER (0.45-0.60 luminance within 4 px of a
+// >=0.90 core), never at the peak: the ACES shoulder desaturates bright
+// cores toward white BY DESIGN (measured: cores 245,245,245 with 15/443
+// hard-clipped; saturation rises monotonically as brightness falls), and a
+// core-sampled gate measures the tone map, not the chroma path. A viewer
+// reads a light's colour on its halo; so does this metric.
+const coreMask = new Uint8Array(W * H);
 for (let y = 0; y < H; y++) {
   for (let x = 0; x < W; x++) {
-    const i = (y * W + x) * 4;
-    if (luma(i) >= LAMP_FLOOR) {
-      const mx = Math.max(data[i], data[i + 1], data[i + 2]);
-      const mn = Math.min(data[i], data[i + 1], data[i + 2]);
-      lampSatSum += mx ? (mx - mn) / mx : 0;
-      lampCount++;
+    if (luma((y * W + x) * 4) >= LAMP_FLOOR) {
+      for (let dy = -4; dy <= 4; dy++) {
+        for (let dx = -4; dx <= 4; dx++) {
+          const yy = y + dy, xx = x + dx;
+          if (yy >= 0 && yy < H && xx >= 0 && xx < W) coreMask[yy * W + xx] = 1;
+        }
+      }
     }
   }
 }
+// ...and WHICH hue that chroma is (PM + this session, 2026-09-01): a
+// saturation scalar certified a mis-hued shoulder, and then an UNDOCUMENTED
+// BUCKET BOUNDARY generated three wrong headlines between two careful
+// readers ("34% violet" filed correct PAPI/threshold reds at 345-360 under
+// violet>=260; "82% warm" wrap-counted the same reds as amber). Buckets,
+// therefore documented AT the definition and aligned to the FIXTURE SET:
+//   fixture-correct: [345,70) red-through-amber  +  [95,150] threshold green
+//   off-fixture:     (160,345) cyan through magenta - where flipped WHITES
+//                    land (the tint flip is B-dominant, hue ~230) and where
+//                    they hue-camouflage against the cyan moonlit background,
+//                    invisible to enrichment analysis by construction.
+// lampOffFixtureFraction gates the line; count and chroma-weight both
+// reported. A pass on quantity with a fail on hue is the feature landing
+// WRONG rather than absent, which the scalar cannot see.
+// Bucket justification, derived not chosen (2026-09-01): pure PAPI red
+// through the tint rotates only -1.4 deg (red x tint stays R-dominant at
+// ~358.6), so a pixel below 345 cannot be a barely-tinted red — but
+// 330..345 IS reachable by red glow COMPOSITING over the cyan-blue
+// moonlit background (additive red-over-blue reads magenta at the edges,
+// photographically true), so that band's attribution is genuinely
+// ambiguous and is REPORTED SEPARATELY, never assigned. No saturation
+// gate on the count denominators: a sat floor excludes exactly the
+// diluted flipped whites the metric exists to see (measured: the gate
+// moved off-fixture from 39.6% to 27.5% by silently dropping them).
+const HUE_OFF_LO = 160, HUE_AMBIG_LO = 330, HUE_CORRECT_LO = 345;
+let lampSatSum = 0, lampCount = 0;
+let offChroma = 0, totalChroma = 0;
+let offCount = 0, ambigCount = 0, neutralCount = 0, classifiedCount = 0;
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W; x++) {
+    if (!coreMask[y * W + x]) continue;
+    const i = (y * W + x) * 4;
+    const L = luma(i);
+    if (L < 0.45 || L > 0.6) continue;
+    const mx = Math.max(data[i], data[i + 1], data[i + 2]);
+    const mn = Math.min(data[i], data[i + 1], data[i + 2]);
+    const sat = mx ? (mx - mn) / mx : 0;
+    lampSatSum += sat;
+    lampCount++;
+    const h = hueDegrees(data[i], data[i + 1], data[i + 2]);
+    if (h === null) { neutralCount++; continue; }
+    classifiedCount++;
+    totalChroma += sat;
+    const off = h > HUE_OFF_LO && h < HUE_AMBIG_LO;
+    const ambiguous = h >= HUE_AMBIG_LO && h < HUE_CORRECT_LO;
+    if (off) { offChroma += sat; offCount++; }
+    else if (ambiguous) ambigCount++;
+  }
+}
 const lampSat = lampCount ? lampSatSum / lampCount : 0;
+const lampOffFixtureChroma = totalChroma > 0 ? offChroma / totalChroma : 0;
+const lampOffFixtureCount = classifiedCount > 0 ? offCount / classifiedCount : 0;
+const lampAmbiguousCount = classifiedCount > 0 ? ambigCount / classifiedCount : 0;
 
 console.log(`${label ?? path} (${W}x${H})`);
 console.log(`  terrainBandMedianLuma  ${terrainMedian.toFixed(4)}   (moonlit target [0.15, 0.30]; moonless [0.06, 0.14])`);
 console.log(`  chromaSaturation       ${chromaSat.toFixed(4)} over ${satCount} px  (proposed floor ~0.15)`);
 console.log(`  skyBlueDominance       ${skyBlue.toFixed(4)}   (proposed floor ~0.02, ceiling ~0.25)`);
-console.log(`  lampMeanSaturation     ${lampSat.toFixed(4)} over ${lampCount} px  (proposed floor ~0.15; "not all white")`);
+console.log(`  lampShoulderSaturation ${lampSat.toFixed(4)} over ${lampCount} px in 0.45-0.60 near cores  (floor 0.15; "not all white")`);
+console.log(`  lampOffFixture         count ${lampOffFixtureCount.toFixed(4)} / chroma ${lampOffFixtureChroma.toFixed(4)} in (160,330); ambiguous[330,345) ${lampAmbiguousCount.toFixed(4)}; neutral ${neutralCount} px  (ceiling TBD from Jason)`);
 console.log(`  hueDiversity           ${hueDiversity.toFixed(4)} over ${colored.length} colored px, dominant ${dominantHue.toFixed(0)} deg  (proposed floor ~0.15)`);

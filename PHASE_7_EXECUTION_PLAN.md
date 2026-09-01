@@ -892,12 +892,38 @@ emissive faces (doubling as 7-5 light points).
 - **The windsock needs a per-object wind sample.** The renderer's only wind consumer samples
   `sampleWind` at the **aircraft** and forwards four scalars to `detail.setWind`
   ([FlightRenderer.ts:2044-2059](src/render/FlightRenderer.ts)). Sample at the sock.
-- **Validate on a crosswind seed.** The runway's preferred heading and the prevailing wind
-  are the *same* hash expression — both `unitFloatFromHash(mixSeed(seedHash, 301)) * 2π`
-  — and site selection adds a 4× wind-axis penalty
-  ([airportSite.ts:847-942](src/world/airportSite.ts), [world.ts:150-152](src/world/world.ts)).
-  The sock will point roughly along the runway by construction, which is authentic but makes
-  it a weak test of the wind path.
+- **Validate on a crosswind seed — and the earlier claim here was overstated.** The mechanism
+  is real: the runway's preferred heading and the prevailing wind are the *same* expression,
+  `unitFloatFromHash(mixSeed(h, 301)) * 2π`, and the site scorer adds a 4× wind-axis penalty
+  (`preferredHeadingForRegion` at [airportSite.ts:963](src/world/airportSite.ts), `windPenalty`
+  at `:992`, wind at [world.ts:150-152](src/world/world.ts)). **But the two-seed split makes
+  the correlation partial, not structural:** `preferredHeadingForRegion` is called with
+  **`sourceHash`** (`airportSite.ts:1024`) while the wind uses **`seedHash`**, which the
+  guaranteed-airport search *replaces* (`world.ts:135,145`). Verified here.
+  **Measured runway-to-wind axis difference across 12 seeds** (0° = along the runway, 90° =
+  pure crosswind), every one with `seedHash ≠ sourceSeedHash`: `sock-1` **2.7°**, `sock-3`
+  13.6, `sock-4` 19.2, `1s9phln` 25.9, `phase1-baseline` 29.8, `sock-7` 33.9, `sock-5` 36.1,
+  `sock-2` 39.9, `clustered-spike` 53.4, `hangar-b` 66.7, `sock-6` 83.9, `hangar-a` **85.9°**.
+  **5 of 12 within 30°, 3 beyond 60°.** So *"the sock points along the runway by
+  construction"* is **true of `sock-1` and false of `hangar-a`** — the previous wording
+  asserted it generally and was wrong. *(Measured by `SWE II 2`; mechanism and seed split
+  re-verified here.)*
+- **Two test-design consequences, and the second is the one that bites.**
+  (a) A windsock test written against `1s9phln` or `phase1-baseline` is **nearly blind**; one
+  written against `hangar-a` is a real test. But because the alignment is **seed-dependent
+  rather than structural**, nothing stops a later change to seeding, the footprint or the
+  region catalogue from quietly turning `hangar-a` into a 5° seed — at which point the test
+  still passes and has *silently become the blind case*. **So the test must assert its own
+  premise**: a separate named assertion that its chosen seed really is a crosswind seed
+  (axis difference above a stated threshold), whose failure message says *"the validation
+  seed has stopped being valid"* rather than *"the sock is wrong"*.
+  (b) **Pointing correctly is not the same as being driven by a per-object sample.**
+  Asserting the angle passes even if the sock reads the *aircraft's* wind. The assertion that
+  actually tests the trap is that the sock responds to a wind sampled **at the sock** which
+  **differs** from the wind at the aircraft.
+  *Implementation gotcha, recorded because it cost a run:* `createWorld` takes the seed
+  **positionally** — passing `{ seed }` coerces to one constant string, so every "different
+  seed" silently measures the same default world.
 
 ### 7-14 obstruction lighting (1.0 d; re-pointed, D-0)
 Red obstruction lights on the tower cab and mast and on hangar roofs; **hangar-face floods

@@ -268,10 +268,84 @@ sample-size checked):
   15/443 hard-clipped — that is the ACES shoulder desaturating highlights
   toward white BY DESIGN, and a bright core reads white to the eye too. A
   gate at the core would measure the tone map and tuning to beat it would
-  make everything below garish. On the landed tip the shoulder reads
-  0.17–0.23 against the 0.15 floor — the lamp gate is a REGRESSION GUARD,
-  not a driver. Sample-size guard as everywhere (0 lamp pixels =
-  instrument failure, never a pass).
+  make everything below garish. Sample-size guard as everywhere (0 lamp
+  pixels = instrument failure, never a pass).
+
+  **A SATURATION SCALAR CANNOT GATE THIS LINE — round 2 proved it (PM,
+  2026-09-01).** The round-2 shoulder read 0.2434 while a quarter of its
+  pixels carried the WRONG hue. The metric measures HOW MUCH colour, never
+  WHICH: *ask what a PASS looks like if the feature is WRONG rather than
+  absent — identical.* The gate is now `lampOffFixtureFraction` — hue in
+  (160°, 345°), outside every fixture colour — measured on the round-2
+  control at **27.5% by count / 15.2% by chroma**. The lamp line stays OPEN
+  (half-delivered) until Jason sees the frames and the finding together.
+
+  **The corrected account, reached through three wrong headlines between two
+  careful readers — recorded because the failure was the BUCKETS, not the
+  pixels.** First reading: "34.1% violet" (PM) — but the violet bucket
+  [260°, 360°) swept the red end of the wheel, and 45 of its 77 pixels were
+  PAPI/threshold REDS at 345–360° rendering CORRECTLY (pure red survives
+  the tint R-dominant). Second reading: "82% warm" (architect) — the
+  wrap-window [345°, 70°) counted the same correct reds as if they answered
+  Jason's amber question. Third: "violet concentrates in the dim half" —
+  backwards, because bright red fixtures inflated the bright band's
+  "violet". The dump of the SAME 134 pixels settles it: ~34% correct red,
+  ~26% correct amber, **13% flipped WHITES at cyan/blue (the tint flip is
+  B-dominant, hue ≈230°) + ~16% magenta-violet — the true off-fixture
+  population, concentrated around white fixtures.** And a finding inside
+  the finding: flipped whites HUE-CAMOUFLAGE against the cyan moonlit
+  background (background reads 63.7% cyan/blue), so enrichment-vs-background
+  analysis structurally cannot see the largest defect population — it reads
+  as depletion. Buckets now live AT the metric definition, fixture-aligned,
+  with count and chroma-weight both reported; an undocumented bucket
+  boundary is a headline generator.
+
+  **The settled numbers (metric v3, round-2 control), after both readers'
+  buckets failed once more:** the PM's red bucket never wrapped 0° ("red
+  0.3%" was wrong about the largest population in the frame), and the
+  architect produced three inconsistent figures for one quantity (a gated
+  denominator, a bin miscount, and the fine bins' true 39.6%) — the
+  saturation gate's bias is the camouflage trap ONE LEVEL DOWN: a sat≥0.05
+  floor on the denominator silently drops the DILUTED flipped whites, the
+  exact population the metric exists to see (it moved off-fixture from
+  39.6% to 27.5%). Metric v3 therefore: NO saturation gate on counts; the
+  345° boundary DERIVED, not chosen (pure red rotates only −1.4° through
+  the tint, so <345° cannot be a barely-tinted red) — and [330°, 345°) is
+  attribution-AMBIGUOUS (reachable by red glow legitimately compositing
+  over the blue background) so it is reported separately, never assigned.
+  Readings: **strict off-fixture 31.3% by count / 14.2% by chroma;
+  ambiguous 8.2%** — the packet quotes the honest range 31–40% with the
+  boundary named, per the PM. The good news for Jason's sentence: the
+  COLOURED fixtures he asked for are working; the defect is narrower and
+  specific to white.
+
+  **Two named traps out of this exchange, beside the false-pass form:**
+  (1) *an enrichment test is blind to any defect whose signature matches
+  the background it normalizes against* — the flipped whites read as
+  depletion, not enrichment (PM's naming, architect's catch); (2) *a
+  saturation/quality floor on a metric's denominator silently biases
+  against low-quality instances of the very defect under study* — the same
+  blindness, built into the instrument's own gate.
+
+  **Mechanism, confirmed at the source (ScotopicVision.ts:297-301):** the
+  rod tint multiplies the HUE-RETAINED branch — `tint · rodLuminance · hue`
+  — so retained warm chroma is blue-flipped: warm `[1.0, 0.78, 0.52]` ×
+  tint `[0.72, 0.94, 1.55]` = `[0.72, 0.73, 0.81]`, B now the max. The
+  violet ring is the ACUITY-BLUR HALO: pixels 2–4 px from a core whose
+  SHARP sample is ground-level (the 1.7 px PSF's tail is ~1e-7 there and
+  bloom feeds in after this pass), so `pixelCone ≈ 0` by construction and
+  the halo takes the full tint on its blur-borrowed warm hue. The field
+  never showed this because its own hues are cool — tint × cool stays cool
+  and reads as the intended cast; only warm content flips, and warm content
+  arrived in the same round that deepened its chroma. Fix menu, held for
+  Jason's eye per the round protocol: (a) soften the tint's blue dominance
+  (moves the approved field), (b) un-tint the hue-retained branch —
+  `mix(tint·lum, hue·lum, chromaKeep)` — hues go TRUE everywhere, the blue
+  cast survives only in the achromatic fraction (also moves the approved
+  field, toward truer greens), (c) fade the tint by the pixel's retained
+  chroma so only near-neutral content is cast. None lands before his
+  reaction; a violet-ringed lamp is a look some night films choose on
+  purpose.
 - `chromaSaturation` (luminance-weighted) — REPORTED, NOT GATED: it
   distinguishes tinted-grey from true-grey in diagnosis but cannot gate
   (see below).
@@ -304,6 +378,21 @@ median 0.3824, diversity 0.2046, sky blue 0.1467.
 An instrument that passes the frames Jason rejected is measuring the wrong
 thing — recalibrate before proceeding. It happened twice in one hour to
 this document's own §3; the demonstration is not a formality.
+
+**The control-frame criterion, corrected after it fired wrong (2026-09-01):**
+round 2's control adjudication was escalated because the architect issued
+two contradictory sentences in one hour — "moves at all beyond ~0.1% =
+leak" to the PM, "night-moonlit's pixels move globally by design" to the
+Lead. The correct criterion is SIGN-BASED, not tolerance-based, and derives
+from what each mechanism CAN do: the twilight dip can only DIM (its factor
+is ≤ 1 everywhere, and exactly 1 at the control's clock by window
+arithmetic), so the terrain median must not FALL; the moon-sky can only ADD
+(in-scatter), so sky-blue must RISE; residual median movement attributes to
+the moon-sky within its reach (measured round 2: +1.8%, with sky-blue
+0.0012 → 0.0347). A tolerance number without a sign is a criterion that
+contradicts the design it guards. If a decomposition to the digit is ever
+needed, one same-tree arm at `NIGHT_SKY_MOON_STRENGTH = 0` separates sky
+from dip exactly.
 
 ---
 
