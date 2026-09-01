@@ -42,13 +42,63 @@ import {
  * needs to stand on: nonzero delivery, inverse-square behaviour, and the
  * composed tint arithmetic — and prints the measured values for the ledger.
  *
- * Readback discipline: the target is rgba32float (no sRGB encode, no clamp at
- * 1.0), read AFTER the final render completes, never interleaved with an
- * in-flight frame (the buffer-ring lesson).
+ * Readback discipline: the target is rgba16float — HDR, no sRGB encode, no
+ * clamp at display range — read AFTER the final render completes, never
+ * interleaved with an in-flight frame (the buffer-ring lesson). NOT
+ * rgba32float: WebGPU refuses blending on 32-bit float targets ("Blending is
+ * enabled but color format (TextureFormat::RGBA32Float) is not blendable"),
+ * and the light-point material's ALPHA_ADD blend state is the shipping
+ * configuration this harness exists to exercise — found by this test's first
+ * run failing loudly, which is the failure mode it was built to have. Half
+ * floats top out at 65,504: the brightest arm below peaks near 5e4, inside
+ * range by design — re-check that headroom if intensities grow.
+ *
+ * SKIPPED — AN ENVIRONMENT WALL, NOT A FEATURE FAILURE. Recorded precisely
+ * because a zero readback here looks exactly like the absent-feature failure
+ * this test exists to catch. In the `vitest.gpu.config.ts` environment,
+ * anything coupled to the canvas swapchain cannot be read back:
+ *
+ *   Destroyed texture [Texture "IOSurface(...WebgpuSwapChainTexture...)"]
+ *   used in a submit.
+ *
+ * The `Principle Engineer` proved the limit with a positive control rather
+ * than inferring it (2026-09-01): a scene CLEARED TO SOLID RED read back as
+ * {lit: 0, peak: 0} through `engine.readPixels`, and a
+ * `RenderTargetTexture` rendered via `scene.render()` dies on the destroyed
+ * swapchain texture above, because custom render targets render inside the
+ * same frame that presents. The compute-readback GPU tests
+ * (`ocean-slope-mips`, `terrain-height-generate`) work because their
+ * textures never ride a presented frame — the wall is specifically
+ * swapchain-coupled RENDERING, not readback per se.
+ *
+ * The assertions below are kept intact: they are correct, and they run the
+ * moment either (a) this suite gains a presentation-free render path (an
+ * RTT rendered outside `scene.render()`, or an engine with no canvas), or
+ * (b) the pin is ported into the perf-capture harness, which is a real
+ * browser writing real PNGs and is where every working lamp measurement of
+ * 2026-09-01 came from. Until then the durable regression pin for "the
+ * airfield is lit" belongs beside the capture baselines, not here.
  */
 
 const CANVAS_SIZE = 128;
 const RTT_SIZE = 128;
+
+/** IEEE 754 half -> float, same decoder as `ocean-slope-mips.test.ts`. */
+function halfToFloat(bits: number): number {
+  const sign = bits & 0x8000 ? -1 : 1;
+  const exponent = (bits >> 10) & 0x1f;
+  const mantissa = bits & 0x3ff;
+  if (exponent === 0) return sign * mantissa * 2 ** -24;
+  if (exponent === 0x1f) return mantissa ? Number.NaN : sign * Infinity;
+  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
+}
+
+/** Babylon's readPixels returns raw halfs or converted floats by path. */
+function toFloats(pixels: ArrayBufferView): number[] {
+  if (pixels instanceof Float32Array) return [...pixels];
+  if (pixels instanceof Uint16Array) return [...pixels].map(halfToFloat);
+  throw new TypeError(`Unexpected readPixels buffer ${pixels.constructor.name}`);
+}
 
 let engine: WebGPUEngine;
 let canvas: HTMLCanvasElement;
@@ -110,8 +160,8 @@ async function readLamp(
     profileRow: 0,
     radiusMeters: AIRFIELD_LAMP_PHOTOMETRY.edge.radiusMeters,
     color: [1, 1, 1],
-    beamCosine: -1,
-  } as LightPointFixture;
+    beamCosineCutoff: -1,
+  };
 
   const system = new LightPointSystem(scene, [fixture], 1);
   system.setRenderSize(RTT_SIZE, RTT_SIZE);
@@ -122,7 +172,7 @@ async function readLamp(
     RTT_SIZE,
     scene,
     {
-      type: Constants.TEXTURETYPE_FLOAT,
+      type: Constants.TEXTURETYPE_HALF_FLOAT,
       format: Constants.TEXTUREFORMAT_RGBA,
       generateMipMaps: false,
       generateDepthBuffer: true,
@@ -144,7 +194,7 @@ async function readLamp(
   }
   for (let frame = 0; frame < 3; frame += 1) scene.render();
 
-  const pixels = (await target.readPixels()) as Float32Array;
+  const pixels = toFloats((await target.readPixels())!);
   let peak = 0;
   let flux = 0;
   for (let index = 0; index < pixels.length; index += 4) {
@@ -166,7 +216,7 @@ function composedPeak(distanceMeters: number, intensity: number): number {
     / (distanceMeters * distanceMeters * LIGHT_POINT_PSF_RADIUS_PIXELS ** 2);
 }
 
-describe("7-5 light-point radiometry on a real adapter", () => {
+describe.skip("7-5 light-point radiometry on a real adapter (SKIPPED: swapchain readback wall — see docblock)", () => {
   it("delivers a nonzero, composition-matching HDR value for one edge lamp at approach range", async () => {
     const distance = 2_500;
     const intensity =
@@ -216,12 +266,13 @@ describe("7-5 light-point radiometry on a real adapter", () => {
   }, 180_000);
 
   it("scales linearly with intensity where the response chain is not involved", async () => {
-    // The HDR buffer has no shoulder: a 157x intensity lift (the physics
-    // anchor's correction factor over the shipped star anchor) must arrive
-    // 157x brighter HERE, whatever the display chain later does with it.
-    // If this holds while the displayed frame stays flat, the crush is in the
-    // response chain, not the lamp path — the discrimination the morning's
-    // "1000x changed nothing" measurement could not make.
+    // The HDR buffer has no shoulder: a large intensity lift must arrive
+    // exactly that much brighter HERE, whatever the display chain later does
+    // with it. If this holds while a displayed frame stays flat, any crush is
+    // provably in the response chain, not the lamp path — the discrimination
+    // the "1000x changed nothing" measurement of 2026-09-01 could not make.
+    // (157x was the physics correction factor the calibration fix later
+    // landed; kept as the probe size so the arm spans the same decades.)
     const base =
       AIRFIELD_LAMP_PHOTOMETRY.edge.intensityCandela * AIRFIELD_LAMP_SCENE_SCALE;
     const one = await readLamp(2_500, base);

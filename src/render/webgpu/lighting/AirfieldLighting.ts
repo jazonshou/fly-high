@@ -771,6 +771,30 @@ export const AIRFIELD_LAMP_PHOTOMETRY: Readonly<
  * without recomputing. `7-4a`'s `log2` highlight term is what keeps decades of
  * source brightness ORDERED at this magnitude instead of clipping - it was
  * built for sources this bright.
+ *
+ * **RED FIXTURES DEPEND ON THIS CONSTANT, and nothing would flag a regression.**
+ * Rods are near-blind to red (`SCOTOPIC_WEIGHTS[0] = 0.03` against 0.928 for a
+ * white lamp -- a 31x deficit) AND `7-4a`'s highlight term reads `sharpNits`
+ * through the same weights, so red loses both the response and its highlight
+ * preservation. What saves it is that the highlight term is `log2`, which
+ * crushes a 31x input gap into a small output one -- but only while lamps are
+ * bright enough to be in it. MEASURED red/white at the rod image:
+ *
+ *   peak ~300 scene units (this constant):  0.828  -- red reads 230 bytes
+ *                                                     against white's 232
+ *   peak ~3:                                 0.735
+ *   peak ~0.02 (the old 36.1 constant):      0.327  -- and below sigma the
+ *                                                     highlight term is
+ *                                                     IDENTICALLY ZERO
+ *
+ * So at the previous calibration the PAPI's red half, the red threshold lights
+ * and the obstruction lights would have faded out at night while their white
+ * neighbours stayed lit -- a safety instrument lying by omission. **Lowering
+ * this constant re-opens that**, silently, and no test in the tree would catch
+ * it: the failure is perceptual and lives one pass downstream. A residue
+ * survives even now, and the right word for it is SPARSER rather than dimmer --
+ * red cores match white, but faint red lamps drop below threshold (1,473 lit
+ * pixels against white's 2,221).
  */
 export const AIRFIELD_LAMP_SCENE_SCALE = 5.7e5;
 

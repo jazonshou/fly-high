@@ -1129,6 +1129,28 @@ describe("perf capture (1A-1c / 2Z)", () => {
         temporal = temporalStability(temporalFrames, viewportWidth, viewportHeight);
       }
 
+      // 7-5: the airfield-is-lit scan. Computed HERE, where the captured
+      // luminance exists, and asserted in the gate block with everything
+      // else — frames must be written before any gate can fail (the
+      // STATUS.txt design above). Band edges in viewport fractions so a
+      // swept viewport scans the same part of the picture.
+      let litRegion: { brightPixels: number; pixelsScanned: number } | undefined;
+      if (shot.litRegion) {
+        const yStart = Math.max(0, Math.floor(shot.litRegion.yMinFraction * viewportHeight));
+        const yEnd = Math.min(viewportHeight, Math.ceil(shot.litRegion.yMaxFraction * viewportHeight));
+        let brightPixels = 0;
+        let pixelsScanned = 0;
+        for (let y = yStart; y < yEnd; y += 1) {
+          for (let x = 0; x < viewportWidth; x += 1) {
+            pixelsScanned += 1;
+            if (luminance[y * viewportWidth + x]! >= shot.litRegion.luminanceFloor) {
+              brightPixels += 1;
+            }
+          }
+        }
+        litRegion = { brightPixels, pixelsScanned };
+      }
+
       shotReports.push({
         name: shot.name,
         worldEvolution: shotWorldEvolution,
@@ -1143,6 +1165,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         worstTileRgbSsimAgainstBaseline: worstTileSsim === null
           ? null
           : Math.round(worstTileSsim * 10_000) / 10_000,
+        ...(litRegion ? { litRegion } : {}),
         tiles: tileStatistics(luminance, viewportWidth, viewportHeight),
         fps: Math.round(measuredFps * 10) / 10,
         wallClockFps: rawTiming.wallClockFps,
@@ -1337,6 +1360,33 @@ describe("perf capture (1A-1c / 2Z)", () => {
         perfCaptureImageContentFailures(shot.tiles, definition),
         `${shot.name}: screenshot is blank or lacks local visual structure`,
       ).toEqual([]);
+      // 7-5: the airfield-is-lit gate. Reads ONLY this capture's own pixels —
+      // it stays ARMED under VITE_PERF_REBASELINE precisely so a baseline
+      // promotion cannot erase it (after `090bf2f` the baseline WAS the
+      // candidate and every SSIM read 1.000 over whatever the frame held).
+      // Skipped under the sweep (tier gating changes the night stack by
+      // design — the scan still lands in the archived report for review) and
+      // under an overridden sun (a diagnostic daylight frame is not a night
+      // shot). The sample-size leg is unconditional: a scan over zero pixels
+      // is an instrument failure, never a pass.
+      if (shot.litRegion) {
+        expect(
+          shot.litRegion.pixelsScanned,
+          `${shot.name}: the lit-region scan examined no pixels — the band or `
+          + "viewport moved out from under the gate",
+        ).toBeGreaterThan(0);
+        if (definition.litRegion && !IS_SWEEP && !SUN_OVERRIDDEN) {
+          expect(
+            shot.litRegion.brightPixels,
+            `${shot.name}: the airfield is not lit — fewer than `
+            + `${definition.litRegion.minBrightPixels} pixels above luminance `
+            + `${definition.litRegion.luminanceFloor} in the runway band. The lamps `
+            + "have gone dark through three different wrong values of one scale "
+            + "constant; whatever the cause this time, it is a Phase 7 deliverable "
+            + "regression, not a tolerance to relax",
+          ).toBeGreaterThanOrEqual(definition.litRegion.minBrightPixels);
+        }
+      }
       if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
         expect(
           shot.ssimAgainstBaseline,

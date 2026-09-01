@@ -302,6 +302,31 @@ export interface PerfCaptureShotDefinition {
     readonly minConsecutiveSsim: number;
     readonly maxMeanLuminanceDelta: number;
   };
+  /**
+   * `7-5`: the airfield-is-lit content gate — bright ground-level pixels must
+   * exist in the band where the runway projects, or the shot fails.
+   *
+   * DELIBERATELY BASELINE-INDEPENDENT AND CONSTANT-INDEPENDENT. The airfield
+   * went dark through three wrong values of one scale factor (3.6e-2, 36.1,
+   * 5.7e5 — see `AIRFIELD_LAMP_SCENE_SCALE`), and a promoted baseline became
+   * the candidate once already (`090bf2f`), which would have read "no change"
+   * over a dark airfield. So this gate reads ONLY the captured frame: no
+   * baseline, no lighting constant, no import from the lamp code. It cares
+   * that bright pixels exist where the runway is, whatever produced them.
+   *
+   * The band is in FRACTIONS of the viewport (sweep viewports rescale), and
+   * the scan size is asserted non-zero so a drifted crop fails loudly instead
+   * of passing over nothing.
+   */
+  readonly litRegion?: {
+    /** Scan band, as fractions of viewport height (0 = top). */
+    readonly yMinFraction: number;
+    readonly yMaxFraction: number;
+    /** Rec. 709 luminance floor (0..1) that counts a pixel as lamp-bright. */
+    readonly luminanceFloor: number;
+    /** Minimum count of qualifying pixels for the shot to pass. */
+    readonly minBrightPixels: number;
+  };
   readonly ceilings: PerfCaptureShotCeilings | null;
   /**
    * Gate 0-a (Phase 6): measured drawCalls ceiling. Host-INDEPENDENT (draw
@@ -550,6 +575,40 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // host-independent and pinned to the measured count exactly, so this
     // gets its value from the R4 run rather than a placeholder.
     comparesToBaseline: true,
+    /**
+     * `7-5`: the airfield must be LIT in this frame — the phase's headline
+     * deliverable, gated on the artifact so no constant rewrite or baseline
+     * promotion can silently darken it again (it already went dark through
+     * three values of one scale factor).
+     *
+     * CALIBRATED 2026-09-01 from a vegetation-visible single-command pair
+     * (`Principle Engineer`): HEAD at the landed 5.7e5 constant vs a worktree
+     * at the old 36.1, band y[216,447) of 720, 295,680 pixels scanned.
+     * Non-lamp content in the band tops out between 0.85 and 0.90 luminance;
+     * lamp pixels run to ~0.95. At floor 0.90 the dark arm reads EXACTLY 0
+     * and the lit arm 431 — the red demonstration fails hard, and the lamps
+     * can lose 54% of their bright pixels before the gate trips, against a
+     * measured run-to-run floor of ~0.1%.
+     *
+     * THE FIRST DRAFT OF THIS GATE PASSED ON THE REGRESSION IT EXISTS TO
+     * CATCH: a provisional floor of 0.5 admitted non-lamp content and read
+     * 326 on the old-constant arm, over the 200 threshold. Only the
+     * demonstrate-red-before-trusting-green run exposed it. Do not retune
+     * these numbers without re-running BOTH arms.
+     *
+     * Ceiling bound, measured: nothing in the band exceeds 0.98 — lamp cores
+     * saturate just under it — so a floor above ~0.95 gates on nothing,
+     * silently. The band itself needs no tightening: the floor alone
+     * separates lamps from everything else, and it brackets the measured
+     * runway projection (brightest lamp at y=285/720 = 0.396) with the
+     * moon's glare excluded above y~0.28.
+     */
+    litRegion: {
+      yMinFraction: 0.3,
+      yMaxFraction: 0.62,
+      luminanceFloor: 0.9,
+      minBrightPixels: 200,
+    },
   },
   {
     name: "dusk-mesopic",
@@ -1807,6 +1866,17 @@ export interface PerfCaptureShotReport {
   /** Lowest RGB SSIM among full 64px tiles; prevents sky/global dilution. */
   readonly worstTileRgbSsimAgainstBaseline: number | null;
   readonly tiles: TileStatistics;
+  /**
+   * `7-5`: the airfield-is-lit scan, present exactly when the shot declares
+   * `litRegion`. Recorded in the report so the gate's inputs are auditable:
+   * `brightPixels` above the declared luminance floor inside the declared
+   * band, and `pixelsScanned` so a zero-size scan is a loud failure rather
+   * than a vacuous pass.
+   */
+  readonly litRegion?: {
+    readonly brightPixels: number;
+    readonly pixelsScanned: number;
+  };
   /** Legacy 5%-trimmed sustained-rate diagnostic; never the strict fps gate. */
   readonly fps: number;
   /** Untrimmed frames / elapsed wall time over every measured interval. */
