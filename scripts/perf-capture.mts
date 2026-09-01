@@ -552,6 +552,70 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     comparesToBaseline: true,
   },
   {
+    name: "dusk-mesopic",
+    description:
+      "Approach pose at 20:27 solar time, in the mesopic band - the only shot "
+      + "where rodFraction is strictly between 0 and 1",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    /**
+     * **The regime `7-4a` applies at PARTIAL weight, and nothing covered it.**
+     * The highlight term reaches the frame through
+     * `mix(scene, rodImage, rodFraction)`, so the blend is only exercised when
+     * `rodFraction` is strictly inside (0, 1). Measured across every shipping
+     * shot clock: **every one lands at exactly 0.000000 or exactly 1.000000.**
+     * Sixteen distinct clocks, no partial weight anywhere in the set.
+     *
+     * **The clock is COMPUTED, not chosen.** `scripts/mesopic-clock-probe.mts`
+     * composes the shipping chain -- `resolveEnvironmentState` ->
+     * `adaptedLuminanceCdM2` -> `rodFractionForAdaptedLuminance` -- rather than
+     * re-deriving it. The night set already shipped with an effectively
+     * moonless clock because a plausible hour was picked without checking the
+     * moon's altitude (`D-6`, `moon-night-shot-probe.mts`); this is the same
+     * mistake one variable over, so the hour is measured.
+     *
+     * **20.45 h is on the PLATEAU, deliberately not at rod = 0.5.** Day 171 has
+     * two contiguous mesopic windows of ~73 min each (02.49-03.71 and
+     * 20.29-21.52 h), and the evening one is strongly asymmetric: a ~7-minute
+     * cliff where `d(rod)/dt` reaches **12 per hour**, then a long shelf at
+     * **~0.22 per hour**. Sitting at rod = 0.5 would put the shot on the cliff,
+     * where a small change to the exposure or atmosphere model swings rod far
+     * and churns the baseline for a reason unrelated to what the shot tests.
+     *
+     * Stability at +/- 3 minutes, measured:
+     *   20.41 h  rod 0.7236  swing 0.4015   <- cliff still within 3 min
+     *   20.42 h  rod 0.7257  swing 0.2903
+     *   20.45 h  rod 0.7321  swing 0.0224   <- chosen, ~18x steadier
+     *
+     * At 20.45 h: **rodFraction 0.7321**, adapted luminance 0.143 cd/m2 --
+     * inside the mesopic band (0.03, 3.0) with an order of magnitude of margin
+     * at each end, and `shouldRunScotopicPass` true.
+     *
+     * The pose is `night`'s and `night-moonlit`'s exactly, so the three form a
+     * ladder in which ONLY the clock varies: dusk (rod 0.73), moonlit night
+     * (rod 1.00), moonless night (rod 1.00). A shot that changed pose as well
+     * could not attribute a difference to the blend.
+     */
+    clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+    // Carried from `night` rather than tightened: the scotopic pass applies a
+    // large gain to a dark image and amplifies the cloud pass's temporal
+    // jitter with it. A mesopic frame is brighter than `night` and should be
+    // steadier, but this shot has never been captured and that is an
+    // inference. Pin it from three clean runs.
+    ssimThreshold: 0.96,
+    // `minMeanLuminance`, `ceilings` and `drawCallCeiling` are all pinned from
+    // the first three clean runs. `ceilings` is required-and-nullable so it is
+    // null; the other two are optional and are OMITTED rather than nulled,
+    // because `exactOptionalPropertyTypes` rejects null on an optional field.
+    ceilings: null,
+    comparesToBaseline: false,
+  },
+  {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
     // treeline — the only reading of "no flicker" that is not an opinion.
     name: "motion-banked-turn",
