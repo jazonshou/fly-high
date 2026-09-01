@@ -27,6 +27,22 @@
  * manufactures the trend you are looking for.
  *
  * ---------------------------------------------------------------------------
+ * THE TERRAIN ROW IS NOT A CONTROL FOR A GROUND-COVER CHANGE.
+ *
+ * Measured 2026-09-01 on `grove-meadow-2m`: toggling the blade winding in
+ * place moved TERRAIN by -0.00317 while VEGETATION moved -0.00001. The null
+ * A/B on that shot is byte-identical, so that terrain movement IS the blade
+ * fix -- the effect is real and the mask is scoring it in the wrong
+ * population. Lowering `maskThreshold` from 8 to 2 moved 32k pixels and did
+ * not fix it.
+ *
+ * So for thin, low-contrast ground cover -- exactly the surface this script
+ * was built to verify -- a near-zero vegetation dY with a moving terrain row
+ * is an INSTRUMENT ARTIFACT, not a null result. Read both rows together, and
+ * do not quote "the change did essentially nothing" from the vegetation row
+ * alone.
+ *
+ * ---------------------------------------------------------------------------
  * READ THIS BEFORE THE FRAMES, NOT AFTER
  *
  * 1. **The winding fix is correct and NOT monotonic.** It reassigns the direct
