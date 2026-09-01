@@ -451,7 +451,14 @@ export function aerialNightness(sunDirectionY: number): number {
  * against `skyBlueDominance` targeting ~[0.04, 0.12] (day reads 0.147);
  * Jason's sanction: "more blue in the sky than expected" is okay.
  */
-export const NIGHT_SKY_MOON_STRENGTH = 0.02;
+export const NIGHT_SKY_MOON_STRENGTH = 0.045;
+// ART DIRECTION 2026-09-01, Jason on the option-(c) frames, verbatim: "could
+// you incorporate more blue (dark blue) into the night sky to light up
+// surroundings a bit more?" — raised 0.02 -> 0.045. This is the honest lever
+// for exactly that sentence: the same in-scatter deepens the sky's blue AND
+// lifts the terrain, and it replaces the blue the tint-withdrawal correctly
+// stopped painting over the sky (skyBlueDominance 0.0347 -> 0.0179 under
+// option (c); this restores it radiance-borne).
 
 /** The moonlit sky's source colour: cool daylight, slightly blue-shifted. */
 export const NIGHT_SKY_MOON_TINT: readonly [number, number, number] = [0.62, 0.78, 1.0];
