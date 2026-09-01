@@ -35,6 +35,16 @@
  * floats", and that holds on every seed or the rule is wrong.
  */
 
+import type { Material } from "@babylonjs/core/Materials/material";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import type { Scene } from "@babylonjs/core/scene";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import {
+  AIRFIELD_ASPECT_V_START,
+  AIRFIELD_CONCRETE_TILE_METERS,
+  AIRFIELD_METAL_TILE_METERS,
+} from "./AirfieldMaterials";
 import { mixSeed, unitFloatFromHash } from "../../../world/seed";
 import type { AirportDefinition } from "../../../world/types";
 
@@ -231,10 +241,40 @@ export function hangarPlanFrom(
   };
 }
 
+/** Which material a run of triangles wants. */
+export type HangarSurface = "metal" | "concrete";
+
+/** A contiguous run of indices sharing one surface. */
+export interface ShellGroup {
+  readonly surface: HangarSurface;
+  readonly start: number;
+  readonly count: number;
+}
+
 export interface ShellGeometry {
   readonly positions: number[];
   readonly normals: number[];
+  /**
+   * World-scale UVs on `7-11`'s contract: U is metres along the face over the
+   * tiling period, V runs from the face's TOP edge to its bottom so weathering
+   * accumulates with +V. V starts at the face's aspect value rather than 0 —
+   * a RANGE START, not a phase offset, because an offset into tiling V would
+   * only shift the pattern instead of ageing the face.
+   *
+   * Aspect is read from the face normal's across component: the runway lies in
+   * −across from the hangars, so a −x face is the one the airfield sees and
+   * gets repainted, and a +x face is the back nobody maintains.
+   */
+  readonly uvs: number[];
   readonly indices: number[];
+  /**
+   * Index runs by surface, in emission order.
+   *
+   * **One mesh per surface, not per part.** Draw calls are the binding axis on
+   * this airfield, so the shell is grouped by material rather than by feature —
+   * a hangar costs two draws, not one per wall.
+   */
+  readonly groups: readonly ShellGroup[];
 }
 
 /**
@@ -259,17 +299,47 @@ export function hangarShellGeometry(plan: HangarPlan): ShellGeometry {
   const halfD = plan.depthMeters / 2;
   const base = -plan.skirtHeightMeters;
 
+  const uvs: number[] = [];
+  const runs: { surface: HangarSurface; indices: number[] }[] = [
+    { surface: "concrete", indices: [] },
+    { surface: "metal", indices: [] },
+  ];
+
   const quad = (
     a: readonly [number, number, number],
     b: readonly [number, number, number],
     c: readonly [number, number, number],
     d: readonly [number, number, number],
     normal: readonly [number, number, number],
+    surface: HangarSurface,
   ) => {
     const start = positions.length / 3;
-    for (const point of [a, b, c, d]) {
+    const corners = [a, b, c, d];
+    // The face's own vertical extent, which is what V is measured against —
+    // `7-11`'s contract is top-of-face to bottom-of-face, not a global height.
+    const topY = Math.max(...corners.map((p) => p[1]));
+    const bottomY = Math.min(...corners.map((p) => p[1]));
+    const height = topY - bottomY;
+    // Aspect from the normal's ACROSS component. The runway lies in −across
+    // from the hangars, so a −x face is the one the airfield sees.
+    const aspect = Math.abs(normal[0]) > 0.5
+      ? (normal[0] < 0
+        ? AIRFIELD_ASPECT_V_START.facingRunway
+        : AIRFIELD_ASPECT_V_START.awayFromRunway)
+      : AIRFIELD_ASPECT_V_START.sides;
+    const period = surface === "metal"
+      ? AIRFIELD_METAL_TILE_METERS
+      : AIRFIELD_CONCRETE_TILE_METERS;
+    for (const point of corners) {
       positions.push(point[0], point[1], point[2]);
       normals.push(normal[0], normal[1], normal[2]);
+      // U runs along the face horizontally; V from the top edge downward, so
+      // streaks accumulate with +V and read as gravity.
+      const u = Math.hypot(point[0] - corners[0]![0], point[2] - corners[0]![2]) / period;
+      const v = height > 1e-9
+        ? aspect + (1 - aspect) * ((topY - point[1]) / height)
+        : aspect;
+      uvs.push(u, v);
     }
     // Wound so `cross(b-a, c-a)` OPPOSES the authored normal, which is
     // Babylon's convention. It is not assumed here: the winding guard reads
@@ -295,7 +365,11 @@ export function hangarShellGeometry(plan: HangarPlan): ShellGeometry {
       const vy = p2[1] - p0[1];
       const vz = p2[2] - p0[2];
       const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
-      if (area > 1e-9) indices.push(start + i0, start + i1, start + i2);
+      if (area > 1e-9) {
+        runs.find((run) => run.surface === surface)!.indices.push(
+          start + i0, start + i1, start + i2,
+        );
+      }
     }
   };
 
@@ -310,16 +384,25 @@ export function hangarShellGeometry(plan: HangarPlan): ShellGeometry {
   const steps = plan.roof === "gabled" ? 2 : plan.archSegments;
   const spanAt = (i: number) => -halfW + (plan.widthMeters * i) / steps;
 
-  // Long walls, from the skirt base up to the eave line.
-  quad([-halfW, base, -halfD], [-halfW, base, halfD], [-halfW, plan.eaveHeightMeters, halfD],
-    [-halfW, plan.eaveHeightMeters, -halfD], [-1, 0, 0]);
-  quad([halfW, base, halfD], [halfW, base, -halfD], [halfW, plan.eaveHeightMeters, -halfD],
-    [halfW, plan.eaveHeightMeters, halfD], [1, 0, 0]);
-  // Gable-end walls, base to eave.
-  quad([halfW, base, -halfD], [-halfW, base, -halfD], [-halfW, plan.eaveHeightMeters, -halfD],
-    [halfW, plan.eaveHeightMeters, -halfD], [0, 0, -1]);
-  quad([-halfW, base, halfD], [halfW, base, halfD], [halfW, plan.eaveHeightMeters, halfD],
-    [-halfW, plan.eaveHeightMeters, halfD], [0, 0, 1]);
+  // Walls, SPLIT AT THE SLAB. Below y=0 is the concrete skirt that closes the
+  // gap to the lowest ground; above it is the metal cladding. One shell, two
+  // materials, and the split is where the real building's is.
+  const wall = (
+    lo: number,
+    hi: number,
+    surface: HangarSurface,
+  ) => {
+    quad([-halfW, lo, -halfD], [-halfW, lo, halfD], [-halfW, hi, halfD],
+      [-halfW, hi, -halfD], [-1, 0, 0], surface);
+    quad([halfW, lo, halfD], [halfW, lo, -halfD], [halfW, hi, -halfD],
+      [halfW, hi, halfD], [1, 0, 0], surface);
+    quad([halfW, lo, -halfD], [-halfW, lo, -halfD], [-halfW, hi, -halfD],
+      [halfW, hi, -halfD], [0, 0, -1], surface);
+    quad([-halfW, lo, halfD], [halfW, lo, halfD], [halfW, hi, halfD],
+      [-halfW, hi, halfD], [0, 0, 1], surface);
+  };
+  wall(base, 0, "concrete");
+  wall(0, plan.eaveHeightMeters, "metal");
 
   for (let i = 0; i < steps; i += 1) {
     const x0 = spanAt(i);
@@ -328,22 +411,28 @@ export function hangarShellGeometry(plan: HangarPlan): ShellGeometry {
     const y1 = roofHeight(x1 / halfW);
     // Gable infill above the eave, one quad per roof segment per end.
     quad([x1, plan.eaveHeightMeters, -halfD], [x0, plan.eaveHeightMeters, -halfD],
-      [x0, y0, -halfD], [x1, y1, -halfD], [0, 0, -1]);
+      [x0, y0, -halfD], [x1, y1, -halfD], [0, 0, -1], "metal");
     quad([x0, plan.eaveHeightMeters, halfD], [x1, plan.eaveHeightMeters, halfD],
-      [x1, y1, halfD], [x0, y0, halfD], [0, 0, 1]);
+      [x1, y1, halfD], [x0, y0, halfD], [0, 0, 1], "metal");
     // The roof plane for this segment.
     const dx = x1 - x0;
     const dy = y1 - y0;
     const length = Math.hypot(dx, dy) || 1;
     quad([x0, y0, -halfD], [x0, y0, halfD], [x1, y1, halfD], [x1, y1, -halfD],
-      [-dy / length, dx / length, 0]);
+      [-dy / length, dx / length, 0], "metal");
   }
 
-  // The slab, closing the manifold.
+  // The underside, closing the manifold.
   quad([-halfW, base, -halfD], [halfW, base, -halfD], [halfW, base, halfD],
-    [-halfW, base, halfD], [0, -1, 0]);
+    [-halfW, base, halfD], [0, -1, 0], "concrete");
 
-  return { positions, normals, indices };
+  const groups: ShellGroup[] = [];
+  for (const run of runs) {
+    if (run.indices.length === 0) continue;
+    groups.push({ surface: run.surface, start: indices.length, count: run.indices.length });
+    indices.push(...run.indices);
+  }
+  return { positions, normals, uvs, indices, groups };
 }
 
 // ---------------------------------------------------------------------------
@@ -418,4 +507,70 @@ export function hangarAttachments(
     ]),
     heightMeters: plan.ridgeHeightMeters + plan.skirtHeightMeters,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mesh construction.
+// ---------------------------------------------------------------------------
+
+/**
+ * Distance policy for airfield structures.
+ *
+ * **The cull distance is load-bearing rather than decorative:** `buildHangar`
+ * installs it as a Babylon LOD level with a null replacement, so beyond it the
+ * shell is not drawn at all. A hangar is a scale reference on final approach,
+ * so this is far rather than tight — `RENDERING_PLAN.md` §1.5 records that the
+ * hangars are the only scale reference on final besides the runway.
+ */
+export const AIRFIELD_STRUCTURE_LOD = Object.freeze({
+  cullDistanceMeters: 6_000,
+});
+
+export interface HangarMeshes {
+  /** Every mesh built, in group order. Parented under the supplied root. */
+  readonly meshes: readonly Mesh[];
+  readonly attachments: HangarAttachments;
+}
+
+/**
+ * Build one hangar's meshes under `root`.
+ *
+ * **EAGER, and parented before returning.** `FlightRenderer` walks
+ * `airport.root.getChildMeshes(false)` ONCE at construction to populate the
+ * cloud-shadow and aerial-perspective registries, and captures `shadowCasters`
+ * into a frozen array in the same pass. A generator that built lazily, or that
+ * reparented afterwards, would miss both registries **with no error at all** —
+ * the hangar would draw, and would silently take neither cloud shadows nor
+ * aerial perspective. So nothing here defers work to a first render.
+ *
+ * **One mesh per SURFACE, not per part.** Draw calls are the binding axis on
+ * this airfield; grouping by material keeps a hangar at two draws.
+ */
+export function buildHangar(
+  scene: Scene,
+  root: TransformNode,
+  index: number,
+  plan: HangarPlan,
+  attachments: HangarAttachments,
+  materials: { readonly metal: Material; readonly concrete: Material },
+): HangarMeshes {
+  const shell = hangarShellGeometry(plan);
+  const meshes: Mesh[] = [];
+  for (const group of shell.groups) {
+    const mesh = new Mesh(`airport-hangar-${index}-${group.surface}`, scene);
+    const data = new VertexData();
+    data.positions = shell.positions;
+    data.normals = shell.normals;
+    data.uvs = shell.uvs;
+    data.indices = shell.indices.slice(group.start, group.start + group.count);
+    data.applyToMesh(mesh, false);
+    mesh.material = group.surface === "metal" ? materials.metal : materials.concrete;
+    mesh.parent = root;
+    // Beyond the cull distance, draw nothing. `addLODLevel(d, null)` is
+    // Babylon's own mechanism, so this is asserted against the mesh rather
+    // than against our constant.
+    mesh.addLODLevel(AIRFIELD_STRUCTURE_LOD.cullDistanceMeters, null);
+    meshes.push(mesh);
+  }
+  return { meshes, attachments };
 }
