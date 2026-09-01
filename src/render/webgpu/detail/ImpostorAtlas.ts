@@ -235,7 +235,28 @@ function rasterizeGeometry(
     let fnz = abx * acy - aby * acx;
     const fnLength = Math.hypot(fnx, fny, fnz) || 1;
     fnx /= fnLength; fny /= fnLength; fnz /= fnLength;
-    const faceToward = fnx * dx + fny * dy + fnz * dz;
+    // Sidedness is taken from the AUTHORED normal, not from the winding.
+    //
+    // It used to read `cross(b-a, c-a) . d`, which happened to work only
+    // because the card and shrub builders emitted their bitangent as
+    // `cross3(normal, tangent)` — an INVERTED winding, under which the face
+    // cross product coincides with the authored outward normal. Correcting
+    // that winding reverses the cross product, which silently inverted this
+    // test and flipped every baked normal: the bake's compensation had been
+    // calibrated against a broken input.
+    //
+    // The authored normal is the surface's own statement of which way it
+    // faces, and it is invariant to winding convention. That makes this a
+    // NO-OP on the old inverted geometry (where cross ~ +normal) and correct
+    // on the fixed geometry (where cross ~ -normal), so the two changes are
+    // safe to land together and this one cannot be un-calibrated by a future
+    // winding change. `fn` is retained above only for the degeneracy guard.
+    const gn = geometry.normals;
+    const anx = (gn[ia * 3]! + gn[ib * 3]! + gn[ic * 3]!) / 3;
+    const any = (gn[ia * 3 + 1]! + gn[ib * 3 + 1]! + gn[ic * 3 + 1]!) / 3;
+    const anz = (gn[ia * 3 + 2]! + gn[ib * 3 + 2]! + gn[ic * 3 + 2]!) / 3;
+    const anLength = Math.hypot(anx, any, anz) || 1;
+    const faceToward = (anx * dx + any * dy + anz * dz) / anLength;
     if (sidedness === "cull-back" && faceToward < 0) continue;
     const normalFlip = sidedness === "two-sided" && faceToward < 0 ? -1 : 1;
 

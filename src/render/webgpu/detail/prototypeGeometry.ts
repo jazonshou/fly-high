@@ -752,7 +752,7 @@ function emitSkeletonCards(
     let tangent = cross3(UP, normal);
     if (Math.hypot(tangent.x, tangent.y, tangent.z) < 1e-4) tangent = { x: 1, y: 0, z: 0 };
     tangent = norm3(tangent.x, tangent.y, tangent.z);
-    const bitangent = cross3(normal, tangent);
+    const bitangent = cross3(tangent, normal);
     const halfWidth = skeleton.cardHalfWidth * anchor.size * budget.cardScale;
     const elongation = 0.72 + ((anchor.pick * 7.13) % 1) * 0.5;
     const halfHeight = halfWidth * elongation;
@@ -1279,7 +1279,7 @@ export function buildShrubPrototype(
     tangent = tangentLength > 1e-4
       ? norm3(tangent.x, tangent.y, tangent.z)
       : { x: 1, y: 0, z: 0 };
-    const bitangent = cross3(normal, tangent);
+    const bitangent = cross3(tangent, normal);
     const size = spec.quadSize * (0.8 + rng() * 0.5);
     quads.push({
       center, normal, tangent, bitangent,
