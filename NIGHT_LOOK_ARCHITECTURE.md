@@ -326,13 +326,18 @@ must become the same quantity:
   floor's fp16/rod rationale are preserved by construction, not by
   re-measurement**. At dusk-mesopic the floor becomes ≈0.038: ground falls
   ~5×, sky rises via (a), and the order flips from both sides.
-- **(c) Night ambient takes the dome's chromaticity.** Below sunset, blend
-  `ambient.diffuse` from the palette zenith toward the dome's own mean
-  colour (the sky probe's SH L0 — already computed, no new source) over
-  the same window. This is the "light up surroundings with the blue"
-  half of Jason's ask: the deepened moon-sky (31e13fa) starts actually
-  tinting what it claims to light. Above sunset the blend is zero —
-  daylight untouched.
+- **(c) Night ambient takes the dome's chromaticity — RESOLVED WITHOUT A
+  NEW MECHANISM (deviation from this note's first draft, logged).**
+  Reading the code showed the hemispheric's palette rows are ALREADY the
+  arch's blue: both twilight zenith anchors normalize to the same
+  chromaticity within 1% (−12° → (0.141, 0.353, 1.0); 0° →
+  (0.136, 0.364, 1.0)) — which is exactly where `TWILIGHT_ARCH_TINT`
+  comes from, so dome and light rig now share a source by derivation.
+  And the dome's new blue reaches materials through the IBL probe
+  re-render (the probe integrates the same `skyRadiance` the arch rides).
+  A second chroma path through `ambient.diffuse` would re-open risk (3)
+  for no observable gain. Revisit ONLY if capture shows ground ambient
+  reading warm against the new sky.
 
 **Acceptance is a RELATION, not a brightness target:** at `dusk-mesopic`,
 sky-band median MUST exceed terrain-band median (new §3 metric
