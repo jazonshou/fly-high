@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   auditInterStage,
   captureShaderModules,
+  CSM_RECEIVE_MARKERS,
   INTER_STAGE_LIMIT,
   type ShaderRecord,
 } from "./interStageBudget";
@@ -84,7 +85,6 @@ describe("wildlife material stack compiles on-adapter (Gate A-5)", () => {
         worldSeed: "wildlife-adapter-compile",
         terrainSample: () => ({ height: 0, slope: 0, biome: TerrainBiome.FOREST }),
       });
-      system.addShadowCasters((mesh) => shadows.addShadowCaster(mesh, false));
       const prototypes = scene.meshes.filter(
         (mesh) => mesh.metadata?.wildlifePrototype === true,
       ) as Mesh[];
@@ -100,6 +100,11 @@ describe("wildlife material stack compiles on-adapter (Gate A-5)", () => {
       }
 
       await scene.whenReadyAsync();
+      // AFTER the thin instances are set: `WildlifeSystem.addShadowCasters`
+      // filters on `thinInstanceCount > 0`, so calling it on empty batches
+      // silently registers nothing and the rig quietly loses the shadow path
+      // it is here to compile.
+      system.addShadowCasters((mesh) => shadows.addShadowCaster(mesh, false));
       for (let frame = 0; frame < 3; frame += 1) scene.render();
       const device = (engine as unknown as { _device: GPUDevice })._device;
       await device.queue.onSubmittedWorkDone();
@@ -108,29 +113,38 @@ describe("wildlife material stack compiles on-adapter (Gate A-5)", () => {
     } finally {
       scene.dispose();
     }
-    // 7-4b: THE INTER-STAGE AUDIT. A `ClusteredLightContainer` is a SCENE
-    // light -- it reaches every material taking Babylon's light loop and adds
-    // exactly one `@location` to each. A material already at the device maximum
-    // does not DEGRADE when one is attached: pipeline creation fails and the
-    // mesh stops drawing entirely.
+    // 7-4b: THE INTER-STAGE AUDIT. A `ClusteredLightContainer` is a SCENE light
+    // -- it reaches every material taking Babylon's light loop and adds exactly
+    // one `@location` to each. A material already at the device maximum does not
+    // DEGRADE when one is attached: pipeline creation fails and the mesh stops
+    // drawing entirely.
     //
-    // `buildsShippingPaths` is TRUE only because the CSM and the reflection
-    // probe are built above. It was false before, and the resulting number was
-    // not wrong so much as about a different material.
-    const { peak, headroom } = auditInterStage(shaderModules, {
+    // `requiredMarkers` is asserted against the compiled source, not declared.
+    // wildlife (feather/fur/keratin)'s meshes set `receiveShadows`, so a run that compiles no
+    // `vPositionFromLight` is measuring a permutation eight varyings lighter
+    // than the one that ships -- which is exactly how this file once reported
+    // 3 of 16 with thirteen slots free.
+    const { peak, headroom, absent } = auditInterStage(shaderModules, {
       label: "wildlife (feather/fur/keratin)",
-      buildsShippingPaths: true,
+      requiredMarkers: CSM_RECEIVE_MARKERS,
     });
+    expect(
+      absent,
+      "the rig did not compile the shipping shadow path, so the budget below "
+      + "describes a material that does not exist",
+    ).toEqual([]);
     expect(peak, "no FragmentInputs struct was captured -- the audit is vacuous")
       .toBeGreaterThan(0);
     expect(
       peak,
-      `wildlife compiles at ${peak} fragment inputs, over the device maximum of `
+      `wildlife (feather/fur/keratin) compiles at ${peak} fragment inputs, over the device maximum of `
       + `${INTER_STAGE_LIMIT}. The mesh will not draw at all.`,
     ).toBeLessThanOrEqual(INTER_STAGE_LIMIT);
+    // The MARGIN is the deliverable, not the pass: a clean audit that names its
+    // headroom is what makes the next attach safe.
     expect(
       headroom,
-      `wildlife has NO slot for a clustered light container (peak ${peak}/${INTER_STAGE_LIMIT}). `
+      `wildlife (feather/fur/keratin) has NO slot for a clustered light container (peak ${peak}/${INTER_STAGE_LIMIT}). `
       + "Attaching one stops this material drawing; free a varying first, as 7-4b did for detail.",
     ).toBeGreaterThanOrEqual(1);
   }, 60_000);

@@ -97,13 +97,33 @@ export interface RigFidelity {
   /** A short name for the material as it SHIPS, used in the log line. */
   readonly label: string;
   /**
-   * True only if the rig builds every generator, wrapper and define the
-   * shipping path attaches. When false, `missingPaths` must say what is absent
-   * and roughly what it costs.
+   * Substrings that MUST appear in some compiled shader for this rig to be
+   * measuring the shipping permutation — e.g. `vPositionFromLight` for any
+   * material whose meshes set `receiveShadows`.
+   *
+   * **Asserted against the compiled artifact, never merely declared.** A
+   * boolean saying "this rig is faithful" is written by the same person who
+   * forgot to build the path; a marker that must be FOUND in the source is not.
+   * The wildlife rig declared itself complete, having grown a
+   * `CascadedShadowGenerator`, and still compiled no shadow path at all —
+   * `addShadowCasters` filters on `thinInstanceCount > 0` and had been called
+   * before the instances existed. The declaration was honest and wrong; the
+   * marker caught it.
    */
-  readonly buildsShippingPaths: boolean;
-  /** e.g. "CSM receive path (8 varyings)" — required when the rig is partial. */
+  readonly requiredMarkers?: readonly string[];
+  /** Named when a path is knowingly absent, so the headroom is not read as a margin. */
   readonly missingPaths?: string;
+}
+
+/** Markers that must appear when a material's meshes set `receiveShadows`. */
+export const CSM_RECEIVE_MARKERS = Object.freeze(["vPositionFromLight"]);
+
+/** Which required markers are missing from every captured shader. */
+export function missingMarkers(
+  records: readonly ShaderRecord[],
+  markers: readonly string[],
+): string[] {
+  return markers.filter((m) => !records.some((r) => r.code.includes(m)));
 }
 
 /**
@@ -114,14 +134,15 @@ export interface RigFidelity {
 export function auditInterStage(
   records: readonly ShaderRecord[],
   rig: RigFidelity,
-): { peak: number; headroom: number; trustworthy: boolean } {
+): { peak: number; headroom: number; absent: string[] } {
   const peak = peakFragmentInputs(records);
   const headroom = clusteredHeadroom(records);
-  const suffix = rig.buildsShippingPaths
+  const absent = missingMarkers(records, rig.requiredMarkers ?? []);
+  const suffix = absent.length === 0
     ? `headroom=${headroom}`
-    : `NOT SHIPPING -- rig omits ${rig.missingPaths ?? "an unnamed path"}; `
-      + "headroom is an artifact, not a margin";
+    : `NOT SHIPPING -- absent from every compiled shader: ${absent.join(", ")}`
+      + `${rig.missingPaths ? ` (${rig.missingPaths})` : ""}; headroom is an artifact`;
   // eslint-disable-next-line no-console
   console.log(`[inter-stage] ${rig.label}: peak=${peak}/${INTER_STAGE_LIMIT} ${suffix}`);
-  return { peak, headroom, trustworthy: rig.buildsShippingPaths };
+  return { peak, headroom, absent };
 }

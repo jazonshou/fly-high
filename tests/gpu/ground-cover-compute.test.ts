@@ -2,8 +2,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
+import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+import { ReflectionProbe } from "@babylonjs/core/Probes/reflectionProbe";
+import { DepthOnlyCascadedShadowGenerator } from "../../src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  auditInterStage,
+  captureShaderModules,
+  CSM_RECEIVE_MARKERS,
+  INTER_STAGE_LIMIT,
+  type ShaderRecord,
+} from "./interStageBudget";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
@@ -45,6 +56,8 @@ let canvas: HTMLCanvasElement;
 let timestampsAvailable = false;
 const gpuErrors: string[] = [];
 
+let shaderModules: ShaderRecord[] = [];
+
 beforeAll(async () => {
   canvas = document.createElement("canvas");
   canvas.width = CANVAS_SIZE;
@@ -60,6 +73,7 @@ beforeAll(async () => {
     deviceDescriptor: { requiredFeatures: ["timestamp-query"] as GPUFeatureName[] },
   });
   await engine.initAsync();
+  shaderModules = captureShaderModules(engine);
   // Babylon silently DROPS an unsupported entry from `requiredFeatures`
   // rather than letting `requestDevice` reject, so the constructor is not
   // proof the counter exists.
@@ -112,6 +126,32 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
     camera.maxZ = 4_000;
     scene.activeCamera = camera;
     new HemisphericLight("ambient", Vector3.Up(), scene);
+    // 7-4b: the SHIPPING lighting path. `GroundCoverSystem` sets
+    // `mesh.receiveShadows = true` on every blade mesh, so production compiles
+    // the CSM receive path and its EIGHT varyings; and 1C-6 binds a cubic sky
+    // probe, without which `vEnvironmentIrradiance` silently disappears too.
+    // A rig with neither measures a materially lighter permutation — that is
+    // exactly how `wildlife-material-compile` reported 3 of 16 when the real
+    // number is 13.
+    const shadowSun = new DirectionalLight(
+      "ground-cover-sun",
+      new Vector3(-0.5, -0.8, 0.3).normalize(),
+      scene,
+    );
+    shadowSun.intensity = 2;
+    const shadows = new DepthOnlyCascadedShadowGenerator(256, shadowSun, false, camera, true);
+    shadows.numCascades = 4;
+    const probe = new ReflectionProbe("ground-cover-probe", 16, scene, true, true);
+    scene.environmentTexture = probe.cubeTexture;
+    // A CSM compiles its RECEIVE path only once it actually has a caster. The
+    // blades do not cast -- in production the sun's cascade is fed by terrain,
+    // detail and airport meshes -- so the rig has to stand something in, or the
+    // receivers silently compile without shadows and the budget under-reports
+    // by eight varyings. This cost `wildlife-material-compile` the same eight
+    // until its `addShadowCasters` call was moved after the instances existed.
+    const shadowStandIn = CreateBox("ground-cover-shadow-caster", { size: 4 }, scene);
+    shadowStandIn.position.set(0, 3, 20);
+    shadows.addShadowCaster(shadowStandIn, false);
 
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
     const budget = new ComputeBudget(profile);
@@ -234,6 +274,36 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
       system.dispose();
       scene.dispose();
     }
+
+    // 7-4b: THE INTER-STAGE AUDIT. A `ClusteredLightContainer` is a SCENE light
+    // -- it reaches every material taking Babylon's light loop and costs each
+    // exactly one `@location`. A material already at the device maximum does not
+    // degrade when one is attached: pipeline creation fails and the blades stop
+    // drawing entirely, which is what the detail material did at 16 of 16.
+    //
+    // Placed after the `finally` deliberately: it reads only captured shader
+    // source, which outlives the scene.
+    const { peak, headroom, absent } = auditInterStage(shaderModules, {
+      label: "ground cover (blades)",
+      requiredMarkers: CSM_RECEIVE_MARKERS,
+    });
+    expect(
+      absent,
+      "the rig did not compile the shipping shadow path, so the budget below "
+      + "describes a material eight varyings lighter than the one that ships",
+    ).toEqual([]);
+    expect(peak, "no FragmentInputs struct was captured -- the audit is vacuous")
+      .toBeGreaterThan(0);
+    expect(
+      peak,
+      `ground cover compiles at ${peak} fragment inputs, over the device maximum `
+      + `of ${INTER_STAGE_LIMIT}. The blades will not draw at all.`,
+    ).toBeLessThanOrEqual(INTER_STAGE_LIMIT);
+    expect(
+      headroom,
+      `ground cover has NO slot for a clustered light container `
+      + `(peak ${peak}/${INTER_STAGE_LIMIT}). Attaching one stops the blades drawing.`,
+    ).toBeGreaterThanOrEqual(1);
   }, 120_000);
 
   /**

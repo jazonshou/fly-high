@@ -546,6 +546,16 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // 7-4b freed the slot with `forceIrradianceInFragment`, set above and in
       // production, which deletes `vEnvironmentIrradiance`. The peak is now 15
       // and the container fits with nothing to spare.
+      // The pin below is only meaningful if this rig compiled the SHIPPING
+      // shadow path. Asserted against the source, because a rig can grow a
+      // shadow generator and still compile no shadow path -- that happened in
+      // `wildlife-material-compile`, where `addShadowCasters` filtered on a
+      // thin-instance count that was still zero.
+      expect(
+        shaderModules.some((r) => r.code.includes("vPositionFromLight")),
+        "no compiled shader carries the CSM receive path; the count below is "
+        + "eight varyings lighter than the permutation that ships",
+      ).toBe(true);
       const peakFragmentInputs = Math.max(
         ...shaderModules.map((record) => {
           const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(record.code);
