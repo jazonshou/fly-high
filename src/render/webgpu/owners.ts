@@ -1146,6 +1146,42 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "per site.",
   },
   {
+    // 7-13: the airfield's furniture. Arithmetic and geometry only -- the
+    // windsock's siting, its wind response, and the tanks/fence/signage
+    // surfaces. It owns no material and no light: signage rides 7-5's
+    // light-point path rather than adding a second emissive one, and nothing
+    // here constructs a scene light, so `render.scene-light-slots.test.ts`
+    // stays at its pinned counts.
+    artifact: "airfield-furniture",
+    owner: "aircraft",
+    definitionSites: ["src/render/webgpu/detail/AirfieldFurniture.ts"],
+    // `lighting` is a declared consumer because 7-13's signage rides 7-5's
+    // light-point path rather than carrying a second emissive material --
+    // `AirfieldLightingSystem` imports `signLightPoints` from here.
+    consumers: ["aircraft", "lighting"],
+    ownedSymbols: [
+      "airfieldFurnitureWindingCases",
+      "windsockWorldPosition",
+      "windsockAxisDirection",
+      "windsockBoreScale",
+      "buildPerimeterFenceGeometry",
+      "signLightPoints",
+    ],
+    notes:
+      "The windsock takes its OWN wind sample. The renderer's other consumer "
+      + "samples at the aircraft and forwards four scalars, and a sock driven by "
+      + "that snapshot still points, swings and gusts -- no frame distinguishes "
+      + "it, so `lighting.windsock.test.ts` asserts the two samples DIFFER rather "
+      + "than asserting the angle looks right. `airfieldFurnitureWindingCases` is "
+      + "spread by the winding guard, so furniture added here is wound-checked "
+      + "with no change to the test; both `sweptTube` and `flatPanel` came out "
+      + "INVERTED on first write, in OPPOSITE directions, which is why there is "
+      + "no house winding convention recorded anywhere -- only a measurement to "
+      + "take. Lateral band, shared with three other sessions: signage at the "
+      + "runway edge (derived), windsock 55 m, tower runwayWidth/2 + 95, hangars "
+      + "118 m, fuel farm 135 m, fence 168 m and outermost by construction.",
+  },
+  {
     // 7-6: billboard cones with a soft depth intersection, reusing the aerial
     // include's participating-media terms rather than a second fog model.
     artifact: "light-volumetrics",

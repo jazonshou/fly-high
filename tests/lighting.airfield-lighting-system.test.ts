@@ -13,6 +13,7 @@ import {
   papiUnitPlacements,
   PAPI_ANGLE_PROFILE,
 } from "../src/render/webgpu/lighting/AirfieldLighting";
+import { signLightPoints } from "../src/render/webgpu/detail/AirfieldFurniture";
 import { lightPointBeamGain } from "../src/render/webgpu/lighting/LightPoints";
 
 /**
@@ -337,6 +338,20 @@ describe("the colour list matches the fixture list", () => {
     // Node rather than at the first PAPI transition in flight.
     const system = new AirfieldLightingSystem(DEFAULT_AIRPORT);
     expect(system.colourList()).toHaveLength(system.fixtures.length);
-    expect(system.fixtures.length).toBe(POINTS.length + papiLamps(DEFAULT_AIRPORT).length);
+    // Derived from every contributor rather than pinned: 7-13's signage joined
+    // this path after the file was written, and a hardcoded total would have
+    // had to be edited rather than simply staying true. The invariant that
+    // matters is that the colour list tracks the fixture list, whatever feeds
+    // it — `setColors` throws on a mismatch, so a drift here is a runtime
+    // failure at the first PAPI transition rather than a test failure.
+    const signs = signLightPoints(
+      DEFAULT_AIRPORT,
+      AIRFIELD_LAMP_RGB.red,
+      AIRFIELD_LAMP_SCENE_SCALE,
+    );
+    expect(signs.length, "signage contributes no light points").toBeGreaterThan(0);
+    expect(system.fixtures.length).toBe(
+      POINTS.length + signs.length + papiLamps(DEFAULT_AIRPORT).length,
+    );
   });
 });

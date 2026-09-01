@@ -98,6 +98,7 @@ import { runwayMarkingProfile } from "../terrain/RunwaySurface";
 import { runwayToWorld } from "../../../world/airport";
 import type { AirportDefinition } from "../../../world/types";
 import type { LightPointFixture } from "./LightPoints";
+import { signLightPoints } from "../detail/AirfieldFurniture";
 
 /** Which runway end the wing bar serves. `+1` is the `along > 0` threshold. */
 export type PapiServedEnd = -1 | 1;
@@ -1023,7 +1024,13 @@ export class AirfieldLightingSystem {
     airport: Readonly<AirportDefinition>,
     extraFixtures: readonly LightPointFixture[] = [],
   ) {
-    const staticPoints = airfieldLightPoints(airport);
+    // 7-13's signage rides this path rather than carrying its own emissive
+    // material — one brightness model, calibrated once. The colour and scale
+    // come from here so a sign cannot drift from the lamps it sits among.
+    const staticPoints = [
+      ...airfieldLightPoints(airport),
+      ...signLightPoints(airport, AIRFIELD_LAMP_RGB.red, AIRFIELD_LAMP_SCENE_SCALE),
+    ];
     const beforePapi = [...staticPoints, ...extraFixtures];
     this.papiOffset = beforePapi.length;
     this.lamps = papiLamps(airport);

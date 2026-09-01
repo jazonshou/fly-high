@@ -4,7 +4,23 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { runwayToWorld, type AirportDefinition } from "@/src/world";
+import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
+import {
+  WINDSOCK_LATERAL_OFFSET_METERS,
+  WINDSOCK_MAST_HEIGHT_METERS,
+  WINDSOCK_PART_KINDS,
+  buildWindsockPart,
+  windsockAxisDirection,
+  windsockWorldPosition,
+  windsockBoreScale,
+  buildPerimeterFenceGeometry,
+  buildFuelFarmGeometry,
+  buildSignageGeometry,
+  windsockDroopRadians,
+  windsockInflation,
+} from "./AirfieldFurniture";
 import {
   buildTowerGeometry,
   TOWER_PART_NAMES,
@@ -52,6 +68,15 @@ const GROUND_SAMPLE_STEP_METERS = 2;
 export class AirportSystem {
   readonly root: TransformNode;
   readonly shadowCasters: readonly Mesh[];
+  /** `7-13`: the sock, the only furniture that moves. Null when unbuilt. */
+  private windsockSock: Mesh | null = null;
+  /**
+   * Where the sock stands, in ABSOLUTE world metres — the point the renderer
+   * must sample wind at. Absolute rather than origin-relative because
+   * `sampleWind` is a world field; the floating origin moves the MESH, not the
+   * weather.
+   */
+  readonly windsockSamplePoint: { readonly x: number; readonly y: number; readonly z: number };
   /**
    * `7-15`: where `7-14` hangs obstruction lights and `7-7` mounts its rotating
    * beacon, in RUNWAY-LOCAL coordinates plus the tower's own placement offset —
@@ -91,6 +116,7 @@ export class AirportSystem {
      */
     seedHash: number,
   ) {
+    this.windsockSamplePoint = windsockWorldPosition(definition);
     this.root = new TransformNode("airport", scene);
     this.root.rotation.y = definition.headingRadians;
 
@@ -200,7 +226,131 @@ export class AirportSystem {
       heightMeters: tower.attachments.heightMeters,
     });
 
-    this.shadowCasters = Object.freeze([...hangars, ...towerMeshes]);
+    // `7-13`: the windsock. Built here for the same reason the hangars and the
+    // tower are — parented under `root` before the constructor returns, so it
+    // is carried by `setFloatingOrigin` and picked up by the shadow, cloud and
+    // aerial registrations that read `root.getChildMeshes()`.
+    const windsockNode = new TransformNode("airport-windsock", scene);
+    windsockNode.parent = this.root;
+    windsockNode.position.set(
+      WINDSOCK_LATERAL_OFFSET_METERS,
+      runwayPlatformHeight(definition, WINDSOCK_LATERAL_OFFSET_METERS) - definition.elevation,
+      0,
+    );
+    const windsockMeshes: Mesh[] = [];
+    for (const kind of WINDSOCK_PART_KINDS) {
+      const mesh = new Mesh(`airport-windsock-${kind}`, scene);
+      const geometry = buildWindsockPart(kind, 1);
+      const data = new VertexData();
+      data.positions = Array.from(geometry.positions);
+      data.normals = Array.from(geometry.normals);
+      data.indices = Array.from(geometry.indices);
+      data.applyToMesh(mesh, false);
+      // The sock is high-visibility fabric, the mast and swivel are steel.
+      mesh.material = kind === "sock"
+        ? this.airfieldMaterials.accent
+        : this.airfieldMaterials.metal;
+      // The sock hangs from the swivel at the mast top and is the only part
+      // that moves; mast and swivel are static in the node's frame.
+      if (kind === "sock") {
+        mesh.position.y = WINDSOCK_MAST_HEIGHT_METERS;
+        mesh.rotationQuaternion = Quaternion.Identity();
+        this.windsockSock = mesh;
+      }
+      mesh.parent = windsockNode;
+      windsockMeshes.push(mesh);
+    }
+
+    const localHeight = (along: number, across: number): number => {
+      const point = runwayToWorld(definition, along, across);
+      return groundHeight(point.x, point.z) - definition.elevation;
+    };
+    // `7-13`: the perimeter fence. ONE merged mesh — the sizing disqualified
+    // the alternative before it was written: 1,211 posts and 1,211 rail bays on
+    // this runway's 3,632 m perimeter is 2,422 draw calls against a night
+    // ceiling of 157.
+    //
+    // Ground-following rather than platform-relative: at 168 m across, the
+    // perimeter stands on natural terrain, and a fence pinned to the platform
+    // elevation floats over falling ground and sinks into rising ground.
+    const fenceMesh = new Mesh("airport-fence", scene);
+    {
+      const geometry = buildPerimeterFenceGeometry(definition, localHeight);
+      const data = new VertexData();
+      data.positions = Array.from(geometry.positions);
+      data.normals = Array.from(geometry.normals);
+      data.indices = Array.from(geometry.indices);
+      data.applyToMesh(fenceMesh, false);
+      fenceMesh.material = this.airfieldMaterials.metal;
+      fenceMesh.parent = this.root;
+    }
+
+    // Fuel farm and signage: one merged mesh each, same reasoning as the fence.
+    // Both DO cast — unlike the fence, a 2.5 m tank and a 1.1 m sign board are
+    // resolvable at approach range and their shadows are part of reading the
+    // airfield as inhabited. Two meshes at 3 draws each is 6, against the
+    // fence's 2,422-draw alternative; the trade is not close in either case.
+    const furniture: Mesh[] = [];
+    for (const [name, geometry] of [
+      ["airport-fuel-farm", buildFuelFarmGeometry(localHeight)],
+      ["airport-signage", buildSignageGeometry(definition, localHeight)],
+    ] as const) {
+      const mesh = new Mesh(name, scene);
+      const data = new VertexData();
+      data.positions = Array.from(geometry.positions);
+      data.normals = Array.from(geometry.normals);
+      data.indices = Array.from(geometry.indices);
+      data.applyToMesh(mesh, false);
+      mesh.material = this.airfieldMaterials.metal;
+      mesh.parent = this.root;
+      furniture.push(mesh);
+    }
+
+    // THE FENCE DOES NOT CAST, and it is a decision rather than an oversight —
+    // someone will ask. A shadow-casting mesh costs 1 beauty draw plus one per
+    // cascade, and tier 1 runs 2, so registering it here would spend 3 draws
+    // per shot instead of 1. What that buys is the shadow of a 1.2 m post,
+    // 168 m off the centreline, at ranges where the whole perimeter is a few
+    // pixels tall. Nobody can resolve it, and it would be paid on every shot
+    // including the ones where the airfield is not even in frame.
+    this.shadowCasters = Object.freeze([...hangars, ...towerMeshes, ...windsockMeshes, ...furniture]);
+  }
+
+  /**
+   * Point and inflate the sock.
+   *
+   * **The wind must be sampled AT THE SOCK.** The renderer's only other wind
+   * consumer samples at the aircraft and forwards four scalars, and a sock
+   * driven by that snapshot still points, still swings and still gusts — no
+   * frame distinguishes it. `lighting.windsock.test.ts` asserts the two samples
+   * differ in heading and speed, which is the assertion a shared-snapshot sock
+   * fails; this is wired to satisfy it rather than around it.
+   *
+   * `windHeadingRadians` is world-referenced. Children of `root` are
+   * runway-local, and `root` carries `rotation.y = headingRadians`, so the
+   * local direction is the axis at the DIFFERENCE of the two headings — no
+   * inverse rotation, and no chance of applying one the wrong way round.
+   */
+  setWindsockState(windHeadingRadians: number, windSpeedMetersPerSecond: number): void {
+    if (!this.windsockSock) return;
+    // Droop and inflation are BOTH functions of speed, so the caller passes
+    // speed and this derives them. Taking them as separate arguments would let
+    // a caller pass a droop that disagreed with its inflation — a sock hanging
+    // slack while fully open — and nothing would catch it.
+    const droopRadians = windsockDroopRadians(windSpeedMetersPerSecond);
+    const inflation = windsockInflation(windSpeedMetersPerSecond);
+    const [x, y, z] = windsockAxisDirection(
+      windHeadingRadians - this.definition.headingRadians,
+      droopRadians,
+    );
+    // The mesh is built along +y, so the rotation is +y onto the axis.
+    Quaternion.FromUnitVectorsToRef(
+      Vector3.Up(),
+      new Vector3(x, y, z),
+      this.windsockSock.rotationQuaternion!,
+    );
+    const bore = windsockBoreScale(inflation);
+    this.windsockSock.scaling.set(bore, 1, bore);
   }
 
   setFloatingOrigin(x: number, z: number): void {

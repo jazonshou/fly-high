@@ -59,6 +59,21 @@ import { buildTowerGeometry, TOWER_PART_NAMES } from "../src/render/webgpu/detai
  * loudly instead of silently reversing every assertion below.
  */
 
+/**
+ * **REGISTER THE MERGED PRODUCT, NOT ONLY ITS PARTS.**
+ *
+ * A builder that merges by transforming a unit — a fence from one post, an
+ * instanced set from one card, a shell from one panel — applies a rotation per
+ * placement. **A basis with a NEGATIVE DETERMINANT flips the winding of every
+ * transformed triangle while each unit part stays perfectly correct**, so
+ * checking the units alone certifies a mesh that is entirely inside-out.
+ *
+ * `fence.post` and `fence.rail` pass individually and say nothing about
+ * `fence.perimeter`, which is why all three are cases here. The same applies to
+ * anything this codebase builds by transforming a unit: the hangar shell, the
+ * tower, any future merged or instanced set. **Add the assembled geometry, not
+ * just the piece it was assembled from.**
+ */
 interface Geo {
   positions: Float32Array | number[];
   normals: Float32Array | number[];

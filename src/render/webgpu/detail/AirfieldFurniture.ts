@@ -1,6 +1,7 @@
-import { runwayToWorld } from "../../../world/airport";
+import { DEFAULT_AIRPORT, runwayToWorld } from "../../../world/airport";
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import type { AirportDefinition } from "../../../world/types";
+import type { LightPointFixture } from "../lighting/LightPoints";
 
 /**
  * `7-13` airfield furniture — the windsock's siting and its wind response.
@@ -117,6 +118,47 @@ export function windsockInflation(speedMetersPerSecond: number): number {
  */
 export function windsockDroopRadians(speedMetersPerSecond: number): number {
   return (1 - windsockInflation(speedMetersPerSecond)) * WINDSOCK_SLACK_DROOP_RADIANS;
+}
+
+/**
+ * How far the sock's bore opens, as a scale on its cross-section.
+ *
+ * **SHARED BY THE BUILDER AND THE RUNTIME, deliberately.** The mesh is built
+ * once at full inflation and scaled per frame — rebuilding 140 triangles every
+ * frame to change a radius would be absurd — so the geometry and the animation
+ * must agree about what inflation means. Two copies of `0.28 + 0.72 * open`
+ * would be a decorative-constant pair, and this project has found three of
+ * those drifting.
+ */
+export function windsockBoreScale(inflation: number): number {
+  return 0.28 + 0.72 * Math.min(Math.max(inflation, 0), 1);
+}
+
+/**
+ * The unit vector the sock points along.
+ *
+ * **Returns a DIRECTION rather than Euler angles on purpose.** Euler angles
+ * only mean something alongside a rotation order, and Babylon's is a convention
+ * this module would then be silently coupled to — a sock 90 degrees out because
+ * someone assumed XYZ where the engine applies YXZ is not a bug any pure test
+ * could catch. A direction vector is checkable against the wind it came from
+ * with no convention in between, which is what the test does.
+ *
+ * `heading` is clockwise from world north (+z), the same convention as
+ * `AirportDefinition.headingRadians` and `windsockHeadingRadians`. `droop` is
+ * measured DOWN from horizontal, so a slack sock returns a vector with a
+ * negative y.
+ */
+export function windsockAxisDirection(
+  headingRadians: number,
+  droopRadians: number,
+): readonly [number, number, number] {
+  const horizontal = Math.cos(droopRadians);
+  return [
+    Math.sin(headingRadians) * horizontal,
+    -Math.sin(droopRadians),
+    Math.cos(headingRadians) * horizontal,
+  ];
 }
 
 /**
@@ -299,7 +341,7 @@ export function buildWindsockPart(
     const taper = WINDSOCK_MOUTH_RADIUS_METERS
       + (WINDSOCK_TAIL_RADIUS_METERS - WINDSOCK_MOUTH_RADIUS_METERS) * t;
     // A slack sock collapses toward the mast rather than holding its bore.
-    return { y: t * WINDSOCK_LENGTH_METERS, radius: taper * (0.28 + 0.72 * open) };
+    return { y: t * WINDSOCK_LENGTH_METERS, radius: taper * windsockBoreScale(open) };
   });
   return sweptTube(14, rings);
 }
@@ -454,5 +496,367 @@ export function airfieldFurnitureWindingCases(): ReadonlyArray<
   for (const kind of FUEL_TANK_PART_KINDS) out.push([`fuelTank.${kind}`, buildFuelTankPart(kind)]);
   for (const kind of FENCE_PART_KINDS) out.push([`fence.${kind}`, buildFencePart(kind)]);
   for (const kind of SIGN_PART_KINDS) out.push([`sign.${kind}`, buildSignPart(kind)]);
+  // The MERGED perimeter, not just its unit parts. A merge applies a rotation
+  // per station, and a basis with a negative determinant flips winding on every
+  // transformed triangle while each unit part stays correct — so checking the
+  // parts alone would pass on a fence that is entirely inside-out.
+  out.push(["fence.perimeter", buildPerimeterFenceGeometry(DEFAULT_AIRPORT)]);
+  out.push(["fuelFarm.merged", buildFuelFarmGeometry()]);
+  out.push(["signage.merged", buildSignageGeometry(DEFAULT_AIRPORT)]);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The perimeter fence: ONE merged mesh, and the sizing is why.
+//
+// **The budget disqualified a design before it was written**, which is the
+// first time this phase has had that ordering. Measured on this runway: a
+// 3,632 m perimeter at the ICAO 3 m spacing is 1,211 posts and 1,211 rail
+// bays, so one mesh per part is **2,422 draw calls against a night ceiling of
+// 157** — not expensive, impossible, by a factor of fifteen. Merged it is ONE.
+//
+// Triangles are not the constraint and that was checked rather than assumed:
+// 33,908 tris is ~2% of the ~1.68M a capture already draws.
+//
+// **MERGING IS ONLY FREE BECAUSE OF THE PARENTING, and that is conditional.**
+// `AirportSystem` parents this under `root` and rebases by moving `root`, so
+// the 4,096 m floating-origin shift costs one node update and no re-upload,
+// ever. `LightPointSystem` is the same merge pattern WITHOUT a moving parent —
+// `new Mesh("light-points", scene)`, absolute positions baked — so its
+// `setFloatingOrigin` rewrites the whole vertex buffer. **Move this fence out
+// from under `root`, or copy the pattern somewhere with no moving parent, and
+// you inherit that re-upload without having chosen it.**
+//
+// **Post spacing is an ART knob, not a performance one.** Halving the count
+// changes no draw call and no ceiling — it is one mesh either way. Recorded so
+// a future "the fence looks busy" is settled as a look decision rather than
+// argued as a cost.
+// ---------------------------------------------------------------------------
+
+/** Rail heights above the post base, metres. Two rails read as fencing at range. */
+export const FENCE_RAIL_HEIGHTS_METERS: readonly number[] = Object.freeze([0.6, 1.8]);
+
+/** One post station: runway-local position and the direction the fence runs. */
+export interface FenceStation {
+  readonly along: number;
+  readonly across: number;
+  /** Unit direction to the NEXT station, runway-local. Null at the last one. */
+  readonly toNext: readonly [number, number] | null;
+}
+
+/**
+ * Post stations around the perimeter rectangle, runway-local.
+ *
+ * The rectangle is derived from the runway rather than pinned: half-length is
+ * the runway plus its end safety area, half-width is
+ * `FENCE_LATERAL_OFFSET_METERS`. A constant would be silently wrong the first
+ * time a seed produced a longer strip — and wrong in the direction that puts a
+ * fence across the runway.
+ */
+export function perimeterFenceStations(
+  airport: Readonly<AirportDefinition>,
+): readonly FenceStation[] {
+  const halfLength = airport.runwayLength / 2 + airport.endSafetyArea;
+  const halfWidth = FENCE_LATERAL_OFFSET_METERS;
+  const corners: readonly (readonly [number, number])[] = [
+    [halfLength, halfWidth], [halfLength, -halfWidth],
+    [-halfLength, -halfWidth], [-halfLength, halfWidth],
+  ];
+  const stations: FenceStation[] = [];
+  for (let corner = 0; corner < corners.length; corner += 1) {
+    const [a0, c0] = corners[corner]!;
+    const [a1, c1] = corners[(corner + 1) % corners.length]!;
+    const spanAlong = a1 - a0;
+    const spanAcross = c1 - c0;
+    const length = Math.hypot(spanAlong, spanAcross);
+    const bays = Math.max(1, Math.round(length / FENCE_POST_SPACING_METERS));
+    const unit: readonly [number, number] = [spanAlong / length, spanAcross / length];
+    for (let bay = 0; bay < bays; bay += 1) {
+      const t = bay / bays;
+      stations.push({
+        along: a0 + spanAlong * t,
+        across: c0 + spanAcross * t,
+        toNext: unit,
+      });
+    }
+  }
+  return stations;
+}
+
+/**
+ * Append `part`, rotated so its local +y maps to `axis` and translated.
+ *
+ * **Normals are rotated with the positions rather than recomputed**, for the
+ * same reason `sweptTube` authors them independently of the index order:
+ * re-deriving a normal from transformed geometry can agree with an inverted
+ * surface and hide it. This carries the authored normal through the same
+ * rotation, so a merge cannot silently fix — or silently break — a winding the
+ * guard already checked on the unit part.
+ */
+function appendTransformed(
+  out: { positions: number[]; normals: number[]; indices: number[] },
+  part: WindsockPartGeometry,
+  axis: readonly [number, number, number],
+  translation: readonly [number, number, number],
+): void {
+  const base = out.positions.length / 3;
+  // Orthonormal basis with newY = axis. For a horizontal axis the perpendicular
+  // is horizontal too, so this stays well-conditioned everywhere the fence runs.
+  const [ax, ay, az] = axis;
+  const helper: readonly [number, number, number] = Math.abs(ay) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const xx = helper[1] * az - helper[2] * ay;
+  const xy = helper[2] * ax - helper[0] * az;
+  const xz = helper[0] * ay - helper[1] * ax;
+  const xLen = Math.hypot(xx, xy, xz) || 1;
+  const nx: readonly [number, number, number] = [xx / xLen, xy / xLen, xz / xLen];
+  const nz: readonly [number, number, number] = [
+    nx[1] * az - nx[2] * ay, nx[2] * ax - nx[0] * az, nx[0] * ay - nx[1] * ax,
+  ];
+  for (let vertex = 0; vertex < part.positions.length / 3; vertex += 1) {
+    const px = part.positions[vertex * 3]!;
+    const py = part.positions[vertex * 3 + 1]!;
+    const pz = part.positions[vertex * 3 + 2]!;
+    out.positions.push(
+      nx[0] * px + ax * py + nz[0] * pz + translation[0],
+      nx[1] * px + ay * py + nz[1] * pz + translation[1],
+      nx[2] * px + az * py + nz[2] * pz + translation[2],
+    );
+    const mx = part.normals[vertex * 3]!;
+    const my = part.normals[vertex * 3 + 1]!;
+    const mz = part.normals[vertex * 3 + 2]!;
+    out.normals.push(
+      nx[0] * mx + ax * my + nz[0] * mz,
+      nx[1] * mx + ay * my + nz[1] * mz,
+      nx[2] * mx + az * my + nz[2] * mz,
+    );
+  }
+  for (const index of part.indices) out.indices.push(base + index);
+}
+
+/** The whole perimeter as one mesh, runway-local, y measured from the platform. */
+export function buildPerimeterFenceGeometry(
+  airport: Readonly<AirportDefinition>,
+  /**
+   * Local y for a station, given its runway-local position. Defaults to flat.
+   *
+   * **The fence needs this and the hangars do not.** At 168 m across, the
+   * perimeter is well outside the graded platform and stands on natural
+   * terrain, so `runwayPlatformHeight` is the wrong datum for it — a fence
+   * pinned to the platform elevation floats over falling ground and sinks into
+   * rising ground, and both read as a modelling bug rather than a placement
+   * one. `AirportSystem` passes a real ground query; the default keeps the
+   * function pure for the winding guard, which does not have one.
+   */
+  heightAt: (along: number, across: number) => number = () => 0,
+): WindsockPartGeometry {
+  const post = buildFencePart("post");
+  const rail = buildFencePart("rail");
+  const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
+  const stations = perimeterFenceStations(airport);
+  for (const station of stations) {
+    const base = heightAt(station.along, station.across);
+    appendTransformed(out, post, [0, 1, 0], [station.across, base, station.along]);
+    if (!station.toNext) continue;
+    const [alongUnit, acrossUnit] = station.toNext;
+    // The rail is built along +y of length FENCE_POST_SPACING_METERS, so it is
+    // laid down by mapping its +y onto the run direction.
+    for (const height of FENCE_RAIL_HEIGHTS_METERS) {
+      appendTransformed(
+        out,
+        rail,
+        [acrossUnit, 0, alongUnit],
+        [station.across, base + height, station.along],
+      );
+    }
+  }
+  return {
+    positions: new Float32Array(out.positions),
+    normals: new Float32Array(out.normals),
+    indices: new Uint32Array(out.indices),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel farm and signage. Both merged for the same reason the fence is — not
+// because they are large, but because a draw call is the scarce unit here and
+// there is no reason to spend six where one does.
+// ---------------------------------------------------------------------------
+
+/** Two tanks: avgas and jet A, which is what a field this size carries. */
+export const FUEL_TANK_COUNT = 2;
+/** Along-runway gap between tank centres, metres. */
+export const FUEL_TANK_PITCH_METERS = 18;
+/** Saddles per tank, at a quarter and three-quarters of its length. */
+export const FUEL_TANK_SADDLE_FRACTIONS: readonly number[] = Object.freeze([0.25, 0.75]);
+
+/**
+ * Runway-local centres of each tank.
+ *
+ * On the POSITIVE `across` side, with the hangars — a fuel farm belongs beside
+ * the apron, and the negative side carries the PAPI, which must not be occluded
+ * from the approach.
+ */
+export function fuelTankPlacements(): readonly { along: number; across: number }[] {
+  const out: { along: number; across: number }[] = [];
+  const span = (FUEL_TANK_COUNT - 1) * FUEL_TANK_PITCH_METERS;
+  for (let index = 0; index < FUEL_TANK_COUNT; index += 1) {
+    out.push({
+      along: -span / 2 + index * FUEL_TANK_PITCH_METERS,
+      across: FUEL_FARM_LATERAL_OFFSET_METERS,
+    });
+  }
+  return out;
+}
+
+/** The fuel farm as one mesh: tanks lying along the runway, on their saddles. */
+export function buildFuelFarmGeometry(
+  heightAt: (along: number, across: number) => number = () => 0,
+): WindsockPartGeometry {
+  const shell = buildFuelTankPart("shell");
+  const saddle = buildFuelTankPart("saddle");
+  const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
+  for (const tank of fuelTankPlacements()) {
+    const base = heightAt(tank.along, tank.across);
+    // The shell is built along +y; lay it along the runway (+along = local +z),
+    // sitting on its saddles rather than on the ground.
+    const axleHeight = base + FUEL_TANK_RADIUS_METERS * 0.6 + FUEL_TANK_RADIUS_METERS;
+    appendTransformed(
+      out,
+      shell,
+      [0, 0, 1],
+      [tank.across, axleHeight, tank.along - FUEL_TANK_LENGTH_METERS / 2],
+    );
+    for (const fraction of FUEL_TANK_SADDLE_FRACTIONS) {
+      appendTransformed(
+        out,
+        saddle,
+        [0, 1, 0],
+        [
+          tank.across,
+          base,
+          tank.along - FUEL_TANK_LENGTH_METERS / 2 + FUEL_TANK_LENGTH_METERS * fraction,
+        ],
+      );
+    }
+  }
+  return {
+    positions: new Float32Array(out.positions),
+    normals: new Float32Array(out.normals),
+    indices: new Uint32Array(out.indices),
+  };
+}
+
+/** A runway sign: where it stands and which way its face points. */
+export interface SignPlacement {
+  readonly along: number;
+  readonly across: number;
+  /** Runway end the face is readable from: the sign faces an arriving aircraft. */
+  readonly facesEnd: -1 | 1;
+}
+
+/**
+ * Signs at both thresholds, on both sides.
+ *
+ * Runway-local, at the DERIVED edge clearance rather than a pinned offset — a
+ * constant would put a sign inside the graded strip the first time a seed made
+ * a wider runway, and a sign inside the strip still renders perfectly.
+ */
+export function signPlacements(
+  airport: Readonly<AirportDefinition>,
+): readonly SignPlacement[] {
+  const across = signLateralOffsetMeters(airport);
+  const along = airport.runwayLength / 2 - 30;
+  const out: SignPlacement[] = [];
+  for (const end of [-1, 1] as const) {
+    for (const side of [-1, 1] as const) {
+      out.push({ along: end * along, across: side * across, facesEnd: end });
+    }
+  }
+  return out;
+}
+
+/** Every sign as one mesh. */
+export function buildSignageGeometry(
+  airport: Readonly<AirportDefinition>,
+  heightAt: (along: number, across: number) => number = () => 0,
+): WindsockPartGeometry {
+  const face = buildSignPart("face");
+  const leg = buildSignPart("leg");
+  const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
+  for (const sign of signPlacements(airport)) {
+    const base = heightAt(sign.along, sign.across);
+    // The face is built in the local xy plane facing +z; a sign read from the
+    // `-1` end must face that way, so the axis flips with `facesEnd`.
+    appendTransformed(
+      out,
+      face,
+      [0, 1, 0],
+      [sign.across, base, sign.along],
+    );
+    for (const offset of [-SIGN_FACE_WIDTH_METERS * 0.4, SIGN_FACE_WIDTH_METERS * 0.4]) {
+      appendTransformed(out, leg, [0, 1, 0], [sign.across + offset, base, sign.along]);
+    }
+  }
+  return {
+    positions: new Float32Array(out.positions),
+    normals: new Float32Array(out.normals),
+    indices: new Uint32Array(out.indices),
+  };
+}
+
+/**
+ * Luminous intensity of an internally-lit sign face, candela.
+ *
+ * **Two orders below a runway edge light (10,000 cd) on purpose.** A sign is an
+ * illuminated PANEL read at a few hundred metres, not a point source picked up
+ * on approach — matching it to a lamp would make the signs the brightest thing
+ * on the airfield, which is both wrong and a distraction from the lighting a
+ * pilot is actually flying.
+ */
+export const SIGN_LUMINOUS_INTENSITY_CANDELA = 60;
+
+/**
+ * Sign faces as light points, so they read at night.
+ *
+ * **Through `7-5`'s billboard path rather than a second emissive one.** The
+ * plan asks for signage "doubling as 7-5 light points" and the alternative —
+ * an emissive material on the face — would be a second brightness model to keep
+ * in step with the lamps through every calibration change. `7-5`'s constant has
+ * already been wrong three times; a parallel path would have to be wrong the
+ * same way at the same moment to stay consistent.
+ *
+ * The face is a MANDATORY instruction sign at a holding position, so ICAO
+ * Annex 14 makes it red with a white inscription: at night the lit background
+ * is what carries, which is why the fixture colour is red rather than white.
+ *
+ * A hemispherical beam, because a sign is readable from the direction it faces
+ * and dark from behind — the same `beamCosineCutoff` the threshold lamps use,
+ * and for the same reason.
+ */
+export function signLightPoints(
+  airport: Readonly<AirportDefinition>,
+  colour: readonly [number, number, number],
+  intensityScale: number,
+  heightAt: (along: number, across: number) => number = () => 0,
+): LightPointFixture[] {
+  const axis: readonly [number, number, number] = [
+    Math.sin(airport.headingRadians), 0, Math.cos(airport.headingRadians),
+  ];
+  return signPlacements(airport).map((sign) => {
+    const point = runwayToWorld(airport, sign.along, sign.across);
+    return {
+      position: [
+        point.x,
+        airport.elevation + heightAt(sign.along, sign.across)
+          + SIGN_LEG_HEIGHT_METERS + SIGN_FACE_HEIGHT_METERS / 2,
+        point.z,
+      ] as const,
+      aim: [axis[0] * sign.facesEnd, 0, axis[2] * sign.facesEnd] as const,
+      intensity: SIGN_LUMINOUS_INTENSITY_CANDELA * intensityScale,
+      profileRow: 0,
+      radiusMeters: SIGN_FACE_HEIGHT_METERS / 2,
+      color: colour,
+      beamCosineCutoff: 0,
+    };
+  });
 }

@@ -99,6 +99,7 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
@@ -2428,6 +2429,28 @@ export class FlightRenderer implements FlightRenderingSystem {
       wind.speed / MAX_WIND_SPEED,
       Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
     );
+    // 7-13: a SECOND wind sample, at the windsock. The snapshot above is taken
+    // at the aircraft and is right for the detail field, whose per-instance
+    // bytes carry the spatial variation — but a windsock is one object at one
+    // fixed place, kilometres from the aeroplane on approach, and a sock driven
+    // by the aircraft's wind still points, swings and gusts convincingly.
+    // Nothing in a frame distinguishes it, which is why
+    // `lighting.windsock.test.ts` asserts the two samples DIFFER in heading and
+    // speed rather than asserting the sock's angle looks right.
+    if (this.airport) {
+      const at = this.airport.windsockSamplePoint;
+      const sockWind = sampleWind(
+        this.worldDefinition,
+        at.x,
+        at.y,
+        at.z,
+        state.simulationTime,
+      );
+      this.airport.setWindsockState(
+        windsockHeadingRadians(sockWind.x, sockWind.z),
+        sockWind.speed,
+      );
+    }
     // 2-12's translucency term: the atmosphere system's own key light, on
     // the same forward-the-snapshot pattern the wind field uses. The
     // strength is the relative illuminance, so a backlit canopy glows in

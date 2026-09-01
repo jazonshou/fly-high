@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createWorld, sampleWind } from "../src/world";
 import {
@@ -6,10 +7,13 @@ import {
   WINDSOCK_SLACK_DROOP_RADIANS,
   headingDifferenceRadians,
   runwayAxisDifferenceRadians,
+  windsockAxisDirection,
+  windsockBoreScale,
   windsockDroopRadians,
   windsockHeadingRadians,
   windsockInflation,
   windsockWorldPosition,
+  buildWindsockPart,
 } from "../src/render/webgpu/detail/AirfieldFurniture";
 
 /**
@@ -182,5 +186,97 @@ describe("the sock reads as an instrument", () => {
     }
     const mid = (WINDSOCK_MINIMUM_INDICATION_MPS + WINDSOCK_FULL_EXTENSION_MPS) / 2;
     expect(windsockInflation(mid)).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe("the sock's orientation is checkable without a rotation convention", () => {
+  it("points along the wind when fully extended", () => {
+    // A direction vector can be checked against the wind it came from with no
+    // Euler order in between. Due east, fully extended: straight along +x.
+    const east = windsockAxisDirection(Math.PI / 2, 0);
+    expect(east[0]).toBeCloseTo(1, 9);
+    expect(east[1]).toBeCloseTo(0, 9);
+    expect(east[2]).toBeCloseTo(0, 9);
+    const north = windsockAxisDirection(0, 0);
+    expect(north[2]).toBeCloseTo(1, 9);
+  });
+
+  it("hangs DOWN when slack, never up", () => {
+    // Sign errors in a droop are the kind that look plausible in one frame: a
+    // sock pointing skyward reads as a strong updraught rather than as no wind.
+    for (const speed of [0, 0.5, 1, 1.5]) {
+      const axis = windsockAxisDirection(1.2, windsockDroopRadians(speed));
+      expect(axis[1], `speed ${speed} lifted the sock`).toBeLessThan(0);
+    }
+    expect(windsockAxisDirection(1.2, windsockDroopRadians(20))[1]).toBeCloseTo(0, 9);
+  });
+
+  it("stays a unit vector at every droop, so scaling cannot leak into length", () => {
+    for (let droop = 0; droop <= Math.PI / 2; droop += 0.05) {
+      const [x, y, z] = windsockAxisDirection(0.7, droop);
+      expect(Math.hypot(x, y, z)).toBeCloseTo(1, 9);
+    }
+  });
+
+  it("keeps its heading as it droops — droop must not steer it", () => {
+    // The failure this catches: folding droop into the horizontal components
+    // wrongly makes a slack sock swing as well as fall, which reads as a wind
+    // shift that never happened.
+    for (const droop of [0, 0.3, 0.9, 1.3]) {
+      const [x, , z] = windsockAxisDirection(2.1, droop);
+      expect(windsockHeadingRadians(x, z)).toBeCloseTo(2.1, 9);
+    }
+  });
+
+  it("shares its bore scale with the mesh builder", () => {
+    // The mesh is built once at full inflation and scaled per frame, so the
+    // builder and the runtime must agree on what inflation means. Asserted
+    // against the geometry rather than against a copy of the formula: a slack
+    // sock's rings must be exactly `windsockBoreScale(0)` of a streaming one's.
+    const slack = buildWindsockPart("sock", 0);
+    const streaming = buildWindsockPart("sock", 1);
+    const radius = (g: { positions: Float32Array }, vertex: number) =>
+      Math.hypot(g.positions[vertex * 3]!, g.positions[vertex * 3 + 2]!);
+    // Seven decimals, not nine: the ratio is read back out of a Float32Array,
+    // which carries ~7 significant digits, and the observed error is 4.2e-9 —
+    // storage precision rather than disagreement. Asserting nine here would be
+    // a test that fails on arithmetic that is exactly right.
+    expect(radius(slack, 3) / radius(streaming, 3))
+      .toBeCloseTo(windsockBoreScale(0) / windsockBoreScale(1), 7);
+    expect(windsockBoreScale(1)).toBeCloseTo(1, 9);
+  });
+});
+
+describe("the renderer actually takes the second sample", () => {
+  // READS THE ARTIFACT, not a model of it. Every assertion above proves the
+  // sock CAN be driven by its own wind; none proves the renderer DOES it. A
+  // sock wired to the aircraft snapshot would pass all of them — which is the
+  // precise shape of the trap the plan warned about, one level up.
+  const source = readFileSync("src/render/FlightRenderer.ts", "utf8");
+
+  it("samples wind at the windsock's own point, not only at the aircraft", () => {
+    expect(source).toContain("windsockSamplePoint");
+    expect(source).toContain("setWindsockState");
+    // Two distinct sampleWind calls: the detail field's and the sock's. One
+    // would mean the sock is reading whatever the other consumer took.
+    const samples = (source.match(/sampleWind\(/g) ?? []).length;
+    expect(
+      samples,
+      "FlightRenderer takes " + samples + " wind sample(s). The windsock needs "
+      + "its own, at its own position — a single shared sample is the defect "
+      + "`lighting.windsock.test.ts` exists to prevent",
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("passes the sock's own sample, not the aircraft's", () => {
+    // The subtle failure: taking a second sample and then passing the FIRST
+    // one's vector. Pin that the call is fed from the sock sample by name.
+    const call = /setWindsockState\(\s*windsockHeadingRadians\(\s*(\w+)\.x,\s*\1\.z,?\s*\),\s*\1\.speed/.exec(source);
+    expect(
+      call,
+      "setWindsockState is not fed from a single consistently-named wind "
+      + "sample — check it is the sock's and not the aircraft's",
+    ).not.toBeNull();
+    expect(call![1]).not.toBe("wind"); // `wind` is the aircraft sample
   });
 });
