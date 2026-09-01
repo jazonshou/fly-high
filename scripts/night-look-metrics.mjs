@@ -185,6 +185,15 @@ for (let y = 0; y < H; y++) {
     else if (ambiguous) ambigCount++;
   }
 }
+// §2.6 lamp criterion — Jason at dusk: "way too bright/spread out". The
+// core AREA (pixels at or above the lit-gate floor) is the proxy for both:
+// intensity drives the count directly and halo spread follows intensity
+// through the bloom threshold. If a capture-tuned intensity cut shrinks the
+// count but the spread survives to the eye, that is a separate PSF issue —
+// report it, do not fold it into this number.
+let lampCoreArea = 0;
+for (let i = 0; i < W * H; i++) if (luma(i * 4) >= LAMP_FLOOR) lampCoreArea++;
+
 const lampSat = lampCount ? lampSatSum / lampCount : 0;
 const lampOffFixtureChroma = totalChroma > 0 ? offChroma / totalChroma : 0;
 const lampOffFixtureCount = classifiedCount > 0 ? offCount / classifiedCount : 0;
@@ -195,6 +204,7 @@ console.log(`  terrainBandMedianLuma  ${terrainMedian.toFixed(4)}   (moonlit tar
 console.log(`  chromaSaturation       ${chromaSat.toFixed(4)} over ${satCount} px  (proposed floor ~0.15)`);
 console.log(`  skyBlueDominance       ${skyBlue.toFixed(4)}   (proposed floor ~0.02, ceiling ~0.25)`);
 console.log(`  skyGroundRatio         ${skyGroundRatio.toFixed(4)}   (sky median ${skyMedian.toFixed(4)} / terrain median; DUSK floor 1.5, no night floor)`);
+console.log(`  lampCoreArea           ${lampCoreArea} px >= ${LAMP_FLOOR} luma  (dusk target <= 0.5x null; night must match null)`);
 console.log(`  lampShoulderSaturation ${lampSat.toFixed(4)} over ${lampCount} px in 0.45-0.60 near cores  (floor 0.15; "not all white")`);
 console.log(`  lampOffFixture         count ${lampOffFixtureCount.toFixed(4)} / chroma ${lampOffFixtureChroma.toFixed(4)} in (160,330); ambiguous[330,345) ${lampAmbiguousCount.toFixed(4)}; neutral ${neutralCount} px  (ceiling TBD from Jason)`);
 console.log(`  hueDiversity           ${hueDiversity.toFixed(4)} over ${colored.length} colored px, dominant ${dominantHue.toFixed(0)} deg  (proposed floor ~0.15)`);
