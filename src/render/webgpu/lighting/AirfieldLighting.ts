@@ -36,6 +36,7 @@ import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import { runwayMarkingProfile } from "../terrain/RunwaySurface";
 import { runwayToWorld } from "../../../world/airport";
 import type { AirportDefinition } from "../../../world/types";
+import type { LightPointFixture } from "./LightPoints";
 
 /** Which runway end the wing bar serves. `+1` is the `along > 0` threshold. */
 export type PapiServedEnd = -1 | 1;
@@ -631,4 +632,248 @@ export function airfieldFixtures(
     out.push(...airfieldApproachFixtures(airport, end));
   }
   return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// `AirfieldLightingSystem` — the third symbol this artifact owns.
+//
+// It joins 7-7's fixture arithmetic above to 7-5's `LightPointSystem`, which
+// owns the billboard path. Until this existed, `FlightRenderer` constructed
+// `new LightPointSystem(scene, [], 1)` and NOT ONE LAMP RENDERED: two gates of
+// night-lighting work were present, correct, green under 33 assertions, and
+// invisible. `PHASE_6_OUTCOME.md` §1 exists because a wave of Phase 6 work
+// failed the same way — read "landed" as "the code exists and is correct",
+// never as "you can see it".
+// ---------------------------------------------------------------------------
+
+/**
+ * Lamp chromaticities, scene-linear RGB, each normalised so no lamp is brighter
+ * than another merely by being a different colour — brightness is
+ * `intensityCandela`'s job and mixing the two makes both untunable.
+ *
+ * Aviation colours are saturated by regulation (ICAO Annex 14, Appendix 1)
+ * because they must stay identifiable through haze and at low intensity, which
+ * is why the green and red sit far from white rather than being tinted whites.
+ */
+export const AIRFIELD_LAMP_RGB: Readonly<
+  Record<Exclude<AirfieldLightColour, "off">, readonly [number, number, number]>
+> = Object.freeze({
+  white: Object.freeze([1.0, 0.96, 0.90] as const),
+  amber: Object.freeze([1.0, 0.63, 0.10] as const),
+  green: Object.freeze([0.10, 1.0, 0.42] as const),
+  red: Object.freeze([1.0, 0.08, 0.06] as const),
+});
+
+/**
+ * Per-kind photometry, in CANDELA, because that is the unit the fixtures are
+ * specified in and the shader's inverse-square falloff consumes.
+ *
+ * These are real orders of magnitude for the fixture classes (ICAO Annex 14
+ * Appendix 2 isocandela diagrams): approach and threshold lights are the
+ * brightest, inset centreline and touchdown-zone lamps are dimmer than elevated
+ * edge lamps.
+ *
+ * CALIBRATION IS UNMEASURED. The scene-linear value a lamp lands on is
+ * `intensity x candela x beam x extinction x transmittance / (distance^2 x
+ * renderedRadiusPixels^2)`, and nothing in the tree states what scene-linear
+ * value equals one cd/m^2 at night. So these are physically-sourced ratios with
+ * one shared scale factor, and the scale factor is the thing to measure on a
+ * host — NOT six numbers to art-direct independently. Keeping the ratios
+ * physical means a calibration run moves one constant.
+ */
+export const AIRFIELD_LAMP_PHOTOMETRY: Readonly<
+  Record<AirfieldFixtureKind | "papi", { readonly intensityCandela: number; readonly radiusMeters: number }>
+> = Object.freeze({
+  edge: Object.freeze({ intensityCandela: 10_000, radiusMeters: 0.12 }),
+  threshold: Object.freeze({ intensityCandela: 10_000, radiusMeters: 0.12 }),
+  centreline: Object.freeze({ intensityCandela: 5_000, radiusMeters: 0.10 }),
+  touchdownZone: Object.freeze({ intensityCandela: 5_000, radiusMeters: 0.10 }),
+  approach: Object.freeze({ intensityCandela: 20_000, radiusMeters: 0.14 }),
+  papi: Object.freeze({ intensityCandela: 20_000, radiusMeters: 0.16 }),
+});
+
+/**
+ * The one scale factor between candela and scene-linear radiance.
+ *
+ * Separated from the photometry above so that a calibration run changes THIS
+ * and nothing else. Derived rather than guessed: a `10,000 cd` edge lamp seen
+ * from 500 m through a clear atmosphere should land near a bright star, and
+ * `StarFieldSystem` fixes a magnitude-0 star at
+ * `STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5` at its PSF centre with the same
+ * `1/psf^2` normaliser and the same 1.7 px PSF. Equating the two:
+ *
+ *   0.5 = SCALE x 10000 / (500^2 x 1.7^2)
+ *   SCALE = 0.5 x 250000 x 2.89 / 10000 = 36.1
+ *
+ * so a runway edge lamp at half a kilometre reads as bright as a first-rank
+ * star, which is about right for a night approach.
+ *
+ * WRITTEN WRONG THE FIRST TIME, as 3.6e-2 -- the same expression, evaluated a
+ * thousandfold out. It survived because nothing renders a light point in Node
+ * and the airfield was black for a second, unrelated reason at the same time,
+ * so the frame could not distinguish "scale is wrong" from "extinction is
+ * wrong". Recorded because a scale factor is exactly the constant a reader
+ * will trust without recomputing.
+ *
+ * STILL A MODEL: it assumes the star constant is itself calibrated, and the
+ * ratio it targets has not been checked against a tone-mapped frame. Treat it
+ * as the starting point of a measurement, not as a result.
+ */
+export const AIRFIELD_LAMP_SCENE_SCALE = 36.1;
+
+/**
+ * Beam cutoff for a directional lamp: a hemisphere.
+ *
+ * `0` is the cosine of 90 degrees. A lamp emitted toward one runway end must be
+ * dark toward the other, or a threshold lamp shows green AND red from both
+ * sides — the per-direction colouring above would be visible nonsense rather
+ * than merely wrong.
+ */
+export const AIRFIELD_LAMP_BEAM_COSINE = 0;
+
+/** World-space unit vector along increasing runway `along`. */
+function runwayAxis(airport: Readonly<AirportDefinition>): readonly [number, number, number] {
+  return [Math.sin(airport.headingRadians), 0, Math.cos(airport.headingRadians)];
+}
+
+/**
+ * Expand 7-7's fixtures into light points, splitting each into up to two —
+ * one per direction it is visible in.
+ *
+ * The split is forced by the data: `colourTowardEnd` carries a colour toward
+ * each runway end, `LightPointFixture` carries one colour, and `"off"` means
+ * not visible that way. One light point per lit direction, each with a
+ * hemispherical beam facing the end it serves, expresses all three states
+ * without a second material.
+ */
+export function airfieldLightPoints(
+  airport: Readonly<AirportDefinition>,
+): LightPointFixture[] {
+  const axis = runwayAxis(airport);
+  const out: LightPointFixture[] = [];
+  for (const fixture of airfieldFixtures(airport)) {
+    const photometry = AIRFIELD_LAMP_PHOTOMETRY[fixture.kind];
+    // Index 0 is the colour shown toward the -1 end, index 1 toward +1.
+    for (const end of [-1, 1] as const) {
+      const colour = fixture.colourTowardEnd[end === -1 ? 0 : 1];
+      if (colour === "off") continue;
+      out.push({
+        position: [fixture.x, fixture.y, fixture.z],
+        aim: [axis[0] * end, 0, axis[2] * end],
+        intensity: photometry.intensityCandela * AIRFIELD_LAMP_SCENE_SCALE,
+        profileRow: 0,
+        radiusMeters: photometry.radiusMeters,
+        color: AIRFIELD_LAMP_RGB[colour],
+        beamCosineCutoff: AIRFIELD_LAMP_BEAM_COSINE,
+      });
+    }
+  }
+  return out;
+}
+
+/** A PAPI lamp's placement plus the aim it is seen along. */
+interface PapiLamp {
+  readonly placement: PapiUnitPlacement;
+  readonly servedEnd: PapiServedEnd;
+}
+
+/**
+ * Every PAPI lamp, both served ends, in the order they are appended to the
+ * light-point list.
+ */
+export function papiLamps(airport: Readonly<AirportDefinition>): readonly PapiLamp[] {
+  const out: PapiLamp[] = [];
+  for (const servedEnd of [-1, 1] as const) {
+    for (const placement of papiUnitPlacements(airport, servedEnd)) {
+      out.push({ placement, servedEnd });
+    }
+  }
+  return out;
+}
+
+/**
+ * The airfield's lighting, as one instanced draw.
+ *
+ * Owns the fixture -> light-point expansion and the PAPI's per-frame
+ * indication. It does NOT own the billboard path, the PSF, the extinction model
+ * or the aerial binding — those are `LightPointSystem`'s, and a second one of
+ * any of them is the drift this arrangement exists to prevent.
+ */
+export class AirfieldLightingSystem {
+  /** Every light point, static fixtures first, then the PAPI lamps. */
+  readonly fixtures: readonly LightPointFixture[];
+  private readonly lamps: readonly PapiLamp[];
+  private readonly papiOffset: number;
+  private readonly colours: (readonly [number, number, number])[];
+  /** Last indication applied, one entry per PAPI lamp; drives the update. */
+  private applied: PapiIndication[];
+
+  constructor(airport: Readonly<AirportDefinition>) {
+    const staticPoints = airfieldLightPoints(airport);
+    this.papiOffset = staticPoints.length;
+    this.lamps = papiLamps(airport);
+    const axis = runwayAxis(airport);
+    const papiPhotometry = AIRFIELD_LAMP_PHOTOMETRY.papi;
+    const papiPoints: LightPointFixture[] = this.lamps.map((lamp) => ({
+      position: [lamp.placement.x, lamp.placement.y, lamp.placement.z] as const,
+      // A PAPI is seen from the approach, which lies BEYOND the served end, so
+      // the lamp faces outward along the axis toward that end.
+      aim: [axis[0] * lamp.servedEnd, 0, axis[2] * lamp.servedEnd] as const,
+      intensity: papiPhotometry.intensityCandela * AIRFIELD_LAMP_SCENE_SCALE,
+      profileRow: 0,
+      radiusMeters: papiPhotometry.radiusMeters,
+      // Starts red; the first `update` call resolves it from the real camera.
+      color: AIRFIELD_LAMP_RGB.red,
+      beamCosineCutoff: AIRFIELD_LAMP_BEAM_COSINE,
+    }));
+    this.fixtures = [...staticPoints, ...papiPoints];
+    this.colours = this.fixtures.map((fixture) => fixture.color);
+    this.applied = this.lamps.map(() => "red");
+  }
+
+  /**
+   * Resolve the PAPI indication for an observer and report whether it changed.
+   *
+   * ANALYTIC, and that is a requirement rather than a preference (D-3): the IES
+   * texture carries 180 samples over 180 degrees — 1.0 deg/sample — against the
+   * 0.1 deg the angular law is pinned to, ten times too coarse, and
+   * interpolating across the step would render the transition as a 1 degree
+   * ramp instead of an edge. Each unit is evaluated at its OWN elevation rather
+   * than one shared angle, because the units are metres apart across the runway
+   * and `papiElevationDegrees` is defined at the unit.
+   *
+   * Returns true only when an indication actually flipped, so the caller
+   * re-uploads colours on a transition rather than every frame. The indication
+   * is a step function of elevation, so there is nothing between the states to
+   * interpolate and nothing is lost by not updating continuously.
+   */
+  update(cameraWorldX: number, cameraWorldY: number, cameraWorldZ: number): boolean {
+    let changed = false;
+    for (let index = 0; index < this.lamps.length; index += 1) {
+      const { placement } = this.lamps[index]!;
+      const elevation = papiElevationDegrees(
+        placement,
+        cameraWorldX,
+        cameraWorldY,
+        cameraWorldZ,
+      );
+      const indication: PapiIndication =
+        elevation >= placement.settingDegrees ? "white" : "red";
+      if (indication === this.applied[index]) continue;
+      this.applied[index] = indication;
+      this.colours[this.papiOffset + index] = AIRFIELD_LAMP_RGB[indication];
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** The colour of every light point, for `LightPointSystem.setColors`. */
+  colourList(): readonly (readonly [number, number, number])[] {
+    return this.colours;
+  }
+
+  /** The current indication per PAPI lamp, in `papiLamps` order. */
+  indication(): readonly PapiIndication[] {
+    return this.applied;
+  }
 }

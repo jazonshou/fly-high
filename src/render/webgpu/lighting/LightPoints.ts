@@ -18,7 +18,6 @@ import {
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import {
   relativeAirMass,
-  STAR_EXTINCTION_MAGNITUDES_PER_AIRMASS,
 } from "@/src/render/webgpu/atmosphere/StarCatalogue";
 
 /**
@@ -74,25 +73,6 @@ import {
 export const LIGHT_POINT_PSF_RADIUS_PIXELS = 1.7;
 
 /**
- * Atmospheric transmission for a light point at a given elevation.
- *
- * Uses the star path's `relativeAirMass` and its extinction coefficient
- * DIRECTLY rather than restating them, which is what makes `7-5`'s pin —
- * *"extinction agrees with the star path's air mass at matched elevations"* —
- * true by construction instead of by tuning. A second Kasten-Young here is the
- * same defect as a second sun disc.
- *
- * This is the ELEVATION-dependent half. The finite-path half (in-scatter and
- * range extinction between the fixture and the camera) is the aerial
- * perspective include's, applied in the shader.
- */
-export function lightPointAtmosphericTransmission(elevationDegrees: number): number {
-  const magnitudes = STAR_EXTINCTION_MAGNITUDES_PER_AIRMASS
-    * Math.min(Math.max(relativeAirMass(elevationDegrees), 1), 40);
-  return 10 ** (-0.4 * magnitudes);
-}
-
-/**
  * The rendered radius of a light point, in pixels, and the flux normaliser
  * that keeps its total emitted flux invariant across the near->far transition.
  *
@@ -110,6 +90,31 @@ export function lightPointRadiusPixels(
   psfRadiusPixels: number = LIGHT_POINT_PSF_RADIUS_PIXELS,
 ): number {
   return Math.max(psfRadiusPixels, projectedRadiusPixels);
+}
+
+/**
+ * Angular softening of the beam edge, in cosine units.
+ *
+ * 0.08 is about 4.6 degrees at a hemisphere cutoff — enough that the edge does
+ * not alias into a hard line as a lamp crosses it, and deliberately far coarser
+ * than the 0.1 degree the PAPI's angular law is pinned to. A PAPI is NOT drawn
+ * through this gate for exactly that reason; its indication is resolved on the
+ * CPU by `AirfieldLightingSystem.update`.
+ */
+export const LIGHT_POINT_BEAM_SOFTNESS = 0.08;
+
+/**
+ * The beam gain for a fixture, mirroring the shader exactly.
+ *
+ * Exported so the gate can be asserted without a GPU — the WGSL below
+ * interpolates the same constant, so this is not a parallel implementation of
+ * the number, only of the expression.
+ */
+export function lightPointBeamGain(beamCosineCutoff: number, axisCosine: number): number {
+  if (beamCosineCutoff <= -1) return 1;
+  const t = (axisCosine - beamCosineCutoff) / LIGHT_POINT_BEAM_SOFTNESS;
+  const clamped = Math.min(Math.max(t, 0), 1);
+  return clamped * clamped * (3 - 2 * clamped);
 }
 
 /** Flux-conserving normaliser for a rendered radius. Mirrors the star field's `1 / psf^2`. */
@@ -181,8 +186,39 @@ export function packIesProfiles(
       );
     }
     // The theta = 0 column: entries [0, 180) of a [phi + theta * 180] grid.
+    //
+    // TWO CORRECTIONS TO THE LOADER, both VERIFIED against the compiled
+    // `@babylonjs/core/Lights/IES/iesLoader.js` rather than taken on report,
+    // and both latent until a real `.ies` file flows through this function.
+    //
+    // 1. CLAMP. `InterpolateCandelaValues` lets its interpolant exceed 1 past
+    //    the file's last vertical angle, so it EXTRAPOLATES rather than holding
+    //    the endpoint. Measured on a 0-90 degree file falling 100 -> 0:
+    //    **32,040 of 64,800 entries come back NEGATIVE**, reaching -0.9889.
+    //    Real edge-light and downlight files commonly span 0-90 degrees, so
+    //    roughly half of such a profile would be negative candela feeding
+    //    straight into the shader's gain chain — a lamp that SUBTRACTS light.
+    //
+    // 2. SQUARE ROOT. `iesLoader.js:111` reads
+    //    `candelaValues[i][j] *= candelaValues[i][j] * multiplier * ...`,
+    //    which squares the photometry before max-normalising, so a packed row
+    //    holds `(x / xmax)^2`. Every IES-driven fixture would render with the
+    //    SQUARE of its real angular falloff: beams too narrow, tails crushed.
+    //    Measured on a linear 100 -> 50 file, the midpoint returns 0.6250
+    //    where 0.75 is correct — and 0.6250 is exactly `lerp(1, 0.25, 0.5)`,
+    //    which identifies it as lerp-of-squares rather than a scale error.
+    //
+    // WHAT THE SQUARE ROOT DOES AND DOES NOT RECOVER, stated because it is
+    // tempting to call it exact: the loader squares BEFORE interpolating, so
+    // `sqrt` is exact at the file's own sample angles (the 100 -> 50 endpoint
+    // returns 0.5041) and approximate between them (the midpoint returns
+    // 0.7906 against 0.75). It turns a -16.7% error into +5.4% and removes the
+    // systematic narrowing; it cannot undo interpolation performed in squared
+    // space. Doing that would mean re-implementing the loader's sampling.
+    //
+    // The clamp precedes the root, or a negative would produce NaN.
     for (let phi = 0; phi < width; phi += 1) {
-      data[row * width + phi] = profile.data[phi]!;
+      data[row * width + phi] = Math.sqrt(Math.max(profile.data[phi]!, 0));
     }
   }
   const texture = RawTexture.CreateRTexture(
@@ -259,15 +295,46 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let profileV = (vertexInputs.lightParams.y + 0.5) / max(uniforms.lightIesRows, 1.0);
   let candela = textureSampleLevel(iesProfile, iesProfileSampler, vec2f(profileU, profileV), 0.0).r;
 
-  // Elevation extinction, Kasten-Young, the STAR PATH'S coefficients. A
-  // second air-mass model here would drift against the star field exactly as
-  // a second sun disc once did.
-  let elevationDegrees = degrees(asin(clamp(-toViewer.y, -1.0, 1.0)));
-  let clampedElevation = max(elevationDegrees, -2.0);
-  let airMass = 1.0 / (sin(radians(clampedElevation))
-    + 0.50572 * pow(clampedElevation + 6.07995, -1.6364));
-  let extinction = pow(10.0, -0.4 * ${STAR_EXTINCTION_MAGNITUDES_PER_AIRMASS}
-    * clamp(airMass, 1.0, 40.0));
+  // Beam gate. lightParams.w is the cosine of the beam half-angle; <= -1 means
+  // omnidirectional and takes the constant path so a fixture with no beam is
+  // never dimmed by the smoothstep's own lower edge. The 0.08 softening is
+  // LIGHT_POINT_BEAM_SOFTNESS wide -- about 4.6 degrees at a hemisphere cutoff,
+  // enough that the edge does not
+  // alias into a hard line as a lamp crosses it, and far coarser than anything
+  // the PAPI needs, which is why the PAPI is not drawn through this.
+  let beamCutoff = vertexInputs.lightParams.w;
+  let beam = select(
+    smoothstep(beamCutoff, beamCutoff + ${LIGHT_POINT_BEAM_SOFTNESS}, axisCosine),
+    1.0,
+    beamCutoff <= -1.0,
+  );
+
+  // NO ELEVATION AIR MASS HERE, and its removal is a bug fix rather than a
+  // simplification.
+  //
+  // This shader used to apply the star field's Kasten-Young air mass, on the
+  // reasoning that a light point is a point source like a star and a second
+  // air-mass model would drift against the star field. The source-kind analogy
+  // holds; the PATH analogy does not. Kasten-Young integrates the FULL
+  // atmospheric column to space as a function of elevation above the horizon.
+  // A runway lamp is a terrestrial source a known, finite distance away, and it
+  // is usually BELOW the viewer, which makes the elevation negative.
+  //
+  // MEASURED, not argued: at every approach geometry an aircraft can fly --
+  // 1,200 m at 70 m, 500 m at 30 m, 200 m at 10 m, 1,200 m at 400 m -- the
+  // negative elevation clamped to -2 degrees and the air mass pinned to its
+  // own ceiling of 40, giving a CONSTANT extinction of 6.31e-4. A 1,585x
+  // attenuation, identical in every case, on paths of a few hundred metres.
+  // Nothing in the term varied with the geometry it was supposed to model.
+  //
+  // The correct extinction for a finite path is the aerial include's, applied
+  // immediately below, which integrates altitude and distance. That was always
+  // here; the air-mass term was a SECOND model layered on top of it, which is
+  // the very thing the comment it replaced was worried about. Removing it
+  // leaves exactly one.
+  //
+  // This was invisible for as long as it existed because no fixture ever
+  // rendered: FlightRenderer built the system with an empty list.
 
   // The finite-path half of extinction, from the OWNED include rather than a
   // second model -- the elevation term above is the star path's, this is the
@@ -282,7 +349,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let haze = aerialPerspective(worldPosition.y, distanceMeters, 0.0);
 
   // Inverse-square falloff to scene-linear radiance, then the photometry.
-  let irradiance = vertexInputs.lightParams.x * candela * extinction
+  let irradiance = vertexInputs.lightParams.x * candela * beam
     / (distanceMeters * distanceMeters);
 
   var clipPosition = uniforms.worldViewProjection * vec4f(worldPosition, 1.0);
@@ -337,6 +404,25 @@ export interface LightPointFixture {
   /** Physical emitter radius in metres — decides where it stops being a point. */
   readonly radiusMeters: number;
   readonly color: readonly [number, number, number];
+  /**
+   * Cosine of the beam half-angle, or `<= -1` for omnidirectional (the
+   * default). `0` is a hemisphere: visible ahead of the fixture, dark behind.
+   *
+   * WHY THIS AND NOT AN IES ROW. The IES path can express a cutoff, but it
+   * samples 180 values over 180 degrees — 1.0 deg/sample — and the cutoff would
+   * land wherever the nearest sample is. That resolution is the same reason
+   * `7-7` requires the PAPI's transition to be analytic rather than IES-sampled.
+   * A beam is also not photometry: it is which way the lamp FACES, and folding
+   * it into the profile would mean a new synthetic IES row per aiming, which is
+   * a per-kind texture in disguise — the thing this module's ONE draw exists to
+   * avoid. This rides the fourth `lightParams` slot, which was already
+   * allocated and written as a constant zero.
+   *
+   * REQUIRED by airfield lighting: a threshold lamp is green to an aircraft
+   * arriving over it and red to one rolling at it. Without a beam, one lamp
+   * emitted per direction shows BOTH colours from both sides.
+   */
+  readonly beamCosineCutoff?: number;
 }
 
 /** Interleaved buffers for one instanced draw over every fixture. */
@@ -369,7 +455,10 @@ export function buildLightPointGeometry(fixtures: readonly LightPointFixture[]):
       params[vertex * 4] = fixture.intensity;
       params[vertex * 4 + 1] = fixture.profileRow;
       params[vertex * 4 + 2] = fixture.radiusMeters;
-      params[vertex * 4 + 3] = 0;
+      // `?? -1` and NOT `?? 0`: zero is a HEMISPHERE here, so defaulting to it
+      // would silently darken the back half of every fixture that did not ask
+      // for a beam. -1 is "no cutoff".
+      params[vertex * 4 + 3] = fixture.beamCosineCutoff ?? -1;
       aims[vertex * 3] = fixture.aim[0];
       aims[vertex * 3 + 1] = fixture.aim[1];
       aims[vertex * 3 + 2] = fixture.aim[2];
@@ -401,6 +490,39 @@ export class LightPointSystem {
   private readonly mesh: Mesh;
   private readonly material: ShaderMaterial;
   readonly fixtureCount: number;
+  /**
+   * The fixtures as handed in, in ABSOLUTE world coordinates.
+   *
+   * Kept because the vertex buffer holds origin-RELATIVE positions and the
+   * renderer rebases every 4,096 m flown (`FLOATING_ORIGIN_THRESHOLD`). The
+   * absolute list is the only thing that survives a rebase unchanged, so it is
+   * what the rebuilt buffer is derived from.
+   */
+  private readonly fixtures: readonly LightPointFixture[];
+  private originX = 0;
+  private originZ = 0;
+  /**
+   * A unit profile, bound at construction so the material is never incomplete.
+   *
+   * FOUND BY A TEST THAT READS THE FRAMEBUFFER, and it was a latent crash
+   * rather than a dim frame: the shader samples `iesProfile` unconditionally,
+   * and with no texture bound Babylon fails to build the bind group and
+   * `createBindGroup` THROWS on the draw. Nothing in the tree ever called
+   * `setIesProfiles` — so the first frame that drew a real fixture would have
+   * thrown, every frame.
+   *
+   * It stayed invisible because the fixture list was EMPTY: no fixtures, no
+   * draw, no bind group, no error. Populating the airfield is what would have
+   * exposed it, in flight, as a hard failure.
+   *
+   * So the default is not a convenience. A system whose own draw call cannot
+   * succeed until an optional setter is called is constructible into an invalid
+   * state, and the fix belongs here rather than in a note telling every caller
+   * to remember. Value 1.0 = unit candela at every angle, which makes the
+   * beam gate and the inverse-square falloff the whole photometry until a real
+   * profile is supplied.
+   */
+  private readonly defaultProfile: RawTexture;
 
   constructor(scene: Scene, fixtures: readonly LightPointFixture[], iesRows: number) {
     ShaderStore.ShadersStoreWGSL[`${LIGHT_POINT_SHADER_NAME}VertexShader`] = LIGHT_POINT_WGSL;
@@ -408,6 +530,7 @@ export class LightPointSystem {
       LIGHT_POINT_FRAGMENT_WGSL;
 
     this.fixtureCount = fixtures.length;
+    this.fixtures = fixtures;
     const geometry = buildLightPointGeometry(fixtures);
     this.mesh = new Mesh("light-points", scene);
     const data = new VertexData();
@@ -448,10 +571,87 @@ export class LightPointSystem {
     // edge does not.
     this.material.alphaMode = Constants.ALPHA_ADD;
     this.material.needAlphaBlending = () => true;
+    this.defaultProfile = RawTexture.CreateRTexture(
+      new Float32Array([1]),
+      1,
+      1,
+      scene,
+      false,
+      false,
+      Texture.BILINEAR_SAMPLINGMODE,
+      EngineConstants.TEXTURETYPE_FLOAT,
+    );
+    this.defaultProfile.name = "ies-unit-profile";
+    this.defaultProfile.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.defaultProfile.wrapV = Texture.CLAMP_ADDRESSMODE;
+    this.material.setTexture("iesProfile", this.defaultProfile);
     this.material.setFloat("lightPsfPixels", LIGHT_POINT_PSF_RADIUS_PIXELS);
     this.material.setFloat("lightIesRows", Math.max(iesRows, 1));
     this.material.setVector2("lightPixelSize", new Vector2(1, 1));
     this.mesh.material = this.material;
+  }
+
+  /**
+   * Re-anchor the fixtures after a floating-origin rebase.
+   *
+   * THIS IS NOT OPTIONAL AND ITS ABSENCE IS SILENT. The shader computes
+   * `toEye = lightCameraPosition - worldPosition` from the raw vertex
+   * attribute, and `FlightRenderer` feeds it `camera.position`, which is
+   * ORIGIN-RELATIVE (`FlightRenderer` stores it as `state.position - origin`).
+   * `worldViewProjection` likewise transforms the raw attribute. So the buffer
+   * must hold origin-relative positions or both the projection and the
+   * inverse-square falloff are wrong by the origin — 4,096 m at the first
+   * rebase, which puts every lamp below the horizon rather than merely in the
+   * wrong place.
+   *
+   * O(fixtures) and called once per 4,096 m flown, not per frame.
+   */
+  setFloatingOrigin(originX: number, originZ: number): void {
+    if (originX === this.originX && originZ === this.originZ) return;
+    this.originX = originX;
+    this.originZ = originZ;
+    if (this.fixtureCount === 0) return;
+    const positions = new Float32Array(this.fixtureCount * 4 * 3);
+    for (let index = 0; index < this.fixtureCount; index += 1) {
+      const fixture = this.fixtures[index]!;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const vertex = index * 4 + corner;
+        positions[vertex * 3] = fixture.position[0] - originX;
+        positions[vertex * 3 + 1] = fixture.position[1];
+        positions[vertex * 3 + 2] = fixture.position[2] - originZ;
+      }
+    }
+    this.mesh.updateVerticesData("position", positions, false, false);
+  }
+
+  /**
+   * Replace every fixture colour, one entry per fixture.
+   *
+   * Exists for the PAPI, whose indication is a STEP function of the observer's
+   * elevation angle and therefore changes rarely — so this is called on a
+   * transition, not per frame. Rewriting the whole buffer rather than a range
+   * keeps the call shape honest about what it costs and avoids an index
+   * arithmetic bug in the caller for a saving nobody measured.
+   */
+  setColors(colors: readonly (readonly [number, number, number])[]): void {
+    if (colors.length !== this.fixtureCount) {
+      throw new Error(
+        `light-point colour update has ${colors.length} entries for `
+        + `${this.fixtureCount} fixtures`,
+      );
+    }
+    if (this.fixtureCount === 0) return;
+    const buffer = new Float32Array(this.fixtureCount * 4 * 3);
+    for (let index = 0; index < this.fixtureCount; index += 1) {
+      const colour = colors[index]!;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const vertex = index * 4 + corner;
+        buffer[vertex * 3] = colour[0];
+        buffer[vertex * 3 + 1] = colour[1];
+        buffer[vertex * 3 + 2] = colour[2];
+      }
+    }
+    this.mesh.updateVerticesData("lightColor", buffer, false, false);
   }
 
   /**
@@ -495,5 +695,6 @@ export class LightPointSystem {
   dispose(): void {
     this.mesh.dispose(false, true);
     this.material.dispose();
+    this.defaultProfile.dispose();
   }
 }

@@ -6,15 +6,10 @@ import {
   LIGHT_POINT_WGSL,
   iesProfileCoordinate,
   LIGHT_POINT_PSF_RADIUS_PIXELS,
-  lightPointAtmosphericTransmission,
   lightPointFluxNormaliser,
   lightPointRadiusPixels,
   type LightPointFixture,
 } from "../src/render/webgpu/lighting/LightPoints";
-import {
-  extinguishedMagnitude,
-  relativeAirMass,
-} from "../src/render/webgpu/atmosphere/StarCatalogue";
 
 const FIXTURES: LightPointFixture[] = [
   { position: [0, 1, 0], aim: [0, 1, 0], intensity: 4, profileRow: 0, radiusMeters: 0.1, color: [1, 1, 1] },
@@ -23,43 +18,51 @@ const FIXTURES: LightPointFixture[] = [
 ];
 
 describe("7-5 light points", () => {
-  it("extinguishes exactly as the star path does at matched elevations", () => {
-    // `7-5`'s pin, satisfied by CONSTRUCTION: this module consumes
-    // `relativeAirMass` and the star path's coefficient rather than restating
-    // either, so agreement is structural, not tuned.
+  it("applies exactly ONE extinction model, and it is the aerial include's", () => {
+    // WHAT THIS REPLACED, and why the replacement is not a weakening.
     //
-    // "The star path" is ambiguous by one clamp, which this test pins rather
-    // than papers over. `StarField`'s WGSL clamps air mass to [1, 40];
-    // `StarCatalogue`'s `extinguishedMagnitude` does not. Kasten-Young returns
-    // 0.9997 at the zenith rather than exactly 1, so the two halves of the star
-    // model disagree ABOVE 88.6 degrees. This module follows the WGSL, because
-    // its own shader must agree with its own TS before either agrees with
-    // anything else.
-    const starClamped = (elevation: number): number =>
-      10 ** (-0.4 * 0.2 * Math.min(Math.max(relativeAirMass(elevation), 1), 40));
-    for (let elevation = 0; elevation <= 88; elevation += 1) {
+    // This slot held an elaborate, careful pin: that
+    // `lightPointAtmosphericTransmission` agreed with the star path's
+    // Kasten-Young air mass to 12 decimal places, clamp divergence above 88.6
+    // degrees and all. Every assertion in it was true. It modelled the shader
+    // instead of reading it, and the shader has since stopped applying an air
+    // mass at all -- so the pin would have gone on passing, in full detail,
+    // about a term that is no longer in the frame. That is the house failure
+    // mode: a guard that MODELS the thing stays green after the thing changes.
+    //
+    // WHY THE TERM WENT. Kasten-Young integrates the full atmospheric column to
+    // space as a function of elevation above the horizon. A runway lamp is a
+    // terrestrial source at finite distance, usually BELOW the viewer, which
+    // makes the elevation negative. MEASURED across every approach geometry an
+    // aircraft can fly (1,200 m at 70 m, 500 m at 30 m, 200 m at 10 m, 1,200 m
+    // at 400 m) the elevation clamped to -2 degrees and the air mass pinned to
+    // its ceiling of 40 -- a CONSTANT 6.31e-4, a 1,585x attenuation identical
+    // in every case, on paths of a few hundred metres. It rendered the whole
+    // airfield black and nothing varied with the geometry it modelled.
+    //
+    // So this reads the SHIPPING shader source for the property that matters:
+    // one extinction model, the owned one.
+    //
+    // COMMENTS STRIPPED FIRST, and this is not fussiness: the docblock that
+    // explains why the air-mass term was removed necessarily NAMES it, so a
+    // raw substring scan reads the explanation as the offence and fails on a
+    // correct shader. `owners.ts` has the same trap recorded -- a boundary
+    // guard that matched prose. A guard must read the CODE.
+    const code = LIGHT_POINT_WGSL.replace(/\/\/[^\n]*/g, "");
+    expect(code).toContain("aerialPerspective(");
+    expect(code).toContain("haze.transmittance");
+    for (const term of ["airMass", "0.50572", "6.07995"]) {
       expect(
-        lightPointAtmosphericTransmission(elevation),
-        `elevation ${elevation} deg`,
-      ).toBeCloseTo(10 ** (-0.4 * extinguishedMagnitude(0, elevation)), 12);
+        code.includes(term),
+        `the light-point shader carries "${term}" — a second extinction model `
+        + "alongside the aerial include, which is the drift the include exists "
+        + "to prevent",
+      ).toBe(false);
     }
-    for (let elevation = 0; elevation <= 90; elevation += 0.5) {
-      expect(lightPointAtmosphericTransmission(elevation)).toBeCloseTo(starClamped(elevation), 12);
-    }
-    // The divergence is bounded and negligible, and pinned so it cannot grow.
-    const worst = Math.max(
-      ...[88.6, 89, 89.5, 90].map((elevation) => Math.abs(
-        lightPointAtmosphericTransmission(elevation)
-        / 10 ** (-0.4 * extinguishedMagnitude(0, elevation)) - 1,
-      )),
-    );
-    expect(worst, "TS/WGSL air-mass clamp divergence above 88.6 deg").toBeLessThan(1e-4);
-    expect(relativeAirMass(90), "Kasten-Young is below 1 at the zenith").toBeLessThan(1);
-
-    // Non-vacuity: agreeing means nothing if the quantity does not vary.
-    expect(lightPointAtmosphericTransmission(90))
-      .toBeGreaterThan(lightPointAtmosphericTransmission(0) * 1.5);
-    expect(relativeAirMass(0)).toBeGreaterThan(30);
+    // And in-scatter still must NOT be added: an additive billboard draws over
+    // a framebuffer that already carries the path's in-scatter, so adding it
+    // again applies the haze once per light.
+    expect(code.includes("haze.inScatter")).toBe(false);
   });
 
   it("conserves flux exactly across the near->far transition", () => {

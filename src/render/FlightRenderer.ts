@@ -25,6 +25,7 @@ import {
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import { LightPointSystem } from "./webgpu/lighting/LightPoints";
+import { AirfieldLightingSystem } from "./webgpu/lighting/AirfieldLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
@@ -444,19 +445,21 @@ export class FlightRenderer implements FlightRenderingSystem {
   /**
    * `7-5`: the lights you SEE, one additive instanced draw.
    *
-   * CONSTRUCTED EMPTY ON PURPOSE. The fixtures are `7-7`'s --
-   * `AirfieldLightingSystem`, `PAPI_ANGLE_PROFILE` and `papiColourForAngle` are
-   * all still `plannedBy: "7-7"`, and inventing airfield geometry here would
-   * put a second author on a layout that item owns. Wiring it now rather than
-   * at the gate boundary keeps the integration point exercised: the aerial
-   * binding, render size and camera position all reach it every frame, so when
-   * `7-7` supplies fixtures the only new thing is the list.
-   *
-   * The empty path is ASSERTED, not merely tolerated -- see
-   * `render.webgpu-light-points.test.ts`. Otherwise "nothing renders" and "the
-   * system is broken" are the same observation on the day it is populated.
+   * POPULATED from `AirfieldLightingSystem`. It was constructed EMPTY until
+   * that system existed, and the comment here previously said the fixtures
+   * were `7-7`'s. That was wrong and it is worth recording why, because the
+   * error is what kept the airfield dark: `owners.ts` states plainly that
+   * `AirfieldLightingSystem` "lands with 7-5, which owns the billboard path a
+   * PAPI is drawn through". The scope boundary was taken from the `plannedBy`
+   * rows rather than from the note that states it, so two gates of
+   * night-lighting work shipped correct, green, and invisible.
    */
   private readonly lightPoints: LightPointSystem;
+  /**
+   * `7-7`'s fixtures, expanded into `7-5`'s light points, plus the PAPI's
+   * analytic indication. Null when the world has no airport.
+   */
+  private readonly airfieldLighting: AirfieldLightingSystem | null;
   /**
    * `7-2`: rod vision. First in the chain WHENEVER IT IS ATTACHED -- which is
    * not always, so it is not unconditionally MSAA's owner. See
@@ -567,6 +570,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     fxaa: FxaaPostProcess,
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
+    airfieldLighting: AirfieldLightingSystem | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
     atmosphereResources: AtmosphereGpuResources,
@@ -598,6 +602,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.stars = stars;
     this.lightPoints = lightPoints;
+    this.airfieldLighting = airfieldLighting;
     this.scotopic = scotopic;
     this.bloom = bloom;
     this.adapterLabel = adapterLabel;
@@ -1056,7 +1061,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => stars.dispose());
 
       // `7-5`: empty until `7-7` authors the fixtures. See the field docblock.
-      const lightPoints = new LightPointSystem(scene, [], 1);
+      // 7-5 + 7-7 joined. `airportDefinition` is resolved far above (line ~857),
+      // so the fixtures exist by the time the billboard system is built —
+      // which matters, because `LightPointSystem` takes its fixtures in the
+      // constructor and the vertex buffer is built once.
+      const airfieldLighting = airportDefinition
+        ? new AirfieldLightingSystem(airportDefinition)
+        : null;
+      const lightPoints = new LightPointSystem(
+        scene,
+        airfieldLighting?.fixtures ?? [],
+        1,
+      );
       cleanup.push(() => lightPoints.dispose());
       // Bound here rather than in the fan-out above, which runs before this
       // system exists. The per-frame fan-out carries it from the next frame on;
@@ -1192,6 +1208,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         fxaa,
         stars,
         lightPoints,
+        airfieldLighting,
         scotopic,
         bloom,
         atmosphereResources,
@@ -1963,6 +1980,18 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.stars.update(this.camera.position);
     this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
     this.lightPoints.setCameraPosition(this.camera.position);
+    // The PAPI's indication, resolved analytically against the camera's WORLD
+    // position — `camera.position` is origin-relative, and an elevation angle
+    // taken against a rebased origin would swing by the origin every 4,096 m.
+    // Only re-uploads when an indication actually flips: it is a step function
+    // of elevation, so there is nothing between the states to interpolate.
+    if (this.airfieldLighting?.update(
+      this.camera.position.x + this.originX,
+      this.camera.position.y,
+      this.camera.position.z + this.originZ,
+    )) {
+      this.lightPoints.setColors(this.airfieldLighting.colourList());
+    }
     this.lightPoints.setRenderSize(
       this.engine.getRenderWidth(),
       this.engine.getRenderHeight(),
@@ -2347,6 +2376,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setFloatingOrigin(this.originX, this.originZ);
     this.hydrology.setFloatingOrigin(this.originX, this.originZ);
     this.airport?.setFloatingOrigin(this.originX, this.originZ);
+    this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     // The planar reflection pass runs before the cloud update in the frame
     // graph. Re-resolve the shared PBR receiver binding immediately so the
     // reflected scene never combines rebased geometry with the prior origin.
