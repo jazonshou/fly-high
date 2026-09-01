@@ -134,8 +134,12 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
           0.87,
         );
 
-        const uniformBuffer = new StorageBuffer(engine, 40 * 4);
-        uniformBuffer.update(packUniforms(binding));
+        // Sized from the packed data itself, so the struct, the packer and
+        // the allocation cannot drift apart — the 40*4 literal this replaces
+        // survived one field addition and cost a buffer-overrun hunt.
+        const packedUniforms = packUniforms(binding);
+        const uniformBuffer = new StorageBuffer(engine, packedUniforms.byteLength);
+        uniformBuffer.update(packedUniforms);
         const probeBuffer = new StorageBuffer(engine, probeData.byteLength);
         probeBuffer.update(probeData);
         const resultBuffer = new StorageBuffer(engine, probes.length * 2 * 4 * 4);
