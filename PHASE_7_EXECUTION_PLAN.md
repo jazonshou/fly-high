@@ -1361,9 +1361,18 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   is the stronger form of the claim:** it is the *lightest* configuration, so a deficit
   there cannot be dismissed as a resolution choice. Across all three viewports the range is
   23.7–**83.2** ms and the factor **1.74–6.10×** — a bigger number and a weaker argument.
-  **Do not mix the two populations:** −10.0 ms (`water-3m`, 720p) is the best case in both,
-  −46.7 (`forest-500ft-sunbehind`) is worst at 720p, and −69.5 (`motion-banked-turn`, 1440p)
-  is worst anywhere. All p95, all exactly subtractable from 13.7 **inside one population**. 7-0-b required a new `post`/`lighting` row to be
+  **The claim that needs no caveat at all, and the one to quote if only one survives:
+  0 of 21 shot-configurations meet 13.7 ms.** No ranking, no ratio, no bound — nothing an
+  order statistic can be attacked on.
+  **Every worst-case figure here IS an order statistic, and the worst shot's identity
+  wanders across tier-2 viewports:** `forest-500ft-sunbehind` owns the worst at **720p**
+  (−46.7) *and* at **1080p** (−65.9); `motion-banked-turn` takes it only at **1440p**
+  (−69.5, p95 83.2). Two of the three rows are forest and the third is not. Tier 3's worst is
+  stable at forest across all three; **tier 2's is not** — which is why these are quoted with
+  their population and their owner rather than as a bare range.
+  **Do not mix populations:** −10.0 ms (`water-3m`, 720p) is the best case in *both*, which
+  is exactly why a mixed range reconciles at one end and hides its own seam. All figures are
+  p95 and all are exactly subtractable from 13.7 **inside one population**. 7-0-b required a new `post`/`lighting` row to be
   funded by cutting an existing row in the same commit, on the premise that tier 2's
   0.05 ms of slack was headroom worth trading for.
   *What survives:* **assertion 20 is a model-internal consistency check**, so the declared
