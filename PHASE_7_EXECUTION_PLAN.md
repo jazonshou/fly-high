@@ -666,10 +666,46 @@ constant-flux PSF. **One instanced draw** (§2.5).
   Use `applyAerialPerspectiveToShaderMaterial` — the owned include, not a second model —
   plus `relativeAirMass` for the near-horizon fixtures.
 - **Near→far transition** from a lit quad to a pure glow, or lights pop on approach.
-- **Bloom does not exist** (D-4). A new post-process between the scotopic pass and ACES,
-  which means renegotiating MSAA and first-pass ownership with `ScotopicVisionPass` at slot
-  0 ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)) and funding a `post` budget
-  row against tier 2's 0.05 ms of **modelled** slack (§2.3(g)).
+- **Bloom LANDED in `285eb2b`** (D-4 recorded it as absent; it is not any more). It sits
+  between the scotopic pass and ACES, which required renegotiating MSAA and first-pass
+  ownership with `ScotopicVisionPass` at slot 0
+  ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)). Gated to tier 1;
+  **tier 2+ recorded as unfunded** pending the cliff, because the `post` row it would
+  have used was funded against tier 2's 0.05 ms of **modelled** slack (§2.3(g)) and that
+  model under-predicts the machine by 1.74–4.42×.
+- **Bloom costs four draw calls on EVERY tier-1 shot, and pixels on only some of them.**
+  `BloomPass` constructs four `PostProcess` instances — bright, blur-h, blur-v, composite —
+  and attaches them to the camera chain. **There is no content gating anywhere:** the
+  threshold is applied per pixel *inside* the bright shader, so **it decides what glows,
+  never whether the pass runs**. Measured across three full captures at `285eb2b`:
+  **30 of 30 shots at exactly +4 draws, byte-identical across all three runs.**
+  `high-10000ft-down` pays the same four draws as every other shot and has no bright
+  source to spend them on.
+  **This is a property, not a complaint** — an unconditional post-process chain is a
+  normal design and the alternative (a per-frame content test) buys little. It is written
+  down because *"bloom is cheap"* is the sentence someone will reach for when the draw
+  budget next gets tight, and it is **true of pixels and false of draws**.
+- **Its cost is a declared raise, not an absorbed margin.** Every affected ceiling moved by
+  exactly four through `DRAW_CALL_RAISES` in `scripts/deliveryFloors.mts`
+  (`dd53dfd`), which asserts the raise is uniform, still needed, and matched per shot. The
+  reason that mechanism exists is worth one line: `PREVIOUS_DRAW_CALL_CEILINGS` had been
+  left holding **pre-tightening** values carrying 6–10 draws of undocumented margin, so
+  bloom's +4 initially passed the ratchet with slack to spare — the guard was comparing
+  against a baseline that no longer shipped, and `mountain-close` had **two draws left**
+  before that stopped. A hand-edited ceiling was refused by the same guard hours earlier;
+  the margin would have let the identical growth through unrecorded.
+  **Provenance.** The +4 is measured: three full `perf:capture:candidate` runs at
+  `285eb2b`, same host, back-to-back, `sweep=false` on all three, all 30 shots
+  byte-identical across the three — and it was a **pre-registered prediction with a
+  stated falsifier** (any shot whose delta was not exactly 4) written before the runs
+  finished. The falsifier did not fire. "No content gating" is read from `BloomPass.ts`,
+  not inferred from the A/B; the tier gating is read from `QualityProfile.ts`; the
+  1.74–4.42x model error is **carried**, not re-derived.
+  **What this does not say:** nothing about bloom's **millisecond** cost, which is a
+  different question from its draw count and is not measured here; nothing about tiers 2
+  and 3, where bloom is off; and *"pixels on only some shots"* is an argument from the
+  shader's structure plus `high-10000ft-down` having no bright source — **the per-shot
+  pixel effect was not measured.**
 *Pins:* one draw call asserted on the night shots; HDR range preserved through 7-4a
 (the monotonicity test re-run with real light points); extinction agrees with the star
 path's air mass at matched elevations; §2.3 A/B pin.
