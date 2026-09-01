@@ -94,14 +94,28 @@ for (const [h, L] of colored) {
 const hueDiversity = coloredLuma > 0 ? offLuma / coloredLuma : 0;
 
 let blueSum = 0, skyCount = 0;
+const skyLumas = [];
 for (let y = Math.floor(SKY.y0 * H); y < Math.floor(SKY.y1 * H); y++) {
   for (let x = 0; x < W; x++) {
     const i = (y * W + x) * 4;
     blueSum += (data[i + 2] - (data[i] + data[i + 1]) / 2) / 255;
+    skyLumas.push(luma(i));
     skyCount++;
   }
 }
 const skyBlue = skyCount ? blueSum / skyCount : 0;
+
+// §2.6 — the silhouette RELATION: sky-band median over terrain-band median,
+// both from THIS script's bands (SKY y 0.02-0.25, TERRAIN y 0.45-0.95 —
+// instrument named because two "terrain band" instruments disagreed by 40%
+// on 2026-09-01). A relation cannot be satisfied by darkening everything
+// and survives any later exposure change. Twilight-only gate: at dusk the
+// sky must outglow the ground (floor >= 1.5; reality at civil dusk is
+// ~10x); at night a moonlit ground under a dark sky legitimately reads
+// below 1, so night rungs carry no floor on this metric.
+skyLumas.sort((a, b) => a - b);
+const skyMedian = skyLumas[Math.floor(skyLumas.length / 2)] ?? 0;
+const skyGroundRatio = terrainMedian > 0 ? skyMedian / terrainMedian : Infinity;
 
 // Lamp chroma is read on the SHOULDER (0.45-0.60 luminance within 4 px of a
 // >=0.90 core), never at the peak: the ACES shoulder desaturates bright
@@ -180,6 +194,7 @@ console.log(`${label ?? path} (${W}x${H})`);
 console.log(`  terrainBandMedianLuma  ${terrainMedian.toFixed(4)}   (moonlit target [0.15, 0.30]; moonless [0.06, 0.14])`);
 console.log(`  chromaSaturation       ${chromaSat.toFixed(4)} over ${satCount} px  (proposed floor ~0.15)`);
 console.log(`  skyBlueDominance       ${skyBlue.toFixed(4)}   (proposed floor ~0.02, ceiling ~0.25)`);
+console.log(`  skyGroundRatio         ${skyGroundRatio.toFixed(4)}   (sky median ${skyMedian.toFixed(4)} / terrain median; DUSK floor 1.5, no night floor)`);
 console.log(`  lampShoulderSaturation ${lampSat.toFixed(4)} over ${lampCount} px in 0.45-0.60 near cores  (floor 0.15; "not all white")`);
 console.log(`  lampOffFixture         count ${lampOffFixtureCount.toFixed(4)} / chroma ${lampOffFixtureChroma.toFixed(4)} in (160,330); ambiguous[330,345) ${lampAmbiguousCount.toFixed(4)}; neutral ${neutralCount} px  (ceiling TBD from Jason)`);
 console.log(`  hueDiversity           ${hueDiversity.toFixed(4)} over ${colored.length} colored px, dominant ${dominantHue.toFixed(0)} deg  (proposed floor ~0.15)`);

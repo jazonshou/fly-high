@@ -45,6 +45,7 @@ import {
   AERIAL_PERSPECTIVE_WGSL,
   aerialNightness,
   applyAerialPerspectiveToShaderMaterial,
+  twilightAmbientFloorFactor,
   type AerialPerspectiveBinding,
 } from "./AerialPerspective";
 
@@ -714,8 +715,17 @@ export class AtmosphereSystem {
     // it is on a blue one, which is precisely "night is dim daylight". It
     // follows the sky's own light now, and is EXACTLY 0.05 at the reference
     // day+clear key so daylight is unchanged.
+    // §2.6(b): the floor is a NIGHT constant (fp16 range, rod input) that
+    // twilight inherited by accident of max() — it is 10× the physical
+    // skylight scale at sunset, so ambient flat-lined from late afternoon
+    // to midnight while the dome fell three orders of magnitude. The arch
+    // window cuts it through the blue hour only; outside the window the
+    // factor is exactly 1 and this line is the shipped expression.
     const ambientIntensity =
-      0.05 * Math.max(this.skylightScale(state, moonLux), NIGHT_AMBIENT_FLOOR_SCALE);
+      0.05 * Math.max(
+        this.skylightScale(state, moonLux),
+        NIGHT_AMBIENT_FLOOR_SCALE * twilightAmbientFloorFactor(state.sun.direction[1]),
+      );
     const snapshotAmbientScale = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
       palette.zenith,

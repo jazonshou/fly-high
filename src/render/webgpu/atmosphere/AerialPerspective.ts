@@ -463,6 +463,88 @@ export const NIGHT_SKY_MOON_STRENGTH = 0.045;
 /** The moonlit sky's source colour: cool daylight, slightly blue-shifted. */
 export const NIGHT_SKY_MOON_TINT: readonly [number, number, number] = [0.62, 0.78, 1.0];
 
+/**
+ * NIGHT_LOOK_ARCHITECTURE §2.6 — the twilight-arch window.
+ *
+ * Between sunset and astronomical twilight the dome used to fall into a
+ * trough between two models: the integral's sun term dies with the sun's
+ * transmittance, its multiple-scatter `ambient` proxy is gated to zero by
+ * `daylight` below sine −0.08, and the moon source is both partial
+ * (aerialNightness) and calibrated for full night. Measured on the frame
+ * Jason rejected: skyBlueDominance NEGATIVE (−0.0091) — a missing model,
+ * not a mis-tuned one. This window keys the missing term — the deep-blue
+ * arch that ozone absorption holds overhead through the blue hour.
+ *
+ * ONE window, three consumers (the dome/haze arch radiance here, the
+ * ambient-floor cut in AtmosphereSystem, and any later chroma blend), so
+ * they cannot drift apart — an arch that brightens while the ground it
+ * should silhouette brightens with it is exactly the drift this prevents.
+ * The edges are therefore load-bearing three times over and are pinned by
+ * their own test, separate from every consumer.
+ *
+ *   rises   0.00 → −0.05   engages at sunset (continuous: zero AT sunset)
+ *   holds  −0.05 → −0.16   the blue hour; `dusk-mesopic` (−0.107) mid-hold
+ *   falls  −0.16 → −0.26   releases on the SAME edges as the §2.1 dip
+ *
+ * Endpoints by shape, same discipline as the dip: golden hour (+0.111) and
+ * everything above sunset read exactly 0 — daylight bit-identical by
+ * construction; `night-moonlit` (−0.369) sits 0.11 of sine below the
+ * release and reads exactly 0 — the approved night frames cannot move.
+ */
+export function twilightArchStrength(sunDirectionY: number): number {
+  const smooth01 = (t: number): number => {
+    const x = Math.min(1, Math.max(0, t));
+    return x * x * (3 - 2 * x);
+  };
+  const rise = smooth01(-sunDirectionY / 0.05);
+  const fall = smooth01((sunDirectionY + 0.26) / 0.1);
+  return rise * fall;
+}
+
+/**
+ * The arch's chromaticity — the palette's own art-directed twilight blue.
+ * Both twilight zenith anchors in AtmosphereSystem normalize to the same
+ * chroma to within 1%: −12° (0.012, 0.03, 0.085) → (0.141, 0.353, 1.0) and
+ * 0° (0.03, 0.08, 0.22) → (0.136, 0.364, 1.0). The dome and the light rig
+ * finally share a source instead of two hand-tunings that happen to agree.
+ */
+export const TWILIGHT_ARCH_TINT: readonly [number, number, number] = [0.14, 0.36, 1.0];
+
+/**
+ * Arch radiance at full window, in the binding's normalized-radiance units
+ * (the `aerialAmbient` slot, so it rides (1 − transmittance): more along
+ * the long horizon paths, less at the thin zenith — the horizon stays the
+ * bright edge of the arch, as it should). ART-DIRECTED, tuned by capture
+ * against §2.6's relation metric: at `dusk-mesopic` the sky-band median
+ * must EXCEED the terrain-band median (skyGroundRatio ≥ 1.5). Jason's
+ * sanction chain: *"blue hour properly dark"* + *"incorporate more blue
+ * (dark blue)"* — dark AND blue, which only a dome term can be; exposure
+ * alone provably could not reorder sky and ground (the dip was live in the
+ * frame he rejected).
+ */
+export const TWILIGHT_ARCH_STRENGTH = 0.08;
+
+/**
+ * §2.6(b) — how much of `NIGHT_AMBIENT_FLOOR_SCALE` the arch window cuts.
+ *
+ * The floor's own rationale (fp16 range, rod-pathway input) binds at FULL
+ * NIGHT, but 0.2 is 10× the physical skylight scale at SUNSET (≈0.021), so
+ * `max()` snapped to it while the sun was still ~10° up and ground ambient
+ * flat-lined from late afternoon to midnight — the "trees way too light"
+ * half of the inversion. Cutting the floor BY THE WINDOW (rather than
+ * lowering it) means: above sunset the multiplier is exactly 1 (golden
+ * hour untouched), at and below the −0.26 release it is exactly 1 (the
+ * approved night frames and the floor's constraints preserved by
+ * construction), and through the blue hour the floor drops to
+ * 0.2 × (1 − 0.81) ≈ 0.038 so the ground can finally follow the sky down.
+ */
+export const TWILIGHT_AMBIENT_FLOOR_CUT = 0.81;
+
+/** The floor multiplier — exactly 1 outside the arch window by shape. */
+export function twilightAmbientFloorFactor(sunDirectionY: number): number {
+  return 1 - TWILIGHT_AMBIENT_FLOOR_CUT * twilightArchStrength(sunDirectionY);
+}
+
 export function resolveAerialPerspectiveBinding(
   state: EnvironmentState,
   cameraAltitudeMeters: number,
@@ -531,10 +613,16 @@ export function resolveAerialPerspectiveBinding(
       sourceTransmittance[2] * (1 - nightness) + moonTransmittance[2] * nightness,
     ];
   }
+  // §2.6 — the twilight arch rides the ambient slot: it is multiple-scatter
+  // radiance (like the daylight ambient it hands over from), it reaches the
+  // dome, the IBL probe and the terrain haze through the one shared
+  // integral, and it is zero outside its window by shape, so day and the
+  // approved night frames cannot move.
+  const arch = twilightArchStrength(state.sun.direction[1]) * TWILIGHT_ARCH_STRENGTH;
   const ambient: [number, number, number] = [
-    skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight,
-    skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight,
-    skyHorizonColor[2] * AERIAL_AMBIENT_SCALE * daylight,
+    skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[0] * arch,
+    skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[1] * arch,
+    skyHorizonColor[2] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[2] * arch,
   ];
   return {
     cameraAltitudeMeters,

@@ -12,6 +12,11 @@ import {
   ozonePathIntegral,
   ozoneTentIntegral,
   resolveAerialPerspectiveBinding,
+  twilightArchStrength,
+  twilightAmbientFloorFactor,
+  TWILIGHT_ARCH_TINT,
+  TWILIGHT_ARCH_STRENGTH,
+  TWILIGHT_AMBIENT_FLOOR_CUT,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import { SKY_FRAGMENT_WGSL } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
@@ -23,7 +28,10 @@ import {
   CAMERA_FAR_PLANE_METERS,
   resolveWebGpuQualityProfile,
 } from "../src/render/webgpu/core/QualityProfile";
-import { resolveEnvironmentState } from "../src/render/webgpu/nature/EnvironmentDirector";
+import {
+  resolveEnvironmentState,
+  twilightExposureDipFactor,
+} from "../src/render/webgpu/nature/EnvironmentDirector";
 import {
   MIE_SCALE_HEIGHT_METERS,
   OZONE_CENTER_METERS,
@@ -402,5 +410,92 @@ describe("the include's WGSL surface (1C-4)", () => {
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).not.toMatch(/uniform aerial/);
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).toContain("fn aerialPerspective(");
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).toContain("fn applyAerialPerspective(");
+  });
+});
+
+describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
+  // ONE window feeds three consumers (dome arch, ambient-floor cut, chroma
+  // blend), so its edges are load-bearing three times over: these pins are
+  // on the WINDOW ITSELF, separate from every consumer, so a later edge
+  // change fails one obvious assertion instead of three confusing ones.
+  const sineAt = (solarTimeHours: number): number =>
+    resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours },
+      latitudeDegrees: 45,
+      weather: "clear",
+    }).sun.direction[1];
+
+  it("is zero at every pinned endpoint, by shape", () => {
+    // Golden hour (19.0h, +0.111): above the window entirely.
+    expect(twilightArchStrength(sineAt(19.0))).toBe(0);
+    // Sunset exactly: continuous engagement, zero AT the boundary.
+    expect(twilightArchStrength(0)).toBe(0);
+    // The release edge itself.
+    expect(twilightArchStrength(-0.26)).toBe(0);
+    // night-moonlit (23.75h) and night (0h): the approved frames sit well
+    // below the release and CANNOT move.
+    expect(twilightArchStrength(sineAt(23.75))).toBe(0);
+    expect(twilightArchStrength(sineAt(0))).toBe(0);
+  });
+
+  it("holds at full strength through the blue hour, dusk-mesopic mid-hold", () => {
+    const duskSine = sineAt(20.45);
+    expect(duskSine).toBeLessThan(-0.09);
+    expect(duskSine).toBeGreaterThan(-0.13);
+    expect(twilightArchStrength(duskSine)).toBeCloseTo(1, 6);
+  });
+
+  it("releases on the same edges as the 2.1 exposure dip", () => {
+    // Behavioral equality, not shared constants: the dip's release runs
+    // -0.16 (still fully held) to -0.26 (fully released). If either window
+    // moves its release alone, one of these fails.
+    expect(twilightExposureDipFactor(-0.16)).toBeCloseTo(0.55, 6);
+    expect(twilightArchStrength(-0.16)).toBeCloseTo(1, 6);
+    expect(twilightExposureDipFactor(-0.26)).toBeCloseTo(1, 6);
+    expect(twilightArchStrength(-0.26)).toBe(0);
+  });
+
+  it("cuts the ambient floor only inside the window", () => {
+    // Outside: EXACTLY 1 — golden hour and the approved night frames get
+    // the shipped max(scale, 0.2) byte-for-byte, preserving the floor's
+    // own fp16/rod rationale where it binds.
+    expect(twilightAmbientFloorFactor(sineAt(19.0))).toBe(1);
+    expect(twilightAmbientFloorFactor(sineAt(23.75))).toBe(1);
+    expect(twilightAmbientFloorFactor(sineAt(0))).toBe(1);
+    // Mid-hold: the floor drops to 0.2 x (1 - cut) so ground can follow
+    // the sky down through the blue hour.
+    expect(twilightAmbientFloorFactor(sineAt(20.45)))
+      .toBeCloseTo(1 - TWILIGHT_AMBIENT_FLOOR_CUT, 6);
+  });
+
+  it("feeds the binding a blue arch at dusk and leaves day and night untouched", () => {
+    const horizon: [number, number, number] = [0.08, 0.075, 0.14];
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
+    // The daylight gate is closed at -6 degrees; without the arch this
+    // ambient was [0,0,0] — the trough the rejected frame measured as a
+    // NEGATIVE skyBlueDominance. Now it is the arch, exactly.
+    expect(dusk.ambient[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
+    expect(dusk.ambient[2]).toBeGreaterThan(dusk.ambient[0] * 2);
+    // Night: the window is closed; the gated ambient stays exactly zero,
+    // so the approved night sky cannot have gained a term.
+    const nightState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 23.75 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const night = resolveAerialPerspectiveBinding(
+      nightState, 120, [0.9, 0.4, 0.25], horizon, 0, [0, 1, 0], 0.8,
+    );
+    expect(night.ambient).toEqual([0, 0, 0]);
+    // Noon: arch zero, ambient is the daylight expression untouched.
+    const noon = resolveAerialPerspectiveBinding(
+      DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
+    );
+    expect(noon.ambient[0]).toBeCloseTo(0.58 * 0.9, 6);
   });
 });
