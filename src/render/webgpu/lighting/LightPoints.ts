@@ -536,11 +536,21 @@ export class LightPointSystem {
     const data = new VertexData();
     data.positions = geometry.positions;
     data.indices = Array.from(geometry.indices);
-    data.applyToMesh(this.mesh, false);
+    // UPDATABLE, and its absence was the defect that kept the airfield dark.
+    // `position` is rewritten by `setFloatingOrigin` and `lightColor` by
+    // `setColors`; a non-updatable buffer cannot take either write, and Babylon
+    // does not report the attempt. The capture world's airport sits ~30 km from
+    // the world origin, so the renderer rebases on the FIRST frame -- after
+    // which the camera works in origin-relative space while the lamp positions
+    // were still absolute, putting all 402 of them ~30 km outside the frustum.
+    // The mesh was submitted every frame (draw calls went +1 on 30 of 30 shots)
+    // and produced no fragment anywhere, which reads exactly like "the lamps are
+    // too dim" and is not.
+    data.applyToMesh(this.mesh, true);
     this.mesh.setVerticesData("lightCorner", geometry.corners, false, 2);
     this.mesh.setVerticesData("lightParams", geometry.params, false, 4);
     this.mesh.setVerticesData("lightAim", geometry.aims, false, 3);
-    this.mesh.setVerticesData("lightColor", geometry.colors, false, 3);
+    this.mesh.setVerticesData("lightColor", geometry.colors, true, 3);
     this.mesh.isPickable = false;
     this.mesh.applyFog = false;
     this.mesh.alwaysSelectAsActiveMesh = true;

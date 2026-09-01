@@ -732,31 +732,47 @@ export const AIRFIELD_LAMP_PHOTOMETRY: Readonly<
 /**
  * The one scale factor between candela and scene-linear radiance.
  *
- * Separated from the photometry above so that a calibration run changes THIS
- * and nothing else. Derived rather than guessed: a `10,000 cd` edge lamp seen
- * from 500 m through a clear atmosphere should land near a bright star, and
- * `StarFieldSystem` fixes a magnitude-0 star at
- * `STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5` at its PSF centre with the same
- * `1/psf^2` normaliser and the same 1.7 px PSF. Equating the two:
+ * Separated from the photometry above so a calibration change moves THIS and
+ * nothing else, leaving the six physical ratios untouched.
  *
- *   0.5 = SCALE x 10000 / (500^2 x 1.7^2)
- *   SCALE = 0.5 x 250000 x 2.89 / 10000 = 36.1
+ * DERIVED IN TWO STEPS, because the first step alone was wrong by four orders
+ * of magnitude and looked reasonable.
  *
- * so a runway edge lamp at half a kilometre reads as bright as a first-rank
- * star, which is about right for a night approach.
+ * **Step 1 — the unit bridge.** `StarFieldSystem` fixes a magnitude-0 star at
+ * `STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5` at its PSF centre, using the same
+ * `1/psf^2` normaliser and the same 1.7 px PSF as a light point. Equating a
+ * 10,000 cd lamp at 500 m to that star gives
  *
- * WRITTEN WRONG THE FIRST TIME, as 3.6e-2 -- the same expression, evaluated a
- * thousandfold out. It survived because nothing renders a light point in Node
- * and the airfield was black for a second, unrelated reason at the same time,
- * so the frame could not distinguish "scale is wrong" from "extinction is
- * wrong". Recorded because a scale factor is exactly the constant a reader
- * will trust without recomputing.
+ *   0.5 = BRIDGE x 10000 / (500^2 x 1.7^2)  =>  BRIDGE = 36.1
  *
- * STILL A MODEL: it assumes the star constant is itself calibrated, and the
- * ratio it targets has not been checked against a tone-mapped frame. Treat it
- * as the starting point of a measurement, not as a result.
+ * That correctly ties scene units to stellar illuminance. **It is not the
+ * answer**, because equating a runway lamp to a mag-0 star is a statement
+ * about brightness that happens to be false.
+ *
+ * **Step 2 — the physics the first step assumed away.** Illuminance at the eye
+ * is `E = I / d^2`. A 10,000 cd lamp at 500 m delivers **0.04 lux**; a
+ * magnitude-0 star delivers **2.54e-6 lux**. The lamp is **~15,750x** the star
+ * — magnitude -10.5, between Venus and the full moon, which is what a real
+ * runway edge light at half a kilometre looks like. So
+ *
+ *   SCALE = 36.1 x (0.04 / 2.54e-6) ~= 5.7e5
+ *
+ * MEASURED, not assumed: at 5.7e5 the `night-moonlit` capture lights 1,763
+ * pixels peaking at **232 display bytes** at the runway, against 175 pixels at
+ * 21 bytes under the old constant. As a cross-check, a deliberately bright
+ * constant fragment (bypassing photometry entirely) peaks at 228 bytes in the
+ * same frame — so the calibration now lands where "a bright lamp" independently
+ * lands, rather than where a docblock guessed.
+ *
+ * **THE HISTORY IS THE WARNING.** This constant has been wrong three times:
+ * 3.6e-2 (the step-1 expression evaluated a thousandfold out), then 36.1 (the
+ * expression right, the anchor physically false by 10.5 magnitudes). Both
+ * survived review because a scale factor is exactly what a reader trusts
+ * without recomputing. `7-4a`'s `log2` highlight term is what keeps decades of
+ * source brightness ORDERED at this magnitude instead of clipping - it was
+ * built for sources this bright.
  */
-export const AIRFIELD_LAMP_SCENE_SCALE = 36.1;
+export const AIRFIELD_LAMP_SCENE_SCALE = 5.7e5;
 
 /**
  * Beam cutoff for a directional lamp: a hemisphere.
