@@ -1832,6 +1832,13 @@ export interface PerfCaptureReport {
     /** `6-11.1`: the tier these numbers describe, and whether this is a sweep run. */
     readonly tier: number;
     readonly sweep: boolean;
+    /**
+     * The tier-cliff A/B arm: the profile fields this run forced, verbatim, or
+     * null for an unmodified run. Recorded so an archived arm carries its own
+     * configuration — and its absence is a positive signal that the override
+     * plumbing was missing when the run was taken.
+     */
+    readonly profileOverride: Readonly<Record<string, unknown>> | null;
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;

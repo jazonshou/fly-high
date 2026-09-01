@@ -3,7 +3,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
-import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
+import {
+  __setProfileOverrideForCaptureExperimentsOnly,
+  resolveWebGpuQualityProfile,
+} from "../../src/render/webgpu/core/QualityProfile";
 import type { QualityLevel } from "../../src/game/types";
 import type { RenderingMode } from "../../src/settings";
 import {
@@ -95,6 +98,15 @@ const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
  * A LOCAL `npm run perf:capture` never sets this and stays fully strict.
  */
 const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
+/**
+ * The canonical tier-1 profile, and it must stay canonical.
+ *
+ * Resolved HERE, deliberately ABOVE the cliff-A/B override below: this is the
+ * reference the tier-1 floors and the render-scale pin are stated against, so an
+ * experiment arm must never move it. If the override block is ever hoisted above
+ * this line, this silently becomes the arm's profile and every tier-1 reference
+ * in the file starts describing the experiment instead.
+ */
 const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 
 /**
@@ -146,7 +158,74 @@ const SWEEP_VIEWPORT = String(import.meta.env.VITE_PERF_VIEWPORT ?? "").trim();
 const IS_SWEEP = SWEEP_QUALITY !== "" || SWEEP_MODE !== "" || SWEEP_VIEWPORT !== "";
 const CAPTURE_QUALITY = (SWEEP_QUALITY === "" ? "medium" : SWEEP_QUALITY) as QualityLevel;
 const CAPTURE_MODE = (SWEEP_MODE === "" ? "balanced" : SWEEP_MODE) as RenderingMode;
+/**
+ * The tier-cliff A/B arm: a JSON object of profile fields to force.
+ *
+ * Applied HERE, at module scope, before `CAPTURE_PROFILE` resolves — every later
+ * consumer (the render-pixel pin, the delivery contract, the renderer's own three
+ * resolution sites) must see the same profile or the arm measures a MIXTURE of the
+ * arm and the baseline. `resolveWebGpuQualityProfile` applies it at the single
+ * point of resolution, so setting it once here is sufficient and cannot be
+ * partially applied.
+ *
+ * THIS BLOCK WAS LOST ONCE. It lived only in a working tree while the setter it
+ * drives was committed, so a later checkout took the caller and left the callee.
+ * `VITE_PERF_PROFILE_OVERRIDE` then silently did nothing and a 2x-MSAA arm
+ * measured the 4x default while reporting itself as 2x — a plausible wrong
+ * answer, not an error. It was caught only because `estimatedGpuMemoryMiB` scales
+ * with sample count and read identically to the 4x arm. **Commit the guard with
+ * the thing it guards.**
+ */
+const PROFILE_OVERRIDE_RAW = String(import.meta.env.VITE_PERF_PROFILE_OVERRIDE ?? "").trim();
+const PROFILE_OVERRIDE = ((): Record<string, unknown> | null => {
+  if (PROFILE_OVERRIDE_RAW === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(PROFILE_OVERRIDE_RAW);
+  } catch (error) {
+    throw new Error(
+      `VITE_PERF_PROFILE_OVERRIDE is not valid JSON: ${PROFILE_OVERRIDE_RAW} (${String(error)})`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("VITE_PERF_PROFILE_OVERRIDE must be a JSON object of profile fields");
+  }
+  if (Object.keys(parsed).length === 0) {
+    throw new Error(
+      "VITE_PERF_PROFILE_OVERRIDE is an empty object. An arm that overrides nothing is the "
+      + "baseline wearing an arm's name — run the baseline explicitly instead.",
+    );
+  }
+  return parsed as Record<string, unknown>;
+})();
+if (PROFILE_OVERRIDE && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_REBASELINE cannot be combined with VITE_PERF_PROFILE_OVERRIDE: an overridden "
+    + "profile draws a different world by design and can never be a baseline.",
+  );
+}
+__setProfileOverrideForCaptureExperimentsOnly(PROFILE_OVERRIDE as never);
+
 const CAPTURE_PROFILE = resolveWebGpuQualityProfile(CAPTURE_QUALITY, CAPTURE_MODE);
+if (PROFILE_OVERRIDE) {
+  // NON-VACUITY, and this is the assertion whose absence cost a measurement.
+  // An arm that silently failed to apply is indistinguishable from a group with
+  // no cost and gets reported as a null recovery. Every requested field must be
+  // present on the resolved profile or the run refuses, rather than producing a
+  // plausible zero.
+  const ignored = Object.keys(PROFILE_OVERRIDE).filter(
+    (key) => JSON.stringify((CAPTURE_PROFILE as unknown as Record<string, unknown>)[key])
+      !== JSON.stringify(PROFILE_OVERRIDE[key]),
+  );
+  if (ignored.length > 0) {
+    throw new Error(
+      `VITE_PERF_PROFILE_OVERRIDE asked for ${ignored.join(", ")} but the resolved profile does `
+      + "not carry those values. Identity fields (tier, quality, mode, frameTargetMs) are stripped "
+      + "by design; anything else means the field name is wrong, or this plumbing has been lost "
+      + "again. Refusing rather than reporting a null for an arm that never ran.",
+    );
+  }
+}
 const DELIVERY = perfCaptureDeliveryContract(CAPTURE_PROFILE.tier);
 const SWEEP_SIZE = ((): { width: number; height: number } | null => {
   if (SWEEP_VIEWPORT === "") return null;
@@ -1128,6 +1207,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
         renderingMode: CAPTURE_MODE,
         tier: CAPTURE_PROFILE.tier,
         sweep: IS_SWEEP,
+        // The cliff-A/B arm, verbatim. An experiment artifact whose arm has to be
+        // reconstructed from a shell history is one nobody can audit later — and
+        // its ABSENCE is how the lost-plumbing incident was detected.
+        profileOverride: PROFILE_OVERRIDE,
         pinnedRenderScale: CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
         // Whether the frame-delivery numbers below were contract or diagnostic.
