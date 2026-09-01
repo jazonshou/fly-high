@@ -153,13 +153,16 @@ const VOLUME_CONVENTION = Math.sign(SPHERE.signedVolume);
  * would rot into exactly the decorative table this codebase has been bitten by
  * before — a list checked for tidiness and never against the artifact.
  */
-const KNOWN_INVERTED: ReadonlyMap<string, string> = new Map([
-  ["tree.crown", "dense near-crown (layer 16) emitted outside emitSkeletonCards; separate fix"],
-  ["rock.granite", "normals derived FROM cross3(b-a,c-a); needs index order reversed at the icosphere source"],
-  ["rock.limestone", "as rock.granite"],
-  ["rock.dark", "as rock.granite"],
-  ["grass.patch", "as rock.granite; blade emission, not a bitangent"],
-]);
+/**
+ * EMPTY, and it emptied the way it was built to. Each fix made this test fail
+ * with "now winds correctly -- delete its entry" until the entry was removed;
+ * that is the mechanism that stops a known-defect list becoming an exception
+ * list nobody revisits. It worked on its first real use.
+ *
+ * Keep the map rather than deleting it: a future builder that lands inverted
+ * for a reason someone accepts belongs here WITH that reason, not suppressed.
+ */
+const KNOWN_INVERTED: ReadonlyMap<string, string> = new Map([]);
 
 function cases(): ReadonlyArray<readonly [string, Geo]> {
   const out: Array<readonly [string, Geo]> = [];
