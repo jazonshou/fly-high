@@ -96,6 +96,19 @@ interface StageProfile {
   readonly depthErrors?: readonly string[];
 }
 
+/**
+ * The clustered slice count Babylon compiled with, or -1 if it emitted no such
+ * define at all.
+ *
+ * Read as a NUMBER rather than tested for presence: Babylon emits
+ * `CLUSTLIGHT_SLICES 0` when there is no container, so any check that only asks
+ * whether the name appears cannot tell the two arms apart.
+ */
+function clustlightSlices(defines: string): number {
+  const match = /#define\s+CLUSTLIGHT_SLICES\s+(\d+)/u.exec(defines);
+  return match ? Number(match[1]) : -1;
+}
+
 function declarations(source: string): { textures: Set<string>; samplers: Set<string> } {
   const textures = new Set<string>();
   const samplers = new Set<string>();
@@ -307,7 +320,7 @@ describe("7-0-d: clustered lighting adapter spike", () => {
       samplers: [base.samplers.length, clustered.samplers.length],
       fragmentStorageBuffers: [base.storageBuffers.length, clustered.storageBuffers.length],
       interStage: [base.interStage, clustered.interStage],
-      clusteredDefine: /CLUSTLIGHT/u.test(clustered.defines),
+      clusteredSlices: [clustlightSlices(base.defines), clustlightSlices(clustered.defines)],
       newTextures: clustered.allTextures.filter((n) => !base.allTextures.includes(n)),
       newStorage: clustered.storageBuffers.filter((n) => !base.storageBuffers.includes(n)),
     };
@@ -317,10 +330,36 @@ describe("7-0-d: clustered lighting adapter spike", () => {
     // Non-vacuity FIRST: if the container never reached the shader, every delta
     // below is zero and the spike would report "it fits" having measured
     // nothing. This is the assertion that makes the rest mean something.
+    //
+    // **It has to discriminate, and the version this replaced did not.**
+    // `/CLUSTLIGHT/` matched the CLEAN arm too, because Babylon emits
+    // `#define CLUSTLIGHT_SLICES 0` and `#define CLUSTLIGHT_BATCH 0` with no
+    // container present and the pattern hits those substrings. Measured: clean
+    // 0, clustered 16. So the guard written to make every delta below
+    // meaningful would itself have passed with no container at all — the exact
+    // failure it exists to prevent, one level up.
+    //
+    // The discriminator is the VALUE, not the presence of the name.
     expect(
-      report.clusteredDefine,
-      "no CLUSTLIGHT define reached the compiled material — the container was not "
-      + "composed into this material, so every delta below is vacuous",
+      report.clusteredSlices[0],
+      "the CLEAN arm reports a non-zero CLUSTLIGHT_SLICES — it is not a clean "
+      + "arm, and every delta measured against it is attributing the container's "
+      + "cost to the wrong baseline",
+    ).toBe(0);
+    expect(
+      report.clusteredSlices[1],
+      "no clustered light data reached the compiled material — the container was "
+      + "not composed into this material, so every delta below is vacuous",
+    ).toBeGreaterThan(0);
+
+    // And the REASON the guard is written this way, asserted rather than left
+    // in a comment for someone to simplify away: the pattern it replaced still
+    // matches the clean arm. If this ever stops being true, `/CLUSTLIGHT/`
+    // became a valid discriminator and the note above is stale — but until
+    // then, reverting to it silently removes the only non-vacuity guard here.
+    expect(
+      /CLUSTLIGHT/u.test(base.defines),
+      "the superseded /CLUSTLIGHT/ pattern no longer matches the clean arm",
     ).toBe(true);
 
     // P1 (re-derived): the terrain fragment stage starts at the contract's
