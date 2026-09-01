@@ -37,8 +37,6 @@ import {
 import {
   towerObstructionFixtures,
   hangarObstructionFixtures,
-  hangarFaceFloodlights,
-  HANGAR_FLOOD_INTENSITY,
 } from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
@@ -473,15 +471,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly lightPoints: LightPointSystem;
   private readonly clusteredLighting: ClusteredLightingSystem;
   /**
-   * Names of `7-14`'s hangar-face floods, for the per-frame daylight gate.
-   *
-   * Held as names rather than as definitions because `setIntensity` addresses
-   * by name and returns false for anything the container REFUSED at
-   * construction — so a rejected flood cannot silently accept intensity writes
-   * every frame, and this list stays the caller's record of what it asked for.
-   */
-  private readonly hangarFloodNames: readonly string[];
-  /**
    * `7-7`'s fixtures, expanded into `7-5`'s light points, plus the PAPI's
    * analytic indication. Null when the world has no airport.
    */
@@ -597,7 +586,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
     clusteredLighting: ClusteredLightingSystem,
-    hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
@@ -631,7 +619,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.stars = stars;
     this.lightPoints = lightPoints;
     this.clusteredLighting = clusteredLighting;
-    this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
     this.scotopic = scotopic;
     this.bloom = bloom;
@@ -1142,30 +1129,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       // tile and slice geometry must come from the profile, because changing it
       // after construction reallocates the tile-mask texture, the storage
       // buffer and the thin-instance matrix buffer.
-      // `7-14`'s hangar-face floods. They go in HERE rather than being added
-      // later because `ClusteredLightingSystem` builds its lights in the
-      // constructor and exposes no `add` — `setPosition` and `setIntensity`
-      // address existing lights by name. `7-8`'s lamps append to this same
-      // array; there is exactly ONE container in the scene and
-      // `render.scene-light-slots` pins that at 1.
-      const hangarFloods = airportDefinition && airport
-        ? airport.hangarAttachments.flatMap((mounts, index) =>
-          hangarFaceFloodlights(airportDefinition, mounts, index))
-        : [];
       const clusteredLighting = new ClusteredLightingSystem(
         scene,
-        hangarFloods,
+        [],
         profile.clusteredLighting,
       );
-      // `IsLightSupported` refuses silently and `addLight` only warns, so a
-      // refused flood would be absent with no error. This is the only place
-      // that can tell.
-      if (clusteredLighting.rejected.length > 0) {
-        console.warn(
-          `clustered lighting refused ${clusteredLighting.rejected.length} `
-          + `definition(s): ${clusteredLighting.rejected.join(", ")}`,
-        );
-      }
       cleanup.push(() => clusteredLighting.dispose());
       // Bound here rather than in the fan-out above, which runs before this
       // system exists. The per-frame fan-out carries it from the next frame on;
@@ -1302,7 +1270,6 @@ export class FlightRenderer implements FlightRenderingSystem {
         stars,
         lightPoints,
         clusteredLighting,
-        hangarFloods.map((flood) => flood.name),
         airfieldLighting,
         scotopic,
         bloom,
@@ -2110,22 +2077,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // pixels on `runway-on-approach` against 56 in its baseline. The term is
     // exactly 1 at or below the horizon, so every night frame is unchanged by
     // construction rather than by measurement.
-    const daylightAttenuation = airfieldLampDaylightAttenuation(
+    this.lightPoints.setDaylightAttenuation(airfieldLampDaylightAttenuation(
       this.environmentState.sun.direction[1],
       horizontalIlluminanceLux(this.environmentState),
-    );
-    this.lightPoints.setDaylightAttenuation(daylightAttenuation);
-    // `7-14`'s floods take the SAME law rather than a second one. They are a
-    // different emission path — real point lights, not billboards — but "is the
-    // airfield lit" is one question and two implementations of it would drift,
-    // which is the failure the sun disc and the ocean already demonstrated.
-    //
-    // Through `setIntensity` and NOT `setEnabled`: `ClusteredLightContainer`
-    // never reads `isEnabled`, so a disabled child stays in the cluster data and
-    // keeps illuminating. Intensity is the only channel that reaches the shader.
-    for (const name of this.hangarFloodNames) {
-      this.clusteredLighting.setIntensity(name, HANGAR_FLOOD_INTENSITY * daylightAttenuation);
-    }
+    ));
     // The PAPI's indication, resolved analytically against the camera's WORLD
     // position — `camera.position` is origin-relative, and an elevation angle
     // taken against a rebased origin would swing by the origin every 4,096 m.

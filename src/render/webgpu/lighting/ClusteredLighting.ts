@@ -220,39 +220,6 @@ export class ClusteredLightingSystem {
   }
 
   /**
-   * Set one light's intensity. Zero is dark.
-   *
-   * **`7-8` needs this and the airfield did not.** A runway lamp is on whenever
-   * the airfield is lit; a landing light is gated on AGL **and** gear **and**
-   * switch, and the container is built at renderer construction, before any
-   * flight state exists. Without this the only choices are a landing light lit
-   * in every capture shot, or no landing light at all.
-   *
-   * **USE THIS RATHER THAN `light.setEnabled(false)`, WHICH DOES NOT WORK
-   * HERE.** `ClusteredLightContainer` never reads `isEnabled` — zero occurrences
-   * in the shipped source — so a disabled child stays in the cluster data and
-   * keeps illuminating. What the container actually packs is
-   * `light.diffuse.scaleToRef(scaledIntensity, ...)`, so **intensity is the
-   * only channel that reaches the shader**, and an intensity of 0 packs a black
-   * diffuse. `setEnabled` would look like it worked and change nothing.
-   *
-   * Returns false for an unknown name — which includes a definition Babylon
-   * REFUSED at construction, so a rejected light cannot silently accept
-   * intensity writes every frame.
-   *
-   * Free at runtime: the container rewrites its whole light buffer once per
-   * frame regardless, guarded on the scene render id with no dirty check.
-   */
-  setIntensity(name: string, intensity: number): boolean {
-    const index = this.indexByName.get(name);
-    if (index === undefined) return false;
-    const light = this.lights[index];
-    if (!light) return false;
-    light.intensity = intensity;
-    return true;
-  }
-
-  /**
    * Rebase every light onto a new floating origin.
    *
    * **This is not optional and the precedent is expensive.** The renderer

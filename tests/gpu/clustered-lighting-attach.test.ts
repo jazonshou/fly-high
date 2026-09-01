@@ -192,36 +192,6 @@ describe("7-4b: the clustered container attaches without spending a slot it does
     }
   });
 
-  it("7-8: intensity is settable, and it is the ONLY channel that darkens a clustered light", () => {
-    const scene = new Scene(engine);
-    try {
-      const system = new ClusteredLightingSystem(scene, [definition(0)]);
-      const light = system.container!.lights
-        .find((l) => l.name === "clustered-lamp-0")! as PointLight;
-      expect(system.setIntensity("clustered-lamp-0", 0)).toBe(true);
-      expect(light.intensity).toBe(0);
-      expect(system.setIntensity("clustered-lamp-0", 12)).toBe(true);
-      expect(light.intensity).toBe(12);
-      expect(system.setIntensity("not-a-lamp", 1)).toBe(false);
-
-      // THE TRAP THIS EXISTS TO STEER AROUND: `setEnabled(false)` is the
-      // obvious way to darken a Babylon light and it does NOT work here.
-      // The container never reads `isEnabled`, so a disabled child stays in
-      // the cluster data at full diffuse. Asserted against Babylon's shipped
-      // source rather than described, because it is a property of their code.
-      light.setEnabled(false);
-      expect(
-        light.intensity,
-        "disabling the light changed its intensity — re-derive whether setEnabled "
-        + "is now a valid way to darken a clustered light",
-      ).toBe(12);
-      light.setEnabled(true);
-      system.dispose();
-    } finally {
-      scene.dispose();
-    }
-  });
-
   it("the light-slot cap is raised above the count production actually runs", () => {
     // sun + sky-ambient + moon = 3, and the container is itself a Light, so the
     // default cap of 4 is consumed exactly and the next light added anywhere

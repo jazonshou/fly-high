@@ -33,7 +33,6 @@
 import type { LightPointFixture } from "./LightPoints";
 import { AIRFIELD_LAMP_SCENE_SCALE } from "./AirfieldLighting";
 import type { TowerAttachments } from "../detail/towerGeometry";
-import type { ClusteredLightDefinition } from "./ClusteredLighting";
 // The type comes from `world/types` and the function from `world/airport`,
 // which is the split every sibling already uses (`AirfieldLighting.ts` imports
 // the same type by the same path). `world/airport` declares `AirportDefinition`
@@ -215,115 +214,6 @@ export function hangarObstructionFixtures(
     ...attachments.ridgeEnds.map(lamp),
     ...subdivideRingForExtentSpacing(attachments.roofPerimeter).map(lamp),
   ];
-}
-
-/**
- * Hangar-face floodlighting — `7-14`'s clustered half.
- *
- * **These are FLOODS, not obstruction lights, and they are a different kind of
- * object in every respect that matters.** Obstruction lights are billboards you
- * look at; a flood is an emitter that lights a surface and appears nowhere
- * itself. So these feed `7-4b`'s clustered path rather than `7-5`'s light
- * points, which is what the plan means by "respectively", and their intensity
- * is in Babylon's scene-linear units — the sun runs 1.1 to 5.2 — NOT the
- * billboard path's `AIRFIELD_LAMP_SCENE_SCALE` of 5.7e5. Carrying that constant
- * across would be a five-order-of-magnitude error into a real `PointLight`.
- *
- * **The plan says hangar-face floods INSTEAD of apron floods, and the reason is
- * that there is no apron** — D-0 re-scoped apron lighting away because that
- * ground does not exist. Lighting the face of a building that does exist is the
- * substitute, so these aim at the structure rather than at open ground.
- */
-export const HANGAR_FLOOD_RGB: readonly [number, number, number] =
-  Object.freeze([0.95, 0.97, 1.0] as const);
-
-/**
- * Range in metres, beyond which a flood contributes nothing.
- *
- * This is the clustering bound as well as the falloff bound, so it is not free
- * to over-state: a light with a large range touches more tiles and is evaluated
- * in each. 45 m covers a 34 m face plus the ground immediately before it.
- */
-export const HANGAR_FLOOD_RANGE_METERS = 45;
-
-/**
- * **UNVERIFIED BY CAPTURE, and deliberately recorded as such.**
- *
- * Anchored to the only in-tree reference for a clustered emitter — the attach
- * test's 40 — with the scene's own directional lights (1.1 to 5.2) fixing the
- * order of magnitude. That is an anchor, not a calibration: nothing has yet put
- * this on a frame and looked. **`AIRFIELD_LAMP_SCENE_SCALE` has been wrong
- * three times in this codebase for exactly this reason**, each value surviving
- * because a scale factor is what a reader trusts without recomputing, so this
- * one says plainly that it has not been checked.
- */
-export const HANGAR_FLOOD_INTENSITY = 40;
-
-/** Metres the flood stands off the wall it lights. */
-const HANGAR_FLOOD_STANDOFF_METERS = 1.5;
-
-/**
- * Two floods on the runway-facing face of one hangar.
- *
- * **The face is chosen by geometry, not by index.** `roofPerimeter`'s corner
- * ORDER is 7-10's to change; its shape is not. So the lit face is the edge
- * whose midpoint sits nearest the runway centreline — which is correct for a
- * hangar on either side of the runway, and survives a re-ordering that an
- * index-based rule would silently follow into the wrong wall.
- *
- * Names are stable and unique per hangar so `ClusteredLightingSystem.setIntensity`
- * can address them for the daylight gate. **That gate must go through
- * `setIntensity` and NOT `setEnabled`** — the container never reads `isEnabled`,
- * so a disabled child keeps illuminating.
- */
-export function hangarFaceFloodlights(
-  airport: Readonly<AirportDefinition>,
-  attachments: { readonly roofPerimeter: readonly (readonly [number, number, number])[] },
-  hangarIndex: number,
-): readonly ClusteredLightDefinition[] {
-  const ring = attachments.roofPerimeter;
-  if (ring.length < 2) return [];
-
-  let bestStart = 0;
-  let bestAcross = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < ring.length; index += 1) {
-    const a = ring[index]!;
-    const b = ring[(index + 1) % ring.length]!;
-    const midAcross = Math.abs((a[0] + b[0]) / 2);
-    if (midAcross < bestAcross) {
-      bestAcross = midAcross;
-      bestStart = index;
-    }
-  }
-
-  const a = ring[bestStart]!;
-  const b = ring[(bestStart + 1) % ring.length]!;
-  // Outward normal of the lit face, in the horizontal plane: away from the
-  // hangar's centre, so the standoff pushes the flood off the wall rather than
-  // into it. Derived from the edge midpoint against the ring centroid, which
-  // needs no winding assumption.
-  const centroidAcross = ring.reduce((sum, p) => sum + p[0], 0) / ring.length;
-  const centroidAlong = ring.reduce((sum, p) => sum + p[2], 0) / ring.length;
-  const midAcross = (a[0] + b[0]) / 2;
-  const midAlong = (a[2] + b[2]) / 2;
-  const outAcross = midAcross - centroidAcross;
-  const outAlong = midAlong - centroidAlong;
-  const outLength = Math.hypot(outAcross, outAlong) || 1;
-
-  // At quarter and three-quarter points, so two floods cover the face evenly
-  // rather than crowding its centre or lighting only its corners.
-  return [0.25, 0.75].map((t, order) => {
-    const across = a[0] + (b[0] - a[0]) * t + (outAcross / outLength) * HANGAR_FLOOD_STANDOFF_METERS;
-    const along = a[2] + (b[2] - a[2]) * t + (outAlong / outLength) * HANGAR_FLOOD_STANDOFF_METERS;
-    const y = a[1] + (b[1] - a[1]) * t;
-    return {
-      name: `hangar-flood-${hangarIndex}-${order}`,
-      position: obstructionFixtureWorldPosition(airport, [across, y, along]),
-      color: HANGAR_FLOOD_RGB,
-      intensity: HANGAR_FLOOD_INTENSITY,
-      rangeMeters: HANGAR_FLOOD_RANGE_METERS,
-    };
-  });
 }
 
 /**
