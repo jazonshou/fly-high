@@ -9,6 +9,7 @@ import {
   buildGrassPatchPrototype,
   buildClutterPrototype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
+import { buildBladeRibbon } from "../src/render/webgpu/detail/GroundCoverSystem";
 
 /**
  * TRIANGLE WINDING, asserted against Babylon's own convention.
@@ -184,6 +185,14 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
     out.push([`rock.${variant}`, buildRockPrototype(variant, 1) as unknown as Geo]);
   }
   out.push(["grass.patch", buildGrassPatchPrototype(1) as unknown as Geo]);
+  // The COMPUTE ground-cover blade, which is what a capture actually draws.
+  // `grass.patch` above is retired globally for the grass archetype while the
+  // blade field is live (`presentationBuild.ts`), so without this row the only
+  // grass under test was grass nothing renders. Every ring segment count in
+  // `GROUND_COVER_LAWS`, since the ribbon is built per ring.
+  for (const segments of [2, 3, 5, 7] as const) {
+    out.push([`groundCover.blade.s${segments}`, buildBladeRibbon(segments) as unknown as Geo]);
+  }
   out.push(["clutter.log", buildClutterPrototype("log" as never, 1) as unknown as Geo]);
   return out;
 }
@@ -237,6 +246,50 @@ describe("prototype triangle winding (Babylon convention)", () => {
       wrong,
       "prototypes wound against Babylon's convention — two-sided lighting will "
       + "negate their normals and these surfaces will take no direct sun",
+    ).toEqual([]);
+  });
+
+  it("keeps the foliage layer constant within every triangle", () => {
+    // `ImpostorAtlas`'s rasterizer reads `layers[ia]` -- the foliage layer of a
+    // triangle's FIRST vertex -- which makes the CPU bake winding-sensitive
+    // unless the layer is constant across all three vertices.
+    //
+    // Today it is, so any index reorder is safe. That property held through the
+    // winding fixes by LUCK rather than by statement: every reorder happened to
+    // be (a,b,c) -> (a,c,b), preserving the first index, and nothing checked
+    // it. An unstated invariant holding by luck is a latent defect with a good
+    // outcome so far. Asserting the CONSTANCY rather than the ordering is the
+    // stronger guarantee -- it makes every reorder safe, not just the ones that
+    // keep vertex 0 first.
+    const mixed: string[] = [];
+    let surfacesChecked = 0;
+    for (const [name, geo] of cases()) {
+      const layer = (geo as unknown as { atlasLayer?: Float32Array }).atlasLayer;
+      if (!layer) continue;
+      surfacesChecked += 1;
+      const ix = geo.indices;
+      let bad = 0;
+      for (let t = 0; t * 3 + 2 < ix.length; t += 1) {
+        const a = layer[ix[t * 3]!]!;
+        const b = layer[ix[t * 3 + 1]!]!;
+        const c = layer[ix[t * 3 + 2]!]!;
+        if (a !== b || b !== c) bad += 1;
+      }
+      if (bad > 0) mixed.push(`${name}: ${bad} triangles span more than one foliage layer`);
+    }
+    // The loop `continue`s past any surface without an `atlasLayer`, so if the
+    // attribute is ever renamed or dropped this test would pass by checking
+    // NOTHING -- green for the reason it was written to catch. Assert the
+    // sample size, not just the result.
+    expect(
+      surfacesChecked,
+      "no surface carried an `atlasLayer`, so this assertion examined nothing",
+    ).toBeGreaterThan(0);
+    expect(
+      mixed,
+      "a triangle whose vertices disagree on foliage layer makes ImpostorAtlas's "
+      + "`layers[ia]` depend on index order, so a winding change would silently "
+      + "re-texture the bake",
     ).toEqual([]);
   });
 

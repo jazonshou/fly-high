@@ -181,7 +181,18 @@ const FRUSTUM_SCRATCH: Plane[] = Array.from(
   () => new Plane(0, 1, 0, 0),
 );
 
-function buildBladeRibbon(segments: number): VertexData {
+/**
+ * The blade ribbon, EXPORTED so the winding guard can measure it.
+ *
+ * `ed5b703` emptied `KNOWN_INVERTED` and reported "six emission sites
+ * corrected", one of them "grass". That was `buildGrassPatchPrototype` -- the
+ * CARD path, which `presentationBuild` retires GLOBALLY for the grass
+ * archetype the moment this compute field is live. So the grass the guard
+ * measured is grass no capture draws, and the grass every capture DOES draw
+ * was in no test at all: the guard imports only `prototypeGeometry`, and this
+ * function was module-private.
+ */
+export function buildBladeRibbon(segments: number): VertexData {
   const vertexCount = 2 * segments + 1;
   const positions = new Float32Array(vertexCount * 3);
   const normals = new Float32Array(vertexCount * 3);
@@ -203,13 +214,21 @@ function buildBladeRibbon(segments: number): VertexData {
   normals[tip * 3 + 2] = 1;
   uvs[tip * 2] = 0.5;
   uvs[tip * 2 + 1] = 1;
+  // Winding: emitted REVERSED, so `cross(b-a, c-a)` opposes the authored +Z
+  // normal the way Babylon's own primitives do (measured agreement -1.000).
+  // The natural order below reads +1.000 -- the blade was inside-out, so
+  // `twoSidedLighting` negated the normal on exactly the fragments facing the
+  // viewer and the field took no direct sun. Only the INDEX order moves; the
+  // normals above are an independent statement of facing and must not be
+  // re-derived from the reversed order, which would flip them back and leave
+  // the ribbon self-consistently wrong again.
   const indices: number[] = [];
   for (let row = 0; row < segments - 1; row += 1) {
     const a = row * 2;
-    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
   }
   const last = (segments - 1) * 2;
-  indices.push(last, last + 1, tip);
+  indices.push(last, tip, last + 1);
   const data = new VertexData();
   data.positions = positions;
   data.normals = normals;
