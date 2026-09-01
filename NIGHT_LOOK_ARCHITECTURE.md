@@ -365,8 +365,35 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a⁗) ROUND S — the below-horizon SUN was the crown-warmer, and round
+  M's double stop is what found it.** The moon recession moved the
+  crowns 2.3% (1.166→1.139, target <1.0) and the ratio FELL — both
+  pre-registered stops fired, killing the moon attribution. The failure
+  pattern plus one code line identified the real mechanism:
+  `sunIntensity = palette.intensity × overcastDimming` with NO horizon
+  gate, and the palette lerping 1.1@0° → 0.0@−12° LINEARLY — a warm
+  directional at ~0.54 (10% of noon) burning from a sun 6° below the
+  horizon, which σ multiplies by `max(sunY, 0)` = ZERO. A σ-blind warm
+  directional, the arch defect class, pre-existing and bigger than
+  everything tuned around it. Retrodicts all six capture rounds,
+  including both failed predictions. THE FIX IS A SPLIT: the DIRECTIONAL
+  light (and σ, through the shared variable — they now agree) gets a
+  narrow GEOMETRIC gate, exactly 1 at/above sine +0.02 and 0 at/below
+  −0.02 — a horizon fact, deliberately NOT the twilight art window, with
+  a divergence assertion so nobody can route one through the other —
+  while the SCATTER path (snapshot `sunIlluminanceNormalized` → aerial
+  source, clouds, water glint) keeps the ungated palette ramp: the
+  atmosphere genuinely sees a below-horizon sun and the sunset afterglow
+  must survive. Also from round M, recorded: receding a light AND its σ
+  term together is a NO-OP on the rodded component and a BRIGHTENER of
+  everything that light does not illuminate — the coupling behaved
+  exactly as built; the darkening prediction was the error
+  (auto-centring, third appearance).
+
 - **(a‴) ROUND M — the moon RECEDES through twilight (consumer #6), a
-  correctness fix taken without waiting on taste.** The cream tree
+  correctness fix taken without waiting on taste** — its crown
+  attribution WITHDRAWN by its own capture (see a⁗); the recession
+  stands on the physical over-share alone. The cream tree
   crowns survived every dusk round because they were never dome-lit:
   crowns measured R/B 1.618 (null) and 1.17 (rA) while the ENTIRE dome
   measured R/B 0.14 at six elevations — the crown colour barely

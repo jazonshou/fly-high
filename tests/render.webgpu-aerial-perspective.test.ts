@@ -22,7 +22,10 @@ import {
   TWILIGHT_ARCH_KEY_FACTOR,
   TWILIGHT_AMBIENT_FLOOR_CUT,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
-import { SKY_FRAGMENT_WGSL } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  SKY_FRAGMENT_WGSL,
+  sunDirectionalHorizonGate,
+} from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
 import {
   FOG_MODE_NONE,
@@ -457,6 +460,27 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.16)).toBeCloseTo(1, 6);
     expect(twilightExposureDipFactor(-0.26)).toBeCloseTo(1, 6);
     expect(twilightArchStrength(-0.26)).toBe(0);
+  });
+
+  it("gates the directional sun at the geometric horizon, not the art window", () => {
+    // Round S: ground-level direct sun from below the horizon is impossible
+    // (refraction ~0.5° ≈ 0.009 sine, inside the ±0.02 band). Exactly 1 at
+    // every day clock — this is new code on the daylight path, and the gate
+    // being the literal 1 there is what keeps day byte-identical.
+    expect(sunDirectionalHorizonGate(sineAt(12.5))).toBe(1);
+    expect(sunDirectionalHorizonGate(sineAt(19.0))).toBe(1);
+    expect(sunDirectionalHorizonGate(0.02)).toBe(1);
+    expect(sunDirectionalHorizonGate(0)).toBeCloseTo(0.5, 9);
+    expect(sunDirectionalHorizonGate(-0.02)).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(20.45))).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(23.75))).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(0))).toBe(0);
+    // And it is DELIBERATELY not the §2.6 twilight window: at sine −0.05 the
+    // art window is fully open while the horizon gate is long closed. If
+    // someone routes the gate through the window, this divergence assertion
+    // fails before any frame does.
+    expect(twilightArchStrength(-0.05)).toBeCloseTo(1, 6);
+    expect(sunDirectionalHorizonGate(-0.05)).toBe(0);
   });
 
   it("recedes the moon only inside the window (consumer #6)", () => {

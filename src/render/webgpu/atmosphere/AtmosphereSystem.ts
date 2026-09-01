@@ -112,6 +112,30 @@ export const MOON_DISC_RADIANCE = 2.1;
  */
 export const NIGHT_AMBIENT_FLOOR_SCALE = 0.2;
 
+/**
+ * §2.6 round S — the DIRECTIONAL sun's geometric horizon gate.
+ *
+ * Exactly 1 at and above sine +0.02, exactly 0 at and below −0.02: a
+ * ground-level DirectionalLight from a sun below the horizon is a
+ * geometric impossibility (atmospheric refraction lifts the disc ~0.5°,
+ * ≈0.009 of sine — inside this band). This is a HORIZON FACT, deliberately
+ * NOT the §2.6 twilight art window (`twilightArchStrength` engages at
+ * sunset and releases at −0.26; this gate is closed before the window has
+ * meaningfully opened): routing it through the shared window would couple
+ * a geometric truth to an art schedule.
+ *
+ * Gates the LIGHT and (through the shared `sunIntensity` variable) σ's sun
+ * term — which `max(sunY, 0)` already zeroed below the horizon, so the two
+ * now agree instead of σ being blind to a burning light. The SCATTER path
+ * (`sunIntensityScatter` → the snapshot's `sunIlluminanceNormalized` → the
+ * aerial source, clouds, water glint) stays on the ungated palette ramp:
+ * the atmosphere genuinely sees a below-horizon sun.
+ */
+export function sunDirectionalHorizonGate(sunElevationSine: number): number {
+  const t = Math.min(1, Math.max(0, (sunElevationSine + 0.02) / 0.04));
+  return t * t * (3 - 2 * t);
+}
+
 const SKY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
 uniform worldViewProjection: mat4x4f;
@@ -676,7 +700,22 @@ export class AtmosphereSystem {
       state.windLayers[0]?.velocityMetersPerSecond[1] ?? 0,
     ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
-    const sunIntensity = palette.intensity * overcastDimming;
+    // §2.6 round S — the SPLIT is the point: the palette ramp keeps feeding
+    // the SCATTER path ungated (the sky's sunset afterglow, high clouds and
+    // the water's dusk glint are real physics — the atmosphere and clouds DO
+    // see a below-horizon sun), while the DIRECTIONAL light gets a narrow
+    // GEOMETRIC horizon gate: ground-level direct sunlight from a sun 6°
+    // below the horizon is impossible (refraction buys ~0.5°), yet the
+    // palette's linear 1.1@0° → 0.0@−12° ramp was driving the light at ~0.54
+    // there — a warm directional that σ was structurally blind to
+    // (sceneKeyLuminance multiplies the sun term by max(sunY, 0)). That
+    // σ-blind warmth was the cream tree-crown defect through six capture
+    // rounds; gating the light makes σ and the light rig AGREE. The gate is
+    // a horizon FACT, not the §2.6 twilight art window — do not route it
+    // through twilightArchStrength.
+    const sunIntensityScatter = palette.intensity * overcastDimming;
+    const sunIntensity = sunIntensityScatter
+      * sunDirectionalHorizonGate(sunDirection.y);
 
     // 7-1: the moon, from the clock the environment director already
     // resolved the sun from. Without a clock (the constructor's default
@@ -694,14 +733,19 @@ export class AtmosphereSystem {
     // MOON_PEAK is calibrated so moonlit ground reads at NIGHT; carried into
     // civil twilight unwindowed it made the moon comparable to the entire
     // sky's ground irradiance, when a real 2.7-lux dusk sky swamps a
-    // ≤0.25-lux moon ~10×. That warm directional was the cream tree-crown
-    // defect (crown R/B 1.17 while the whole dome measured R/B 0.14) —
-    // hidden while the rod path processed the warmth away, exposed when the
-    // field-adaptation fix routed dusk through the raw path. Scaled HERE, at
-    // the derivation, so the light and σ's moon term (which reads this same
-    // variable below) recede together by construction; at and below the
-    // release the factor is exactly 1 and every night quantity — including
-    // the moon anchor's arithmetic — is byte-for-byte the shipped one.
+    // ≤0.25-lux moon ~10×. Scaled HERE, at the derivation, so the light and
+    // σ's moon term (which reads this same variable below) recede together
+    // by construction; at and below the release the factor is exactly 1 and
+    // every night quantity — including the moon anchor's arithmetic — is
+    // byte-for-byte the shipped one.
+    //
+    // ~~That warm directional was the cream tree-crown defect~~ — WITHDRAWN
+    // by round M's own capture (crowns moved 2.3% when the moon receded
+    // 90%; both pre-registered stops fired). The crown-warmer was the
+    // ungated below-horizon SUN directional (see round S above); this
+    // recession stands as a correctness fix on its own terms — the moon
+    // really is ~10× over its physical share at civil twilight — not as
+    // the crown remedy it was first sold as.
     const moonIntensity = (moonLux / FULL_MOON_ILLUMINANCE_LUX)
       * MOON_PEAK_LIGHT_INTENSITY * overcastDimming
       * (1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(state.sun.direction[1]));
@@ -833,11 +877,15 @@ export class AtmosphereSystem {
     this.snapshotValue = {
       sunDirection: sunDirection.clone(),
       sunColor: palette.sunColor.clone(),
-      sunIntensity,
+      // Round S: the snapshot carries the SCATTER intensity, ungated — its
+      // consumers (the aerial source via sunIlluminanceNormalized, clouds,
+      // the water glint) model the atmosphere, which sees a below-horizon
+      // sun. Only the DirectionalLight and σ carry the horizon gate.
+      sunIntensity: sunIntensityScatter,
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
       ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
-      sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
+      sunIlluminanceNormalized: sunIntensityScatter / PEAK_SUN_INTENSITY,
       sunAngularRadiusRadians: state.sun.angularRadiusRadians,
       cloudCoverage,
       humidity,
