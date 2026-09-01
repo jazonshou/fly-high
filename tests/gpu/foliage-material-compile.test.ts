@@ -524,6 +524,26 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       expect(samplers.length).toBeGreaterThan(3);
       expect(textures.length).toBeGreaterThan(3);
 
+      // 7-4b: THE ATTENUATION SPLIT LANDED IN THE ARTIFACT, not merely in the
+      // source. A `!regex` injection anchor that matches NOTHING is SILENT --
+      // Babylon reports no error and the plugin's code simply never appears --
+      // so a test that only checks the foliage still renders would pass on a
+      // split that does not exist, and the impostor branch would quietly go
+      // back to dimming clustered lamps by SUN occlusion.
+      const impostorShader = [...shaderModules].reverse()
+        .find((record) => record.code.includes("detailImpostorC"));
+      expect(impostorShader, "no impostor fragment shader was compiled").toBeDefined();
+      expect(
+        /diffuse\d+\s*=\s*vec4f\(\s*diffuse\d+\.rgb\s*\*\s*impostorSunShadow/u
+          .test(impostorShader!.code),
+        "the per-light sun attenuation did not inject -- the CUSTOM_LIGHT{X}_COLOR "
+        + "anchor matched nothing, which Babylon does not report",
+      ).toBe(true);
+      expect(
+        impostorShader!.code.includes("finalDiffuse *= impostorSunShadow"),
+        "the OLD accumulator multiply is back; it dims clustered lights by sun occlusion",
+      ).toBe(false);
+
       // 7-4b: THE INTER-STAGE BUDGET, which is the tight one and had nothing
       // watching it. This material sits at EXACTLY the device limit with zero
       // slots free, so the next varying anyone adds does not degrade — it

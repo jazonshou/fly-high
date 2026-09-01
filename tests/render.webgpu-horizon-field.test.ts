@@ -195,9 +195,36 @@ describe("horizon field operator (6-11)", () => {
     // The cascade term and the horizon term compose into ONE scalar...
     expect(code).toMatch(
       /impostorSunShadow = impostorCascadeShadow \* detailHorizonShadow\(/u);
-    // ...which multiplies diffuse and specular.
-    expect(code).toContain("finalDiffuse *= impostorSunShadow");
-    expect(code).toContain("finalSpecularScaled *= impostorSunShadow");
+    // ...which multiplies diffuse and specular — but PER DIRECTIONAL LIGHT,
+    // not over the accumulator.
+    //
+    // 7-4b MOVED THIS APPLICATION SITE, and the move STRENGTHENS what this
+    // test is named for. The old form was `finalDiffuse *= impostorSunShadow`
+    // over the whole light sum. That was "direct light, and only direct light"
+    // only for as long as the sum contained nothing but the sun — and a
+    // `ClusteredLightContainer` puts clustered lamps into exactly that
+    // accumulator, so a runway or landing light would have been dimmed by SUN
+    // occlusion. The title was becoming false; under the per-light form it is
+    // true again.
+    //
+    // Attenuating `diffuse{X}.rgb` still covers diffuse AND specular, because
+    // `computeDiffuseLighting` and `computeSpecularLighting` both take it —
+    // so this asserts the same behaviour the two removed lines did, at a site
+    // that cannot reach a clustered light.
+    expect(code).toContain("diffuse$2 = vec4f(diffuse$2.rgb * impostorSunShadow, diffuse$2.a);");
+    // Guarded on DIRLIGHT, which is what makes it sun/moon-only rather than
+    // every light. A hard-coded light index would break the moment anyone
+    // reorders the sun/ambient/moon construction.
+    expect(code).toContain("#ifdef DIRLIGHT$2");
+    // The anchor itself, with the alternation the terrain mirror also needs:
+    // at runtime the marker reads CUSTOM_LIGHT0_COLOR so `\d+` matches, but the
+    // shipped Babylon file still says `{X}`, and a digits-only anchor matches
+    // nothing there.
+    expect(code).toContain(String.raw`!(#define CUSTOM_LIGHT(\{X\}|\d+)_COLOR)`);
+    // And the OLD form must not come back: it is the failure this item's
+    // successor had to undo.
+    expect(code, "the whole-accumulator multiply is back; it dims clustered lights by sun occlusion")
+      .not.toContain("finalDiffuse *= impostorSunShadow");
     // ...and NOTHING else. Ambient/irradiance must not carry it: a horizon
     // occludes the SUN, and multiplying it into ambient too would darken the
     // same stand twice for one occluder — the reason 6-8 put the canopy term

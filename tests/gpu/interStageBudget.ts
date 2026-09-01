@@ -24,6 +24,26 @@ import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
  * attached — pipeline creation fails and the mesh stops drawing entirely. The
  * detail material was at exactly 16 and did precisely that.
  *
+ * **TWO WAYS A RIG SILENTLY OMITS THE SHIPPING PATH, both of which present as
+ * a plausibly small count rather than an error.**
+ *
+ *  1. **A `CascadedShadowGenerator` does not compile the RECEIVE path until it
+ *     actually has a CASTER.** Constructing the generator is not enough. A
+ *     material whose meshes set `receiveShadows` will still compile without any
+ *     shadow varyings, eight slots light. `WildlifeSystem.addShadowCasters`
+ *     filters on `thinInstanceCount > 0`, so calling it before the instances
+ *     exist registers nothing at all; and ground cover's blades RECEIVE but
+ *     never CAST, so its rig has to stand a caster in the way terrain and the
+ *     airport do in production.
+ *  2. **Babylon compiles WebGPU shaders asynchronously and silently skips a
+ *     mesh that is not ready**, so `scene.render()` without a preceding
+ *     `await scene.whenReadyAsync()` can create no shader modules whatsoever.
+ *     That reads here as `peak = 0`, which is why the non-vacuity assertion
+ *     exists.
+ *
+ * A rig missing a cubic reflection texture also drops `vEnvironmentIrradiance`,
+ * costing one more slot on top of either.
+ *
  * Deliberately imports nothing from `src/`: a material's plugin injections leak
  * across modules (see `clustered-lighting-detail-spike`), so an audit helper
  * that pulled one in could contaminate the permutation it is measuring.

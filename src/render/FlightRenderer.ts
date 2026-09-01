@@ -37,6 +37,7 @@ import {
   shouldRunScotopicPass,
   ScotopicVisionPass,
 } from "./webgpu/atmosphere/ScotopicVision";
+import { ClusteredLightingSystem } from "./webgpu/lighting/ClusteredLighting";
 import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
@@ -1099,6 +1100,25 @@ export class FlightRenderer implements FlightRenderingSystem {
         1,
       );
       cleanup.push(() => lightPoints.dispose());
+      // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
+      // are the lamps you SEE. Constructed with no definitions on purpose —
+      // `ClusteredLightingSystem` then builds NO container, which costs
+      // nothing, because Babylon gates `vViewDepth` on `CLUSTLIGHT_BATCH > 0`
+      // rather than on whether a material has a clustered light: the moment a
+      // container exists EVERY light-loop material pays one inter-stage slot,
+      // and terrain and detail have exactly one each.
+      //
+      // It exists here so `7-8`'s landing/taxi lights and `7-14`'s obstruction
+      // lights have a surface to add to, and so the tier row reaches it: the
+      // tile and slice geometry must come from the profile, because changing it
+      // after construction reallocates the tile-mask texture, the storage
+      // buffer and the thin-instance matrix buffer.
+      const clusteredLighting = new ClusteredLightingSystem(
+        scene,
+        [],
+        profile.clusteredLighting,
+      );
+      cleanup.push(() => clusteredLighting.dispose());
       // Bound here rather than in the fan-out above, which runs before this
       // system exists. The per-frame fan-out carries it from the next frame on;
       // this is the one that lands before the first.

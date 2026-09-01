@@ -1079,9 +1079,17 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/lighting/ClusteredLighting.ts"],
     consumers: ["lighting"],
     ownedSymbols: [
+      // Corrected at 7-4b's landing against the module that actually shipped.
+      // The planned row named `CLUSTERED_LIGHTING_WGSL` and
+      // `resolveClusteredLightBinding`; neither exists, because Babylon's
+      // container owns its own shader and binding and this module configures
+      // it rather than re-implementing either. A `plannedBy` row can name
+      // symbols that never get built -- clearing it is what makes the list
+      // enforced, so the list has to become true in the same change.
       "ClusteredLightingSystem",
-      "CLUSTERED_LIGHTING_WGSL",
-      "resolveClusteredLightBinding",
+      "CLUSTERED_LIGHTING_DEFAULT_GEOMETRY",
+      "CLUSTERED_MAX_SIMULTANEOUS_LIGHTS",
+      "prepareMaterialForClusteredLighting",
     ],
     notes:
       "Tile dimensions and slice count come from WebGpuQualityProfile data "
@@ -1098,7 +1106,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "CLUSTLIGHT_SLICES floats of light UBO. ZERO samplers -- the light data "
       + "is read with textureLoad, which is why a sampler-count measurement "
       + "would have reported no change on a feature that does add a binding.",
-    plannedBy: "7-4b",
   },
   {
     // 7-5: the ~200 lights you SEE. Instanced emissive billboards that

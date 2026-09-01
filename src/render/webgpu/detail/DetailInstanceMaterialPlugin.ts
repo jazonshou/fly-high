@@ -492,6 +492,41 @@ normalUpdated = detailRotateByQuaternion(
 `,
 });
 
+/**
+ * `7-4b`: the DETAIL material's sun/moon-only attenuation point, mirroring
+ * `TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor` deliberately rather than
+ * inventing a second pattern.
+ *
+ * The impostor branch used to multiply the accumulated light SUM by
+ * `impostorSunShadow` at final composition. `finalDiffuse` is what every light
+ * writes into, so once a `ClusteredLightContainer` is attached a runway or
+ * landing light would be dimmed by SUN occlusion. `lightFragment` emits
+ * `#define CUSTOM_LIGHT{X}_COLOR` per light index, right after `diffuse{X}` is
+ * set and BEFORE that light's contribution is computed, so the occlusion can
+ * ride the light's own colour and never reach the others.
+ *
+ * **The `{X}|\d+` alternation is load-bearing.** Injection runs after include
+ * expansion, so at runtime the marker reads `CUSTOM_LIGHT0_COLOR` and `\d+`
+ * matches — but the anchor is also checked against the SHIPPED Babylon file,
+ * where it is still `CUSTOM_LIGHT{X}_COLOR`. A digits-only anchor matches zero
+ * times there and the guard fails.
+ *
+ * Attenuating `diffuse{X}.rgb` covers diffuse AND specular, because
+ * `computeDiffuseLighting` and `computeSpecularLighting` both take it — which
+ * is exactly what the two removed multiplies did. `computeClusteredLighting{X}`
+ * reads `light.vLightDiffuse` from the UBO instead, so clustered lights are
+ * untouched. **That is the whole point of the split.**
+ *
+ * **This matters most for the band it applies to.** The multiply lived only in
+ * the impostor (far) branch, which a ~60 m runway lamp cannot reach — but
+ * `7-8`'s landing and taxi lights are high-intensity forward beams from an
+ * aircraft and can. The one branch that was wrong is the one those lights are
+ * most able to illuminate.
+ */
+export const DETAIL_INSTANCE_INJECTION_ANCHORS = Object.freeze({
+  sunLightColor: String.raw`!(#define CUSTOM_LIGHT(\{X\}|\d+)_COLOR)`,
+});
+
 const WGSL_FRAGMENT_CODE = Object.freeze({
   CUSTOM_FRAGMENT_DEFINITIONS: `
 varying detailInstanceTint: vec4f;
@@ -1033,6 +1068,34 @@ if (impostorNormalLength > 0.25) {
 } else {
   normalW = vec3f(0.0, 1.0, 0.0);
 }
+
+// 7-4b: computed BEFORE the light loop, because the CUSTOM_LIGHT{X}_COLOR
+// anchor that consumes it fires inside that loop and cannot see a value
+// declared afterwards. Both hooks inject into main(), so a let here is
+// still in scope at final composition where the backlit term reads it.
+// NOTE no backticks in this comment: it lives inside a TS template literal
+// and one would close it.
+#ifdef DETAIL_SUN_SHADOW
+// Wave R: lifted 0.3 m — the billboard's base fragments are coplanar with
+// the terrain caster sheet, and a coplanar comparison is a coin flip even
+// with the bias above.
+let impostorCascadeShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
+#else
+let impostorCascadeShadow = 1.0;
+#endif
+// '6-11': the far-field half. The two terms MULTIPLY rather than select,
+// for the reason the cascade fade exists at all — inside the cascades the
+// horizon field is a coarse agreement with what the CSM already resolves
+// finely, and across the handoff ring a hard switch would draw its own line
+// on the forest. Multiplying lets the CSM fade to 1.0 exactly as the horizon
+// term takes over, which is the same crossfade shape wave R gave the
+// cascade boundary.
+#ifdef DETAIL_HORIZON_SHADOW
+let impostorSunShadow = impostorCascadeShadow * detailHorizonShadow(
+  fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy);
+#else
+let impostorSunShadow = impostorCascadeShadow;
+#endif
 #endif
 `,
   CUSTOM_FRAGMENT_BEFORE_FINALCOLORCOMPOSITION: `
@@ -1061,35 +1124,14 @@ if (detailBacklit > 0.0) {
 // Wave Q (tree-cutoff fix): the hand-packed CSM term. Multiplying here
 // mirrors the terrain horizon-shadow hook — direct diffuse and specular
 // only; ambient/irradiance are untouched.
-#ifdef DETAIL_SUN_SHADOW
-// Wave R: lifted 0.3 m — the billboard's base fragments are coplanar with
-// the terrain caster sheet, and a coplanar comparison is a coin flip even
-// with the bias above.
-let impostorCascadeShadow = detailSunShadow(fragmentInputs.vPositionW + vec3f(0.0, 0.3, 0.0));
-#else
-let impostorCascadeShadow = 1.0;
-#endif
-// '6-11': the far-field half. The two terms MULTIPLY rather than select,
-// for the reason the cascade fade exists at all — inside the cascades the
-// horizon field is a coarse agreement with what the CSM already resolves
-// finely, and across the handoff ring a hard switch would draw its own line
-// on the forest. Multiplying lets the CSM fade to 1.0 exactly as the horizon
-// term takes over, which is the same crossfade shape wave R gave the
-// cascade boundary.
-#ifdef DETAIL_HORIZON_SHADOW
-let impostorSunShadow = impostorCascadeShadow * detailHorizonShadow(
-  fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy);
-#else
-let impostorSunShadow = impostorCascadeShadow;
-#endif
-// Direct diffuse and specular only; ambient/irradiance are untouched. This
-// mirrors the terrain horizon-shadow hook exactly — a horizon occludes the
-// SUN, and multiplying it into ambient as well would darken the same stand
-// twice for one occluder.
-finalDiffuse *= impostorSunShadow;
-#ifdef SPECULARTERM
-finalSpecularScaled *= impostorSunShadow;
-#endif
+// 7-4b: the two accumulator multiplies that used to live here are GONE.
+// finalDiffuse is the sum every light writes into, so multiplying it by a
+// SUN-derived term dimmed every light equally — and once a
+// ClusteredLightContainer is attached that sum contains clustered lamps.
+// The attenuation now rides each DIRECTIONAL light own colour at
+// CUSTOM_LIGHT{X}_COLOR; see DETAIL_INSTANCE_INJECTION_ANCHORS.
+// The backlit term below keeps its explicit factor: it is a wrap
+// TRANSMISSION of the key light, so it genuinely should carry sun shadow.
 // Fix-pack polish: the far band gets the SAME wrap-transmission response as
 // the crowns it hands off to — the term was gated on the atlas define the
 // impostor material never sets, so every backlit stand stepped from glowing
@@ -1106,6 +1148,13 @@ if (impostorBacklit > 0.0) {
   finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
     * (impostorBacklit * 0.55 * impostorSunShadow);
 }
+#endif
+`,
+  [DETAIL_INSTANCE_INJECTION_ANCHORS.sunLightColor]: /* wgsl */ `$1
+#ifdef DETAIL_IMPOSTOR
+#ifdef DIRLIGHT$2
+diffuse$2 = vec4f(diffuse$2.rgb * impostorSunShadow, diffuse$2.a);
+#endif
 #endif
 `,
 });

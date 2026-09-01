@@ -193,6 +193,31 @@ export interface WebGpuQualityProfile {
    * splat — the co-residency rule `4-2` states.
    */
   readonly channelAtlasSlots: number;
+  /**
+   * `7-4b`/`7-9`: the clustered light container's tile and slice geometry.
+   *
+   * **Profile data rather than a runtime lever, and that is a Babylon
+   * constraint rather than a preference.** Changing any of the three
+   * reallocates the tile-mask texture, the storage buffer and the thin-instance
+   * matrix buffer, so `ClusteredLightingSystem` applies them once at
+   * construction and never again.
+   *
+   * **UNIFORM ACROSS TIERS TODAY, AND THAT IS DELIBERATE RATHER THAN
+   * UNFINISHED.** Slices drive the per-light-slot UBO — `vSliceData: vec2f`
+   * plus `vSliceRanges: array<vec4f, CLUSTLIGHT_SLICES>`, so 2 + 4x slices
+   * floats, 264 B at 16 — which is far too small to differentiate on memory
+   * against the 2.7 MiB of inventoried headroom. The real cost of coarser tiles
+   * is MORE LIGHTS PER TILE and therefore more per-pixel shading, and that is a
+   * frame-time question. **Differentiating these rows without measuring it
+   * would be inventing four numbers and calling them a tier row**, which is the
+   * failure `7-9` exists to avoid. The mechanism is wired so the sweep can tune
+   * it; the sweep is blocked on a quiet host.
+   */
+  readonly clusteredLighting: {
+    readonly horizontalTiles: number;
+    readonly verticalTiles: number;
+    readonly depthSlices: number;
+  };
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -316,6 +341,7 @@ function resolveBaseQualityProfile(
       // texel density inside them roughly triples at every tier.
       shadowMapSize: 1_024,
       shadowCascades: 2,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 900,
       oceanResolution: 128,
       oceanCascades: 3,
@@ -400,6 +426,7 @@ function resolveBaseQualityProfile(
       // which is the HIGH row plus a filter that cannot run (tier-2 note).
       shadowMapSize: 1_280,
       shadowCascades: 2,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 1_400,
       oceanResolution: 128,
       oceanCascades: 4,
@@ -472,6 +499,7 @@ function resolveBaseQualityProfile(
       // worth here, so PCSS is a Phase 7 conversation.
       shadowMapSize: 1_536,
       shadowCascades: 3,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 1_800,
       oceanResolution: 256,
       oceanCascades: 5,
@@ -531,6 +559,7 @@ function resolveBaseQualityProfile(
     // `4-8b`: 4 × 2048 @ 2400 m. PCSS struck here too (see tier 2).
     shadowMapSize: 2_048,
     shadowCascades: 4,
+    clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
     shadowDistance: 2_400,
     oceanResolution: 256,
     oceanCascades: 5,
