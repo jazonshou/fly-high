@@ -1636,6 +1636,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       mesh.isVisible = visible;
       toggled += 1;
     }
+    // The `detail-` walk above cannot reach the compute ground-cover field:
+    // its meshes are named `ground-cover-ring-N`, and — more to the point —
+    // `GroundCoverSystem` re-asserts `setEnabled()` on them every update, so
+    // an `isVisible` written from out here is overwritten on the next frame.
+    // Only the owner can stop re-asserting, so it owns the flag and this adds
+    // its count to ours. Before this, blades survived into every
+    // "vegetation-hidden" capture and were therefore differenced to ~0 and
+    // classified as TERRAIN by the very instrument built to isolate them.
+    toggled += this.groundCover.setVisibleForCapture(visible);
     return toggled;
   }
 

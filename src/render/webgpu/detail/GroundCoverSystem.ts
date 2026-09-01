@@ -241,6 +241,27 @@ export class GroundCoverSystem {
   private readonly scene: Scene;
   private readonly options: GroundCoverSystemOptions;
   private readonly gpuActive: boolean;
+  /**
+   * `VITE_PERF_HIDE_VEGETATION` suppression, owned HERE rather than by the
+   * caller.
+   *
+   * `FlightRenderer.setVegetationVisibleForCapture` hides vegetation by walking
+   * `scene.meshes`, matching the `detail-` name prefix and setting `isVisible`.
+   * That works only for meshes nobody re-asserts. **This system re-asserts
+   * `setEnabled()` on every ring every update**, so a scene-level toggle is
+   * overwritten by the owner on the next frame — measured: toggling the blade
+   * winding changed the supposedly vegetation-HIDDEN capture, which it could
+   * only do if blades were still being drawn in it.
+   *
+   * The consequence was that every blade pixel differenced to ~0 between the
+   * normal and hidden frames and was therefore classified TERRAIN by
+   * `ab-shape.mts`, putting ~100% of a blade-only change into the control at
+   * `grove-meadow-2m` and ~91% at `grove-forest-2m`. The instrument's control
+   * contained the surface under test.
+   *
+   * Only the owner can stop re-asserting, so the flag lives here.
+   */
+  private hiddenForCapture = false;
   private readonly material: PBRMaterial | null = null;
   private readonly plugin: GroundCoverMaterialPlugin | null = null;
   private rings: GroundCoverRingResources[] = [];
@@ -782,7 +803,7 @@ export class GroundCoverSystem {
     ))) * leverScale;
     this.lastGateScale = gate;
     if (gate <= 0.02) {
-      for (const ring of this.rings) ring.mesh.setEnabled(false);
+      for (const ring of this.rings) this.setRingEnabled(ring, false);
       return;
     }
 
@@ -793,7 +814,7 @@ export class GroundCoverSystem {
       Math.round((input.cameraWorldZ - GROUND_COVER_TILE_SPAN_METERS / 2) / snap) * snap;
     this.advanceTileBake(desiredOriginX, desiredOriginZ);
     if (!this.frontTileReady) {
-      for (const ring of this.rings) ring.mesh.setEnabled(false);
+      for (const ring of this.rings) this.setRingEnabled(ring, false);
       return;
     }
 
@@ -911,12 +932,12 @@ export class GroundCoverSystem {
         this.publishIndirect(ring, counterFrame, ringIndex);
         dispatched += 1;
         this.applyDrawCount(ring);
-        ring.mesh.setEnabled(true);
+        this.setRingEnabled(ring, true);
       } else {
         // A deferred ring keeps LAST frame's records and last frame's count,
         // which is why deferring this client is invisible: the lattice is
         // world-anchored, so a frame-old field is the same field.
-        ring.mesh.setEnabled(ring.compute.isReady());
+        this.setRingEnabled(ring, ring.compute.isReady());
       }
       innerRadius = outerRadius;
     }
@@ -1025,6 +1046,40 @@ export class GroundCoverSystem {
     }).finally(() => {
       this.readbacksInFlight -= 1;
     });
+  }
+
+  /**
+   * The ONE place a ring's enabled state is written.
+   *
+   * Every `setEnabled` in this file goes through here so the capture flag
+   * cannot be forgotten at one of five call sites — the same reason
+   * `towerGeometry`'s winding adaptation lives in a single function. A future
+   * sixth enable site that bypasses this is the failure mode, which is why
+   * `render.webgpu-ground-cover-capture.test.ts` asserts the source contains no
+   * direct `ring.mesh.setEnabled(` outside it.
+   */
+  private setRingEnabled(ring: { mesh: { setEnabled(value: boolean): void } }, enabled: boolean): void {
+    ring.mesh.setEnabled(this.hiddenForCapture ? false : enabled);
+  }
+
+  /**
+   * Hide or show the ground-cover field for a diagnostic capture.
+   *
+   * Returns **the number of ring meshes that were actually enabled at the
+   * moment of the call and are now suppressed** — a non-vacuity signal built
+   * into the API, copied from `setVegetationVisibleForCapture`'s own return.
+   * A caller that gets `0` back knows nothing was hidden, which is the
+   * difference between a mask that works and a mask that silently masks
+   * nothing. Four instruments this phase passed by examining nothing.
+   */
+  setVisibleForCapture(visible: boolean): number {
+    this.hiddenForCapture = !visible;
+    let affected = 0;
+    for (const ring of this.rings) {
+      if (!visible && ring.mesh.isEnabled(false)) affected += 1;
+      if (!visible) ring.mesh.setEnabled(false);
+    }
+    return affected;
   }
 
   dispose(): void {

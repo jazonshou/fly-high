@@ -703,7 +703,20 @@ describe("perf capture (1A-1c / 2Z)", () => {
       if (HIDE_VEGETATION) {
         // After streaming, so the meshes exist to hide; before the settle and
         // readback, so the captured frame is the vegetation-free one.
-        renderer.setVegetationVisibleForCapture(false);
+        const hidden = renderer.setVegetationVisibleForCapture(false);
+        // A mask that hides nothing is not a mask, and it fails SILENTLY: the
+        // "hidden" frame comes back identical to the normal one, every pixel
+        // differences to ~0, and every surface is classified as terrain. That
+        // is exactly what happened to the ground-cover field — its meshes are
+        // not named `detail-` AND its owner re-asserts `setEnabled()` every
+        // update, so an outside toggle was overwritten on the next frame.
+        // Assert the count rather than trusting the call.
+        expect(
+          hidden,
+          `${shot.name}: VITE_PERF_HIDE_VEGETATION suppressed NOTHING. The `
+          + "resulting frame is not a vegetation mask, and anything differenced "
+          + "against it would classify every vegetation pixel as terrain",
+        ).toBeGreaterThan(0);
       }
       const captureRenderScale = shot.captureRenderScale ?? CAPTURE_PROFILE.renderScale;
       renderer.setPinnedRenderScaleForCapture(captureRenderScale);
