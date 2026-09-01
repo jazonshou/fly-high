@@ -271,6 +271,9 @@ uniform lightPixelSize: vec2f;
 uniform lightPsfPixels: f32;
 uniform lightCameraPosition: vec3f;
 uniform lightIesRows: f32;
+// Daylight suppression. Exactly 1 whenever the sun is at or below the horizon,
+// so every night frame is bit-identical to one rendered without this term.
+uniform lightDaylightAttenuation: f32;
 
 var iesProfileSampler: sampler;
 var iesProfile: texture_2d<f32>;
@@ -350,6 +353,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 
   // Inverse-square falloff to scene-linear radiance, then the photometry.
   let irradiance = vertexInputs.lightParams.x * candela * beam
+    * uniforms.lightDaylightAttenuation
     / (distanceMeters * distanceMeters);
 
   var clipPosition = uniforms.worldViewProjection * vec4f(worldPosition, 1.0);
@@ -568,6 +572,7 @@ export class LightPointSystem {
           "lightPsfPixels",
           "lightCameraPosition",
           "lightIesRows",
+          "lightDaylightAttenuation",
           ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: ["iesProfile"],
@@ -597,6 +602,9 @@ export class LightPointSystem {
     this.material.setTexture("iesProfile", this.defaultProfile);
     this.material.setFloat("lightPsfPixels", LIGHT_POINT_PSF_RADIUS_PIXELS);
     this.material.setFloat("lightIesRows", Math.max(iesRows, 1));
+    // Defaults to full effect: a renderer that never calls the setter behaves
+    // exactly as it did before this term existed, rather than dark.
+    this.material.setFloat("lightDaylightAttenuation", 1);
     this.material.setVector2("lightPixelSize", new Vector2(1, 1));
     this.mesh.material = this.material;
   }
@@ -693,6 +701,20 @@ export class LightPointSystem {
   }
 
   /** The camera position the inverse-square falloff and IES angle are taken from. */
+  /**
+   * Daylight suppression, from `airfieldLampDaylightAttenuation`.
+   *
+   * Clamped here as well as computed there: this value multiplies every lamp in
+   * the scene, so a NaN or a negative arriving from a future caller would take
+   * the whole airfield out silently rather than loudly.
+   */
+  setDaylightAttenuation(attenuation: number): void {
+    const safe = Number.isFinite(attenuation)
+      ? Math.min(1, Math.max(0, attenuation))
+      : 1;
+    this.material.setFloat("lightDaylightAttenuation", safe);
+  }
+
   setCameraPosition(position: Vector3): void {
     this.material.setVector3("lightCameraPosition", position);
   }

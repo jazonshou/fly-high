@@ -28,6 +28,15 @@ export const PERF_CAPTURE_STRUCTURED_TILE_VARIANCE = 0.000_01;
 /** Local structure must cover the frame rather than hide in one noisy patch. */
 export const PERF_CAPTURE_MIN_STRUCTURED_TILE_FRACTION = 0.5;
 /** SSIM below this against the committed baseline fails the capture. */
+/**
+ * Luminance at or above which a pixel counts as near-clipped.
+ *
+ * 245 of 255 — high enough that ordinary sunlit highlights do not trip it (a
+ * clean daylight baseline reads 56 over the whole frame) and low enough to
+ * catch a light source blowing out, which reads in the thousands.
+ */
+export const PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE = 245 / 255;
+
 export const PERF_CAPTURE_SSIM_THRESHOLD = 0.985;
 /** Per-channel SSIM catches hue/chroma regressions that luma SSIM cannot see. */
 export const PERF_CAPTURE_RGB_SSIM_THRESHOLD = 0.95;
@@ -318,6 +327,12 @@ export interface PerfCaptureShotDefinition {
    * the scan size is asserted non-zero so a drifted crop fails loudly instead
    * of passing over nothing.
    */
+  /**
+   * Whole-frame ceiling on near-clipped pixels. Set on DAY shots: it is the
+   * gate that would have caught the airfield lamps burning at their night
+   * calibration at solar noon — 10,019 clipped pixels against a baseline 56.
+   */
+  readonly maxNearClippedPixels?: number;
   readonly litRegion?: {
     /** Scan band, as fractions of viewport height (0 = top). */
     readonly yMinFraction: number;
@@ -911,6 +926,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.4 },
     drawCallCeiling: 166,
+    // `7-9`: 60 measured with the daylight attenuation term, against 56 in the
+    // pre-lamp baseline and **10,019 without it**. 400 is ~6.7x the measured
+    // value and still 25x below the defect — wide enough that ordinary
+    // highlight churn cannot trip it, narrow enough that a lamp calibrated for
+    // night blowing out this daylight frame cannot pass.
+    maxNearClippedPixels: 400,
   },
   {
     // Fix-pack W5 (2026-08-25, APPENDED per the rule above): the first shot
@@ -1928,6 +1949,8 @@ export interface PerfCaptureShotReport {
    * band, and `pixelsScanned` so a zero-size scan is a loud failure rather
    * than a vacuous pass.
    */
+  /** Whole-frame count of near-clipped pixels — the day-side lamp gate. */
+  readonly nearClippedPixels: number;
   readonly litRegion?: {
     readonly brightPixels: number;
     readonly pixelsScanned: number;

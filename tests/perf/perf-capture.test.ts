@@ -26,6 +26,7 @@ import {
   PERF_CAPTURE_RGB_SSIM_THRESHOLD,
   PERF_CAPTURE_SEED,
   PERF_CAPTURE_SHOTS,
+  PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE,
   PERF_CAPTURE_SSIM_THRESHOLD,
   PERF_CAPTURE_TEMPORAL_FRAMES,
   PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
@@ -1212,10 +1213,27 @@ describe("perf capture (1A-1c / 2Z)", () => {
         litRegion = { brightPixels, pixelsScanned };
       }
 
+      // `7-9`: near-clipped pixels, whole frame. The airfield lamps carry a
+      // NIGHT calibration applied unconditionally, so before the daylight
+      // attenuation term they burned at full strength at solar noon and
+      // `runway-on-approach` rendered its runway as blown-out blocks --
+      // measured 10,019 pixels above luminance 245 against 56 in its committed
+      // baseline, 1.09% of a daylight frame clipped.
+      //
+      // This is the instrument that caught it, kept as a gate so the next
+      // person calibrating a light FOR NIGHT cannot break DAY silently. Whole
+      // frame and unconditional: scoping it to a band would only move the
+      // place a future one can hide.
+      let nearClippedPixels = 0;
+      for (let i = 0; i < luminance.length; i += 1) {
+        if (luminance[i]! >= PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE) nearClippedPixels += 1;
+      }
+
       shotReports.push({
         name: shot.name,
         worldEvolution: shotWorldEvolution,
         description: shot.description,
+        nearClippedPixels,
         ssimAgainstBaseline: ssim === null ? null : Math.round(ssim * 10_000) / 10_000,
         rgbSsimAgainstBaseline: rgbSsim === null
           ? null
@@ -1447,6 +1465,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
             + "regression, not a tolerance to relax",
           ).toBeGreaterThanOrEqual(definition.litRegion.minBrightPixels);
         }
+      }
+      // The day-side counterpart of the lit gate, and the reason both exist:
+      // one change to a lamp constant can darken NIGHT and blow out DAY, and
+      // until now only the night half was watched.
+      if (definition.maxNearClippedPixels !== undefined && !IS_SWEEP && !SUN_OVERRIDDEN) {
+        expect(
+          shot.nearClippedPixels,
+          `${shot.name}: ${shot.nearClippedPixels} pixels at or above luminance `
+          + `${PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE}, against a ceiling of `
+          + `${definition.maxNearClippedPixels}. A lamp calibrated for night is the `
+          + "likeliest cause -- the lamps have no daylight term unless one is applied",
+        ).toBeLessThanOrEqual(definition.maxNearClippedPixels);
       }
       if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
         expect(

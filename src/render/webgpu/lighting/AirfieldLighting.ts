@@ -826,6 +826,64 @@ export const AIRFIELD_LAMP_PHOTOMETRY: Readonly<
 export const AIRFIELD_LAMP_SCENE_SCALE = 5.7e5;
 
 /**
+ * Horizontal illuminance, lux, at or below which the lamps are at full effect.
+ *
+ * Anchored on deep civil twilight — the textbook figure for the sun at −6° is
+ * ~3.4 lux, and this world's own model reads **2.672 lux at −6.12°**
+ * (`dusk-mesopic`'s clock), so the two agree. That is the light level at which
+ * runway lighting genuinely takes over from daylight.
+ */
+export const AIRFIELD_LAMP_FULL_EFFECT_LUX = 3.4;
+
+/**
+ * How much daylight suppresses the airfield lamps.
+ *
+ * **Why this exists.** `AIRFIELD_LAMP_SCENE_SCALE` is applied unconditionally
+ * at both emission sites, and nothing else in this file references the sun. So
+ * the lamps burn at their full NIGHT calibration at solar noon: measured on
+ * `runway-on-approach`, **10,019 pixels above luminance 245 against 56 in the
+ * committed baseline — 179×, and 1.09% of a daylight frame clipped.** The
+ * runway rendered as a chequerboard of blown-out blocks.
+ *
+ * **Why it is a separate term and not a change to the scale.** That constant
+ * has had three wrong values, and the frame its current value produces carries
+ * Jason's approval. Moving it would put an approved night frame at risk to fix
+ * a day defect. A multiplier that is *exactly* 1 below the horizon cannot
+ * disturb any night shot at all — the night calibration is preserved **by
+ * construction rather than by measurement**, which is a much stronger promise
+ * than a re-measured one.
+ *
+ * **The horizon gate is syntactic on purpose.** It is an early return, not an
+ * arithmetic edge case, so no illuminance value — a moon, a future sky model,
+ * a bug — can reach through it and perturb a night frame. `night`,
+ * `night-moonlit` and `dusk-mesopic` all sit at sun elevations of −21.46°,
+ * −21.65° and −6.12°, so all three are untouched.
+ *
+ * **Above the horizon it is physical rather than tuned.** A lamp of fixed
+ * intensity contributes in proportion to how much it adds over the ambient, so
+ * the term is the ratio of the full-effect illuminance to the actual one. At
+ * solar noon the model reads 1.11e5 lux against 1.5e-3 at night, and the
+ * resulting attenuation is ~3e-5. No coefficient here was chosen by looking at
+ * the clipped-pixel count it produced.
+ *
+ * @param sunElevationSine `state.sun.direction[1]` — the sine of the sun's
+ *   elevation. At or below zero the lamps are at full effect.
+ * @param horizontalLux the scene's horizontal illuminance from the sun.
+ */
+export function airfieldLampDaylightAttenuation(
+  sunElevationSine: number,
+  horizontalLux: number,
+): number {
+  // Not `sunElevationSine <= 0`: NaN must take this branch too. A NaN sun would
+  // otherwise fall through and produce a NaN intensity, which reaches the GPU
+  // as a lamp that is either invisible or infinite depending on the hardware.
+  if (!(sunElevationSine > 0)) return 1;
+  if (!Number.isFinite(horizontalLux)) return 1;
+  const effective = Math.max(horizontalLux, AIRFIELD_LAMP_FULL_EFFECT_LUX);
+  return Math.min(1, AIRFIELD_LAMP_FULL_EFFECT_LUX / effective);
+}
+
+/**
  * Beam cutoff for a directional lamp: a hemisphere.
  *
  * `0` is the cosine of 90 degrees. A lamp emitted toward one runway end must be

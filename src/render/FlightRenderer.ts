@@ -20,12 +20,16 @@ import type {
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   exposureForState,
+  horizontalIlluminanceLux,
   resolveEnvironmentState,
   SCENE_UNIT_TO_NITS,
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import { LightPointSystem } from "./webgpu/lighting/LightPoints";
-import { AirfieldLightingSystem } from "./webgpu/lighting/AirfieldLighting";
+import {
+  AirfieldLightingSystem,
+  airfieldLampDaylightAttenuation,
+} from "./webgpu/lighting/AirfieldLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
@@ -1988,6 +1992,16 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.stars.update(this.camera.position);
     this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
     this.lightPoints.setCameraPosition(this.camera.position);
+    // Daylight suppression. The lamps carry a NIGHT calibration
+    // (`AIRFIELD_LAMP_SCENE_SCALE`) applied unconditionally, so without this
+    // they burn at full strength at solar noon — measured at 10,019 clipped
+    // pixels on `runway-on-approach` against 56 in its baseline. The term is
+    // exactly 1 at or below the horizon, so every night frame is unchanged by
+    // construction rather than by measurement.
+    this.lightPoints.setDaylightAttenuation(airfieldLampDaylightAttenuation(
+      this.environmentState.sun.direction[1],
+      horizontalIlluminanceLux(this.environmentState),
+    ));
     // The PAPI's indication, resolved analytically against the camera's WORLD
     // position — `camera.position` is origin-relative, and an elevation angle
     // taken against a rebased origin would swing by the origin every 4,096 m.
