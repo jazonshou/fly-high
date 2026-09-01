@@ -120,31 +120,48 @@ describe("ATC tower (7-15)", () => {
     }
   });
 
-  it("subtends a stated, measured angle at 3 NM — not a claimed one", () => {
-    // Gate 7D's criterion is "the tower reads as a tower from 3 NM". This pins
-    // the ARITHMETIC that criterion has to be judged against, because the first
-    // version of this file asserted the tower was "hundreds of pixels tall" at
-    // that range and it is 6.8. Two orders of magnitude, in a comment nobody
-    // would have re-derived.
+  it("subtends a stated, measured angle at the readable range — not a claimed one", () => {
+    // Gate 7D's criterion was "the tower reads as a tower from 3 NM". IT WAS
+    // UNACHIEVABLE and Jason re-scoped it to 1-2 km on 2026-09-01.
     //
-    // Verified against a real capture rather than left as a model: at
-    // `approach-500ft`'s 2.5 km the rendered footprint measured 17 px tall
-    // against 15.2 predicted, so this formula is the one the renderer obeys.
+    // The arithmetic is why. At 5,556 m and 0.069 deg/px this tower is 6.9 px
+    // tall -- a dot. Reaching the ~20 px a shape needs to be recognisable would
+    // take a tower near 135 m, against the ~46 m of a real regional field: one
+    // of the tallest towers in the world beside a small runway. The criterion
+    // could not be met by building better, only by building wrong.
+    //
+    // This pins the arithmetic the criterion is judged against, because the
+    // first version of this file asserted the tower was "hundreds of pixels
+    // tall" at 3 NM and it is 6.9. Two orders of magnitude, in a comment nobody
+    // would have re-derived. Verified against a real capture rather than left
+    // as a model: at `approach-500ft`'s 2.5 km the rendered footprint measured
+    // 17 px against 15.2 predicted, so this formula is the one the renderer
+    // obeys.
     const { heightMeters } = buildTowerGeometry().attachments;
     const DEGREES_PER_PIXEL_720P = 50 / 720;
     const at = (range: number) =>
       ((Math.atan2(heightMeters, range) * 180) / Math.PI) / DEGREES_PER_PIXEL_720P;
 
     expect(heightMeters).toBeGreaterThan(40);
-    // 2.5 km — the range an existing shot already exercises, and the one the
+    // 2.5 km -- the range an existing shot already exercises, and the one the
     // capture confirmed.
     expect(at(2_500)).toBeGreaterThan(14);
     expect(at(2_500)).toBeLessThan(17);
-    // 3 NM. Asserted as a BAND, not a floor: a floor would be silently
-    // satisfiable by inflating the tower, which is exactly the move this test
-    // exists to make visible. If someone raises the tower past 60 m to pass a
-    // readability target, this fails and the trade becomes a decision.
-    expect(at(3 * 1_852)).toBeGreaterThan(6);
+
+    // THE CRITERION: readable across 1-2 km, asserted as a BAND at both ends
+    // rather than a floor. A floor is silently satisfiable by inflating the
+    // tower, which is exactly the move this test exists to make visible -- so
+    // the upper bounds are the load-bearing half. Raising the tower to pass a
+    // readability target fails here and becomes a decision rather than a fix.
+    expect(at(2_000)).toBeGreaterThan(18); // far edge still reads as a shape
+    expect(at(2_000)).toBeLessThan(23);
+    expect(at(1_000)).toBeGreaterThan(34); // near edge unmistakable
+    expect(at(1_000)).toBeLessThan(45);
+
+    // Recorded, NOT asserted as a criterion: the figure that retired the old
+    // one. Kept so the next reader sees why the range moved rather than
+    // re-deriving it, and so a geometry change that makes 3 NM plausible is
+    // visible here first.
     expect(at(3 * 1_852)).toBeLessThan(9);
   });
 });

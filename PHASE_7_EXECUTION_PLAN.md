@@ -977,7 +977,11 @@ not be flying it.
 **Gate 7D exit criteria.** No `CreateBox` primitive remains in `AirportSystem.ts` (the
 criterion is measured against that file, so one surviving call fails it). Hangars are
 visually distinct from one another under the same seed. The windsock tracks the simulated
-wind vector at its own position. The tower reads as a tower from 3 NM.
+wind vector at its own position. The tower reads as a tower across **1-2 km** (Jason, 2026-09-01, re-scoped from
+3 NM). At 3 NM and 0.069 deg/px a 46 m tower is **6.9 px** -- reaching the ~20 px a
+shape needs would take a tower near 135 m beside a small runway, so the old
+criterion was unmeetable by building better, only by building wrong. At the new
+range this tower is 38.5 px at 1 km and 19.3 px at 2 km, and needed no change.
 
 **Rebaseline: R7-4 at Gate 7D close** — this moves the *day* shots, and four of them share
 one pose (`approach-500ft`, `reference-viewport`, `winter-noon`, `night` are all
@@ -1569,7 +1573,8 @@ matches the geometric glideslope to within **0.1°**; nav-light colours correctl
 another aircraft's heading on the settled body-axis contract.
 **Gate 7D.** No `CreateBox` primitive remains in `AirportSystem.ts`; hangars are visually
 distinct from one another under the same seed; the windsock tracks the simulated wind vector
-at its own position; the tower reads as a tower from 3 NM.
+at its own position; the tower reads as a tower across **1-2 km** (re-scoped from 3 NM by Jason,
+2026-09-01: 6.9 px at 3 NM is unmeetable without a ~135 m tower).
 **Phase.** All four tiers pass `assertWithinBudget()` at three viewport sizes with the night
 rows applied; the 24 + 4 shot set is green under the strict tier-1 contract on the reference
 host; N-1 and N-3 have verdicts.
