@@ -132,7 +132,7 @@ describe("opaque PBR cloud-shadow registry", () => {
       endSafetyArea: 120,
       shoulderWidth: 14,
       terrainBlendDistance: 220,
-    }, () => 80);
+    }, () => 80, 1_234);
     const detail = new WorldDetailRuntime(scene, {
       worldSeed: "cloud-shadow-detail",
       terrainSample: () => ({
@@ -156,7 +156,13 @@ describe("opaque PBR cloud-shadow registry", () => {
     wildlife.addPbrMaterials((material) => registry.registerMaterial(material));
     // Building materials left with 1B-5's village deletion.
     for (const materialName of [
-      "hangar-metal",
+      // `7-10` replaced the local `hangar-metal` stand-in with `7-11`'s shared
+      // airfield set, so the hangars now wear `airfield-metal` and
+      // `airfield-concrete`. Both are listed: the property under test is that
+      // an AIRPORT material reaches this registry, and checking only one of the
+      // two surfaces would leave the other able to lose cloud shadows silently.
+      "airfield-metal",
+      "airfield-concrete",
       "detail-foliage-pine",
       // 2-12: per-species bark materials replaced the shared trunk.
       "detail-bark-pine",

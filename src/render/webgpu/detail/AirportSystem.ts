@@ -1,6 +1,5 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder.pure";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -11,6 +10,27 @@ import {
   TOWER_PART_NAMES,
   type TowerAttachments,
 } from "./towerGeometry";
+import { createAirfieldMaterials, type AirfieldMaterialSet } from "../airfield/AirfieldMaterials";
+import {
+  HANGAR_SITING,
+  MINIMUM_SKIRT_METERS,
+  buildHangar,
+  hangarAttachments,
+  hangarFootprint,
+  hangarFootprintSamples,
+  hangarPlanFrom,
+  hangarSeatingFrom,
+  type HangarAttachments,
+} from "../airfield/AirfieldStructures";
+
+/**
+ * Ground-sample spacing under a hangar footprint.
+ *
+ * 2 m over 46 x 34 m is 408 samples per hangar. That is the resolution the
+ * relief figures behind `7-10`'s seating rule were measured at, so the rule and
+ * the bridge agree about what "the ground under it" means.
+ */
+const GROUND_SAMPLE_STEP_METERS = 2;
 
 /**
  * The authored detail around the starter airport — which, since `3-9`, is the
@@ -40,7 +60,15 @@ export class AirportSystem {
    * breaks a test instead of silently relocating someone else's lights.
    */
   readonly towerAttachments: TowerAttachments;
+  /**
+   * `7-14` and `7-7` mount to these. Runway-local with each hangar's own
+   * placement folded in — the same frame as `towerAttachments`, and on the
+   * class surface for the same reason: a rename breaks a test rather than
+   * silently relocating someone else's lights.
+   */
+  readonly hangarAttachments: readonly HangarAttachments[];
   private readonly materials: PBRMaterial[] = [];
+  private readonly airfieldMaterials: AirfieldMaterialSet;
 
   /**
    * `groundHeight` samples the shipped terrain at a WORLD coordinate. It is
@@ -55,36 +83,60 @@ export class AirportSystem {
     scene: Scene,
     private readonly definition: Readonly<AirportDefinition>,
     groundHeight: (x: number, z: number) => number,
+    /**
+     * `world.seedHash`, NOT `sourceSeedHash`. The airfield is earthworks-
+     * coupled and therefore terrain-authority: it must agree with the ground it
+     * stands on, and a guaranteed-airport world replaces `seedHash` during the
+     * airport search so the two differ.
+     */
+    seedHash: number,
   ) {
     this.root = new TransformNode("airport", scene);
     this.root.rotation.y = definition.headingRadians;
 
-    const metal = this.material(scene, "hangar-metal", new Color3(0.20, 0.25, 0.27), 0.48, 0.42);
-
+    // `7-10`: the parametric hangars. Every one is built HERE, in the
+    // constructor, and parented under `root` before it returns — same reason
+    // the tower is, spelled out below.
+    this.airfieldMaterials = createAirfieldMaterials(scene, seedHash);
     const hangars: Mesh[] = [];
-    for (let index = 0; index < 3; index += 1) {
-      const height = 14 + index * 2;
-      const hangar = CreateBox(`airport-hangar-${index}`, {
-        width: 46,
-        height,
-        depth: 34,
-      }, scene);
-      // The node's local +x is the runway's ACROSS axis and local +z its ALONG
-      // axis (the root carries the heading rotation), so these are runway-local
-      // coordinates and `runwayToWorld` converts them for the ground query.
-      const across = definition.runwayWidth * 0.5 + 118;
-      const along = -definition.runwayLength * 0.12 + (index - 1) * 52;
-      const world = runwayToWorld(definition, along, across);
-      const ground = groundHeight(world.x, world.z);
-      // The root sits at `definition.elevation`, so a hangar's local y is its
-      // own half-height plus however far the ground has fallen from the datum.
-      // Sunk 0.4 m so the sill meets the ground rather than hovering on it.
-      const sit = Number.isFinite(ground) ? ground - definition.elevation : 0;
-      hangar.position.set(across, sit + height * 0.5 - 0.4, along);
-      hangar.material = metal;
-      hangar.parent = this.root;
-      hangars.push(hangar);
+    const attachments: HangarAttachments[] = [];
+    for (let index = 0; index < HANGAR_SITING.count; index += 1) {
+      const footprint = hangarFootprint(definition, index);
+      // THE FOOTPRINT, NOT A CENTRE SAMPLE. A 46 x 34 m box on the earthworks
+      // batter sits over 2.86-5.52 m of relief; seating on one point buried a
+      // corner by up to 2.70 m and floated another by up to 2.85 m.
+      const ground: number[] = [];
+      for (const local of hangarFootprintSamples(footprint, GROUND_SAMPLE_STEP_METERS)) {
+        const world = runwayToWorld(definition, local.along, local.across);
+        const height = groundHeight(world.x, world.z);
+        // Non-finite means the terrain query failed for that sample. Dropping
+        // it is deliberate: `hangarSeatingFrom` THROWS on a non-finite input,
+        // which is right for a pure function and wrong here, where it would
+        // stop the flight from starting over one bad sample.
+        if (Number.isFinite(height)) ground.push(height);
+      }
+      // If EVERY sample failed there is no ground to stand on, so fall back to
+      // the datum — the pre-7-10 behaviour. Recorded rather than silent,
+      // because a hangar at the datum on fallen ground looks like a modelling
+      // bug rather than a failed query.
+      const seating = ground.length > 0
+        ? hangarSeatingFrom(ground)
+        : { baseAltitudeMeters: definition.elevation, skirtHeightMeters: MINIMUM_SKIRT_METERS, reliefMeters: 0 };
+      const plan = hangarPlanFrom(seedHash, index, seating.skirtHeightMeters);
+      const mounts = hangarAttachments(definition, index, plan, seating.baseAltitudeMeters);
+      const node = new TransformNode(`airport-hangar-${index}`, scene);
+      node.parent = this.root;
+      // `root` sits at the datum, so a child's local y is measured from it.
+      node.position.set(
+        footprint.across,
+        seating.baseAltitudeMeters - definition.elevation,
+        footprint.along,
+      );
+      const built = buildHangar(scene, node, index, plan, mounts, this.airfieldMaterials);
+      hangars.push(...built.meshes);
+      attachments.push(mounts);
     }
+    this.hangarAttachments = Object.freeze(attachments);
     // `7-15`: the ATC tower. Built HERE, in the constructor, and parented under
     // `root` before it returns — because `FlightRenderer` registers airport
     // meshes exactly once: `shadowCasters` is frozen below and read at
@@ -162,6 +214,7 @@ export class AirportSystem {
   dispose(): void {
     this.root.dispose(false, false);
     for (const material of this.materials) material.dispose(true, true);
+    this.airfieldMaterials.dispose();
   }
 
   private material(

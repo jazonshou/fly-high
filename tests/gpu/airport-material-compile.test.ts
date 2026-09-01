@@ -106,7 +106,7 @@ describe("airport material compiles on-adapter, and its inter-stage budget (7-4b
       const world = createWorld();
       const definition = world.airport;
       expect(definition, "the default world has no airport to audit").toBeTruthy();
-      const airport = new AirportSystem(scene, definition!, () => definition!.elevation);
+      const airport = new AirportSystem(scene, definition!, () => definition!.elevation, world.seedHash);
       airport.setFloatingOrigin(0, 0);
 
       // Exactly what `FlightRenderer` attaches, in the same order.

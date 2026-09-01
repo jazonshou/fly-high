@@ -466,6 +466,7 @@ export class FlightRenderer implements FlightRenderingSystem {
    * night-lighting work shipped correct, green, and invisible.
    */
   private readonly lightPoints: LightPointSystem;
+  private readonly clusteredLighting: ClusteredLightingSystem;
   /**
    * `7-7`'s fixtures, expanded into `7-5`'s light points, plus the PAPI's
    * analytic indication. Null when the world has no airport.
@@ -581,6 +582,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     fxaa: FxaaPostProcess,
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
+    clusteredLighting: ClusteredLightingSystem,
     airfieldLighting: AirfieldLightingSystem | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
@@ -613,6 +615,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.stars = stars;
     this.lightPoints = lightPoints;
+    this.clusteredLighting = clusteredLighting;
     this.airfieldLighting = airfieldLighting;
     this.scotopic = scotopic;
     this.bloom = bloom;
@@ -878,6 +881,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           scene,
           airportDefinition,
           (x, z) => options.terrainSample(x, z).height,
+          options.world.seedHash,
         )
         : null;
       if (airport) cleanup.push(() => airport.dispose());
@@ -1257,6 +1261,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         fxaa,
         stars,
         lightPoints,
+        clusteredLighting,
         airfieldLighting,
         scotopic,
         bloom,
@@ -2470,6 +2475,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.hydrology.setFloatingOrigin(this.originX, this.originZ);
     this.airport?.setFloatingOrigin(this.originX, this.originZ);
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
+    // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
+    // under. A clustered light gets an unrebased origin worse than a billboard
+    // does — the inverse-square falloff reads the position too, so it would not
+    // merely draw in the wrong place, it would light the wrong place.
+    this.clusteredLighting.setFloatingOrigin(this.originX, this.originZ);
     // The planar reflection pass runs before the cloud update in the frame
     // graph. Re-resolve the shared PBR receiver binding immediately so the
     // reflected scene never combines rebased geometry with the prior origin.

@@ -2,6 +2,7 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { AirportSystem } from "../src/render/webgpu/detail/AirportSystem";
+import { HANGAR_SITING } from "../src/render/webgpu/airfield/AirfieldStructures";
 import { TOWER_PART_NAMES, buildTowerGeometry } from "../src/render/webgpu/detail/towerGeometry";
 import { createWorld } from "../src/world";
 
@@ -35,7 +36,7 @@ function fixture() {
   // A ground function that is deliberately NOT the datum, so a tower pinned to
   // `definition.elevation` instead of to the ground it stands on is visible as
   // a wrong y rather than hidden by a coincidence.
-  const system = new AirportSystem(scene, airport, () => airport.elevation - 7.5);
+  const system = new AirportSystem(scene, airport, () => airport.elevation - 7.5, 1_234);
   return { engine, scene, system, airport };
 }
 
@@ -71,8 +72,20 @@ describe("ATC tower (7-15)", () => {
         "these tower meshes cast no sun shadow — `shadowCasters` is frozen at "
         + "construction and cannot be added to afterwards",
       ).toEqual([]);
-      // The hangars must still be there: appending must not replace.
-      expect(casters.filter((n) => n.startsWith("airport-hangar-")).length).toBe(3);
+      // The hangars must still be there: appending must not replace. Asserted
+      // as "every hangar is represented" rather than as a COUNT, because the
+      // count is not the property this test cares about and it moved once
+      // already: `7-10` replaced three placeholder boxes with a parametric
+      // shell split by material, so three casters became six. A count would
+      // have to be edited again the moment a third surface appears, and each
+      // edit is a chance to weaken the check without noticing.
+      const hangarCasters = casters.filter((name) => name.startsWith("airport-hangar-"));
+      for (let index = 0; index < HANGAR_SITING.count; index += 1) {
+        expect(
+          hangarCasters.some((name) => name.startsWith(`airport-hangar-${index}-`)),
+          `hangar ${index} casts no sun shadow — appending the tower replaced it`,
+        ).toBe(true);
+      }
     } finally {
       engine.dispose();
     }
