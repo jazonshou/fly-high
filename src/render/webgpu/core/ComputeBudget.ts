@@ -165,7 +165,17 @@ export function planComputeAdmissions(
       if (entry && entry.costMs <= 0) {
         // A zero-cost dispatch is free; admitting it costs nothing and
         // refusing it would deadlock a producer whose estimate has not warmed.
-        admitted.set(client, entry.count);
+        //
+        // ACCUMULATE, never assign. `take` is called TWICE per client — once
+        // in the reservation pass and once in the surplus pass — and the first
+        // call zeroes `entry.count` after banking it. Assigning `entry.count`
+        // on the second call therefore wrote back 0 and silently un-admitted
+        // the client, which is the exact absorbing state the branch above
+        // exists to prevent: a cold-estimate producer would be refused every
+        // frame, observe no cost, never warm its estimate, and never run.
+        // Found by the `6-11` admission audit; `render.webgpu-compute-
+        // starvation.test.ts` pins it at every tier.
+        admitted.set(client, (admitted.get(client) ?? 0) + entry.count);
         entry.count = 0;
       }
       return;

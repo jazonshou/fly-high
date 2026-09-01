@@ -802,6 +802,39 @@ never crown-against-litter; it was crown-against-canopy-painted-ground. **Two
 questions, one unit confusion, and both dissolve once the drawn/painted split is
 read off `canopyHandoff` rather than assumed from the closure number.**
 
+**A cross-cutting shape, distinct from the five and observed three times in one
+day: a GUARD THAT IS ITSELF THE DEFECT IT GUARDS AGAINST.** Not an instrument
+that measures the wrong thing — a mechanism that *exists*, reads correctly at
+its call site, carries a comment stating the right intent, and then does nothing
+or the exact opposite of its purpose:
+
+- **`DETAIL_SUN_SHADOW`** — a cascade-shadow receiver for the far vegetation
+  band, fully written, with uniforms declared, sampler bound and shadow map
+  uploaded every frame. The define was never declared in the plugin's
+  constructor map, so Babylon stripped it and **the receiver never compiled**.
+  The guard against an unshadowed far band *was* the unshadowed far band.
+- **The architecture boundary guards** — they enforce "code doing X" by matching
+  "text containing X", and strip comments but not string literals. So they are
+  hardest on the single most useful error message an author can write: the one
+  naming the construct they forbid.
+- **`ComputeBudget.take()`'s zero-cost branch** — `admitted.set(client,
+  entry.count)` is an assignment, not an accumulate, followed by
+  `entry.count = 0`. On the second pass of a two-pass call the branch re-fires
+  with count 0 and **overwrites the admission with 0**. The comment directly
+  above it says a zero-cost dispatch must be admitted because "refusing it would
+  deadlock a producer whose estimate has not warmed" — and the code refuses it.
+  The clearest of the three, because the intent is stated one line above the
+  inversion.
+
+**Why this is worth naming separately:** the five forms above are about
+*measurement* — an instrument reporting something other than what it claims. This
+one is about *mechanism*, and it is harder to see, because reading the code at
+the call site confirms the intent rather than the behaviour. **All three were
+found by exercising the mechanism (a compiled-shader assertion, a replicated
+strip function, a two-pass call), never by reading it** — which is the same
+prescription as the rest of this section, applied to control flow instead of to
+data.
+
 **Five members, five distinct ways an instrument can be wrong:** a decorative
 list models an artifact and *drifts* from it; admission-gated compute is
 *correct and never runs*; a memory gate was *uncharacterised*, its variance

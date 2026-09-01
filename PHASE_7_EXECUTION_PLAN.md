@@ -890,6 +890,48 @@ still belong to their original items.
 
 ---
 
+## 10a. Carried latent defects — filed 2026-08-31, **none of them Jason's line**
+
+Found while investigating Jason's four visual reports and **investigated and
+excluded from them**. His primary defect was inverted crown winding, fixed in
+`bbf3d27`. These four are separate, pre-existing, and unscheduled. They are
+filed here rather than in a register of their own because a register nobody
+reads is the `report.json` failure this project just deleted — Phase 7 is the
+next work to touch vegetation and impostor lighting, so this is where they will
+be met.
+
+**Provenance is marked per row, because it varies.** "Re-derived" means this
+plan's author verified the numbers against the tree; "reported" means they are
+carried on another session's measurement and still need independent checking.
+
+| # | Defect | Evidence | Provenance |
+|---|---|---|---|
+| **L-1** | **The far-band shadow fade collides with the card band edge.** `detailSunShadow()` ends with `smoothstep(maxZ * 0.82, maxZ, viewDepth)`, lifting the far band's shadow term to fully lit, while the geometry bands use Babylon's receiver with a **hard stop** at `shadowMaxZ` and no fade. So the far band stops receiving shadow across the same ring where it is still drawn as cards. | Fade start = `0.82 × shadowDistance` = **738 / 1,148 / 1,476 / 1,968 m**; cards end = `mid.outerRadiusMeters + DETAIL_MEMBERSHIP_SLACK_METERS` (96) = **736 / 1,196 / 1,596 / 2,096 m**. Ground-level overlap **−2 / +48 / +120 / +128 m** — open at three of four tiers. Pinned by `tests/detail-shadow-band-seam.test.ts`, which re-derives the 0.82 **from the shader source** so a retune cannot move it silently. | **Re-derived.** Originally raised by the `Principle Engineer` session; every figure independently recomputed here. |
+| **L-2** | **`barkMaterial` is missing its intensity overrides.** `WorldDetailRuntime.ts:3247` takes neither the `environmentIntensity 0.62` nor the `specularIntensity 0.4` its three siblings take (`crownMaterial`, `opaqueCrownMaterial`, `impostorMaterial`), so it keeps `createMaterial`'s 1.0/1.0. Trunks are ambient-brighter than the canopy around them and step at the impostor handoff, where the bake folds the trunk into a sprite that *is* shaded at 0.62. | `opaqueCrownMaterial`'s own comment at `:3244-3246` records that **this exact miss already shipped once**. Verified: the three siblings set both fields at `:3211,:3217`, `:3242,:3246`, `:3401,:3402`; `barkMaterial` appears at neither, and `createMaterial` sets `1` for both at `:3597,:3599`. | **Re-derived** for the code fact — bark provably takes the defaults. The visual consequence (trunks brighter than the canopy, stepping at the handoff) is argued from the intensities, **not measured in a frame**. |
+| **L-3** | **A horizon-shadowed impostor renders sky-blue, not dark green.** The `6-11` horizon term multiplies **direct diffuse and specular only**, leaving ambient/irradiance untouched — correct for terrain, where ground albedo still shows under ambient, but for a vegetation sprite the shadowed state becomes **pure sky ambient**. | Impostor band only (`DETAIL_HORIZON_SHADOW` compiles with `DETAIL_IMPOSTOR`), and only past `shadowDistance` where the CSM has faded out. **Latent, not observed** — correctly excluded from Jason's line by polarity: it only ever darkens, and his far band was lighter. | **Reported.** |
+| **L-4** | **Far/mid luminance ratio 0.510 at low, deeply back-lit sun** (elevation 15°, azimuth 180°) — the far band at half the mid band's brightness. | This is the condition the impostor bake's own docstring warns about. **Opposite in direction to Jason's report**, so it must not be folded into it: his far band was too bright, this one is too dark. | **Reported** — carried on the PM's measurement. **Not verified here and I could not verify it in Node**; it needs a render at that sun angle. Treat the 0.510 as unconfirmed until someone re-derives it. |
+
+**One property L-1, L-3 and L-4 share, and it is the reason they are worth
+filing rather than fixing opportunistically: no committed capture shot can see
+any of them.** L-1's ring sits at 1,148–1,196 m at tier 1 while `canopy-1200ft`
+— the shot with the most canopy — reaches only 678 m of ground range; L-3 needs
+a horizon-shadowed impostor past `shadowDistance`; L-4 needs a low back-lit sun
+no shot carries. **The regression suite is blind to all three**, and L-1 is
+worst at tiers 2 and Ultra, which have `vegetationCastsShadows: true` and which
+nobody flies. Whoever fixes one should append a shot that can see it, or the fix
+is unverifiable and the defect can return unnoticed.
+
+**Fix direction for L-1, recorded because the obvious repair does not work:**
+the `0.82` cannot be corrected by moving it — the fraction that would close the
+gap differs per tier and rises with altitude (the fade is keyed on **view
+depth** while the band edges are **horizontal range**, so climbing opens the
+window rather than closing it). Re-key the fade to horizontal range, the metric
+the band edges already use. And do **not** simply delete the fade: wave R added
+it to stop the cascade boundary drawing its own line on the forest, and removing
+it reinstates that artifact.
+
+---
+
 ## 11. Deviation log
 
 - **D-0 (at planning, Jason Q3):** **taxiway lighting, apron markings, tie-downs, GSE and
