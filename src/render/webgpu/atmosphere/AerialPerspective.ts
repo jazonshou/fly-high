@@ -613,7 +613,12 @@ export function twilightArchRadiance(
  * construction), and through the blue hour the floor drops to
  * 0.2 × (1 − 0.81) ≈ 0.038 so the ground can finally follow the sky down.
  */
-export const TWILIGHT_AMBIENT_FLOOR_CUT = 0.81;
+// Round A (first sanctioned tuning round, PM-held): 0.81 → 0.88, unlocked
+// by the registered rule — the ratio missed (1.4429 < 1.5) while criterion 4
+// was binding (sky median 0.3514 ≥ 0.35, the numerator out of room). At rod
+// 0.36 the raw path finally lets ambient cuts REACH the display; predicted
+// terrain 0.2435 → ~0.21 with σ moving only −2.3%.
+export const TWILIGHT_AMBIENT_FLOOR_CUT = 0.88;
 
 /** The floor multiplier — exactly 1 outside the arch window by shape. */
 export function twilightAmbientFloorFactor(sunDirectionY: number): number {

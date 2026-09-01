@@ -937,7 +937,13 @@ export function airfieldLampDaylightAttenuation(
  * against the §2.6 round's lamp criterion — never against the night frames,
  * which the early return above keeps out of reach by construction.
  */
-export const AIRFIELD_LAMP_TWILIGHT_CUT = 0.75;
+// Round A: 0.75 → 0.85. At rod 0.36 the lamps render mostly through the
+// RAW path (the field-adaptation fix's cost, landing where it should), so
+// this cut is the only thing holding them at dusk — cores measured 614
+// against a ≤384.5 target. NOT deeper than 0.85 uninstructed: the airfield
+// must still read lit at dusk (Jason's older standing ask, held against
+// this metric on purpose).
+export const AIRFIELD_LAMP_TWILIGHT_CUT = 0.85;
 
 /**
  * Beam cutoff for a directional lamp: a hemisphere.
