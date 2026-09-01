@@ -2795,6 +2795,18 @@ export const TERRAIN_SURFACE_INJECTION_ANCHORS = Object.freeze({
    * value of type 'vec3<f32>'`. So the injection is not merely out of scope in
    * the helper, it is illegal there, and excluding it is the only cheap fix.
    *
+   * **A SECOND VICTIM OF THE SAME DEFECT, found 7-4b.** Babylon emits its own
+   * `computeSheenLighting(preInfo, normalW, ..., light.vLightDiffuse.rgb)` inside
+   * `computeClusteredLighting{X}` too, where `normalW` is likewise a `main`-local
+   * `var` — so a sheen material plus a container fails to parse with
+   * `unresolved value 'normalW'` and writes no frames. **Terrain hit this with
+   * OUR injected value; wildlife hits it with BABYLON's own.** It takes one
+   * clustered light, not a count threshold. Fixed the same way, for the same
+   * reason: exclusion, at `ClusteredLightingSystem.excludeSheenReceivers` —
+   * because the `var<private>` repair recorded below fails on parameter
+   * immutability in both cases. **If a third victim appears, start from that
+   * second failure rather than the first.**
+   *
    * The discriminator is the helper's own preamble, which `main` does not have.
    * `tests/render.webgpu-terrain-reflectance-anchor.test.ts` pins that this
    * text still exists upstream, so a Babylon reformat fails a Node test naming

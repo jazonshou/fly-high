@@ -197,6 +197,54 @@ export class ClusteredLightingSystem {
   }
 
   /**
+   * Exclude every SHEEN-enabled material's meshes from this container, and
+   * return the names excluded so the result is observable rather than silent.
+   *
+   * **THE RULE IS NAMED AFTER THE CAUSE, NOT AFTER TODAY'S VICTIM.** Babylon
+   * 9.21.2 emits its clustered sheen call inside `computeClusteredLighting{X}`,
+   * a separate WGSL FUNCTION, while the `normalW` it passes is a `var` local to
+   * `main` — so the shader fails to parse with `unresolved value 'normalW'` and
+   * NO frames are written. **Measured across a 0..12 child sweep: ONE clustered
+   * light is enough. It is not a count threshold.** Wildlife is merely the only
+   * material in the tree that enables sheen today, and an exclusion written as
+   * "not wildlife" would let the next sheen material walk straight back in.
+   *
+   * **SAME DEFECT AS THE TERRAIN REFLECTANCE ANCHOR, from the other side.**
+   * `TERRAIN_SURFACE_INJECTION_ANCHORS.reflectance` records a container making
+   * Babylon include `<pbrBlockReflectance0>` a second time inside
+   * `fn computeClusteredLighting2`, 1,700 lines before `terrainSurfaceF0` is
+   * declared in `main`. **Terrain hit it with OUR injected value; wildlife hits
+   * it with Babylon's own.** That docblock also records why the obvious repair
+   * fails: module-scope `var<private>` fixes the scope and then dies one line
+   * later, because `reflectivityOut` is a function PARAMETER and WGSL
+   * parameters are immutable. **A real fix inside Babylon needs a different
+   * shape; exclusion is the cheap correct one, exactly as it was for terrain.**
+   *
+   * **CALL THIS AFTER EVERY SYSTEM HAS BUILT ITS MATERIALS, AND MOVING IT
+   * EARLIER IS A SILENT NO-OP.** A mesh takes its material AFTER construction
+   * (`WildlifeSystem.registerBatch` assigns to an already-created mesh), so a
+   * sweep run any earlier sees no sheen, excludes nothing, returns an empty
+   * array, and **appears to have worked** — leaving the parse failure and the
+   * black screen exactly as they were. There is no error and no warning; the
+   * only symptom is the bug you thought you had fixed. **Anyone moving this
+   * call up for tidiness reintroduces the defect invisibly.**
+   * `tests/gpu/clustered-sheen-exclusion.test.ts` fails the build if any mesh
+   * the container can still reach has sheen enabled, which is what catches a
+   * material added after this call.
+   */
+  excludeSheenReceivers(scene: Scene): string[] {
+    if (!this.container) return [];
+    const excluded: string[] = [];
+    for (const mesh of scene.meshes) {
+      const material = mesh.material as { sheen?: { isEnabled?: boolean } } | null;
+      if (!material?.sheen?.isEnabled) continue;
+      this.container.excludedMeshes.push(mesh);
+      excluded.push(mesh.name);
+    }
+    return excluded;
+  }
+
+  /**
    * Move one light, in WORLD coordinates.
    *
    * **`7-8` needs this and the airfield did not**: runway lamps are bolted to

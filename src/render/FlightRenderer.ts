@@ -1135,6 +1135,18 @@ export class FlightRenderer implements FlightRenderingSystem {
         profile.clusteredLighting,
       );
       cleanup.push(() => clusteredLighting.dispose());
+      // 7-4b: SHEEN MATERIALS MUST NOT BE REACHED BY THE CONTAINER. Babylon
+      // 9.21.2 emits its clustered sheen call inside
+      // `computeClusteredLighting{X}` -- a separate WGSL function -- while the
+      // `normalW` it passes is local to `main`, so the shader fails to parse
+      // and NO frames are written. ONE clustered light is enough; it is not a
+      // count threshold. Excluded by the PROPERTY rather than by material name,
+      // so a future sheen material cannot walk back into it.
+      //
+      // Placed after every system above has built its materials, because a mesh
+      // takes its material AFTER construction and an earlier sweep would see no
+      // sheen at all.
+      clusteredLighting.excludeSheenReceivers(scene);
       // Bound here rather than in the fan-out above, which runs before this
       // system exists. The per-frame fan-out carries it from the next frame on;
       // this is the one that lands before the first.
