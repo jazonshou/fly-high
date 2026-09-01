@@ -27,6 +27,28 @@
  * manufactures the trend you are looking for.
  *
  * ---------------------------------------------------------------------------
+ * VERIFY THE MASK BEFORE YOU TRUST A RUN, AND IT COSTS TWO CAPTURES.
+ *
+ * Capture two HIDDEN frames across a change to the surface under test. If they
+ * DIFFER, the mask is blind to that surface -- geometry cannot change a frame
+ * it is absent from. Cheap, decisive, and it needs no knowledge of the
+ * renderer. Same shape as STEP 0.
+ *
+ * It would have caught this immediately: `VITE_PERF_HIDE_VEGETATION` matches
+ * `detail-` only, and the compute blade field's meshes are
+ * `ground-cover-ring-N`. So 100% of blade pixels are classified TERRAIN --
+ * measured ~100% of a blade-only change landing in the terrain row on
+ * `grove-meadow-2m` and ~91% on `grove-forest-2m`, the difference being that
+ * the forest has crowns behind its blades and the meadow does not.
+ *
+ * And fixing the predicate is NOT sufficient: with `ground-cover-` added, two
+ * HIDDEN frames STILL differ across a blade change, so `isVisible = false`
+ * does not suppress the blade draw. `GroundCoverSystem` gates with
+ * `setEnabled()`, re-asserts it every update, and sets
+ * `alwaysSelectAsActiveMesh = true`. A real fix has to suppress the indirect
+ * draw itself.
+ *
+ * ---------------------------------------------------------------------------
  * THE TERRAIN ROW IS NOT A CONTROL FOR A GROUND-COVER CHANGE.
  *
  * Measured 2026-09-01 on `grove-meadow-2m`: toggling the blade winding in
