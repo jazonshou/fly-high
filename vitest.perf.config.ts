@@ -6,7 +6,8 @@ import { defineConfig } from "vitest/config";
  * The perf-capture project (1A-1c).
  *
  * `npm run perf:capture` boots the real FlightRenderer in WebGPU-capable
- * headless Chromium, renders the sixteen canonical shots (fixed seed, camera,
+ * headless Chromium, renders the canonical shot list — `PERF_CAPTURE_SHOTS`,
+ * which is the count's only authority — (fixed seed, camera,
  * weather, clock, and viewport per definition), and writes screenshots plus a numeric report to
  * tests/perf/artifacts, comparing against the committed baselines in
  * tests/perf/baseline. The baseline directory is always read-only. A missing
@@ -50,7 +51,10 @@ export default defineConfig({
     include: ["tests/perf/**/*.test.ts"],
     passWithNoTests: false,
     reporters: ["default"],
-    // 2Z and later terrain phases grew the shot list to sixteen; streaming dominates.
+    // 2Z and later phases grew the shot list well past its original size and
+    // streaming dominates the run. Deliberately no count here: this comment
+    // said "sixteen" against a list of 29, and a restated count goes stale on
+    // the next append. `PERF_CAPTURE_SHOTS` is the authority.
     testTimeout: 1_500_000,
     hookTimeout: 120_000,
     browser: {

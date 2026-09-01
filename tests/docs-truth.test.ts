@@ -7,6 +7,7 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
 import type { QualityLevel } from "../src/game/types";
 import type { RenderingMode } from "../src/settings";
 import { VEGETATION_DRAW_CEILING } from "../src/render/webgpu/detail/renderedDensity";
+import { PERF_CAPTURE_SHOTS } from "../scripts/perf-capture.mts";
 
 /**
  * `6-12` — the documentation truth pass, and the pin that makes it one.
@@ -267,6 +268,64 @@ describe("6-12 documentation truth: the committed capture baseline", () => {
         + "committed baseline PNGs. Shots are APPEND-ONLY and canonical-index-keyed, so a "
         + "stale count implies a different index mapping than the harness uses.",
     ).toBe(shots.length);
+  });
+
+  /**
+   * **6-12 demonstrated its own headline defect, and this is the fix.**
+   *
+   * The truth pass worked a LIST of known-suspect locations. `vitest.perf.config.ts:9`
+   * was not on that list, and it claimed the capture "renders the sixteen
+   * canonical shots" while the list held 24 — stale by eight, in a file the
+   * recorded untruth list never named. A pass driven by a list of suspects will
+   * always miss the location nobody listed; that is the same shape as the
+   * sampler comment, where the list was the instrument and the instrument did
+   * not cover the artifact.
+   *
+   * So this assertion does not read a curated set of files. **It scans the
+   * whole tree** for any claim of the form "<N> canonical shot(s)" and requires
+   * N to equal the list. The count itself is deliberately never spelled out in
+   * prose any more — `vitest.perf.config.ts` now points at `PERF_CAPTURE_SHOTS`
+   * as the only authority, because a hardcoded number goes stale on the next
+   * append and this exact defect returns.
+   */
+  it("lets no file in the tree claim a canonical shot count that disagrees with the list", () => {
+    const WORDS: Record<string, number> = {
+      twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+      seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+      "twenty-one": 21, "twenty-two": 22, "twenty-three": 23, "twenty-four": 24,
+      "twenty-five": 25, "twenty-six": 26, "twenty-seven": 27, "twenty-eight": 28,
+      "twenty-nine": 29, thirty: 30, "thirty-one": 31, "thirty-two": 32,
+    };
+    const offenders: string[] = [];
+    const skip = new Set(["node_modules", ".git", ".claude", "dist", "dist-pages", "build"]);
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (skip.has(entry.name)) continue;
+        const absolute = join(dir, entry.name);
+        if (entry.isDirectory()) walk(absolute);
+        else if (/\.(ts|mts|mjs|md|json)$/u.test(entry.name)) {
+          const text = readFileSync(absolute, "utf8");
+          const pattern = /([A-Za-z-]+|\d{1,3})\s+canonical\s+shots?\b/giu;
+          for (const match of text.matchAll(pattern)) {
+            const raw = (match[1] ?? "").toLowerCase();
+            const claimed = /^\d+$/u.test(raw) ? Number.parseInt(raw, 10) : WORDS[raw];
+            if (claimed === undefined) continue; // "the canonical shots" etc.
+            if (claimed !== PERF_CAPTURE_SHOTS.length) {
+              offenders.push(
+                `${absolute.slice(REPO_ROOT.length + 1)}: claims ${claimed} canonical shots, list has ${PERF_CAPTURE_SHOTS.length}`,
+              );
+            }
+          }
+        }
+      }
+    };
+    walk(REPO_ROOT);
+    expect(
+      offenders,
+      "A stale canonical shot count. Shots are APPEND-ONLY and canonical-index-keyed, "
+        + "so a wrong count implies a different index mapping than the harness uses. "
+        + "Prefer pointing at PERF_CAPTURE_SHOTS over restating the number.",
+    ).toEqual([]);
   });
 
   it("names every committed shot in that table", () => {

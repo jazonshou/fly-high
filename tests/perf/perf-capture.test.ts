@@ -12,6 +12,7 @@ import {
   sampleTerrainHeight,
 } from "../../src/world";
 import { sunDirectionForClock } from "../../src/render/webgpu/nature/EnvironmentDirector";
+import { densityField } from "../../src/render/webgpu/detail/densityField";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../../src/game/types";
 import {
   PERF_CAPTURE_DEFAULT_CLOCK,
@@ -445,6 +446,57 @@ describe("perf capture (1A-1c / 2Z)", () => {
           }
           return steep >= 2;
         }, { stepMeters: 300, maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
+      if (shot.locate === "canopy-backlit") {
+        // `L-4`: closed canopy along the SUN-DERIVED heading, not +x.
+        //
+        // Two departures from `forest`, both deliberate:
+        //
+        // 1. **Gated on the vegetation field, not the biome id.** A biome-only
+        //    predicate accepts forest with no stems standing in it — exactly
+        //    what shipped `horizon-shadow-far-annulus` at 0 stems/m2 on every
+        //    annulus sample, a shot that could not fail.
+        // 2. **Scanned along this shot's own heading.** With
+        //    `relativeSunBearingDegrees: 0` the corridor the camera looks down
+        //    is not the corridor a +x predicate checks, and validating the
+        //    wrong corridor blesses terrain the capture never frames.
+        //
+        // The span 0-2,400 m covers the frame's own reach at 400 m AGL /
+        // pitch 20 (479-5,278 m measured), so mid, far and beyond-far canopy
+        // are all required rather than hoped for.
+        const clock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
+        const heading = headingVectorFromYaw(
+          yawForSunBearing(
+            sunDirectionForClock(clock, world.latitudeDegrees),
+            shot.relativeSunBearingDegrees ?? 0,
+          ),
+        );
+        const found = locateShotOffset((x, z) => {
+          for (let ahead = 0; ahead <= 2_400; ahead += 200) {
+            const sx = airportX + x + heading.x * ahead;
+            const sz = airportZ + z + heading.z * ahead;
+            const sample = sampleTerrain(world, sx, sz);
+            if (sample.biomeName === "water") return false;
+            const field = densityField(world.sourceSeedHash, {
+              x: sx,
+              z: sz,
+              heightMeters: sample.height,
+              seaLevelMeters: world.seaLevel,
+              slope: sample.slope,
+              moisture: sample.moisture,
+              normalX: sample.normal.x,
+              normalZ: sample.normal.z,
+              airportInfluence: sample.airportInfluence,
+              dayOfYear: clock.dayOfYear,
+              // 0 = the full-bandwidth field, which is what per-stem placement
+              // uses; only a page bake passes a width (`4-6b`/D12).
+              filterWidthMeters: 0,
+            });
+            if (field.treeStemsPerSquareMeter < 0.006 || field.heightFactor < 0.35) return false;
+          }
+          return true;
+        }, { stepMeters: 500, maxRadiusMeters: 18_000 });
         return found ?? fallback;
       }
       // Coast: over water with land ~3 km ahead on the +x heading.
@@ -1259,7 +1311,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
 
       // Z-2: retain the historical per-shot gate as a diagnostic regression
       // contract in addition to (never instead of) the strict tier-1 gate.
-      const ceilings = definition.ceilings;
+      //
+      // `6-11.1`: SKIPPED under the sweep, and this is not a convenience.
+      // These per-shot floors were pinned from tier-1 captures at 1280x720
+      // (Gate 0-a, and re-pinned at each rebaseline point from >=3 runs of that
+      // same configuration). They are statements about ONE tier at ONE
+      // viewport. Judging a tier-3 Ultra row — which promises 30 fps against
+      // `FRAME_TARGET_MS[3]` — against tier 1's ~101 fps floor would fail it for
+      // being Ultra, and judging any row at 1080p or 1440p against a 720p floor
+      // fails it for the resolution it was asked to render. Either would be a
+      // false failure that reads exactly like a real one.
+      //
+      // Delivery is still gated under the sweep: `deliveryFailuresAgainst`
+      // above holds every row to ITS OWN tier's contract. This block is the
+      // tier-1 regression pin, and a sweep row is not a tier-1 regression.
+      const ceilings = IS_SWEEP ? null : definition.ceilings;
       if (ceilings !== null) {
         gateDelivery(() => expect(
           shot.fps,

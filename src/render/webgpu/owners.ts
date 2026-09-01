@@ -1065,6 +1065,121 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "does not re-derive it -- a second SDF is the drift that once gave the "
       + "water two sun discs.",
   },
+  {
+    // 7-4b: the ONE integration of Babylon's `ClusteredLightContainer`. The
+    // container is itself a Light and occupies a `maxSimultaneousLights` slot,
+    // so a second integration does not merely duplicate code -- it silently
+    // stops the first contributing, because `PrepareDefinesForLights` breaks
+    // at the cap rather than reporting. Phase 7's emitters get their own
+    // directory: `atmosphere/` keeps sky and light-in-transit, `lighting/`
+    // owns discrete emitters. Owner is a responsibility and path is a
+    // location, so `lighting`-owned artifacts still live elsewhere too.
+    artifact: "clustered-light-container",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/ClusteredLighting.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      "ClusteredLightingSystem",
+      "CLUSTERED_LIGHTING_WGSL",
+      "resolveClusteredLightBinding",
+    ],
+    plannedBy: "7-4b",
+    notes:
+      "Tile dimensions and slice count come from WebGpuQualityProfile data "
+      + "rather than a per-tier branch. Clustered light DATA is static per "
+      + "fixture: `_updateLightData` calls `engine.flushFramebuffer()` on WebGPU "
+      + "whenever it changes, so animated intensity belongs on the light POINTS. "
+      + "Receiver cost per container, measured from lightUboDeclaration: one "
+      + "sampled texture, one fragment storage buffer, one inter-stage varying, "
+      + "and 2 + 4x CLUSTLIGHT_SLICES floats of light UBO. Zero samplers -- the "
+      + "light data is read with textureLoad.",
+  },
+  {
+    // 7-5: the ~200 lights you SEE. Instanced emissive billboards that
+    // illuminate nothing; the illumination is 7-4b's. Cloning
+    // `StarFieldSystem`'s constant-flux PSF is deliberate -- two point-source
+    // brightness models would drift exactly as two sun discs once did.
+    artifact: "light-points",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/LightPoints.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["LightPointSystem", "LIGHT_POINT_WGSL"],
+    plannedBy: "7-5",
+    notes:
+      "ONE instanced draw -- a design constraint, not an aspiration: the night "
+      + "shot's draw ceiling is 160. Extinction is applied by hand through "
+      + "`applyAerialPerspectiveToShaderMaterial`, because `isOpaqueAerialReceiver` "
+      + "rejects additive billboards and a second extinction model is the drift "
+      + "the aerial include exists to prevent.",
+  },
+  {
+    // 7-6: billboard cones with a soft depth intersection, reusing the aerial
+    // include's participating-media terms rather than a second fog model.
+    artifact: "light-volumetrics",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/LightVolumetrics.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["LightVolumetricsSystem", "LIGHT_VOLUMETRICS_WGSL"],
+    plannedBy: "7-6",
+    notes:
+      "The phase's first cut candidate. Needs the terrain-only depth buffer "
+      + "(`renderListPredicate = isCloudRaymarchDepthOccluder`), so it extends and "
+      + "re-owns that render list -- a single-owner change against the atmosphere "
+      + "subsystem, never a parallel list.",
+  },
+  {
+    // 7-7: runway edge/threshold/centreline fixtures and the PAPI. The PAPI's
+    // angular law is authored ANALYTICALLY here and deliberately not as IES:
+    // Babylon's `LoadIESData` is one-dimensional and rotationally symmetric
+    // about a single axis, and a PAPI is azimuthally asymmetric with a sharp
+    // vertical transition (D-3). IES carries only the symmetric fixtures.
+    artifact: "airfield-lighting",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/AirfieldLighting.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["AirfieldLightingSystem", "PAPI_ANGLE_PROFILE", "papiColourForAngle"],
+    plannedBy: "7-7",
+    notes:
+      "Taxiway and apron lighting are re-scoped away (D-0): that ground does not "
+      + "exist and 3-9 declined to build it. Mounts 7-14's obstruction lights.",
+  },
+  {
+    // 7-8: navigation, beacon, strobe and landing lights. Sited under
+    // `lighting/` rather than `aircraft/` on purpose -- the aircraft subsystem
+    // owns form and mount points, while the emission law is one model shared
+    // with the airfield, or the two drift apart in colour and falloff.
+    artifact: "aircraft-lighting",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/AircraftLighting.ts"],
+    consumers: ["lighting", "aircraft"],
+    ownedSymbols: ["AircraftLightingSystem", "BEACON_PERIOD_SECONDS", "STROBE_PERIOD_SECONDS"],
+    plannedBy: "7-8",
+    notes:
+      "Recorded consequence of 7-4b: `IsLightSupported` rejects any light "
+      + "carrying a shadow generator, so clustered landing lights cast NO "
+      + "shadows. Periods are owned here because the capture driver pins "
+      + "simulationTime -- a beacon sampled at its own period renders static in "
+      + "every frame, which is what 7-0-a's offset shot exists to catch.",
+  },
+  {
+    // 7-10 + 7-15: the parametric hangar and the ATC tower. Second scale
+    // reference on final after the runway, and the mount for 7-7's rotating
+    // beacon and 7-14's obstruction lights. `AirportSystem.ts` moves here from
+    // `detail/` when 7D opens (D-11).
+    artifact: "airfield-structures",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/airfield/AirfieldStructures.ts"],
+    consumers: ["world"],
+    ownedSymbols: ["buildHangar", "buildControlTower", "AIRFIELD_STRUCTURE_LOD"],
+    plannedBy: "7-10",
+    notes:
+      "Budgeted against the same hard draw ceilings as the light points "
+      + "(runway-on-approach 169, approach-500ft 158). Any shadow caster here is "
+      + "built through the guarded factory in core/, never constructed directly. "
+      + "And every prototype it adds is registered in the prototype winding "
+      + "guard AS IT IS BUILT: six inverted surfaces were found on 2026-08-31 "
+      + "and a green test was asserting the inverted convention as correct.",
+  },
 ];
 
 /**

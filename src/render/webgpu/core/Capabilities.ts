@@ -38,6 +38,24 @@ export const REQUIRED_WEBGPU_LIMITS: Readonly<Record<string, number>> = Object.f
   // photometric textures and material arrays to fit. True headroom is 10/16.
   maxSampledTexturesPerShaderStage: 16,
   maxSamplersPerShaderStage: 16,
+  // `7-0-d` (C4): the limit that guards Phase 7's binding constraint, and the
+  // one nobody probed. Clustered lighting adds a `vViewDepth` inter-stage
+  // varying to EVERY PBR material whenever the container exists — the define
+  // is gated on `CLUSTLIGHT_BATCH > 0`, not on whether a given material has a
+  // clustered light. The detail material sits at 12 today, so 13 with it; and
+  // a shadow-casting light under CSM declares NINE more of its own
+  // (`vPositionFromLight{X}_0..3`, `vDepthMetric{X}_0..3`,
+  // `vPositionFromCamera{X}`), which is why impostor shadow receiving was
+  // disabled once already to get under this ceiling. Spec default; `7-0-d`'s
+  // P4 measures the real per-material counts on the adapter.
+  maxInterStageShaderVariables: 16,
+  // `7-0-d` (C4): `GetSupportedSimultaneousLights` clamps the light count to
+  // `maxUniformBuffersPerShaderStage - 4`, and returns the requested count
+  // UNTOUCHED when the cap reads null — so on an engine that does not report
+  // it the clamp silently does not happen. 12 is the spec default and yields
+  // 8 supported lights; the clustered container is itself a Light and takes
+  // one of those slots.
+  maxUniformBuffersPerShaderStage: 12,
   // Height atlas (read) + one channel atlas (write) per bake dispatch, plus
   // slack for the min/max reduction's two targets.
   maxStorageTexturesPerShaderStage: 4,
@@ -68,6 +86,39 @@ export const REQUIRED_WEBGPU_LIMITS: Readonly<Record<string, number>> = Object.f
   maxComputeInvocationsPerWorkgroup: 64,
 });
 
+/**
+ * Limits the renderer needs but which the SPEC MARKS OPTIONAL, so an adapter
+ * may legitimately not report them.
+ *
+ * These are kept separate from `REQUIRED_WEBGPU_LIMITS` on purpose.
+ * `tests/gpu/webgpu-limits.test.ts` asserts that every REQUIRED key comes back
+ * as a number — a non-vacuity guard added after a probe printed `undefined`
+ * for all ten limits and nobody noticed. Declaring an optional limit in that
+ * map would make the guard fail on any adapter that omits it, which would
+ * either red the suite or force the guard to be weakened. Both are worse than
+ * saying which limits are optional.
+ *
+ * Shortfalls are still checked for these: `findWebGpuLimitShortfalls` skips a
+ * limit the report does not carry, so an adapter that DOES report one is held
+ * to it and one that does not is not punished for it.
+ */
+export const OPTIONAL_WEBGPU_LIMITS: Readonly<Record<string, number>> = Object.freeze({
+  // `7-0-d` (C4): the clustered container gives every receiving material one
+  // fragment-stage read-only storage buffer (`tileMaskBuffer{X}`) — the
+  // project's first. One container is the design, so one buffer is the whole
+  // requirement; declaring the spec default of 8 would fail compatibility-mode
+  // adapters that report a lower but entirely sufficient number. `@webgpu/types`
+  // declares this one `?: number` where the neighbouring per-stage limit is
+  // required, which is why it lives here.
+  maxStorageBuffersInFragmentStage: 1,
+});
+
+/** Every limit the renderer declares, required and optional together. */
+export const ALL_DECLARED_WEBGPU_LIMITS: Readonly<Record<string, number>> = Object.freeze({
+  ...REQUIRED_WEBGPU_LIMITS,
+  ...OPTIONAL_WEBGPU_LIMITS,
+});
+
 export interface WebGpuLimitShortfall {
   readonly limit: string;
   readonly required: number;
@@ -82,7 +133,7 @@ export interface WebGpuLimitShortfall {
  */
 export function findWebGpuLimitShortfalls(
   reported: Readonly<Record<string, number>>,
-  required: Readonly<Record<string, number>> = REQUIRED_WEBGPU_LIMITS,
+  required: Readonly<Record<string, number>> = ALL_DECLARED_WEBGPU_LIMITS,
 ): readonly WebGpuLimitShortfall[] {
   const shortfalls: WebGpuLimitShortfall[] = [];
   for (const [limit, value] of Object.entries(required)) {
@@ -96,7 +147,7 @@ export function findWebGpuLimitShortfalls(
 /** Throws, naming every shortfall, when a device cannot host Phase 4's atlases. */
 export function assertWebGpuLimits(
   reported: Readonly<Record<string, number>>,
-  required: Readonly<Record<string, number>> = REQUIRED_WEBGPU_LIMITS,
+  required: Readonly<Record<string, number>> = ALL_DECLARED_WEBGPU_LIMITS,
 ): void {
   const shortfalls = findWebGpuLimitShortfalls(reported, required);
   if (shortfalls.length === 0) return;

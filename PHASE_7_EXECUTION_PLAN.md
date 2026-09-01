@@ -56,8 +56,8 @@ for Phase 7's own night work, and it is stated twice on purpose.
 | # | Condition | Verification | Owner today |
 |---|---|---|---|
 | E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented — **LANDED in `1e526f9`** as `tests/perf/cold-start.test.ts` (158 lines), and it honours the timeout-OR-error requirement rather than only the easy half: it captures both `console.error` and Babylon's `Logger.Error`, asserts empty, **and** races a timeout whose rejection message records that the guarded class produces no console error at all. What remains for E-1 is the sweep, QR-1 and memory truth; 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d). **But nothing runs the cold-start test**: `tests/perf/**` is excluded from both `npm test` and `npm run verify` ([vitest.config.ts:15](vitest.config.ts)), `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, and `grep -rn cold-start package.json .github/workflows/*.yml` is empty. This row is therefore unmet for a **wiring** reason rather than a construction one — a smaller job than originally priced, but not a discharged one. **A correct instrument nobody invokes is the same defect as a wrong one**, and this phase has now hit that shape three times: the sampler list nothing compared against a shader, Gate W's suite that never rendered its own product, and this | tier table asserted from profile data in CI; **the cold-start test actually invoked by a workflow or an npm script**, not merely present; the sampler list derived, not hand-maintained | `SWE III` (was `flight-simulator-d7`) |
-| E-2 | **6-12 closed** — documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
-| E-3 | **R1+R2+R3 promoted** as one reviewed pass. The committed baseline has not moved since 2026-08-28 (`6a46742`); the post-D-19 candidate exists on disk only. `tests/perf/baseline/report.json` is still a 17-shot fossil against 24 tracked PNGs and nothing reads it — 6-12 owes a decide-once on recommit-or-delete | `tests/perf/baseline/` mtimes move; 24 shots in the promoted report | `flight-simulator-d7` |
+| E-2 | **6-12 — SUBSTANTIALLY CLOSED in `6216a80`, one survivor. Re-checked against the tree 2026-08-31 late, not against the commit message.** `tests/perf/baseline/report.json` is **deleted** (the decide-once resolved to delete, which was the right call — the harness never read it and a committed fossil is how the 17-shot number kept being quoted). `docs/PERFORMANCE.md`'s two surviving "seventeen" mentions at `:513` and `:591` are **legitimate historical quotation**, not stale claims — they describe what a past promotion asserted. **The one genuine survivor was [vitest.perf.config.ts:9](vitest.perf.config.ts), whose docblock restated a canonical shot count as a word rather than pointing at `PERF_CAPTURE_SHOTS` — a live description of current behaviour that had gone stale. FIXED, and the `docs-truth` guard that now derives the count from the list caught a second instance in this very file on its first run.** It sits in a file 6-12's recorded list never named, which is exactly how a documentation pass that works the list rather than the tree leaves something behind. *(Original row, retained for what it verified:)* documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
+| E-3 | **R1+R2+R3 — PROMOTED, verified 2026-08-31 late.** The baseline moved in `6216a80` (PNG mtimes Aug 31 11:57, previously Aug 28), 24 PNGs tracked, `report.json` removed. **This row is dischargeable.** *(Original row, retained for what it verified:)* promoted as one reviewed pass. The committed baseline has not moved since 2026-08-28 (`6a46742`); the post-D-19 candidate exists on disk only. `tests/perf/baseline/report.json` is still a 17-shot fossil against 24 tracked PNGs and nothing reads it — 6-12 owes a decide-once on recommit-or-delete | `tests/perf/baseline/` mtimes move; 24 shots in the promoted report | `flight-simulator-d7` |
 | ~~E-4~~ | **STRUCK 2026-08-31 — shelved with the eroded world, not discharged.** This row required D-7's canonical-split fix and D-9's bounds re-tightening. Both exist only to make the *eroded* page producer's seams sound, and both were entry conditions solely because they blocked §8's re-default. §8 has resolved NO, so **they block nothing in Phase 7** and requiring them would block this phase on work that has been deliberately shelved. **Their state is recorded, not erased**, for whoever resumes the eroded path: `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](src/render/webgpu/terrain/TerrainPageErosionGpu.ts), no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`, and D-9's loosening is therefore still outliving its cause — which is exactly the condition D-9 warned becomes permission if left | n/a — struck | shelved with the eroded path |
 | E-5 | **The horizon-shadow work has landed or been withdrawn.** Status per its own session: **implemented and verified, pending a capture pin and a merge slot** — not landed, not speculative. Worktree `nifty-williamson-2aca66`, branch `claude/nifty-williamson-2aca66`, uncommitted; Node 123 files / 1163 passed, GPU 42 files / 93 passed, typecheck and lint clean. The open item is sequencing (d7 wants it as its own churn point after the R1+R2+R3 promotion) plus an owed §2.3 same-host A/B pin on a quarantined idle host | merged at its sanctioned churn point, with its A/B pin recorded | `nifty-williamson-2aca66` + d7 |
 
@@ -405,7 +405,15 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   and none is lighting; `COMPUTE_BUDGET_CLIENTS` has five and none is lighting.
   **Tier 2 has 0.05 ms of slack** (13.65 against a 13.7 ms target) and assertion 20 is a
   hard `toBeLessThanOrEqual` — so the row must be funded by cutting an existing row in the
-  same commit. **The memory trade is NOT booked here — per D-10 it moved off Gate 7B's
+  same commit.
+  **Price against measured admission, not the declared table.** `c41f52a` pins which
+  `ComputeBudget` reservations are no-ops: the reservation pass admits whole-or-nothing
+  while `spentHere + costMs <= ceilingMs`, so it protects a client **only if one dispatch
+  fits inside its own ceiling** — and `occlusionCompute` starves at tier 2, where the
+  reservation pass is effectively a no-op for every client that matters. Anything Phase 7
+  puts on that row **inherits the starvation**. So a declared row is not a delivered
+  dispatch: any 7B or 7D compute must state its measured admission rate at its item close,
+  and the floor-of-one is the only guarantee available. **The memory trade is NOT booked here — per D-10 it moved off Gate 7B's
   critical path entirely**, because 7B's own allocations total under 0.1 MiB. 7-0-b
   therefore books only the frame-budget row, and carries the trade forward as a costed
   *menu* for **7-11 to execute at 7D**, sized against 6-11.4's landed numbers when
@@ -547,12 +555,21 @@ which is a sub-item:
   BEFORE_FINALCOLORCOMPOSITION hook does `finalDiffuse *= terrainHorizonShadow *
   terrainCanopyDirect` where `finalDiffuse = diffuseBase` — the accumulator every light
   writes into ([TerrainSurfacePlugin.ts:2783-2797](src/render/webgpu/terrain/TerrainSurfacePlugin.ts)).
-  A runway edge light would be dimmed by *sun* occlusion. The same shape exists in
-  `DetailInstanceMaterialPlugin` (`finalDiffuse *= impostorSunShadow`). **7-4b must split
-  the attenuation so it applies to the sun/moon contribution only** — there is no existing
-  hook between the light loop and final composition, so this is real shader surgery across
-  the five `MaterialPluginBase` subclasses (terrain 180, detail 190, ground cover 195,
-  aerial 205, cloud shadow 210).
+  A runway edge light would be dimmed by *sun* occlusion. **7-4b must split the attenuation
+  so it applies to the sun/moon contribution only** — there is no existing hook between the
+  light loop and final composition, so this is real shader surgery across the five
+  `MaterialPluginBase` subclasses (terrain 180, detail 190, ground cover 195, aerial 205,
+  cloud shadow 210).
+  **The two materials are NOT equivalent, and the plan previously treated them as though
+  they were.** Terrain multiplies an accumulator it did not contribute to. The detail plugin
+  **adds its own hand-rolled key-light term into `finalDiffuse` first** and only then
+  attenuates — verified: `finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb`
+  at [DetailInstanceMaterialPlugin.ts:1056 and :1106](src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts),
+  with `finalDiffuse *= impostorSunShadow` at `:1089`. So on detail the job is **not** "route
+  the accumulator two ways" — it is that **plus reconciling a bespoke key-light path with
+  the clustered one**, which is a design question (does the hand-rolled term become a
+  clustered light, stay separate and get attenuated separately, or get retired?) rather than
+  a plumbing one. Price the detail half accordingly; it is the harder of the two.
 - **`IsLightSupported` rejects any light with a shadow generator** while shadows are
   enabled, any non-default falloff, anything that is not a point/spot, and any spot with a
   projection or IES texture ([clusteredLightContainer.pure.js:68-89](node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)).
@@ -782,6 +799,19 @@ from `AirportDefinition` on the hangar side. At night: a lit cab interior (one c
 light plus emissive), obstruction lights (7-14), and **it is the mount for 7-7's rotating
 beacon**. In daylight it is the second scale reference on final approach after the hangars.
 Materials from 7-11. Same ground-query, mesh-registration and seed rules as 7-10.
+
+**Winding is an ordering constraint on 7D, not an intention.** **Every new mesh 7D
+introduces — hangar panels, roof profiles, door tracks, tower cab and gallery, railings,
+mast, fence, windsock, signage — is added to
+`tests/render.webgpu-prototype-winding.test.ts` in the commit that creates it**, not in a
+cleanup pass afterwards. On 2026-08-31 six emission sites were found wound opposite to
+Babylon's convention — cards, shrubs, the dense crown, both rock paths, moss cushion and
+grass — so those surfaces received **no direct sunlight at all**, and one of them was a
+surface nobody had listed. It survived a whole phase for a reason worth stating exactly:
+**an existing test was asserting the inverted convention as correct** — a green test pinning
+the defect. Fixed in `bbf3d27` and `ed5b703`. 7D is the largest block of new hand-authored
+geometry in the programme's remaining life, and it is being written by sessions that will
+not be flying it.
 
 **Gate 7D exit criteria.** No `CreateBox` primitive remains in `AirportSystem.ts` (the
 criterion is measured against that file, so one surviving call fails it). Hangars are
@@ -1139,6 +1169,30 @@ it reinstates that artifact.
   `tests/architecture.boundaries.test.ts` **and nothing else** in `src/` or `tests/` — so a
   manifest change is a one-file change and does not stray into 6-12's `ARCHITECTURE.md`
   territory. Worth knowing before anyone plans a two-file edit that isn't one.
+
+- **D-12 (2026-08-31 late, Gate 7-0 opens; the Phase 6 blocker cleared and it retires a
+  risk this plan was carrying):** Jason's four shipping-world visual defects — near trees
+  near-black against far trees bright yellow-green, a grey band across near trees, a blue
+  band across far trees, terrain splotches — were **inverted triangle winding**, not a
+  tone-response fault. Six emission sites (cards, shrubs, dense crown, both rock paths, moss
+  cushion, grass) were wound opposite to Babylon's convention and therefore received **no
+  direct sunlight at all**. Fixed in `bbf3d27` and `ed5b703`.
+  *Why this matters to Phase 7 specifically:* I had flagged that those defects would move
+  exactly the shots **R7-1** was reserved to move, confounding the pre-exposure change with
+  the defect fixes in one baseline. **That attribution risk is retired** — the seam was
+  geometric, it landed before Gate 7-0 opened, and 7-4a now starts from a clean tree. R7-1
+  keeps its solitary-rebaseline discipline for its own sake, not to disentangle these.
+  *The transferable finding, which is the reason the winding rule in §7 is an ordering
+  constraint:* it survived a whole phase because **an existing test was asserting the
+  inverted convention as correct** — a green test pinning the defect, which is the strongest
+  form of the day's pattern. Not an instrument that failed to look, but one actively
+  defending the fault. One of the six surfaces was not on anyone's list at all.
+  *Also opened here:* Gate 7-0 is live with `Principle Engineer (Phase 7 Lead)` implementing
+  and this session remaining author-of-record. §10a's four latent defects (L-1…L-4) were
+  filed by another session against this plan with **per-row provenance** — re-derived /
+  argued / reported / reported-and-unverified. **Those statuses are load-bearing and must
+  not be flattened**: L-4's 0.510 ratio in particular is explicitly unverified and carried
+  on one measurement.
 
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*

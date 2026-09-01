@@ -163,7 +163,8 @@ export interface PerfCaptureShotCeilings {
  * MiB** while `inventoriedGpuMemoryMiB` reads **483.9–492.3 MiB** — a shortfall
  * of 111–119 MiB at a ratio of **1.293–1.324**.
  *
- * **The tightness of that ratio across 24 shots with very different content is
+ * **The tightness of that ratio across the 24 shots of the 2026-08-31 baseline
+ * (a historical count — the list has grown since) with very different content is
  * the finding, not the size of the gap.** Drift accumulated per-item would
  * scatter; a stable multiplier means the model omits a whole CATEGORY of
  * allocation. So the verdict is neither "re-derive the rows" nor "move the
@@ -229,8 +230,24 @@ export interface PerfCaptureShotDefinition {
    * shot's own clock. Unset = fly +x, the Phase-1 convention.
    */
   readonly relativeSunBearingDegrees?: number;
-  /** Z-3: locate the shot over a terrain feature instead of a fixed offset. */
-  readonly locate?: "fixed" | "forest" | "grassland" | "mountain" | "cliff" | "coast";
+  /**
+   * Z-3: locate the shot over a terrain feature instead of a fixed offset.
+   *
+   * `canopy-backlit` (`L-4`, 2026-08-31) differs from `forest` in two ways that
+   * matter: it gates on the VEGETATION field rather than the biome id, and it
+   * scans along the shot's own sun-derived heading rather than +x. A biome-only
+   * predicate accepts forest with no stems in it — the failure that shipped
+   * `horizon-shadow-far-annulus` with 0 stems/m² at every sampled range, a shot
+   * that could not fail.
+   */
+  readonly locate?:
+    | "fixed"
+    | "forest"
+    | "grassland"
+    | "mountain"
+    | "cliff"
+    | "coast"
+    | "canopy-backlit";
   /** Z-3: "motion" runs a scripted banked turn and asserts temporal stability. */
   readonly kind?: "still" | "motion";
   /** Bank angle used by motion shots, degrees. */
@@ -1078,6 +1095,81 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 18.2 },
     relativeSunBearingDegrees: 161,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    /**
+     * **`L-4` (`PHASE_7_EXECUTION_PLAN.md` §10a): the only shot that looks INTO
+     * a low sun.** Appended 2026-08-31.
+     *
+     * The filed defect is a far/mid luminance ratio of 0.510 under a low,
+     * deeply back-lit sun — the far band at half the mid band's brightness.
+     * **That figure is carried on another session's measurement and is
+     * UNVERIFIED**; nothing in the suite could confirm or refute it, because no
+     * committed shot puts the camera on the sunward side of the canopy.
+     * `forest-500ft-sunbehind` is sun ASTERN, i.e. front-lit — the opposite
+     * phase angle. This shot exists to settle that row either way.
+     *
+     * **BEARING 0, AND THE BRIEF THAT SAID OTHERWISE WAS WRONG.** The item was
+     * handed over as "elevation 15, azimuth 180". As a WORLD azimuth that is
+     * unrealisable: on `dayOfYear` 171 at latitude 45 the sun is due south only
+     * at local noon and therefore at maximum elevation, never at 15deg. As a
+     * RELATIVE bearing, 180 is sun-astern — front-lit, the opposite of the
+     * condition the row describes. The artifact settles it:
+     * `DetailInstanceMaterialPlugin`'s `impostorBacklit` docblock records that
+     * "every backlit stand stepped from glowing mid hulls to flat far sprites
+     * at the handoff ring" — the mid/far step is a BACK-LIT phenomenon, so the
+     * camera must face the sun. Bearing 0. The ambiguity is written down rather
+     * than silently resolved, because a later reader handed the same brief will
+     * otherwise re-derive it from the same broken wording.
+     *
+     * **WHY IT CAN FAIL.** A back-lit ratio needs all three canopy
+     * representations in ONE frame, or a step between them is unattributable.
+     * Verified before capture with `scripts/frame-forensics.mts`, marching 180
+     * real rays through this exact camera: **0% water**, 48.9% impostor-capable
+     * canopy, ground range 479-5,278 m, and band coverage mid 114 / far 51 /
+     * beyond-far 15. The mid->far ring at 1,196 m lands near row 328, well
+     * inside the image rather than at an edge.
+     *
+     * **LOCATED, NOT FIXED**, and gated on the VEGETATION field rather than the
+     * biome id — see the `locate` docblock. The raw offset below is only the
+     * search seed. It is also scanned along the SUN-derived heading, not +x:
+     * with `relativeSunBearingDegrees: 0` the corridor the camera looks down is
+     * not the corridor a +x predicate checks, and validating the wrong corridor
+     * is how a shot gets blessed for terrain it never frames.
+     *
+     * **UNPINNED, deliberately.** `ceilings: null`, no `drawCallCeiling`, and
+     * `comparesToBaseline: false` until R4 promotes a baseline for it — a shot
+     * with no committed baseline is FATAL to a normal capture. Flip it in the
+     * same commit that promotes the baseline, never separately.
+     *
+     * **The one number I could not derive without a host: the luminance
+     * floors.** Solar elevation 15deg over closed canopy, looking into the sun,
+     * may sit near the 0.01 default `minMeanLuminance`. The defaults are left
+     * in place rather than guessed downward — if the first capture trips them,
+     * the floor is the thing to re-derive from that frame, with the reasoning
+     * recorded the way `night`'s 0.0005 was. Lowering it pre-emptively would
+     * make it decorative.
+     */
+    name: "canopy-backlit-lowsun",
+    description:
+      "400 m AGL looking INTO a 15deg sun over closed canopy, with mid, far "
+      + "and beyond-far vegetation all in frame - the only shot on the sunward "
+      + "side of the canopy, and the only one that can settle L-4's far/mid ratio",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 400,
+    altitudeMslMeters: null,
+    // Search seed only; `locate: "canopy-backlit"` does the work. Verified
+    // vantage on the current seed resolves near (11000, 12000), ground 151.4 m.
+    offsetXMeters: 11_000,
+    offsetZMeters: 12_000,
+    pitchDownDegrees: 20,
+    airspeedMetersPerSecond: 0,
+    // 18.13 h -> solar elevation 15.03deg, bisected against `solarPosition`.
+    clock: { dayOfYear: 171, solarTimeHours: 18.13 },
+    relativeSunBearingDegrees: 0,
+    locate: "canopy-backlit",
     comparesToBaseline: false,
     ceilings: null,
   },
