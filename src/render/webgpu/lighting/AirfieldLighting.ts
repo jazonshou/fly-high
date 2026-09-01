@@ -13,6 +13,23 @@
  * axis. A PAPI is azimuthally asymmetric with a sharp vertical transition, so
  * it is not a function of that angle and cannot be carried by that format. IES
  * carries the rotationally-symmetric fixtures; this one is authored.
+ *
+ * ---
+ *
+ * **Two traps waiting for `AirfieldLightingSystem`.** Neither can bite this
+ * file — there is no Babylon object in it — which is exactly why they are
+ * written here rather than left in a conversation: they land the moment a
+ * shader and a draw wrapper first exist, and that is the moment someone will
+ * be reading this docblock.
+ *
+ * 1. **`isReady()` returns true on a shader with an unresolved symbol.** A
+ *    readiness flag is not a compile check. Assert on the compiled artifact.
+ * 2. **`subMeshes[0].effect` after a depth pass is the DEPTH effect**, carrying
+ *    none of the beauty pass's defines. Reading it reported a clean all-clear
+ *    on both arms of a real investigation. Select the wrapper deliberately.
+ *
+ * Both break the same distinction the tests here are careful to keep: a green
+ * suite is not a working feature unless the thing asserted is the thing drawn.
  */
 
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
@@ -229,4 +246,389 @@ export function papiThresholdCrossingHeightMeters(
   airport: Readonly<AirportDefinition>,
 ): number {
   return papiOnSlopeAltitudeMeters(airport, 0) - runwayPlatformHeight(airport, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Runway edge, threshold and centreline fixtures.
+// ---------------------------------------------------------------------------
+
+/**
+ * `"off"` means **not visible in that direction**, which is a real state rather
+ * than a placeholder: touchdown-zone and approach fixtures are unidirectional
+ * and show nothing to an aircraft using the other end. Without it the
+ * per-direction model would have to pretend they are omnidirectional.
+ */
+export type AirfieldLightColour = "white" | "amber" | "green" | "red" | "off";
+export type AirfieldFixtureKind =
+  | "edge"
+  | "threshold"
+  | "centreline"
+  | "touchdownZone"
+  | "approach";
+
+/**
+ * Fixture geometry and its colour coding.
+ *
+ * **The colours are per-DIRECTION and that is not a refinement.** This runway
+ * is bidirectional: the same lamp at the `+1` end is a green threshold light to
+ * an aircraft arriving over it and a red end light to one rolling at it. One
+ * colour per fixture cannot express that, and the plan asks for it by name.
+ * The distances that drive the coding — the caution zone, the centreline's
+ * remaining-distance bands — are measured toward the end being served, so they
+ * are direction-dependent for the same reason.
+ *
+ * `centrelineSpacingMeters` is deliberately its own number rather than
+ * `runwayMarkingProfile`'s stripe period. Paint and lights are different
+ * fixtures that happen to share a line; tying them together would make a
+ * lighting change require a painting change because two numbers looked alike.
+ */
+export const AIRFIELD_LIGHTING_PROFILE = Object.freeze({
+  edgeSpacingMeters: 60,
+  /** Outboard of the paved edge, still inside the graded platform. */
+  edgeLateralMarginMeters: 3,
+  /**
+   * Caution-zone cap, metres. The zone is the LESSER of this and a third of
+   * the runway — see `cautionZoneMeters`, which is where the rule lives.
+   */
+  cautionZoneCapMeters: 600,
+  /** The other half of the rule: a fraction of runway length. */
+  cautionZoneFraction: 1 / 3,
+  centrelineSpacingMeters: 30,
+  /** Centreline coding bands, in metres of runway REMAINING ahead. */
+  centrelineAllRedMeters: 300,
+  centrelineAlternatingMeters: 900,
+  thresholdLightCount: 12,
+  /** Elevated fixtures; the centreline is inset and sits flush. */
+  elevatedHeightMeters: 0.35,
+  insetHeightMeters: 0,
+
+  // Touchdown zone (ICAO Annex 14): pairs of barrettes about the centreline,
+  // innermost 60 m from the threshold, at 60 m longitudinal intervals.
+  touchdownZoneStartMeters: 60,
+  touchdownZoneSpacingMeters: 60,
+  /** Cap on the pattern; the midpoint rule below usually wins on this runway. */
+  touchdownZoneCapMeters: 900,
+  barretteLightCount: 3,
+  barretteSpacingMeters: 1.5,
+
+  // Simple approach lighting system (ICAO Annex 14): a centreline row reaching
+  // 420 m out at 60 m spacing, with one crossbar 300 m from the threshold.
+  approachLengthMeters: 420,
+  approachSpacingMeters: 60,
+  approachCrossbarDistanceMeters: 300,
+  approachCrossbarLengthMeters: 30,
+  approachCrossbarLightCount: 9,
+});
+
+export interface AirfieldFixture {
+  readonly kind: AirfieldFixtureKind;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly along: number;
+  readonly across: number;
+  /**
+   * Colour emitted toward the `-1` end and toward the `+1` end, in that order —
+   * what an observer beyond that end, looking back along the runway, sees.
+   */
+  readonly colourTowardEnd: readonly [AirfieldLightColour, AirfieldLightColour];
+}
+
+/** Runway-local `along` positions at an even spacing, both ends included. */
+function alongPositions(halfLength: number, spacing: number): number[] {
+  const out: number[] = [];
+  const steps = Math.floor((2 * halfLength) / spacing);
+  for (let index = 0; index <= steps; index += 1) out.push(-halfLength + index * spacing);
+  return out;
+}
+
+/**
+ * The caution zone: **600 m or one third of the runway length, whichever is the
+ * less** (ICAO Annex 14, 3.9.7 — the yellow section at the remote end from
+ * where the take-off run began).
+ *
+ * **It is a function of runway length, not a constant, and that is the whole
+ * point.** A fixed 600 m on this 1,320 m runway leaves a 120 m white band
+ * containing exactly one light station, so the runway reads amber end to end.
+ * At one third it is 440 m of zone and 440 m of white — a third of the runway,
+ * which is what the coding is meant to look like.
+ *
+ * **Do not "fix" this back to a half.** That variant is real but it is the
+ * FAA's, and it comes paired with 2,000 ft (609.6 m) rather than 600 m; on this
+ * runway the FAA rule gives a 100.8 m white band, NARROWER still. Taking 600 m
+ * from ICAO and "half" from the FAA is a hybrid belonging to neither, and it
+ * was how this constant was first written here.
+ * `runwayMarkingProfile` declares this airport "ICAO-ish rather than
+ * art-directed", so the ICAO pair is the consistent one.
+ */
+export function cautionZoneMeters(airport: Readonly<AirportDefinition>): number {
+  return Math.min(
+    AIRFIELD_LIGHTING_PROFILE.cautionZoneCapMeters,
+    airport.runwayLength * AIRFIELD_LIGHTING_PROFILE.cautionZoneFraction,
+  );
+}
+
+/**
+ * Edge-light colour toward one end: amber once an aircraft rolling that way has
+ * the caution zone or less of runway left.
+ */
+export function edgeColourTowardEnd(
+  airport: Readonly<AirportDefinition>,
+  along: number,
+  end: PapiServedEnd,
+): AirfieldLightColour {
+  const remaining = airport.runwayLength * 0.5 - end * along;
+  return remaining <= cautionZoneMeters(airport) ? "amber" : "white";
+}
+
+/**
+ * Centreline colour toward one end, by runway remaining: white, then
+ * alternating red/white, then red. The alternation keys on the fixture's index
+ * from that end, so the pattern is a function of position rather than of the
+ * order the list happened to be built in.
+ */
+export function centrelineColourTowardEnd(
+  airport: Readonly<AirportDefinition>,
+  along: number,
+  end: PapiServedEnd,
+): AirfieldLightColour {
+  const profile = AIRFIELD_LIGHTING_PROFILE;
+  const remaining = airport.runwayLength * 0.5 - end * along;
+  if (remaining <= profile.centrelineAllRedMeters) return "red";
+  if (remaining <= profile.centrelineAlternatingMeters) {
+    return Math.round(remaining / profile.centrelineSpacingMeters) % 2 === 0 ? "red" : "white";
+  }
+  return "white";
+}
+
+/**
+ * Every runway edge, threshold and centreline fixture, in runway-local order.
+ *
+ * **Keyed on the PAVED rectangle** (`runwayLength` x `runwayWidth`), not the
+ * graded platform and not the influence footprint. Three rectangles are in
+ * active use at this airport and they differ by 160 m and 508 m of width;
+ * picking the wrong one puts edge lights in the grass or in the blend.
+ *
+ * **Every height goes through `runwayPlatformHeight`.** `airport.elevation` is
+ * the surface only at `across == 0`, and every fixture here except the
+ * centreline stands on camber.
+ */
+export function airfieldRunwayFixtures(
+  airport: Readonly<AirportDefinition>,
+): readonly AirfieldFixture[] {
+  const profile = AIRFIELD_LIGHTING_PROFILE;
+  const halfLength = airport.runwayLength * 0.5;
+  const halfWidth = airport.runwayWidth * 0.5;
+  const out: AirfieldFixture[] = [];
+
+  const push = (
+    kind: AirfieldFixtureKind,
+    along: number,
+    across: number,
+    colourTowardEnd: readonly [AirfieldLightColour, AirfieldLightColour],
+    heightMeters: number,
+  ) => {
+    const point = runwayToWorld(airport, along, across);
+    out.push({
+      kind,
+      along,
+      across,
+      x: point.x,
+      z: point.z,
+      y: runwayPlatformHeight(airport, across) + heightMeters,
+      colourTowardEnd,
+    });
+  };
+
+  for (const along of alongPositions(halfLength, profile.edgeSpacingMeters)) {
+    const colours = [
+      edgeColourTowardEnd(airport, along, -1),
+      edgeColourTowardEnd(airport, along, 1),
+    ] as const;
+    for (const side of [-1, 1] as const) {
+      push(
+        "edge",
+        along,
+        side * (halfWidth + profile.edgeLateralMarginMeters),
+        colours,
+        profile.elevatedHeightMeters,
+      );
+    }
+  }
+
+  // Green outward to arrivals, red inward to departures, at BOTH ends.
+  for (const end of [-1, 1] as const) {
+    const spanCount: number = profile.thresholdLightCount;
+    const colours: readonly [AirfieldLightColour, AirfieldLightColour] =
+      end === 1 ? ["red", "green"] : ["green", "red"];
+    for (let index = 0; index < spanCount; index += 1) {
+      const fraction = spanCount === 1 ? 0.5 : index / (spanCount - 1);
+      const across = -halfWidth + fraction * airport.runwayWidth;
+      push("threshold", end * halfLength, across, colours, profile.elevatedHeightMeters);
+    }
+  }
+
+  for (const along of alongPositions(halfLength, profile.centrelineSpacingMeters)) {
+    push(
+      "centreline",
+      along,
+      0,
+      [
+        centrelineColourTowardEnd(airport, along, -1),
+        centrelineColourTowardEnd(airport, along, 1),
+      ] as const,
+      profile.insetHeightMeters,
+    );
+  }
+
+  return Object.freeze(out);
+}
+
+/**
+ * Touchdown-zone pattern length: **900 m from the threshold, or the runway
+ * midpoint, whichever is the shorter** (ICAO Annex 14). The midpoint rule is
+ * what stops the two directions' patterns overlapping on a short runway; at
+ * exactly the midpoint they meet, which is why the innermost barrette of each
+ * direction lands on `along == 0`.
+ *
+ * Same shape as `cautionZoneMeters` and written the same way for the same
+ * reason: a length rule expressed as a bare constant silently stops being the
+ * rule the moment the runway changes.
+ */
+export function touchdownZoneExtentMeters(airport: Readonly<AirportDefinition>): number {
+  return Math.min(AIRFIELD_LIGHTING_PROFILE.touchdownZoneCapMeters, airport.runwayLength * 0.5);
+}
+
+/**
+ * Touchdown-zone barrettes for one approach direction. Unidirectional: an
+ * aircraft using the other end sees nothing.
+ *
+ * **The barrette's inner offset DOES come from `runwayMarkingProfile`,** unlike
+ * the centreline spacing which deliberately does not. The standard couples
+ * these two — the barrettes sit on the touchdown-zone marking's lateral spacing
+ * so the lights line up with the paint. Coupling where the standard couples,
+ * and not where two numbers merely look alike, is the distinction; there is no
+ * general rule here against sharing a constant.
+ */
+export function airfieldTouchdownZoneFixtures(
+  airport: Readonly<AirportDefinition>,
+  servedEnd: PapiServedEnd,
+): readonly AirfieldFixture[] {
+  const profile = AIRFIELD_LIGHTING_PROFILE;
+  const threshold = servedEnd * airport.runwayLength * 0.5;
+  const extent = touchdownZoneExtentMeters(airport);
+  const colours: readonly [AirfieldLightColour, AirfieldLightColour] =
+    servedEnd === 1 ? ["off", "white"] : ["white", "off"];
+  const out: AirfieldFixture[] = [];
+  for (
+    let distance = profile.touchdownZoneStartMeters;
+    distance <= extent + 1e-9;
+    distance += profile.touchdownZoneSpacingMeters
+  ) {
+    const along = threshold - servedEnd * distance;
+    for (const side of [-1, 1] as const) {
+      for (let index = 0; index < profile.barretteLightCount; index += 1) {
+        const across =
+          side
+          * (runwayMarkingProfile.touchdownHalfWidthMeters
+            + index * profile.barretteSpacingMeters);
+        const point = runwayToWorld(airport, along, across);
+        out.push({
+          kind: "touchdownZone",
+          along,
+          across,
+          x: point.x,
+          z: point.z,
+          y: runwayPlatformHeight(airport, across) + profile.insetHeightMeters,
+          colourTowardEnd: colours,
+        });
+      }
+    }
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * Simple approach lighting system for one direction: a centreline row reaching
+ * `approachLengthMeters` beyond the threshold at `approachSpacingMeters`, plus
+ * one crossbar at `approachCrossbarDistanceMeters` (ICAO Annex 14).
+ *
+ * **Held in the threshold's horizontal plane, and that is what keeps it
+ * seed-independent.** These fixtures sit up to 420 m beyond the threshold, far
+ * outside the graded platform, where the only ground height available is
+ * `runwayEarthworksHeightLocal` — which needs `naturalHeight` and a `seedHash`.
+ * Real installations mount approach lights on masts precisely so the lamps lie
+ * in a plane rather than following the ground, so taking the threshold's plane
+ * is both the physically correct choice and the one that survives a seed
+ * change. **Mast length is what absorbs the terrain and is not modelled here:**
+ * a consumer that wants to draw the structure has to sample terrain itself.
+ */
+export function airfieldApproachFixtures(
+  airport: Readonly<AirportDefinition>,
+  servedEnd: PapiServedEnd,
+): readonly AirfieldFixture[] {
+  const profile = AIRFIELD_LIGHTING_PROFILE;
+  const threshold = servedEnd * airport.runwayLength * 0.5;
+  const planeY = runwayPlatformHeight(airport, 0) + profile.elevatedHeightMeters;
+  const colours: readonly [AirfieldLightColour, AirfieldLightColour] =
+    servedEnd === 1 ? ["off", "white"] : ["white", "off"];
+  const out: AirfieldFixture[] = [];
+  const push = (along: number, across: number) => {
+    const point = runwayToWorld(airport, along, across);
+    out.push({
+      kind: "approach",
+      along,
+      across,
+      x: point.x,
+      z: point.z,
+      y: planeY,
+      colourTowardEnd: colours,
+    });
+  };
+  for (
+    let distance = profile.approachSpacingMeters;
+    distance <= profile.approachLengthMeters + 1e-9;
+    distance += profile.approachSpacingMeters
+  ) {
+    push(threshold + servedEnd * distance, 0);
+  }
+  const half = profile.approachCrossbarLengthMeters * 0.5;
+  const count = profile.approachCrossbarLightCount;
+  for (let index = 0; index < count; index += 1) {
+    const across = -half + (index / (count - 1)) * profile.approachCrossbarLengthMeters;
+    push(threshold + servedEnd * profile.approachCrossbarDistanceMeters, across);
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * Every airfield fixture, for the approach directions actually served.
+ *
+ * **Both ends by default, and the reason is recorded because the opposite looks
+ * like an easy win.** Serving one end drops 283 fixtures to 201 and appears to
+ * fit `7-5`'s "~200 light points" — but that figure is a plan SIZING ESTIMATE,
+ * not a measured budget, and landing exactly on an estimate is not evidence the
+ * estimate was right.
+ *
+ * What has actually been measured is that **draw calls bind**, and light points
+ * are one instanced draw whatever the count: 283 against 201 adds **zero** draw
+ * calls, and at 32 B of instance data apiece the difference is about 2.6 KB.
+ * The count is not on the binding axis. What it could cost is **fill rate**,
+ * which is measurable, tunable and reversible — whereas an unlit approach is
+ * not, and would be found by someone flying a night approach onto the dark end.
+ *
+ * `servedEnds` stays a parameter so that lever exists if `7-5`'s measurement
+ * ever shows fill rate binding. Changing the default is a one-value decision;
+ * make it against a measurement rather than against this estimate.
+ */
+export function airfieldFixtures(
+  airport: Readonly<AirportDefinition>,
+  servedEnds: readonly PapiServedEnd[] = [-1, 1],
+): readonly AirfieldFixture[] {
+  const out: AirfieldFixture[] = [...airfieldRunwayFixtures(airport)];
+  for (const end of servedEnds) {
+    out.push(...airfieldTouchdownZoneFixtures(airport, end));
+    out.push(...airfieldApproachFixtures(airport, end));
+  }
+  return Object.freeze(out);
 }
