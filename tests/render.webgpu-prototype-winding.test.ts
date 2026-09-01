@@ -1,3 +1,7 @@
+import {
+  WINDSOCK_PART_KINDS,
+  buildWindsockPart,
+} from "../src/render/webgpu/detail/AirfieldFurniture";
 import { describe, expect, it } from "vitest";
 import { CreateSphereVertexData } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import { CreateBoxVertexData } from "@babylonjs/core/Meshes/Builders/boxBuilder";
@@ -204,6 +208,16 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   }
   for (const variant of ["granite", "limestone", "dark"] as const) {
     out.push([`rock.${variant}`, buildRockPrototype(variant, 1) as unknown as Geo]);
+  }
+  // 7-13: derived from WINDSOCK_PART_KINDS rather than listed, so a part added
+  // to the furniture is checked here without anyone remembering to come back.
+  // Both inflation extremes: a slack sock is a different mesh from a streaming
+  // one (the rings collapse toward the mast), so checking one arm would leave
+  // the other unwound.
+  for (const kind of WINDSOCK_PART_KINDS) {
+    for (const [label, inflation] of [["slack", 0], ["streaming", 1]] as const) {
+      out.push([`windsock.${kind}.${label}`, buildWindsockPart(kind, inflation) as unknown as Geo]);
+    }
   }
   // EVERY archetype, not the default. The specs differ per archetype -- blade
   // count, length, lean, and `layer` -- so the default tested one member of a

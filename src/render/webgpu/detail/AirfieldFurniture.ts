@@ -155,3 +155,127 @@ export function runwayAxisDifferenceRadians(
   const heading = headingDifferenceRadians(runwayHeadingRadians, windHeadingRadians);
   return heading > Math.PI / 2 ? Math.PI - heading : heading;
 }
+
+// ---------------------------------------------------------------------------
+// Geometry. Separated from the arithmetic above because it can only be wrong in
+// ways a number cannot be — and one of those ways is winding, which is why
+// every part below is enumerated rather than hand-listed: the winding guard
+// derives its cases from `WINDSOCK_PART_KINDS`, so a part added here is
+// checked without anyone remembering to add it there.
+// ---------------------------------------------------------------------------
+
+/** ICAO Annex 14: a windsock is 3.6 m long with a 0.9 m mouth. */
+export const WINDSOCK_LENGTH_METERS = 3.6;
+export const WINDSOCK_MOUTH_RADIUS_METERS = 0.45;
+/** The tail is narrower, which is what makes the sock stream rather than balloon. */
+export const WINDSOCK_TAIL_RADIUS_METERS = 0.22;
+export const WINDSOCK_MAST_RADIUS_METERS = 0.07;
+
+/**
+ * Every part the windsock is built from.
+ *
+ * THE WINDING GUARD ENUMERATES THIS. `render.webgpu-prototype-winding.test.ts`
+ * derives its cases from this array rather than listing parts by hand, because
+ * a hand-written case list is the artefact this project has already found
+ * rotted twice — `GroundCoverSystem.buildBladeRibbon` shipped inverted while
+ * the guard checked a grass card no capture drew, and `clutter.mossCushion` was
+ * invisible because three of four kinds were unlisted.
+ */
+export const WINDSOCK_PART_KINDS = ["mast", "swivel", "sock"] as const;
+export type WindsockPartKind = (typeof WINDSOCK_PART_KINDS)[number];
+
+/** Positions, normals and indices — the shape the winding guard consumes. */
+export interface WindsockPartGeometry {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly indices: Uint32Array;
+}
+
+/**
+ * A tube swept along +y, radius varying by ring.
+ *
+ * **The index order was DERIVED FROM THE GUARD, not remembered.** The first
+ * version wound `(a, c, b)` on the reasoning that this is "Babylon's
+ * convention" — a tuple copied from a comment on a different builder. The guard
+ * measured +0.994 to +0.997 against Babylon's own -0.9993, i.e. inverted on all
+ * three parts and both inflation arms.
+ *
+ * **A winding tuple is not portable between builders**, which is the reusable
+ * part: whether `(a, c, b)` or `(a, b, c)` faces outward depends on how the
+ * quad's four corners were ORDERED when they were emitted, and this tube walks
+ * its rings in the opposite sense to the builder that comment came from. So
+ * there is no convention to remember, only a measurement to take.
+ *
+ * Normals are the outward radial direction, authored independently of the index
+ * order — deliberately, because deriving them FROM the winding would make an
+ * inverted tube self-consistently inside-out and invisible to a guard that
+ * compares the two. That is exactly how eight surfaces shipped inverted.
+ */
+function sweptTube(
+  segments: number,
+  rings: readonly { readonly y: number; readonly radius: number }[],
+): WindsockPartGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  for (const ring of rings) {
+    for (let s = 0; s <= segments; s += 1) {
+      const angle = (s / segments) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      positions.push(cos * ring.radius, ring.y, sin * ring.radius);
+      normals.push(cos, 0, sin);
+    }
+  }
+  const stride = segments + 1;
+  for (let r = 0; r + 1 < rings.length; r += 1) {
+    for (let s = 0; s < segments; s += 1) {
+      const a = r * stride + s;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    indices: new Uint32Array(indices),
+  };
+}
+
+/**
+ * Build one part. `inflation` is `windsockInflation`'s output: it decides how
+ * far the sock opens, so a limp sock is narrow and a streaming one is full.
+ */
+export function buildWindsockPart(
+  kind: WindsockPartKind,
+  inflation = 1,
+): WindsockPartGeometry {
+  const open = Math.min(Math.max(inflation, 0), 1);
+  if (kind === "mast") {
+    return sweptTube(10, [
+      { y: 0, radius: WINDSOCK_MAST_RADIUS_METERS },
+      { y: WINDSOCK_MAST_HEIGHT_METERS, radius: WINDSOCK_MAST_RADIUS_METERS * 0.72 },
+    ]);
+  }
+  if (kind === "swivel") {
+    const top = WINDSOCK_MAST_HEIGHT_METERS;
+    return sweptTube(12, [
+      { y: top - 0.06, radius: WINDSOCK_MOUTH_RADIUS_METERS * 0.35 },
+      { y: top + 0.06, radius: WINDSOCK_MOUTH_RADIUS_METERS * 0.35 },
+    ]);
+  }
+  // The sock, built along +y in its own frame; the renderer orients it by the
+  // wind heading and droop. Five rings, which is also the stripe count a pilot
+  // counts speed off — the geometry and the banding share their divisions
+  // rather than being two numbers that happen to look alike.
+  const rings = Array.from({ length: 6 }, (_, index) => {
+    const t = index / 5;
+    const taper = WINDSOCK_MOUTH_RADIUS_METERS
+      + (WINDSOCK_TAIL_RADIUS_METERS - WINDSOCK_MOUTH_RADIUS_METERS) * t;
+    // A slack sock collapses toward the mast rather than holding its bore.
+    return { y: t * WINDSOCK_LENGTH_METERS, radius: taper * (0.28 + 0.72 * open) };
+  });
+  return sweptTube(14, rings);
+}
