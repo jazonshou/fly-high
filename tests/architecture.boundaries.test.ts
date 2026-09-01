@@ -27,6 +27,36 @@ interface SourceFile {
  * Remove comments, import statements, and re-export-from statements, so that
  * `type Foo` inside an import brace does not read as a declaration of Foo and
  * a mention inside a comment cannot satisfy a convention check.
+ *
+ * **DOCUMENTED TRAP (`6-12`, 2026-08-31): this strips comments but NOT string
+ * literals, and the convention guards below are bare regexes over the result.**
+ * Verified by replicating this function against both forms: a comment
+ * containing `new ShadowDepthWrapper` or `.tier` is stripped and passes; the
+ * same text inside a string literal **fails the build**.
+ *
+ * The practical consequence is narrow and counter-intuitive, so it is worth
+ * stating exactly. You may freely *comment* about these constructs — that is
+ * what this function is for. What you cannot do is put their vocabulary in a
+ * **string**: an error message, a thrown `Error`, a log line, a test name. Which
+ * means the guards are hardest on the single most useful error message an
+ * author can write — the one that names the construct it forbids.
+ * The guards' own failure messages below are exempt only because this file is
+ * not under `SOURCE_ROOT`.
+ *
+ * Workaround, until the open question below is settled: phrase around the
+ * token — "a profile data field, not a per-tier read", "the guarded factory".
+ *
+ * **OPEN QUESTION, deliberately not resolved here.** Whether these guards
+ * *should* strip string literals is a real decision with a cost on both sides:
+ * a string containing `new ShadowDepthWrapper` can be a genuine dynamic
+ * construction site (a registry key, a `Function` body, a dynamic import), so
+ * stripping strings opens a hole in a guard whose whole job is to have no
+ * holes. Recorded rather than fixed, because trading a false positive for a
+ * false negative in a boundary guard is an architectural call, not a cleanup.
+ *
+ * This is the third member of a family this phase kept finding: an instrument
+ * that models "code doing X" while actually matching "text containing X", never
+ * re-checked against the difference. See `PHASE_6_EXECUTION_PLAN.md` §6-12.
  */
 function withoutImportClauses(content: string): string {
   return content

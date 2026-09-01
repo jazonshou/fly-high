@@ -155,6 +155,33 @@ export interface PerfCaptureShotCeilings {
  * catches every NEW allocation against the real number. The tolerance is the
  * measured 2026-08-30 maximum plus 6 MiB of slack; 6-11.4 reconciles the
  * estimate model and ratchets this back down.
+ *
+ * **RESOLVED 2026-08-31 (`6-11.4`, recorded by `6-12`) — and it resolved the
+ * OPPOSITE way to the last sentence above.** The estimate model was not
+ * re-derived and this ceiling was not ratcheted down. Measured across all 24
+ * shots of the promoted baseline: `estimatedGpuMemoryMiB` reads **367.5–380.7
+ * MiB** while `inventoriedGpuMemoryMiB` reads **483.9–492.3 MiB** — a shortfall
+ * of 111–119 MiB at a ratio of **1.293–1.324**.
+ *
+ * **The tightness of that ratio across 24 shots with very different content is
+ * the finding, not the size of the gap.** Drift accumulated per-item would
+ * scatter; a stable multiplier means the model omits a whole CATEGORY of
+ * allocation. So the verdict is neither "re-derive the rows" nor "move the
+ * ceiling" but: **the estimate is not a usable proxy, and the ceiling must be
+ * judged on the inventory** — which is what this constant does, and why it and
+ * not `MEMORY_CEILING_MIB` is the real gate.
+ *
+ * For anyone reading a memory number here:
+ * - **Never quote `estimatedGpuMemoryMiB` as headroom.** It understates by ~30%.
+ * - `MEMORY_CEILING_MIB[1]` is **480**, and the tier-1 inventory (492.3) is
+ *   already ABOVE it. Nothing is broken — that row gates the estimate only —
+ *   but the two ceilings measure different quantities and must never be
+ *   compared or quoted together.
+ * - Real tier-1 headroom is **2.7 MiB (0.5%)**, at `reference-viewport`.
+ *
+ * The superseded text is kept above rather than rewritten, because the
+ * prediction it made is itself the lesson: a forward-looking promise in a
+ * comment is a claim like any other, and nothing ever re-checks it.
  */
 export const PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495;
 
@@ -829,6 +856,231 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
   // To restore them, re-append at the END with `worldEvolution: "eroded"` and
   // permissive ceilings — D-24 records the definitions.
   // -------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // P0 DEFECT SHOTS (2026-08-31). Jason flew the SHIPPING analytic world and
+  // reported defects no existing shot frames at a readable scale. As he
+  // corrected it: the trees are NOT blue - "there's very clearly a LINE where
+  // trees shift from dark green to light green ... it doesn't make sense why
+  // the line is so obvious". So the defect is a hard SEAM at a vegetation LOD
+  // boundary, plus camo-like brown/blue splotches in the ground materials.
+  //
+  // THE VANTAGE IS NOT TRANSPLANTABLE, which is why these are feature-located.
+  // Jason flew a URL-seeded world (`?seed=`, base-36); captures pin
+  // PERF_CAPTURE_SEED = "phase1-perf-baseline". His reported -14,445 / 11,555 at
+  // 508 m MSL reproduces in NEITHER frame here: read as an airport offset the
+  // terrain is -98.5 m (open ocean, and all three shots below returned 100% sea
+  // when first written that way), read as world-absolute it is 122.2 m, and
+  // neither yields his 19 m of ground. Coordinates do not survive a seed change;
+  // terrain FEATURES do. Hence `locate`, per this list's own docblock.
+  //
+  // WHY THESE FRAMINGS. Vegetation band membership is keyed on HORIZONTAL
+  // distance (`Math.hypot(tree.x - observerX, tree.z - observerZ)`,
+  // presentationBuild.ts), never slant range, so altitude cannot push a stand
+  // into the next band and the pitch that puts a seam mid-frame is fixed by the
+  // altitude alone. At tier 1 (`RENDERED_DENSITY_LAWS[1]`, the shipping
+  // G-target), with the fade margin and membership slack applied:
+  //   T1 near -> card     the near representation ends at 246 m (150 + 96)
+  //   T2 card -> impostor both representations coexist over 904-1,196 m
+  //   T3 impostor cull    fades out over 2,580-3,096 m
+  // Vertical SCREEN extent of each transition, measured across the 24 existing
+  // shots at 720 px: T1 is at most 5 px and off-frame in 19 of 24; T2 peaks at
+  // 84 px (forest-line-highsun, itself built for wave R's handoff line); T3
+  // peaks at 22 px. A seam crushed into 5 px cannot read as a line. That is how
+  // a 24-shot suite drew these defects and gated none of them.
+  //
+  // SUN BEARING 105 IS LOAD-BEARING, NOT DECORATIVE. It is near side-lit, so
+  // both bands take comparable illumination and a brightness step across the
+  // seam is attributable to the REPRESENTATION rather than to phase angle. It
+  // is also the nearest side-lit bearing with unbroken forest across the seam:
+  // sampling the located forest site every 15 degrees, bearings 0-90 break
+  // (bearing 90 is grassland at 904-1,000 m, exactly inside T2) while 105-195
+  // hold forest at all of 500/700/850/904/1,000/1,100/1,196/1,300/1,400 m.
+  // Trees on BOTH sides of the seam are what makes the shot able to fail.
+  //
+  // DELIBERATELY UNPINNED. `ceilings: null` and no `drawCallCeiling`: the
+  // reference host is thermally exhausted (117.73 -> 31.0 fps on identical code,
+  // 2026-08-31) and a ceiling pinned there would bake a 3x throttle in as the
+  // standard. Pin from three clean idle-host runs at the next rebaseline.
+  // `comparesToBaseline: false` until that rebaseline promotes a baseline for
+  // each: a shot with no committed baseline is FATAL to a normal capture
+  // (`readBaselinePixels` runs with `required = !REBASELINE`), which is what the
+  // three eroded shots did to the branch head today. Flip all four to
+  // baseline-comparing in the SAME commit that promotes their baselines.
+  // ---------------------------------------------------------------------------
+  {
+    // THE seam shot. Puts the card -> impostor boundary across the middle of the
+    // frame at 130 px of vertical extent, against the best existing 84 px, with
+    // decimated-card trees filling the lower frame and impostors the upper, so
+    // the dark-green/light-green line appears as a step INSIDE one image rather
+    // than as a difference between two shots taken at different times. The cull
+    // fade also stays on screen at 40 px (best existing 22 px).
+    //
+    // Framed for the TILE SSIM, not the frame average. A seam is thin,
+    // high-contrast and spatially localised - precisely what a whole-frame mean
+    // washes out, and this project has already read 0.98 whole-frame against
+    // 0.42 in a single tile. The boundary is placed well inside the image rather
+    // than at the top edge so it lands across whole 64 px tiles, which is what
+    // `worstTileRgbSsimThreshold` actually samples.
+    name: "veg-seam-1600ft-oblique",
+    description:
+      "1,600 ft AGL oblique over closed forest with the card-to-impostor seam "
+      + "across mid-frame and trees both sides - catches the dark-green to "
+      + "light-green line; framed so worst-tile SSIM sees it, not just the mean",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 489,
+    altitudeMslMeters: null,
+    offsetXMeters: 500,
+    offsetZMeters: 500,
+    pitchDownDegrees: 25,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 14 },
+    relativeSunBearingDegrees: 105,
+    locate: "forest",
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    // The secondary seam, and a coverage hole every other shot shares. T1 - the
+    // full-geometry -> card boundary at 246 m - is off-frame in every shot with
+    // the altitude to see it and at most 5 px in the three ground-level shots.
+    // Here it spans 294 px. Same located forest as the shot above, so the two
+    // differ only in which seam they frame; the altitude is lower only because
+    // at 489 m AGL the 246 m ring sits 63 degrees below the horizon, an attitude
+    // no aircraft holds. If the line Jason sees is the geometry -> card boundary
+    // rather than the card -> impostor one, this is the only shot that can
+    // show it, and the pair together says WHICH boundary is at fault.
+    name: "veg-seam-near-500ft",
+    description:
+      "500 ft AGL over the same forest framing the geometry-to-card boundary - "
+      + "the only shot that frames the 246 m near-band edge at a readable "
+      + "scale, and the control that says which of the two seams is at fault",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 150,
+    altitudeMslMeters: null,
+    offsetXMeters: 500,
+    offsetZMeters: 500,
+    pitchDownDegrees: 30,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 14 },
+    relativeSunBearingDegrees: 105,
+    locate: "forest",
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    // The ground-material shot. Terrain fills the frame - its top edge is 23
+    // degrees below the horizon, so there is no sky and no horizon line to
+    // anchor exposure - across roughly 322 m to 1,133 m of ground, the scale at
+    // which a metre-scale material mask reads as a splotch rather than as
+    // texture. Located on a mountain so the rock/slope material family is in
+    // frame at 82% terrain coverage: that is the family with the precedent,
+    // since wave R found Rock's joint crease was an 84%-coverage half-plane
+    // produced by a REVERSED `smoothstep`, which read as "black, brown and
+    // white camo" (ARCHITECTURE.md:362). `cliff-60m` gates that family at 60 m
+    // and nothing gates it at the range an aircraft actually sees it from.
+    // The remaining ~18% is sea along the top edge, which is wanted here: it
+    // puts a shoreline in frame, and the reported splotches were brown AND
+    // blue.
+    name: "terrain-material-1600ft-down",
+    description:
+      "1,600 ft AGL steep look-down filling the frame with mountain terrain "
+      + "322-1,133 m out - catches camo-like brown and blue splotches in the "
+      + "ground materials at the range they were reported from",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 489,
+    altitudeMslMeters: null,
+    offsetXMeters: -1_200,
+    offsetZMeters: -5_600,
+    pitchDownDegrees: 40,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 14 },
+    relativeSunBearingDegrees: 105,
+    locate: "mountain",
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    // E-5's far-annulus shot: the horizon-shadow term applied to FAR VEGETATION.
+    // Vantage measured by the horizon-shadow session with a CPU search, and
+    // re-derived here against this seed: camera ground 1,043.5 m (it said
+    // 1,043), target ground 483.9 m at 2.2 km (it said 484). The term can only
+    // act between `shadowDistance` 1,400 m, where the cascades stop, and
+    // `vegetationDistance` 3,000 m, where vegetation stops; the 559 m drop to
+    // the target is what holds that annulus open at a sane pitch instead of
+    // compressing it to a sliver at the horizon.
+    //
+    // Clock 18.2 h is pinned, NOT inherited from the 19 h low-sun shots: at
+    // 19 h so much of the world is shadowed that a bug disabling the term
+    // entirely would still look plausible, whereas at 18.2 h roughly 13% of the
+    // field is occluded, so lit and shadowed vegetation are both in frame and
+    // the terminator reads as an edge. A frame where everything is shadowed
+    // proves as little as one where nothing is.
+    //
+    // KNOWN LIMIT, recorded rather than discovered later: at this vantage the
+    // ridge ahead rises to 1,485 m by 3,000 m out - above the camera - so the
+    // shot frames the 1,400-2,600 m part of the annulus (depressions 26.5 to
+    // 10.1 degrees) and not its outer end. That is the part where impostor
+    // trees stand on ground the horizon field shadows, which is the claim under
+    // test. Terrain coverage 77.9%, sea 0.3%.
+    //
+    // Unlike the three above this one is FIXED, not feature-located: it is
+    // aimed at one specific ridge-and-basin pair, so it does not survive a seed
+    // change and must be re-derived if the capture seed ever moves.
+    name: "horizon-shadow-far-annulus",
+    description:
+      "Low sun at 18.2 h framing impostor-band CANOPY across the horizon "
+      + "terminator at 1,400-2,600 m - lit forest one side, shadowed forest the "
+      + "other. The only shot evidencing the horizon term on FAR VEGETATION "
+      + "rather than on terrain",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 120,
+    altitudeMslMeters: null,
+    /**
+     * **A FIXED-OFFSET vantage — the only one among the four seam shots — so
+     * its coordinates mean something on their own and must be validated
+     * directly. The other three are `locate`-based, where the predicate finds
+     * the feature and the raw offset is merely a search seed.**
+     *
+     * Mixing the two conventions in one set is a trap this shot already fell
+     * into once: `forest-500ft-sunbehind`'s raw offset `(-4000, +3000)` samples
+     * at -33 m, biome 0 — UNDERWATER — and its `locate: "forest"` does all the
+     * work. So a fixed-offset vantage cannot be checked against a `locate`
+     * shot's realised position, or the reverse, and reading one as the other
+     * validates a point the capture never visits.
+     *
+     * **Re-sited 2026-08-31 because the original vantage had NO TREES.** It was
+     * chosen on horizon-occlusion margin alone and never gated on vegetation:
+     * measured canopy along the sun ray was 0 stems/m2 at every one of 1,400 /
+     * 1,800 / 2,200 / 2,600 / 3,000 m. A shadowed bare hillside evidences only
+     * what `4-7` already shipped for terrain in Phase 4 and would look
+     * identical with the horizon-shadow change reverted — **a shot that cannot
+     * fail**, which is the instrument failure this phase has produced most
+     * often.
+     *
+     * This vantage is gated on the CONJUNCTION: impostor-capable canopy
+     * (>= 0.0075 stems/m2, heightFactor >= 0.4 to exclude krummholz) AND both
+     * shadowed and lit canopy in frame, because a uniformly dark frame proves
+     * as little as a uniformly lit one. Closed forest 0.07-0.08 stems/m2 from
+     * 1,400-2,000 m, thinning to 0.037 by 2,400; the horizon terminator falls
+     * between 1,800 and 2,100 m, inside tier 1's 1,400-3,000 m annulus.
+     *
+     * Stated limit rather than buried: the ground here is nearly flat, so the
+     * forested band spans only 4.4deg to 3.7deg of depression and reads as a
+     * compressed horizontal strip. Raising AGL barely helps. Trees are
+     * non-negotiable; compression is a framing problem. Runners-up if it frames
+     * badly: (2000, -18000) ground 134 m at 18.5 h, and (-1500, 4500) ground
+     * 65 m at 18.2 h.
+     */
+    offsetXMeters: 5_000,
+    offsetZMeters: 3_000,
+    pitchDownDegrees: 18,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.2 },
+    relativeSunBearingDegrees: 161,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
 ]);
 
 export interface CaptureQuaternion {

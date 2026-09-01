@@ -1043,6 +1043,28 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "Off-thread terrain material synthesis (4.5-C2b). The client falls back to the in-frame path wherever no Worker exists, which is what the Node suite and every headless tool run.",
   },
+  {
+    // Pre-existing and previously unowned, which PHASE_7_EXECUTION_PLAN.md
+    // 2.8 calls out by name. `AirportSystem` PLACES the airport's objects;
+    // `runway-surface-painter` PAINTS the runway into the terrain surface.
+    // Two artifacts, one airfield -- recording the split is the point, because
+    // 3-9 deleted 28 coplanar z-fighting boxes that had grown from exactly
+    // this ambiguity. Phase 7 moves this file to `airfield/` when 7D opens
+    // (D-11); until then the row is enforced where the file actually is.
+    // RENDERING_PLAN.md Phase 7's citations into this file are STALE
+    // (`:72-83`, `:111`), and `AirportSystemOptions.includeHangars` -- which
+    // that plan builds on -- never existed at all (D-2).
+    artifact: "airport-system",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/detail/AirportSystem.ts"],
+    consumers: "any",
+    ownedSymbols: ["AirportSystem"],
+    notes:
+      "The runway SURFACE is not here: RunwaySurface.ts paints it from the "
+      + "analytic SDF in src/world/airport.ts. Placement consumes that SDF and "
+      + "does not re-derive it -- a second SDF is the drift that once gave the "
+      + "water two sun discs.",
+  },
 ];
 
 /**

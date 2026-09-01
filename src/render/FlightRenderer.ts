@@ -1492,6 +1492,37 @@ export class FlightRenderer implements FlightRenderingSystem {
    * high-DPR/cap-equivalent reference workload. It is intentionally refused
    * for interactive renderers, where the adaptive governor owns this state.
    */
+  /**
+   * `6-12` / P0 seam work — hide every vegetation mesh for one capture, so a
+   * second capture can be differenced against it to yield a true VEGETATION
+   * MASK.
+   *
+   * Capture-only, and it exists because every cheap post-hoc mask is
+   * confounded with the quantity under test. Measured on the seam frame: a
+   * COLOUR mask cannot work — far trees read `rgb(86,107,86)` against open
+   * ground `rgb(81,104,78)`, indistinguishable in hue and saturation. A
+   * DARKNESS mask biases toward the dark mode, and a SPATIAL-FREQUENCY mask
+   * biases toward the alpha-tested band — both of which are exactly what a
+   * band-handoff comparison is trying to measure. Differencing against a
+   * vegetation-free render is the only mask that is independent of the thing
+   * being measured.
+   *
+   * Every vegetation mesh is named with the `detail-` prefix (`detail-tree-*`,
+   * `detail-foliage-*`, `detail-bark-*`, `detail-shrub-*`, `detail-clutter-*`,
+   * `detail-ground-*`, `detail-rock-*`, `detail-impostor`), which is the whole
+   * selector. Terrain, water, sky and aircraft are untouched.
+   */
+  setVegetationVisibleForCapture(visible: boolean): number {
+    let toggled = 0;
+    for (const mesh of this.scene.meshes) {
+      if (!mesh.name.startsWith("detail-")) continue;
+      if (mesh.isVisible === visible) continue;
+      mesh.isVisible = visible;
+      toggled += 1;
+    }
+    return toggled;
+  }
+
   setPinnedRenderScaleForCapture(scale: number): void {
     if (this.pinnedRenderScale === null) {
       throw new Error("Capture render scale can only change on a pinned renderer");

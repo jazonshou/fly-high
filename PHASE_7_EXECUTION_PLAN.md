@@ -18,7 +18,7 @@ log, per house rule.
 | Q | Decision | Consequence |
 |---|---|---|
 | **Q1 Start line** | **Phase 6 finishes first; Phase 7 plans clean.** No absorbing Gate-0 that duplicates Phase 6 work. | §1 is a verified *entry-condition checklist*, not a work gate. Phase 7 still opens with its own Gate 7-0 (§4) for instruments Phase 6 never had to build — night shots, a night entry point, a lighting budget row, and the adapter spike. |
-| **Q2 Memory** | **The vegetation atlases fund Phase 7.** `impostorAtlasMiB` 9.33 and `foliageAtlasMiB` 6.0 ([PerformanceBudget.ts:312-388](src/render/webgpu/core/PerformanceBudget.ts)) are the fidelity rows that pay for cluster/tile-mask buffers, the light-point instance buffer, photometric textures and 7-11's material arrays. | Settles D-16's unbooked surplus in the opposite direction from booking wave T's leaf-spray layers — **6-11 must not book them**. Every allocation is measured against the enforced inventoried assert, not the estimate (§2.4). The ratchet binds: no count row rises without its fidelity row moving in the same commit. |
+| **Q2 Memory** | **The vegetation atlases fund Phase 7 — but they fund 7D, not the lighting engine. Re-scoped 2026-08-31, D-10.** Measured: the lighting engine is **not** a memory consumer. The clustered tile-mask buffer at the shipped 64×64 tiles is ~16 KB, ~200 light points at 32 B is ~6.4 KB, and an IES profile is 180 floats — **under 0.1 MiB for all of 7B**. The consumer is **7D**: at tier 1's `materialArrayEdge: 512`, the existing 2 arrays × 10 layers already cost **26.67 MiB**, and each additional material layer 7-11 needs costs **~2.67 MiB**. So the trade is aimed at 7-11's hangar/tower materials and 7D's geometry, and **7B can proceed with no memory trade at all**. |
 | **Q3 Airfield scope** | **Runway, hangars, and an ATC tower.** *"Airport specifics don't matter too much, but it should still look real."* | Taxiway lighting, apron markings and apron floodlighting are **re-scoped away with reason** (D-0) — none of that ground exists and 3-9 declined to build it. A new item **7-15 ATC tower** (3.0 d) is added (D-1); it mounts 7-7's rotating beacon and 7-14's obstruction lights and is the second scale reference on final. "It should still look real" is tested by the §8 acceptance flights, not by a count of fixtures. |
 | **Q4 Night HDR** | **7-4 builds a real scene pre-exposure and a highlight-preserving rod response.** | The largest single change in the phase and the one that moves *every* pixel in *every* shot. It gets its own solitary rebaseline **R7-1**, before any light exists to blame. It reopens `MAX_EXPOSURE`'s derivation and both art-directed night constants — all test-pinned (§5, D-5). 6-11's sweep will deliberately pin nothing downstream of exposure, so this is Phase 7's to move. |
 | **Q5 Which world ships** | **The ANALYTIC world is the shipped default. SETTLED, not assumed.** Jason re-flew the eroded world after d7's fixes, found it still badly wrong, and made an executive call on 2026-08-31 to **shelve it for this phase** — §8 resolving **NO**, which the Phase 6 plan explicitly sanctions ("the analytic default ships on and eroded stays a flag — that outcome is acceptable by Q1's own terms and is not a phase failure"). | **Eroded is out of Phase 7's scope entirely.** There is no Gate W dependency, no eroded prerequisite, and no eroded night shot; a future reader should not go looking for one. All 24 + 4 capture shots are `worldEvolution: "analytic"`. **The eroded code is parked behind its `?world=eroded` flag, not removed** — it is shelved with its state recorded, not abandoned, and someone will want to resume it. This was the assumption Phase 7 was already written on, so nothing structural changes; it simply stopped being able to move mid-phase. |
@@ -55,7 +55,7 @@ for Phase 7's own night work, and it is stated twice on purpose.
 
 | # | Condition | Verification | Owner today |
 |---|---|---|---|
-| E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented (**no instrument exists in any form** — no script, no test, no CI step, and `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, so this is build-from-zero, and it must fail on **timeout OR console error**: the failure class it guards hung with *no* error, so an error check alone cannot catch it); 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d) | tier table asserted from profile data in CI; a cold-start gate exists in the perf workflow; the sampler list derived, not hand-maintained | `flight-simulator-d7` |
+| E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented — **LANDED in `1e526f9`** as `tests/perf/cold-start.test.ts` (158 lines), and it honours the timeout-OR-error requirement rather than only the easy half: it captures both `console.error` and Babylon's `Logger.Error`, asserts empty, **and** races a timeout whose rejection message records that the guarded class produces no console error at all. What remains for E-1 is the sweep, QR-1 and memory truth; 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d). **But nothing runs the cold-start test**: `tests/perf/**` is excluded from both `npm test` and `npm run verify` ([vitest.config.ts:15](vitest.config.ts)), `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, and `grep -rn cold-start package.json .github/workflows/*.yml` is empty. This row is therefore unmet for a **wiring** reason rather than a construction one — a smaller job than originally priced, but not a discharged one. **A correct instrument nobody invokes is the same defect as a wrong one**, and this phase has now hit that shape three times: the sampler list nothing compared against a shader, Gate W's suite that never rendered its own product, and this | tier table asserted from profile data in CI; **the cold-start test actually invoked by a workflow or an npm script**, not merely present; the sampler list derived, not hand-maintained | `SWE III` (was `flight-simulator-d7`) |
 | E-2 | **6-12 closed** — documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
 | E-3 | **R1+R2+R3 promoted** as one reviewed pass. The committed baseline has not moved since 2026-08-28 (`6a46742`); the post-D-19 candidate exists on disk only. `tests/perf/baseline/report.json` is still a 17-shot fossil against 24 tracked PNGs and nothing reads it — 6-12 owes a decide-once on recommit-or-delete | `tests/perf/baseline/` mtimes move; 24 shots in the promoted report | `flight-simulator-d7` |
 | ~~E-4~~ | **STRUCK 2026-08-31 — shelved with the eroded world, not discharged.** This row required D-7's canonical-split fix and D-9's bounds re-tightening. Both exist only to make the *eroded* page producer's seams sound, and both were entry conditions solely because they blocked §8's re-default. §8 has resolved NO, so **they block nothing in Phase 7** and requiring them would block this phase on work that has been deliberately shelved. **Their state is recorded, not erased**, for whoever resumes the eroded path: `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](src/render/webgpu/terrain/TerrainPageErosionGpu.ts), no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`, and D-9's loosening is therefore still outliving its cause — which is exactly the condition D-9 warned becomes permission if left | n/a — struck | shelved with the eroded path |
@@ -110,20 +110,63 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    same-host A/B on the ten default-clock shots. **The one sanctioned exception is 7-4a's
    pre-exposure**, which moves every pixel by construction and therefore lands alone at
    R7-1 (§9) before any light exists to be blamed for it.
-3. **Every item that adds cost to the daylight path carries a same-host A/B pin** —
-   reference-host capture before/after, wall-fps delta ≤ 2% on the affected shots, logged
-   at item close. Clustered lighting is *not* cost-dark: the container adds a
-   `vViewDepth` inter-stage varying, a sampled `lightDataTexture` and a fragment-stage
+3. **Every item that adds cost to the daylight path carries a same-host A/B pin — and the
+   pin reports its own noise floor, not just its delta.** *(Amended 2026-08-31, before any
+   Phase 7 item used it; see D-9.)*
+   The old rule was "reference-host capture before/after, wall-fps delta ≤ 2% on the
+   affected shots". **A ≤2% gate is meaningless without knowing the spread of the arm it
+   is measured on**, and on this host that spread has been measured at **62%**: d7's
+   horizon-shadow pin took four captures, and on `reference-viewport` the *same tree* read
+   **74.0 → 115.1 → 120.1 wall fps**, so one AFTER scored −4.27% against BEFORE (a fail)
+   while another AFTER on the identical tree scored −0.08% (a pass). The shape — a rising
+   asymptote, not a random walk — says this is **warm-up, not thermal drift**.
+   The protocol, therefore:
+   (a) **Discard the first capture of a session**, or warm until consecutive runs agree
+       within the threshold you intend to gate at. The first run of a session is not a
+       measurement of the tree.
+   (b) **At least two captures per arm, interleaved** — `A B A B`, not a three-arm
+       bracket — so every tree yields a *within-tree spread* as well as a between-tree
+       delta.
+   (c) **The gate is two-part.** The delta must be **larger than the measured within-tree
+       spread** to be *believed at all*, and **≤2%** to *pass*. These are different
+       questions and a single number cannot answer both.
+   (d) **If a shot's within-tree spread exceeds 2%, that shot cannot gate at 2%.** Either
+       quiet the host until it can, or state that shot's gate in terms of its measured
+       floor and say so in the landing note. Do not pass a shot by out-waiting its noise.
+   (e) **Every A/B landing note reports the within-tree spread beside the delta.** A pin
+       without a spread is not a pin.
+   (f) **The two-part gate extends to the memory row, whose noise floor has never been
+       characterised either.** `inventoryGpuMemoryMiB` never queries the driver — it is
+       `width × height × depth × bytesPerTexel × mipFactor` over `scene.textures`, plus
+       geometry, plus `inventoriedGpuBufferBytes()` — so it is arithmetically exact but it
+       **enumerates whatever terrain pages and detail chunks are resident at the instant of
+       measurement**. The total is therefore *not a pure function of the tree*: it has a
+       within-tree spread exactly as wall fps does. That matters at this headroom —
+       **2.7 MiB is plausibly one terrain page's geometry** — so a small measured memory
+       delta is indistinguishable from streaming state until the spread is known.
+       `SWE III` is measuring it on the next cold block; until then, treat any memory
+       delta under the unmeasured floor as unproven rather than zero. Clustered lighting is *not* cost-dark: the container adds a
+   `vViewDepth` inter-stage varying on **every** PBR material, a `textureLoad`-read
+   `lightDataTexture` (a sampled-texture slot, **not** a sampler) and a fragment-stage
    `tileMaskBuffer` to every PBR material whether or not a light is on.
 4. **Memory is measured against the enforced inventoried assert.** `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495`
    is asserted hard on **every host including CI**, outside the delivery row. Every
    `new StorageBuffer(` site must also call `registerGpuBufferBytes` — a source scan whose
    allowlist is `[]` and is asserted `toHaveLength(0)`
    ([tests/render.gpu-buffer-inventory-policy.test.ts:28-79](tests/render.gpu-buffer-inventory-policy.test.ts)).
-   **Per Q2, Phase 7's allocations are funded by cutting `impostorAtlasMiB` and
-   `foliageAtlasMiB` in the same commit that raises them.** No 7B/7C/7D item lands before
-   its row is funded. Both are real textures walked by the inventory, so cutting them frees
-   **real inventoried bytes**, not merely estimate-model bytes.
+   **Per Q2, Phase 7's allocations are funded from the vegetation atlases — but see D-10:
+   the funding mechanism stated at planning was a category error and is corrected here.**
+   `foliageAtlasMiB: 6` and `impostorAtlasMiB: 9.33` are **inputs to the estimate model
+   only** ([PerformanceBudget.ts:334,339](src/render/webgpu/core/PerformanceBudget.ts));
+   `grep -rn foliageAtlasMiB src --include="*.ts"` outside that file returns **nothing**, so
+   no allocator reads them. Editing those numbers moves the estimate and frees **zero real
+   bytes**. The real levers are the allocations themselves — `FOLIAGE_ATLAS_EDGE = 256`
+   ([FoliageAtlas.ts:33](src/render/webgpu/detail/FoliageAtlas.ts)) and its 18 layers, and
+   the impostor set's 7 species × 2 season buckets × 2 arrays × 64² tiles — and the row is
+   then updated **to match the measurement**, which is what a row is for. **A fidelity trade
+   is a visible loss of fidelity; if nothing looks worse, nothing was freed.**
+   No 7B/7C/7D item lands before its real allocation is funded and measured against the
+   inventoried delta at item close.
    **And the pin ratchets down.** `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` exists to
    catch growth: if Phase 7 frees 15 MiB and the pin stays at 495, it stops catching
    anything for the rest of the project. **Re-pin it from each promoting capture; never
@@ -161,7 +204,21 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    uses `createGuardedShadowDepthWrapper` (assertion 117); no raw `new ShadowDepthWrapper`;
    any new `ComputeShader` is `withoutDispatchTiming(`-wrapped or listed in
    `TIMED_ON_PURPOSE` with a named consumer; assertion 51b's swizzle-compound-assignment
-   scan applies to every new WGSL string. **Note the terrain→detail import rule**: a
+   scan applies to every new WGSL string.
+   **Write the owner-row notes AROUND the banned tokens — these guards match text, not
+   code.** Verified: `collectSourceFiles` stores `withoutImportClauses(...)`
+   ([architecture.boundaries.test.ts:31-47](tests/architecture.boundaries.test.ts)), which
+   strips comments and imports but **not string literals**, and both guards then test that
+   string — assertion 117 against `/\bnew\s+ShadowDepthWrapper\b/u` (`:131`) and the tier
+   rule against a bare `/\.tier\b/u` (`:155`). `owners.ts` is almost entirely string data,
+   so **a manifest note that explains a prohibition trips the prohibition**: a row saying
+   *"never construct a raw `new ShadowDepthWrapper`"* fails the build, and so does one
+   containing the literal token `.tier`. This is not hypothetical — it cost the Phase 7
+   lead two build failures, both in documentation rather than code.
+   So: say **"the guarded factory"**, not the raw class name; say **"a profile data field,
+   not a per-tier read"**, never the dotted token. As stated, §2.8's instruction to add an
+   owner row and its instruction to avoid those constructs **collide inside the same file**
+   if followed literally, and this paragraph is the resolution. **Note the terrain→detail import rule**: a
    Phase 7 file under `terrain/` cannot import `mainRenderPassId` from
    [indirectDrawCapability.ts:102-110](src/render/webgpu/detail/indirectDrawCapability.ts)
    — only `densityField`/`densityFieldWgsl` are permitted. If a lighting path needs it, the
@@ -275,9 +332,46 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
 - **7-0-d The adapter spike — FIRST ACTION OF THE PHASE (0.75 d).** Before anything is
   built: on the reference adapter, attach a `ClusteredLightContainer` to
   production-parity terrain, foliage, water and aircraft materials with the 4-cascade CSM
-  and `scene.environmentTexture`, and **measure** (a) inter-stage variable count, (b)
-  fragment-stage storage buffers, (c) sampler count, (d) whether the pipeline compiles at
-  all. This mirrors `1A-7`/`R-20`'s precedent. **If the container does not fit, 7-4 changes
+  and `scene.environmentTexture`, **with the 4-cascade CSM attached** — CSM spends
+  inter-stage slots itself (`vPositionFromLight{X}_0..3`, `vDepthMetric{X}_0..3`), so a
+  spike without it measures a configuration that does not ship. Measure (a) inter-stage
+  variable count, (b) fragment-stage storage buffers, (c) **sampled-texture count —
+  NOT sampler count** (see below), (d) whether the pipeline compiles at all.
+  **(c) was specified wrongly in the first draft and would have produced a false pass.**
+  `getClusteredLight` reads `lightDataTexture{X}` through **`textureLoad`**
+  ([clusteredLightingFunctions.js](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/clusteredLightingFunctions.js)
+  — verified: zero occurrences of `Sampler` in that include), and a `texture_2d<f32>` read
+  that way declares **no sampler at all**. So measuring samplers returns "no change", which
+  reads as "it fits". The load is on **`maxSampledTexturesPerShaderStage`**. The project
+  already draws exactly this distinction at
+  [TerrainSpineContract.ts:545-549](src/render/webgpu/terrain/TerrainSpineContract.ts), which
+  is why that list records an empty vertex sampler set.
+  **Prediction P1 — PREDICTED 14, DERIVED 10. Falsified, and the falsification is the
+  point.** 6-11 item 4 landed: `TERRAIN_SAMPLED_BINDINGS.fragment` is now derived from
+  `effect.fragmentSourceCode` and asserted `toEqual` across two shipping permutations by
+  `tests/gpu/terrain-sampler-budget.test.ts`. Verified in tree — it holds **ten** entries
+  (`environmentBrdfSampler`, `shadowTexture`, `terrainSurfaceAlbedo`,
+  `terrainSurfaceNormal`, `terrainOcclusionAtlas`, `terrainHorizonAtlasA`,
+  `terrainHorizonAtlasB`, `terrainSplatId`, `terrainSplatWeightLo`,
+  `terrainSplatWeightHi`), and `TERRAIN_HYDROLOGY_ADDS_SAMPLED_BINDINGS = 0`, so the widest
+  shipping permutation is the same set. **Terrain is 10/16, going to 11/16 with the
+  container: five slots free, not one.**
+  **The scoping implication that briefly stood here is withdrawn.** It said the crunch might
+  decide whether IES rides a texture or is authored analytically for every fixture. There is
+  no crunch. **7-5's IES is not texture-budget-constrained**, and if every fixture is ever
+  authored analytically it must be for a fidelity or authoring reason — deciding it on a
+  phantom budget would have bought real work for nothing.
+  **P1 is retained, re-pointed at 10, and the derivation requirement is retained with it:**
+  the prediction guards the *mechanism*, not the value. The old count was wrong **in both
+  directions** — it listed six PBR samplers the material never declares and omitted
+  `environmentBrdfSampler` and the CSM `shadowTexture`, so the *set* was wrong, not merely
+  the total, and "stale by four" understates it. Note also that
+  [Capabilities.ts:24](src/render/webgpu/core/Capabilities.ts)'s comment **still says 14**
+  and is now itself the stale artifact (routed to 6-12).
+  *Recorded for whoever writes the next prediction:* **a falsified prediction did its job.**
+  P1 was wrong and cost nothing, because what made it safe was refusing to trust a comment
+  and requiring derivation. A prediction earns its keep by being **checkable**, not by being
+  right — and P1 caught a wrong scoping decision inside an hour of it being written. This mirrors `1A-7`/`R-20`'s precedent. **If the container does not fit, 7-4 changes
   shape and Gate 7B re-prices** — that is a recorded outcome, not a failure. Re-run after
   E-5's horizon-shadow work merges.
   **Consume the derived sampler count; do not build a second list.** Three numbers were in
@@ -311,12 +405,12 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   and none is lighting; `COMPUTE_BUDGET_CLIENTS` has five and none is lighting.
   **Tier 2 has 0.05 ms of slack** (13.65 against a 13.7 ms target) and assertion 20 is a
   hard `toBeLessThanOrEqual` — so the row must be funded by cutting an existing row in the
-  same commit. Book Q2's memory trade at the same time: `impostorAtlasMiB` and
-  `foliageAtlasMiB` reduced, with the fidelity consequence stated and framed **before and
-  after**. Sequencing note: the trade is sized against 6-11.4's landed numbers, which d7
-  will message when measured — until then 7-0-b holds a costed *menu*, not a committed cut
-  (Risk 7). All 24 + 4 shots run `worldEvolution: "analytic"` per Q5; no eroded night shot
-  is appended in this phase.
+  same commit. **The memory trade is NOT booked here — per D-10 it moved off Gate 7B's
+  critical path entirely**, because 7B's own allocations total under 0.1 MiB. 7-0-b
+  therefore books only the frame-budget row, and carries the trade forward as a costed
+  *menu* for **7-11 to execute at 7D**, sized against 6-11.4's landed numbers when
+  `SWE III` measures them (Risk 7). All 24 + 4 shots run `worldEvolution: "analytic"` per
+  Q5; no eroded night shot is appended in this phase.
 - **7-0-c A night entry point (0.5 d).** A `night` `TimeOfDayPreset` and a night runway
   start, so §8's flights are flyable without slider-dragging. Pin that the shipped default
   preset is unchanged.
@@ -333,11 +427,53 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
 adapted luminance ([ScotopicVision.ts:158-166](src/render/webgpu/atmosphere/ScotopicVision.ts);
 σ passed from [FlightRenderer.ts:1850-1853](src/render/FlightRenderer.ts)). At the `night`
 shot σ ≈ 4.21 cd/m² while physical adapted luminance is 8.0e-5, so `rodFraction = 1` and
-the rod image fully replaces the scene. With `displayGain = 0.16 / 4.698 = 0.03406`,
-scene-linear values of **0.01, 1 and 1000 all land at 0.1449 / 0.1598 / 0.1600** — a
-10⁵:1 range compressed to **1.10:1**. Every light point would render at the same
-brightness. The pass also takes four extra taps on a rotated cross at up to 3 texels and
-evaluates the response on the **blurred** value.
+the rod image fully replaces the scene. With `displayGain = 0.16 / 4.698026 = 0.0340569`,
+scene-linear **0.01 / 1 / 1000** land at **0.032211 / 0.034037 / 0.034057** — five decades
+of input producing a **5.7% output spread, a ratio of 1.0573 : 1**. Every light point would
+render at the same brightness. The pass also takes four extra taps on a rotated cross at up
+to 3 texels and evaluates the response on the **blurred** value.
+*(These figures are derived from the shipping constants, not transcribed. An earlier draft
+printed 0.1449 / 0.1598 / 0.1600 — a ratio of 1.1042, which implies σ ≈ 7.65 and is
+inconsistent with the shipping formula. It **understated** the defect. Corrected here, and
+see the pins below: **7-4a's tests derive their expectations from the shipping constants,
+never from figures printed in this plan.** An illustrative number in prose becoming an
+asserted number in a test is the `Capabilities.ts` sampler comment one layer up.)*
+
+> **DO NOT "FIX" THIS BY PASSING ADAPTED LUMINANCE INTO σ.** The sentence above names the
+> scene key in contrast to the physical adapted luminance, and the obvious reading — *swap
+> the uniform* — makes the defect **strictly worse**. Swept against the shipping formula:
+> σ = 4.21 (shipped) → 1.0573 : 1; σ = 1.0 → 1.0136 : 1; σ = 0.05 → 1.0007 : 1;
+> **σ = 8.0e-5 (physically correct) → 1.0000 : 1, a perfectly flat uniform grey field.**
+> Compression *worsens* as σ falls, because the Naka–Rushton response saturates toward 1 for
+> any `nits ≫ σ`. **The shipped scene-key choice is not the bug — it is the only reason any
+> range survives at all**, and the code says so deliberately at
+> [FlightRenderer.ts:1884](src/render/FlightRenderer.ts) ("σ is the SCENE's key, not the
+> physical adapted luminance"). The fix is the pre-exposure **and** the highlight-preserving
+> term, per Q4. This warning is written negatively on purpose: a plan that only describes a
+> defect leaves its most obvious remedy available and wrong — and this particular wrong fix
+> produces a result that *looks like it did something* while passing all 24 gates.
+
+**The mechanism, stated so Q4's two deliverables have target numbers rather than a
+direction.** The rod response is **not rangeless** — it has about **three usable decades**,
+and they sit entirely *below* where any light source lives. Verified against the shipping
+constants (`response = nits / (nits + σ)`, σ = 4.21, `SCENE_UNIT_TO_NITS = 7345.61`):
+
+| scene-linear | nits | response |
+|---|---|---|
+| 1e-5 | 0.07 | 1.71% |
+| 1e-4 | 0.73 | 14.86% |
+| **5.731e-4** | **4.21** | **50.00% — half-saturation** |
+| 1e-2 | 73.46 | 94.58% |
+| **5.7e-2** | 418.70 | **99.00% — the curve has spent its output** |
+| 1 | 7,345.61 | 99.94% |
+
+So the usable band is roughly **1e-5 … 1e-2 scene units**, half-saturating at **5.731e-4**,
+and **above ~5.7e-2 the curve has spent 99% of its range**. A runway edge light, a landing
+light and the moon all sit above that, which is why they render as the same pixel — not
+because the curve has no range, but because **its range is in the wrong part of the
+domain**. That is the target: **7-4a's pre-exposure must place artificial sources inside the
+usable band, or the highlight-preserving term must extend the curve above it — and either
+way the number to hit is the half-saturation point, not a feel.**
 What lands: a scene pre-exposure so the fp16 beauty target carries the range; a
 highlight-preserving term so sources above σ survive the rod response; and an emissive-aware
 path so the rod blur does not smear point sources. **This reopens pinned constants** —
@@ -346,8 +482,15 @@ path so the rod blur does not smear point sources. **This reopens pinned constan
 `MOON_PEAK_LIGHT_INTENSITY = 0.055` and `STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5`. Fix the
 source docstring while there: it claims ~4.66 against a pinned 4.698.
 *Pins:* the exposure ladder re-derived, not re-chosen, with its new derivation in the
-docblock; a monotonicity test that N scene-linear decades map to N distinguishable output
-decades at the night clock; the rod blur proved not to smear a one-pixel source.
+docblock; **an output-ratio pin, not a "monotonicity" pin** — the earlier wording ("N
+scene-linear decades map to N distinguishable output decades") is unmeasurable as written,
+since *distinguishable* is undefined and today's code would pass it at N = 1. Pin **the
+ratio itself**: the output ratio across a 10⁵ : 1 scene-linear sweep at the night clock must
+exceed a stated floor, with today's measured **1.0573 : 1 recorded as the pre-fix
+baseline** — which gives R7-1 a number that must have moved rather than a property to argue
+about. Expectations derive from the shipping constants at test time. Also: the rod blur
+proved not to smear a one-pixel source, and a guard that σ is **not** wired to the physical
+adapted luminance, so the wrong fix fails loudly rather than silently greying the frame.
 **Lands alone at R7-1.**
 
 **7-4b The clustered container (4.0 d).** Integrate `ClusteredLightContainer` as the
@@ -361,13 +504,45 @@ which is a sub-item:
 - **`GetSupportedSimultaneousLights` clamps to `maxUniformBuffersPerShaderStage - 4`**, and
   `REQUIRED_WEBGPU_LIMITS` declares no such limit
   ([Capabilities.ts:21-37](src/render/webgpu/core/Capabilities.ts)). Declare and probe it.
-- **The container adds a `vViewDepth` inter-stage varying unconditionally** whenever
-  `CLUSTLIGHT_BATCH > 0`. This project has already measured 17 inter-stage inputs on a
-  material and disabled impostor shadow receiving to get under the limit. 7-0-d measures
-  this before anything is built.
-- **It adds the project's first fragment-stage storage buffer** (`tileMaskBuffer{X}`), and
-  the clustering pass itself needs a read_write atomic storage buffer in the fragment
-  stage. `maxStorageBuffersInFragmentStage` is neither declared nor probed.
+- **`vViewDepth` is gated on `CLUSTLIGHT_BATCH > 0`, NOT on whether a material has a
+  clustered light** ([pbrFragmentExtraDeclaration.js:19-21](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/pbrFragmentExtraDeclaration.js)),
+  so it lands on **every PBR material in the scene** — including the detail material, which
+  E-5 leaves at 12 varyings in a project that has already hit 17 and had to disable impostor
+  shadow receiving to get under the limit. 7-0-d measures this before anything is built.
+- **Receiver-side cost, stated exactly.** Per container in light slot `{X}` a receiving
+  material gets `var lightDataTexture{X}: texture_2d<f32>` and
+  `var<storage,read> tileMaskBuffer{X}: array<u32>`
+  ([lightUboDeclaration.js:36](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js))
+  plus `vViewDepth`. That is the whole of it — **one sampled texture, one storage buffer,
+  one varying, zero samplers.**
+- **The storage-buffer question splits in two, and only half of it is open.**
+  `maxStorageBuffersPerShaderStage: 8` **is** declared
+  ([Capabilities.ts:29](src/render/webgpu/core/Capabilities.ts)); the newer
+  *per-stage-split* limit is not. Separately `maxUniformBuffersPerShaderStage` is genuinely
+  absent, and that one bites: `GetSupportedSimultaneousLights` returns the requested count
+  **untouched** when the cap reads null (`materialHelper.functions.js:447-456`), so on an
+  engine that does not report it **the clamp silently does not happen**.
+- **The surviving risk is inter-stage, and the limit guarding it is undeclared.**
+  With the sampled-texture crunch dissolved (P1: 10/16 → 11/16, five free), the pressure
+  relocates entirely to varyings — and **`maxInterStageShaderVariables` appears nowhere**:
+  verified, zero hits across `src/` and `tests/`, so it is absent from
+  `REQUIRED_WEBGPU_LIMITS` and from the spine contract alike. The one limit that guards the
+  one risk that survived is the one limit nobody probes. It joins
+  `maxUniformBuffersPerShaderStage` and the per-stage-split storage limit on 7-0-d's
+  declare-and-probe list.
+- **And there is a cliff behind it: CSM costs NINE inter-stage variables per shadow light**,
+  not one — `vPositionFromLight{X}_0..3` (4) + `vDepthMetric{X}_0..3` (4) +
+  `vPositionFromCamera{X}` (1)
+  ([lightUboDeclaration.js:40](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js)).
+  That is almost certainly why impostor shadow receiving was disabled to get under the
+  limit. **Consequence for 7-4b and for 7-9's night shadow policy: `vViewDepth`'s +1 is the
+  cheap part.** The expensive interaction is clustered lighting *against* CSM on a material
+  already at 12, and anything that re-enables shadow receiving on a material spends **9**.
+- **The per-slot UBO is 264 B and wants checking against the size cap, not the count.**
+  Slices default to `DefaultDepthSlices = 16` alongside the 64×64 tiles
+  ([clusteredLightContainer.pure.js:184-185](node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)),
+  and `vSliceData: vec2f` + `vSliceRanges: array<vec4f, CLUSTLIGHT_SLICES>` is **66 floats /
+  264 B per light slot**.
 - **The terrain plugin attenuates the light *sum*.** `TerrainSurfacePlugin`'s
   BEFORE_FINALCOLORCOMPOSITION hook does `finalDiffuse *= terrainHorizonShadow *
   terrainCanopyDirect` where `finalDiffuse = diffuseBase` — the accumulator every light
@@ -817,6 +992,111 @@ still belong to their original items.
   flying it found that out. Phase 7 is a *night lighting* phase, which is the most exposed
   possible case of the same failure: its entire subject matter is invisible to every
   non-visual metric, and the pass that would hide a black frame is already in the tree.
+
+- **D-9 (2026-08-31, the same-host A/B protocol is amended before any Phase 7 item uses
+  it — §2.3):** the plan inherited "same-host A/Bs run **B→A→B**" as a standing house rule
+  and restated it without checking it against a measurement. It does not do what a ≤2% gate
+  needs. **Measured:** d7's horizon-shadow pin ran four captures — AFTER₁ → BEFORE →
+  AFTER₂ → AFTER₃ — and on `reference-viewport` the *same tree* read **74.0 → 115.1 →
+  120.1 wall fps**. AFTER₂ scored **−4.27%** against BEFORE (a fail against the 2% gate)
+  while AFTER₃, on the identical tree, scored **−0.08%** (a pass). A within-tree spread of
+  ~62% cannot gate a 2% delta.
+  *The diagnosis:* a three-arm bracket — `B→A→B` or the `A→B→A` amendment being discussed —
+  defends against **monotonic drift** by straddling the experiment with the control. But the
+  rising-asymptote shape (74 → 115 → 120) is **warm-up, not drift**, and neither ordering
+  measures the noise floor *of the arm the delta is claimed on*. Both answer "did the host
+  move between trees?" and neither answers "how much does this tree vary against itself?"
+  Those are different questions and one number cannot answer both.
+  *The fix, in §2.3:* discard the first capture of a session; at least two captures per arm,
+  interleaved `A B A B`; a two-part gate where the delta must exceed the measured
+  within-tree spread to be *believed* and be ≤2% to *pass*; a shot whose spread exceeds 2%
+  may not gate at 2%; and every landing note reports the spread beside the delta.
+  *Why this belongs in a deviation log rather than a quiet edit:* the ordering rule was
+  itself a hand-specified instrument that had never been checked against the thing it
+  models — the identical shape as the sampler list, Gate W's blind suite, and the
+  unwired cold-start test. It was caught only because d7 happened to take a **third**
+  capture nobody's protocol asked for. Six Phase 7 items were about to be pinned to it.
+
+- **D-10 (2026-08-31, Q2's funding mechanism was a category error; the trade is re-aimed):**
+  raised by the `Principle Engineer` session via the PM, verified independently here before
+  amending.
+  *The error:* Q2 said Phase 7's allocations are funded "by cutting `impostorAtlasMiB` 9.33
+  and `foliageAtlasMiB` 6.0". **Those are inputs to the estimate model, not allocations.**
+  `grep -rn "foliageAtlasMiB\|impostorAtlasMiB" src --include="*.ts"` returns hits **only**
+  in `core/PerformanceBudget.ts` — no allocator reads either. Editing them moves the
+  estimate and frees zero real bytes; the real levers are `FOLIAGE_ATLAS_EDGE = 256` with
+  its 18 layers, and the impostor set's 7 species × 2 season buckets × 2 arrays. I had
+  been assured these rows were "real textures walked by the inventory, so cutting them
+  frees real inventoried bytes" — the *textures* are indeed walked, but the *rows* are
+  reporting, and I did not separate the two before writing the trade.
+  *The larger correction, which improves the plan:* the lighting engine is **not** a memory
+  consumer. Tile mask ~16 KB at the shipped 64×64 tiles, ~200 light points at 32 B ≈ 6.4 KB,
+  an IES profile 180 floats — **< 0.1 MiB for all of Gate 7B**. The consumer is **7D**: at
+  tier 1's `materialArrayEdge: 512` the existing 2 × 10 layers cost **26.67 MiB** and each
+  layer 7-11 adds costs **~2.67 MiB**. So the trade was aimed at the wrong gate. It now
+  funds 7-11 and 7D's geometry, and **7B proceeds with no memory trade at all** — which also
+  removes 7-0-b's funding step from Gate 7B's critical path.
+  *The rule this yields, stated so it is checkable — and note it is NOT "the constants were
+  wrong":* both were **exact**. Traced to their allocators and evaluated against
+  `inventoryGpuMemoryMiB`'s own formula: impostor = 2 arrays × 256² × (7 species × 2 season
+  buckets) × 4 B × 4/3 = **9.333 MiB** against `impostorAtlasMiB: 9.33`; foliage = 256² × 18
+  layers × 4 B × 4/3 = **6.000 MiB** against `foliageAtlasMiB: 6`. Both arrays are scene
+  textures, so had anyone actually shrunk an atlas the inventory would have moved by exactly
+  the advertised amount. **That is what makes this trap dangerous rather than sloppy:** a
+  reader who checks the obvious way — *"is 9.33 right for that atlas?"* — gets **yes**, and
+  walks away more confident than we were, having verified the wrong property. The row is a
+  faithful description and an inert lever at the same time.
+  So the rule is about **readership, not accuracy**: **these rows are *reports*, not
+  *controls*.** `FOLIAGE_ATLAS_EDGE` is a control — an allocator reads it.
+  `foliageAtlasMiB` is a report — only a sum reads it. Q2 instructed us to change a report
+  and expect a control's effect. **The check is one grep for who *reads* the constant, never
+  whether it is correct.** And downstream of it: **a fidelity trade is a visible loss of
+  fidelity — if nothing looks worse, nothing was freed.** Note the shape: this is the fourth instrument
+  in this phase that models something and was trusted instead of the thing it models
+  (the sampler list, Gate W's suite, the A/B ordering rule, now the allocation rows), and
+  the third that I restated into this plan without checking. The check is cheap — one grep
+  for who reads the constant — and it is now the standing habit for any number this plan
+  quotes from a budget table.
+
+- **D-11 (2026-08-31, ruling on where Phase 7's artifacts live — asked by the
+  `Principle Engineer` session before entrenching it, which was the right call because
+  `owners.ts` paths are normative):**
+  **Ruling: yes to a new `src/render/webgpu/lighting/`, with a stated split, plus a second
+  new directory the question did not ask about.**
+  - **`lighting/` holds discrete emitters and their delivery** — the clustered container,
+    light points, light volumetrics, airfield lighting, aircraft lighting.
+  - **`atmosphere/` keeps the sky and what it does to light in transit** — the aerial
+    include, ephemeris, star catalogue and field, scotopic vision, sky probe. These stay
+    where they are; **do not move them**, since moving files to match a name is churn
+    against a capture-gated tree for no measured gain.
+  - **`airfield/` (also new) holds 7D's structures** — the parametric hangar, tower,
+    materials, interior and furniture, and `AirportSystem.ts` moves there from `detail/`,
+    where it has no owner row today at all. Structures are not lighting and should not be
+    filed as such.
+  *Why the owner/directory mismatch is fine:* `owner: "lighting"` **already** spans
+  directories — `shared-receiver-registry` and `guarded-shadow-depth-wrapper` are
+  lighting-owned and live in `core/`. Owner is a responsibility, path is a location, and
+  this codebase has never conflated them. A `lighting/` directory that fails to contain
+  every lighting-owned artifact is therefore normal, not a defect.
+  *The hazard that makes this worth a ruling rather than a guess, verified:*
+  [tests/architecture.boundaries.test.ts:67,81](tests/architecture.boundaries.test.ts)
+  filters `definitionSites` to those that exist and only fails when *none* exist **and the
+  row is not marked planned** — so **a `planned` row whose path never materialises is
+  exempt forever, silently.** Accordingly: **every Phase 7 owner row's path must
+  materialise in the same commit as its item.** A row may be `planned` only between its
+  gate opening and that item landing, never across a gate boundary. If Phase 7 ends with a
+  `planned` row still pointing at a non-existent path, that is a defect to be closed, not a
+  placeholder to be inherited — and 6-12's doc-truth pass is the natural place to assert it.
+  *Complied with the same day:* the six 7B/7C/7D rows were already written when this ruling
+  landed and were **held rather than entrenched** (their gates are not open), with only
+  `airport-system` landed — an artifact that exists today, was genuinely unowned, and is the
+  one row §2.8 names that is not a forward declaration. `owner: "world"`, 8/8 boundary tests
+  green. Recorded because holding a written row against one's own item is the behaviour this
+  rule needs and cannot itself enforce.
+  *Also verified while there:* `ARCHITECTURAL_OWNERS` is consumed by
+  `tests/architecture.boundaries.test.ts` **and nothing else** in `src/` or `tests/` — so a
+  manifest change is a one-file change and does not stray into 6-12's `ARCHITECTURE.md`
+  territory. Worth knowing before anyone plans a two-file edit that isn't one.
 
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*

@@ -1188,6 +1188,18 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         DETAIL_IMPOSTOR: false,
         DETAIL_BAND_FADES: false,
         DETAIL_OPAQUE_CROWN: false,
+        // The impostor band's CASCADE-shadow receiver. Declared for exactly the
+        // reason the next comment gives, and it was NOT — so `#ifdef
+        // DETAIL_SUN_SHADOW` never compiled and the far vegetation band shipped
+        // with `impostorCascadeShadow = 1.0`, unshadowed, while every mesh band
+        // received CSM. That is a visible tone step at the band handoff, and it
+        // was invisible to every runtime check because the uniforms, the
+        // sampler and the shadow map were all correctly bound and updated —
+        // only the shader source differed. Proven on the adapter by
+        // `tests/gpu/detail-sun-shadow-compiles.test.ts`, and prevented in
+        // general by `tests/render.webgpu-plugin-define-declaration.test.ts`,
+        // which asserts every define a plugin WRITES is declared here.
+        DETAIL_SUN_SHADOW: false,
         // `6-11`: the far-field horizon receiver. Declared here for the
         // recorded reason above — an undeclared plugin define survives only
         // because `MaterialDefines.rebuild()` re-derives its key list from

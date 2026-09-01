@@ -107,6 +107,38 @@ const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
  * `npm run perf:capture` is bit-for-bit the run it has always been — the sweep
  * adds a mode, it does not change the standing gate.
  */
+/**
+ * `VITE_PERF_HIDE_VEGETATION=1` — render the shot with every `detail-` mesh
+ * hidden, so the frame can be differenced against a normal capture to yield a
+ * vegetation mask. Diagnostic only: it is mutually exclusive with rebaseline
+ * for the obvious reason, and it never compares against a baseline.
+ */
+const HIDE_VEGETATION = import.meta.env.VITE_PERF_HIDE_VEGETATION === "1";
+
+/**
+ * `VITE_PERF_SUN_HOUR` / `VITE_PERF_SUN_BEARING` — override a shot's solar time
+ * and its sun bearing relative to the view, for the measured
+ * elevation x azimuth acceptance grid. Diagnostic only: any override forces the
+ * run off baseline comparison, because a different sun is a different picture.
+ */
+const SUN_HOUR_OVERRIDE = Number.parseFloat(String(import.meta.env.VITE_PERF_SUN_HOUR ?? ""));
+const SUN_BEARING_OVERRIDE = Number.parseFloat(
+  String(import.meta.env.VITE_PERF_SUN_BEARING ?? ""),
+);
+const SUN_OVERRIDDEN = Number.isFinite(SUN_HOUR_OVERRIDE) || Number.isFinite(SUN_BEARING_OVERRIDE);
+if (SUN_OVERRIDDEN && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_SUN_HOUR / VITE_PERF_SUN_BEARING cannot be combined with "
+    + "VITE_PERF_REBASELINE: an overridden sun is a diagnostic frame, not a baseline.",
+  );
+}
+if (HIDE_VEGETATION && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_HIDE_VEGETATION and VITE_PERF_REBASELINE are mutually exclusive: "
+    + "a vegetation-free frame is a diagnostic mask, never a baseline.",
+  );
+}
+
 const SWEEP_QUALITY = String(import.meta.env.VITE_PERF_QUALITY ?? "").trim();
 const SWEEP_MODE = String(import.meta.env.VITE_PERF_MODE ?? "").trim();
 const SWEEP_VIEWPORT = String(import.meta.env.VITE_PERF_VIEWPORT ?? "").trim();
@@ -475,11 +507,19 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // scale, and pinning tier 1's across the sweep would measure tier 1's
       // pixel count with another tier's settings — the one thing a tier row
       // must not do.
+      if (HIDE_VEGETATION) {
+        // After streaming, so the meshes exist to hide; before the settle and
+        // readback, so the captured frame is the vegetation-free one.
+        renderer.setVegetationVisibleForCapture(false);
+      }
       const captureRenderScale = shot.captureRenderScale ?? CAPTURE_PROFILE.renderScale;
       renderer.setPinnedRenderScaleForCapture(captureRenderScale);
 
       // R-15: the clock is per shot and applied inside the loop.
-      const clock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
+      const baseClock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
+      const clock = Number.isFinite(SUN_HOUR_OVERRIDE)
+        ? { ...baseClock, solarTimeHours: SUN_HOUR_OVERRIDE }
+        : baseClock;
       renderer.setAtmosphere(clock, "clear");
 
       const placement = resolvePlacement(shot);
@@ -489,10 +529,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const altitude = shot.altitudeAglMeters !== null
         ? groundHeight + shot.altitudeAglMeters
         : shot.altitudeMslMeters!;
-      const yawDegrees = shot.relativeSunBearingDegrees !== undefined
+      const relativeSunBearing = Number.isFinite(SUN_BEARING_OVERRIDE)
+        ? SUN_BEARING_OVERRIDE
+        : shot.relativeSunBearingDegrees;
+      const yawDegrees = relativeSunBearing !== undefined
         ? yawForSunBearing(
             sunDirectionForClock(clock, world.latitudeDegrees),
-            shot.relativeSunBearingDegrees,
+            relativeSunBearing,
           )
         : 0;
       const heading = headingVectorFromYaw(yawDegrees);
@@ -915,7 +958,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // 6-11.1: a sweep run never compares to a baseline. A different tier or
       // viewport draws a different world ON PURPOSE, so every SSIM would be a
       // false failure and a passing one would be the real surprise.
-      const comparesToBaseline = !IS_SWEEP && (shot.comparesToBaseline ?? true);
+      const comparesToBaseline = !IS_SWEEP && !HIDE_VEGETATION && !SUN_OVERRIDDEN
+        && (shot.comparesToBaseline ?? true);
       const baseline = !comparesToBaseline
         ? null
         : await readBaselinePixels(

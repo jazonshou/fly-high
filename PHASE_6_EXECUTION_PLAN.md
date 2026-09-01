@@ -593,6 +593,215 @@ was caught by *looking at the frame*; D-20's readback by *a guard on an
 impossible value*; the sampler list by *an agent asked to verify one claim
 against the tree*. Reasoning found none of them, because each was a case where
 the model and the artifact had quietly diverged and only the artifact could say so.
+
+**A second general form this phase earned, from two independent instances in one
+day:** *admission-gated compute can be entirely correct and never run, and
+nothing that drives the producer directly can see it.*
+
+A GPU producer that admits through `ComputeBudget` only executes when the meter
+admits it. That makes "is it correct?" and "does it ever run?" **separate
+questions with separate evidence**, and every natural test answers only the
+first — a harness calls the producer, so the producer runs, so the harness can
+never observe the case where nothing calls it.
+
+Both instances landed on 2026-08-31, in unrelated subsystems, and neither was
+found by the tests that covered the code:
+- **D-23 (`fine-band`).** `demand()` returned zero for a stage its own `advance()`
+  could reach, so the clipmap submitted nothing, the meter admitted nothing, and
+  the page was never pumped again. **No eroded page ever became resident and the
+  whole world rendered flat, silently.** Every erosion test pumped the DAG
+  unconditionally, so `demand()` — the function that failed — was called by no
+  test in the project.
+- **D-25 (horizon bake).** The bake competes for the `occlusionCompute` row
+  against page streaming, which saturates that row during a cold spawn. A
+  correct, compiled, correctly-bound term could therefore **win no admission and
+  do nothing forever**, shipping as a dead feature behind a green capture pin.
+  Every test drove `bakeHorizon()` directly; none proved the renderer calls it.
+
+One froze a world and one would have shipped a no-op. The difference in symptom
+is luck; the mechanism is identical.
+
+**The rule, and it generalises to the next admission-gated feature:** for any
+producer behind an admission meter, add one test that **drives the real pump
+under realistic competition and asserts the output becomes resident within a
+FRAME BOUND** — not "eventually". The bound is not fussiness: a feature that
+arrives after the first two hundred frames is absent for the part of the session
+a player actually meets, which is the same defect wearing a slower disguise.
+Testing the operator proves the maths; only this proves the maths ever executes.
+Related and not the same: [[harness-must-drive-like-production]] is about a
+harness driving a subsystem *differently* from production; this is about
+production *not driving it at all*.
+
+**A third form, and the corrected memory rule (2026-08-31).** *Know an
+instrument's variance before you gate on it — and do not assume the variance
+exists either.*
+
+`inventoryGpuMemoryMiB` (`FlightRenderer.ts:1522+`) walks `scene.textures` and
+`scene.meshes` and computes bytes **arithmetically from dimensions — it never
+queries the driver.** Two things follow, and the second is the one that was
+wrong.
+1. There is no surface for "unexplained driver overhead", so any theory
+   invoking it is unfounded. A previously circulating ~60% overhead figure is
+   retracted.
+2. It was then inferred that because the walk enumerates what is RESIDENT at the
+   instant of measurement, `inventoriedGpuMemoryMiB` must carry residency
+   jitter the way wall fps carries thermal jitter — and that the enforced
+   **2.7 MiB headroom** might therefore be gating on its own noise.
+   **Measured, and that inference is FALSE.** Across three runs of an identical
+   tree (the horizon A/B's three AFTER arms), resident page count varied on
+   **24 of 24 shots**, by as much as 9 pages (30 / 39 / 37 on
+   `approach-500ft`) — while inventoried memory moved by **less than the
+   report's 0.05 MiB resolution on every shot.**
+   The mechanism, verified rather than assumed: terrain pages occupy SLOTS in
+   an atlas allocated once at `terrainAtlasEdgeTexels(profile.heightAtlasSlots,
+   …)`. Residency changes which slots are *occupied*, never how many bytes
+   *exist*, and the walk sees the atlas texture at full size either way. Page
+   residency and page memory are decoupled by construction.
+   **So the 2.7 MiB headroom is real and the ceiling is not gating on noise.**
+   Two limits on that claim, stated because they are where it stops holding:
+   it was measured on the capture's SETTLED state (every run drained to
+   `pendingTerrainPages === 0`), so it says nothing about a live session
+   mid-stream; and a **tier** change resizes the atlases themselves, so memory
+   *will* move across the sweep — that is signal, not jitter.
+
+**The corrected rule for memory claims**, replacing "measure deltas, never
+arithmetic", which was too strong:
+- **Known, static construction parameters → ARITHMETIC against the inventory's
+  own formula is preferable**, because it is deterministic while a measurement
+  carries whatever spread the instrument has. The horizon work's hand-computed
+  0.125 MiB was the *more* reliable number; my +0.20 MiB measurement was the
+  less reliable one, and I should not have told it to prefer mine.
+- **Aggregate totals and headroom → measure, with a same-tree control arm**,
+  per §1.2's A→B→A amendment. This is that rule applied to memory instead of fps.
+- **Never reason arithmetically about an allocation you have not traced to an
+  allocator.** That was the original sin (D-6's storage buffers, invisible to
+  the walk and therefore absent from every total), and it is a *different*
+  failure from either of the above — an omitted category, not a mis-estimated
+  one.
+The family resemblance to the two forms above: in all three, an instrument was
+trusted past the point where anyone had characterised it. The fix is the same
+shape every time — **characterise the instrument, then gate on it.**
+
+**A fourth general form, and the only one that indicts the guards themselves:**
+*an instrument that models "code doing X" while actually matching "text
+containing X", never re-checked against the difference.*
+
+`tests/architecture.boundaries.test.ts` enforces the ownership manifest with
+bare regexes over source text — `/\bnew\s+ShadowDepthWrapper\b/u` at `:131`,
+`/\.tier\b/u` at `:155`. `withoutImportClauses` (`:31`) strips comments, imports
+and re-export clauses before they run, and its own docstring gives the purpose:
+"so that a mention inside a comment cannot satisfy a convention check".
+**It does not strip string literals.** Verified by replicating the function
+against both forms rather than by reading it: a comment containing either token
+is stripped and passes; the same text inside a string literal **fails the
+build**.
+
+**The consequence inverts the obvious guidance, which is why it went unnoticed.**
+You may comment about these constructs freely — that is what the strip is for.
+What you cannot do is put their vocabulary in a **string**: an error message, a
+thrown `Error`, a `note:` field, a test name. **So the guards are hardest on the
+single most useful error message an author can write — the one naming the
+construct it forbids.** A guard meant to enforce a convention actively degrades
+the explanation of that convention, pushing authors toward vaguer wording
+exactly where precision matters most. The guards' own failure messages are
+exempt only because that file sits outside `SOURCE_ROOT` (`src/`) — luck, not
+design.
+
+**Recorded as a trap plus an open question, not a fix.** Whether these guards
+*should* strip string literals is a real decision with a cost on both sides: a
+string containing `new ShadowDepthWrapper` can be a genuine dynamic construction
+site — a registry key, a `Function` body, a dynamic import — so stripping
+strings opens a hole in a guard whose entire job is to have none. Trading a
+false positive for a false negative in a boundary guard is an architectural
+call, not a cleanup. The full note lives on `withoutImportClauses`'s docstring,
+where an author who trips it will meet it.
+
+**`SEASONAL_FIELD_FAMILY` is the roster case — and this section WITHDRAWS its own
+proposed fix.** The gap is real: `:236` iterates the roster and checks each
+member conforms, so it verifies **conformance of members** and never
+**completeness of membership**; a seasonal field that never registers is
+invisible to it. This section previously proposed "a scan for the shape (a field
+taking `dayOfYear`/`EnvironmentClock`) rather than a walk of the roster".
+**That instruction is wrong and is struck.** Measured with the file's own shape
+regex and its own strip function over `src/`: **27 files match the shape, 5 are
+roster definition sites, 23 match and are not on the roster** — the clock's own
+definition (`world/environmentClock.ts`), `render/types.ts` which merely *passes*
+it, and the rest plumbing. **The shape cannot distinguish a field that DERIVES
+from the clock from a consumer that THREADS it, and §1.6 requires everyone to
+thread it.** A guard with an ~85% false-positive rate acquires an exception list
+within a week and is decorative again, in the more dangerous way: it *looks*
+enforced. The open question — what machine-readable property separates a
+seasonal FIELD from a seasonal-clock CONSUMER — is a design decision and is
+deliberately not answered here; note the two existing "NOT a member"
+declarations (`detail/talusField.ts:62`, `TerrainSurfacePlugin.ts:274`) are
+**comments**, so the strip removes them and they cannot serve as exclusions.
+Worth keeping: this is the first time in the phase that **a proposed fix was
+measured before being implemented and turned out to be worse than the gap it
+closed.** The measurement cost minutes; the guard would have cost a permanently
+weakened boundary test.
+
+**Four members, four distinct ways an instrument can be wrong:** a decorative
+list models an artifact and *drifts* from it; admission-gated compute is
+*correct and never runs*; a memory gate was *uncharacterised*, its variance
+assumed rather than measured in both directions; and a source guard *matches
+text while claiming to match code*. The common root is that the model and the
+artifact had quietly diverged and **only the artifact could say so** — none was
+found by reasoning, and three were found by accident.
+
+**Two corollaries from the P0 seam work, both about proxies standing in for the
+artifact — the same disease as the four forms above, one level down.**
+
+**A mesh's NAME is a convention; its DEFINES are what compiled.** A compiled-
+source assertion selected impostor effects with
+`mesh.name.startsWith("detail-impostor")` and matched only the **prototype
+template quad** — never submitted, never carrying the shadow define. It failed
+identically before and after a working fix and **would have reported that fix as
+broken.** The meshes the renderer actually draws are
+`detail-tree-impostor-chunk-*`. Select on the compiled define, which is a fact
+about the artifact, not on the name, which is a fact about whoever named it.
+
+**A guard that false-positives acquires an exception list and is decorative
+within a week — in the more dangerous way, because it then LOOKS enforced.**
+`tests/render.webgpu-plugin-define-declaration.test.ts` nearly did this on its
+first run: it reported `GroundCoverMaterialPlugin` as undeclared because that
+plugin writes its define map inline (`{ GROUND_COVER_BLADES: false },`) and the
+scan was anchored to line starts. One false positive out of two findings. Had it
+shipped, the fix would have been an allowlist entry, and the guard would have
+been decorative from its first week. **Measure a new guard's false-positive rate
+before landing it** — the `SEASONAL_FIELD_FAMILY` scan was withdrawn for exactly
+this reason at ~85%, and this one would have shipped at 50%.
+
+**A hazard specific to a harness that writes to FIXED PATHS: comparing an
+artifact against a copy of itself.** Twice in one day. `tests/perf/artifacts/`
+holds one file per shot name, so two runs of the same shot produce one filename
+— and a comparison that reads "the artifact" before and after a change may be
+reading the same bytes twice. Instance one: a rebaseline candidate was compared
+against `artifacts/report.json` in the belief it was the baseline-era record; it
+is regenerated by every capture and gitignored, so the comparison was the run
+against itself and reported no differences at all. Instance two: an altitude A/B
+on `veg-seam-1600ft-oblique` produced byte-identical luminance profiles at two
+altitudes, because the second capture had overwritten the first PNG before the
+comparison read it.
+**The failure mode is what makes this dangerous: it returns a PERFECT result,
+not an error.** No differences, identical profiles, everything agrees — which
+reads as evidence of stability rather than as a broken measurement. **The rule:
+a capture comparison must verify its two inputs are distinct files before
+comparing them.** `cmp -s a b && echo IDENTICAL` is the whole check, and copying
+each run's artifact to a distinct name at the moment it is produced is the whole
+fix.
+
+**One corollary earned the hard way, because it is how this section's own
+bookkeeping went wrong.** A draft of the wave-P decision row asserted that the
+viewer mode's synthetic-state seam "was never recorded at all". It is recorded —
+`ARCHITECTURE.md:358`, the wave-**V** row, in as many words. The search had been
+for *"viewer mode"*; the row says *"Terrain Viewer"*, *"setViewerMode"*,
+*"viewer behaviour"*, and never that bigram. **The plan's phrasing was searched
+for instead of the artifact's.** So: *a negative grep result feels like evidence
+of absence and is only ever evidence about your search string* — and **a row
+claiming a gap is a claim like any other, verified against the artifact or not
+made at all.** Back-filling four rows to match a promise would have added three
+duplicates and one fiction to a log whose whole value is that a row means a
+decision was reviewed.
 The verified untruth list (grown since preplanning): PERFORMANCE.md §Vegetation
 (ceilings two generations stale + dead `VEGETATION_FRAME_DEBT_RATIO` symbol),
 §"Current measured tier row" (17-shot, pre-overhaul numbers), cold-start framing

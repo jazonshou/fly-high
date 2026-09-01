@@ -756,6 +756,40 @@ Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in or
 
 ### 5.3 Redesigned `QualityProfile`
 
+> **Annotated 2026-08-31 (Phase 6 item `6-12`). Four rows below no longer
+> describe what ships.** This table is the Phase-4 *design*, and it is kept as
+> written because it is what the tier decisions were argued against. It is not a
+> record of the shipped profile. `src/render/webgpu/core/QualityProfile.ts` is
+> the only authority for that, and the deltas are now pinned against it by
+> `tests/docs-truth.test.ts` — so this annotation cannot itself go stale without
+> a red test.
+>
+> | Row | Published here | Shipped (`QualityProfile.ts`) |
+> |---|---|---|
+> | `msaaSamples` | 1 / **4** / 4 / 4 | 1 / **1** / 4 / 4 |
+> | CDLOD node budget *(both rows)* | 160 / 240 / 320 / 448 | **224 / 320 / 448 / 640** |
+> | Ocean cascades / N | 3 @ 128 / **4 @ 256** / 5 @ 256 / **6 @ 256 (+ capillary)** | 3 @ 128 / **4 @ 128** / 5 @ 256 / **5 @ 256** |
+>
+> **The node-budget row moved for a recorded reason and the τ row did not move
+> with it.** `4.5-A` found the budget binds before `cdlodPixelThreshold` at every
+> tier, so the budget was raised and the threshold deliberately left alone. The
+> combined "CDLOD τ / node budget" row above therefore reads as one decision when
+> it is two, and its second half is stale while its first half is current.
+>
+> **Ultra's ocean row was never built.** Cascade 6 and the capillary band belong
+> to phases that did not run; `QualityProfile.ts:474` says so at the tier-3
+> return. Ultra matches tier 2's ocean, and PCSS was struck outright by `4-8b`.
+>
+> **The GPU memory ceiling row is true but no longer sufficient**, and this is
+> the sharper problem. Its 480 MiB matches `MEMORY_CEILING_MIB[1]`, which gates
+> the *estimate* model — and `6-11.4` measured that model reading 367.5–380.7 MiB
+> while the actual inventory reads 483.9–492.3 MiB, a stable 1.29–1.32x shortfall
+> across 24 shots. **The tier-1 inventory is therefore already OVER the 480 row
+> this table publishes**, and passes only because a second, higher ceiling
+> (`PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495`) is what actually gates.
+> A reader taking 480 as headroom is wrong twice: wrong quantity, and wrong
+> direction. Real tier-1 headroom is **2.7 MiB (0.5%)**. Never quote the estimate.
+
 | Parameter | Low | **Balanced (default)** | High | Ultra |
 |---|---|---|---|---|
 | Frame target | 60 fps | 60 fps | 60 fps | 30 fps |
