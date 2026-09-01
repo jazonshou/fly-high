@@ -277,3 +277,76 @@ export function cockpitInstrumentGlow(
   }
   return COCKPIT_GLOW_NIGHT_MULTIPLE;
 }
+
+/**
+ * `7-8`: the landing and taxi CAST POOLS, as clustered point lights.
+ *
+ * **These are not the lamps.** The lamp is the emissive lens on the airframe,
+ * driven by `resolveAircraftLights`; this is the pool of light it throws on the
+ * ground. The two are separate objects with separate rules, and the split is
+ * the point:
+ *
+ * **Lamps are exempt from daylight attenuation; pools are not.** Anti-collision
+ * lights are required lit in daylight, so the beacon, strobes and nav lamps
+ * emit unattenuated. But a pool of light on the ground at solar noon is
+ * invisible in life and would be wrong in the frame. **The lamp being visible
+ * and the ground being lit by it are two claims, and only the first survives
+ * daylight** — so the pools take `airfieldLampDaylightAttenuation`, the same
+ * law as the hangar floods rather than an aircraft variant of it.
+ *
+ * **Point lights, because that is what the container holds.** A landing light
+ * is really a spot, and `ClusteredLightingSystem` builds `PointLight`s. The
+ * offsets below put the source ahead of and below the aircraft so the pool
+ * lands where a beam would, which is the honest approximation available.
+ */
+export interface AircraftCastPool {
+  readonly name: string;
+  /** Body-frame offset: +X forward, +Y up, +Z starboard (`D-6`). */
+  readonly offset: readonly [number, number, number];
+  readonly color: readonly [number, number, number];
+  readonly intensity: number;
+  readonly rangeMeters: number;
+}
+
+export const AIRCRAFT_CAST_POOLS: readonly AircraftCastPool[] = Object.freeze([
+  Object.freeze({
+    name: "aircraft-landing-pool",
+    // Well ahead and below: a landing light illuminates the touchdown zone, not
+    // the airframe. 40 m forward at 3 m below puts the pool where the aircraft
+    // is going rather than where it is.
+    offset: [40, -3, 0] as const,
+    color: [1, 0.94, 0.82] as const,
+    intensity: 12,
+    rangeMeters: 90,
+  }),
+  Object.freeze({
+    name: "aircraft-taxi-pool",
+    // Close and wide: a taxi light lights the ground immediately ahead.
+    offset: [14, -2, 0] as const,
+    color: [1, 0.95, 0.86] as const,
+    intensity: 5,
+    rangeMeters: 34,
+  }),
+]);
+
+/**
+ * World position of a cast pool, from the aircraft's world position and its
+ * body axes.
+ *
+ * Takes the body basis as vectors rather than deriving it, so this stays free
+ * of any world-space convention and cannot disagree with `FlightRenderer`'s
+ * own matrix — the mistake `D-6` cost two items to settle.
+ */
+export function castPoolWorldPosition(
+  aircraftWorld: readonly [number, number, number],
+  forward: readonly [number, number, number],
+  up: readonly [number, number, number],
+  starboard: readonly [number, number, number],
+  offset: readonly [number, number, number],
+): [number, number, number] {
+  return [
+    aircraftWorld[0] + forward[0] * offset[0] + up[0] * offset[1] + starboard[0] * offset[2],
+    aircraftWorld[1] + forward[1] * offset[0] + up[1] * offset[1] + starboard[1] * offset[2],
+    aircraftWorld[2] + forward[2] * offset[0] + up[2] * offset[1] + starboard[2] * offset[2],
+  ];
+}

@@ -31,6 +31,8 @@ import {
   airfieldLampDaylightAttenuation,
 } from "./webgpu/lighting/AirfieldLighting";
 import {
+  AIRCRAFT_CAST_POOLS,
+  castPoolWorldPosition,
   observerAzimuthDegrees,
   resolveAircraftLights,
 } from "./webgpu/lighting/AircraftLighting";
@@ -482,6 +484,14 @@ export class FlightRenderer implements FlightRenderingSystem {
    * every frame, and this list stays the caller's record of what it asked for.
    */
   private readonly hangarFloodNames: readonly string[];
+  /**
+   * `7-8`: last frame's daylight attenuation, so the aircraft cast pools take
+   * the SAME value the floods and billboards did rather than recomputing it a
+   * third time and drifting.
+   */
+  private lastDaylightAttenuation = 1;
+  /** One-shot latch: a refused cast pool is worth saying once, not per frame. */
+  private castPoolWarned = false;
   /**
    * `7-7`'s fixtures, expanded into `7-5`'s light points, plus the PAPI's
    * analytic indication. Null when the world has no airport.
@@ -1153,9 +1163,24 @@ export class FlightRenderer implements FlightRenderingSystem {
         ? airport.hangarAttachments.flatMap((mounts, index) =>
           hangarFaceFloodlights(airportDefinition, mounts, index))
         : [];
+      // `7-8`: the aircraft's landing and taxi cast pools APPEND to `7-14`'s
+      // array rather than constructing a second system. The container takes its
+      // definitions at construction and exposes no `add`, and
+      // `render.scene-light-slots.test.ts` pins `ClusteredLighting: 1` — a
+      // second construction fails with a map diff. Positions are placeholders;
+      // `setPosition` moves them onto the airframe every frame.
       const clusteredLighting = new ClusteredLightingSystem(
         scene,
-        hangarFloods,
+        [
+          ...hangarFloods,
+          ...AIRCRAFT_CAST_POOLS.map((pool) => ({
+            name: pool.name,
+            position: [0, 0, 0] as readonly [number, number, number],
+            color: pool.color,
+            intensity: 0,
+            rangeMeters: pool.rangeMeters,
+          })),
+        ],
         profile.clusteredLighting,
       );
       // `IsLightSupported` refuses silently and `addLight` only warns, so a
@@ -2092,7 +2117,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       const toCamera = this.camera.position.subtract(this.aircraft.root.position);
       const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
       const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
-      this.aircraft.setLightState(resolveAircraftLights({
+      const lights = resolveAircraftLights({
         simulationTimeSeconds: state.simulationTime,
         observerAzimuthDegrees: observerAzimuthDegrees(
           Vector3.Dot(toCamera, bodyForward),
@@ -2105,7 +2130,46 @@ export class FlightRenderer implements FlightRenderingSystem {
         // in the opposite direction: panel lighting comes UP as the sun sets.
         sunElevationSine: this.environmentState.sun.direction[1],
         horizontalLux: horizontalIlluminanceLux(this.environmentState),
-      }));
+      });
+      this.aircraft.setLightState(lights);
+
+      // `7-8`: the landing and taxi CAST POOLS — separate objects from the
+      // lamps and governed by a different rule. The lamps are exempt from
+      // daylight attenuation because anti-collision lights are required lit by
+      // day; a pool of light on the ground at solar noon is invisible in life.
+      // Same law as `7-14`'s floods, not an aircraft variant of it.
+      //
+      // `setPosition` takes WORLD coordinates and rebases itself, so the
+      // floating origin is deliberately NOT applied: `state.position` is
+      // already world and subtracting the origin would double-correct.
+      const poolStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+      const poolUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+      for (const pool of AIRCRAFT_CAST_POOLS) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [poolUp.x, poolUp.y, poolUp.z],
+          [poolStarboard.x, poolStarboard.y, poolStarboard.z],
+          pool.offset,
+        );
+        // BOTH returns are checked. False means the name is unknown — which
+        // includes a definition `IsLightSupported` refused at construction, and
+        // that refusal is silent. A pool that never moves and never brightens
+        // looks exactly like a pool correctly gated off, so an unchecked call
+        // would hide the failure for the whole life of the renderer.
+        const moved = this.clusteredLighting.setPosition(pool.name, at[0], at[1], at[2]);
+        const lit = this.clusteredLighting.setIntensity(
+          pool.name,
+          pool.intensity * lights.landing * this.lastDaylightAttenuation,
+        );
+        if ((!moved || !lit) && !this.castPoolWarned) {
+          this.castPoolWarned = true;
+          console.warn(
+            `aircraft cast pool "${pool.name}" is not in the clustered container `
+            + "— it was refused at construction and will never light anything",
+          );
+        }
+      }
     }
     this.updateCamera(state);
     this.cameraWorld.set(
@@ -2127,6 +2191,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       this.environmentState.sun.direction[1],
       horizontalIlluminanceLux(this.environmentState),
     );
+    this.lastDaylightAttenuation = daylightAttenuation;
     this.lightPoints.setDaylightAttenuation(daylightAttenuation);
     // `7-14`'s floods take the SAME law rather than a second one. They are a
     // different emission path — real point lights, not billboards — but "is the
