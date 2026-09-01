@@ -8,7 +8,9 @@ import {
   DRAW_CALL_SAMPLES,
   FIRST_PIN_SHOTS,
   PREVIOUS_DELIVERY_FLOORS,
+  DRAW_CALL_RAISES,
   PREVIOUS_DRAW_CALL_CEILINGS,
+  declaredRaiseFor,
   SAMPLE_SPREAD_TOLERANCE_FPS,
   TAIL_DEFERRED_SHOTS,
   TAIL_DERIVED_FIELDS,
@@ -300,12 +302,92 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
       const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
       if (shot?.drawCallCeiling === undefined) throw new Error(`${name}: no ceiling`);
       if (previous === undefined) return; // new shot; nothing shipped before it
+      // A raise is admissible only as far as it was DECLARED. Undeclared growth
+      // of even one draw fails, which is the property the previous version of
+      // this test claimed and did not have: it compared against pre-tightening
+      // values carrying 6-10 draws of margin, so a whole feature's cost fitted
+      // inside the slack and passed as though nothing had happened.
+      const allowed = previous + declaredRaiseFor(name);
       expect(
         shot.drawCallCeiling,
-        `${name}: a draw-call ceiling was raised. This change may only tighten.`,
-      ).toBeLessThanOrEqual(previous);
+        `${name}: the draw-call ceiling exceeds what was declared. It may tighten `
+          + `freely; to raise it, add an entry to DRAW_CALL_RAISES naming the feature `
+          + `and its per-shot cost. Previous ${previous}, declared raise `
+          + `${declaredRaiseFor(name)}, committed ${shot.drawCallCeiling}.`,
+      ).toBeLessThanOrEqual(allowed);
     },
   );
+
+  describe("a declared raise is checked, not just recorded", () => {
+    it("every uniform raise really is uniform", () => {
+      // The claim that makes a uniform raise cheap to accept is that one
+      // feature costs the same everywhere. If it does not, the entry is
+      // describing creep as though it were a feature.
+      for (const raise of DRAW_CALL_RAISES) {
+        if (raise.kind !== "uniform") continue;
+        for (const name of raise.shots) {
+          const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
+          const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
+          expect(shot?.drawCallCeiling, `${raise.feature} names ${name}, which has no ceiling`)
+            .toBeDefined();
+          expect(previous, `${raise.feature} names ${name}, which has no previous ceiling`)
+            .toBeDefined();
+          expect(
+            shot!.drawCallCeiling! - previous!,
+            `${raise.feature} is declared uniform at ${raise.delta}, but ${name} moved by `
+              + `${shot!.drawCallCeiling! - previous!}. Either it is not one feature's cost, `
+              + "or it belongs in a per-shot raise that says what varies.",
+          ).toBe(raise.delta);
+        }
+      }
+    });
+
+    it("no raise outlives the growth it was declared for", () => {
+      // Entries are not standing permission. If a feature is removed and the
+      // ceilings come back down, its raise must go too — otherwise the
+      // allowance accumulates and the ratchet loosens by one entry at a time.
+      for (const raise of DRAW_CALL_RAISES) {
+        const named = raise.kind === "uniform" ? raise.shots : Object.keys(raise.deltas);
+        const stillNeeded = named.filter((name) => {
+          const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
+          const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
+          return shot?.drawCallCeiling !== undefined && previous !== undefined
+            && shot.drawCallCeiling > previous;
+        });
+        expect(
+          stillNeeded.length,
+          `${raise.feature}'s raise is no longer needed by any shot it names — the growth `
+            + "it permitted is gone. Delete the entry rather than leaving an allowance.",
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it("a per-shot raise says what varies, and is not a disguised uniform one", () => {
+      for (const raise of DRAW_CALL_RAISES) {
+        if (raise.kind !== "per-shot") continue;
+        expect(raise.whyNonUniform.length, `${raise.feature}: whyNonUniform is empty`)
+          .toBeGreaterThan(0);
+        const values = Object.values(raise.deltas);
+        expect(
+          new Set(values).size,
+          `${raise.feature} lists per-shot deltas that are all equal. Declare it uniform — `
+            + "the two forms mean different things and a long list is where a uniform cost hides.",
+        ).toBeGreaterThan(1);
+      }
+    });
+
+    it("is load-bearing: the committed ceilings need it", () => {
+      // Non-vacuity for the whole mechanism. If no shot currently exceeds its
+      // previous, DRAW_CALL_RAISES is inert and every assertion above passes
+      // without testing anything.
+      const raised = SHOTS_WITH_DRAW_CEILINGS.filter((shot) => {
+        const previous = PREVIOUS_DRAW_CALL_CEILINGS[shot.name];
+        return previous !== undefined && (shot.drawCallCeiling ?? 0) > previous;
+      });
+      expect(raised.length, "no ceiling exceeds its previous; the raise mechanism is untested")
+        .toBeGreaterThan(0);
+    });
+  });
 
   it("throws rather than taking a maximum when runs disagree", () => {
     // Disagreement would mean drawCalls are NOT host-independent, which

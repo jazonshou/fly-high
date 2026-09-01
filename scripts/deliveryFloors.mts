@@ -572,65 +572,199 @@ export function firstPinFrom(
  * is information worth having rather than a risk to paper over with margin.
  */
 export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Object.freeze({
-  "approach-500ft": [150, 150, 150],
-  "slant-10km": [132, 132, 132],
-  "high-10000ft-down": [135, 135, 135],
-  "reference-viewport": [151, 151, 151],
-  "cruise-horizon": [127, 127, 127],
-  "winter-noon": [150, 150, 150],
-  "night": [152, 152, 152],
-  "night-moonlit": [152, 152, 152],
-  "motion-banked-turn": [155, 155, 155],
-  "page-thrash-turn": [154, 154, 154],
-  "cdlod-transition": [122, 122, 122],
-  "cruise-sun-30": [131, 131, 131],
-  "forest-500ft-sunbehind": [151, 151, 151],
-  "coast-10km-lowsun": [127, 127, 127],
-  "ground-2m-lowsun": [159, 159, 159],
-  "canopy-1200ft": [149, 149, 149],
-  "runway-on-approach": [161, 161, 161],
-  "water-25ft": [130, 130, 130],
-  "grove-forest-2m": [156, 156, 156],
-  "grove-meadow-2m": [168, 168, 168],
-  "hills-dusk-glint": [147, 147, 147],
-  "mountain-close": [175, 175, 175],
-  "forest-line-highsun": [147, 147, 147],
-  "cliff-60m": [163, 163, 163],
-  "water-3m": [129, 129, 129],
-  "veg-seam-1600ft-oblique": [144, 144, 144],
-  "veg-seam-near-500ft": [152, 152, 152],
-  "terrain-material-1600ft-down": [172, 172, 172],
-  "horizon-shadow-far-annulus": [148, 148, 148],
-  "canopy-backlit-lowsun": [156, 156, 156],
+  "approach-500ft":               [154, 154, 154],
+  "slant-10km":                   [136, 136, 136],
+  "high-10000ft-down":            [139, 139, 139],
+  "reference-viewport":           [155, 155, 155],
+  "cruise-horizon":               [131, 131, 131],
+  "winter-noon":                  [154, 154, 154],
+  "night":                        [156, 156, 156],
+  "night-moonlit":                [156, 156, 156],
+  "motion-banked-turn":           [159, 159, 159],
+  "page-thrash-turn":             [158, 158, 158],
+  "cdlod-transition":             [126, 126, 126],
+  "cruise-sun-30":                [135, 135, 135],
+  "forest-500ft-sunbehind":       [155, 155, 155],
+  "coast-10km-lowsun":            [131, 131, 131],
+  "ground-2m-lowsun":             [163, 163, 163],
+  "canopy-1200ft":                [153, 153, 153],
+  "runway-on-approach":           [165, 165, 165],
+  "water-25ft":                   [134, 134, 134],
+  "grove-forest-2m":              [160, 160, 160],
+  "grove-meadow-2m":              [172, 172, 172],
+  "hills-dusk-glint":             [151, 151, 151],
+  "mountain-close":               [179, 179, 179],
+  "forest-line-highsun":          [151, 151, 151],
+  "cliff-60m":                    [167, 167, 167],
+  "water-3m":                     [133, 133, 133],
+  "veg-seam-1600ft-oblique":      [148, 148, 148],
+  "veg-seam-near-500ft":          [156, 156, 156],
+  "terrain-material-1600ft-down": [176, 176, 176],
+  "horizon-shadow-far-annulus":   [152, 152, 152],
+  "canopy-backlit-lowsun":        [160, 160, 160],
 });
 
-/** What shipped before this pin — the ratchet's reference, stored as data. */
+/**
+ * What actually ships today — the ratchet's reference, stored as data.
+ *
+ * **This was stale and the staleness mattered.** It used to hold the
+ * PRE-TIGHTENING ceilings, the ones carrying 6-to-10 draws of undocumented
+ * margin. Measured against those, bloom's +4 passed on every shot with slack to
+ * spare, so the ratchet was comparing against a baseline that no longer shipped
+ * and therefore constrained nothing. The margin described elsewhere in this file
+ * as "eight draws of real growth passing silently" is exactly what let a real
+ * feature's growth through without a recorded decision — the same outcome as a
+ * hand-edited ceiling, reached by a different route. `mountain-close` had two
+ * draws left before that stopped.
+ *
+ * Refreshed to the values committed at 285eb2b. From here a ceiling can only
+ * rise through `DRAW_CALL_RAISES`.
+ */
 export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Object.freeze({
-  "approach-500ft": 158,
-  "slant-10km": 140,
-  "high-10000ft-down": 144,
-  "reference-viewport": 159,
-  "cruise-horizon": 137,
-  "winter-noon": 158,
-  "night": 160,
-  "night-moonlit": 163,
-  "page-thrash-turn": 162,
-  "cdlod-transition": 130,
-  "cruise-sun-30": 139,
-  "forest-500ft-sunbehind": 159,
-  "coast-10km-lowsun": 135,
-  "ground-2m-lowsun": 167,
-  "canopy-1200ft": 157,
-  "runway-on-approach": 169,
-  "water-25ft": 138,
-  "grove-forest-2m": 164,
-  "grove-meadow-2m": 176,
-  "hills-dusk-glint": 155,
-  "mountain-close": 181,
-  "forest-line-highsun": 155,
-  "cliff-60m": 173,
-  "water-3m": 137,
+  "approach-500ft":               150,
+  "slant-10km":                   132,
+  "high-10000ft-down":            135,
+  "reference-viewport":           151,
+  "cruise-horizon":               127,
+  "winter-noon":                  150,
+  "night":                        152,
+  "motion-banked-turn":           155,
+  "page-thrash-turn":             154,
+  "cdlod-transition":             122,
+  "cruise-sun-30":                131,
+  "forest-500ft-sunbehind":       151,
+  "coast-10km-lowsun":            127,
+  "ground-2m-lowsun":             159,
+  "canopy-1200ft":                149,
+  "runway-on-approach":           161,
+  "water-25ft":                   130,
+  "grove-forest-2m":              156,
+  "grove-meadow-2m":              168,
+  "hills-dusk-glint":             147,
+  "mountain-close":               175,
+  "forest-line-highsun":          147,
+  "cliff-60m":                    163,
+  "water-3m":                     129,
+  "veg-seam-1600ft-oblique":      144,
+  "veg-seam-near-500ft":          152,
+  "terrain-material-1600ft-down": 172,
+  "horizon-shadow-far-annulus":   148,
+  "canopy-backlit-lowsun":        156,
 });
+
+/**
+ * A raise is a NAMED DECISION, and its arithmetic is checked.
+ *
+ * The ratchet says draw-call ceilings may only tighten. That is right as a
+ * default and wrong as an absolute: a feature that genuinely costs draws has to
+ * be able to land. The question a guard can actually answer is not "is this
+ * cost acceptable" — it cannot know — but **"is this one feature's cost, or is
+ * it assorted creep?"**
+ *
+ * **Uniformity is the measurable signature of the first.** Bloom attaches four
+ * post-process passes with no content gating, so it costs exactly four draws on
+ * every shot; measured, 30 of 30 at +4 with all three runs byte-identical.
+ * Creep does not look like that.
+ *
+ * **Two admissible forms, and the cheap one is the uniform one:**
+ * - `kind: "uniform"` — one delta, applied to every shot named. The test
+ *   asserts every named shot moved by EXACTLY that much, so a raise claiming
+ *   uniformity it does not have fails.
+ * - `kind: "per-shot"` — each shot's delta listed individually, with
+ *   `whyNonUniform` explaining what varies. Not blocked, deliberately more
+ *   expensive to write and to read, because the per-shot list is the thing a
+ *   reviewer has to look at.
+ *
+ * **The non-uniform form exists so the first legitimately non-uniform feature
+ * does not meet a guard it cannot satisfy.** That is how a ratchet becomes a
+ * formality: someone widens the rule under deadline pressure. A content-gated
+ * pass, or one whose work scales with what is in frame, is a real possibility
+ * and it stays possible here — just visibly costlier to declare.
+ *
+ * **Entries are not permanent permission.** The test asserts every raise is
+ * still NEEDED: each named shot's committed ceiling must actually exceed its
+ * previous by that delta. A raise whose feature was later removed fails, so
+ * these cannot accumulate into a standing allowance.
+ */
+export type DrawCallRaise =
+  | {
+      readonly kind: "uniform";
+      readonly feature: string;
+      readonly commit: string;
+      readonly reason: string;
+      readonly delta: number;
+      readonly shots: readonly string[];
+    }
+  | {
+      readonly kind: "per-shot";
+      readonly feature: string;
+      readonly commit: string;
+      readonly reason: string;
+      /** What varies between shots. Required: it is the whole justification. */
+      readonly whyNonUniform: string;
+      readonly deltas: Readonly<Record<string, number>>;
+    };
+
+export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
+  Object.freeze({
+    kind: "uniform" as const,
+    feature: "bloom",
+    commit: "285eb2b",
+    reason:
+      "BloomPass attaches four PostProcess instances — bright, blur-h, blur-v, "
+      + "composite — to the camera chain at tier 1. There is no content gating: "
+      + "the threshold is applied per pixel INSIDE the bright shader, so it "
+      + "decides what glows, never whether the pass runs. Every tier-1 shot pays "
+      + "four draws and only the shots with a bright source get anything for "
+      + "them. Measured 30 of 30 at +4, byte-identical across three runs.",
+    delta: 4,
+    shots: Object.freeze([
+    "approach-500ft",
+    "slant-10km",
+    "high-10000ft-down",
+    "reference-viewport",
+    "cruise-horizon",
+    "winter-noon",
+    "night",
+    "motion-banked-turn",
+    "page-thrash-turn",
+    "cdlod-transition",
+    "cruise-sun-30",
+    "forest-500ft-sunbehind",
+    "coast-10km-lowsun",
+    "ground-2m-lowsun",
+    "canopy-1200ft",
+    "runway-on-approach",
+    "water-25ft",
+    "grove-forest-2m",
+    "grove-meadow-2m",
+    "hills-dusk-glint",
+    "mountain-close",
+    "forest-line-highsun",
+    "cliff-60m",
+    "water-3m",
+    "veg-seam-1600ft-oblique",
+    "veg-seam-near-500ft",
+    "terrain-material-1600ft-down",
+    "horizon-shadow-far-annulus",
+    "canopy-backlit-lowsun",
+    ]),
+  }),
+]);
+
+/** Total declared raise for a shot, or 0 if none is declared. */
+export function declaredRaiseFor(name: string): number {
+  let total = 0;
+  for (const raise of DRAW_CALL_RAISES) {
+    if (raise.kind === "uniform") {
+      if (raise.shots.includes(name)) total += raise.delta;
+    } else if (raise.deltas[name] !== undefined) {
+      total += raise.deltas[name];
+    }
+  }
+  return total;
+}
+
 
 /**
  * The ceiling is the measured count, and the guard is that every run agrees.
