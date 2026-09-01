@@ -1462,6 +1462,54 @@ decision log, per house rule.)*
 
 ---
 
+- **D-16 (2026-09-01, 7-6 light volumetrics is CUT — no emitter, not too expensive):**
+  **7-6 has nothing cone-shaped to draw, and its declared dependency does not supply one.**
+  Measured by executing the shipping constructor: `new AirfieldLightingSystem(DEFAULT_AIRPORT)`
+  yields **402 fixtures, every one carrying `beamCosineCutoff = 0`** — a 90° half-angle,
+  which is a hemisphere, not a cone
+  ([AirfieldLighting.ts](src/render/webgpu/lighting/AirfieldLighting.ts)). 7-6 names two
+  emitter sources and both are absent: **landing lights** are a `landing-light` *mesh* with
+  an emissive material and no direction, intensity or cutoff
+  ([createAircraft.ts](src/render/webgpu/aircraft/createAircraft.ts)), their emitter data
+  belonging to `AircraftLightingSystem` (`plannedBy: "7-8"`, does not exist); and **floods**
+  were re-scoped away by **D-0**, with hangar and tower faces belonging to
+  `airfield-structures` (`plannedBy: "7-10"`, also absent). So 7-6 sits in Gate 7B while
+  every source it draws from is 7-8, 7-10, or cut.
+
+  **The reason is recorded as "no emitter until 7-8" and NOT "too expensive", and the
+  distinction is the point.** A missing input is not a cost overrun, and no budget makes an
+  emitter appear. If 7-8 lands and someone wants light shafts later, the cost question was
+  never the obstacle and the feasibility work here stays valid — this is a cut, not a
+  deferral, and recording the wrong one would waste the work twice.
+
+  **The declared dependent has no content behind it.** `7-9 ← 7-6` is declared in §Sequencing,
+  but the word *volumetrics* does not appear anywhere in 7-9's body. A future reader would
+  otherwise inherit a broken dependency where there is none. **7-6 −3.0 d.**
+
+  *Three corrections this investigation produced, all of which outlive the cut:*
+
+  1. **The inter-stage budget was wrong in every particular and had been relayed to four
+     sessions.** The device limit is **16**, not the adapter's reported 28 — `setMaximumLimits:
+     false` means the device takes the spec default, so the adapter's number was never the
+     budget. **Terrain is 15 of 16** (14 `@location` plus `@builtin(front_facing)`), **16 of
+     16 with a `ClusteredLightContainer` — zero free** — and the widest shipping detail/foliage
+     permutation is likewise **16 of 16, zero free**. So "two free slots that 7-6 competes for"
+     was false twice over: there are not two free, and it would not have competed for them.
+     The budget is **per-pipeline per-entry-point**, confirmed by creating two pipelines of 15
+     user locations back-to-back on one device, both succeeding. **This lands hardest on 7-4b,
+     whose spike measured 14 and whose number moved once the builtin was counted.**
+  2. **7-6's own cut trigger had no instrument.** `SubsystemBudgetMs`
+     ([PerformanceBudget.ts](src/render/webgpu/core/PerformanceBudget.ts)) has twelve rows and
+     **no `lighting` row**, so "cut this first if the budget bites" could never have fired. The
+     declared tier sums are modelled with zero samples, and assertion 20 checks only that the
+     declared constants sum under target — it consumes no measurement. **This is a note on the
+     trigger mechanism, not on 7-6.**
+  3. **The draw-call ratchet has a sanctioned raise path**, so a feature that genuinely costs
+     draws is not blocked: `DRAW_CALL_RAISES` in [deliveryFloors.mts](scripts/deliveryFloors.mts)
+     carries `uniform` and `per-shot` forms, the latter existing "so the first legitimately
+     non-uniform feature does not meet a guard it cannot satisfy". Bloom's +4 is already
+     declared there.
+
 ## 12. Exit criteria and goal certification
 
 **Gate 7B.** 200+ light points and 16 clustered illuminating lights hold the tier frame
