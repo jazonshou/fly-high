@@ -1221,6 +1221,30 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "guard AS IT IS BUILT: six inverted surfaces were found on 2026-08-31 "
       + "and a green test was asserting the inverted convention as correct.",
   },
+  {
+    // 7-11: the structure materials — synthesized once, shared by every
+    // hangar, the tower and the furniture. One author; the geometry files
+    // assign these and never edit this one (and vice versa).
+    artifact: "airfield-materials",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/airfield/AirfieldMaterials.ts"],
+    consumers: ["world"],
+    ownedSymbols: [
+      "createAirfieldMaterials",
+      "synthesizeAirfieldMetal",
+      "synthesizeAirfieldConcrete",
+      "AIRFIELD_ASPECT_V_START",
+    ],
+    notes:
+      "Follows the Gate A aircraft-paint convention: CPU-authored bytes, "
+      + "explicit Toksvig mips through the shared reducer, RawTexture upload "
+      + "boundary. Budget is derived from the capture inventory's worst shot "
+      + "against the 495 pin, never from a transcribed figure, and the module "
+      + "pins its own byte total by test. UV contract: U wraps along the "
+      + "surface over the exported tile period; V CLAMPS downward from each "
+      + "face's runway-relative aspect start, so weathering is gravity plus "
+      + "neglect, not a compass claim the geometry would have to bake in.",
+  },
 ];
 
 /**
