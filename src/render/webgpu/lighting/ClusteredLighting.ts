@@ -122,6 +122,12 @@ export class ClusteredLightingSystem {
    */
   readonly geometry: ClusteredLightingGeometry;
   private readonly lights: readonly PointLight[];
+  /** WORLD positions, the source of truth; `light.position` is these minus the origin. */
+  private readonly worldPositions: [number, number, number][] = [];
+  /** Name to index, built once so a per-frame move is O(1) and not a scan. */
+  private readonly indexByName = new Map<string, number>();
+  private originX = 0;
+  private originZ = 0;
 
   constructor(
     scene: Scene,
@@ -155,6 +161,8 @@ export class ClusteredLightingSystem {
         light.dispose();
         continue;
       }
+      this.indexByName.set(definition.name, lights.length);
+      this.worldPositions.push([...definition.position] as [number, number, number]);
       lights.push(light);
     }
 
@@ -186,6 +194,58 @@ export class ClusteredLightingSystem {
    */
   get supported(): boolean {
     return this.container?.isSupported ?? false;
+  }
+
+  /**
+   * Move one light, in WORLD coordinates.
+   *
+   * **`7-8` needs this and the airfield did not**: runway lamps are bolted to
+   * the ground, so the constructor was enough for them, and a landing light is
+   * on a moving airframe. Returns false when the name is unknown — which
+   * includes a definition Babylon REFUSED at construction, so a caller that
+   * checks the return learns about a silent rejection here as well as in
+   * `rejected`.
+   *
+   * **Free at runtime.** The container rewrites its entire light buffer and
+   * flushes once per frame from the moment it exists, guarded on the scene
+   * render id with no dirty check — so moving a light adds nothing to a cost
+   * that is already being paid.
+   */
+  setPosition(name: string, x: number, y: number, z: number): boolean {
+    const index = this.indexByName.get(name);
+    if (index === undefined) return false;
+    this.worldPositions[index] = [x, y, z];
+    this.applyPosition(index);
+    return true;
+  }
+
+  /**
+   * Rebase every light onto a new floating origin.
+   *
+   * **This is not optional and the precedent is expensive.** The renderer
+   * rebases once per 4,096 m flown, and `LightPointSystem` carries the same
+   * method because the billboards once shipped without it: the capture world's
+   * airport sits ~30 km from the world origin, the renderer rebased on the
+   * first frame, and all 402 lamps were left in absolute coordinates outside
+   * the frustum. A clustered light gets it worse than a billboard — the
+   * inverse-square falloff is computed from the position too, so an unrebased
+   * lamp does not merely draw in the wrong place, it lights the wrong place.
+   *
+   * O(lights) and called once per rebase, not per frame.
+   */
+  setFloatingOrigin(originX: number, originZ: number): void {
+    if (originX === this.originX && originZ === this.originZ) return;
+    this.originX = originX;
+    this.originZ = originZ;
+    for (let index = 0; index < this.lights.length; index += 1) this.applyPosition(index);
+  }
+
+  /** World position minus the current origin, which is what Babylon is given. */
+  private applyPosition(index: number): void {
+    const world = this.worldPositions[index];
+    const light = this.lights[index];
+    if (!world || !light) return;
+    light.position.set(world[0] - this.originX, world[1], world[2] - this.originZ);
   }
 
   dispose(): void {

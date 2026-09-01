@@ -144,6 +144,54 @@ describe("7-4b: the clustered container attaches without spending a slot it does
     }
   });
 
+  it("7-8: a light can be MOVED after construction, in world coordinates", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0), definition(1)]);
+      // Runway lamps are bolted to the ground and the constructor was enough
+      // for them; a landing light is on a moving airframe.
+      expect(system.setPosition("clustered-lamp-1", 100, 25, -40)).toBe(true);
+      const moved = system.container!.lights
+        .find((l) => l.name === "clustered-lamp-1")! as PointLight;
+      expect([moved.position.x, moved.position.y, moved.position.z]).toEqual([100, 25, -40]);
+      // An unknown name — which includes one Babylon REFUSED at construction —
+      // reports false rather than failing silently.
+      expect(system.setPosition("not-a-lamp", 0, 0, 0)).toBe(false);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("REBASE — every light follows the floating origin, or it lights the wrong place", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0), definition(2)]);
+      // The renderer rebases once per 4,096 m flown. `LightPointSystem` carries
+      // the same method because the billboards once shipped without it and all
+      // 402 lamps were left ~30 km outside the frustum. A clustered light gets
+      // it worse: the inverse-square falloff reads the position too.
+      system.setFloatingOrigin(4_096, -2_048);
+      const first = system.container!.lights
+        .find((l) => l.name === "clustered-lamp-0")! as PointLight;
+      // definition(0) is world (0, 3, 0) -> origin-relative (-4096, 3, 2048).
+      expect([first.position.x, first.position.y, first.position.z])
+        .toEqual([-4_096, 3, 2_048]);
+
+      // WORLD POSITION IS THE SOURCE OF TRUTH, so a move and a rebase compose.
+      // Storing origin-relative positions instead would make the second
+      // operation silently undo the first.
+      expect(system.setPosition("clustered-lamp-0", 10, 4, 20)).toBe(true);
+      expect([first.position.x, first.position.y, first.position.z])
+        .toEqual([10 - 4_096, 4, 20 + 2_048]);
+      system.setFloatingOrigin(0, 0);
+      expect([first.position.x, first.position.y, first.position.z]).toEqual([10, 4, 20]);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
   it("the light-slot cap is raised above the count production actually runs", () => {
     // sun + sky-ambient + moon = 3, and the container is itself a Light, so the
     // default cap of 4 is consumed exactly and the next light added anywhere
