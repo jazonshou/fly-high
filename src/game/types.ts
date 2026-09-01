@@ -15,7 +15,7 @@ export interface QuaternionState extends Vec3State {
 export type CameraMode = "chase" | "cockpit" | "cinematic" | "freefly";
 export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
-export type TimeOfDayPreset = "dawn" | "day" | "golden";
+export type TimeOfDayPreset = "dawn" | "day" | "golden" | "night";
 export type WeatherPreset = "clear" | "breezy" | "cloudy";
 /** WebGPU feature intent. Quality controls asset density; this controls expensive GPU techniques. */
 export type RequestedRenderingMode = "performance" | "balanced" | "ultra";

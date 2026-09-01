@@ -66,6 +66,19 @@ export const TIME_OF_DAY_PRESET_CLOCKS: Readonly<
   dawn: Object.freeze({ dayOfYear: 171, solarTimeHours: 5.5 }),
   day: Object.freeze({ dayOfYear: 171, solarTimeHours: 12.5 }),
   golden: Object.freeze({ dayOfYear: 171, solarTimeHours: 19 }),
+  // `7-0-c`: a flyable night, so the night-approach flights do not start with
+  // dragging a slider. Solar 23.75 matches every night CAPTURE shot, so the
+  // preset and the harness describe the same hour.
+  //
+  // Day 356 rather than the 171 the other three presets share, and the reason
+  // is measured rather than aesthetic: at day 171 / 23.75 the moon sits at
+  // roughly 0.6 degrees altitude and delivers about a thousandth of full-moon
+  // illuminance, so that clock is a STARLIT night, not a moonlit one. Day 356
+  // puts the moon near 72 degrees at ~100% lit. The moonless clock is kept in
+  // the capture set as the adversarial case; the front door gets the lit one.
+  // `tests/render.night-clock-moonlight.test.ts` pins both and carries the
+  // altitude calculation, which is not reachable from `moonState` alone.
+  night: Object.freeze({ dayOfYear: 356, solarTimeHours: 23.75 }),
 });
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -122,7 +135,7 @@ export function validateSettings(value: unknown): GameSettings {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const timeOfDay = oneOf(
     source.timeOfDay,
-    ["dawn", "day", "golden"] as const,
+    ["dawn", "day", "golden", "night"] as const,
     DEFAULT_SETTINGS.timeOfDay,
   );
   return {
