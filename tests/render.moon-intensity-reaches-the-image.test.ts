@@ -5,6 +5,14 @@ import {
   NIGHT_AMBIENT_FLOOR_SCALE,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
+  TWILIGHT_AMBIENT_FLOOR_CUT,
+  twilightAmbientFloorFactor,
+} from "../src/render/webgpu/atmosphere/AerialPerspective";
+import {
+  REFERENCE_ILLUMINANCE_LUX,
+  resolveEnvironmentState,
+} from "../src/render/webgpu/nature/EnvironmentDirector";
+import {
   rodFractionForAdaptedLuminance,
   SCOTOPIC_HIGHLIGHT_GAIN,
   SCOTOPIC_HIGHLIGHT_KNEE,
@@ -49,11 +57,16 @@ import { TIME_OF_DAY_PRESET_CLOCKS } from "../src/settings";
  * **What the raise DOES do is the part that matters, and it goes the wrong
  * way for a "make it lighter" request.** Ambient does not scale with the moon
  * (`ambientIntensity` floors at `NIGHT_AMBIENT_FLOOR_SCALE` and follows the
- * SKY), so raising the moon raises sigma while leaving moon-shadowed ground
- * where it was: shadows get DARKER. And a lamp is a fixed absolute source, so
- * a larger sigma shrinks its `highlightExcess` and lamps get DIMMER. The net
- * of a raise is a darker, contrastier frame — "stronger moon" in the shading
- * sense, and the opposite of "much lighter" in the exposure sense.
+ * SKY — since §2.6 the floor is twilight-WINDOWED by
+ * `twilightAmbientFloorFactor`, but the window keys on the SUN's sine alone
+ * and is exactly 1 across the whole night band, and even the worst-case cut
+ * floor dwarfs a full moon's skylight contribution — see the ANCHOR
+ * EXTENSION below), so raising the moon raises sigma while leaving
+ * moon-shadowed ground where it was: shadows get DARKER. And a lamp is a
+ * fixed absolute source, so a larger sigma shrinks its `highlightExcess` and
+ * lamps get DIMMER. The net of a raise is a darker, contrastier frame —
+ * "stronger moon" in the shading sense, and the opposite of "much lighter"
+ * in the exposure sense.
  *
  * **The lever for lightness is `SCOTOPIC_MID_GREY_TARGET`** (`FlightRenderer`),
  * which sets where the auto-centred ground LANDS after the exposure curve —
@@ -125,8 +138,15 @@ describe("does a moon-intensity raise reach the night image?", () => {
       "the scene key no longer contains the moon term — the coupling this file describes is gone",
     ).toBe(true);
     expect(
-      atmosphere.includes("0.05 * Math.max(this.skylightScale(state, moonLux), NIGHT_AMBIENT_FLOOR_SCALE)"),
-      "night ambient is no longer floored independently of the moon — shadows may now scale with it",
+      atmosphere.includes(
+        "0.05 * Math.max(\n"
+        + "        this.skylightScale(state, moonLux),\n"
+        + "        NIGHT_AMBIENT_FLOOR_SCALE * twilightAmbientFloorFactor(state.sun.direction[1]),\n"
+        + "      )",
+      ),
+      "night ambient is no longer floored independently of the moon — shadows may now scale with it"
+      + " (the §2.6 window must key on the SUN's sine alone; if this line changed, re-derive"
+      + " the ANCHOR EXTENSION below before trusting anything in this file)",
     ).toBe(true);
     const renderer = readFileSync("src/render/FlightRenderer.ts", "utf8");
     expect(
@@ -138,6 +158,35 @@ describe("does a moon-intensity raise reach the night image?", () => {
       renderer.includes("SCOTOPIC_MID_GREY_TARGET"),
       "the lever named as the one that DOES move lit ground no longer exists",
     ).toBe(true);
+  });
+
+  it("ANCHOR EXTENSION — the §2.6 windowed floor keeps ambient moon-independent at every sine", () => {
+    // The floor is no longer a bare constant: §2.6 cuts it through the blue
+    // hour so twilight ground can follow the sky down. Three facts keep this
+    // file's reasoning alive across that change:
+    //
+    // 1. The window keys on the SUN's elevation sine alone — its signature
+    //    admits no moon input — so the floor cannot scale with the moon
+    //    STRUCTURALLY, at any clock.
+    // 2. Across the whole night band the factor is exactly 1, so at this
+    //    file's preset the expression is the shipped max(…, 0.2)
+    //    byte-for-byte and NIGHT_AMBIENT's restatement below stays exact.
+    const nightSunSine = resolveEnvironmentState({
+      clock: NIGHT,
+      latitudeDegrees: LAT,
+      weather: "clear",
+    }).sun.direction[1];
+    expect(nightSunSine).toBeLessThan(-0.26);
+    expect(twilightAmbientFloorFactor(nightSunSine)).toBe(1);
+    expect(twilightAmbientFloorFactor(-0.26)).toBe(1);
+    // 3. Even at the window's DEEPEST cut, the floor still dwarfs the most
+    //    the moon can ever add to skylightScale (a full moon's illuminance
+    //    over the reference key) — by orders, not margin — so max() never
+    //    lets the moon through even while the window is open. Ambient
+    //    follows the sun's window and the sky, never the moon.
+    const deepestFloor = NIGHT_AMBIENT_FLOOR_SCALE * (1 - TWILIGHT_AMBIENT_FLOOR_CUT);
+    const fullMoonSkylightScale = FULL_MOON_ILLUMINANCE_LUX / REFERENCE_ILLUMINANCE_LUX;
+    expect(deepestFloor / fullMoonSkylightScale).toBeGreaterThan(100);
   });
 
   it("NON-VACUITY — the moon genuinely dominates the key at the night preset", () => {
