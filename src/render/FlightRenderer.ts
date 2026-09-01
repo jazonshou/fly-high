@@ -25,6 +25,7 @@ import {
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import { LightPointSystem } from "./webgpu/lighting/LightPoints";
+import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
   shouldRunScotopicPass,
@@ -285,6 +286,41 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
   return weather === "cloudy" ? 2_200 : weather === "clear" ? 4_500 : 3_800;
 }
 
+/** Sample counts for the three post-processes that can head the camera chain. */
+export interface FirstPassSamples {
+  readonly scotopic: number;
+  readonly bloom: number;
+  readonly toneMap: number;
+}
+
+/**
+ * Decide which post-process owns the multisampled beauty target.
+ *
+ * `1B-11`'s rule is that the FIRST post-process owns the offscreen scene target
+ * and therefore its sample count. The part that is easy to get wrong is that
+ * ownership is DYNAMIC: `ScotopicVision` detaches in photopic daylight, so the
+ * head of the chain changes with the time of day, and `7-5` put a third
+ * candidate behind it. Chain order is fixed -- rod vision, bloom, tone map --
+ * so the owner is simply the first one attached.
+ *
+ * Pure, and separate from `applyFirstPassOwnership`, because the interesting
+ * content here is a three-way policy over eight states and none of it needs a
+ * GPU. The test that replaced the old source-string pin exercises all eight.
+ */
+export function firstPassSampleAssignment(
+  msaaSamples: number,
+  scotopicAttached: boolean,
+  bloomAttached: boolean,
+): FirstPassSamples {
+  const bloomFirst = !scotopicAttached && bloomAttached;
+  const toneMapFirst = !scotopicAttached && !bloomAttached;
+  return {
+    scotopic: scotopicAttached ? msaaSamples : 1,
+    bloom: bloomFirst ? msaaSamples : 1,
+    toneMap: toneMapFirst ? msaaSamples : 1,
+  };
+}
+
 export class AtmosphereChangeTracker {
   private dayOfYear = Number.NaN;
   private solarTimeHours = Number.NaN;
@@ -421,8 +457,20 @@ export class FlightRenderer implements FlightRenderingSystem {
    * system is broken" are the same observation on the day it is populated.
    */
   private readonly lightPoints: LightPointSystem;
-  /** 7-2: rod vision, the first post-process (and therefore MSAA's owner). */
+  /**
+   * `7-2`: rod vision. First in the chain WHENEVER IT IS ATTACHED -- which is
+   * not always, so it is not unconditionally MSAA's owner. See
+   * `applyFirstPassOwnership`.
+   */
   private readonly scotopic: ScotopicVisionPass;
+  /**
+   * `7-5`: bloom, between rod vision and the tone map.
+   *
+   * Constructed at every tier and gated by ATTACHMENT, not by construction --
+   * the chain's order is fixed when its members are built, so a pass that only
+   * exists at some tiers could never be inserted in the right place later.
+   */
+  private readonly bloom: BloomPass;
   private readonly resizeObserver: ResizeObserver;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
@@ -520,6 +568,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
     scotopic: ScotopicVisionPass,
+    bloom: BloomPass,
     atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
@@ -550,6 +599,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.stars = stars;
     this.lightPoints = lightPoints;
     this.scotopic = scotopic;
+    this.bloom = bloom;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.latitudeDegrees = options.world.latitudeDegrees;
@@ -1021,6 +1071,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       const scotopic = new ScotopicVisionPass(camera, engine, profile.msaaSamples);
       cleanup.push(() => scotopic.dispose(camera));
 
+      // 7-5: bloom, constructed here so it lands BETWEEN rod vision and the
+      // tone map -- Babylon orders a camera's chain by attachment order, and
+      // attachment happens in the PostProcess constructor. Built at every tier
+      // and detached where it is not funded; see `BloomPass.setEnabled`.
+      const bloom = new BloomPass(camera, engine, 1);
+      cleanup.push(() => bloom.dispose(camera));
+      if (!profile.bloomEnabled) bloom.setEnabled(camera, false, 1);
+
       scene.imageProcessingConfiguration.toneMappingEnabled = true;
       scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
       scene.imageProcessingConfiguration.exposure = 1.08;
@@ -1135,6 +1193,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         stars,
         lightPoints,
         scotopic,
+        bloom,
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
@@ -1917,26 +1976,43 @@ export class FlightRenderer implements FlightRenderingSystem {
    * shot is reproducible (the 1A-4 rule that any animated state the capture
    * gates must be a function of pinned inputs).
    */
+  /**
+   * Give MSAA to whichever post-process is currently FIRST, and make every
+   * pass behind it a single-sample consumer.
+   *
+   * `1B-11`'s rule is that the first post-process owns the offscreen scene
+   * target and therefore its sample count. What is easy to miss -- and what
+   * this method exists to stop anyone having to remember -- is that ownership
+   * is DYNAMIC. `applyScotopicState` detaches rod vision in photopic daylight,
+   * so the head of the chain changes with the time of day, and `7-5` added a
+   * third candidate behind it. Written out by hand this was two branches in
+   * two methods that had to agree; a third holder would have made it six.
+   *
+   * Derived from one place instead, so the invariant is stated once and the
+   * next pass inserted into the chain extends this method rather than
+   * discovering the rule from whichever site it happens to read.
+   */
+  private applyFirstPassOwnership(): void {
+    const samples = firstPassSampleAssignment(
+      this.profile.msaaSamples,
+      this.scotopic.enabled,
+      this.bloom.enabled,
+    );
+    this.scotopic.setSamples(samples.scotopic);
+    this.bloom.setSamples(samples.bloom);
+    this.toneMap.samples = samples.toneMap;
+  }
+
   private applyScotopicState(): void {
     const snapshot = this.atmosphere.snapshot;
     const adapted = snapshot.adaptedLuminanceCdM2;
     const rodFraction = rodFractionForAdaptedLuminance(adapted);
     const scotopicActive = shouldRunScotopicPass(rodFraction);
     if (scotopicActive !== this.scotopic.enabled) {
-      if (scotopicActive) {
-        // Scotopic returns to slot zero and owns the multisampled scene
-        // target; ACES becomes a single-sample consumer again.
-        this.scotopic.setSamples(this.profile.msaaSamples);
-        this.toneMap.samples = 1;
-        this.scotopic.setEnabled(this.camera, true);
-      } else {
-        // In photopic daylight the scotopic shader is a half-float copy.
-        // Detach it and transfer first-pass/MSAA ownership to the already
-        // half-float, ratio-one ACES pass. RGB input and output are unchanged.
-        this.toneMap.samples = this.profile.msaaSamples;
-        this.scotopic.setSamples(1);
-        this.scotopic.setEnabled(this.camera, false);
-      }
+      // Toggle first, then derive ownership from the resulting chain. The
+      // order matters: `applyFirstPassOwnership` reads `scotopic.enabled`.
+      this.scotopic.setEnabled(this.camera, scotopicActive);
+      this.applyFirstPassOwnership();
     }
     // The rod pathway's saturated response has to land somewhere sensible
     // AFTER the one exposure curve, so its display gain is that curve's
@@ -2311,10 +2387,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    // Whichever pass is first owns the multisampled scene target. Daylight
-    // bypasses scotopic; twilight/night restores it at slot zero.
-    this.scotopic.setSamples(this.scotopic.enabled ? this.profile.msaaSamples : 1);
-    this.toneMap.samples = this.scotopic.enabled ? 1 : this.profile.msaaSamples;
+    // Bloom's funding is a per-tier decision, so a profile change can add or
+    // remove it. Re-gate BEFORE deriving ownership: which pass is first
+    // depends on what is attached.
+    this.bloom.setEnabled(this.camera, this.profile.bloomEnabled, this.scotopic.enabled ? 1 : 0);
+    this.applyFirstPassOwnership();
     this.camera.detachPostProcess(this.fxaa);
     if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
     this.resetTimingWindow();

@@ -1118,6 +1118,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "the aerial include exists to prevent.",
   },
   {
+    // 7-5: bloom. Owned by lighting rather than by a post-process subsystem
+    // because what it is FOR is making sources read as sources -- it is the
+    // display half of the same job `LightPoints` does in the scene.
+    artifact: "bloom",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/BloomPass.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["BloomPass", "BLOOM_BRIGHT_WGSL", "bloomBrightPassWeight", "bloomBlurWeights"],
+    notes:
+      "The blur weights in the WGSL are GENERATED from `bloomBlurWeights` and "
+      + "unrolled, so the test asserting they sum to one is asserting the "
+      + "numbers that ship rather than a parallel table. The bright pass is "
+      + "ratio 1.0, NOT the usual half: it becomes the first post-process "
+      + "whenever `ScotopicVision` detaches for daylight, and the first pass's "
+      + "ratio sets the size of the target the SCENE renders into -- a "
+      + "half-resolution bright pass would have halved scene resolution for "
+      + "most of the day. MSAA ownership across the three possible chain heads "
+      + "is derived in `FlightRenderer.applyFirstPassOwnership`, not branched "
+      + "per site.",
+  },
+  {
     // 7-6: billboard cones with a soft depth intersection, reusing the aerial
     // include's participating-media terms rather than a second fog model.
     artifact: "light-volumetrics",
