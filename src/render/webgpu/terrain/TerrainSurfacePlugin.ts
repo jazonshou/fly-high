@@ -2736,7 +2736,34 @@ var terrainSurfaceF90 = clamp(
 export const TERRAIN_SURFACE_INJECTION_ANCHORS = Object.freeze({
   ambientOcclusion: String.raw`!(aoOut=ambientOcclusionBlock\([\s\S]*?\);)`,
   roughness: String.raw`!(var roughness: f32=reflectivityOut\.roughness;var diffuseRoughness: f32=reflectivityOut\.diffuseRoughness;)`,
-  reflectance: String.raw`!(var specularEnvironmentR0: vec3f=reflectivityOut\.colorReflectanceF0;)`,
+  /**
+   * **The lookbehind is load-bearing: without it this anchor matches TWICE.**
+   *
+   * A `ClusteredLightContainer` makes Babylon include `<pbrBlockReflectance0>`
+   * a second time INSIDE `fn computeClusteredLighting2`
+   * (`pbrClusteredLightingFunctions.js:34`). That block is where this anchor's
+   * text lives, and the replacement is global, so the override landed in the
+   * helper too — 1,700 lines before `terrainSurfaceF0` is declared in `main`
+   * and inside a different function. Measured: clean arm one use site,
+   * clustered arm two, and the earlier one fails to resolve.
+   *
+   * **Two independent reasons the helper cannot take this injection**, and the
+   * second is why the obvious repair does not work. Making the values
+   * module-scope `var<private>` fixes the SCOPE and was tried: the shader then
+   * fails on the next line instead, because `reflectivityOut` is a function
+   * PARAMETER there and WGSL parameters are immutable — `cannot assign to
+   * value of type 'vec3<f32>'`. So the injection is not merely out of scope in
+   * the helper, it is illegal there, and excluding it is the only cheap fix.
+   *
+   * The discriminator is the helper's own preamble, which `main` does not have.
+   * `tests/render.webgpu-terrain-reflectance-anchor.test.ts` pins that this
+   * text still exists upstream, so a Babylon reformat fails a Node test naming
+   * this coupling rather than silently un-matching and shipping a wrong frame.
+   *
+   * **Consequence, recorded here rather than in a commit message: clustered
+   * point lights light terrain with Babylon's default F0/F90, not ours.**
+   */
+  reflectance: String.raw`!(?<!absEps\(dot\(N,V\)\);\s*var reflectanceF0: f32=reflectivityOut\.reflectanceF0;\s*)(var specularEnvironmentR0: vec3f=reflectivityOut\.colorReflectanceF0;)`,
 });
 
 /** The tokens assertion 57 looks for in the PROCESSED effect source. */

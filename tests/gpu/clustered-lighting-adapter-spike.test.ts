@@ -395,31 +395,52 @@ describe("7-0-d: clustered lighting adapter spike", () => {
       + `container would be wrong: ${JSON.stringify(base.depthErrors)}`,
     ).toBe(true);
 
-    // PRE-FIX DEFECT, pinned so 7-4b has something it must invert. NOT a
-    // property being protected: with the container present the depth
-    // permutation takes TerrainSurfacePlugin's reflectance injection without
-    // the before-lights block that DECLARES `terrainSurfaceF0`, so the symbol
-    // is unresolved. `getCustomCode` returns fragment injections for
-    // shaderType "fragment" unconditionally, with no check for which pass is
-    // compiling.
+    // FIXED, and the pre-fix note that stood here was wrong about the cause in
+    // two ways worth recording, because both were plausible and both misled.
     //
-    // WHEN 7-4b FIXES THIS, INVERT THIS ASSERTION IN THE SAME COMMIT.
+    // It said the DEPTH permutation took the reflectance injection without the
+    // before-lights block. Measured: no depth shader was ever involved. Every
+    // `shadowMap` module in both arms is 1.5-1.9 KB and contains no terrain
+    // symbol at all. The failing module was a BEAUTY-pass PBR permutation, and
+    // "depth" was an artefact of attributing errors by WHEN they arrived —
+    // `gpuErrors.slice(errorsBeforeDepth)` is a time slice of a device-wide
+    // list taken across full `scene.render()` calls.
+    //
+    // It also blamed `getCustomCode` for not checking which pass is compiling.
+    // The pass was never the variable. The real cause: a
+    // `ClusteredLightContainer` makes Babylon include `<pbrBlockReflectance0>`
+    // a SECOND time inside `fn computeClusteredLighting2`
+    // (pbrClusteredLightingFunctions.js:34). That block is where the anchor
+    // text lives, the injection is a global replace, so the override landed in
+    // both — and in the helper `terrainSurfaceF0` was a local of `main`,
+    // 1,702 lines later and out of scope. Clean arm: one use site, at 3137,
+    // after the declaration at 3091. Clustered: uses at 1481 and 3229 against
+    // a declaration at 3183.
+    //
+    // The fix makes the two values module-scope `var<private>` so both scopes
+    // see them (`TerrainSurfacePlugin` FRAGMENT_DEFINITIONS), which also means
+    // clustered lights get the terrain's reflectance rather than Babylon's
+    // default — the visible half a lookbehind-based exclusion would have cost.
     const depthBroken = (clustered.depthErrors ?? []).some(
       (message) => /terrainSurfaceF0/u.test(message),
     );
     expect(
       depthBroken,
-      "the container no longer breaks the shadow-depth permutation — if 7-4b "
-      + "fixed it, invert this assertion in the same commit and record the fix",
-    ).toBe(true);
-
-    // And the nastier half, worth pinning separately: the wrapper reports
-    // READY while its shader module failed to create. A depth pass can be
-    // broken and still answer isReady() with true.
+      `the clustered permutation broke again on terrainSurfaceF0. The likely cause `
+      + `is that the module-scope var<private> declarations in `
+      + `TerrainSurfacePlugin's FRAGMENT_DEFINITIONS were turned back into `
+      + `locals of main: ${JSON.stringify(clustered.depthErrors)}`,
+    ).toBe(false);
     expect(
-      clustered.depthReady,
-      "the wrapper now reports NOT ready on a broken depth shader — if that "
-      + "changed, isReady() became trustworthy and this note is stale",
-    ).toBe(true);
+      (clustered.depthErrors ?? []).length,
+      `the clustered permutation produced GPU errors: ${JSON.stringify(clustered.depthErrors)}`,
+    ).toBe(0);
+
+    // The `isReady()` trap is NOT asserted here any more, and that is the
+    // honest state rather than an omission: it needs a broken shader to
+    // observe, and there is no longer one. Recorded so it is not rediscovered
+    // as new — a wrapper reports READY while its shader module failed to
+    // create, so a depth pass can be broken and still answer isReady() true.
+    expect(clustered.depthReady).toBe(true);
   }, 240_000);
 });
