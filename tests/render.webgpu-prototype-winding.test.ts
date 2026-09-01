@@ -8,6 +8,7 @@ import {
   buildRockPrototype,
   buildGrassPatchPrototype,
   buildClutterPrototype,
+  type GroundCoverArchetype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
 import { buildBladeRibbon } from "../src/render/webgpu/detail/GroundCoverSystem";
 
@@ -165,18 +166,33 @@ const VOLUME_CONVENTION = Math.sign(SPHERE.signedVolume);
  */
 const KNOWN_INVERTED: ReadonlyMap<string, string> = new Map([]);
 
+/**
+ * The archetypes `buildGrassPatchPrototype` can actually build, matching the
+ * four the shipping caller hard-codes at `WorldDetailRuntime.ts:3534`.
+ *
+ * `_coversEveryArchetype` below is a COMPILE-TIME exhaustiveness check: if
+ * `prototypeGeometry`'s `GroundCoverArchetype` ever gains a member this list
+ * lacks, the assignment stops typechecking. Without it this is a hand-written
+ * roster, which is the thing that let the blade ribbon go unmeasured -- a list
+ * a member can fail to appear in.
+ */
+const GRASS_ARCHETYPES = ["grass", "fern", "heather", "reed"] as const;
+type _Uncovered = Exclude<GroundCoverArchetype, (typeof GRASS_ARCHETYPES)[number]>;
+const _coversEveryArchetype: _Uncovered extends never ? true : never = true;
+void _coversEveryArchetype;
+
 function cases(): ReadonlyArray<readonly [string, Geo]> {
   const out: Array<readonly [string, Geo]> = [];
   for (const species of ["oak", "pine", "birch"] as const) {
     const proto = buildTreePrototype(species, 0, 1, "near");
-    out.push([`tree.crown`, proto.crown as unknown as Geo]);
-    out.push([`tree.trunk`, proto.trunk as unknown as Geo]);
+    out.push([`tree.crown.${species}`, proto.crown as unknown as Geo]);
+    out.push([`tree.trunk.${species}`, proto.trunk as unknown as Geo]);
     // (species, variant, seed, band) — matching buildTreePrototype's own
     // (species, variant, seed, band) above, so the fringe is measured on the
     // SAME prototype the crown and trunk come from. Passing (species, seed)
     // typechecked as (species, variant) with the seed silently in the variant
     // slot, which measured a different prototype than the rest of the row.
-    out.push([`tree.fringe`, buildCrownFringePrototype(species, 0, 1, "near") as unknown as Geo]);
+    out.push([`tree.fringe.${species}`, buildCrownFringePrototype(species, 0, 1, "near") as unknown as Geo]);
   }
   for (const species of ["juniper", "hazel", "sage"] as const) {
     out.push([`shrub.${species}`, buildShrubPrototype(species, 0, 1) as unknown as Geo]);
@@ -184,7 +200,24 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   for (const variant of ["granite", "limestone", "dark"] as const) {
     out.push([`rock.${variant}`, buildRockPrototype(variant, 1) as unknown as Geo]);
   }
-  out.push(["grass.patch", buildGrassPatchPrototype(1) as unknown as Geo]);
+  // EVERY archetype, not the default. The specs differ per archetype -- blade
+  // count, length, lean, and `layer` -- so the default tested one member of a
+  // family of four. And the default is `grass`, the one archetype
+  // `presentationBuild.ts` retires GLOBALLY while the blade field is live:
+  // the only one under test was the only one that never draws, while fern,
+  // heather and reed DO draw beyond the field radius.
+  //
+  // Deliberately NOT `GROUND_COVER_ARCHETYPES` from `densityField`, which is
+  // the canonical list and has FIVE members -- it includes `clutter`, which
+  // `GROUND_COVER_SPECS` has no entry for, so `buildGrassPatchPrototype`
+  // throws on it. `GroundCoverArchetype` is declared three times in this tree
+  // (`densityField` derives five; `types.ts` and `prototypeGeometry` each
+  // hard-code four) and the duplicates have drifted from the canonical one.
+  // This roster is the BUILDER's, so it matches what the builder can build.
+  for (const archetype of GRASS_ARCHETYPES) {
+    out.push([`grass.patch.${archetype}`,
+      buildGrassPatchPrototype(1, archetype) as unknown as Geo]);
+  }
   // The COMPUTE ground-cover blade, which is what a capture actually draws.
   // `grass.patch` above is retired globally for the grass archetype while the
   // blade field is live (`presentationBuild.ts`), so without this row the only
@@ -193,7 +226,13 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   for (const segments of [2, 3, 5, 7] as const) {
     out.push([`groundCover.blade.s${segments}`, buildBladeRibbon(segments) as unknown as Geo]);
   }
-  out.push(["clutter.log", buildClutterPrototype("log" as never, 1) as unknown as Geo]);
+  // All four ClutterKinds. `ed5b703` found `mossCushion` at +0.964 -- "which
+  // nobody had measured" -- and corrected it, but the guard still enumerated
+  // only `log`, so the surface it had just fixed went straight back to being
+  // unwatched. A fix without a case is a fix with a shelf life.
+  for (const kind of ["log", "stump", "branchLitter", "mossCushion"] as const) {
+    out.push([`clutter.${kind}`, buildClutterPrototype(kind as never, 1) as unknown as Geo]);
+  }
   return out;
 }
 
