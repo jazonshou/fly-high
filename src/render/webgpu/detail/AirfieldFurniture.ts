@@ -1,3 +1,4 @@
+import { hangarFootprint } from "../airfield/AirfieldStructures";
 import { DEFAULT_AIRPORT, runwayToWorld } from "../../../world/airport";
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import type { AirportDefinition } from "../../../world/types";
@@ -349,21 +350,40 @@ export function buildWindsockPart(
 // ---------------------------------------------------------------------------
 // The rest of `7-13`: fuel tanks, perimeter fence, runway signage.
 //
-// **Lateral offsets are the shared resource here**, and three sessions are
-// placing structures across the same centreline. Recorded together so the next
-// one can see the whole band rather than discovering a collision in a frame:
+// **Lateral offsets are a shared resource and this used to be a comment.** The
+// comment listed one number per structure and was endorsed as the thing to read
+// before siting anything. It was wrong in three ways at once, and every one of
+// them was invisible because the list was tidy:
 //
-//     signage    runway edge + clearance  (derived, ~26 m on this runway)
-//     windsock   55 m
-//     tower      runwayWidth * 0.5 + 95
-//     hangars    118 m
-//     fuel farm  135 m   <- this file
-//     fence      168 m   <- this file, outermost by construction
+//  1. **It recorded LINES for objects that have WIDTH.** "hangars 118 m" is an
+//     offset that resolves to ~135 and spans ~112 to ~158, because a hangar is
+//     46 m across. A reader placing something at 135 would have put it through
+//     the middle of one.
+//  2. **It mixed conventions silently.** The windsock's 55 is a bare `across`;
+//     the tower's 95 is `runwayWidth/2 + 95`; the hangars' 118 is the same but
+//     written without the formula. Three rows, two conventions, no way to tell
+//     which was which.
+//  3. **It answered a ONE-dimensional question about a TWO-dimensional
+//     problem.** The tower's across is 112 — exactly the hangars' inboard edge.
+//     It is clear only because `along` separates them by 185.6 m, an axis the
+//     comment could not represent. A record that cannot show the axis doing the
+//     work will eventually be believed about a case where that axis is absent.
 //
-// The fence is last on purpose: it is the only one whose job is to be outside
-// everything else, so it is derived from the outermost structure rather than
-// given its own constant to drift against.
+// The fuel farm was the case waiting to happen: `FUEL_FARM_LATERAL_OFFSET_METERS`
+// is 135 with zero consumers, and there is no reading of it that clears the
+// hangars. It was not a defect yet — only because nobody had wired it.
+//
+// So the band is DERIVED rather than transcribed, both axes are recorded, and
+// `render.webgpu-airfield-layout.test.ts` asserts no two structures overlap in
+// both. A band of expressions cannot disagree with the code; a band of numbers
+// just did.
 // ---------------------------------------------------------------------------
+
+/** The ATC tower's placement, exported so the band can derive rather than restate. */
+export const TOWER_LATERAL_OFFSET_METERS = 95;
+export const TOWER_ALONG_FRACTION = 0.06;
+/** Plan radius of the tower's widest element, for the band's across span. */
+export const TOWER_PLAN_RADIUS_METERS = 7;
 
 /** A bulk avgas tank: 12 m long, 2.5 m diameter, horizontal on saddles. */
 export const FUEL_TANK_LENGTH_METERS = 12;
@@ -374,6 +394,102 @@ export const FUEL_FARM_LATERAL_OFFSET_METERS = 135;
 export const FENCE_POST_HEIGHT_METERS = 2.4;
 export const FENCE_POST_SPACING_METERS = 3;
 export const FENCE_LATERAL_OFFSET_METERS = 168;
+
+/**
+ * Where the fuel farm sits ALONG the runway.
+ *
+ * **Its `across` of 135 puts it inside the hangar footprint (112..158) and no
+ * reading of that constant clears them**, so the axis that separates it has to
+ * be this one. The hangar row occupies `along` -227.4 .. -89.4 on the default
+ * airport; the farm sits on the opposite side of the tower, which is both clear
+ * and the way a real field lays out — fuel away from the hangar line, reachable
+ * from the same apron.
+ *
+ * `AIRFIELD_LATERAL_BAND` asserts the clearance rather than assuming it.
+ */
+export const FUEL_FARM_ALONG_FRACTION = 0.14;
+/** Plan half-extents of the tank group, for the band. */
+export const FUEL_FARM_HALF_ACROSS_METERS = 6;
+export const FUEL_FARM_HALF_ALONG_METERS = 8;
+
+export interface AirfieldFootprint {
+  readonly name: string;
+  /** Runway-local `across` span, metres from the centreline. */
+  readonly across: readonly [number, number];
+  /**
+   * Runway-local `along` span, or `null` for something that runs the length of
+   * the field. A null span overlaps EVERYTHING in `along`, so such a structure
+   * has to be clear of every other on `across` alone — which is exactly the
+   * fence's job, and why it is derived as outermost rather than given a
+   * constant to drift against.
+   */
+  readonly along: readonly [number, number] | null;
+}
+
+/**
+ * Every structure's footprint in BOTH axes, derived from the constants that
+ * place it.
+ *
+ * Nothing here is transcribed. A number repeated into a record is a copy that
+ * can disagree with the code, which is what the comment above this one did.
+ */
+export function airfieldLateralBand(
+  airport: Readonly<AirportDefinition>,
+): readonly AirfieldFootprint[] {
+  const half = airport.runwayWidth / 2;
+  const sign = signLateralOffsetMeters(airport);
+  const towerAcross = half + TOWER_LATERAL_OFFSET_METERS;
+  const towerAlong = airport.runwayLength * TOWER_ALONG_FRACTION;
+  const fuelAcross = half + FUEL_FARM_LATERAL_OFFSET_METERS;
+  const fuelAlong = airport.runwayLength * FUEL_FARM_ALONG_FRACTION;
+  const hangars = [0, 1, 2].map((index) => hangarFootprint(airport, index));
+  return Object.freeze([
+    { name: "signage", across: [sign - 0.5, sign + 0.5], along: null },
+    {
+      name: "windsock",
+      across: [WINDSOCK_LATERAL_OFFSET_METERS - 1, WINDSOCK_LATERAL_OFFSET_METERS + 1],
+      along: [-1, 1],
+    },
+    {
+      name: "tower",
+      across: [towerAcross - TOWER_PLAN_RADIUS_METERS, towerAcross + TOWER_PLAN_RADIUS_METERS],
+      along: [towerAlong - TOWER_PLAN_RADIUS_METERS, towerAlong + TOWER_PLAN_RADIUS_METERS],
+    },
+    ...hangars.map((footprint, index) => ({
+      name: `hangar-${index}`,
+      across: [
+        footprint.across - footprint.widthMeters / 2,
+        footprint.across + footprint.widthMeters / 2,
+      ] as readonly [number, number],
+      along: [
+        footprint.along - footprint.depthMeters / 2,
+        footprint.along + footprint.depthMeters / 2,
+      ] as readonly [number, number],
+    })),
+    {
+      name: "fuel-farm",
+      across: [fuelAcross - FUEL_FARM_HALF_ACROSS_METERS, fuelAcross + FUEL_FARM_HALF_ACROSS_METERS],
+      along: [fuelAlong - FUEL_FARM_HALF_ALONG_METERS, fuelAlong + FUEL_FARM_HALF_ALONG_METERS],
+    },
+    {
+      name: "fence",
+      across: [half + FENCE_LATERAL_OFFSET_METERS - 0.5, half + FENCE_LATERAL_OFFSET_METERS + 0.5],
+      along: null,
+    },
+  ] as readonly AirfieldFootprint[]);
+}
+
+/** Do two footprints overlap in BOTH axes? A null `along` spans everything. */
+export function airfieldFootprintsOverlap(
+  a: AirfieldFootprint,
+  b: AirfieldFootprint,
+): boolean {
+  const spans = (x: readonly [number, number], y: readonly [number, number]) =>
+    x[0] < y[1] && y[0] < x[1];
+  if (!spans(a.across, b.across)) return false;
+  if (a.along === null || b.along === null) return true;
+  return spans(a.along, b.along);
+}
 
 /**
  * A mandatory instruction sign — ICAO Annex 14 Table 5-4, inscription height

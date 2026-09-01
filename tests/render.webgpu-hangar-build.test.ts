@@ -12,6 +12,7 @@ import {
   AIRFIELD_STRUCTURE_LOD,
   buildHangar,
   hangarAttachments,
+  hangarDetailBoxes,
   hangarPlanFrom,
   hangarShellGeometry,
 } from "../src/render/webgpu/airfield/AirfieldStructures";
@@ -57,6 +58,7 @@ function build(host: Scene, root: TransformNode, index: number) {
   const materials = {
     metal: new StandardMaterial("metal", host),
     concrete: new StandardMaterial("concrete", host),
+    glass: new StandardMaterial("glass", host),
   };
   return { plan, built: buildHangar(host, root, index, plan, attachments, materials), materials };
 }
@@ -103,11 +105,59 @@ describe("hangar meshes reach the renderer's registries", () => {
     const host = scene();
     try {
       const root = new TransformNode("airport", host.scene);
-      const { built } = build(host.scene, root, 0);
-      // Draw calls are the binding axis here. Two materials, two meshes.
-      expect(built.meshes.length).toBe(2);
+      const { built, plan } = build(host.scene, root, 0);
+      // Asserted as a PROPERTY, not a count. The first version of this pinned
+      // `toBe(2)` and broke the moment `7-10` added glazing — a true failure
+      // that carried no information, because the number it defended was
+      // incidental and the rule it meant to defend was not being checked at
+      // all. What matters is that mesh count tracks MATERIALS and not PARTS.
+      const surfaces = new Set(hangarShellGeometry(plan).groups.map((g) => g.surface));
+      expect(built.meshes.length).toBe(surfaces.size);
       const names = built.meshes.map((m) => m.name).sort();
-      expect(names).toEqual(["airport-hangar-0-concrete", "airport-hangar-0-metal"]);
+      expect(names).toEqual([...surfaces].map((s) => `airport-hangar-0-${s}`).sort());
+
+      // The rule with teeth: a per-part build would cost one draw per solid,
+      // and there are dozens. This is the comparison the count was standing in
+      // for, and unlike the count it stays true as detail grows.
+      const parts = hangarDetailBoxes(plan).length;
+      expect(parts, "the detail pass emits no solids").toBeGreaterThan(10);
+      expect(
+        built.meshes.length,
+        "mesh count is tracking parts rather than materials",
+      ).toBeLessThan(parts);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("keeps the glazing out of the caster list and everything else in", () => {
+    const host = scene();
+    try {
+      const root = new TransformNode("airport", host.scene);
+      const { built } = build(host.scene, root, 0);
+      const casterNames = built.shadowCasters.map((m) => m.name).sort();
+      // Every caster is also a mesh — a caster that is not in the scene graph
+      // would be a dangling registration.
+      for (const caster of built.shadowCasters) {
+        expect(built.meshes, `${caster.name} casts but is not a built mesh`).toContain(caster);
+      }
+      expect(casterNames).toEqual([
+        "airport-hangar-0-concrete",
+        "airport-hangar-0-metal",
+      ]);
+
+      // NON-VACUITY: the glazing must actually EXIST to have been excluded.
+      // Without this the assertion above passes just as well on a build that
+      // never made a glass mesh at all — which is the same green-by-absence
+      // shape as a guard whose case list is empty.
+      expect(
+        built.meshes.map((m) => m.name),
+        "no glass mesh was built, so excluding it from the casters proves nothing",
+      ).toContain("airport-hangar-0-glass");
+
+      // `82c4182` measured 2.00 draws per hangar mesh inside the LOD cull, so
+      // this exclusion is worth exactly one draw per hangar per frame.
+      expect(built.shadowCasters.length).toBe(built.meshes.length - 1);
     } finally {
       host.dispose();
     }

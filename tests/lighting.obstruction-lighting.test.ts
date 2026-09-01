@@ -30,6 +30,7 @@ import {
   hangarAttachments,
   hangarPlanFrom,
   hangarFootprint,
+  hangarShellGeometry,
   HANGAR_PLAN_LIMITS,
   HANGAR_SITING,
 } from "../src/render/webgpu/airfield/AirfieldStructures";
@@ -291,6 +292,96 @@ describe("hangar obstruction fixtures", () => {
         expect(away).toBeLessThanOrEqual(reach);
       }
     }
+  });
+
+  /**
+   * The top light must clear every point of the hangar it marks — read from the
+   * BUILT GEOMETRY, not from a height formula.
+   *
+   * **This is the one assertion here that anticipates a change nobody has made
+   * yet.** 7-10 is adding ridge ventilators that stand above the ridge. My
+   * fixtures mount at `ridgeEnds + OBSTRUCTION_ROOF_STAND_METERS`, so a vent
+   * taller than that stand puts the highest obstruction light BELOW the highest
+   * metal on the building — the one place an obstruction light must never be.
+   *
+   * **The near-miss that produced this test is why it reads the mesh.** The
+   * change was relayed to me as affecting `heightMeters`, and my fixtures do
+   * not read `heightMeters` at all. Had I checked only that field I would have
+   * concluded I was unaffected and been wrong, because the hazard travels
+   * through `ridgeEnds`. **A guard keyed on the field someone told me about
+   * would have gone green on the change it exists to catch.** Keyed on the
+   * shell's own vertices it cannot: the moment a vent is added to the geometry,
+   * this fails, without anyone remembering that 7-14 needed telling.
+   */
+  it("puts the top light above every vertex of the hangar it marks", () => {
+    for (let index = 0; index < 3; index += 1) {
+      const plan_ = hangarPlanFrom(7, index, 1.1);
+      const mounts_ = hangarAttachments(OBLIQUE, index, plan_, OBLIQUE.elevation + 2);
+      const shell = hangarShellGeometry(plan_);
+
+      // Shell positions are hangar-local; the attachments carry the slab and
+      // the airport datum. Compare in the shell's own frame: the tallest
+      // vertex against the ridge-end mount, both measured from the slab.
+      let tallest = -Infinity;
+      for (let p = 1; p < shell.positions.length; p += 3) {
+        if (shell.positions[p]! > tallest) tallest = shell.positions[p]!;
+      }
+      expect(Number.isFinite(tallest)).toBe(true);
+
+      const fixtures = hangarObstructionFixtures(OBLIQUE, mounts_);
+      const highestLight = Math.max(...fixtures.map((f) => f.position[1]));
+      const highestLightAboveSlab = highestLight - (OBLIQUE.elevation + 2 - OBLIQUE.elevation)
+        - OBLIQUE.elevation;
+
+      // FAILS IF: any geometry is added that out-tops the ridge by more than
+      // the fixture stand. The margin is the stand itself, so this is exactly
+      // "the light clears the metal", not a padded approximation.
+      expect(highestLightAboveSlab).toBeGreaterThan(tallest);
+    }
+  });
+
+  /**
+   * The negative control for the test above, adopted from 7-10's version of it.
+   *
+   * **The clearance assertion alone cannot tell a working fix from a lucky
+   * one.** Today the structural ridge IS the apex, so mounting at `ridgeEnds`
+   * clears everything and the guard passes — and it would go on passing if a
+   * raised mount later fixed the vent case for some unrelated reason. What
+   * makes it discriminating is showing the clearance goes NEGATIVE at the
+   * pre-fix mount height.
+   *
+   * **This is arithmetic on a hypothetical vent rather than a mutation**, so it
+   * survives in the suite. I proved the same thing once by injecting a vertex
+   * into `hangarShellGeometry` and deleting it afterwards; a guard whose
+   * discrimination was demonstrated once and thrown away is a guard nobody can
+   * check later. 7-10 pins the miss as a NUMBER for the same reason — a change
+   * to the stand shows up as a changed magnitude, not a flipped boolean.
+   */
+  it("would go NEGATIVE at the pre-fix mount height, which is what makes it discriminate", () => {
+    const plan_ = hangarPlanFrom(7, 0, 1.1);
+    const mounts_ = hangarAttachments(OBLIQUE, 0, plan_, OBLIQUE.elevation + 2);
+
+    // The stand is DERIVED from the shipped fixtures, not imported. It is
+    // module-private, and reading it out of the artifact means a change to it
+    // moves this test's numbers automatically instead of needing the constant
+    // re-exported and then kept in step by hand.
+    const ridgeLamp = hangarObstructionFixtures(OBLIQUE, mounts_)[0]!;
+    const stand = ridgeLamp.position[1] - (OBLIQUE.elevation + mounts_.ridgeEnds[0]![1]);
+    expect(stand).toBeGreaterThan(0);
+
+    // 7-10's ventilators stand 0.7 m above the ridge.
+    const VENT = 0.7;
+
+    // PRE-FIX: mounts at the structural ridge, vent above it. Lamp sits below.
+    const preFixClearance = stand - VENT;
+    expect(preFixClearance).toBeLessThan(0);
+    // Pinned as a MAGNITUDE, so a change to the stand shows up as a changed
+    // number rather than silently keeping the sign.
+    expect(preFixClearance).toBeCloseTo(-0.2, 9);
+
+    // POST-FIX: `ridgeEnds` raised to the true apex, so clearance IS the stand.
+    expect(stand).toBeGreaterThan(0);
+    expect(stand).toBeCloseTo(0.5, 9);
   });
 
   it("uses ONE intensity, because the whole generator sits below the 45 m band", () => {

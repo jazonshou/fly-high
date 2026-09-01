@@ -188,6 +188,16 @@ const VOLUME_CONVENTION = Math.sign(SPHERE.signedVolume);
 const KNOWN_INVERTED: ReadonlyMap<string, string> = new Map([]);
 
 /**
+ * Case-name prefixes whose builders DOCUMENT themselves as closed manifolds.
+ *
+ * The signed-volume metric is only defined on a closed surface, so the
+ * assertion below skips anything open — which means a surface that promises
+ * closure and stops delivering it leaves the guard with no failure anywhere.
+ * Listing the promise here turns that silence into a red test.
+ */
+const CLOSED_BY_CONTRACT: readonly string[] = ["airfield.hangarShell."];
+
+/**
  * The archetypes `buildGrassPatchPrototype` can actually build, matching the
  * four the shipping caller hard-codes at `WorldDetailRuntime.ts:3534`.
  *
@@ -394,10 +404,12 @@ describe("prototype triangle winding (Babylon convention)", () => {
     // wrong when normals are derived from the winding. Signed volume cannot.
     const wrong: string[] = [];
     const staleEntries: string[] = [];
+    const closedNames = new Set<string>();
     let closedSeen = 0;
     for (const [name, geo] of cases()) {
       const w = measure(geo);
       if (!w.closed || w.triangles === 0) continue;
+      closedNames.add(name);
       closedSeen += 1;
       const inverted = Math.sign(w.signedVolume) !== VOLUME_CONVENTION;
       if (KNOWN_INVERTED.has(name)) {
@@ -413,5 +425,34 @@ describe("prototype triangle winding (Babylon convention)", () => {
     expect(closedSeen, "no closed mesh was examined").toBeGreaterThan(0);
     expect(staleEntries).toEqual([]);
     expect(wrong, "closed meshes wound inside-out").toEqual([]);
+
+    // AND THE SURFACES THAT ARE SUPPOSED TO BE CLOSED MUST HAVE BEEN.
+    //
+    // `closedSeen > 0` above is satisfied by any one closed mesh in the whole
+    // roster, so a builder whose docstring PROMISES a closed manifold can go
+    // open and this assertion keeps passing on somebody else's geometry. That
+    // is not hypothetical: the hangar shell claimed to be "ONE closed
+    // manifold", was open by `2 * steps + 2` edges at the gable eave from the
+    // day it landed, and sat in this very case list being skipped — green by
+    // not being measured, which is the failure mode this file exists to catch,
+    // reproduced inside the file itself.
+    //
+    // Keyed on a PREFIX rather than a list of names so both roof profiles are
+    // covered without naming either, and a third profile joins automatically.
+    const skipped = cases()
+      .map(([name]) => name)
+      .filter((name) => CLOSED_BY_CONTRACT.some((prefix) => name.startsWith(prefix)))
+      .filter((name) => !closedNames.has(name));
+    expect(
+      skipped,
+      "these surfaces document themselves as closed manifolds but were judged "
+      + "OPEN, so the signed-volume assertion silently skipped them",
+    ).toEqual([]);
+    // The prefix must match something, or the check above is a filter over an
+    // empty list — the same vacuity one level up.
+    expect(
+      cases().filter(([name]) => CLOSED_BY_CONTRACT.some((p) => name.startsWith(p))).length,
+      "no case matched CLOSED_BY_CONTRACT — the prefixes have gone stale",
+    ).toBeGreaterThan(0);
   });
 });

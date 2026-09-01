@@ -5,6 +5,7 @@ import { runwayToWorld } from "../src/world/airport";
 import { sampleTerrainHeight } from "../src/world/terrain";
 import {
   HANGAR_PLAN_LIMITS,
+  HANGAR_DETAIL,
   HANGAR_SITING,
   MINIMUM_SKIRT_METERS,
   hangarAttachments,
@@ -228,7 +229,13 @@ describe("hangar seating", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("builds a closed shell whose skirt reaches the base", () => {
+  it("spans from the skirt's base to the highest metal on the building", () => {
+    // RENAMED. This was called "builds a closed shell" and never checked
+    // closure — and the shell was in fact OPEN by `2 * steps + 2` edges at the
+    // gable eave for as long as the name stood. A test title is a claim like
+    // any other. Closure is asserted for real, over the whole plan space and
+    // with a T-junction non-vacuity arm, in
+    // `render.webgpu-hangar-detail.test.ts`.
     for (const roof of ["gabled", "arched"] as const) {
       const plan = { ...hangarPlanFrom(1, 0, 2.5), roof };
       const geometry = hangarShellGeometry(plan);
@@ -237,7 +244,13 @@ describe("hangar seating", () => {
       const ys: number[] = [];
       for (let i = 1; i < geometry.positions.length; i += 3) ys.push(geometry.positions[i]!);
       expect(Math.min(...ys)).toBeCloseTo(-plan.skirtHeightMeters, 9);
-      expect(Math.max(...ys)).toBeCloseTo(plan.ridgeHeightMeters, 9);
+      // THE RIDGE IS NO LONGER THE TOP: `7-10`'s ventilators stand above it.
+      expect(Math.max(...ys))
+        .toBeCloseTo(plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters, 9);
+      expect(
+        Math.max(...ys),
+        "nothing rises above the ridge, so the ventilators are not being built",
+      ).toBeGreaterThan(plan.ridgeHeightMeters);
     }
   });
 
@@ -310,7 +323,19 @@ describe("hangar seating", () => {
         expect(ridgeY, `${roof}: a roof corner is at or above the ridge`).toBeGreaterThan(corner[1]);
       }
       expect(mounts.ridgeEnds.length).toBe(2);
-      expect(mounts.heightMeters).toBeCloseTo(plan.ridgeHeightMeters + plan.skirtHeightMeters, 9);
+      // `heightMeters` is what `7-14` mounts obstruction lighting against, so
+      // it has to be the height of the tallest METAL, not of the ridge. The
+      // ventilators stand above the ridge; a light at ridge height would sit
+      // below the highest thing on the building.
+      expect(mounts.heightMeters).toBeCloseTo(
+        plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters + plan.skirtHeightMeters,
+        9,
+      );
+      expect(
+        mounts.heightMeters,
+        "heightMeters stops at the ridge, so an obstruction light would sit "
+        + "below the ventilators",
+      ).toBeGreaterThan(plan.ridgeHeightMeters + plan.skirtHeightMeters);
     }
   });
 

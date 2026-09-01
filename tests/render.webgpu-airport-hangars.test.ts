@@ -7,7 +7,12 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 
 import { AirportSystem } from "../src/render/webgpu/detail/AirportSystem";
 import { createWorld } from "../src/world/world";
-import { HANGAR_SITING } from "../src/render/webgpu/airfield/AirfieldStructures";
+import {
+  HANGAR_SHADOW_CASTING_SURFACES,
+  HANGAR_SITING,
+  hangarPlanFrom,
+  hangarShellGeometry,
+} from "../src/render/webgpu/airfield/AirfieldStructures";
 
 /**
  * `7-10`: the hangars reach the renderer's registries THROUGH `AirportSystem`.
@@ -52,20 +57,35 @@ function system() {
 const hangarMeshes = (names: readonly string[]) =>
   names.filter((name) => name.startsWith("airport-hangar-"));
 
+/**
+ * The surfaces the shell builder emits, asked of the builder rather than
+ * listed. `AirportSystem` makes one mesh per group, so this is the per-hangar
+ * mesh count for any plan — the group set does not vary with bay count or roof
+ * profile, only the triangles inside it do.
+ */
+const SHELL_SURFACES = [
+  ...new Set(hangarShellGeometry(hangarPlanFrom(1, 0, 1)).groups.map((g) => g.surface)),
+];
+
 describe("hangars reach the registries through AirportSystem", () => {
   it("puts every hangar mesh in the walk FlightRenderer actually performs", () => {
     const host = system();
     try {
       const walked = hangarMeshes(host.system.root.getChildMeshes(false).map((m) => m.name));
-      // Two surfaces per hangar — metal cladding and the concrete skirt.
+      // DERIVED from the surfaces the shell builder actually emits, not the
+      // two this test was written against. The literal `* 2` here broke when
+      // `7-10` added glazing — a true failure carrying no information, because
+      // the number was incidental to the property (every surface of every
+      // hangar is reachable from the root) and the property was not checked.
       expect(
         walked.length,
         "hangar meshes are missing from `root.getChildMeshes(false)`, so they would "
           + "take neither cloud shadows nor aerial perspective, with no error",
-      ).toBe(HANGAR_SITING.count * 2);
+      ).toBe(HANGAR_SITING.count * SHELL_SURFACES.length);
       for (let index = 0; index < HANGAR_SITING.count; index += 1) {
-        expect(walked).toContain(`airport-hangar-${index}-metal`);
-        expect(walked).toContain(`airport-hangar-${index}-concrete`);
+        for (const surface of SHELL_SURFACES) {
+          expect(walked).toContain(`airport-hangar-${index}-${surface}`);
+        }
       }
     } finally {
       host.dispose();
@@ -80,7 +100,27 @@ describe("hangars reach the registries through AirportSystem", () => {
         casters.length,
         "hangar meshes cast no sun shadow — `shadowCasters` is frozen in the "
           + "constructor, so anything built after it is never added",
-      ).toBe(HANGAR_SITING.count * 2);
+      ).toBe(HANGAR_SITING.count * HANGAR_SHADOW_CASTING_SURFACES.length);
+
+      // THE PROPERTY THE COUNT CANNOT EXPRESS, and the one that changed: the
+      // glazing DRAWS but does not CAST. `HANGAR_SITING.count * 2` was still
+      // arithmetically right after `7-10` — 3 hangars times 2 casting surfaces
+      // — so it stayed green while saying nothing about the exclusion that had
+      // just been introduced. A count that survives the change it should have
+      // been watching is not watching it.
+      const walked = hangarMeshes(host.system.root.getChildMeshes(false).map((m) => m.name));
+      for (let index = 0; index < HANGAR_SITING.count; index += 1) {
+        expect(
+          walked,
+          `hangar ${index} has no glazing to exclude, so the exclusion below `
+          + "proves nothing",
+        ).toContain(`airport-hangar-${index}-glass`);
+        expect(
+          casters,
+          `hangar ${index}'s glazing casts a shadow — it stands 6 cm off a wall `
+          + "that already casts, and costs a draw per hangar per frame",
+        ).not.toContain(`airport-hangar-${index}-glass`);
+      }
     } finally {
       host.dispose();
     }

@@ -95,6 +95,22 @@ describe("the fence does not cast shadows, deliberately", () => {
       + "shadow nobody can resolve. If it is deliberate, re-derive the cost.",
     ).toBe(false);
     // Non-vacuity: the set must contain something, or this passes on an empty one.
-    expect(casters![1]!).toContain("hangars");
+    //
+    // Asserted on the CONTRIBUTORS, not on one variable's spelling. This arm
+    // read `toContain("hangars")` and broke when `7-10` renamed that local to
+    // `hangarCasters` — a correct catch (the list did change shape) reported as
+    // a fence regression, which is the wrong place to look. What the arm needs
+    // to know is that the list is populated and that the hangars are in it;
+    // neither fact depends on the identifier.
+    expect(
+      casters![1]!,
+      "the hangars are not in the shadow-caster set, so a fence absent from an "
+      + "empty set proves nothing",
+    ).toMatch(/hangar/i);
+    expect(
+      casters![1]!.match(/\.\.\./g)?.length ?? 0,
+      "the caster set has almost nothing in it — this test would pass on a "
+      + "registration that had been gutted",
+    ).toBeGreaterThanOrEqual(3);
   });
 });

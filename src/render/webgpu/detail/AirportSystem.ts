@@ -27,6 +27,7 @@ import {
   type TowerAttachments,
 } from "./towerGeometry";
 import { createAirfieldMaterials, type AirfieldMaterialSet } from "../airfield/AirfieldMaterials";
+import { TOWER_ALONG_FRACTION, TOWER_LATERAL_OFFSET_METERS } from "./AirfieldFurniture";
 import {
   HANGAR_SITING,
   MINIMUM_SKIRT_METERS,
@@ -125,6 +126,7 @@ export class AirportSystem {
     // the tower is, spelled out below.
     this.airfieldMaterials = createAirfieldMaterials(scene, seedHash);
     const hangars: Mesh[] = [];
+    const hangarCasters: Mesh[] = [];
     const attachments: HangarAttachments[] = [];
     for (let index = 0; index < HANGAR_SITING.count; index += 1) {
       const footprint = hangarFootprint(definition, index);
@@ -160,6 +162,10 @@ export class AirportSystem {
       );
       const built = buildHangar(scene, node, index, plan, mounts, this.airfieldMaterials);
       hangars.push(...built.meshes);
+      // `7-10` detail: the CASTER list is the builder's, not this loop's. The
+      // clerestory glazing is a mesh that draws and does not cast, so the two
+      // lists have diverged and `hangars` is no longer a stand-in for either.
+      hangarCasters.push(...built.shadowCasters);
       attachments.push(mounts);
     }
     this.hangarAttachments = Object.freeze(attachments);
@@ -179,8 +185,8 @@ export class AirportSystem {
     // Placed on the hangar side, nearer the runway than the hangars (+95 m
     // against their +118) and offset along it, so on final approach it reads as
     // a separate structure at a different range rather than a fourth hangar.
-    const towerAcross = definition.runwayWidth * 0.5 + 95;
-    const towerAlong = definition.runwayLength * 0.06;
+    const towerAcross = definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS;
+    const towerAlong = definition.runwayLength * TOWER_ALONG_FRACTION;
     const towerWorld = runwayToWorld(definition, towerAlong, towerAcross);
     const towerGround = groundHeight(towerWorld.x, towerWorld.z);
     // Same rule as the hangars: the root sits at the datum, so the tower's
@@ -313,7 +319,13 @@ export class AirportSystem {
     // 168 m off the centreline, at ranges where the whole perimeter is a few
     // pixels tall. Nobody can resolve it, and it would be paid on every shot
     // including the ones where the airfield is not even in frame.
-    this.shadowCasters = Object.freeze([...hangars, ...towerMeshes, ...windsockMeshes, ...furniture]);
+    // `hangarCasters`, NOT `hangars`: `7-10`'s clerestory glazing is a mesh that
+    // draws and does not cast, so the two lists diverged and `hangars` stopped
+    // being a stand-in for either. Every other contributor here still casts
+    // everything it builds.
+    this.shadowCasters = Object.freeze([
+      ...hangarCasters, ...towerMeshes, ...windsockMeshes, ...furniture,
+    ]);
   }
 
   /**

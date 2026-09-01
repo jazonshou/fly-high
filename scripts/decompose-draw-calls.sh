@@ -79,17 +79,66 @@ capture() { # <sha> <outdir>
         npx vitest run --config vitest.perf.config.ts >/dev/null 2>&1 )
     [ "$pass" = keep ] && cp "$wt/tests/perf/artifacts/report.json" "$out/report.json"
   done
+  # PROVENANCE, read from the worktree that actually ran. `captureEnvironment`
+  # records adapter, tier, quality and render scale -- and NO COMMIT. So a
+  # report is well-formed and internally consistent whether or not the checkout
+  # moved, and an arm that failed to rebuild produces a perfectly valid report
+  # OF THE WRONG TREE. That has cost this team four captures once already.
+  # Stamped per arm and asserted below; a claim about a commit needs evidence
+  # from the commit.
+  git -C "$wt" rev-parse HEAD > "$out/HEAD.sha"
+  git -C "$wt" status --porcelain | wc -l | tr -d " " > "$out/dirty.count"
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1
 }
 
 echo "baseline  $BASE"; capture "$BASE" "$WORK/base"
 echo "feature   $HEAD_SHA"; capture "$HEAD_SHA" "$WORK/feat"
 
-python3 - "$WORK/base/report.json" "$WORK/feat/report.json" "$HEAD_SHA" <<'PY'
+# The two arms must be the two commits asked for, and must differ. Without this
+# the whole run is a difference between two trees nobody verified.
+BASE_RAN="$(cat "$WORK/base/HEAD.sha")"; FEAT_RAN="$(cat "$WORK/feat/HEAD.sha")"
+BASE_WANT="$(git -C "$REPO" rev-parse "$BASE_REF")"; FEAT_WANT="$(git -C "$REPO" rev-parse "$HEAD_REF")"
+if [ "$BASE_RAN" != "$BASE_WANT" ] || [ "$FEAT_RAN" != "$FEAT_WANT" ]; then
+  echo "ERROR: an arm ran the wrong tree." >&2
+  echo "       baseline wanted $BASE_WANT ran $BASE_RAN" >&2
+  echo "       feature  wanted $FEAT_WANT ran $FEAT_RAN" >&2
+  exit 4
+fi
+if [ "$BASE_RAN" = "$FEAT_RAN" ]; then
+  echo "ERROR: both arms ran the SAME commit ($BASE_RAN); the difference is meaningless." >&2
+  exit 4
+fi
+if [ "$(cat "$WORK/base/dirty.count")" != "0" ] || [ "$(cat "$WORK/feat/dirty.count")" != "0" ]; then
+  echo "WARNING: an arm's worktree was dirty; the capture is not purely of that commit." >&2
+fi
+echo "provenance OK  base $(echo "$BASE_RAN" | cut -c1-7)  feat $(echo "$FEAT_RAN" | cut -c1-7)"
+
+python3 - "$WORK/base/report.json" "$WORK/feat/report.json" "$HEAD_SHA" "$SHOTS" <<'PY'
 import json, sys
 base = {s["name"]: s["drawCalls"] for s in json.load(open(sys.argv[1]))["shots"]}
 feat = {s["name"]: s["drawCalls"] for s in json.load(open(sys.argv[2]))["shots"]}
+
+# NON-VACUITY, STRUCTURAL. An empty report does not produce SMALL numbers, it
+# produces NO SHOTS -- and without this the loop below prints "no shot moved,
+# this commit costs no draws", which is the expected answer for most commits
+# here. A run that measured nothing would have been indistinguishable from a
+# correct zero. Structural, not physical: no threshold, no noise floor.
+requested = [s for s in (sys.argv[4].split(",") if len(sys.argv) > 4 and sys.argv[4] else []) if s]
+for label, got in (("baseline", base), ("feature", feat)):
+    if not got:
+        print(f"ERROR: the {label} report contains NO SHOTS. The run measured nothing; "
+              "this is not a zero result.", file=sys.stderr)
+        raise SystemExit(3)
+    missing = [s for s in requested if s not in got]
+    if missing:
+        print(f"ERROR: the {label} report is missing requested shot(s): {', '.join(missing)}. "
+              "A partial report cannot be differenced.", file=sys.stderr)
+        raise SystemExit(3)
+
 shared = sorted(set(base) & set(feat))
+if not shared:
+    print("ERROR: the two reports share no shots, so nothing can be differenced.", file=sys.stderr)
+    raise SystemExit(3)
 deltas = {n: feat[n] - base[n] for n in shared}
 moved = {n: d for n, d in deltas.items() if d != 0}
 print(f"\n=== {sys.argv[3]} : per-shot draw-call delta ===")
