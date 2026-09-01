@@ -264,6 +264,7 @@ async function compile(clustered: boolean): Promise<StageProfile> {
   }
 }
 
+
 describe("7-0-d: clustered lighting adapter spike", () => {
   it("measures the receiver-side cost of a ClusteredLightContainer", async () => {
     const base = await compile(false);
@@ -310,4 +311,5 @@ describe("7-0-d: clustered lighting adapter spike", () => {
     expect(clustered.interStage).toBeGreaterThan(0);
     expect(clustered.interStage - base.interStage).toBe(1);
   }, 180_000);
+
 });
