@@ -107,6 +107,16 @@ export function deliveryFloorsFrom(samples: DeliveryFloorSamples): DerivedDelive
  * regenerate.
  */
 export const DELIVERY_FLOOR_SAMPLES: Readonly<Record<string, DeliveryFloorSamples>> = Object.freeze({
+  // FIRST PIN (2026-09-01), three clean runs at committed 0af134c in a worktree.
+  // Cross-run wallClockFps spread 0.054 against the 0.5 tolerance; a fourth
+  // first-run capture was taken and discarded by protocol and agreed anyway.
+  "dusk-mesopic": {
+    fps: [121, 120.9, 121.2],
+    wallClockFps: [120.07, 120.07, 120.12],
+    frameIntervalMsP95: [9.2, 9.2, 9.4],
+    hitchCount: [0, 0, 0],
+    p999FrameMs: [9.3, 9.3, 9.4],
+  },
   "approach-500ft": {
     fps: [121.5, 121.3, 121.7],
     wallClockFps: [120.11, 119.82, 120.1],
@@ -515,7 +525,11 @@ export const SAMPLE_SPREAD_TOLERANCE_FPS = 0.5;
  * member that turns out to HAVE a predecessor is a stale entry and fails, so
  * this set cannot outlive its reason.
  */
-export const FIRST_PIN_SHOTS: ReadonlySet<string> = new Set<string>(["night-moonlit"]);
+export const FIRST_PIN_SHOTS: ReadonlySet<string> = new Set<string>([
+  "night-moonlit",
+  // First-pinned 2026-09-01 at 0af134c; see its ceilings block for provenance.
+  "dusk-mesopic",
+]);
 
 /** Cross-run wall-clock fps spread — the host-cleanliness evidence. */
 export function sampleSpreadFps(samples: DeliveryFloorSamples): number {
@@ -572,36 +586,38 @@ export function firstPinFrom(
  * is information worth having rather than a risk to paper over with margin.
  */
 export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Object.freeze({
-  "approach-500ft":               [154, 154, 154],
-  "slant-10km":                   [136, 136, 136],
-  "high-10000ft-down":            [139, 139, 139],
-  "reference-viewport":           [155, 155, 155],
-  "cruise-horizon":               [131, 131, 131],
-  "winter-noon":                  [154, 154, 154],
-  "night":                        [156, 156, 156],
-  "night-moonlit":                [156, 156, 156],
-  "motion-banked-turn":           [159, 159, 159],
-  "page-thrash-turn":             [158, 158, 158],
-  "cdlod-transition":             [126, 126, 126],
-  "cruise-sun-30":                [135, 135, 135],
-  "forest-500ft-sunbehind":       [155, 155, 155],
-  "coast-10km-lowsun":            [131, 131, 131],
-  "ground-2m-lowsun":             [163, 163, 163],
-  "canopy-1200ft":                [153, 153, 153],
-  "runway-on-approach":           [165, 165, 165],
-  "water-25ft":                   [134, 134, 134],
-  "grove-forest-2m":              [160, 160, 160],
-  "grove-meadow-2m":              [172, 172, 172],
-  "hills-dusk-glint":             [151, 151, 151],
-  "mountain-close":               [179, 179, 179],
-  "forest-line-highsun":          [151, 151, 151],
-  "cliff-60m":                    [167, 167, 167],
-  "water-3m":                     [133, 133, 133],
-  "veg-seam-1600ft-oblique":      [148, 148, 148],
-  "veg-seam-near-500ft":          [156, 156, 156],
-  "terrain-material-1600ft-down": [176, 176, 176],
-  "horizon-shadow-far-annulus":   [152, 152, 152],
-  "canopy-backlit-lowsun":        [160, 160, 160],
+  // First pin, 0af134c: byte-identical across three runs and the discarded warm-up.
+  "dusk-mesopic":                 [156, 156, 156],
+  "approach-500ft":               [155, 155, 155],
+  "slant-10km":                   [137, 137, 137],
+  "high-10000ft-down":            [140, 140, 140],
+  "reference-viewport":           [156, 156, 156],
+  "cruise-horizon":               [132, 132, 132],
+  "winter-noon":                  [155, 155, 155],
+  "night":                        [157, 157, 157],
+  "night-moonlit":                [157, 157, 157],
+  "motion-banked-turn":           [160, 160, 160],
+  "page-thrash-turn":             [159, 159, 159],
+  "cdlod-transition":             [127, 127, 127],
+  "cruise-sun-30":                [136, 136, 136],
+  "forest-500ft-sunbehind":       [156, 156, 156],
+  "coast-10km-lowsun":            [132, 132, 132],
+  "ground-2m-lowsun":             [164, 164, 164],
+  "canopy-1200ft":                [154, 154, 154],
+  "runway-on-approach":           [166, 166, 166],
+  "water-25ft":                   [135, 135, 135],
+  "grove-forest-2m":              [161, 161, 161],
+  "grove-meadow-2m":              [173, 173, 173],
+  "hills-dusk-glint":             [152, 152, 152],
+  "mountain-close":               [180, 180, 180],
+  "forest-line-highsun":          [152, 152, 152],
+  "cliff-60m":                    [168, 168, 168],
+  "water-3m":                     [134, 134, 134],
+  "veg-seam-1600ft-oblique":      [149, 149, 149],
+  "veg-seam-near-500ft":          [157, 157, 157],
+  "terrain-material-1600ft-down": [177, 177, 177],
+  "horizon-shadow-far-annulus":   [153, 153, 153],
+  "canopy-backlit-lowsun":        [161, 161, 161],
 });
 
 /**
@@ -705,7 +721,80 @@ export type DrawCallRaise =
       readonly deltas: Readonly<Record<string, number>>;
     };
 
+/**
+ * WHICH SHOTS A RAISE MAY NAME IS NOT A JUDGEMENT CALL — it falls out of the
+ * mechanism, and this comment exists because the only way to learn that
+ * currently is to have a gate reject you.
+ *
+ * A raise declares how far a shot's ceiling moved from
+ * `PREVIOUS_DRAW_CALL_CEILINGS`. A shot with no entry in that snapshot has no
+ * value it moved FROM, so its movement is not expressible as a raise at all —
+ * `undefined` is not a baseline of zero. Both `bloom` and `airfield-lighting`
+ * name exactly the same 29 shots, and neither author chose that number: it is
+ * the size of the snapshot.
+ *
+ * `dusk-mesopic` and `night-moonlit` postdate the snapshot. Their ceilings are
+ * still the measured count — that field is defined as the measurement, not as a
+ * ratcheted value — but they sit OUTSIDE the raise mechanism until they get a
+ * first pin (`firstPinFrom`, `FIRST_PIN_SHOTS`) or the snapshot is refreshed.
+ * Adding either to a raise's `shots` list fails with "which has no previous
+ * ceiling", which is correct and reads like a bug in the entry.
+ */
 export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
+  Object.freeze({
+    kind: "uniform" as const,
+    feature: "airfield-lighting",
+    commit: "122f9fa",
+    reason:
+      "AirfieldLightingSystem populates LightPointSystem, which had been "
+      + "constructed with an EMPTY fixture list and so issued no draw at all. One "
+      + "instanced draw now carries every light point -- 279 placed fixtures "
+      + "expanded per lit direction plus 8 PAPI lamps, 402 in total -- so the cost "
+      + "is one draw however many lamps are in frame, and it did NOT move when the "
+      + "lamps were recalibrated brighter. Uniform because the mesh sets "
+      + "`alwaysSelectAsActiveMesh = true` and is submitted on every shot whether "
+      + "or not the airfield is in view; a frustum-culled mesh would have made "
+      + "this per-shot. MEASURED +1 on 30 of 30, three byte-identical warm runs "
+      + "in a clean worktree at committed 326f94e. A fourth, first-run capture was "
+      + "taken and discarded by protocol: SWE II 1 measured a real first-run effect "
+      + "(136 vs 157 on `night`, residentTerrainPages and vegetationBatches moving "
+      + "with it), and although it did not occur here, a non-reproduction on a "
+      + "different shot and thermal state is not a refutation. `dusk-mesopic` is "
+      + "deliberately NOT named: it is new, has no committed ceiling, and needs "
+      + "its own three clean runs rather than riding in on this one. `night-moonlit` + is absent for the same structural reason: both postdate + `PREVIOUS_DRAW_CALL_CEILINGS`, so there is no baseline to have moved FROM + and their movement is not expressible as a raise. Their ceilings are still + the measured count -- that field is defined as the measurement, not as a + ratcheted value -- but they sit outside the raise mechanism until the + snapshot is next refreshed. Bloom names the same 29 for the same reason.",
+    delta: 1,
+    shots: Object.freeze([
+      "approach-500ft",
+      "canopy-1200ft",
+      "canopy-backlit-lowsun",
+      "cdlod-transition",
+      "cliff-60m",
+      "coast-10km-lowsun",
+      "cruise-horizon",
+      "cruise-sun-30",
+      "forest-500ft-sunbehind",
+      "forest-line-highsun",
+      "ground-2m-lowsun",
+      "grove-forest-2m",
+      "grove-meadow-2m",
+      "high-10000ft-down",
+      "hills-dusk-glint",
+      "horizon-shadow-far-annulus",
+      "motion-banked-turn",
+      "mountain-close",
+      "night",
+      "page-thrash-turn",
+      "reference-viewport",
+      "runway-on-approach",
+      "slant-10km",
+      "terrain-material-1600ft-down",
+      "veg-seam-1600ft-oblique",
+      "veg-seam-near-500ft",
+      "water-25ft",
+      "water-3m",
+      "winter-noon",
+    ]),
+  }),
   Object.freeze({
     kind: "uniform" as const,
     feature: "bloom",

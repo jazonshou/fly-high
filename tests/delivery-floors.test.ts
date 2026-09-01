@@ -319,26 +319,56 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
   );
 
   describe("a declared raise is checked, not just recorded", () => {
-    it("every uniform raise really is uniform", () => {
+    it("every declared raise is accounted for, to the draw", () => {
       // The claim that makes a uniform raise cheap to accept is that one
       // feature costs the same everywhere. If it does not, the entry is
       // describing creep as though it were a feature.
+      //
+      // THIS COMPARES THE SUM, and the change is a repair rather than a
+      // widening. This test previously asserted a shot's TOTAL movement equalled
+      // ONE raise's delta, which cannot pass once two raises name the same shot
+      // — for any value of either. `declaredRaiseFor` (deliveryFloors.mts) has
+      // always summed across every raise of both forms, and the ceiling gate
+      // above already spends `previous + declaredRaiseFor(name)`. The two gates
+      // disagreed, and the summing loop is the one the file means: it exists for
+      // a case this test never caught up to. Bloom's +4 and airfield-lighting's
+      // +1 were simply the first pair to expose it.
+      //
+      // WHAT THE AGGREGATE GIVES UP, stated so nobody reads it as more than it
+      // is: with only total movement observable, a shot's raises cannot be
+      // decomposed. Two live raises could each be non-uniform and still sum
+      // correctly, and this test would not see it.
+      //
+      // WHAT STOPS THAT MATTERING is the exactness. The comparison is `.toBe`,
+      // never `<=`, so no undeclared draw can hide inside the aggregate — every
+      // draw of growth is named by some entry, even if this test cannot say
+      // which. **Do not relax this to `toBeLessThanOrEqual`**; the ceiling gate
+      // above is already the permissive one, and this is the check that makes
+      // the total honest.
+      const named = new Set<string>();
       for (const raise of DRAW_CALL_RAISES) {
-        if (raise.kind !== "uniform") continue;
-        for (const name of raise.shots) {
-          const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
-          const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
-          expect(shot?.drawCallCeiling, `${raise.feature} names ${name}, which has no ceiling`)
-            .toBeDefined();
-          expect(previous, `${raise.feature} names ${name}, which has no previous ceiling`)
-            .toBeDefined();
-          expect(
-            shot!.drawCallCeiling! - previous!,
-            `${raise.feature} is declared uniform at ${raise.delta}, but ${name} moved by `
-              + `${shot!.drawCallCeiling! - previous!}. Either it is not one feature's cost, `
-              + "or it belongs in a per-shot raise that says what varies.",
-          ).toBe(raise.delta);
+        for (const name of raise.kind === "uniform" ? raise.shots : Object.keys(raise.deltas)) {
+          named.add(name);
         }
+      }
+      for (const name of [...named].sort()) {
+        const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
+        const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
+        const features = DRAW_CALL_RAISES.filter((raise) => raise.kind === "uniform"
+          ? raise.shots.includes(name)
+          : raise.deltas[name] !== undefined).map((raise) => raise.feature);
+        expect(shot?.drawCallCeiling, `${features.join(" + ")} names ${name}, which has no ceiling`)
+          .toBeDefined();
+        expect(previous, `${features.join(" + ")} names ${name}, which has no previous ceiling`)
+          .toBeDefined();
+        const moved = shot!.drawCallCeiling! - previous!;
+        expect(
+          moved,
+          `${name} moved by ${moved}, but the raises naming it `
+            + `(${features.join(" + ")}) declare ${declaredRaiseFor(name)}. Either a `
+            + "feature's cost is not what its entry claims, or undeclared growth is "
+            + "riding in beside it.",
+        ).toBe(declaredRaiseFor(name));
       }
     });
 
