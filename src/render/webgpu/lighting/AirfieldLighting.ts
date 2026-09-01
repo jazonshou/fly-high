@@ -1,4 +1,41 @@
 /**
+ * RETRACTION of `fafb11a`'s headline, recorded here because a commit message
+ * cannot be corrected in place.
+ *
+ * `fafb11a` is titled "Light the airfield" and reported
+ * `runway-on-approach` gaining 20.476% of its pixels against a same-tree dark
+ * control. THE WIRING LANDED; THE LAMPS ARE NOT VISIBLY LIT IN ANY SHOT.
+ *
+ * That 20.476% is terrain and ground-cover state differing between captures --
+ * the foreground ground is green in one frame and sand in the other, with rows
+ * 540-720 showing 66% and 81% of pixels changed at a mean of ~75 bytes. And
+ * `runway-on-approach` is a DAYLIGHT shot, so there should have been no lamp
+ * signal in it at all. The 12.5x day-versus-night figure came from the same
+ * method and is withdrawn with it.
+ *
+ * WHAT IS ESTABLISHED: the mesh draws where an empty system drew nothing, +1
+ * draw call measured uniformly on 30 of 30 shots, one instanced draw for 402
+ * light points. The lamps are not visible night or day. It is NOT brightness --
+ * raising `AIRFIELD_LAMP_SCENE_SCALE` by 1000x leaves the night frame
+ * pixel-identical to the eye.
+ *
+ * THE DEPTH TEST REJECTS THEM, and that is measured: forcing
+ * `depthFunction = ALWAYS` takes night-moonlit from 79 to 748 changed pixels
+ * and approach-500ft from 46 to 1180. The mechanism is plain in the fixture
+ * data -- `insetHeightMeters: 0` puts centreline and touchdown lamps exactly
+ * coplanar with the runway they are drawn against, and elevated fixtures sit
+ * 0.35 m up, below depth resolution at approach range. A ground-level additive
+ * billboard depth-tested against its own ground cannot win. Even with depth
+ * off the peak gain is 12-38 bytes, so depth is a confirmed contributor and
+ * probably not the whole story.
+ *
+ * CLOSED: the aerial-transmittance route is refuted, not merely unmeasured.
+ * `aerialPerspectiveCoefficients` reads only `state.atmosphere` and
+ * `state.weather.relativeHumidity` -- no clock term -- so transmittance is
+ * identical day and night at matched geometry and cannot produce a
+ * time-of-day ratio.
+ */
+/**
  * `7-7` airfield lighting — the PAPI's angular law.
  *
  * **This increment is the geometry only.** `AirfieldLightingSystem`, the third
