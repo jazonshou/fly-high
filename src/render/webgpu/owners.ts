@@ -1083,16 +1083,22 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "CLUSTERED_LIGHTING_WGSL",
       "resolveClusteredLightBinding",
     ],
-    plannedBy: "7-4b",
     notes:
       "Tile dimensions and slice count come from WebGpuQualityProfile data "
-      + "rather than a per-tier branch. Clustered light DATA is static per "
-      + "fixture: `_updateLightData` calls `engine.flushFramebuffer()` on WebGPU "
-      + "whenever it changes, so animated intensity belongs on the light POINTS. "
-      + "Receiver cost per container, measured from lightUboDeclaration: one "
-      + "sampled texture, one fragment storage buffer, one inter-stage varying, "
-      + "and 2 + 4x CLUSTLIGHT_SLICES floats of light UBO. Zero samplers -- the "
-      + "light data is read with textureLoad.",
+      + "rather than a per-tier branch. CORRECTED against Babylon's source: the "
+      + "container flushes the WebGPU framebuffer and rewrites its entire light "
+      + "buffer ONCE PER FRAME, UNCONDITIONALLY. `_updateLightData` guards on the "
+      + "scene RENDER ID, not on whether any light changed, so the flush is a "
+      + "standing per-frame cost of having the container at all -- animating a "
+      + "fixture's intensity adds nothing to it. Price the flush into 7-4b's "
+      + "baseline; do NOT treat static fixture data as a way to avoid it. "
+      + "Receiver cost per container, MEASURED on the adapter by 7-0-d: one "
+      + "texture binding, one fragment storage buffer, one inter-stage varying "
+      + "(terrain 13 -> 14 of 16 with the 4-cascade CSM), and 2 + 4x "
+      + "CLUSTLIGHT_SLICES floats of light UBO. ZERO samplers -- the light data "
+      + "is read with textureLoad, which is why a sampler-count measurement "
+      + "would have reported no change on a feature that does add a binding.",
+    plannedBy: "7-4b",
   },
   {
     // 7-5: the ~200 lights you SEE. Instanced emissive billboards that
@@ -1129,9 +1135,16 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
   {
     // 7-7: runway edge/threshold/centreline fixtures and the PAPI. The PAPI's
     // angular law is authored ANALYTICALLY here and deliberately not as IES:
-    // Babylon's `LoadIESData` is one-dimensional and rotationally symmetric
-    // about a single axis, and a PAPI is azimuthally asymmetric with a sharp
-    // vertical transition (D-3). IES carries only the symmetric fixtures.
+    // but NOT for D-3's stated reason, which is FALSE and corrected here.
+    // `LoadIESData` is not one-dimensional: it builds a `Float32Array(360*180)`
+    // and interpolates across theta (`iesLoader.js:124-141`). It merely RETURNS
+    // `{ width: 180, height: 1 }` because, in its own words, "we only need the
+    // first half of the first row ... as we only support IES for spot light".
+    // The real reason is RESOLUTION: 180 samples over 180 degrees of elevation
+    // is 1.0 deg/sample against 7-7's 0.1 deg pin -- ten times too coarse, and
+    // interpolating across a step renders the red/white transition as a 1 degree
+    // ramp rather than an edge. A perfectly 2D IES still could not carry that
+    // law, so this reason survives whatever the loader does next.
     artifact: "airfield-lighting",
     owner: "lighting",
     definitionSites: ["src/render/webgpu/lighting/AirfieldLighting.ts"],
@@ -1142,7 +1155,13 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "exist and 3-9 declined to build it. Mounts 7-14's obstruction lights. "
       + "The site exists as of 7-7's angular law; AirfieldLightingSystem itself "
       + "lands with 7-5, which owns the billboard path a PAPI is drawn through, "
-      + "so the row is enforced from now and one owned symbol is still to come.",
+      + "so the row is enforced from now and one owned symbol is still to come. "
+      + "MEMORY, corrected: ONE IES profile is 64,800 floats = 253.1 KiB on the "
+      + "CPU, not the 180 floats Q2 summed -- 360x low, and 2.5x Q2's entire "
+      + "claimed 7B budget from a single profile. What reaches the DEVICE depends "
+      + "on an upload policy nobody has stated: uploading per the returned "
+      + "descriptor gives 720 bytes AND the theta=0 column only -- the cheap case "
+      + "and the wrong-data case at once. Decide the policy before quoting either.",
   },
   {
     // 7-8: navigation, beacon, strobe and landing lights. Sited under

@@ -5,6 +5,17 @@ import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Vector2, Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { Constants as EngineConstants } from "@babylonjs/core/Engines/constants";
+import { LoadIESData } from "@babylonjs/core/Lights/IES/iesLoader";
+import {
+  AERIAL_PERSPECTIVE_UNIFORMS,
+  AERIAL_PERSPECTIVE_WGSL,
+  applyAerialPerspectiveToShaderMaterial,
+  type AerialPerspectiveBinding,
+} from "@/src/render/webgpu/atmosphere/AerialPerspective";
 import {
   relativeAirMass,
   STAR_EXTINCTION_MAGNITUDES_PER_AIRMASS,
@@ -124,6 +135,77 @@ export function iesProfileCoordinate(
   return Math.acos(cosine) / Math.PI;
 }
 
+/**
+ * Pack N one-dimensional IES profiles into one R32F texture, one row each.
+ *
+ * `LoadIESData` is the Light-free parser: it returns `{width, height: 1, data}`
+ * of candela values against polar angle, so a fixture kind is a ROW and the
+ * polar angle is the U axis. One texture for every kind keeps the promise this
+ * module exists to keep -- ONE draw -- because a per-kind texture would mean a
+ * per-kind material.
+ *
+ * THE RETURN SHAPE IS NOT WHAT IT SAYS, and this cost a real bug here. The
+ * loader reports `{ width: 180, height: 1 }` but hands back a Float32Array of
+ * **64,800** floats -- it builds a 180-phi x 360-theta grid and indexes it
+ * `[phi + theta * 180]` (`iesLoader.js:124-146`), then returns `width / 2` and
+ * a hardcoded `height: 1`. Code that trusts `height` reads 1/360th of the
+ * buffer. This function takes the **theta = 0 column explicitly**, which is the
+ * first 180 entries, because these fixtures are rotationally symmetric -- not
+ * because that is all there is.
+ *
+ * AND THE LOADER IS NOT ONE-DIMENSIONAL. `InterpolateCandelaValues` lerps
+ * across `candelaValues[thetaIndex]` and `[nextThetaIndex]`, so a .ies file
+ * declaring several horizontal angles produces a genuinely azimuthally
+ * asymmetric distribution. D-3 records the opposite; see the note filed against
+ * it. If that is corrected, this function is where a 2D profile would land.
+ */
+export function packIesProfiles(
+  scene: Scene,
+  files: readonly Uint8Array[],
+): { texture: RawTexture; rows: number; width: number } {
+  if (files.length === 0) throw new RangeError("packIesProfiles: no profiles");
+  const parsed = files.map((file) => LoadIESData(file));
+  const rows = parsed.length;
+  // The loader always emits 180 phi samples per theta column, whatever the
+  // source file's angular resolution -- it resamples internally. So the width
+  // is fixed rather than negotiated, and a file with 19 measured angles and one
+  // with 200 both arrive as 180.
+  const width = IES_PHI_SAMPLES;
+  const data = new Float32Array(width * rows);
+  for (let row = 0; row < rows; row += 1) {
+    const profile = parsed[row]!;
+    if (profile.data.length < width) {
+      throw new RangeError(
+        `packIesProfiles: profile ${row} has ${profile.data.length} samples, `
+        + `fewer than the ${width} phi samples the loader is documented to emit`,
+      );
+    }
+    // The theta = 0 column: entries [0, 180) of a [phi + theta * 180] grid.
+    for (let phi = 0; phi < width; phi += 1) {
+      data[row * width + phi] = profile.data[phi]!;
+    }
+  }
+  const texture = RawTexture.CreateRTexture(
+    data,
+    width,
+    rows,
+    scene,
+    false,
+    false,
+    // The profile is a smooth function of angle, so filtering across it is
+    // correct; NEAREST would step the beam edge.
+    Texture.BILINEAR_SAMPLINGMODE,
+    EngineConstants.TEXTURETYPE_FLOAT,
+  );
+  texture.name = "ies-profiles";
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  return { texture, rows, width };
+}
+
+/** Phi samples per theta column that `LoadIESData` always emits (`iesLoader.js:124`). */
+export const IES_PHI_SAMPLES = 180;
+
 const LIGHT_POINT_SHADER_NAME = "lightPoints";
 
 /**
@@ -153,6 +235,8 @@ uniform lightIesRows: f32;
 var iesProfileSampler: sampler;
 var iesProfile: texture_2d<f32>;
 
+${AERIAL_PERSPECTIVE_WGSL}
+
 @vertex
 fn main(input: VertexInputs) -> FragmentOutputs {
   let worldPosition = vertexInputs.position;
@@ -176,6 +260,18 @@ fn main(input: VertexInputs) -> FragmentOutputs {
     + 0.50572 * pow(clampedElevation + 6.07995, -1.6364));
   let extinction = pow(10.0, -0.4 * ${STAR_EXTINCTION_MAGNITUDES_PER_AIRMASS}
     * clamp(airMass, 1.0, 40.0));
+
+  // The finite-path half of extinction, from the OWNED include rather than a
+  // second model -- the elevation term above is the star path's, this is the
+  // atmosphere's, and neither is restated here.
+  //
+  // TRANSMITTANCE ONLY, DELIBERATELY. aerialPerspective also returns
+  // inScatter, and an opaque receiver adds it because the haze along the
+  // path is part of what that surface looks like. An ADDITIVE billboard must
+  // not: whatever drew behind it has already contributed the path's in-scatter
+  // to the framebuffer, and adding it again would put the haze in twice --
+  // once per light. A light point contributes its own flux, attenuated.
+  let haze = aerialPerspective(worldPosition.y, distanceMeters, 0.0);
 
   // Inverse-square falloff to scene-linear radiance, then the photometry.
   let irradiance = vertexInputs.lightParams.x * candela * extinction
@@ -201,7 +297,7 @@ fn main(input: VertexInputs) -> FragmentOutputs {
   );
   vertexOutputs.position = clipPosition;
   vertexOutputs.lightOffset = vertexInputs.lightCorner;
-  vertexOutputs.lightTint = vertexInputs.lightColor * irradiance
+  vertexOutputs.lightTint = vertexInputs.lightColor * irradiance * haze.transmittance
     / (renderedRadiusPixels * renderedRadiusPixels);
 }
 `;
@@ -331,6 +427,7 @@ export class LightPointSystem {
           "lightPsfPixels",
           "lightCameraPosition",
           "lightIesRows",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
         samplers: ["iesProfile"],
         shaderLanguage: ShaderLanguage.WGSL,
@@ -345,7 +442,46 @@ export class LightPointSystem {
     this.material.needAlphaBlending = () => true;
     this.material.setFloat("lightPsfPixels", LIGHT_POINT_PSF_RADIUS_PIXELS);
     this.material.setFloat("lightIesRows", Math.max(iesRows, 1));
+    this.material.setVector2("lightPixelSize", new Vector2(1, 1));
     this.mesh.material = this.material;
+  }
+
+  /**
+   * Per-frame haze binding, resolved once by the renderer for every consumer.
+   * Mirrors `HydrologySystem.setAerialPerspective` exactly; a second call
+   * shape would be a second integration point for one owned include.
+   */
+  setAerialPerspective(binding: AerialPerspectiveBinding): void {
+    applyAerialPerspectiveToShaderMaterial(
+      this.material,
+      binding,
+      (name, x, y, z) => this.material.setVector3(name, new Vector3(x, y, z)),
+      (name, x, y, z, w) => this.material.setVector4(name, new Vector4(x, y, z, w)),
+    );
+  }
+
+  /**
+   * NDC-per-pixel, so the sprite is sized in OUTPUT PIXELS and render scale
+   * cannot change its apparent size. Same call shape and same arithmetic as
+   * `StarFieldSystem.setRenderSize` deliberately: two sprite-sizing rules that
+   * looked alike but computed differently would be the drift this module
+   * exists to avoid.
+   */
+  setRenderSize(widthPixels: number, heightPixels: number): void {
+    this.material.setVector2(
+      "lightPixelSize",
+      new Vector2(2 / Math.max(1, widthPixels), 2 / Math.max(1, heightPixels)),
+    );
+  }
+
+  /** The camera position the inverse-square falloff and IES angle are taken from. */
+  setCameraPosition(position: Vector3): void {
+    this.material.setVector3("lightCameraPosition", position);
+  }
+
+  /** Bind the packed IES profile texture. */
+  setIesProfiles(texture: RawTexture): void {
+    this.material.setTexture("iesProfile", texture);
   }
 
   dispose(): void {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { CreateSphereVertexData } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import {
   buildLightPointGeometry,
+  LIGHT_POINT_FRAGMENT_WGSL,
+  LIGHT_POINT_WGSL,
   iesProfileCoordinate,
   LIGHT_POINT_PSF_RADIUS_PIXELS,
   lightPointAtmosphericTransmission,
@@ -88,6 +90,54 @@ describe("7-5 light points", () => {
     expect(iesProfileCoordinate([0, 1, 0], [0, 1, 0])).toBeCloseTo(0, 12);
     expect(iesProfileCoordinate([0, 1, 0], [1, 0, 0])).toBeCloseTo(0.5, 12);
     expect(iesProfileCoordinate([0, 1, 0], [0, -1, 0])).toBeCloseTo(1, 12);
+  });
+
+  it("produces no geometry and does not throw with an empty fixture list", () => {
+    // `FlightRenderer` constructs this system EMPTY: the fixtures are 7-7's,
+    // and wiring it now keeps the integration point exercised across the gate
+    // boundary rather than letting it rot unwired.
+    //
+    // The empty path is asserted rather than tolerated because otherwise
+    // "nothing renders" and "the system is broken" are the SAME observation on
+    // the day 7-7 populates it — and the first person to see a dark airfield
+    // would have no way to tell which they were looking at.
+    expect(() => buildLightPointGeometry([])).not.toThrow();
+    const empty = buildLightPointGeometry([]);
+    expect(empty.indices.length, "no fixtures must mean no triangles").toBe(0);
+    expect(empty.positions.length).toBe(0);
+    expect(empty.params.length).toBe(0);
+    // And one fixture must produce exactly one quad, so "zero" is a real zero
+    // rather than a builder that always returns nothing.
+    expect(buildLightPointGeometry([FIXTURES[0]!]).indices.length).toBe(6);
+  });
+
+  it("assembles the shader with the owned aerial include actually in it", () => {
+    // A missing interpolation is invisible to `tsc` and to every Node test that
+    // does not look: the string would simply lack the include and fail only on
+    // a GPU, in a compile error naming a symbol rather than a missing include.
+    // `isReady()` would not catch it either -- a readiness flag is not a
+    // compile check.
+    expect(LIGHT_POINT_WGSL).toContain("fn aerialPerspective(");
+    expect(LIGHT_POINT_WGSL).toContain("aerialPerspective(worldPosition.y");
+    expect(LIGHT_POINT_WGSL).toContain("haze.transmittance");
+    // In-scatter must NOT be added: an additive billboard draws over a
+    // framebuffer that already carries the path's in-scatter, so adding it
+    // again puts the haze in once per light.
+    expect(LIGHT_POINT_WGSL).not.toContain("haze.inScatter");
+
+    for (const [name, source] of [
+      ["vertex", LIGHT_POINT_WGSL],
+      ["fragment", LIGHT_POINT_FRAGMENT_WGSL],
+    ] as const) {
+      const opens = (source.match(/\{/g) ?? []).length;
+      const closes = (source.match(/\}/g) ?? []).length;
+      expect(opens, `${name} braces balanced`).toBe(closes);
+      // A backtick inside a WGSL template literal terminates the string and
+      // has already cost two confusing `tsc` failures in this file.
+      expect(source.includes("`"), `${name} carries no stray backtick`).toBe(false);
+    }
+    expect(LIGHT_POINT_WGSL).toContain("@vertex");
+    expect(LIGHT_POINT_FRAGMENT_WGSL).toContain("@fragment");
   });
 
   it("emits one draw's worth of geometry and winds it Babylon's way", () => {

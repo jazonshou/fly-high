@@ -24,6 +24,7 @@ import {
   SCENE_UNIT_TO_NITS,
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
+import { LightPointSystem } from "./webgpu/lighting/LightPoints";
 import {
   rodFractionForAdaptedLuminance,
   shouldRunScotopicPass,
@@ -404,6 +405,22 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly fxaa: FxaaPostProcess;
   /** 7-3: the catalogue star field, one additive draw. */
   private readonly stars: StarFieldSystem;
+  /**
+   * `7-5`: the lights you SEE, one additive instanced draw.
+   *
+   * CONSTRUCTED EMPTY ON PURPOSE. The fixtures are `7-7`'s --
+   * `AirfieldLightingSystem`, `PAPI_ANGLE_PROFILE` and `papiColourForAngle` are
+   * all still `plannedBy: "7-7"`, and inventing airfield geometry here would
+   * put a second author on a layout that item owns. Wiring it now rather than
+   * at the gate boundary keeps the integration point exercised: the aerial
+   * binding, render size and camera position all reach it every frame, so when
+   * `7-7` supplies fixtures the only new thing is the list.
+   *
+   * The empty path is ASSERTED, not merely tolerated -- see
+   * `render.webgpu-light-points.test.ts`. Otherwise "nothing renders" and "the
+   * system is broken" are the same observation on the day it is populated.
+   */
+  private readonly lightPoints: LightPointSystem;
   /** 7-2: rod vision, the first post-process (and therefore MSAA's owner). */
   private readonly scotopic: ScotopicVisionPass;
   private readonly resizeObserver: ResizeObserver;
@@ -501,6 +518,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
     stars: StarFieldSystem,
+    lightPoints: LightPointSystem,
     scotopic: ScotopicVisionPass,
     atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
@@ -530,6 +548,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.toneMap = toneMap;
     this.fxaa = fxaa;
     this.stars = stars;
+    this.lightPoints = lightPoints;
     this.scotopic = scotopic;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
@@ -986,6 +1005,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       const stars = new StarFieldSystem(scene, 1);
       cleanup.push(() => stars.dispose());
 
+      // `7-5`: empty until `7-7` authors the fixtures. See the field docblock.
+      const lightPoints = new LightPointSystem(scene, [], 1);
+      cleanup.push(() => lightPoints.dispose());
+      // Bound here rather than in the fan-out above, which runs before this
+      // system exists. The per-frame fan-out carries it from the next frame on;
+      // this is the one that lands before the first.
+      if (initialAerialBinding) lightPoints.setAerialPerspective(initialAerialBinding);
+
       // 7-2: rod vision, FIRST in the chain — it must see scene-referred
       // linear radiance, because the tone map is where exposure and ACES
       // live and a perceptual model applied after them would be operating on
@@ -1106,6 +1133,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         toneMap,
         fxaa,
         stars,
+        lightPoints,
         scotopic,
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
@@ -1875,6 +1903,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.update(this.camera.position);
     this.stars.update(this.camera.position);
     this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
+    this.lightPoints.setCameraPosition(this.camera.position);
+    this.lightPoints.setRenderSize(
+      this.engine.getRenderWidth(),
+      this.engine.getRenderHeight(),
+    );
     this.updateAerialPerspective();
   }
 
@@ -1942,6 +1975,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setAerialPerspective(binding);
     this.hydrology.setAerialPerspective(binding);
     this.clouds.setAerialPerspective(binding);
+    this.lightPoints.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.

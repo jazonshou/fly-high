@@ -91,6 +91,9 @@ interface StageProfile {
   /** `@location(...)` slots on the fragment input struct. */
   readonly interStage: number;
   readonly defines: string;
+  /** Did the SHADOW-DEPTH permutation compile? Not the same shader. */
+  readonly depthReady?: boolean;
+  readonly depthErrors?: readonly string[];
 }
 
 function declarations(source: string): { textures: Set<string>; samplers: Set<string> } {
@@ -255,9 +258,37 @@ async function compile(clustered: boolean): Promise<StageProfile> {
     expect(ready, `the ${clustered ? "clustered" : "baseline"} permutation never compiled`)
       .toBe(true);
 
-    const effect = mesh.subMeshes[0]?.effect;
-    expect(effect, "no effect compiled").toBeTruthy();
-    return profileFragment(effect!.fragmentSourceCode, effect!.defines);
+    // Profile the BEAUTY effect BEFORE driving the depth pass. Reading
+    // `subMeshes[0].effect` afterwards returns the DEPTH effect, which carries
+    // no CLUSTLIGHT define — measuring it would report "the container adds
+    // nothing" and a clean depth pass, a complete false all-clear. The
+    // non-vacuity assertion below caught exactly that.
+    const beauty = mesh.subMeshes[0]?.effect;
+    expect(beauty, "no beauty effect compiled").toBeTruthy();
+    const profile = profileFragment(beauty!.fragmentSourceCode, beauty!.defines);
+
+    // THE SHADOW-DEPTH PERMUTATION. A shadow-casting terrain material ships
+    // TWO compiled shaders and this spike originally measured only the beauty
+    // pass -- so it answered "does the container fit?" with a yes from an
+    // instrument that could not see the pass that breaks.
+    const errorsBeforeDepth = gpuErrors.length;
+    let depthReady = false;
+    for (let frame = 0; frame < 240 && !depthReady; frame += 1) {
+      engine.beginFrame();
+      scene.render();
+      engine.endFrame();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const subMesh = mesh.subMeshes[0];
+      depthReady = subMesh !== undefined
+        && (shadows.isReady(subMesh, true, false) || shadows.isReady(subMesh, false, false));
+      if (gpuErrors.length > errorsBeforeDepth) break;
+    }
+    const depthErrors = gpuErrors.slice(errorsBeforeDepth);
+    // eslint-disable-next-line no-console
+    console.log(`[spike] clustered=${clustered} depthReady=${depthReady} `
+      + `depthErrors=${depthErrors.length} ${JSON.stringify(depthErrors.slice(0, 2))}`);
+
+    return { ...profile, depthReady, depthErrors };
   } finally {
     for (const disposable of disposables) disposable.dispose();
     scene.dispose();
@@ -310,6 +341,46 @@ describe("7-0-d: clustered lighting adapter spike", () => {
     // still be under the adapter's limit with it.
     expect(clustered.interStage).toBeGreaterThan(0);
     expect(clustered.interStage - base.interStage).toBe(1);
-  }, 180_000);
+  
+    // ---- P-COMPILE, BOTH PERMUTATIONS ----------------------------------
+    // A shadow-casting terrain material ships TWO shaders. This spike
+    // originally compiled only the beauty pass and answered "does the
+    // container fit?" with a yes from an instrument that could not see the
+    // pass that breaks.
+    //
+    // CONTROL FIRST: if the clean arm's depth pass does not compile, the break
+    // is not the container and any attribution below is wrong before it starts.
+    expect(
+      base.depthReady && (base.depthErrors ?? []).length === 0,
+      `the CLEAN arm's shadow-depth permutation failed — attribution to the `
+      + `container would be wrong: ${JSON.stringify(base.depthErrors)}`,
+    ).toBe(true);
 
+    // PRE-FIX DEFECT, pinned so 7-4b has something it must invert. NOT a
+    // property being protected: with the container present the depth
+    // permutation takes TerrainSurfacePlugin's reflectance injection without
+    // the before-lights block that DECLARES `terrainSurfaceF0`, so the symbol
+    // is unresolved. `getCustomCode` returns fragment injections for
+    // shaderType "fragment" unconditionally, with no check for which pass is
+    // compiling.
+    //
+    // WHEN 7-4b FIXES THIS, INVERT THIS ASSERTION IN THE SAME COMMIT.
+    const depthBroken = (clustered.depthErrors ?? []).some(
+      (message) => /terrainSurfaceF0/u.test(message),
+    );
+    expect(
+      depthBroken,
+      "the container no longer breaks the shadow-depth permutation — if 7-4b "
+      + "fixed it, invert this assertion in the same commit and record the fix",
+    ).toBe(true);
+
+    // And the nastier half, worth pinning separately: the wrapper reports
+    // READY while its shader module failed to create. A depth pass can be
+    // broken and still answer isReady() with true.
+    expect(
+      clustered.depthReady,
+      "the wrapper now reports NOT ready on a broken depth shader — if that "
+      + "changed, isReady() became trustworthy and this note is stale",
+    ).toBe(true);
+  }, 240_000);
 });
