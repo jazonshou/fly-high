@@ -1447,6 +1447,50 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
     drawCallCeiling: 160,
   },
+  /**
+   * NIGHT_LOOK_ARCHITECTURE §2.1, Option B — two PROBE clocks bracketing the
+   * twilight dip, for Jason's four-frame reaction set (golden hour, blue
+   * hour, the dusk-mesopic mover, the night-moonlit unchanged control).
+   * PROBES, not baselined shots: `comparesToBaseline: false`, `ceilings:
+   * null`, APPENDED at the list's end — an insertion above would renumber
+   * every canonical index and move the pinned wave phase of every baselined
+   * shot (the Wave R trap).
+   *
+   * Both clocks are BISECTED against the shipping ephemeris to a target sun
+   * elevation, not picked — the `night` shot shipped effectively moonless
+   * because a plausible hour went unchecked. Same approach pose as
+   * `dusk-mesopic`/`night-moonlit`, so all four frames differ only in clock.
+   */
+  {
+    name: "golden-hour",
+    description: "Approach pose with the sun at +5.0 deg — bright and warm, ABOVE the twilight dip window",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    // 19.148 h -> sun sine +0.0872 (+5.0 deg), bisected on day 179 at 45N.
+    clock: { dayOfYear: 179, solarTimeHours: 19.148 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "blue-hour",
+    description: "Approach pose with the sun at -3.0 deg — inside the twilight dip's full hold",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    // 20.047 h -> sun sine -0.0523 (-3.0 deg), bisected on day 179 at 45N.
+    clock: { dayOfYear: 179, solarTimeHours: 20.047 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
 ]);
 
 export interface CaptureQuaternion {

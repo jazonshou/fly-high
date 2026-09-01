@@ -83,15 +83,42 @@ perceptual treatments, replacing the single achromatic pipe:
 
 - **Level, by ground anchor.** The night look's brightness is set by ONE
   art-directed anchor per ladder rung: *the display value moonlit mid-albedo
-  terrain should read.* Target for `night-moonlit`: terrain-band median
-  luminance in **[0.15, 0.30] display** (≈38–76 bytes; RDR2-readable), from
-  today's near-black. Moonless `night`: **[0.06, 0.14]** — darker, still
-  legible as shapes. The knob is the scotopic output mapping
-  (`SCOTOPIC_MID_GREY_TARGET`, first move 0.16 → ~0.30) and, if range demands
-  it, a night pre-exposure ahead of the response — but the anchor is the
-  CONTRACT; the constants serve it. The anchor is calibrated against the
-  captured artifact (terrain-band median), never against a formula, because
-  the scene-key theory and the frame have already disagreed once today.
+  terrain should read.* **ANCHORS UPDATED FROM JASON'S ROUND-1 REACTION
+  (2026-09-01):** he called the round-1 `night-moonlit` frame — terrain-band
+  median **0.1237** — *"on the right track"*, and `dusk-mesopic` at
+  **0.3467** *"wayyy too bright"*. So: moonlit anchor **[0.10, 0.16]**
+  (my provisional floor of 0.15 sat ABOVE his taste — the range moved DOWN,
+  and the planned `SCOTOPIC_MID_GREY_TARGET` lift 0.16 → 0.30 is
+  **CANCELLED**: round 1's moon+retention changes already landed the moonlit
+  rung at his level). Moonless `night`: provisional **[0.05, 0.10]**,
+  awaiting his word. Mesopic `dusk-mesopic`: **[0.15, 0.24]** provisional
+  (the rod-interpolated point between day 0.38 and approved night 0.124 is
+  ≈0.19). The anchor is calibrated against the captured artifact
+  (terrain-band median), never against a formula, because the scene-key
+  theory and the frame have already disagreed once today.
+
+  **The twilight dimming (round 2, RE-KEYED — the §5 risk fired and Jason
+  chose Option B):** dusk was NOT regressed by the probe — both candidate
+  mechanisms died by arithmetic (the moon lift added 0.0071 scene units at
+  dusk's 3.8°-altitude moon, sub-percent; dusk's exposure computes to 3.851,
+  unclamped) and no pre-probe dusk frame exists (7-0-a's shot was never
+  baselined; round 1 was its first human viewing). His reaction is a fresh
+  ANCHOR — and his choice, verbatim *"golden hour bright and warm, blue hour
+  properly dark"*, keys the dip to SUN ELEVATION: two targets minutes apart
+  in elevation and similar in raw luminance, which adaptation-keying could
+  not separate. As landed (`twilightExposureDipFactor`, EnvironmentDirector):
+  the dip rises over sun-sine +0.02→−0.05, holds at 0.45 through the blue
+  hour (−0.05→−0.16), releases −0.16→−0.26 — window edges DERIVED from the
+  shipping ephemeris (golden hour 19.0h = +0.111 above the window;
+  `dusk-mesopic` 20.45h = −0.109 mid-hold, factor 0.5500, targeting ≈0.19
+  from 0.347; `night-moonlit` 23.75h = −0.369, 0.11 of sine below the
+  release, factor exactly 1.0000 — the ONE approved frame pinned by shape).
+  Verified numerically across nine ladder points before capture. Companion
+  finding (`326f94e`, the Lead): `MOON_PEAK_LIGHT_INTENSITY` CANNOT brighten
+  moonlit ground at any value — ground and σ are the same quantity, the
+  ratio is 0.5 by construction; it is a CONTRAST lever (shadows 2.65×
+  darker at 0.18), so "stronger moon" belongs to exposure work, not that
+  constant.
 - **Colour: partial chroma retention.** `SCOTOPIC_CHROMA_RETENTION`
   (probe-landed at 0.65) — the rod response still sets luminance; the scene's
   own hue survives at retention strength (`sceneHue = soft/dot(soft, W)`, so
@@ -104,6 +131,27 @@ perceptual treatments, replacing the single achromatic pipe:
   the deep-blue gradient of the reference image. The probe touches both;
   the architecture keeps them independently tunable because Jason may want a
   blue sky over neutral ground.
+
+  **Round 1 proved the separation is not optional: the probe's bluer tint
+  moved `skyBlueDominance` the WRONG way (0.0017 → 0.0012)** — chroma
+  retention returned the sky's own near-neutral darkness, beating the tint.
+  The sky must carry blue RADIANCE. Design (round 2): the moon becomes a
+  night source of the SAME shared aerial-perspective integral that already
+  produces the day sky — the moonlit sky IS Rayleigh-scattered moonlight,
+  so the deep-blue gradient, the horizon falloff, and the blue depth-haze
+  on night terrain all fall out of the owned integral and agree with each
+  other by construction (exactly the 1C-5 property, extended to night).
+  Mechanics: below sun elevation −8° the aerial binding's source swaps to
+  the moon (blend over −4°…−8°), with three mitigations named now —
+  `sunDiscVisibility` gates off the sun-disc branch (the moon's disc is
+  drawn separately), the moon-phase term gets the TRUE sun direction via a
+  dedicated uniform (it currently reads `aerialSunDirection` and would
+  self-light the moon to permanently full), and the radiance scale
+  `NIGHT_SKY_MOON_RADIANCE_SCALE` is art-directed (the physical scale is
+  ~450,000× below visible — the docblock at `MOON_PEAK_LIGHT_INTENSITY`
+  already records why absolute night levels are chosen, relative ones
+  physical), tuned by capture against `skyBlueDominance` targeting
+  ~[0.04, 0.12] (day reads 0.147).
 - **Blur: near-zero.** Probe-landed at `0.25 + 0.75·rod` texels. The
   architecture treats acuity blur as an art knob with a low ceiling, not a
   physiological obligation.
@@ -212,9 +260,18 @@ sample-size checked):
 - `skyBlueDominance` — mean `B − (R+G)/2` over the sky band; a product of
   blueness AND brightness, which is what "more blue in the sky" means
   (positive and bounded: deep blue, not cyan, not black).
-- `lampMeanSaturation` — mean relative saturation among lit-gate pixels;
-  floor asserts "not all white" structurally, with the lit-gate's pixel count
-  as the sample-size guard (0 lamp pixels = instrument failure, never a pass).
+- `lampMeanSaturation` — mean relative saturation among lamp pixels **in the
+  0.45–0.60 luminance SHOULDER band within a lamp mask (4 px of a ≥0.90
+  core), never at the peak** (PE, measured on `122f9fa` with clean
+  provenance): saturation rises monotonically as brightness falls (cores
+  0.017, shoulder 0.174–0.233), the cores read neutral 245,245,245 with only
+  15/443 hard-clipped — that is the ACES shoulder desaturating highlights
+  toward white BY DESIGN, and a bright core reads white to the eye too. A
+  gate at the core would measure the tone map and tuning to beat it would
+  make everything below garish. On the landed tip the shoulder reads
+  0.17–0.23 against the 0.15 floor — the lamp gate is a REGRESSION GUARD,
+  not a driver. Sample-size guard as everywhere (0 lamp pixels =
+  instrument failure, never a pass).
 - `chromaSaturation` (luminance-weighted) — REPORTED, NOT GATED: it
   distinguishes tinted-grey from true-grey in diagnosis but cannot gate
   (see below).
@@ -265,14 +322,33 @@ Round-based, one look-change set per capture round, Jason reacting to frames:
    (this morning's worktree-calibration trap, generalised). Attribution in
    the round-1 report names BOTH authors' changes; the retention is the
    Lead's, the fixture colour the PE's, none of round 1 is the architect's.
-2. **Round 2 — the level + per-pixel cone chroma (mine).** Ground anchor
-   lift (mid-grey → ~0.30 starting value) and §2.2's cone-chroma, under my
-   pen, taken from the Lead after round 1 lands. Warm white then reaches its
-   FULL saturation through cone-chroma (round 1 shows it diluted to the
-   0.65 retention floor). Attribution inside rounds is carried by
-   instruments, not sequencing: the PE's lamp-pixel saturation/hue histogram
-   decomposes lamp changes, the terrain-band metrics decompose the level,
-   and the day-null guards both.
+2. **Round 2 — AS BUILT (2026-09-01, my pen, all suites green):** (a) the
+   twilight dip, Option B sun-elevation-keyed per Jason's choice, endpoints
+   pinned by the window's shape; (b) per-pixel cone chroma — **σ-RELATIVE**,
+   not absolute: the pixel reads photopic between 4× and 64× the frame's
+   adapted level (log-space smoothstep on the sharp nits). An absolute
+   cd/m² threshold was drafted first and CAUGHT BY COMPOSITION before any
+   capture: sharpNits is in scene-key-scaled units ~three orders above
+   physical, so an absolute photopic threshold of 3.0 lands inside the
+   moonlit ground's own range and would have stripped tint and retention
+   from the entire approved field — the misplaced-ladder trap in a new
+   costume. Hue follows the sharp-sample rule (blurred hue dilutes a point
+   source toward grey — the seam 7-4a fixed for luminance, found open for
+   hue independently twice); the rod tint fades to neutral with cone (the
+   blue cast cannot sit on a bright source); (c) the §2.1 moon-as-aerial-
+   source night sky with all three mitigations (phase reads a dedicated
+   true-sun uniform — the 7-1 anti-solar pin updated to guard the same
+   property against the NEW failure shape; disc gated by nightness; a
+   moonless night never swaps and stays honestly dark). The originally
+   planned mid-grey lift is CANCELLED (round 1 landed the moonlit anchor).
+   The FOUR-FRAME reaction set: `golden-hour` (+5.0°) and `blue-hour`
+   (−3.0°) probe shots appended with ephemeris-BISECTED clocks
+   (19.148h/20.047h, day 179 — appended at the list END; a mid-list insert
+   renumbers canonical indices and moves every pinned wave phase), plus
+   `dusk-mesopic` (the mover, 0.347 → ≈0.19 expected) and `night-moonlit`
+   (the UNCHANGED control — dip factor exactly 1.0000 there, and Jason will
+   look for that whether or not we say it). Attribution inside rounds is
+   carried by instruments, not sequencing.
 3. **Rounds 3+ — iterate on Jason's reactions.** Knobs move inside the §2.5
    registry; anything structural comes back to this document first.
 4. **R7-1 — spent ONCE at approval.** Jason approves a round → acceptance

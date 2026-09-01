@@ -91,6 +91,8 @@ describe("aircraft material stack compiles on-adapter (Gate A)", () => {
         sunColor: [1, 0.95, 0.88],
         skyHorizonColor: [0.35, 0.55, 0.72],
         sunIlluminanceNormalized: 1,
+        moonDirection: [0, -1, 0],
+        moonIlluminanceNormalizedToFull: 0,
       }, 0, 0);
       trainer.update({
         ...INITIAL_VISUAL_STATE,

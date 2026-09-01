@@ -426,14 +426,54 @@ export interface AerialPerspectiveBinding {
  * (1C-5 replaces the palette with skyRadiance() from this include; then the
  * agreement is by construction rather than by shared inputs.)
  */
+/**
+ * NIGHT_LOOK_ARCHITECTURE §2.1 — how much of the aerial integral's source is
+ * the MOON rather than the sun, from the sun's elevation sine alone. 0 by
+ * day and through civil twilight (sun above −4°), 1 below −8°: the moonlit
+ * sky IS Rayleigh-scattered moonlight, so at night the same shared integral
+ * that builds the day sky runs on the moon — the deep-blue gradient, the
+ * horizon falloff and the blue depth-haze on night terrain then agree with
+ * each other by construction (1C-5's property, extended to night).
+ */
+export function aerialNightness(sunDirectionY: number): number {
+  const t = Math.min(1, Math.max(0, (-0.07 - sunDirectionY) / 0.07));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The full-moon night sky's radiance as a fraction of the noon sun's, for
+ * the aerial integral. ART-DIRECTED ABSOLUTE, PHYSICAL RELATIVE — the same
+ * doctrine as `MOON_PEAK_LIGHT_INTENSITY` and for the same arithmetic
+ * reason: the physical ratio is ~2 × 10⁻⁶ (0.25 lux against 120,000), which
+ * the display chain cannot show. Everything relative still rides
+ * `moonIlluminanceNormalizedToFull` (phase, altitude, distance), so a half
+ * moon's sky is genuinely dimmer than a full moon's. Tuned by capture
+ * against `skyBlueDominance` targeting ~[0.04, 0.12] (day reads 0.147);
+ * Jason's sanction: "more blue in the sky than expected" is okay.
+ */
+export const NIGHT_SKY_MOON_STRENGTH = 0.02;
+
+/** The moonlit sky's source colour: cool daylight, slightly blue-shifted. */
+export const NIGHT_SKY_MOON_TINT: readonly [number, number, number] = [0.62, 0.78, 1.0];
+
 export function resolveAerialPerspectiveBinding(
   state: EnvironmentState,
   cameraAltitudeMeters: number,
   sunColor: [number, number, number],
   skyHorizonColor: [number, number, number],
   sunIlluminanceNormalized: number,
+  moonDirection: [number, number, number] = [0, -1, 0],
+  moonIlluminanceNormalizedToFull = 0,
 ): AerialPerspectiveBinding {
   const coefficients = aerialPerspectiveCoefficients(state);
+  // A moonless night never swaps: the sun stays the source with its own
+  // near-zero radiance, and the sky is honestly dark.
+  const nightness = moonIlluminanceNormalizedToFull > 0
+    ? aerialNightness(state.sun.direction[1])
+    : 0;
+  // Blend the SOURCE the integral runs on. Direction is a normalized lerp —
+  // both endpoints are unit vectors and the blend window is narrow, so the
+  // path never degenerates; radiance and transmittance blend per source.
   const sunTransmittance = evaluateTransmittance(
     state.atmosphere,
     Math.max(cameraAltitudeMeters, 0),
@@ -442,11 +482,48 @@ export function resolveAerialPerspectiveBinding(
   );
   const sunScale = sunIlluminanceNormalized * AERIAL_SUN_RADIANCE_SCALE;
   const daylight = Math.min(1, Math.max(0, (state.sun.direction[1] + 0.08) / 0.4));
-  const sunRadiance: [number, number, number] = [
+  let sourceDirection: [number, number, number] = [
+    state.sun.direction[0],
+    state.sun.direction[1],
+    state.sun.direction[2],
+  ];
+  let sourceRadiance: [number, number, number] = [
     sunColor[0] * sunScale,
     sunColor[1] * sunScale,
     sunColor[2] * sunScale,
   ];
+  let sourceTransmittance: [number, number, number] = [
+    sunTransmittance[0],
+    sunTransmittance[1],
+    sunTransmittance[2],
+  ];
+  if (nightness > 0) {
+    const moonScale = moonIlluminanceNormalizedToFull
+      * NIGHT_SKY_MOON_STRENGTH * AERIAL_SUN_RADIANCE_SCALE;
+    const moonTransmittance = evaluateTransmittance(
+      state.atmosphere,
+      Math.max(cameraAltitudeMeters, 0),
+      moonDirection[1],
+      12,
+    );
+    const blended: [number, number, number] = [
+      sourceDirection[0] * (1 - nightness) + moonDirection[0] * nightness,
+      sourceDirection[1] * (1 - nightness) + moonDirection[1] * nightness,
+      sourceDirection[2] * (1 - nightness) + moonDirection[2] * nightness,
+    ];
+    const length = Math.hypot(blended[0], blended[1], blended[2]) || 1;
+    sourceDirection = [blended[0] / length, blended[1] / length, blended[2] / length];
+    sourceRadiance = [
+      sourceRadiance[0] * (1 - nightness) + NIGHT_SKY_MOON_TINT[0] * moonScale * nightness,
+      sourceRadiance[1] * (1 - nightness) + NIGHT_SKY_MOON_TINT[1] * moonScale * nightness,
+      sourceRadiance[2] * (1 - nightness) + NIGHT_SKY_MOON_TINT[2] * moonScale * nightness,
+    ];
+    sourceTransmittance = [
+      sourceTransmittance[0] * (1 - nightness) + moonTransmittance[0] * nightness,
+      sourceTransmittance[1] * (1 - nightness) + moonTransmittance[1] * nightness,
+      sourceTransmittance[2] * (1 - nightness) + moonTransmittance[2] * nightness,
+    ];
+  }
   const ambient: [number, number, number] = [
     skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight,
     skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight,
@@ -454,15 +531,11 @@ export function resolveAerialPerspectiveBinding(
   ];
   return {
     cameraAltitudeMeters,
-    sunDirection: [
-      state.sun.direction[0],
-      state.sun.direction[1],
-      state.sun.direction[2],
-    ],
+    sunDirection: sourceDirection,
     coefficients,
-    sunRadiance,
+    sunRadiance: sourceRadiance,
     ambient,
-    sunTransmittance: [sunTransmittance[0], sunTransmittance[1], sunTransmittance[2]],
+    sunTransmittance: sourceTransmittance,
     strength: 1,
   };
 }
@@ -623,6 +696,10 @@ export interface AerialPerspectiveProjection {
   readonly sunColor: [number, number, number];
   readonly skyHorizonColor: [number, number, number];
   readonly sunIlluminanceNormalized: number;
+  /** §2.1 night sky: the moon as the integral's night source. */
+  readonly moonDirection: [number, number, number];
+  /** Moon illuminance / full-moon illuminance — phase, altitude, distance. */
+  readonly moonIlluminanceNormalizedToFull: number;
 }
 
 function isOpaqueAerialReceiver(material: PBRMaterial): boolean {
@@ -666,6 +743,8 @@ export class AerialPerspectiveRegistry extends SharedReceiverRegistry<
       projection.sunColor,
       projection.skyHorizonColor,
       projection.sunIlluminanceNormalized,
+      projection.moonDirection,
+      projection.moonIlluminanceNormalizedToFull,
     );
   }
 

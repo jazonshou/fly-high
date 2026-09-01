@@ -252,7 +252,6 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // Back to scene-linear so the ONE exposure curve on the image-processing
   // chain still owns the display mapping. The gain arrives precomputed.
   let rodLuminance = response * uniforms.scotopicDisplayGain + highlight;
-  let rodMonochrome = SCOTOPIC_TINT * rodLuminance;
   // ART DIRECTION: let the scene's own hue survive the rod blend. sceneHue is
   // the colour RATIO normalised by the same scotopic weights, so a neutral
   // input stays exactly neutral (the weights sum to 1) and only genuinely
@@ -260,10 +259,45 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // luminance; this decides only whether the result is grey.
   let sceneLuminance = max(dot(soft, SCOTOPIC_WEIGHTS), 1.0e-6);
   let sceneHue = soft / sceneLuminance;
+  // Per-pixel cone chroma (NIGHT_LOOK_ARCHITECTURE §2.2): a lamp bright
+  // enough to see is bright enough to see IN COLOUR. The pixel's own
+  // luminance decides how much cone vision sees it, measured RELATIVE TO
+  // SIGMA — the frame's adapted level — as a log-space smoothstep on the
+  // SHARP nits 7-4a already computes: cone vision takes over where a source
+  // sits many multiples above what the eye is adapted to. 4x..64x spans the
+  // hand-over (diffuse moonlit ground varies within ~1-3x of the scene key
+  // and stays rod-tinted; lamp shoulders, star cores and the moon's disc sit
+  // decades above and read in their own colour).
+  //
+  // DELIBERATELY NOT thresholded in absolute cd/m2: sharpNits is in
+  // scene-key-scaled units, which sit ~three orders above the physical
+  // adaptation at night (the misplaced-ladder fact this file's own sigma
+  // docblock records). An absolute photopic threshold of 3.0 lands INSIDE
+  // the moonlit ground's range in those units and would have stripped the
+  // rod tint and the retention floor from the entire approved field —
+  // caught by composition before any frame was captured, 2026-09-01.
+  //
+  // Hue follows the same sharp-sample rule as luminance: a point source's
+  // hue must come from its own pixels, not the blurred neighbourhood that
+  // dilutes it toward grey — 7-4a fixed that seam for luminance and left it
+  // open for hue (found independently twice, 2026-09-01).
+  let pixelCone = smoothstep(
+    ${Math.log(4)},
+    ${Math.log(64)},
+    log(max(sharpNits, 1.0e-6) / sigma),
+  );
+  let sharpHue = scene / max(dot(scene, SCOTOPIC_WEIGHTS), 1.0e-6);
+  let hue = mix(sceneHue, sharpHue, pixelCone);
+  // A fully photopic pixel carries no rod tint — cones see true colour, so
+  // the blue night cast fades out exactly where a source is bright enough
+  // to defeat it. Tint and hue are both luminance-normalised, so
+  // rodLuminance still owns the level throughout.
+  let tint = mix(SCOTOPIC_TINT, vec3f(1.0), pixelCone);
+  let chromaKeep = max(${SCOTOPIC_CHROMA_RETENTION}, pixelCone);
   let rodImage = mix(
-    rodMonochrome,
-    rodMonochrome * sceneHue,
-    ${SCOTOPIC_CHROMA_RETENTION},
+    tint * rodLuminance,
+    tint * rodLuminance * hue,
+    chromaKeep,
   );
 
   // 2. The mesopic blend.

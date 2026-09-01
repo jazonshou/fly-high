@@ -295,6 +295,49 @@ export const SCOTOPIC_FLOOR_ILLUMINANCE_LUX = (0.03 * Math.PI) / 0.2;
 export const MAX_EXPOSURE = BASE_EXPOSURE
   * Math.pow(REFERENCE_ILLUMINANCE_LUX / SCOTOPIC_FLOOR_ILLUMINANCE_LUX, ADAPTATION_STRENGTH);
 
+/**
+ * NIGHT_LOOK_ARCHITECTURE §2.1 — how dark twilight FEELS, keyed to SUN
+ * ELEVATION. Jason's Option B, chosen 2026-09-01: *"golden hour bright and
+ * warm, blue hour properly dark"* — two targets minutes apart in elevation
+ * and similar in raw luminance, which is exactly why an adaptation-keyed dip
+ * could not deliver them and this is keyed to the sun instead.
+ *
+ * His round-1 anchors: the moonlit night at terrain median 0.124 is "on the
+ * right track"; `dusk-mesopic` at 0.347 is "wayyy too bright". Dusk was NOT
+ * regressed by the probe (the moon lift added 0.0071 scene units there and
+ * dusk's exposure computes to 3.851, unclamped) — the rung had simply never
+ * been seen. So this is ART DIRECTION, not a bug fix.
+ *
+ * The window, in sun-elevation SINE, derived from the shipping ephemeris at
+ * the capture latitude/day rather than picked (day 179, 45°N: golden hour
+ * 19.0h = +0.111, sunset 19.75h = −0.008, `dusk-mesopic` 20.45h = −0.109,
+ * `night-moonlit` 23.75h = −0.369):
+ *
+ *   rises  +0.02 → −0.05   sunset into early blue hour begins to dim
+ *   holds  −0.05 → −0.16   the blue hour, `dusk-mesopic` mid-band
+ *   falls  −0.16 → −0.26   astronomical twilight releases to zero
+ *
+ * ENDPOINTS PINNED BY SHAPE on the new parameterisation, same discipline as
+ * the rod-keyed draft this replaces: golden hour (+0.111) is above the
+ * window — bright and warm, untouched; `night-moonlit` (−0.369) is 0.11 of
+ * sine below the release — the ONE approved frame cannot move. 0.45 targets
+ * dusk terrain ≈0.19 from 0.347, tuned by capture against the terrain-band
+ * median, never by eye alone.
+ */
+export const TWILIGHT_EXPOSURE_DIP = 0.45;
+
+function smooth01(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
+
+/** The §2.1 twilight dip factor from the sun-elevation sine (Option B). */
+export function twilightExposureDipFactor(sunElevationSine: number): number {
+  const rise = 1 - smooth01((sunElevationSine + 0.05) / 0.07);
+  const fall = smooth01((sunElevationSine + 0.26) / 0.1);
+  return 1 - TWILIGHT_EXPOSURE_DIP * rise * fall;
+}
+
 export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0): number {
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
   const illuminance = Math.max(

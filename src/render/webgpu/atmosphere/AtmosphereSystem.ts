@@ -24,6 +24,7 @@ import {
   horizontalIlluminanceLux,
   REFERENCE_ILLUMINANCE_LUX,
   SCENE_UNIT_TO_NITS,
+  twilightExposureDipFactor,
 } from "@/src/render/webgpu/nature/EnvironmentDirector";
 import {
   equatorialToWorld,
@@ -42,6 +43,7 @@ import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
   AERIAL_PERSPECTIVE_WGSL,
+  aerialNightness,
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "./AerialPerspective";
@@ -132,6 +134,11 @@ uniform sunDiscVisibility: f32;
 // sky's own sun direction, so the drawn phase can never disagree with the
 // lighting.
 uniform moonDirection: vec3f;
+// NIGHT_LOOK_ARCHITECTURE 2.1: the TRUE sun, for the moon's phase only.
+// aerialSunDirection becomes the MOON below twilight (the integral's night
+// source), and a phase computed against it would light the moon with itself
+// - permanently full. The terminator must follow the real sun.
+uniform moonPhaseSunDirection: vec3f;
 uniform moonFrame: vec4f;
 uniform moonRadiance: vec3f;
 uniform galacticPole: vec3f;
@@ -216,7 +223,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     // that its direction from the moon equals its direction from us, so the
     // terminator falls out of one dot product — no phase parameter is
     // needed and the phase can never disagree with the sky's own sun.
-    let lit = clamp(dot(surfaceNormal, uniforms.aerialSunDirection), 0.0, 1.0);
+    let lit = clamp(dot(surfaceNormal, uniforms.moonPhaseSunDirection), 0.0, 1.0);
     // Lommel-Seeliger-ish limb behaviour: the moon is famously FLAT, not
     // Lambertian — a full moon is a uniform disc, not a bright centre.
     let limb = lit / max(lit + max(discZ, 0.02), 0.05) * 1.9;
@@ -475,6 +482,7 @@ export class AtmosphereSystem {
           "worldViewProjection",
           "sunDiscVisibility",
           "moonDirection",
+          "moonPhaseSunDirection",
           "moonFrame",
           "moonRadiance",
           "galacticPole",
@@ -493,6 +501,7 @@ export class AtmosphereSystem {
     this.skyMaterial.setFloat("sunDiscVisibility", 1);
     // 7-1/7-3 defaults: no moon, no night sky, until the first clock lands.
     this.skyMaterial.setVector3("moonDirection", new Vector3(0, -1, 0));
+    this.skyMaterial.setVector3("moonPhaseSunDirection", new Vector3(0, 1, 0));
     this.skyMaterial.setVector4("moonFrame", new Vector4(0.00453, 0, 1, 0));
     this.skyMaterial.setVector3("moonRadiance", new Vector3(0, 0, 0));
     this.skyMaterial.setVector3("galacticPole", new Vector3(0, 1, 0));
@@ -683,7 +692,17 @@ export class AtmosphereSystem {
     // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
     // day+clear look exactly; every private shader exposure is deleted. 7-2
     // reopened its ceiling — a derived constant now, not a magic 2.6.
-    this.scene.imageProcessingConfiguration.exposure = exposureForState(state, moonLux);
+    //
+    // NIGHT_LOOK_ARCHITECTURE §2.1, Option B (Jason, 2026-09-01): the
+    // twilight dip is keyed to SUN ELEVATION — golden hour bright and warm,
+    // blue hour properly dark — with both endpoints pinned by the window's
+    // shape (golden hour above it, the approved night-moonlit frame 0.11 of
+    // sine below its release). Applied HERE, on the CPU, at the one exposure
+    // site — assertion 29 still holds and exposureForState's own pins are
+    // untouched (the dip is the consumer's, not the curve's).
+    this.scene.imageProcessingConfiguration.exposure =
+      exposureForState(state, moonLux)
+      * twilightExposureDipFactor(state.sun.direction[1]);
     // 1C-6: IBL now carries the skylight. The hemispheric light survives
     // only as a small ground-bounce approximation, so skylight is not
     // double-counted; the snapshot's ambientColor keeps the old scale — it
@@ -728,6 +747,15 @@ export class AtmosphereSystem {
     // 7-1/7-3: the sky's night inputs.
     const nightStrength = Math.min(1, Math.max(0, (-sunDirection.y - 0.03) / 0.25));
     this.skyMaterial.setVector3("moonDirection", moonDirection);
+    this.skyMaterial.setVector3("moonPhaseSunDirection", sunDirection);
+    // 2.1: as the aerial source hands over to the moon, the SUN-disc branch
+    // must not paint a 40x disc at the moon's position - the moon draws its
+    // own disc. The probe capture's zeroing still composes (it multiplies
+    // through the same uniform in onBeforeBind).
+    this.skyMaterial.setFloat(
+      "sunDiscVisibility",
+      1 - aerialNightness(sunDirection.y),
+    );
     this.skyMaterial.setVector4("moonFrame", new Vector4(
       moon?.angularRadiusRadians ?? 0.00453,
       moon?.illuminatedFraction ?? 0,

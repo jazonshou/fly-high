@@ -37,6 +37,7 @@ import {
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
 import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { FULL_MOON_ILLUMINANCE_LUX } from "./webgpu/atmosphere/Ephemeris";
 import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
@@ -1023,6 +1024,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           initialSnapshot.skyHorizon.b,
         ],
         sunIlluminanceNormalized: initialSnapshot.sunIlluminanceNormalized,
+        moonDirection: [
+          initialSnapshot.moonDirection.x,
+          initialSnapshot.moonDirection.y,
+          initialSnapshot.moonDirection.z,
+        ],
+        moonIlluminanceNormalizedToFull:
+          initialSnapshot.moonIlluminanceLux / FULL_MOON_ILLUMINANCE_LUX,
       }, 0, 0);
       const initialAerialBinding = aerialReceivers.currentBinding;
       if (initialAerialBinding) {
@@ -2073,6 +2081,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       sunColor: [snapshot.sunColor.r, snapshot.sunColor.g, snapshot.sunColor.b],
       skyHorizonColor: [snapshot.skyHorizon.r, snapshot.skyHorizon.g, snapshot.skyHorizon.b],
       sunIlluminanceNormalized: snapshot.sunIlluminanceNormalized,
+      // NIGHT_LOOK_ARCHITECTURE 2.1: below twilight the aerial integral runs
+      // on the moon, so sky and night haze stay one system (1C-5 at night).
+      moonDirection: [
+        snapshot.moonDirection.x,
+        snapshot.moonDirection.y,
+        snapshot.moonDirection.z,
+      ],
+      moonIlluminanceNormalizedToFull:
+        snapshot.moonIlluminanceLux / FULL_MOON_ILLUMINANCE_LUX,
     }, this.originX, this.originZ);
     const binding = this.aerialReceivers.currentBinding;
     if (!binding) return;

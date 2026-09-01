@@ -374,10 +374,16 @@ describe("night below the horizon (1C-10, superseded by Gate 7A)", () => {
     expect(SKY_FRAGMENT_WGSL).not.toContain("starHash");
     expect(SKY_FRAGMENT_WGSL).not.toContain("normalize(-uniforms.aerialSunDirection)");
     // The real moon: its own ephemeris direction and angular radius, and a
-    // terminator taken from the sky's OWN sun direction, so the drawn phase
-    // can never disagree with the light the scene is lit by.
+    // terminator taken from the TRUE sun direction. NIGHT_LOOK §2.1 made
+    // `aerialSunDirection` the MOON below twilight (the integral's night
+    // source), so the phase now reads a dedicated true-sun uniform — the
+    // property this pin guards is unchanged (the drawn phase can never
+    // disagree with the real sun-moon geometry), and reading
+    // `aerialSunDirection` for the phase would now recreate the self-lit
+    // always-full moon this assertion exists to prevent.
     expect(SKY_FRAGMENT_WGSL).toContain("uniform moonDirection: vec3f;");
-    expect(SKY_FRAGMENT_WGSL).toContain("dot(surfaceNormal, uniforms.aerialSunDirection)");
+    expect(SKY_FRAGMENT_WGSL).toContain("dot(surfaceNormal, uniforms.moonPhaseSunDirection)");
+    expect(SKY_FRAGMENT_WGSL).not.toContain("dot(surfaceNormal, uniforms.aerialSunDirection)");
     expect(SKY_FRAGMENT_WGSL).toContain("earthshine");
     // The Milky Way rides the star field's own galactic frame.
     expect(SKY_FRAGMENT_WGSL).toContain("uniforms.galacticPole");

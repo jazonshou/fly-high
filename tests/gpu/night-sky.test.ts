@@ -11,7 +11,7 @@ import { ScotopicVisionPass } from "../../src/render/webgpu/atmosphere/ScotopicV
 import { AerialPerspectiveRegistry } from "../../src/render/webgpu/atmosphere/AerialPerspective";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { resolveEnvironmentState } from "../../src/render/webgpu/nature/EnvironmentDirector";
-import { moonState } from "../../src/render/webgpu/atmosphere/Ephemeris";
+import { FULL_MOON_ILLUMINANCE_LUX, moonState } from "../../src/render/webgpu/atmosphere/Ephemeris";
 import { createEnvironmentClock } from "../../src/world/environmentClock";
 
 /**
@@ -136,12 +136,20 @@ describe("the night sky on a real adapter (Gate 7A)", () => {
       atmosphere.setGalacticFrame(galactic.pole, galactic.center);
       stars.setRenderSize(CANVAS_SIZE, CANVAS_SIZE);
 
+      const moonSnapshot = atmosphere.snapshot;
       aerial.setProjection({
         state,
         cameraAltitudeMeters: 100,
         sunColor: [1, 0.96, 0.9],
         skyHorizonColor: [0.05, 0.06, 0.1],
         sunIlluminanceNormalized: 0,
+        moonDirection: [
+          moonSnapshot.moonDirection.x,
+          moonSnapshot.moonDirection.y,
+          moonSnapshot.moonDirection.z,
+        ],
+        moonIlluminanceNormalizedToFull:
+          moonSnapshot.moonIlluminanceLux / FULL_MOON_ILLUMINANCE_LUX,
       }, 0, 0);
       const binding = aerial.currentBinding;
       expect(binding).not.toBeNull();
