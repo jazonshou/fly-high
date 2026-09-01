@@ -2047,6 +2047,10 @@ export class FlightRenderer implements FlightRenderingSystem {
         altitudeAglMeters: state.altitudeAgl,
         gear: state.gear ?? 1,
         landingSwitchOn: false,
+        // The cockpit glow rides the same environment the airfield lamps do,
+        // in the opposite direction: panel lighting comes UP as the sun sets.
+        sunElevationSine: this.environmentState.sun.direction[1],
+        horizontalLux: horizontalIlluminanceLux(this.environmentState),
       }));
     }
     this.updateCamera(state);

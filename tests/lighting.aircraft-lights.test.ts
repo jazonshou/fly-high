@@ -15,6 +15,8 @@ import {
   beaconLit,
   strobeLit,
   landingLightOn,
+  cockpitInstrumentGlow,
+  COCKPIT_GLOW_NIGHT_MULTIPLE,
   type AircraftNavLight,
 } from "../src/render/webgpu/lighting/AircraftLighting";
 import { PERF_CAPTURE_SHOTS, PERF_CAPTURE_DEFAULT_CLOCK } from "../scripts/perf-capture.mts";
@@ -211,5 +213,55 @@ describe("lamp-phase coverage of the capture set (7-0-a / 7-8)", () => {
       expect(beaconMargin, `${shot.name}: beacon sits on a duty edge`).toBeGreaterThan(0.02);
       expect(strobeMargin, `${shot.name}: strobe sits on a duty edge`).toBeGreaterThan(0.02);
     }
+  });
+});
+
+describe("cockpit instrument glow (7-8)", () => {
+  it("is EXACTLY 1 in daylight, so no cockpit-mode shot can churn", () => {
+    // `toBe(1)`, not `toBeCloseTo`. Eleven capture shots use `cameraMode:
+    // "cockpit"`, and the multiplier is applied to each airframe's own
+    // authored value — the trainer's 0.42 and the jet's 0.7. Only the literal
+    // 1 leaves `authored * multiple === authored` bit-for-bit; 0.9999 moves
+    // every one of them for no visible reason.
+    for (const lux of [1.11e5, 1.014e5, 5e4, 3.4]) {
+      expect(cockpitInstrumentGlow(0.92456, lux)).toBe(1);
+    }
+  });
+
+  it("raises the panel at night, and never darkens it below daylight", () => {
+    // Below the horizon: full night value.
+    for (const sunY of [-0.001, -0.10669, -0.36585, -0.36896]) {
+      expect(cockpitInstrumentGlow(sunY, 1.5e-3)).toBe(COCKPIT_GLOW_NIGHT_MULTIPLE);
+    }
+    // A panel is never DIMMER than its daylight setting — that would be a
+    // pilot losing instruments as the light fades, the opposite of the point.
+    for (let sunY = -1; sunY <= 1; sunY += 0.01) {
+      for (const lux of [0, 1, 3.4, 1e3, 1.11e5]) {
+        expect(cockpitInstrumentGlow(sunY, lux)).toBeGreaterThanOrEqual(1);
+        expect(cockpitInstrumentGlow(sunY, lux)).toBeLessThanOrEqual(COCKPIT_GLOW_NIGHT_MULTIPLE);
+      }
+    }
+  });
+
+  it("fades through twilight rather than snapping at the horizon", () => {
+    // The sun crossing zero is not the moment a panel becomes unreadable, and
+    // a step there would pop the whole cockpit in one frame on a dawn scrub.
+    const justAbove = cockpitInstrumentGlow(1e-6, 0.5);
+    expect(justAbove).toBeGreaterThan(1);
+    expect(justAbove).toBeLessThanOrEqual(COCKPIT_GLOW_NIGHT_MULTIPLE);
+    // Monotone in illuminance: brighter ambient never means a brighter panel.
+    let previous = COCKPIT_GLOW_NIGHT_MULTIPLE + 1;
+    for (const lux of [0, 0.5, 1, 2, 3.4, 10, 1e3]) {
+      const value = cockpitInstrumentGlow(0.2, lux);
+      expect(value).toBeLessThanOrEqual(previous);
+      previous = value;
+    }
+  });
+
+  it("keeps the panel lit when the sun is NaN", () => {
+    // A NaN sun taking the dark branch would black out the instruments. The
+    // airfield law defaults the other way for the same reason inverted: there,
+    // full effect is the safe failure; here, a readable panel is.
+    expect(cockpitInstrumentGlow(Number.NaN, 1e5)).toBe(COCKPIT_GLOW_NIGHT_MULTIPLE);
   });
 });

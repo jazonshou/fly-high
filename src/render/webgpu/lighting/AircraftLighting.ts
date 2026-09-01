@@ -1,3 +1,5 @@
+import { AIRFIELD_LAMP_FULL_EFFECT_LUX } from "./AirfieldLighting";
+
 /**
  * `7-8`: navigation, anti-collision beacon, strobe and landing lights.
  *
@@ -168,6 +170,8 @@ export interface AircraftLightState {
   readonly beacon: number;
   readonly strobe: number;
   readonly landing: number;
+  /** Multiplier on the authored instrument-marking emissive. 1 by day. */
+  readonly cockpitGlow: number;
 }
 
 export interface AircraftLightInput {
@@ -181,6 +185,10 @@ export interface AircraftLightInput {
   readonly altitudeAglMeters: number;
   readonly gear: number;
   readonly landingSwitchOn: boolean;
+  /** `state.sun.direction[1]`, for the cockpit glow. */
+  readonly sunElevationSine: number;
+  /** Horizontal illuminance, for the cockpit glow. */
+  readonly horizontalLux: number;
 }
 
 /**
@@ -217,6 +225,7 @@ export function resolveAircraftLights(input: AircraftLightInput): AircraftLightS
       gear: input.gear,
       switchOn: input.landingSwitchOn,
     }) ? 1 : 0,
+    cockpitGlow: cockpitInstrumentGlow(input.sunElevationSine, input.horizontalLux),
   };
 }
 
@@ -231,4 +240,40 @@ export function resolveAircraftLights(input: AircraftLightInput): AircraftLightS
 export function observerAzimuthDegrees(forwardComponent: number, starboardComponent: number): number {
   if (!Number.isFinite(forwardComponent) || !Number.isFinite(starboardComponent)) return 0;
   return (Math.atan2(starboardComponent, forwardComponent) * 180) / Math.PI;
+}
+
+/**
+ * Cockpit instrument glow, as a MULTIPLIER on each airframe's authored value.
+ *
+ * **A multiplier rather than an absolute intensity, and exactly 1 by day.**
+ * The trainer's markings emit at 0.42 and the jet's at 0.7 — different values,
+ * authored per airframe against the daylight shots that already exist. An
+ * absolute law would have to pick one and would move both. Returning exactly
+ * the literal 1 in daylight leaves `authored * 1 === authored` bit-for-bit, so
+ * **eleven cockpit-mode capture shots cannot churn**, which is the same
+ * construction-not-measurement guarantee the airfield attenuation uses at
+ * night.
+ *
+ * The direction is the mirror of `airfieldLampDaylightAttenuation`: that one
+ * suppresses lamps as the sun rises, this one raises panel lighting as the sun
+ * sets. Sharing the shape means one place to reason about, and the horizon gate
+ * is syntactic in both.
+ */
+export const COCKPIT_GLOW_NIGHT_MULTIPLE = 3.2;
+
+export function cockpitInstrumentGlow(
+  sunElevationSine: number,
+  horizontalLux: number,
+): number {
+  // Daylight: the authored value, untouched. `!(x > 0)` so a NaN sun takes the
+  // NIGHT branch rather than producing a NaN intensity — the panel going dark
+  // is a worse failure than it being bright, because a pilot reads it.
+  if (sunElevationSine > 0) {
+    if (!Number.isFinite(horizontalLux)) return 1;
+    // Fades UP through twilight rather than snapping at the horizon: the sun
+    // crossing zero is not the moment a panel becomes unreadable.
+    const t = Math.min(1, Math.max(0, horizontalLux / AIRFIELD_LAMP_FULL_EFFECT_LUX));
+    return 1 + (COCKPIT_GLOW_NIGHT_MULTIPLE - 1) * (1 - t);
+  }
+  return COCKPIT_GLOW_NIGHT_MULTIPLE;
 }

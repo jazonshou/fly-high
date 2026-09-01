@@ -197,6 +197,7 @@ function createTrainer(scene: Scene): AircraftVisual {
   // — and the white TAIL light is the one the 110/110/140 split-angle
   // partition depends on, so the pin could not be met without building it.
   const applyLamp = createLampApplier();
+  const applyGlow = createGlowApplier();
   const tailLamp = build.material("trainer-tail-lamp", 0xfff6e8, {
     emissive: 0xfff2d8, emissiveIntensity: 2,
   });
@@ -663,6 +664,7 @@ function createTrainer(scene: Scene): AircraftVisual {
       applyLamp(beaconLamp, lights.beacon);
       applyLamp(strobeLamp, lights.strobe);
       applyLamp(landingLamp, lights.landing);
+      applyGlow(instrumentMarking, lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;
@@ -749,6 +751,7 @@ function createJet(scene: Scene): AircraftVisual {
   // the first time someone switches aircraft, and the split-angle partition is
   // a property of the law, not of one model.
   const jetApplyLamp = createLampApplier();
+  const jetApplyGlow = createGlowApplier();
   const tailLamp = build.material("jet-tail-lamp", 0xfff6e8, {
     emissive: 0xfff2d8, emissiveIntensity: 2.4,
   });
@@ -1164,6 +1167,8 @@ function createJet(scene: Scene): AircraftVisual {
       jetApplyLamp(beaconLamp, lights.beacon);
       jetApplyLamp(strobeLamp, lights.strobe);
       jetApplyLamp(landingLamp, lights.landing);
+      jetApplyGlow(instrumentMarking, lights.cockpitGlow);
+
     },
     setCockpitView(enabled) {
       if (disposed) return;
@@ -1230,6 +1235,28 @@ function setCockpitVisibility(rig: CommonRig, scene: Scene, enabled: boolean): v
  * The propeller rig makes the same point about phase-dependent visibility and
  * it applies identically here.
  */
+/**
+ * `7-8`: the cockpit instrument glow, which legitimately EXCEEDS 1.
+ *
+ * Separate from `createLampApplier` because that one clamps to [0, 1] — right
+ * for a lamp, which is either lit or not, and wrong here: the panel's authored
+ * value is its DAYLIGHT brightness and night raises it above that. Sharing one
+ * applier would have silently clamped the night case back to daylight, which
+ * is the kind of thing that looks like the law being wrong.
+ */
+function createGlowApplier(): (material: PBRMaterial, multiple: number) => void {
+  const base = new WeakMap<PBRMaterial, number>();
+  return (material, multiple) => {
+    let authored = base.get(material);
+    if (authored === undefined) {
+      authored = material.emissiveIntensity;
+      base.set(material, authored);
+    }
+    const safe = Number.isFinite(multiple) ? Math.max(0, multiple) : 1;
+    material.emissiveIntensity = authored * safe;
+  };
+}
+
 function createLampApplier(): (material: PBRMaterial, scale: number) => void {
   const base = new WeakMap<PBRMaterial, number>();
   return (material, scale) => {
