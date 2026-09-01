@@ -332,6 +332,21 @@ export interface PerfCaptureShotDefinition {
    * gate that would have caught the airfield lamps burning at their night
    * calibration at solar noon — 10,019 clipped pixels against a baseline 56.
    */
+  /**
+   * Seconds added to this shot's pinned `simulationTime`.
+   *
+   * **Exists because every shot samples an identical lamp phase.** The harness
+   * pins `simulationTime = 500 + index * 120`, and both flashing rates divide
+   * 120 s into whole periods — 45 fpm is 90 periods and 60 fpm is 120 — so the
+   * beacon is lit and the strobe dark in *every* frame the set contains. No
+   * capture can see the complementary state, and a lamp wired to the wrong
+   * timer would look identical in all of them.
+   *
+   * An offset moves one shot off that lattice. It is deliberately a per-shot
+   * field rather than a global change: moving the lattice itself would rewrite
+   * the phase of all 31 shots and churn every baseline.
+   */
+  readonly simulationTimeOffsetSeconds?: number;
   readonly maxNearClippedPixels?: number;
   readonly litRegion?: {
     /** Scan band, as fractions of viewport height (0 = top). */
@@ -1522,6 +1537,50 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
     comparesToBaseline: false,
     ceilings: null,
+  },
+  {
+    name: "night-beacon-offset",
+    description:
+      "Night approach pose sampled off the lamp-phase lattice: beacon DARK and "
+      + "strobes LIT, the complement of every other shot in the set",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    clock: { dayOfYear: 179, solarTimeHours: 23.75 },
+    /**
+     * **The shot `7-0-a` was to append and did not.** The plan names it three
+     * times — including in `7-8`'s own text as the thing that catches the
+     * beacon's off phase — and it was never created. `dusk-mesopic`, its twin
+     * from the same bullet, was missing too and is now in.
+     *
+     * **Why the set needs it.** The harness pins
+     * `simulationTime = 500 + index * 120`, and both flashing rates divide
+     * 120 s into whole periods — 45 fpm gives 90 and 60 fpm gives 120. So
+     * **every** shot samples beacon phase 0 and strobe phase 0.5: beacon lit,
+     * strobe dark, in all 31 frames. The complementary state is captured
+     * nowhere, and a beacon wired to the strobe's timer — or either lamp stuck
+     * on — would look identical in every one of them.
+     *
+     * **0.53 s is computed, not chosen.** Searched for the offset maximising
+     * the smaller margin to a duty edge, so the shot is not perched on a
+     * transition: at `t = 500 + 120k + 0.53` the beacon sits at phase 0.3975
+     * (off, 0.1775 periods clear of its 0.22 duty edge) and the strobe at 0.03
+     * (lit, 0.03 clear of both edges). Verified at k = 0, 1, 2.
+     *
+     * Same pose and clock as `night-moonlit`, so the ONLY difference between
+     * the two frames is lamp phase — a shot that changed pose as well could
+     * not attribute a difference to the lamps.
+     */
+    simulationTimeOffsetSeconds: 0.53,
+    // Carried from `night`, not tightened: the scotopic pass amplifies the
+    // cloud pass's temporal jitter and this shot has never been captured.
+    ssimThreshold: 0.96,
+    ceilings: null,
+    comparesToBaseline: false,
   },
 ]);
 

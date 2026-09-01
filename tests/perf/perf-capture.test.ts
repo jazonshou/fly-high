@@ -832,7 +832,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const canonicalShotIndex = PERF_CAPTURE_SHOTS.findIndex(
         (candidate) => candidate.name === shot.name,
       );
-      simulationTime = 500 + canonicalShotIndex * 120;
+      // `7-0-a` / `7-8`: the optional per-shot offset. Without it every shot
+      // sits on the same lamp phase (see `simulationTimeOffsetSeconds`).
+      simulationTime = 500 + canonicalShotIndex * 120
+        + (shot.simulationTimeOffsetSeconds ?? 0);
       for (let settle = 0; settle < 150; settle += 1) {
         await nextAnimationFrame();
         simulationTime += 1 / 60;

@@ -24,6 +24,12 @@ const NEW_SHOTS = [
   "horizon-shadow-far-annulus",
   "canopy-backlit-lowsun",
   "night-moonlit",
+  // Added since: the roster drifted and this script's own partition assertion
+  // is what caught it, naming all four rather than silently promoting three.
+  "dusk-mesopic",
+  "golden-hour",
+  "blue-hour",
+  "night-beacon-offset",
 ] as const;
 
 /**
