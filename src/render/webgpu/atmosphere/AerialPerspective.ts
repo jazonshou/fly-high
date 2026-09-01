@@ -245,7 +245,7 @@ export function evaluateSkyRadiance(
   const mu = direction[0] * binding.sunDirection[0]
     + direction[1] * binding.sunDirection[1]
     + direction[2] * binding.sunDirection[2];
-  return evaluateAerialPerspective(
+  const inScatter = evaluateAerialPerspective(
     binding.coefficients,
     binding.cameraAltitudeMeters,
     AERIAL_SKY_SHELL_METERS,
@@ -255,6 +255,13 @@ export function evaluateSkyRadiance(
     binding.ambient,
     binding.sunTransmittance,
   ).inScatter;
+  // §2.6 sky-path arch — mirrors the WGSL line for line.
+  const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
+  return [
+    inScatter[0] + binding.twilightArch[0] * shape,
+    inScatter[1] + binding.twilightArch[1] * shape,
+    inScatter[2] + binding.twilightArch[2] * shape,
+  ];
 }
 
 /**
@@ -272,6 +279,7 @@ uniform aerialOzone: vec3f;
 uniform aerialSunRadiance: vec3f;
 uniform aerialAmbient: vec3f;
 uniform aerialSunTransmittance: vec3f;
+uniform aerialTwilightArch: vec3f;
 uniform aerialParams: vec4f; // x rayleighH, y mieH, z mieAnisotropy, w strength
 
 const AERIAL_PI: f32 = 3.14159265359;
@@ -378,7 +386,14 @@ fn skyRadiance(direction: vec3f) -> vec3f {
     distanceToShell,
     dot(direction, uniforms.aerialSunDirection),
   );
-  return aerial.inScatter;
+  // NIGHT_LOOK_ARCHITECTURE 2.6: the twilight arch is a SKY-PATH term. It
+  // lives here, not in aerialAmbient, so the dome and the IBL probe receive
+  // it while applyAerialPerspective's terrain-haze path does not - round 1
+  // measured what happens otherwise (the ground floods). Horizon-bright,
+  // zenith-dim: the falloff constant mirrors TWILIGHT_ARCH_ZENITH_FALLOFF.
+  let arch = uniforms.aerialTwilightArch
+    * (1.0 - 0.6 * clamp(direction.y, 0.0, 1.0));
+  return aerial.inScatter + arch;
 }
 `;
 
@@ -404,6 +419,7 @@ export const AERIAL_PERSPECTIVE_UNIFORMS: readonly string[] = Object.freeze([
   "aerialSunRadiance",
   "aerialAmbient",
   "aerialSunTransmittance",
+  "aerialTwilightArch",
   "aerialParams",
 ]);
 
@@ -415,6 +431,8 @@ export interface AerialPerspectiveBinding {
   readonly sunRadiance: [number, number, number];
   readonly ambient: [number, number, number];
   readonly sunTransmittance: [number, number, number];
+  /** §2.6 sky-path arch radiance — tint × strength × window, zero outside it. */
+  readonly twilightArch: [number, number, number];
   readonly strength: number;
 }
 
@@ -491,13 +509,15 @@ export const NIGHT_SKY_MOON_TINT: readonly [number, number, number] = [0.62, 0.7
  * construction; `night-moonlit` (−0.369) sits 0.11 of sine below the
  * release and reads exactly 0 — the approved night frames cannot move.
  */
+export const TWILIGHT_WINDOW_RELEASE_SINE = -0.26;
+
 export function twilightArchStrength(sunDirectionY: number): number {
   const smooth01 = (t: number): number => {
     const x = Math.min(1, Math.max(0, t));
     return x * x * (3 - 2 * x);
   };
   const rise = smooth01(-sunDirectionY / 0.05);
-  const fall = smooth01((sunDirectionY + 0.26) / 0.1);
+  const fall = smooth01((sunDirectionY - TWILIGHT_WINDOW_RELEASE_SINE) / 0.1);
   return rise * fall;
 }
 
@@ -511,18 +531,73 @@ export function twilightArchStrength(sunDirectionY: number): number {
 export const TWILIGHT_ARCH_TINT: readonly [number, number, number] = [0.14, 0.36, 1.0];
 
 /**
- * Arch radiance at full window, in the binding's normalized-radiance units
- * (the `aerialAmbient` slot, so it rides (1 − transmittance): more along
- * the long horizon paths, less at the thin zenith — the horizon stays the
- * bright edge of the arch, as it should). ART-DIRECTED, tuned by capture
- * against §2.6's relation metric: at `dusk-mesopic` the sky-band median
- * must EXCEED the terrain-band median (skyGroundRatio ≥ 1.5). Jason's
- * sanction chain: *"blue hour properly dark"* + *"incorporate more blue
- * (dark blue)"* — dark AND blue, which only a dome term can be; exposure
- * alone provably could not reorder sky and ground (the dip was live in the
- * frame he rejected).
+ * Arch radiance at full window, in the sky integral's radiance units.
+ *
+ * RESHAPED after round 1 (2026-09-01): the first cut rode the
+ * `aerialAmbient` slot, which `applyAerialPerspective` paints onto EVERY
+ * distant terrain pixel — at dusk magnitudes that flooded the ground
+ * (terrain rose 2.1×, stop condition 3), and σ never learned the new
+ * radiance so the rod response re-exposed the whole frame upward. The
+ * arch now lives INSIDE `skyRadiance()` only: the dome and the IBL probe
+ * receive it, the terrain-haze path does not (twilight air is optically
+ * thin without a sun to scatter through), and mountains silhouette
+ * against the blue — which is the point. σ learns the dome's ground
+ * irradiance through `TWILIGHT_ARCH_KEY_FACTOR`.
+ *
+ * ART-DIRECTED, tuned by capture against §2.6's relation metric: at
+ * `dusk-mesopic` the sky-band median must EXCEED the terrain-band median
+ * (skyGroundRatio ≥ 1.5). Jason's sanction chain: *"blue hour properly
+ * dark"* + *"incorporate more blue (dark blue)"* — dark AND blue, which
+ * only a dome term can be; exposure alone provably could not reorder sky
+ * and ground (the dip was live in the frame he rejected).
  */
 export const TWILIGHT_ARCH_STRENGTH = 0.08;
+
+/**
+ * How much the arch dims from horizon to zenith: radiance is
+ * `arch × (1 − FALLOFF × max(direction.y, 0))`. Blue hour's zenith is the
+ * DARK deep blue and its horizon the bright edge — the first cut borrowed
+ * that gradient from `(1 − transmittance)`, a coupling nobody wrote down;
+ * this one is explicit.
+ */
+export const TWILIGHT_ARCH_ZENITH_FALLOFF = 0.6;
+
+/**
+ * σ's share of the arch — the Lambertian ground irradiance the dome term
+ * produces, as an intensity-equivalent in `sceneKeyLuminance`'s units
+ * (E/π, the same convention the hemispheric's intensity uses).
+ *
+ * Closed form, derived not tuned: with shape s(u) = 1 − FALLOFF·u over the
+ * upper hemisphere, E = 2π·L·∫₀¹ s(u)·u du = π·L·(1 − 2·FALLOFF/3), so
+ * E/π = 1 − (2/3)·FALLOFF. Computed FROM the falloff so the two cannot
+ * drift apart — at FALLOFF 0.6 this happens to also equal 0.6; they are
+ * DIFFERENT quantities that coincide numerically, so do not deduplicate.
+ *
+ * This is what round 1 was missing: the arch raised scene radiance while
+ * σ (sun + moon + hemispheric only) never heard about it, and the
+ * Naka–Rushton auto-centring re-exposed the frame upward — the
+ * auto-centring lesson and the misplaced-ladder lesson composing. The
+ * general fix (σ integrates the whole dome) is a larger refactor; this
+ * term is exact for the arch and zero outside its window, so day and
+ * night σ are bit-identical by construction.
+ */
+export const TWILIGHT_ARCH_KEY_FACTOR = 1 - (2 / 3) * TWILIGHT_ARCH_ZENITH_FALLOFF;
+
+/**
+ * The arch's radiance vector at a sun elevation — tint × strength ×
+ * window. ONE source for the binding, the σ term and any test; zero
+ * outside the window by the window's own shape.
+ */
+export function twilightArchRadiance(
+  sunDirectionY: number,
+): [number, number, number] {
+  const arch = twilightArchStrength(sunDirectionY) * TWILIGHT_ARCH_STRENGTH;
+  return [
+    TWILIGHT_ARCH_TINT[0] * arch,
+    TWILIGHT_ARCH_TINT[1] * arch,
+    TWILIGHT_ARCH_TINT[2] * arch,
+  ];
+}
 
 /**
  * §2.6(b) — how much of `NIGHT_AMBIENT_FLOOR_SCALE` the arch window cuts.
@@ -613,16 +688,14 @@ export function resolveAerialPerspectiveBinding(
       sourceTransmittance[2] * (1 - nightness) + moonTransmittance[2] * nightness,
     ];
   }
-  // §2.6 — the twilight arch rides the ambient slot: it is multiple-scatter
-  // radiance (like the daylight ambient it hands over from), it reaches the
-  // dome, the IBL probe and the terrain haze through the one shared
-  // integral, and it is zero outside its window by shape, so day and the
-  // approved night frames cannot move.
-  const arch = twilightArchStrength(state.sun.direction[1]) * TWILIGHT_ARCH_STRENGTH;
+  // §2.6 — the twilight arch is a SKY-PATH term (see TWILIGHT_ARCH_STRENGTH
+  // for why it must not ride the ambient slot): skyRadiance() adds it, so
+  // the dome and the IBL probe receive it while the terrain-haze path does
+  // not. Zero outside its window by shape.
   const ambient: [number, number, number] = [
-    skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[0] * arch,
-    skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[1] * arch,
-    skyHorizonColor[2] * AERIAL_AMBIENT_SCALE * daylight + TWILIGHT_ARCH_TINT[2] * arch,
+    skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight,
+    skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight,
+    skyHorizonColor[2] * AERIAL_AMBIENT_SCALE * daylight,
   ];
   return {
     cameraAltitudeMeters,
@@ -631,6 +704,7 @@ export function resolveAerialPerspectiveBinding(
     sunRadiance: sourceRadiance,
     ambient,
     sunTransmittance: sourceTransmittance,
+    twilightArch: twilightArchRadiance(state.sun.direction[1]),
     strength: 1,
   };
 }
@@ -706,6 +780,7 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
         { name: "aerialSunRadiance", size: 3, type: "vec3" },
         { name: "aerialAmbient", size: 3, type: "vec3" },
         { name: "aerialSunTransmittance", size: 3, type: "vec3" },
+        { name: "aerialTwilightArch", size: 3, type: "vec3" },
         { name: "aerialParams", size: 4, type: "vec4" },
       ],
     };
@@ -765,6 +840,12 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
       binding.sunTransmittance[0],
       binding.sunTransmittance[1],
       binding.sunTransmittance[2],
+    );
+    uniformBuffer.updateFloat3(
+      "aerialTwilightArch",
+      binding.twilightArch[0],
+      binding.twilightArch[1],
+      binding.twilightArch[2],
     );
     uniformBuffer.updateFloat4(
       "aerialParams",
@@ -876,6 +957,7 @@ export function applyAerialPerspectiveToShaderMaterial(
   setVector3("aerialSunRadiance", ...binding.sunRadiance);
   setVector3("aerialAmbient", ...binding.ambient);
   setVector3("aerialSunTransmittance", ...binding.sunTransmittance);
+  setVector3("aerialTwilightArch", ...binding.twilightArch);
   setVector4(
     "aerialParams",
     RAYLEIGH_SCALE_HEIGHT_METERS,

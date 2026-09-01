@@ -14,8 +14,11 @@ import {
   resolveAerialPerspectiveBinding,
   twilightArchStrength,
   twilightAmbientFloorFactor,
+  twilightArchRadiance,
   TWILIGHT_ARCH_TINT,
   TWILIGHT_ARCH_STRENGTH,
+  TWILIGHT_ARCH_ZENITH_FALLOFF,
+  TWILIGHT_ARCH_KEY_FACTOR,
   TWILIGHT_AMBIENT_FLOOR_CUT,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import { SKY_FRAGMENT_WGSL } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
@@ -468,7 +471,12 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
       .toBeCloseTo(1 - TWILIGHT_AMBIENT_FLOOR_CUT, 6);
   });
 
-  it("feeds the binding a blue arch at dusk and leaves day and night untouched", () => {
+  it("feeds the binding a SKY-PATH arch at dusk and leaves day and night untouched", () => {
+    // RESHAPED after round 1: the arch rode `ambient`, which the terrain
+    // haze paints onto every distant pixel — the ground flooded (terrain
+    // +2.1x, stop condition 3). It is now its own binding field, consumed
+    // ONLY by skyRadiance(), so dome and IBL receive it and the haze does
+    // not. `ambient` stays the daylight-gated expression — [0,0,0] at dusk.
     const horizon: [number, number, number] = [0.08, 0.075, 0.14];
     const duskState = resolveEnvironmentState({
       clock: { dayOfYear: 171, solarTimeHours: 20.45 },
@@ -476,13 +484,11 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
       weather: "clear",
     });
     const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
-    // The daylight gate is closed at -6 degrees; without the arch this
-    // ambient was [0,0,0] — the trough the rejected frame measured as a
-    // NEGATIVE skyBlueDominance. Now it is the arch, exactly.
-    expect(dusk.ambient[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
-    expect(dusk.ambient[2]).toBeGreaterThan(dusk.ambient[0] * 2);
-    // Night: the window is closed; the gated ambient stays exactly zero,
-    // so the approved night sky cannot have gained a term.
+    expect(dusk.ambient).toEqual([0, 0, 0]);
+    expect(dusk.twilightArch[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
+    expect(dusk.twilightArch[2]).toBeGreaterThan(dusk.twilightArch[0] * 2);
+    // Night: window closed — no arch, ambient stays zero; the approved
+    // night sky cannot have gained a term.
     const nightState = resolveEnvironmentState({
       clock: { dayOfYear: 171, solarTimeHours: 23.75 },
       latitudeDegrees: 45,
@@ -492,10 +498,53 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
       nightState, 120, [0.9, 0.4, 0.25], horizon, 0, [0, 1, 0], 0.8,
     );
     expect(night.ambient).toEqual([0, 0, 0]);
+    expect(night.twilightArch).toEqual([0, 0, 0]);
     // Noon: arch zero, ambient is the daylight expression untouched.
     const noon = resolveAerialPerspectiveBinding(
       DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
     );
     expect(noon.ambient[0]).toBeCloseTo(0.58 * 0.9, 6);
+    expect(noon.twilightArch).toEqual([0, 0, 0]);
+  });
+
+  it("adds the arch in the sky integral with the explicit gradient, mirror and WGSL alike", () => {
+    const horizon: [number, number, number] = [0.08, 0.075, 0.14];
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
+    const bare = { ...dusk, twilightArch: [0, 0, 0] as [number, number, number] };
+    // The mirror: sky-with-arch minus sky-without is EXACTLY the arch times
+    // the gradient — nothing else in the integral moved.
+    const zenithDelta = evaluateSkyRadiance(dusk, [0, 1, 0])[2]!
+      - evaluateSkyRadiance(bare, [0, 1, 0])[2]!;
+    const horizonDelta = evaluateSkyRadiance(dusk, [0.9994, 0.035, 0])[2]!
+      - evaluateSkyRadiance(bare, [0.9994, 0.035, 0])[2]!;
+    expect(zenithDelta).toBeCloseTo(
+      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF), 9,
+    );
+    expect(horizonDelta).toBeCloseTo(dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF * 0.035), 9);
+    // Horizon stays the bright edge of the arch; zenith the dark deep blue.
+    expect(horizonDelta).toBeGreaterThan(zenithDelta);
+    // And the WGSL carries the same term: the uniform is declared, the sky
+    // function consumes it, and the falloff constant matches the export.
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("uniform aerialTwilightArch: vec3f;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      `* (1.0 - ${TWILIGHT_ARCH_ZENITH_FALLOFF} * clamp(direction.y, 0.0, 1.0))`,
+    );
+  });
+
+  it("teaches sigma the arch's ground irradiance, in closed form", () => {
+    // E/pi for the gradient s(u) = 1 - FALLOFF*u over the hemisphere is
+    // 1 - (2/3)*FALLOFF — derived FROM the falloff so they cannot drift.
+    expect(TWILIGHT_ARCH_KEY_FACTOR).toBeCloseTo(1 - (2 / 3) * TWILIGHT_ARCH_ZENITH_FALLOFF, 12);
+    // Zero outside the window: day and night sigma are bit-identical.
+    expect(twilightArchRadiance(0.5)).toEqual([0, 0, 0]);
+    expect(twilightArchRadiance(-0.369)).toEqual([0, 0, 0]);
+    // Inside: the radiance is the tint at strength, so sigma's term is real.
+    const mid = twilightArchRadiance(-0.107);
+    expect(mid[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
   });
 });

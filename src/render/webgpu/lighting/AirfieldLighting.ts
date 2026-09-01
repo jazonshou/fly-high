@@ -93,6 +93,10 @@
  * suite is not a working feature unless the thing asserted is the thing drawn.
  */
 
+import {
+  twilightArchStrength,
+  TWILIGHT_WINDOW_RELEASE_SINE,
+} from "../atmosphere/AerialPerspective";
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import { runwayMarkingProfile } from "../terrain/RunwaySurface";
 import { runwayToWorld } from "../../../world/airport";
@@ -878,11 +882,27 @@ export const AIRFIELD_LAMP_FULL_EFFECT_LUX = 3.4;
  * construction rather than by measurement**, which is a much stronger promise
  * than a re-measured one.
  *
- * **The horizon gate is syntactic on purpose.** It is an early return, not an
- * arithmetic edge case, so no illuminance value — a moon, a future sky model,
- * a bug — can reach through it and perturb a night frame. `night`,
- * `night-moonlit` and `dusk-mesopic` all sit at sun elevations of −21.46°,
- * −21.65° and −6.12°, so all three are untouched.
+ * **The night gate is syntactic on purpose, and it moved from the horizon to
+ * the §2.6 window release.** It is an early return, not an arithmetic edge
+ * case, so no illuminance value — a moon, a future sky model, a bug — can
+ * reach through it and perturb a night frame. `night` and `night-moonlit`
+ * sit at sun elevations of −21.46° and −21.65°, well below the release, and
+ * are untouched byte-for-byte.
+ *
+ * **Through twilight the lamps now RAMP instead of stepping to full at the
+ * horizon.** The original gate returned 1 for the whole of civil twilight,
+ * and Jason caught the consequence on the first dusk frame that showed it:
+ * *"Airport lights are way too bright/spread out given the current lighting
+ * conditions."* At −6.12° the sky is still substantially lit; lamps burning
+ * at full night calibration are wrong there. The cut rides
+ * `twilightArchStrength` — the §2.6 window's FOURTH consumer (dome, ambient
+ * floor, σ, lamps) — so the lamps reach full effect exactly where the sky
+ * reaches full night, and none of the four can drift from the others.
+ *
+ * **The known sunset step is unchanged.** Just above the horizon the
+ * illuminance law reads ~0.002 and just below it this ramp reads ~1; that
+ * 500× step at the crossing second is shipped behaviour, predates this
+ * change, and is out of its scope — recorded here so nobody reads it as new.
  *
  * **Above the horizon it is physical rather than tuned.** A lamp of fixed
  * intensity contributes in proportion to how much it adds over the ambient, so
@@ -892,21 +912,32 @@ export const AIRFIELD_LAMP_FULL_EFFECT_LUX = 3.4;
  * the clipped-pixel count it produced.
  *
  * @param sunElevationSine `state.sun.direction[1]` — the sine of the sun's
- *   elevation. At or below zero the lamps are at full effect.
+ *   elevation. At or below the §2.6 release the lamps are at full effect.
  * @param horizontalLux the scene's horizontal illuminance from the sun.
  */
 export function airfieldLampDaylightAttenuation(
   sunElevationSine: number,
   horizontalLux: number,
 ): number {
-  // Not `sunElevationSine <= 0`: NaN must take this branch too. A NaN sun would
+  // Not a `<=` comparison: NaN must take this branch too. A NaN sun would
   // otherwise fall through and produce a NaN intensity, which reaches the GPU
   // as a lamp that is either invisible or infinite depending on the hardware.
-  if (!(sunElevationSine > 0)) return 1;
+  if (!(sunElevationSine > TWILIGHT_WINDOW_RELEASE_SINE)) return 1;
+  if (!(sunElevationSine > 0)) {
+    return 1 - AIRFIELD_LAMP_TWILIGHT_CUT * twilightArchStrength(sunElevationSine);
+  }
   if (!Number.isFinite(horizontalLux)) return 1;
   const effective = Math.max(horizontalLux, AIRFIELD_LAMP_FULL_EFFECT_LUX);
   return Math.min(1, AIRFIELD_LAMP_FULL_EFFECT_LUX / effective);
 }
+
+/**
+ * How deep the twilight ramp cuts the lamps at the window's hold. ART
+ * ANCHOR from Jason's dusk rejection (*"way too bright"*), tuned by capture
+ * against the §2.6 round's lamp criterion — never against the night frames,
+ * which the early return above keeps out of reach by construction.
+ */
+export const AIRFIELD_LAMP_TWILIGHT_CUT = 0.75;
 
 /**
  * Beam cutoff for a directional lamp: a hemisphere.

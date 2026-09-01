@@ -7,6 +7,7 @@ import {
 import {
   TWILIGHT_AMBIENT_FLOOR_CUT,
   twilightAmbientFloorFactor,
+  twilightArchRadiance,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import {
   REFERENCE_ILLUMINANCE_LUX,
@@ -187,6 +188,11 @@ describe("does a moon-intensity raise reach the night image?", () => {
     const deepestFloor = NIGHT_AMBIENT_FLOOR_SCALE * (1 - TWILIGHT_AMBIENT_FLOOR_CUT);
     const fullMoonSkylightScale = FULL_MOON_ILLUMINANCE_LUX / REFERENCE_ILLUMINANCE_LUX;
     expect(deepestFloor / fullMoonSkylightScale).toBeGreaterThan(100);
+    // 4. The reshape added a fourth sigma term (the arch's ground
+    //    irradiance). It is EXACTLY zero across the night band, so every
+    //    NIGHT_AMBIENT-based ratio in this file is computed on the same
+    //    sigma it always was.
+    expect(twilightArchRadiance(nightSunSine)).toEqual([0, 0, 0]);
   });
 
   it("NON-VACUITY — the moon genuinely dominates the key at the night preset", () => {

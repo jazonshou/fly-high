@@ -46,6 +46,8 @@ import {
   aerialNightness,
   applyAerialPerspectiveToShaderMaterial,
   twilightAmbientFloorFactor,
+  twilightArchRadiance,
+  TWILIGHT_ARCH_KEY_FACTOR,
   type AerialPerspectiveBinding,
 } from "./AerialPerspective";
 
@@ -790,9 +792,21 @@ export class AtmosphereSystem {
     // will read pixels in. Lambertian ground under the frame's actual lights
     // — this is what σ has to be, because the buffer is not photometrically
     // scaled at night (see ScotopicState.adaptedLuminanceCdM2).
+    //
+    // §2.6: the twilight arch is part of the frame's actual light — the IBL
+    // probe integrates it onto every material — so σ must count it or the
+    // rod response re-exposes the frame around a key that is smaller than
+    // the scene (round 1 measured that: terrain up 2.1×, sky up 5.9×).
+    // TWILIGHT_ARCH_KEY_FACTOR is the closed-form Lambertian irradiance of
+    // the arch's gradient (E/π); the term is exactly zero outside the
+    // window, so day and night σ are bit-identical by construction.
+    const archRadiance = twilightArchRadiance(state.sun.direction[1]);
+    const archKeyIntensity = TWILIGHT_ARCH_KEY_FACTOR
+      * (0.2126 * archRadiance[0] + 0.7152 * archRadiance[1] + 0.0722 * archRadiance[2]);
     const sceneKeyLuminance = ((sunIntensity * Math.max(sunDirection.y, 0)
       + moonIntensity * Math.max(moonDirection.y, 0)
-      + ambientIntensity)
+      + ambientIntensity
+      + archKeyIntensity)
       * state.atmosphere.groundAlbedo[1]) / Math.PI;
 
     const adaptationTarget = adaptedLuminanceCdM2(state, moonLux);

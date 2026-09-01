@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   airfieldLampDaylightAttenuation,
   AIRFIELD_LAMP_FULL_EFFECT_LUX,
+  AIRFIELD_LAMP_TWILIGHT_CUT,
 } from "../src/render/webgpu/lighting/AirfieldLighting";
+import { TWILIGHT_WINDOW_RELEASE_SINE } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import {
   resolveEnvironmentState,
   horizontalIlluminanceLux,
@@ -39,11 +41,10 @@ function conditionsAt(dayOfYear: number, solarTimeHours: number) {
   return { sunY: state.sun.direction[1], lux: horizontalIlluminanceLux(state) };
 }
 
-/** Every shot in the set whose clock puts the sun at or below the horizon. */
+/** The shots whose clocks sit at or below the §2.6 window release. */
 const NIGHT_SHOTS = [
   { name: "night", day: 171, hour: 23.75 },
   { name: "night-moonlit", day: 179, hour: 23.75 },
-  { name: "dusk-mesopic", day: 171, hour: 20.45 },
 ] as const;
 
 const DAY_SHOTS = [
@@ -55,7 +56,8 @@ describe("airfield lamp daylight attenuation", () => {
   it("is EXACTLY 1 for every night shot — the night calibration is untouched", () => {
     for (const shot of NIGHT_SHOTS) {
       const { sunY, lux } = conditionsAt(shot.day, shot.hour);
-      expect(sunY, `${shot.name}: expected the sun below the horizon`).toBeLessThanOrEqual(0);
+      expect(sunY, `${shot.name}: expected the sun below the release`)
+        .toBeLessThanOrEqual(TWILIGHT_WINDOW_RELEASE_SINE);
       const a = airfieldLampDaylightAttenuation(sunY, lux);
       // `toBe(1)`, not `toBeCloseTo` — 0.9999 would make `night-moonlit` move,
       // and that frame carries an approved `terrainBandMedianLuma` of 0.1259.
@@ -63,14 +65,40 @@ describe("airfield lamp daylight attenuation", () => {
     }
   });
 
-  it("is exactly 1 below the horizon for any illuminance at all", () => {
+  it("ramps through twilight — dusk lamps no longer burn at full night effect", () => {
+    // Jason, on the first dusk frame that ever showed the old behaviour:
+    // "Airport lights are way too bright/spread out given the current
+    // lighting conditions." The horizon gate returned 1 for the whole of
+    // civil twilight; the cut now rides the §2.6 window (its fourth
+    // consumer), reaching full effect exactly at the release.
+    const { sunY, lux } = conditionsAt(171, 20.45); // dusk-mesopic, mid-hold
+    expect(airfieldLampDaylightAttenuation(sunY, lux))
+      .toBeCloseTo(1 - AIRFIELD_LAMP_TWILIGHT_CUT, 6);
+    // The release edge itself is already the literal 1.
+    expect(airfieldLampDaylightAttenuation(TWILIGHT_WINDOW_RELEASE_SINE, 0.3)).toBe(1);
+  });
+
+  it("is exactly 1 at and below the release for any illuminance at all", () => {
     // The night guarantee must not depend on the lux argument being small: a
-    // moon, an aurora or a future sky model could raise it. The horizon gate is
+    // moon, an aurora or a future sky model could raise it. The gate is
     // syntactic, so nothing above it can reach through.
     for (const lux of [0, 1e-9, 2.672, 3.4, 1e3, 1e6]) {
-      expect(airfieldLampDaylightAttenuation(-0.001, lux)).toBe(1);
+      expect(airfieldLampDaylightAttenuation(TWILIGHT_WINDOW_RELEASE_SINE, lux)).toBe(1);
+      expect(airfieldLampDaylightAttenuation(-0.3, lux)).toBe(1);
       expect(airfieldLampDaylightAttenuation(-0.5, lux)).toBe(1);
-      expect(airfieldLampDaylightAttenuation(0, lux)).toBe(1);
+    }
+  });
+
+  it("keeps the twilight band illuminance-blind — the cut is the sun's alone", () => {
+    // The same no-reach-through promise, restated for the band the gate no
+    // longer covers: within (release, 0] the value may differ from 1, but it
+    // must not depend on lux — the cut is a function of the sun's sine only,
+    // so no illuminance value can perturb it.
+    for (const sine of [-0.001, -0.05, -0.107, -0.2, -0.25]) {
+      const reference = airfieldLampDaylightAttenuation(sine, 0);
+      for (const lux of [1e-9, 2.672, 3.4, 1e3, 1e6]) {
+        expect(airfieldLampDaylightAttenuation(sine, lux)).toBe(reference);
+      }
     }
   });
 
