@@ -239,7 +239,7 @@ function clampTier(value: number): 0 | 1 | 2 | 3 {
 }
 
 /** Resolve one bounded profile instead of scattering quality branches across systems. */
-export function resolveWebGpuQualityProfile(
+function resolveBaseQualityProfile(
   quality: QualityLevel,
   mode: RenderingMode,
 ): WebGpuQualityProfile {
@@ -519,6 +519,71 @@ export function resolveWebGpuQualityProfile(
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
   };
+}
+
+/**
+ * Fields the override may never touch, because they are IDENTITY rather than
+ * configuration: other code keys on them (`FRAME_BUDGET_MS[tier]`,
+ * `OTHER_DETAIL_ALLOWANCE_MIB[tier]`, the capture's delivery contract), so
+ * overriding one corrupts every downstream lookup instead of testing a field.
+ * Stripped here rather than left to the caller's discipline — the experiment's
+ * scope exclusion is enforced by construction, the same reason the override
+ * lives at the single point of resolution.
+ */
+const PROFILE_OVERRIDE_FORBIDDEN_KEYS = ["tier", "quality", "mode", "frameTargetMs"] as const;
+
+let captureExperimentProfileOverride: Partial<WebGpuQualityProfile> | null = null;
+
+/**
+ * TEST-ONLY. Force individual profile fields for the tier-cliff A/B capture.
+ *
+ * **What it is for.** Tier 2 misses its 13.7 ms frame contract on 0 of 21
+ * measured shot-configurations, by 10.0-46.7 ms, and **30 of 35 profile fields
+ * differ between tier 1 and tier 2**, so the cause cannot be isolated by
+ * reading the diff. The A/B reverts one group of fields at a time from tier 2
+ * toward tier 1 and measures the recovery. Nothing else can vary a single
+ * field: the profile is a frozen literal per tier.
+ *
+ * **Why it lives here rather than in `FlightRendererOptions`.** The profile is
+ * resolved at THREE sites in `FlightRenderer` (construction, the async create
+ * path, and the runtime quality switch). An override threaded through options
+ * could be applied at some and not others, producing an experiment arm that
+ * silently tested a MIXTURE of tier-1 and tier-2 fields — and that arm would
+ * look like a clean measurement. Applying it at the single point of resolution
+ * makes that inconsistency impossible rather than unlikely.
+ *
+ * **What removes it.** Delete this, its clearer, and the wrapper below once the
+ * cliff has a cause — the finding is the deliverable, not the scaffold. If the
+ * A/B returns NULL (the cliff is not in the profile at all) it should be
+ * deleted too, because a scaffold kept for a question it could not answer is
+ * how an experiment hook becomes API. It has no other caller by design, and
+ * `tests/render.webgpu-profile-override-absent.test.ts` fails the build if one
+ * appears under `src/`.
+ */
+export function __setProfileOverrideForCaptureExperimentsOnly(
+  override: Partial<WebGpuQualityProfile> | null,
+): void {
+  if (!override) {
+    captureExperimentProfileOverride = null;
+    return;
+  }
+  const safe: Record<string, unknown> = { ...override };
+  for (const key of PROFILE_OVERRIDE_FORBIDDEN_KEYS) delete safe[key];
+  captureExperimentProfileOverride = safe as Partial<WebGpuQualityProfile>;
+}
+
+/**
+ * Resolve the tier profile, applying the capture experiment's override if one
+ * is set. Inert — and identical to `resolveBaseQualityProfile` — when it is not,
+ * which is every path that is not the A/B harness.
+ */
+export function resolveWebGpuQualityProfile(
+  quality: QualityLevel,
+  mode: RenderingMode,
+): WebGpuQualityProfile {
+  const base = resolveBaseQualityProfile(quality, mode);
+  if (!captureExperimentProfileOverride) return base;
+  return Object.freeze({ ...base, ...captureExperimentProfileOverride });
 }
 
 /**

@@ -375,8 +375,24 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   `terrainSurfaceNormal`, `terrainOcclusionAtlas`, `terrainHorizonAtlasA`,
   `terrainHorizonAtlasB`, `terrainSplatId`, `terrainSplatWeightLo`,
   `terrainSplatWeightHi`), and `TERRAIN_HYDROLOGY_ADDS_SAMPLED_BINDINGS = 0`, so the widest
-  shipping permutation is the same set. **Terrain is 10/16, going to 11/16 with the
-  container: five slots free, not one.**
+  shipping permutation is the same set. **Terrain is 10/16 sampled.**
+  **7-0-d HAS NOW RUN, and it corrects P1's own follow-up (2026-09-01).** I wrote
+  "10 → 11 with the container". **Sampled textures stayed at 10.** The container's +1 landed
+  in *total* texture bindings, because `lightDataTexture{X}` is `textureLoad`-only. Both
+  numbers were right and two metrics were conflated — mine as much as anyone's, since I
+  wrote the sentence.
+  **The consequence outlives this item: `TERRAIN_SAMPLED_BINDINGS` is the WRONG list for
+  auditing `maxSampledTexturesPerShaderStage`**, which counts texture bindings regardless of
+  sampler pairing. The list is correct for its stated purpose — the *sampler* budget — and
+  6-6 added shore distance without moving it precisely because of that exclusion. **Anyone
+  checking the adapter limit against it will under-count.** That is a live trap: the list is
+  now derived and trustworthy, which makes it more likely to be reached for, not less.
+  **Measured on the adapter:** terrain with the container **and** the 4-cascade CSM sits at
+  **14 of 16 inter-stage — two slots free**; the container adds **one sampled-texture
+  binding, one fragment storage buffer, and zero samplers**. **Binding counts are properties
+  of the compiled permutation and are tier-independent, so 7-4b's buildability does not move
+  with the tier-2 cliff** — only the millisecond budgeting does. *(Carried from the
+  `Principle Engineer`'s 7-0-d run.)*
   **The scoping implication that briefly stood here is withdrawn.** It said the crunch might
   decide whether IES rides a texture or is authored analytically for every fixture. There is
   no crunch. **7-5's IES is not texture-budget-constrained**, and if every fixture is ever
@@ -1340,8 +1356,14 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   to the message that was teaching it.
 
 - **D-14 (2026-09-01, 7-0-b's funding mechanism is void; the obligation is not):** the
-  tier-2 sweep measured **23.7–60.4 ms** against the declared table's **13.65**, an
-  under-prediction of **1.74–4.42×**. 7-0-b required a new `post`/`lighting` row to be
+  tier-2 sweep measured **23.7–60.4 ms p95 at 1280×720** against the declared table's
+  **13.65**, an under-prediction of **1.74–4.42×**. **The 720p population is deliberate and
+  is the stronger form of the claim:** it is the *lightest* configuration, so a deficit
+  there cannot be dismissed as a resolution choice. Across all three viewports the range is
+  23.7–**83.2** ms and the factor **1.74–6.10×** — a bigger number and a weaker argument.
+  **Do not mix the two populations:** −10.0 ms (`water-3m`, 720p) is the best case in both,
+  −46.7 (`forest-500ft-sunbehind`) is worst at 720p, and −69.5 (`motion-banked-turn`, 1440p)
+  is worst anywhere. All p95, all exactly subtractable from 13.7 **inside one population**. 7-0-b required a new `post`/`lighting` row to be
   funded by cutting an existing row in the same commit, on the premise that tier 2's
   0.05 ms of slack was headroom worth trading for.
   *What survives:* **assertion 20 is a model-internal consistency check**, so the declared
