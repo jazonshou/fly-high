@@ -1200,8 +1200,16 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "lighting",
     definitionSites: ["src/render/webgpu/lighting/AircraftLighting.ts"],
     consumers: ["lighting", "aircraft"],
-    ownedSymbols: ["AircraftLightingSystem", "BEACON_PERIOD_SECONDS", "STROBE_PERIOD_SECONDS"],
-    plannedBy: "7-8",
+    // `7-8` landed as a pure LAW module rather than a system class: the
+    // lighting has no per-frame state to own, so a class would have been an
+    // empty shell added to satisfy this row. Recorded rather than silently
+    // substituted.
+    ownedSymbols: [
+      "resolveAircraftLights",
+      "BEACON_PERIOD_SECONDS",
+      "STROBE_PERIOD_SECONDS",
+      "NAV_LIGHT_ARC_DEGREES",
+    ],
     notes:
       "Recorded consequence of 7-4b: `IsLightSupported` rejects any light "
       + "carrying a shadow generator, so clustered landing lights cast NO "
