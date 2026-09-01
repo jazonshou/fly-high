@@ -30,11 +30,42 @@
 # against an identical code state. Three sessions have been bitten. Each arm
 # here runs twice and keeps the second.
 set -u
-COMMIT="${1:?usage: decompose-draw-calls.sh <commit> [shots]}"
-SHOTS="${2:-}"
+# TWO EXPLICIT REFS, not <commit> and an implied parent. The first cut took one
+# commit and derived `^` itself; the invocation published to four owners was the
+# two-ref form, and the mismatch was SILENT -- `<sha>^ <sha> shots` would have
+# diffed the GRANDPARENT against the parent and passed a SHA as the shot filter,
+# matching no shots and producing an empty report that looked like a clean run.
+# Caught by validating the tool before anyone used it.
+BASE_REF="${1:?usage: decompose-draw-calls.sh <base> <head> [shots]   e.g. abc123^ abc123}"
+HEAD_REF="${2:?usage: decompose-draw-calls.sh <base> <head> [shots]   e.g. abc123^ abc123}"
+SHOTS="${3:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BASE="$(git -C "$REPO" rev-parse --short "${COMMIT}^")"
-HEAD_SHA="$(git -C "$REPO" rev-parse --short "$COMMIT")"
+
+# REFUSE THE SHAPES THAT FAIL SILENTLY. The published invocation and the script
+# disagreed once already, and the failure mode was not an error -- it was an
+# EMPTY REPORT that reads as a clean zero, which is the expected answer for most
+# commits here. A wrong answer that matches the expectation is the worst kind.
+if ! git -C "$REPO" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+  echo "ERROR: base ref '$BASE_REF' is not a commit." >&2
+  echo "       usage: decompose-draw-calls.sh <base> <head> [shots]   e.g. abc123^ abc123" >&2
+  exit 2
+fi
+if ! git -C "$REPO" rev-parse --verify --quiet "${HEAD_REF}^{commit}" >/dev/null; then
+  echo "ERROR: head ref '$HEAD_REF' is not a commit." >&2
+  echo "       If you passed a shot list here you are using the OLD two-argument form." >&2
+  echo "       usage: decompose-draw-calls.sh <base> <head> [shots]   e.g. abc123^ abc123" >&2
+  exit 2
+fi
+# A shot filter that looks like a SHA is the old form's signature, and it would
+# select ZERO shots rather than erroring.
+if [ -n "$SHOTS" ] && git -C "$REPO" rev-parse --verify --quiet "${SHOTS}^{commit}" >/dev/null; then
+  echo "ERROR: shot filter '$SHOTS' resolves to a commit -- that is the OLD argument form." >&2
+  echo "       usage: decompose-draw-calls.sh <base> <head> [shots]" >&2
+  exit 2
+fi
+
+BASE="$(git -C "$REPO" rev-parse --short "$BASE_REF")"
+HEAD_SHA="$(git -C "$REPO" rev-parse --short "$HEAD_REF")"
 WORK="${TMPDIR:-/tmp}/decompose-$HEAD_SHA"
 rm -rf "$WORK"; mkdir -p "$WORK"
 

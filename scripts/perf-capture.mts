@@ -237,7 +237,27 @@ export interface PerfCaptureShotDefinition {
   readonly altitudeAglMeters: number | null;
   /** Metres above sea level when not AGL-anchored. */
   readonly altitudeMslMeters: number | null;
-  /** Horizontal offset from the airport centre, metres. */
+  /**
+   * Horizontal offset from the airport centre, metres — **BUT ONLY WHEN
+   * `locate` IS ABSENT.**
+   *
+   * **This field means two different things and its name and type say which
+   * one is which for neither.** On a shot with no `locate`, it is a POSITION.
+   * On a shot with `locate`, it is a SEARCH SEED — where a terrain search
+   * begins — and the camera ends up over whatever feature the search finds,
+   * which can be kilometres away. **16 of the 34 shots carry a `locate`.**
+   *
+   * **So any table sorted or differenced by this field silently mixes two
+   * populations.** That is not hypothetical: `7-9`'s draw-call analysis
+   * concluded a bimodal +24/+12 split "does not track distance" on the grounds
+   * that `mountain-close` and `cliff-60m` share offsets and land in different
+   * groups. **They share a seed, not a position, and the two shots are sited on
+   * different terrain features.** The conclusion was retracted; re-run over the
+   * 15 `locate: null` shots alone, distance separated the groups cleanly.
+   *
+   * **Before computing any distance from this field, filter to `locate == null`
+   * or resolve the search.** A mixed set gives an answer that looks clean.
+   */
   readonly offsetXMeters: number;
   readonly offsetZMeters: number;
   /** Pitch-down angle of the aircraft body, degrees. */
