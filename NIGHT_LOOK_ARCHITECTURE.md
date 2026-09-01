@@ -317,6 +317,43 @@ must become the same quantity:
   (daylight bit-identical by construction), peak through the hold band,
   **zero at and below the −0.26 release** so the approved night frames are
   untouched by shape, exactly as the dip pinned them.
+
+  **ROUND 1 FIRED STOP CONDITION 3 AND RESHAPED (a) — recorded, because
+  the first mechanism is the obvious one and the next person will reach
+  for it.** The first cut rode the binding's `aerialAmbient` slot, which
+  `applyAerialPerspective` paints onto EVERY distant terrain pixel; the
+  IBL compounded it; and σ (sun + moon + hemispheric only) never learned
+  the new radiance while (b)'s floor cut lowered its ambient term — scene
+  radiance up, key down, and the Naka–Rushton auto-centring re-exposed
+  the whole frame upward. Measured: terrain 0.2523 → 0.5313 (rose 2.1×
+  where it had to fall), sky 0.0846 → 0.4992 (5.9× ≈ 3.7× arch × 1.6×
+  recentring — the arithmetic reconstructs from the mechanism). Jason,
+  on the frame: *"it should not look like an oil spill."* As reshaped:
+  the arch is a binding field consumed ONLY inside `skyRadiance()` —
+  dome and IBL probe receive it, the terrain haze does not (twilight air
+  is optically thin without a sun to scatter through; mountains
+  silhouette against the blue, which is the point) — with the
+  horizon-bright gradient EXPLICIT (`TWILIGHT_ARCH_ZENITH_FALLOFF`, not
+  borrowed from `(1 − t)`), and **σ taught the arch's ground irradiance
+  in closed form** (`TWILIGHT_ARCH_KEY_FACTOR = 1 − ⅔·falloff`, derived
+  from the gradient so the two cannot drift, zero outside the window so
+  day and night σ stay bit-identical). The general fix — σ integrates
+  the whole dome — is a larger refactor this term approximates exactly
+  for the arch's share.
+
+- **(a′) The lamps are the window's FOURTH consumer** (dome, floor, σ,
+  lamps — one window, none can drift). Jason's second dusk complaint,
+  verbatim: *"Airport lights are way too bright/spread out given the
+  current lighting conditions."* Mechanism confirmed at source: the lamp
+  daylight gate returned the literal 1 for the whole of civil twilight,
+  so lamps burned at full NIGHT calibration at −6.12°. The gate's early
+  return moves from the horizon to the −0.26 release — same syntactic
+  no-reach-through promise, same edge as everything else in this section
+  — and through the twilight band the lamps ramp by
+  `AIRFIELD_LAMP_TWILIGHT_CUT × twilightArchStrength`, now asserted
+  illuminance-blind per-lux across the band. `AIRFIELD_LAMP_SCENE_SCALE`
+  does not move. The shipped 500× step at the sunset crossing second is
+  recorded at the function as pre-existing and out of scope.
 - **(b) Ground ambient rides the dome down.** Replace the constant floor
   with a windowed one: `floor(sine) = 0.2 × smooth01` over the same
   sunset→release window, so the floor is reached EXACTLY at the arch
