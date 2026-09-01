@@ -15,6 +15,7 @@ import {
   twilightArchStrength,
   twilightAmbientFloorFactor,
   twilightArchRadiance,
+  MOON_TWILIGHT_RECESSION,
   TWILIGHT_ARCH_TINT,
   TWILIGHT_ARCH_STRENGTH,
   TWILIGHT_ARCH_ZENITH_FALLOFF,
@@ -456,6 +457,20 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.16)).toBeCloseTo(1, 6);
     expect(twilightExposureDipFactor(-0.26)).toBeCloseTo(1, 6);
     expect(twilightArchStrength(-0.26)).toBe(0);
+  });
+
+  it("recedes the moon only inside the window (consumer #6)", () => {
+    // MOON_PEAK is a night calibration; mid-hold the moon keeps ~10% and
+    // returns to full EXACTLY at the release, so the approved night frames
+    // and the moon anchor's arithmetic are untouched by shape.
+    const recession = (sine: number): number =>
+      1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(sine);
+    expect(recession(sineAt(12.5))).toBe(1);
+    expect(recession(sineAt(19.0))).toBe(1);
+    expect(recession(sineAt(23.75))).toBe(1);
+    expect(recession(sineAt(0))).toBe(1);
+    expect(recession(-0.26)).toBe(1);
+    expect(recession(sineAt(20.45))).toBeCloseTo(1 - MOON_TWILIGHT_RECESSION, 6);
   });
 
   it("cuts the ambient floor only inside the window", () => {

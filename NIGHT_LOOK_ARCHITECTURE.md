@@ -365,6 +365,26 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a‴) ROUND M — the moon RECEDES through twilight (consumer #6), a
+  correctness fix taken without waiting on taste.** The cream tree
+  crowns survived every dusk round because they were never dome-lit:
+  crowns measured R/B 1.618 (null) and 1.17 (rA) while the ENTIRE dome
+  measured R/B 0.14 at six elevations — the crown colour barely
+  responded to the dome flipping from near-black to deep blue, which is
+  a measurement that the dome is not the cause. The warm directional is
+  the MOON: `MOON_PEAK_LIGHT_INTENSITY` is a night calibration, and
+  carried into civil twilight unwindowed it made the moon comparable to
+  the whole sky's ground irradiance — a real 2.7-lux dusk sky swamps a
+  ≤0.25-lux moon ~10×. Hidden while the rod path processed the warmth
+  away; exposed when field adaptation routed dusk through the raw path
+  (the second night-calibrated constant that fix has surfaced — the
+  lamps were the first). `MOON_TWILIGHT_RECESSION` 0.9 scales the
+  intensity AT ITS DERIVATION so the light and σ's moon term recede
+  together by construction; exactly 1 at and below the release, so the
+  night frames and the moon anchor's arithmetic are byte-for-byte
+  shipped. Tuned against the crown-warmth patches (dusk pooled R/B must
+  cross below 1.0), never against night.
+
 - **(a′) The lamps are the window's FOURTH consumer** (dome, floor, σ,
   lamps — one window, none can drift). Jason's second dusk complaint,
   verbatim: *"Airport lights are way too bright/spread out given the

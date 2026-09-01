@@ -625,6 +625,18 @@ export function twilightAmbientFloorFactor(sunDirectionY: number): number {
   return 1 - TWILIGHT_AMBIENT_FLOOR_CUT * twilightArchStrength(sunDirectionY);
 }
 
+/**
+ * §2.6 round M — how far the moon's directional light recedes at the
+ * window's hold (consumer #6: dome, floor, σ, lamps, adaptation… and now
+ * the moon). MOON_PEAK is a NIGHT calibration; at civil twilight a real
+ * sky outshines the moon's ground contribution ~10×, so the moon keeps
+ * ~10% of its night intensity mid-hold and returns to full exactly at the
+ * release — the approved night frames and the moon anchor's arithmetic
+ * untouched by shape. Tuned by capture against the crown-warmth patches
+ * (dusk pooled R/B 1.17 must cross below 1.0), never against night.
+ */
+export const MOON_TWILIGHT_RECESSION = 0.9;
+
 export function resolveAerialPerspectiveBinding(
   state: EnvironmentState,
   cameraAltitudeMeters: number,

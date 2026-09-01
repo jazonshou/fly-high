@@ -5,9 +5,11 @@ import {
   NIGHT_AMBIENT_FLOOR_SCALE,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
+  MOON_TWILIGHT_RECESSION,
   TWILIGHT_AMBIENT_FLOOR_CUT,
   twilightAmbientFloorFactor,
   twilightArchRadiance,
+  twilightArchStrength,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import {
   adaptedLuminanceCdM2,
@@ -194,6 +196,12 @@ describe("does a moon-intensity raise reach the night image?", () => {
     //    NIGHT_AMBIENT-based ratio in this file is computed on the same
     //    sigma it always was.
     expect(twilightArchRadiance(nightSunSine)).toEqual([0, 0, 0]);
+    // 5. Round M scales moonIntensity by the twilight recession AT ITS
+    //    DERIVATION (light and sigma's moon term recede together). The
+    //    factor is exactly 1 across the night band, so this file's
+    //    moon-share and shadow-cost arithmetic still runs on the shipped
+    //    intensity.
+    expect(1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(nightSunSine)).toBe(1);
   });
 
   it("NON-VACUITY — the moon genuinely dominates the key at the night preset", () => {

@@ -47,6 +47,8 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   twilightAmbientFloorFactor,
   twilightArchRadiance,
+  twilightArchStrength,
+  MOON_TWILIGHT_RECESSION,
   TWILIGHT_ARCH_KEY_FACTOR,
   type AerialPerspectiveBinding,
 } from "./AerialPerspective";
@@ -687,8 +689,22 @@ export class AtmosphereSystem {
     // Physical in every RELATIVE term — phase, opposition surge, altitude,
     // perigee distance — and normalised to the full-moon value, so only the
     // absolute level is art-directed (see MOON_PEAK_LIGHT_INTENSITY).
+    //
+    // §2.6 round M — the moon RECEDES through twilight (window consumer #6).
+    // MOON_PEAK is calibrated so moonlit ground reads at NIGHT; carried into
+    // civil twilight unwindowed it made the moon comparable to the entire
+    // sky's ground irradiance, when a real 2.7-lux dusk sky swamps a
+    // ≤0.25-lux moon ~10×. That warm directional was the cream tree-crown
+    // defect (crown R/B 1.17 while the whole dome measured R/B 0.14) —
+    // hidden while the rod path processed the warmth away, exposed when the
+    // field-adaptation fix routed dusk through the raw path. Scaled HERE, at
+    // the derivation, so the light and σ's moon term (which reads this same
+    // variable below) recede together by construction; at and below the
+    // release the factor is exactly 1 and every night quantity — including
+    // the moon anchor's arithmetic — is byte-for-byte the shipped one.
     const moonIntensity = (moonLux / FULL_MOON_ILLUMINANCE_LUX)
-      * MOON_PEAK_LIGHT_INTENSITY * overcastDimming;
+      * MOON_PEAK_LIGHT_INTENSITY * overcastDimming
+      * (1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(state.sun.direction[1]));
     this.moon.direction.copyFrom(moonDirection).scaleInPlace(-1);
     this.moon.intensity = moonIntensity;
 
