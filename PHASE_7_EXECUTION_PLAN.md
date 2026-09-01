@@ -188,7 +188,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    trade is re-sized against them rather than against the 495/492.3 pair quoted here.
    **Two accounting paths feed one enforced number.** `inventoryGpuMemoryMiB` walks
    `scene.textures` and mesh geometry *and then adds* `inventoriedGpuBufferBytes()`
-   ([FlightRenderer.ts:1485-1531](src/render/FlightRenderer.ts)). So a `RawTexture` that
+   ([FlightRenderer.ts](src/render/FlightRenderer.ts) (`private inventoryGpuMemoryMiB()`)). So a `RawTexture` that
    never touches `GpuBufferInventory` still counts against the capture pin exactly like an
    atlas — E-5's 0.125 MiB is precisely this case. Phase 7's photometric/IES textures and
    7-11's material arrays land in the texture walk, its cluster and light-point buffers in
@@ -336,7 +336,7 @@ scene component, and a Light-independent `LoadIESData` parser. Pinned exactly at
   a deviation declining to replace it ([RunwaySurface.ts:32-37](src/render/webgpu/terrain/RunwaySurface.ts));
   `rg -in taxiway src tests scripts` returns zero; the post chain is exactly
   ScotopicVision → ACES → FXAA with no `DefaultRenderingPipeline`, no glow layer
-  ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)). D-0 and D-4.
+  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). D-0 and D-4.
 - **There is no way to fly at night.** `TimeOfDayPreset` is `"dawn" | "day" | "golden"`
   ([src/game/types.ts:18](src/game/types.ts)); the only route to night is dragging the
   solar-time slider. 7-0-c fixes this or the §8 flights cannot happen.
@@ -403,7 +403,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   directions** — it listed six PBR samplers the material never declares and omitted
   `environmentBrdfSampler` and the CSM `shadowTexture`, so the *set* was wrong, not merely
   the total, and "stale by four" understates it. Note also that
-  [Capabilities.ts:24](src/render/webgpu/core/Capabilities.ts)'s comment **still says 14**
+  [Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`maxSampledTexturesPerShaderStage`'s comment)'s comment **still says 14**
   and is now itself the stale artifact (routed to 6-12).
   *Recorded for whoever writes the next prediction:* **a falsified prediction did its job.**
   P1 was wrong and cost nothing, because what made it safe was refusing to trust a comment
@@ -489,7 +489,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
 7A's own hand-off. The problem, measured: `ScotopicVision`'s Naka–Rushton response
 `nits / (nits + sigma)` half-saturates at the **scene's key luminance**, not the physical
 adapted luminance ([ScotopicVision.ts:158-166](src/render/webgpu/atmosphere/ScotopicVision.ts);
-σ passed from [FlightRenderer.ts:1850-1853](src/render/FlightRenderer.ts)). At the `night`
+σ passed from [FlightRenderer.ts](src/render/FlightRenderer.ts) (`adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2`)). At the `night`
 shot σ ≈ 4.21 cd/m² while physical adapted luminance is 8.0e-5, so `rodFraction = 1` and
 the rod image fully replaces the scene. With `displayGain = 0.16 / 4.698026 = 0.0340569`,
 scene-linear **0.01 / 1 / 1000** land at **0.032211 / 0.034037 / 0.034057** — five decades
@@ -511,7 +511,7 @@ asserted number in a test is the `Capabilities.ts` sampler comment one layer up.
 > Compression *worsens* as σ falls, because the Naka–Rushton response saturates toward 1 for
 > any `nits ≫ σ`. **The shipped scene-key choice is not the bug — it is the only reason any
 > range survives at all**, and the code says so deliberately at
-> [FlightRenderer.ts:1884](src/render/FlightRenderer.ts) ("σ is the SCENE's key, not the
+> [FlightRenderer.ts](src/render/FlightRenderer.ts) (the `sceneKeyLuminanceCdM2` hand-off, commented "σ is the SCENE's key") ("σ is the SCENE's key, not the
 > physical adapted luminance"). The fix is the pre-exposure **and** the highlight-preserving
 > term, per Q4. This warning is written negatively on purpose: a plan that only describes a
 > defect leaves its most obvious remedy available and wrong — and this particular wrong fix
@@ -567,7 +567,7 @@ which is a sub-item:
   `materialHelper.functions.js:661-667`). Raise it explicitly and pin it.
 - **`GetSupportedSimultaneousLights` clamps to `maxUniformBuffersPerShaderStage - 4`**, and
   `REQUIRED_WEBGPU_LIMITS` declares no such limit
-  ([Capabilities.ts:21-37](src/render/webgpu/core/Capabilities.ts)). Declare and probe it.
+  ([Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`REQUIRED_WEBGPU_LIMITS`)). Declare and probe it.
 - **`vViewDepth` is gated on `CLUSTLIGHT_BATCH > 0`, NOT on whether a material has a
   clustered light** ([pbrFragmentExtraDeclaration.js:19-21](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/pbrFragmentExtraDeclaration.js)),
   so it lands on **every PBR material in the scene** — including the detail material, which
@@ -581,7 +581,7 @@ which is a sub-item:
   one varying, zero samplers.**
 - **The storage-buffer question splits in two, and only half of it is open.**
   `maxStorageBuffersPerShaderStage: 8` **is** declared
-  ([Capabilities.ts:29](src/render/webgpu/core/Capabilities.ts)); the newer
+  ([Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`maxStorageBuffersPerShaderStage`)); the newer
   *per-stage-split* limit is not. Separately `maxUniformBuffersPerShaderStage` is genuinely
   absent, and that one bites: `GetSupportedSimultaneousLights` returns the requested count
   **untouched** when the cap reads null (`materialHelper.functions.js:447-456`), so on an
@@ -669,7 +669,7 @@ constant-flux PSF. **One instanced draw** (§2.5).
 - **Bloom LANDED in `285eb2b`** (D-4 recorded it as absent; it is not any more). It sits
   between the scotopic pass and ACES, which required renegotiating MSAA and first-pass
   ownership with `ScotopicVisionPass` at slot 0
-  ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)). Gated to tier 1;
+  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). Gated to tier 1;
   **tier 2+ recorded as unfunded** pending the cliff, because the `post` row it would
   have used was funded against tier 2's 0.05 ms of **modelled** slack (§2.3(g)) and that
   model under-predicts the machine by 1.74–4.42×.
@@ -867,7 +867,11 @@ service doors, pilasters, concrete skirt. Parameterised on bay count. Corrugatio
   through the same earthworks profile and assertion 63 pins the two to under 1 mm.
 - **Register meshes correctly or they silently lose cloud shadows and aerial perspective.**
   `FlightRenderer` calls `airport.root.getChildMeshes(false)` **once at construction**
-  ([FlightRenderer.ts:765-768,877,893](src/render/FlightRenderer.ts)) and `shadowCasters` is
+  (in [FlightRenderer.ts](src/render/FlightRenderer.ts) — find the three call sites by
+  symbol, **not by line**: `atmosphere.addShadowCaster(mesh, false)` over
+  `airport.shadowCasters`, then `cloudShadowReceivers.registerMeshes(...)` and
+  `aerialReceivers.registerMeshes(...)`, both taking `airport.root.getChildMeshes(false)`)
+  and `shadowCasters` is
   a frozen array captured in the constructor. A generator that builds lazily or reparents
   misses both registries with no error.
 - **Seed discipline.** Hangar bay counts and "visually distinct under the same seed" are
@@ -891,7 +895,7 @@ Wind-driven animated windsock, fuel tanks, perimeter fence, runway/taxiway signa
 emissive faces (doubling as 7-5 light points).
 - **The windsock needs a per-object wind sample.** The renderer's only wind consumer samples
   `sampleWind` at the **aircraft** and forwards four scalars to `detail.setWind`
-  ([FlightRenderer.ts:2044-2059](src/render/FlightRenderer.ts)). Sample at the sock.
+  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (the single `sampleWind(` call, forwarding to `detail.setWind`)). Sample at the sock.
 - **Validate on a crosswind seed — and the earlier claim here was overstated.** The mechanism
   is real: the runway's preferred heading and the prevailing wind are the *same* expression,
   `unitFloatFromHash(mixSeed(h, 301)) * 2π`, and the site scorer adds a 4× wind-axis penalty
@@ -921,9 +925,28 @@ emissive faces (doubling as 7-5 light points).
   Asserting the angle passes even if the sock reads the *aircraft's* wind. The assertion that
   actually tests the trap is that the sock responds to a wind sampled **at the sock** which
   **differs** from the wind at the aircraft.
-  *Implementation gotcha, recorded because it cost a run:* `createWorld` takes the seed
-  **positionally** — passing `{ seed }` coerces to one constant string, so every "different
-  seed" silently measures the same default world.
+  *Implementation note:* **`createWorld` takes the seed positionally.** Write
+  `createWorld("hangar-a")`, not `createWorld({ seed: "hangar-a" })`.
+  **This is guidance, not a hazard — an earlier draft framed it as one and that was wrong,
+  retracted here rather than quietly dropped.** The object form **cannot compile**:
+  `WorldSeed = string | number` ([types.ts:2](src/world/types.ts)), so it is a `TS2345`, and
+  `npm run typecheck` runs in CI on every PR ([ci.yml:49](.github/workflows/ci.yml)). Zero of
+  ~125 call sites use it, and the untyped entry point reads `searchParams.get("seed")`, which
+  is `string | null`. **Verified here.**
+  *Why the retraction is worth reading rather than skipping:* the measurement behind the
+  original claim was real — an object seed does collide — but it was produced by a probe that
+  used an `as any` cast, **and that cast was the only thing that made the path reachable.**
+  The guard preventing the bug was disabled in order to observe the bug, and the bug was then
+  reported as live. **Before reporting what a probe found, state what a probe would find if
+  the defect were already prevented, and check that the probe did not disable that prevention
+  in order to run.**
+  *The one detail worth keeping, because the mechanism is nastier than the reach:*
+  `hashSeed` loops over `text.length` from the FNV offset basis `0x811c_9dc5`
+  ([seed.ts:38-42](src/world/seed.ts)), so a value with no `length` returns the basis
+  **untouched** — colliding not merely with other malformed seeds but with the hash of the
+  **empty string**, which is itself a legal seed someone might choose deliberately. A
+  `TypeError` in `normalizeSeed` now names that collision for the callers types do not bind:
+  an `as any`, a `.mts` script, a trusted worker payload.
 
 ### 7-14 obstruction lighting (1.0 d; re-pointed, D-0)
 Red obstruction lights on the tower cab and mast and on hangar roofs; **hangar-face floods
@@ -1199,7 +1222,7 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   clustered lighting never touches.*
 - **D-4 (at planning):** **"bloom coupling" is not a coupling.** There is no bloom, no glow
   layer and no `DefaultRenderingPipeline` anywhere in the tree; the post chain is exactly
-  ScotopicVision → ACES → FXAA ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)).
+  ScotopicVision → ACES → FXAA ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)).
   7-5 prices a new post-process, its MSAA/first-pass renegotiation with the scotopic pass at
   slot 0, and a `post` budget row against tier 2's 0.05 ms of **modelled** slack (§2.3(g)).
 - **D-5 (at planning, Jason Q4):** **the pre-exposure decision is taken, and it is the
