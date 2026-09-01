@@ -1137,10 +1137,12 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/lighting/AirfieldLighting.ts"],
     consumers: ["lighting"],
     ownedSymbols: ["AirfieldLightingSystem", "PAPI_ANGLE_PROFILE", "papiColourForAngle"],
-    plannedBy: "7-7",
     notes:
       "Taxiway and apron lighting are re-scoped away (D-0): that ground does not "
-      + "exist and 3-9 declined to build it. Mounts 7-14's obstruction lights.",
+      + "exist and 3-9 declined to build it. Mounts 7-14's obstruction lights. "
+      + "The site exists as of 7-7's angular law; AirfieldLightingSystem itself "
+      + "lands with 7-5, which owns the billboard path a PAPI is drawn through, "
+      + "so the row is enforced from now and one owned symbol is still to come.",
   },
   {
     // 7-8: navigation, beacon, strobe and landing lights. Sited under
