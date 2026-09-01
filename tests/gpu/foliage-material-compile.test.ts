@@ -538,16 +538,6 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // cannot be enabled on the detail material until a varying is freed** —
       // it is a budget wall, not a wiring bug, and no amount of plugin
       // reordering moves it.
-      // TEMP-DUMP
-      {
-        const widest = [...shaderModules]
-          .map((r) => /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(r.code))
-          .filter((m): m is RegExpExecArray => m !== null)
-          .sort((a, b) => b[1]!.length - a[1]!.length)[0];
-        // eslint-disable-next-line no-console
-        console.log("[varyings]\n" + (widest?.[1] ?? "none"));
-      }
-      // END-TEMP-DUMP
       const peakFragmentInputs = Math.max(
         ...shaderModules.map((record) => {
           const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(record.code);
