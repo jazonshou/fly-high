@@ -116,6 +116,68 @@ export {
 export type { GroundCoverCandidateRange } from "./presentationBuild";
 
 /**
+ * `7-4b` CAPTURE SCAFFOLD — move spherical-harmonic irradiance off the vertex
+ * stage for every detail material.
+ *
+ * **This exists to buy ONE inter-stage slot, and that slot is the whole of
+ * `7-4b`.** Babylon evaluates SH irradiance per-vertex by default, which costs
+ * the `vEnvironmentIrradiance` varying. The detail material sits at EXACTLY the
+ * device's fragment-input maximum — 15 `@location` plus `front_facing` is 16 of
+ * 16 — and attaching a `ClusteredLightContainer` adds one more, so the pipeline
+ * fails to create and the foliage stops drawing entirely. `forceIrradianceInFragment`
+ * deletes that varying (`USESPHERICALINVERTEX = !useSHInFragment`), which is
+ * exactly enough. MEASURED both ways: flag on plus container compiles and
+ * renders; flag off plus container is 8 limits errors at 17/16.
+ *
+ * **The plugin's own varyings have no slack left and this is not the place to
+ * look for it.** `DetailInstanceMaterialPlugin` already packs four values into
+ * `detailAtlasData` to add no location, already excludes `detailFadeByte` from
+ * the impostor path because it "cost the 16th input slot", and already forgoes
+ * Babylon's CSM varyings on impostors in favour of a hand-packed receiver. The
+ * remaining slack is all in BABYLON's varyings, and this flag takes one of them
+ * through a supported public property rather than by forking its shadow
+ * includes — which is the alternative, and which buys three slots at the price
+ * of a fork.
+ *
+ * **MEASURED, and this is the reason the default is ON.** Two capture arms per
+ * configuration, interleaved on one tree and one host, with same-arm controls:
+ *
+ *   shot                    control floor      effect (two pairings)
+ *   grove-forest-2m         0.003% / 0.000%    2.231% / 2.228%
+ *   night-moonlit           0.050% / 0.000%    0.372% / 0.380%
+ *
+ * — an effect about 700x the control floor at grove, reproducing across two
+ * independent pairings to within 0.003 points.
+ *
+ * **The LOCATION of the change is what makes it a mechanism rather than a
+ * magnitude.** At grove, 18.19% of pixels differ in the top band of the frame
+ * and 0.00% in the bottom four: the change is confined to CANOPY and absent
+ * from ground. Mean signed delta is +0.01 / -0.06, so it is a REDISTRIBUTION
+ * and not a brightness shift — which is the signature of removing per-vertex
+ * interpolation error, and is why this is the more correct rendering rather
+ * than merely a different one. Max channel delta 21/255, invisible at 1x.
+ *
+ * **The COST is BOUNDED, NOT MEASURED, and the distinction is deliberate.**
+ * The timing channel failed: `gpuPassMs.mainPass` swung 4.6x on byte-identical
+ * geometry (see the note in `tests/perf/perf-capture.test.ts`), so its null
+ * carries no information. The bound is arithmetic — roughly nine SH dot
+ * products on the ~25% of pixels that are foliage, order 0.01 ms, against an
+ * instrument resolving ~0.07 ms at best, so a null was EXPECTED either way.
+ * **Do not restate this as "no measurable cost"**: that reads as a measurement
+ * and there was not one.
+ */
+let detailIrradianceInFragment = true;
+
+/**
+ * Set BEFORE the renderer is created — it is read when each material is built.
+ * Retained after the default flipped so the A/B remains reproducible: pass
+ * `false` to capture the pre-`7-4b` arm.
+ */
+export function setDetailIrradianceInFragmentForCapture(enabled: boolean): void {
+  detailIrradianceInFragment = enabled;
+}
+
+/**
  * The GPU side of one batch: ONE interleaved 32-byte-stride buffer plus the
  * five typed instanced views onto it. Held across rebuilds — see
  * `uploadBatch`.
@@ -3590,6 +3652,10 @@ export class WorldDetailRuntime {
     samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
+    // 7-4b: read at CREATION, before the first effect compiles, so the
+    // permutation is built with the varying already absent rather than
+    // recompiled out of it later.
+    material.forceIrradianceInFragment = detailIrradianceInFragment;
     material.albedoColor = albedo;
     material.metallic = 0;
     material.roughness = roughness;

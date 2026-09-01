@@ -271,6 +271,12 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         opaqueCrown = false,
       ) => {
         const material = new PBRMaterial(name, scene);
+        // 7-4b: production sets this on every detail material
+        // (`WorldDetailRuntime.createMaterial`). Mirrored here because a
+        // budget measured on a permutation that does not ship is worth
+        // nothing -- and without it this rig would pin 16 while production
+        // compiles 15.
+        material.forceIrradianceInFragment = true;
         material.albedoColor = new Color3(0.4, 0.5, 0.35);
         material.metallic = 0;
         material.roughness = 0.9;
@@ -365,6 +371,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // rule. Impostors neither cast nor receive shadows.
       const impostorAtlas = createImpostorAtlas(scene, "foliage-compile-test");
       const impostorMaterial = new PBRMaterial("compile-impostor-material", scene);
+      impostorMaterial.forceIrradianceInFragment = true;
       impostorMaterial.albedoColor = new Color3(1, 1, 1);
       impostorMaterial.metallic = 0;
       impostorMaterial.roughness = 0.95;
@@ -532,12 +539,13 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       //
       // MEASURED, both arms, same tree, one flag: attaching a
       // `ClusteredLightContainer` adds exactly +1 `@location` to every
-      // permutation of this material, taking the peak from 16/16 to 17/16.
-      // The container arm fails with the message quoted above and the crowns,
-      // trunks and impostors all stop rasterizing. **So clustered lighting
-      // cannot be enabled on the detail material until a varying is freed** —
-      // it is a budget wall, not a wiring bug, and no amount of plugin
-      // reordering moves it.
+      // permutation of this material. Before 7-4b that took the peak from
+      // 16/16 to 17/16 and the crowns, trunks and impostors ALL stopped
+      // rasterizing — a budget wall, not a wiring bug.
+      //
+      // 7-4b freed the slot with `forceIrradianceInFragment`, set above and in
+      // production, which deletes `vEnvironmentIrradiance`. The peak is now 15
+      // and the container fits with nothing to spare.
       const peakFragmentInputs = Math.max(
         ...shaderModules.map((record) => {
           const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(record.code);
@@ -558,10 +566,11 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // it must not happen silently.
       expect(
         peakFragmentInputs,
-        "the detail material's fragment-input count moved. UP means the material no longer "
-        + "compiles on a 16-slot device; DOWN means a varying was freed and clustered lighting "
-        + "may now fit, which 7-4b is waiting for. Either way, re-derive before repinning.",
-      ).toBe(16);
+        "the detail material's fragment-input count moved. UP means the ONE slot 7-4b freed "
+        + "has been spent and a clustered light container no longer fits; DOWN means another "
+        + "was freed. Either way, re-derive before repinning -- and check this rig still sets "
+        + "`forceIrradianceInFragment` the way production does.",
+      ).toBe(15);
 
       // Non-vacuity 2: the instance must actually RASTERIZE. A tree that
       // compiles cleanly but draws no pixels (degenerate decode, zero scale,

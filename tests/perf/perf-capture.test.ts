@@ -16,6 +16,7 @@ import {
 } from "../../src/world";
 import { sunDirectionForClock } from "../../src/render/webgpu/nature/EnvironmentDirector";
 import { densityField } from "../../src/render/webgpu/detail/densityField";
+import { setDetailIrradianceInFragmentForCapture } from "../../src/render/webgpu/detail/WorldDetailRuntime";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../../src/game/types";
 import {
   PERF_CAPTURE_DEFAULT_CLOCK,
@@ -72,7 +73,31 @@ const BASELINE_DIR = "tests/perf/baseline";
 const ARTIFACT_DIR = "tests/perf/artifacts";
 const CANDIDATE_ROOT = `${ARTIFACT_DIR}/rebaseline-candidates`;
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
-/** Diagnostic only; normal captures match shipping's observer-free path. */
+/**
+ * Diagnostic only; normal captures match shipping's observer-free path.
+ *
+ * **DO NOT RESOLVE A SMALL RENDER CHANGE WITH `gpuPassMs`. IT IS BIMODAL.**
+ * Measured across ten invocations on 2026-09-01 while A/B-ing `7-4b`:
+ * `mainPass` read **2.041 ms and then 0.284 ms in the SAME ARM** on
+ * `night-moonlit`, and a six-run `grove-forest-2m` series went
+ * 1.415 / 1.286 / 1.368 then 0.282 / 0.315 / 0.291. Values cluster near two
+ * states (~0.3 and ~1.9) with ~48 GPU samples per shot either way, so a mean
+ * over them measures the MIXING RATIO rather than the work.
+ *
+ * **The transition is TIME-ordered, not arm-ordered** — both arms appeared in
+ * both populations, with the switch falling mid-series. And it is not the
+ * workload: `drawCalls`, `triangles`, `vegetationBatches` and `renderPixels`
+ * were byte-identical throughout at 1,679,836 triangles and 161 draws. **This
+ * is the timer, and it will poison any timing A/B taken on this host, not just
+ * that one.**
+ *
+ * **What to use instead: the PIXEL channel, which is deterministic.** Comparing
+ * the arms' PNGs directly with SAME-ARM controls, the same runs that produced
+ * the 4.6x timing swing gave a control floor of 0.003% / 0.000% differing
+ * against a 2.23% effect reproducing to within 0.003 points across two
+ * independent pairings. A rig can be blind in one channel and sharp in another
+ * — establish which before quoting either.
+ */
 const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
 /**
  * `VITE_PERF_UNPINNED_HOST=1` — this run is NOT on the pinned reference
@@ -129,6 +154,28 @@ const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 const HIDE_VEGETATION = import.meta.env.VITE_PERF_HIDE_VEGETATION === "1";
 
 /**
+ * `VITE_PERF_DETAIL_SH_IN_FRAGMENT=1` — build every detail material with
+ * `forceIrradianceInFragment`, moving spherical-harmonic irradiance off the
+ * vertex stage.
+ *
+ * **TRI-STATE, and it has to be.** `7-4b` measured this and flipped the SHIPPED
+ * default to on, so a two-state `=== "1"` read would force the flag OFF on every
+ * unqualified capture and quietly baseline a configuration that does not ship.
+ * Unset means DO NOT OVERRIDE; `1` and `0` pin the arm explicitly.
+ *
+ * Retained after the decision so the A/B stays reproducible — `0` captures the
+ * pre-`7-4b` arm. **Run it on ONE tree and ONE host, and run each arm TWICE**,
+ * because a control that is not the same tree measures the host rather than the
+ * change; the same-arm control is also what certifies the tree did not move
+ * under a concurrent edit, which no timing number can do.
+ *
+ * Diagnostic only, and mutually exclusive with rebaseline for the same reason
+ * the vegetation mask is: an arm under evaluation must never become the
+ * reference the other arm is then judged against.
+ */
+const DETAIL_SH_OVERRIDE = String(import.meta.env.VITE_PERF_DETAIL_SH_IN_FRAGMENT ?? "").trim();
+
+/**
  * `VITE_PERF_SUN_HOUR` / `VITE_PERF_SUN_BEARING` — override a shot's solar time
  * and its sun bearing relative to the view, for the measured
  * elevation x azimuth acceptance grid. Diagnostic only: any override forces the
@@ -149,6 +196,13 @@ if (HIDE_VEGETATION && REBASELINE) {
   throw new Error(
     "VITE_PERF_HIDE_VEGETATION and VITE_PERF_REBASELINE are mutually exclusive: "
     + "a vegetation-free frame is a diagnostic mask, never a baseline.",
+  );
+}
+
+if (DETAIL_SH_OVERRIDE !== "" && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_DETAIL_SH_IN_FRAGMENT and VITE_PERF_REBASELINE are mutually exclusive: "
+    + "arm B is a candidate under evaluation, never the reference arm A is judged against.",
   );
 }
 
@@ -430,6 +484,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
       ...(world.airport ? { runway: world.airport } : {}),
     });
 
+    // 7-4b: before creation, so each detail material is BUILT without the
+    // varying rather than recompiled out of it partway through the run. Only
+    // when EXPLICITLY pinned — an unqualified capture must measure the shipped
+    // default, whatever that default currently is.
+    if (DETAIL_SH_OVERRIDE !== "") {
+      setDetailIrradianceInFragmentForCapture(DETAIL_SH_OVERRIDE === "1");
+    }
     renderer = await FlightRenderer.create(captureRendererOptions());
     // This is the authoritative rejected-submit channel. A WebGPU validation
     // error is a device event, not necessarily a call through the page's
