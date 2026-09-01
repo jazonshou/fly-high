@@ -49,6 +49,55 @@ if (reports.length === 0) {
   process.exit(2);
 }
 
+/**
+ * Every report must carry a `sweep` stamp, and they must all come from one run.
+ *
+ * **The control gate below proves the CONTROLS were stable. It says nothing
+ * about whether every row belongs to the same run**, and that is a different
+ * failure with the same appearance. This directory held a 15:54-16:46 sweep on
+ * a thermally degraded host — tier 0 reading 75.5 fps and tier 3 at 1440p
+ * reading 9.9 — alongside a 22:41 run reading 120.1. Merged, the table would
+ * have shown tier 0 SLOWER than tier 1: a physically impossible ordering
+ * printed under "controls agree — tier rows are comparable", because the three
+ * controls all came from the newer epoch and agreed perfectly with each other.
+ *
+ * `tier-sweep.sh` stamps `sweep` into every artifact it copies. A report
+ * without one was placed here by something else, so its provenance is unknown
+ * and it is not admissible — refusing is right where guessing is not, and an
+ * unstamped file is exactly what a leftover looks like.
+ */
+const unstamped = reports.filter((r) => !r.report.sweep?.label);
+if (unstamped.length > 0) {
+  console.error("=== provenance ===");
+  console.error(`${unstamped.length} report(s) carry no \`sweep\` stamp:`);
+  for (const r of unstamped) console.error(`  ${r.file}`);
+  console.error("");
+  console.error("`tier-sweep.sh` stamps every artifact it writes, so these came from somewhere");
+  console.error("else — a previous run, a manual capture, or a different tree. A sweep mixes");
+  console.error("rows from ONE run by construction; rows of unknown origin are not comparable");
+  console.error("to it and the control readings cannot detect them. Move them out of this");
+  console.error("directory (keep them — an old run is evidence, just not this run's evidence).");
+  process.exit(2);
+}
+
+const startTimes = reports
+  .map((r) => Date.parse(r.report.sweep.startedAt ?? ""))
+  .filter((t) => Number.isFinite(t));
+if (startTimes.length === reports.length && reports.length > 1) {
+  const windowHours = (Math.max(...startTimes) - Math.min(...startTimes)) / 3_600_000;
+  console.log(`=== run window ===\n  ${reports.length} reports spanning ${windowHours.toFixed(2)} h`);
+  // A sweep is long, but not a working day long. A wide span means two runs
+  // were merged even though both were stamped.
+  if (windowHours > 6) {
+    console.error("");
+    console.error(`SWEEP VOID — the reports span ${windowHours.toFixed(1)} hours, which is longer than`);
+    console.error("any single sweep. Two runs have been merged. Separate them by run and");
+    console.error("re-analyse each on its own; a host does not hold still for that long.");
+    process.exit(1);
+  }
+  console.log("");
+}
+
 const meanFps = (report) =>
   report.shots.reduce((sum, s) => sum + s.wallClockFps, 0) / report.shots.length;
 

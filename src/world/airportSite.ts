@@ -216,7 +216,20 @@ interface CoarseCandidate {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const PRIMARY_CANDIDATE_COUNT = 192;
-const DETAILED_PRIMARY_COUNT = 192;
+/**
+ * Detailed candidates examined per search. EXPORTED so `world.test.ts` can
+ * derive its work ceiling from the search's own constant rather than from a
+ * number copied out of a passing run — a budget that does not move when the
+ * search does is decorative.
+ */
+export const DETAILED_PRIMARY_COUNT = 192;
+
+/**
+ * Headings tried per detailed candidate: the contour, the contour + 45 deg,
+ * and the preferred heading (`findDetailedCandidate`). Exported for the same
+ * reason as the count above.
+ */
+export const HEADINGS_PER_DETAILED_CANDIDATE = 3;
 const DRY_PLATFORM_CLEARANCE = 8;
 // These describe the untouched ground, not the finished pavement. A site may
 // be technically gradeable yet still look like an implausible mountain cut in
@@ -715,6 +728,30 @@ function buildAssessment(
  * This distinction prevents a constructed runway from "proving" its own site
  * is dry and level after it has replaced an ocean or cut through a mountain.
  */
+/**
+ * Site assessments performed since the last reset — the search's WORK, counted.
+ *
+ * `world.test.ts`'s 384-seed sweep used to guard site selection with a
+ * wall-clock p95, under a comment stating it guarded "an algorithmic
+ * regression ... not hardware speed". It did the opposite: the budget was
+ * calibrated per machine, drifted with load, and failed and passed on
+ * identical code twenty minutes apart. Counting the assessments measures the
+ * property the comment claims — an unbounded or badly seeded search does more
+ * of them — and is exactly reproducible, because the search is a pure function
+ * of the seed with no clock, no concurrency and no allocation sensitivity.
+ */
+let airportSiteEvaluationCount = 0;
+
+/** Reads the evaluation counter. Test-only; nothing in the renderer calls it. */
+export function readAirportSiteEvaluationCount(): number {
+  return airportSiteEvaluationCount;
+}
+
+/** Resets the evaluation counter. Test-only. */
+export function resetAirportSiteEvaluationCount(): void {
+  airportSiteEvaluationCount = 0;
+}
+
 export function assessAirportSite(
   seedHash: number,
   seaLevel: number,
@@ -723,6 +760,7 @@ export function assessAirportSite(
   headingRadians: number,
   footprint: Readonly<AirportFootprint>,
 ): AirportSiteAssessment {
+  airportSiteEvaluationCount += 1;
   return sampleCertifiedFootprint(
     seedHash,
     seaLevel,
@@ -743,6 +781,7 @@ function assessSuitableAirportSite(
   headingRadians: number,
   footprint: Readonly<AirportFootprint>,
 ): AirportSiteAssessment | null {
+  airportSiteEvaluationCount += 1;
   const platform = samplePlatform(
     seedHash,
     seaLevel,

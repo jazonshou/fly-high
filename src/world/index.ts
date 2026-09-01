@@ -10,7 +10,11 @@ export {
 } from "./airport";
 export {
   assessAirportSite,
+  DETAILED_PRIMARY_COUNT,
   findGeneratedAirportSite,
+  HEADINGS_PER_DETAILED_CANDIDATE,
+  readAirportSiteEvaluationCount,
+  resetAirportSiteEvaluationCount,
   resolveGuaranteedAirportRegion,
 } from "./airportSite";
 export type {
