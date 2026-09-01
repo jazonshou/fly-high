@@ -76,10 +76,51 @@ export const PHOTOPIC_WEIGHTS: readonly [number, number, number] = Object.freeze
  * without brightening.
  */
 export const SCOTOPIC_TINT: readonly [number, number, number] = Object.freeze([
-  0.80,
-  0.97,
-  1.35,
+  0.72,
+  0.94,
+  1.55,
 ]);
+
+/**
+ * ART DIRECTION, 2026-09-01 — Jason flew the night and rejected it. **This
+ * path is deliberately NOT physiological from here on, and that is the point.**
+ *
+ * His words, kept verbatim because a future reader will otherwise "correct"
+ * this back toward realism on the strength of the docblocks above:
+ *
+ *   - *"I don't like how everything is black and white — that's not what night
+ *     looks like"*
+ *   - *"I want to see more blue and there should be a stronger lighting effect
+ *     from the moon. It's okay if it's not perfectly realistic — the moon can
+ *     be stronger than expected and there can be more blue in the sky than
+ *     expected."*
+ *   - *"It should be much lighter, less blurry/black-white and more colourful
+ *     and peaceful"*
+ *   - **"Exaggerated colours are okay, sometimes."**
+ *
+ * Reference: a Red Dead Redemption 2 night — a deep blue sky with real colour,
+ * a landscape you can read, grass and water holding their own hue.
+ *
+ * **The tension, stated so nobody has to rediscover it: real rod vision IS
+ * monochrome and blurry, and the model above was right.** Rods cannot carry
+ * colour; the desaturation and the acuity blur are both defensible. Jason is
+ * not reporting a bug — he is saying the physiology is the wrong target. **Do
+ * not restore the monochrome because rods are achromatic. That is known, and
+ * it was traded away on purpose.**
+ *
+ * How much of the scene's own hue survives the rod blend, 0 = the original
+ * achromatic model, 1 = full chroma retention. The rod response still sets
+ * LUMINANCE; this only decides whether the result keeps the scene's colour.
+ */
+export const SCOTOPIC_CHROMA_RETENTION = 0.65;
+
+/**
+ * Acuity-blur radius in texels: `BASE + ROD_SCALE * rodFraction`.
+ * Was `0.6 + 2.4 * rod` — *"less blurry"* is a direct quote, and at full rod
+ * weight the old figure was the dominant reason the night read as soup.
+ */
+export const SCOTOPIC_BLUR_BASE = 0.25;
+export const SCOTOPIC_BLUR_ROD_SCALE = 0.75;
 
 /** Adapted luminance (cd/m²) below which vision is rod-only. */
 export const SCOTOPIC_THRESHOLD_CD_M2 = 0.03;
@@ -175,7 +216,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // a tenth of foveal cone acuity; four taps on a rotated cross at a
   // rod-weighted radius is enough to read as "I cannot make out detail"
   // without turning the image to soup.
-  let blurRadius = uniforms.scotopicTexelSize * (0.6 + 2.4 * rod);
+  let blurRadius = uniforms.scotopicTexelSize
+    * (${SCOTOPIC_BLUR_BASE} + ${SCOTOPIC_BLUR_ROD_SCALE} * rod);
   var soft = scene;
   soft = soft + textureSample(textureSampler, textureSamplerSampler,
     fragmentInputs.vUV + vec2f(blurRadius.x, blurRadius.y * 0.5)).rgb;
@@ -209,7 +251,20 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
 
   // Back to scene-linear so the ONE exposure curve on the image-processing
   // chain still owns the display mapping. The gain arrives precomputed.
-  let rodImage = SCOTOPIC_TINT * (response * uniforms.scotopicDisplayGain + highlight);
+  let rodLuminance = response * uniforms.scotopicDisplayGain + highlight;
+  let rodMonochrome = SCOTOPIC_TINT * rodLuminance;
+  // ART DIRECTION: let the scene's own hue survive the rod blend. sceneHue is
+  // the colour RATIO normalised by the same scotopic weights, so a neutral
+  // input stays exactly neutral (the weights sum to 1) and only genuinely
+  // coloured ground, water and sky carry through. The rod response still owns
+  // luminance; this decides only whether the result is grey.
+  let sceneLuminance = max(dot(soft, SCOTOPIC_WEIGHTS), 1.0e-6);
+  let sceneHue = soft / sceneLuminance;
+  let rodImage = mix(
+    rodMonochrome,
+    rodMonochrome * sceneHue,
+    ${SCOTOPIC_CHROMA_RETENTION},
+  );
 
   // 2. The mesopic blend.
   fragmentOutputs.color = vec4f(mix(scene, rodImage, rod), 1.0);

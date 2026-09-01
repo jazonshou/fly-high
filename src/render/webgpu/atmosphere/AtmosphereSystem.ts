@@ -74,7 +74,14 @@ const PEAK_SUN_INTENSITY = 5.2;
  * viewer perceives is driven by real photometry even though the buffer is
  * not.
  */
-export const MOON_PEAK_LIGHT_INTENSITY = 0.055;
+export const MOON_PEAK_LIGHT_INTENSITY = 0.18;
+// ART DIRECTION 2026-09-01: raised from 0.055 (3.3x) on Jason's direction —
+// *"there should be a stronger lighting effect from the moon ... the moon can
+// be stronger than expected"*. The docblock above already says the ABSOLUTE
+// level is chosen rather than physical, so this moves a number that was always
+// art-directed; everything RELATIVE (phase, opposition surge, altitude,
+// distance) still comes from real photometry. See SCOTOPIC_CHROMA_RETENTION
+// for the rest of the night art direction and the reason it is deliberate.
 
 /**
  * Scene-linear radiance of the moon's disc at full. The disc is far brighter

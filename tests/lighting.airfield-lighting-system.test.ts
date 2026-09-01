@@ -100,6 +100,101 @@ describe("the airfield emits light at all", () => {
   });
 });
 
+describe("the lamp colours stay distinguishable from each other", () => {
+  /**
+   * PINS THE SEPARATION, NOT THE VALUES — deliberately.
+   *
+   * A test asserting `white === [1.0, 0.78, 0.52]` fails the day anyone retunes
+   * a tint and tells the reader nothing about why the number mattered. What
+   * actually matters is that the aviation colour CODING survives: a pilot must
+   * tell an edge light from a caution-zone light from a threshold bar. So this
+   * pins the property the coding depends on and leaves the values free.
+   *
+   * WHY TWO CHANNELS. A physically-correct 2700 K incandescent white, referred
+   * to D65, is [1.000, 0.417, 0.100] — MORE saturated than amber's
+   * [1.000, 0.630, 0.100], and separated from it in blue alone by 0.000. That
+   * near-collision is exactly the defect this guards: shipping the naive
+   * blackbody would have made edge lights more orange than the caution zone.
+   * A single-channel separation is one tint change away from collapsing.
+   *
+   * JOINT INVARIANT, stated because it is not local to this file:
+   * `SCOTOPIC_CHROMA_RETENTION` decides how much of these hues survives the
+   * night pass at all. At the shipped 0.65 the separation reaches the frame; at
+   * a much lower retention every pair compresses toward grey and the coding
+   * degrades no matter what is set here. This test cannot see that — it reads
+   * the source colours, not the frame — and says so rather than implying
+   * coverage it does not have.
+   */
+  const PAIRS: readonly (readonly [keyof typeof AIRFIELD_LAMP_RGB, keyof typeof AIRFIELD_LAMP_RGB])[] = [
+    ["white", "amber"], ["white", "green"], ["white", "red"],
+    ["amber", "green"], ["amber", "red"], ["green", "red"],
+  ];
+
+  it("separates every colour pair robustly", () => {
+    // ROBUST = two channels apart, OR one channel apart by a wide margin.
+    //
+    // The first draft of this test demanded two channels from every pair and
+    // FAILED on amber-vs-red, which differ in green alone — by 0.55. That is
+    // not fragility, it is what makes amber amber: the two hues genuinely
+    // differ in green content and nowhere else. The test was wrong, not the
+    // colours, and the disjunction is the honest invariant.
+    //
+    // It still catches the case it was written for. The naive D65-referred
+    // 2700 K white [1.000, 0.417, 0.100] against amber [1.000, 0.630, 0.100]
+    // separates in ONE channel by 0.213 — under the wide margin, so it fails,
+    // which is correct: that pair really would have been hard to tell apart.
+    const NARROW = 0.1;
+    const WIDE = 0.4;
+    for (const [a, b] of PAIRS) {
+      const left = AIRFIELD_LAMP_RGB[a];
+      const right = AIRFIELD_LAMP_RGB[b];
+      const deltas = [0, 1, 2].map((channel) => Math.abs(left[channel]! - right[channel]!));
+      const channels = deltas.filter((delta) => delta >= NARROW).length;
+      const widest = Math.max(...deltas);
+      expect(
+        channels >= 2 || widest >= WIDE,
+        `${a} ${JSON.stringify(left)} and ${b} ${JSON.stringify(right)}: `
+        + `${channels} channel(s) >= ${NARROW}, widest ${widest.toFixed(3)}. `
+        + "Aviation colour coding needs two channels of separation or one wide "
+        + "one, else a tint change collapses the pair",
+      ).toBe(true);
+    }
+  });
+
+  it("would reject the naive 2700 K white against amber", () => {
+    // NON-VACUITY, and it pins the actual near-miss rather than a synthetic
+    // one: this is the value the Planckian derivation produces before the
+    // adaptation correction, and it is the defect the docblock describes.
+    const naive2700K: readonly [number, number, number] = [1.0, 0.417, 0.1];
+    const amber = AIRFIELD_LAMP_RGB.amber;
+    const deltas = [0, 1, 2].map((c) => Math.abs(naive2700K[c]! - amber[c]!));
+    expect(deltas.filter((d) => d >= 0.1).length).toBe(1);
+    expect(Math.max(...deltas)).toBeLessThan(0.4);
+  });
+
+  it("keeps the edge-light white WARM rather than neutral", () => {
+    // Jason, from the air: "should not all be white -- they should be yellow
+    // and stuff". Neutral is the defect; this fails if anyone flattens it back.
+    const [r, g, b] = AIRFIELD_LAMP_RGB.white;
+    expect(r).toBeGreaterThan(g);
+    expect(g).toBeGreaterThan(b);
+    expect(r - b, "white is too close to neutral to read as incandescent")
+      .toBeGreaterThan(0.25);
+  });
+
+  it("keeps white LESS saturated than amber, or the coding inverts", () => {
+    // The 2700 K trap, pinned as an ordering rather than as a value: whatever
+    // the two become, the caution zone must stay the more saturated of them.
+    const sat = (c: readonly [number, number, number]) =>
+      (Math.max(...c) - Math.min(...c)) / Math.max(Math.max(...c), 1e-6);
+    expect(
+      sat(AIRFIELD_LAMP_RGB.white),
+      "edge-light white is more saturated than the caution-zone amber — the "
+      + "coding has inverted and the runway will read amber end to end",
+    ).toBeLessThan(sat(AIRFIELD_LAMP_RGB.amber));
+  });
+});
+
 describe("the beam shows one colour per side, not both", () => {
   it("lights a fixture toward the end it serves and hides it from behind", () => {
     // THE CORRECTNESS PROPERTY THE SPLIT EXISTS FOR. A threshold lamp is green

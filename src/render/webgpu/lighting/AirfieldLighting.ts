@@ -695,7 +695,34 @@ export function airfieldFixtures(
 export const AIRFIELD_LAMP_RGB: Readonly<
   Record<Exclude<AirfieldLightColour, "off">, readonly [number, number, number]>
 > = Object.freeze({
-  white: Object.freeze([1.0, 0.96, 0.90] as const),
+  // WARM, and derived rather than chosen. Runway edge lights are incandescent
+  // at roughly 2700 K; the shipped value before this was [1.0, 0.96, 0.90],
+  // near-neutral, which Jason reported from the air as "should not all be
+  // white -- they should be yellow and stuff".
+  //
+  // THE NAIVE DERIVATION IS A TRAP, and it fails toward a worse defect than the
+  // one it fixes. A 2700 K blackbody on the Planckian locus, referred to D65
+  // and max-normalised, is [1.000, 0.417, 0.100] -- MORE saturated than the
+  // amber below at [1.000, 0.630, 0.100]. Shipping it would make runway edge
+  // lights more orange than the caution zone, destroying the white/amber
+  // distinction the coding depends on, and it would read as a bug in the
+  // caution zone rather than as a colour choice.
+  //
+  // The physics is right; the REFERENCE FRAME is what makes it wrong. D65 is
+  // not what an observer is adapted to at night -- moonlight is, at roughly
+  // 4,100 K (see `Ephemeris.MOONLIGHT_TINT`). Adapting 2700 K to that adapting
+  // white is the principled correction and lands here. It is a stated frame
+  // with a reason, which a raw blackbody number lacks.
+  //
+  // THE INVARIANT IS THE SEPARATION, NOT THIS TRIPLE. White and amber must stay
+  // distinguishable in TWO channels -- green 0.78 vs 0.63 AND blue 0.52 vs 0.10
+  // -- because a single-channel separation collapses under any future tint or
+  // rod-retention change. `lighting.airfield-lighting-system.test.ts` pins the
+  // separation rather than these values, so retuning either colour is allowed
+  // and collapsing the coding is not. NOTE this is a JOINT invariant with
+  // `SCOTOPIC_CHROMA_RETENTION`: at a much lower retention the hues compress
+  // toward grey and the coding degrades whatever is set here.
+  white: Object.freeze([1.0, 0.78, 0.52] as const),
   amber: Object.freeze([1.0, 0.63, 0.10] as const),
   green: Object.freeze([0.10, 1.0, 0.42] as const),
   red: Object.freeze([1.0, 0.08, 0.06] as const),
