@@ -34,7 +34,10 @@ import {
   observerAzimuthDegrees,
   resolveAircraftLights,
 } from "./webgpu/lighting/AircraftLighting";
-import { towerObstructionFixtures } from "./webgpu/lighting/ObstructionLighting";
+import {
+  towerObstructionFixtures,
+  hangarObstructionFixtures,
+} from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
@@ -1094,10 +1097,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       // source in the tree is `colourList()`. Adding fixtures here and colours
       // nowhere throws inside the frame graph on the first PAPI transition.
       //
-      // They need the tower, so they are null whenever it is — `airport` owns
-      // the attachment points and folds the tower's placement into them.
+      // They need the structures, so they are empty whenever `airport` is null
+      // — it owns the attachment points and folds each structure's placement
+      // into them, so nothing here applies a placement of its own.
       const obstructionFixtures = airportDefinition && airport
-        ? towerObstructionFixtures(airportDefinition, airport.towerAttachments)
+        ? [
+          ...towerObstructionFixtures(airportDefinition, airport.towerAttachments),
+          ...airport.hangarAttachments.flatMap((mounts) =>
+            hangarObstructionFixtures(airportDefinition, mounts)),
+        ]
         : [];
       const airfieldLighting = airportDefinition
         ? new AirfieldLightingSystem(airportDefinition, obstructionFixtures)

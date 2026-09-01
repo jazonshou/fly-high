@@ -27,6 +27,7 @@ import {
 import {
   hangarAttachments,
   hangarPlanFrom,
+  hangarFootprint,
   HANGAR_PLAN_LIMITS,
   HANGAR_SITING,
 } from "../src/render/webgpu/airfield/AirfieldStructures";
@@ -262,6 +263,31 @@ describe("hangar obstruction fixtures", () => {
     const outline = fixtures.slice(mounts.ridgeEnds.length);
     for (const r of ridge) {
       for (const o of outline) expect(r.position[1]).toBeGreaterThan(o.position[1]);
+    }
+  });
+
+  it("lands every fixture over its own hangar's footprint", () => {
+    // THE SEAM TEST, and it covers ground neither side's own tests reach.
+    // `AirfieldStructures` asserts its ATTACHMENTS sit within the footprint;
+    // this asserts the FIXTURES do, which additionally exercises the
+    // local->world conversion in between. A transposition or a double-applied
+    // placement produces finite coordinates on the airfield and would pass
+    // every other assertion in this file.
+    for (let index = 0; index < 3; index += 1) {
+      const plan_ = hangarPlanFrom(7, index, 1.1);
+      const mounts_ = hangarAttachments(OBLIQUE, index, plan_, OBLIQUE.elevation + 2);
+      const footprint = hangarFootprint(OBLIQUE, index);
+      const centre = runwayToWorld(OBLIQUE, footprint.along, footprint.across);
+      // Half-diagonal of the plan outline, plus a metre of slack for the
+      // fixture stand. Nothing legitimate reaches beyond it.
+      const reach = Math.hypot(plan_.widthMeters, plan_.depthMeters) / 2 + 1;
+      for (const fixture of hangarObstructionFixtures(OBLIQUE, mounts_)) {
+        const away = Math.hypot(
+          fixture.position[0] - centre.x,
+          fixture.position[2] - centre.z,
+        );
+        expect(away).toBeLessThanOrEqual(reach);
+      }
     }
   });
 
