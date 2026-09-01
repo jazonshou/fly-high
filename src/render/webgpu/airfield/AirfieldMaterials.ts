@@ -548,6 +548,8 @@ export interface AirfieldMaterialSet {
   readonly metal: PBRMaterial;
   readonly concrete: PBRMaterial;
   readonly glass: PBRMaterial;
+  /** Plain structural steel — railings, masts, tracks; NOT corrugated. */
+  readonly steel: PBRMaterial;
   readonly accent: PBRMaterial;
   dispose(): void;
 }
@@ -612,13 +614,26 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
   // Glass is deliberately untextured in 7-11 v1 (0 MiB): a smooth, dark,
   // reflective PBR reads correctly at every shipped camera distance, and the
   // sky probe supplies the reflection. A ripple normal is the first upgrade
-  // if the tower cab ever reads flat in a Jason closeup.
+  // if the tower cab ever reads flat in a Jason closeup. Values adopted from
+  // the tower's landed stand-in (`1833b21`, "chosen to read correctly at
+  // range") rather than this module's original blind guess — the stand-in
+  // was tuned against a frame; the guess was not.
   const glass = new PBRMaterial("airfield-glass", scene);
   prepareMaterialForClusteredLighting(glass);
-  glass.albedoColor = new Color3(0.03, 0.045, 0.06);
-  glass.roughness = 0.08;
-  glass.metallic = 0.1;
+  glass.albedoColor = new Color3(0.06, 0.09, 0.11);
+  glass.roughness = 0.14;
+  glass.metallic = 0.35;
   glass.environmentIntensity = 1;
+
+  // Plain structural steel for railings, masts, door tracks and the cab roof
+  // — surfaces where the corrugated tile would read as a mistake. Untextured;
+  // values likewise adopted from the tower's landed stand-in.
+  const steel = new PBRMaterial("airfield-steel", scene);
+  prepareMaterialForClusteredLighting(steel);
+  steel.albedoColor = new Color3(0.3, 0.32, 0.34);
+  steel.roughness = 0.4;
+  steel.metallic = 0.55;
+  steel.environmentIntensity = 1;
 
   const accent = new PBRMaterial("airfield-accent", scene);
 
@@ -637,12 +652,14 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
     metal,
     concrete,
     glass,
+    steel,
     accent,
     dispose(): void {
       for (const texture of textures) texture.dispose();
       metal.dispose(true, false);
       concrete.dispose(true, false);
       glass.dispose(true, false);
+      steel.dispose(true, false);
       accent.dispose(true, false);
     },
   };
