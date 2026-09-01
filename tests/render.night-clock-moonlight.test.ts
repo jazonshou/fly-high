@@ -44,8 +44,10 @@ import { DEFAULT_SETTINGS, TIME_OF_DAY_PRESET_CLOCKS } from "../src/settings";
  * of asking why the image is so dark.
  *
  * The moonless shot is KEPT: it is a good adversarial case and it is already
- * baselined. A moonlit shot is added beside it so `7-9` has something to make
- * its moonlight-shadow trade against.
+ * baselined. A moonlit CONTROL is added beside it so `7-9` has something to make
+ * its moonlight-shadow trade against — at day 179 rather than the year's
+ * brightest day 356, because `dayOfYear` also drives the seasonal chain and the
+ * control must differ in moonlight alone. See `MOONLIT_CONTROL` below.
  */
 
 const LAT = DEFAULT_WORLD_LATITUDE_DEGREES;
@@ -78,8 +80,29 @@ function moonlightAt(dayOfYear: number, solarTimeHours: number): {
 
 /** The clock every existing night capture shot runs at. */
 const MOONLESS = { dayOfYear: 171, solarTimeHours: 23.75 } as const;
-/** `7-0-a`'s added shot and `7-0-c`'s flyable preset: the moon actually up. */
-const MOONLIT = { dayOfYear: 356, solarTimeHours: 23.75 } as const;
+
+/**
+ * `7-0-a`'s added CONTROL shot. Eight days from `MOONLESS`, so the seasonal
+ * chain is held and the pair differs in moonlight ALONE.
+ *
+ * **`dayOfYear` is not a moon parameter.** It also drives R-13's seasonal
+ * snowline, land-cover classification and ground-cover density. The brightest
+ * moon of the year at this solar time is day 356 — and at latitude 45 that is
+ * WINTER, so a shot there would differ from `night` in two variables at once
+ * and could not isolate the term it exists to isolate. Optimising the measured
+ * variable moved an unmeasured one.
+ */
+const MOONLIT_CONTROL = { dayOfYear: 179, solarTimeHours: 23.75 } as const;
+
+/**
+ * `7-0-c`'s flyable preset, and a DEFERRED Phase 7 shot with its own purpose.
+ * Day 356 is the year's brightest moon at this hour, on winter ground: a full
+ * moon on snow is the hardest case for the scotopic range's TOP end, because
+ * high albedo pushes the upper end hardest and nothing else in the set covers
+ * it. That makes it a deliberate two-variable shot, which is a feature for a
+ * front door and for a stress case, and disqualifying for a control.
+ */
+const MOONLIT_PRESET = { dayOfYear: 356, solarTimeHours: 23.75 } as const;
 
 describe("night clock moonlight", () => {
   it("the probe is not vacuous: the moon is up on some days and down on others", () => {
@@ -105,21 +128,35 @@ describe("night clock moonlight", () => {
     expect(m.lux).toBeLessThan(FULL_MOON_ILLUMINANCE_LUX / 500);
   });
 
-  it("the ADDED night shot is genuinely moonlit, at the same solar time", () => {
-    const m = moonlightAt(MOONLIT.dayOfYear, MOONLIT.solarTimeHours);
-    expect(m.altitudeDegrees).toBeGreaterThan(70);
+  it("the added CONTROL shot is genuinely moonlit AND holds the season", () => {
+    const m = moonlightAt(MOONLIT_CONTROL.dayOfYear, MOONLIT_CONTROL.solarTimeHours);
     expect(m.illuminatedFraction).toBeGreaterThan(0.99);
-    // At the full moon's own illuminance, within the distance term's swing.
-    expect(m.lux).toBeGreaterThan(FULL_MOON_ILLUMINANCE_LUX * 0.9);
-    // Same solar time as every other night shot, so the capture driver's
-    // index-pinned temporal phase is untouched.
-    expect(MOONLIT.solarTimeHours).toBe(MOONLESS.solarTimeHours);
+    expect(m.altitudeDegrees).toBeGreaterThan(15);
+    // Same solar time, so the capture driver's index-pinned temporal phase is
+    // untouched; and within a fortnight of the moonless shot, so the seasonal
+    // chain (snowline, land cover, ground-cover density) is effectively equal
+    // and the pair isolates moonlight.
+    expect(MOONLIT_CONTROL.solarTimeHours).toBe(MOONLESS.solarTimeHours);
+    expect(Math.abs(MOONLIT_CONTROL.dayOfYear - MOONLESS.dayOfYear)).toBeLessThanOrEqual(14);
+  });
+
+  it("ATTRIBUTION — the moonless shot is dark because the moon has SET, not because it is half-lit", () => {
+    // Decomposing the shortfall matters: someone repairing this by choosing a
+    // fuller phase without checking altitude gains only the smaller factor and
+    // still ships an effectively moonless frame.
+    const dark = moonlightAt(MOONLESS.dayOfYear, MOONLESS.solarTimeHours);
+    const lit = moonlightAt(MOONLIT_CONTROL.dayOfYear, MOONLIT_CONTROL.solarTimeHours);
+    const phaseFactor = lit.illuminatedFraction / dark.illuminatedFraction;
+    const totalFactor = lit.lux / dark.lux;
+    // Phase is worth about 2x here; altitude carries the rest by a wide margin.
+    expect(phaseFactor).toBeLessThan(3);
+    expect(totalFactor / phaseFactor).toBeGreaterThan(50);
   });
 
   it("7-0-c: the night PRESET uses the moonlit clock, and the default is unchanged", () => {
     // The flyable preset gets the lit clock; the moonless one stays in the
     // capture set as the adversarial case.
-    expect(TIME_OF_DAY_PRESET_CLOCKS.night).toEqual(MOONLIT);
+    expect(TIME_OF_DAY_PRESET_CLOCKS.night).toEqual(MOONLIT_PRESET);
     // Same solar hour as every night capture shot, so the preset and the
     // harness describe the same moment of the night rather than two.
     expect(TIME_OF_DAY_PRESET_CLOCKS.night.solarTimeHours).toBe(MOONLESS.solarTimeHours);
@@ -128,9 +165,11 @@ describe("night clock moonlight", () => {
     expect(TIME_OF_DAY_PRESET_CLOCKS.day).toEqual({ dayOfYear: 171, solarTimeHours: 12.5 });
   });
 
-  it("the two clocks differ by about three orders of magnitude in moonlight", () => {
+  it("both moonlit clocks are orders of magnitude above the moonless one", () => {
     const dark = moonlightAt(MOONLESS.dayOfYear, MOONLESS.solarTimeHours).lux;
-    const lit = moonlightAt(MOONLIT.dayOfYear, MOONLIT.solarTimeHours).lux;
-    expect(lit / dark).toBeGreaterThan(500);
+    expect(moonlightAt(MOONLIT_CONTROL.dayOfYear, MOONLIT_CONTROL.solarTimeHours).lux / dark)
+      .toBeGreaterThan(100);
+    expect(moonlightAt(MOONLIT_PRESET.dayOfYear, MOONLIT_PRESET.solarTimeHours).lux / dark)
+      .toBeGreaterThan(500);
   });
 });
