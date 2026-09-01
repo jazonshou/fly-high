@@ -550,11 +550,29 @@ function createTrainer(scene: Scene): AircraftVisual {
   const noseHub = build.cylinder("nose-wheel-hub", 0.15, 0.15, 0.15, 12, hub, noseWheel);
   noseHub.rotation.x = Math.PI / 2;
 
+  // `D-6`: PORT (red) sits at -Z and STARBOARD (green) at +Z, because
+  // **starboard is body +Z**. Derived from the scene's own basis rather than
+  // from `bodyAxes` below, which declares `port: "+z"` and is the thing that
+  // is wrong: `FlightRenderer` maps body +X -> forward and +Y -> up into a
+  // right-handed scene, and a camera looking along +X with up +Y reports
+  // screen-right as +Z. Screen-right for a forward-looking camera IS the
+  // pilot's right. `src/input/index.ts:38-40` independently observed the same
+  // thing and inverts keyboard roll to compensate.
+  //
+  // These two lines were reversed, so every night flight showed red on the
+  // right wing and green on the left -- the exact inversion an observer uses
+  // to infer which way an aircraft is heading.
+  //
+  // The `bodyAxes` declaration is deliberately NOT corrected here: it is
+  // consumed as a contract and migrating it belongs with physics, telemetry
+  // and cameras together, per the note in `src/input/index.ts`. The roll
+  // inversion there compensates for that contract, not for these lamps, and
+  // must stay.
   const portLight = build.sphere("port-navigation-light", 0.18, 8, redLamp, root);
-  portLight.position.set(0.2, 0.3, 5.43);
+  portLight.position.set(0.2, 0.3, -5.43);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };
   const starboardLight = build.sphere("starboard-navigation-light", 0.18, 8, greenLamp, root);
-  starboardLight.position.set(0.2, 0.3, -5.43);
+  starboardLight.position.set(0.2, 0.3, 5.43);
   starboardLight.metadata = { ...starboardLight.metadata, castsShadow: false };
   const landingLight = build.cylinder("landing-light", 0.025, 0.24, 0.24, 10, landingLamp, root);
   landingLight.rotation.z = Math.PI / 2;
@@ -1011,11 +1029,12 @@ function createJet(scene: Scene): AircraftVisual {
     surface.position.x = -0.42;
     speedBrakes.push(speedBrake);
   }
+  // `D-6`: same reversal as the trainer, same fix -- port (red) to -Z.
   const portLight = build.sphere("port-navigation-light", 0.17, 8, redLamp, root);
-  portLight.position.set(-0.2, 0.07, 4.82);
+  portLight.position.set(-0.2, 0.07, -4.82);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };
   const starboardLight = build.sphere("starboard-navigation-light", 0.17, 8, greenLamp, root);
-  starboardLight.position.set(-0.2, 0.07, -4.82);
+  starboardLight.position.set(-0.2, 0.07, 4.82);
   starboardLight.metadata = { ...starboardLight.metadata, castsShadow: false };
 
   const rig: JetRig = {

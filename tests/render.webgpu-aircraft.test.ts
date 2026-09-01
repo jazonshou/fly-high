@@ -87,8 +87,18 @@ describe("Babylon WebGPU aircraft visual", () => {
       handedness: "right",
       bodyAxes: { forward: "+x", up: "+y", port: "+z" },
     });
-    expect(mesh(fixture.scene, "port-navigation-light").position.z).toBeGreaterThan(0);
-    expect(mesh(fixture.scene, "starboard-navigation-light").position.z).toBeLessThan(0);
+    // `D-6`: these two assertions were REVERSED, and they were the reason the
+    // reversal survived -- they pinned the red lamp to +Z and the green to -Z,
+    // so the bug had a passing test defending it. They asserted CONSISTENCY
+    // WITH `bodyAxes` above, which is itself the thing that is wrong, so the
+    // pair agreed with each other and with nothing physical.
+    //
+    // Corrected here to keep this test honest, but the real assertion lives in
+    // `render.webgpu-nav-light-sides.test.ts`, which DERIVES starboard from the
+    // scene basis via a camera instead of reading the declaration. A test that
+    // consults `bodyAxes` can only ever confirm it.
+    expect(mesh(fixture.scene, "port-navigation-light").position.z).toBeLessThan(0);
+    expect(mesh(fixture.scene, "starboard-navigation-light").position.z).toBeGreaterThan(0);
     aircraft.dispose();
     fixture.scene.dispose();
     fixture.engine.dispose();
