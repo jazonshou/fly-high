@@ -1429,6 +1429,34 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   deliver the benefit — from opposite causes. **A figure being enforced is not evidence that
   it describes anything**, which is the half of D-10 that D-10 did not say.
 
+- **D-15 (2026-09-01, D-6 is settled ahead of 7-8 and the defect was bigger than D-6
+  said):** the body-axis contract is migrated end to end — **body +Z is starboard**, matching
+  the arithmetic (fwd × up = starboard), the rendered mesh, and 7cacc44's lamps; the sim's
+  internal basis, `bodyAxes` metadata and the keyboard mapping now agree and every boundary
+  compensation is deleted. Measured before the fix with a probe whose built-in null (pitch,
+  chirality-invariant) validated the instrument: pilot roll +1 read **bank +76.7°** while the
+  starboard wingtip pointed **up** (world y +0.972 — a hard left bank on screen), and pilot
+  yaw +1 swung the nose **screen-left** while the compass climbed "right". D-6 knew about
+  the keyboard inversion and the metadata; it did not know that **rudder (E/Q), mouse
+  flight and gamepad roll were all shipped visually reversed with no compensation at all**,
+  or that the HUD attitude ball contradicted the out-the-window horizon. All are fixed by
+  the one settlement; the same probe now shows identical dynamics magnitudes with only the
+  chirality inverted. 7-8's blocker is discharged: `port-navigation-light` at −Z /
+  `starboard-navigation-light` at +Z now agree with the declarations around them, and the
+  input module's compensation note is deleted rather than migrated. Contract pinned in
+  world space by `tests/sim.body-axis-contract.test.ts` (reads no declaration); the old
+  A/D compatibility test — a green test whose subject was the workaround, the exact D-12
+  shape — is replaced; four convention pins in `sim.rebuild` / `sim.stability-augmentation`
+  / `services` / `render.webgpu-aircraft` legitimately flipped and each is annotated in
+  place, none silently. **Held for Jason (via the PM): the compass question.** The world's
+  sky is a self-consistent mirror of Earth (measured: morning sun toward +X, which heading
+  calls east), so after the settlement a compass agreeing with the sky disagrees with the
+  turns — pilot-right turns currently decrease the displayed heading. Option (a) flips the
+  heading definition in its three sites (zero pixels move; compass agrees with turns; sun
+  rises at compass-west); option (c) de-mirrors the sky itself (every baseline moves;
+  future phase). The scenic ground heading-hold carries an interim sign annotated to
+  revert under (a). Normative row in `ARCHITECTURE.md`'s decision log, same date.
+
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*
 

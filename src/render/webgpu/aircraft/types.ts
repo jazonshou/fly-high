@@ -20,7 +20,10 @@ export function aircraftCameraLayerMask(currentMask: number, cockpit: boolean): 
  * Babylon equivalent of the legacy aircraft presentation contract.
  *
  * The body frame is deliberately renderer-independent and right-handed:
- * +X points through the nose, +Y points up, and +Z points to port/left.
+ * +X points through the nose, +Y points up, and +Z points to starboard/right
+ * (forward x up = starboard; settled by D-6 on 2026-09-01, measured with
+ * scripts/bodyaxes-probe.mts — this comment previously claimed +Z was port,
+ * which contradicted both the arithmetic and the rendered mesh).
  */
 export interface AircraftVisual {
   readonly kind: AircraftKind;

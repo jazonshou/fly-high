@@ -376,8 +376,12 @@ describe("rebuilt light-trainer handling", () => {
     const established = simulator.telemetry();
     expect(established.bank * RAD_TO_DEG).toBeGreaterThan(26);
     expect(established.bank * RAD_TO_DEG).toBeLessThan(34);
-    expect(established.heading * RAD_TO_DEG).toBeGreaterThan(106);
-    expect(established.heading * RAD_TO_DEG).toBeLessThan(119);
+    // D-6: a right turn DECREASES the current compass reading (heading is
+    // still atan2(+fx, fz) while pilot-right yaw is now -omega_y). The
+    // pre-D-6 bounds were the mirror image, 106..119 from a 90-degree spawn.
+    // If the compass flip (D-6 brief option (a)) lands, these revert.
+    expect(established.heading * RAD_TO_DEG).toBeGreaterThan(61);
+    expect(established.heading * RAD_TO_DEG).toBeLessThan(74);
     expect(Math.abs(established.sideslip * RAD_TO_DEG)).toBeLessThan(4);
     expect(established.airspeed).toBeGreaterThan(45);
 
@@ -519,8 +523,10 @@ describe("rebuilt light-trainer handling", () => {
       spawn: { heading: 90 * DEG_TO_RAD, pitch: 2 * DEG_TO_RAD, airspeed: 50 },
     });
     advance(airborne, 1.5, () => ({ ...DEFAULT_CONTROLS, yaw: 0.35 }));
-    expect(airborne.telemetry().heading * RAD_TO_DEG).toBeGreaterThan(98);
-    expect(airborne.state.angularVelocity.y).toBeGreaterThan(0);
+    // D-6: right rudder is nose-right, which is -omega_y with +Z = starboard
+    // and DECREASES the current compass reading (pre-D-6: >98 and +omega_y).
+    expect(airborne.telemetry().heading * RAD_TO_DEG).toBeLessThan(82);
+    expect(airborne.state.angularVelocity.y).toBeLessThan(0);
 
     const taxi = new FlightSimulator({
       spawn: {
@@ -534,8 +540,10 @@ describe("rebuilt light-trainer handling", () => {
     advance(taxi, 8, () => ({ ...DEFAULT_CONTROLS, throttle: 0.2, yaw: 0.5 }));
     expect(taxi.telemetry().groundSpeed).toBeGreaterThan(1);
     expect(taxi.telemetry().groundSpeed).toBeLessThan(4);
-    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeGreaterThan(5);
-    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeLessThan(20);
+    // D-6: right rudder steers the nose wheel to starboard and the compass
+    // reading falls (wrapped into [0, 360); pre-D-6 the mirror read 5..20).
+    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeGreaterThan(340);
+    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeLessThan(355);
     expect(taxi.state.crashed).toBe(false);
   });
 

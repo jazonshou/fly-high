@@ -85,7 +85,7 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(aircraft.group.name).toBe("aerolith-trainer");
     expect(aircraft.group.metadata).toMatchObject({
       handedness: "right",
-      bodyAxes: { forward: "+x", up: "+y", port: "+z" },
+      bodyAxes: { forward: "+x", up: "+y", starboard: "+z" },
     });
     // `D-6`: these two assertions were REVERSED, and they were the reason the
     // reversal survived -- they pinned the red lamp to +Z and the green to -Z,

@@ -62,7 +62,7 @@ function configureRoot(root: TransformNode, kind: AircraftKind): void {
     aircraftVisual: true,
     aircraftKind: kind,
     handedness: "right",
-    bodyAxes: { forward: "+x", up: "+y", port: "+z" },
+    bodyAxes: { forward: "+x", up: "+y", starboard: "+z" },
   };
 }
 
@@ -551,23 +551,21 @@ function createTrainer(scene: Scene): AircraftVisual {
   noseHub.rotation.x = Math.PI / 2;
 
   // `D-6`: PORT (red) sits at -Z and STARBOARD (green) at +Z, because
-  // **starboard is body +Z**. Derived from the scene's own basis rather than
-  // from `bodyAxes` below, which declares `port: "+z"` and is the thing that
-  // is wrong: `FlightRenderer` maps body +X -> forward and +Y -> up into a
+  // **starboard is body +Z**. Derived from the scene's own basis:
+  // `FlightRenderer` maps body +X -> forward and +Y -> up into a
   // right-handed scene, and a camera looking along +X with up +Y reports
   // screen-right as +Z. Screen-right for a forward-looking camera IS the
-  // pilot's right. `src/input/index.ts:38-40` independently observed the same
-  // thing and inverts keyboard roll to compensate.
+  // pilot's right.
   //
   // These two lines were reversed, so every night flight showed red on the
   // right wing and green on the left -- the exact inversion an observer uses
   // to infer which way an aircraft is heading.
   //
-  // The `bodyAxes` declaration is deliberately NOT corrected here: it is
-  // consumed as a contract and migrating it belongs with physics, telemetry
-  // and cameras together, per the note in `src/input/index.ts`. The roll
-  // inversion there compensates for that contract, not for these lamps, and
-  // must stay.
+  // The full body-axis contract was settled to match on 2026-09-01: the sim's
+  // internal basis, `bodyAxes` above, and this placement now all agree that
+  // +Z is starboard, and the keyboard roll inversion that compensated for the
+  // old mismatch is deleted. `tests/sim.body-axis-contract.test.ts` pins the
+  // chain in world space without consulting any of these declarations.
   const portLight = build.sphere("port-navigation-light", 0.18, 8, redLamp, root);
   portLight.position.set(0.2, 0.3, -5.43);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };

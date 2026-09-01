@@ -5,13 +5,17 @@
  *   +X east/right, +Y up, +Z north/forward at heading zero.
  *
  * Aircraft body space is right-handed and matches the renderer's quaternion convention:
- *   +X through the nose, +Y up, +Z port (left wing).
+ *   +X through the nose, +Y up, +Z starboard (right wing).
  *
- * Using +Z for the right wing would make the body basis left-handed. That was
- * the source of several deceptively plausible sign errors in the original
- * model: a positive roll command visually banked and turned left, and positive
- * rudder yawed left. Pilot-facing roll/yaw values remain positive to the right;
- * only the internal body-axis components follow the right-handed basis.
+ * (fwd, up, starboard) is the right-handed triple: forward x up = starboard.
+ * SETTLED 2026-09-01 (D-6): this file previously declared +Z port and claimed
+ * the opposite handedness — that claim was arithmetically backwards, and the
+ * renderer applies this quaternion to a mesh whose physical starboard is +Z
+ * (measured, scripts/bodyaxes-probe.mts; nav lights placed accordingly in
+ * 7cacc44). The old declaration made every lateral axis render mirrored:
+ * keyboard roll carried a local inversion, rudder was visually reversed, and
+ * the HUD bank contradicted the horizon. Pilot-facing signs are unchanged and
+ * are the contract: only the internal body-axis component signs moved.
  *
  * `orientation` rotates body-space vectors into world space. Angular velocity is
  * expressed in body space. Public angles and controls use pilot-friendly signs:

@@ -35,17 +35,18 @@ export function smoothAxis(current: number, target: number, rate: number, deltaS
 }
 
 /**
- * Keyboard-to-renderer compatibility convention shared by held-key and tap
- * handling. The current aircraft mesh/chase basis presents body +Z as
- * starboard even though the simulator's public comments describe it as port,
- * so keyboard roll is intentionally inverted at this boundary: A must send a
- * positive simulator command to look like a left bank, and D a negative one.
- * Keep this compensation local until the complete body-axis contract can be
- * migrated together with physics, telemetry, cameras, and aircraft geometry.
+ * Standard pilot signs, shared by held-key and tap handling: D banks right
+ * and sends the positive simulator roll command, A banks left and sends the
+ * negative one. The historical inversion this boundary carried (A -> +1) was
+ * a workaround for the body-axis mirror settled by D-6 on 2026-09-01 — the
+ * sim declared body +Z as port while the rendered mesh's starboard is +Z, so
+ * every positive lateral command displayed mirrored. The sim's basis now
+ * matches the renderer (+Z = starboard) and no compensation exists anywhere
+ * on the roll path.
  */
 export function keyboardRollDirection(code: string): -1 | 0 | 1 {
-  if (code === "KeyA") return 1;
-  if (code === "KeyD") return -1;
+  if (code === "KeyA") return -1;
+  if (code === "KeyD") return 1;
   return 0;
 }
 
