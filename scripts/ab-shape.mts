@@ -93,6 +93,37 @@ console.log(overPct < 5
   ? "  *** STOP: the BEFORE image looks like a HIDDEN capture. Do not compare. ***"
   : "  ok — BEFORE is a normal capture (a hidden one reads ~0%)");
 
+// -------------------------------------------------------------- STEP 0b
+// Is BEFORE the same image as AFTER?
+//
+// After a promotion, `tests/perf/baseline/<shot>.png` IS the candidate that was
+// just promoted, so the obvious invocation compares a frame against itself and
+// every bin reads exactly 1.000. That is indistinguishable from "the change did
+// nothing" -- a clean, plausible, entirely false result, and STEP 0 cannot see
+// it because both images are normal captures.
+//
+// Measured: re-running the blade verification after `090bf2f` returned 1.000 in
+// all nine bins for `grove-forest-2m`, a shot whose dark bin actually moved
+// x8.741. Recover the true "before" from git rather than the working tree:
+//
+//   git show <promotion-commit>^:tests/perf/baseline/<shot>.png > /tmp/before.png
+let identical = true;
+for (let y = 0; y < H && identical; y += 2) {
+  for (let x = 0; x < W; x += 2) {
+    const a = pixelAt(before, x, y);
+    const b = pixelAt(after, x, y);
+    if (a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2]) { identical = false; break; }
+  }
+}
+console.log(`\nSTEP 0b before-vs-after: ${identical ? "IDENTICAL" : "differ"}`);
+if (identical) {
+  console.log("  *** STOP: BEFORE and AFTER are the same image. Every ratio below");
+  console.log("      will read 1.000 and that is an artifact, not a result. If the");
+  console.log("      baselines were promoted, recover the pre-promotion frame with");
+  console.log("      `git show <promotion>^:tests/perf/baseline/<shot>.png`. ***");
+  process.exit(2);
+}
+
 // -------------------------------------------------------------- populations
 const EDGES = [0, 0.02, 0.04, 0.06, 0.08, 0.11, 0.15, 0.20, 0.30, 99];
 const nBin = EDGES.length - 1;
