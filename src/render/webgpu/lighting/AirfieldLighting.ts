@@ -15,19 +15,43 @@
  *
  * WHAT IS ESTABLISHED: the mesh draws where an empty system drew nothing, +1
  * draw call measured uniformly on 30 of 30 shots, one instanced draw for 402
- * light points. The lamps are not visible night or day. It is NOT brightness --
- * raising `AIRFIELD_LAMP_SCENE_SCALE` by 1000x leaves the night frame
- * pixel-identical to the eye.
+ * light points.
  *
- * THE DEPTH TEST REJECTS THEM, and that is measured: forcing
- * `depthFunction = ALWAYS` takes night-moonlit from 79 to 748 changed pixels
- * and approach-500ft from 46 to 1180. The mechanism is plain in the fixture
- * data -- `insetHeightMeters: 0` puts centreline and touchdown lamps exactly
- * coplanar with the runway they are drawn against, and elevated fixtures sit
- * 0.35 m up, below depth resolution at approach range. A ground-level additive
- * billboard depth-tested against its own ground cannot win. Even with depth
- * off the peak gain is 12-38 bytes, so depth is a confirmed contributor and
- * probably not the whole story.
+ * ~~The lamps are not visible night or day. It is NOT brightness -- raising~~
+ * ~~`AIRFIELD_LAMP_SCENE_SCALE` by 1000x leaves the night frame~~
+ * ~~pixel-identical to the eye.~~
+ *
+ * Also withdrawn, and it was the exact inversion of the truth: it WAS
+ * brightness, and only brightness. The 1000x probe that "proved" otherwise was
+ * forced to pure red, and `SCOTOPIC_WEIGHTS[0] = 0.03` -- the rod pathway is
+ * nearly blind to red BY DESIGN, so the probe was read in the night path's own
+ * blind spot. Re-run in white it showed 1,559 pixels at 228 bytes: the lamps
+ * had been rendering the whole time.
+ *
+ * THE DEPTH DIAGNOSIS BELOW IS WITHDRAWN. It is left standing, struck, because
+ * it was believed and acted on, and because a reader who finds only the
+ * conclusion cannot tell it was ever in doubt.
+ *
+ * ~~THE DEPTH TEST REJECTS THEM, and that is measured: forcing~~
+ * ~~`depthFunction = ALWAYS` takes night-moonlit from 79 to 748 changed pixels~~
+ * ~~and approach-500ft from 46 to 1180. `insetHeightMeters: 0` puts centreline~~
+ * ~~and touchdown lamps exactly coplanar with the runway they are drawn~~
+ * ~~against. A ground-level additive billboard depth-tested against its own~~
+ * ~~ground cannot win.~~
+ *
+ * `5621131` refuted it: the 79-to-748 pixel movement behind that claim was THE
+ * TREE LINE, not the lamps, and "geometry, positions and rasterization were
+ * correct at both clocks the whole time". The whole defect was one constant,
+ * `AIRFIELD_LAMP_SCENE_SCALE`, wrong by four orders. The lamps are lit and have
+ * been since `5621131`; the first sentence of this docblock describes `fafb11a`
+ * and NOT the current tree.
+ *
+ * WHY THE STRIKETHROUGH IS WORTH THE LINES. This text outlived its refutation
+ * by four commits, and in that window it was read as current and cost real
+ * design work: `7-14` sized its obstruction-light mounting offsets to defeat a
+ * depth test that had already been shown not to be the mechanism. A retraction
+ * notice at the top of a file is only load-bearing if it retracts everything it
+ * should, and this one had itself gone stale.
  *
  * CLOSED: the aerial-transmittance route is refuted, not merely unmeasured.
  * `aerialPerspectiveCoefficients` reads only `state.atmosphere` and
@@ -970,9 +994,38 @@ export class AirfieldLightingSystem {
   /** Last indication applied, one entry per PAPI lamp; drives the update. */
   private applied: PapiIndication[];
 
-  constructor(airport: Readonly<AirportDefinition>) {
+  /**
+   * `extraFixtures` are light points this system does not generate but must
+   * OWN, and ownership here is the whole point rather than a convenience.
+   *
+   * `LightPointSystem.setColors` throws unless it is handed exactly one colour
+   * per fixture, its `fixtureCount` is frozen at construction, and the single
+   * caller in the tree feeds it `colourList()`. So a caller that concatenates
+   * its own fixtures into the `LightPointSystem` constructor and leaves this
+   * class generating the colours ships a guaranteed throw — 402 colours against
+   * 402+N fixtures — which fires inside the frame graph on the first PAPI
+   * transition. That is not hypothetical: it was detonated during `7-12`'s lamp
+   * measurement, and it killed the capture before the report was written, in a
+   * way a harness reusing a stale artifact reads as a clean null result.
+   *
+   * Routing the fixtures through here instead makes the colour list a MAP over
+   * the fixture list, so the lengths cannot disagree.
+   *
+   * These land between the static points and the PAPI lamps, and `papiOffset`
+   * is taken from the array that actually precedes the lamps rather than from
+   * `staticPoints` alone. Deriving it from the concatenation is what keeps the
+   * PAPI writing its own colours: computed the old way it would be short by
+   * `extraFixtures.length` and every indication change would repaint an
+   * obstruction light instead — a corruption the existing length-only guard
+   * cannot see, because the array stays exactly as long as it should be.
+   */
+  constructor(
+    airport: Readonly<AirportDefinition>,
+    extraFixtures: readonly LightPointFixture[] = [],
+  ) {
     const staticPoints = airfieldLightPoints(airport);
-    this.papiOffset = staticPoints.length;
+    const beforePapi = [...staticPoints, ...extraFixtures];
+    this.papiOffset = beforePapi.length;
     this.lamps = papiLamps(airport);
     const axis = runwayAxis(airport);
     const papiPhotometry = AIRFIELD_LAMP_PHOTOMETRY.papi;
@@ -988,7 +1041,7 @@ export class AirfieldLightingSystem {
       color: AIRFIELD_LAMP_RGB.red,
       beamCosineCutoff: AIRFIELD_LAMP_BEAM_COSINE,
     }));
-    this.fixtures = [...staticPoints, ...papiPoints];
+    this.fixtures = [...beforePapi, ...papiPoints];
     this.colours = this.fixtures.map((fixture) => fixture.color);
     this.applied = this.lamps.map(() => "red");
   }

@@ -30,6 +30,7 @@ import {
   AirfieldLightingSystem,
   airfieldLampDaylightAttenuation,
 } from "./webgpu/lighting/AirfieldLighting";
+import { towerObstructionFixtures } from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
@@ -1077,8 +1078,20 @@ export class FlightRenderer implements FlightRenderingSystem {
       // so the fixtures exist by the time the billboard system is built —
       // which matters, because `LightPointSystem` takes its fixtures in the
       // constructor and the vertex buffer is built once.
+      // `7-14`'s obstruction lights go THROUGH `AirfieldLightingSystem` rather
+      // than being concatenated into the `LightPointSystem` constructor below.
+      // That is not a style choice: `setColors` demands one colour per fixture
+      // against a `fixtureCount` frozen at construction, and the only colour
+      // source in the tree is `colourList()`. Adding fixtures here and colours
+      // nowhere throws inside the frame graph on the first PAPI transition.
+      //
+      // They need the tower, so they are null whenever it is — `airport` owns
+      // the attachment points and folds the tower's placement into them.
+      const obstructionFixtures = airportDefinition && airport
+        ? towerObstructionFixtures(airportDefinition, airport.towerAttachments)
+        : [];
       const airfieldLighting = airportDefinition
-        ? new AirfieldLightingSystem(airportDefinition)
+        ? new AirfieldLightingSystem(airportDefinition, obstructionFixtures)
         : null;
       const lightPoints = new LightPointSystem(
         scene,
