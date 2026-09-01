@@ -281,16 +281,31 @@ Derive the roster from whatever enumerates the parts rather than listing it by
 hand, and anchor on the compiled artifact rather than on a model of it — a
 guard that *models* the thing stays green after the thing changes.
 
-**A worked trap of exactly this shape.** `createWorld` takes its seed
-**positionally** (`createWorld(seed, options)`). The object form compiles,
-runs, and collapses every distinct seed to one constant world:
+**A worked example — of getting this wrong.** `createWorld` takes its seed
+**positionally**, and `hashSeed` iterates `text.length`. An object has no
+`.length`, so the loop never runs and the function returns its untouched FNV
+offset basis — meaning *every* object seed hashes to the **empty-string
+constant**, not merely to each other:
 
-    createWorld({ seed: "alpha" }).seedHash  ==  905055214
-    createWorld({ seed: "beta"  }).seedHash  ==  905055214
+    hashSeed({seed: "alpha"}) == hashSeed({seed: "beta"}) == hashSeed("") == 1947474976
 
-A seed-varying test written that way measures the same world N times and
-reports agreement. It is silent, and it lands hardest on criteria phrased
-*"distinct under the same seed"*.
+This was measured, and then broadcast as a live hazard to five sessions —
+"every seed-varying test silently measures one world". **It was not a live
+hazard.** `WorldSeed = string | number`, so an object seed is `TS2345`,
+`npm run typecheck` runs in CI on every PR, and no call site passes one. The
+measurement had used an `as any` cast: **the probe switched off the guard that
+prevents the bug, and then reported the bug as reachable.**
+
+So the rule above applies to measurements as much as to tests. **Before
+reporting what a probe found, state what a probe would find if the defect were
+already prevented** — and check that your probe did not disable that
+prevention to run at all. A cast, a mock, a relaxed config or a direct call
+past a validator all create the condition they then discover.
+
+The residue is genuine but small: types bind TypeScript callers only, so an
+`as any`, a `.mts` script or a trusted worker payload still reaches the silent
+constant. `normalizeSeed` throws on a non-string, non-number seed for that
+reason, naming the empty-string collision in its message.
 
 ---
 
