@@ -1,6 +1,7 @@
 # Phase 6 — what came out
 
-**Written 2026-08-31 for someone who was not here.** Head at writing: `aada1cd`.
+**Written 2026-08-31 for someone who was not here; QR-1 section updated 2026-09-01.**
+Head at last update: `a982ceb`.
 Self-contained: everything needed to follow a sentence is inlined, with deviation ids
 (`D-3`, `D-7`, `D-8`, `D-9`, `D-23`) cited as the authority for the full record.
 **If this document and `PHASE_6_EXECUTION_PLAN.md` §11 ever disagree, the deviation log
@@ -35,11 +36,21 @@ handoff, 6-9's GPU scatter.
 **A third case of the same shape, found tonight:** the capture set's `night` shot is
 effectively **moonless** — its clock puts a half-lit moon on the horizon — and Phase 7's
 four new night shots inherit that clock. Gate 7A's moon, scotopic vision and star field were
-all validated against it. Shipped, correct, and not visible. One moonlit shot is being
-appended. *(Carried from the PM.)*
+all validated against it. Shipped, correct, and not visible. **Closed:** a `night-moonlit`
+shot has since been appended ([scripts/perf-capture.mts:494](scripts/perf-capture.mts) —
+verified here), and the moonless clock is deliberately **kept** as the capture set's
+adversarial case, which is worth more than replacing it: a shot known to be hostile for a
+stated reason beats a shot that is merely dark.
 
 **So: read "landed" as "the code exists and is correct", never as "you can see it."** That
 gap between the ledger and the screen is what made tonight expensive.
+
+**The mirror-image warning, from the same night.** `water-3m` was flagged as an anomaly in
+three separate analyses and dissolved in all three: it ranks **first by ratio and last by
+absolute increase**, because its base is small. It is simply a cheaper scene. **The anomaly
+was the artifact; the behaviour was unremarkable.** So the discipline cuts both ways — an
+item can be present and invisible, and a measurement can be striking and mean nothing. Both
+are the distance between a model and the thing it describes. *(Carried from the PM.)*
 
 ---
 
@@ -147,9 +158,33 @@ one pointed the wrong way.
 
 ## 5. What Phase 6 leaves open
 
-- **6-11** — the four-tier sweep, **QR-1**, cold-start wiring, memory truth. QR-1 has been
-  **reframed by measurement**; the live question is the `keep` clause at tier 3. Not
-  detailed here pending `SWE III`'s recon report.
+- **6-11 / QR-1 — ANSWERED, and the answer is a negative result.** The tier-2 sweep ran
+  seven shots × three viewports.
+  - **Tier 2 meets its 13.7 ms contract in 0 of 21 shot-configurations** — every cell,
+    steady state, GPU-bound.
+  - **The vegetation shadow caster is not the lever.** Best case is `water-3m` at 720p,
+    **−10.0 ms** against an estimated ~2.66 ms caster cost: removing the caster closes
+    **26.6%** of the gap even there, and **5.7%** at the worst shot.
+  - **So QR-1's answer at tier 2 is "no change, because disabling it does not fix the
+    tier" — NOT "keep it because tier 2 can afford it."** Those read alike and mean
+    opposite things, and only the first is supported by the data.
+  - **Tiers 0 and 1 remain refused on the draw ceiling.** The honest summary of the phase's
+    QR-1 work is therefore **a refusal at tiers 0/1 and a negative result at tier 2** —
+    smaller than it felt, and worth stating as such. The engineer who ran it pre-registered
+    that framing before the data existed and reported it against his own bias.
+  - **The magnitude, stated without a ratio:** `reference-viewport` at an identical
+    **921,600 pixels** measures **54.5 ms p95 against a 13.7 ms target — a 40.8 ms miss.**
+    **Do not quote a tier-1→tier-2 ratio.** Tier 1 is frame-capped: a 43% spread in draw
+    calls produces a 0.4% spread in fps, so any "N× cliff" is tier-2 fps wearing a ratio's
+    clothes. If a step must be quoted, quote it as a bound and say so.
+  - **`treePrototypeMode` is withdrawn as a cause** — magnitude agreement, zero measured
+    support, and every correlation flipped sign when one of seven points was removed.
+    **The cliff is real, large, GPU-bound and unexplained.** Naming a mechanism on our
+    say-so would cost the next person a day.
+  - **One nuance that must not be lost:** the frame is GPU-dominated at every viewport,
+    **and above 720p, 4 of 7 shots exceed the target on CPU alone.** Both true, different
+    implications — **a GPU-only fix does not reach the contract on those four.**
+  *(Carried from `SWE III`'s sweep via the PM; figures not independently re-derived here.)*
 - **The cold-start instrument exists and nothing runs it.**
   `tests/perf/cold-start.test.ts` is correct — both `console.error` and Babylon's
   `Logger.Error`, plus a timeout race — but `tests/perf/**` is excluded from `npm test` and
