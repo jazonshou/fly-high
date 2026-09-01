@@ -687,9 +687,29 @@ green-centreline lights are cut** (D-0) — no taxiway geometry exists anywhere.
   The datum is sound: the platform is level along its length and the centreline crown is
   exactly zero.
 - **Fixture height trap.** `runwayToWorld` returns `y = airport.elevation`, which is correct
-  only on the centreline. Edge lights at `across = ±(runwayWidth/2 + margin)` sit
-  `runwayCrownHeight(airport, across)` **below** it — up to the full 0.35 m camber. Place
-  every off-centreline fixture through `runwayPlatformHeight(airport, across)`.
+  only on the centreline. Off-centreline fixtures sit `runwayCrownHeight(airport, across)`
+  **below** it. Place every one of them through `runwayPlatformHeight(airport, across)`.
+- **Budget 0.105 m for edge lights, not 0.35 m.** The camber is quadratic in
+  `across / runwayPlatformHalfWidth` — **31 m** (`runwayWidth/2 + shoulderWidth`,
+  [RunwayEarthworks.ts:122-124,162-170](src/render/webgpu/terrain/RunwayEarthworks.ts)) —
+  **not** in the paved half-width of 17 m, so the paved edge takes only **(17/31)² = 30.1%**
+  of it. Against `DEFAULT_AIRPORT`: centreline **0.000 m**, TDZ bar at 10.5 m **0.040 m**,
+  PAPI at a 15 m offset **0.082 m**, paved edge **0.105 m**, edge + 3 m margin **0.146 m**,
+  graded platform edge **0.350 m**. **The full 0.35 m occurs only at the graded platform
+  edge, where no runway edge light goes.** An earlier draft of this bullet said "up to the
+  full 0.35 m camber" — **3.3× too large for the fixtures it names**, and over-provisioning
+  is what later gets cut as unnecessary along with the part that was necessary.
+- **What the error costs the PAPI pin.** A vertical siting error `d` perturbs the elevation
+  angle by about `d/R` at horizontal range `R`, so it consumes the whole 0.1° budget at
+  `R = d / tan(0.1°)`: **47 m** for the PAPI's own 0.082 m, **60 m** at 0.105 m, **201 m** at
+  0.35 m. **So an uncorrected fixture breaks the 0.1° pin only inside ~47 m of range** — the
+  swept fixture's minimum range decides whether this is a correctness concern or a placement
+  one.
+  *(Camber and angle figures re-derived here against `runwayCrownHeight` and
+  `DEFAULT_AIRPORT`; they reproduce `SWE II 2`'s to the digit. **Scope:** this is the camber
+  term only — it says nothing about whether `runwayToWorld`'s y is otherwise right, and
+  nothing about longitudinal grade. The **15 m PAPI offset is a conventional siting figure,
+  not something the tree specifies.**)*
 - **Do not transliterate the airport SDF a fourth time.** Three WGSL copies exist and one of
   them — the splat bake's — was a 240 m disc under a comment claiming the rounded
   rectangle, reading 0.000 where the CPU returned 0.807, for months (D-19). Compose
