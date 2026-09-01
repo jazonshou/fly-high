@@ -11,6 +11,7 @@ import {
   type GroundCoverArchetype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
 import { buildBladeRibbon } from "../src/render/webgpu/detail/GroundCoverSystem";
+import { buildTowerGeometry, TOWER_PART_NAMES } from "../src/render/webgpu/detail/towerGeometry";
 
 /**
  * TRIANGLE WINDING, asserted against Babylon's own convention.
@@ -232,6 +233,16 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   // unwatched. A fix without a case is a fix with a shelf life.
   for (const kind of ["log", "stump", "branchLitter", "mossCushion"] as const) {
     out.push([`clutter.${kind}`, buildClutterPrototype(kind as never, 1) as unknown as Geo]);
+  }
+  // `7-15`: every ATC tower surface, DERIVED from the builder's own roster
+  // rather than listed here. 7D is the largest block of new hand-authored
+  // geometry left in the programme and it is written by sessions that will not
+  // be flying it, so a mesh that is added and not listed is the likeliest way
+  // this class recurs. Naming a part in `TOWER_PART_NAMES` without building it
+  // throws in the builder; building one without naming it is impossible.
+  const tower = buildTowerGeometry();
+  for (const name of TOWER_PART_NAMES) {
+    out.push([`tower.${name}`, tower.parts[name] as unknown as Geo]);
   }
   return out;
 }
