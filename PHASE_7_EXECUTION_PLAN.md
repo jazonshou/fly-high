@@ -18,7 +18,7 @@ log, per house rule.
 | Q | Decision | Consequence |
 |---|---|---|
 | **Q1 Start line** | **Phase 6 finishes first; Phase 7 plans clean.** No absorbing Gate-0 that duplicates Phase 6 work. | §1 is a verified *entry-condition checklist*, not a work gate. Phase 7 still opens with its own Gate 7-0 (§4) for instruments Phase 6 never had to build — night shots, a night entry point, a lighting budget row, and the adapter spike. |
-| **Q2 Memory** | **The vegetation atlases fund Phase 7 — but they fund 7D, not the lighting engine. Re-scoped 2026-08-31, D-10.** Measured: the lighting engine is **not** a memory consumer. The clustered tile-mask buffer at the shipped 64×64 tiles is ~16 KB, ~200 light points at 32 B is ~6.4 KB, and an IES profile is 180 floats — **under 0.1 MiB for all of 7B**. The consumer is **7D**: at tier 1's `materialArrayEdge: 512`, the existing 2 arrays × 10 layers already cost **26.67 MiB**, and each additional material layer 7-11 needs costs **~2.67 MiB**. So the trade is aimed at 7-11's hangar/tower materials and 7D's geometry, and **7B can proceed with no memory trade at all**. |
+| **Q2 Memory** | **SUPERSEDED 2026-08-31 late (D-13): memory is not the binding axis at all, and Gate 7B needs no trade for TWO independent reasons.** (i) 7B's own allocations total **under 0.1 MiB** — tile mask ~16 KB at the shipped 64×64 tiles, ~200 light points at 32 B ≈ 6.4 KB, an IES profile is 180 floats; and (ii) `SWE III`'s QR-1 measurement found **draw calls bind, the frame budget is mis-modelled, and memory is not an axis**. Either reason alone discharges the trade, so a reader who finds a hole in one still has the other. **The remaining consumer is 7-11's material arrays at ~2.67 MiB per layer** — a 7D question, priced there. *(Prior scoping, retained for provenance:)* **The vegetation atlases fund Phase 7 — but they fund 7D, not the lighting engine. Re-scoped 2026-08-31, D-10.** Measured: the lighting engine is **not** a memory consumer. The clustered tile-mask buffer at the shipped 64×64 tiles is ~16 KB, ~200 light points at 32 B is ~6.4 KB, and an IES profile is 180 floats — **under 0.1 MiB for all of 7B**. The consumer is **7D**: at tier 1's `materialArrayEdge: 512`, the existing 2 arrays × 10 layers already cost **26.67 MiB**, and each additional material layer 7-11 needs costs **~2.67 MiB**. So the trade is aimed at 7-11's hangar/tower materials and 7D's geometry, and **7B can proceed with no memory trade at all**. |
 | **Q3 Airfield scope** | **Runway, hangars, and an ATC tower.** *"Airport specifics don't matter too much, but it should still look real."* | Taxiway lighting, apron markings and apron floodlighting are **re-scoped away with reason** (D-0) — none of that ground exists and 3-9 declined to build it. A new item **7-15 ATC tower** (3.0 d) is added (D-1); it mounts 7-7's rotating beacon and 7-14's obstruction lights and is the second scale reference on final. "It should still look real" is tested by the §8 acceptance flights, not by a count of fixtures. |
 | **Q4 Night HDR** | **7-4 builds a real scene pre-exposure and a highlight-preserving rod response.** | The largest single change in the phase and the one that moves *every* pixel in *every* shot. It gets its own solitary rebaseline **R7-1**, before any light exists to blame. It reopens `MAX_EXPOSURE`'s derivation and both art-directed night constants — all test-pinned (§5, D-5). 6-11's sweep will deliberately pin nothing downstream of exposure, so this is Phase 7's to move. |
 | **Q5 Which world ships** | **The ANALYTIC world is the shipped default. SETTLED, not assumed.** Jason re-flew the eroded world after d7's fixes, found it still badly wrong, and made an executive call on 2026-08-31 to **shelve it for this phase** — §8 resolving **NO**, which the Phase 6 plan explicitly sanctions ("the analytic default ships on and eroded stays a flag — that outcome is acceptable by Q1's own terms and is not a phase failure"). | **Eroded is out of Phase 7's scope entirely.** There is no Gate W dependency, no eroded prerequisite, and no eroded night shot; a future reader should not go looking for one. All 24 + 4 capture shots are `worldEvolution: "analytic"`. **The eroded code is parked behind its `?world=eroded` flag, not removed** — it is shelved with its state recorded, not abandoned, and someone will want to resume it. This was the assumption Phase 7 was already written on, so nothing structural changes; it simply stopped being able to move mid-phase. |
@@ -78,7 +78,7 @@ made. That is what Phase 7 follows on from — **no eroded prerequisites of any 
 **E-5's measured deltas, supplied by that session and reproduced here so Phase 7 plans
 against numbers rather than a rumour:** **zero** new `WebGpuQualityProfile` fields, **zero**
 new `SubsystemBudgetMs` rows and **zero** new `ComputeBudgetClient`s — the global horizon
-bake shares the existing `occlusionCompute` row rather than finding tier 2's 0.05 ms wall.
+bake shares the existing `occlusionCompute` row rather than finding tier 2's 0.05 ms wall (a **modelled** wall — see §2.3(g)).
 Memory: **0.125 MiB** total (two rgba8 128² `RawTexture`s, which land in
 `inventoryGpuMemoryMiB`'s *texture* walk, not in `GpuBufferInventory`) plus a **32-byte**
 registered `StorageBuffer`. On `TerrainSurfacePlugin`: **zero** sampler, uniform-lane and
@@ -145,7 +145,20 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
        **2.7 MiB is plausibly one terrain page's geometry** — so a small measured memory
        delta is indistinguishable from streaming state until the spread is known.
        `SWE III` is measuring it on the next cold block; until then, treat any memory
-       delta under the unmeasured floor as unproven rather than zero. Clustered lighting is *not* cost-dark: the container adds a
+       delta under the unmeasured floor as unproven rather than zero.
+   (g) **Every number this plan quotes from a budget table says whether an instrument
+       produced it.** Three members of one family were quoted confidently tonight by people
+       being careful: the memory *estimate* under-reporting by 111–119 MiB, the sampler
+       comment saying 14 against a derived 10, and **tier 2's "0.050 ms of slack" — which
+       is model-derived, not measured.** It is summed from the declared `FRAME_BUDGET_MS`
+       table, and that table's vegetation row rests on `VEGETATION_DRAW_COST_MS = 0.026`,
+       whose own docblock at
+       [renderedDensity.ts:390-393](src/render/webgpu/detail/renderedDensity.ts) calls it a
+       "**draw-submission-only model**" and says outright that "tier 0/1 being below one
+       means submissions fit, not vegetation". It under-prices the measured caster cost by
+       **~3.3×**. So the 0.05 ms is not a wall anyone has stood at. It is retained as a
+       planning figure with **"modelled, not measured"** attached at every site, and any
+       Phase 7 budget row that claims to fit inside it owes a measurement at its item close. Clustered lighting is *not* cost-dark: the container adds a
    `vViewDepth` inter-stage varying on **every** PBR material, a `textureLoad`-read
    `lightDataTexture` (a sampled-texture slot, **not** a sampler) and a fragment-stage
    `tileMaskBuffer` to every PBR material whether or not a light is on.
@@ -188,9 +201,17 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    configuration that actually ships rather than hedged across two.
 5. **Draw ceilings are hard on every host.** `night` 160, `runway-on-approach` 169,
    `approach-500ft` 158 ([scripts/perf-capture.mts:188-195](scripts/perf-capture.mts)).
-   **~200 light points must be one instanced draw** — this is a design constraint, not an
-   aspiration. 7D's hangars, tower and furniture are the other pressure and are budgeted
-   against the same ceilings.
+   **~200 light points must be one instanced draw — and per D-13 this is load-bearing for
+   the GATE, not merely for the shot.** With draws established as the binding axis, that
+   single instanced draw is what makes Gate 7B fit at all; it is not a tidiness target that
+   could be relaxed to 3 or 4 draws under schedule pressure.
+   **And the risk framing of this phase inverts.** The plan was written with 7B as the hard
+   part and 7D as the long tail. On a draw-bound axis that is backwards: **7B is one
+   instanced draw plus a container; 7D is buildings** — hangars, a tower, furniture, signage,
+   each a mesh, against `runway-on-approach`'s 169 and the appended night shots' ceilings.
+   **7D is the risky half of Phase 7.** Nothing in the ledger moves — the work is the same
+   work — but review attention, the adversarial pass, and any schedule slack should be
+   pointed at 7D rather than at the lighting engine.
 6. **The ratchet binds** (`RENDERING_PLAN.md:837`): no count row rises without a fidelity
    row moving in the same commit.
 7. **The tier rule is absolute.** The `.tier`-reader grandfather list is
@@ -403,7 +424,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   Ceilings and `drawCallCeiling` pinned from three clean idle-host runs at each rebaseline.
 - **7-0-b The `lighting` budget row, funded (0.5 d).** `SubsystemBudgetMs` has twelve rows
   and none is lighting; `COMPUTE_BUDGET_CLIENTS` has five and none is lighting.
-  **Tier 2 has 0.05 ms of slack** (13.65 against a 13.7 ms target) and assertion 20 is a
+  **Tier 2 has 0.05 ms of MODELLED slack** (13.65 against a 13.7 ms target — summed from the declared table, never measured; §2.3(g)) and assertion 20 is a
   hard `toBeLessThanOrEqual` — so the row must be funded by cutting an existing row in the
   same commit.
   **Price against measured admission, not the declared table.** `c41f52a` pins which
@@ -613,7 +634,7 @@ constant-flux PSF. **One instanced draw** (§2.5).
 - **Bloom does not exist** (D-4). A new post-process between the scotopic pass and ACES,
   which means renegotiating MSAA and first-pass ownership with `ScotopicVisionPass` at slot
   0 ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)) and funding a `post` budget
-  row against tier 2's 0.05 ms slack.
+  row against tier 2's 0.05 ms of **modelled** slack (§2.3(g)).
 *Pins:* one draw call asserted on the night shots; HDR range preserved through 7-4a
 (the monotonicity test re-run with real light points); extinction agrees with the star
 path's air mass at matched elevations; §2.3 A/B pin.
@@ -1003,7 +1024,7 @@ it reinstates that artifact.
   layer and no `DefaultRenderingPipeline` anywhere in the tree; the post chain is exactly
   ScotopicVision → ACES → FXAA ([FlightRenderer.ts:955-995](src/render/FlightRenderer.ts)).
   7-5 prices a new post-process, its MSAA/first-pass renegotiation with the scotopic pass at
-  slot 0, and a `post` budget row against tier 2's 0.05 ms of slack.
+  slot 0, and a `post` budget row against tier 2's 0.05 ms of **modelled** slack (§2.3(g)).
 - **D-5 (at planning, Jason Q4):** **the pre-exposure decision is taken, and it is the
   largest single change in the phase.** Gate 7A deviation 2 handed it here by name. Measured
   justification: at the `night` clock the scotopic pass's σ is **4.21 cd/m²** against a
@@ -1193,6 +1214,31 @@ it reinstates that artifact.
   argued / reported / reported-and-unverified. **Those statuses are load-bearing and must
   not be flattened**: L-4's 0.510 ratio in particular is explicitly unverified and carried
   on one measurement.
+
+- **D-13 (2026-08-31 late, the binding axis is draws — Q2 superseded and the phase's risk
+  framing inverts):** `SWE III`'s QR-1 measurement establishes that **draw calls bind, the
+  frame budget is mis-modelled, and memory is not an axis at all**. Three consequences, each
+  correcting something this plan asserted.
+  *(a) Q2's funding argument is void, twice over.* Gate 7B needs no memory trade because its
+  allocations total under 0.1 MiB **and** because memory is not the constraint. Stated as
+  two independent reasons deliberately: a reader who finds a hole in one still has the
+  other. Left as written, the next person to open §2.4 would have re-derived the same wrong
+  constraint and started cutting vegetation fidelity to pay for lighting that was never
+  memory-bound — **the decorative-list failure in a plan document rather than a source
+  file**, sitting exactly where someone would act on it.
+  *(b) The risky half of Phase 7 inverts.* 7B is one instanced draw plus a container; 7D is
+  buildings. §2.5 now says so, and 7-5's single instanced draw is restated as load-bearing
+  for the **gate** rather than for the shot.
+  *(c) Tier 2's "0.050 ms of slack" is modelled, not measured*, and I had quoted it as a
+  wall at four sites. It sums the declared `FRAME_BUDGET_MS` table, whose vegetation row
+  rests on `VEGETATION_DRAW_COST_MS = 0.026` — a constant whose own docblock calls it a
+  "draw-submission-only model" and which under-prices the measured caster cost by **~3.3×**.
+  All four sites now carry "modelled, not measured", and §2.3(g) makes it general: **a
+  number in a plan says whether an instrument produced it.**
+  *Provenance note:* raised by the `Principle Engineer` session, which included a correction
+  to a figure **it had given me itself** earlier in the evening. Verified here against
+  `renderedDensity.ts:390-393` rather than accepted — which is the same discipline, applied
+  to the message that was teaching it.
 
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*
