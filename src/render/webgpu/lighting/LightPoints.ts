@@ -218,6 +218,10 @@ const LIGHT_POINT_SHADER_NAME = "lightPoints";
  * The fragment stage does the PSF and nothing else.
  */
 export const LIGHT_POINT_WGSL = /* wgsl */ `
+// position must be declared even though Babylon lists it in the material's
+// attributes: the WGSL processor builds VertexInputs from THESE declarations,
+// so omitting it compiles to "struct member position not found".
+attribute position: vec3f;
 attribute lightCorner: vec2f;
 attribute lightParams: vec4f;
 attribute lightAim: vec3f;
@@ -237,8 +241,12 @@ var iesProfile: texture_2d<f32>;
 
 ${AERIAL_PERSPECTIVE_WGSL}
 
+// Babylon's WGSL convention: the VERTEX stage returns FragmentInputs and only
+// the FRAGMENT stage returns FragmentOutputs. Writing FragmentOutputs here
+// parses as an unresolved type and the pipeline is invalid -- caught on the
+// adapter, invisible to tsc and to every Node test.
 @vertex
-fn main(input: VertexInputs) -> FragmentOutputs {
+fn main(input: VertexInputs) -> FragmentInputs {
   let worldPosition = vertexInputs.position;
   let toEye = uniforms.lightCameraPosition - worldPosition;
   let distanceMeters = max(length(toEye), 1.0);

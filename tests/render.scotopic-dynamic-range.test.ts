@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MAX_EXPOSURE, SCENE_UNIT_TO_NITS } from "../src/render/webgpu/nature/EnvironmentDirector";
+import {
+  SCOTOPIC_HIGHLIGHT_GAIN,
+  SCOTOPIC_HIGHLIGHT_KNEE,
+} from "../src/render/webgpu/atmosphere/ScotopicVision";
 
 /**
  * `7-4a`'s target, expressed so it cannot be argued about.
@@ -36,6 +40,28 @@ function responseAtGroundDecades(d: number): number {
   return relative / (relative + 1);
 }
 
+const smoothstep = (edge0: number, edge1: number, x: number): number => {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * `7-4a`'s SHIPPED output, in decades relative to the ground: the rod response
+ * plus the highlight term. The display gain cancels from a ratio of two
+ * responses but NOT once an additive term joins it, so this one carries it.
+ */
+function outputAtGroundDecades(d: number): number {
+  const relative = 10 ** d;
+  const excess = Math.max(relative - 1, 0);
+  const highlight = SCOTOPIC_HIGHLIGHT_GAIN
+    * smoothstep(0, SCOTOPIC_HIGHLIGHT_KNEE, excess)
+    * Math.log2(1 + excess);
+  return responseAtGroundDecades(d) * DISPLAY_GAIN + highlight;
+}
+
+/** `SCOTOPIC_MID_GREY_TARGET / MAX_EXPOSURE`, the gain the CPU precomputes. */
+const DISPLAY_GAIN = 0.16 / MAX_EXPOSURE;
+
 describe("7-4a: scotopic dynamic range", () => {
   it("ANCHOR — the math below models the SHIPPING shader, and fails if it stops doing so", () => {
     // Every other assertion in this file is arithmetic over `responseAtGroundDecades`,
@@ -52,6 +78,17 @@ describe("7-4a: scotopic dynamic range", () => {
     expect(
       shader.includes("let response = nits / (nits + sigma);"),
       "the rod response is no longer Naka-Rushton in the form this file models",
+    ).toBe(true);
+    // 7-4a's highlight term, read from the SHARP sample so a one-pixel source
+    // is not smeared into the ground by the acuity blur before it is seen.
+    expect(
+      shader.includes("let highlightExcess = max(sharpNits - sigma, 0.0) / sigma;"),
+      "the highlight term's excess is no longer measured against sigma",
+    ).toBe(true);
+    expect(
+      shader.includes("dot(scene, SCOTOPIC_WEIGHTS)"),
+      "the highlight term no longer reads the SHARP sample — a light point will "
+      + "be smeared by the acuity blur before the response sees it",
     ).toBe(true);
 
     // And the auto-centring: the uniform is NAMED for adapted luminance but is
@@ -86,27 +123,33 @@ describe("7-4a: scotopic dynamic range", () => {
     }
   });
 
-  it("PRE-FIX DEFECT — three decades of light-source brightness collapse to 1.0100:1", () => {
-    // NOT a property being protected. This is the defect 7-4a exists to remove,
-    // pinned so the repair has a number it must move. A runway edge light, a
-    // landing light and the moon sit roughly 2 to 5 decades above the ground
-    // and all land inside the top 1% of the curve, so they render at
-    // indistinguishable brightness.
-    //
-    // WHEN 7-4a LANDS THIS TEST MUST FAIL, and it must be updated in the same
-    // commit with the new measured spread. A green assertion quietly pinning a
-    // defect as correct is what let the inverted winding survive; this one says
-    // in its own name that it is pinning a defect.
-    const low = responseAtGroundDecades(2);
-    const high = responseAtGroundDecades(5);
-    expect(high / low).toBeCloseTo(1.00998990, 6);
+  it("FIXED by 7-4a — three decades of source brightness are now distinguishable", () => {
+    // This was `PRE-FIX DEFECT — ... collapse to 1.0100:1`, pinning the defect
+    // so the repair had a number it had to move. 7-4a moved it, so the
+    // assertion is INVERTED here in the same commit, exactly as that pin
+    // instructed. The pre-fix value is kept in the message because a fix whose
+    // starting point is forgotten cannot be shown to have worked.
+    const low = outputAtGroundDecades(2);
+    const high = outputAtGroundDecades(5);
+    const spread = high / low;
 
-    // The target 7-4a is aiming at, recorded but deliberately NOT asserted —
-    // asserting it now would be a red test masquerading as a plan. The highlight
-    // term must give three decades of source brightness a spread a viewer can
-    // see; the working figure is a per-decade step of at least 1.2x, i.e. a
-    // spread above 1.7:1 across those same three decades.
-    expect(high / low).toBeLessThan(1.7);
+    // Pre-fix this ratio was 1.0100:1 — a runway edge light, a landing light
+    // and the moon at indistinguishable brightness.
+    expect(spread, "the light-source band collapsed again").toBeGreaterThan(1.7);
+    expect(spread).toBeCloseTo(2.384, 2);
+
+    // Every decade above the ground must step visibly, not just the endpoints.
+    for (let d = 1; d <= 5; d += 1) {
+      const step = outputAtGroundDecades(d) / outputAtGroundDecades(d - 1);
+      expect(step, `decade ${d - 1} -> ${d} is not distinguishable`).toBeGreaterThan(1.2);
+    }
+  });
+
+  it("7-4a did NOT disturb the ground: the response half-saturates as before", () => {
+    // The highlight term is exactly zero at and below sigma, so the auto-centred
+    // ground is untouched. This is the property the near-miss repair destroys.
+    expect(outputAtGroundDecades(0)).toBeCloseTo(0.5 * DISPLAY_GAIN, 12);
+    expect(responseAtGroundDecades(0)).toBeCloseTo(0.5, 12);
   });
 
   it("the near-miss repair makes it strictly worse, monotonically", () => {

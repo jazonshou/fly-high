@@ -89,6 +89,42 @@ export const PHOTOPIC_THRESHOLD_CD_M2 = 3.0;
 /** The shader's daylight-copy threshold, shared with the chain scheduler. */
 export const SCOTOPIC_PASS_THRESHOLD = 0.001;
 
+/**
+ * `7-4a`: the highlight-preserving term's gain, in output units per doubling
+ * of luminance above the adapted level.
+ *
+ * **Why a second term rather than a change to the response.** The Naka-Rushton
+ * response is auto-centred: sigma is the SCENE KEY, which is Lambertian ground
+ * under the frame's own lights, so moonlit ground half-saturates at every clock
+ * and that is the property worth keeping. The cost is that it has spent 99% of
+ * its output by ground x 100 — measured, three decades of light-source
+ * brightness (ground x 1e2 to x 1e5) collapse to **1.0100:1**, so a runway edge
+ * light, a landing light and the moon render at indistinguishable brightness.
+ *
+ * This term adds range precisely where the response has already spent itself
+ * and is exactly zero at and below sigma, so it cannot disturb the ground.
+ * At 0.06 the same three decades span **2.384:1** and every decade above ground
+ * steps by at least **1.24x**.
+ *
+ * **Do NOT fix the compression by feeding sigma the physical adapted
+ * luminance.** Measured: sigma 4.21 gives 1.0573:1 over 1e5:1 of input;
+ * the physical value (8.0e-5) gives **1.0000:1** — a uniform grey field that
+ * passes every capture gate. Compression WORSENS as sigma falls.
+ */
+export const SCOTOPIC_HIGHLIGHT_GAIN = 0.06;
+
+/**
+ * `7-4a`: width of the highlight term's turn-on, in units of `(nits - sigma) /
+ * sigma`, i.e. multiples of the adapted level.
+ *
+ * Without it the term switches on with a derivative jump of 0.095 per unit at
+ * sigma — a visible crease exactly where ground meets a light — and the
+ * smoothstep degenerates at zero width. At 1.0 the derivative just above the
+ * ground is 0.0085 and the term is fully caught up by ground x 2, so nothing
+ * brighter than twice the adapted level is suppressed.
+ */
+export const SCOTOPIC_HIGHLIGHT_KNEE = 1.0;
+
 /** Whether rod vision contributes enough to require the scotopic pass. */
 export function shouldRunScotopicPass(rodFraction: number): boolean {
   return Number.isFinite(rodFraction) && rodFraction > SCOTOPIC_PASS_THRESHOLD;
@@ -158,9 +194,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let nits = scotopicScene * uniforms.scotopicSceneToNits;
   let sigma = max(uniforms.scotopicAdaptedLuminance, 1.0e-5);
   let response = nits / (nits + sigma);
+
+  // 7-4a: the highlight-preserving term. Read from the SHARP sample, not the
+  // blurred one — a light point is a one-pixel source and the acuity blur
+  // above would smear it into the ground before the response ever saw it.
+  // Zero at and below sigma by construction, so the ground's half-saturation
+  // is untouched; logarithmic above, so decades of source brightness stay
+  // ordered where the response has already saturated.
+  let sharpNits = max(dot(scene, SCOTOPIC_WEIGHTS), 0.0) * uniforms.scotopicSceneToNits;
+  let highlightExcess = max(sharpNits - sigma, 0.0) / sigma;
+  let highlight = ${SCOTOPIC_HIGHLIGHT_GAIN}
+    * smoothstep(0.0, ${SCOTOPIC_HIGHLIGHT_KNEE}, highlightExcess)
+    * log2(1.0 + highlightExcess);
+
   // Back to scene-linear so the ONE exposure curve on the image-processing
   // chain still owns the display mapping. The gain arrives precomputed.
-  let rodImage = SCOTOPIC_TINT * (response * uniforms.scotopicDisplayGain);
+  let rodImage = SCOTOPIC_TINT * (response * uniforms.scotopicDisplayGain + highlight);
 
   // 2. The mesopic blend.
   fragmentOutputs.color = vec4f(mix(scene, rodImage, rod), 1.0);

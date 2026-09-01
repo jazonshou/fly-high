@@ -283,9 +283,14 @@ export const SCOTOPIC_FLOOR_ILLUMINANCE_LUX = (0.03 * Math.PI) / 0.2;
  * stated rationale: the curve keeps opening down to the illuminance at
  * which human vision hands over to the rods, and stops there, because past
  * that point brightening the cone image is not what a person's night vision
- * does — `ScotopicVision`'s Naka–Rushton response is. It evaluates to ~4.66
- * at the shipped constants; the number moves only if the curve or the
- * scotopic threshold moves, which is the point.
+ * does — `ScotopicVision`'s Naka–Rushton response is. It evaluates to
+ * **4.698026433055187** at the shipped constants; the number moves only if the
+ * curve or the scotopic threshold moves, which is the point.
+ *
+ * `7-4a`: this docblock said "~4.66" from Phase 2.5 until 2026-09-01, against a
+ * value test-pinned at 4.698. Nothing consumed the prose, so nothing caught it —
+ * the figure is now asserted in `tests/render.scotopic-dynamic-range.test.ts`
+ * so the docstring and the constant cannot drift apart again.
  */
 export const MAX_EXPOSURE = BASE_EXPOSURE
   * Math.pow(REFERENCE_ILLUMINANCE_LUX / SCOTOPIC_FLOOR_ILLUMINANCE_LUX, ADAPTATION_STRENGTH);
