@@ -109,6 +109,31 @@ describe("the scene's light slots", () => {
     ).toBe(true);
   });
 
+  it("the container ignores isEnabled, so INTENSITY is the only way to darken a clustered light", () => {
+    // `ClusteredLightingSystem.setIntensity`'s docblock tells callers not to
+    // reach for `setEnabled(false)`, on the grounds that the container never
+    // consults `isEnabled` and would keep the child in its cluster data at full
+    // diffuse. That is a claim about BABYLON's code, so it is asserted against
+    // Babylon's code — if a future version starts respecting `isEnabled`, the
+    // advice becomes wrong and this fails rather than quietly misleading.
+    const container = readFileSync(
+      "node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js",
+      "utf8",
+    );
+    expect(
+      container.includes("isEnabled"),
+      "ClusteredLightContainer now references isEnabled — re-derive whether "
+      + "setEnabled is a valid way to darken a clustered light before trusting "
+      + "setIntensity's docblock",
+    ).toBe(false);
+    // And the channel that DOES reach the shader: intensity, folded into the
+    // packed diffuse. If this moved, an intensity of 0 might stop meaning dark.
+    expect(
+      container.includes("light.diffuse.scaleToRef(scaledIntensity"),
+      "the container no longer packs diffuse scaled by intensity",
+    ).toBe(true);
+  });
+
   it("NON-VACUITY — the scanner finds light constructions at all", () => {
     // An over-tight regex would report an empty map and pass the pin above by
     // matching nothing against nothing.

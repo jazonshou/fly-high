@@ -18,6 +18,8 @@ import {
 import {
   towerObstructionFixtures,
   hangarObstructionFixtures,
+  hangarFaceFloodlights,
+  HANGAR_FLOOD_INTENSITY,
   obstructionFixtureWorldPosition,
   subdivideRingForExtentSpacing,
   OBSTRUCTION_LIGHT_RGB,
@@ -307,6 +309,73 @@ describe("hangar obstruction fixtures", () => {
     expect(intensities.size).toBe(1);
     expect([...intensities][0]).toBeCloseTo(
       OBSTRUCTION_LIGHT_CANDELA.extent * AIRFIELD_LAMP_SCENE_SCALE, 6);
+  });
+});
+
+describe("hangar-face floodlights (the clustered half)", () => {
+  const mountsFor = (i: number) =>
+    hangarAttachments(OBLIQUE, i, hangarPlanFrom(7, i, 1.1), OBLIQUE.elevation + 2);
+
+  it("lights the face that looks at the runway", () => {
+    const runwayCentre = runwayToWorld(OBLIQUE, 0, 0);
+    for (let index = 0; index < 3; index += 1) {
+      const footprint = hangarFootprint(OBLIQUE, index);
+      const centre = runwayToWorld(OBLIQUE, footprint.along, footprint.across);
+      const centreToRunway = Math.hypot(centre.x - runwayCentre.x, centre.z - runwayCentre.z);
+      const floods = hangarFaceFloodlights(OBLIQUE, mountsFor(index), index);
+      expect(floods).toHaveLength(2);
+      for (const flood of floods) {
+        // On the near face: closer to the runway than the hangar's own centre.
+        expect(Math.hypot(
+          flood.position[0] - runwayCentre.x,
+          flood.position[2] - runwayCentre.z,
+        )).toBeLessThan(centreToRunway);
+      }
+    }
+  });
+
+  it("picks the face by geometry, so a re-ordered ring cannot move it", () => {
+    // FAILS IF: the face is chosen by corner INDEX. `roofPerimeter`'s order is
+    // 7-10's to change and its shape is not, so an index rule would follow a
+    // re-ordering into the wrong wall — silently, since the floods would still
+    // sit on a hangar face, just the one nobody sees on approach.
+    const mounts = mountsFor(0);
+    const reversed = { roofPerimeter: [...mounts.roofPerimeter].reverse() };
+    const rotated = {
+      roofPerimeter: [...mounts.roofPerimeter.slice(2), ...mounts.roofPerimeter.slice(0, 2)],
+    };
+    const key = (defs: readonly { position: readonly [number, number, number] }[]) =>
+      defs.map((d) => d.position.map((v) => v.toFixed(6)).join(",")).sort().join(" | ");
+
+    expect(key(hangarFaceFloodlights(OBLIQUE, reversed, 0)))
+      .toBe(key(hangarFaceFloodlights(OBLIQUE, mounts, 0)));
+    expect(key(hangarFaceFloodlights(OBLIQUE, rotated, 0)))
+      .toBe(key(hangarFaceFloodlights(OBLIQUE, mounts, 0)));
+  });
+
+  it("stays in Babylon's intensity units and nowhere near the billboard scale", () => {
+    // FAILS IF: someone reuses AIRFIELD_LAMP_SCENE_SCALE here, which is the
+    // single most destructive available mistake in this file — the billboard
+    // path's 5.7e5 into a real PointLight is a five-order error, and both
+    // constants are called "intensity" one screen apart.
+    const floods = hangarFaceFloodlights(OBLIQUE, mountsFor(0), 0);
+    for (const flood of floods) {
+      expect(flood.intensity).toBe(HANGAR_FLOOD_INTENSITY);
+      // The scene's own directional lights run 1.1 to 5.2; a flood is allowed
+      // to be brighter than the sun's multiplier but not by five orders.
+      expect(flood.intensity).toBeLessThan(1_000);
+      expect(flood.intensity * 1_000).toBeLessThan(AIRFIELD_LAMP_SCENE_SCALE);
+      expect(flood.rangeMeters).toBeGreaterThan(0);
+    }
+  });
+
+  it("names every flood uniquely, because the daylight gate addresses them by name", () => {
+    // `setIntensity(name, ...)` returns false for an unknown name and silently
+    // does nothing. Two floods sharing a name would leave one permanently lit
+    // through the day, and nothing would report it.
+    const names = [0, 1, 2].flatMap((i) =>
+      hangarFaceFloodlights(OBLIQUE, mountsFor(i), i).map((f) => f.name));
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 
