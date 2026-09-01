@@ -1189,6 +1189,31 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
 
 ## 11. Deviation log
 
+- **D-PROV (2026-09-01, PM):** **`2bfe84a` and `ddc5a63` each carry more than one owner's
+  work, because I batched landings with `git add -A`.** `git log -- <file>` is therefore NOT a
+  reliable answer to "who wrote this and why" for the files below, and a reader chasing a
+  guard's origin will land on a commit whose subject is about something else.
+
+  - **`2bfe84a`** ("Detail the hangar…") carries, besides 7-10's detail pass:
+    `tests/gpu/shadow-caster-draw-cost.test.ts` and `scripts/decompose-draw-calls.sh`
+    (7-9's, pinning the measured 2.00 draws per casting mesh), and
+    `tests/lighting.obstruction-lighting.test.ts` (7-14's vent-clearance guard and its
+    negative control — **built against the MESH precisely because the change had been
+    described in terms of a field that module does not read**, which is the whole reason
+    that guard exists and is exactly what its commit subject hides).
+  - **`ddc5a63`** ("Wire the parametric hangars…") carries 7-4b's
+    `clusteredLighting.setFloatingOrigin` call — **and separating that call from its
+    implementation, which landed in `82c4182`, left `ddc5a63` unable to run.** Bisect fails
+    there confusingly.
+
+  **Not repaired: rewriting landed history would invalidate seven sessions' worktrees,
+  patches, banked captures and pre-registered baselines to fix an attribution.** Recorded
+  instead. `git add -A` is not used for landings from here; files are staged by owner.
+
+  The general shape, which is the evening's own lesson one level up: **a record that is
+  well-formed, internally consistent, and answers a different question than the one a reader
+  will ask of it.**
+
 - **D-0 (at planning, Jason Q3):** **taxiway lighting, apron markings, tie-downs, GSE and
   apron floodlighting are re-scoped away.** Reason, verified: `AirportDefinition` carries
   nine scalar fields and no taxiway or apron data ([src/world/types.ts:18-34](src/world/types.ts));
