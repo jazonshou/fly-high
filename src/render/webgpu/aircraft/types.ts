@@ -1,3 +1,4 @@
+import type { AircraftLightState } from "../lighting/AircraftLighting";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { FlightVisualState } from "@/src/game/types";
@@ -39,6 +40,16 @@ export interface AircraftVisual {
   /** All meshes owned by this visual, useful for shadow-caster registration. */
   readonly meshes: readonly AbstractMesh[];
   update(state: FlightVisualState, deltaSeconds: number): void;
+  /**
+   * `7-8`: apply the aircraft lighting law for this frame.
+   *
+   * Separate from `update` because the observer bearing is the RENDERER's
+   * knowledge, not the aircraft's — `update` receives flight state and has no
+   * camera. Passing the resolved state in keeps the law pure and Node-testable
+   * (`lighting/AircraftLighting.ts`) and leaves this method as the only place
+   * that touches lamp materials.
+   */
+  setLightState(state: AircraftLightState): void;
   setCockpitView(enabled: boolean): void;
   dispose(): void;
 }

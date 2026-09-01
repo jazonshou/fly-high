@@ -30,6 +30,10 @@ import {
   AirfieldLightingSystem,
   airfieldLampDaylightAttenuation,
 } from "./webgpu/lighting/AirfieldLighting";
+import {
+  observerAzimuthDegrees,
+  resolveAircraftLights,
+} from "./webgpu/lighting/AircraftLighting";
 import { towerObstructionFixtures } from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
@@ -2023,6 +2027,22 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
       this.aircraft.update(state, this.currentDeltaSeconds);
+      // `7-8`: the lamp law needs the OBSERVER's bearing, which is the
+      // renderer's knowledge and not the aircraft's. Body-frame components, so
+      // no world convention leaks in: `D-6` settled forward +X, starboard +Z.
+      const toCamera = this.camera.position.subtract(this.aircraft.root.position);
+      const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+      const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+      this.aircraft.setLightState(resolveAircraftLights({
+        simulationTimeSeconds: state.simulationTime,
+        observerAzimuthDegrees: observerAzimuthDegrees(
+          Vector3.Dot(toCamera, bodyForward),
+          Vector3.Dot(toCamera, bodyStarboard),
+        ),
+        altitudeAglMeters: state.altitudeAgl,
+        gear: state.gear ?? 1,
+        landingSwitchOn: false,
+      }));
     }
     this.updateCamera(state);
     this.cameraWorld.set(
