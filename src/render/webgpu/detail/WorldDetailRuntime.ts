@@ -491,9 +491,29 @@ type ResidentCell = InlineResidentCell | WorkerResidentCell;
  * Rendered-share thinning selects THE CANOPY, not a random sample of the
  * forest (perf-debt pass).
  *
- * The ecological field authors ~400 stems/ha of closed forest across every
- * age class — measured mean crown radius 3.40 m, median 3.15 m, p90 1.78 m:
- * mostly saplings, as a real stand is. Thinning that to the law's ~70
+ * The ecological field authors closed forest across every age class —
+ * measured mean crown radius 3.5 m, median 3.3 m, **p10 1.8 m, p90 5.6 m**:
+ * mostly saplings, as a real stand is.
+ *
+ * **The p-value was mislabelled and the label mattered.** This read
+ * "p90 1.78 m" from 2026-08-19 until it was re-measured: a 90th percentile
+ * BELOW the median is arithmetically impossible, so the three numbers never
+ * described one sample. **1.78 was the tenth percentile.** Re-measured
+ * through the shipping generator (`scripts/crown-radius-distribution.mts`,
+ * `generateDetailCell` over 105-419 ha of closed forest): p10 1.80-1.91,
+ * p90 5.53-5.92, mean 3.47-3.71, median 3.21-3.42.
+ *
+ * **Quantiles are density-independent and the ranges above are why.** Crown
+ * radius is a per-tree draw, so sweeping `densityMultiplier` over 1.7x
+ * (160-279 stems/ha) moves p10 by 0.02 m and p90 by 0.26 m. The spread is
+ * fixture, not uncertainty about the distribution.
+ *
+ * **The stems/ha figure is NOT reproduced and is left unstated rather than
+ * repeated.** The original said ~400/ha; this fixture plateaus near 290/ha
+ * and moisture does not move it. That may be drift since August or a
+ * condition not recorded at the time — either way it is the kind of number
+ * that should not be restated without a measurement behind it. The
+ * conclusion below does not rest on it. Thinning that to the law's ~70
  * rendered stems/ha by a UNIFORM key keeps saplings and dominants in equal
  * proportion, and the drawn stand's crown cover comes out at 0.26 against
  * Gate 2C's 0.55 criterion — the criterion was never automated, so this went
