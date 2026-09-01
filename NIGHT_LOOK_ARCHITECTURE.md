@@ -204,24 +204,49 @@ sample-size checked):
 
 - `terrainBandMedianLuma` — the §2.1 anchor, per night shot, gated to its
   rung's range once Jason approves a round.
-- `chromaSaturation` — mean of `(max(rgb)−min(rgb))/max(rgb)` over the
-  terrain band. Today's frames read ≈0 ("black and white"); the gate floor is
-  set from the approved round.
-- `skyBlueDominance` — mean `B − (R+G)/2` over the sky band; positive and
-  bounded (deep blue, not cyan, not black).
-- `lampHueSpread` — among lit-gate pixels, the hue variance; floor asserts
-  "not all white" structurally.
-- Daylight null: all four metrics asserted UNCHANGED on `reference-viewport`
+- `hueDiversity` — among visibly colored terrain-band pixels (relative
+  saturation ≥ 0.15, luma ≥ 0.02), the LUMINANCE FRACTION whose hue sits
+  more than 30° off the frame's luminance-weighted dominant hue. This is the
+  "black and white" gate, and its definition was earned the hard way — see
+  the demonstration record below.
+- `skyBlueDominance` — mean `B − (R+G)/2` over the sky band; a product of
+  blueness AND brightness, which is what "more blue in the sky" means
+  (positive and bounded: deep blue, not cyan, not black).
+- `lampMeanSaturation` — mean relative saturation among lit-gate pixels;
+  floor asserts "not all white" structurally, with the lit-gate's pixel count
+  as the sample-size guard (0 lamp pixels = instrument failure, never a pass).
+- `chromaSaturation` (luminance-weighted) — REPORTED, NOT GATED: it
+  distinguishes tinted-grey from true-grey in diagnosis but cannot gate
+  (see below).
+- Daylight null: all metrics asserted UNCHANGED on `reference-viewport`
   and `winter-noon` — the day frames are the control arm and must stay
   bit-stable through every night change (the scotopic pass-through leg).
 
-**The demonstration before trust (house rule):** the instrument must read the
-REJECTED baseline frames as failures — Jason's own rejection is the red arm.
-Before any gate value is trusted, run the metrics against the pre-probe
-`night-moonlit`/`night` PNGs (on disk in `tests/perf/baseline/`) and confirm:
-saturation ≈ 0 fails the chroma floor, median luma fails the anchor range.
+**The demonstration record (2026-09-01, run against the rejected frames
+before any gate value was trusted — house rule):** two metric designs died
+on the red arm before one survived. (1) Mean relative saturation over
+non-black pixels read **0.2953** on the rejected `night-moonlit` — a PASS of
+its intended floor — because near-black quantization noise ([8,3,1] → sat
+0.875) dominates an unweighted mean. (2) Luminance-weighted saturation read
+**0.2954** — still a pass — because `SCOTOPIC_TINT` is itself ~53% saturated
+blue: the rejected frame is a CYANOTYPE, one hue everywhere, and that is
+what "black and white" means perceptually. (3) `hueDiversity` reads
+**0.0000** on both rejected frames (460,800 colored pixels, every one within
+30° of the dominant 220° blue), **0.2046** on the day null (dominant 110°
+green), **0.0286** on the dusk-glint frame (a golden-hour frame is genuinely
+hue-concentrated — the mesopic rung's floor must respect that). Surviving
+red-arm readings on the rejected frames: median luma 0.0894 (moonlit,
+fails [0.15, 0.30]) / 0.0583 (moonless — MARGINAL against [0.06, 0.14];
+that anchor waits for Jason's reaction), sky blue 0.0017/0.0012 (fail 0.02),
+hue diversity 0.0000/0.0000 (fails 0.15). The lamp metric is vacuous on the
+baselines (they predate the lamp calibration — 0 pixels, which the guard
+must flag); its red reading is the PE's direct measurement of the shipped
+lamps: saturation median **0.020** against the 0.15 floor. Day-null pins:
+median 0.3824, diversity 0.2046, sky blue 0.1467.
+
 An instrument that passes the frames Jason rejected is measuring the wrong
-thing — recalibrate before proceeding.
+thing — recalibrate before proceeding. It happened twice in one hour to
+this document's own §3; the demonstration is not a formality.
 
 ---
 
