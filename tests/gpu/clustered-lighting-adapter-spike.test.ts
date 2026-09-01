@@ -88,8 +88,12 @@ interface StageProfile {
   readonly samplers: string[];
   /** Fragment-stage storage buffers — the project's first arrive with 7-4b. */
   readonly storageBuffers: string[];
-  /** `@location(...)` slots on the fragment input struct. */
+  /** `@location` + fragment `@builtin` — what the DEVICE limit actually counts. */
   readonly interStage: number;
+  /** The `@location` half alone, so the two sessions' numbers are comparable. */
+  readonly locations?: number;
+  /** Which fragment builtins the struct declares, named. */
+  readonly builtins?: readonly string[];
   readonly defines: string;
   /** Did the SHADOW-DEPTH permutation compile? Not the same shader. */
   readonly depthReady?: boolean;
@@ -131,14 +135,42 @@ function profileFragment(source: string, defines: string): StageProfile {
   const storage = [...source.matchAll(/var<storage[^>]*>\s*(\w+)\s*:/gu)].map((m) => m[1]!);
   // Babylon emits the fragment inputs as one struct; each interpolated value
   // takes an @location slot, which is the resource the adapter limits.
+  //
+  // COUNT IT THE WAY THE DEVICE DOES, which is neither of the two ways this
+  // spike counted before. `@location` alone UNDER-counts. Adding every
+  // `@builtin` OVER-counts. The adapter settled it by refusing a pipeline and
+  // saying exactly what it had added up, verbatim:
+  //
+  //     Total fragment input variables count
+  //     (17 = 16 (user-defined) + 1 (front_facing)) exceeds the maximum (16)
+  //
+  // So it is `@location` plus `front_facing`, and `@builtin(position)` is NOT
+  // counted. That resolves the ladder experiment this file was going to run —
+  // a real refusal answered it, and no synthetic ladder is needed.
+  //
+  // CONSEQUENCE FOR THIS FILE'S OWN NUMBERS: the terrain arm previously read
+  // 15 -> 16 on the all-builtins count, i.e. apparently AT the limit with the
+  // container attached. On the device's accounting it is 14 -> 15, so terrain
+  // keeps ONE free slot and the container fits. The detail material is the one
+  // with none (see `foliage-material-compile`), which is why production breaks
+  // there and not here. Report the halves separately so the arithmetic stays
+  // checkable rather than arbitrated.
   const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\}/u.exec(source);
-  const interStage = struct ? [...struct[1]!.matchAll(/@location\(/gu)].length : -1;
+  const locations = struct ? [...struct[1]!.matchAll(/@location\(/gu)].length : -1;
+  const builtins = struct
+    ? [...struct[1]!.matchAll(/@builtin\((\w+)\)/gu)].map((m) => m[1]!)
+    : [];
+  const interStage = locations < 0
+    ? -1
+    : locations + (builtins.includes("front_facing") ? 1 : 0);
   return {
     sampledTextures: [...new Set(sampled)].sort(),
     allTextures: [...textures].sort(),
     samplers: [...samplers].sort(),
     storageBuffers: [...new Set(storage)].sort(),
     interStage,
+    locations,
+    builtins,
     defines,
   };
 }
@@ -320,6 +352,8 @@ describe("7-0-d: clustered lighting adapter spike", () => {
       samplers: [base.samplers.length, clustered.samplers.length],
       fragmentStorageBuffers: [base.storageBuffers.length, clustered.storageBuffers.length],
       interStage: [base.interStage, clustered.interStage],
+      locationsOnly: [base.locations, clustered.locations],
+      builtins: [base.builtins, clustered.builtins],
       clusteredSlices: [clustlightSlices(base.defines), clustlightSlices(clustered.defines)],
       newTextures: clustered.allTextures.filter((n) => !base.allTextures.includes(n)),
       newStorage: clustered.storageBuffers.filter((n) => !base.storageBuffers.includes(n)),

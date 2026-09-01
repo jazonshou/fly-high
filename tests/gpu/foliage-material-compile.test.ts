@@ -517,6 +517,62 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       expect(samplers.length).toBeGreaterThan(3);
       expect(textures.length).toBeGreaterThan(3);
 
+      // 7-4b: THE INTER-STAGE BUDGET, which is the tight one and had nothing
+      // watching it. This material sits at EXACTLY the device limit with zero
+      // slots free, so the next varying anyone adds does not degrade — it
+      // fails pipeline creation and the mesh stops drawing entirely.
+      //
+      // COUNT IT THE WAY THE DEVICE DOES. The adapter's own message is
+      // "Total fragment input variables count (17 = 16 (user-defined) + 1
+      // (front_facing)) exceeds the maximum (16)" — so `@location` plus
+      // `front_facing`, and `@builtin(position)` is NOT counted. Counting all
+      // builtins over-reports by one and makes a material with a free slot
+      // look full; counting locations alone under-reports and makes a full one
+      // look free. Both mistakes were made before this line existed.
+      //
+      // MEASURED, both arms, same tree, one flag: attaching a
+      // `ClusteredLightContainer` adds exactly +1 `@location` to every
+      // permutation of this material, taking the peak from 16/16 to 17/16.
+      // The container arm fails with the message quoted above and the crowns,
+      // trunks and impostors all stop rasterizing. **So clustered lighting
+      // cannot be enabled on the detail material until a varying is freed** —
+      // it is a budget wall, not a wiring bug, and no amount of plugin
+      // reordering moves it.
+      // TEMP-DUMP
+      {
+        const widest = [...shaderModules]
+          .map((r) => /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(r.code))
+          .filter((m): m is RegExpExecArray => m !== null)
+          .sort((a, b) => b[1]!.length - a[1]!.length)[0];
+        // eslint-disable-next-line no-console
+        console.log("[varyings]\n" + (widest?.[1] ?? "none"));
+      }
+      // END-TEMP-DUMP
+      const peakFragmentInputs = Math.max(
+        ...shaderModules.map((record) => {
+          const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(record.code);
+          if (!struct) return 0;
+          const locations = [...struct[1]!.matchAll(/@location\(/gu)].length;
+          const frontFacing = /@builtin\(front_facing\)/u.test(struct[1]!) ? 1 : 0;
+          return locations + frontFacing;
+        }),
+      );
+      expect(
+        peakFragmentInputs,
+        `the detail material's peak fragment-input count is ${peakFragmentInputs}, over the `
+        + "device maximum of 16. The mesh will not draw at all — this is not a soft regression.",
+      ).toBeLessThanOrEqual(16);
+      // Pinned EXACTLY, in both directions, because both are news. Going UP is
+      // the wall above. Going DOWN means a slot was freed, which is the one
+      // thing that would let the clustered container onto this material, and
+      // it must not happen silently.
+      expect(
+        peakFragmentInputs,
+        "the detail material's fragment-input count moved. UP means the material no longer "
+        + "compiles on a 16-slot device; DOWN means a varying was freed and clustered lighting "
+        + "may now fit, which 7-4b is waiting for. Either way, re-derive before repinning.",
+      ).toBe(16);
+
       // Non-vacuity 2: the instance must actually RASTERIZE. A tree that
       // compiles cleanly but draws no pixels (degenerate decode, zero scale,
       // full transparency) costs full GPU time while looking like bare
