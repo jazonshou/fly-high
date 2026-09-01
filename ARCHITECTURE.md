@@ -248,6 +248,52 @@ sources** in the Node project instead (assertion 51b is the standing example).
 
 ---
 
+## 7. A test whose premise can drift must assert that premise (7-13)
+
+**When a test is only meaningful because some condition holds, and that
+condition could change without anyone touching the test, assert the condition
+as a separate named assertion.** Word its failure to say *the premise died*,
+not *the feature broke* — the two demand completely different responses and a
+generic failure message sends the reader to the wrong one.
+
+The failure it prevents is a test that **stays green while ceasing to test
+anything**. This has now happened four times in one phase, in four unrelated
+subsystems:
+
+- the winding guard whose hand-written roster omitted `buildBladeRibbon`, so
+  the live blades were in no test at all;
+- `TERRAIN_SAMPLED_BINDINGS` hand-maintained against a shader nobody compared
+  it to, stale in **both** directions;
+- `foliage-material-compile` pinning an inter-stage peak of 16 while
+  production compiled 15 — the instant `forceIrradianceInFragment`'s default
+  flipped, the rig measured a permutation that no longer shipped;
+- the windsock's crosswind validation seed, where runway heading and
+  prevailing wind are the same hash expression called with *different* hashes,
+  so the 85.9° separation at `hangar-a` is **seed-dependent, not structural**.
+  A later change to seeding or the region catalogue turns it into a 5° seed,
+  and the test passes while proving nothing.
+
+Only the last was caught before shipping, and only because it was written
+before the test rather than after the test failed. **That is the cheap moment;
+there is no other one.**
+
+Derive the roster from whatever enumerates the parts rather than listing it by
+hand, and anchor on the compiled artifact rather than on a model of it — a
+guard that *models* the thing stays green after the thing changes.
+
+**A worked trap of exactly this shape.** `createWorld` takes its seed
+**positionally** (`createWorld(seed, options)`). The object form compiles,
+runs, and collapses every distinct seed to one constant world:
+
+    createWorld({ seed: "alpha" }).seedHash  ==  905055214
+    createWorld({ seed: "beta"  }).seedHash  ==  905055214
+
+A seed-varying test written that way measures the same world N times and
+reports agreement. It is silent, and it lands hardest on criteria phrased
+*"distinct under the same seed"*.
+
+---
+
 ## Decision log
 
 | Item | Decision | Detail |
