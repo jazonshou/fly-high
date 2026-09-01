@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Scene } from "@babylonjs/core/scene";
 import {
+  createAirfieldMaterials,
   AIRFIELD_ASPECT_V_START,
   AIRFIELD_CONCRETE_EDGE,
   AIRFIELD_METAL_EDGE,
@@ -126,6 +129,26 @@ describe("7-11 airfield material synthesis", () => {
     }
     expect(bottomRoughness).toBeGreaterThan(topRoughness * 1.1);
     expect(topMetal).toBeGreaterThan(bottomMetal * 1.1);
+  });
+
+  it("reads roughness from GREEN, never from the all-255 alpha channel", () => {
+    // The defect this pins: Babylon defaults useRoughnessFromMetallicTextureAlpha
+    // to TRUE and the alpha flag beats the green flag, so an ORM with A=255
+    // silently renders everything at roughness 1.0 — the first hangars
+    // shipped as flat unlit mush this way. NullEngine is enough: the flag is
+    // material state, not rasterization.
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const set = createAirfieldMaterials(scene, 0x7d11);
+    for (const material of [set.metal, set.concrete]) {
+      expect(material.useRoughnessFromMetallicTextureAlpha).toBe(false);
+      expect(material.useRoughnessFromMetallicTextureGreen).toBe(true);
+      expect(material.useMetallnessFromMetallicTextureBlue).toBe(true);
+      expect(material.useAmbientOcclusionFromMetallicTextureRed).toBe(true);
+    }
+    set.dispose();
+    scene.dispose();
+    engine.dispose();
   });
 
   it("exports the tiling periods geometry must read instead of retyping", () => {

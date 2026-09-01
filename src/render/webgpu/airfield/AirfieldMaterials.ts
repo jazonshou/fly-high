@@ -581,6 +581,16 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
     material.bumpTexture = normal;
     material.metallicTexture = orm;
     material.useAmbientOcclusionFromMetallicTextureRed = true;
+    // Babylon's DEFAULT is useRoughnessFromMetallicTextureAlpha = true, and
+    // this ORM's alpha is 255 everywhere — omitting the explicit false made
+    // every textured surface roughness-1.0 (the alpha flag WINS over the
+    // green flag), which rendered the first hangars as flat, blue-shifted,
+    // IBL-only mush: roof and wall 0.3% apart in a frame where tree
+    // top-vs-under read 25% apart, and darker than the asphalt. The
+    // aircraft's proven wiring (builders.ts paintMaterial) sets this false
+    // explicitly for exactly this reason; now so does this one, pinned by
+    // test.
+    material.useRoughnessFromMetallicTextureAlpha = false;
     material.useRoughnessFromMetallicTextureGreen = true;
     material.useMetallnessFromMetallicTextureBlue = true;
     material.roughness = 1;
