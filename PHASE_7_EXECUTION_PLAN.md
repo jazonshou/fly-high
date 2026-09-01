@@ -427,6 +427,25 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   **Tier 2 has 0.05 ms of MODELLED slack** (13.65 against a 13.7 ms target — summed from the declared table, never measured; §2.3(g)) and assertion 20 is a
   hard `toBeLessThanOrEqual` — so the row must be funded by cutting an existing row in the
   same commit.
+  **AMENDED 2026-09-01 (D-14): add the row, fund it by rebalancing INSIDE the model, and
+  do not cut shipped fidelity for it.** The mechanical obligation stands — assertion 20 is
+  a **model-internal consistency check** and a lighting row that breaks the declared sum
+  should fail the build. **What is void is the reasoning on top of it:** that 0.05 ms is
+  real headroom and that cutting a row is a real trade. Measured tier 2 is **23.7–60.4 ms**
+  against the model's 13.65, an under-prediction of **1.74–4.42×**, so the model does not
+  describe the machine. Cutting a shipped feature to free 0.05 ms inside it **spends
+  something real and buys nothing — and the loss is permanent while the gain was never
+  available.**
+  **The line a future reader needs: any cut booked here is bookkeeping until the model is
+  reconciled.** Without it, someone finds a fidelity reduction in the log in a month,
+  assumes it bought frame time, and defends it.
+  **Tiers 2 and 3 are recorded as UNFUNDED pending `SWE III`'s cliff work** — the same
+  treatment bloom now carries in 7-5, so the two are consistent.
+  *This is the Q2 mistake in a different currency, by the opposite mechanism.* There the
+  number was **accurate and inert** — a faithful description nothing consulted. Here it is
+  **read and enforced and does not describe the machine.** Same outcome from opposite
+  causes: a real cost paid against a figure that cannot deliver the benefit. **A figure
+  being enforced is not evidence that it describes anything.**
   **Price against measured admission, not the declared table.** `c41f52a` pins which
   `ComputeBudget` reservations are no-ops: the reservation pass admits whole-or-nothing
   while `spentHere + costMs <= ceilingMs`, so it protects a client **only if one dispatch
@@ -1299,6 +1318,29 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   to a figure **it had given me itself** earlier in the evening. Verified here against
   `renderedDensity.ts:390-393` rather than accepted — which is the same discipline, applied
   to the message that was teaching it.
+
+- **D-14 (2026-09-01, 7-0-b's funding mechanism is void; the obligation is not):** the
+  tier-2 sweep measured **23.7–60.4 ms** against the declared table's **13.65**, an
+  under-prediction of **1.74–4.42×**. 7-0-b required a new `post`/`lighting` row to be
+  funded by cutting an existing row in the same commit, on the premise that tier 2's
+  0.05 ms of slack was headroom worth trading for.
+  *What survives:* **assertion 20 is a model-internal consistency check**, so the declared
+  rows must still sum to ≤ target and a lighting row that breaks the sum must still fail
+  the build. Adding a row is still work.
+  *What is void:* the premise that 0.05 ms is real headroom and that cutting a row is a
+  real trade. **Fund by rebalancing inside the model; do not cut shipped fidelity.** A cut
+  made here spends something real to buy something that was never available, and the loss
+  outlives the model that motivated it. **Any cut booked here is bookkeeping until the model
+  is reconciled** — recorded so that a fidelity reduction found in the log a month from now
+  is not mistaken for a purchase and defended.
+  *Tiers 2 and 3 are unfunded pending `SWE III`'s cliff work*, matching bloom's treatment
+  in 7-5.
+  *The pattern, from the `Principle Engineer`:* **this is D-10's mistake in a different
+  currency and by the opposite mechanism.** In Q2 the number was **accurate and inert** — a
+  faithful description that no allocator consulted. Here it is **read and enforced and does
+  not describe the machine.** Same outcome — a real cost paid against a figure that cannot
+  deliver the benefit — from opposite causes. **A figure being enforced is not evidence that
+  it describes anything**, which is the half of D-10 that D-10 did not say.
 
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*
