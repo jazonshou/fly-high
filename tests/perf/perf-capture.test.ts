@@ -1367,7 +1367,22 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // Gate 0-a: drawCalls is a host-independent counter (byte-identical
       // across the pinning runs), so it stays hard on every host, outside
       // the nullable delivery row.
-      if (definition.drawCallCeiling !== undefined) {
+      //
+      // HOST-independent is not TIER-independent, and the ceiling is pinned
+      // from tier 1 at 1280x720. Tier 2 submits roughly ten times tier 1's
+      // vegetation draws BY DESIGN (507.6 against 53.3 modelled), and the
+      // measured tier-3 rows ran 197-533 draws against ceilings of 122-161.
+      // Applied under a sweep, this ceiling fails every row of every higher
+      // tier for being that tier -- a false failure that reads exactly like a
+      // real regression, on the axis the sweep exists to vary.
+      //
+      // The original comment is not wrong; it reasons about the host axis and
+      // is silent about the tier axis. That silence is the defect: a scope
+      // claim that names one axis reads as though it had considered them all.
+      // Same fix and same reason as `ceilings` above -- a sweep row is not a
+      // tier-1 regression, and `deliveryFailuresAgainst` still holds every row
+      // to its own tier's contract.
+      if (!IS_SWEEP && definition.drawCallCeiling !== undefined) {
         expect(
           shot.drawCalls,
           `${shot.name}: more draw calls than the committed ceiling`,
@@ -1378,8 +1393,26 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // ceiling while the inventory reads 489 MiB at the binding shot.
       // Hard on every host: the settle loop guarantees pendingDetailWork=0,
       // so allocations converge identically.
+      //
+      // `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` is 495, pinned from tier 1
+      // where real headroom is 2.7 MiB. Higher tiers legitimately allocate far
+      // more -- `MEMORY_CEILING_MIB` is 260/480/700/1000 -- and the measured
+      // tier-3 rows read 650.5-661.7 MiB. Under a sweep this ceiling therefore
+      // fails every row above tier 1 for being above tier 1.
+      //
+      // The ceiling is NOT swapped for the tier's own: that constant gates the
+      // ESTIMATE, this one gates the Babylon INVENTORY, and the docblock on the
+      // constant says explicitly that the two measure different quantities and
+      // must never be compared. Substituting one for the other would be a
+      // fabricated threshold wearing a real one's name. So the sweep keeps the
+      // plausibility check -- a non-finite or non-positive reading is still a
+      // broken instrument at any tier -- and drops only the tier-1 regression
+      // pin, which a sweep row is not.
       expect(
-        inventoriedMemoryFailures(shot.inventoriedGpuMemoryMiB),
+        inventoriedMemoryFailures(
+          shot.inventoriedGpuMemoryMiB,
+          IS_SWEEP ? Number.POSITIVE_INFINITY : undefined,
+        ),
         `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
       ).toEqual([]);
       // 4-10 (assertion 84b): page residency under streaming load. The
