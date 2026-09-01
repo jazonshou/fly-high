@@ -241,6 +241,118 @@ the fixture colours and the chroma-retention floor, so a retention retune
 below ~0.65 must re-check the separation test, which pins the property
 rather than the values.
 
+### 2.6 Twilight regime — the dusk inversion and the missing arch
+
+**Jason's round-3 rejection, verbatim (2026-09-01):** *"the trees are way
+too light and the mountains are light two [sic] — which contrasts strangely
+with the super dark backdrop."* The frame is `optc2-round/dusk-mesopic.png`
+(tree `f9c7bcd`, which contains the landed dip).
+
+**Read this first: the dip was live in the rejected frame and it worked.**
+Canonical `terrainBandMedianLuma` (night-look-metrics.mjs) reads **0.2485**
+post-dip against the **0.347** pre-dip figure — the §2.1 dimming did its
+job, and Jason rejected the result anyway. So do not reach for "dip
+harder": a deeper dip multiplies EXPOSURE, which dims sky and ground by the
+same factor and **cannot change their order**. The complaint is the ORDER.
+
+*Instrument provenance, because two instruments already disagreed here:* a
+quick strip-band probe (skyground.mjs, horizontal sixths of the frame) read
+mid-frame trees at 0.350 on the same PNG — numerically identical to the
+pre-dip 0.347 by coincidence, which briefly looked like "the dip never
+applied". The canonical metric samples a different population (the §3
+terrain band, which excludes the near forest that fills the lower half of
+this vantage). Every number in this section names its instrument; the
+canonical metric is authoritative for anchors, and the strip bands are used
+ONLY for the sky/ground relation, where the canonical instrument has no
+sky reading.
+
+**The measured inversion (strip bands, rejected frame):** upper sky
+**0.080**, lower sky 0.088, far terrain 0.089, mid terrain (forest)
+**0.350** — the ground outglows the sky ~4×. Reality at −6° civil dusk is
+the reverse by one to two orders: zenith ~2–10 cd/m² against unlit ground
+~0.2 cd/m². A lit foreground under a darker sky is the grammar of a
+COMPOSITE, which is exactly Jason's *"contrasts strangely"*.
+
+**And the backdrop is not merely dark — it is colourless.**
+`skyBlueDominance` on the rejected frame is **−0.0091** (canonical metric):
+the twilight sky has NO blue at all (mean upper-sky RGB 21,20,22 — neutral;
+strip-band instrument). This is a MISSING MODEL, not a mis-tuned one:
+
+- The day scatter model's terms gate on `max(sunY, 0)` — collapsed.
+- The night-sky model (moon-scatter + stars) is at `nightStrength`
+  `(−sunY − 0.03)/0.25` = **0.316** — one third strength.
+- Nothing models the **twilight arch** — the deep-blue upper dome that
+  ozone (Chappuis-band) absorption produces from sunlight crossing the
+  upper atmosphere after sunset. The dome falls into a trough between two
+  models and renders neutral grey-black. There is no term to turn up.
+
+**Why the ground stays lit while the dome dies — the floor regime.**
+`ambientIntensity = 0.05 × max(skylightScale, NIGHT_AMBIENT_FLOOR_SCALE)`.
+At dusk-mesopic, `skylightScale` = 2.672 lux / reference ≈ **3×10⁻⁵**; the
+floor is **0.2**. Two facts scale this from nudge to regime:
+
+1. The floor is **10× the physical skylight scale at sunset** (≈0.021), so
+   the `max()` snaps to 0.2 while the sun is still up (~10°) and ambient is
+   then CONSTANT from late afternoon through midnight. The only twilight
+   decline the ground sees is the dip's ×0.55 — while the real sky falls
+   three orders of magnitude.
+2. The floor's stated reasons (its 7-2 docblock) are **night constraints**:
+   the fp16 beauty buffer cannot carry a physical 10⁻⁹ ambient, and the rod
+   pathway needs non-zero input. Both bind at FULL NIGHT — and full night
+   carries Jason's approved frame. Neither binds at dusk, where the moon
+   and the (missing) arch supply light and 10⁻³-scale values are fp16-fine.
+   Twilight inherits a night constant by accident of `max()`.
+
+**The fix is one architecture item, not two tunings** — and it is also
+Jason's other standing ask (*"incorporate more blue (dark blue) into the
+night sky to light up surroundings a bit more"*). Sky dome and skylight
+must become the same quantity:
+
+- **(a) A twilight-arch term in the dome** (AerialPerspective sky WGSL): a
+  deep-blue zenith with the warm horizon residual left to the existing
+  scatter remnant. Chromaticity from the palette's own art-directed
+  twilight rows (the −12°/0° zenith anchors are already the right blue —
+  reuse them so dome and light rig finally share a source). Magnitude keyed
+  to sun elevation in the SAME window family as the dip: zero above sunset
+  (daylight bit-identical by construction), peak through the hold band,
+  **zero at and below the −0.26 release** so the approved night frames are
+  untouched by shape, exactly as the dip pinned them.
+- **(b) Ground ambient rides the dome down.** Replace the constant floor
+  with a windowed one: `floor(sine) = 0.2 × smooth01` over the same
+  sunset→release window, so the floor is reached EXACTLY at the arch
+  release (−0.26) and `max(skylightScale, floor)` ramps through twilight
+  instead of flat-lining at sunset. At and below the release the expression
+  is the shipped `max(…, 0.2)` — **the approved night frames and the
+  floor's fp16/rod rationale are preserved by construction, not by
+  re-measurement**. At dusk-mesopic the floor becomes ≈0.038: ground falls
+  ~5×, sky rises via (a), and the order flips from both sides.
+- **(c) Night ambient takes the dome's chromaticity.** Below sunset, blend
+  `ambient.diffuse` from the palette zenith toward the dome's own mean
+  colour (the sky probe's SH L0 — already computed, no new source) over
+  the same window. This is the "light up surroundings with the blue"
+  half of Jason's ask: the deepened moon-sky (31e13fa) starts actually
+  tinting what it claims to light. Above sunset the blend is zero —
+  daylight untouched.
+
+**Acceptance is a RELATION, not a brightness target:** at `dusk-mesopic`,
+sky-band median MUST exceed terrain-band median (new §3 metric
+`skyGroundRatio`, floor ≥ 1.5 provisional, real-world ~10×; strip-band sky
+numerator over canonical terrain-band denominator, both named in the
+metric's output). A relation cannot be satisfied by darkening everything,
+and it survives any later exposure change — it is also literally what Jason
+described. Endpoint pins: `night-moonlit` terrain median stays in the §2.1
+anchor and its `skyBlueDominance` may only move by (c)'s deliberate,
+metric'd amount; golden hour (+0.111) is above every window — untouched.
+
+**Risks named:** (1) clouds read the snapshot `ambientColor`, which lags
+the arch — twilight clouds may sit warm against the new blue for a frame
+family; follow-up, not blocking. (2) A brighter twilight dome washes early
+stars — correct behaviour (stars belong after the blue hour), but the §3
+star metrics run at night rungs only, so no gate moves. (3) (c) touches
+every material's ambient below sunset; the day-identity guard is the
+window's zero above sunset, and the §3 daylight bit-identity assertion
+stays the backstop.
+
 ---
 
 ## 3. The acceptance instrument — and its own red demonstration
