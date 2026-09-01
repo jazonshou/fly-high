@@ -740,7 +740,69 @@ measured before being implemented and turned out to be worse than the gap it
 closed.** The measurement cost minutes; the guard would have cost a permanently
 weakened boundary test.
 
-**Four members, four distinct ways an instrument can be wrong:** a decorative
+**A fifth general form, and the one that gave two correct engineers opposite
+conclusions from the same two images:** *a summary statistic over a bimodal
+population measures the mixture's COMPOSITION as much as the quantity being
+summarised.*
+
+`canopy-1200ft` is not one population of pixels. It is **lit ground plus dark
+crowns**, and the mixing ratio varies row by row with canopy closure. When the
+inverted-winding fix (`bbf3d27`) brightened crown pixels ~6-9x everywhere, the
+same two PNGs gave opposite verdicts depending only on the statistic chosen:
+
+| statistic | lane | non-lane | verdict |
+|---|---|---|---|
+| sRGB mean | x1.28 | x1.25 | uniform |
+| linear mean | x1.40 | x1.42 | uniform |
+| sRGB median | x1.54 | x1.04 | selective |
+| linear median | x2.29 | x1.09 | selective |
+| darkest decile | x1.81 | x7.27 | lane moved LESS |
+
+Where crowns are the dark **tail** (open rows) the darkest decile jumps 6-9x and
+the median barely moves; where crowns are the **bulk** (closed canopy) the median
+jumps x2.3 while the tail -- genuine occluded understory -- stays put. **The
+region under test differed from its controls precisely in mixing ratio, so a
+mean-based comparison partially cancelled the effect it was testing.**
+
+**The rule:** before comparing regions of a frame, ask whether the pixels are one
+population or two. If two, either mask to one population and normalise each
+region against **its own** counterpart, or report a median and a tail quantile
+beside the mean and **name the statistic the conclusion rests on**. When two
+measurements of the same images disagree, **reconcile the statistics before
+re-measuring or re-arguing** -- the disagreement is usually information about the
+scene rather than an error by either party.
+
+The normalise-against-its-own-counterpart half is not hypothetical: the far band
+read 100.8 against the near band's 95.5, which looks like a 5% LOD-band
+disagreement. Measured against **the ground each band stands on** it is 1.064 vs
+1.044 -- the same relationship, and the seam genuinely closed. **The raw
+comparison invents a difference that the normalised one dissolves.**
+
+**Corollary that inverts the obvious reading:** removing this defect took
+Pearson r(closure, luminance) from **-0.72 to -0.89** while the effect size
+collapsed. **A correlation strengthening as a defect is removed is what a
+discontinuity's removal looks like** -- the relation became clean and monotone.
+Read as "the dependence got worse", it would have reopened a closed defect.
+
+**And the arithmetic gap this left, closed rather than filed.** It looked as
+though the numbers could not work: at closure 0.94-1.00 the whole-pixel mean is
+sRGB 75, and if crowns are 95.5 covering ~94.5% of the pixel, nothing
+non-negative pulls the mixture that low. The resolution is that **`canopyClosure`
+is NOT screen-space crown coverage.** At closure 0.945 and 520 m,
+`canopyCrownAreaRatio` is **2.900** -- a ratio, not a fraction -- and
+`canopyHandoff` puts **DRAWN crown cover at 0.0663**, with 0.8787 of the canopy
+appearance painted by the TERRAIN instead. So the non-crown 93.4% need only
+average 73.5 to produce 75: canopy-shaded ground, not near-black. Nothing is
+wrong.
+**That also answers the sibling question of why lit crowns over 0.09-albedo
+litter measure only 4-6% brighter than "ground".** The masked comparison puts
+drawn crowns (95.5) against all non-vegetation pixels (91.5) -- but those pixels
+are terrain *already painted with canopy appearance* by the deficit term. It was
+never crown-against-litter; it was crown-against-canopy-painted-ground. **Two
+questions, one unit confusion, and both dissolve once the drawn/painted split is
+read off `canopyHandoff` rather than assumed from the closure number.**
+
+**Five members, five distinct ways an instrument can be wrong:** a decorative
 list models an artifact and *drifts* from it; admission-gated compute is
 *correct and never runs*; a memory gate was *uncharacterised*, its variance
 assumed rather than measured in both directions; and a source guard *matches
