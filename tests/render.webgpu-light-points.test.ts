@@ -1,0 +1,140 @@
+import { describe, expect, it } from "vitest";
+import { CreateSphereVertexData } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
+import {
+  buildLightPointGeometry,
+  iesProfileCoordinate,
+  LIGHT_POINT_PSF_RADIUS_PIXELS,
+  lightPointAtmosphericTransmission,
+  lightPointFluxNormaliser,
+  lightPointRadiusPixels,
+  type LightPointFixture,
+} from "../src/render/webgpu/lighting/LightPoints";
+import {
+  extinguishedMagnitude,
+  relativeAirMass,
+} from "../src/render/webgpu/atmosphere/StarCatalogue";
+
+const FIXTURES: LightPointFixture[] = [
+  { position: [0, 1, 0], aim: [0, 1, 0], intensity: 4, profileRow: 0, radiusMeters: 0.1, color: [1, 1, 1] },
+  { position: [10, 1, 5], aim: [0, 0, 1], intensity: 2, profileRow: 1, radiusMeters: 0.2, color: [1, 0.6, 0.2] },
+  { position: [-8, 2, 3], aim: [1, 0, 0], intensity: 9, profileRow: 0, radiusMeters: 0.05, color: [0.2, 1, 0.3] },
+];
+
+describe("7-5 light points", () => {
+  it("extinguishes exactly as the star path does at matched elevations", () => {
+    // `7-5`'s pin, satisfied by CONSTRUCTION: this module consumes
+    // `relativeAirMass` and the star path's coefficient rather than restating
+    // either, so agreement is structural, not tuned.
+    //
+    // "The star path" is ambiguous by one clamp, which this test pins rather
+    // than papers over. `StarField`'s WGSL clamps air mass to [1, 40];
+    // `StarCatalogue`'s `extinguishedMagnitude` does not. Kasten-Young returns
+    // 0.9997 at the zenith rather than exactly 1, so the two halves of the star
+    // model disagree ABOVE 88.6 degrees. This module follows the WGSL, because
+    // its own shader must agree with its own TS before either agrees with
+    // anything else.
+    const starClamped = (elevation: number): number =>
+      10 ** (-0.4 * 0.2 * Math.min(Math.max(relativeAirMass(elevation), 1), 40));
+    for (let elevation = 0; elevation <= 88; elevation += 1) {
+      expect(
+        lightPointAtmosphericTransmission(elevation),
+        `elevation ${elevation} deg`,
+      ).toBeCloseTo(10 ** (-0.4 * extinguishedMagnitude(0, elevation)), 12);
+    }
+    for (let elevation = 0; elevation <= 90; elevation += 0.5) {
+      expect(lightPointAtmosphericTransmission(elevation)).toBeCloseTo(starClamped(elevation), 12);
+    }
+    // The divergence is bounded and negligible, and pinned so it cannot grow.
+    const worst = Math.max(
+      ...[88.6, 89, 89.5, 90].map((elevation) => Math.abs(
+        lightPointAtmosphericTransmission(elevation)
+        / 10 ** (-0.4 * extinguishedMagnitude(0, elevation)) - 1,
+      )),
+    );
+    expect(worst, "TS/WGSL air-mass clamp divergence above 88.6 deg").toBeLessThan(1e-4);
+    expect(relativeAirMass(90), "Kasten-Young is below 1 at the zenith").toBeLessThan(1);
+
+    // Non-vacuity: agreeing means nothing if the quantity does not vary.
+    expect(lightPointAtmosphericTransmission(90))
+      .toBeGreaterThan(lightPointAtmosphericTransmission(0) * 1.5);
+    expect(relativeAirMass(0)).toBeGreaterThan(30);
+  });
+
+  it("conserves flux exactly across the near->far transition", () => {
+    // The pop this prevents: cross-fading a glow into a disc changes total
+    // flux as a light approaches. Here peak * area is invariant, so the light
+    // SPREADS rather than brightening.
+    for (const projected of [0, 0.5, 1.7, 2, 8, 40, 400]) {
+      const radius = lightPointRadiusPixels(projected);
+      const flux = lightPointFluxNormaliser(radius) * radius * radius;
+      expect(flux, `projected ${projected}px`).toBeCloseTo(1, 12);
+    }
+  });
+
+  it("never renders below the PSF, and is continuous through the crossover", () => {
+    expect(lightPointRadiusPixels(0)).toBe(LIGHT_POINT_PSF_RADIUS_PIXELS);
+    const below = lightPointRadiusPixels(LIGHT_POINT_PSF_RADIUS_PIXELS - 1e-6);
+    const above = lightPointRadiusPixels(LIGHT_POINT_PSF_RADIUS_PIXELS + 1e-6);
+    expect(Math.abs(above - below)).toBeLessThan(1e-5);
+    let previous = 0;
+    for (let projected = 0; projected < 20; projected += 0.25) {
+      const radius = lightPointRadiusPixels(projected);
+      expect(radius).toBeGreaterThanOrEqual(previous);
+      previous = radius;
+    }
+  });
+
+  it("maps the IES polar angle to [0,1] with the axis at zero", () => {
+    expect(iesProfileCoordinate([0, 1, 0], [0, 1, 0])).toBeCloseTo(0, 12);
+    expect(iesProfileCoordinate([0, 1, 0], [1, 0, 0])).toBeCloseTo(0.5, 12);
+    expect(iesProfileCoordinate([0, 1, 0], [0, -1, 0])).toBeCloseTo(1, 12);
+  });
+
+  it("emits one draw's worth of geometry and winds it Babylon's way", () => {
+    const g = buildLightPointGeometry(FIXTURES);
+    // ONE instanced draw is the design constraint (night draw ceiling 160), so
+    // the geometry must be a single index buffer over every fixture.
+    expect(g.indices.length).toBe(FIXTURES.length * 6);
+    expect(g.positions.length).toBe(FIXTURES.length * 4 * 3);
+    expect(g.params.length).toBe(FIXTURES.length * 4 * 4);
+
+    const agreement = (
+      positions: ArrayLike<number>, normals: ArrayLike<number>, indices: ArrayLike<number>,
+    ): number => {
+      let sum = 0; let n = 0;
+      for (let t = 0; t * 3 + 2 < indices.length; t += 1) {
+        const ia = indices[t * 3]!, ib = indices[t * 3 + 1]!, ic = indices[t * 3 + 2]!;
+        const ax = positions[ia * 3]!, ay = positions[ia * 3 + 1]!, az = positions[ia * 3 + 2]!;
+        const ux = positions[ib * 3]! - ax, uy = positions[ib * 3 + 1]! - ay, uz = positions[ib * 3 + 2]! - az;
+        const vx = positions[ic * 3]! - ax, vy = positions[ic * 3 + 1]! - ay, vz = positions[ic * 3 + 2]! - az;
+        const gx = uy * vz - uz * vy, gy = uz * vx - ux * vz, gz = ux * vy - uy * vx;
+        const gl = Math.hypot(gx, gy, gz);
+        if (!(gl > 1e-12)) continue;
+        const nx = (normals[ia * 3]! + normals[ib * 3]! + normals[ic * 3]!) / 3;
+        const ny = (normals[ia * 3 + 1]! + normals[ib * 3 + 1]! + normals[ic * 3 + 1]!) / 3;
+        const nz = (normals[ia * 3 + 2]! + normals[ib * 3 + 2]! + normals[ic * 3 + 2]!) / 3;
+        const nl = Math.hypot(nx, ny, nz);
+        if (!(nl > 1e-9)) continue;
+        sum += (gx * nx / nl + gy * ny / nl + gz * nz / nl) / gl; n += 1;
+      }
+      return sum / Math.max(n, 1);
+    };
+    const sphere = CreateSphereVertexData({ diameter: 2, segments: 16 }) as unknown as
+      { positions: number[]; normals: number[]; indices: number[] };
+    const convention = Math.sign(agreement(sphere.positions, sphere.normals, sphere.indices));
+    expect(convention).toBe(-1);
+
+    // The billboard quads are flat in the XY plane of their corner basis; give
+    // every vertex the +Z normal the quad faces and check the winding against
+    // Babylon's convention rather than assuming it.
+    const flat = new Float32Array(g.positions.length);
+    for (let v = 0; v * 3 + 2 < flat.length; v += 1) flat[v * 3 + 2] = 1;
+    const quadPositions = new Float32Array(g.positions.length);
+    for (let v = 0; v * 3 + 2 < quadPositions.length; v += 1) {
+      quadPositions[v * 3] = g.corners[v * 2]!;
+      quadPositions[v * 3 + 1] = g.corners[v * 2 + 1]!;
+      quadPositions[v * 3 + 2] = 0;
+    }
+    expect(Math.sign(agreement(quadPositions, flat, g.indices))).toBe(convention);
+  });
+});

@@ -1104,7 +1104,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/lighting/LightPoints.ts"],
     consumers: ["lighting"],
     ownedSymbols: ["LightPointSystem", "LIGHT_POINT_WGSL"],
-    plannedBy: "7-5",
     notes:
       "ONE instanced draw -- a design constraint, not an aspiration: the night "
       + "shot's draw ceiling is 160. Extinction is applied by hand through "
