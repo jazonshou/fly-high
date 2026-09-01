@@ -841,6 +841,118 @@ export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
   }),
 ]);
 
+/**
+ * **Measured draw-call deltas that have not yet become raise entries.**
+ *
+ * `DRAW_CALL_RAISES` cannot be written one owner at a time: its guard asserts
+ * `committed - previous === declaredRaiseFor(name)` exactly, so a raise cannot
+ * land without the ceilings moving in the same change, and moving the ceilings
+ * needs three clean runs. Four owners would mean four re-pins with three
+ * intermediate states nobody can satisfy. **So every owner measures, nothing
+ * lands, and ONE re-pin carries all the entries and all the ceilings together.**
+ *
+ * **This exists because that gap has a cost, and it was paid twice in one
+ * evening.** Between measuring and landing, a delta lives only in conversation
+ * — so anyone doing arithmetic over the set subtracts from memory. Two correct
+ * decompositions disagreed by 5 draws because one of them had no way to know
+ * two terms had already been measured: the aircraft lamps at +4 and Babylon's
+ * clustered-container proxy mesh at +1. **Neither party got a number wrong.
+ * One of them was working from a list that did not contain them.**
+ *
+ * That nearly sent an owner to reconcile a predicted 14 against a target of 19
+ * — hunting five draws of tower that do not exist. **A search with a target
+ * usually finds something**, which would have been worse than the arithmetic
+ * being wrong, because the wrong answer would have arrived with a measurement
+ * attached.
+ *
+ * **So: measure into here, then promote out of here.** An entry leaves when its
+ * feature becomes a `DRAW_CALL_RAISES` entry, and the test below fails if one
+ * is ever in both — a staged delta that has been declared is a duplicate
+ * waiting to be subtracted twice.
+ */
+export interface MeasuredDrawDelta {
+  /** Which session measured it, so a disagreement has someone to ask. */
+  readonly owner: string;
+  /** The feature name it will carry into `DRAW_CALL_RAISES`. */
+  readonly feature: string;
+  /** The exact pair given to `scripts/decompose-draw-calls.sh`. */
+  readonly baseRef: string;
+  readonly headRef: string;
+  /** How many shots were measured. A 2-shot discovery pass is not an entry. */
+  readonly shotsMeasured: number;
+  /**
+   * The delta. A number when every measured shot moved by the same amount; a
+   * per-shot map otherwise. **A sign change cannot be expressed as a uniform
+   * number and must not be averaged into one.**
+   */
+  readonly delta: number | Readonly<Record<string, number>>;
+  /** What the number means, and anything that qualifies it. */
+  readonly note: string;
+}
+
+/**
+ * **Everything measured so far, with its provenance.** Anyone subtracting
+ * across the set should subtract from THIS, not from memory or from chat.
+ */
+export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze([
+  Object.freeze({
+    owner: "7-4b / clustered lighting",
+    feature: "aircraft-lamps",
+    baseRef: "37cf3aa^", headRef: "37cf3aa",
+    shotsMeasured: 2,
+    delta: 4,
+    note:
+      "Four lamp spheres on the trainer -- tail-navigation-light, "
+      + "anticollision-beacon, port-strobe-light, starboard-strobe-light -- each "
+      + "carrying `metadata.castsShadow = false`, so 1.00 draw apiece rather "
+      + "than 2.00. The aircraft is in every shot, so the delta is uniform. "
+      + "PREDICTED from the mesh count and the caster flag before measuring.",
+  }),
+  Object.freeze({
+    owner: "7-4b / clustered lighting",
+    feature: "clustered-container-proxy",
+    baseRef: "1db14f0", headRef: "d1c02c1",
+    shotsMeasured: 2,
+    delta: 1,
+    note:
+      "Babylon's `ClusteredLightContainer` constructs `_proxyMesh = "
+      + "CreatePlane(\"ProxyMesh\")`. `ClusteredLightingSystem` builds NO container "
+      + "when it has no children, so this draw exists exactly when the container "
+      + "does -- it appeared when the hangar floods were restored. NOT a cost of "
+      + "the floods themselves; a cost of the container having any child at all.",
+  }),
+  Object.freeze({
+    owner: "7-10 / hangars",
+    feature: "parametric-hangars",
+    baseRef: "37cf3aa", headRef: "82c4182",
+    shotsMeasured: 3,
+    delta: Object.freeze({
+      "reference-viewport": 6, "ground-2m-lowsun": 6, "cruise-horizon": -6,
+    }),
+    note:
+      "NOT UNIFORM, and the first feature that legitimately cannot be. Six "
+      + "meshes at 2.00 inside the 6000 m LOD cull; beyond it the new meshes are "
+      + "culled while the three `CreateBox` placeholders they replaced are gone, "
+      + "so the commit is a net SAVING of 6. A sign change, not a magnitude "
+      + "change -- and the swing of 12 is the whole of the +24/+12 bimodality. "
+      + "Measured via `37cf3aa -> 82c4182` because `ddc5a63` does not run; see "
+      + "MULTI_OWNER_COMMITS. Needs the full 31 before it becomes an entry.",
+  }),
+  Object.freeze({
+    owner: "7-13 / airfield furniture",
+    feature: "airfield-furniture",
+    baseRef: "679815a^", headRef: "679815a",
+    shotsMeasured: 34,
+    delta: 11,
+    note:
+      "Windsock 3 meshes casting = 6, fence 1 non-casting = 1, fuel farm 2, "
+      + "signage 2. PREDICTED from construction before measuring, then measured "
+      + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
+      + "cause of the +24/+12 split.",
+  }),
+]);
+
+
 /** Total declared raise for a shot, or 0 if none is declared. */
 export function declaredRaiseFor(name: string): number {
   let total = 0;

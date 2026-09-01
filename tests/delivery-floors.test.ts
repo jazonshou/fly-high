@@ -21,6 +21,7 @@ import {
   ratchetedFloorsFrom,
   sampleSpreadFps,
   tailDeferredFloorsFrom,
+  MEASURED_DRAW_DELTAS,
 } from "../scripts/deliveryFloors.mts";
 
 /**
@@ -660,5 +661,59 @@ describe("a ratcheted ceiling still has to clear the shot's own noise", () => {
       `tightest non-exempt shot is ${tightestName} at ${tightest.toFixed(2)}x its own spread`,
     ).toBeGreaterThanOrEqual(1);
     expect(Number.isFinite(tightest), "no non-exempt shot was measured").toBe(true);
+  });
+});
+
+describe("measured draw deltas awaiting a raise entry", () => {
+  it("PROMOTED means REMOVED — nothing may be both staged and declared", () => {
+    // The staging record exists because a measured delta has no home until the
+    // batch lands, so anyone doing arithmetic over the set subtracts from
+    // memory. The failure it guards is the opposite one: a delta that has been
+    // promoted into DRAW_CALL_RAISES and left here too would be subtracted
+    // TWICE by the next person reconciling a remainder.
+    const declared = new Set(DRAW_CALL_RAISES.map((raise) => raise.feature));
+    const stillStaged = MEASURED_DRAW_DELTAS
+      .filter((measured) => declared.has(measured.feature))
+      .map((measured) => measured.feature);
+    expect(
+      stillStaged,
+      `these features are BOTH staged in MEASURED_DRAW_DELTAS and declared in `
+      + `DRAW_CALL_RAISES: ${stillStaged.join(", ")}. A promoted delta must be `
+      + "removed from staging, or the next remainder subtracts it twice.",
+    ).toEqual([]);
+  });
+
+  it("NON-VACUITY — both lists are populated, so the check above compares something", () => {
+    // An empty staging record satisfies the intersection trivially, which is
+    // exactly how this guard would stop guarding once the batch lands and
+    // someone forgets to delete it along with the entries.
+    expect(MEASURED_DRAW_DELTAS.length).toBeGreaterThan(0);
+    expect(DRAW_CALL_RAISES.length).toBeGreaterThan(0);
+  });
+
+  it("a NON-UNIFORM delta is recorded per shot, never averaged into a number", () => {
+    // A sign change cannot be expressed as a uniform delta, and averaging one
+    // into a single number is how a legitimately per-shot feature ends up
+    // declared uniform and rejected by the raise guard -- or worse, accepted.
+    for (const measured of MEASURED_DRAW_DELTAS) {
+      if (typeof measured.delta === "number") continue;
+      const values = new Set(Object.values(measured.delta));
+      expect(
+        values.size,
+        `${measured.feature} is recorded per-shot but every shot has the same `
+        + "delta; record it as a number so its uniformity is visible.",
+      ).toBeGreaterThan(1);
+    }
+  });
+
+  it("every staged delta names the exact refs it was measured from", () => {
+    // Provenance, for the same reason the harness stamps it: a delta whose
+    // baseline nobody can reconstruct cannot be checked, only believed.
+    for (const measured of MEASURED_DRAW_DELTAS) {
+      expect(measured.baseRef.length, `${measured.feature}: no baseRef`).toBeGreaterThan(0);
+      expect(measured.headRef.length, `${measured.feature}: no headRef`).toBeGreaterThan(0);
+      expect(measured.shotsMeasured, `${measured.feature}: no shot count`).toBeGreaterThan(0);
+      expect(measured.owner.length, `${measured.feature}: unowned`).toBeGreaterThan(0);
+    }
   });
 });
