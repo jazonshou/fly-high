@@ -769,18 +769,34 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
   const live = run(true);
 
   it("is byte-identical to the reconstructed pre-6-8 classifier when the channel is absent", () => {
-    // MEASURED, not asserted: `d93d3dc2` is the digest of a reconstructed
-    // pre-6-8 `landCoverSuitabilities` (this file's three canopy gain terms
-    // removed) over exactly this probe set. The classification the CPU ecology,
+    // MEASURED, not asserted: the digest of a reconstructed pre-6-8
+    // `landCoverSuitabilities` (this file's three canopy gain terms removed)
+    // over exactly this probe set. The classification the CPU ecology,
     // species and wildlife rules read is therefore unmoved — only the page
     // splat bake, which is the one caller that supplies the channel, changes.
-    expect(dark.digest).toBe("d93d3dc2");
+    //
+    // RE-PINNED `d93d3dc2` -> `622c08d1` at `6-13`, and it moved for the SLOPE
+    // half, NOT the closure gate. Verified by reverting the slope change alone:
+    // with the gate applied and the windows untouched this assertion passes on
+    // its old digest, because the gate multiplies by 1.0 for a caller that
+    // omits `canopyClosure` — which is every CPU caller, and is the invariant
+    // this test exists to hold. What moved it is `gentle` becoming the exact
+    // complement of `steep`, a law change that necessarily reaches both the
+    // channel-absent and channel-live paths.
+    expect(dark.digest).toBe("622c08d1");
     expect(dark.probes).toBe(EDGE * EDGE);
   });
 
   it("moves the splat by a recorded amount once the channel is live", () => {
     expect(live.digest).not.toBe(dark.digest);
-    expect(live.digest).toBe("95fcbd8c");
+    // RE-PINNED `95fcbd8c` -> `b3c52bb2` at `6-13`. This one moves for BOTH
+    // halves, and the gate half is the point: closure was a GAIN,
+    // `(1 + closure * 0.55)`, which is 1.0 at closure 0 — so ForestFloor kept
+    // its full `1.1` base on ground with no canopy and beat Grass's ceiling of
+    // 1.0 by a permanent 0.100 on every wet lowland. Forest litter was painted
+    // where there is no forest. Measured on the shipping bake afterwards:
+    // ForestFloor 13.6% of baked texels, against 57.7% of land before.
+    expect(live.digest).toBe("b3c52bb2");
     let changed = 0;
     for (let index = 0; index < dark.reference.length; index += 1) {
       if (dark.reference[index] !== live.reference[index]) changed += 1;
@@ -791,8 +807,15 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // weight on forest floor — forest floor where no forest stands.
     expect(live.shares[2]!).toBeLessThan(dark.shares[2]!);
     expect(live.shares[1]!).toBeGreaterThan(dark.shares[1]!);
-    // Bounded: this is a retune of two suitabilities, not a new classifier.
-    expect(share).toBeLessThan(0.35);
+    // Bounded: still a retune, not a new classifier — but the bound now spans
+    // TWO changes and must not be read as 6-8's alone. 6-8 measured 18.19% of
+    // probes changing dominant material; with `6-13`'s closure gate and slope
+    // partition on top it is 35.7%, so roughly two thirds of probes still keep
+    // their material. Raised from 0.35 to 0.40 to cover both, and stated here
+    // rather than ratcheted to whatever passes: if a later change pushes this
+    // toward 0.5 the claim "retune, not rewrite" has stopped being true and
+    // the number should be argued, not moved.
+    expect(share).toBeLessThan(0.40);
     // eslint-disable-next-line no-console
     console.log(
       `6-8 analytic splat movement over ${dark.probes} probes: dominant material `

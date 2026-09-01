@@ -189,13 +189,67 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const dry = 1 - smoothstep(0.28, 0.62, wetness);
   const wet = smoothstep(0.3, 0.64, wetness);
   const warm = smoothstep(0.16, 0.34, temperature);
-  const gentle = 1 - smoothstep(0.06, 0.26, slope);
+  // `6-13`: ONE partition of the slope axis, hinged on the angle of repose.
+  //
+  // These two terms describe the SAME physical transition — ground that holds
+  // soil versus ground that sheds it — so they must be complementary. They
+  // were not: `gentle` reached its half-value at slope 0.16 and `steep` at
+  // 0.41, a quarter of the axis apart, and BOTH sat in their flat tails across
+  // 0.24-0.26. Measured there: gentle 0.0086, steep 0.0016. Every climatic
+  // material collapsed to ~0 in that band and `Sand`'s constant `+0.02` floor
+  // won by default — 270 of 13,685 land probes, at exactly 0.02, every one in
+  // slope 0.24-0.27.
+  //
+  // That hole was invisible only because `ForestFloor` was ungated on canopy
+  // (see below) and its `1.1 * wet` filled it everywhere, at the cost of
+  // painting forest litter across treeless lowland. The two defects are one:
+  // fixing either alone trades brown camo for inland sand.
+  //
+  // The partition is anchored on `steep`, and which term anchors it is the
+  // whole decision. Hinging both on the documented angle of repose (~0.21,
+  // this file's own `slope` docblock) is tidier in isolation and was tried
+  // first — but `Rock` is `steep * 1.25`, a coefficient calibrated against
+  // steep's EXISTING window, so recentring that window silently re-tunes Rock.
+  // Measured over 13,685 land probes: the repose hinge closed the hole and
+  // took Rock from 18.77% to 35.40% of land, trading a camo defect for a grey
+  // world. Anchoring on `steep` instead closes the hole just as well
+  // (worst-case suitability 0.5217 vs 0.5316) and leaves Rock at 18.93% —
+  // a 0.16 pp move.
+  //
+  // So: `steep` keeps the window its calibrated consumer was tuned against,
+  // and `gentle` — which never meant anything but "not steep" — becomes its
+  // exact complement instead of a second window free to drift away from it.
+  // `gentle + steep === 1` at every slope, so the gap cannot reopen.
   const steep = smoothstep(0.24, 0.58, slope);
+  const gentle = 1 - steep;
   const alpine = smoothstep(420, 980, elevation);
   const lowland = 1 - smoothstep(320, 900, elevation);
   const airfield = saturate(airportInfluence);
 
   const closure = saturate(input.canopyClosure ?? 0);
+  /**
+   * `6-13`: OMISSION IS NOT ZERO CLOSURE, and the gate below is the first term
+   * for which the difference matters.
+   *
+   * `?? 0` makes "this ground has no canopy" and "nobody told me about canopy"
+   * arrive as the same value. That was harmless while closure was a GAIN —
+   * `(1 + 0 * GAIN)` is 1.0, which is exactly what preserves the `6-8`
+   * invariant this file's own docblock promises: an omitting caller keeps its
+   * pre-6-8 classification. As a GATE the two cases diverge completely, and
+   * all three CPU callers omit the field — `GroundCoverSystem`,
+   * `detail/generation` and `world/terrain`, the last of which feeds
+   * `BIOME_FOR_DOMINANT_MATERIAL`. Gating on the merged value would have made
+   * the FOREST biome unreachable on the CPU path: a world-classification
+   * regression, not a rendering one, and silent.
+   *
+   * So the gate applies only where closure was actually supplied. The GPU
+   * splat bake always supplies it (`input.canopyClosure = canopy.x`), and it
+   * is the only consumer that knows where canopy stands, so it is the only
+   * one that gets gated.
+   */
+  const closureGate = input.canopyClosure === undefined
+    ? 1
+    : closure * (1 + LAND_COVER_CANOPY_CLOSURE_GAIN);
   const sward = saturate(input.grassCover ?? 0);
 
   const suitability = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
@@ -212,10 +266,22 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // and, since 6-6, carrying the litter its soil column can actually support.
   // A thin-soiled crest under the same climate is duff-free ground and now
   // classifies that way instead of reading as closed forest floor.
+  // `6-13`: closure is a GATE, not a gain.
+  //
+  // It was `(1 + closure * GAIN)`, which is 1.0 at closure 0 — so ForestFloor
+  // kept its full `1.1` base on ground with no canopy at all and beat Grass's
+  // ceiling of 1.0 by a permanent 0.100 on every wet lowland. Forest litter
+  // was painted where there is no forest: measured 57.7% of land dominant,
+  // against Grass's 13.3%, in a frame with 0.171% tree pixels.
+  //
+  // Litter exists BECAUSE a canopy drops it, so the term belongs to closure
+  // rather than merely benefiting from it. `(1 + GAIN)` preserves the value a
+  // CLOSED canopy sees today, so the `1.1` base and the gain constant carry
+  // their existing meaning unchanged — only open ground moves.
   suitability[SurfaceMaterial.ForestFloor] =
     shore * wet * warm * (1 - smoothstep(900, 1_350, elevation)) * (1 - steep * 0.8) * 1.1
     * (1 + landCoverLitter(input) * LAND_COVER_FOREST_FLOOR_LITTER_GAIN)
-    * (1 + closure * LAND_COVER_CANOPY_CLOSURE_GAIN);
+    * closureGate;
   // Shrub: the highland band — drier, cooler, tolerant of slope.
   suitability[SurfaceMaterial.Shrub] =
     shore * alpine * (1 - smoothstep(1_150, 1_650, elevation)) * (0.4 + dry * 0.6) * 0.95;
@@ -477,8 +543,9 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let dry = 1.0 - kSmoothstep(0.28, 0.62, wetness);
   let wet = kSmoothstep(0.3, 0.64, wetness);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
-  let gentle = 1.0 - kSmoothstep(0.06, 0.26, slope);
+  // 6-13: one partition, anchored on steep's calibrated window — see TS twin.
   let steep = kSmoothstep(0.24, 0.58, slope);
+  let gentle = 1.0 - steep;
   let alpine = kSmoothstep(420.0, 980.0, elevation);
   let lowland = 1.0 - kSmoothstep(320.0, 900.0, elevation);
   let airfield = kSaturate(input.airportInfluence);
@@ -495,7 +562,8 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
     shore * wet * warm * (1.0 - kSmoothstep(900.0, 1350.0, elevation))
       * (1.0 - steep * 0.8) * 1.1
       * (1.0 + landCoverLitter(input) * LAND_COVER_FLOOR_LITTER_GAIN)
-      * (1.0 + closure * LAND_COVER_CLOSURE_GAIN);
+      // 6-13: closure GATES the litter rather than gaining it — see TS twin.
+      * (closure * (1.0 + LAND_COVER_CLOSURE_GAIN));
   suitability[${SurfaceMaterial.Shrub}] =
     shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, elevation))
       * (0.4 + dry * 0.6) * 0.95;

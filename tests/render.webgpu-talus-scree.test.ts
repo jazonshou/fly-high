@@ -424,8 +424,21 @@ describe("6-7 scree placement in the world", () => {
     // the over-repose faces lose a quarter of their loose blocks, and the net
     // count falls 19.7%. That is the redistribution, as numbers.
     const run = rockRun(ANALYTIC_SAMPLER, MOUNTAIN_CELLS);
-    expect(run.digest).toBe("cd718155");
-    expect(run.rocks).toBe(114);
+        // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
+    // complement of `steep` rather than a second, independently-drifting
+    // window. The old pair left every climatic suitability at ~0 across
+    // slope 0.24-0.26 (gentle 0.0086, steep 0.0016), where `Sand`'s
+    // constant `+0.02` won by default. Rock's own share is essentially
+    // unmoved by the change — 18.77%% -> 18.93%% of land, measured over
+    // 13,685 probes — because the partition is anchored on `steep`'s
+    // existing window precisely so `Rock = steep * 1.25` keeps the
+    // calibration that coefficient was tuned against.
+    expect(run.digest).toBe("bcd0d548");
+        // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
+    // slope axis, so grass holds ground that previously went to rock).
+    // Down is budget-safe; the +1 mid-band boulder noted above is a
+    // redistribution outward, not a net increase.
+    expect(run.rocks).toBe(108);   // 6-13: 114 -> 108
     expect(run.rocks, "net count falls vs the pre-6-7 142").toBeLessThan(142);
     expect(run.bands[1]! + run.bands[2]!, "apron bands vs pre-6-7 3").toBeGreaterThan(3 * 2);
     expect(run.bands[5]!, "failure-face band vs pre-6-7 95").toBeLessThan(95 * 0.85);
@@ -436,14 +449,27 @@ describe("6-7 scree placement in the world", () => {
     const eroded = rockRun(SOIL_SAMPLER, MOUNTAIN_CELLS);
     // Live: the channel changes placements.
     expect(eroded.digest).not.toBe(analytic.digest);
-    expect(eroded.digest).toBe("154a2177");
+        // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
+    // complement of `steep` rather than a second, independently-drifting
+    // window. The old pair left every climatic suitability at ~0 across
+    // slope 0.24-0.26 (gentle 0.0086, steep 0.0016), where `Sand`'s
+    // constant `+0.02` won by default. Rock's own share is essentially
+    // unmoved by the change — 18.77%% -> 18.93%% of land, measured over
+    // 13,685 probes — because the partition is anchored on `steep`'s
+    // existing window precisely so `Rock = steep * 1.25` keeps the
+    // calibration that coefficient was tuned against.
+    expect(eroded.digest).toBe("18b9e79d");
     // And it only ever REMOVES scree — deep soil is a stable, vegetated
     // slope. Measured at 113 against the analytic 114 here; the effect is
     // small on purpose, because the soil proxy's own slope-retention term has
     // already collapsed on ground steep enough to hold an apron. Its
     // discriminating power lives in the runout toe.
     expect(eroded.rocks).toBeLessThanOrEqual(analytic.rocks);
-    expect(eroded.rocks).toBe(113);
+        // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
+    // slope axis, so grass holds ground that previously went to rock).
+    // Down is budget-safe; the +1 mid-band boulder noted above is a
+    // redistribution outward, not a net increase.
+    expect(eroded.rocks).toBe(106);  // 6-13: 113 -> 106
     // The pre-6-7 tree read the channel not at all for rocks: 142 with and
     // without it. That is what "the channel was dark and now is not" means
     // here, and it is the same shape 6-6's evidence took.
@@ -485,8 +511,21 @@ describe("6-7 scree placement in the world", () => {
     const first = rockRun(ANALYTIC_SAMPLER, FAR_CELLS);
     const second = rockRun(ANALYTIC_SAMPLER, FAR_CELLS);
     expect(second.digest).toBe(first.digest);
-    expect(first.digest).toBe("90006e9");
-    expect(first.rocks).toBe(53);
+        // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
+    // complement of `steep` rather than a second, independently-drifting
+    // window. The old pair left every climatic suitability at ~0 across
+    // slope 0.24-0.26 (gentle 0.0086, steep 0.0016), where `Sand`'s
+    // constant `+0.02` won by default. Rock's own share is essentially
+    // unmoved by the change — 18.77%% -> 18.93%% of land, measured over
+    // 13,685 probes — because the partition is anchored on `steep`'s
+    // existing window precisely so `Rock = steep * 1.25` keeps the
+    // calibration that coefficient was tuned against.
+    expect(first.digest).toBe("554b8c38");
+        // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
+    // slope axis, so grass holds ground that previously went to rock).
+    // Down is budget-safe; the +1 mid-band boulder noted above is a
+    // redistribution outward, not a net increase.
+    expect(first.rocks).toBe(52);    // 6-13: 53 -> 52
     expect(first.rocks, "net count falls vs the pre-6-7 72").toBeLessThan(72);
     expect(first.bands[1]! + first.bands[2]!, "apron bands vs pre-6-7 3")
       .toBeGreaterThan(3);
@@ -580,8 +619,22 @@ describe("6-7 budgets", () => {
     // 96) and 6-7 does not touch it: the apron spends existing candidates.
     expect(run.perCellMaximum).toBeLessThanOrEqual(96);
     // The mid-band population — the boulders drawn out to the MID radius
-    // rather than the near one — falls too: 14 before, 9 now.
-    expect(run.midBand).toBe(9);
+    // rather than the near one — falls too: 14 before, 9 at `6-7`.
+    //
+    // `6-13` RAISES IT BY ONE, 9 -> 10, and this is NOT a re-pin like the
+    // digests above — it is a count, and counts are what the ratchet watches.
+    // Stated plainly so it is reviewed rather than absorbed:
+    //   * the INVARIANT this test exists for still holds — 10 is still well
+    //     under the pre-6-7 14, and the assertion below is the real guard;
+    //   * the budget guards above are untouched: the rock batch set is still
+    //     the same three keys, and `perCellMaximum` is still inside 96;
+    //   * `Rock`'s share of land barely moves (18.77% -> 18.93% over 13,685
+    //     probes), because the slope partition is anchored on `steep`'s own
+    //     window to preserve `Rock = steep * 1.25`'s calibration. The +1 is a
+    //     boundary effect at the mid radius, not a new rock regime.
+    // If a reviewer decides a +1 mid-band boulder is not payable, the fix is
+    // the slope partition, not this pin.
+    expect(run.midBand).toBe(10);
     expect(run.midBand, "mid-band draw pressure vs the pre-6-7 14").toBeLessThan(14);
   });
 

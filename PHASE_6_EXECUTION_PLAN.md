@@ -910,6 +910,48 @@ unrecorded — the log is normative and incomplete), and this phase's own rows.
 Pins: doc-truth tests read the profile table, the startup number, and the ceilings
 constants so drift fails `npm test`.
 
+**A sixth form, which subsumes several of the above and says where to put the
+assertion rather than merely that one is missing:** *every guard in this phase
+that failed was verified at the site where it is WRITTEN and never at the site
+where it must ACT.*
+
+Recorded at `SWE III`'s request in place of its own formulation ("a guard that is
+itself the defect it guards against"), which named the symptom. This names the
+mechanism, and therefore the remedy.
+
+Four instances, all found on 2026-08-31, in four unrelated subsystems:
+
+| guard | verified where it is written | never verified where it acts |
+|---|---|---|
+| `DETAIL_SUN_SHADOW` | the define is set in `prepareDefines` | that it reaches a **compiled shader** |
+| boundary manifest | the regex matches the manifest's text | that it matches **code** and not string literals |
+| `ComputeBudget.take()`'s zero-cost branch | the branch reads correctly in isolation | that it survives the **second** of two passes |
+| `6-13`'s closure gate (nearly) | the expression preserves the invariant | that the invariant holds at the **callers**, all three of which omit the field |
+
+In every case the mechanism exists, reads correctly at its own site, and does
+nothing — or the exact opposite of its purpose. `take()` is the cleanest: the
+comment directly above states an intent the code inverts, and both were read many
+times. The fourth was caught by another session reading call sites, not by its
+author, and would otherwise have made the FOREST biome unreachable on every CPU
+path while fixing a 10% albedo advantage.
+
+**The remedy follows directly from the framing, which is why it is worth
+preferring to the symptom version.** For each guard, name the site where it must
+act, and put one assertion *there*:
+- a define → assert on the **compiled shader source**, not the define map;
+- a boundary regex → assert against **both** a positive and a *string-literal*
+  negative, so text-vs-code is pinned;
+- a budget branch → drive the **full call sequence**, not the branch;
+- an invariant on an optional input → assert it **from a caller that omits it**
+  (`render.webgpu-land-cover-closure-gate.test.ts` is that assertion, and it
+  fails with exactly the message describing the regression).
+
+The family resemblance to the first form is exact and worth stating: *derive from
+the artifact* is this rule applied to lists. *Assert at the site of action* is the
+same rule applied to mechanisms. A list checked against a limit and a guard
+checked at its own definition fail for one reason — **the check never met the
+thing it is about.**
+
 ---
 
 ## 8. The re-default decision (end of phase, 0 d — it is a decision, not work)
@@ -2172,6 +2214,74 @@ authored.
   **Outstanding and needing only a cold host:** the twelve sweep configurations,
   QR-1's per-tier headroom decision (which is a measurement), and pinning the
   cold-start acceptance number.
+
+- **D-27 (2026-08-31, `6-13` — Jason's defect 4, the terrain camo splotches:
+  TWO defects that were one, and neither is fixable alone):** the patchwork is
+  not a blend problem, it is *the wrong material winning almost everywhere*,
+  and the two halves were papering over each other.
+  * **Half A, the moisture axis.** `ForestFloor` carried canopy closure as a
+    GAIN — `(1 + closure * 0.55)`, which is **1.0 at closure 0** — so it kept
+    its full `1.1` base on ground with no canopy and beat `Grass`'s ceiling of
+    1.0 by a permanent **0.100** on every wet lowland. Forest litter painted
+    where there is no forest. Measured: ForestFloor dominant on **57.72%** of
+    land against Grass's **13.34%**, in a frame with **0.171% tree pixels**.
+    Grass was dominant in **2 cells of an 11x13** slope x moisture table —
+    Jason's *"grass should be noticeably grass"* was not a tuning complaint,
+    grass was very nearly unreachable.
+  * **Half B, the slope axis.** `gentle = 1 - smoothstep(0.06, 0.26)` and
+    `steep = smoothstep(0.24, 0.58)` describe ONE physical transition but their
+    half-values sat at slope 0.16 and 0.41, and both were in their flat tails
+    across 0.24-0.26 (measured 0.0086 and 0.0016). Every climatic suitability
+    collapsed to ~0 there and **`Sand`'s constant `+0.02` won by default** —
+    270 of 13,685 land probes, at exactly 0.02, all in slope 0.24-0.27.
+  * **They are one defect.** Half A's ungated `1.1 * wet` is what filled half
+    B's hole. Fix the gate alone and brown camo becomes inland sand speckle;
+    fix the windows alone and the 10% litter advantage survives. Landed
+    together.
+  **Result:** Grass **13.34% -> 57.60%**, ForestFloor **57.72% -> 10.63%**,
+  Rock **18.77% -> 18.93%** (13,685 probes).
+  **A wrong turn worth recording, because the measurement caught it and review
+  would not have.** The slope partition was first hinged on the documented
+  angle of repose (~0.21, this file's own `slope` docblock) — tidy, physical,
+  and **wrong**, because `Rock = steep * 1.25` is a coefficient calibrated
+  against `steep`'s EXISTING window, so recentring it silently re-tunes Rock.
+  Measured, that variant took Rock to **35.40%** — trading a camo defect for a
+  grey world. Anchoring on `steep` instead closes the hole equally well
+  (worst-case suitability 0.5217 vs 0.5316) and moves Rock by **0.16 pp**.
+  *The general rule: anchor a partition on the term that has a tuned consumer,
+  because moving that window invalidates its coefficient.*
+  **A near-miss caught by another session, not by me.** A plain multiplicative
+  gate would have zeroed ForestFloor for **every CPU caller**, because all
+  three omit `canopyClosure` and `?? 0` makes *"no canopy here"* and *"nobody
+  told me about canopy"* the same value — taking the **FOREST biome**
+  unreachable through `world/terrain.ts`'s `BIOME_FOR_DOMINANT_MATERIAL`, a
+  world-classification regression far larger than the bug being fixed. The gate
+  now applies only where closure was supplied. See the sixth general form in
+  §6-12: the invariant was preserved at the expression and never asserted at
+  the callers, and nothing asserted it before
+  `render.webgpu-land-cover-closure-gate.test.ts`.
+  **Bake parity, because a CPU-derived law change validated only on the CPU is
+  how D-18 happened:** `tests/gpu/land-cover-bake-parity.test.ts` reads the
+  material the splat bake actually wrote (`splatId` — the classifier's own
+  answer, no pixel-colour inference) and compares it to the CPU classifier at
+  the same world positions. **82.97% agreement over 3,254 texels**, every
+  disagreement an adjacent-material boundary flip, and **ForestFloor 13.6% on
+  the shipping path**. D-18 read 0.008 against 0.90; this reads 13.6 against
+  15.0. Not a second D-18.
+  **For the rebaseline reviewer, three things to meet rather than discover:**
+  (a) this is **sanctioned churn** — a law change visible on every terrain
+  shot; (b) the bake shows **Sand 1.8%** where the CPU shows none, confined to
+  low elevation and almost certainly the shore term's sensitivity at
+  `smoothstep(-1, 3, elevation)` where the two paths straddle its edge — small,
+  but inland Sand was the exact failure mode of half B, so it is on the record;
+  (c) six pins moved — `canopy-handoff`'s absent-channel digest for the SLOPE
+  half **only** (verified by reverting the slope change alone: the gate leaves
+  it byte-identical), its channel-live digest for both, three `talus-scree`
+  digests plus rock counts **falling** 114/113/53 -> 108/106/52, and
+  `midBand` **rising 9 -> 10**. That last is a COUNT, not a digest: it stays
+  inside the test's real invariant (< the pre-6-7 14) and every budget guard
+  (batch keys <= 3, `perCellMaximum` <= 96), and it is a boundary redistribution
+  rather than a new rock regime — but it is flagged rather than absorbed.
 
 *(Further deviations land here with evidence, plus a normative row in
 ARCHITECTURE.md's decision log, per house rule.)*
