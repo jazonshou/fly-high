@@ -155,6 +155,20 @@ export const SCOTOPIC_PASS_THRESHOLD = 0.001;
 export const SCOTOPIC_HIGHLIGHT_GAIN = 0.06;
 
 /**
+ * Option (c)'s dead zone and full-fade point, in retained-hue relative
+ * saturation. Below LO the rod tint applies in full — moonlit ground mottle
+ * and sky grain sit here, which is what keeps the approved blue field
+ * untouched by construction. Above HI the tint has fully yielded to the
+ * pixel's own colour — warm lamp halos (sat ~0.5) and fixture reds (~0.85)
+ * land here, which is Jason's "warmer colors/lights". Chosen so the
+ * transition brackets the measured gap between field saturation and halo
+ * saturation; tuned by capture against lampOffFixtureFraction with
+ * terrainBandMedianLuma and skyBlueDominance as the do-not-move gates.
+ */
+export const SCOTOPIC_TINT_CHROMA_FADE_LO = 0.08;
+export const SCOTOPIC_TINT_CHROMA_FADE_HI = 0.35;
+
+/**
  * `7-4a`: width of the highlight term's turn-on, in units of `(nits - sigma) /
  * sigma`, i.e. multiples of the adapted level.
  *
@@ -294,9 +308,39 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // rodLuminance still owns the level throughout.
   let tint = mix(SCOTOPIC_TINT, vec3f(1.0), pixelCone);
   let chromaKeep = max(${SCOTOPIC_CHROMA_RETENTION}, pixelCone);
+  // Option (c), Jason's ruling 2026-09-01 ("warmer colors/lights. Not a huge
+  // fan of super cool lights"): the rod tint is an ACHROMATIC cast — it may
+  // colour the grey field, never RE-colour chroma that survived retention.
+  // The tint therefore withdraws by the retained hue's own saturation: below
+  // the dead zone (ground mottle, sky haze grain) the full blue cast
+  // applies, so the approved field is untouched BY CONSTRUCTION — and that
+  // claim is measured, not asserted, against terrainBandMedianLuma and
+  // skyBlueDominance. Above it (a warm lamp halo, a PAPI red, the sky's own
+  // moon-sourced blue) the cast yields to the pixel's true colour — which
+  // was the violet-halo mechanism: SCOTOPIC_TINT's blue coefficient
+  // overrunning warm halo hues (warm x tint flips B-dominant). Jason's two
+  // instructions compose, not conflict: the blue belongs to the sky and
+  // field (their own hue survives untinted), the warmth to the fixtures.
+  let hueMax = max(hue.r, max(hue.g, hue.b));
+  let hueMin = min(hue.r, min(hue.g, hue.b));
+  let hueSaturation = (hueMax - hueMin) / max(hueMax, 1.0e-4);
+  let tintFade = smoothstep(
+    ${SCOTOPIC_TINT_CHROMA_FADE_LO},
+    ${SCOTOPIC_TINT_CHROMA_FADE_HI},
+    hueSaturation,
+  ) * chromaKeep;
+  // The fade target is NEUTRAL AT THE TINT'S OWN PHOTOPIC LUMA, not white:
+  // SCOTOPIC_TINT's Rec.709 luma is ~0.937, so fading toward vec3(1.0)
+  // brightened every faded pixel ~6.7% — measured as terrainBandMedianLuma
+  // 0.1259 -> 0.1311 (+4.1%) against a same-tree null, the exact do-not-move
+  // gate this change carries. Fading toward the tint's own luma makes the
+  // withdrawal luminance-invariant by construction.
+  let castTint = mix(tint, vec3f(${(
+    0.2126 * SCOTOPIC_TINT[0] + 0.7152 * SCOTOPIC_TINT[1] + 0.0722 * SCOTOPIC_TINT[2]
+  ).toFixed(6)}), tintFade);
   let rodImage = mix(
-    tint * rodLuminance,
-    tint * rodLuminance * hue,
+    castTint * rodLuminance,
+    castTint * rodLuminance * hue,
     chromaKeep,
   );
 
