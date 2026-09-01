@@ -242,11 +242,21 @@ export function horizontalIlluminanceLux(
   const luminous =
     0.2126 * transmittance[0] + 0.7152 * transmittance[1] + 0.0722 * transmittance[2];
   const direct = state.sun.illuminanceLux * Math.max(sunY, 0) * luminous;
-  // Diffuse skylight proxy with a twilight tail. The tail runs to the real
-  // night floor now rather than stopping at a placeholder 40 lux.
-  const sky = 14_000 * smoothstepValue(-0.1, 0.35, sunY)
-    + 3.4 * smoothstepValue(-0.31, -0.02, sunY);
-  return direct + sky + moonIlluminanceLux + MOONLESS_NIGHT_ILLUMINANCE_LUX;
+  return direct + skyDiffuseIlluminanceLux(sunY)
+    + moonIlluminanceLux + MOONLESS_NIGHT_ILLUMINANCE_LUX;
+}
+
+/**
+ * The diffuse-sky portion of the illuminance model, physical lux — a proxy
+ * with a twilight tail that runs to the real night floor rather than
+ * stopping at a placeholder 40 lux. Extracted so `adaptedLuminanceCdM2`'s
+ * sky-view term and `horizontalIlluminanceLux` compose the SAME expression
+ * and cannot drift — a mirrored copy of this formula is exactly the kind
+ * that rots.
+ */
+export function skyDiffuseIlluminanceLux(sunDirectionY: number): number {
+  return 14_000 * smoothstepValue(-0.1, 0.35, sunDirectionY)
+    + 3.4 * smoothstepValue(-0.31, -0.02, sunDirectionY);
 }
 
 export const REFERENCE_ILLUMINANCE_LUX = ((): number => {
@@ -364,10 +374,43 @@ export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0
 export const SCENE_UNIT_TO_NITS = 120_000 / (5.2 * Math.PI);
 
 /**
- * Mean scene luminance a viewer is adapted to, cd/m². Lambertian ground at
- * the world's mean albedo under the current illuminance — the standard
- * approximation, and it needs no framebuffer readback, so the capture stays
- * a function of pinned inputs (the `1A-4` stale-state rule).
+ * How much of the visual field the sky dome occupies, for adaptation. A
+ * canonical level-flight cockpit view holds the sky across roughly the
+ * upper half of the field; 0.45 splits the difference between straight
+ * cruise (~0.5) and the slightly nose-down capture vantages (~0.35–0.4).
+ * A camera-pitch-dependent share would need renderer state here and would
+ * make the capture depend on unpinned inputs — the `1A-4` rule — so the
+ * share is canonical, and the adaptation smoothing absorbs the error.
+ */
+export const SKY_VIEW_FRACTION = 0.45;
+
+/**
+ * Mean scene luminance a viewer is adapted to, cd/m² — what fills the
+ * VISUAL FIELD, not what lights the ground.
+ *
+ * Until NIGHT_LOOK §2.6 round 3 this was Lambertian ground alone, and at
+ * twilight that is the wrong question: the brightest thing a pilot sees at
+ * civil dusk is the sky dome across the upper half of the field, and the
+ * eye adapts to it. Ground-only adaptation read 0.14 cd/m² at `dusk-
+ * mesopic` and put the rod fraction at 0.73 — and two measured capture
+ * rounds showed the consequences (the rod response re-centring ground and
+ * compressing the sky/ground order the twilight arch was built to create).
+ * Field-weighted, dusk reads 0.46 cd/m² and rod 0.36, by the perceptual
+ * model's own arithmetic — the call stays physical; its INPUT was wrong.
+ *
+ * The sky term is the PHYSICAL illuminance model's diffuse sky over π (a
+ * uniform-dome mean), never the rendered dome: the art-directed sky is
+ * ~20–100× physical at twilight and ~3000× at night (a visible night sky
+ * IS art-bright), and adapting to the art dome would read ~78 cd/m² at
+ * night and slam the rod fraction to 0 — the approved night look would
+ * die. The physical sky term is zero below sine −0.31, so at every night
+ * clock this function returns 0.55× its old value, far below the scotopic
+ * threshold either way: night rod stays exactly 1 by the model's shape,
+ * and noon/golden stay exactly 0 (verified at all five ladder clocks in
+ * render.webgpu-environment.test.ts).
+ *
+ * Still no framebuffer readback — the capture stays a function of pinned
+ * inputs (the `1A-4` stale-state rule).
  */
 export function adaptedLuminanceCdM2(
   state: EnvironmentState,
@@ -375,7 +418,10 @@ export function adaptedLuminanceCdM2(
 ): number {
   const albedo = state.atmosphere.groundAlbedo[1];
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
-  return (horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast * albedo) / Math.PI;
+  const ground =
+    (horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast * albedo) / Math.PI;
+  const dome = (skyDiffuseIlluminanceLux(state.sun.direction[1]) * overcast) / Math.PI;
+  return (1 - SKY_VIEW_FRACTION) * ground + SKY_VIEW_FRACTION * dome;
 }
 
 /**

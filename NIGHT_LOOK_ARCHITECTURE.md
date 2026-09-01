@@ -341,6 +341,30 @@ must become the same quantity:
   the whole dome — is a larger refactor this term approximates exactly
   for the arch's share.
 
+- **(a″) ROUND 2 STOPPED AGAIN, AND THE MECHANISM WAS THE ADAPTATION'S
+  INPUT — resolved physically, no ladder amendment.** With the arch
+  sky-path-only and σ taught, the sky display stayed pinned (~0.49)
+  across a 2.3× σ change — the saturation signature: at rod 0.73 the
+  response re-centres ground and compresses sky/ground toward ≲2:1, and
+  every radiance knob is inert against it (two rounds are the evidence).
+  The first-draft answer — art-temper the rod fraction through the
+  window — was HELD by the PM, whose counter-hypothesis proved out:
+  `adaptedLuminanceCdM2` was Lambertian GROUND only, and at twilight the
+  brightest thing in a pilot's visual field is the sky dome. Adaptation
+  is what fills the FIELD. Field-weighted (SKY_VIEW_FRACTION 0.45, dome
+  = the PHYSICAL illuminance model's diffuse sky / π — NEVER the
+  rendered art dome, which is ~3000× physical at night and would slam
+  rod to 0 and kill the approved look), the model's own arithmetic
+  gives: noon 0→0, golden 0→0, dusk **0.732→0.361**, both nights 1→1
+  exactly (the physical sky term is zero below sine −0.31 — night
+  survives structurally, not by tolerance). §2.4's *"the perceptual
+  call stays physical"* SURVIVES — the call was always physical; its
+  input was wrong. Pinned at all five ladder clocks. Deferred with a
+  named trigger: the σ-side sky term (scene units) is correct
+  arithmetic but moves the night rod image 1–2% against a triple-pinned
+  quantity — it is cut ONLY if round 3 still shows compression, with
+  the night delta quantified first.
+
 - **(a′) The lamps are the window's FOURTH consumer** (dome, floor, σ,
   lamps — one window, none can drift). Jason's second dusk complaint,
   verbatim: *"Airport lights are way too bright/spread out given the

@@ -10,6 +10,7 @@ import {
   twilightArchRadiance,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import {
+  adaptedLuminanceCdM2,
   REFERENCE_ILLUMINANCE_LUX,
   resolveEnvironmentState,
 } from "../src/render/webgpu/nature/EnvironmentDirector";
@@ -211,9 +212,13 @@ describe("does a moon-intensity raise reach the night image?", () => {
     // and raw scene DOES scale with the moon. The claim therefore holds only
     // where rod saturates, which is the whole night band and not dusk.
     //
-    // `adaptedLuminanceCdM2` is `illuminance * overcast * albedo / PI`. A full
-    // moon is 0.267 lux, so even at the top of any plausible ground albedo the
-    // adapted level lands far below the scotopic threshold.
+    // A full moon is 0.267 lux, so even at the top of any plausible ground
+    // albedo the adapted level lands far below the scotopic threshold. The
+    // per-albedo sweep uses the GROUND term's shape (illuminance × albedo /
+    // π) as an upper bound: since §2.6 round 3 the production function is
+    // FIELD-weighted and its sky term is zero at night (the physical
+    // twilight tail is dead below sine −0.31), so the real value is 0.55×
+    // this bound — strictly darker, so rod = 1 a fortiori.
     const adaptedAtFullMoon = (albedo: number) => (FULL_MOON_ILLUMINANCE_LUX * albedo) / Math.PI;
     for (const albedo of [0.08, 0.12, 0.2, 0.35]) {
       expect(
@@ -221,6 +226,21 @@ describe("does a moon-intensity raise reach the night image?", () => {
         `rod is no longer saturated at full moon on albedo ${albedo}`,
       ).toBe(1);
     }
+    // And the PRODUCTION path, not a mirror: the shipped adaptation at this
+    // file's own night preset must saturate the rod fraction. A test-local
+    // restatement of the adapted formula is a copy, and copies rot — this
+    // line reads the artifact.
+    const nightState = resolveEnvironmentState({
+      clock: NIGHT,
+      latitudeDegrees: LAT,
+      weather: "clear",
+    });
+    expect(
+      rodFractionForAdaptedLuminance(
+        adaptedLuminanceCdM2(nightState, FULL_MOON_ILLUMINANCE_LUX),
+      ),
+      "the shipped adaptation no longer saturates rod at the night preset",
+    ).toBe(1);
     // Non-vacuity: the ladder is not stuck at 1 everywhere. Dusk is the rung
     // where scene DOES leak, which is why this file scopes itself to night.
     expect(rodFractionForAdaptedLuminance(0.3)).toBeLessThan(0.6);
