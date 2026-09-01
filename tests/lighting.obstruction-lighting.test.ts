@@ -13,13 +13,23 @@ import {
   AirfieldLightingSystem,
   papiLamps,
   AIRFIELD_LAMP_RGB,
+  AIRFIELD_LAMP_SCENE_SCALE,
 } from "../src/render/webgpu/lighting/AirfieldLighting";
 import {
   towerObstructionFixtures,
+  hangarObstructionFixtures,
   obstructionFixtureWorldPosition,
+  subdivideRingForExtentSpacing,
   OBSTRUCTION_LIGHT_RGB,
   OBSTRUCTION_LIGHT_CANDELA,
+  OBSTRUCTION_EXTENT_SPACING_MAX_METERS,
 } from "../src/render/webgpu/lighting/ObstructionLighting";
+import {
+  hangarAttachments,
+  hangarPlanFrom,
+  HANGAR_PLAN_LIMITS,
+  HANGAR_SITING,
+} from "../src/render/webgpu/airfield/AirfieldStructures";
 import { buildTowerGeometry } from "../src/render/webgpu/detail/towerGeometry";
 import { runwayToWorld, DEFAULT_AIRPORT } from "../src/world/airport";
 import type { AirportDefinition } from "../src/world/types";
@@ -204,6 +214,73 @@ describe("tower obstruction fixtures", () => {
     const reddestApplied = table.reduce((a, b) =>
       (b.appliedRodRegime > a.appliedRodRegime ? b : a));
     expect(reddestApplied.name).toBe("red");
+  });
+});
+
+describe("hangar obstruction fixtures", () => {
+  const plan = hangarPlanFrom(12_345, 0, 1.2);
+  const mounts = hangarAttachments(OBLIQUE, 0, plan, OBLIQUE.elevation + 2);
+
+  it("marks the outline no coarser than the ICAO 45 m extent spacing", () => {
+    const ring = subdivideRingForExtentSpacing(mounts.roofPerimeter);
+    const gaps = ring.map((a, i) => {
+      const b = ring[(i + 1) % ring.length]!;
+      return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    });
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(OBSTRUCTION_EXTENT_SPACING_MAX_METERS);
+
+    // NON-VACUITY. Without this the assertion above would also pass on a
+    // hangar small enough never to need subdividing, and the subdivision could
+    // be a no-op — or absent — without any test noticing. The raw corners MUST
+    // violate the cap, or this whole describe block is testing nothing.
+    const rawGaps = mounts.roofPerimeter.map((a, i) => {
+      const b = mounts.roofPerimeter[(i + 1) % mounts.roofPerimeter.length]!;
+      return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    });
+    expect(Math.max(...rawGaps)).toBeGreaterThan(OBSTRUCTION_EXTENT_SPACING_MAX_METERS);
+    expect(ring.length).toBeGreaterThan(mounts.roofPerimeter.length);
+  });
+
+  it("keeps every true corner where the geometry put it", () => {
+    // FAILS IF: subdivision resamples the ring at even arc length instead of
+    // per edge. That would slide points off the corners and round off the very
+    // outline the lights exist to describe, while still satisfying the cap.
+    const ring = subdivideRingForExtentSpacing(mounts.roofPerimeter);
+    for (const corner of mounts.roofPerimeter) {
+      expect(ring.some((p) =>
+        Math.hypot(p[0] - corner[0], p[1] - corner[1], p[2] - corner[2]) < 1e-9)).toBe(true);
+    }
+  });
+
+  it("lights the ridge ends, and they stand above the outline lights", () => {
+    const fixtures = hangarObstructionFixtures(OBLIQUE, mounts);
+    expect(fixtures).toHaveLength(
+      mounts.ridgeEnds.length + subdivideRingForExtentSpacing(mounts.roofPerimeter).length,
+    );
+    // The ridge is the obstacle's highest part; the outline sits at the eaves.
+    const ridge = fixtures.slice(0, mounts.ridgeEnds.length);
+    const outline = fixtures.slice(mounts.ridgeEnds.length);
+    for (const r of ridge) {
+      for (const o of outline) expect(r.position[1]).toBeGreaterThan(o.position[1]);
+    }
+  });
+
+  it("uses ONE intensity, because the whole generator sits below the 45 m band", () => {
+    // Not a simplification — Annex 14 grades at 45 m and this generator cannot
+    // reach it. If the plan limits ever grow past that, this fails and the
+    // grading question becomes real rather than staying silently wrong.
+    const worstRidge = HANGAR_PLAN_LIMITS.baseEaveHeightMeters
+      + (HANGAR_PLAN_LIMITS.maxBays - HANGAR_PLAN_LIMITS.minBays)
+        * HANGAR_PLAN_LIMITS.eaveHeightPerBayMeters
+      + HANGAR_SITING.widthMeters
+        * Math.max(HANGAR_PLAN_LIMITS.gabledRiseFraction, HANGAR_PLAN_LIMITS.archedRiseFraction);
+    expect(worstRidge + 6).toBeLessThan(45);
+
+    const fixtures = hangarObstructionFixtures(OBLIQUE, mounts);
+    const intensities = new Set(fixtures.map((f) => f.intensity));
+    expect(intensities.size).toBe(1);
+    expect([...intensities][0]).toBeCloseTo(
+      OBSTRUCTION_LIGHT_CANDELA.extent * AIRFIELD_LAMP_SCENE_SCALE, 6);
   });
 });
 

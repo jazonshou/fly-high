@@ -128,6 +128,95 @@ export function obstructionFixtureWorldPosition(
 }
 
 /**
+ * ICAO Annex 14: consecutive extent lights on an extensive obstacle sit no more
+ * than this far apart, so the outline reads as an outline rather than as a few
+ * unrelated points.
+ *
+ * **This constant lives here and not in the geometry module, deliberately.** It
+ * is aviation law, not a property of a shell, and it belongs where it can be
+ * tested against the regulation. `AirfieldStructures.hangarAttachments`
+ * therefore publishes TRUE corners and leaves subdivision to this file — a
+ * hangar is 46 m across, so each of its two long edges exceeds this cap by 1 m
+ * and takes a single midpoint, while its 34 m edges take none.
+ */
+export const OBSTRUCTION_EXTENT_SPACING_MAX_METERS = 45;
+
+/**
+ * Insert points along a CLOSED ring until no gap exceeds the spacing cap.
+ *
+ * Corners are always kept — they are the outline's actual shape, and a
+ * subdivision that moved them would round off the thing being marked. Interior
+ * points are spread EVENLY along each over-long edge rather than dropped every
+ * `max` metres from one end: a 46 m edge yields one midpoint at 23 m, not a
+ * point at 45 m with an orphaned 1 m stub. Even spacing is also what keeps the
+ * result independent of which corner the ring happens to start at.
+ */
+export function subdivideRingForExtentSpacing(
+  ring: readonly (readonly [number, number, number])[],
+  maxSpacingMeters: number = OBSTRUCTION_EXTENT_SPACING_MAX_METERS,
+): readonly (readonly [number, number, number])[] {
+  if (ring.length < 2 || !(maxSpacingMeters > 0)) return ring;
+  const out: (readonly [number, number, number])[] = [];
+  for (let index = 0; index < ring.length; index += 1) {
+    const a = ring[index]!;
+    const b = ring[(index + 1) % ring.length]!;
+    out.push(a);
+    const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const segments = Math.ceil(span / maxSpacingMeters);
+    for (let step = 1; step < segments; step += 1) {
+      const t = step / segments;
+      out.push([
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+      ] as const);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every obstruction light on one hangar.
+ *
+ * **All ONE intensity, and that is the regulation rather than a simplification.**
+ * The generator's tallest possible hangar is 34.84 m to the ridge including the
+ * worst skirt (14.60 m max eave + 14.72 m max rise + 5.52 m relief), which is
+ * more than 10 m below Annex 14's 45 m boundary. Everything below that boundary
+ * is low-intensity — Type B, steady red, 32 cd — so there is no top-versus-
+ * extent grading to make here, unlike the tower where the mast tip crosses into
+ * the medium-intensity band.
+ *
+ * **The ridge ends are lit because they are the highest points, and the roof
+ * outline because the ridge does not describe it.** Both ridge ends sit at
+ * `across = 0`, so lighting them alone would leave a 46 m span unmarked in the
+ * across direction — the outline carries the extent, the ridge carries the top.
+ */
+export function hangarObstructionFixtures(
+  airport: Readonly<AirportDefinition>,
+  attachments: {
+    readonly roofPerimeter: readonly (readonly [number, number, number])[];
+    readonly ridgeEnds: readonly (readonly [number, number, number])[];
+  },
+): readonly LightPointFixture[] {
+  const lamp = (local: readonly [number, number, number]): LightPointFixture => ({
+    position: obstructionFixtureWorldPosition(airport, [
+      local[0],
+      local[1] + OBSTRUCTION_ROOF_STAND_METERS,
+      local[2],
+    ]),
+    aim: [0, 1, 0] as const,
+    intensity: OBSTRUCTION_LIGHT_CANDELA.extent * AIRFIELD_LAMP_SCENE_SCALE,
+    profileRow: 0,
+    radiusMeters: OBSTRUCTION_LIGHT_RADIUS_METERS,
+    color: OBSTRUCTION_LIGHT_RGB,
+  });
+  return [
+    ...attachments.ridgeEnds.map(lamp),
+    ...subdivideRingForExtentSpacing(attachments.roofPerimeter).map(lamp),
+  ];
+}
+
+/**
  * Every obstruction light on the tower, top light first.
  *
  * Omnidirectional by construction: `beamCosineCutoff` is left unset, and
