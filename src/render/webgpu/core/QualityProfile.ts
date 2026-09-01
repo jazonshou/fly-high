@@ -62,6 +62,34 @@ export interface WebGpuQualityProfile {
    * off, so alpha-tested foliage gets no MSAA benefit — this fixes ridge
    * lines, runway edges and wing silhouettes, not tree canopies.
    */
+  /**
+   * `7-5`: whether the bloom post-process runs.
+   *
+   * DATA, NOT A `profile.tier` BRANCH, per the tier rule -- and here that rule
+   * is load-bearing rather than stylistic. Whether tier 2 should carry 4x MSAA
+   * at all is a fidelity call for Jason, and if it drops to 1x, tier 2's bloom
+   * question reopens with real headroom. Keeping this a data field makes that
+   * a GATE FLIP rather than a redesign.
+   *
+   * Why the rows below are what they are, with the reason per row rather than
+   * one blanket justification -- they are not the same reason:
+   *  - tier 0: UNMEASURED, not refused. Nobody has priced bloom there.
+   *  - tier 1: ON. The gate was ratified here, and this is the tier whose
+   *    headroom is actually measured.
+   *  - tiers 2 and Ultra: UNFUNDED. The plan funded bloom against tier 2's
+   *    0.05 ms of *modelled* slack (D-4, §2.3(g)); the sweep measured a
+   *    10.0-46.7 ms deficit at 0 of 21 shot-configurations, of which 32.79 ms
+   *    is `msaaSamples` alone. There is no slack to fund against, and the sign
+   *    is wrong rather than the magnitude.
+   *
+   * COST AND SAMPLES. Bloom is not the first post-process, so it reads a
+   * RESOLVED target -- `toneMap.samples = 1` already records that non-first
+   * passes are single-sampled. Its marginal cost should therefore be
+   * independent of `msaaSamples`, which is the opposite of the assumption that
+   * a post-process cost must carry a sample count. That is a claim to be
+   * MEASURED at both 1x and 4x before it is quoted, not asserted here.
+   */
+  readonly bloomEnabled: boolean;
   readonly msaaSamples: number;
   /**
    * The tier's controllable frame-time target (Z-2), mirrored from
@@ -252,6 +280,7 @@ function resolveBaseQualityProfile(
       renderScale: 0.72,
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
+      bloomEnabled: false,
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
@@ -326,6 +355,7 @@ function resolveBaseQualityProfile(
       // duplicates its dominant colour/depth traffic. FXAA is already the
       // renderer's sample-count-1 path, so Balanced spends this row on frame
       // cadence rather than hardware MSAA; higher tiers retain multisampling.
+      bloomEnabled: true,
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
@@ -414,6 +444,7 @@ function resolveBaseQualityProfile(
       // rows above have now paid for it. Note this COSTS 54.9 MiB raw here —
       // more than the shadow refund — so `4-8b` is net +8.7 MiB at this tier.
       // It is not a refund, and the D3 table carries it as a cost.
+      bloomEnabled: false,
       msaaSamples: 4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
@@ -480,6 +511,7 @@ function resolveBaseQualityProfile(
     renderScale: 1,
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
+    bloomEnabled: false,
     msaaSamples: 4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
