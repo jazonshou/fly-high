@@ -218,13 +218,29 @@ function sweptTube(
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
-  for (const ring of rings) {
+  for (let r = 0; r < rings.length; r += 1) {
+    const ring = rings[r]!;
+    // SLOPE-CORRECTED NORMAL. A purely radial `(cos, 0, sin)` is only correct
+    // for a straight cylinder; on a tapered or domed section the surface tilts
+    // and the normal must tilt with it, or a cone shades as a cylinder.
+    //
+    // FOUND BY AN UNEXPLAINED DEFICIT, which is the whole reason to compute the
+    // expected number rather than eyeball it: every part here matched faceting's
+    // `cos(pi/segments)` to ~1e-5 EXCEPT the tank saddle, the most steeply
+    // tapered surface, which sat 4.1e-2 low. That residual was the missing
+    // slope term. The guard still PASSED it — an inverted winding is what it
+    // tests, and a mis-authored normal is not inverted, merely wrong.
+    const previous = rings[Math.max(r - 1, 0)]!;
+    const next = rings[Math.min(r + 1, rings.length - 1)]!;
+    const dy = next.y - previous.y;
+    const slope = dy === 0 ? 0 : (next.radius - previous.radius) / dy;
+    const inverseLength = 1 / Math.hypot(1, slope);
     for (let s = 0; s <= segments; s += 1) {
       const angle = (s / segments) * Math.PI * 2;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
       positions.push(cos * ring.radius, ring.y, sin * ring.radius);
-      normals.push(cos, 0, sin);
+      normals.push(cos * inverseLength, -slope * inverseLength, sin * inverseLength);
     }
   }
   const stride = segments + 1;
@@ -234,7 +250,15 @@ function sweptTube(
       const b = a + 1;
       const c = a + stride;
       const d = c + 1;
-      indices.push(a, b, c, b, d, c);
+      // A ring that collapses to the axis — a dome end — makes one triangle of
+      // each quad degenerate. Emitting them anyway is how four zero-area
+      // triangles hid inside the hangar shell while its metric still passed, so
+      // the quad degrades to a fan here instead. Measured: the tank shell shed
+      // 16 degenerates and no surface area.
+      const lower = rings[r]!.radius;
+      const upper = rings[r + 1]!.radius;
+      if (lower > 1e-9) indices.push(a, b, c);
+      if (upper > 1e-9) indices.push(b, d, c);
     }
   }
   return {
@@ -278,4 +302,157 @@ export function buildWindsockPart(
     return { y: t * WINDSOCK_LENGTH_METERS, radius: taper * (0.28 + 0.72 * open) };
   });
   return sweptTube(14, rings);
+}
+
+// ---------------------------------------------------------------------------
+// The rest of `7-13`: fuel tanks, perimeter fence, runway signage.
+//
+// **Lateral offsets are the shared resource here**, and three sessions are
+// placing structures across the same centreline. Recorded together so the next
+// one can see the whole band rather than discovering a collision in a frame:
+//
+//     signage    runway edge + clearance  (derived, ~26 m on this runway)
+//     windsock   55 m
+//     tower      runwayWidth * 0.5 + 95
+//     hangars    118 m
+//     fuel farm  135 m   <- this file
+//     fence      168 m   <- this file, outermost by construction
+//
+// The fence is last on purpose: it is the only one whose job is to be outside
+// everything else, so it is derived from the outermost structure rather than
+// given its own constant to drift against.
+// ---------------------------------------------------------------------------
+
+/** A bulk avgas tank: 12 m long, 2.5 m diameter, horizontal on saddles. */
+export const FUEL_TANK_LENGTH_METERS = 12;
+export const FUEL_TANK_RADIUS_METERS = 1.25;
+export const FUEL_FARM_LATERAL_OFFSET_METERS = 135;
+
+/** ICAO Annex 14 perimeter fencing: 2.4 m posts at 3 m centres. */
+export const FENCE_POST_HEIGHT_METERS = 2.4;
+export const FENCE_POST_SPACING_METERS = 3;
+export const FENCE_LATERAL_OFFSET_METERS = 168;
+
+/**
+ * A mandatory instruction sign — ICAO Annex 14 Table 5-4, inscription height
+ * 300 mm for a code-2 runway, which puts the face at 0.8 m on 0.3 m legs.
+ */
+export const SIGN_FACE_WIDTH_METERS = 1.5;
+export const SIGN_FACE_HEIGHT_METERS = 0.8;
+export const SIGN_LEG_HEIGHT_METERS = 0.3;
+
+/**
+ * Signage sits at the runway edge plus clearance, DERIVED rather than pinned.
+ *
+ * A sign is an obstacle beside a runway, so its offset is a function of the
+ * runway it serves — a constant would be wrong the first time a seed produced a
+ * wider strip, and wrong silently, because a sign inside the graded strip still
+ * renders perfectly well.
+ */
+export function signLateralOffsetMeters(airport: Readonly<AirportDefinition>): number {
+  return airport.runwayWidth / 2 + airport.shoulderWidth + 3;
+}
+
+/**
+ * A flat rectangular panel in the local xy plane, facing +z.
+ *
+ * Separate from `sweptTube` because a panel has no ring ordering to inherit,
+ * so its winding is its own question — and, per the tube's own docblock, a
+ * winding tuple copied from another builder is exactly how the windsock shipped
+ * inverted on all six cases.
+ *
+ * **It came out inverted too, and in the opposite direction**, which is the
+ * claim confirming itself: the guard passed every `sweptTube` part in the same
+ * change and failed `sign.face` alone at +1.000. Tube and panel need OPPOSITE
+ * index orders. There is no house convention to carry between builders.
+ */
+function flatPanel(width: number, height: number, yBase: number): WindsockPartGeometry {
+  const hw = width / 2;
+  return {
+    positions: new Float32Array([
+      -hw, yBase, 0, hw, yBase, 0, hw, yBase + height, 0, -hw, yBase + height, 0,
+    ]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    // Measured, not remembered — and it is the OPPOSITE of `sweptTube`'s.
+    // The tube needs (a, b, c); this panel needs (a, c, b), because its four
+    // corners are emitted in the other rotational sense. Written as two
+    // explicit triangles rather than a shared helper so the difference is
+    // visible instead of hidden behind an argument.
+    indices: new Uint32Array([0, 2, 1, 0, 3, 2]),
+  };
+}
+
+export const FUEL_TANK_PART_KINDS = ["shell", "saddle"] as const;
+export const FENCE_PART_KINDS = ["post", "rail"] as const;
+export const SIGN_PART_KINDS = ["face", "leg"] as const;
+
+export function buildFuelTankPart(
+  kind: (typeof FUEL_TANK_PART_KINDS)[number],
+): WindsockPartGeometry {
+  if (kind === "saddle") {
+    return sweptTube(8, [
+      { y: 0, radius: FUEL_TANK_RADIUS_METERS * 0.55 },
+      { y: FUEL_TANK_RADIUS_METERS * 0.6, radius: FUEL_TANK_RADIUS_METERS * 0.75 },
+    ]);
+  }
+  // Domed ends rather than flat caps: a flat-capped cylinder reads as a drum.
+  const rings = Array.from({ length: 9 }, (_, index) => {
+    const t = index / 8;
+    const dome = Math.sin(Math.PI * Math.min(Math.max((t - 0.06) / 0.88, 0), 1)) ** 0.35;
+    return { y: t * FUEL_TANK_LENGTH_METERS, radius: FUEL_TANK_RADIUS_METERS * dome };
+  });
+  return sweptTube(16, rings);
+}
+
+export function buildFencePart(
+  kind: (typeof FENCE_PART_KINDS)[number],
+): WindsockPartGeometry {
+  if (kind === "rail") {
+    return sweptTube(6, [
+      { y: 0, radius: 0.025 },
+      { y: FENCE_POST_SPACING_METERS, radius: 0.025 },
+    ]);
+  }
+  return sweptTube(8, [
+    { y: 0, radius: 0.05 },
+    { y: FENCE_POST_HEIGHT_METERS, radius: 0.045 },
+  ]);
+}
+
+export function buildSignPart(
+  kind: (typeof SIGN_PART_KINDS)[number],
+): WindsockPartGeometry {
+  if (kind === "leg") {
+    return sweptTube(6, [
+      { y: 0, radius: 0.04 },
+      { y: SIGN_LEG_HEIGHT_METERS, radius: 0.04 },
+    ]);
+  }
+  return flatPanel(SIGN_FACE_WIDTH_METERS, SIGN_FACE_HEIGHT_METERS, SIGN_LEG_HEIGHT_METERS);
+}
+
+/**
+ * Every furniture surface, as `[label, geometry]`, for the winding guard.
+ *
+ * **THE GUARD SPREADS THIS RATHER THAN LISTING PARTS.** So furniture added to
+ * this file is wound-checked with no change to the test at all — which is one
+ * step stronger than deriving from a kind array, because a new kind array would
+ * still need wiring. The two failure modes this closes are both on the record:
+ * `buildBladeRibbon` shipped inverted while the guard checked a grass card no
+ * capture drew, and three of `clutter`'s four kinds were never listed.
+ */
+export function airfieldFurnitureWindingCases(): ReadonlyArray<
+  readonly [string, WindsockPartGeometry]
+> {
+  const out: (readonly [string, WindsockPartGeometry])[] = [];
+  for (const kind of WINDSOCK_PART_KINDS) {
+    // Both inflation arms: a slack sock's rings collapse toward the mast, so it
+    // is a different mesh and checking one arm would leave the other unwound.
+    out.push([`windsock.${kind}.slack`, buildWindsockPart(kind, 0)]);
+    out.push([`windsock.${kind}.streaming`, buildWindsockPart(kind, 1)]);
+  }
+  for (const kind of FUEL_TANK_PART_KINDS) out.push([`fuelTank.${kind}`, buildFuelTankPart(kind)]);
+  for (const kind of FENCE_PART_KINDS) out.push([`fence.${kind}`, buildFencePart(kind)]);
+  for (const kind of SIGN_PART_KINDS) out.push([`sign.${kind}`, buildSignPart(kind)]);
+  return out;
 }

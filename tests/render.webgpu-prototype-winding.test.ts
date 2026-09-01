@@ -1,7 +1,4 @@
-import {
-  WINDSOCK_PART_KINDS,
-  buildWindsockPart,
-} from "../src/render/webgpu/detail/AirfieldFurniture";
+import { airfieldFurnitureWindingCases } from "../src/render/webgpu/detail/AirfieldFurniture";
 import { describe, expect, it } from "vitest";
 import { CreateSphereVertexData } from "@babylonjs/core/Meshes/Builders/sphereBuilder";
 import { CreateBoxVertexData } from "@babylonjs/core/Meshes/Builders/boxBuilder";
@@ -214,10 +211,12 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   // Both inflation extremes: a slack sock is a different mesh from a streaming
   // one (the rings collapse toward the mast), so checking one arm would leave
   // the other unwound.
-  for (const kind of WINDSOCK_PART_KINDS) {
-    for (const [label, inflation] of [["slack", 0], ["streaming", 1]] as const) {
-      out.push([`windsock.${kind}.${label}`, buildWindsockPart(kind, inflation) as unknown as Geo]);
-    }
+  // 7-13: SPREAD, not listed. `airfieldFurnitureWindingCases` enumerates every
+  // furniture surface at its source, so furniture added there is wound-checked
+  // with no change here at all — one step stronger than deriving from a kind
+  // array, which would still need wiring per new kind.
+  for (const [label, geometry] of airfieldFurnitureWindingCases()) {
+    out.push([label, geometry as unknown as Geo]);
   }
   // EVERY archetype, not the default. The specs differ per archetype -- blade
   // count, length, lean, and `layer` -- so the default tested one member of a
