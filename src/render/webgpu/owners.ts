@@ -1212,10 +1212,13 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     definitionSites: ["src/render/webgpu/airfield/AirfieldStructures.ts"],
     consumers: ["world"],
     ownedSymbols: ["buildHangar", "buildControlTower", "AIRFIELD_STRUCTURE_LOD"],
-    plannedBy: "7-10",
     notes:
-      "Budgeted against the same hard draw ceilings as the light points "
-      + "(runway-on-approach 169, approach-500ft 158). Any shadow caster here is "
+      "Budgeted against the same hard draw ceilings as the light points -- read "
+      + "them from the shots' own drawCallCeiling rather than from here. This "
+      + "note used to quote 169 and 158, which were the PRE-TIGHTENING values; "
+      + "R4 removed 6-10 draws of undocumented margin and bloom then added 4, so "
+      + "a reader budgeting against the old pair would have believed in four "
+      + "draws that do not exist. Any shadow caster here is "
       + "built through the guarded factory in core/, never constructed directly. "
       + "And every prototype it adds is registered in the prototype winding "
       + "guard AS IT IS BUILT: six inverted surfaces were found on 2026-08-31 "

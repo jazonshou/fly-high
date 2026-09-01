@@ -11,6 +11,10 @@ import {
   type GroundCoverArchetype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
 import { buildBladeRibbon } from "../src/render/webgpu/detail/GroundCoverSystem";
+import {
+  hangarPlanFrom,
+  hangarShellGeometry,
+} from "../src/render/webgpu/airfield/AirfieldStructures";
 import { buildTowerGeometry, TOWER_PART_NAMES } from "../src/render/webgpu/detail/towerGeometry";
 
 /**
@@ -243,6 +247,20 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   const tower = buildTowerGeometry();
   for (const name of TOWER_PART_NAMES) {
     out.push([`tower.${name}`, tower.parts[name] as unknown as Geo]);
+  }
+  // `7-10`'s hangar shell, registered AS IT IS BUILT rather than after -- the
+  // owners row for `airfield-structures` requires exactly that, because
+  // `ed5b703` fixed a surface the guard was not enumerating and it went
+  // straight back to being unwatched.
+  //
+  // BOTH roof profiles, because they are different geometry: the gabled shell
+  // emits 18 triangles and the arched 78, and a roster carrying one of them
+  // would leave the other unmeasured in the same way the grass roster left the
+  // blade. The profile is hash-chosen, so whichever one a given seed builds is
+  // not a choice anybody makes deliberately.
+  for (const roof of ["gabled", "arched"] as const) {
+    const plan = { ...hangarPlanFrom(1, 0, 1), roof };
+    out.push([`airfield.hangarShell.${roof}`, hangarShellGeometry(plan) as unknown as Geo]);
   }
   return out;
 }
