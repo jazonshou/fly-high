@@ -91,11 +91,23 @@ describe("water shader extraction (2-8a)", () => {
     // `coast-10km-lowsun` by design — the swell now stacks up and breaks where
     // the depth says it must — and those shots rebaseline at the Wave-1 point
     // (§9 R1), not here. Deliberate, named, reviewed.
+    //
+    // Re-pinned by NIGHT_LOOK §2.6 (twilight arch). FRAGMENT ONLY, and the
+    // delta is exactly ONE line of the shared aerial include: the
+    // `aerialTwilightArch` uniform DECLARATION (plus the arch term inside
+    // `skyRadiance`, which the water fragment composes but never calls).
+    // The ocean's own shading text did not move — no lighting, no foam, no
+    // spectrum change — and the unchanged vertex hash is the claim that the
+    // include's growth is declaration-side only where the vertex is
+    // concerned. Water pixels cannot move: the uniform is zero-filled
+    // outside the twilight window and the fragment never evaluates the sky
+    // function that consumes it. Deliberate, named, reviewed — the flow
+    // this assertion exists to force.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "d38e8078db4263b326c8e0ac0ed2f63b50e1f34abfe7bb3875dfbf1d28e59d21",
+      "d98c96e0ee0b46983628d9739ddfe0037995fe51d0cf968b2fbe1da3768a573c",
     );
   });
 
