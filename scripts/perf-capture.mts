@@ -467,6 +467,66 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     drawCallCeiling: 160,
   },
   {
+    name: "night-moonlit",
+    description: "Approach pose at 23:45 solar time under a full moon 17.6 deg up",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    /**
+     * **Day 179, not 171, and not 356.** The shipped `night` shot sits at day
+     * 171, where the moon is 0.4985 lit and **0.62 deg above the horizon** --
+     * essentially set. Its ground illuminance is 2.573e-4 lx against a
+     * full-moon 0.267 lx: **1038x dimmer**, i.e. effectively moonless. Gate 7A
+     * shipped the moon, scotopic vision and the star field validated against a
+     * set with no moonlight in it.
+     *
+     * **The dimming is ALTITUDE, not phase, and the distinction is
+     * actionable.** Decomposed: phase contributes ~10.8x, altitude ~88x. A fix
+     * that chooses a fuller phase without checking altitude gains ~11x and
+     * still ships a moonless frame -- a plausible fix that leaves the defect
+     * standing. **The moon is above the horizon on only 188 of 365 days at
+     * this solar time**, so choosing a night-shot day without an altitude
+     * check is a coin flip, which is how the original shipped.
+     *
+     * Day 179: lit **1.000**, altitude **17.6 deg**, 7.094e-2 lx --
+     * **276x brighter than the `night` shot** and 3.8x dimmer than a zenith
+     * full moon.
+     *
+     * **Day 356 was rejected despite being the year's brightest (72.4 deg,
+     * 1.00x full).** `dayOfYear` drives the snowline (R-13's seasonal
+     * descent), the land-cover classification and ground-cover density, so at
+     * latitude 45 day 356 is WINTER: the shot would differ from `night` in
+     * **two** variables and could not attribute an effect to moonlight, which
+     * is the only reason it is being added. Day 179 holds the season eight
+     * days away. Full-moon-on-snow is a real and untested case -- the hardest
+     * one for the scotopic range's top end -- and is deferred to Phase 7 as a
+     * deliberate two-variable shot with that purpose stated.
+     *
+     * Verify with `scripts/moon-night-shot-probe.mts`, which composes the
+     * renderer's own call chain rather than re-deriving the astronomy.
+     */
+    clock: { dayOfYear: 179, solarTimeHours: 23.75 },
+    // Same structural jitter as `night`: the scotopic pass half-saturates at
+    // the scene's key luminance, so it applies a large gain to a dark image
+    // and amplifies the cloud pass's temporal jitter along with it. A moonlit
+    // frame is brighter and should be steadier, but the relaxation is carried
+    // over rather than tightened on an assumption -- pin it from the R4 run.
+    ssimThreshold: 0.96,
+    // `minMeanLuminance` is OMITTED, not null: the field is optional and
+    // `exactOptionalPropertyTypes` rejects null. `night` uses 0.000_5, a floor
+    // sized for a near-black frame; copying it onto a moonlit one would make
+    // the assertion vacuous. Pin it from the R4 run.
+    ceilings: null,
+    // `drawCallCeiling` likewise omitted rather than null. Draw calls are
+    // host-independent and pinned to the measured count exactly, so this
+    // gets its value from the R4 run rather than a placeholder.
+    comparesToBaseline: false,
+  },
+  {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
     // treeline — the only reading of "no flicker" that is not an opinion.
     name: "motion-banked-turn",
@@ -1051,7 +1111,34 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
       + "other. The only shot evidencing the horizon term on FAR VEGETATION "
       + "rather than on terrain",
     cameraMode: "cockpit",
-    altitudeAglMeters: 120,
+    // R4: 120 -> 400 m. At 120 m the vantage's forested band sits at only
+    // 3.7-4.4 deg of depression, so a pitch of 18 looks well BELOW it and
+    // fills the frame with near ground the CSM already shadows. Measured by
+    // ray-marching this shot's own parameters, **2-6% of land samples fell in
+    // the 1,400-3,000 m annulus** — the only band where the horizon term can
+    // act. Two sessions measured this independently and got 1.8% and 5.7%;
+    // the spread is ray-grid density, not a disagreement about the finding,
+    // and the range is quoted rather than either number, because neither is
+    // the one. The frame was overwhelmingly near ground the CSM already
+    // shadows. The shot could not fail on its own stated purpose.
+    //
+    // The compression was flagged when the vantage was chosen and no altitude
+    // or pitch was specified with it: a caveat stated without a corresponding
+    // parameter is a caveat that does not act. The second session's own note
+    // is worth carrying too — this shot was cited as covering `L-3` on the
+    // strength of its docblock being canopy-gated, without measuring how much
+    // of its frame reaches the band. The docblock was true and the coverage
+    // was not implied by it.
+    //
+    // Swept AGL x pitch at this vantage and bearing, in-band land coverage /
+    // canopy samples in band / sky:
+    //   120 m  1.8% /  34 / 0.0%      400 m  27.6% / 326 / 1.7%
+    //   250 m 14.3% / 166 / 0.2%      600 m  39.7% / 507 / 4.3%
+    // The second sweep agrees on the remedy to within 0.3 pp (27.9% at 400 m)
+    // while differing on the baseline — the fix reproduces, the floor does
+    // not. 400 is the stop: ~15x the in-band coverage of 120 with sky still
+    // negligible, where 600 starts spending frame on sky.
+    altitudeAglMeters: 400,
     altitudeMslMeters: null,
     /**
      * **A FIXED-OFFSET vantage — the only one among the four seam shots — so
