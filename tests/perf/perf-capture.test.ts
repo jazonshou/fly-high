@@ -1339,11 +1339,15 @@ describe("perf capture (1A-1c / 2Z)", () => {
           shot.maxFrameMs,
           `${shot.name}: worst frame exceeded the committed ceiling`,
         ).toBeLessThanOrEqual(ceilings.maxFrameMs));
-        if (shot.p999FrameMs !== null) {
+        // `ceilings.p999FrameMs` absent = deliberately not gated yet (see
+        // TAIL_DEFERRED_SHOTS); `shot.p999FrameMs` null = the run produced no
+        // reading. Different causes, same skip, so keep them separate.
+        const p999Ceiling = ceilings.p999FrameMs;
+        if (shot.p999FrameMs !== null && p999Ceiling !== undefined) {
           gateDelivery(() => expect(
             shot.p999FrameMs,
             `${shot.name}: p999 frame exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(ceilings.p999FrameMs));
+          ).toBeLessThanOrEqual(p999Ceiling));
         }
         // Gate 0-a (Phase 6): floors pinned at today's delivery, not the
         // 60 fps contract minimum — the strict gate alone would let the
@@ -1352,10 +1356,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
           shot.wallClockFps,
           `${shot.name}: wall-clock fps fell below the committed floor`,
         ).toBeGreaterThanOrEqual(ceilings.minWallClockFps));
-        gateDelivery(() => expect(
-          shot.frameIntervalMsP95,
-          `${shot.name}: frame-interval p95 exceeded the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.maxFrameIntervalMsP95));
+        const p95Ceiling = ceilings.maxFrameIntervalMsP95;
+        if (p95Ceiling !== undefined) {
+          gateDelivery(() => expect(
+            shot.frameIntervalMsP95,
+            `${shot.name}: frame-interval p95 exceeded the committed ceiling`,
+          ).toBeLessThanOrEqual(p95Ceiling));
+        }
       }
       // Gate 0-a: drawCalls is a host-independent counter (byte-identical
       // across the pinning runs), so it stays hard on every host, outside

@@ -574,6 +574,12 @@ not evidence about where the floor belongs.
 | `forest-line-highsun` | 120.2 | 9.2 ms | 0 | 0 | 9.6 ms | 147 | 484.7 MiB |
 | `cliff-60m` | 120.1 | 9.1 ms | 0 | 0 | 10.1 ms | 163 | 486.4 MiB |
 | `water-3m` | 120.0 | 9.4 ms | 0 | 0 | 10.0 ms | 129 | 483.9 MiB |
+| `veg-seam-1600ft-oblique` | 120.2 | 10.7 ms | 0 | 0 | 9.9 ms | 144 | 484.9 MiB |
+| `veg-seam-near-500ft` | 120.2 | 10.7 ms | 0 | 0 | 9.6 ms | 152 | 484.9 MiB |
+| `terrain-material-1600ft-down` | 119.8 | 13.9 ms | 0 | 0 | 9.2 ms | 172 | 486.4 MiB |
+| `horizon-shadow-far-annulus` | 119.9 | 10.7 ms | 0 | 0 | 9.6 ms | 148 | 485.8 MiB |
+| `canopy-backlit-lowsun` | 120.3 | 10.6 ms | 0 | 0 | 10.0 ms | 156 | 485.6 MiB |
+| `night-moonlit` | 120.0 | 10.7 ms | 0 | 0 | 9.8 ms | 152 | 485.1 MiB |
 
 **All twenty-four clear** the strict FPS, p95, hitch-count and maximum-frame
 contract, with Phase 6's water, wetness, ecology, talus, canopy handoff and GPU

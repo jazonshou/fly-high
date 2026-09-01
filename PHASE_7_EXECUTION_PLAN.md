@@ -983,6 +983,66 @@ it reinstates that artifact.
 
 ---
 
+## 10b. Carried structural item — the ratchet is only as sound as the quietest set it has seen
+
+**Filed 2026-09-01 by `SWE II 2` at the PM's request, during the R4 floor
+re-pin. Not a defect with a reproduction — a property of the mechanism that
+nobody has looked at, and it will not surface as a red test.**
+
+`ratchetedFloorsFrom` keeps the **stricter** of (previous pin, fresh
+derivation), field by field. That is right, and it is load-bearing: a raw
+re-derivation from the 2026-09-01 runs would have loosened a majority of the
+shots carrying a predecessor, which is how a regression gets laundered into a
+baseline. **But min-ratcheting is not symmetric in what it remembers.** One
+unusually quiet run set permanently imprints its tightness, because no later set
+can ever relax it, and nothing records that the ceiling came from a lucky night.
+
+**The measurement that exposed it**, taken with one tool across the three
+retained candidate sets on the same host:
+
+| set | fps median spread | p95 median spread | shots with p95 spread ≥ 1.0 ms |
+|---|---|---|---|
+| 2026-09-01 (`3053b8f`, the R4 pinning runs) | 0.120 | 0.500 | 8 of 30 |
+| 2026-08-31 evening | 0.114 | 0.200 | 1 of 27 |
+| 2026-08-28 | 0.312 | 0.300 | 5 of 21 |
+
+**Near-identical fps stability, 2.5× the tail spread.** The consequence for the
+gate: `cruise-horizon`'s committed `maxFrameIntervalMsP95` of 11.4 ms leaves
+1.00 ms above the 2026-09-01 measured max while that shot varies 1.10 ms
+run-to-run — a ceiling tighter than the shot's own noise, which will redden on a
+capture that regressed nothing. It is carried as a **named exemption** in
+`tests/delivery-floors.test.ts` (`P95_HEADROOM_EXEMPT`) with a guard asserting
+every exempt shot still fails the check, so the entry cannot outlive its reason.
+
+**What is NOT claimed:** that 11.4 came from a tail-quiet set. The 2026-08-30
+pinning runs are **not retained** under `tests/perf/artifacts/`, so the
+mechanism is demonstrated and this particular instance is not. Verifying it
+needs those runs or a re-pin from a set whose tail is measured.
+
+**The generalisation, which is the reason to file it:** the "quiet host" check
+that clears a set for pinning (`drift-check`) reads `wallClockFps` — **a mean
+over ~1800 frames**. Delivery floors include three tail order statistics
+(`maxFrameIntervalMsP95`, `p999FrameMs`, `hitchCount`). **A verdict computed on
+the mean does not certify the tail**, and the table above is the counter-example.
+Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
+
+**Work this implies, unscheduled:**
+1. Make the quiet-host check report per-field spread for the fields actually
+   being pinned, not fps alone. The five shots in `TAIL_DEFERRED_SHOTS` are
+   waiting on exactly this.
+2. Decide whether a floor should carry the **tail spread of the set it came
+   from**, so a later reader can tell a tight ceiling from a lucky one. Today a
+   floor records its value and its provenance runs, but nothing about how noisy
+   those runs were.
+3. Retain the runs a floor was pinned from, or the provenance is unfalsifiable —
+   as it is for the 2026-08-30 pins right now.
+4. Revisit `SAMPLE_SPREAD_TOLERANCE_FPS = 0.5`. Two shots have come within 4% of
+   it (`canopy-1200ft` 0.486, `grove-meadow-2m` 0.480). **It must not be widened
+   to make a pin fit**; the open question is whether 0.5 is the right number at
+   all, and it is an fps tolerance being used on sets whose tails differ 2.5×.
+
+---
+
 ## 11. Deviation log
 
 - **D-0 (at planning, Jason Q3):** **taxiway lighting, apron markings, tie-downs, GSE and

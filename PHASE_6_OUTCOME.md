@@ -155,8 +155,19 @@ one pointed the wrong way.
   `Logger.Error`, plus a timeout race — but `tests/perf/**` is excluded from `npm test` and
   `npm run verify`, and `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`.
   **The residual is CI wiring, not construction.** Verified here.
-- **One documentation survivor**: [vitest.perf.config.ts:9](vitest.perf.config.ts) still
-  says the harness "renders the sixteen canonical shots". It is 24. Verified here.
+- **One documentation survivor**: [vitest.perf.config.ts:9](vitest.perf.config.ts) said
+  the harness rendered sixteen shots while the list held **24 at the time of writing**.
+  Fixed by pointing the docblock at `PERF_CAPTURE_SHOTS` rather than restating a number,
+  because a restated count goes stale on the next append — **which it promptly did: more
+  shots were appended the same night, and the `docs-truth` guard then caught this very
+  line for restating the number in turn.** The count is deliberately not written here;
+  `PERF_CAPTURE_SHOTS` is its only authority.
+
+  *Recorded because it is the guard's own limitation, found on first contact: the check
+  keys on the phrase "N canonical shots" and cannot distinguish a live claim from a
+  quoted historical one. Rephrasing away from the pattern is the workaround; teaching it
+  to detect quotation would be guessing at intent. It narrows the class rather than
+  closing it, which is the honest description of what it does.*
 - **Four latent vegetation defects (L-1…L-4)**, filed in `PHASE_7_EXECUTION_PLAN.md` §10a
   with per-row provenance. **No committed capture shot can see three of them.** L-4's 0.510
   far/mid ratio is explicitly unverified and rests on one measurement.
