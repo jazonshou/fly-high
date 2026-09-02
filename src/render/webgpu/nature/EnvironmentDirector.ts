@@ -341,9 +341,46 @@ function smooth01(t: number): number {
   return x * x * (3 - 2 * x);
 }
 
-/** The §2.1 twilight dip factor from the sun-elevation sine (Option B). */
+/**
+ * The §2.1 twilight dip factor from the sun-elevation sine (Option B).
+ *
+ * **THE RISE NARROWED 2026-09-02 ON NEW INPUT FROM JASON**, the same
+ * objective-bound-moves-on-new-information pattern this record already uses
+ * twice. His original direction stands — *"golden hour bright and warm, blue
+ * hour properly dark"* — and he has now seen the sunward twilight frame and
+ * finds it **too dark**. He chose to NARROW THE BAND rather than weaken the
+ * dip, so 0.45 is untouched and `dusk-mesopic`'s approved darkness is
+ * preserved exactly.
+ *
+ *     rise was  -0.05 .. +0.02  (width 0.07)   both shots took the full dip
+ *     rise now  -0.095 .. -0.056 (width 0.039)  sunset out, dusk unchanged
+ *
+ * **THE ENGINEERING PROBLEM IS THE TIGHTNESS.** `sunset-sunward` sits at sine
+ * −0.0523 and `dusk-mesopic` at −0.1067 — **0.0543 apart** — and the whole
+ * transition has to fit between them, so margin on both sides in the amounts
+ * one would like is not available. **The margin is deliberately ASYMMETRIC:
+ * 0.0116 of sine for dusk below the full-dip end against 0.0037 for sunset
+ * above the release.** Dusk's darkness is the protection and sunward brightness
+ * is the objective; a protection should fail safe and an objective should fail
+ * visible, so if the ephemeris moves, sunset flips back to dimmed before dusk
+ * brightens.
+ *
+ * **THE RELEASE IS UNTOUCHED AND MUST STAY SO.** `twilightArchStrength`
+ * (§2.6, `AerialPerspective`) is a separate function that shares ONLY these
+ * release edges, deliberately, and six consumers hang on it — the dome arch,
+ * the ambient-floor cut, σ's arch key, the lamp twilight ramp, the moon
+ * recession, and Jason's warm lobe and Belt premultipliers. The shared edges
+ * are pinned behaviourally at −0.16 and −0.26 in
+ * `render.webgpu-aerial-perspective.test.ts`. Narrowing the RISE is safe by
+ * construction; moving the release is not.
+ *
+ * **In time, the narrower window is 15-18 minutes against the previous 28**,
+ * measured against the shipping ephemeris near sunset — a real change to how
+ * fast blue hour arrives, and the one part of this Jason has not been asked
+ * about directly.
+ */
 export function twilightExposureDipFactor(sunElevationSine: number): number {
-  const rise = 1 - smooth01((sunElevationSine + 0.05) / 0.07);
+  const rise = 1 - smooth01((sunElevationSine + 0.095) / 0.039);
   const fall = smooth01((sunElevationSine + 0.26) / 0.1);
   return 1 - TWILIGHT_EXPOSURE_DIP * rise * fall;
 }
