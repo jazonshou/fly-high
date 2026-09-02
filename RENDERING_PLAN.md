@@ -801,7 +801,46 @@ Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in or
 > this table publishes**, and passes only because a second, higher ceiling
 > (`PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495`) is what actually gates.
 > A reader taking 480 as headroom is wrong twice: wrong quantity, and wrong
-> direction. Real tier-1 headroom is **2.7 MiB (0.5%)**. Never quote the estimate.
+> direction. ~~Real tier-1 headroom is **2.7 MiB (0.5%)**. Never quote the
+> estimate.~~
+>
+> **STRUCK 2026-09-01. BOTH SENTENCES ARE WRONG, AND THEY FAIL IN OPPOSITE
+> DIRECTIONS — which is why striking one without the other would be worse than
+> leaving both.**
+>
+> **The 2.7 MiB is not a real quantity.** `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB`
+> was derived FROM the inventory, twice, and from nothing else — there is no
+> device limit, no product requirement, no physical budget behind it:
+>
+>     489.0 measured (2026-08-30)  +  6.0 slack  =  495.0   the constant, exactly
+>     492.3 re-measured (6-11.4)   +  2.7        =  495.0   same constant, re-justified
+>
+> So "headroom" here is the distance between a measurement and a number chosen
+> to sit just above that measurement. **The inventory over-counts via the
+> `bytesPerTexel` type-versus-format error, and the ceiling inherits the whole
+> error.** The Senior Principal established the inflation is R32F-site-selective
+> and therefore constant-additive at a fixed tier — which is exactly why the
+> ratchet kept catching real growth all week while being absolutely wrong, and
+> why **no reclaimable figure is quoted here.** Both terms of (inflation at the
+> binding shot) − (growth absorbed since 08-30) are unknowable until SWE II 2's
+> four-site audit lands and the fixed instrument is re-measured at the current
+> 36-shot set.
+>
+> **And "never quote the estimate" invites the opposite error, which is equally
+> available.** The estimator is not the fallback. Measured by the Principle
+> Engineer across the cascade arms: `estimatedGpuMemoryMiB` read **591.3 in both
+> the shipped and the naive arm** while `inventoriedGpuMemoryMiB` read **657.7
+> and 785.7** — **a 128 MiB allocation change completely invisible to the
+> estimator.** One instrument is blind to whole categories of allocation; the
+> other counts bytes that are not there. **Neither is the truth, and the honest
+> reading of any memory number in this repository today is that it names an
+> instrument, not a quantity.**
+>
+> Until the audit and re-measure land: quote the inventory for RELATIVE change
+> at a fixed tier, where the constant-additive error cancels; quote neither for
+> an absolute figure; and treat one concrete decision as reopened rather than
+> settled — `7-11`'s 512² refusal at 2.67 MiB, which the Senior Principal finds
+> affordable roughly 60× over.
 
 | Parameter | Low | **Balanced (default)** | High | Ultra |
 |---|---|---|---|---|
