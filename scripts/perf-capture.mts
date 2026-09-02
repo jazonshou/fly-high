@@ -320,6 +320,26 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "tests/perf/artifacts/rebaseline-candidates/2026-09-02T03-05-29.027Z/report.json",
 });
 
+/**
+ * The SSIM gate's failure text, as a FUNCTION so the delivery path can be
+ * tested without a GPU adapter.
+ *
+ * **This exists because the source-scan version of that test did not work.** It
+ * asserted the driver mentioned `sanctionedRebaseline` near the gate, and
+ * passed when the composition was disabled with the identifier left in place —
+ * a guard checking for a TOKEN while the BEHAVIOUR was broken.
+ */
+export function ssimBaselineFailureMessage(
+  shotName: string,
+  sanctionedRebaseline?: string,
+): string {
+  const base = `${shotName} diverged from the committed baseline — a regression unless this is `
+    + "a sanctioned churn point (then generate and review a perf:capture:candidate)";
+  return sanctionedRebaseline === undefined
+    ? base
+    : `${base}\n\nPRE-AUTHORISED REBASELINE for this shot: ${sanctionedRebaseline}`;
+}
+
 /** Human-readable inventoried-memory failures, shared by driver and unit tests. */
 export function inventoriedMemoryFailures(
   inventoriedGpuMemoryMiB: number,
@@ -441,6 +461,17 @@ export interface PerfCaptureShotDefinition {
    * temporal variance than the fixed-viewport shots (measured 0.981 against
    * its own fresh baseline); everything else uses PERF_CAPTURE_SSIM_THRESHOLD.
    */
+  /**
+   * A rebaseline this shot is EXPECTED to need, pre-authorised before the
+   * change that causes it lands — text shown inline when its SSIM gate fails.
+   *
+   * **The failure and its explanation must arrive together.** The generic
+   * message says "a regression unless this is a sanctioned churn point", which
+   * leaves whoever meets it to work out whether their own change did it. For a
+   * churn point known IN ADVANCE, that is a puzzle we chose not to solve for
+   * them: the person most likely to hit it is the one who did not cause it.
+   */
+  readonly sanctionedRebaseline?: string;
   readonly ssimThreshold?: number;
   /** Optional override for whole-frame, per-channel RGB SSIM. */
   readonly rgbSsimThreshold?: number;
@@ -1013,6 +1044,35 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 84,
     clock: { dayOfYear: 171, solarTimeHours: 19 },
+    /**
+     * **PRE-AUTHORISED: this baseline is WRONG and must be re-shot when the
+     * bathymetry window fix lands.** Written before the fix, so whoever meets
+     * the red SSIM meets an explanation rather than a puzzle.
+     *
+     * **THE MECHANISM.** The bathymetry NEAR-clipmap selects its window with a
+     * Chebyshev box test — `max(|dx|,|dz|) <= 0.48 * window`, no blend — so
+     * 16 m texels inside meet 128 m texels outside across one hard `if`. The
+     * near half-span computes to 7,864 m, exactly where the slab's top edge
+     * falls. **The water is REAL and correctly placed**; what is wrong is a
+     * shading discontinuity drawn across it.
+     *
+     * ~~A flat water plate drawn over DRY LAND; every row it occupies maps to
+     * terrain 49-831 m above sea level.~~ **STRUCK.** The row figures were
+     * right and the conclusion was not: that ray sampling was a SINGLE AZIMUTH
+     * and the slab spans the frame's full +/-31 deg. At az -30 the terrain is
+     * genuinely below sea level (-8 to -31 m across 6,000-8,500 m). **The
+     * flat-ground range model was bounded and the AZIMUTH was not.** Kept
+     * struck rather than deleted: the figures were quoted onward.
+     *
+     * **Because the artifact is IN the reference, every SSIM comparison since
+     * has asserted it is correct.** The frame changing IS the fix working.
+     */
+    sanctionedRebaseline:
+      "This baseline contains the bathymetry near-clipmap's hard window edge — a "
+      + "shading discontinuity at the 7,864 m Chebyshev boundary, drawn across "
+      + "correctly-placed water. When the window fix lands, this frame MUST change "
+      + "and this gate MUST go red. Re-shoot the baseline and review the candidate "
+      + "— the change is the fix, not a regression.",
     locate: "coast",
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.

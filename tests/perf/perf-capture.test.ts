@@ -48,6 +48,7 @@ import {
   sustainedFpsFromFrameIntervals,
   temporalStability,
   inventoriedMemoryFailures,
+  ssimBaselineFailureMessage,
   deliveryFailuresAgainst,
   perfCaptureDeliveryContract,
   tier1BalancedPerformanceFailures,
@@ -1791,8 +1792,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
           gateAlways(() => expect(
             shot.ssimAgainstBaseline,
-            `${shot.name} diverged from the committed baseline — a regression unless this is `
-            + "a sanctioned churn point (then generate and review a perf:capture:candidate)",
+            ssimBaselineFailureMessage(shot.name, definition.sanctionedRebaseline),
           ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD));
         }
         if (shot.rgbSsimAgainstBaseline !== null && !REBASELINE) {
