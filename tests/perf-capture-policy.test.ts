@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   PERF_CAPTURE_FRAME_BUDGET_MS,
   PERF_CAPTURE_MAX_FRAME_MS,
@@ -15,7 +16,7 @@ const driver = readFileSync(
   "utf8",
 );
 const packageJson = JSON.parse(
-  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  readSource(new URL("../package.json", import.meta.url)),
 ) as { readonly scripts: Readonly<Record<string, string>> };
 const rendererWorkflow = readFileSync(
   new URL("../.github/workflows/gpu-tests.yml", import.meta.url),

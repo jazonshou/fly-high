@@ -26,6 +26,7 @@ import {
   groundCoverLaneCount,
 } from "../src/render/webgpu/detail/groundCoverLaw";
 import { GROUND_COVER_COMPUTE_WGSL } from "../src/render/webgpu/detail/groundCoverWgsl";
+import { readSource } from "./support/sourceText";
 import {
   SURFACE_MATERIALS,
   SurfaceMaterial,
@@ -470,7 +471,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
 
   it("pins @babylonjs/core to an exact version", () => {
     const manifest = JSON.parse(
-      readFileSync(join(projectRoot, "package.json"), "utf8"),
+      readSource(join(projectRoot, "package.json")),
     ) as { dependencies?: Record<string, string> };
     const pinned = manifest.dependencies?.["@babylonjs/core"];
     // No caret, no tilde, no range: R4 asks for a pin because the feature
@@ -511,7 +512,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
       "utf8",
     );
     expect(system).not.toMatch(/addShadowCaster|renderList|customRenderTargets/u);
-    const renderer = readFileSync(join(projectRoot, "src/render/FlightRenderer.ts"), "utf8");
+    const renderer = readSource(join(projectRoot, "src/render/FlightRenderer.ts"));
     const casters = renderer.slice(
       renderer.indexOf("private syncDynamicShadowCasters()"),
       renderer.indexOf("private syncDynamicShadowCasters()") + 2_000,

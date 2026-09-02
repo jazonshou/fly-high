@@ -4,6 +4,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { GroundCoverSystem } from "../src/render/webgpu/detail/GroundCoverSystem";
 import type { TerrainSample } from "../src/world/types";
+import { readSource } from "./support/sourceText";
 
 /**
  * `VITE_PERF_HIDE_VEGETATION` must actually hide the compute ground cover.
@@ -35,8 +36,8 @@ function flatSample(): TerrainSample {
   } as unknown as TerrainSample;
 }
 
-const SOURCE = readFileSync(
-  "src/render/webgpu/detail/GroundCoverSystem.ts", "utf8");
+const SOURCE = readSource(
+  "src/render/webgpu/detail/GroundCoverSystem.ts");
 
 describe("ground-cover capture suppression", () => {
   it("routes EVERY ring enable through the one gate", () => {
@@ -86,7 +87,7 @@ describe("ground-cover capture suppression", () => {
   it("is reached from the renderer's single capture entry point", () => {
     // The harness calls `setVegetationVisibleForCapture` and nothing else, so
     // the system's flag has to be reachable from there or it is dead code.
-    const renderer = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const renderer = readSource("src/render/FlightRenderer.ts");
     const body = renderer.slice(
       renderer.indexOf("setVegetationVisibleForCapture(visible: boolean): number"),
     ).slice(0, 1400);

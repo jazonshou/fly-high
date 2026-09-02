@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 /**
  * Every system that CAN be rebased must actually BE rebased.
@@ -62,12 +63,12 @@ function sourceFiles(directory: string): string[] {
 function declaringFiles(): string[] {
   return sourceFiles("src/render")
     .filter((file) => file !== RENDERER)
-    .filter((file) => /^\s{2}setFloatingOrigin\s*\(/m.test(readFileSync(file, "utf8")));
+    .filter((file) => /^\s{2}setFloatingOrigin\s*\(/m.test(readSource(file)));
 }
 
 /** Distinct `this.x.setFloatingOrigin` receivers inside the rebase method. */
 function rebasedReceivers(): string[] {
-  const source = readFileSync(RENDERER, "utf8");
+  const source = readSource(RENDERER);
   const start = source.indexOf("private updateFloatingOrigin(");
   expect(start, `${RENDERER} has no updateFloatingOrigin`).toBeGreaterThan(-1);
   const end = source.indexOf("\n  private ", start + 10);
@@ -107,7 +108,7 @@ describe("floating-origin coverage", () => {
     // The subtler version: a system initialised once with (0, 0) and never
     // called again looks wired and is not. Every receiver called anywhere in
     // the renderer must also be called inside `updateFloatingOrigin`.
-    const source = readFileSync(RENDERER, "utf8");
+    const source = readSource(RENDERER);
     const everywhere = [...new Set(
       [...source.matchAll(/this\.([A-Za-z]+)\??\.setFloatingOrigin/g)].map((m) => m[1]!),
     )].sort();

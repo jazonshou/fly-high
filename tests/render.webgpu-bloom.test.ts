@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { readSource } from "./support/sourceText";
 import {
   BLOOM_BLUR_RATIO,
   BLOOM_BLUR_SIGMA,
@@ -139,7 +140,7 @@ describe("the shipped shader carries the tested numbers", () => {
     // detaches for daylight, so the textbook half-resolution bright pass would
     // have silently halved scene resolution for most of the day -- intermittent,
     // time-of-day dependent, and invisible to every other test here.
-    const source = readFileSync("src/render/webgpu/lighting/BloomPass.ts", "utf8");
+    const source = readSource("src/render/webgpu/lighting/BloomPass.ts");
     const bright = /this\.bright = new PostProcess\(([\s\S]*?)\);/.exec(source)?.[1];
     expect(bright, "could not find the bright pass constructor").toBeTruthy();
     expect(
@@ -153,7 +154,7 @@ describe("the shipped shader carries the tested numbers", () => {
 });
 
 describe("first-pass MSAA ownership is derived in one place", () => {
-  const source = readFileSync("src/render/FlightRenderer.ts", "utf8");
+  const source = readSource("src/render/FlightRenderer.ts");
 
   it("has exactly one assignment per chain member", () => {
     // Ownership used to be two hand-written branches in two methods that had

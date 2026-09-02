@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   TerrainErosionReadbackFaultError,
   decodeOrderableFloatBits,
@@ -101,6 +102,5 @@ describe("erosion orderable readback fault", () => {
 });
 
 function readFileSyncSafe(path: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require("node:fs").readFileSync(path, "utf8") as string;
+  return readSource(path);
 }

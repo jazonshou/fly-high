@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   __setProfileOverrideForCaptureExperimentsOnly,
   resolveWebGpuQualityProfile,
@@ -44,7 +45,7 @@ describe("capture-only profile override stays out of shipping code", () => {
       .toBeGreaterThan(50);
 
     const offenders = files.filter(
-      (path) => path !== DEFINITION_SITE && readFileSync(path, "utf8").includes(SETTER),
+      (path) => path !== DEFINITION_SITE && readSource(path).includes(SETTER),
     );
     expect(
       offenders,
@@ -60,7 +61,7 @@ describe("capture-only profile override stays out of shipping code", () => {
     // would return false and the guard would pass while checking nothing. This
     // fails instead, and names what to update.
     expect(
-      readFileSync(DEFINITION_SITE, "utf8").includes(SETTER),
+      readSource(DEFINITION_SITE).includes(SETTER),
       `${SETTER} is not defined in ${DEFINITION_SITE}. Either it was renamed — in `
       + "which case update SETTER here, because the scan above is now vacuous — or "
       + "the experiment is over and this guard and the hook should both be deleted.",

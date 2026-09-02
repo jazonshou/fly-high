@@ -11,6 +11,7 @@ import {
 } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { rodFractionForAdaptedLuminance } from "../src/render/webgpu/atmosphere/ScotopicVision";
 import { dayLengthHours, solarDeclinationRadians } from "../src/world/environmentClock";
+import { readSource } from "./support/sourceText";
 
 /**
  * 1C-1 — the environment director's NOAA solar position, and 1C-9's
@@ -113,7 +114,7 @@ describe("time-of-day label containment (1C-9, assertion 30)", () => {
           continue;
         }
         if (!/\.(ts|tsx)$/.test(entry)) continue;
-        if (readFileSync(path, "utf8").includes("TimeOfDayPreset")) {
+        if (readSource(path).includes("TimeOfDayPreset")) {
           offenders.push(path);
         }
       }

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 import {
   gpuTimingEnabledAtStartup,
@@ -53,7 +54,7 @@ function sourceFiles(directory: string): string[] {
 function computeShaderSites(): Array<{ file: string; wrapped: boolean }> {
   const sites: Array<{ file: string; wrapped: boolean }> = [];
   for (const path of sourceFiles(renderRoot)) {
-    const source = readFileSync(path, "utf8");
+    const source = readSource(path);
     let index = source.indexOf("new ComputeShader(");
     while (index >= 0) {
       const prefix = source.slice(Math.max(0, index - 24), index);

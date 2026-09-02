@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Constants } from "@babylonjs/core/Engines/constants";
+import { readSource } from "./support/sourceText";
 
 /**
  * The inventory's per-texel arithmetic must read a texture's FORMAT, not only
@@ -30,7 +31,7 @@ import { Constants } from "@babylonjs/core/Engines/constants";
  * was never wrong about RGBA — it was wrong about never asking.
  */
 
-const SOURCE = readFileSync("src/render/FlightRenderer.ts", "utf8");
+const SOURCE = readSource("src/render/FlightRenderer.ts");
 
 /**
  * Source with comments removed.
@@ -166,7 +167,7 @@ describe("the GPU memory inventory reads texture FORMAT, not only type", () => {
         const full = `${dir}/${entry.name}`;
         if (entry.isDirectory()) { walkDir(full); continue; }
         if (!entry.name.endsWith(".ts")) continue;
-        for (const m of readFileSync(full, "utf8").matchAll(/Constants\.(TEXTURETYPE_[A-Z_]+)/gu)) {
+        for (const m of readSource(full).matchAll(/Constants\.(TEXTURETYPE_[A-Z_]+)/gu)) {
           used.add(m[1]!);
         }
       }

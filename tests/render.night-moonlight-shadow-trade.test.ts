@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB } from "../scripts/perf-capture.mts";
+import { readSource, rawSource } from "./support/sourceText";
 
 /**
  * `7-9` — the moonlight-shadow trade, **measured rather than inherited.**
@@ -137,13 +138,25 @@ describe("7-9: the moonlight-shadow trade is a measured no", () => {
 describe("7-9: PCSS stays declined, with the price rather than the judgement", () => {
   it("the tier-2 note that defers this is still the shipping one", () => {
     // The decline below is only binding while the reason it cites is real.
-    const source = readFileSync("src/render/webgpu/core/QualityProfile.ts", "utf8");
+    //
+    // DELIBERATE PROSE ANCHOR — `rawSource`, not `readSource`. This assertion is
+    // ABOUT the note: it checks that the recorded reason for deferring PCSS is
+    // still in the file. Stripping comments here would make it assert nothing
+    // and pass forever. Every other source guard in the suite strips by default;
+    // this is the exception and it is one on purpose.
+    const note = rawSource("src/render/webgpu/core/QualityProfile.ts");
     expect(
-      source.includes("`computeShadowWithCSMPCSS` needs a second"),
+      note.includes("`computeShadowWithCSMPCSS` needs a second"),
       "the PCSS deferral note moved or changed; re-derive before quoting this decline",
     ).toBe(true);
-    expect(source.includes("filter: ShadowGenerator.FILTER_PCF")
-      || source.includes("FILTER_PCF")).toBe(true);
+    // KNOWN DEFECTIVE, owned by `7-10`'s guard repair, left raw so it keeps its
+    // current (green) behaviour rather than being silently changed here:
+    // `FILTER_PCF` occurs in `QualityProfile.ts` EXACTLY ONCE, inside a comment.
+    // The shipped assignment is in `AtmosphereSystem.ts`, so this asserts on
+    // prose and would stay green if the filter changed. Do not read it as
+    // evidence about the shipped filter.
+    expect(note.includes("filter: ShadowGenerator.FILTER_PCF")
+      || note.includes("FILTER_PCF")).toBe(true);
   });
 
   it("reproduces the retired 128 MiB figure, so the byte size is the right one", () => {

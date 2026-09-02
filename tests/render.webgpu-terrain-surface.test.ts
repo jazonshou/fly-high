@@ -57,6 +57,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "../src/world";
 import { DEFAULT_AIRPORT } from "../src/world/airport";
+import { readSource } from "./support/sourceText";
 
 /**
  * 3-2/3-3/3-4/3-5/3-6/3-7/3-10 — the terrain surface plugin.
@@ -74,7 +75,7 @@ const BABYLON_WGSL = join(__dirname, "..", "node_modules", "@babylonjs", "core",
 function shippedPbrFragmentSource(): string {
   // The anchors span pbr.fragment and one of its includes; the injection runs
   // after include resolution, so the concatenation is what the regex sees.
-  const main = readFileSync(join(BABYLON_WGSL, "pbr.fragment.js"), "utf8");
+  const main = readSource(join(BABYLON_WGSL, "pbr.fragment.js"));
   const reflectance0 = readFileSync(
     join(BABYLON_WGSL, "ShadersInclude", "pbrBlockReflectance0.js"),
     "utf8",
@@ -89,8 +90,8 @@ function shippedPbrFragmentSource(): string {
 }
 
 function shippedTerrainVertexNormalConsumers(): string {
-  const pbr = readFileSync(join(BABYLON_WGSL, "pbr.vertex.js"), "utf8");
-  const shadow = readFileSync(join(BABYLON_WGSL, "shadowMap.vertex.js"), "utf8");
+  const pbr = readSource(join(BABYLON_WGSL, "pbr.vertex.js"));
+  const shadow = readSource(join(BABYLON_WGSL, "shadowMap.vertex.js"));
   return `${pbr}\n${shadow}`;
 }
 

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MAX_EXPOSURE, SCENE_UNIT_TO_NITS } from "../src/render/webgpu/nature/EnvironmentDirector";
+import { readSource } from "./support/sourceText";
 import {
   SCOTOPIC_HIGHLIGHT_GAIN,
   SCOTOPIC_HIGHLIGHT_KNEE,
@@ -70,7 +71,7 @@ describe("7-4a: scotopic dynamic range", () => {
     // So tie the model to the artifact. If either of these two lines moves, the
     // model is stale and the rest of this file must be re-derived before it is
     // trusted again.
-    const shader = readFileSync("src/render/webgpu/atmosphere/ScotopicVision.ts", "utf8");
+    const shader = readSource("src/render/webgpu/atmosphere/ScotopicVision.ts");
     expect(
       shader.includes("let sigma = max(uniforms.scotopicAdaptedLuminance, 1.0e-5);"),
       "the rod response no longer takes sigma from scotopicAdaptedLuminance",
@@ -94,7 +95,7 @@ describe("7-4a: scotopic dynamic range", () => {
     // And the auto-centring: the uniform is NAMED for adapted luminance but is
     // FED the scene key, which is the whole reason sigma cancels. This is the
     // wiring 7-4a must not casually 'correct'.
-    const renderer = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const renderer = readSource("src/render/FlightRenderer.ts");
     expect(
       renderer.includes("adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2,"),
       "sigma is no longer fed the SCENE KEY — the auto-centring invariant is gone",

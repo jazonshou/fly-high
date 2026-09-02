@@ -33,6 +33,7 @@ import {
 } from "../src/render/webgpu/atmosphere/StarCatalogue";
 import { DEFAULT_WORLD_LATITUDE_DEGREES } from "../src/world/world";
 import { TIME_OF_DAY_PRESET_CLOCKS } from "../src/settings";
+import { readSource } from "./support/sourceText";
 
 /**
  * **Raising `MOON_PEAK_LIGHT_INTENSITY` cannot make moonlit ground brighter.**
@@ -136,7 +137,7 @@ describe("does a moon-intensity raise reach the night image?", () => {
     // Every assertion below is arithmetic over a restatement. If any of these
     // three moves, the restatement is stale and the conclusions must be
     // re-derived before they are trusted.
-    const atmosphere = readFileSync("src/render/webgpu/atmosphere/AtmosphereSystem.ts", "utf8");
+    const atmosphere = readSource("src/render/webgpu/atmosphere/AtmosphereSystem.ts");
     expect(
       atmosphere.includes("+ moonIntensity * Math.max(moonDirection.y, 0)"),
       "the scene key no longer contains the moon term — the coupling this file describes is gone",
@@ -152,7 +153,7 @@ describe("does a moon-intensity raise reach the night image?", () => {
       + " (the §2.6 window must key on the SUN's sine alone; if this line changed, re-derive"
       + " the ANCHOR EXTENSION below before trusting anything in this file)",
     ).toBe(true);
-    const renderer = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const renderer = readSource("src/render/FlightRenderer.ts");
     expect(
       renderer.includes("adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2,"),
       "sigma is no longer fed the scene key — the auto-centring this file depends on is gone",

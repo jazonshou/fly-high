@@ -16,6 +16,7 @@ import {
   resolveEnvironmentState,
 } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
+import { readSource } from "./support/sourceText";
 
 /**
  * 1C-3 — the transmittance/multiple-scattering model and its LUT bake, and
@@ -157,7 +158,7 @@ describe("no private exposure multiplies (1C-2, assertion 29)", () => {
           continue;
         }
         if (!/\.(ts|tsx)$/.test(entry)) continue;
-        const content = readFileSync(path, "utf8");
+        const content = readSource(path);
         if (/uniforms\.exposure|uniform exposure\b|\* exposure;/.test(content)) {
           offenders.push(path);
         }

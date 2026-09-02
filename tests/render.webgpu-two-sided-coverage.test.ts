@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readSource } from "./support/sourceText";
 
 /**
  * COVERAGE, not correctness: does the winding guard look at every surface that
@@ -83,7 +84,7 @@ function discoverTwoSidedLitMaterials(): TwoSidedSite[] {
   const PROXIMITY_LINES = 6;
   const found = new Map<string, TwoSidedSite>();
   for (const file of sourceFiles(WEBGPU_ROOT)) {
-    const lines = readFileSync(file, "utf8").split("\n");
+    const lines = readSource(file).split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const lit = /(\w+)\.twoSidedLighting\s*=\s*true/.exec(lines[index]!);
       if (!lit) continue;
@@ -171,7 +172,7 @@ const DISCOVERED = discoverTwoSidedLitMaterials();
 
 /** The `cases()` names the winding guard actually checks. */
 function windingGuardCaseNames(): string[] {
-  const source = readFileSync("tests/render.webgpu-prototype-winding.test.ts", "utf8");
+  const source = readSource("tests/render.webgpu-prototype-winding.test.ts");
   return [...source.matchAll(/out\.push\(\[\s*`?"?([A-Za-z][\w.$*{}]*)/g)].map((m) => m[1]!);
 }
 

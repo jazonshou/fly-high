@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 /**
  * Every define a `MaterialPluginBase` WRITES must appear in the define map it
@@ -56,7 +57,7 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 describe("material plugin define declaration", () => {
   it("declares every define it writes, on every MaterialPluginBase", () => {
     const files = sourceFiles("src/render/webgpu")
-      .filter((path) => readFileSync(path, "utf8").includes("MaterialPluginBase"));
+      .filter((path) => readSource(path).includes("MaterialPluginBase"));
     expect(files.length, "no MaterialPluginBase files found — the scan is vacuous")
       .toBeGreaterThan(2);
 
@@ -65,7 +66,7 @@ describe("material plugin define declaration", () => {
     let checkedDefines = 0;
 
     for (const path of files) {
-      const source = readFileSync(path, "utf8");
+      const source = readSource(path);
       // Written: `defines["NAME"] = ...` and `defines.NAME = ...`
       const written = new Set<string>();
       for (const m of source.matchAll(/\bdefines\[\s*["'`]([A-Z0-9_]+)["'`]\s*\]\s*=/gu)) {

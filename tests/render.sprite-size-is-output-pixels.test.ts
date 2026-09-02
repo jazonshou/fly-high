@@ -28,9 +28,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { readSource } from "./support/sourceText";
 
 const ROOT = resolve(__dirname, "..");
-const read = (relative: string) => readFileSync(resolve(ROOT, relative), "utf8");
+const read = (relative: string) => readSource(resolve(ROOT, relative));
 
 /** Every `setOutputSize(` call and the arguments up to its closing paren. */
 function outputSizeCalls(source: string): string[] {

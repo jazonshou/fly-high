@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
+import { readSource } from "./support/sourceText";
 import {
   createAirfieldMaterials,
   AIRFIELD_ASPECT_V_START,
@@ -186,7 +187,7 @@ describe("7-11 airfield material synthesis", () => {
     // signage — if those move, update the file list, not the assertion.)
     const sources = [
       "src/render/webgpu/detail/AirportSystem.ts",
-    ].map((path) => readFileSync(path, "utf8")).join("\n");
+    ].map((path) => readSource(path)).join("\n");
     for (const member of ["metal", "concrete", "glass", "steel", "accent"] as const) {
       expect(
         sources.includes(`airfieldMaterials.${member}`),

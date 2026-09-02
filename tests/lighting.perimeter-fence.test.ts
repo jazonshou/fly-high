@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_AIRPORT } from "../src/world/airport";
+import { readSource } from "./support/sourceText";
 import {
   FENCE_LATERAL_OFFSET_METERS,
   FENCE_POST_SPACING_METERS,
@@ -90,7 +91,7 @@ describe("the fence does not cast shadows, deliberately", () => {
     // registration site: casting would cost 1 beauty + 2 cascades = 3 draws
     // per shot instead of 1, to render the shadow of a 1.2 m post 168 m off
     // the centreline. Someone will ask why; the answer is here and at the site.
-    const source = readFileSync("src/render/webgpu/detail/AirportSystem.ts", "utf8");
+    const source = readSource("src/render/webgpu/detail/AirportSystem.ts");
     const casters = /this\.shadowCasters = Object\.freeze\(\[([^\]]*)\]\)/.exec(source);
     expect(casters, "could not find the shadow-caster registration").not.toBeNull();
     expect(

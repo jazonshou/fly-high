@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLUSTERED_MAX_SIMULTANEOUS_LIGHTS } from "../src/render/webgpu/lighting/ClusteredLighting";
+import { readSource } from "./support/sourceText";
 
 /**
  * **How many lights the scene actually has, and why the answer must stay 4.**
@@ -64,7 +65,7 @@ const LIGHT_CONSTRUCTION = /new\s+(Directional|Hemispheric|Point|Spot)Light\s*\(
 function lightSites(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const path of sourceFiles(SRC)) {
-    const code = readFileSync(path, "utf8")
+    const code = readSource(path)
       .replace(/\/\*[\s\S]*?\*\//gu, " ")
       .replace(/(^|[^:])\/\/[^\n]*/gu, "$1 ");
     const count = [...code.matchAll(LIGHT_CONSTRUCTION)].length;

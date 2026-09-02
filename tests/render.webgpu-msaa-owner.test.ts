@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { firstPassSampleAssignment } from "../src/render/FlightRenderer";
+import { readSource } from "./support/sourceText";
 
 /**
  * MSAA beauty-target ownership — `1B-11`.
@@ -71,7 +72,7 @@ describe("MSAA beauty-target ownership", () => {
   });
 
   it("derives ownership in exactly one place", () => {
-    const source = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const source = readSource("src/render/FlightRenderer.ts");
     const count = (pattern: RegExp) => (source.match(pattern) ?? []).length;
     // A second assignment site means someone re-derived the rule locally,
     // which is how the two-holder version stayed correct only by luck.
@@ -83,7 +84,7 @@ describe("MSAA beauty-target ownership", () => {
   });
 
   it("still toggles rod vision, and still has no alpha-to-coverage", () => {
-    const source = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const source = readSource("src/render/FlightRenderer.ts");
     expect(source).toContain("this.scotopic.setEnabled(this.camera, scotopicActive)");
     expect(source).not.toContain("setAlphaToCoverage");
   });

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   inventoriedGpuBufferBytes,
   registerGpuBufferBytes,
@@ -51,7 +52,7 @@ describe("GPU buffer inventory policy", () => {
     const allowed = new Set(UNREGISTERED_ALLOCATION_SITES.map((site) => site.file));
     const offenders: string[] = [];
     for (const file of sourceFiles("src")) {
-      const source = readFileSync(file, "utf8");
+      const source = readSource(file);
       if (!source.includes("new StorageBuffer(")) continue;
       const relative = file.replace(/\\/g, "/");
       if (allowed.has(relative)) continue;
@@ -67,7 +68,7 @@ describe("GPU buffer inventory policy", () => {
 
   it("keeps the unregistered-site list shrinking and justified", () => {
     for (const site of UNREGISTERED_ALLOCATION_SITES) {
-      expect(readFileSync(site.file, "utf8")).toContain("new StorageBuffer(");
+      expect(readSource(site.file)).toContain("new StorageBuffer(");
       expect(site.reason.length).toBeGreaterThan(40);
     }
     // Every allocation site now registers. The list is empty and must stay
@@ -95,7 +96,7 @@ describe("GPU buffer inventory policy", () => {
   });
 
   it("is wired into the renderer's inventory floor", () => {
-    const renderer = readFileSync("src/render/FlightRenderer.ts", "utf8");
+    const renderer = readSource("src/render/FlightRenderer.ts");
     expect(renderer).toContain("inventoriedGpuBufferBytes()");
     const inventory = renderer.slice(
       renderer.indexOf("private inventoryGpuMemoryMiB()"),

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createWorld, sampleWind } from "../src/world";
+import { readSource } from "./support/sourceText";
 import {
   WINDSOCK_FULL_EXTENSION_MPS,
   WINDSOCK_MINIMUM_INDICATION_MPS,
@@ -252,7 +253,7 @@ describe("the renderer actually takes the second sample", () => {
   // sock CAN be driven by its own wind; none proves the renderer DOES it. A
   // sock wired to the aircraft snapshot would pass all of them — which is the
   // precise shape of the trap the plan warned about, one level up.
-  const source = readFileSync("src/render/FlightRenderer.ts", "utf8");
+  const source = readSource("src/render/FlightRenderer.ts");
 
   it("samples wind at the windsock's own point, not only at the aircraft", () => {
     expect(source).toContain("windsockSamplePoint");

@@ -29,6 +29,7 @@ import {
   talusRestWeight,
 } from "../src/render/webgpu/detail/talusField";
 import type { DetailTerrainSample, DetailTerrainSampler } from "../src/render/webgpu/detail/types";
+import { readSource } from "./support/sourceText";
 
 /**
  * `6-7` — talus and scree PLACEMENT.
@@ -210,7 +211,7 @@ describe("6-7 talus placement law", () => {
     // complement of the edge it reads as; a `sin`/`fract` hash collapses into
     // rows once world-anchored ids get large.
     const sources = ["src/render/webgpu/detail/talusField.ts"].map((path) =>
-      readFileSync(join(__dirname, "..", path), "utf8")
+      readSource(join(__dirname, "..", path))
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/.*$/gm, ""));
     for (const code of sources) {

@@ -8,6 +8,7 @@ import {
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
+import { readSource } from "./support/sourceText";
 
 /**
  * Every PBR material that a clustered light can reach must have its light-slot
@@ -45,11 +46,11 @@ describe("clustered material preparation", () => {
     // on the day it is added rather than the day a light silently drops.
     const creators = sourceFiles(ROOT)
       .filter((f) => !f.endsWith("ClusteredLighting.ts"))
-      .filter((f) => /new PBRMaterial\(/.test(readFileSync(f, "utf8")));
+      .filter((f) => /new PBRMaterial\(/.test(readSource(f)));
     expect(creators.length, "no PBRMaterial creation sites found — the scan is broken")
       .toBeGreaterThan(4);
     const unprepared = creators.filter(
-      (f) => !readFileSync(f, "utf8").includes("prepareMaterialForClusteredLighting"));
+      (f) => !readSource(f).includes("prepareMaterialForClusteredLighting"));
     expect(
       unprepared,
       "these files construct a PBRMaterial and never prepare it. The container "
@@ -63,7 +64,7 @@ describe("clustered material preparation", () => {
     // Presence of the call is not enough: a site could construct two materials
     // and prepare one. Count both and require agreement.
     for (const file of sourceFiles(ROOT).filter((f) => !f.endsWith("ClusteredLighting.ts"))) {
-      const text = readFileSync(file, "utf8");
+      const text = readSource(file);
       const built = (text.match(/new PBRMaterial\(/g) ?? []).length;
       if (built === 0) continue;
       const prepared = (text.match(/prepareMaterialForClusteredLighting\(/g) ?? []).length;

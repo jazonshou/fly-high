@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { readWorldEvolutionFromUrl } from "../src/settings";
 import { DEFAULT_WORLD_EVOLUTION } from "../src/world";
+import { readSource } from "./support/sourceText";
 
 /**
  * Gate 0-b (Phase 6): the eroded world is reachable only by explicit URL
@@ -24,7 +25,7 @@ describe("eroded-world URL opt-in", () => {
 
   it("the shipped default remains analytic and the toggle is never persisted", () => {
     expect(DEFAULT_WORLD_EVOLUTION).toBe("analytic");
-    const settingsSource = readFileSync("src/settings/index.ts", "utf8");
+    const settingsSource = readSource("src/settings/index.ts");
     // The reader must not write to storage: persistence would make one shared
     // link permanently flip a player's world.
     const readerBody = settingsSource.slice(
@@ -37,7 +38,7 @@ describe("eroded-world URL opt-in", () => {
   });
 
   it("FlightGame threads the URL value into createWorld and nowhere else sets it", () => {
-    const source = readFileSync("src/game/FlightGame.tsx", "utf8");
+    const source = readSource("src/game/FlightGame.tsx");
     expect(source).toContain("readWorldEvolutionFromUrl()");
     expect(source).toMatch(/createWorld\(seed, worldEvolution \? \{ worldEvolution \} : \{\}\)/);
   });

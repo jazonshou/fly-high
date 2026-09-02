@@ -8,6 +8,7 @@ import type { QualityLevel } from "../src/game/types";
 import type { RenderingMode } from "../src/settings";
 import { VEGETATION_DRAW_CEILING } from "../src/render/webgpu/detail/renderedDensity";
 import { PERF_CAPTURE_SHOTS } from "../scripts/perf-capture.mts";
+import { readSource } from "./support/sourceText";
 
 /**
  * `6-12` — the documentation truth pass, and the pin that makes it one.
@@ -39,8 +40,8 @@ import { PERF_CAPTURE_SHOTS } from "../scripts/perf-capture.mts";
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PERFORMANCE_MD = readFileSync(join(REPO_ROOT, "docs/PERFORMANCE.md"), "utf8");
-const RENDERING_PLAN_MD = readFileSync(join(REPO_ROOT, "RENDERING_PLAN.md"), "utf8");
+const PERFORMANCE_MD = readSource(join(REPO_ROOT, "docs/PERFORMANCE.md"));
+const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "RENDERING_PLAN.md"));
 const BASELINE_DIR = join(REPO_ROOT, "tests/perf/baseline");
 
 /** The (quality, mode) pair resolving to each tier — `QUALITY_WEIGHT + MODE_WEIGHT`. */
@@ -416,7 +417,7 @@ describe("6-12 documentation truth: vegetation ceilings", () => {
         const absolute = join(dir, entry.name);
         if (entry.isDirectory()) walk(absolute);
         else if (/\.tsx?$/u.test(entry.name)) {
-          if (readFileSync(absolute, "utf8").includes("VEGETATION_FRAME_DEBT_RATIO")) {
+          if (readSource(absolute).includes("VEGETATION_FRAME_DEBT_RATIO")) {
             offenders.push(absolute.slice(REPO_ROOT.length + 1));
           }
         }
@@ -504,7 +505,7 @@ describe("6-12 documentation truth: the committed capture baseline", () => {
         const absolute = join(dir, entry.name);
         if (entry.isDirectory()) walk(absolute);
         else if (/\.(ts|mts|mjs|md|json)$/u.test(entry.name)) {
-          const text = readFileSync(absolute, "utf8");
+          const text = readSource(absolute);
           const pattern = /([A-Za-z-]+|\d{1,3})\s+canonical\s+shots?\b/giu;
           for (const match of text.matchAll(pattern)) {
             const raw = (match[1] ?? "").toLowerCase();
