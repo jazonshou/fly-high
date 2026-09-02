@@ -1412,316 +1412,369 @@ describe("perf capture (1A-1c / 2Z)", () => {
      * exact sentence the reference adapter would have failed with.
      */
     const unpinnedDeliveryNotes: string[] = [];
+    const gateFailures: string[] = [];
+    let shotsEvaluated = 0;
+    /** The shot the gate loop is currently on, so a collected failure can name it. */
+    let currentShotName = "";
+    /**
+     * Frame-delivery is the most HOST-SENSITIVE gate in this file, and it used
+     * to run before the deterministic memory and residency gates. Throwing here
+     * skipped the rest of THIS shot's gates -- so on a loaded host a wall-clock
+     * miss hid whatever the later gates would have found, which is how a
+     * 495.9-against-495 MiB breach on `reference-viewport` went unseen.
+     *
+     * It is still ENFORCED: a failure is collected and fails the test after the
+     * loop. It simply no longer decides whether the other gates get to run.
+     * Ordering is not the fix -- a non-aborting gate cannot mask anything
+     * regardless of where it sits.
+     */
     const gateDelivery = (assertion: () => void): void => {
-      if (!UNPINNED_HOST) {
-        assertion();
-        return;
-      }
       try {
         assertion();
       } catch (error) {
-        unpinnedDeliveryNotes.push(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        if (UNPINNED_HOST) unpinnedDeliveryNotes.push(message);
+        else gateFailures.push(`${currentShotName}: ${message}`);
       }
     };
 
+    // EVERY SHOT'S GATES ARE EVALUATED, and a run that could not evaluate them
+    // all must not read as a pass on the ones it skipped.
+    //
+    // Until now this loop threw on the first failing gate, so shot 1 failing
+    // aborted the loop and shots 2..N were never CHECKED -- they were captured
+    // and are in the report, but no gate ran against them. The ordering made
+    // that worse than random: `deliveryFailuresAgainst` is the most
+    // HOST-SENSITIVE gate in the file and it ran before the deterministic
+    // memory and residency ones, so on a loaded host a wall-clock miss on the
+    // first shot silently skipped every later shot's memory ceiling. It hid a
+    // live breach: `reference-viewport` measured 495.9 MiB inventoried against
+    // a 495 MiB pin, which `inventoriedMemoryFailures` compares with a bare
+    // `>` and no tolerance -- a failure by the gate's own definition, unseen
+    // because the gate never ran.
+    //
+    // This is the inert-guard shape with a new delivery mechanism: not a check
+    // that CANNOT fail, but one that never EXECUTES, masked by a check failing
+    // for reasons unrelated to what it guards.
     for (let index = 0; index < shotReports.length; index += 1) {
       const definition = SELECTED_SHOTS[index]!;
       const shot = shotReports[index]!;
-      // Z-1: the pinned shipping scale must hold. Rendered dimensions round
-      // independently, so permit only a small integer-size tolerance.
-      // 6-11.1: the tier's own pixel CAP bounds this, and above the cap the
-      // renderer scales down regardless of the pinned scale. Without the cap
-      // term this assertion fails on any swept viewport larger than the tier
-      // allows — and it fails describing a scale error rather than the cap,
-      // which is what it actually is.
-      //
-      // Worth knowing beyond the assertion: because the cap binds, the three
-      // viewport columns do NOT measure three resolutions at every tier. At
-      // tier 1 (1.5 Mpx) both 1080p and 1440p render at the cap, so those two
-      // columns are the same workload with different presentation.
-      const expectedRenderPixels = Math.min(
-        shot.viewportWidth * shot.viewportHeight * shot.renderScale ** 2,
-        CAPTURE_PROFILE.maxRenderPixels,
-      );
-      expect(
-        Math.abs(shot.renderPixels - expectedRenderPixels) / expectedRenderPixels,
-        `${shot.name}: renderPixels must match the medium/balanced scale pin`,
-      ).toBeLessThan(0.01);
-      expect(shot.renderScale).toBeCloseTo(
-        definition.captureRenderScale ?? CAPTURE_PROFILE.renderScale,
-        6,
-      );
-      expect(
-        perfCaptureImageContentFailures(shot.tiles, definition),
-        `${shot.name}: screenshot is blank or lacks local visual structure`,
-      ).toEqual([]);
-      // 7-5: the airfield-is-lit gate. Reads ONLY this capture's own pixels —
-      // it stays ARMED under VITE_PERF_REBASELINE precisely so a baseline
-      // promotion cannot erase it (after `090bf2f` the baseline WAS the
-      // candidate and every SSIM read 1.000 over whatever the frame held).
-      // Skipped under the sweep (tier gating changes the night stack by
-      // design — the scan still lands in the archived report for review) and
-      // under an overridden sun (a diagnostic daylight frame is not a night
-      // shot). The sample-size leg is unconditional: a scan over zero pixels
-      // is an instrument failure, never a pass.
-      if (shot.litRegion) {
+      currentShotName = shot.name;
+      try {
+        // Z-1: the pinned shipping scale must hold. Rendered dimensions round
+        // independently, so permit only a small integer-size tolerance.
+        // 6-11.1: the tier's own pixel CAP bounds this, and above the cap the
+        // renderer scales down regardless of the pinned scale. Without the cap
+        // term this assertion fails on any swept viewport larger than the tier
+        // allows — and it fails describing a scale error rather than the cap,
+        // which is what it actually is.
+        //
+        // Worth knowing beyond the assertion: because the cap binds, the three
+        // viewport columns do NOT measure three resolutions at every tier. At
+        // tier 1 (1.5 Mpx) both 1080p and 1440p render at the cap, so those two
+        // columns are the same workload with different presentation.
+        const expectedRenderPixels = Math.min(
+          shot.viewportWidth * shot.viewportHeight * shot.renderScale ** 2,
+          CAPTURE_PROFILE.maxRenderPixels,
+        );
         expect(
-          shot.litRegion.pixelsScanned,
-          `${shot.name}: the lit-region scan examined no pixels — the band or `
-          + "viewport moved out from under the gate",
-        ).toBeGreaterThan(0);
-        if (definition.litRegion && !IS_SWEEP && !SUN_OVERRIDDEN) {
+          Math.abs(shot.renderPixels - expectedRenderPixels) / expectedRenderPixels,
+          `${shot.name}: renderPixels must match the medium/balanced scale pin`,
+        ).toBeLessThan(0.01);
+        expect(shot.renderScale).toBeCloseTo(
+          definition.captureRenderScale ?? CAPTURE_PROFILE.renderScale,
+          6,
+        );
+        expect(
+          perfCaptureImageContentFailures(shot.tiles, definition),
+          `${shot.name}: screenshot is blank or lacks local visual structure`,
+        ).toEqual([]);
+        // 7-5: the airfield-is-lit gate. Reads ONLY this capture's own pixels —
+        // it stays ARMED under VITE_PERF_REBASELINE precisely so a baseline
+        // promotion cannot erase it (after `090bf2f` the baseline WAS the
+        // candidate and every SSIM read 1.000 over whatever the frame held).
+        // Skipped under the sweep (tier gating changes the night stack by
+        // design — the scan still lands in the archived report for review) and
+        // under an overridden sun (a diagnostic daylight frame is not a night
+        // shot). The sample-size leg is unconditional: a scan over zero pixels
+        // is an instrument failure, never a pass.
+        if (shot.litRegion) {
           expect(
-            shot.litRegion.brightPixels,
-            `${shot.name}: the airfield is not lit — fewer than `
-            + `${definition.litRegion.minBrightPixels} pixels above luminance `
-            + `${definition.litRegion.luminanceFloor} in the runway band. The lamps `
-            + "have gone dark through three different wrong values of one scale "
-            + "constant; whatever the cause this time, it is a Phase 7 deliverable "
-            + "regression, not a tolerance to relax",
-          ).toBeGreaterThanOrEqual(definition.litRegion.minBrightPixels);
+            shot.litRegion.pixelsScanned,
+            `${shot.name}: the lit-region scan examined no pixels — the band or `
+            + "viewport moved out from under the gate",
+          ).toBeGreaterThan(0);
+          if (definition.litRegion && !IS_SWEEP && !SUN_OVERRIDDEN) {
+            expect(
+              shot.litRegion.brightPixels,
+              `${shot.name}: the airfield is not lit — fewer than `
+              + `${definition.litRegion.minBrightPixels} pixels above luminance `
+              + `${definition.litRegion.luminanceFloor} in the runway band. The lamps `
+              + "have gone dark through three different wrong values of one scale "
+              + "constant; whatever the cause this time, it is a Phase 7 deliverable "
+              + "regression, not a tolerance to relax",
+            ).toBeGreaterThanOrEqual(definition.litRegion.minBrightPixels);
+          }
         }
-      }
-      // The day-side counterpart of the lit gate, and the reason both exist:
-      // one change to a lamp constant can darken NIGHT and blow out DAY, and
-      // until now only the night half was watched.
-      if (definition.maxNearClippedPixels !== undefined && !IS_SWEEP && !SUN_OVERRIDDEN) {
-        expect(
-          shot.nearClippedPixels,
-          `${shot.name}: ${shot.nearClippedPixels} pixels at or above luminance `
-          + `${PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE}, against a ceiling of `
-          + `${definition.maxNearClippedPixels}. A lamp calibrated for night is the `
-          + "likeliest cause -- the lamps have no daylight term unless one is applied",
-        ).toBeLessThanOrEqual(definition.maxNearClippedPixels);
-      }
-      if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
-        expect(
-          shot.ssimAgainstBaseline,
-          `${shot.name} diverged from the committed baseline — a regression unless this is `
-          + "a sanctioned churn point (then generate and review a perf:capture:candidate)",
-        ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD);
-      }
-      if (shot.rgbSsimAgainstBaseline !== null && !REBASELINE) {
-        expect(
-          shot.rgbSsimAgainstBaseline,
-          `${shot.name}: RGB/chroma diverged from the committed baseline`,
-        ).toBeGreaterThanOrEqual(
-          definition.rgbSsimThreshold ?? PERF_CAPTURE_RGB_SSIM_THRESHOLD,
-        );
-        expect(
-          shot.lowerFrameRgbSsimAgainstBaseline,
-          `${shot.name}: nearby terrain/foliage diverged even if the sky remained stable`,
-        ).toBeGreaterThanOrEqual(
-          definition.lowerFrameRgbSsimThreshold
-            ?? PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
-        );
-        expect(
-          shot.worstTileRgbSsimAgainstBaseline,
-          `${shot.name}: a local visual regression was diluted by the whole-frame score`,
-        ).toBeGreaterThanOrEqual(
-          definition.worstTileRgbSsimThreshold
-            ?? PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
-        );
-      }
-      if (definition.temporalFloors && shot.temporal) {
-        expect(
-          shot.temporal.minConsecutiveSsim,
-          `${shot.name}: consecutive-frame SSIM fell below the committed floor (flicker)`,
-        ).toBeGreaterThanOrEqual(definition.temporalFloors.minConsecutiveSsim);
-        expect(
-          shot.temporal.maxMeanLuminanceDelta,
-          `${shot.name}: frame-to-frame luminance jumped above the committed ceiling`,
-        ).toBeLessThanOrEqual(definition.temporalFloors.maxMeanLuminanceDelta);
-      }
-      // The tier-1 medium/balanced delivery contract is intentionally raw:
-      // no percentile trimming may hide a freeze or a run that averages 59.9.
-      // 6-11.1: judged at THIS tier's own contract. Off the sweep that is
-      // byte-for-byte tier 1's, so the standing gate is unchanged; on it, a
-      // tier-3 run is held to 30 fps rather than failed for not being tier 1.
-      gateDelivery(() => expect(
-        deliveryFailuresAgainst(DELIVERY, {
-          wallClockFps: shot.wallClockFps,
-          frameIntervalMsP95: shot.frameIntervalMsP95,
-          framesOver27_4Ms: shot.framesOver27_4Ms,
-          maxFrameMs: shot.maxFrameMs,
-        }),
-        `${shot.name}: strict tier-${CAPTURE_PROFILE.tier} `
-        + `${CAPTURE_QUALITY}/${CAPTURE_MODE} frame-delivery gate failed`,
-      ).toEqual([]));
+        // The day-side counterpart of the lit gate, and the reason both exist:
+        // one change to a lamp constant can darken NIGHT and blow out DAY, and
+        // until now only the night half was watched.
+        if (definition.maxNearClippedPixels !== undefined && !IS_SWEEP && !SUN_OVERRIDDEN) {
+          expect(
+            shot.nearClippedPixels,
+            `${shot.name}: ${shot.nearClippedPixels} pixels at or above luminance `
+            + `${PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE}, against a ceiling of `
+            + `${definition.maxNearClippedPixels}. A lamp calibrated for night is the `
+            + "likeliest cause -- the lamps have no daylight term unless one is applied",
+          ).toBeLessThanOrEqual(definition.maxNearClippedPixels);
+        }
+        if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
+          expect(
+            shot.ssimAgainstBaseline,
+            `${shot.name} diverged from the committed baseline — a regression unless this is `
+            + "a sanctioned churn point (then generate and review a perf:capture:candidate)",
+          ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD);
+        }
+        if (shot.rgbSsimAgainstBaseline !== null && !REBASELINE) {
+          expect(
+            shot.rgbSsimAgainstBaseline,
+            `${shot.name}: RGB/chroma diverged from the committed baseline`,
+          ).toBeGreaterThanOrEqual(
+            definition.rgbSsimThreshold ?? PERF_CAPTURE_RGB_SSIM_THRESHOLD,
+          );
+          expect(
+            shot.lowerFrameRgbSsimAgainstBaseline,
+            `${shot.name}: nearby terrain/foliage diverged even if the sky remained stable`,
+          ).toBeGreaterThanOrEqual(
+            definition.lowerFrameRgbSsimThreshold
+              ?? PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
+          );
+          expect(
+            shot.worstTileRgbSsimAgainstBaseline,
+            `${shot.name}: a local visual regression was diluted by the whole-frame score`,
+          ).toBeGreaterThanOrEqual(
+            definition.worstTileRgbSsimThreshold
+              ?? PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
+          );
+        }
+        if (definition.temporalFloors && shot.temporal) {
+          expect(
+            shot.temporal.minConsecutiveSsim,
+            `${shot.name}: consecutive-frame SSIM fell below the committed floor (flicker)`,
+          ).toBeGreaterThanOrEqual(definition.temporalFloors.minConsecutiveSsim);
+          expect(
+            shot.temporal.maxMeanLuminanceDelta,
+            `${shot.name}: frame-to-frame luminance jumped above the committed ceiling`,
+          ).toBeLessThanOrEqual(definition.temporalFloors.maxMeanLuminanceDelta);
+        }
+        // The tier-1 medium/balanced delivery contract is intentionally raw:
+        // no percentile trimming may hide a freeze or a run that averages 59.9.
+        // 6-11.1: judged at THIS tier's own contract. Off the sweep that is
+        // byte-for-byte tier 1's, so the standing gate is unchanged; on it, a
+        // tier-3 run is held to 30 fps rather than failed for not being tier 1.
+        gateDelivery(() => expect(
+          deliveryFailuresAgainst(DELIVERY, {
+            wallClockFps: shot.wallClockFps,
+            frameIntervalMsP95: shot.frameIntervalMsP95,
+            framesOver27_4Ms: shot.framesOver27_4Ms,
+            maxFrameMs: shot.maxFrameMs,
+          }),
+          `${shot.name}: strict tier-${CAPTURE_PROFILE.tier} `
+          + `${CAPTURE_QUALITY}/${CAPTURE_MODE} frame-delivery gate failed`,
+        ).toEqual([]));
 
-      // Z-2: retain the historical per-shot gate as a diagnostic regression
-      // contract in addition to (never instead of) the strict tier-1 gate.
-      //
-      // `6-11.1`: SKIPPED under the sweep, and this is not a convenience.
-      // These per-shot floors were pinned from tier-1 captures at 1280x720
-      // (Gate 0-a, and re-pinned at each rebaseline point from >=3 runs of that
-      // same configuration). They are statements about ONE tier at ONE
-      // viewport. Judging a tier-3 Ultra row — which promises 30 fps against
-      // `FRAME_TARGET_MS[3]` — against tier 1's ~101 fps floor would fail it for
-      // being Ultra, and judging any row at 1080p or 1440p against a 720p floor
-      // fails it for the resolution it was asked to render. Either would be a
-      // false failure that reads exactly like a real one.
-      //
-      // Delivery is still gated under the sweep: `deliveryFailuresAgainst`
-      // above holds every row to ITS OWN tier's contract. This block is the
-      // tier-1 regression pin, and a sweep row is not a tier-1 regression.
-      const ceilings = IS_SWEEP ? null : definition.ceilings;
-      if (ceilings !== null) {
-        gateDelivery(() => expect(
-          shot.fps,
-          `${shot.name}: measured fps fell below the committed floor`,
-        ).toBeGreaterThanOrEqual(ceilings.minFps));
-        gateDelivery(() => expect(
-          shot.hitchCount,
-          `${shot.name}: more hitch frames than the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.hitchCount));
-        gateDelivery(() => expect(
-          shot.maxFrameMs,
-          `${shot.name}: worst frame exceeded the committed ceiling`,
-        ).toBeLessThanOrEqual(ceilings.maxFrameMs));
-        // `ceilings.p999FrameMs` absent = deliberately not gated yet (see
-        // TAIL_DEFERRED_SHOTS); `shot.p999FrameMs` null = the run produced no
-        // reading. Different causes, same skip, so keep them separate.
-        const p999Ceiling = ceilings.p999FrameMs;
-        if (shot.p999FrameMs !== null && p999Ceiling !== undefined) {
+        // Z-2: retain the historical per-shot gate as a diagnostic regression
+        // contract in addition to (never instead of) the strict tier-1 gate.
+        //
+        // `6-11.1`: SKIPPED under the sweep, and this is not a convenience.
+        // These per-shot floors were pinned from tier-1 captures at 1280x720
+        // (Gate 0-a, and re-pinned at each rebaseline point from >=3 runs of that
+        // same configuration). They are statements about ONE tier at ONE
+        // viewport. Judging a tier-3 Ultra row — which promises 30 fps against
+        // `FRAME_TARGET_MS[3]` — against tier 1's ~101 fps floor would fail it for
+        // being Ultra, and judging any row at 1080p or 1440p against a 720p floor
+        // fails it for the resolution it was asked to render. Either would be a
+        // false failure that reads exactly like a real one.
+        //
+        // Delivery is still gated under the sweep: `deliveryFailuresAgainst`
+        // above holds every row to ITS OWN tier's contract. This block is the
+        // tier-1 regression pin, and a sweep row is not a tier-1 regression.
+        const ceilings = IS_SWEEP ? null : definition.ceilings;
+        if (ceilings !== null) {
           gateDelivery(() => expect(
-            shot.p999FrameMs,
-            `${shot.name}: p999 frame exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(p999Ceiling));
-        }
-        // Gate 0-a (Phase 6): floors pinned at today's delivery, not the
-        // 60 fps contract minimum — the strict gate alone would let the
-        // phase shed ~45% of current delivery with everything green.
-        gateDelivery(() => expect(
-          shot.wallClockFps,
-          `${shot.name}: wall-clock fps fell below the committed floor`,
-        ).toBeGreaterThanOrEqual(ceilings.minWallClockFps));
-        const p95Ceiling = ceilings.maxFrameIntervalMsP95;
-        if (p95Ceiling !== undefined) {
+            shot.fps,
+            `${shot.name}: measured fps fell below the committed floor`,
+          ).toBeGreaterThanOrEqual(ceilings.minFps));
           gateDelivery(() => expect(
-            shot.frameIntervalMsP95,
-            `${shot.name}: frame-interval p95 exceeded the committed ceiling`,
-          ).toBeLessThanOrEqual(p95Ceiling));
+            shot.hitchCount,
+            `${shot.name}: more hitch frames than the committed ceiling`,
+          ).toBeLessThanOrEqual(ceilings.hitchCount));
+          gateDelivery(() => expect(
+            shot.maxFrameMs,
+            `${shot.name}: worst frame exceeded the committed ceiling`,
+          ).toBeLessThanOrEqual(ceilings.maxFrameMs));
+          // `ceilings.p999FrameMs` absent = deliberately not gated yet (see
+          // TAIL_DEFERRED_SHOTS); `shot.p999FrameMs` null = the run produced no
+          // reading. Different causes, same skip, so keep them separate.
+          const p999Ceiling = ceilings.p999FrameMs;
+          if (shot.p999FrameMs !== null && p999Ceiling !== undefined) {
+            gateDelivery(() => expect(
+              shot.p999FrameMs,
+              `${shot.name}: p999 frame exceeded the committed ceiling`,
+            ).toBeLessThanOrEqual(p999Ceiling));
+          }
+          // Gate 0-a (Phase 6): floors pinned at today's delivery, not the
+          // 60 fps contract minimum — the strict gate alone would let the
+          // phase shed ~45% of current delivery with everything green.
+          gateDelivery(() => expect(
+            shot.wallClockFps,
+            `${shot.name}: wall-clock fps fell below the committed floor`,
+          ).toBeGreaterThanOrEqual(ceilings.minWallClockFps));
+          const p95Ceiling = ceilings.maxFrameIntervalMsP95;
+          if (p95Ceiling !== undefined) {
+            gateDelivery(() => expect(
+              shot.frameIntervalMsP95,
+              `${shot.name}: frame-interval p95 exceeded the committed ceiling`,
+            ).toBeLessThanOrEqual(p95Ceiling));
+          }
         }
-      }
-      // Gate 0-a: drawCalls is a host-independent counter (byte-identical
-      // across the pinning runs), so it stays hard on every host, outside
-      // the nullable delivery row.
-      //
-      // HOST-independent is not TIER-independent, and the ceiling is pinned
-      // from tier 1 at 1280x720. Tier 2 submits roughly ten times tier 1's
-      // vegetation draws BY DESIGN (507.6 against 53.3 modelled), and the
-      // measured tier-3 rows ran 197-533 draws against ceilings of 122-161.
-      // Applied under a sweep, this ceiling fails every row of every higher
-      // tier for being that tier -- a false failure that reads exactly like a
-      // real regression, on the axis the sweep exists to vary.
-      //
-      // The original comment is not wrong; it reasons about the host axis and
-      // is silent about the tier axis. That silence is the defect: a scope
-      // claim that names one axis reads as though it had considered them all.
-      // Same fix and same reason as `ceilings` above -- a sweep row is not a
-      // tier-1 regression, and `deliveryFailuresAgainst` still holds every row
-      // to its own tier's contract.
-      if (!IS_SWEEP && definition.drawCallCeiling !== undefined) {
+        // Gate 0-a: drawCalls is a host-independent counter (byte-identical
+        // across the pinning runs), so it stays hard on every host, outside
+        // the nullable delivery row.
+        //
+        // HOST-independent is not TIER-independent, and the ceiling is pinned
+        // from tier 1 at 1280x720. Tier 2 submits roughly ten times tier 1's
+        // vegetation draws BY DESIGN (507.6 against 53.3 modelled), and the
+        // measured tier-3 rows ran 197-533 draws against ceilings of 122-161.
+        // Applied under a sweep, this ceiling fails every row of every higher
+        // tier for being that tier -- a false failure that reads exactly like a
+        // real regression, on the axis the sweep exists to vary.
+        //
+        // The original comment is not wrong; it reasons about the host axis and
+        // is silent about the tier axis. That silence is the defect: a scope
+        // claim that names one axis reads as though it had considered them all.
+        // Same fix and same reason as `ceilings` above -- a sweep row is not a
+        // tier-1 regression, and `deliveryFailuresAgainst` still holds every row
+        // to its own tier's contract.
+        if (!IS_SWEEP && definition.drawCallCeiling !== undefined) {
+          expect(
+            shot.drawCalls,
+            `${shot.name}: more draw calls than the committed ceiling`,
+          ).toBeLessThanOrEqual(definition.drawCallCeiling);
+        }
+        // Gate 0-c (Phase 6, = 6-11.4a): the Babylon inventory floor is the
+        // real memory number — only the ~380 MiB estimate gates the 480 MiB
+        // ceiling while the inventory reads 489 MiB at the binding shot.
+        // Hard on every host: the settle loop guarantees pendingDetailWork=0,
+        // so allocations converge identically.
+        //
+        // `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` is 495, pinned from tier 1
+        // where real headroom is 2.7 MiB. Higher tiers legitimately allocate far
+        // more -- `MEMORY_CEILING_MIB` is 260/480/700/1000 -- and the measured
+        // tier-3 rows read 650.5-661.7 MiB. Under a sweep this ceiling therefore
+        // fails every row above tier 1 for being above tier 1.
+        //
+        // The ceiling is NOT swapped for the tier's own: that constant gates the
+        // ESTIMATE, this one gates the Babylon INVENTORY, and the docblock on the
+        // constant says explicitly that the two measure different quantities and
+        // must never be compared. Substituting one for the other would be a
+        // fabricated threshold wearing a real one's name. So the sweep keeps the
+        // plausibility check -- a non-finite or non-positive reading is still a
+        // broken instrument at any tier -- and drops only the tier-1 regression
+        // pin, which a sweep row is not.
         expect(
-          shot.drawCalls,
-          `${shot.name}: more draw calls than the committed ceiling`,
-        ).toBeLessThanOrEqual(definition.drawCallCeiling);
-      }
-      // Gate 0-c (Phase 6, = 6-11.4a): the Babylon inventory floor is the
-      // real memory number — only the ~380 MiB estimate gates the 480 MiB
-      // ceiling while the inventory reads 489 MiB at the binding shot.
-      // Hard on every host: the settle loop guarantees pendingDetailWork=0,
-      // so allocations converge identically.
-      //
-      // `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` is 495, pinned from tier 1
-      // where real headroom is 2.7 MiB. Higher tiers legitimately allocate far
-      // more -- `MEMORY_CEILING_MIB` is 260/480/700/1000 -- and the measured
-      // tier-3 rows read 650.5-661.7 MiB. Under a sweep this ceiling therefore
-      // fails every row above tier 1 for being above tier 1.
-      //
-      // The ceiling is NOT swapped for the tier's own: that constant gates the
-      // ESTIMATE, this one gates the Babylon INVENTORY, and the docblock on the
-      // constant says explicitly that the two measure different quantities and
-      // must never be compared. Substituting one for the other would be a
-      // fabricated threshold wearing a real one's name. So the sweep keeps the
-      // plausibility check -- a non-finite or non-positive reading is still a
-      // broken instrument at any tier -- and drops only the tier-1 regression
-      // pin, which a sweep row is not.
-      expect(
-        inventoriedMemoryFailures(
-          shot.inventoriedGpuMemoryMiB,
-          IS_SWEEP ? Number.POSITIVE_INFINITY : undefined,
-        ),
-        `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
-      ).toEqual([]);
-      // 4-10 (assertion 84b): page residency under streaming load. The
-      // page-thrash and CDLOD-transition scenes exist to make a pump that
-      // outruns the compute meter visible as a rising queue rather than as a
-      // hitch nobody can attribute.
-      const residency = definition.residencyCeilings;
-      expect(
-        shot.pendingDetailWork,
-        `${shot.name}: detail generation/presentation was still pending at capture`,
-      ).toBe(0);
-      /**
-       * Terrain, made symmetric with detail above — a shot's pixels are only
-       * meaningful if the world had finished building when they were read.
-       *
-       * This was previously asserted ONLY inside the motion branch's final-pose
-       * drain, so the 24 static shots recorded `pendingTerrainPages` in the
-       * report and asserted nothing against it. A static shot that exhausted
-       * `maxStreamingFrames` therefore screenshotted a HALF-BUILT world, wrote
-       * the number that proved it into the report, and passed — and Gate F's
-       * eroded shots are exactly the ones close enough to the budget for that
-       * to happen (168 pages × ~31 frames/page = 5,208 of 6,000). The very
-       * first eroded reference images could have been frames of a world that
-       * had not finished streaming.
-       *
-       * The two streaming-stress shots keep their explicit allowance: a rising
-       * queue is the phenomenon they exist to measure. Everything else must be
-       * done, and the failure is loud rather than a number in a report.
-       */
-      if (!residency) {
+          inventoriedMemoryFailures(
+            shot.inventoriedGpuMemoryMiB,
+            IS_SWEEP ? Number.POSITIVE_INFINITY : undefined,
+          ),
+          `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
+        ).toEqual([]);
+        // 4-10 (assertion 84b): page residency under streaming load. The
+        // page-thrash and CDLOD-transition scenes exist to make a pump that
+        // outruns the compute meter visible as a rising queue rather than as a
+        // hitch nobody can attribute.
+        const residency = definition.residencyCeilings;
         expect(
-          shot.pendingTerrainPages,
-          `${shot.name}: terrain was still streaming when the frame was read — `
-          + "this shot's pixels are of a half-built world. Raise "
-          + "maxStreamingFrames, or reduce the shot's working set.",
+          shot.pendingDetailWork,
+          `${shot.name}: detail generation/presentation was still pending at capture`,
         ).toBe(0);
-      }
-      /**
-       * The margin, asserted rather than discovered.
-       *
-       * Finishing inside the budget is necessary but not reassuring on its own:
-       * the failure above only fires once a shot has ALREADY crossed, and by
-       * then a reviewer is looking at a half-built frame and wondering why the
-       * terrain changed. This fails while there is still room, so the shot that
-       * is creeping toward the cap is caught on the run before the one that
-       * exceeds it.
-       */
-      const streamingUsedFraction = shot.streamingFramesUsed / shot.streamingFrameBudget;
-      expect(
-        streamingUsedFraction,
-        `${shot.name}: used ${shot.streamingFramesUsed} of ${shot.streamingFrameBudget} `
-        + "streaming frames to settle. That is most of the budget, and the next "
-        + "increase in this shot's working set will exhaust it and screenshot a "
-        + "half-built world. Raise the budget now.",
-      ).toBeLessThan(0.75);
-      if (residency) {
-        // Queue DEPTH is what the wall-clock compute meter admits per frame,
-        // so it follows the host the same way the delivery rows do.
-        gateDelivery(() => expect(
-          shot.pendingTerrainPages,
-          `${shot.name}: more pages pending generation than the committed ceiling`,
-        ).toBeLessThanOrEqual(residency.maxPendingTerrainPages));
-        // Atlas OCCUPANCY is a capacity bound. It stays hard on every host.
+        /**
+         * Terrain, made symmetric with detail above — a shot's pixels are only
+         * meaningful if the world had finished building when they were read.
+         *
+         * This was previously asserted ONLY inside the motion branch's final-pose
+         * drain, so the 24 static shots recorded `pendingTerrainPages` in the
+         * report and asserted nothing against it. A static shot that exhausted
+         * `maxStreamingFrames` therefore screenshotted a HALF-BUILT world, wrote
+         * the number that proved it into the report, and passed — and Gate F's
+         * eroded shots are exactly the ones close enough to the budget for that
+         * to happen (168 pages × ~31 frames/page = 5,208 of 6,000). The very
+         * first eroded reference images could have been frames of a world that
+         * had not finished streaming.
+         *
+         * The two streaming-stress shots keep their explicit allowance: a rising
+         * queue is the phenomenon they exist to measure. Everything else must be
+         * done, and the failure is loud rather than a number in a report.
+         */
+        if (!residency) {
+          expect(
+            shot.pendingTerrainPages,
+            `${shot.name}: terrain was still streaming when the frame was read — `
+            + "this shot's pixels are of a half-built world. Raise "
+            + "maxStreamingFrames, or reduce the shot's working set.",
+          ).toBe(0);
+        }
+        /**
+         * The margin, asserted rather than discovered.
+         *
+         * Finishing inside the budget is necessary but not reassuring on its own:
+         * the failure above only fires once a shot has ALREADY crossed, and by
+         * then a reviewer is looking at a half-built frame and wondering why the
+         * terrain changed. This fails while there is still room, so the shot that
+         * is creeping toward the cap is caught on the run before the one that
+         * exceeds it.
+         */
+        const streamingUsedFraction = shot.streamingFramesUsed / shot.streamingFrameBudget;
         expect(
-          shot.residentTerrainPages,
-          `${shot.name}: more resident page slots than the atlas holds`,
-        ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
+          streamingUsedFraction,
+          `${shot.name}: used ${shot.streamingFramesUsed} of ${shot.streamingFrameBudget} `
+          + "streaming frames to settle. That is most of the budget, and the next "
+          + "increase in this shot's working set will exhaust it and screenshot a "
+          + "half-built world. Raise the budget now.",
+        ).toBeLessThan(0.75);
+        if (residency) {
+          // Queue DEPTH is what the wall-clock compute meter admits per frame,
+          // so it follows the host the same way the delivery rows do.
+          gateDelivery(() => expect(
+            shot.pendingTerrainPages,
+            `${shot.name}: more pages pending generation than the committed ceiling`,
+          ).toBeLessThanOrEqual(residency.maxPendingTerrainPages));
+          // Atlas OCCUPANCY is a capacity bound. It stays hard on every host.
+          expect(
+            shot.residentTerrainPages,
+            `${shot.name}: more resident page slots than the atlas holds`,
+          ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
+        }
+      } catch (error) {
+        gateFailures.push(
+          `${shot.name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
+      shotsEvaluated += 1;
     }
+
+    // The count is reported whether or not anything failed, so "gates ran" is
+    // never inferred from the absence of a complaint.
+    console.info(`shot gates evaluated: ${shotsEvaluated} of ${shotReports.length}`);
+    expect(
+      shotsEvaluated,
+      `only ${shotsEvaluated} of ${shotReports.length} shots had their gates evaluated`,
+    ).toBe(shotReports.length);
+    expect(
+      gateFailures,
+      `${gateFailures.length} of ${shotReports.length} shots failed a gate:\n`
+      + gateFailures.map((f) => `  - ${f}`).join("\n"),
+    ).toEqual([]);
 
     // Never silent. An unpinned run states every contract it declined to
     // enforce, so "green on CI" can never be read as "met the tier-1 bar".
