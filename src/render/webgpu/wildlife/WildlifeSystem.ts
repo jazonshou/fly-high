@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -682,6 +683,14 @@ export class WildlifeSystem {
           : ["dielectric-keratin", "subtle-clearcoat"],
     };
     this.materials.add(material);
+    // AFTER every feature is configured, not at construction. The sheen
+    // refusal reads `material.sheen.isEnabled`, and wildlife enables sheen
+    // BELOW the constructor — so preparing at the `new PBRMaterial` line would
+    // see a bare material, prepare it, and defeat the very rule that keeps a
+    // sheen material out of the cluster. The call site's position is part of
+    // the contract, which is why the guard asserts the OUTCOME rather than the
+    // presence of this call.
+    prepareMaterialForClusteredLighting(material);
     return material;
   }
 

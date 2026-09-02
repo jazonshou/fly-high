@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
@@ -102,6 +103,7 @@ export class AircraftBuildContext {
     options: AircraftMaterialOptions = {},
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
+    prepareMaterialForClusteredLighting(material);
     material.albedoColor = color3(color);
     material.metallic = options.metallic ?? 0.08;
     material.roughness = options.roughness ?? 0.48;

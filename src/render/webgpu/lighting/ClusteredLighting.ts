@@ -341,7 +341,32 @@ export class ClusteredLightingSystem {
  * Called at every PBR material creation site rather than swept over
  * `scene.materials`, because a material built after the sweep would miss it and
  * the failure is silent: the light simply stops contributing.
+ *
+ * **Why the cap needs raising at all, given nothing is dropped today.** The
+ * scene holds exactly four lights — three in `AtmosphereSystem` plus the
+ * container, which is itself a `Light` — against Babylon's default
+ * `maxSimultaneousLights` of 4. That fits with **zero margin**, and
+ * `PrepareDefinesForLights` breaks at the cap rather than reporting, so the
+ * fifth light silently costs whichever the iteration reaches last. If that is
+ * the container, every clustered lamp stops contributing and nothing says so.
+ *
+ * **Returns whether it prepared**, because a sheen material must not be, and a
+ * caller that cannot tell the difference between "prepared" and "skipped" is
+ * the shape that lets the two rules drift apart.
  */
-export function prepareMaterialForClusteredLighting(material: PBRMaterial): void {
+export function prepareMaterialForClusteredLighting(material: PBRMaterial): boolean {
+  // SHEEN IS THE ONE EXCLUSION, and it is checked here rather than trusted to
+  // the call sites. Babylon 9.21.2 emits its clustered sheen call inside
+  // `computeClusteredLighting{X}` while the `normalW` it passes is local to
+  // `main`, so a sheen material reached by the container fails to compile and
+  // renders NOTHING — a black frame, and one that 1,654 green Node tests
+  // cannot see because NullEngine compiles no shaders.
+  //
+  // `excludeSheenReceivers` already keeps the container away from these meshes.
+  // Refusing here as well means preparation and exclusion cannot disagree: the
+  // same property decides both, so there is no combination of the two rules
+  // that admits a sheen material to the cluster.
+  if (material.sheen?.isEnabled) return false;
   material.maxSimultaneousLights = CLUSTERED_MAX_SIMULTANEOUS_LIGHTS;
+  return true;
 }

@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
@@ -599,9 +600,13 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
   };
 
   const metal = new PBRMaterial("airfield-metal", scene);
+
+  prepareMaterialForClusteredLighting(metal);
   wire(metal, "airfield-metal", metalSynthesis);
 
   const concrete = new PBRMaterial("airfield-concrete", scene);
+
+  prepareMaterialForClusteredLighting(concrete);
   wire(concrete, "airfield-concrete", concreteSynthesis);
 
   // Glass is deliberately untextured in 7-11 v1 (0 MiB): a smooth, dark,
@@ -609,12 +614,15 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
   // sky probe supplies the reflection. A ripple normal is the first upgrade
   // if the tower cab ever reads flat in a Jason closeup.
   const glass = new PBRMaterial("airfield-glass", scene);
+  prepareMaterialForClusteredLighting(glass);
   glass.albedoColor = new Color3(0.03, 0.045, 0.06);
   glass.roughness = 0.08;
   glass.metallic = 0.1;
   glass.environmentIntensity = 1;
 
   const accent = new PBRMaterial("airfield-accent", scene);
+
+  prepareMaterialForClusteredLighting(accent);
   const accentHue = hash2(17, 23, seed);
   accent.albedoColor = Color3.FromHSV(
     30 + accentHue * 30,

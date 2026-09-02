@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
@@ -3672,6 +3673,7 @@ export class WorldDetailRuntime {
     samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
+    prepareMaterialForClusteredLighting(material);
     // 7-4b: read at CREATION, before the first effect compiles, so the
     // permutation is built with the varying already absent rather than
     // recompiled out of it later.

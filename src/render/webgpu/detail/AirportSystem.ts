@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -387,6 +388,7 @@ export class AirportSystem {
     metallic = 0,
   ): PBRMaterial {
     const material = new PBRMaterial(name, scene);
+    prepareMaterialForClusteredLighting(material);
     material.albedoColor = color;
     material.roughness = roughness;
     material.metallic = metallic;

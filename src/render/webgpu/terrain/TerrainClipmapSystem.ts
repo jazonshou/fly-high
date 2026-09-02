@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 // Side-effect import: Babylon 9 tree-shakes the thin-instance API, and
 // `Mesh.prototype.thinInstanceSetBuffer` / `thinInstanceCount` do not exist
@@ -290,6 +291,7 @@ const TERRAIN_STREAMING_PRIORITY_OPTIONS: Partial<WorldPageStreamingPriorityOpti
  */
 export function createTerrainMaterial(scene: Scene): PBRMaterial {
   const material = new PBRMaterial("terrain-pbr", scene);
+  prepareMaterialForClusteredLighting(material);
   material.metallic = 0;
   // 3-7 replaces this per fragment from the 3-0 BRDF table. It survives as
   // the value the material compiles with before the arrays are bound (and

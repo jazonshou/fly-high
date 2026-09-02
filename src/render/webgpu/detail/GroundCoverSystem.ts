@@ -1,3 +1,4 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -334,6 +335,8 @@ export class GroundCoverSystem {
     if (!this.gpuActive) return;
 
     const material = new PBRMaterial("ground-cover-blades", scene);
+
+    prepareMaterialForClusteredLighting(material);
     material.metallic = 0;
     material.roughness = 0.72;
     material.environmentIntensity = 1;
