@@ -317,7 +317,14 @@ export const AIRCRAFT_CAST_POOLS: readonly AircraftCastPool[] = Object.freeze([
     // is going rather than where it is.
     offset: [40, -3, 0] as const,
     color: [1, 0.94, 0.82] as const,
-    intensity: 12,
+    // Jason, after rejecting the six-pool airframe wash (b7ec12c, reverted at
+    // 991f9cf): "let's revert back to the old and maybe just increase the
+    // lighting a tiny bit." 12 -> 14.5 is +21% delivered illuminance at the
+    // pool centre, which keeps the inverse-square derivation below intact --
+    // the geometry is unchanged and only the scalar moved. Deliberately small:
+    // the thing he rejected was a change in COVERAGE, not in strength, so this
+    // must not grow the lit region.
+    intensity: 14.5,
     rangeMeters: 90,
   }),
   Object.freeze({
@@ -325,7 +332,9 @@ export const AIRCRAFT_CAST_POOLS: readonly AircraftCastPool[] = Object.freeze([
     // Close and wide: a taxi light lights the ground immediately ahead.
     offset: [14, -2, 0] as const,
     color: [1, 0.95, 0.86] as const,
-    intensity: 5,
+    // Same +20% and the same reasoning as the landing pool above; the two move
+    // together so their relative weighting is unchanged.
+    intensity: 6,
     rangeMeters: 34,
   }),
 ]);
