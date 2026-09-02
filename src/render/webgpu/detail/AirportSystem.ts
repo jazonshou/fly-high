@@ -1,5 +1,6 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -195,16 +196,42 @@ export class AirportSystem {
     const towerSit = Number.isFinite(towerGround) ? towerGround - definition.elevation : 0;
     towerNode.position.set(towerAcross, towerSit, towerAlong);
 
-    // 7-11 second pass: the stand-ins this block carried ("7-11 owns the
-    // real material set") are retired — the set's glass and steel ADOPTED
-    // the stand-ins' exact values when they were added (ef6ceb1), so this
-    // wiring changes ownership, not the tower's look. Concrete moves to the
-    // synthesized airfield concrete, which is the one visible change and
-    // the point: the shaft weathers like the aprons it stands on.
+    // 7-11 second pass: the stand-ins are retired for the UNTEXTURED members
+    // and RETAINED for concrete. The set's glass and steel adopted the
+    // stand-ins' exact values when they were added (ef6ceb1), so those two
+    // change ownership rather than appearance.
+    //
+    // **Concrete stays local, and the blocker is the UV contract rather than
+    // the palette.** `airfield-concrete` is the only one of the three that is
+    // TEXTURED (`wire(concrete, ..., concreteSynthesis)`), and this tower's
+    // UVs satisfy neither half of the contract that texture assumes
+    // (`AirfieldMaterials.ts:39-43`):
+    //
+    //   - **V runs DOWN the face** in the contract, so streaks and oxidation
+    //     grow monotonically with V — gravity in UV form. `band()` in
+    //     `towerGeometry.ts:222-225` emits V = 0 at `bottomY` and V = 1 at
+    //     `topY`. Applied as-is the weathering CLIMBS toward the mast and
+    //     leaves the base clean: an inverted gradient reads as wrong without
+    //     reading as broken, which is the kind that ships.
+    //   - **U is metres / `tileMeters` and WRAPS** in the contract. `band()`
+    //     emits `i / SIDES`, a normalised octagon sweep, so panel seams would
+    //     scale to each band's own width and read coarser on the mast than on
+    //     the base.
+    //
+    // Fixing that is new UV emission in `towerGeometry` plus an aspect V-start
+    // the tower has no notion of. That is its own item, not a rider on this
+    // one. Steel and glass are untextured — no UV dependency — which is
+    // exactly why they can share today and concrete cannot.
+    const towerConcrete = new PBRMaterial("tower-concrete", scene);
+    prepareMaterialForClusteredLighting(towerConcrete);
+    towerConcrete.albedoColor = new Color3(0.52, 0.51, 0.48);
+    towerConcrete.roughness = 0.72;
+    towerConcrete.metallic = 0;
+    towerConcrete.environmentIntensity = 1;
     const towerMaterials: Readonly<Record<string, PBRMaterial>> = {
-      base: this.airfieldMaterials.concrete,
-      shaft: this.airfieldMaterials.concrete,
-      gallery: this.airfieldMaterials.concrete,
+      base: towerConcrete,
+      shaft: towerConcrete,
+      gallery: towerConcrete,
       railing: this.airfieldMaterials.steel,
       cab: this.airfieldMaterials.glass,
       cabRoof: this.airfieldMaterials.steel,
