@@ -432,6 +432,19 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 
 ### Phase 7 — Night operations and airfield identity
 
+> **Governed by [`PHASE_7_EXECUTION_PLAN.md`](PHASE_7_EXECUTION_PLAN.md), which is binding over this table.** That plan states the order itself: `ARCHITECTURE.md` decision log (normative) → the execution plan → this section. It also warns that **§Phase 7's citations below are stale** — `AirportSystem.ts:72-83` and `:111` both are, and `AirportSystemOptions.includeHangars` never existed (D-2).
+>
+> **D-0 cut scope this table still promises, and the cuts are load-bearing rather than editorial: the ground those items sit on does not exist.** `3-9` deleted the apron slab and recorded a deviation declining to replace it, and no taxiway geometry was ever built — `AirportDefinition` carries nine scalars and no apron or taxiway at all, so there is nothing to generate the fixtures *from*. Struck by D-0, and still written as deliverables below:
+> - **`7-7`'s row** — taxiway blue-edge and green-centreline lights. `AirfieldFixtureKind` is `edge | threshold | centreline | touchdownZone | approach`; there is no taxiway kind. Re-priced 3.5 d (was 4.0).
+> - **`7-13`'s row** — apron markings, tie-down anchors and ground support equipment. Re-priced 2.0 d (was 3.5).
+> - **`7-14`'s row** — apron floodlighting, **re-pointed to hangar-face floods** (there is no apron). Shipped that way: `ObstructionLighting.ts` emits tower and hangar-roof obstruction lights plus hangar-face floods, and no apron emitter.
+> - **§1.6's "Lights you *see*" table** and **this section's "What you will see"**, which still describe taxiway edge lights and "hangar apron floods".
+> - **The Phase 7 summary table far below** repeats `7-13` at 3.5 d and `7-14` at 1.0 d — the pre-cut figures, a second time.
+>
+> Referenced by row identifier rather than by line, deliberately: **inserting this note shifted every row beneath it and invalidated the line citations in its own first draft** — which is the failure it documents, committed inside the correction. Row ids survive an edit; line numbers do not.
+>
+> **Why this note exists at all, recorded because the gap was itself the defect.** Phases 3, 4 and 5 each carry a supersession note in place, three sections above. **Phase 7 had none — `PHASE_7_EXECUTION_PLAN.md` was referenced nowhere in this file** — while the 2026-08-19 amendment at the top still reads *"Only Phases 5–7 (less 7A) remain pre-Phase-0 tables"*, presenting this table as standing. A reader who greps this file for their item finds a cut feature written as a deliverable, with nothing nearby to contradict it. That happened: `7-14` was built against its row here, and apron floodlighting was designed before the cut was found. **Rows are struck in place rather than deleted, per house convention — a reader needs to see that they were once promised.**
+
 **Goal.** Deliver the complete night experience — moon, stars, night vision, and real airfield and aircraft lighting — and replace the three placeholder hangar boxes with an airfield that has a recognisable identity.
 
 **What you will see.** A night approach: the rotating beacon picks out the field from ten miles, the approach lights sequence you in, the PAPI shows two red and two white and changes as you drift off the glideslope, the runway edge lights resolve from a smear into individual sources, your landing light throws a cone through the haze onto asphalt, and the hangar apron floods pick out corrugated metal with rust streaking down from the bolt lines. In daylight the same hangars have ribbed cladding, sliding doors you can see the tracks on, roof vents, gutters, a windsock that actually reads the wind, and a perimeter fence.
