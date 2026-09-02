@@ -336,7 +336,12 @@ export const AIRCRAFT_CAST_POOLS: readonly AircraftCastPool[] = Object.freeze([
  * dies — a beacon wash that stayed lit through the beacon's dark phase would be
  * a light with no source.
  */
-export type AircraftWashDriver = "portNav" | "starboardNav" | "beacon" | "strobe";
+export type AircraftWashDriver =
+  | "portNav"
+  | "starboardNav"
+  | "tailNav"
+  | "beacon"
+  | "strobe";
 
 /**
  * `7-15`: the aircraft's own lamps spilling onto its own airframe.
@@ -395,7 +400,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-beacon-wash",
     offset: [-0.75, 1.02, 0] as const,
     color: [1, 0.11, 0.063] as const,
-    intensity: 2.4,
+    intensity: 4.8,
     rangeMeters: 12,
     driver: "beacon" as const,
   }),
@@ -403,7 +408,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-nav-wash-port",
     offset: [0.2, 0.3, -5.43] as const,
     color: [1, 0.125, 0.094] as const,
-    intensity: 2.2,
+    intensity: 4.4,
     rangeMeters: 9,
     driver: "portNav" as const,
   }),
@@ -411,7 +416,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-nav-wash-starboard",
     offset: [0.2, 0.3, 5.43] as const,
     color: [0.141, 1, 0.514] as const,
-    intensity: 2.2,
+    intensity: 4.4,
     rangeMeters: 9,
     driver: "starboardNav" as const,
   }),
@@ -419,7 +424,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-strobe-wash-port",
     offset: [0.05, 0.32, -5.62] as const,
     color: [0.949, 0.973, 1] as const,
-    intensity: 3.6,
+    intensity: 7.2,
     rangeMeters: 10,
     driver: "strobe" as const,
   }),
@@ -427,9 +432,23 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-strobe-wash-starboard",
     offset: [0.05, 0.32, 5.62] as const,
     color: [0.949, 0.973, 1] as const,
-    intensity: 3.6,
+    intensity: 7.2,
     rangeMeters: 10,
     driver: "strobe" as const,
+  }),
+  Object.freeze({
+    // `7-15b`: the tail lamp had no wash, and the empennage is the largest
+    // stretch of airframe with no lamp near it — every other pool sits forward
+    // of the wing trailing edge. MEASURED before adding it: the strongest local
+    // lift anywhere on the moonlit airframe was +106%, so the pools were never
+    // weak; they were too few, and the mean over the whole airframe band (+3.7%)
+    // hid that by averaging lit pools against unlit tail.
+    name: "aircraft-tail-wash",
+    offset: [-3.18, 1.02, 0] as const,
+    color: [1, 0.949, 0.847] as const,
+    intensity: 3.4,
+    rangeMeters: 9,
+    driver: "tailNav" as const,
   }),
 ]);
 
@@ -438,7 +457,7 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-beacon-wash",
     offset: [-1.6, 0.92, 0] as const,
     color: [1, 0.11, 0.063] as const,
-    intensity: 2.4,
+    intensity: 4.8,
     rangeMeters: 12,
     driver: "beacon" as const,
   }),
@@ -446,7 +465,7 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-nav-wash-port",
     offset: [-0.2, 0.07, -4.82] as const,
     color: [1, 0.125, 0.094] as const,
-    intensity: 2.2,
+    intensity: 4.4,
     rangeMeters: 9,
     driver: "portNav" as const,
   }),
@@ -454,7 +473,7 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-nav-wash-starboard",
     offset: [-0.2, 0.07, 4.82] as const,
     color: [0.141, 1, 0.514] as const,
-    intensity: 2.2,
+    intensity: 4.4,
     rangeMeters: 9,
     driver: "starboardNav" as const,
   }),
@@ -462,7 +481,7 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-strobe-wash-port",
     offset: [-0.34, 0.09, -4.98] as const,
     color: [0.949, 0.973, 1] as const,
-    intensity: 3.6,
+    intensity: 7.2,
     rangeMeters: 10,
     driver: "strobe" as const,
   }),
@@ -470,9 +489,18 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
     name: "aircraft-strobe-wash-starboard",
     offset: [-0.34, 0.09, 4.98] as const,
     color: [0.949, 0.973, 1] as const,
-    intensity: 3.6,
+    intensity: 7.2,
     rangeMeters: 10,
     driver: "strobe" as const,
+  }),
+  Object.freeze({
+    // Jet tail lamp, 5.42 m aft against the trainer's 3.18 m.
+    name: "aircraft-tail-wash",
+    offset: [-5.42, 1.18, 0] as const,
+    color: [1, 0.949, 0.847] as const,
+    intensity: 3.4,
+    rangeMeters: 9,
+    driver: "tailNav" as const,
   }),
 ]);
 
