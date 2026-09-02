@@ -1732,6 +1732,32 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   future phase). The scenic ground heading-hold carries an interim sign annotated to
   revert under (a). Normative row in `ARCHITECTURE.md`'s decision log, same date.
 
+- **D-17 (2026-09-02, an owed cross-plan citation audit, written down because it had
+  survived only in messages):** recorded here at Jason's session because the crew that
+  agreed it dispersed before anyone logged it, and a grep of every root `*.md` and
+  `docs/*.md` confirmed **it appeared in no file at all.** That is this document's own
+  subject with the crew as the instrument: an agreement that existed, was correct, and had
+  no reader who could refute or recover it.
+  *The work:* the Phase 5 and Phase 6 plans have never had their `file:line` citations
+  audited. This plan's were, on 2026-09-01 — **10 stale citations replaced with symbol
+  references** after four of five `FlightRenderer.ts` cites and `Capabilities.ts`'s sampler
+  cite were found drifted by hundreds of lines across one night's commits. It carries **53**
+  such citations today and the older plans carry more.
+  *Why it is worth doing properly rather than opportunistically:* **the failure has two
+  forms and the 2026-09-01 pass only caught one.**
+  **(a) Drifted line** — the citation points at the right file and the wrong line. Catchable
+  mechanically: extract every `file:line`, assert the cited line still contains a stated
+  token.
+  **(b) Right file, wrong artifact** — the citation points at *prose about* a decision
+  rather than the decision. **No line-number audit can catch this**, because nothing has
+  moved. Found when two independent artifacts — a test and this plan — both cited the same
+  comment for the same reason, which was not two mistakes but evidence that **the comment
+  read more like the decision than the assignment site did.** Fixed at `e1eec4f` by making
+  the assignment site say it *is* the decision.
+  *The general rule:* **a citation audit must ask not only "is this line still there" but
+  "is this the artifact that decides the thing".** The first is a script; the second is a
+  reading, and only the second catches a citation that has never moved and was never right.
+
 *(Further deviations land here with evidence, plus a normative row in `ARCHITECTURE.md`'s
 decision log, per house rule.)*
 
