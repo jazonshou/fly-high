@@ -1,6 +1,4 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -196,42 +194,36 @@ export class AirportSystem {
     const towerSit = Number.isFinite(towerGround) ? towerGround - definition.elevation : 0;
     towerNode.position.set(towerAcross, towerSit, towerAlong);
 
-    // 7-11 second pass: the stand-ins are retired for the UNTEXTURED members
-    // and RETAINED for concrete. The set's glass and steel adopted the
-    // stand-ins' exact values when they were added (ef6ceb1), so those two
-    // change ownership rather than appearance.
+    // `7-11` third pass: ALL SEVEN PARTS ARE NOW ON THE SHARED SET. The
+    // stand-ins are gone and no tower-local material remains.
     //
-    // **Concrete stays local, and the blocker is the UV contract rather than
-    // the palette.** `airfield-concrete` is the only one of the three that is
-    // TEXTURED (`wire(concrete, ..., concreteSynthesis)`), and this tower's
-    // UVs satisfy neither half of the contract that texture assumes
-    // (`AirfieldMaterials.ts:39-43`):
+    // **Concrete was the last holdout and the blocker was the UV contract, not
+    // the palette** — it is the only one of the three that is TEXTURED. Both
+    // halves of the contract were broken in `towerGeometry` and both read as
+    // plausible, which is why this took a pass of its own:
     //
-    //   - **V runs DOWN the face** in the contract, so streaks and oxidation
-    //     grow monotonically with V — gravity in UV form. `band()` in
-    //     `towerGeometry.ts:222-225` emits V = 0 at `bottomY` and V = 1 at
-    //     `topY`. Applied as-is the weathering CLIMBS toward the mast and
-    //     leaves the base clean: an inverted gradient reads as wrong without
-    //     reading as broken, which is the kind that ships.
-    //   - **U is metres / `tileMeters` and WRAPS** in the contract. `band()`
-    //     emits `i / SIDES`, a normalised octagon sweep, so panel seams would
-    //     scale to each band's own width and read coarser on the mast than on
-    //     the base.
+    //   - **V ran BACKWARDS.** The contract runs V down the face so weathering
+    //     grows with gravity; `band()` emitted V = 0 at the bottom and 1 at the
+    //     top, so oxidation climbed toward the mast and left the base clean. An
+    //     inverted gradient still looks weathered, just wrongly.
+    //   - **U was `i / SIDES`** — one tile per face regardless of size. With
+    //     dU = 1/8 per face and chord = girth/8, metres-per-tile came out equal
+    //     to the band's GIRTH: the base ran **46.4 m per 3.0 m tile, a 15.5x
+    //     stretch**, essentially one tile wrapped around the whole tower.
     //
-    // Fixing that is new UV emission in `towerGeometry` plus an aspect V-start
-    // the tower has no notion of. That is its own item, not a rider on this
-    // one. Steel and glass are untextured — no UV dependency — which is
-    // exactly why they can share today and concrete cannot.
-    const towerConcrete = new PBRMaterial("tower-concrete", scene);
-    prepareMaterialForClusteredLighting(towerConcrete);
-    towerConcrete.albedoColor = new Color3(0.52, 0.51, 0.48);
-    towerConcrete.roughness = 0.72;
-    towerConcrete.metallic = 0;
-    towerConcrete.environmentIntensity = 1;
+    // **MEASURED, and it corrects the prediction the previous pass recorded
+    // here.** That comment said seams would "read coarser on the mast than on
+    // the base"; it is the other way round. The mast's 2.32 m girth happens to
+    // land within 3% of its 2.4 m tile period, so the mast was accidentally
+    // RIGHT while every large band was stretched 11-18x. A check that sampled
+    // one band could have picked the mast and passed —
+    // `render.tower-uv-contract.test.ts` therefore asserts every band, and
+    // samples the synthesized texture at the emitted UVs rather than reasoning
+    // about the numbers.
     const towerMaterials: Readonly<Record<string, PBRMaterial>> = {
-      base: towerConcrete,
-      shaft: towerConcrete,
-      gallery: towerConcrete,
+      base: this.airfieldMaterials.concrete,
+      shaft: this.airfieldMaterials.concrete,
+      gallery: this.airfieldMaterials.concrete,
       railing: this.airfieldMaterials.steel,
       cab: this.airfieldMaterials.glass,
       cabRoof: this.airfieldMaterials.steel,

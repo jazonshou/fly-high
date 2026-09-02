@@ -119,6 +119,52 @@ const MAST_RADIUS = 0.35;
 const MAST_HEIGHT = 10;
 
 /** Octagonal cross-sections throughout — a tower silhouette, not a chimney. */
+import {
+  AIRFIELD_ASPECT_V_START,
+  AIRFIELD_CONCRETE_TILE_METERS,
+  AIRFIELD_METAL_TILE_METERS,
+} from "../airfield/AirfieldMaterials";
+
+/**
+ * Which 7-11 surface each part is drawn with, and therefore which tile period
+ * its U is measured in. **Read off `AirportSystem`'s material map rather than
+ * chosen here** — the two must agree or the UVs are metrically right for a
+ * texture the part does not carry.
+ */
+export const TOWER_PART_SURFACE = Object.freeze({
+  base: "concrete", shaft: "concrete", gallery: "concrete",
+  railing: "metal", cab: "glass", cabRoof: "metal", mast: "metal",
+} as const);
+
+/** Metres of surface one tile covers along U, by surface. */
+export const TOWER_TILE_METERS = Object.freeze({
+  concrete: AIRFIELD_CONCRETE_TILE_METERS,
+  metal: AIRFIELD_METAL_TILE_METERS,
+  // Untextured: any period is inert, so it takes metal's rather than inventing
+  // a third number that would read as meaningful.
+  glass: AIRFIELD_METAL_TILE_METERS,
+});
+
+/**
+ * `7-11`'s aspect V-start for a face, from the HORIZONTAL direction it looks.
+ *
+ * **The hangar tests `Math.abs(normal[0]) > 0.5` on the full normal, and that
+ * is the same thing ONLY because its walls are vertical.** A tower band is
+ * raked, so its outward normal carries a vertical component that shrinks the
+ * horizontal ones — a steeply raked face pointing straight at the runway can
+ * read `|n.x| < 0.5` and be classified a side. Aspect is about which way a face
+ * looks in PLAN, not how far it leans, so this takes the in-plane direction.
+ *
+ * Runway-relative, never compass: the runway lies in −across from the tower, so
+ * a −x face is the one the airfield sees and maintains.
+ */
+function aspectVStartFor(horizontalX: number): number {
+  if (Math.abs(horizontalX) <= 0.5) return AIRFIELD_ASPECT_V_START.sides;
+  return horizontalX < 0
+    ? AIRFIELD_ASPECT_V_START.facingRunway
+    : AIRFIELD_ASPECT_V_START.awayFromRunway;
+}
+
 const SIDES = 8;
 
 interface Accumulator {
@@ -194,6 +240,7 @@ function band(
   topY: number,
   capBottom: boolean,
   capTop: boolean,
+  tileMeters: number,
 ): void {
   const dy = topY - bottomY;
   const dr = topHalf - bottomHalf;
@@ -202,6 +249,9 @@ function band(
   const radial = dy / slopeLength;
   const vertical = -dr / slopeLength;
 
+  const height = topY - bottomY;
+  // Running arc distance around the ring, so U is continuous across the seams.
+  let uOrigin = 0;
   for (let i = 0; i < SIDES; i += 1) {
     const j = (i + 1) % SIDES;
     const b0 = corner(i, bottomHalf);
@@ -216,15 +266,32 @@ function band(
     const n: readonly [number, number, number] = [
       (mx / ml) * radial, vertical, (mz / ml) * radial,
     ];
-    const u0 = i / SIDES;
-    const u1 = (i + 1) / SIDES;
+    // `7-11` UV CONTRACT. U runs along the face in METRES / tileMeters and
+    // wraps; V runs DOWN the face from the aspect start to 1, so weathering
+    // accumulates with +V and reads as gravity.
+    //
+    // **U is arc length, not `i / SIDES`.** A normalised sweep gives every band
+    // one tile per face regardless of size, so the mast — an eighth of the
+    // base's girth — would carry the same seam count and read far coarser. The
+    // running `uOrigin` carries distance across the eight seams so tiling does
+    // not restart at each, the way the hangar carries `uOriginMeters` across a
+    // split gable.
+    const uAt = (px: number, pz: number): number =>
+      (uOrigin + Math.hypot(px - b0[0], pz - b0[1])) / tileMeters;
+    // Aspect from the face's in-plane direction; see `aspectVStartFor`.
+    const aspect = aspectVStartFor(mx / ml);
+    // A zero-height band (the railing's top rail) has no top-to-bottom run to
+    // put a gradient on, matching the hangar's `height > 1e-9` guard.
+    const vTop = aspect;
+    const vBottom = height > 1e-9 ? 1 : aspect;
     // Outward-CCW seen from outside: bottom-left, bottom-right, top-right,
     // top-left.
-    const a = vertex(acc, [b0[0], bottomY, b0[1]], n, u0, 0);
-    const b = vertex(acc, [b1[0], bottomY, b1[1]], n, u1, 0);
-    const c = vertex(acc, [t1[0], topY, t1[1]], n, u1, 1);
-    const d = vertex(acc, [t0[0], topY, t0[1]], n, u0, 1);
+    const a = vertex(acc, [b0[0], bottomY, b0[1]], n, uAt(b0[0], b0[1]), vBottom);
+    const b = vertex(acc, [b1[0], bottomY, b1[1]], n, uAt(b1[0], b1[1]), vBottom);
+    const c = vertex(acc, [t1[0], topY, t1[1]], n, uAt(t1[0], t1[1]), vTop);
+    const d = vertex(acc, [t0[0], topY, t0[1]], n, uAt(t0[0], t0[1]), vTop);
     quad(acc, a, b, c, d);
+    uOrigin += Math.hypot(b1[0] - b0[0], b1[1] - b0[1]);
   }
 
   if (capTop) {
@@ -262,6 +329,7 @@ function post(
   cx: number, cz: number,
   halfX: number, halfZ: number,
   bottomY: number, topY: number,
+  tileMeters: number,
 ): void {
   const x0 = cx - halfX, x1 = cx + halfX;
   const z0 = cz - halfZ, z1 = cz + halfZ;
@@ -276,8 +344,24 @@ function post(
     { n: [0, 1, 0], c: [[x0, topY, z1], [x1, topY, z1], [x1, topY, z0], [x0, topY, z0]] },
     { n: [0, -1, 0], c: [[x0, bottomY, z0], [x1, bottomY, z0], [x1, bottomY, z1], [x0, bottomY, z1]] },
   ];
+  const height = topY - bottomY;
   for (const face of faces) {
-    const idx = face.c.map((p, i) => vertex(acc, p, face.n, i === 1 || i === 2 ? 1 : 0, i > 1 ? 1 : 0));
+    // Same `7-11` contract as `band()`: U in metres / tileMeters from the
+    // face's own corner 0, V from the aspect start at the TOP down to 1.
+    // A horizontal cap (n.y = +/-1) has no top or bottom edge to run a
+    // gravity gradient between, so it takes the aspect start flat rather than
+    // a gradient invented from its plan extent.
+    const horizontal = Math.hypot(face.n[0], face.n[2]);
+    const aspect = horizontal > 1e-9
+      ? aspectVStartFor(face.n[0] / horizontal)
+      : AIRFIELD_ASPECT_V_START.sides;
+    const flat = horizontal <= 1e-9 || height <= 1e-9;
+    const origin = face.c[0]!;
+    const idx = face.c.map((p, i) => vertex(
+      acc, p, face.n,
+      Math.hypot(p[0] - origin[0], p[2] - origin[2]) / tileMeters,
+      flat ? aspect : (i > 1 ? aspect : 1),
+    ));
     // Reversed relative to the list above: these faces are authored
     // CCW-seen-from-outside, where `band()` authors CW. Measured, not
     // reasoned — the railing was the one part reading agreement +0.714
@@ -298,13 +382,18 @@ function post(
  */
 export function buildTowerGeometry(): TowerGeometry {
   const parts = {} as Record<TowerPartName, TowerPart>;
+  // Each part's tile period, via its surface — so a part that changes material
+  // changes period in one place and cannot drift from `AirportSystem`'s map.
+  const TILE = Object.fromEntries(
+    TOWER_PART_NAMES.map((name) => [name, TOWER_TILE_METERS[TOWER_PART_SURFACE[name]]]),
+  ) as Record<TowerPartName, number>;
 
   const baseAcc = accumulator();
-  band(baseAcc, BASE_HALF, BASE_TOP_HALF, 0, BASE_HEIGHT, false, false);
+  band(baseAcc, BASE_HALF, BASE_TOP_HALF, 0, BASE_HEIGHT, false, false, TILE.base);
   parts.base = finish(baseAcc);
 
   const shaftAcc = accumulator();
-  band(shaftAcc, SHAFT_BOTTOM_HALF, SHAFT_TOP_HALF, BASE_HEIGHT, SHAFT_TOP_Y, false, false);
+  band(shaftAcc, SHAFT_BOTTOM_HALF, SHAFT_TOP_HALF, BASE_HEIGHT, SHAFT_TOP_Y, false, false, TILE.shaft);
   parts.shaft = finish(shaftAcc);
 
   // The gallery is a slab, not a ring: an annulus would need an inner wall and
@@ -312,7 +401,7 @@ export function buildTowerGeometry(): TowerGeometry {
   const galleryAcc = accumulator();
   band(
     galleryAcc, GALLERY_HALF, GALLERY_HALF,
-    SHAFT_TOP_Y - GALLERY_THICKNESS, SHAFT_TOP_Y, true, true,
+    SHAFT_TOP_Y - GALLERY_THICKNESS, SHAFT_TOP_Y, true, true, TILE.gallery,
   );
   parts.gallery = finish(galleryAcc);
 
@@ -323,28 +412,28 @@ export function buildTowerGeometry(): TowerGeometry {
     const r = GALLERY_HALF / Math.cos(Math.PI / SIDES) - 0.35;
     post(
       railAcc, Math.cos(angle) * r, Math.sin(angle) * r,
-      0.06, 0.06, SHAFT_TOP_Y, railTop,
+      0.06, 0.06, SHAFT_TOP_Y, railTop, TILE.railing,
     );
   }
   // Top rail, as a thin band closing the ring.
-  band(railAcc, GALLERY_HALF - 0.3, GALLERY_HALF - 0.3, railTop - 0.09, railTop, true, true);
+  band(railAcc, GALLERY_HALF - 0.3, GALLERY_HALF - 0.3, railTop - 0.09, railTop, true, true, TILE.railing);
   parts.railing = finish(railAcc);
 
   // The cab RAKES OUTWARD — wider at the roof than the floor — which is what
   // makes a control tower read as one rather than as a water tank. It also
   // angles the glass down toward the runway, which is why real cabs do it.
   const cabAcc = accumulator();
-  band(cabAcc, CAB_FLOOR_HALF, CAB_ROOF_HALF, SHAFT_TOP_Y, SHAFT_TOP_Y + CAB_HEIGHT, false, false);
+  band(cabAcc, CAB_FLOOR_HALF, CAB_ROOF_HALF, SHAFT_TOP_Y, SHAFT_TOP_Y + CAB_HEIGHT, false, false, TILE.cab);
   parts.cab = finish(cabAcc);
 
   const roofY = SHAFT_TOP_Y + CAB_HEIGHT;
   const roofAcc = accumulator();
-  band(roofAcc, CAB_ROOF_HALF, CAB_ROOF_HALF - 0.6, roofY, roofY + 0.7, false, true);
+  band(roofAcc, CAB_ROOF_HALF, CAB_ROOF_HALF - 0.6, roofY, roofY + 0.7, false, true, TILE.cabRoof);
   parts.cabRoof = finish(roofAcc);
 
   const mastBottom = roofY + 0.7;
   const mastAcc = accumulator();
-  band(mastAcc, MAST_RADIUS, MAST_RADIUS * 0.6, mastBottom, mastBottom + MAST_HEIGHT, false, true);
+  band(mastAcc, MAST_RADIUS, MAST_RADIUS * 0.6, mastBottom, mastBottom + MAST_HEIGHT, false, true, TILE.mast);
   parts.mast = finish(mastAcc);
 
   // Completeness: the roster and the build must agree. A part named and not
