@@ -322,8 +322,37 @@ everywhere the sun's contribution gates the shadow — which is everything excep
 this one ocean term — and on steep night wave faces it is a bounded brightening
 of at most ~0.0016 scene units, and only where the night shadow map currently
 reports shadowed at all. **Under the scotopic response small scene values are
-not small display values**, so the honest close is a pixel check on a water shot
-at night, not an assertion. `water-3m` and `water-25ft` are both in the set.
+not small display values**, so the honest close would be a pixel check on a water
+shot at night.
+
+> **THERE IS NO NIGHT WATER SHOT. Corrected 2026-09-01, before the capture.**
+> This section first named `water-3m` and `water-25ft` as the check. Both are
+> DAYTIME: sun elevation **+31.97** and **+11.34** degrees, computed from
+> `solarApparentPosition` the same way as the night clocks above. The sun is up,
+> `sunColor` is nonzero, and the entire night argument — the `intensity: 0.0`
+> clamp below −12 degrees, `nDotL` failing against a below-horizon sun — does not
+> apply at either vantage. **A daylight shot cannot show a night-only term.**
+>
+> And it is not a bad choice of two shots. **The night and water populations are
+> disjoint across the whole set.** The dark band holds exactly `night`,
+> `night-moonlit` and `night-beacon-offset`, and all three are the SAME airfield
+> approach pose — 152 m AGL, `offsetXMeters: -2500`, chase camera down the runway
+> axis. The water shots are `water-3m` (16.5 h), `water-25ft` (18.5 h) and
+> `coast-10km-lowsun` (19 h). No night vantage contains water.
+>
+> **So the verdict is ABSENT, not null**, and the distinction is the point: this
+> is a gap in the shot set, not evidence about the term. Neither water shot sets
+> `windSpeed` either, so the wind-dependence leg was independently untestable —
+> the smaller version of the same problem.
+>
+> **The useful bound that survives.** If no night shot contains water, the
+> ungated `:913` term **cannot affect a single frame in the capture set**. It is
+> invisible to every delivery gate we have — no ratchet, no SSIM check, no
+> draw-call floor can see it. That does not make it harmless; it makes it a
+> defect only a pilot flying over water at night would meet. **A term no
+> instrument can see is not a term that is not there.** Settling it empirically
+> needs a NEW night-over-water vantage, which is a shot-set change and therefore
+> needs its own ceiling rather than a delta.
 
 ## The plan's suggested light-point lever is attached to almost nothing
 
