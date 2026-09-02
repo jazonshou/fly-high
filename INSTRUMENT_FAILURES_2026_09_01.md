@@ -259,10 +259,29 @@ than any of the others.
 
 ## 7. One correction to this document's own commissioning
 
-The brief quoted a sentence back to me as mine — *"A threshold that cannot fire,
-a coordinate that cannot be right, an azimuth 90° out, a right number in the
-wrong frame, and a git ref that reads as a commit object."* **I did not write
-it.** Of those five, the git-ref one is mine; the azimuth and the frame error
-belong to other sessions. It is a good summary and it is not my sentence, and on
-a night whose subject was numbers detaching from their provenance, it would be a
-poor document that let that stand.
+The brief quoted a sentence back to me as mine. **It is the Principle
+Engineer's**, and in full it reads:
+
+> the failures we found were uniformly silent: a threshold that cannot fire, a
+> coordinate that cannot be right, an azimuth 90° out, a right number in the
+> wrong frame, and a git ref that reads as a commit object. **Five instruments,
+> five confident tidy answers, no errors raised.**
+
+Of those five instruments only the git ref is mine; the azimuth and the
+wrong-frame error belong to other sessions. **It is the best summary of the
+evening anyone produced and it is not my sentence.**
+
+Recorded here rather than quietly corrected because the mechanism is the
+document's own: a sentence was taken from one session, handed to another as
+theirs, and used to commission a document — **the same detachment from
+provenance, with a person as the payload instead of a number.** It is also the
+second instance of that in one hour; `flight-simulator-d6` made the identical
+correction about the body-axis work.
+
+**A smaller instance, in the same brief.** The commit count I was given was 169
+and `git log --since` returned 146. **Both are correct and they answer different
+questions** — 169 is the working session measured from the Phase 6 plan commit,
+146 is the calendar day. Neither is wrong; neither was the number the sentence
+needed. This document quotes no commit count, because at the time of writing I
+could establish only that the two figures disagreed and not which question
+either answered.
