@@ -830,10 +830,20 @@ and cull radii, night shadow policy.
   `shadowDistance` out to `vegetationDistance` for two phases, invisibly, because each half
   was individually correct. **When 7-9 shortens or re-budgets anything on that reasoning,
   check that every representation of the affected thing got both halves.**
-- **Absorbs the PCSS residual with reason.** `QualityProfile.ts:436-441` records PCSS as
-  "a Phase 7 conversation" because `1A-5` deleted the colour attachment
-  `computeShadowWithCSMPCSS` needs. Decline it explicitly with that citation rather than
-  leaving it open a fourth phase.
+- **Absorbs the PCSS residual with reason. Cite the DECISION, not the note about it.**
+  The shipped decision is the assignment `this.shadows.filter = ShadowGenerator.FILTER_PCF`
+  in [AtmosphereSystem.ts](src/render/webgpu/atmosphere/AtmosphereSystem.ts); the
+  explanatory note lives separately in
+  [QualityProfile.ts](src/render/webgpu/core/QualityProfile.ts) (search `FILTER_PCF`, not a
+  line number). **An earlier draft of this bullet cited only the note, and cited it by line
+  — both wrong in the way this phase keeps finding.** The line has since drifted onto ocean
+  ring counts, and the note was never the mechanism: `62cc447` records that the guard
+  holding this decline had the identical defect, asserting on a token that occurs in
+  `QualityProfile.ts` **exactly once, inside a comment**, so switching the real assignment to
+  `FILTER_PCSS` left it green.
+  **The substance is unchanged:** PCSS has been carried as "a Phase 7 conversation" because
+  `1A-5` deleted the colour attachment `computeShadowWithCSMPCSS` needs. **7-9 declines it
+  explicitly, against the assignment**, rather than leaving it open a fourth phase.
 - **The governor gains its first lighting rung.** The GPU ladder's nine rungs contain
   nothing for lights ([AdaptiveGovernor.ts:174-197](src/render/webgpu/core/AdaptiveGovernor.ts)).
   Add one — and remember the governor is **frozen under captures**, so the rung's real

@@ -609,6 +609,14 @@ export class AtmosphereSystem {
     // sheet, lofted aircraft, closed crown hulls), which is the case this
     // technique is standard for.
     this.shadows.forceBackFacesOnly = true;
+    // **THIS LINE IS THE PCSS DECISION.** Not the note in `QualityProfile.ts`
+    // that explains why PCSS was declined -- that is prose ABOUT this, and two
+    // independent readers have now gone there instead of here: a guard whose
+    // own describe read "PCSS stays declined" asserted on the note and could
+    // not see this assignment change (repaired, `62cc447`), and the 7-9 plan
+    // bullet cited the note by line number, which then drifted onto an
+    // unrelated subject. Anything asserting or citing the shipped filter must
+    // read THIS statement. `render.night-moonlight-shadow-trade.test.ts` does.
     this.shadows.filter = ShadowGenerator.FILTER_PCF;
     this.shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 
