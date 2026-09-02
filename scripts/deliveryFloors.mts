@@ -936,7 +936,14 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "so the commit is a net SAVING of 6. A sign change, not a magnitude "
       + "change -- and the swing of 12 is the whole of the +24/+12 bimodality. "
       + "Measured via `37cf3aa -> 82c4182` because `ddc5a63` does not run; see "
-      + "MULTI_OWNER_COMMITS. Needs the full 34 before it becomes an entry.",
+      + "MULTI_OWNER_COMMITS. Needs the full set AS IT STANDS AT THOSE TWO "
+      + "COMMITS -- 34 at both `37cf3aa` and `82c4182` -- before it becomes an "
+      + "entry. NOT the current set: each capture arm imports its own "
+      + "worktree's `PERF_CAPTURE_SHOTS` (`SELECTED_SHOTS` falls back to it "
+      + "when the filter is empty), so a shot added to HEAD does not change "
+      + "this pair's denominator. The set reached 35 in `57e38a0` while this "
+      + "note still read `the full 34`, which was correct and looked stale -- "
+      + "the reason the count is now stated against the commits that fix it.",
   }),
   Object.freeze({
     owner: "7-10 / hangars",
