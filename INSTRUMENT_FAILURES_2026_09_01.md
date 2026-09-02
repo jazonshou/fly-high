@@ -558,6 +558,47 @@ is right and permanent. Both belong, marked as different things:
 | the inventory format fix | SWE II 2 | `4543b7e` |
 | "cannot affect a single frame" | this session `[87a15f]` | `d0c7ecc` |
 
+**POSTSCRIPT — the claim above was tested on this document within the hour. It
+held, and it held harder than the section had allowed for.**
+
+**First, the error, because it is the section's own subject and I made it.** Every
+session name in this file went unreachable at once, and I concluded the crew had
+been replaced — reporting to the user that the team no longer existed. **It was a
+batch RENAME.** The sessions persisted, their work persisted, and ownership
+persisted; only the labels moved. **I inferred identity from a name, which is
+precisely what this section argues cannot be done.** The PM independently made
+the same misreading in the same window and briefed a colleague who had written
+four of this project's documents as a stranger. **Two sessions, no contact, the
+same wrong inference from the same signal** — the shape §1.6's host gate has.
+
+**Second, and worse for this section: the `[ref]` is not durable either.** The
+table above uses session refs — `[b12695]`, `[87a15f]` — in the perishable column
+as though they disambiguated a name. **They do not survive a rename.** This
+session's ref went `[87a15f]` to `[e17500]` across it, and that is not an
+inference: **I hold this entire evening's context and know I am the same
+session.** A name changing is ambiguous evidence; a ref changing under an
+identity I can verify from the inside is proof.
+
+**So the perishable column is more perishable than it was drawn.** Names, refs,
+and any roster built from either expire together and without notice. **What
+survived the reset is exactly and only what §8's durable column already held:
+every commit sha resolves, every file path resolves.** Four of the five owner
+names in §6 resolve to nobody, and would have been the whole record had the
+anchors not been placed beside them.
+
+**Read the §6 owners as "who to ask, if that name still points at them", and the
+anchors as the handle.** An unreachable name is not an abandoned item; each is
+described well enough beside its anchor to be picked up cold.
+
+**Recorded, not tidied: four untracked probe scripts sit at the repository root**
+— `.band-probe.mjs`, `.frame-view.mjs`, `.lampdiff.mjs`, `.lamphist.mjs`, about
+1 KB each, referenced by nothing tracked, almost certainly throwaway instruments
+from the lamp and night-frame work. **Deliberately not deleted**, for the reason
+`flight-simulator-d6` gave about this document's own near-miss: *nothing in the
+outcome would distinguish "I moved it somewhere safe" from "I destroyed the only
+copy" until someone went looking.* Their existence is the record; the decision
+belongs to whoever can still identify them.
+
 **And their caveat, stated rather than left to inference: none of this makes
 attribution sufficient.** A correctly-attributed wrong number is still a wrong
 number, and tonight produced several — the **+128 MiB** above, true of the arms
