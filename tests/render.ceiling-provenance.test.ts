@@ -17,6 +17,18 @@ import {
  * every run.** A ceiling with 93% slack is not a ceiling; it is a number that
  * happens to be larger.
  *
+ * **WHY THE FAILURE MESSAGE MATTERS MORE THAN THE LOGIC HERE.** When the set
+ * grows, two exits cost exactly one line each: declaring the new shot
+ * unmeasured, which is TRUE, and raising `shotCount`, which is FALSE — it
+ * claims a measurement nobody took. **Equal cost, opposite honesty.**
+ *
+ * So the message must name the QUESTION, not the number. **When a failure
+ * message names a value, the cheapest way out is to change that value; when it
+ * names a question, the cheapest way out is to answer it.** Both are one line;
+ * the message chooses which one a tired reader takes. A guard that names the
+ * number is one people SATISFY instead of ANSWER — and "it is probably a light
+ * shot" is precisely the assumption the 495 ceiling was built on.
+ *
  * **Why a BAND and not a `>`:** `inventoriedMemoryFailures` compares with a bare
  * `>`, which catches a ceiling about to bind and is structurally blind to one
  * that has gone slack. The defect above is invisible to it *by construction*.
