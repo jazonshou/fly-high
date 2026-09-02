@@ -740,7 +740,13 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
 // band R/B 0.592 null -> 0.902 at 0.06; the added red scales ~linearly at
 // these pre-knee levels, so reaching the registered 1.2 needs ~2.3x the
 // lobe). One turn remains in the [0.03, 0.15] budget.
-export const TWILIGHT_WARM_STRENGTH = 0.13;
+// Round W turn 2 (final): 0.13 -> 0.15, the registered ceiling. The R/B
+// response is bending (5.2/unit on turn 1's data, 3.56/unit on turn 2's)
+// and the solve lands within noise of the 1.2 target at the ceiling -
+// the number decides, and if it misses here the pre-named SHAPE failure
+// fires with the clock as the identified candidate (-3 deg is a pink
+// phase; sunset oranges live nearer -1..0).
+export const TWILIGHT_WARM_STRENGTH = 0.15;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
 export const TWILIGHT_BELT_RATIO = 0.35;
 export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
