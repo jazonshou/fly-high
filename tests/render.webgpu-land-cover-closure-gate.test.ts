@@ -125,4 +125,60 @@ describe("land-cover closure gate (6-13)", () => {
       ).toBeGreaterThan(0.05);
     }
   });
+
+  it("never paints unclaimed ground as SAND, at any temperature", () => {
+    // The same hole as the sweep above, one axis over — and the reason that
+    // sweep could not see it is that it varies `slope` while pinning climate
+    // at `WET_WARM_LOWLAND`. **A guard that fixes the axes it is not sweeping
+    // is blind to the identical defect one axis away.**
+    //
+    // `warm` gates Grass, ForestFloor and DryGrass; `alpine` gates Shrub and
+    // most of Rock; `steep` gates the rest. Below the warm threshold, below
+    // the alpine onset, on gentle ground, all three shut at once. Measured
+    // before the fix at 200 m: temperature <= 0.16 gave Sand at exactly 0.020,
+    // temperature >= 0.18 gave Grass at 0.800 — a 0.02-wide step flipping the
+    // whole surface, tracing a CONTOUR because terrain temperature varies
+    // smoothly. That is why Jason saw strips rather than patches.
+    //
+    // **THIS ASSERTS THE INVARIANT, NOT THE SCORE, AND THE DIFFERENCE IS
+    // HONEST.** The floor moved from Sand to Grass, so unclaimed ground is now
+    // painted the ordinary lowland cover instead of beach. It is still a
+    // DEFAULT rather than a claim: the winning score there is 0.02, and a
+    // `best > 0.05` assertion would still fail. The structural hole — no
+    // climatic class genuinely claiming cold gentle lowland — is NOT closed by
+    // this change and is recorded as open. What is closed is that the default
+    // can no longer be the one material whose appearance contradicts every
+    // neighbour.
+    //
+    // **THE HOLE THAT REMAINS, stated so nobody reads this green as more than
+    // it is.** Cold gentle lowland below the alpine onset has no climatic
+    // class that genuinely claims it: Grass wins there on a floor of 0.02,
+    // which is a DEFAULT masquerading as a claim. The right repair is a class
+    // that covers cold open ground on its own terms — tundra, or a
+    // cold-tolerant Grass term — and that is a look decision nobody has taken.
+    // **Until then this guard proves only that the default is plausible, not
+    // that the ground is classified.**
+    for (let temperature = 0; temperature <= 0.6; temperature += 0.01) {
+      for (const elevationMeters of [5, 50, 200, 380, 500]) {
+        const suit = landCoverSuitabilities({
+          ...WET_WARM_LOWLAND,
+          elevationMeters,
+          temperature,
+          slope: 0.05,
+          moisture: 0.55,
+          canopyClosure: 0,
+        });
+        let dominantIndex = 0;
+        for (let i = 1; i < suit.length; i += 1) {
+          if (suit[i]! > suit[dominantIndex]!) dominantIndex = i;
+        }
+        expect(
+          dominantIndex,
+          `temperature ${temperature.toFixed(2)} at ${elevationMeters} m: gentle `
+          + "inland ground classified as Sand. A constant term is deciding what "
+          + "unclaimed ground looks like, and beach is the least ordinary answer.",
+        ).not.toBe(SurfaceMaterial.Sand);
+      }
+    }
+  });
 });

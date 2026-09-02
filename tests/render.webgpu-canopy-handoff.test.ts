@@ -783,7 +783,29 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // this test exists to hold. What moved it is `gentle` becoming the exact
     // complement of `steep`, a law change that necessarily reaches both the
     // channel-absent and channel-live paths.
-    expect(dark.digest).toBe("622c08d1");
+    // RE-PINNED `622c08d1` -> `2a43cd2c` for Jason's "brown/grey strips"
+    // report. `Sand` carried a constant `+ 0.02` while every other class is a
+    // pure product, so wherever the others all fell below 0.02 Sand won — not
+    // because the ground is sandy but because nothing else claimed it. Below
+    // the `warm` threshold, below the `alpine` onset, on gentle ground, all
+    // three gates shut at once, and terrain temperature varying smoothly
+    // turned that into a CONTOUR: the strips he saw. The floor moved to Grass.
+    //
+    // **THE CONSEQUENCE, STATED RATHER THAN LEFT IN THE HASH.** This moves the
+    // CPU-visible classification, which is what this assertion exists to
+    // flag: measured over 26,460 terrain conditions, Sand 7.7% -> 1.7% with
+    // essentially all of it to Grass. **Cold gentle lowland now reads as GRASS
+    // to the species, wildlife and ecology rules where it read as BEACH.**
+    //
+    // That this is ecologically more sensible is an ARGUMENT, not a
+    // measurement — mine, approved by the PM, and recorded as such so the next
+    // reader can disagree with it. What is measured is only the share.
+    //
+    // Same amendment path `6-13` used one paragraph above: one law, both
+    // readers, re-pinned. The rejected alternative was applying the floor in
+    // the splat path alone, which would split one authority into two — the
+    // shape that left the memory estimate and the inventory disagreeing.
+    expect(dark.digest).toBe("2a43cd2c");
     expect(dark.probes).toBe(EDGE * EDGE);
   });
 
@@ -796,7 +818,7 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // 1.0 by a permanent 0.100 on every wet lowland. Forest litter was painted
     // where there is no forest. Measured on the shipping bake afterwards:
     // ForestFloor 13.6% of baked texels, against 57.7% of land before.
-    expect(live.digest).toBe("b3c52bb2");
+    expect(live.digest).toBe("266f19ce"); // re-pinned with `2a43cd2c`; same cause, see above
     let changed = 0;
     for (let index = 0; index < dark.reference.length; index += 1) {
       if (dark.reference[index] !== live.reference[index]) changed += 1;

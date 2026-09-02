@@ -254,7 +254,32 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
 
   const suitability = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
   // Sand: the shore band, and only where it is not steep.
-  suitability[SurfaceMaterial.Sand] = (1 - shore) * gentle * 1.35 + 0.02;
+  //
+  // **THE FLOOR MOVED TO GRASS, and that is the whole of Jason's "brown/grey
+  // strips" report.** This term carried a constant `+ 0.02` while every other
+  // class is a pure product, so wherever the others all evaluated below 0.02
+  // Sand won — **not because the ground is sandy, but because nothing else
+  // claimed it.** An unclaimed-ground default has to be the most ordinary
+  // cover, and beach is the least ordinary thing on a temperate lowland.
+  //
+  // `6-13` already fixed one instance of this in the SLOPE axis, by making
+  // `gentle + steep === 1` so the two tails cannot both be flat. The hole
+  // stayed open in TEMPERATURE: `warm` gates Grass, ForestFloor and DryGrass;
+  // `alpine` gates Shrub and most of Rock; `steep` gates the rest. Below the
+  // warm threshold, below the alpine onset, on gentle ground, **all three
+  // gates shut at once**. Measured at 200 m on gentle ground: temperature
+  // <= 0.16 gave Sand at 0.020, temperature >= 0.18 gave Grass at 0.800 — a
+  // 0.02-wide step flipping the entire surface.
+  //
+  // **That is why the artifact is a STRIP rather than a patch.** Terrain
+  // temperature varies smoothly, so the threshold traces a contour line across
+  // the landscape. A defect that produces bands needs a mechanism that
+  // produces contours, and a gate crossing does exactly that.
+  //
+  // Moving the floor rather than widening a gate is the smaller change: it
+  // cannot touch the shore band, which is doing real work at the waterline,
+  // and it changes only ground that had no claimant at all.
+  suitability[SurfaceMaterial.Sand] = (1 - shore) * gentle * 1.35;
   // Grass: the default lowland cover, and what an airfield is mown to. The
   // sward gain rides the CLIMATIC term only — an airfield is mown grass by
   // decree and must not be scaled by whether the wild sward would grow there.
@@ -262,6 +287,18 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
     + airfield * 2.4;
+  // The unclaimed-ground floor, moved here from Sand. Grass is what a temperate
+  // lowland looks like when no stronger signal applies; beach is not.
+  //
+  // **A FLOOR, NOT A BONUS — and the difference is measurable.** Written as
+  // `+ 0.02` it is a universal gain: Grass beats every rival it was within
+  // 0.02 of, anywhere, including ground those rivals legitimately claimed.
+  // Measured across 26,460 terrain conditions, the additive form moved
+  // DryGrass 6.4% -> 5.4% and Rock 61.7% -> 61.4% on top of the Sand
+  // correction it was written for. `Math.max` raises only ground that scored
+  // below the floor, which is the ground that had no claimant — the case this
+  // exists to serve.
+  suitability[SurfaceMaterial.Grass] = Math.max(suitability[SurfaceMaterial.Grass]!, 0.02);
   // Forest floor: wet, warm, below the treeline, off the steepest ground —
   // and, since 6-6, carrying the litter its soil column can actually support.
   // A thin-soiled crest under the same climate is duff-free ground and now
