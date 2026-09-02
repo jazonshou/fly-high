@@ -1806,6 +1806,39 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     comparesToBaseline: false,
     ceilings: null,
   },
+  {
+    name: "lake-island-piercing",
+    description:
+      "Ground-level daylight look at hydrology lake 23:-16, where terrain "
+      + "rose up to 10.1 m through the legacy water plate (the analytic twin "
+      + "of the W-5 dropped-island residual; fixed by appendContainedLake)",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 90,
+    altitudeMslMeters: null,
+    /**
+     * Jason's in-flight report, verbatim: "blue blotches over the green
+     * terrain… hard geometric shapes that go through the terrain… especially
+     * near water." scripts/hydrology-piercing-probe.mts measured every
+     * analytic lake pierced by ground (1.1% of lake area; worst 10.1 m at
+     * (20520, −14630), two instruments converged — a coarse first grid
+     * read 8.34 m), and lakeShoreline.ts records why: "Interior
+     * (hole/island) rings are dropped: the polygon export contract is a
+     * single ring. Recorded W-5 residual" — the plate is triangulated over
+     * its islands. This shot stands 75–100 m west of the worst measured
+     * ridge run (20503..20533, −14627), flying the +x convention straight
+     * at it, daylight default clock, fixed offsets (no locate: the point is
+     * exact, not searched).
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers
+     * every canonical shot index (the Wave R trap).
+     */
+    offsetXMeters: 20_395,
+    offsetZMeters: -14_501,
+    pitchDownDegrees: 22,
+    airspeedMetersPerSecond: 0,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
 ]);
 
 export interface CaptureQuaternion {

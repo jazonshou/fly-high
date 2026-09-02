@@ -505,9 +505,32 @@ describe("Babylon WebGPU hydrology presentation", () => {
     // Gate W rule 1/2 (PHASE_6_EXECUTION_PLAN §1): the analytic legacy paging
     // path must produce byte-identical meshes while the graph-mode builders
     // are replaced. These hashes were pinned from the pre-W-5 tree; if this
-    // fails, the analytic appendRiver/appendLake path changed — which breaks
-    // the Gate W unchanged-SSIM close proof. Do not re-pin without a
-    // sanctioned analytic rebaseline.
+    // fails, the analytic appendRiver/appendContainedLake path changed. Do
+    // not re-pin without a sanctioned analytic rebaseline.
+    //
+    // AMENDMENT (2026-09-02, PM-sanctioned rebaseline; LAKE hash only): the
+    // analytic lake builder was replaced by `appendContainedLake` after the
+    // legacy fan was measured drawing water over ground — every generated
+    // lake pierced (1.1% of lake area, worst 10.1 m of terrain above the
+    // plate; scripts/hydrology-piercing-probe.mts — first reported 8.34 m
+    // from a coarse grid, corrected upward on a two-instrument convergence
+    // audit with SWE II 1, both landing on (20520, −14630) ±2 m). The sanction's basis: Gate
+    // W's unchanged-SSIM close proof is GIVEN (PHASE_6_OUTCOME.md, 24/24
+    // green analytic shots) and the eroded path is shelved, so the frozen
+    // input the old hash protected no longer guards a pending proof. The
+    // RIVER hash is deliberately untouched — appendRiver remains
+    // byte-identical, and this test still fails on any drift in it.
+    //
+    // BLAST-RADIUS CORRECTION (same day, SWE II 1's frustum audit): the
+    // sanction request said "no baselined PNG frames a lake" — FALSE as
+    // written. slant-10km frames lake:23:-16 at 18.1 km (~41 px wide, on
+    // the frame's azimuth edge) and lake:32:-16 at 26.1 km. The clause
+    // that is TRUE: the intrusion subtends 0.62 px there — the defect was
+    // UNRESOLVABLE, not unframed, so no baseline could have caught it and
+    // none should visibly move under this fix (if slant-10km shifts beyond
+    // noise, something other than the island holes moved). The audit is a
+    // floor: 15 locate-driven shots have unresolved camera positions and
+    // the frustum test targets lake centres only.
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const camera = new FreeCamera("legacy-pin-camera", new Vector3(0, 300, -600), scene);
@@ -564,7 +587,7 @@ describe("Babylon WebGPU hydrology presentation", () => {
     }).toEqual({
       river: "f7e407f55a911841736e63f5a74da5830853808c0e54586aa8eadfe632dc9103",
       riverLake: "null",
-      lake: "d84e0e187981b513ed96eb1fc95074e7c789bb3f07c234ba69ae2690d2508324",
+      lake: "0109459be386cc32b447905142356eff782f4aa48fbc78a004182f877539f124",
       lakeRiver: "null",
     });
     riverSystem.dispose();

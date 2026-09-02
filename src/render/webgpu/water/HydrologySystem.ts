@@ -641,26 +641,265 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
   }
 }
 
-function appendLake(arrays: MeshArrays, lake: HydrologyLake): void {
+/**
+ * The waterline-contained analytic lake plate — the fix for the in-flight
+ * "blue blotches over the green terrain… hard geometric shapes that go
+ * through the terrain" report (Jason, 2026-09-02), which
+ * scripts/hydrology-piercing-probe.mts measured (all five generated lakes
+ * pierced by ground, 1.1% of lake area, worst 10.1 m — two instruments
+ * converged on (20520, −14630) ±2 m; a coarse first grid read 8.34 m)
+ * and the lake-island-piercing capture sited against.
+ *
+ * The legacy builder was a 32-segment fan from the basin centre at
+ * `surfaceHeight`: nothing sampled the interior, so any ground above the
+ * surface inside the polygon drew water straight over it — the analytic
+ * twin of the recorded W-5 dropped-island residual (lakeShoreline.ts
+ * computes island rings and its export contract drops them). Here the
+ * plate is the CELL FILL of the submergence field s = surfaceHeight −
+ * ground on a per-lake fine grid clipped to the ownership polygon:
+ * fully-wet cells emit quads, mixed cells clip at the interpolated zero
+ * crossing (saddle cells disambiguate on the centre average,
+ * `marchingSquaresIsoRings`' rule), dry cells emit nothing. Islands are
+ * holes BY CONSTRUCTION and every mesh edge is a waterline.
+ *
+ * Attribute semantics reproduce the fan's FIELDS rather than its
+ * geometry: uv is the radial map the fan interpolated (0.5 + dir·0.5·r/R),
+ * flowData is the legacy constant lane, and waterData carries
+ * [max(0.08, s), 1, 1 − clamp(s / maxDepth, 0, 1), 0] — per-vertex REAL
+ * depth instead of the centre-only maximum, the same shore gradient the
+ * fan produced for a bowl, and the analytic `waterData.w = 0` sentinel
+ * unchanged.
+ *
+ * The grid step scales with radius (≤ ~57×57 nodes, floor 4 m), capping
+ * the one-time ground sampling at ~3.3k calls per lake — sub-frame work
+ * at region page-in, and no lake generates within ~11 km of any
+ * baselined capture vantage.
+ */
+const LAKE_CONTAINMENT_MAX_NODES_PER_AXIS = 57;
+const LAKE_CONTAINMENT_STEP_FLOOR_METERS = 4;
+const LAKE_CONTAINMENT_CROSSING_CLAMP = 1e-3;
+
+export function appendContainedLake(
+  arrays: MeshArrays,
+  lake: HydrologyLake,
+  ground: (x: number, z: number) => number,
+): void {
   if (lake.boundary.length < 3) return;
-  const centerVertex = arrays.positions.length / 3;
-  arrays.positions.push(lake.centerX, lake.surfaceHeight, lake.centerZ);
-  arrays.normals.push(0, 1, 0);
-  arrays.uvs.push(0.5, 0.5);
-  arrays.flowData.push(lake.flowDirection[0], lake.flowDirection[1], 0.18, 0);
-  arrays.waterData.push(lake.maximumDepthMeters, 1, 0, 0);
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
   for (const point of lake.boundary) {
-    const direction = normalizedDirection(point.x - lake.centerX, point.z - lake.centerZ);
-    arrays.positions.push(point.x, point.y, point.z);
-    arrays.normals.push(0, 1, 0);
-    arrays.uvs.push(0.5 + direction[0] * 0.5, 0.5 + direction[1] * 0.5);
-    arrays.flowData.push(lake.flowDirection[0], lake.flowDirection[1], 0.18, 0);
-    arrays.waterData.push(0.08, 1, 1, 0);
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minZ = Math.min(minZ, point.z);
+    maxZ = Math.max(maxZ, point.z);
   }
-  for (let index = 0; index < lake.boundary.length; index += 1) {
-    const current = centerVertex + 1 + index;
-    const next = centerVertex + 1 + (index + 1) % lake.boundary.length;
-    arrays.indices.push(centerVertex, next, current);
+  const span = Math.max(maxX - minX, maxZ - minZ);
+  if (!(span > 0)) return;
+  const step = Math.max(
+    LAKE_CONTAINMENT_STEP_FLOOR_METERS,
+    span / (LAKE_CONTAINMENT_MAX_NODES_PER_AXIS - 1),
+  );
+  // One dry padding node on every side so the fill can never reach the
+  // grid rim (the same closed-contour guarantee marchingSquaresIsoRings
+  // asks of its callers).
+  const width = Math.ceil((maxX - minX) / step) + 3;
+  const height = Math.ceil((maxZ - minZ) / step) + 3;
+  const originX = minX - step;
+  const originZ = minZ - step;
+  const inside = (px: number, pz: number): boolean => {
+    let odd = false;
+    const ring = lake.boundary;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i]!;
+      const b = ring[j]!;
+      if ((a.z > pz) !== (b.z > pz)
+        && px < ((b.x - a.x) * (pz - a.z)) / (b.z - a.z) + a.x) odd = !odd;
+    }
+    return odd;
+  };
+  // Submergence at each node; forced dry outside the ownership polygon so
+  // this lake cannot flood terrain another basin owns.
+  const submergence = new Float32Array(width * height);
+  for (let iz = 0; iz < height; iz += 1) {
+    for (let ix = 0; ix < width; ix += 1) {
+      const x = originX + ix * step;
+      const z = originZ + iz * step;
+      submergence[iz * width + ix] = (ix === 0 || iz === 0 || ix === width - 1
+        || iz === height - 1 || !inside(x, z))
+        ? -1
+        : lake.surfaceHeight - ground(x, z);
+    }
+  }
+  const vertexIndex = new Map<number, number>();
+  const invRadius = 1 / Math.max(lake.radiusMeters, 1e-6);
+  const invMaxDepth = 1 / Math.max(lake.maximumDepthMeters, 1e-6);
+  const emitVertex = (key: number, x: number, z: number, depth: number): number => {
+    const existing = vertexIndex.get(key);
+    if (existing !== undefined) return existing;
+    const index = arrays.positions.length / 3;
+    const dx = x - lake.centerX;
+    const dz = z - lake.centerZ;
+    const radial = Math.hypot(dx, dz);
+    const scale = radial > 1e-6 ? Math.min(1, radial * invRadius) / radial : 0;
+    arrays.positions.push(x, lake.surfaceHeight, z);
+    arrays.normals.push(0, 1, 0);
+    arrays.uvs.push(0.5 + dx * scale * 0.5, 0.5 + dz * scale * 0.5);
+    arrays.flowData.push(lake.flowDirection[0], lake.flowDirection[1], 0.18, 0);
+    arrays.waterData.push(
+      Math.max(0.08, depth),
+      1,
+      1 - clamp(depth * invMaxDepth, 0, 1),
+      0,
+    );
+    vertexIndex.set(key, index);
+    return index;
+  };
+  // Vertex keys are quantized world offsets (1/16 m lattice), so a corner
+  // shared between any mix of base cells and subdivided cells — and a
+  // crossing reached from either direction — resolves to one vertex.
+  // Adjacent cells at different subdivision levels leave T-junctions, but
+  // every vertex sits at the one surface height, so the mesh is coplanar
+  // and a T-junction cannot open a visible gap.
+  const vertexKey = (x: number, z: number): number =>
+    Math.round((x - originX) * 16) * 2_097_152 + Math.round((z - originZ) * 16);
+  // Cached point sampler for sub-grid corners (base nodes pre-fill it).
+  const sampleCache = new Map<number, number>();
+  const sampleSubmergence = (x: number, z: number): number => {
+    const key = vertexKey(x, z);
+    const cached = sampleCache.get(key);
+    if (cached !== undefined) return cached;
+    const value = inside(x, z) ? lake.surfaceHeight - ground(x, z) : -1;
+    sampleCache.set(key, value);
+    return value;
+  };
+  for (let iz = 0; iz < height; iz += 1) {
+    for (let ix = 0; ix < width; ix += 1) {
+      sampleCache.set(
+        vertexKey(originX + ix * step, originZ + iz * step),
+        submergence[iz * width + ix]!,
+      );
+    }
+  }
+  const cornerVertex = (x: number, z: number, s: number): number =>
+    emitVertex(vertexKey(x, z), x, z, s);
+  const crossingVertex = (
+    xA: number, zA: number, sA: number, xB: number, zB: number, sB: number,
+  ): number => {
+    // Canonicalize on the lower-keyed endpoint so both walk directions
+    // resolve the same edge to one vertex.
+    if (vertexKey(xB, zB) < vertexKey(xA, zA)) {
+      [xA, xB] = [xB, xA];
+      [zA, zB] = [zB, zA];
+      [sA, sB] = [sB, sA];
+    }
+    const denominator = sA - sB;
+    const t = clamp(
+      Math.abs(denominator) > 1e-9 ? sA / denominator : 0.5,
+      LAKE_CONTAINMENT_CROSSING_CLAMP,
+      1 - LAKE_CONTAINMENT_CROSSING_CLAMP,
+    );
+    const x = xA + (xB - xA) * t;
+    const z = zA + (zB - zA) * t;
+    return emitVertex(vertexKey(x, z), x, z, 0);
+  };
+  const fanOut = (polygon: readonly number[]): void => {
+    for (let i = 1; i + 1 < polygon.length; i += 1) {
+      arrays.indices.push(polygon[0]!, polygon[i + 1]!, polygon[i]!);
+    }
+  };
+  // A cell subdivides while it straddles the waterline or spans steep
+  // ground, down to ~1 m cells: the leaf size bounds how much sub-cell
+  // terrain can stand above drawn water (the legacy fan's unbounded
+  // version of that error measured 10.1 m, converged).
+  const LEAF_STEP_METERS = 1.25;
+  const SUBDIVIDE_SPREAD_METERS = 0.75;
+  const processCell = (
+    x0: number, z0: number, cellStep: number,
+    s00: number, s10: number, s11: number, s01: number,
+  ): void => {
+    const wet = [s00 >= 0, s10 >= 0, s11 >= 0, s01 >= 0] as const;
+    const wetCount = Number(wet[0]) + Number(wet[1]) + Number(wet[2]) + Number(wet[3]);
+    const minS = Math.min(s00, s10, s11, s01);
+    const maxS = Math.max(s00, s10, s11, s01);
+    if (wetCount === 0 && maxS < -SUBDIVIDE_SPREAD_METERS) return;
+    // Refine only where the waterline can pass through the cell: corner
+    // submergence within one spread band of zero. Deep interior stays at
+    // the base step — its residual is zero by definition, water over water.
+    if (cellStep > LEAF_STEP_METERS
+      && minS < SUBDIVIDE_SPREAD_METERS
+      && maxS > -SUBDIVIDE_SPREAD_METERS) {
+      const half = cellStep / 2;
+      const xm = x0 + half;
+      const zm = z0 + half;
+      const x1 = x0 + cellStep;
+      const z1 = z0 + cellStep;
+      const sTop = sampleSubmergence(xm, z0);
+      const sLeft = sampleSubmergence(x0, zm);
+      const sRight = sampleSubmergence(x1, zm);
+      const sBottom = sampleSubmergence(xm, z1);
+      const sCentre = sampleSubmergence(xm, zm);
+      processCell(x0, z0, half, s00, sTop, sCentre, sLeft);
+      processCell(xm, z0, half, sTop, s10, sRight, sCentre);
+      processCell(xm, zm, half, sCentre, sRight, s11, sBottom);
+      processCell(x0, zm, half, sLeft, sCentre, sBottom, s01);
+      return;
+    }
+    if (wetCount === 0) return;
+    const x1 = x0 + cellStep;
+    const z1 = z0 + cellStep;
+    // Corners in edge-walk order.
+    const cx = [x0, x1, x1, x0] as const;
+    const cz = [z0, z0, z1, z1] as const;
+    const cs = [s00, s10, s11, s01] as const;
+    if (wetCount === 4) {
+      fanOut([
+        cornerVertex(cx[0], cz[0], cs[0]),
+        cornerVertex(cx[1], cz[1], cs[1]),
+        cornerVertex(cx[2], cz[2], cs[2]),
+        cornerVertex(cx[3], cz[3], cs[3]),
+      ]);
+      return;
+    }
+    // Saddle with a dry centre splits into two opposite corner triangles;
+    // every other mixed cell is one simple polygon walked in edge order.
+    const saddle = wetCount === 2 && wet[0] === wet[2] && wet[1] === wet[3];
+    if (saddle && (s00 + s10 + s11 + s01) * 0.25 < 0) {
+      for (let c = 0; c < 4; c += 1) {
+        if (!wet[c]) continue;
+        const p = (c + 3) % 4;
+        const n = (c + 1) % 4;
+        fanOut([
+          crossingVertex(cx[c]!, cz[c]!, cs[c]!, cx[p]!, cz[p]!, cs[p]!),
+          cornerVertex(cx[c]!, cz[c]!, cs[c]!),
+          crossingVertex(cx[c]!, cz[c]!, cs[c]!, cx[n]!, cz[n]!, cs[n]!),
+        ]);
+      }
+      return;
+    }
+    const polygon: number[] = [];
+    for (let c = 0; c < 4; c += 1) {
+      const n = (c + 1) % 4;
+      if (wet[c]) polygon.push(cornerVertex(cx[c]!, cz[c]!, cs[c]!));
+      if (wet[c] !== wet[n]) {
+        polygon.push(crossingVertex(cx[c]!, cz[c]!, cs[c]!, cx[n]!, cz[n]!, cs[n]!));
+      }
+    }
+    if (polygon.length >= 3) fanOut(polygon);
+  };
+  for (let iz = 0; iz + 1 < height; iz += 1) {
+    for (let ix = 0; ix + 1 < width; ix += 1) {
+      processCell(
+        originX + ix * step,
+        originZ + iz * step,
+        step,
+        submergence[iz * width + ix]!,
+        submergence[iz * width + ix + 1]!,
+        submergence[(iz + 1) * width + ix + 1]!,
+        submergence[(iz + 1) * width + ix]!,
+      );
+    }
   }
 }
 
@@ -1056,6 +1295,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private readonly pagingConfig: HydrologyPagingConfig;
   private readonly generationClient: HydrologyGenerationClientLike | null;
   private readonly graphMode: boolean;
+  /** Ground heights for the contained lake plate; null only in graph mode. */
+  private readonly analyticGroundSample: ((x: number, z: number) => number) | null;
   private readonly cloudShadowCenterLocal = Vector2.Zero();
   private readonly cloudShadowSunDirection = Vector3.Up();
   private currentRegion: HydrologyRegionRuntime | null = null;
@@ -1120,6 +1361,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
         terrainSample: generationOptions.terrainSample,
         ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
       });
+    this.analyticGroundSample = this.graphMode
+      ? null
+      : (x, z) => generationOptions.terrainSample(x, z).height;
     this.material = new ShaderMaterial(
       "hydrology-water-material",
       scene,
@@ -1427,9 +1671,13 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     root.position.set(-this.originX, 0, -this.originZ);
     try {
       // W-5: canonical graph geometry gets the arc-length/ear-clip builders;
-      // the analytic legacy path keeps appendRiver/appendLake byte-identical
-      // (the Gate W unchanged-SSIM proof depends on it — see the pinned-hash
-      // test in tests/render.webgpu-hydrology.test.ts).
+      // the analytic path keeps appendRiver byte-identical (Gate W), while
+      // the analytic LAKE builder was replaced under a sanctioned rebaseline
+      // (2026-09-02, Gate W closed and eroded shelved): the legacy fan drew
+      // water over any ground above the surface inside its polygon — the
+      // measured "blue slash through the terrain" defect. See
+      // appendContainedLake and the amendment note on the pinned-hash test
+      // in tests/render.webgpu-hydrology.test.ts.
       const riverBuild = buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
         hydrology.rivers.forEach((river) => (
           this.graphMode ? appendGraphRiver(arrays, river) : appendRiver(arrays, river)
@@ -1437,7 +1685,9 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       });
       const lakeBuild = buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
         hydrology.lakes.forEach((lake) => (
-          this.graphMode ? appendGraphLake(arrays, lake) : appendLake(arrays, lake)
+          this.graphMode
+            ? appendGraphLake(arrays, lake)
+            : appendContainedLake(arrays, lake, this.analyticGroundSample!)
         ));
       });
       const region: HydrologyRegionRuntime = {
