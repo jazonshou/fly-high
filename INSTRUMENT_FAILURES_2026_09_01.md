@@ -127,6 +127,94 @@ reports zero. A valid command, plausible output, wrong question.
 
 ---
 
+### 1.7 A gate reading the wrong activity — the crashpad case's sibling, not a repeat
+
+The gate above measured **presence instead of activity**: chromium processes
+counted whether or not they were doing anything. This one reads a real signal
+correctly and **the signal does not mean what the gate needs it to mean.**
+
+The host gate this session ran all evening was two checks. The chromium half was
+CPU-thresholded (`awk '$3>10'`) and never counted idle leftovers — right by
+construction rather than by luck. The vitest half was
+`ps aux | grep -i vitest | grep -v grep | wc -l`: **pure presence counting, the
+defective form exactly.** No evidence it ever produced a wrong answer, because
+vitest exits rather than lingering the way a crashpad handler does — **structure
+wrong, outcome fine**, and one persistent process away from the same two hours.
+
+**But the interesting failure is the other one, and it did produce a wrong
+answer.** Watched across three checks in five minutes:
+
+    check 1   vitest present 4    vitest >10% cpu 0    chromium >10% 0
+    check 2   vitest present 0    vitest >10% cpu 0    chromium >10% 0
+    check 3   vitest present 9    vitest >10% cpu 9    chromium >10% 0
+              node at 107%, 94%, 93%, 90% — a Node suite run, not a capture
+
+**`vitest` busy with `chromium` idle is somebody running the Node suite. That
+contends for CPU and not at all for the GPU.** The gate conflated it with "a
+capture is running", which is the thing that actually blocks a capture slot.
+
+**Two signals, two questions, read as one.** For a draw-call or pixel
+measurement — deterministic, load-independent — chromium CPU is the signal and a
+Node suite is irrelevant. For wall-clock and watchdog margin, total CPU matters.
+A concrete cost: **"4 vitest, load 11.48" was reported to the PM as a busy host
+and held a slot. It was a Node suite; by the GPU criterion the host was free.**
+
+**The corrected form reports both**, because there are two questions: *chromium
+free, so a capture can run; nine node processes at 90–107% and load 13.2, so a
+timing-sensitive run would still be contended.*
+
+**Why this is a distinct entry rather than a second instance.** The crashpad gate
+was wrong about *whether* something was happening. This one was right about that
+and wrong about *what* — and no amount of thresholding fixes it, because the
+threshold was already there. **A gate can be correct in mechanism, correct in
+reading, and still answer a question nobody asked.**
+
+---
+
+### 1.7 A gate reading the wrong activity — the crashpad case's sibling, not a repeat
+
+The gate above measured **presence instead of activity**: chromium processes
+counted whether or not they were doing anything. This one reads a real signal
+correctly and **the signal does not mean what the gate needs it to mean.**
+
+The host gate this session ran all evening was two checks. The chromium half was
+CPU-thresholded (`awk '$3>10'`) and never counted idle leftovers — right by
+construction rather than by luck. The vitest half was
+`ps aux | grep -i vitest | grep -v grep | wc -l`: **pure presence counting, the
+defective form exactly.** No evidence it ever produced a wrong answer, because
+vitest exits rather than lingering the way a crashpad handler does — **structure
+wrong, outcome fine**, and one persistent process away from the same two hours.
+
+**But the interesting failure is the other one, and it did produce a wrong
+answer.** Watched across three checks in five minutes:
+
+    check 1   vitest present 4    vitest >10% cpu 0    chromium >10% 0
+    check 2   vitest present 0    vitest >10% cpu 0    chromium >10% 0
+    check 3   vitest present 9    vitest >10% cpu 9    chromium >10% 0
+              node at 107%, 94%, 93%, 90% — a Node suite run, not a capture
+
+**`vitest` busy with `chromium` idle is somebody running the Node suite. That
+contends for CPU and not at all for the GPU.** The gate conflated it with "a
+capture is running", which is the thing that actually blocks a capture slot.
+
+**Two signals, two questions, read as one.** For a draw-call or pixel
+measurement — deterministic, load-independent — chromium CPU is the signal and a
+Node suite is irrelevant. For wall-clock and watchdog margin, total CPU matters.
+A concrete cost: **"4 vitest, load 11.48" was reported to the PM as a busy host
+and held a slot. It was a Node suite; by the GPU criterion the host was free.**
+
+**The corrected form reports both**, because there are two questions: *chromium
+free, so a capture can run; nine node processes at 90–107% and load 13.2, so a
+timing-sensitive run would still be contended.*
+
+**Why this is a distinct entry rather than a second instance.** The crashpad gate
+was wrong about *whether* something was happening. This one was right about that
+and wrong about *what* — and no amount of thresholding fixes it, because the
+threshold was already there. **A gate can be correct in mechanism, correct in
+reading, and still answer a question nobody asked.**
+
+---
+
 ## 2. The discriminator
 
 The transferable result. Not
@@ -204,6 +292,47 @@ stated in prose has nothing to compare against and nobody to tell. Now a
 mechanism at `0c8802e`, reading the threshold from an exported constant rather
 than a transcribed copy — **and it has never been executed**, because
 `tests/perf/` needs a device. It will fail its first capture. That is the point.
+
+---
+
+## 3b. The failure that is not an instrument failing: no instrument at all
+
+**Every entry above is a check that RAN and answered the wrong question. There is
+a second category, and it accounts for more of the evening's wrong claims than
+the seven instruments did: a claim about an artifact, made without reading the
+artifact.**
+
+**It has a reader who could refute it — the artifact — and the reader is
+skipped.** That is §8's argument turned inward: not an unattributed claim with no
+possible reader, but an attributable one whose reader was one command away.
+
+Instances, both authors:
+
+- **The Phase 7 Lead asserted twice that *Still open* named no owner for any
+  item**, in messages arguing that claims need a reader who can refute them. The
+  owners had landed in `cebfca0`, an ancestor of the commit they verified at, in
+  the file they had open. Reported from recollection of having written the
+  section, one `sed` away from the text.
+- **The PM claimed `runwayPlatformHalfWidth` did not exist**, from a grep scoped
+  to `src/world/`; it is in `src/render/webgpu/terrain/RunwayEarthworks.ts`. Was
+  about to "correct" a correct citation.
+- **The PM generalised "vertex buffers were never counted against textures"** —
+  true of the plan's discussion — **to the instrument**, which walks
+  `scene.meshes` and sums them. Sent an engineer hunting a missing category that
+  was never missing.
+- **The PM counted prose as code seven times in one evening**, most consequentially
+  reporting a duplicate `parametric-hangars` entry that was a cross-reference in
+  another entry's note.
+
+**Why it is worth its own section rather than a line in the honest-cost list: it
+is cheaper to fix than any of the seven and it is the one nobody instrumented.**
+A defective gate needs a redesign. This needs opening the file. **The document is
+about instruments answering the wrong question; this is the failure of not asking
+one.**
+
+**Not written as contrition.** The useful form is the rule: **before asserting
+what an artifact contains, read the artifact — especially when you wrote it, and
+most of all when the claim is that something is absent.**
 
 ---
 
