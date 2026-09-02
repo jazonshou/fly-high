@@ -46,6 +46,41 @@ export const PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD = 0.94;
 export const PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD = 0.72;
 /** rAF-paced frames measured per shot (Z-1/Z-2): fps and hitch metrics come only from these. */
 export const PERF_CAPTURE_MEASURE_FRAMES = 240;
+
+/**
+ * Transit speed for `VITE_PERF_TRANSLATE`'s approach, when a shot does not
+ * state its own.
+ *
+ * **Deliberately NOT `airspeedMetersPerSecond`, and the distinction is the
+ * whole point.** Airspeed describes the aircraft's state IN the photograph — a
+ * shot parked 2 m from a grove is parked, and that is true and intended. The
+ * approach describes how the observer GOT there, which is a property of the
+ * journey. Nothing about "this photograph shows a stationary aircraft" implies
+ * "this observer materialised from nothing", and conflating the two left
+ * translation inert on **15 of 38 shots including all four near-tree
+ * vantages** — the exact vantages the instrument was commissioned for.
+ *
+ * **80 m/s is chosen against the LATTICE, not against plausibility.**
+ * `resident.distance` refreshes only when the observer crosses a 256 m
+ * quantum (`WorldDetailRuntime.ts`, `cellSizeMeters * 0.5`), so an approach
+ * shorter than one period may cross NO boundary at all depending on where the
+ * grid falls:
+ *
+ *     240 warm-up frames at  62 m/s = 248 m = 0.97 periods   may cross none
+ *     240 warm-up frames at  80 m/s = 320 m = 1.25 periods   always crosses
+ *
+ * **A null from an approach under one period is not evidence of no effect — it
+ * is evidence of insufficient travel**, and it would read as "the streaming
+ * window is clean". At 1.25 periods a crossing is guaranteed whatever the
+ * phase, with margin either side.
+ *
+ * **It is a diagnostic transit speed, not a claim about how the vantage would
+ * be reached in flight.** The mode is opt-in, refuses `VITE_PERF_REBASELINE`,
+ * and the frame it finally measures is the pinned pose either way — what the
+ * approach changes is the state the streaming system is in when that frame is
+ * taken, which is the only thing it is for.
+ */
+export const DEFAULT_APPROACH_SPEED_METERS_PER_SECOND = 80;
 /** Consecutive frames read back at the end of a motion shot for temporal metrics (Z-3). */
 export const PERF_CAPTURE_TEMPORAL_FRAMES = 24;
 
@@ -342,6 +377,14 @@ export interface PerfCaptureShotDefinition {
   /** Pitch-down angle of the aircraft body, degrees. */
   readonly pitchDownDegrees: number;
   readonly airspeedMetersPerSecond: number;
+  /**
+   * Transit speed for `VITE_PERF_TRANSLATE`'s approach to this pose. Optional;
+   * `DEFAULT_APPROACH_SPEED_METERS_PER_SECOND` applies when absent. Set it
+   * only where a shot's approach must differ from the default — NOT to mirror
+   * `airspeedMetersPerSecond`, which describes the pose rather than the
+   * journey and is zero on 15 shots that still need approaching.
+   */
+  readonly approachSpeedMetersPerSecond?: number;
   /** Z-3: per-shot environment clock (R-15) — defaults to the D-10 clock. */
   readonly clock?: PerfCaptureClock;
   /** Z-3: viewport override; defaults to 1280×720 @ DPR 1. */
@@ -2326,6 +2369,22 @@ export interface PerfCaptureShotReport {
    * only that a flag was set.
    */
   readonly observerTravelMeters: number;
+  /**
+   * The approach speed this shot actually resolved to, after the default.
+   * Published so the report explains its own travel without anyone
+   * cross-referencing the shot table.
+   */
+  readonly approachSpeedMetersPerSecond: number;
+  /**
+   * Warm-up frames the approach ACTUALLY ran, not the number planned.
+   *
+   * These differ whenever the settle loop exits early — the stability break or
+   * `VITE_PERF_UNDRAINED_FRAMES`. Measured: an undrained cut at 200 against a
+   * 240-frame approach produced 205.6 m rather than 248.0 m. **A guard
+   * predicting distance from the PLANNED count would have been wrong by a
+   * fifth on that run and had no way to know.**
+   */
+  readonly approachFrames: number;
   /**
    * The residency total above, split by WHY each page is wanted. Only `drawn`
    * could ever be reduced by a visibility test: the collision ring is

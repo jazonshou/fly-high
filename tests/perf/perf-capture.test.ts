@@ -25,6 +25,7 @@ import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../../src/game/typ
 import {
   PERF_CAPTURE_DEFAULT_CLOCK,
   PERF_CAPTURE_HEIGHT,
+  DEFAULT_APPROACH_SPEED_METERS_PER_SECOND,
   PERF_CAPTURE_MEASURE_FRAMES,
   PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
   PERF_CAPTURE_RGB_SSIM_THRESHOLD,
@@ -910,9 +911,22 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // deliberate: it makes translate-only a CONTROL that should match, and
       // leaves TRANSLATE + UNDRAINED as the arm that photographs an arrival
       // still in progress.
-      const approachFrames = IS_TRANSLATING
+      // The approach uses its OWN speed, not `airspeedMetersPerSecond`. Airspeed
+      // is the aircraft's state in the photograph; a parked shot is parked, and
+      // that is intended. The approach is how the observer GOT there, and every
+      // vantage has to have been reached — including the 15 shots at airspeed 0,
+      // which is where translation was previously inert and which include all
+      // four near-tree vantages the instrument exists for.
+      const approachSpeed = shot.approachSpeedMetersPerSecond
+        ?? DEFAULT_APPROACH_SPEED_METERS_PER_SECOND;
+      const plannedApproachFrames = IS_TRANSLATING
         ? Math.min(PERF_CAPTURE_WARMUP_FRAMES, maxStreamingFrames)
         : 0;
+      // ACTUAL, not planned: the settle loop exits early on the stability break
+      // and on the undrained cut, and a distance predicted from the planned
+      // count is then wrong with nothing to say so. Measured: an undrained cut
+      // at 200 frames against a 240-frame approach travelled 205.6 m, not 248.0.
+      let approachFramesRun = 0;
       // The OUTCOME, not the intent. Recorded from the positions actually
       // rendered, so an early exit — the stability break or the undrained cut —
       // reports the distance genuinely covered rather than the distance
@@ -926,9 +940,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
         simulationTime += 1 / 60;
         // Metres still to run. Zero once arrived, so every later frame — and
         // every measured frame — is at the nominal pose to the bit.
-        const remaining = approachFrames > 0
-          ? Math.max(0, ((approachFrames - frame) * shot.airspeedMetersPerSecond) / 60)
+        const remaining = plannedApproachFrames > 0
+          ? Math.max(0, ((plannedApproachFrames - frame) * approachSpeed) / 60)
           : 0;
+        if (plannedApproachFrames > 0 && frame < plannedApproachFrames) approachFramesRun = frame + 1;
         const settleState = remaining > 0
           ? {
             ...state,
@@ -1476,6 +1491,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
         observerTravelMeters: observerFirstX === null
           ? 0
           : Math.hypot(observerLastX - observerFirstX, observerLastZ - (observerFirstZ ?? 0)),
+        approachSpeedMetersPerSecond: approachSpeed,
+        approachFrames: approachFramesRun,
         residencyReasons: sceneDiagnostics.residencyReasons,
         pendingTerrainPages: sceneDiagnostics.pendingTerrainPages,
         pendingDetailWork: sceneDiagnostics.pendingDetailWork,
