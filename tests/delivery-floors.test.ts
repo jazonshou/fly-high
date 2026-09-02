@@ -348,6 +348,13 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // the moment someone measures it; this one should stay a probe until the
     // vegetation work settles.
     "approach-lights-outboard",
+    // 1cbe6b1: the vantage that photographs the analytic lake waterline fix.
+    // Unpinned for the same two reasons as the shot above, and the second is
+    // again the binding one -- it has no predecessor to difference against, AND
+    // its content is the subject of the change it exists to observe. The
+    // ownership polygon still truncates real submergence at its straight edges,
+    // so this frame is expected to MOVE again when that follow-up lands.
+    "lake-island-piercing",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

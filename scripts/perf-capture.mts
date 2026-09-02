@@ -267,6 +267,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // never been measured. 1.5 km out on the extended centreline at 60 m AGL --
     // the only vantage that frames the approach lighting system at all.
     "approach-lights-outboard",
+    // Added by the 4121940 merge, after the same inventory run. Cockpit height
+    // beside a forested lake 30 km out -- and it is named here rather than
+    // folded into shotCount precisely BECAUSE it is not obviously cheap: dense
+    // vegetation at eye level against a full water plate is the shape of a new
+    // maximum, not of a light shot. Nobody has measured it.
+    "lake-island-piercing",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
