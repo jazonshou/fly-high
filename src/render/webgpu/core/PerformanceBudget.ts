@@ -436,11 +436,44 @@ const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Ob
 const MISC_ALLOWANCE_MIB = 40;
 
 /**
- * Estimate-vs-reality slack. Provisional calibration 2026-08-17 (Apple
- * M-series reference machine): pure allocation arithmetic, cross-checked
- * against the renderer's texture/buffer inventory only coarsely; the 1A-1
- * numeric report carries `estimatedGpuMemoryMiB` so the drift is visible in
- * every capture. Re-pin when |estimate − actual| exceeds 15%.
+ * Estimate-vs-reality slack.
+ *
+ * **THE PROVENANCE CLAIM BELOW IS FALSE AND IS STRUCK. The cross-check it
+ * cites could not have happened, because the instrument did not exist.**
+ *
+ * ~~Provisional calibration 2026-08-17 (Apple M-series reference machine):
+ * pure allocation arithmetic, cross-checked against the renderer's
+ * texture/buffer inventory only coarsely.~~
+ *
+ * `f67b147` (2026-08-17) introduced this constant carrying that sentence. At
+ * that commit `inventoryGpuMemoryMiB` appears **zero** times in
+ * `FlightRenderer.ts`, and the string "inventor" appears exactly ONCE in all
+ * of `src/` — inside this very docblock, citing it. The inventory walk arrived
+ * the next day in `ba63ef0`. **So this is not a calibration that went stale;
+ * it was never measured against anything.**
+ *
+ * What it costs: the estimate's terms sum to 319.55 MiB at tier 1, and this
+ * multiplier ADDS 47.93 on top of otherwise exact allocation arithmetic.
+ * Together with the two flat allowances that are declared rather than computed
+ * (`miscMiB` 40.00 and `otherDetailMiB` 9.00), roughly **97 MiB of the
+ * estimate corresponds to nothing the renderer allocates**.
+ *
+ * **AND ITS OWN RE-PIN TRIGGER HAS FIRED, UNWATCHED.** The rule was "re-pin
+ * when |estimate − actual| exceeds 15%". Measured 2026-09-01 at tier 1 over 36
+ * shots, after the inventory's format fix (`4543b7e`): estimate 367.5 against
+ * an inventoried 248.3–256.7, which is **48%** — three times the threshold,
+ * with nothing checking it. A trigger with no mechanism is a comment.
+ *
+ * The constant is NOT removed here. Four owners budget against numbers derived
+ * through it and removing a multiplier without a replacement basis trades a
+ * known-wrong figure for an unknown one. It needs a real calibration against
+ * the corrected inventory, which in turn wants that inventory to survive the
+ * single-channel-texture enumeration — it has already been wrong once, a 2x
+ * under-count on `TEXTURETYPE_SHORT`.
+ *
+ * **Do not re-derive `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` while this
+ * multiplier stands**, or a 15% arbitrary component is carried forward
+ * invisibly into the new ceiling.
  */
 const ESTIMATE_FUDGE_FACTOR = 1.15;
 
