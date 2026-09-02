@@ -1786,6 +1786,61 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.graph.invalidateHistory("capture render-scale change");
   }
 
+/**
+ * Bytes per texel from a texture's TYPE **and** its FORMAT.
+ *
+ * **The format half was missing and it cost 156 MiB of fiction.** This read
+ * `type` alone and mapped `TEXTURETYPE_FLOAT` to 16 bytes — correct for
+ * RGBA32F and **four times too large for R32F**. The terrain height atlas is
+ * `RawTexture.CreateRStorageTexture(..., TEXTURETYPE_FLOAT)` — one channel,
+ * 3696² — so the inventory reported it at 208.44 MiB against a true 52.11,
+ * and the whole-renderer total read 488 MiB against a true ~332 with a 495 MiB
+ * ceiling. **Headroom was reported as −0.9 MiB when it was +163.**
+ *
+ * Two things that made the error survive. It is a CONSTANT factor on one term,
+ * so `inventoried / estimated` held a stable ratio — and that stability was
+ * read for months as evidence the ESTIMATE was missing a category, when it was
+ * evidence this function had a constant-factor bug. The same observation, the
+ * opposite conclusion. And nothing compared the arithmetic against any
+ * texture's real format, which is what
+ * `tests/render.gpu-memory-inventory-format.test.ts` now does.
+ *
+ * Integer formats carry the same channel counts as their float siblings; the
+ * component width comes from the type, so they need no separate row.
+ */
+private texelBytes(type: number | undefined, format: number | undefined): number {
+  // Component width by TYPE. `SHORT` is here because the audit of every
+  // single-channel site found `shoreDistance` created as
+  // `TEXTUREFORMAT_RED_INTEGER` + `TEXTURETYPE_SHORT` — two bytes, which the
+  // first version of this fix counted as one. **The fix for a 4x over-count
+  // shipped with a 2x under-count in it**, on the one type nobody was looking
+  // at, and only enumerating the sites found it.
+  const componentBytes = type === Constants.TEXTURETYPE_FLOAT
+    || type === Constants.TEXTURETYPE_INT
+    || type === Constants.TEXTURETYPE_UNSIGNED_INTEGER
+    ? 4
+    : type === Constants.TEXTURETYPE_HALF_FLOAT
+      || type === Constants.TEXTURETYPE_SHORT
+      || type === Constants.TEXTURETYPE_UNSIGNED_SHORT
+      ? 2
+      // UNSIGNED_BYTE and BYTE, and the default for an undeclared type.
+      : 1;
+  const channels = format === Constants.TEXTUREFORMAT_R
+    || format === Constants.TEXTUREFORMAT_R_INTEGER
+    ? 1
+    : format === Constants.TEXTUREFORMAT_RG
+      || format === Constants.TEXTUREFORMAT_RG_INTEGER
+      ? 2
+      : format === Constants.TEXTUREFORMAT_RGB
+        || format === Constants.TEXTUREFORMAT_RGB_INTEGER
+        ? 3
+        // Undefined format means the texture never declared one; Babylon's
+        // default is RGBA and four channels is also the SAFE direction for a
+        // figure used as a ceiling check.
+        : 4;
+  return channels * componentBytes;
+}
+
   /**
    * Z-4: a best-effort inventory of what is actually allocated — textures by
    * size×format, geometry by vertex stride and indices. It cannot see MSAA
@@ -1803,6 +1858,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           height?: number;
           depth?: number;
           type?: number;
+          format?: number;
           generateMipMaps?: boolean;
         } | null;
       })._texture;
@@ -1811,11 +1867,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       const width = internal.width ?? 0;
       const height = internal.height ?? 0;
       const depth = Math.max(1, internal.depth ?? 1);
-      const bytesPerTexel = internal.type === Constants.TEXTURETYPE_HALF_FLOAT
-        ? 8
-        : internal.type === Constants.TEXTURETYPE_FLOAT
-          ? 16
-          : 4;
+      const bytesPerTexel = this.texelBytes(internal.type, internal.format);
       const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
       bytes += width * height * depth * bytesPerTexel * mipFactor;
     }
