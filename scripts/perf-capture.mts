@@ -364,7 +364,7 @@ export interface PerfCaptureShotDefinition {
    *
    * An offset moves one shot off that lattice. It is deliberately a per-shot
    * field rather than a global change: moving the lattice itself would rewrite
-   * the phase of all 31 shots and churn every baseline.
+   * the phase of every shot in the set and churn every baseline.
    */
   readonly simulationTimeOffsetSeconds?: number;
   readonly maxNearClippedPixels?: number;

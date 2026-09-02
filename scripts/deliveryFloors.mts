@@ -936,7 +936,7 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "so the commit is a net SAVING of 6. A sign change, not a magnitude "
       + "change -- and the swing of 12 is the whole of the +24/+12 bimodality. "
       + "Measured via `37cf3aa -> 82c4182` because `ddc5a63` does not run; see "
-      + "MULTI_OWNER_COMMITS. Needs the full 31 before it becomes an entry.",
+      + "MULTI_OWNER_COMMITS. Needs the full 34 before it becomes an entry.",
   }),
   Object.freeze({
     owner: "7-10 / hangars",
