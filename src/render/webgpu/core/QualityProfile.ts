@@ -571,11 +571,28 @@ function resolveBaseQualityProfile(
     // 274.8 m and covers the full 2,400 m.
     //
     // MEASURED at tier 3, three arms interleaved two runs each: rendering all
-    // FOUR cascades costs -12.6% mean fps (-21.3% worst) and +128 MiB against
-    // shipped, while TWO cascades cost nothing resolvable (+0.3% mean; the four
-    // per-shot deltas alternate sign, which is what no effect looks like).
-    // The cost tracks the number of full-resolution cascade renders, NOT the
-    // draw count: +31% draw calls was free, +96% was not.
+    // FOUR cascades costs -12.6% mean fps (-21.3% worst shot), while TWO cost
+    // nothing resolvable (+0.3% mean; the four per-shot deltas alternate sign,
+    // which is what no effect looks like). The cost tracks the number of
+    // full-resolution cascade renders, NOT the draw count: +31% draw calls was
+    // free, +96% was not.
+    //
+    // Those arms reached "all cascades render" via `noColorAttachment: false`,
+    // so they also carried a colour attachment and +128 MiB. 034aedd renders
+    // every cascade WITHOUT it, so THE MEMORY FIGURE DOES NOT APPLY HERE and
+    // must not be quoted against the shipping build. The fps figure is the one
+    // that carries over, because the cost tracks renders rather than the
+    // attachment — though the exact shipping configuration is unmeasured.
+    //
+    // This MUST stay paired with the `is2DArray` decoupling landed in 034aedd.
+    // Before that commit these counts were INERT — only cascade 0 ever
+    // rendered, so 4 cost exactly what 2 cost, which is what hid the defect for
+    // as long as it existed. After it, every declared cascade is a full render,
+    // so leaving this at 4 would ship the measured -12.6% arm.
+    //
+    // ENFORCED rather than remembered: `tests/gpu/shadow-caster-draw-cost.test.ts`
+    // pins `1 + numCascades` draws per caster and reads the count off the
+    // GENERATOR, because Babylon's setter clamps to MIN_CASCADES_COUNT silently.
     shadowCascades: 2,
     clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
     shadowDistance: 2_400,
