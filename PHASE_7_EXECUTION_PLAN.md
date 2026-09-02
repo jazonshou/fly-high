@@ -1330,6 +1330,32 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   well-formed, internally consistent, and answers a different question than the one a reader
   will ask of it.**
 
+  **RECURRED THE SAME EVENING, and the second time it shipped a regression rather than only
+  a bad record.** Staging files individually instead of `git add -A` was NOT the fix,
+  because the problem was never the glob — **it was that the file list was someone else's
+  in-flight work.** `git add -A` and `git add <five paths>` are the same act when the paths
+  are not yours. **The test is provenance, not precision: was this handed to me.**
+
+  - **`034aedd`** ("Decouple the cascade loop…") and **`5b93d79`** ("Cut tiers 2 and 3…")
+    both carry the Principle Engineer's work, committed by the PM out of the shared
+    checkout's working tree without a handoff. `5b93d79` swept four files plus
+    `docs/PERFORMANCE.md` while that session was mid-way through preparing the same commit;
+    their own `09ab15f` therefore contains only the corrections added on top, and two
+    commits with near-identical titles now do one job.
+  - **The regression: `034aedd` was landed ALONE because it was in the tree and the suite
+    was green. The suite was green because cascade counts were INERT — which is precisely
+    the defect that commit fixed.** Every declared cascade became a full-resolution render
+    on landing, putting tier 3 on the configuration measured at −12.6% mean fps, where it
+    sat for about an hour until its author flagged it. `5b93d79` closed it.
+
+  **That generalises past this incident and is the sharper form of the evening's lesson: a
+  defect which makes a class of configuration inert will make the suite green about exactly
+  the thing it breaks.** "It is in the tree and the suite is green" was not a weak standard
+  here — it was a standard the defect was actively satisfying.
+
+  **Standing rule from this: nothing is committed out of the shared checkout's working tree
+  unless its owner has handed it over — a patch path, a branch, or an explicit "land it".**
+
 - **D-0 (at planning, Jason Q3):** **taxiway lighting, apron markings, tie-downs, GSE and
   apron floodlighting are re-scoped away.** Reason, verified: `AirportDefinition` carries
   nine scalar fields and no taxiway or apron data ([src/world/types.ts:18-34](src/world/types.ts));
