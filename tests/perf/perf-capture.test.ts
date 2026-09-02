@@ -1503,7 +1503,17 @@ describe("perf capture (1A-1c / 2Z)", () => {
         viewportWidth,
         viewportHeight,
         estimatedGpuMemoryMiB: Math.round(sceneDiagnostics.estimatedGpuMemoryMiB * 10) / 10,
+        estimatedInventoriableGpuMemoryMiB:
+          Math.round(sceneDiagnostics.estimatedInventoriableGpuMemoryMiB * 10) / 10,
         inventoriedGpuMemoryMiB: Math.round(sceneDiagnostics.inventoriedGpuMemoryMiB * 10) / 10,
+        // The lanes, so the estimate-vs-inventory divergence can be attributed
+        // rather than only measured. Splitting `MISC_ALLOWANCE_MIB` into what
+        // the walk can and cannot see was blocked on their absence.
+        inventoriedGpuMemoryLanes: {
+          textureMiB: Math.round(sceneDiagnostics.inventoriedGpuMemoryLanes.textureMiB * 10) / 10,
+          geometryMiB: Math.round(sceneDiagnostics.inventoriedGpuMemoryLanes.geometryMiB * 10) / 10,
+          bufferMiB: Math.round(sceneDiagnostics.inventoriedGpuMemoryLanes.bufferMiB * 10) / 10,
+        },
         // 4.5-C3: uncorrelated per-pass aggregates. Never compared against a
         // ceiling — they exist so the interval-versus-GPU gap is inspectable.
         gpuPassMs: {
@@ -2002,8 +2012,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
         )[IS_TRANSLATING ? "toBeGreaterThan" : "toBe"](0));
 
         if (!IS_SWEEP) {
+          // COMPARED LIKE WITH LIKE, which it was not before. The inventory is
+          // a FLOOR by its own docblock -- blind to pipelines, shader cache,
+          // MSAA resolve targets and driver overhead -- and MISC_ALLOWANCE_MIB
+          // is a description of most of that blindness. Requiring the full
+          // estimate to agree within 15% asked two quantities defined not to be
+          // equal to be equal, and only looked satisfiable while the inventory's
+          // format bug held the ratio steady.
+          //
+          // The threshold is UNCHANGED and the fudge factor is UNCHANGED. What
+          // changed is which estimate enters the subtraction.
           const divergence = estimateDivergenceFraction(
-            shot.estimatedGpuMemoryMiB,
+            shot.estimatedInventoriableGpuMemoryMiB,
             shot.inventoriedGpuMemoryMiB,
           );
           // `null` means a reading was missing or implausible. That is a broken
@@ -2011,20 +2031,23 @@ describe("perf capture (1A-1c / 2Z)", () => {
           gateAlways(() => expect(
             divergence,
             `${shot.name}: estimate/inventory divergence could not be computed `
-            + `(estimated ${shot.estimatedGpuMemoryMiB}, inventoried `
-            + `${shot.inventoriedGpuMemoryMiB}) -- a missing reading is not a passing one`,
+            + `(inventoriable estimate ${shot.estimatedInventoriableGpuMemoryMiB}, `
+            + `inventoried ${shot.inventoriedGpuMemoryMiB}) -- a missing reading is not a passing one`,
           ).not.toBeNull());
           gateAlways(() => expect(
             divergence ?? Number.POSITIVE_INFINITY,
             `${shot.name}: |estimate - inventory| / inventory is `
             + `${(((divergence ?? 0) * 100)).toFixed(1)}%, past the `
             + `${(ESTIMATE_REPIN_TRIGGER_FRACTION * 100).toFixed(0)}% the fudge factor's `
-            + "own docblock says triggers a re-pin. Estimated "
-            + `${shot.estimatedGpuMemoryMiB} MiB against a measured `
-            + `${shot.inventoriedGpuMemoryMiB} MiB. Either recalibrate `
-            + "ESTIMATE_FUDGE_FACTOR against the corrected inventory, or move "
-            + "ESTIMATE_REPIN_TRIGGER_FRACTION to a value someone is prepared to "
-            + "defend. Do not widen it to make this green.",
+            + "own docblock says triggers a re-pin. Inventoriable estimate "
+            + `${shot.estimatedInventoriableGpuMemoryMiB} MiB against a measured `
+            + `${shot.inventoriedGpuMemoryMiB} MiB (unrestricted estimate `
+            + `${shot.estimatedGpuMemoryMiB}). These two ARE comparable -- misc, `
+            + "the eroded-only reservations and the slack factor are already out "
+            + "-- so a gap here is real arithmetic drift, not the ceiling-versus-"
+            + "floor mismatch this check used to report. Fix the estimate or the "
+            + "allocation. Do not widen the trigger, and do not move a term out "
+            + "of estimateInventoriableGpuMemoryMiB to make this green.",
           ).toBeLessThanOrEqual(ESTIMATE_REPIN_TRIGGER_FRACTION));
         }
         // 4-10 (assertion 84b): page residency under streaming load. The

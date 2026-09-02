@@ -90,7 +90,10 @@ import {
   type GovernorState,
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
-import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
+import {
+  estimateGpuMemoryMiB,
+  estimateInventoriableGpuMemoryMiB,
+} from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
   frameTimingPercentile,
@@ -1865,6 +1868,42 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * never been compared against a real reading).
    */
   private inventoryGpuMemoryMiB(): number {
+    return this.inventoryGpuMemoryBreakdown().totalMiB;
+  }
+
+  /**
+   * The same walk, reporting WHAT IT SAW rather than one scalar.
+   *
+   * **The single scalar is why the estimate's re-pin trigger could fire and
+   * not be actionable.** `|estimate - inventory|` was 47.3% at tier 1 after
+   * the format fix, and the only two numbers in the report were the two ends
+   * of that subtraction — so the divergence could be measured and could not be
+   * ATTRIBUTED. Splitting `MISC_ALLOWANCE_MIB` into the part the walk can see
+   * and the part it cannot was blocked on exactly this: without a breakdown,
+   * any split is someone deciding which MiB are invisible and calling the
+   * result measured.
+   *
+   * The three lanes are the walk's three sources, and they are not
+   * interchangeable:
+   * - `textureMiB` — `scene.textures`, by size x format.
+   * - `geometryMiB` — `scene.meshes` vertex strides and indices. **This is the
+   *   lane that bounds the mesh half of `MISC_ALLOWANCE_MIB`**, whose docblock
+   *   claims "aircraft/airport meshes, sky dome" among things the estimate
+   *   allows 40 MiB for. Those meshes are in `scene.meshes`, so they are
+   *   MEASURED here and must not also be counted as invisible.
+   * - `bufferMiB` — storage buffers, which appear in neither Babylon list.
+   *
+   * Still a FLOOR, and the reason is unchanged: pipelines, shader cache, MSAA
+   * resolve targets and driver overhead are invisible to all three lanes. The
+   * point of the split is that "invisible" is now a named residual instead of
+   * a property of the whole number.
+   */
+  private inventoryGpuMemoryBreakdown(): {
+    textureMiB: number;
+    geometryMiB: number;
+    bufferMiB: number;
+    totalMiB: number;
+  } {
     let bytes = 0;
     const seenTextures = new Set<unknown>();
     for (const texture of this.scene.textures) {
@@ -1887,6 +1926,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
       bytes += width * height * depth * bytesPerTexel * mipFactor;
     }
+    const textureBytes = bytes;
     const seenGeometries = new Set<unknown>();
     for (const mesh of this.scene.meshes) {
       const geometry = (mesh as Mesh).geometry;
@@ -1902,11 +1942,23 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       bytes += geometry.getTotalVertices() * strideBytes;
       bytes += geometry.getTotalIndices() * 4;
     }
+    const geometryBytes = bytes - textureBytes;
     // Storage buffers appear in neither list, and every allocation Phase 6
     // adds is one. Without this the wall reads byte-identical no matter how
     // much compute scratch an item allocates.
-    bytes += inventoriedGpuBufferBytes();
-    return bytes / 1_048_576;
+    const bufferBytes = inventoriedGpuBufferBytes();
+    bytes += bufferBytes;
+    const MIB = 1_048_576;
+    // The total is the SUM OF THE LANES, never a separately accumulated
+    // figure: two additions of the same quantity are two things that can
+    // disagree, and a breakdown that does not reconcile to its own total is
+    // worth less than the scalar it replaced.
+    return {
+      textureMiB: textureBytes / MIB,
+      geometryMiB: geometryBytes / MIB,
+      bufferMiB: bufferBytes / MIB,
+      totalMiB: bytes / MIB,
+    };
   }
 
   getDiagnostics(): RenderDiagnostics {
@@ -1925,6 +1977,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
     // 27.4 ms is a visible missed delivery and must remain visible here.
+    const inventoryLanes = this.inventoryGpuMemoryBreakdown();
+    // One viewport for both estimates. Two reads of `clientWidth` could differ
+    // across a resize and make the restricted figure incomparable to the one
+    // it is a subset of.
+    const estimateViewport = {
+      cssWidth: Math.max(1, this.domElement.clientWidth),
+      cssHeight: Math.max(1, this.domElement.clientHeight),
+      devicePixelRatio: window.devicePixelRatio || 1,
+    };
     const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
@@ -1998,12 +2059,25 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
-      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
-        cssWidth: Math.max(1, this.domElement.clientWidth),
-        cssHeight: Math.max(1, this.domElement.clientHeight),
-        devicePixelRatio: window.devicePixelRatio || 1,
-      }),
-      inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, estimateViewport),
+      // The subset the inventory walk can actually see, for the re-pin trigger.
+      // The unrestricted figure above stays the budgeting number — four owners
+      // budget through it — and this one exists ONLY to be compared against a
+      // measurement, which the unrestricted figure cannot honestly be.
+      estimatedInventoriableGpuMemoryMiB: estimateInventoriableGpuMemoryMiB(
+        this.profile,
+        estimateViewport,
+        { worldEvolution: this.worldDefinition.worldEvolution },
+      ),
+      // ONE walk, both readings. Calling `inventoryGpuMemoryMiB()` here as
+      // well would walk the scene twice and let the total disagree with the
+      // lanes it is supposed to be the sum of.
+      inventoriedGpuMemoryMiB: inventoryLanes.totalMiB,
+      inventoriedGpuMemoryLanes: {
+        textureMiB: inventoryLanes.textureMiB,
+        geometryMiB: inventoryLanes.geometryMiB,
+        bufferMiB: inventoryLanes.bufferMiB,
+      },
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
       gpuPassMs: this.collectGpuPassAttribution(),
