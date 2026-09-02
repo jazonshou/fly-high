@@ -946,11 +946,61 @@ The roster is the artifact and cannot drift the way this list did: a part named 
   `seedHash ≠ sourceSeedHash` and this is the exact collision that caught two Phase 6 items.
 
 ### 7-11 hangar and tower materials (2.5 d)
-Procedural corrugated metal (normal + roughness), vertical rust and streak weathering
-driven by a downward-flow accumulation term from bolt lines, gutter mouths and roof edges,
-oxidation biased by aspect, concrete with form-tie marks, and the tower's glass. Reuses the
-Phase 3 synthesis infrastructure — no new pipeline. **This is the largest single memory
-consumer in 7D** and is funded from Q2's vegetation-atlas trade.
+**PARTLY LANDED.** The material set ships; the tower half does not. Audited against source
+2026-09-01 after 7-10's audit found five stale claims in one section.
+
+**VERIFIED TRUE**, each read from the module rather than restated: procedural corrugated
+metal as a height field driving normal + roughness; streak weathering from all three
+declared source kinds (bolt lines at seam × girt intersections, gutter drip points, and a
+roof-edge wash); oxidation biased by aspect; concrete with form-tie marks; and Phase 3's
+synthesis infrastructure reused via `buildMipChain` from `TextureArrayMips` with no new
+pipeline. Oxidation grows downward as designed — measured 0.067 in the top third against
+0.266 in the bottom.
+
+**"AND THE TOWER'S GLASS" IS NOT TRUE AT THIS TIP.** `AirportSystem` still builds local
+stand-ins — `tower-concrete`, `tower-glass`, `tower-steel` — and the tower consumes none of
+7-11's set. Their retirement is real work sitting on `s78/7-11-second-pass` (`116f8ec`),
+**unlanded**. The set's `glass` does have a consumer: `7-10`'s hangar clerestory. So the
+material exists and the tower is not the thing using it.
+
+**"THE LARGEST SINGLE MEMORY CONSUMER IN 7D" IS FALSE, AND IT IS NOT CLOSE.** Measured:
+
+| allocation | MiB | note |
+|---|---|---|
+| **7-13 perimeter fence** | **1.789** | one merged mesh, 1,184 stations, 47,360 triangles |
+| 7-11 textures (whole set) | 1.250 | metal 256² 1.000 + concrete 128² 0.250; glass and accent untextured |
+| 7-10 hangar geometry | 0.090 | 3 hangars, 1,228 triangles |
+| 7-15 tower geometry | 0.024 | 7 parts, 352 triangles |
+
+The fence alone is **43% larger than 7-11's entire set**, and 7-13 as an item totals 1.813
+MiB. The claim is wrong on both readings — largest single allocation and largest item.
+**Vertex buffers were never counted against textures**, which is how a 47,360-triangle mesh
+stayed invisible to a memory discussion for the whole gate.
+
+**"FUNDED FROM Q2'S VEGETATION-ATLAS TRADE" IS WRONG, AND THE TRADE IS STILL UNSPENT.** The
+Q2 row aims that trade at 7-11 joining the terrain material arrays at tier 1's 512 edge,
+~2.67 MiB per added layer. **7-11 explicitly did not do that** — `AirfieldMaterials`
+states it "does NOT join the terrain material arrays" and that a 512² upgrade "is not taken
+here". It ships standalone `RawTexture`s at 256²/128² for 1.25 MiB out of ordinary
+headroom. **So the vegetation-atlas trade was never drawn on and remains available**, which
+matters more than the wording: anyone reading this line would believe a budget had been
+spent that has not.
+
+**A LIVE CEILING BREACH, measured rather than modelled.** At `2bfe84a`, full 34-shot
+capture, `reference-viewport` reads **495.9 MiB inventoried against the 495 MiB pin** —
+headroom **−0.9 MiB**. `inventoriedMemoryFailures` has no tolerance (`> ceilingMiB`), so
+this is a failure by the gate's own definition. Provenance: one host, one commit, before
+the 35th shot landed; re-measure before acting. It is recorded here because a breach that
+lives only in a capture report is a breach nobody reads.
+
+**AND NOTHING EVALUATED IT, for a structural reason worth more than this item.** In that
+run the memory assertion never executed: `approach-500ft` is **shot 1 of 34** and its
+frame-delivery gate threw, aborting the whole per-shot loop before `reference-viewport`
+(shot 4) reached its memory check. The delivery gate is the assertion most sensitive to
+host load, it runs first, and when `UNPINNED_HOST` is false it throws rather than
+collecting. **So a loaded host converts every downstream gate — memory, draw calls,
+residency, for all 34 shots — into "not evaluated", and the run still looks like a
+red test with a known cause.**
 
 ### 7-12 hangar interior (2.0 d) — **cut candidate**
 Interior shell visible through open doors, dark PBR, emissive strip lighting at night, a
