@@ -91,6 +91,18 @@ mine:
 | `cmd \| head -N; echo $?` | `head`'s status, always 0 | did the command succeed |
 | `git diff <ref> -- <paths>` | untracked files as deletions | what changed |
 | a `sed` window around a match | the previous record's fields | this record's fields |
+| `ps \| grep -c chromium` | 20, for hours | **is a capture RUNNING** |
+
+**The host gate is the seventh and it is the only one that cost TIME rather than
+a wrong answer.** A session deferred its work for over two hours on a check that
+counted chromium *processes* rather than busy ones. The twenty it kept seeing
+were `chrome_crashpad_handler` at **0.0% CPU** — leftovers that persist after a
+capture ends. Captures were genuinely running for the first stretch; after they
+finished the gate went on reporting "capture live" **and never erred, never
+varied, and was confidently wrong for hours.** *Measure CPU, not presence.* The
+PM used the same presence-counting form early in the evening before switching to
+a CPU threshold, so it produced the same wrong answer in two sessions
+independently.
 
 **In zsh, `$c:scripts/foo.ts` expands to `$c`** — `:s` is a history-substitution
 modifier that eats the path. The resulting `git show <sha>` **succeeds**, prints
