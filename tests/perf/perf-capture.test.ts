@@ -1442,6 +1442,37 @@ describe("perf capture (1A-1c / 2Z)", () => {
       }
     };
 
+    /**
+     * Non-aborting AND ALWAYS ENFORCED. The wrapper for every gate that is not
+     * a delivery gate.
+     *
+     * **`gateDelivery` bundles two properties and only one of them is wanted
+     * here.** It does not abort the loop — which is what stops a failing gate
+     * masking the gates behind it — but it is ALSO host-conditional: on an
+     * unpinned host its failures become notes rather than failures. That
+     * relaxation is correct for frame-time gates, whose thresholds are host
+     * speed, and wrong for everything else.
+     *
+     * **Using `gateDelivery` for its non-aborting half silently relaxes the
+     * gate.** That is not hypothetical: converting the twenty bare `expect()`
+     * calls to `gateDelivery` would have made the draw-call ceiling and the
+     * inventoried-memory check waivable on any unpinned host — both of which
+     * `perf-capture-policy.test.ts` requires to *"hold on every host"*, being
+     * arithmetic over the frozen shipping profile rather than host speed.
+     * The policy guard caught it before the change landed.
+     *
+     * So: `gateDelivery` for the eight delivery gates, `gateAlways` for the
+     * rest. Both collect; only one may be waived.
+     */
+    const gateAlways = (assertion: () => void): void => {
+      try {
+        assertion();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        gateFailures.push(`${currentShotName}: ${message}`);
+      }
+    };
+
     // EVERY SHOT'S GATES ARE EVALUATED, and a run that could not evaluate them
     // all must not read as a pass on the ones it skipped.
     //
@@ -1481,18 +1512,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
           shot.viewportWidth * shot.viewportHeight * shot.renderScale ** 2,
           CAPTURE_PROFILE.maxRenderPixels,
         );
-        expect(
+        gateAlways(() => expect(
           Math.abs(shot.renderPixels - expectedRenderPixels) / expectedRenderPixels,
           `${shot.name}: renderPixels must match the medium/balanced scale pin`,
-        ).toBeLessThan(0.01);
-        expect(shot.renderScale).toBeCloseTo(
+        ).toBeLessThan(0.01));
+        gateAlways(() => expect(shot.renderScale).toBeCloseTo(
           definition.captureRenderScale ?? CAPTURE_PROFILE.renderScale,
           6,
-        );
-        expect(
+        ));
+        gateAlways(() => expect(
           perfCaptureImageContentFailures(shot.tiles, definition),
           `${shot.name}: screenshot is blank or lacks local visual structure`,
-        ).toEqual([]);
+        ).toEqual([]));
         // 7-5: the airfield-is-lit gate. Reads ONLY this capture's own pixels —
         // it stays ARMED under VITE_PERF_REBASELINE precisely so a baseline
         // promotion cannot erase it (after `090bf2f` the baseline WAS the
@@ -1503,73 +1534,78 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // shot). The sample-size leg is unconditional: a scan over zero pixels
         // is an instrument failure, never a pass.
         if (shot.litRegion) {
-          expect(
-            shot.litRegion.pixelsScanned,
+          const litRegion = shot.litRegion;
+          gateAlways(() => expect(
+            litRegion.pixelsScanned,
             `${shot.name}: the lit-region scan examined no pixels — the band or `
             + "viewport moved out from under the gate",
-          ).toBeGreaterThan(0);
+          ).toBeGreaterThan(0));
           if (definition.litRegion && !IS_SWEEP && !SUN_OVERRIDDEN) {
-            expect(
-              shot.litRegion.brightPixels,
+            const litSpec = definition.litRegion;
+            gateAlways(() => expect(
+              litRegion.brightPixels,
               `${shot.name}: the airfield is not lit — fewer than `
-              + `${definition.litRegion.minBrightPixels} pixels above luminance `
-              + `${definition.litRegion.luminanceFloor} in the runway band. The lamps `
+              + `${litSpec.minBrightPixels} pixels above luminance `
+              + `${litSpec.luminanceFloor} in the runway band. The lamps `
               + "have gone dark through three different wrong values of one scale "
               + "constant; whatever the cause this time, it is a Phase 7 deliverable "
               + "regression, not a tolerance to relax",
-            ).toBeGreaterThanOrEqual(definition.litRegion.minBrightPixels);
+            ).toBeGreaterThanOrEqual(litSpec.minBrightPixels));
           }
         }
         // The day-side counterpart of the lit gate, and the reason both exist:
         // one change to a lamp constant can darken NIGHT and blow out DAY, and
         // until now only the night half was watched.
         if (definition.maxNearClippedPixels !== undefined && !IS_SWEEP && !SUN_OVERRIDDEN) {
-          expect(
+          const clipCeiling = definition.maxNearClippedPixels;
+          gateAlways(() => expect(
             shot.nearClippedPixels,
             `${shot.name}: ${shot.nearClippedPixels} pixels at or above luminance `
             + `${PERF_CAPTURE_NEAR_CLIPPED_LUMINANCE}, against a ceiling of `
-            + `${definition.maxNearClippedPixels}. A lamp calibrated for night is the `
+            + `${clipCeiling}. A lamp calibrated for night is the `
             + "likeliest cause -- the lamps have no daylight term unless one is applied",
-          ).toBeLessThanOrEqual(definition.maxNearClippedPixels);
+          ).toBeLessThanOrEqual(clipCeiling));
         }
         if (shot.ssimAgainstBaseline !== null && !REBASELINE) {
-          expect(
+          gateAlways(() => expect(
             shot.ssimAgainstBaseline,
             `${shot.name} diverged from the committed baseline — a regression unless this is `
             + "a sanctioned churn point (then generate and review a perf:capture:candidate)",
-          ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD);
+          ).toBeGreaterThanOrEqual(definition.ssimThreshold ?? PERF_CAPTURE_SSIM_THRESHOLD));
         }
         if (shot.rgbSsimAgainstBaseline !== null && !REBASELINE) {
-          expect(
+          gateAlways(() => expect(
             shot.rgbSsimAgainstBaseline,
             `${shot.name}: RGB/chroma diverged from the committed baseline`,
           ).toBeGreaterThanOrEqual(
             definition.rgbSsimThreshold ?? PERF_CAPTURE_RGB_SSIM_THRESHOLD,
-          );
-          expect(
+          ));
+          gateAlways(() => expect(
             shot.lowerFrameRgbSsimAgainstBaseline,
             `${shot.name}: nearby terrain/foliage diverged even if the sky remained stable`,
           ).toBeGreaterThanOrEqual(
             definition.lowerFrameRgbSsimThreshold
               ?? PERF_CAPTURE_LOWER_FRAME_RGB_SSIM_THRESHOLD,
-          );
-          expect(
+          ));
+          gateAlways(() => expect(
             shot.worstTileRgbSsimAgainstBaseline,
             `${shot.name}: a local visual regression was diluted by the whole-frame score`,
           ).toBeGreaterThanOrEqual(
             definition.worstTileRgbSsimThreshold
               ?? PERF_CAPTURE_WORST_TILE_RGB_SSIM_THRESHOLD,
-          );
+          ));
         }
         if (definition.temporalFloors && shot.temporal) {
-          expect(
-            shot.temporal.minConsecutiveSsim,
+          const floors = definition.temporalFloors;
+          const temporal = shot.temporal;
+          gateAlways(() => expect(
+            temporal.minConsecutiveSsim,
             `${shot.name}: consecutive-frame SSIM fell below the committed floor (flicker)`,
-          ).toBeGreaterThanOrEqual(definition.temporalFloors.minConsecutiveSsim);
-          expect(
-            shot.temporal.maxMeanLuminanceDelta,
+          ).toBeGreaterThanOrEqual(floors.minConsecutiveSsim));
+          gateAlways(() => expect(
+            temporal.maxMeanLuminanceDelta,
             `${shot.name}: frame-to-frame luminance jumped above the committed ceiling`,
-          ).toBeLessThanOrEqual(definition.temporalFloors.maxMeanLuminanceDelta);
+          ).toBeLessThanOrEqual(floors.maxMeanLuminanceDelta));
         }
         // The tier-1 medium/balanced delivery contract is intentionally raw:
         // no percentile trimming may hide a freeze or a run that averages 59.9.
@@ -1661,10 +1697,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // tier-1 regression, and `deliveryFailuresAgainst` still holds every row
         // to its own tier's contract.
         if (!IS_SWEEP && definition.drawCallCeiling !== undefined) {
-          expect(
+          const drawCeiling = definition.drawCallCeiling;
+          gateAlways(() => expect(
             shot.drawCalls,
             `${shot.name}: more draw calls than the committed ceiling`,
-          ).toBeLessThanOrEqual(definition.drawCallCeiling);
+          ).toBeLessThanOrEqual(drawCeiling));
         }
         // Gate 0-c (Phase 6, = 6-11.4a): the Babylon inventory floor is the
         // real memory number — only the ~380 MiB estimate gates the 480 MiB
@@ -1686,13 +1723,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // plausibility check -- a non-finite or non-positive reading is still a
         // broken instrument at any tier -- and drops only the tier-1 regression
         // pin, which a sweep row is not.
-        expect(
+        gateAlways(() => expect(
           inventoriedMemoryFailures(
             shot.inventoriedGpuMemoryMiB,
             IS_SWEEP ? Number.POSITIVE_INFINITY : undefined,
           ),
           `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
-        ).toEqual([]);
+        ).toEqual([]));
         // THE ESTIMATE'S OWN RE-PIN TRIGGER, MADE MECHANICAL.
         //
         // `ESTIMATE_FUDGE_FACTOR`'s docblock has said "re-pin when
@@ -1724,13 +1761,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
           );
           // `null` means a reading was missing or implausible. That is a broken
           // instrument, not a pass, and it must not be silently tolerated.
-          expect(
+          gateAlways(() => expect(
             divergence,
             `${shot.name}: estimate/inventory divergence could not be computed `
             + `(estimated ${shot.estimatedGpuMemoryMiB}, inventoried `
             + `${shot.inventoriedGpuMemoryMiB}) -- a missing reading is not a passing one`,
-          ).not.toBeNull();
-          expect(
+          ).not.toBeNull());
+          gateAlways(() => expect(
             divergence ?? Number.POSITIVE_INFINITY,
             `${shot.name}: |estimate - inventory| / inventory is `
             + `${(((divergence ?? 0) * 100)).toFixed(1)}%, past the `
@@ -1741,17 +1778,17 @@ describe("perf capture (1A-1c / 2Z)", () => {
             + "ESTIMATE_FUDGE_FACTOR against the corrected inventory, or move "
             + "ESTIMATE_REPIN_TRIGGER_FRACTION to a value someone is prepared to "
             + "defend. Do not widen it to make this green.",
-          ).toBeLessThanOrEqual(ESTIMATE_REPIN_TRIGGER_FRACTION);
+          ).toBeLessThanOrEqual(ESTIMATE_REPIN_TRIGGER_FRACTION));
         }
         // 4-10 (assertion 84b): page residency under streaming load. The
         // page-thrash and CDLOD-transition scenes exist to make a pump that
         // outruns the compute meter visible as a rising queue rather than as a
         // hitch nobody can attribute.
         const residency = definition.residencyCeilings;
-        expect(
+        gateAlways(() => expect(
           shot.pendingDetailWork,
           `${shot.name}: detail generation/presentation was still pending at capture`,
-        ).toBe(0);
+        ).toBe(0));
         /**
          * Terrain, made symmetric with detail above — a shot's pixels are only
          * meaningful if the world had finished building when they were read.
@@ -1771,12 +1808,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
          * done, and the failure is loud rather than a number in a report.
          */
         if (!residency) {
-          expect(
+          gateAlways(() => expect(
             shot.pendingTerrainPages,
             `${shot.name}: terrain was still streaming when the frame was read — `
             + "this shot's pixels are of a half-built world. Raise "
             + "maxStreamingFrames, or reduce the shot's working set.",
-          ).toBe(0);
+          ).toBe(0));
         }
         /**
          * The margin, asserted rather than discovered.
@@ -1789,13 +1826,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
          * exceeds it.
          */
         const streamingUsedFraction = shot.streamingFramesUsed / shot.streamingFrameBudget;
-        expect(
+        gateAlways(() => expect(
           streamingUsedFraction,
           `${shot.name}: used ${shot.streamingFramesUsed} of ${shot.streamingFrameBudget} `
           + "streaming frames to settle. That is most of the budget, and the next "
           + "increase in this shot's working set will exhaust it and screenshot a "
           + "half-built world. Raise the budget now.",
-        ).toBeLessThan(0.75);
+        ).toBeLessThan(0.75));
         if (residency) {
           // Queue DEPTH is what the wall-clock compute meter admits per frame,
           // so it follows the host the same way the delivery rows do.
@@ -1804,10 +1841,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
             `${shot.name}: more pages pending generation than the committed ceiling`,
           ).toBeLessThanOrEqual(residency.maxPendingTerrainPages));
           // Atlas OCCUPANCY is a capacity bound. It stays hard on every host.
-          expect(
+          gateAlways(() => expect(
             shot.residentTerrainPages,
             `${shot.name}: more resident page slots than the atlas holds`,
-          ).toBeLessThanOrEqual(residency.maxResidentTerrainPages);
+          ).toBeLessThanOrEqual(residency.maxResidentTerrainPages));
         }
       } catch (error) {
         gateFailures.push(

@@ -282,6 +282,41 @@ describe("perf-capture baseline policy", () => {
 
     // Exactly the eight wrappers enumerated above; nothing else may be relaxed.
     expect([...driver.matchAll(/gateDelivery\(/g)]).toHaveLength(8);
+
+    // THE SECOND WRAPPER, and the invariant that makes it safe to have two.
+    //
+    // `gateAlways` exists because `gateDelivery` bundles two properties —
+    // non-aborting AND host-conditional — and every gate outside the eight
+    // above wants only the first. A conversion that reached for `gateDelivery`
+    // to stop a gate masking the ones behind it would ALSO have made the
+    // draw-call ceiling and the inventoried-memory check waivable on an
+    // unpinned host. That was caught here rather than in a capture.
+    //
+    // The COUNT is not the invariant — it moves whenever a gate is added. What
+    // must never change is that `gateAlways` does not consult `UNPINNED_HOST`:
+    // the moment it does, the two wrappers collapse into one and the list above
+    // stops meaning anything.
+    const gateAlwaysBody = driver.slice(
+      driver.indexOf("const gateAlways ="),
+      driver.indexOf("};", driver.indexOf("const gateAlways =")),
+    );
+    expect(
+      gateAlwaysBody,
+      "gateAlways is defined but the driver no longer uses it — either the "
+      + "wrapper was removed or its gates were moved onto gateDelivery, which "
+      + "would relax them",
+    ).not.toHaveLength(0);
+    expect(
+      gateAlwaysBody.includes("UNPINNED_HOST"),
+      "gateAlways must NOT consult UNPINNED_HOST — it is the always-enforced "
+      + "wrapper, and reading the host flag would silently relax every gate "
+      + "that uses it, which is the whole distinction from gateDelivery",
+    ).toBe(false);
+    expect(
+      [...driver.matchAll(/gateAlways\(\(\) =>/g)].length,
+      "no gate uses gateAlways — the non-aborting, always-enforced path is "
+      + "unused, so either masking has returned or the gates were relaxed",
+    ).toBeGreaterThan(0);
   });
 
   it("keeps GPU and non-mutating perf gates wired to automatic CI with artifacts", () => {
