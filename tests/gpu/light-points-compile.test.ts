@@ -133,7 +133,7 @@ function renderOnce(fixtures: readonly LightPointFixture[]): LightPointSystem {
   const packed = packIesProfiles(scene, [syntheticIes()]);
   const system = new LightPointSystem(scene, fixtures, packed.rows);
   system.setIesProfiles(packed.texture);
-  system.setRenderSize(CANVAS_SIZE, CANVAS_SIZE);
+  system.setOutputSize(CANVAS_SIZE, CANVAS_SIZE);
   system.setCameraPosition(camera.position);
   for (let frame = 0; frame < 4; frame += 1) scene.render();
   return system;

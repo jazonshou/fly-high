@@ -284,8 +284,17 @@ export class StarFieldSystem {
     this.mesh.setEnabled(visibility > 0.002);
   }
 
-  /** Keeps the sprite size in pixels as the render target resizes. */
-  setRenderSize(widthPixels: number, heightPixels: number): void {
+  /**
+   * Keeps the sprite size in OUTPUT pixels as the canvas resizes.
+   *
+   * **Was `setRenderSize`, and the caller passed the scaled raster**, so at any
+   * render scale below 1 a star drew wider than its stated pixel size -- 16.3%
+   * at tier 1's 0.86. The constructor above initialises `starPixelSize` to
+   * `2 / 1280, 2 / 720`, the OUTPUT size, so the intent was never in doubt;
+   * only the setter's argument was. Same defect and same fix as
+   * `LightPointSystem.setOutputSize`.
+   */
+  setOutputSize(widthPixels: number, heightPixels: number): void {
     this.material.setVector2(
       "starPixelSize",
       new Vector2(2 / Math.max(1, widthPixels), 2 / Math.max(1, heightPixels)),

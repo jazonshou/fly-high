@@ -134,7 +134,7 @@ describe("7-9: light count does not recompile shaders in flight", () => {
         scene.activeCamera = camera;
         const fixtures = Array.from({ length: count }, (_, i) => fixture(i));
         const system = new LightPointSystem(scene, fixtures, 1);
-        system.setRenderSize(CANVAS, CANVAS);
+        system.setOutputSize(CANVAS, CANVAS);
         system.setCameraPosition(camera.position);
         scene.render();
         const lamp = [...shaderModules].reverse()

@@ -688,12 +688,29 @@ export class LightPointSystem {
 
   /**
    * NDC-per-pixel, so the sprite is sized in OUTPUT PIXELS and render scale
-   * cannot change its apparent size. Same call shape and same arithmetic as
-   * `StarFieldSystem.setRenderSize` deliberately: two sprite-sizing rules that
+   * cannot change its apparent size.
+   *
+   * **NAMED `setOutputSize` BECAUSE THE PREVIOUS NAME WAS THE BUG.** It was
+   * `setRenderSize`, and the caller duly passed `engine.getRenderWidth()` --
+   * the SCALED raster, not the presented size. At tier 1 that raster is
+   * 1100x619 and is stretched to 1280x720, so every sprite drew **16.3%
+   * wider** than the pixel count it was given. The docblock above this one
+   * asserted the opposite of what shipped, which is why nobody looked: a
+   * comment that confidently states the inverse of the behaviour is worse than
+   * no comment.
+   *
+   * **The intent was recoverable from the code and that is what settled it.**
+   * `StarField`'s constructor initialises the same uniform to the literal
+   * `2 / 1280, 2 / 720` -- the OUTPUT size -- and the per-frame setter then
+   * overwrote it with the render size. Author's intent in the initialiser,
+   * denomination silently changed by the setter, in both systems.
+   *
+   * Pass the CSS/presented size. Same call shape and same arithmetic as
+   * `StarFieldSystem.setOutputSize` deliberately: two sprite-sizing rules that
    * looked alike but computed differently would be the drift this module
-   * exists to avoid.
+   * exists to avoid -- and they did drift, in the units rather than the maths.
    */
-  setRenderSize(widthPixels: number, heightPixels: number): void {
+  setOutputSize(widthPixels: number, heightPixels: number): void {
     this.material.setVector2(
       "lightPixelSize",
       new Vector2(2 / Math.max(1, widthPixels), 2 / Math.max(1, heightPixels)),

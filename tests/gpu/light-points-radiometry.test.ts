@@ -164,7 +164,7 @@ async function readLamp(
   };
 
   const system = new LightPointSystem(scene, [fixture], 1);
-  system.setRenderSize(RTT_SIZE, RTT_SIZE);
+  system.setOutputSize(RTT_SIZE, RTT_SIZE);
   system.setCameraPosition(camera.position);
 
   const target = new RenderTargetTexture(

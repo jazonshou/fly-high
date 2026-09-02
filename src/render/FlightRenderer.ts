@@ -2179,7 +2179,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     );
     this.atmosphere.update(this.camera.position);
     this.stars.update(this.camera.position);
-    this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
+    // OUTPUT size, not `getRenderWidth()`. See `StarFieldSystem.setOutputSize`:
+    // the raster is scaled and then stretched to the canvas, so feeding the
+    // raster made every sprite wider than its stated pixel count.
+    this.stars.setOutputSize(this.domElement.clientWidth, this.domElement.clientHeight);
     this.lightPoints.setCameraPosition(this.camera.position);
     // Daylight suppression. The lamps carry a NIGHT calibration
     // (`AIRFIELD_LAMP_SCENE_SCALE`) applied unconditionally, so without this
@@ -2216,9 +2219,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     )) {
       this.lightPoints.setColors(this.airfieldLighting.colourList());
     }
-    this.lightPoints.setRenderSize(
-      this.engine.getRenderWidth(),
-      this.engine.getRenderHeight(),
+    // OUTPUT size, for the reason on `LightPointSystem.setOutputSize`. The CSS
+    // size is what `applyRenderScale` already reads for its own pixel cap, so
+    // this is the same authority rather than a second one.
+    this.lightPoints.setOutputSize(
+      this.domElement.clientWidth,
+      this.domElement.clientHeight,
     );
     this.updateAerialPerspective();
   }

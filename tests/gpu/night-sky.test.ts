@@ -134,7 +134,7 @@ describe("the night sky on a real adapter (Gate 7A)", () => {
       stars.setClock(chosen, 45, state.sun.direction[1]);
       const galactic = stars.galacticFrame(chosen, 45);
       atmosphere.setGalacticFrame(galactic.pole, galactic.center);
-      stars.setRenderSize(CANVAS_SIZE, CANVAS_SIZE);
+      stars.setOutputSize(CANVAS_SIZE, CANVAS_SIZE);
 
       const moonSnapshot = atmosphere.snapshot;
       aerial.setProjection({
