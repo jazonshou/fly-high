@@ -149,14 +149,47 @@ describe("7-9: PCSS stays declined, with the price rather than the judgement", (
       note.includes("`computeShadowWithCSMPCSS` needs a second"),
       "the PCSS deferral note moved or changed; re-derive before quoting this decline",
     ).toBe(true);
-    // KNOWN DEFECTIVE, owned by `7-10`'s guard repair, left raw so it keeps its
-    // current (green) behaviour rather than being silently changed here:
-    // `FILTER_PCF` occurs in `QualityProfile.ts` EXACTLY ONCE, inside a comment.
-    // The shipped assignment is in `AtmosphereSystem.ts`, so this asserts on
-    // prose and would stay green if the filter changed. Do not read it as
-    // evidence about the shipped filter.
-    expect(note.includes("filter: ShadowGenerator.FILTER_PCF")
-      || note.includes("FILTER_PCF")).toBe(true);
+  });
+
+  it("the SHIPPED filter is still PCF — read where it is actually assigned", () => {
+    // REPAIRED 2026-09-02. This assertion previously searched
+    // `QualityProfile.ts` for `FILTER_PCF`, where the token occurs EXACTLY
+    // ONCE, inside a comment. The shipped assignment has always been in
+    // `AtmosphereSystem.ts`. So a guard whose own describe reads "PCSS stays
+    // declined" was asserting on prose in a file that does not make the
+    // decision, and would have stayed green through the exact change it exists
+    // to catch — the most consequential of the five comment-matching defects,
+    // because the others watched settled facts and this one holds an OPEN
+    // trade its own docblock calls "a Phase 7 conversation".
+    //
+    // `readSource`, so a future comment naming PCSS cannot satisfy it.
+    const atmosphere = readSource("src/render/webgpu/atmosphere/AtmosphereSystem.ts");
+    expect(
+      atmosphere,
+      "the sun shadow generator no longer assigns FILTER_PCF. If PCSS has been "
+      + "adopted, this decline is stale and its price must be re-derived before "
+      + "the entry above is quoted again",
+    ).toMatch(/shadows\.filter\s*=\s*ShadowGenerator\.FILTER_PCF/u);
+
+    // NON-VACUITY IN THE DIRECTION THAT MATTERS. The regex above is satisfied
+    // only by an assignment, but a file that had stopped assigning a filter at
+    // all would also stop matching — which reads the same as "PCSS adopted"
+    // and is a different fact. Assert the generator is still configured here,
+    // so the failure message points at the right question.
+    expect(
+      atmosphere,
+      "AtmosphereSystem no longer configures the shadow filter at all; this "
+      + "guard is looking at the wrong file again",
+    ).toMatch(/shadows\.filteringQuality\s*=/u);
+
+    // And PCSS must be absent from the shipping assignment path. Comments are
+    // stripped, so the tier-2 note explaining WHY PCSS was declined cannot
+    // satisfy this — that note is what the previous assertion was reading.
+    expect(
+      /FILTER_PCSS/u.test(atmosphere),
+      "AtmosphereSystem references FILTER_PCSS in code; the decline recorded "
+      + "above no longer describes what ships",
+    ).toBe(false);
   });
 
   it("reproduces the retired 128 MiB figure, so the byte size is the right one", () => {

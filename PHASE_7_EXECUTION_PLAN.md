@@ -986,12 +986,57 @@ headroom. **So the vegetation-atlas trade was never drawn on and remains availab
 matters more than the wording: anyone reading this line would believe a budget had been
 spent that has not.
 
-**A LIVE CEILING BREACH, measured rather than modelled.** At `2bfe84a`, full 34-shot
-capture, `reference-viewport` reads **495.9 MiB inventoried against the 495 MiB pin** —
-headroom **−0.9 MiB**. `inventoriedMemoryFailures` has no tolerance (`> ceilingMiB`), so
-this is a failure by the gate's own definition. Provenance: one host, one commit, before
-the 35th shot landed; re-measure before acting. It is recorded here because a breach that
-lives only in a capture report is a breach nobody reads.
+**~~A LIVE CEILING BREACH, measured rather than modelled.~~ RETRACTED 2026-09-02 — THERE
+WAS NO BREACH. THE INSTRUMENT WAS WRONG BY 156 MiB ON ONE LINE.**
+
+Struck in place rather than deleted, because the reasoning is the finding. The claim was:
+`reference-viewport` reads 495.9 MiB inventoried against the 495 MiB pin, headroom
+−0.9 MiB, a failure by `inventoriedMemoryFailures`' own definition. Every step of that was
+true of the number the instrument produced. **The number was fiction.**
+
+`inventoryGpuMemoryMiB`'s per-texel arithmetic read a texture's TYPE and never its FORMAT,
+mapping `TEXTURETYPE_FLOAT` to 16 bytes — correct for RGBA32F, **four times too large for
+R32F**. The terrain height atlas is a 3696² single-channel float storage texture, so it was
+counted at 208.44 MiB against a true 52.11. Four of the ten terrain channel families were
+mis-keyed the same way. Fixed in `4543b7e` with a guard
+(`render.gpu-memory-inventory-format.test.ts`); the repair itself shipped a 2× UNDER-count
+on `TEXTURETYPE_SHORT` and was corrected in the same sweep.
+
+**POST-FIX, MEASURED:**
+
+| | |
+|---|---|
+| inventoried, 36-shot tier-1 sweep | **248.3 – 256.7 MiB** (PM, `2026-09-02T03-05-29.027Z`) |
+| inventoried, `apron-hangar-variety` | **249.5 MiB** (this session, independent, inside that range) |
+| estimated | 367.5 – 380.7 MiB |
+| ceiling | 495 MiB → **~238 MiB of slack** |
+
+**DO NOT RE-DERIVE THE 495 CEILING FROM THESE.** The corrected instrument has been wrong
+once already, and a ceiling wants a reading that has survived enumeration. `SWE II 1` owns
+that with a guard.
+
+**THE INVENTORY READING BELOW THE ESTIMATE IS CORRECT, AND THE OLD STATE WAS THE ANOMALY.**
+Its docblock calls it a FLOOR — blind to MSAA resolve targets, pipelines and driver
+overhead — so it SHOULD sit under a model that includes them. Before the fix a
+self-described floor read ~100 MiB ABOVE the estimate and nobody flagged it, including the
+sessions quoting it as "the binding number".
+
+**AND THE STABLE RATIO WAS EVIDENCE FOR THE OPPOSITE CONCLUSION TO THE ONE DRAWN.**
+`inventoried / estimated` held tight across every shot, and that tightness was read for a
+long time as proof the ESTIMATE omitted a whole category. A constant factor on one term is
+exactly what produces a stable ratio. The same observation, the opposite conclusion, and
+the tightness that made it convincing is what the bug produces.
+
+**A RELATED CLAIM OF MINE ALSO RESOLVED, AND IT WAS NOT A DEFECT.** I measured the terrain
+channel atlases at 165.96 MiB against the estimate's 107.18 and flagged it as a second
+disagreement. It was the same bug seen from the other end: post-fix the term reads 107.18,
+matching the estimate to the hundredth.
+
+**7-11 WAS BUDGETED AGAINST HEADROOM THAT NEVER EXISTED.** `AirfieldMaterials`' docblock
+sizes the material set against 2.6 MiB and says "the estimate row tells a comfortable lie;
+the inventory binds". The inventory did not bind. The 512² upgrade rejected as unaffordable
+at 2.67 MiB per layer was affordable throughout, and Q2's vegetation-atlas trade — already
+found unspent — is unspent against real slack rather than notional.
 
 **AND NOTHING EVALUATED IT, for a structural reason worth more than this item.** In that
 run the memory assertion never executed: `approach-500ft` is **shot 1 of 34** and its

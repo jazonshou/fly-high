@@ -309,6 +309,54 @@ reason, naming the empty-string collision in its message.
 
 ---
 
+## 8. A guard that reads source must strip comments (7-10)
+
+**Use `readSource` from `tests/support/sourceText.ts`. Reach for `rawSource`
+only when the assertion is genuinely ABOUT the prose, and say so at the call
+site.**
+
+The reason is structural rather than stylistic, and it is why care does not
+defend against it:
+
+> **A comment that explains a defect necessarily NAMES it.** So the files most
+> likely to be searched for a forbidden identifier are exactly the ones whose
+> docblocks explain why it is forbidden — and a guard searching raw text finds
+> the explanation and passes.
+
+**Five instances in one evening, across three sessions, none found by review.**
+Every one was found by running the control: mutate the thing the guard exists
+to catch and watch whether it goes red.
+
+- **The worst held an open decision.** A guard titled *"7-9: PCSS stays
+  declined"* asserted `FILTER_PCF` appears in `QualityProfile.ts`, where it
+  occurs **exactly once, inside a comment**. The shipped assignment is
+  `AtmosphereSystem.ts`. Changing the filter left it green — a guard that could
+  not see the only change it existed to catch. Repaired to read the file that
+  makes the decision.
+- **Two were in the repair for the first one.** A guard written to catch
+  format-blind memory arithmetic asserted the function body matched `/format/`;
+  a mutation renaming the parameter `unusedFormat` kept it green. Strengthened
+  to require the format CONSTANTS by name — then a second mutation deleting a
+  `TEXTURETYPE_SHORT` branch ALSO stayed green, because the comment above the
+  branch explains the SHORT defect by name.
+- **One was in the opposite direction**: a regex hunting a removed vacuous
+  assertion matched the comment *explaining* the vacuity that had just been
+  removed, and reported a repaired file as still broken.
+
+**The related rule, for the same reason:** assert on CONSTANTS and expressions,
+not on words. `Constants.TEXTUREFORMAT_R` cannot be satisfied by an identifier
+called `unusedFormat`; `/format/` can. A channel count cannot be computed
+without naming the format constants, which is what makes naming them the thing
+that cannot be faked.
+
+**And the check that finds these is cheap and mechanical:** a presence
+assertion on a token that appears in the target's comments and NOT in its code
+is a proof, not a suspicion. It cannot distinguish a deliberate prose anchor
+from a defect — a human has to — but it reduces "41 files search raw text" to a
+list short enough to read.
+
+---
+
 ## Decision log
 
 | Item | Decision | Detail |
