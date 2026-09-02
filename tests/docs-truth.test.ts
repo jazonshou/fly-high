@@ -200,12 +200,27 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // rows from the shot table further down the file.
     const rows = tierTableRowLabels();
 
-    const covered = new Set([
-      ...TIER_ROW_CHECKS.map((row) => row[0]),
-      ...DECLARED_UNVERIFIABLE.map((row) => row[0]),
-      "Absolute pixel cap",
-    ]);
+    const checkedKeys = [...TIER_ROW_CHECKS.map((row) => row[0]), "Absolute pixel cap"];
+    const declaredKeys = DECLARED_UNVERIFIABLE.map((row) => row[0]);
+    const covered = new Set([...checkedKeys, ...declaredKeys]);
     const uncovered = rows.filter((label) => ![...covered].some((c) => label.includes(c)));
+
+    // EXACTLY one, not at least one. A row that is both checked AND declared
+    // unverifiable passes the `uncovered` test above while the file says two
+    // contradictory things about it — and that is not hypothetical: the
+    // two-number-cell parser makes `Height-atlas slots / channel-atlas slots`
+    // checkable, so whoever lands it must drop the declaration in the SAME
+    // commit. Without this leg the contradiction would be invisible.
+    const both = rows.filter(
+      (label) => checkedKeys.some((c) => label.includes(c))
+        && declaredKeys.some((d) => label.includes(d)),
+    );
+    expect(
+      both,
+      "These rows are BOTH checked against the profile and declared unverifiable. "
+      + "A row cannot be both: remove it from DECLARED_UNVERIFIABLE in the same "
+      + "commit that adds its check.",
+    ).toEqual([]);
     expect(
       uncovered,
       "These rows of docs/PERFORMANCE.md's resolved-tier table are neither checked "
