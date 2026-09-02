@@ -736,7 +736,11 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
  * golden-hour cannot gain warmth by shape). Tints from the palette's own
  * 0° sunColor row (warm) and the classic Belt pink.
  */
-export const TWILIGHT_WARM_STRENGTH = 0.06;
+// Round W turn 1: 0.06 -> 0.13, solved from the measured delta (sunward
+// band R/B 0.592 null -> 0.902 at 0.06; the added red scales ~linearly at
+// these pre-knee levels, so reaching the registered 1.2 needs ~2.3x the
+// lobe). One turn remains in the [0.03, 0.15] budget.
+export const TWILIGHT_WARM_STRENGTH = 0.13;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
 export const TWILIGHT_BELT_RATIO = 0.35;
 export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
