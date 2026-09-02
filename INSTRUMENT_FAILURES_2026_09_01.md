@@ -104,6 +104,22 @@ PM used the same presence-counting form early in the evening before switching to
 a CPU threshold, so it produced the same wrong answer in two sessions
 independently.
 
+**Two things about it that the other six do not have, both from the session it
+cost, correcting this document's first framing of them.**
+
+**The emphasis belongs on the independence, not on the self-report.** Two
+sessions, no contact, the same wrong mechanism. **That is not two people being
+careless; it is `ps | grep -c` being the obvious thing to write and the wrong
+thing to write.** Anyone writing that gate fresh tomorrow gets the same answer.
+
+**And a gate that falsely says BUSY can never be contradicted.** Nothing
+downstream disagrees with it, because nothing downstream runs. **Every other
+instrument on this list produced a number somebody argued with; this one produced
+silence, and nobody argues with silence.** That asymmetry is why it survived
+hours when a wrong *number* would have been caught in minutes — and it
+generalises past this instance: **a false negative in a gate is structurally
+harder to detect than a false positive in a measurement.**
+
 **In zsh, `$c:scripts/foo.ts` expands to `$c`** — `:s` is a history-substitution
 modifier that eats the path. The resulting `git show <sha>` **succeeds**, prints
 a commit message containing none of the searched text, and the grep honestly
@@ -243,6 +259,36 @@ positive control separated them: **would this window show the effect if the
 effect were enormous?** The one genuinely independent agreement of the night —
 two methods with no common input meeting at 208.44 and 52.11 — is worth more
 than any of the others.
+
+---
+
+## 5b. One measurement that had to be repaired, and why it counts as a lesson
+
+**The ceilings re-measure was run, produced +81..+108 draw calls across every
+baselined shot, and was then USELESS** — the movement was cumulative since the
+first pin and therefore unattributable, so no owner could declare a raise against
+it. A fourth arm with only the cascade decoupling removed split it:
+
+    CASCADE FIX       +57 .. +69   mean +65.1
+    EVERYTHING ELSE   +24 .. +39   mean +35.6
+
+**The fourth arm is a REPAIR, not a design**, and its author asked that it be
+recorded that way. **The lesson is "ask what the number will be used for before
+measuring it", not "always run a fourth arm."** Three runs answered a question
+nobody needed answered; the requirement — that a raise declaration needs an
+attributable delta — was discoverable before any capture and was not sought.
+
+**Two things fell out of the repair that the original measurement could not have
+given.** The cascade fix is nearly **twice every other feature since the pin,
+combined** — *"a casting mesh goes 2.00 → 3.00 draws"* sounded negligible, and
+with ~65 casting meshes in frame it is **+35% of the frame's draw calls**
+(194 → 261 at `reference-viewport`). A per-item delta multiplied by an unstated
+population is a small instance of this document's own subject, and the PM was
+using that framing too.
+
+And "everything else" is cleanly bimodal: **+24 on exactly the seven shots with
+no airfield in frame, +39 on all others.** One global group and one airfield
+group, which makes owner declarations checkable rather than assertable.
 
 ---
 
