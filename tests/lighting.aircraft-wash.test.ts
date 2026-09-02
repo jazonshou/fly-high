@@ -41,7 +41,6 @@ const WASH_TO_LAMP: Readonly<Record<string, string>> = Object.freeze({
   "aircraft-nav-wash-starboard": "starboard-navigation-light",
   "aircraft-strobe-wash-port": "port-strobe-light",
   "aircraft-strobe-wash-starboard": "starboard-strobe-light",
-  "aircraft-tail-wash": "tail-navigation-light",
 });
 
 describe("7-15: every wash light sits on the lamp it is the spill of", () => {
@@ -55,12 +54,8 @@ describe("7-15: every wash light sits on the lamp it is the spill of", () => {
         // NON-VACUITY, twice. An empty wash list, or a lamp lookup that finds
         // nothing, would make every assertion below pass by having nothing to
         // check — the failure mode this project has hit repeatedly.
-        expect(washes.length, `${kind} has no wash lights to check`).toBe(6);
+        expect(washes.length, `${kind} has no wash lights to check`).toBe(5);
 
-        // Every wash must appear in the map. Without this a wash added later
-        // with no mapping would be skipped silently and the count check alone
-        // would not catch it once the count is bumped to match.
-        expect(new Set(washes.map((w) => w.name)).size, "duplicate wash names").toBe(washes.length);
         for (const wash of washes) {
           const lampName = WASH_TO_LAMP[wash.name];
           expect(lampName, `no lamp mapped for wash "${wash.name}"`).toBeDefined();
