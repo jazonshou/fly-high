@@ -17,6 +17,11 @@ import {
   twilightArchRadiance,
   nightZenithFade,
   NIGHT_ZENITH_FALLOFF,
+  twilightWarmRadiance,
+  twilightBeltRadiance,
+  TWILIGHT_WARM_TINT,
+  TWILIGHT_WARM_STRENGTH,
+  TWILIGHT_BELT_RATIO,
   MOON_TWILIGHT_RECESSION,
   TWILIGHT_ARCH_TINT,
   TWILIGHT_ARCH_STRENGTH,
@@ -464,6 +469,71 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.26)).toBe(0);
   });
 
+  it("paints the sunset lobe toward the TRUE sun, zero outside the window", () => {
+    // Round W. Premultiplied warm and belt are zero at every window
+    // endpoint by the arch window's own proven shape — no new gate.
+    for (const sine of [sineAt(12.5), sineAt(19.0), -0.26, sineAt(23.75), sineAt(0)]) {
+      expect(twilightWarmRadiance(sine)).toEqual([0, 0, 0]);
+      expect(twilightBeltRadiance(sine)).toEqual([0, 0, 0]);
+    }
+    const duskWarm = twilightWarmRadiance(sineAt(20.45));
+    expect(duskWarm[0]).toBeCloseTo(TWILIGHT_WARM_TINT[0] * TWILIGHT_WARM_STRENGTH, 9);
+    expect(duskWarm[0]).toBeGreaterThan(duskWarm[2]! * 2); // warm means R-dominant
+    // The belt is the weaker pink tail, by the fixed ratio exactly.
+    const duskBelt = twilightBeltRadiance(sineAt(20.45));
+    expect(duskBelt[0]).toBeCloseTo(duskWarm[0]! * TWILIGHT_BELT_RATIO, 9);
+
+    // The lobe aims at the TRUE sun, never the nightness-blended source: at
+    // dusk with a moon the binding's sunDirection has swung toward the moon,
+    // and sunsetDirection must not follow it.
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(
+      duskState, 152, [0.9, 0.4, 0.25], [0.08, 0.075, 0.14], 0.1,
+      [0, 1, 0], 0.8,
+    );
+    const s = duskState.sun.direction;
+    const h = Math.hypot(s[0], s[2]);
+    expect(dusk.sunsetDirection[0]).toBeCloseTo(s[0] / h, 9);
+    expect(dusk.sunsetDirection[1]).toBeCloseTo(s[2] / h, 9);
+    expect(Math.hypot(...dusk.sunsetDirection)).toBeCloseTo(1, 9);
+
+    // And the MIRROR shows the azimuthal structure the sky was measured to
+    // lack: at 5 deg elevation, sunward is warm (R/B > 1) and anti-solar
+    // carries only the fainter pink — sunward red exceeds anti-solar red.
+    const el = Math.sin((5 * Math.PI) / 180), c = Math.cos((5 * Math.PI) / 180);
+    const sunward = evaluateSkyRadiance(dusk, [
+      dusk.sunsetDirection[0] * c, el, dusk.sunsetDirection[1] * c,
+    ]);
+    const anti = evaluateSkyRadiance(dusk, [
+      -dusk.sunsetDirection[0] * c, el, -dusk.sunsetDirection[1] * c,
+    ]);
+    // STRUCTURAL claims only — the display-domain R/B threshold lives in
+    // the frame criteria where the knob budget is registered; a radiance
+    // pin that hardcoded it would re-tune the knob from a test.
+    const bare = {
+      ...dusk,
+      twilightWarm: [0, 0, 0] as [number, number, number],
+      twilightBelt: [0, 0, 0] as [number, number, number],
+    };
+    const sunwardBare = evaluateSkyRadiance(bare, [
+      dusk.sunsetDirection[0] * c, el, dusk.sunsetDirection[1] * c,
+    ]);
+    // The lobe at least doubles the sunward red over the azimuth-uniform sky…
+    expect(sunward[0]!).toBeGreaterThan(sunwardBare[0]! * 2);
+    // …asymmetrically: sunward red beats anti-solar red well past the belt.
+    expect(anti[0]!).toBeGreaterThan(0);
+    expect(sunward[0]!).toBeGreaterThan(anti[0]! * 1.5);
+    // And the anti-solar side gained ONLY the fainter belt, nothing more.
+    const antiBare = evaluateSkyRadiance(bare, [
+      -dusk.sunsetDirection[0] * c, el, -dusk.sunsetDirection[1] * c,
+    ]);
+    expect(anti[0]! - antiBare[0]!).toBeLessThan(sunward[0]! - sunwardBare[0]!);
+  });
+
   it("fades the night zenith on the NIGHTNESS gate, and day is exactly zero", () => {
     // Round G (Jason: "the blue transitions into black the further up you
     // look"). Gated by aerialNightness, deliberately NOT the twilight art
@@ -500,6 +570,9 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(surfacePath).not.toContain("skyRadiance(");
     expect(surfacePath).not.toContain("aerialTwilightArch");
     expect(surfacePath).not.toContain("aerialNightZenithFade");
+    expect(surfacePath).not.toContain("aerialTwilightWarm");
+    expect(surfacePath).not.toContain("aerialTwilightBelt");
+    expect(surfacePath).not.toContain("aerialSunsetDir");
     // And the sky path DOES carry both, with the exponential shape.
     const skyPath = AERIAL_PERSPECTIVE_WGSL.slice(
       AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance("),

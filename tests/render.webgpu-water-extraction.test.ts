@@ -112,11 +112,21 @@ describe("water shader extraction (2-8a)", () => {
     // cannot move for the same reason as the arch's re-pin: the uniform is
     // zero-filled by day and the fragment never evaluates the sky function
     // that consumes it. Deliberate, named, reviewed.
+    //
+    // Re-pinned by NIGHT_LOOK §2.6 round W (sunset lobe + Belt of Venus).
+    // FRAGMENT ONLY, declaration-side for the fourth time: three uniform
+    // declarations (warm, belt, sunset direction) plus the lobe lines
+    // inside `skyRadiance`, which the water fragment composes but never
+    // calls. The vertex hash is byte-for-byte unchanged for the fourth
+    // consecutive include growth; water pixels cannot move — the uniforms
+    // are zero-filled outside the twilight window and the fragment never
+    // evaluates the sky function that consumes them. Deliberate, named,
+    // reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "7b93ee7cf8528519e71911b1fb66dd31ef671c6e8de14412fa65c5065dc9c4e2",
+      "dde1511467eb79144bbd02efa28853a7d0d9e31650042347eea4e9017db3a34a",
     );
   });
 

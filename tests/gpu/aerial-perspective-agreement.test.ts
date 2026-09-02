@@ -38,6 +38,9 @@ struct AerialUniforms {
   aerialTwilightArch: vec3f,
   aerialNightZenithFade: f32,
   aerialParams: vec4f,
+  aerialTwilightWarm: vec3f,
+  aerialTwilightBelt: vec3f,
+  aerialSunsetDir: vec3f,
 };
 
 @group(0) @binding(0) var<storage, read> uniforms: AerialUniforms;
@@ -61,7 +64,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
  * tail slot), then aerialParams aligns to 16 bytes at float 40 — 44 floats.
  */
 function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
-  const data = new Float32Array(44);
+  const data = new Float32Array(56);
   data[0] = binding.cameraAltitudeMeters;
   data.set(binding.sunDirection, 4);
   data.set(binding.coefficients.rayleighScattering, 8);
@@ -77,6 +80,11 @@ function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
   data[41] = MIE_SCALE_HEIGHT_METERS;
   data[42] = binding.coefficients.mieAnisotropy;
   data[43] = binding.strength;
+  data.set(binding.twilightWarm, 44);
+  data.set(binding.twilightBelt, 48);
+  data[52] = binding.sunsetDirection[0];
+  data[53] = 0;
+  data[54] = binding.sunsetDirection[1];
   return data;
 }
 

@@ -257,12 +257,21 @@ export function evaluateSkyRadiance(
   ).inScatter;
   // §2.6 sky-path arch — mirrors the WGSL line for line.
   const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
+  // Round W sunset lobe + Belt of Venus — mirrors the WGSL line for line.
+  const viewHLen = Math.max(Math.hypot(direction[0], direction[2]), 1e-4);
+  const viewAz = (direction[0] / viewHLen) * binding.sunsetDirection[0]
+    + (direction[2] / viewHLen) * binding.sunsetDirection[1];
+  const horizonHug = Math.exp(-Math.max(direction[1], 0) / TWILIGHT_WARM_ELEVATION_FOLD);
+  const warmLobe = Math.max(viewAz, 0) ** 4;
+  const beltLobe = Math.max(-viewAz, 0) ** 4;
+  const sunset = [0, 1, 2].map((c) =>
+    (binding.twilightWarm[c]! * warmLobe + binding.twilightBelt[c]! * beltLobe) * horizonHug);
   // Round G zenith fade — mirrors the WGSL line for line.
   const zenithFade = Math.exp(-binding.nightZenithFade * Math.max(direction[1], 0));
   return [
-    (inScatter[0] + binding.twilightArch[0] * shape) * zenithFade,
-    (inScatter[1] + binding.twilightArch[1] * shape) * zenithFade,
-    (inScatter[2] + binding.twilightArch[2] * shape) * zenithFade,
+    (inScatter[0] + binding.twilightArch[0] * shape + sunset[0]!) * zenithFade,
+    (inScatter[1] + binding.twilightArch[1] * shape + sunset[1]!) * zenithFade,
+    (inScatter[2] + binding.twilightArch[2] * shape + sunset[2]!) * zenithFade,
   ];
 }
 
@@ -284,6 +293,9 @@ uniform aerialSunTransmittance: vec3f;
 uniform aerialTwilightArch: vec3f;
 uniform aerialNightZenithFade: f32;
 uniform aerialParams: vec4f; // x rayleighH, y mieH, z mieAnisotropy, w strength
+uniform aerialTwilightWarm: vec3f;
+uniform aerialTwilightBelt: vec3f;
+uniform aerialSunsetDir: vec3f;
 
 const AERIAL_PI: f32 = 3.14159265359;
 const AERIAL_OZONE_CENTER: f32 = 25000.0;
@@ -396,12 +408,25 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   // zenith-dim: the falloff constant mirrors TWILIGHT_ARCH_ZENITH_FALLOFF.
   let arch = uniforms.aerialTwilightArch
     * (1.0 - 0.6 * clamp(direction.y, 0.0, 1.0));
+  // Round W: the sunset's warm lobe (sunward) and the Belt of Venus (the
+  // mirrored pink tail) - the azimuthal structure the twilight sky was
+  // measured to lack. Horizon-hugging by its own tight profile; gated by
+  // the same window as the arch through the premultiplied uniforms, so day
+  // and night cannot gain warmth by shape. aerialSunsetDir is the TRUE
+  // sun's azimuth, never the nightness-blended source.
+  let viewHLen = max(length(vec2f(direction.x, direction.z)), 1e-4);
+  let viewAz = dot(vec2f(direction.x, direction.z) / viewHLen, uniforms.aerialSunsetDir.xz);
+  let horizonHug = exp(-max(direction.y, 0.0) / 0.12);
+  let warmLobe = pow(max(viewAz, 0.0), 4.0);
+  let beltLobe = pow(max(-viewAz, 0.0), 4.0);
+  let sunset = (uniforms.aerialTwilightWarm * warmLobe
+    + uniforms.aerialTwilightBelt * beltLobe) * horizonHug;
   // Round G: the night zenith fade - the sky glow transitions to black the
   // further up you look (Jason's ask), while stars and the moon disc are
   // added AFTER this function and stay. Exponential so it is never
   // negative; premultiplied by nightness on the CPU so day is untouched.
   let zenithFade = exp(-uniforms.aerialNightZenithFade * max(direction.y, 0.0));
-  return (aerial.inScatter + arch) * zenithFade;
+  return (aerial.inScatter + arch + sunset) * zenithFade;
 }
 `;
 
@@ -430,6 +455,9 @@ export const AERIAL_PERSPECTIVE_UNIFORMS: readonly string[] = Object.freeze([
   "aerialTwilightArch",
   "aerialNightZenithFade",
   "aerialParams",
+  "aerialTwilightWarm",
+  "aerialTwilightBelt",
+  "aerialSunsetDir",
 ]);
 
 /** Everything a consumer needs to fill the shared uniforms for one frame. */
@@ -444,6 +472,18 @@ export interface AerialPerspectiveBinding {
   readonly twilightArch: [number, number, number];
   /** Round G zenith fade, premultiplied falloff × nightness; 0 by day. */
   readonly nightZenithFade: number;
+  /** Round W sunset lobe, premultiplied tint × strength × window; 0 outside. */
+  readonly twilightWarm: [number, number, number];
+  /** Round W Belt of Venus — the mirrored, weaker, pinker tail. */
+  readonly twilightBelt: [number, number, number];
+  /**
+   * The TRUE sun's horizontal azimuth, unit — NOT `sunDirection`, which is
+   * nightness-blended toward the moon below twilight; aiming the sunset at
+   * the blended source would point it at the moon (the moon-phase-uniform
+   * lesson, reapplied). [1, 0] when the sun is at the zenith and the
+   * horizontal is degenerate — the window is closed there anyway.
+   */
+  readonly sunsetDirection: [number, number];
   readonly strength: number;
 }
 
@@ -674,6 +714,73 @@ export function twilightAmbientFloorFactor(sunDirectionY: number): number {
 export const NIGHT_ZENITH_FALLOFF = 2.3;
 
 /**
+ * §2.6 round W — the sunset's warm lobe and the Belt of Venus.
+ *
+ * Measured before designed: the twilight sky was AZIMUTHALLY UNIFORM below
+ * sunset (sunward R/B ≡ anti-solar to three digits at −3° and −6°, while
+ * golden-hour's +5° sunward read 5.51 — the warm machinery works only while
+ * the sun is up, which is the positive control that made the null a
+ * finding). Jason: *"I would much prefer more reds/yellow/orange which
+ * eventually transforms into the bright night sky."* That is the SUNWARD
+ * twilight gradient, and the real sky's anti-solar side is not pure blue
+ * either — it is the Earth's-shadow blue-grey with the PINK Belt of Venus
+ * above it, which every 140°-off camera in the set would see. One
+ * mechanism, both colours.
+ *
+ * FIXED parameters (pre-registered; not knobs — retuning them needs a new
+ * registration): azimuthal shape pow(max(±az, 0), 4) — a ~±35° lobe;
+ * BELT_RATIO 0.35 of the warm strength on the mirrored side; elevation
+ * profile exp(−y / 0.12) — ~7° e-folding, horizon-hugging; the gate is
+ * `twilightArchStrength` VERBATIM (no new gate: both endpoints are already
+ * proven — zero above sunset and at/below −0.26, so day, night and
+ * golden-hour cannot gain warmth by shape). Tints from the palette's own
+ * 0° sunColor row (warm) and the classic Belt pink.
+ */
+export const TWILIGHT_WARM_STRENGTH = 0.06;
+export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
+export const TWILIGHT_BELT_RATIO = 0.35;
+export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
+/** ~7° e-folding of the horizon hug — fixed, see the registration above. */
+export const TWILIGHT_WARM_ELEVATION_FOLD = 0.12;
+
+/** Premultiplied warm-lobe radiance at a sun elevation: tint × strength × window. */
+export function twilightWarmRadiance(
+  sunDirectionY: number,
+): [number, number, number] {
+  const w = twilightArchStrength(sunDirectionY) * TWILIGHT_WARM_STRENGTH;
+  return [
+    TWILIGHT_WARM_TINT[0] * w,
+    TWILIGHT_WARM_TINT[1] * w,
+    TWILIGHT_WARM_TINT[2] * w,
+  ];
+}
+
+/** Premultiplied Belt of Venus radiance — the mirrored, weaker, pinker tail. */
+export function twilightBeltRadiance(
+  sunDirectionY: number,
+): [number, number, number] {
+  const w = twilightArchStrength(sunDirectionY) * TWILIGHT_WARM_STRENGTH * TWILIGHT_BELT_RATIO;
+  return [
+    TWILIGHT_BELT_TINT[0] * w,
+    TWILIGHT_BELT_TINT[1] * w,
+    TWILIGHT_BELT_TINT[2] * w,
+  ];
+}
+
+/**
+ * σ's share of the lobe pair, closed form (round 1's lesson, applied BEFORE
+ * the capture): Lambertian ground irradiance E = W·A·V with the azimuthal
+ * integral A = ∫₀^{2π} pow(max(cos φ, 0), 4) dφ = 3π/8 (each side) and the
+ * elevation integral V = ∫₀¹ e^(−y/0.12)·y dy = 0.12²·(1 − e^(−1/0.12)·
+ * (1 + 1/0.12)) ≈ 0.0144. E/π per unit lobe luma ≈ (3π/8)·0.0144/π ≈
+ * 0.0054; both lobes share the shape, so the key term is
+ * 0.0054 × (warmLuma + beltLuma). ~1.3% of the arch's key share at the
+ * shipped strengths — small, and counted anyway, because "small" is how
+ * round 1 started.
+ */
+export const TWILIGHT_WARM_KEY_FACTOR = 0.0054;
+
+/**
  * The premultiplied per-frame fade the binding carries: falloff × nightness.
  * Moon-independent on purpose — a moonless dome is already near-black and
  * fading it further is both harmless and consistent, so the gate stays one
@@ -790,6 +897,14 @@ export function resolveAerialPerspectiveBinding(
     sunTransmittance: sourceTransmittance,
     twilightArch: twilightArchRadiance(state.sun.direction[1]),
     nightZenithFade: nightZenithFade(state.sun.direction[1]),
+    twilightWarm: twilightWarmRadiance(state.sun.direction[1]),
+    twilightBelt: twilightBeltRadiance(state.sun.direction[1]),
+    sunsetDirection: ((): [number, number] => {
+      const h = Math.hypot(state.sun.direction[0], state.sun.direction[2]);
+      return h > 1e-4
+        ? [state.sun.direction[0] / h, state.sun.direction[2] / h]
+        : [1, 0];
+    })(),
     strength: 1,
   };
 }
@@ -868,6 +983,9 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
         { name: "aerialTwilightArch", size: 3, type: "vec3" },
         { name: "aerialNightZenithFade", size: 1, type: "float" },
         { name: "aerialParams", size: 4, type: "vec4" },
+        { name: "aerialTwilightWarm", size: 3, type: "vec3" },
+        { name: "aerialTwilightBelt", size: 3, type: "vec3" },
+        { name: "aerialSunsetDir", size: 3, type: "vec3" },
       ],
     };
   }
@@ -934,6 +1052,24 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
       binding.twilightArch[2],
     );
     uniformBuffer.updateFloat("aerialNightZenithFade", binding.nightZenithFade);
+    uniformBuffer.updateFloat3(
+      "aerialTwilightWarm",
+      binding.twilightWarm[0],
+      binding.twilightWarm[1],
+      binding.twilightWarm[2],
+    );
+    uniformBuffer.updateFloat3(
+      "aerialTwilightBelt",
+      binding.twilightBelt[0],
+      binding.twilightBelt[1],
+      binding.twilightBelt[2],
+    );
+    uniformBuffer.updateFloat3(
+      "aerialSunsetDir",
+      binding.sunsetDirection[0],
+      0,
+      binding.sunsetDirection[1],
+    );
     uniformBuffer.updateFloat4(
       "aerialParams",
       RAYLEIGH_SCALE_HEIGHT_METERS,
@@ -1046,6 +1182,11 @@ export function applyAerialPerspectiveToShaderMaterial(
   setVector3("aerialSunTransmittance", ...binding.sunTransmittance);
   setVector3("aerialTwilightArch", ...binding.twilightArch);
   material.setFloat("aerialNightZenithFade", binding.nightZenithFade);
+  setVector3("aerialTwilightWarm", ...binding.twilightWarm);
+  setVector3("aerialTwilightBelt", ...binding.twilightBelt);
+  // vec3 with y unused: the helper's interface carries vec3, not vec2, and
+  // one padded float beats a fifth setter kind at four call sites.
+  setVector3("aerialSunsetDir", binding.sunsetDirection[0], 0, binding.sunsetDirection[1]);
   setVector4(
     "aerialParams",
     RAYLEIGH_SCALE_HEIGHT_METERS,

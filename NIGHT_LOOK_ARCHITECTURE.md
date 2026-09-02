@@ -365,6 +365,40 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a⁶) ROUND W — the sunset exists now, and the Belt of Venus with it.**
+  Jason: *"I would much prefer more reds/yellow/orange which eventually
+  transforms into the bright night sky… The extreme blue in the current
+  dusk is unsettling and doesn't feel real."* Measured first, with a
+  positive control: the twilight sky was AZIMUTHALLY UNIFORM below
+  sunset — sunward R/B ≡ anti-solar to three digits at −3° and −6°,
+  while golden-hour's +5° sunward read 5.51, proving the warm machinery
+  works only while the sun is up. Two gaps hid each other: the model
+  had no sunset, and no shot in the set faced where one would be (every
+  twilight shot flies +x, 137–152° off-sun — the PM's framing hypothesis
+  verified and demoted: re-aiming would have photographed the same
+  blue). The `sunset-sunward` probe shot (bearing 0, blue-hour clock)
+  lands BEFORE this mechanism so its first baseline is the honest
+  uniformly-blue before. Mechanism: premultiplied warm
+  (palette-sunColor orange) and Belt (pink, 0.35 ratio) lobes,
+  pow(±azimuth, 4) toward the TRUE sun's horizontal (never the
+  nightness-blended source — that would aim the sunset at the moon),
+  exp(−y/0.12) horizon hug, gated by `twilightArchStrength` VERBATIM —
+  no new gate, endpoints proven. σ learns the pair's Lambertian share in
+  closed form BEFORE capture (round 1's lesson, pre-applied:
+  TWILIGHT_WARM_KEY_FACTOR 0.0054, ~1.3% of the arch's share — small,
+  and counted anyway, because "small" is how round 1 started). FIXED
+  parameters (lobe power 4, fold 0.12, belt ratio 0.35, both tints) are
+  registered as NOT knobs; the ONE knob is TWILIGHT_WARM_STRENGTH
+  (0.06, two turns, [0.03, 0.15]). CRITERIA: probe-shot sunward horizon
+  band display R/B ≥ 1.2; dusk horizon band R/B into [0.5, 0.9] with
+  the Belt's pink measurable anti-solar and NOT breaching 1.0; night
+  byte-identical to a same-run null; day and golden-hour bracketed;
+  dusk terrain band and ratio ≥ 1.5 hold. FAILURE, pre-named: sunward
+  R/B < 1.2 at the knob's ceiling = the SHAPE is wrong — stop, no
+  fixed-parameter retuning without a new registration; anti-solar
+  breaching 1.0 = the belt is wrong-shaped — stop; any endpoint
+  excursion = defect — stop.
+
 - **(a⁵) ROUND G — the night zenith fades to black, and the byte-identity
   chain RETIRES HERE, DELIBERATELY.** Jason, verbatim: *"Instead of
   having a solid dark blue sky, I'd like the blue to transition into
