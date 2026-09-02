@@ -1,3 +1,4 @@
+import type { AircraftKind } from "@/src/sim";
 import { AIRFIELD_LAMP_FULL_EFFECT_LUX } from "./AirfieldLighting";
 
 /**
@@ -328,6 +329,157 @@ export const AIRCRAFT_CAST_POOLS: readonly AircraftCastPool[] = Object.freeze([
     rangeMeters: 34,
   }),
 ]);
+
+/**
+ * Which lamp scalar in `AircraftLightState` modulates a wash light. The wash is
+ * the lamp's own spill, so it flashes when the lamp flashes and dies when it
+ * dies — a beacon wash that stayed lit through the beacon's dark phase would be
+ * a light with no source.
+ */
+export type AircraftWashDriver = "portNav" | "starboardNav" | "beacon" | "strobe";
+
+/**
+ * `7-15`: the aircraft's own lamps spilling onto its own airframe.
+ *
+ * **Why this exists as a separate table from `AIRCRAFT_CAST_POOLS`.** The cast
+ * pools are correct as what they are — a landing light illuminates the
+ * touchdown zone, not the airframe — and they are sited 40 m and 14 m AHEAD
+ * for that reason. **MEASURED: switching them on lifts the airframe by
+ * +1.6% at `night-moonlit`, which reads as nothing**, because what reaches the
+ * aircraft is spill off the back of a beam aimed elsewhere. Keeping the wash
+ * separate is what lets "the pools light the ground" and "the lamps light the
+ * aircraft" remain two claims that can be measured and broken independently.
+ *
+ * **Sited AT the lamps, not at the aircraft's centre.** A point light inside
+ * the fuselage would light the airframe from a place no lamp occupies and read
+ * as an aircraft glowing from within. Each entry below sits on the emissive
+ * lamp it belongs to, at the coordinates `createAircraft` gives that lamp, so
+ * the wingtips are lit from their own wingtip.
+ *
+ * **Ranges are small on purpose, and that is the scene protection.** The widest
+ * is 9 m against a wingspan of 11.3 m, so the wash reaches across the airframe
+ * and stops. At the night shots' 152 m AGL the visible ground is 500 m+ away
+ * down the view ray, three orders outside any of these ranges — **the wash
+ * cannot spill onto the scene by construction, not by tuning.**
+ *
+ * **Intensities are derived, not guessed.** The landing pool at intensity 12
+ * and ~40 m from the airframe measured +1.6%; irradiance goes as 1/d², so the
+ * same intensity at ~3 m would deliver (40/3)^2 = 178x that, which is far too
+ * much. These are scaled down from that measurement rather than tuned upward
+ * from zero until something looked right.
+ */
+export interface AircraftWashLight {
+  readonly name: string;
+  /** Body-frame offset: +X forward, +Y up, +Z starboard (`D-6`). */
+  readonly offset: readonly [number, number, number];
+  readonly color: readonly [number, number, number];
+  readonly intensity: number;
+  readonly rangeMeters: number;
+  readonly driver: AircraftWashDriver;
+}
+
+/**
+ * Per-airframe, because the lamps are. The trainer and the jet place every lamp
+ * differently — port nav at `(0.2, 0.3, -5.43)` on the trainer and
+ * `(-0.2, 0.07, -4.82)` on the jet — and a wash sited from the wrong table
+ * would glow half a metre off its own lamp. **Both airframes ship:
+ * `settings/index.ts:142` accepts `["trainer", "jet"]`**, so a trainer-only
+ * table would be silently wrong for every jet pilot.
+ *
+ * Coordinates are transcribed from `createAircraft`'s lamp placements and must
+ * follow them; `tests/lighting.aircraft-wash.test.ts` asserts each wash sits on
+ * a lamp rather than near one, so the two cannot drift apart unnoticed.
+ */
+const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
+  Object.freeze({
+    name: "aircraft-beacon-wash",
+    offset: [-0.75, 1.02, 0] as const,
+    color: [1, 0.11, 0.063] as const,
+    intensity: 2.4,
+    rangeMeters: 12,
+    driver: "beacon" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-port",
+    offset: [0.2, 0.3, -5.43] as const,
+    color: [1, 0.125, 0.094] as const,
+    intensity: 2.2,
+    rangeMeters: 9,
+    driver: "portNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-starboard",
+    offset: [0.2, 0.3, 5.43] as const,
+    color: [0.141, 1, 0.514] as const,
+    intensity: 2.2,
+    rangeMeters: 9,
+    driver: "starboardNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-port",
+    offset: [0.05, 0.32, -5.62] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 3.6,
+    rangeMeters: 10,
+    driver: "strobe" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-starboard",
+    offset: [0.05, 0.32, 5.62] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 3.6,
+    rangeMeters: 10,
+    driver: "strobe" as const,
+  }),
+]);
+
+const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
+  Object.freeze({
+    name: "aircraft-beacon-wash",
+    offset: [-1.6, 0.92, 0] as const,
+    color: [1, 0.11, 0.063] as const,
+    intensity: 2.4,
+    rangeMeters: 12,
+    driver: "beacon" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-port",
+    offset: [-0.2, 0.07, -4.82] as const,
+    color: [1, 0.125, 0.094] as const,
+    intensity: 2.2,
+    rangeMeters: 9,
+    driver: "portNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-starboard",
+    offset: [-0.2, 0.07, 4.82] as const,
+    color: [0.141, 1, 0.514] as const,
+    intensity: 2.2,
+    rangeMeters: 9,
+    driver: "starboardNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-port",
+    offset: [-0.34, 0.09, -4.98] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 3.6,
+    rangeMeters: 10,
+    driver: "strobe" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-starboard",
+    offset: [-0.34, 0.09, 4.98] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 3.6,
+    rangeMeters: 10,
+    driver: "strobe" as const,
+  }),
+]);
+
+/** The wash set for an airframe. Both kinds ship; neither may be approximated. */
+export function aircraftWashLights(kind: AircraftKind): readonly AircraftWashLight[] {
+  return kind === "jet" ? JET_WASH : TRAINER_WASH;
+}
 
 /**
  * World position of a cast pool, from the aircraft's world position and its

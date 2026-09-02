@@ -32,6 +32,7 @@ import {
 } from "./webgpu/lighting/AirfieldLighting";
 import {
   AIRCRAFT_CAST_POOLS,
+  aircraftWashLights,
   castPoolWorldPosition,
   observerAzimuthDegrees,
   resolveAircraftLights,
@@ -535,6 +536,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
+  /** `7-15`: which lamp geometry the wash lights follow. Both airframes ship. */
+  private readonly aircraftKind: AircraftKind;
   private readonly latitudeDegrees: number;
   /** The chase rig's ground clamp samples the terrain directly. */
   private readonly cameraTerrainSample: TerrainSampleFunction;
@@ -648,6 +651,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.bloom = bloom;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
+    this.aircraftKind = options.aircraft;
     this.latitudeDegrees = options.world.latitudeDegrees;
     this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
@@ -1179,6 +1183,18 @@ export class FlightRenderer implements FlightRenderingSystem {
             color: pool.color,
             intensity: 0,
             rangeMeters: pool.rangeMeters,
+          })),
+          // `7-15`: the lamps' own spill onto the airframe. Appended HERE for
+          // the same reason the pools are: the container takes its definitions
+          // at construction and exposes no `add`. Separate table, separate
+          // names, so "the pools light the ground" and "the lamps light the
+          // aircraft" stay independently measurable.
+          ...aircraftWashLights(options.aircraft).map((wash) => ({
+            name: wash.name,
+            position: [0, 0, 0] as readonly [number, number, number],
+            color: wash.color,
+            intensity: 0,
+            rangeMeters: wash.rangeMeters,
           })),
         ],
         profile.clusteredLighting,
@@ -2218,6 +2234,39 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.castPoolWarned = true;
           console.warn(
             `aircraft cast pool "${pool.name}" is not in the clustered container `
+            + "— it was refused at construction and will never light anything",
+          );
+        }
+      }
+
+      // `7-15`: the wash lights ride the same body axes as the pools and the
+      // same daylight law — a wash on the airframe at solar noon is invisible
+      // in life, and attenuating it is what keeps every daylight capture
+      // unchanged by this feature.
+      //
+      // Each wash is driven by ITS OWN lamp's scalar, so the beacon wash
+      // flashes with the beacon and the nav washes are steady. A wash that
+      // outlived its lamp would be a light with no source.
+      for (const wash of aircraftWashLights(this.aircraftKind)) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [poolUp.x, poolUp.y, poolUp.z],
+          [poolStarboard.x, poolStarboard.y, poolStarboard.z],
+          wash.offset,
+        );
+        const washMoved = this.clusteredLighting.setPosition(wash.name, at[0], at[1], at[2]);
+        const washLit = this.clusteredLighting.setIntensity(
+          wash.name,
+          wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
+        );
+        // Both returns checked, for the reason the pools check theirs: a
+        // silent `IsLightSupported` refusal at construction is indistinguishable
+        // from a wash correctly gated dark.
+        if ((!washMoved || !washLit) && !this.castPoolWarned) {
+          this.castPoolWarned = true;
+          console.warn(
+            `aircraft wash light "${wash.name}" is not in the clustered container `
             + "— it was refused at construction and will never light anything",
           );
         }
