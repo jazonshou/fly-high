@@ -1,5 +1,10 @@
 # Docblock truth sweep — `src/render/webgpu/`
 
+*Counts taken against `jazonshou/Phase-6-Implementation` at `1a4c1ac`. Naming
+the ref matters: resolving "the tip" by commit date returns whichever side
+branch committed last, which is how this sweep was first run against a branch
+that happened to be docs-only.*
+
 **Report, not edits.** Every claim below is classified SUPPORTED / WITHDRAWN /
 UNVERIFIABLE against the tree and the commit that wrote it.
 
@@ -24,7 +29,7 @@ current and carries the authority of having been measured.**
 ## Method
 
 `scripts/docblock-truth-sweep.mts`. Not a list of suspects — a **ranking**,
-because checking 193 claims by hand is not the job and finding the rotted ones
+because checking 194 claims by hand is not the job and finding the rotted ones
 is.
 
 **The risk signal is churn since the claim was written.** A claim made in the
@@ -37,14 +42,34 @@ its commit, and counts commits to that file since.
 
 | | |
 |---|---|
-| comment-borne claims (`measured` / `MEASURED` / `verified` / `VERIFIED`) | **193** |
+| comment-borne claims (`measured` / `MEASURED` / `verified` / `VERIFIED`) | **194** |
 | files carrying at least one | **54** of 138 |
-| claims whose blame commit is **not in the file's history** | **49** |
+| claims whose blame commit is **not in the file's history** | **0** |
+| claims whose evidence was a **capture** rather than something readable | **27** |
 
-**Those 49 are UNVERIFIABLE by construction** — rebased or squashed, so the
-commit that would justify the claim no longer exists to be read. That is a
-quarter of the corpus, and it is the honest size of the category the PM
-predicted would be largest.
+**RETRACTED: I first reported 50 unverifiable claims — "a quarter of the
+corpus". That number was my own tool measuring my checkout, and it was wrong
+twice over.**
+
+`git log -- <file>` walks from HEAD, and this worktree's HEAD sits on an old
+commit because files arrive via `git checkout <ref> -- paths` without HEAD
+moving — so every claim written since read as unreachable. And `git blame`
+against the working tree reports staged lines with an all-zero sha, which the
+script counted the same way. **Reading both from the branch ref instead gives
+0.** Every claim's commit is present and readable.
+
+**The sweep whose thesis is that instruments measure the wrong thing was
+measuring the wrong thing.** The tell was in the output and I nearly missed it:
+all thirteen "undefended" claims were dated the same day. A category that
+correlates perfectly with *today* is a property of the observer.
+
+**The real prioritisation is evidence class, not reachability.** 27 claims rest
+on a capture. A claim you can check by reading two constants gets incidentally
+re-verified whenever someone works nearby; **a capture-established claim has no
+such traffic and rots undisturbed** — which is how the depth-test phantom
+survived four commits. And `normalW` proves nothing here can defend them:
+1,654 green tests on a tree that rendered nothing, because NullEngine compiles
+no shaders.
 
 ## Findings
 
@@ -93,7 +118,9 @@ longer exists; there is no artifact to re-read. Not wrong — **uncheckable**,
 which is a different thing and should be recorded as such rather than trusted or
 deleted.
 
-**The 49 unreachable-blame claims** are the same category at scale.
+**And the 27 capture-established claims are the same category at scale** — not
+because their commits are missing, but because re-reading the commit tells you
+what was *claimed*, and only a capture tells you whether it is still *true*.")
 
 ### CLEAN — the known-stale phrase is now handled
 
@@ -112,7 +139,8 @@ Two mechanisms would close most of it:
 1. **A claim that cites a checkable artifact should cite it by path**, the way
    the two SUPPORTED findings above could be checked in minutes and the
    UNVERIFIABLE one could not. The difference between them is not rigour at the
-   time of writing — it is whether the evidence survived.
+   time of writing — it is whether the evidence is CHEAP TO RE-READ. That is
+   the corrected version of what I first attributed to evidence "surviving".
 2. **Strike through, never delete.** Already demonstrated in
    `AirfieldLighting.ts`. A withdrawn claim left visible costs three lines and
    prevents a session rebuilding against it.

@@ -290,6 +290,33 @@ a real minority of ocean pixels rather than none:
 | 0.05 | 0.00065 | 0.00143 | 0.00078 |
 | 0.10 | 0.00130 | 0.00286 | 0.00156 |
 
+**PRE-REGISTERED SIGNATURE (SWE III, before the capture — recorded here so the
+capture TESTS this rather than confirms it).** If the mechanism is what we both
+read, the artifact is *not* a uniform wash:
+
+1. **Sparse speckle on wave faces**, tracking the slope tail — a few percent of
+   ocean pixels, not a general brightening.
+2. **Azimuthally biased toward the sun's below-horizon direction**, because only
+   faces tilted THAT way clear the `nDotL` clamp. One side of each crest, not both.
+3. **Strongly wind-dependent** — Cox-Munk `sigma^2 = 0.003 + 0.00512 U` puts the
+   affected fraction at 0.99% at 5 m/s, 5.29% at 11 m/s, 8.16% at 15 m/s. A
+   fivefold change in area between 5 and 11 m/s.
+
+**If the capture shows UNIFORM brightening across the water, it is not this term**
+and `:913` must not be "fixed" on the strength of it.
+
+**Two corrections to my own reading, from the same source.** First, the scatter
+colour is GREEN-DOMINANT and therefore lands in the rod peak: against
+`SCOTOPIC_WEIGHTS = (0.03, 0.42, 0.55)` it scores **0.1182 scotopic against
+0.1038 photopic, a ratio of 1.138 — MORE visible to rods than to cones.** That is
+the reverse of the aviation-red case, which survived scrutiny partly because rods
+weight red at 0.03. So "small in scene units" is not merely unreliable here, it is
+biased in the wrong direction. Second, `directSunVisibility = cloudShadow *
+sunShadow` is plausibly **≈1** at night — nothing occludes a sun that is not
+there — which makes the live factor `0.1 + 0.12 = 0.22` rather than the floor
+alone, roughly doubling the term. Both to be confirmed from a frame, not from
+reading.
+
 **So this is not a strict no-op and must not be quoted as one.** It is a no-op
 everywhere the sun's contribution gates the shadow — which is everything except
 this one ocean term — and on steep night wave faces it is a bounded brightening

@@ -253,10 +253,16 @@ export interface PerfCaptureShotDefinition {
    * that `mountain-close` and `cliff-60m` share offsets and land in different
    * groups. **They share a seed, not a position, and the two shots are sited on
    * different terrain features.** The conclusion was retracted; re-run over the
-   * 15 `locate: null` shots alone, distance separated the groups cleanly.
+   * 18 shots without a `locate` alone, distance separated the groups cleanly.
    *
    * **Before computing any distance from this field, filter to `locate == null`
    * or resolve the search.** A mixed set gives an answer that looks clean.
+   *
+   * **The `==` there is LOOSE ON PURPOSE and must stay loose.** No shot
+   * carries `locate: null`; unlocated shots simply omit the key, so
+   * `locate == null` catches them via `undefined == null` and selects 18
+   * of 34. Tightening it to `===` selects ZERO and returns a clean-looking
+   * empty answer rather than an error.
    */
   readonly offsetXMeters: number;
   readonly offsetZMeters: number;
