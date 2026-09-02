@@ -2275,6 +2275,19 @@ export interface PerfCaptureShotReport {
   readonly triangles: number;
   readonly residentTerrainPages: number;
   /**
+   * Metres the observer actually covered approaching this pose, measured from
+   * the positions rendered rather than from the distance planned.
+   *
+   * **Zero on every shot unless `VITE_PERF_TRANSLATE=1`**, because the settle
+   * loop otherwise renders a fixed position for all 240 warm-up frames — so
+   * every pinned capture streams its world from a standstill and arrives at
+   * its pose without a journey. An early exit (the stability break, or the
+   * undrained cut) reports the distance genuinely covered, not the planned
+   * one: this is an OUTCOME, and a guard reading `translating: true` learns
+   * only that a flag was set.
+   */
+  readonly observerTravelMeters: number;
+  /**
    * The residency total above, split by WHY each page is wanted. Only `drawn`
    * could ever be reduced by a visibility test: the collision ring is
    * omnidirectional on purpose, morph parents pop their children, and erosion
@@ -2352,6 +2365,16 @@ export interface PerfCaptureReport {
    * derived from it.
    */
   readonly undrained: number | null;
+  /**
+   * `VITE_PERF_TRANSLATE=1`: the observer FLEW INTO this pose rather than
+   * appearing at it. The measured frame is the same pose as a pinned capture;
+   * what differs is that the world was streamed by a moving observer, so
+   * residency, cell replans and `resident.distance` reflect an arrival rather
+   * than a stand. **A translated run is deliberately not reproducible** — the
+   * 256 m distance lattice is crossed at different points on different runs —
+   * so it must never be read as a baseline or differenced against one.
+   */
+  readonly translating: boolean;
     /**
      * The tier-cliff A/B arm: the profile fields this run forced, verbatim, or
      * null for an unmodified run. Recorded so an archived arm carries its own

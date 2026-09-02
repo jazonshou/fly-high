@@ -258,6 +258,28 @@ export interface TerrainObserver {
  * inside `shadowDistance` casts into view from any direction and must stay
  * resident whether or not it is on screen.
  *
+ * **SIZING A CULL FROM IT — the bound, and the way to misread it.**
+ *
+ *     ceiling on any frustum cull  =  drawnBeyondShadowDistance x >0.828
+ *
+ * The 0.828 is `1 - fov/360` at the shipped horizontal FOV of 62 degrees
+ * (`FlightRenderer.ts:799-800`, `FOVMODE_HORIZONTAL_FIXED`). **It is a LOWER
+ * BOUND on the out-of-frustum share, NOT the share.** The wedge is an AZIMUTH
+ * fraction and a frustum also has top and bottom planes, so near-field ground
+ * below the bottom plane is inside the wedge and outside the frustum: the true
+ * out-of-frustum share is strictly larger, and a cull sized on 0.828 will
+ * under-claim rather than over-claim.
+ *
+ * **And it holds for a narrower reason than the obvious one.** It is NOT that
+ * selection is rotation-invariant so the selected set is radially symmetric —
+ * that premise is false, because `deviationFor` and `heightRangeFor` are
+ * strongly anisotropic and the node lattice is world-anchored rather than
+ * camera-anchored. It holds because **heading is not an input to selection at
+ * all** (`TerrainNodeSelectionInput` carries `cameraX/Y/Z` and scalars, no
+ * direction), so for any fixed selected set under uniform heading the expected
+ * wedge share is exactly `theta / 2pi`. The symmetry argument reaches the same
+ * number and does not survive contact with the code.
+ *
  * Published because the totals could not answer the question they were being
  * asked. `collisionOnly` was already computed and discarded one line after it
  * was built; this keeps it.

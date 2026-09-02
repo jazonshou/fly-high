@@ -153,6 +153,36 @@ const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
 const UNDRAINED_FRAMES = Number.parseInt(
   String(import.meta.env.VITE_PERF_UNDRAINED_FRAMES ?? ""), 10);
 const IS_UNDRAINED = Number.isFinite(UNDRAINED_FRAMES) && UNDRAINED_FRAMES > 0;
+
+/**
+ * `VITE_PERF_TRANSLATE=1` — FLY INTO the pose instead of appearing at it.
+ *
+ * **What it fixes: no shot has a journey.** The settle loop renders
+ * `{ ...state, simulationTime }` with a FIXED position for all 240 warm-up
+ * frames, on every shot including the three with `kind: "motion"`. Those three
+ * translate only AFTERWARDS, during measurement. So the world is always
+ * streamed by an observer standing still, and every cost that exists only
+ * while an observer is arriving somewhere is invisible to all 36 shots:
+ * page churn, cell replans, cohort admission, and the `resident.distance`
+ * lattice, which refreshes on observer TRAVEL and therefore never refreshes
+ * during a settle.
+ *
+ * **The final pose is unchanged, deliberately.** The aircraft starts BACK
+ * along its own heading by exactly the distance it will cover and arrives at
+ * the nominal position on the last settle frame. **The frame that gets
+ * measured is the same frame as today** — same position, same orientation,
+ * same simulation time — so a translated capture stays comparable with a
+ * pinned one on everything except how the world got into that state. Anything
+ * that differs is the journey, which is the whole point.
+ *
+ * **Opt-in and unreachable from the pinned path.** A translating shot is
+ * non-reproducible in a way a parked one is not: `resident.distance` refreshes
+ * on a 256 m lattice, so where the crossings fall relative to the approach
+ * changes what is resident on arrival. Two runs of the same shot can therefore
+ * differ legitimately. That is a diagnostic property, not a regression, and it
+ * is why this must never gate a baseline.
+ */
+const IS_TRANSLATING = import.meta.env.VITE_PERF_TRANSLATE === "1";
 /**
  * The canonical tier-1 profile, and it must stay canonical.
  *
@@ -253,6 +283,14 @@ const SUN_BEARING_OVERRIDE = Number.parseFloat(
   String(import.meta.env.VITE_PERF_SUN_BEARING ?? ""),
 );
 const SUN_OVERRIDDEN = Number.isFinite(SUN_HOUR_OVERRIDE) || Number.isFinite(SUN_BEARING_OVERRIDE);
+if (IS_TRANSLATING && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_TRANSLATE and VITE_PERF_REBASELINE are mutually exclusive: a "
+    + "translated capture arrives at its pose by a route whose lattice crossings "
+    + "vary between runs, so it is deliberately not reproducible and must never "
+    + "become the reference another arm is judged against.",
+  );
+}
 if (IS_UNDRAINED && REBASELINE) {
   throw new Error(
     "VITE_PERF_UNDRAINED_FRAMES and VITE_PERF_REBASELINE are mutually exclusive: "
@@ -860,9 +898,54 @@ describe("perf capture (1A-1c / 2Z)", () => {
       let stableChecks = 0;
       let lastVisibleInstances = -1;
       let streamingFramesUsed = maxStreamingFrames;
+      // `VITE_PERF_TRANSLATE`: fly the last `approachFrames` worth of track INTO
+      // the pose, then hold it. Arrival is on a FIXED frame rather than at the
+      // loop's end, because the loop can exit early on stability or on the
+      // undrained cut — so tying arrival to the exit would leave the observer
+      // short of the pose exactly when the diagnostic fires, and the measured
+      // frame would no longer be the pinned one.
+      //
+      // After arrival the remaining settle frames run parked, so TRANSLATE
+      // ALONE converges to the same state a pinned capture reaches. That is
+      // deliberate: it makes translate-only a CONTROL that should match, and
+      // leaves TRANSLATE + UNDRAINED as the arm that photographs an arrival
+      // still in progress.
+      const approachFrames = IS_TRANSLATING
+        ? Math.min(PERF_CAPTURE_WARMUP_FRAMES, maxStreamingFrames)
+        : 0;
+      // The OUTCOME, not the intent. Recorded from the positions actually
+      // rendered, so an early exit — the stability break or the undrained cut —
+      // reports the distance genuinely covered rather than the distance
+      // planned. A guard reading `translating: true` learns only that a flag
+      // was set; this is the field that says the camera moved.
+      let observerFirstX: number | null = null;
+      let observerFirstZ: number | null = null;
+      let observerLastX = positionX;
+      let observerLastZ = positionZ;
       for (let frame = 0; frame < maxStreamingFrames; frame += 1) {
         simulationTime += 1 / 60;
-        renderer.render({ ...state, simulationTime }, 1 / 60);
+        // Metres still to run. Zero once arrived, so every later frame — and
+        // every measured frame — is at the nominal pose to the bit.
+        const remaining = approachFrames > 0
+          ? Math.max(0, ((approachFrames - frame) * shot.airspeedMetersPerSecond) / 60)
+          : 0;
+        const settleState = remaining > 0
+          ? {
+            ...state,
+            position: {
+              x: positionX - heading.x * remaining,
+              y: altitude,
+              z: positionZ - heading.z * remaining,
+            },
+          }
+          : state;
+        observerLastX = settleState.position.x;
+        observerLastZ = settleState.position.z;
+        if (observerFirstX === null) {
+          observerFirstX = observerLastX;
+          observerFirstZ = observerLastZ;
+        }
+        renderer.render({ ...settleState, simulationTime }, 1 / 60);
         // Yield regularly so terrain/hydrology/detail worker results land.
         if (frame % 2 === 1) await new Promise((resolve) => setTimeout(resolve, 0));
         // The diagnostic exit: stop with work still in flight, which is the
@@ -1386,6 +1469,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
         vegetationBatches: sceneDiagnostics.vegetationBatches,
         triangles: sceneDiagnostics.triangles,
         residentTerrainPages: sceneDiagnostics.residentTerrainPages,
+        // How far the observer ACTUALLY travelled into this pose. Zero on every
+        // shot today; non-zero only under VITE_PERF_TRANSLATE. Per shot rather
+        // than per run because each shot has its own airspeed and its own
+        // approach, and an early exit shortens one without shortening others.
+        observerTravelMeters: observerFirstX === null
+          ? 0
+          : Math.hypot(observerLastX - observerFirstX, observerLastZ - (observerFirstZ ?? 0)),
         residencyReasons: sceneDiagnostics.residencyReasons,
         pendingTerrainPages: sceneDiagnostics.pendingTerrainPages,
         pendingDetailWork: sceneDiagnostics.pendingDetailWork,
@@ -1433,6 +1523,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         tier: CAPTURE_PROFILE.tier,
         sweep: IS_SWEEP,
       undrained: IS_UNDRAINED ? UNDRAINED_FRAMES : null,
+      translating: IS_TRANSLATING,
         // The cliff-A/B arm, verbatim. An experiment artifact whose arm has to be
         // reconstructed from a shell history is one nobody can audit later — and
         // its ABSENCE is how the lost-plumbing incident was detected.
@@ -1858,6 +1949,41 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // Skipped under the sweep for the same reason the ceiling is: a sweep
         // row is not the tier-1 pin, and comparing across tiers would be a
         // fabricated threshold wearing a real one's name.
+        // THE POSITIVE CONTROL FOR THE TRANSLATION INSTRUMENT.
+        //
+        // Two modes were built to reach the state Jason plays in — an undrained
+        // capture and a translating one — and **nobody was asserting that the
+        // capability does anything.** An instrument that gained both and behaved
+        // exactly as before would look like a success and issue a clean bill of
+        // health for the renderer, which is the worst possible outcome: we would
+        // have built the thing that stops us finding the next five defects, and
+        // it would be green.
+        //
+        // Asserted on the OUTCOME, not the intent. `observerTravelMeters` is the
+        // distance between the first and last positions actually RENDERED, so a
+        // translation whose arithmetic is broken publishes a small number rather
+        // than a confident planned one. `captureEnvironment.translating` alone
+        // would prove only that a flag was set.
+        //
+        // Both arms, because one is not a control: non-zero when translating,
+        // and EXACTLY zero when not. The second half is what makes the first
+        // mean something — if a stationary shot also travelled, the field would
+        // be measuring something other than the journey.
+        //
+        // `gateAlways`, not `gateDelivery`: this is arithmetic over rendered
+        // positions, not host speed, so it must hold on every host.
+        gateAlways(() => expect(
+          shot.observerTravelMeters,
+          IS_TRANSLATING
+            ? `${shot.name}: VITE_PERF_TRANSLATE is on and the observer travelled `
+              + `${shot.observerTravelMeters} m. The settle loop is not flying it in, `
+              + "so an undrained capture still photographs a standstill and the two "
+              + "modes compose into nothing."
+            : `${shot.name}: the observer travelled ${shot.observerTravelMeters} m `
+              + "with translation OFF. A pinned capture must arrive at its pose by "
+              + "teleport, or it is not the pose history was measured at.",
+        )[IS_TRANSLATING ? "toBeGreaterThan" : "toBe"](0));
+
         if (!IS_SWEEP) {
           const divergence = estimateDivergenceFraction(
             shot.estimatedGpuMemoryMiB,
