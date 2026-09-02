@@ -277,8 +277,12 @@ export function hangarPlanFrom(
  * interior is out of scope, so a transparent clerestory would look through the
  * cladding into an empty box — worse than an opaque one — and it would drag
  * alpha sorting onto three meshes on the critical path. `airfield-glass` is an
- * opaque dark PBR (albedo 0.03/0.045/0.06, roughness 0.08) that reads as
- * glazing purely from its reflection of the sky probe.
+ * opaque dark PBR that reads as glazing purely from its reflection of the sky
+ * probe — its exact values live in `AirfieldMaterials` (this text once quoted
+ * them and went stale the first time they moved), and the OPACITY this
+ * paragraph depends on is pinned there: `glass.alpha` is asserted 1 with no
+ * transparency mode, so the interior cut cannot be violated by a material
+ * edit that forgets this constraint exists.
  */
 export type HangarSurface = "metal" | "concrete" | "glass";
 

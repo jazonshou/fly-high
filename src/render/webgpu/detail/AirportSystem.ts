@@ -1,4 +1,3 @@
-import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -94,7 +93,6 @@ export class AirportSystem {
    * silently relocating someone else's lights.
    */
   readonly hangarAttachments: readonly HangarAttachments[];
-  private readonly materials: PBRMaterial[] = [];
   private readonly airfieldMaterials: AirfieldMaterialSet;
 
   /**
@@ -197,14 +195,20 @@ export class AirportSystem {
     const towerSit = Number.isFinite(towerGround) ? towerGround - definition.elevation : 0;
     towerNode.position.set(towerAcross, towerSit, towerAlong);
 
-    const concrete = this.material(scene, "tower-concrete", new Color3(0.52, 0.51, 0.48), 0.72);
-    const glass = this.material(scene, "tower-glass", new Color3(0.06, 0.09, 0.11), 0.14, 0.35);
-    const steel = this.material(scene, "tower-steel", new Color3(0.30, 0.32, 0.34), 0.40, 0.55);
-    // 7-11 owns the real material set; these are local stand-ins chosen to read
-    // correctly at range rather than to anticipate that item's palette.
+    // 7-11 second pass: the stand-ins this block carried ("7-11 owns the
+    // real material set") are retired — the set's glass and steel ADOPTED
+    // the stand-ins' exact values when they were added (ef6ceb1), so this
+    // wiring changes ownership, not the tower's look. Concrete moves to the
+    // synthesized airfield concrete, which is the one visible change and
+    // the point: the shaft weathers like the aprons it stands on.
     const towerMaterials: Readonly<Record<string, PBRMaterial>> = {
-      base: concrete, shaft: concrete, gallery: concrete,
-      railing: steel, cab: glass, cabRoof: steel, mast: steel,
+      base: this.airfieldMaterials.concrete,
+      shaft: this.airfieldMaterials.concrete,
+      gallery: this.airfieldMaterials.concrete,
+      railing: this.airfieldMaterials.steel,
+      cab: this.airfieldMaterials.glass,
+      cabRoof: this.airfieldMaterials.steel,
+      mast: this.airfieldMaterials.steel,
     };
 
     const towerMeshes: Mesh[] = [];
@@ -217,7 +221,7 @@ export class AirportSystem {
       data.uvs = part.uvs as unknown as number[];
       data.indices = part.indices as unknown as number[];
       data.applyToMesh(mesh, false);
-      mesh.material = towerMaterials[name] ?? concrete;
+      mesh.material = towerMaterials[name] ?? this.airfieldMaterials.concrete;
       mesh.parent = towerNode;
       towerMeshes.push(mesh);
     }
@@ -376,25 +380,6 @@ export class AirportSystem {
 
   dispose(): void {
     this.root.dispose(false, false);
-    for (const material of this.materials) material.dispose(true, true);
     this.airfieldMaterials.dispose();
-  }
-
-  private material(
-    scene: Scene,
-    name: string,
-    color: Color3,
-    roughness: number,
-    metallic = 0,
-  ): PBRMaterial {
-    const material = new PBRMaterial(name, scene);
-    prepareMaterialForClusteredLighting(material);
-    material.albedoColor = color;
-    material.roughness = roughness;
-    material.metallic = metallic;
-    // 1C-6: full-strength now that scene.environmentTexture exists.
-    material.environmentIntensity = 1;
-    this.materials.push(material);
-    return material;
   }
 }

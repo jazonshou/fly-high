@@ -624,6 +624,16 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
   glass.roughness = 0.14;
   glass.metallic = 0.35;
   glass.environmentIntensity = 1;
+  // LOAD-BEARING OPACITY: the hangar clerestory draws this material over an
+  // UNMODELLED interior (7-12 out of scope) and the tower cab over an empty
+  // shell — a transparent glass would look through the cladding into a void
+  // and drag alpha sorting onto the critical path. alpha stays 1 and no
+  // transparency mode is set, ON PURPOSE, and the set's test pins both; the
+  // material reads as glazing purely from its probe reflection. If 7-12 ever
+  // models interiors, the pin is the thing to renegotiate — not this line
+  // silently.
+  glass.alpha = 1;
+  glass.transparencyMode = null;
 
   // Plain structural steel for railings, masts, door tracks and the cab roof
   // — surfaces where the corrugated tile would read as a mistake. Untextured;
@@ -635,6 +645,13 @@ export function createAirfieldMaterials(scene: Scene, seed: number): AirfieldMat
   steel.metallic = 0.55;
   steel.environmentIntensity = 1;
 
+  // `accent` IS the high-visibility fabric — the windsock's sock is its one
+  // consumer and that is what the member means now, not a generic trim
+  // colour awaiting hypothetical doors. It was declared into the set with
+  // ZERO consumers and sat decorative until 7-13 arrived; the contract is
+  // hereby shrunk to what exists rather than defended (second-pass ruling,
+  // 2026-09-01). Aviation orange band, seeded within the regulation-ish
+  // range. Values untouched from the Jason-seen daylight frames.
   const accent = new PBRMaterial("airfield-accent", scene);
 
   prepareMaterialForClusteredLighting(accent);

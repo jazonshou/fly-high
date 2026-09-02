@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
@@ -154,5 +155,43 @@ describe("7-11 airfield material synthesis", () => {
   it("exports the tiling periods geometry must read instead of retyping", () => {
     expect(AIRFIELD_METAL_TILE_METERS).toBeGreaterThan(1);
     expect(AIRFIELD_CONCRETE_TILE_METERS).toBeGreaterThan(1);
+  });
+
+  it("keeps glass OPAQUE — the interior cut depends on it", () => {
+    // The clerestory and the tower cab draw this material over unmodelled
+    // space (7-12's interiors are out of scope). A transparent glass would
+    // look through the cladding into a void and drag alpha sorting onto the
+    // critical path. AirfieldStructures' hangar-interior reasoning cites
+    // THIS pin instead of quoting values that can go stale.
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const set = createAirfieldMaterials(scene, 0x7d11);
+    expect(set.glass.alpha).toBe(1);
+    expect(set.glass.transparencyMode).toBeNull();
+    expect(set.glass.needAlphaBlending()).toBe(false);
+    set.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
+
+  it("ANCHOR — every set member has a consumer outside this module", () => {
+    // Two of the set's four members had ZERO consumers when 7-11 was
+    // declared done — glass waited hours for the clerestory while the tower
+    // used a stand-in, and accent waited for the windsock. A member exists
+    // because something reads it; this scans the consuming sources for a
+    // literal `.member` reference so a dangling member fails loudly instead
+    // of sitting decorative. (buildHangar reaches metal/concrete/glass
+    // DYNAMICALLY through materials[group.surface]; the literal references
+    // pinned here are the tower wiring, the windsock, the fence and the
+    // signage — if those move, update the file list, not the assertion.)
+    const sources = [
+      "src/render/webgpu/detail/AirportSystem.ts",
+    ].map((path) => readFileSync(path, "utf8")).join("\n");
+    for (const member of ["metal", "concrete", "glass", "steel", "accent"] as const) {
+      expect(
+        sources.includes(`airfieldMaterials.${member}`),
+        `set member '${member}' has no literal consumer — decorative until proven otherwise`,
+      ).toBe(true);
+    }
   });
 });
