@@ -273,6 +273,95 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     (shot) => typeof shot.drawCallCeiling === "number",
   );
 
+  /**
+   * **The population of every test below is SELF-SELECTING, and that is the
+   * hazard this pair of assertions closes.**
+   *
+   * `SHOTS_WITH_DRAW_CEILINGS` is defined by the very property the block
+   * checks. A shot that loses its `drawCallCeiling` does not fail anything
+   * here — it silently leaves the population, every remaining case passes, and
+   * the block reports green over a smaller set than yesterday. **The result of
+   * the check cannot reach anyone for the one shot that stopped being
+   * checked**, which is the shape this file has now met five times.
+   *
+   * Today the uncovered set is exactly the PROBES: shots carrying
+   * `ceilings: null` and `comparesToBaseline: false`, deliberately unpinned on
+   * every axis because they frame something nothing else frames and have no
+   * predecessor to be a delta against.
+   *
+   * **TWO assertions, because the coupling alone has a residual and I would
+   * rather state it than discover it.** The coupling catches a HALF demotion —
+   * a shot that loses one axis and keeps the other. It cannot catch a FULL
+   * demotion: strip both `ceilings` and `drawCallCeiling` from a pinned shot
+   * and the two lists stay equal while the shot leaves `SHOTS_WITH_FLOORS` and
+   * `SHOTS_WITH_DRAW_CEILINGS` together, silently. So the probe set is ALSO
+   * declared by name below, the way `KNOWN_UNRESERVED` declares the compute
+   * pairs whose reservation is a no-op: **becoming a probe is a decision, and a
+   * decision should cost one line of justification.**
+   */
+  it("a shot is outside draw-call coverage IF AND ONLY IF it is an unpinned probe", () => {
+    const noDrawCeiling = PERF_CAPTURE_SHOTS
+      .filter((shot) => shot.drawCallCeiling === undefined)
+      .map((shot) => shot.name)
+      .toSorted();
+    const probes = PERF_CAPTURE_SHOTS
+      .filter((shot) => shot.ceilings === null)
+      .map((shot) => shot.name)
+      .toSorted();
+    expect(
+      noDrawCeiling,
+      "A shot has no draw-call ceiling but IS a pinned shot, or a probe grew one. "
+      + "Draw calls are host-independent, so a pinned shot without a ceiling is the "
+      + "one kind of growth nothing in this repository can see: it is absent from "
+      + "SHOTS_WITH_DRAW_CEILINGS, so every test in this block passes without it.",
+    ).toEqual(probes);
+  });
+
+  /**
+   * Every shot deliberately outside ALL delivery coverage, with the reason.
+   * A shot appearing here that nobody declared is a pinned shot that quietly
+   * stopped being measured; a shot missing from here is a probe that grew a
+   * ceiling and should now be pinned on every axis.
+   */
+  const DECLARED_PROBES: readonly string[] = [
+    // 0af134c: twilight PROBES, added to watch the sun-keyed dip and cone
+    // chroma. Baselining them would pin an appearance still being tuned.
+    "golden-hour",
+    "blue-hour",
+    // 74bac55: samples the beacon/strobe phase lattice at its complement —
+    // beacon dark, strobes lit. Exists to catch a lamp wired to the wrong
+    // timer, which is a boolean, not a budget.
+    "night-beacon-offset",
+    // 57e38a0: frames hangars nothing else frames, so there is no predecessor
+    // to difference against. A raise across it is a first measurement.
+    "apron-hangar-variety",
+    // fb7e670: the twilight sky's sunward half, framed for the first time.
+    // Same reason as the apron shot.
+    "sunset-sunward",
+  ].toSorted();
+
+  it("the set of fully-unpinned probes is exactly the declared one", () => {
+    expect(
+      PERF_CAPTURE_SHOTS.filter((shot) => shot.ceilings === null)
+        .map((shot) => shot.name)
+        .toSorted(),
+      "A shot became a probe without being declared, or a declared probe was "
+      + "pinned. Both lists above are filtered BY the property under test, so a "
+      + "shot leaving them takes its own coverage with it and nothing else here "
+      + "notices — this is the only assertion that sees a full demotion.",
+    ).toEqual(DECLARED_PROBES);
+  });
+
+  it("NON-VACUITY — the guarded population is most of the set, not a remnant", () => {
+    // Without this, the coupling above is satisfied trivially if ceilings were
+    // stripped from every shot at once: both lists would be equal and complete,
+    // and the whole block would guard nothing.
+    expect(SHOTS_WITH_DRAW_CEILINGS.length).toBeGreaterThan(PERF_CAPTURE_SHOTS.length / 2);
+    expect(SHOTS_WITH_DRAW_CEILINGS.length + PERF_CAPTURE_SHOTS
+      .filter((shot) => shot.drawCallCeiling === undefined).length)
+      .toBe(PERF_CAPTURE_SHOTS.length);
+  });
+
   it("has samples for every shot that carries a draw-call ceiling", () => {
     const missing = SHOTS_WITH_DRAW_CEILINGS.map((shot) => shot.name).filter(
       (name) => DRAW_CALL_SAMPLES[name] === undefined,
