@@ -1,4 +1,6 @@
 import type { TerrainBiomeId, WorldSeed } from "@/src/world";
+import type { AirportDefinition } from "@/src/world/types";
+import type { StructureExclusionBox } from "../airfield/StructureExclusion";
 
 export const DEFAULT_DETAIL_CELL_SIZE_METERS = 512;
 
@@ -62,6 +64,22 @@ export interface DetailCellGenerationOptions {
    * turn, leaf fall, canopy snowline). Default 45°N, the world default.
    */
   readonly latitudeDegrees?: number;
+  /**
+   * Where airfield structures stand, so vegetation does not grow through them.
+   *
+   * **PASSED IN, NOT RECOMPUTED HERE, and that is the two-seed trap.** The
+   * hangars' seeded yaw comes from `world.seedHash` (terrain authority, because
+   * the airfield is earthworks-coupled), while this module hashes the world
+   * SEED STRING — which is `sourceSeedHash`. On a guaranteed-airport world the
+   * two differ, so rebuilding the boxes here would rotate every exclusion away
+   * from the building it is meant to cover, silently. The caller holds the
+   * world and computes them with the right seed.
+   *
+   * Plain data, so it crosses to the generation worker unchanged.
+   */
+  readonly structureExclusions?: readonly StructureExclusionBox[];
+  /** Required with `structureExclusions`: the frame those boxes are stated in. */
+  readonly exclusionAirport?: Readonly<AirportDefinition>;
 }
 
 export interface DetailTreePlacement {

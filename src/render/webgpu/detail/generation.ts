@@ -17,6 +17,11 @@ import {
   terrainTopographicWetnessIndex,
 } from "@/src/render/webgpu/terrain/TerrainPageHydrology";
 import { hashSeed } from "@/src/world/seed";
+import type { AirportDefinition } from "@/src/world/types";
+import {
+  structureClearanceFactor,
+  type StructureExclusionBox,
+} from "../airfield/StructureExclusion";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
   densityField,
@@ -594,6 +599,10 @@ function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
 interface ScatterContext {
   readonly seed: string;
   readonly seedHash: number;
+  /** Airfield structures vegetation must not grow through; empty off-airfield. */
+  readonly structureExclusions: readonly StructureExclusionBox[];
+  /** The frame those boxes are stated in; absent when there are none. */
+  readonly exclusionAirport: Readonly<AirportDefinition> | undefined;
   readonly minX: number;
   readonly minZ: number;
   readonly cellSize: number;
@@ -621,7 +630,7 @@ function fieldAt(
   x: number,
   z: number,
 ): VegetationDensitySample {
-  return densityField(context.seedHash, {
+  const field = densityField(context.seedHash, {
     // Per-stem placement is the full-bandwidth field, forever: filtering here
     // would move individual trees, not smooth a page.
     filterWidthMeters: 0,
@@ -640,6 +649,33 @@ function fieldAt(
       : {}),
     dayOfYear: context.dayOfYear,
   });
+  return field;
+}
+
+/**
+ * 1 where vegetation may stand, 0 where a structure does.
+ *
+ * **EVALUATED AT THE STEM, NOT AT A BLOCK CENTRE, and that distinction is the
+ * whole fix.** Density is sampled on a 32 m block lattice and BILINEARLY
+ * INTERPOLATED to each stem, so applying the exclusion to the block sample
+ * lets a neighbouring centre up to 32 m away — outside the structure, at full
+ * density — leak its value back into the footprint. Measured: applying it at
+ * the block sample took stems inside the hangars from 73 to 3. **Three is not
+ * a smaller version of the bug; it is the bug.**
+ *
+ * Applied ONCE, here, for that reason: doing both would double-thin the blend
+ * band and strip the surround Jason has separately asked to keep.
+ */
+function structureFactorAt(context: ScatterContext, x: number, z: number): number {
+  if (context.exclusionAirport === undefined || context.structureExclusions.length === 0) {
+    return 1;
+  }
+  return structureClearanceFactor(
+    context.exclusionAirport,
+    context.structureExclusions,
+    x,
+    z,
+  );
 }
 
 interface ScatterCandidate {
@@ -785,8 +821,14 @@ function scatterLayer(
           const acceptRoll = random();
           const x = blockX * SCATTER_BLOCK_METERS + (subX + jitterX) * subSize;
           const z = blockZ * SCATTER_BLOCK_METERS + (subZ + jitterZ) * subSize;
+          // A HARD gate at the stem's own position — see `structureFactorAt`.
+          // Zero here means no roll can place this stem, which is what an
+          // exclusion has to mean: a probabilistic reduction is not a fix for
+          // a building with a tree in it.
+          const structure = structureFactorAt(context, x, z);
+          if (structure <= 0) continue;
           const acceptance = kernelClamp(
-            stemsInterpolated(x, z) * subSize * subSize,
+            stemsInterpolated(x, z) * subSize * subSize * structure,
             0,
             1,
           );
@@ -1397,6 +1439,8 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
   const context: ScatterContext = {
     seed,
     seedHash,
+    structureExclusions: options.structureExclusions ?? [],
+    exclusionAirport: options.exclusionAirport,
     minX,
     minZ,
     cellSize: cellSizeMeters,

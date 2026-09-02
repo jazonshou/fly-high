@@ -89,6 +89,10 @@ import {
 } from "./presentationBuild";
 import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
 import {
+  airfieldStructureExclusions,
+  type StructureExclusionBox,
+} from "../airfield/StructureExclusion";
+import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
   type ClutterKind,
@@ -813,6 +817,14 @@ export class WorldDetailRuntime {
   private presentationObserverSignature = "";
   /** R-13: normalized environment-clock day forwarded to cell generation. */
   private dayOfYear = 0;
+
+  /**
+   * Airfield structures vegetation must not grow through, built ONCE from the
+   * world this runtime was given. Uses `seedHash` — the terrain authority the
+   * hangars' own siting reads — not the seed string's hash, which is a
+   * different number on any guaranteed-airport world.
+   */
+  private readonly structureExclusions: readonly StructureExclusionBox[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -836,6 +848,9 @@ export class WorldDetailRuntime {
     this.groundCoverBladesActive =
       (scene.getEngine().getCaps() as { supportComputeShaders?: boolean })
         .supportComputeShaders === true;
+    this.structureExclusions = options.workerWorld?.airport
+      ? airfieldStructureExclusions(options.workerWorld.airport, options.workerWorld.seedHash)
+      : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
       !Number.isFinite(this.cellSizeMeters) ||
@@ -1569,6 +1584,14 @@ export class WorldDetailRuntime {
           seaLevelMeters: this.options.seaLevelMeters ?? 0,
           dayOfYear: this.dayOfYear,
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
+          // The inline path needs the same exclusions as the worker path, or
+          // the fix is only present on whichever one happens to run.
+          ...(this.options.workerWorld?.airport
+            ? {
+              structureExclusions: this.structureExclusions,
+              exclusionAirport: this.options.workerWorld.airport,
+            }
+            : {}),
         });
         this.replaceResident(desired.key, {
           source: "inline",
