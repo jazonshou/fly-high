@@ -5,8 +5,13 @@ import {
   FENCE_LATERAL_OFFSET_METERS,
   FENCE_POST_SPACING_METERS,
   buildPerimeterFenceGeometry,
+  fenceApproachGapHalfWidthMeters,
   perimeterFenceStations,
 } from "../src/render/webgpu/detail/AirfieldFurniture";
+import {
+  AIRFIELD_LIGHTING_PROFILE,
+  airfieldFixtures,
+} from "../src/render/webgpu/lighting/AirfieldLighting";
 
 /**
  * `7-13` perimeter fence — the properties the sizing decided, pinned so the
@@ -112,5 +117,73 @@ describe("the fence does not cast shadows, deliberately", () => {
       "the caster set has almost nothing in it — this test would pass on a "
       + "registration that had been gutted",
     ).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("the fence does not stand a post in the approach corridor", () => {
+  it("leaves a gap where its end run crosses the extended centreline", () => {
+    // THE DEFECT THIS FIXES was emergent rather than authored: the fence's end
+    // runs derive from `runwayLength / 2 + endSafetyArea` (740 m here) and the
+    // approach array derives from its own length, and the two correct
+    // derivations intersect at `across = 0`. Nobody chose a post on the
+    // approach centreline; it fell out.
+    //
+    // It lands on short final, which is the most-viewed camera in the
+    // simulator, and a rigid obstacle on the approach surface is the one
+    // arrangement that is neither realistic nor deliberate.
+    const gap = fenceApproachGapHalfWidthMeters();
+    const stations = perimeterFenceStations(DEFAULT_AIRPORT);
+    const halfLength = DEFAULT_AIRPORT.runwayLength / 2 + DEFAULT_AIRPORT.endSafetyArea;
+    const inCorridor = stations.filter(
+      (s) => Math.abs(Math.abs(s.along) - halfLength) < 1 && Math.abs(s.across) < gap,
+    );
+    expect(
+      inCorridor,
+      "a fence post stands inside the approach corridor at across "
+      + inCorridor.map((s) => s.across.toFixed(1)).join(", "),
+    ).toEqual([]);
+  });
+
+  it("gaps ONLY the corridor — the rest of the end run is still fenced", () => {
+    // Non-vacuity, and the thing that separates a gap from a shorter fence:
+    // the end runs must still exist outside the corridor. An implementation
+    // that dropped the end runs entirely would pass the assertion above.
+    const gap = fenceApproachGapHalfWidthMeters();
+    const halfLength = DEFAULT_AIRPORT.runwayLength / 2 + DEFAULT_AIRPORT.endSafetyArea;
+    const onEndRuns = perimeterFenceStations(DEFAULT_AIRPORT).filter(
+      (s) => Math.abs(Math.abs(s.along) - halfLength) < 1,
+    );
+    expect(onEndRuns.length, "the end runs have vanished, not been gapped")
+      .toBeGreaterThan(20);
+    expect(onEndRuns.some((s) => Math.abs(s.across) > gap * 2)).toBe(true);
+  });
+
+  it("derives the gap from the approach lighting, not from a pinned width", () => {
+    // The collision was two constants that never met. A pinned gap would drift
+    // from the corridor the same way, so this pins the RELATIONSHIP: the gap
+    // must widen if the crossbar does.
+    expect(fenceApproachGapHalfWidthMeters())
+      .toBeGreaterThan(AIRFIELD_LIGHTING_PROFILE.approachCrossbarLengthMeters / 2);
+  });
+
+  it("clears every approach fixture that sits near the fence line", () => {
+    // The end-to-end check, against the real fixtures rather than the model:
+    // no approach light may be within a post's reach of a fence station.
+    const halfLength = DEFAULT_AIRPORT.runwayLength / 2 + DEFAULT_AIRPORT.endSafetyArea;
+    const approach = airfieldFixtures(DEFAULT_AIRPORT).filter((f) => f.kind === "approach");
+    expect(approach.length, "no approach fixtures to check against").toBeGreaterThan(0);
+    const stations = perimeterFenceStations(DEFAULT_AIRPORT).filter(
+      (s) => Math.abs(Math.abs(s.along) - halfLength) < 1,
+    );
+    for (const fixture of approach) {
+      for (const station of stations) {
+        const distance = Math.hypot(fixture.along - station.along, fixture.across - station.across);
+        expect(
+          distance,
+          `approach fixture at along ${fixture.along.toFixed(0)}, across `
+          + `${fixture.across.toFixed(1)} is ${distance.toFixed(1)} m from a fence post`,
+        ).toBeGreaterThan(3);
+      }
+    }
   });
 });

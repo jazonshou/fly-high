@@ -1,5 +1,6 @@
 import { hangarFootprint } from "../airfield/AirfieldStructures";
 import { DEFAULT_AIRPORT, runwayToWorld } from "../../../world/airport";
+import { AIRFIELD_LIGHTING_PROFILE } from "../lighting/AirfieldLighting";
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import type { AirportDefinition } from "../../../world/types";
 import type { LightPointFixture } from "../lighting/LightPoints";
@@ -653,6 +654,29 @@ export function airfieldFurnitureWindingCases(): ReadonlyArray<
 export const FENCE_RAIL_HEIGHTS_METERS: readonly number[] = Object.freeze([0.6, 1.8]);
 
 /** One post station: runway-local position and the direction the fence runs. */
+/**
+ * Half-width of the gap where the fence's end run crosses the approach corridor.
+ *
+ * **DERIVED from the approach lighting, not pinned.** The collision this fixes
+ * was produced by two correct derivations that never met -- the fence's
+ * `runwayLength / 2 + endSafetyArea` and the approach array's own extent -- so
+ * a pinned width here would drift apart from the corridor exactly the same way.
+ * Keyed to the crossbar, which is the widest approach element, plus a margin.
+ *
+ * **Why a gap rather than a shorter fence or acceptance.** Approach lighting
+ * sits outside the boundary at real airfields, but the boundary does not cross
+ * the approach surface with a rigid obstacle on the centreline: anything in
+ * that corridor is frangible or absent, because it is directly under aircraft
+ * at decision height. A post in line with the approach lights is the one
+ * arrangement that is neither realistic nor deliberate. A shorter fence makes
+ * the perimeter stop for no visible reason; acceptance ships a visual defect at
+ * the exact moment a pilot is looking hardest -- short final is the most-viewed
+ * camera in the simulator.
+ */
+export function fenceApproachGapHalfWidthMeters(): number {
+  return AIRFIELD_LIGHTING_PROFILE.approachCrossbarLengthMeters / 2 + 6;
+}
+
 export interface FenceStation {
   readonly along: number;
   readonly across: number;
@@ -687,13 +711,16 @@ export function perimeterFenceStations(
     const length = Math.hypot(spanAlong, spanAcross);
     const bays = Math.max(1, Math.round(length / FENCE_POST_SPACING_METERS));
     const unit: readonly [number, number] = [spanAlong / length, spanAcross / length];
+    const gapHalfWidth = fenceApproachGapHalfWidthMeters();
     for (let bay = 0; bay < bays; bay += 1) {
       const t = bay / bays;
-      stations.push({
-        along: a0 + spanAlong * t,
-        across: c0 + spanAcross * t,
-        toNext: unit,
-      });
+      const along = a0 + spanAlong * t;
+      const across = c0 + spanAcross * t;
+      // The END runs cross the extended centreline, where the approach lighting
+      // is. Leave that corridor open rather than standing a post in it.
+      const onEndRun = Math.abs(spanAcross) > Math.abs(spanAlong);
+      if (onEndRun && Math.abs(across) < gapHalfWidth) continue;
+      stations.push({ along, across, toNext: unit });
     }
   }
   return stations;
