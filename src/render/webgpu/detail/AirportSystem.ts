@@ -34,6 +34,7 @@ import {
   hangarAttachments,
   hangarFootprint,
   hangarFootprintSamples,
+  hangarYawRadians,
   hangarPlanFrom,
   hangarSeatingFrom,
   type HangarAttachments,
@@ -158,6 +159,10 @@ export class AirportSystem {
         seating.baseAltitudeMeters - definition.elevation,
         footprint.along,
       );
+      // Set out by eye, not by instancing. The mesh is unchanged — this is a
+      // node rotation, so it costs nothing in the draw budget or the vertex
+      // count, and it is the one cue that survives however much the roofs vary.
+      node.rotation.y = hangarYawRadians(seedHash, index);
       const built = buildHangar(scene, node, index, plan, mounts, this.airfieldMaterials);
       hangars.push(...built.meshes);
       // `7-10` detail: the CASTER list is the builder's, not this loop's. The

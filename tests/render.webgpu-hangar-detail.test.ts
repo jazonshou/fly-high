@@ -9,6 +9,8 @@ import {
   hangarFootprint,
   hangarPlanFrom,
   hangarShellGeometry,
+  hangarYawRadians,
+  HANGAR_MAX_YAW_RADIANS,
   type HangarPlan,
 } from "../src/render/webgpu/airfield/AirfieldStructures";
 import {
@@ -473,6 +475,162 @@ describe("the vents do not outrank the obstruction lights (7-10 / 7-14)", () => 
       OBSTRUCTION_ROOF_STAND_METERS - HANGAR_DETAIL.ventHeightMeters,
       9,
     );
+  });
+});
+
+describe("the hangars do not read as primitives (7-10 organic pass)", () => {
+  /**
+   * Jason, on the first frame ever rendered of a hangar at apron range:
+   * *"it looks like it was thrown together with a semi circle and a square.
+   * Let's try to make it look more organic."*
+   *
+   * Every assertion here defends one of the cues that answers that. They are
+   * PROPERTIES OF THE VARIANCE, not pinned values — a pinned crown offset
+   * would be satisfied by a build that put all three hangars at the same
+   * offset, which is the failure being fixed.
+   */
+  const SEEDS = [1_437_115_038, 1, 99, 12_345, 777_777];
+
+  it("does not lay the eave heights out in an arithmetic sequence", () => {
+    // THE ORIGINAL DEFECT. Eave came from bay count alone in fixed 0.9 m
+    // steps, so three hangars formed a sequence and read as one building at
+    // three scales — `AirfieldStructures` says exactly that in its own
+    // pilaster comment. Equal gaps are the signature.
+    let seedsWithUnequalGaps = 0;
+    for (const seed of SEEDS) {
+      const eaves = [0, 1, 2].map((i) => hangarPlanFrom(seed, i, 2.5).eaveHeightMeters);
+      const gaps = [eaves[1]! - eaves[0]!, eaves[2]! - eaves[1]!];
+      if (Math.abs(gaps[0]! - gaps[1]!) > 0.25) seedsWithUnequalGaps += 1;
+    }
+    expect(
+      seedsWithUnequalGaps,
+      "the eave heights still step evenly, so the three hangars are one "
+      + "building at three scales",
+    ).toBe(SEEDS.length);
+  });
+
+  it("puts the roof's high point OFF the centreline, in both directions", () => {
+    const offsets = SEEDS.flatMap((seed) =>
+      [0, 1, 2].map((i) => hangarPlanFrom(seed, i, 2.5).crownOffset));
+    for (const offset of offsets) {
+      expect(Math.abs(offset), "a crown sits too near the centreline to read").toBeGreaterThanOrEqual(HANGAR_PLAN_LIMITS.minCrownOffset - 1e-9);
+      expect(Math.abs(offset)).toBeLessThanOrEqual(HANGAR_PLAN_LIMITS.maxCrownOffset + 1e-9);
+    }
+    // NON-VACUITY: a build that offset every crown the same way would satisfy
+    // "non-zero" and still be mirror-symmetric as a ROW. Both signs must occur.
+    expect(offsets.some((o) => o > 0), "no crown leans one way").toBe(true);
+    expect(offsets.some((o) => o < 0), "no crown leans the other").toBe(true);
+  });
+
+  it("keeps the arch exponent BELOW the boxy direction", () => {
+    // The first attempt at this used 2.3-3.2, which flattens a superellipse
+    // toward a rounded RECTANGLE — the opposite of the note. A true segmental
+    // arc stands at 0.782 of its rise at half-span; p = 2.8 stands at 0.946.
+    expect(HANGAR_PLAN_LIMITS.maxArchExponent).toBeLessThanOrEqual(2.3);
+    for (const seed of SEEDS) {
+      for (let i = 0; i < 3; i += 1) {
+        const plan = hangarPlanFrom(seed, i, 2.5);
+        expect(plan.archExponent).toBeGreaterThanOrEqual(HANGAR_PLAN_LIMITS.minArchExponent);
+        expect(plan.archExponent).toBeLessThanOrEqual(HANGAR_PLAN_LIMITS.maxArchExponent);
+      }
+    }
+  });
+
+  it("builds a roof that is not a dome: shallower rise than the old cosine", () => {
+    // `archedRiseFraction` was 0.32 — a rise of 14.7 m over a 23 m half-span,
+    // ratio 0.64, which is what read as a half-cylinder. Asserted as a RATIO
+    // so it survives a width change.
+    for (const seed of SEEDS) {
+      for (let i = 0; i < 3; i += 1) {
+        const plan = hangarPlanFrom(seed, i, 2.5);
+        if (plan.roof !== "arched") continue;
+        const ratio = (plan.ridgeHeightMeters - plan.eaveHeightMeters) / (plan.widthMeters / 2);
+        expect(ratio, "the arch is back to dome proportions").toBeLessThan(0.55);
+        expect(ratio, "the arch has flattened into a lid").toBeGreaterThan(0.28);
+      }
+    }
+  });
+
+  it("renders an ASYMMETRIC silhouette — the halves differ", () => {
+    // The property a reader actually sees. Sample the built shell either side
+    // of the centreline and require the two profiles to differ; a symmetric
+    // roof is a primitive however its constants were drawn.
+    for (const seed of SEEDS) {
+      const plan = hangarPlanFrom(seed, 1, 2.5);
+      const shell = hangarShellGeometry(plan);
+      const halfW = plan.widthMeters / 2;
+      // WHERE THE ROOF ACTUALLY PEAKS, read off the built vertices. The first
+      // version of this sampled bands either side of the centreline and could
+      // not see the answer: a gabled roof has three span vertices, so beyond
+      // 35% of the half-width there is nothing but the two eaves, which are
+      // equal by construction. It failed on geometry that was correct AND on
+      // geometry that was wrong, which is no test at all.
+      const crownAcross = halfW * plan.crownOffset;
+      const peaks: number[] = [];
+      for (let v = 0; v < shell.positions.length / 3; v += 1) {
+        if (Math.abs(shell.positions[v * 3 + 1]! - plan.ridgeHeightMeters) < 1e-6) {
+          peaks.push(shell.positions[v * 3]!);
+        }
+      }
+      expect(peaks.length, "no vertex reaches the ridge height — the crown is not a VERTEX, "
+        + "so the offset exists only between sample points and nothing renders it")
+        .toBeGreaterThan(0);
+      for (const x of peaks) {
+        expect(x, "the roof peaks on the centreline — mirror-symmetric").toBeCloseTo(crownAcross, 6);
+      }
+      expect(Math.abs(crownAcross), "the crown offset is too small to see at apron range")
+        .toBeGreaterThan(0.5);
+    }
+  });
+
+  it("moves the ridge mounts and vents onto the crown, not the centreline", () => {
+    // A mount left at across = 0 would hang over a roof that is no longer
+    // highest there, and `7-14` puts its top obstruction lamp on it.
+    for (const seed of SEEDS) {
+      for (let i = 0; i < 3; i += 1) {
+        const plan = hangarPlanFrom(seed, i, 2.5);
+        const crownAcross = (plan.widthMeters / 2) * plan.crownOffset;
+        const vents = hangarDetailBoxes(plan).filter((b) => b.part === "ridge-vent");
+        for (const vent of vents) {
+          const centre = (vent.min[0]! + vent.max[0]!) / 2;
+          expect(centre, "a ridge vent still straddles the centreline")
+            .toBeCloseTo(crownAcross, 6);
+        }
+        const mounts = hangarAttachments(DEFAULT_AIRPORT, i, plan, DEFAULT_AIRPORT.elevation);
+        const footprint = hangarFootprint(DEFAULT_AIRPORT, i);
+        for (const end of mounts.ridgeEnds) {
+          expect(end[0] - footprint.across, "a ridge mount is on the centreline")
+            .toBeCloseTo(crownAcross, 6);
+        }
+      }
+    }
+  });
+
+  it("sets the hangars out by eye — seeded yaw, bounded and non-zero", () => {
+    const yaws = SEEDS.flatMap((seed) => [0, 1, 2].map((i) => hangarYawRadians(seed, i)));
+    for (const yaw of yaws) {
+      expect(Math.abs(yaw), "a hangar sits on the exact runway axis").toBeGreaterThan(1e-9);
+      expect(Math.abs(yaw)).toBeLessThanOrEqual(HANGAR_MAX_YAW_RADIANS + 1e-12);
+    }
+    expect(yaws.some((y) => y > 0) && yaws.some((y) => y < 0), "every hangar leans the same way").toBe(true);
+    // The bound is what keeps this from becoming a collision: at the maximum a
+    // 46 x 34 m footprint's corner moves under a metre, against 18 m of
+    // clearance between hangars.
+    const halfDiagonal = Math.hypot(46, 34) / 2;
+    expect(halfDiagonal * Math.sin(HANGAR_MAX_YAW_RADIANS)).toBeLessThan(1);
+  });
+
+  it("costs no triangles — the whole pass is free in the draw budget", () => {
+    // The constraint the pass was given. Every casting mesh costs 3.00 draws,
+    // so form had to come from the shape already there rather than new
+    // geometry. Asserted as a CEILING on the built shell, per plan.
+    for (const seed of SEEDS) {
+      for (let i = 0; i < 3; i += 1) {
+        const plan = hangarPlanFrom(seed, i, 2.5);
+        const triangles = hangarShellGeometry(plan).indices.length / 3;
+        expect(triangles, "the shell grew past its budget").toBeLessThanOrEqual(600);
+      }
+    }
   });
 });
 

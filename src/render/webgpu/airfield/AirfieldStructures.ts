@@ -206,6 +206,26 @@ export interface HangarPlan {
   readonly skirtHeightMeters: number;
   /** Segments across the span for an arched roof; ignored when gabled. */
   readonly archSegments: number;
+  /**
+   * Where the roof's high point sits across the span, as a fraction of the
+   * half-width from centre. **Non-zero on purpose.**
+   *
+   * A ridge exactly on the centreline is the strongest single cue that a
+   * building is a primitive rather than a structure — it makes the silhouette
+   * mirror-symmetric, which nothing built by people ever is. Jason's note on
+   * the first apron close-up was that the hangar "looks like it was thrown
+   * together with a semi circle and a square"; symmetry is half of why.
+   */
+  readonly crownOffset: number;
+  /**
+   * Superellipse exponent for the arched profile: `(1 - u^p)^(1/p)`.
+   *
+   * p = 2 is a circle — the dome read. **p > 2 flattens the crown and
+   * straightens the haunch**, which is the segmental barrel vault a real
+   * arch-roof hangar has. Seeded per hangar so three on one field do not share
+   * a curve.
+   */
+  readonly archExponent: number;
 }
 
 /**
@@ -229,11 +249,70 @@ export const HANGAR_PLAN_LIMITS = Object.freeze({
   baseEaveHeightMeters: 11,
   eaveHeightPerBayMeters: 0.9,
   gabledRiseFraction: 0.18,
-  archedRiseFraction: 0.32,
+  /**
+   * **0.32 -> 0.22 (2026-09-02).** At 0.32 the rise was 14.7 m over a 23 m
+   * half-span — ratio 0.64, meeting the wall at 45 degrees — which renders as
+   * a dome sitting on a box. A real barrel-vault hangar is a SEGMENTAL arc:
+   * shallower, springing nearer the vertical. This is the single change with
+   * the most effect on that read and it costs no triangles.
+   */
+  archedRiseFraction: 0.22,
   archSegments: 12,
   /** Distinct channels so bay count and profile are independent draws. */
   bayChannel: 8_101,
   profileChannel: 8_102,
+  /**
+   * `7-10` organic pass. Four MORE independent channels, not one reused with
+   * an index: variance drawn from a single stream would correlate the eave
+   * with the crown and read as one dial being turned, which is the failure the
+   * bay/profile split already avoids.
+   */
+  eaveJitterChannel: 8_103,
+  riseJitterChannel: 8_104,
+  crownChannel: 8_105,
+  exponentChannel: 8_106,
+  yawChannel: 8_107,
+  /** Per-hangar eave variation, +/- this fraction. */
+  eaveJitterFraction: 0.055,
+  /** Per-hangar rise variation, +/- this fraction. */
+  riseJitterFraction: 0.11,
+  /**
+   * Crown offset magnitude range, as a fraction of the half-width.
+   *
+   * **There is a FLOOR because a uniform draw includes zero.** The first
+   * version drew uniformly in [-max, max] and a hangar landed at 0.0034 —
+   * a crown 8 cm off the centreline, which at apron range is about two pixels
+   * and is simply a symmetric roof. Variance that is allowed to vanish does
+   * not deliver the property on the instances where it vanishes; the sign
+   * carries the variety, the magnitude has to stay visible.
+   */
+  minCrownOffset: 0.035,
+  maxCrownOffset: 0.085,
+  /**
+   * Superellipse exponent range for the arched profile, bracketing the TRUE
+   * segmental circular arc.
+   *
+   * **The first attempt at this used 2.3-3.2 and was wrong in the direction of
+   * the complaint.** A superellipse with p > 2 flattens the crown toward a
+   * ROUNDED RECTANGLE: at p = 2.8 the roof stands at 0.95 of its rise halfway
+   * out the span, so it is nearly flat across the middle and then falls off a
+   * shoulder. Jason's note was that the building reads as "a semi circle and a
+   * square", and p > 2 makes it more square.
+   *
+   * Measured against real profiles, height at half-span as a fraction of rise:
+   *
+   *     true segmental circular arc   0.782   <- what a barrel hangar is
+   *     parabola                      0.750
+   *     ellipse (p = 2)               0.866
+   *     the old cosine                0.707
+   *     p = 2.8                       0.946   <- the wrong answer
+   *
+   * So the range brackets 0.782 from both sides rather than sitting above it.
+   * **The rise reduction is what fixes the dome; the exponent only supplies
+   * per-hangar variance**, and it should not be asked to do more.
+   */
+  minArchExponent: 1.75,
+  maxArchExponent: 2.2,
 });
 
 export function hangarPlanFrom(
@@ -248,10 +327,21 @@ export function hangarPlanFrom(
   const profileHash = mixSeed(mixSeed(seedHash, limits.profileChannel), index);
   const bays = limits.minBays + Math.min(span - 1, Math.floor(unitFloatFromHash(bayHash) * span));
   const roof: HangarRoofProfile = unitFloatFromHash(profileHash) < 0.5 ? "gabled" : "arched";
-  const eave = limits.baseEaveHeightMeters
-    + (bays - limits.minBays) * limits.eaveHeightPerBayMeters;
+  // Signed unit draws in [-1, 1] from four independent channels.
+  const signed = (channel: number): number =>
+    unitFloatFromHash(mixSeed(mixSeed(seedHash, channel), index)) * 2 - 1;
+
+  // **THE HEIGHTS VARY PER HANGAR AND THE STEP RULE STILL SETS THE BASE.**
+  // Bay count already drove the eave in fixed 0.9 m steps, which is why three
+  // hangars read as one building at three scales: the heights formed an
+  // arithmetic sequence. The jitter breaks the sequence without discarding the
+  // rule that taller buildings have more bays.
+  const eave = (limits.baseEaveHeightMeters
+    + (bays - limits.minBays) * limits.eaveHeightPerBayMeters)
+    * (1 + signed(limits.eaveJitterChannel) * limits.eaveJitterFraction);
   const rise = siting.widthMeters
-    * (roof === "gabled" ? limits.gabledRiseFraction : limits.archedRiseFraction);
+    * (roof === "gabled" ? limits.gabledRiseFraction : limits.archedRiseFraction)
+    * (1 + signed(limits.riseJitterChannel) * limits.riseJitterFraction);
   return {
     bays,
     roof,
@@ -261,6 +351,15 @@ export function hangarPlanFrom(
     ridgeHeightMeters: eave + rise,
     skirtHeightMeters,
     archSegments: limits.archSegments,
+    // One draw supplies both sign and magnitude: the sign is its own, and
+    // |draw| is uniform on [0, 1] so the magnitude spans [min, max] evenly.
+    crownOffset: Math.sign(signed(limits.crownChannel) || 1)
+      * (limits.minCrownOffset
+        + Math.abs(signed(limits.crownChannel))
+          * (limits.maxCrownOffset - limits.minCrownOffset)),
+    archExponent: limits.minArchExponent
+      + unitFloatFromHash(mixSeed(mixSeed(seedHash, limits.exponentChannel), index))
+        * (limits.maxArchExponent - limits.minArchExponent),
   };
 }
 
@@ -498,10 +597,13 @@ export function hangarDetailBoxes(plan: HangarPlan): readonly HangarDetailBox[] 
   const ventPitch = ventRun / d.ventCount;
   for (let vent = 0; vent < d.ventCount; vent += 1) {
     const centre = -ventRun / 2 + (vent + 0.5) * ventPitch;
+    // Straddling the crown, which is no longer the centreline. A vent left at
+    // across = 0 would float above an off-centre roof by the crown's own drop.
+    const crownAcross = halfW * plan.crownOffset;
     box(
       "ridge-vent", "metal",
-      [-d.ventWidthMeters / 2, plan.ridgeHeightMeters - 0.05, centre - d.ventLengthMeters / 2],
-      [d.ventWidthMeters / 2, plan.ridgeHeightMeters + d.ventHeightMeters, centre + d.ventLengthMeters / 2],
+      [crownAcross - d.ventWidthMeters / 2, plan.ridgeHeightMeters - 0.05, centre - d.ventLengthMeters / 2],
+      [crownAcross + d.ventWidthMeters / 2, plan.ridgeHeightMeters + d.ventHeightMeters, centre + d.ventLengthMeters / 2],
     );
   }
 
@@ -672,16 +774,74 @@ export function hangarShellGeometry(plan: HangarPlan): ShellGeometry {
     }
   };
 
-  /** Roof height at a normalised span coordinate in [-1, 1]. */
+  /**
+   * Roof height at a normalised span coordinate in [-1, 1].
+   *
+   * **The crown is OFF CENTRE and the arch is a superellipse, not a cosine.**
+   * The cosine lobe is a dome: rise/half-span 0.64 at the old constants,
+   * meeting the wall at 45 degrees, mirror-symmetric. Read as "a semi circle
+   * and a square" the first time anyone saw it at 200 px.
+   *
+   * `u` is distance from the crown, renormalised so each SIDE still reaches
+   * exactly 1 at its own eave — that is what lets the peak move without the
+   * roof lifting off the walls. Both halves land on `eaveHeightMeters` at
+   * t = ±1 for any offset, which the closed-manifold requirement depends on.
+   *
+   * Neither branch adds a vertex: the segment count is unchanged and only the
+   * heights differ. The whole organic pass is free in the draw budget, which
+   * it had to be — every casting mesh costs 3.00 draws now.
+   */
   const roofHeight = (t: number): number => {
     const rise = plan.ridgeHeightMeters - plan.eaveHeightMeters;
-    return plan.roof === "gabled"
-      ? plan.eaveHeightMeters + rise * (1 - Math.abs(t))
-      : plan.eaveHeightMeters + rise * Math.cos((t * Math.PI) / 2);
+    const c = plan.crownOffset;
+    const u = t <= c
+      ? (c - t) / (1 + c)
+      : (t - c) / (1 - c);
+    const clamped = Math.min(1, Math.max(0, u));
+    const profile = plan.roof === "gabled"
+      // A straight pitch, but off centre: the two slopes now differ, which is
+      // the whole point. A symmetric gable is as much a primitive as a dome.
+      ? 1 - clamped
+      // Superellipse, with p bracketing a true segmental circular arc. p = 2
+      // is an ellipse; BELOW 2 approaches the parabola a shallow arch really
+      // follows. See `minArchExponent` for why p > 2 is the wrong direction.
+      : (1 - clamped ** plan.archExponent) ** (1 / plan.archExponent);
+    return plan.eaveHeightMeters + rise * profile;
   };
 
   const steps = plan.roof === "gabled" ? 2 : plan.archSegments;
-  const spanAt = (i: number) => -halfW + (plan.widthMeters * i) / steps;
+  /**
+   * Span breakpoints, with the CROWN snapped onto one of them.
+   *
+   * **Moving the crown in the profile function is not enough; it has to be a
+   * VERTEX.** A gabled roof is two segments through x = -halfW, 0, +halfW, so
+   * an off-centre peak was never sampled: the polyline still turned at x = 0,
+   * at a height BELOW `ridgeHeightMeters`, and the ridge vents — which sit at
+   * `ridgeHeightMeters` by construction — floated about 1.2 m above the metal.
+   * A silhouette change that only exists between vertices does not exist.
+   *
+   * Found by an asymmetry assertion failing on the built shell rather than by
+   * reading the profile function, which is the only way it could have been
+   * found: the arithmetic was right and the sampling was wrong.
+   *
+   * The count is unchanged — a breakpoint MOVES, none is added — so this is
+   * still free in the draw budget.
+   */
+  const spanBreaks = ((): number[] => {
+    const xs: number[] = [];
+    for (let i = 0; i <= steps; i += 1) xs.push(-halfW + (plan.widthMeters * i) / steps);
+    const crownX = halfW * plan.crownOffset;
+    // Snap the interior breakpoint nearest the crown onto it. Interior only:
+    // the two eaves are structural and must stay at +/- halfW or the roof
+    // leaves the walls.
+    let nearest = 1;
+    for (let i = 2; i < steps; i += 1) {
+      if (Math.abs(xs[i]! - crownX) < Math.abs(xs[nearest]! - crownX)) nearest = i;
+    }
+    if (steps >= 2) xs[nearest] = crownX;
+    return xs;
+  })();
+  const spanAt = (i: number) => spanBreaks[i]!;
 
   // Walls, SPLIT AT THE SLAB. Below y=0 is the concrete skirt that closes the
   // gap to the lowest ground; above it is the metal cladding. One shell, two
@@ -868,9 +1028,13 @@ export function hangarAttachments(
     // now agree about where the top of the building is, which is the point: a
     // truth split across two attachment fields is one stale field waiting to be
     // read.
+    // ACROSS THE CROWN, NOT THE CENTRELINE. The organic pass moved the roof's
+    // high point off centre, so a mount at across = 0 would hang in the air
+    // over a roof that is no longer highest there. `7-14` puts its top
+    // obstruction lamp here and the lamp has to sit on the metal.
     ridgeEnds: Object.freeze([
-      at(0, plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters, -halfD),
-      at(0, plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters, halfD),
+      at(halfW * plan.crownOffset, plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters, -halfD),
+      at(halfW * plan.crownOffset, plan.ridgeHeightMeters + HANGAR_DETAIL.ventHeightMeters, halfD),
     ]),
     // THE RIDGE IS NO LONGER THE TOP. `7-10`'s ventilators stand
     // `ventHeightMeters` above it, and this figure is what `7-14` mounts
@@ -901,6 +1065,27 @@ export function hangarAttachments(
 export const AIRFIELD_STRUCTURE_LOD = Object.freeze({
   cullDistanceMeters: 6_000,
 });
+
+/**
+ * Largest per-hangar yaw, radians. Three buildings on exactly parallel axes is
+ * a placement no airfield has, and it is the cue that survives every change to
+ * the buildings themselves — vary the roofs all you like and a perfectly
+ * parallel row still reads as instanced.
+ *
+ * **Deliberately tiny.** At 1.4 degrees a 46 x 34 m hangar's corners move by
+ * about 0.7 m, which is inside the 18 m the siting already leaves between
+ * footprints, so it cannot introduce a collision. Larger would start to look
+ * like a mistake rather than a building that was set out by eye.
+ */
+export const HANGAR_MAX_YAW_RADIANS = 0.024;
+
+/** Seeded yaw for one hangar. Its own channel, per the plan's variance rule. */
+export function hangarYawRadians(seedHash: number, index: number): number {
+  const draw = unitFloatFromHash(
+    mixSeed(mixSeed(seedHash, HANGAR_PLAN_LIMITS.yawChannel), index),
+  );
+  return (draw * 2 - 1) * HANGAR_MAX_YAW_RADIANS;
+}
 
 export interface HangarMeshes {
   /** Every mesh built, in group order. Parented under the supplied root. */
