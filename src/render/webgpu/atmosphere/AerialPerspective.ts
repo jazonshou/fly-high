@@ -759,7 +759,12 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
 // back to blue with more yellow/red/orange/pink accents from the dimming
 // sun." His words are the registered input for the raised bound, the way
 // T4's greyer target carried the eye-call. Two turns in the new band.
-export const TWILIGHT_WARM_STRENGTH = 0.22;
+// Round O turn 1: 0.22 -> 0.26, after O(b)'s belt shape cleared the
+// median protection (0.3771 -> 0.3576). Solved from the W-era measured
+// slope (~3.5 R/B per unit): sunward 1.269 + 0.04 x 3.5 = ~1.41 against
+// the [1.35, 1.90] floor. Predicted median cost ~+0.01, inside the
+// cleared headroom. One turn remains.
+export const TWILIGHT_WARM_STRENGTH = 0.26;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
 /**
  * Round O: the deep-twilight endpoint of the warm lobe's depth blend —
