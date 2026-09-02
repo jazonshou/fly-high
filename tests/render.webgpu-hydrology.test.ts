@@ -531,6 +531,17 @@ describe("Babylon WebGPU hydrology presentation", () => {
     // noise, something other than the island holes moved). The audit is a
     // floor: 15 locate-driven shots have unresolved camera positions and
     // the frustum test targets lake centres only.
+    //
+    // HASH CORRECTION (same day, caught by the PM at merge review — the
+    // armed guard doing exactly its job): the first re-pin (0109459b…)
+    // was hashed BEFORE the mesher's final edit landed (the adaptive
+    // waterline subdivision), so the committed pin matched a geometry the
+    // committed code no longer produced — the stale-pin failure this test
+    // exists to prevent, this time by its own author. Re-derived at
+    // aee74e9 in a clean detached worktree, twice, deterministic:
+    // 385b455f…. Never pin from a tree you have not verified is the
+    // committed one; re-run the guard AFTER the last edit, not after the
+    // last edit you remember.
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const camera = new FreeCamera("legacy-pin-camera", new Vector3(0, 300, -600), scene);
@@ -587,7 +598,7 @@ describe("Babylon WebGPU hydrology presentation", () => {
     }).toEqual({
       river: "f7e407f55a911841736e63f5a74da5830853808c0e54586aa8eadfe632dc9103",
       riverLake: "null",
-      lake: "0109459be386cc32b447905142356eff782f4aa48fbc78a004182f877539f124",
+      lake: "385b455f6c6edb8ae1f4dae450666b7b25cf91b770fbb174f60150535f751b80",
       lakeRiver: "null",
     });
     riverSystem.dispose();
