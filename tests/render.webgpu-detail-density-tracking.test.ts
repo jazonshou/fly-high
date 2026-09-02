@@ -110,5 +110,19 @@ describe("detail density tracks the observer (tree pop-in)", () => {
       scene.dispose();
       engine.dispose();
     }
-  });
+    // **The timeout is generous on purpose, and wall clock is NOT the subject.**
+    //
+    // Structural publication is serialised at one chunk per update, so the 96
+    // settle passes above are the instrument, not padding — shortening them
+    // under-settles the runtime and the drift this measures becomes an artifact
+    // of an unfinished build rather than of stale distance. The work is
+    // therefore irreducible, ~11 s on an idle host.
+    //
+    // This runs on a shared machine alongside other sessions' builds and
+    // captures. At load average ~16 the same test took 42 s and tripped the
+    // 30 s default — a guard that goes red because a neighbour was compiling
+    // gets relabelled flaky and then stops being read at all, which costs more
+    // than the minutes saved. The bound is set well clear of host noise so that
+    // a red here means the drift moved.
+  }, 180_000);
 });

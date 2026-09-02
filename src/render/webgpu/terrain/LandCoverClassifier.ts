@@ -255,8 +255,53 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const suitability = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
   // Sand: the shore band, and only where it is not steep.
   //
-  // **THE FLOOR MOVED TO GRASS, and that is the whole of Jason's "brown/grey
-  // strips" report.** This term carried a constant `+ 0.02` while every other
+  // **~~THE FLOOR MOVED TO GRASS, and that is the whole of Jason's "brown/grey
+  // strips" report.~~ STRUCK 2026-09-02 — FALSE OF THE PRODUCT, on two counts,
+  // and the second was only found by testing it.**
+  //
+  // **Count one: it shipped into one of two classifiers.** This file carries a
+  // TypeScript law and a WGSL twin, and `0608fed` moved the floor on the CPU
+  // side alone; the twin kept `Sand = (1 - shore) * gentle * 1.35 + 0.02` with
+  // no floor on Grass. The twin is what paints the ground the player sees, so
+  // for that whole period the fix was not in the shipped product at all.
+  //
+  // **Count two: mirroring the fix into the twin does not move the bake.**
+  // Measured, rather than reasoned about:
+  //
+  // ```
+  //   before   bake Sand 1.8%   cpu-vs-bake disagreement 1.26%
+  //   after    bake Sand 1.8%   cpu-vs-bake disagreement 1.23%
+  // ```
+  //
+  // With a positive control proving the edit reaches the compiled shader:
+  // forcing the Sand term to `0.0` made Sand vanish entirely and took Grass to
+  // 53.9%. **So the floor is not what paints the Sand, in either
+  // implementation, and this block does not explain the strips.** The cause is
+  // open. Do not let this docblock end anyone's search.
+  //
+  // **THREE SWEEPS AGREED WITH THIS SENTENCE BEFORE ANYONE TESTED IT.** The
+  // original validation ran 26,460 synthetic classifier conditions — the INPUT
+  // SPACE, not the world. A later sweep took 5 seeds and 173,393 real land
+  // probes with a positive control and found zero ground where the floor
+  // decides. Both were sound instruments pointed at the CPU law, which was
+  // already fixed; neither asked which of the two classifiers it was sampling
+  // or which one paints. And a CPU-side sweep cannot reach this regime even in
+  // principle: it needs `ForestFloor` out of the way, `ForestFloor` is gated on
+  // `canopyClosure`, and **only the bake supplies closure** (see the
+  // `closureGate` note below — the CPU ecology callers omit it, the gate reads
+  // 1, and ForestFloor claims the ground Sand would otherwise take).
+  // Reproducing the twin's additive `+ 0.02` on CPU inputs moves 0.01% of land.
+  //
+  // The unclaimed-ground regime is separately guarded, **on the CPU law only**,
+  // by `tests/render.webgpu-land-cover-unclaimed-ground.test.ts`: cold ground
+  // exists (minimum normalised temperature 0.000 in four of five seeds) but
+  // never co-occurs with gentle and low. That contingency is real and worth
+  // holding. **It is not a guard on the twin, and a guard on one of two
+  // implementations is worth exactly the implementation it reads.**
+  //
+  // The mechanism below stands as a description of the CLASSIFIER, and is why
+  // the floor had to move regardless. This term carried a constant `+ 0.02`
+  // while every other
   // class is a pure product, so wherever the others all evaluated below 0.02
   // Sand won — **not because the ground is sandy, but because nothing else
   // claimed it.** An unclaimed-ground default has to be the most ordinary
@@ -271,7 +316,10 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // <= 0.16 gave Sand at 0.020, temperature >= 0.18 gave Grass at 0.800 — a
   // 0.02-wide step flipping the entire surface.
   //
-  // **That is why the artifact is a STRIP rather than a patch.** Terrain
+  // **~~That is why the artifact is a STRIP rather than a patch.~~ STRUCK — this
+  // explains why the classifier WOULD band if it ever entered the regime. It is
+  // not evidence that it did, and the world sweep above says it does not.**
+  // Terrain
   // temperature varies smoothly, so the threshold traces a contour line across
   // the landscape. A defect that produces bands needs a mechanism that
   // produces contours, and a gate crossing does exactly that.
