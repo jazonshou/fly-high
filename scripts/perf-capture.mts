@@ -2351,8 +2351,30 @@ export interface PerfCaptureShotReport {
   readonly viewportWidth: number;
   readonly viewportHeight: number;
   readonly estimatedGpuMemoryMiB: number;
+  /**
+   * The estimate restricted to what the inventory walk can see — misc, the
+   * eroded-only reservations and the slack factor removed. The re-pin trigger
+   * compares THIS against the inventory; the unrestricted figure above is not
+   * comparable to a measurement and never was.
+   */
+  readonly estimatedInventoriableGpuMemoryMiB: number;
   /** Z-4: the renderer's actual-allocation floor reading. */
   readonly inventoriedGpuMemoryMiB: number;
+  /**
+   * The floor reading's three lanes, summing to it.
+   *
+   * Recorded because the estimate's re-pin trigger fired at 47.3% and the
+   * report held only the two ends of that subtraction, so the divergence could
+   * be measured and not attributed. `MISC_ALLOWANCE_MIB` claims 40 MiB for
+   * "pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs" —
+   * the meshes and LUTs are IN this walk, the pipelines and cache are not, and
+   * without the lanes there is no way to say how much of the 40 is which.
+   */
+  readonly inventoriedGpuMemoryLanes: {
+    readonly textureMiB: number;
+    readonly geometryMiB: number;
+    readonly bufferMiB: number;
+  };
   /**
    * `4.5-C3`: per-pass GPU milliseconds, as UNCORRELATED aggregates from
    * Babylon's own counters. They say what each pass costs the GPU; they do not

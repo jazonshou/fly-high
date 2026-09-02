@@ -200,10 +200,29 @@ export interface RenderDiagnostics {
   terrainComputeDispatches: number;
   estimatedGpuMemoryMiB: number;
   /**
+   * The estimate restricted to allocations the inventory walk can see — the
+   * only figure it is honest to compare against a measurement. The
+   * unrestricted number above remains the budgeting one.
+   */
+  estimatedInventoriableGpuMemoryMiB: number;
+  /**
    * Z-4: best-effort walk of actual texture/geometry allocations — a floor
    * reading the estimate's fudge factor is sanity-checked against.
    */
   inventoriedGpuMemoryMiB: number;
+  /**
+   * The same walk's three lanes, so a divergence can be ATTRIBUTED and not
+   * merely measured. Sums to `inventoriedGpuMemoryMiB` by construction.
+   *
+   * Required rather than optional deliberately: an absent breakdown would let
+   * a gate that reads it pass on nothing, which is the failure mode this whole
+   * area already has one of.
+   */
+  inventoriedGpuMemoryLanes: {
+    readonly textureMiB: number;
+    readonly geometryMiB: number;
+    readonly bufferMiB: number;
+  };
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;
   /**

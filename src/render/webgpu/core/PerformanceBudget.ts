@@ -471,6 +471,26 @@ const MISC_ALLOWANCE_MIB = 40;
  * single-channel-texture enumeration — it has already been wrong once, a 2x
  * under-count on `TEXTURETYPE_SHORT`.
  *
+ * **2026-09-02: THE RE-PIN THIS DOCBLOCK ASKS FOR IS NOT THE FIX, AND THE
+ * PARAGRAPH ABOVE IS LEFT STANDING BECAUSE IT IS WHAT WAS BELIEVED.** No value
+ * of this constant can satisfy the trigger. The estimate's terms sum to 319.55
+ * MiB at tier 1 against a measured 249.50, so clearing 15% needs the estimate
+ * at or below 286.92 — **reachable only at a factor of 0.8979, a slack
+ * multiplier that SHRINKS the estimate.** That is widening the trigger wearing
+ * a different constant's name.
+ *
+ * The trigger was mis-stated, not mis-tuned. `inventoryGpuMemoryMiB` is a
+ * FLOOR by its own docblock — blind to pipelines, shader cache, MSAA resolve
+ * targets and driver overhead — and `MISC_ALLOWANCE_MIB` is a description of
+ * most of that blindness. **Two quantities defined not to be equal were
+ * required to agree within 15%.** See `estimateInventoriableGpuMemoryMiB`,
+ * which the trigger now reads: same threshold, same factor, comparable
+ * operands, 8.7%.
+ *
+ * This constant remains uncalibrated and still needs its own answer. It is
+ * simply no longer load-bearing for the trigger, so that work is not urgent
+ * and must not be done by fitting it to a gate.
+ *
  * **Do not re-derive `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` while this
  * multiplier stands**, or a 15% arbitrary component is carried forward
  * invisibly into the new ceiling.
@@ -517,6 +537,56 @@ export function estimateDivergenceFraction(
   if (typeof inventoriedMiB !== "number" || !Number.isFinite(inventoriedMiB)) return null;
   if (inventoriedMiB <= 0) return null;
   return Math.abs(estimatedMiB - inventoriedMiB) / inventoriedMiB;
+}
+
+/**
+ * The estimate restricted to what `inventoryGpuMemoryMiB` can actually SEE.
+ *
+ * **The re-pin rule compared a ceiling against an acknowledged floor.** The
+ * inventory's own docblock says it "cannot see MSAA resolve targets, pipelines
+ * or driver overhead, so it is a FLOOR", and `MISC_ALLOWANCE_MIB` is a
+ * description of most of what that floor is blind to. Two quantities defined
+ * not to be equal were being required to agree within 15%, and the only reason
+ * that ever looked satisfiable is that the inventory's format bug held the
+ * ratio steady. **The gate did not start being wrong when the inventory was
+ * fixed; it started being visible.**
+ *
+ * Three exclusions, each for its own reason:
+ *
+ * - **`miscMiB`.** Its named contents are either invisible to the walk
+ *   (pipelines, shader cache) or already inside the walk's other lanes
+ *   (aircraft/airport meshes, sky dome, small LUTs). Adding it to this side
+ *   would either double-count what the lanes already hold or import what they
+ *   cannot hold. Measured 2026-09-02 at tier 1: the walk's ENTIRE geometry
+ *   lane is 10.50 MiB across every mesh in the scene — terrain grids and
+ *   shadow casters included, which `miscMiB` does not even claim — so its mesh
+ *   half cannot exceed that, and at least 29.50 of its 40 is non-inventoriable
+ *   whatever else is true.
+ * - **The eroded-only reservations.** `TerrainMacroErosionGpu` is constructed
+ *   only when `worldEvolution === "eroded"` (FlightRenderer), and
+ *   `erosionScratchMiB` is that same producer's working set. The SHIPPING
+ *   world is analytic — `DEFAULT_WORLD_EVOLUTION` — so these are budgeted and
+ *   never allocated in the world the inventory measures.
+ * - **`ESTIMATE_FUDGE_FACTOR`.** Slack is not an allocation. Comparing a
+ *   padded figure against a measurement tests the padding, not the arithmetic.
+ *
+ * Verified across the whole admissible range of the misc split: 8.7% with all
+ * of misc excluded, 12.9% with its mesh half at the measured bound. **Both
+ * inside the existing 15% rule, with no constant re-tuned** — which is why the
+ * fix here is to what is compared, not to what it is compared against.
+ */
+export function estimateInventoriableGpuMemoryMiB(
+  profile: WebGpuQualityProfile,
+  viewport: RenderViewport,
+  options: { readonly worldEvolution: "analytic" | "eroded" },
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
+): number {
+  const b = estimateGpuMemoryBreakdown(profile, viewport, inputs);
+  const terms = b.totalMiB / ESTIMATE_FUDGE_FACTOR;
+  const erodedOnly = options.worldEvolution === "eroded"
+    ? 0
+    : b.macroEvolutionMiB + b.erosionScratchMiB;
+  return terms - b.miscMiB - erodedOnly;
 }
 
 export interface GpuMemoryEstimateMiB {
