@@ -245,7 +245,7 @@ export interface PerfCaptureShotDefinition {
    * one is which for neither.** On a shot with no `locate`, it is a POSITION.
    * On a shot with `locate`, it is a SEARCH SEED — where a terrain search
    * begins — and the camera ends up over whatever feature the search finds,
-   * which can be kilometres away. **16 of the 34 shots carry a `locate`.**
+   * which can be kilometres away. **16 of the 35 shots carry a `locate`.**
    *
    * **So any table sorted or differenced by this field silently mixes two
    * populations.** That is not hypothetical: `7-9`'s draw-call analysis
@@ -253,15 +253,15 @@ export interface PerfCaptureShotDefinition {
    * that `mountain-close` and `cliff-60m` share offsets and land in different
    * groups. **They share a seed, not a position, and the two shots are sited on
    * different terrain features.** The conclusion was retracted; re-run over the
-   * 18 shots without a `locate` alone, distance separated the groups cleanly.
+   * 19 shots without a `locate` alone, distance separated the groups cleanly.
    *
    * **Before computing any distance from this field, filter to `locate == null`
    * or resolve the search.** A mixed set gives an answer that looks clean.
    *
    * **The `==` there is LOOSE ON PURPOSE and must stay loose.** No shot
    * carries `locate: null`; unlocated shots simply omit the key, so
-   * `locate == null` catches them via `undefined == null` and selects 18
-   * of 34. Tightening it to `===` selects ZERO and returns a clean-looking
+   * `locate == null` catches them via `undefined == null` and selects 19
+   * of 35. Tightening it to `===` selects ZERO and returns a clean-looking
    * empty answer rather than an error.
    */
   readonly offsetXMeters: number;
@@ -1607,6 +1607,56 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ssimThreshold: 0.96,
     ceilings: null,
     comparesToBaseline: false,
+  },
+  {
+    name: "apron-hangar-variety",
+    description:
+      "Ground pose off the runway shoulder framing hangars 0 and 1 \u2014 the 3-bay "
+      + "gabled and the 6-bay arched \u2014 so both hash-driven plan channels are in one frame",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 1.7,
+    altitudeMslMeters: null,
+    offsetXMeters: -233,
+    offsetZMeters: -12,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    /**
+     * **7-10's "visually distinct under the same seed" needs TWO hangars, and no
+     * existing shot contains one.** `AirfieldStructures.ts` states the failure
+     * mode outright: "three hangars differing only in height read as one
+     * building at three scales." A single-hangar frame cannot show variety --
+     * obliqueness buys pilasters, but variety needs something to vary against.
+     *
+     * **The pose is oblique because the features are on different walls.** Door
+     * leaves sit on the -across wall only, the clerestory on both across walls,
+     * and the pilasters ONLY on the +/-along gable ends. A camera square-on to
+     * the apron sees doors and glazing and NO PILASTER -- and the pilasters are
+     * the only place the bay count becomes visible geometry.
+     *
+     * **The bay-count signal is pilaster PITCH, not pier width.**
+     * `pilasterWidthMeters` is 0.70 m on every hangar that will ever exist, so a
+     * budget gated on it reads identically whether bay counts vary, are uniform,
+     * or are broken. Under this seed the emitted pitches are 15.10 / 7.55 /
+     * 11.32 m: hangar 0 draws the 3-bay minimum and gabled, hangar 1 draws 6
+     * bays and ARCHED -- differing in both independent hash channels.
+     *
+     * **Framing verified by frustum projection, NOT by the terrain oracle.**
+     * `cockpitTerrainCoverage` is blind to buildings; it would return identical
+     * numbers if the hangars did not exist, so it establishes only that this is
+     * not a capture of empty ocean (46.4% terrain, 13 sea rays of 943). Both
+     * target hangars project FULLY inside the 56 x 33.3 deg cockpit frustum:
+     * hangar 0 spans horiz [-20.7, 0.3] deg and hangar 1 [-0.2, 22.3] against a
+     * 28 deg half-angle; vertically 12.5 at worst against 16.7. Hangar 2 clips
+     * the right edge and is a bonus, not a requirement.
+     *
+     * **`relativeSunBearingDegrees` is derived, not chosen.** Aiming is only
+     * reachable through the sun bearing, so -38.92 is the value yielding the
+     * 69.40 deg yaw that points at the 0/1 midpoint; round-tripped through
+     * `yawForSunBearing`.
+     */
+    relativeSunBearingDegrees: -38.92,
+    comparesToBaseline: false,
+    ceilings: null,
   },
 ]);
 
