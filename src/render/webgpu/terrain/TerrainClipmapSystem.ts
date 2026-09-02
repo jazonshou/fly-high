@@ -1329,16 +1329,24 @@ export class TerrainClipmapSystem {
     // precedence, not a new rule: a page that is both drawn and in the collision
     // ring is drawn, and culling it would still break the draw.
     const reasonFor = new Map<string, "drawn" | "parent" | "collision" | "seed">();
-    let drawnBeyondShadow = 0;
+    const pageHasNearNode = new Map<string, boolean>();
     const shadowRadius = this.shadowCasterDistanceMeters;
     for (const node of this.nodes) {
       const nodeKey = `${node.address.level}:${node.address.x}:${node.address.z}`;
       if (!reasonFor.has(nodeKey)) reasonFor.set(nodeKey, "drawn");
-      // `node.distanceMeters` is the SELECTOR's own distance, not one recomputed
-      // here — the same number that decided the node's level. Re-deriving it
-      // from the origin would introduce a second definition of the same
-      // quantity, which is how two figures for one thing start disagreeing.
-      if (node.distanceMeters > shadowRadius) drawnBeyondShadow += 1;
+      // PAGES, not nodes — the same unit as `drawn`. Up to
+      // TERRAIN_NODES_PER_SLOT_EDGE^2 nodes share one page address, so counting
+      // nodes here produced 251 against a `drawn` of 14: two different units
+      // presented side by side as if they were comparable, which is the exact
+      // defect this whole breakdown exists to prevent.
+      //
+      // A page is beyond the shadow distance only if EVERY node on it is. One
+      // node inside the radius casts into view, so the page must stay resident
+      // whatever the others do — the cullable set is the intersection, not the
+      // union.
+      const near = node.distanceMeters <= shadowRadius;
+      const prior = pageHasNearNode.get(nodeKey);
+      if (prior === undefined || near) pageHasNearNode.set(nodeKey, near);
       wanted.set(nodeKey, node.address);
       // `4.5-B1`: no parent above the ROOT level. A node at the coarsest level
       // has `morphK = 0` by construction (there is nothing to morph into), so
@@ -1416,6 +1424,10 @@ export class TerrainClipmapSystem {
     // the split sums to the WANTED set; the atlas holds a subset of it while
     // admission catches up, and mixing the two would produce a breakdown that
     // does not add up to anything.
+    let drawnBeyondShadow = 0;
+    for (const [key, hasNear] of pageHasNearNode) {
+      if (!hasNear && reasonFor.get(key) === "drawn") drawnBeyondShadow += 1;
+    }
     let drawn = 0, parents = 0, collision = 0, seed = 0;
     for (const reason of reasonFor.values()) {
       if (reason === "drawn") drawn += 1;
