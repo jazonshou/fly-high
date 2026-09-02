@@ -1084,6 +1084,16 @@ function generateRocks(
   seaLevelMeters: number,
   sampleTerrain: DetailCellGenerationOptions["terrainSample"],
   season: FoliageSeason,
+  /**
+   * The hard structure gate, as a function rather than a `ScatterContext`.
+   *
+   * This function predates `ScatterContext` and takes its world in ten
+   * positional parameters; threading two more through would make an already
+   * fragile call site worse. A closure keeps the exclusion's shape here to one
+   * argument and leaves rocks independent of the scatter context's other
+   * fields, none of which they use.
+   */
+  structureFactor: (x: number, z: number) => number,
 ): readonly DetailRockPlacement[] {
   if (density <= 0) return [];
   const random = createRandom(`${seed}/rocks/${key}`);
@@ -1103,6 +1113,12 @@ function generateRocks(
     const acceptance = random();
     const sample = sampleTerrain(x, z);
     if (!validSample(sample)) continue;
+    // Hard structure gate, before the fall-line probe rather than after it: a
+    // candidate inside a hangar cannot become a rock at any talus density, so
+    // walking its supply is work whose result is discarded. Rejected
+    // candidates already skip the variant/radius draws below, so this
+    // short-circuit takes the same branch the probability test would.
+    if (structureFactor(x, z) <= 0) continue;
     // Lithology, from the one owned geology sampler. Filter width 0: this is
     // a per-placement read, the full-bandwidth field, exactly as every other
     // per-stem field in this file is read.
@@ -1370,9 +1386,18 @@ function scatterClutter(
     // 6-6: `litterDriver` is the soil-depth channel where it exists and the
     // 2-15 moisture stand-in where it does not.
     const litter = litterDriver(sample);
+    // The SAME hard structure gate the stems get. `airportClearance` alone is
+    // a multiplicative thin keyed on the airport's rounded-rectangle influence
+    // field, which knows the airport but not its BUILDINGS — so it can reduce
+    // the odds of a log inside a hangar and can never reach zero. Trees and
+    // shrubs were fixed here; clutter and rocks were not, and that asymmetry
+    // was the whole defect.
+    const structure = structureFactorAt(context, x, z);
+    if (structure <= 0) continue;
     const probability = airportClearance(sample)
       * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
-      * (0.06 + closure * 0.5 + litter * 0.12);
+      * (0.06 + closure * 0.5 + litter * 0.12)
+      * structure;
     if (acceptance >= probability) continue;
     // Moss cushions need a substrate to sit on, not just humid air: real soil
     // depth replaces the moisture gate wherever the channel supplies it.
@@ -1480,6 +1505,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
       seaLevelMeters,
       options.terrainSample,
       context.season,
+      (x, z) => structureFactorAt(context, x, z),
     ),
   };
 }
