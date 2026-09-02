@@ -681,7 +681,15 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
  * floor's anchor asserts).
  */
 export function nightZenithFade(sunDirectionY: number): number {
-  return NIGHT_ZENITH_FALLOFF * aerialNightness(sunDirectionY);
+  // SQUARED nightness (round G turn 2): at full night the gate is exactly 1
+  // either way, but linear nightness bit dusk too hard — its 0.578 carried
+  // the full-strength fade into the blue hour and dragged dusk terrain 44%
+  // below the frame Jason approved (0.17 → 0.095, technically inside the
+  // band and spiritually not). Squaring keeps every endpoint (0 by day, 1
+  // at night, smooth between) while the blue hour keeps most of the arch
+  // glow it was approved with.
+  const nightness = aerialNightness(sunDirectionY);
+  return NIGHT_ZENITH_FALLOFF * nightness * nightness;
 }
 
 /**
