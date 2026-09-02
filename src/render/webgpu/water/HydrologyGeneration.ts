@@ -1,5 +1,21 @@
 const TAU = Math.PI * 2;
 
+/**
+ * `5-12a`: the carved-sampler mark, read WITHOUT importing `RiverChannels`.
+ *
+ * This module is deliberately dependency-free — "pure functions over numbers,
+ * no Babylon import", which is what lets it be tested without a host — and
+ * `RiverChannels` imports its result type, so a direct import would also be a
+ * cycle. `Symbol.for` is a global registry, so both modules name the same
+ * symbol without either depending on the other.
+ */
+const CARVED_SAMPLER = Symbol.for("aerolith.carvedTerrainSampler");
+
+function samplerReadsCarvedGround(value: unknown): boolean {
+  if (typeof value !== "function") return false;
+  return (value as unknown as Record<symbol, boolean>)[CARVED_SAMPLER] === true;
+}
+
 export interface HydrologyTerrainSample {
   readonly height: number;
   /** Optional normalized moisture. Missing values use a neutral 0.5. */
@@ -105,6 +121,19 @@ export interface HydrologyGenerationConfig {
    * `traceDownhillPath` when real channel carving lands.
    */
   readonly maximumRiverGrade: number;
+  /**
+   * `R-24b`: how far to look for lower ground when a downhill trace stalls in a
+   * hollow, and how many hops to allow.
+   *
+   * MEASURED: 79 of 90 traces terminate in a "basin" after a median of 5 steps
+   * against the 10 points a river needs, and NOT ONE of those hollows is a real
+   * closed depression - every one has lower ground within 1,800 m, 31 of them
+   * within 180 m. They are sampling noise, not landform.
+   *
+   * Zero disables the escape and restores the previous behaviour exactly.
+   */
+  readonly riverPitEscapeRadiusMeters: number;
+  readonly riverPitEscapeMaximumHops: number;
   readonly directionInertia: number;
   readonly riverSurfaceOffsetMeters: number;
   readonly baseRiverWidthMeters: number;
@@ -172,6 +201,21 @@ export const DEFAULT_HYDROLOGY_CONFIG: HydrologyGenerationConfig = Object.freeze
   maximumRivers: 7,
   minimumDownhillDropMeters: 0.08,
   maximumRiverGrade: 0.09,
+  // `R-24b`: sized to the WORK BUDGET, not to the measurement.
+  //
+  // 1,800 m x 8 hops is what the terrain wants — MEASURED 17 rivers against 4
+  // over 5,184 km2 with the grade cull inert. It does not fit: the pre-flight
+  // bound is `haloCells x (maxSteps + hops*rings) x angularSamples` against
+  // 300,000, and base tracing alone at the 100-cell cap is 100 x 180 x 16 =
+  // 288,000, or **96% of the budget before this feature exists**. That leaves
+  // `hops * rings <= 7`, and 1,800 x 8 asks for 160.
+  //
+  // So this is 270 m x 2 hops: 99.2% of the bound, and MEASURED 9 rivers
+  // against 4 — a bit over half of what the terrain would give. The remainder
+  // is not available without re-sizing a safety bound, which is a decision
+  // about the budget rather than about rivers.
+  riverPitEscapeRadiusMeters: 270,
+  riverPitEscapeMaximumHops: 2,
   directionInertia: 0.18,
   riverSurfaceOffsetMeters: 0.16,
   baseRiverWidthMeters: 2.4,
@@ -310,6 +354,10 @@ export function assertHydrologyConfig(config: HydrologyGenerationConfig): void {
   if (config.maximumRiverGrade > 1) {
     throw new RangeError("hydrology.maximumRiverGrade must be at most 1 (rise/run)");
   }
+  if (config.riverPitEscapeRadiusMeters < 0) {
+    throw new RangeError("hydrology.riverPitEscapeRadiusMeters must not be negative");
+  }
+  integerRange(config.riverPitEscapeMaximumHops, 0, 32, "hydrology.riverPitEscapeMaximumHops");
   if (config.directionInertia < 0 || config.directionInertia > 1) {
     throw new RangeError("hydrology.directionInertia must be in [0, 1]");
   }
@@ -499,8 +547,14 @@ function buildSourceCandidates(
         || positiveModulo(cellZ - sourceOffsetZ, sourceStride) !== 0
       ) continue;
       haloSourceCellCount += 1;
+      // `R-24b`: the escape's ring search is real work this bound must carry,
+      // or the guard stays green while the work grows.
+      const escapeRings = config.riverPitEscapeRadiusMeters > 0
+        ? Math.ceil(config.riverPitEscapeRadiusMeters / config.traceStepMeters)
+        : 0;
       const maximumDirectionalTraceSamples = haloSourceCellCount
-        * config.maximumTraceSteps
+        * (config.maximumTraceSteps
+          + config.riverPitEscapeMaximumHops * escapeRings)
         * config.traceAngularSamples;
       if (
         haloSourceCellCount > MAX_HYDROLOGY_HALO_SOURCE_CELLS
@@ -848,7 +902,41 @@ function buildBasinLake(
   });
 }
 
+
+/** `R-24b`: lowest ground below a stalled trace's floor, or null if truly closed. */
+function findSpillPoint(
+  x: number, z: number, floorHeight: number, radiusMeters: number,
+  stepMeters: number, angularSamples: number, terrainSample: HydrologyTerrainSampler,
+): { readonly x: number; readonly z: number } | null {
+  for (let radius = stepMeters; radius <= radiusMeters; radius += stepMeters) {
+    let best: { x: number; z: number; height: number } | null = null;
+    for (let index = 0; index < angularSamples; index += 1) {
+      const angle = (index / angularSamples) * Math.PI * 2;
+      const px = x + Math.cos(angle) * radius;
+      const pz = z + Math.sin(angle) * radius;
+      const height = terrainSample(px, pz).height;
+      if (height < floorHeight && (!best || height < best.height)) {
+        best = { x: px, z: pz, height };
+      }
+    }
+    if (best) return { x: best.x, z: best.z };
+  }
+  return null;
+}
+
 export function generateHydrology(options: HydrologyGenerationOptions): HydrologyGenerationResult {
+  // `5-12a`: rivers are traced FROM the heightfield and carving MODIFIES it, so
+  // tracing over carved ground makes the generator consume its own output. The
+  // type system holds this at compile time; this holds it at runtime, for the
+  // paths types do not reach — worker boundaries, reconstructed closures, and
+  // anything written with a cast in a hurry.
+  if (samplerReadsCarvedGround(options.terrainSample)) {
+    throw new Error(
+      "generateHydrology was given a CARVED terrain sampler. Rivers must be "
+      + "traced on uncarved ground: carving is derived from the trace, so "
+      + "tracing the carve makes the generator consume its own output.",
+    );
+  }
   const { worldSeed, terrainSample: sourceTerrainSample, ...configInput } = options;
   const config = resolveHydrologyConfig(configInput);
   const hash = seedHash(worldSeed);
@@ -902,6 +990,35 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       minimumDropMeters: config.minimumDownhillDropMeters,
       directionInertia: config.directionInertia,
     });
+    // `R-24b`: step over noise hollows. The LAKE test below deliberately runs
+    // on the FIRST trace, exactly as before, so this cannot remove a lake.
+    const escapedPoints: DownhillTracePoint[] = [...trace.points];
+    let escapedTermination = trace.termination;
+    if (config.riverPitEscapeRadiusMeters > 0) {
+      let stalled = trace;
+      for (let hop = 0; hop < config.riverPitEscapeMaximumHops; hop += 1) {
+        if (stalled.termination !== "basin") break;
+        const floor = stalled.points.at(-1);
+        if (!floor) break;
+        const spill = findSpillPoint(
+          floor.x, floor.z, floor.terrainHeight,
+          config.riverPitEscapeRadiusMeters, config.traceStepMeters,
+          config.traceAngularSamples, terrainSample,
+        );
+        if (!spill) break;
+        stalled = traceDownhillPath({
+          worldSeed: `${String(worldSeed)}/river/${candidate.key}/spill/${hop}`,
+          terrainSample, startX: spill.x, startZ: spill.z, bounds: traceBounds,
+          seaLevel: config.seaLevel, stepMeters: config.traceStepMeters,
+          angularSamples: config.traceAngularSamples, maximumSteps: config.maximumTraceSteps,
+          minimumDropMeters: config.minimumDownhillDropMeters,
+          directionInertia: config.directionInertia,
+        });
+        escapedPoints.push(...stalled.points.slice(1));
+        escapedTermination = stalled.termination;
+      }
+    }
+
     if (candidate.lakeEligible && trace.termination === "basin") {
       const basin = trace.points.at(-1);
       if (basin && basin.terrainHeight > config.seaLevel + 0.5) {
@@ -916,11 +1033,11 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       }
     }
 
-    if (trace.points.length < config.minimumRiverPoints) continue;
+    if (escapedPoints.length < config.minimumRiverPoints) continue;
     const completeRiver = buildRiver(
       `${hash.toString(16)}:river:${candidate.cellX}:${candidate.cellZ}`,
-      trace.points,
-      trace.termination,
+      escapedPoints,
+      escapedTermination,
       config,
       terrainSample,
     );

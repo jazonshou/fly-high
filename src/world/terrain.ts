@@ -3,6 +3,10 @@ import {
   runwayEarthworksHeightLocal,
   runwayEarthworksProfile,
 } from "@/src/render/webgpu/terrain/RunwayEarthworks";
+import {
+  channelCarveDepth,
+  type CarvedChannelSet,
+} from "@/src/render/webgpu/terrain/RiverChannels";
 import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
 import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
 import {
@@ -595,6 +599,41 @@ export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
   return applyAirportEarthworks(world, naturalHeight, x, z);
+}
+
+/**
+ * `5-12a`: height with river channels carved in — the only carved authority.
+ *
+ * **Ordering is carried by this signature, not by a rule.** A `CarvedChannelSet`
+ * has one constructor and it takes a finished `HydrologyGenerationResult`, so a
+ * caller holding one has necessarily already traced. `sampleTerrainHeight`
+ * stays uncarved and is what hydrology samples, which holds the other half of
+ * the cycle open.
+ *
+ * **This must stay `uncarved - channelCarveDepth` with no other term.** The GPU
+ * height kernel mirrors exactly this expression; anything read here that the
+ * kernel cannot read puts collision and render on different terrain, which is
+ * `3-8` — 15.3 m apart on the runway, the feature this copies.
+ */
+export function sampleCarvedTerrainHeight(
+  world: WorldDefinition,
+  channels: CarvedChannelSet,
+  x: number,
+  z: number,
+): number {
+  return sampleTerrainHeight(world, x, z) - channelCarveDepth(channels, x, z);
+}
+
+/** Band-limited render-path height with channels carved in. See above. */
+export function sampleCarvedFilteredTerrainHeight(
+  world: WorldDefinition,
+  channels: CarvedChannelSet,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  return sampleFilteredTerrainHeight(world, x, z, filterWidthMeters)
+    - channelCarveDepth(channels, x, z);
 }
 
 /**
