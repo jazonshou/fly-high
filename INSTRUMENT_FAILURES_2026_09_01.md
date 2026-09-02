@@ -236,22 +236,26 @@ than any of the others.
 
 ## 6. Still open
 
-- **The inventory ceiling.** ~238 MiB of slack, deliberately not re-derived: the
+**Each item names an owner, because §8 applies to this section first: an item
+with no owner is a claim with no reader who can refute it. The names are the
+PM's assignment, not the owners' claim, and any of them may hand an item back.**
+
+- **The inventory ceiling** — *SWE II 1.* ~238 MiB of slack, deliberately not re-derived: the
   corrected instrument has already been wrong once (a 2× under-count on
   `TEXTURETYPE_SHORT`, caught only by enumerating every single-channel site), so
   the re-derivation should follow the enumeration rather than precede it. And it
   must not be re-derived while the fudge factor stands, or a 15% arbitrary
   component is carried into the new ceiling invisibly.
-- **The trigger guard has never run.** It needs one capture and will fail it.
-- **The `:913` ocean subsurface term.** Live on night water and measured at
+- **The trigger guard has never run** — *Principle Engineer, with the ceilings re-measure.* It needs one capture and will fail it.
+- **The `:913` ocean subsurface term** — *SWE III.* Live on night water and measured at
   ≤1 display byte at the shipped vantage — a genuine null on a shot containing
   the substrate, with a 1000× positive control proving the instrument could see
   it. Not fixed, not closed; a near-field night-over-water vantage would settle
   it and is now earned rather than merely wanted.
-- **Night tier inversion.** Tier 3 slower than tier 2 at night while leaving
+- **Night tier inversion** — *unowned, and deliberately so: nobody has a measurement in hand and assigning it would manufacture false coverage.* Tier 3 slower than tier 2 at night while leaving
   82–85% of pixels identical. Thirteen profile fields differ, not the four the
   writeup originally listed; **the 21% is unattributed and no claim is made.**
-- **The archive is not in the tree.** `tests/perf/artifacts/` is gitignored, so
+- **The archive is not in the tree** — *Phase 7 Lead, who found it.* `tests/perf/artifacts/` is gitignored, so
   every archived report cited in a finding exists on one machine. Numbers quoted
   from them are not retrievable by anyone else.
 
@@ -285,3 +289,72 @@ questions** — 169 is the working session measured from the Phase 6 plan commit
 needed. This document quotes no commit count, because at the time of writing I
 could establish only that the two figures disagreed and not which question
 either answered.
+
+---
+
+## 8. Why those misattributions were catchable at all
+
+**`flight-simulator-d6`'s observation, and it generalises §7 into the document's
+own thesis rather than sitting beside it.**
+
+Two misattributions happened within an hour, and **both were caught by the person
+misattributed *to*.** That is not luck. **The subject of a credit claim is the
+only reader guaranteed to know it is wrong** — everyone else is reading a
+plausible sentence about work they did not do. Attaching a name to a claim
+installs the one reader who can refute it.
+
+**The converse is what puts this in this document instead of a style guide.** An
+unattributed claim has no such reader. *"The body-axis work was done"* is
+checkable by nobody in particular; *"the body-axis work was yours"* is checkable
+by exactly one person, who will notice. **The unattributed version is a statement
+with no failure mode** — the same shape as the guard that matched nothing, the
+scan that returned empty, and the trigger with no mechanism. Not wrong. Incapable
+of being found wrong.
+
+**Three sharpenings, all theirs:**
+
+**The mechanism is asymmetric, and only one direction is reliable.**
+Misattributing *to* someone is caught, because they read it and know.
+Misattributing *away* from someone — dropping a credit, or absorbing a finding
+into a summary — often is not, because the true author may never see the
+document. **The defence is weakest exactly where the injustice is worst.** A
+writeup should therefore be checked hardest where a name was *omitted*, not where
+one was given. Both of tonight's catches were the easy direction.
+
+**Naming creates the route, not only the detector.** An attributed claim tells a
+doubting reader **who to ask**. An unattributed one leaves them the claim and
+nothing else — which is how a wrong figure travelled four sessions before anyone
+could locate its origin to question it.
+
+**Provenance marking is the same mechanism applied to facts rather than credit.**
+"Carried from X" versus "verified here" is not bookkeeping: it names the person
+who can refute the line, and marks which lines have no such person yet. **If the
+argument holds for credit it holds for measurements, and the two conventions are
+one convention.** This document's own preamble is an instance.
+
+**Session names are not durable identifiers, and this document will outlive
+every session in it.** Also theirs, and caught on this document: §8 first read
+"the Principle Engineer's +128 MiB" while the file was written by a session
+signing as *Principle Engineer (Phase 7 Lead)*. Those are two sessions —
+`[b12695]` and `[87a15f]` — but **a reader with no roster cannot resolve that**,
+and the roster is the shortest-lived thing in the story. Names were reassigned
+mid-flight, two collided, and one session was unreachable under the name three
+others were still using.
+
+**So the two uses want different anchors.** Where the point is *who to ask*, a
+name is right and perishable. Where the point is *where this came from*, a commit
+is right and permanent. Both belong, marked as different things:
+
+| claim | who to ask (perishable) | where it came from (durable) |
+|---|---|---|
+| the cascade arms and their +128 MiB | `Principle Engineer [b12695]` | `034aedd`, and the figure at `AtmosphereSystem.ts:311` |
+| the inventory format fix | SWE II 2 | `4543b7e` |
+| "cannot affect a single frame" | this session `[87a15f]` | `d0c7ecc` |
+
+**And their caveat, stated rather than left to inference: none of this makes
+attribution sufficient.** A correctly-attributed wrong number is still a wrong
+number, and tonight produced several — the **+128 MiB** above, true of the arms
+measured through `noColorAttachment: false` and not of what `034aedd` shipped;
+the **165.96**, real and pre-fix; my own **"cannot affect a single frame"**, true
+of the shot names and false of the frames. **All three correctly attributed. All
+three wrong. Attribution installs a checker. It does not do the checking.**
