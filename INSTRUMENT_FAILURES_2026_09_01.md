@@ -1,15 +1,31 @@
 # Instruments that answered instead of failing — 2026-09-01
 
-**What this is.** One evening, six sessions, three unrelated areas. The
-recurring defect was not in the renderer. It was in the things we measure the
+**What this is.** One evening on **fly high**, a browser flight simulator built
+on a Babylon.js WebGPU renderer — six Claude sessions working in one repository.
+The recurring defect was not in the renderer. It was in the things we measure the
 renderer with, and it had one shape:
 
 > **A check ran, produced a confident tidy answer, and the answer was about a
 > different question than the one asked. No error was raised.**
 
+**The three unrelated areas, named because "unrelated" is what makes this a
+pattern rather than one bad subsystem:** the **cascaded shadow renderer**
+(`AtmosphereSystem`, Babylon's CSM), **GPU memory accounting**
+(`FlightRenderer`'s inventory and `PerformanceBudget`'s estimate), and the
+**test and capture harness** (`tests/`, `perf-capture.test.ts`). They share no
+code, no owner, and no data. The same defect shape appeared in all three on the
+same evening.
+
 Every instance below was found while looking for something else, and every one
-was a number somebody was about to build on. They are currently scattered across
-five commit messages, which is why this file exists.
+was a number somebody was about to build on.
+
+**Scope, because the count changed while this was written.** The file was started
+to consolidate five instances that were scattered across five commit messages and
+would otherwise have stayed there. It now carries **seven instrument failures
+(§1)**, **two claims that were never true at any commit (§3)**, **a category that
+is no instrument at all (§3b)**, and **one measurement that had to be repaired
+(§5b)**. It is not a complete audit — nobody swept for these — it is what one
+evening's work surfaced while doing something else.
 
 **Provenance note.** Every SHA, count and code claim here was re-derived from the
 tree while writing, not transcribed from the conversations they came from. Where
@@ -427,14 +443,18 @@ group, which makes owner declarations checkable rather than assertable.
 with no owner is a claim with no reader who can refute it. The names are the
 PM's assignment, not the owners' claim, and any of them may hand an item back.**
 
-- **The inventory ceiling** — *SWE II 1.* ~238 MiB of slack, deliberately not re-derived: the
+- **The inventory ceiling** — *SWE II 1 (`tests/render.gpu-memory-inventory-format.test.ts`).*
+  **The frame for the number:** `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` is
+  495; a 36-shot capture at tier 1 (`quality medium`, `renderScale 0.86`) after
+  the format fix `4543b7e` read a maximum of **256.7 MiB** inventoried
+  (`reference-viewport`), minimum 248.3. That is ~238 MiB of slack — deliberately not re-derived: the
   corrected instrument has already been wrong once (a 2× under-count on
   `TEXTURETYPE_SHORT`, caught only by enumerating every single-channel site), so
   the re-derivation should follow the enumeration rather than precede it. And it
   must not be re-derived while the fudge factor stands, or a 15% arbitrary
   component is carried into the new ceiling invisibly.
-- **The trigger guard has never run** — *Principle Engineer, with the ceilings re-measure.* It needs one capture and will fail it.
-- **The `:913` ocean subsurface term** — *SWE III.* Live on night water and measured at
+- **The trigger guard has never run** — *Principle Engineer (`0c8802e`, `tests/perf/perf-capture.test.ts`).* It needs one capture and will fail it.
+- **The `:913` ocean subsurface term** — *SWE III (`SpectralOceanSystem.ts:913`).* Live on night water and measured at
   ≤1 display byte at the shipped vantage — a genuine null on a shot containing
   the substrate, with a 1000× positive control proving the instrument could see
   it. Not fixed, not closed; a near-field night-over-water vantage would settle
@@ -442,7 +462,7 @@ PM's assignment, not the owners' claim, and any of them may hand an item back.**
 - **Night tier inversion** — *unowned, and deliberately so: nobody has a measurement in hand and assigning it would manufacture false coverage.* Tier 3 slower than tier 2 at night while leaving
   82–85% of pixels identical. Thirteen profile fields differ, not the four the
   writeup originally listed; **the 21% is unattributed and no claim is made.**
-- **The archive is not in the tree** — *Phase 7 Lead, who found it.* `tests/perf/artifacts/` is gitignored, so
+- **The archive is not in the tree** — *Phase 7 Lead (`.gitignore:45`), who found it.* `tests/perf/artifacts/` is gitignored, so
   every archived report cited in a finding exists on one machine. Numbers quoted
   from them are not retrievable by anyone else.
 
