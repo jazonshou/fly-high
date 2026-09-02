@@ -586,38 +586,42 @@ export function firstPinFrom(
  * is information worth having rather than a risk to paper over with margin.
  */
 export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Object.freeze({
-  // First pin, 0af134c: byte-identical across three runs and the discarded warm-up.
-  "dusk-mesopic":                 [156, 156, 156],
-  "approach-500ft":               [155, 155, 155],
-  "slant-10km":                   [137, 137, 137],
-  "high-10000ft-down":            [140, 140, 140],
-  "reference-viewport":           [156, 156, 156],
-  "cruise-horizon":               [132, 132, 132],
-  "winter-noon":                  [155, 155, 155],
-  "night":                        [157, 157, 157],
-  "night-moonlit":                [157, 157, 157],
-  "motion-banked-turn":           [160, 160, 160],
-  "page-thrash-turn":             [159, 159, 159],
-  "cdlod-transition":             [127, 127, 127],
-  "cruise-sun-30":                [136, 136, 136],
-  "forest-500ft-sunbehind":       [156, 156, 156],
-  "coast-10km-lowsun":            [132, 132, 132],
-  "ground-2m-lowsun":             [164, 164, 164],
-  "canopy-1200ft":                [154, 154, 154],
-  "runway-on-approach":           [166, 166, 166],
-  "water-25ft":                   [135, 135, 135],
-  "grove-forest-2m":              [161, 161, 161],
-  "grove-meadow-2m":              [173, 173, 173],
-  "hills-dusk-glint":             [152, 152, 152],
-  "mountain-close":               [180, 180, 180],
-  "forest-line-highsun":          [152, 152, 152],
-  "cliff-60m":                    [168, 168, 168],
-  "water-3m":                     [134, 134, 134],
-  "veg-seam-1600ft-oblique":      [149, 149, 149],
-  "veg-seam-near-500ft":          [157, 157, 157],
-  "terrain-material-1600ft-down": [177, 177, 177],
-  "horizon-shadow-far-annulus":   [153, 153, 153],
-  "canopy-backlit-lowsun":        [161, 161, 161],
+  // RE-PINNED at 768f1cb from three byte-identical arms (R1/R2/R3) plus a
+  // discarded warm-up: 36 shots, tier 1, medium/balanced, zero nondeterministic
+  // shots across the three. The previous samples are gone rather than kept
+  // because a sample list is the ceiling's derivation, not its history --
+  // MEASURED_DRAW_DELTAS and DRAW_CALL_RAISES carry what moved and why.
+  "approach-500ft":              [261, 261, 261],
+  "slant-10km":                  [222, 222, 222],
+  "high-10000ft-down":           [223, 223, 223],
+  "reference-viewport":          [262, 262, 262],
+  "cruise-horizon":              [214, 214, 214],
+  "winter-noon":                 [261, 261, 261],
+  "night":                       [263, 263, 263],
+  "night-moonlit":               [263, 263, 263],
+  "dusk-mesopic":                [262, 262, 262],
+  "motion-banked-turn":          [268, 268, 268],
+  "page-thrash-turn":            [267, 267, 267],
+  "cdlod-transition":            [208, 208, 208],
+  "cruise-sun-30":               [240, 240, 240],
+  "forest-500ft-sunbehind":      [262, 262, 262],
+  "coast-10km-lowsun":           [235, 235, 235],
+  "ground-2m-lowsun":            [268, 268, 268],
+  "canopy-1200ft":               [260, 260, 260],
+  "runway-on-approach":          [269, 269, 269],
+  "water-25ft":                  [238, 238, 238],
+  "grove-forest-2m":             [267, 267, 267],
+  "grove-meadow-2m":             [281, 281, 281],
+  "hills-dusk-glint":            [258, 258, 258],
+  "mountain-close":              [285, 285, 285],
+  "forest-line-highsun":         [258, 258, 258],
+  "cliff-60m":                   [251, 251, 251],
+  "water-3m":                    [237, 237, 237],
+  "veg-seam-1600ft-oblique":     [255, 255, 255],
+  "veg-seam-near-500ft":         [263, 263, 263],
+  "terrain-material-1600ft-down":[282, 282, 282],
+  "horizon-shadow-far-annulus":  [238, 238, 238],
+  "canopy-backlit-lowsun":       [246, 246, 246],
 });
 
 /**
@@ -637,6 +641,13 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
  * rise through `DRAW_CALL_RAISES`.
  */
 export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Object.freeze({
+  // Added with the 768f1cb batch. These two entered the ratchet at their own
+  // first measurement and were never raised, so no baseline was ever written
+  // for them -- which the raise guard found the moment a raise first named
+  // them. Their baseline IS their first committed ceiling, read from the
+  // pre-edit file rather than retyped.
+  "night-moonlit":                157,
+  "dusk-mesopic":                 156,
   "approach-500ft":               150,
   "slant-10km":                   132,
   "high-10000ft-down":            135,
@@ -741,6 +752,132 @@ export type DrawCallRaise =
  * ceiling", which is correct and reads like a bug in the entry.
  */
 export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
+  Object.freeze({
+    kind: "per-shot" as const,
+    feature: "csm-cascade-decoupling",
+    commit: "034aedd",
+    deltas: Object.freeze({
+      "approach-500ft":              67,
+      "slant-10km":                  61,
+      "high-10000ft-down":           59,
+      "reference-viewport":          67,
+      "cruise-horizon":              58,
+      "winter-noon":                 67,
+      "night":                       67,
+      "night-moonlit":               67,
+      "dusk-mesopic":                67,
+      "motion-banked-turn":          69,
+      "page-thrash-turn":            69,
+      "cdlod-transition":            57,
+      "cruise-sun-30":               65,
+      "forest-500ft-sunbehind":      67,
+      "coast-10km-lowsun":           64,
+      "ground-2m-lowsun":            65,
+      "canopy-1200ft":               67,
+      "runway-on-approach":          64,
+      "water-25ft":                  64,
+      "grove-forest-2m":             67,
+      "grove-meadow-2m":             69,
+      "hills-dusk-glint":            67,
+      "mountain-close":              66,
+      "forest-line-highsun":         67,
+      "cliff-60m":                   59,
+      "water-3m":                    64,
+      "veg-seam-1600ft-oblique":     67,
+      "veg-seam-near-500ft":         67,
+      "terrain-material-1600ft-down":66,
+      "horizon-shadow-far-annulus":  61,
+      "canopy-backlit-lowsun":       61,
+    }),
+    reason:
+      "`DepthOnlyCascadedShadowGenerator` passed `noColorAttachment: true`, which "
+      + "nulled the render target's colour texture -- and `RenderTargetTexture`'s "
+      + "per-layer loop is gated on `is2DArray`, which READS that colour texture. "
+      + "The loop was skipped and only cascade 0 ever rendered. The optimisation "
+      + "disabled cascade rendering through a property unrelated to where shadow "
+      + "data is stored, and `034aedd` decoupled them. "
+      + "PER-SHOT, not uniform, and the reason is the mechanism: the cost is one "
+      + "extra depth render per CASTING MESH IN FRAME, so it scales with how much "
+      + "geometry casts at that vantage. Declared from the difference between the "
+      + "shipped arm and an arm with only this change reverted (`NOCASC`), which "
+      + "is the only way to attribute it -- three arms alone gave an "
+      + "unattributable total.",
+    whyNonUniform:
+      "57..69, mean 65.1 across 36 shots. The spread is caster count in frame: "
+      + "a vantage with more shadow-casting geometry pays more. No shot is at "
+      + "zero, because the terrain sheet casts everywhere.",
+  }),
+  Object.freeze({
+    kind: "uniform" as const,
+    feature: "since-pin-global",
+    commit: "768f1cb",
+    delta: 24,
+    shots: Object.freeze([
+      "slant-10km",
+      "high-10000ft-down",
+      "cruise-horizon",
+      "cdlod-transition",
+      "cliff-60m",
+      "horizon-shadow-far-annulus",
+      "canopy-backlit-lowsun",
+    ]),
+    reason:
+      "AGGREGATE, and deliberately not attributed per feature. Everything landed "
+      + "between the previous pin and `768f1cb` EXCEPT the cascade decoupling "
+      + "above, measured as `NOCASC` minus the committed ceiling. It is +24 on "
+      + "exactly these seven shots and +39 on the other twenty-four; this entry "
+      + "is the global half. "
+      + "THE SEVEN ARE THE SHOTS WITH NO AIRFIELD IN FRAME, and that is checkable "
+      + "rather than asserted: the identical seven appear as the zero group in "
+      + "`hangar-detail` and as the negative group in `parametric-hangars`, three "
+      + "measurements from three commit pairs by three owners. The boundary is "
+      + "`AIRFIELD_STRUCTURE_LOD.cullDistanceMeters = 6000`. "
+      + "NOT DECOMPOSED FURTHER because this measurement cannot: it has one arm "
+      + "for the whole span. Splitting it per owner would be arithmetic dressed "
+      + "as attribution.",
+  }),
+  Object.freeze({
+    kind: "uniform" as const,
+    feature: "since-pin-airfield",
+    commit: "768f1cb",
+    delta: 39,
+    shots: Object.freeze([
+      "approach-500ft",
+      "reference-viewport",
+      "winter-noon",
+      "night",
+      "night-moonlit",
+      "dusk-mesopic",
+      "motion-banked-turn",
+      "page-thrash-turn",
+      "cruise-sun-30",
+      "forest-500ft-sunbehind",
+      "coast-10km-lowsun",
+      "ground-2m-lowsun",
+      "canopy-1200ft",
+      "runway-on-approach",
+      "water-25ft",
+      "grove-forest-2m",
+      "grove-meadow-2m",
+      "hills-dusk-glint",
+      "mountain-close",
+      "forest-line-highsun",
+      "water-3m",
+      "veg-seam-1600ft-oblique",
+      "veg-seam-near-500ft",
+      "terrain-material-1600ft-down",
+    ]),
+    reason:
+      "The airfield half of the same aggregate: +39 where the airfield is within "
+      + "the 6000 m structure cull, against +24 where it is not. The 15-draw "
+      + "difference is the airfield's own growth over the span -- hangars, tower, "
+      + "signage, obstruction lighting -- and is NOT decomposed per feature for "
+      + "the reason given on the global entry. "
+      + "Declared as two uniform raises rather than one per-shot raise so that "
+      + "GROUP MEMBERSHIP IS EXPLICIT: a shot moving between the groups is a "
+      + "visibility change and should fail loudly, which a per-shot table of the "
+      + "same numbers would absorb silently.",
+  }),
   Object.freeze({
     kind: "uniform" as const,
     feature: "airfield-lighting",
