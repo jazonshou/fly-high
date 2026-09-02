@@ -939,6 +939,61 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "MULTI_OWNER_COMMITS. Needs the full 31 before it becomes an entry.",
   }),
   Object.freeze({
+    owner: "7-10 / hangars",
+    feature: "hangar-detail",
+    baseRef: "1a23abf", headRef: "2bfe84a",
+    shotsMeasured: 34,
+    delta: Object.freeze({
+      // +3 on 27 shots: the hangars are drawn.
+      "approach-500ft": 3, "blue-hour": 3, "canopy-1200ft": 3, "coast-10km-lowsun": 3,
+      "cruise-sun-30": 3, "dusk-mesopic": 3, "forest-500ft-sunbehind": 3,
+      "forest-line-highsun": 3, "golden-hour": 3, "ground-2m-lowsun": 3,
+      "grove-forest-2m": 3, "grove-meadow-2m": 3, "hills-dusk-glint": 3,
+      "motion-banked-turn": 3, "mountain-close": 3, "night": 3,
+      "night-beacon-offset": 3, "night-moonlit": 3, "page-thrash-turn": 3,
+      "reference-viewport": 3, "runway-on-approach": 3,
+      "terrain-material-1600ft-down": 3, "veg-seam-1600ft-oblique": 3,
+      "veg-seam-near-500ft": 3, "water-25ft": 3, "water-3m": 3, "winter-noon": 3,
+      // 0 on 7: the hangars are not drawn at all.
+      "canopy-backlit-lowsun": 0, "cdlod-transition": 0, "cliff-60m": 0,
+      "cruise-horizon": 0, "high-10000ft-down": 0, "horizon-shadow-far-annulus": 0,
+      "slant-10km": 0,
+    }),
+    note:
+      "The clerestory glazing needs a third material and therefore a third mesh "
+      + "per hangar. It is excluded from `shadowCasters` -- the band stands 6 cm "
+      + "off a wall that already casts -- so each costs 1.00 draw, not 2.00: "
+      + "three hangars, +3. PREDICTED as +3 before measuring, with the "
+      + "falsifiers registered; none fired. +6 would have meant the caster "
+      + "exclusion was not reaching the renderer, 0 would have meant the mesh "
+      + "was not drawing, and any value tracking TRIANGLES would have shown up "
+      + "because the same commit made the shell a closed manifold, adding ~330 "
+      + "triangles per hangar at constant mesh count. Nothing moved by anything "
+      + "but 3 or 0. "
+      + "SEPARATE FROM `parametric-hangars` AND NOT A SIGN CHANGE: that commit "
+      + "replaced placeholders and so could go negative; this one only ADDS a "
+      + "mesh, so its floor is zero. "
+      + "WHY NOT UNIFORM: +3 wherever the hangars are drawn, 0 where they are "
+      + "not, for three distinct reasons. (a) Beyond the 6000 m LOD cull -- "
+      + "measured in ONE frame by converting the hangars through `runwayToWorld` "
+      + "onto the capture world, 17 of the 18 shots whose distance is computable "
+      + "agree exactly, including `horizon-shadow-far-annulus` at 6007 m, seven "
+      + "metres past the line. (b) Relocated by terrain search onto ground far "
+      + "from the airfield: `cliff-60m` and `canopy-backlit-lowsun` read 0 while "
+      + "the other 14 located shots find terrain near enough and read +3; their "
+      + "distances are NOT computable, since a located shot's offset is a search "
+      + "seed. (c) `cdlod-transition` sits 224 m INSIDE the cull and still reads "
+      + "0: it is a motion shot climbing outbound at 96 m/s, and `drawCalls` "
+      + "comes from one `getDiagnostics()` call at the END of the capture, so "
+      + "the sampled frame is several hundred metres beyond the 5776 m start. "
+      + "Mechanism named; the arithmetic is NOT closed, because the final "
+      + "position was never pinned. "
+      + "Both feature passes were byte-identical on `drawCalls` across all 34 "
+      + "shots, so this counter carries no first-run effect. Baseline arm from "
+      + "the harness run that failed; feature arm re-run alone in a clean "
+      + "worktree after the failure, warm-up plus keep.",
+  }),
+  Object.freeze({
     owner: "7-13 / airfield furniture",
     feature: "airfield-furniture",
     baseRef: "679815a^", headRef: "679815a",

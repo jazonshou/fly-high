@@ -401,14 +401,22 @@ export const FENCE_LATERAL_OFFSET_METERS = 168;
  *
  * **Its `across` of 135 puts it inside the hangar footprint (112..158) and no
  * reading of that constant clears them**, so the axis that separates it has to
- * be this one. The hangar row occupies `along` -227.4 .. -89.4 on the default
- * airport; the farm sits on the opposite side of the tower, which is both clear
- * and the way a real field lays out — fuel away from the hangar line, reachable
- * from the same apron.
+ * be `along`. Measured on the default airport: the hangar row occupies
+ * `along` -227 .. -89 and the tank group -17 .. 17, so they clear by 72 m.
  *
- * `AIRFIELD_LATERAL_BAND` asserts the clearance rather than assuming it.
+ * **A PREVIOUS VERSION OF THIS COMMENT DESCRIBED A FIELD THAT DOES NOT EXIST.**
+ * It said the farm "sits on the opposite side of the tower", and the band
+ * placed it at `runwayLength * 0.14` — 184.8 m along — to match. The tanks are
+ * at `along` 0 +/- 9 and always have been: `fuelTankPlacements` centres them on
+ * the midpoint. The band was describing a phantom 184.8 m from the real object,
+ * on a field whose own docblock says "Nothing here is transcribed."
+ *
+ * The clearance survived only because the hangars happen to sit 89 m the other
+ * way. The check never examined the real farm, so it was luck, not a result.
+ *
+ * The footprint is now DERIVED from `fuelTankPlacements()` — the function that
+ * actually positions the tanks — so the two cannot disagree again.
  */
-export const FUEL_FARM_ALONG_FRACTION = 0.14;
 /** Plan half-extents of the tank group, for the band. */
 export const FUEL_FARM_HALF_ACROSS_METERS = 6;
 export const FUEL_FARM_HALF_ALONG_METERS = 8;
@@ -428,11 +436,39 @@ export interface AirfieldFootprint {
 }
 
 /**
- * Every structure's footprint in BOTH axes, derived from the constants that
- * place it.
+ * Every structure's footprint in BOTH axes, derived from the functions that
+ * PLACE each one — not from the constants those functions happen to read.
  *
- * Nothing here is transcribed. A number repeated into a record is a copy that
- * can disagree with the code, which is what the comment above this one did.
+ * **The original version of this docblock said "Nothing here is transcribed",
+ * and two of its eight entries were transcribed wrong.** The fuel farm sat at
+ * `runwayLength * 0.14` when the tanks are at `along` 0 +/- 9 — a phantom
+ * 184.8 m from the real object — and the fence claimed `across` 184.5 when the
+ * outermost post is at 168. Both errors were the same spurious `half +`.
+ *
+ * **Why care could not have caught it: the convention is PER CONSTANT.** The
+ * tower genuinely does add `runwayWidth * 0.5` (`AirportSystem` computes
+ * `runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS`); the fence, windsock,
+ * signage and fuel farm genuinely do not. Applying one rule to all of them gets
+ * the tower right and the others wrong, which is exactly what happened. Only
+ * executing the placement function distinguishes them.
+ *
+ * **Why nothing caught it either: every test over this record compared entries
+ * to OTHER ENTRIES.** A closed system passes its own consistency check while
+ * describing nothing — a phantom 184.8 m away clears everything a real one
+ * does. The tests that matter are in
+ * `tests/render.webgpu-airfield-layout.test.ts` and they compare each entry to
+ * its PLACEMENT FUNCTION; one of them fails if a new entry appears with no such
+ * check, because the omission is how the fence stayed broken after the fuel
+ * farm was fixed.
+ *
+ * **THE RULE, paid for twice:** when one entry in a table is wrong, do not fix
+ * that entry. Run EVERY entry against its source before touching anything —
+ * the mechanism that produced one is usually still running.
+ *
+ * The clearances this record reports are real but tighter than the broken
+ * version claimed: the fence clears the hangars by 9.5 m, not 26.5 m, and the
+ * fuel farm clears them by 72 m on `along` only, since the hangar `across` band
+ * fully contains it.
  */
 export function airfieldLateralBand(
   airport: Readonly<AirportDefinition>,
@@ -441,8 +477,18 @@ export function airfieldLateralBand(
   const sign = signLateralOffsetMeters(airport);
   const towerAcross = half + TOWER_LATERAL_OFFSET_METERS;
   const towerAlong = airport.runwayLength * TOWER_ALONG_FRACTION;
-  const fuelAcross = half + FUEL_FARM_LATERAL_OFFSET_METERS;
-  const fuelAlong = airport.runwayLength * FUEL_FARM_ALONG_FRACTION;
+  // FROM THE PLACEMENT FUNCTION, not from constants restated here. The tanks
+  // are positioned by `fuelTankPlacements`, whose `across` is
+  // `FUEL_FARM_LATERAL_OFFSET_METERS` with NO half-width added — the previous
+  // version added `half`, which put the model 17 m out on this axis as well as
+  // 184.8 m out on the other.
+  const tanks = fuelTankPlacements();
+  const tankAlongs = tanks.map((tank) => tank.along);
+  const fuelAcross = tanks[0]!.across;
+  // The outermost post is what has to clear everything, and the fence is
+  // symmetric about the centreline, so the band's positive-side leg is the
+  // largest |across| any station reaches.
+  const fenceAcross = Math.max(...perimeterFenceStations(airport).map((st) => Math.abs(st.across)));
   const hangars = [0, 1, 2].map((index) => hangarFootprint(airport, index));
   return Object.freeze([
     { name: "signage", across: [sign - 0.5, sign + 0.5], along: null },
@@ -470,11 +516,27 @@ export function airfieldLateralBand(
     {
       name: "fuel-farm",
       across: [fuelAcross - FUEL_FARM_HALF_ACROSS_METERS, fuelAcross + FUEL_FARM_HALF_ACROSS_METERS],
-      along: [fuelAlong - FUEL_FARM_HALF_ALONG_METERS, fuelAlong + FUEL_FARM_HALF_ALONG_METERS],
+      along: [
+        Math.min(...tankAlongs) - FUEL_FARM_HALF_ALONG_METERS,
+        Math.max(...tankAlongs) + FUEL_FARM_HALF_ALONG_METERS,
+      ],
     },
     {
       name: "fence",
-      across: [half + FENCE_LATERAL_OFFSET_METERS - 0.5, half + FENCE_LATERAL_OFFSET_METERS + 0.5],
+      // FROM THE STATIONS, not from the constant plus a half-width. The same
+      // spurious `half +` that put the fuel farm 17 m out was here too:
+      // `perimeterFenceStations` uses `FENCE_LATERAL_OFFSET_METERS` as the
+      // half-width directly, so the real outermost post is at 168 and the band
+      // claimed 184.5. Two entries, one mistake, and the convention is
+      // per-constant rather than uniform — the TOWER genuinely does add
+      // `runwayWidth * 0.5` (see `AirportSystem`), while the fence, windsock,
+      // signage and fuel farm do not. That is exactly why these are derived
+      // now instead of reasoned about.
+      //
+      // It matters more here than for the farm. The fence's `along` is null, so
+      // `across` is the ONLY axis that can clear it, and the band overstated
+      // its clearance of the hangars as 26.5 m when it is 9.5 m.
+      across: [fenceAcross - 0.5, fenceAcross + 0.5],
       along: null,
     },
   ] as readonly AirfieldFootprint[]);
