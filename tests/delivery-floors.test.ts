@@ -22,6 +22,7 @@ import {
   sampleSpreadFps,
   tailDeferredFloorsFrom,
   MEASURED_DRAW_DELTAS,
+  RETRACTED_DRAW_READINGS,
 } from "../scripts/deliveryFloors.mts";
 
 /**
@@ -714,6 +715,45 @@ describe("measured draw deltas awaiting a raise entry", () => {
       expect(measured.headRef.length, `${measured.feature}: no headRef`).toBeGreaterThan(0);
       expect(measured.shotsMeasured, `${measured.feature}: no shot count`).toBeGreaterThan(0);
       expect(measured.owner.length, `${measured.feature}: unowned`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("retracted draw readings", () => {
+  it("every strike carries the mechanism, the correction and what it cost", () => {
+    // A retraction that says only "this was wrong" is re-derivable and will be
+    // re-derived. The mechanism is what stops someone reconstructing the same
+    // error from the same evidence, and the cost is the argument for the record
+    // existing at all.
+    for (const struck of RETRACTED_DRAW_READINGS) {
+      expect(struck.claim.length, "a strike with no claim cannot be recognised when quoted")
+        .toBeGreaterThan(20);
+      expect(struck.whyWrong.length, `${struck.author}: no mechanism given`).toBeGreaterThan(40);
+      expect(struck.correctedTo.length, `${struck.author}: nothing replaces it`).toBeGreaterThan(20);
+      expect(struck.costAfterRetraction.length, `${struck.author}: no cost recorded`)
+        .toBeGreaterThan(20);
+    }
+  });
+
+  it("NON-VACUITY — the record is populated, so the check above compares something", () => {
+    // An empty record satisfies every assertion above trivially, which is how
+    // this stops guarding the moment someone clears it out.
+    expect(RETRACTED_DRAW_READINGS.length).toBeGreaterThan(0);
+  });
+
+  it("a struck reading is NOT also standing as a measured delta", () => {
+    // The failure this catches is the one the record exists for: a withdrawn
+    // number that is still being read as current somewhere. If a strike's
+    // corrected value ever appears verbatim as a staged note, the correction
+    // has not actually replaced anything.
+    const stagedNotes = MEASURED_DRAW_DELTAS.map((measured) => measured.note).join(" ");
+    for (const struck of RETRACTED_DRAW_READINGS) {
+      // The claim text is quoted; it must not be repeated as live reasoning.
+      const quoted = struck.claim.replace(/^"|"$/gu, "").slice(0, 40);
+      expect(
+        stagedNotes.includes(quoted),
+        `a retracted reading is quoted verbatim in a staged delta's note: ${quoted}`,
+      ).toBe(false);
     }
   });
 });

@@ -952,6 +952,102 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
   }),
 ]);
 
+/**
+ * **Readings that were LOAD-BEARING, are WRONG, and must not be rebuilt on.**
+ *
+ * Struck rather than deleted, for the reason a struck docblock is: **deleting
+ * hides that the question was ever asked, and the next person re-derives it.**
+ *
+ * **This exists because a retraction cannot travel and a claim can.** A wrong
+ * number stated in conversation reaches everyone reading at that moment and
+ * then keeps going; the withdrawal reaches only whoever is reading when it
+ * lands, hours later, against the original's head start. **Every entry below
+ * was withdrawn and then quoted back as a premise anyway.**
+ *
+ * The rule that follows: **move a claim out of conversation and into an
+ * artifact the moment it becomes load-bearing** — then a correction has
+ * somewhere to attach, and anyone building on it reads the strike with it.
+ */
+export interface RetractedDrawReading {
+  /** Who said it, so the correction has the same author as the claim. */
+  readonly author: string;
+  /** The claim, as stated, so it is recognisable when someone quotes it. */
+  readonly claim: string;
+  /** Why it is wrong — the mechanism, not the verdict. */
+  readonly whyWrong: string;
+  /** What replaced it. */
+  readonly correctedTo: string;
+  /** What it cost after withdrawal, which is the argument for this record. */
+  readonly costAfterRetraction: string;
+}
+
+export const RETRACTED_DRAW_READINGS: readonly RetractedDrawReading[] = Object.freeze([
+  Object.freeze({
+    author: "7-4b / clustered lighting",
+    claim:
+      "\"+6 inside the 6000 m LOD cull and -6 beyond -- six meshes, beauty only, "
+      + "no shadow draws at 2642 m.\"",
+    whyWrong:
+      "An ABSOLUTE compared against a DELTA. `37cf3aa` had THREE CreateBox "
+      + "placeholder hangars and `82c4182` has six meshes, so the mesh delta is "
+      + "+3, not 6. +6 over +3 meshes is 2.00 per mesh, not 1.00.",
+    correctedTo:
+      "2.00 draws per casting mesh -- one beauty plus exactly ONE shadow cascade, "
+      + "at a tier declaring `shadowCascades: 2`. Confirmed by a discriminating "
+      + "shot at ~820 m reading +6 where a two-cascade reading required +9, and "
+      + "independently on furniture, and directly off Babylon's `_drawCalls` "
+      + "counter at 40 m.",
+    costAfterRetraction:
+      "Quoted back hours later as the premise of an entire range-gating "
+      + "derivation for the tower, which predicted +7 where the measurement gave "
+      + "+14. The retraction was in the conversation the whole time.",
+  }),
+  Object.freeze({
+    author: "7-4b / clustered lighting",
+    claim:
+      "\"The +24/+12 split does not track distance -- `mountain-close` and "
+      + "`cliff-60m` sit at identical offsets and land in different groups.\"",
+    whyWrong:
+      "Both shots carry a `locate` value, and a located shot's "
+      + "`offsetXMeters` is a SEARCH SEED rather than a position -- the camera "
+      + "ends up over whatever terrain feature the search finds. The two shots "
+      + "compared have unknown, different distances. The comparison could not "
+      + "bear on the question.",
+    correctedTo:
+      "Over the 15 shots with `locate: null`, where offsets ARE comparable, "
+      + "distance separates the groups cleanly: +24 at 661-4472 m, +12 at "
+      + "5629-8944 m. Held as PROVISIONAL -- 15 of 31 is not a random half.",
+    costAfterRetraction:
+      "Handed to three sessions as evidence against distance before it was "
+      + "withdrawn. Two of them built on it.",
+  }),
+  Object.freeze({
+    author: "7-4b / clustered lighting",
+    claim:
+      "\"The REPO/node_modules defect is the root cause of the 98-minute capture "
+      + "that produced no report.\"",
+    whyWrong:
+      "The defect is real -- `REPO` derives from the script's own path, so a "
+      + "worktree copy symlinks the wrong `node_modules` -- but it does not "
+      + "explain the symptom. The failing run's BASE arm used the identical "
+      + "chained symlink and completed in twelve minutes with a full report, and "
+      + "chained symlinks were then shown to resolve on this host. **The bug's "
+      + "existence was verified; its CAUSATION was not, and only the second "
+      + "claim was made.**",
+    correctedTo:
+      "Cause UNKNOWN and deliberately left open. Contention is the leading "
+      + "candidate -- the arm ran against two live decomposition worktrees at "
+      + "load 6-10 -- but there is no evidence from inside the failed run, "
+      + "because its output went to /dev/null. The logging fix means the next "
+      + "occurrence answers this in seconds. **Do not close this question on the "
+      + "REPO fix.**",
+    costAfterRetraction:
+      "Reported to the PM and to the affected owner as the root cause within "
+      + "the hour, and refuted by that owner's own baseline arm.",
+  }),
+]);
+
+
 
 /** Total declared raise for a shot, or 0 if none is declared. */
 export function declaredRaiseFor(name: string): number {
