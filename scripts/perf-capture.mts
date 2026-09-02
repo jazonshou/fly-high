@@ -1658,6 +1658,44 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     comparesToBaseline: false,
     ceilings: null,
   },
+  {
+    name: "sunset-sunward",
+    description:
+      "Blue-hour approach pose FACING the sunset azimuth — the twilight sky's "
+      + "sunward half, which no other shot has ever framed",
+    cameraMode: "chase",
+    altitudeAglMeters: 152,
+    altitudeMslMeters: null,
+    offsetXMeters: -2_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 62,
+    /**
+     * **The gap this shot closes hid a physics gap for six rounds.** Every
+     * twilight shot in the set flies the +x convention, 137–152 deg off
+     * the sun; measuring the shipping integral showed the twilight sky is
+     * AZIMUTHALLY UNIFORM below sunset (sunward R/B ≡ anti-solar to
+     * three digits at −3 deg and −6 deg, while golden-hour's +5 deg
+     * sunward reads 5.51 — the warm machinery works only while the sun
+     * is up). Nobody saw the missing sunset because nothing looked at it:
+     * two gaps, one hiding the other. This shot is landed BEFORE the warm
+     * lobe that fixes the model, so its first baseline is the honest
+     * "before" — a uniformly blue sunset.
+     *
+     * Bearing 0 = flying INTO the sun's azimuth (the field's own
+     * convention); the blue-hour clock (−3.0 deg, bisected day 179)
+     * because real sunset colour peaks in early civil twilight, and the
+     * probe should sit where the missing signal is largest.
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers
+     * every canonical shot index and moves every baselined wave phase (the
+     * Wave R trap, re-proven at the golden/blue-hour append).
+     */
+    relativeSunBearingDegrees: 0,
+    clock: { dayOfYear: 179, solarTimeHours: 20.047 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
 ]);
 
 export interface CaptureQuaternion {
