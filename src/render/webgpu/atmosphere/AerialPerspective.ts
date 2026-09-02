@@ -257,10 +257,12 @@ export function evaluateSkyRadiance(
   ).inScatter;
   // §2.6 sky-path arch — mirrors the WGSL line for line.
   const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
+  // Round G zenith fade — mirrors the WGSL line for line.
+  const zenithFade = Math.exp(-binding.nightZenithFade * Math.max(direction[1], 0));
   return [
-    inScatter[0] + binding.twilightArch[0] * shape,
-    inScatter[1] + binding.twilightArch[1] * shape,
-    inScatter[2] + binding.twilightArch[2] * shape,
+    (inScatter[0] + binding.twilightArch[0] * shape) * zenithFade,
+    (inScatter[1] + binding.twilightArch[1] * shape) * zenithFade,
+    (inScatter[2] + binding.twilightArch[2] * shape) * zenithFade,
   ];
 }
 
@@ -280,6 +282,7 @@ uniform aerialSunRadiance: vec3f;
 uniform aerialAmbient: vec3f;
 uniform aerialSunTransmittance: vec3f;
 uniform aerialTwilightArch: vec3f;
+uniform aerialNightZenithFade: f32;
 uniform aerialParams: vec4f; // x rayleighH, y mieH, z mieAnisotropy, w strength
 
 const AERIAL_PI: f32 = 3.14159265359;
@@ -393,7 +396,12 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   // zenith-dim: the falloff constant mirrors TWILIGHT_ARCH_ZENITH_FALLOFF.
   let arch = uniforms.aerialTwilightArch
     * (1.0 - 0.6 * clamp(direction.y, 0.0, 1.0));
-  return aerial.inScatter + arch;
+  // Round G: the night zenith fade - the sky glow transitions to black the
+  // further up you look (Jason's ask), while stars and the moon disc are
+  // added AFTER this function and stay. Exponential so it is never
+  // negative; premultiplied by nightness on the CPU so day is untouched.
+  let zenithFade = exp(-uniforms.aerialNightZenithFade * max(direction.y, 0.0));
+  return (aerial.inScatter + arch) * zenithFade;
 }
 `;
 
@@ -420,6 +428,7 @@ export const AERIAL_PERSPECTIVE_UNIFORMS: readonly string[] = Object.freeze([
   "aerialAmbient",
   "aerialSunTransmittance",
   "aerialTwilightArch",
+  "aerialNightZenithFade",
   "aerialParams",
 ]);
 
@@ -433,6 +442,8 @@ export interface AerialPerspectiveBinding {
   readonly sunTransmittance: [number, number, number];
   /** §2.6 sky-path arch radiance — tint × strength × window, zero outside it. */
   readonly twilightArch: [number, number, number];
+  /** Round G zenith fade, premultiplied falloff × nightness; 0 by day. */
+  readonly nightZenithFade: number;
   readonly strength: number;
 }
 
@@ -626,6 +637,50 @@ export function twilightAmbientFloorFactor(sunDirectionY: number): number {
 }
 
 /**
+ * NIGHT_LOOK §2.6 round G — the night sky's zenith fade, from Jason's own
+ * ask: *"Instead of having a solid dark blue sky, I'd like the blue to
+ * transition into black the further up you look."*
+ *
+ * THE CONSTANT IS DELIBERATELY LARGER THAN THE DISPLAY TARGET SUGGESTS,
+ * and the next reader must not "fix" it: the dome's radiance gradient was
+ * ALREADY 3.7× (zenith 5.1e-5 → horizon 1.9e-4, sampled from the shipping
+ * integral) while the display showed only 1.54× — the rod response's
+ * saturation compresses radiance ratios by roughly a cube root at night.
+ * To move the DISPLAY ratio meaningfully, the RADIANCE ratio must move
+ * roughly as its cube. exp(−falloff·y) at falloff 1.8 attenuates the
+ * zenith to 0.44, taking the radiance gradient to ~8×, which the
+ * compression is expected to render as roughly the ≤0.5 top/horizon
+ * display target. Tuned by frame, as everything Jason judges is.
+ *
+ * GATED BY NIGHTNESS, DELIBERATELY NOT the §2.6 twilight window
+ * (`twilightArchStrength`): this is Jason's NIGHT ask, and routing it
+ * through the twilight window would couple it to five unrelated dusk
+ * behaviours forever. `aerialNightness` is its own gate — zero through
+ * daylight and civil twilight's start (sine −0.07), one below −0.14 — so
+ * DAY IS BIT-IDENTICAL BY SHAPE and the fade reaches full strength
+ * exactly where the night sky model does.
+ *
+ * The exponential shape (never negative, extinction-like) multiplies the
+ * WHOLE skyRadiance output — scatter and arch alike — so at dusk (partial
+ * nightness) the arch's own horizon-bright gradient deepens consistently
+ * rather than fighting a second shape. Stars, the Milky Way and the moon
+ * disc are added AFTER skyRadiance in the sky material and are untouched:
+ * the glow fades to black upward and the stars stay — which is the look.
+ */
+export const NIGHT_ZENITH_FALLOFF = 1.8;
+
+/**
+ * The premultiplied per-frame fade the binding carries: falloff × nightness.
+ * Moon-independent on purpose — a moonless dome is already near-black and
+ * fading it further is both harmless and consistent, so the gate stays one
+ * function of the sun alone (the same moon-blindness discipline the ambient
+ * floor's anchor asserts).
+ */
+export function nightZenithFade(sunDirectionY: number): number {
+  return NIGHT_ZENITH_FALLOFF * aerialNightness(sunDirectionY);
+}
+
+/**
  * §2.6 round M — how far the moon's directional light recedes at the
  * window's hold (consumer #6: dome, floor, σ, lamps, adaptation… and now
  * the moon). MOON_PEAK is a NIGHT calibration; at civil twilight a real
@@ -722,6 +777,7 @@ export function resolveAerialPerspectiveBinding(
     ambient,
     sunTransmittance: sourceTransmittance,
     twilightArch: twilightArchRadiance(state.sun.direction[1]),
+    nightZenithFade: nightZenithFade(state.sun.direction[1]),
     strength: 1,
   };
 }
@@ -798,6 +854,7 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
         { name: "aerialAmbient", size: 3, type: "vec3" },
         { name: "aerialSunTransmittance", size: 3, type: "vec3" },
         { name: "aerialTwilightArch", size: 3, type: "vec3" },
+        { name: "aerialNightZenithFade", size: 1, type: "float" },
         { name: "aerialParams", size: 4, type: "vec4" },
       ],
     };
@@ -864,6 +921,7 @@ export class AerialPerspectiveMaterialPlugin extends MaterialPluginBase {
       binding.twilightArch[1],
       binding.twilightArch[2],
     );
+    uniformBuffer.updateFloat("aerialNightZenithFade", binding.nightZenithFade);
     uniformBuffer.updateFloat4(
       "aerialParams",
       RAYLEIGH_SCALE_HEIGHT_METERS,
@@ -975,6 +1033,7 @@ export function applyAerialPerspectiveToShaderMaterial(
   setVector3("aerialAmbient", ...binding.ambient);
   setVector3("aerialSunTransmittance", ...binding.sunTransmittance);
   setVector3("aerialTwilightArch", ...binding.twilightArch);
+  material.setFloat("aerialNightZenithFade", binding.nightZenithFade);
   setVector4(
     "aerialParams",
     RAYLEIGH_SCALE_HEIGHT_METERS,

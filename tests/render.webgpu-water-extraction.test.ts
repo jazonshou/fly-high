@@ -103,11 +103,20 @@ describe("water shader extraction (2-8a)", () => {
     // outside the twilight window and the fragment never evaluates the sky
     // function that consumes it. Deliberate, named, reviewed — the flow
     // this assertion exists to force.
+    //
+    // Re-pinned by NIGHT_LOOK §2.6 round G (night zenith fade). FRAGMENT
+    // ONLY, declaration-side again: the `aerialNightZenithFade` uniform
+    // declaration plus the fade line inside `skyRadiance`, which the water
+    // fragment composes but never calls. The vertex hash is byte-for-byte
+    // unchanged for the third consecutive include growth, and water pixels
+    // cannot move for the same reason as the arch's re-pin: the uniform is
+    // zero-filled by day and the fragment never evaluates the sky function
+    // that consumes it. Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "d98c96e0ee0b46983628d9739ddfe0037995fe51d0cf968b2fbe1da3768a573c",
+      "7b93ee7cf8528519e71911b1fb66dd31ef671c6e8de14412fa65c5065dc9c4e2",
     );
   });
 

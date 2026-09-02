@@ -15,6 +15,8 @@ import {
   twilightArchStrength,
   twilightAmbientFloorFactor,
   twilightArchRadiance,
+  nightZenithFade,
+  NIGHT_ZENITH_FALLOFF,
   MOON_TWILIGHT_RECESSION,
   TWILIGHT_ARCH_TINT,
   TWILIGHT_ARCH_STRENGTH,
@@ -462,6 +464,50 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.26)).toBe(0);
   });
 
+  it("fades the night zenith on the NIGHTNESS gate, and day is exactly zero", () => {
+    // Round G (Jason: "the blue transitions into black the further up you
+    // look"). Gated by aerialNightness, deliberately NOT the twilight art
+    // window — coupling a night ask to five dusk behaviours is the drift
+    // this family's tests exist to prevent.
+    expect(nightZenithFade(sineAt(12.5))).toBe(0);
+    expect(nightZenithFade(sineAt(19.0))).toBe(0);
+    expect(nightZenithFade(-0.07)).toBe(0); // nightness engages below here
+    expect(nightZenithFade(sineAt(23.75))).toBe(NIGHT_ZENITH_FALLOFF);
+    expect(nightZenithFade(sineAt(0))).toBe(NIGHT_ZENITH_FALLOFF);
+    const dusk = nightZenithFade(sineAt(20.45));
+    expect(dusk).toBeGreaterThan(0);
+    expect(dusk).toBeLessThan(NIGHT_ZENITH_FALLOFF);
+    // The mirror applies it multiplicatively over scatter AND arch: a zero
+    // fade is the identity, so a day binding's sky is bit-identical.
+    const noon = resolveAerialPerspectiveBinding(
+      DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
+    );
+    expect(noon.nightZenithFade).toBe(0);
+    expect(Math.exp(-noon.nightZenithFade * 1)).toBe(1);
+  });
+
+  it("keeps the fade (and the arch) OUT of the terrain-haze path — pinned, not assumed", () => {
+    // Load-bearing isolation: skyRadiance carries the arch and the zenith
+    // fade; applyAerialPerspective is what terrain, water and every surface
+    // consumer call. If skyRadiance is ever reached from the surface path,
+    // the ground inherits sky-only terms — round 1 measured that failure
+    // (the ground flooded). Pin the WGSL structure itself.
+    const surfacePath = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn applyAerialPerspective("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance("),
+    );
+    expect(surfacePath.length).toBeGreaterThan(100);
+    expect(surfacePath).not.toContain("skyRadiance(");
+    expect(surfacePath).not.toContain("aerialTwilightArch");
+    expect(surfacePath).not.toContain("aerialNightZenithFade");
+    // And the sky path DOES carry both, with the exponential shape.
+    const skyPath = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance("),
+    );
+    expect(skyPath).toContain("uniforms.aerialTwilightArch");
+    expect(skyPath).toContain("exp(-uniforms.aerialNightZenithFade * max(direction.y, 0.0))");
+  });
+
   it("gates the directional sun at the geometric horizon, not the art window", () => {
     // Round S: ground-level direct sun from below the horizon is impossible
     // (refraction ~0.5° ≈ 0.009 sine, inside the ±0.02 band). Exactly 1 at
@@ -556,15 +602,20 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
     const bare = { ...dusk, twilightArch: [0, 0, 0] as [number, number, number] };
     // The mirror: sky-with-arch minus sky-without is EXACTLY the arch times
-    // the gradient — nothing else in the integral moved.
+    // the gradient times round G's zenith fade — nothing else moved. (The
+    // fade multiplies the WHOLE sky output, so it scales the arch's delta
+    // too; at dusk the premultiplied fade is partial nightness.)
+    const fadeAt = (y: number): number => Math.exp(-dusk.nightZenithFade * Math.max(y, 0));
     const zenithDelta = evaluateSkyRadiance(dusk, [0, 1, 0])[2]!
       - evaluateSkyRadiance(bare, [0, 1, 0])[2]!;
     const horizonDelta = evaluateSkyRadiance(dusk, [0.9994, 0.035, 0])[2]!
       - evaluateSkyRadiance(bare, [0.9994, 0.035, 0])[2]!;
     expect(zenithDelta).toBeCloseTo(
-      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF), 9,
+      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF) * fadeAt(1), 9,
     );
-    expect(horizonDelta).toBeCloseTo(dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF * 0.035), 9);
+    expect(horizonDelta).toBeCloseTo(
+      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF * 0.035) * fadeAt(0.035), 9,
+    );
     // Horizon stays the bright edge of the arch; zenith the dark deep blue.
     expect(horizonDelta).toBeGreaterThan(zenithDelta);
     // And the WGSL carries the same term: the uniform is declared, the sky

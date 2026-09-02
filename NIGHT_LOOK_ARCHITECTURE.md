@@ -365,6 +365,36 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a⁵) ROUND G — the night zenith fades to black, and the byte-identity
+  chain RETIRES HERE, DELIBERATELY.** Jason, verbatim: *"Instead of
+  having a solid dark blue sky, I'd like the blue to transition into
+  black the further up you look. I like how it's lighter now — you're on
+  the right path."* Measured first: the rendered night sky ran 0.066 →
+  0.102 (1.54×) and dusk was a FLAT SLAB (1.02× across the upper 70%) —
+  while the dome's RADIANCE gradient was already 3.7×. The rod response
+  compresses radiance ratios ~cube-root at night, so the physics Jason
+  wants existed and the response flattened it — no radiance-widening
+  knob could win without acknowledging that, and the falloff constant is
+  therefore DELIBERATELY larger than the display target suggests (its
+  docblock carries the arithmetic so nobody "fixes" it). Mechanism:
+  `NIGHT_ZENITH_FALLOFF` (1.8, exp shape, never negative) premultiplied
+  by `aerialNightness` into the binding, applied inside `skyRadiance`
+  over scatter and arch alike — GATED BY NIGHTNESS, deliberately NOT the
+  twilight window (a night ask must not couple to five dusk behaviours);
+  stars, the Milky Way and the moon disc compose AFTER `skyRadiance` and
+  stay bright against the blackening glow, which is the look. Day is
+  bit-identical by shape (nightness 0, exp(0) = 1) and PINNED at the day
+  sines; the terrain-haze isolation is PINNED STRUCTURALLY (the
+  `applyAerialPerspective` body must not reach `skyRadiance` or either
+  sky-only uniform — round 1 measured that failure).
+  **CRITERIA RECORD: the eight-round night byte-identity chain ends at
+  this round BY DESIGN — changing the night sky's pixels is the request
+  itself. A broken byte-identity comparison against any pre-G frame is
+  EXPECTED, not a regression. Successor criteria: night vertical display
+  ratio top/horizon ≤ 0.5 (from 0.65); night terrain band HELD in the
+  approved [0.115, 0.145]; dusk keeps skyGroundRatio ≥ 1.5 and its
+  terrain band; day pixel-floor bracket unchanged.**
+
 - **(a⁗) ROUND S — the below-horizon SUN was the crown-warmer, and round
   M's double stop is what found it.** The moon recession moved the
   crowns 2.3% (1.166→1.139, target <1.0) and the ratio FELL — both

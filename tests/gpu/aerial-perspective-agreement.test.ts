@@ -36,6 +36,7 @@ struct AerialUniforms {
   aerialAmbient: vec3f,
   aerialSunTransmittance: vec3f,
   aerialTwilightArch: vec3f,
+  aerialNightZenithFade: f32,
   aerialParams: vec4f,
 };
 
@@ -55,7 +56,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
-/** Struct layout above: vec3f aligns to 16 bytes, so 11 fields span 44 floats. */
+/**
+ * Struct layout above: the f32 after the vec3 packs into float 39 (a vec3's
+ * tail slot), then aerialParams aligns to 16 bytes at float 40 — 44 floats.
+ */
 function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
   const data = new Float32Array(44);
   data[0] = binding.cameraAltitudeMeters;
@@ -68,6 +72,7 @@ function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
   data.set(binding.ambient, 28);
   data.set(binding.sunTransmittance, 32);
   data.set(binding.twilightArch, 36);
+  data[39] = binding.nightZenithFade;
   data[40] = RAYLEIGH_SCALE_HEIGHT_METERS;
   data[41] = MIE_SCALE_HEIGHT_METERS;
   data[42] = binding.coefficients.mieAnisotropy;
