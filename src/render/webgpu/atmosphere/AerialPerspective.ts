@@ -746,22 +746,49 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
 // the number decides, and if it misses here the pre-named SHAPE failure
 // fires with the clock as the identified candidate (-3 deg is a pink
 // phase; sunset oranges live nearer -1..0).
-export const TWILIGHT_WARM_STRENGTH = 0.15;
+//
+// Round O: 0.15 -> 0.22 inside a RE-REGISTERED band [0.03, 0.30]. The old
+// ceiling was set before Jason had seen a single warm frame; he has now
+// seen three and ruled, verbatim: "Not a fan of the violet - let's go
+// back to blue with more yellow/red/orange/pink accents from the dimming
+// sun." His words are the registered input for the raised bound, the way
+// T4's greyer target carried the eye-call. Two turns in the new band.
+export const TWILIGHT_WARM_STRENGTH = 0.22;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
+/**
+ * Round O: the deep-twilight endpoint of the warm lobe's depth blend —
+ * the established Belt pink, reused. The lobe's tint now shifts
+ * TWILIGHT_WARM_TINT (palette 0-deg sunColor orange, the sunset end)
+ * toward this with sun depth: oranges live at the horizon crossing, pink
+ * as the sun sinks. depthT = clamp(-sunY / 0.26, 0, 1) - normalized on
+ * the window's own release sine, no new constants; both endpoints are
+ * palette/Belt-established, FIXED, not knobs. At the sunset-sunward clock
+ * (-3.0 deg) depthT is 0.20 - orange-leaning, which is where Jason's
+ * yellow/orange lives; at dusk-mesopic (-6.1) 0.41 - pinker.
+ */
+export const TWILIGHT_WARM_DEEP_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
+// Round O: banded [0.35, 0.60] from the fixed 0.35 - Jason named pink
+// explicitly, so the Belt's share is in scope as ONE knob, turned only
+// after the strength settles (his "more" first, his "pink" second).
 export const TWILIGHT_BELT_RATIO = 0.35;
 export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
 /** ~7° e-folding of the horizon hug — fixed, see the registration above. */
 export const TWILIGHT_WARM_ELEVATION_FOLD = 0.12;
 
-/** Premultiplied warm-lobe radiance at a sun elevation: tint × strength × window. */
+/**
+ * Premultiplied warm-lobe radiance at a sun elevation: depth-blended tint
+ * × strength × window. Round O's depth shift lives HERE, CPU-side — zero
+ * new uniforms; the same aerialTwilightWarm carries the blended colour.
+ */
 export function twilightWarmRadiance(
   sunDirectionY: number,
 ): [number, number, number] {
   const w = twilightArchStrength(sunDirectionY) * TWILIGHT_WARM_STRENGTH;
+  const depthT = Math.min(1, Math.max(0, -sunDirectionY / 0.26));
   return [
-    TWILIGHT_WARM_TINT[0] * w,
-    TWILIGHT_WARM_TINT[1] * w,
-    TWILIGHT_WARM_TINT[2] * w,
+    (TWILIGHT_WARM_TINT[0] + (TWILIGHT_WARM_DEEP_TINT[0] - TWILIGHT_WARM_TINT[0]) * depthT) * w,
+    (TWILIGHT_WARM_TINT[1] + (TWILIGHT_WARM_DEEP_TINT[1] - TWILIGHT_WARM_TINT[1]) * depthT) * w,
+    (TWILIGHT_WARM_TINT[2] + (TWILIGHT_WARM_DEEP_TINT[2] - TWILIGHT_WARM_TINT[2]) * depthT) * w,
   ];
 }
 

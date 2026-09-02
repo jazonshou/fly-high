@@ -469,6 +469,25 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.26)).toBe(0);
   });
 
+  it("shifts the warm lobe orange-to-pink with sun depth (round O)", () => {
+    // The depth blend is a SHAPE with zero new freedom: both endpoints are
+    // fixed (palette 0-deg sunColor orange; the established Belt pink) and
+    // depthT normalizes on the window's own release sine. The falsifiable
+    // consequence: deeper sun = pinker lobe (B/R rises monotonically),
+    // which is what separates the -3 deg probe (orange-leaning) from the
+    // -6 deg dusk (pinker) in the frames.
+    const shallow = twilightWarmRadiance(-0.052); // sunset-sunward's clock
+    const deep = twilightWarmRadiance(-0.107); // dusk-mesopic's clock
+    expect(shallow[2]! / shallow[0]!).toBeLessThan(deep[2]! / deep[0]!);
+    // Shallow stays in the orange family, well under the pink endpoint's
+    // 0.65 B/R; G tracks the blend upward toward pink.
+    expect(shallow[2]! / shallow[0]!).toBeLessThan(0.35);
+    expect(shallow[1]! / shallow[0]!).toBeLessThan(deep[1]! / deep[0]!);
+    // Endpoint zeros untouched: the window still gates everything.
+    expect(twilightWarmRadiance(sineAt(12.5))).toEqual([0, 0, 0]);
+    expect(twilightWarmRadiance(sineAt(23.75))).toEqual([0, 0, 0]);
+  });
+
   it("paints the sunset lobe toward the TRUE sun, zero outside the window", () => {
     // Round W. Premultiplied warm and belt are zero at every window
     // endpoint by the arch window's own proven shape — no new gate.
