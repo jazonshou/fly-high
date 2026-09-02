@@ -764,7 +764,13 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
 // slope (~3.5 R/B per unit): sunward 1.269 + 0.04 x 3.5 = ~1.41 against
 // the [1.35, 1.90] floor. Predicted median cost ~+0.01, inside the
 // cleared headroom. One turn remains.
-export const TWILIGHT_WARM_STRENGTH = 0.26;
+// Round O turn 2 (final): 0.26 -> 0.30, the re-registered ceiling. The
+// response flattened to ~1.3 R/B per unit (compression bending, as in
+// round W's ceiling approach) and the solve lands just over the 1.35
+// floor with no margin - the number decides. A miss at this ceiling is a
+// SHAPE answer (angular width or elevation fold) per the PM's standing
+// instruction; the ceiling does not move twice in one round.
+export const TWILIGHT_WARM_STRENGTH = 0.30;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
 /**
  * Round O: the deep-twilight endpoint of the warm lobe's depth blend —
