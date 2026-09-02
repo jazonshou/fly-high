@@ -262,10 +262,12 @@ export function evaluateSkyRadiance(
   const viewAz = (direction[0] / viewHLen) * binding.sunsetDirection[0]
     + (direction[2] / viewHLen) * binding.sunsetDirection[1];
   const horizonHug = Math.exp(-Math.max(direction[1], 0) / TWILIGHT_WARM_ELEVATION_FOLD);
+  const beltHug = Math.exp(-Math.max(direction[1], 0) / TWILIGHT_BELT_ELEVATION_FOLD);
   const warmLobe = Math.max(viewAz, 0) ** 4;
   const beltLobe = Math.max(-viewAz, 0) ** 4;
   const sunset = [0, 1, 2].map((c) =>
-    (binding.twilightWarm[c]! * warmLobe + binding.twilightBelt[c]! * beltLobe) * horizonHug);
+    binding.twilightWarm[c]! * warmLobe * horizonHug
+    + binding.twilightBelt[c]! * beltLobe * beltHug);
   // Round G zenith fade — mirrors the WGSL line for line.
   const zenithFade = Math.exp(-binding.nightZenithFade * Math.max(direction[1], 0));
   return [
@@ -417,10 +419,14 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   let viewHLen = max(length(vec2f(direction.x, direction.z)), 1e-4);
   let viewAz = dot(vec2f(direction.x, direction.z) / viewHLen, uniforms.aerialSunsetDir.xz);
   let horizonHug = exp(-max(direction.y, 0.0) / 0.12);
+  // Round O(b): the Belt is a TIGHT arc (the anti-solar shadow edge), not
+  // a broad glow - its own fold at half the lobe's. The falloff constants
+  // mirror TWILIGHT_WARM_ELEVATION_FOLD and TWILIGHT_BELT_ELEVATION_FOLD.
+  let beltHug = exp(-max(direction.y, 0.0) / 0.06);
   let warmLobe = pow(max(viewAz, 0.0), 4.0);
   let beltLobe = pow(max(-viewAz, 0.0), 4.0);
-  let sunset = (uniforms.aerialTwilightWarm * warmLobe
-    + uniforms.aerialTwilightBelt * beltLobe) * horizonHug;
+  let sunset = uniforms.aerialTwilightWarm * warmLobe * horizonHug
+    + uniforms.aerialTwilightBelt * beltLobe * beltHug;
   // Round G: the night zenith fade - the sky glow transitions to black the
   // further up you look (Jason's ask), while stars and the moon disc are
   // added AFTER this function and stay. Exponential so it is never
@@ -774,6 +780,20 @@ export const TWILIGHT_BELT_RATIO = 0.35;
 export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
 /** ~7° e-folding of the horizon hug — fixed, see the registration above. */
 export const TWILIGHT_WARM_ELEVATION_FOLD = 0.12;
+
+/**
+ * Round O(b) — the Belt of Venus gets its OWN, tighter fold: ~3.5°
+ * e-folding, half the lobe's. THE BETTER MODEL, not a workaround: the
+ * real Belt is the anti-solar edge of Earth's shadow — a tight arc above
+ * the horizon in every photograph, not a broad glow — and sharing the
+ * lobe's 0.12 fold was a modelling shortcut. The instrument that found
+ * it: the sky-median PROTECTION binding at 0.3771 vs ≤0.37, because
+ * broad pink in the sky band's horizon rows is accent luminance in the
+ * wrong rows. A protection that binds is information; the first response
+ * is to change the thing measured, never the threshold (PM ruling,
+ * objective-vs-protection distinction, on the §2.6 record).
+ */
+export const TWILIGHT_BELT_ELEVATION_FOLD = 0.06;
 
 /**
  * Premultiplied warm-lobe radiance at a sun elevation: depth-blended tint

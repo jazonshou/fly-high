@@ -122,11 +122,18 @@ describe("water shader extraction (2-8a)", () => {
     // are zero-filled outside the twilight window and the fragment never
     // evaluates the sky function that consumes them. Deliberate, named,
     // reviewed.
+    //
+    // Re-pinned by NIGHT_LOOK §2.6 round O(b) (the Belt's own tighter
+    // fold). FRAGMENT ONLY, fifth consecutive include growth with the
+    // vertex byte-identical: two lines inside `skyRadiance` (the beltHug
+    // term and the split sunset composition), which the water fragment
+    // composes but never calls. Same reasoning as every prior re-pin:
+    // water pixels cannot move. Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "dde1511467eb79144bbd02efa28853a7d0d9e31650042347eea4e9017db3a34a",
+      "5ea90f0a55d6828547526c1f9f9ee0fbe08ca79c10207a57d8ded609c5915bc4",
     );
   });
 
