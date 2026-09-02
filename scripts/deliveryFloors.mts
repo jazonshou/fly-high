@@ -922,28 +922,69 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "the floods themselves; a cost of the container having any child at all.",
   }),
   Object.freeze({
-    owner: "7-10 / hangars",
+    owner: "7-10 / parametric hangars",
     feature: "parametric-hangars",
     baseRef: "37cf3aa", headRef: "82c4182",
-    shotsMeasured: 3,
+    shotsMeasured: 34,
     delta: Object.freeze({
-      "reference-viewport": 6, "ground-2m-lowsun": 6, "cruise-horizon": -6,
+      // +6 where the hangars draw: six meshes replacing three CreateBox placeholders.
+      "approach-500ft": 6, "blue-hour": 6, "canopy-1200ft": 6,
+      "coast-10km-lowsun": 6, "cruise-sun-30": 6, "dusk-mesopic": 6,
+      "forest-500ft-sunbehind": 6, "forest-line-highsun": 6, "golden-hour": 6,
+      "ground-2m-lowsun": 6, "grove-forest-2m": 6, "grove-meadow-2m": 6,
+      "hills-dusk-glint": 6, "motion-banked-turn": 6, "mountain-close": 6,
+      "night": 6, "night-beacon-offset": 6, "night-moonlit": 6,
+      "page-thrash-turn": 6, "reference-viewport": 6, "runway-on-approach": 6,
+      "terrain-material-1600ft-down": 6, "veg-seam-1600ft-oblique": 6, "veg-seam-near-500ft": 6,
+      "water-25ft": 6, "water-3m": 6, "winter-noon": 6,
+      // -6 where they do not: the placeholders are gone and nothing replaces them.
+      "canopy-backlit-lowsun": -6, "cdlod-transition": -6, "cliff-60m": -6,
+      "cruise-horizon": -6, "high-10000ft-down": -6, "horizon-shadow-far-annulus": -6,
+      "slant-10km": -6,
     }),
     note:
-      "NOT UNIFORM, and the first feature that legitimately cannot be. Six "
-      + "meshes at 2.00 inside the 6000 m LOD cull; beyond it the new meshes are "
-      + "culled while the three `CreateBox` placeholders they replaced are gone, "
-      + "so the commit is a net SAVING of 6. A sign change, not a magnitude "
-      + "change -- and the swing of 12 is the whole of the +24/+12 bimodality. "
-      + "Measured via `37cf3aa -> 82c4182` because `ddc5a63` does not run; see "
-      + "MULTI_OWNER_COMMITS. Needs the full set AS IT STANDS AT THOSE TWO "
-      + "COMMITS -- 34 at both `37cf3aa` and `82c4182` -- before it becomes an "
-      + "entry. NOT the current set: each capture arm imports its own "
-      + "worktree's `PERF_CAPTURE_SHOTS` (`SELECTED_SHOTS` falls back to it "
-      + "when the filter is empty), so a shot added to HEAD does not change "
-      + "this pair's denominator. The set reached 35 in `57e38a0` while this "
-      + "note still read `the full 34`, which was correct and looked stale -- "
-      + "the reason the count is now stated against the commits that fix it.",
+      "THE BRIDGE MEASUREMENT, promoted from the two-shot discovery pass. Full "
+      + "34 of 34 shots, both arms 34, shot sets identical -- stated before the "
+      + "delta because a partial decomposition is the failure this table exists "
+      + "to exclude. Measured via `37cf3aa -> 82c4182` because `ddc5a63` does "
+      + "not run; see MULTI_OWNER_COMMITS. "
+      + "EVERY shot moved, by exactly +6 or -6, no shot at zero and no third "
+      + "value. Six hangar meshes replace three `CreateBox` placeholders at "
+      + "2.00 draws each, so the commit ADDS 6 where the hangars draw and SAVES "
+      + "6 where they do not. A sign change rather than a magnitude change, and "
+      + "the swing of 12 is the whole of the +24/+12 bimodality that started "
+      + "this. "
+      + "EVIDENCE LOCATION, stated honestly: both reports are on the capture "
+      + "host at `tests/perf/artifacts/run-archive/bridge-37cf3aa-82c4182/`, "
+      + "which is GITIGNORED (`.gitignore:45`) and therefore NOT in the tree. "
+      + "`git ls-files tests/perf/artifacts/run-archive/` returns zero. Do not "
+      + "read `archived` as `retrievable`; a clean checkout has none of it.",
+    whyNonUniform:
+      "`AIRFIELD_STRUCTURE_LOD.cullDistanceMeters = 6000`, installed by "
+      + "`buildHangar` as a Babylon LOD level with a NULL replacement, so beyond "
+      + "it the shell is not drawn at all. What varies across shots is whether "
+      + "the camera is inside that radius. "
+      + "CORROBORATED INDEPENDENTLY: the seven shots that go negative here are "
+      + "EXACTLY the seven that read 0 in the `hangar-detail` entry above, "
+      + "measured by a different owner from a different commit pair "
+      + "(`1a23abf -> 2bfe84a`). Two measurements, two commit pairs, the same "
+      + "27/7 partition of the shot set. "
+      + "THE TWO APPARENT EXCEPTIONS ARE MEASUREMENT ERROR IN THE PROXY, NOT IN "
+      + "THE MECHANISM, and are recorded because the earlier working called them "
+      + "a refutation. `cdlod-transition` (5701 m to the datum) and "
+      + "`horizon-shadow-far-annulus` (5845 m) look INSIDE the cull. The hangars "
+      + "sit up to 250 m from the airport datum (`hangarFootprint` gives "
+      + "across 135, along -210.4 / -158.4 / -106.4), so their true distances "
+      + "reach 5951 m and 6095 m -- the second crosses the cull outright and the "
+      + "first lands within 1% of it. The proxy ignores the airport's "
+      + "`headingRadians` rotation and measures to the datum rather than to each "
+      + "mesh, so it cannot resolve the last 50 m and no claim is made that it "
+      + "does. "
+      + "AND THIS RETIRES A RETRACTED CLAIM RATHER THAN LEAVING IT OPEN: the "
+      + "`+24/+12` working once concluded the split `does not track distance`, "
+      + "citing `mountain-close` and `cliff-60m` at equal offsets in different "
+      + "groups. Both carry a `locate`, so those offsets are search SEEDS and "
+      + "not positions; see RETRACTED_DRAW_READINGS. Distance is the mechanism.",
   }),
   Object.freeze({
     owner: "7-10 / hangars",

@@ -479,7 +479,17 @@ orders of magnitude larger and is already established as a night-specific waste.
 **Acceptance reports, not standing baselines**, per 7-9's own pins. Only the
 canonical tier-1 set remains the regression gate.
 
-Reports archived in the main tree at
-`tests/perf/artifacts/run-archive/7-9-tier-sweep/` — eight tier arms plus the
+> **CORRECTED 2026-09-01: "archived in the main tree" IS FALSE.**
+> `tests/perf/artifacts/` is gitignored (`.gitignore:45`) and
+> `git ls-files tests/perf/artifacts/run-archive/` returns **zero tracked
+> files**. These reports exist on ONE machine, in an ignored directory. They are
+> in no commit, and a clean checkout has none of them. **Every number quoted
+> above is therefore backed by evidence that cannot be retrieved by anyone but
+> the person holding this disk** — which is the same shape as a correction that
+> never lands: it reads as durable and is not. Either the archive moves
+> somewhere tracked, or this sentence has to say "on the capture host only".
+
+Reports at
+`tests/perf/artifacts/run-archive/7-9-tier-sweep/` **on the capture host only** — eight tier arms plus the
 34-shot `ratchet-full` run the draw-call table came from. The PNGs stay in the
 capture worktree; the reports carry every number quoted above.
