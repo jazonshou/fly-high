@@ -159,6 +159,43 @@ const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 const HIDE_VEGETATION = import.meta.env.VITE_PERF_HIDE_VEGETATION === "1";
 
 /**
+ * `VITE_PERF_TEMPORAL_DUMP=1` — write every temporal-loop frame of a motion
+ * shot as a PNG artifact (temporal-<shot>-fNN.png). The committed temporal
+ * gate reduces frames to LUMINANCE before any metric, so a chromatic
+ * transient (Jason: "random colors that slash through the terrain") sits in
+ * the instrument's blind spot by construction; this dump is the instrument
+ * that can see it. Diagnostic only; adds untimed toDataURL work inside the
+ * already-untimed temporal loop, and never touches render state.
+ */
+const TEMPORAL_DUMP = import.meta.env.VITE_PERF_TEMPORAL_DUMP === "1";
+
+/**
+ * `VITE_PERF_SCOTOPIC_WOBBLE=1` — during a motion shot's temporal loop,
+ * alternate the clock across the scotopic pass's activation boundary
+ * (day 171, 20.33 h rod=0 OFF vs 20.36 h rod~0.04 ON; measured by
+ * mesopic-clock-probe) every frame, through the production path
+ * (setAtmosphere -> applyScotopicState -> attach/detachPostProcess at
+ * slot 0 + applyFirstPassOwnership MSAA reassignment). Live dusk flight
+ * crosses this boundary once per session with NO hysteresis in
+ * shouldRunScotopicPass; no shipping capture ever crosses it mid-run, so
+ * the toggle is capture-invisible today. This is the amplified positive
+ * control for the render-bundle attachment-state family (the mixed
+ * night/daylight capture crash). Diagnostic only.
+ */
+const SCOTOPIC_WOBBLE = import.meta.env.VITE_PERF_SCOTOPIC_WOBBLE === "1";
+
+/**
+ * `VITE_PERF_RESIZE_WOBBLE=1` — during a motion shot's temporal loop, nudge
+ * the render surface's CSS size by 2×1 px every 4th frame, driving the
+ * production ResizeObserver -> applyRenderScale -> engine.resize path (the
+ * same seam the adaptive governor's resolution lever exercises in live
+ * flight and every capture freezes). Combined with the scotopic wobble this
+ * interleaves post-chain rebuilds with render-target recreation, the state
+ * pair Babylon's post-process texture cache must survive. Diagnostic only.
+ */
+const RESIZE_WOBBLE = import.meta.env.VITE_PERF_RESIZE_WOBBLE === "1";
+
+/**
  * `VITE_PERF_DETAIL_SH_IN_FRAGMENT=1` — build every detail material with
  * `forceIrradianceInFragment`, moving spherical-harmonic irradiance off the
  * vertex stage.
@@ -1112,10 +1149,29 @@ describe("perf capture (1A-1c / 2Z)", () => {
       if (isMotion) {
         for (let frame = 0; frame < PERF_CAPTURE_TEMPORAL_FRAMES; frame += 1) {
           await nextAnimationFrame();
+          if (SCOTOPIC_WOBBLE) {
+            renderer.setAtmosphere(
+              { dayOfYear: 171, solarTimeHours: frame % 2 === 0 ? 20.33 : 20.36 },
+              "clear",
+            );
+          }
+          if (RESIZE_WOBBLE && frame % 4 === 0) {
+            const shrink = (frame / 4) % 2 === 1;
+            canvas.style.width = `${viewportWidth - (shrink ? 2 : 0)}px`;
+            canvas.style.height = `${viewportHeight - (shrink ? 1 : 0)}px`;
+          }
           renderer.render(advanceFrameState(), 1 / 60);
           resolvePresentedFrame();
           const rgba = copyContext.getImageData(0, 0, viewportWidth, viewportHeight).data;
           temporalFrames.push(luminanceFromRgba(rgba, viewportWidth, viewportHeight));
+          if (TEMPORAL_DUMP) {
+            const frameBase64 = copy.toDataURL("image/png").split(",", 2)[1]!;
+            await commands.writeFile(
+              `${ARTIFACT_DIR}/temporal-${shot.name}-f${String(frame).padStart(2, "0")}.png`,
+              frameBase64,
+              "base64",
+            );
+          }
         }
 
         // The temporal loop is still moving the observer and can legitimately

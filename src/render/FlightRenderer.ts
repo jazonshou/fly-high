@@ -2365,6 +2365,33 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.scotopic.setSamples(samples.scotopic);
     this.bloom.setSamples(samples.bloom);
     this.toneMap.samples = samples.toneMap;
+    // The chain HEAD hosts the scene render, so only the head's input RTT
+    // carries a depth-stencil. Babylon re-establishes that invariant on
+    // PostProcess.dispose() (its head-change branch calls markTextureDirty)
+    // but NOT on camera.attach/detachPostProcess — the calls the runtime
+    // scotopic/bloom toggles use — so across a head flip the engine's open
+    // pass and its render bundles desync from the rebuilt RTTs. Measured on
+    // the deterministic wobble repro (dusk crossing × a resolution step,
+    // stock tier 1): "Attachment state of renderBundles[0] is not
+    // compatible" kills the frame and GpuUncapturedErrorGuard then fails
+    // every later render(); the format-COMPATIBLE variant of the same
+    // desync composites one stale intermediate silently — the in-flight
+    // "random colors slash through the terrain" report. Invalidate every
+    // chain pass whenever membership or samples change, so the next frame
+    // rebuilds all input RTTs against the new chain shape. Reached only
+    // from real chain changes (toggle edges and profile application), never
+    // per-frame.
+    for (const pass of [
+      this.scotopic.postProcess,
+      this.bloom.bright,
+      this.bloom.blurHorizontal,
+      this.bloom.blurVertical,
+      this.bloom.composite,
+      this.toneMap,
+      this.fxaa,
+    ]) {
+      pass.markTextureDirty();
+    }
   }
 
   private applyScotopicState(): void {
