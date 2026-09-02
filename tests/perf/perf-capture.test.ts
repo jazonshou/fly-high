@@ -4,6 +4,10 @@ import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
 import {
+  ESTIMATE_REPIN_TRIGGER_FRACTION,
+  estimateDivergenceFraction,
+} from "../../src/render/webgpu/core/PerformanceBudget";
+import {
   __setProfileOverrideForCaptureExperimentsOnly,
   resolveWebGpuQualityProfile,
 } from "../../src/render/webgpu/core/QualityProfile";
@@ -1689,6 +1693,56 @@ describe("perf capture (1A-1c / 2Z)", () => {
           ),
           `${shot.name}: inventoried GPU memory breached the pinned ceiling`,
         ).toEqual([]);
+        // THE ESTIMATE'S OWN RE-PIN TRIGGER, MADE MECHANICAL.
+        //
+        // `ESTIMATE_FUDGE_FACTOR`'s docblock has said "re-pin when
+        // |estimate - actual| exceeds 15%" since the constant was introduced.
+        // It fired, reached 48%, and stayed fired for weeks -- because a
+        // threshold stated in prose has nothing to compare against and nobody
+        // to tell. **A trigger with no mechanism is a comment.**
+        //
+        // THIS IS THE ONLY PLACE THE CHECK CAN BE HONEST. The Node suite has no
+        // device, so a test there would compare the multiplier against a
+        // transcribed or modelled figure -- which is exactly the failure this
+        // guard exists to catch. Here both readings come off a real frame.
+        //
+        // It reads `ESTIMATE_REPIN_TRIGGER_FRACTION` rather than a local 0.15,
+        // so the rule and its enforcement cannot drift apart.
+        //
+        // EXPECTED TO FAIL WHEN WRITTEN, deliberately. The point is that the
+        // decision gets made by someone rather than by nobody: either the
+        // multiplier gets a real calibration against the corrected inventory,
+        // or the threshold gets a defended new value. Not "make it green".
+        //
+        // Skipped under the sweep for the same reason the ceiling is: a sweep
+        // row is not the tier-1 pin, and comparing across tiers would be a
+        // fabricated threshold wearing a real one's name.
+        if (!IS_SWEEP) {
+          const divergence = estimateDivergenceFraction(
+            shot.estimatedGpuMemoryMiB,
+            shot.inventoriedGpuMemoryMiB,
+          );
+          // `null` means a reading was missing or implausible. That is a broken
+          // instrument, not a pass, and it must not be silently tolerated.
+          expect(
+            divergence,
+            `${shot.name}: estimate/inventory divergence could not be computed `
+            + `(estimated ${shot.estimatedGpuMemoryMiB}, inventoried `
+            + `${shot.inventoriedGpuMemoryMiB}) -- a missing reading is not a passing one`,
+          ).not.toBeNull();
+          expect(
+            divergence ?? Number.POSITIVE_INFINITY,
+            `${shot.name}: |estimate - inventory| / inventory is `
+            + `${(((divergence ?? 0) * 100)).toFixed(1)}%, past the `
+            + `${(ESTIMATE_REPIN_TRIGGER_FRACTION * 100).toFixed(0)}% the fudge factor's `
+            + "own docblock says triggers a re-pin. Estimated "
+            + `${shot.estimatedGpuMemoryMiB} MiB against a measured `
+            + `${shot.inventoriedGpuMemoryMiB} MiB. Either recalibrate `
+            + "ESTIMATE_FUDGE_FACTOR against the corrected inventory, or move "
+            + "ESTIMATE_REPIN_TRIGGER_FRACTION to a value someone is prepared to "
+            + "defend. Do not widen it to make this green.",
+          ).toBeLessThanOrEqual(ESTIMATE_REPIN_TRIGGER_FRACTION);
+        }
         // 4-10 (assertion 84b): page residency under streaming load. The
         // page-thrash and CDLOD-transition scenes exist to make a pump that
         // outruns the compute meter visible as a rising queue rather than as a

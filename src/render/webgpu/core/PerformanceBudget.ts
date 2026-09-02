@@ -477,6 +477,48 @@ const MISC_ALLOWANCE_MIB = 40;
  */
 const ESTIMATE_FUDGE_FACTOR = 1.15;
 
+/**
+ * The re-pin rule above, as a NUMBER something can read.
+ *
+ * The docblock has said "re-pin when |estimate - actual| exceeds 15%" since
+ * `f67b147`. It fired, reached 48%, and stayed fired — because **a threshold
+ * written in prose has nothing to compare against and nobody to tell.** That is
+ * the same shape as the GPU ladder's "a governor lever must never be attached
+ * to nothing", which was also true, also prose, and also unenforced until it
+ * became a test.
+ *
+ * **Exported so the check reads the rule rather than a copy of it.** A guard
+ * that transcribes 0.15 into a test file is two constants that can drift apart,
+ * which is the defect this whole area has been suffering from.
+ *
+ * **The comparison must be against a MEASURED inventory, never a modelled one.**
+ * There is no device in the Node suite, so the check lives in
+ * `tests/perf/perf-capture.test.ts` where both `estimatedGpuMemoryMiB` and
+ * `inventoriedGpuMemoryMiB` are read off a real frame. A trigger guard that
+ * compared this constant against another constant would have the disease it
+ * was written to cure.
+ */
+export const ESTIMATE_REPIN_TRIGGER_FRACTION = 0.15;
+
+/**
+ * `|estimate - inventory| / inventory`, the quantity the rule is stated in.
+ *
+ * Divided by the INVENTORY rather than the estimate: the inventory is the
+ * measured floor and the estimate is the thing on trial, so the measured value
+ * is the denominator. Returns `null` when either reading is missing or the
+ * inventory is not a plausible positive, so an absent number can never be
+ * mistaken for a passing one.
+ */
+export function estimateDivergenceFraction(
+  estimatedMiB: number | undefined,
+  inventoriedMiB: number | undefined,
+): number | null {
+  if (typeof estimatedMiB !== "number" || !Number.isFinite(estimatedMiB)) return null;
+  if (typeof inventoriedMiB !== "number" || !Number.isFinite(inventoriedMiB)) return null;
+  if (inventoriedMiB <= 0) return null;
+  return Math.abs(estimatedMiB - inventoriedMiB) / inventoriedMiB;
+}
+
 export interface GpuMemoryEstimateMiB {
   readonly renderPixels: number;
   readonly framebuffersMiB: number;
