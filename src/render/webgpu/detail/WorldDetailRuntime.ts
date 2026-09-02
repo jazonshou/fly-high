@@ -13,6 +13,7 @@ import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guarde
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RENDERED_DENSITY_LAWS,
+  renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
@@ -612,6 +613,21 @@ const DETAIL_REVEAL_RAMP_UPDATES = 42;
  * start, so newly resident cells appear through the existing range dither.
  */
 const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
+
+/**
+ * How far a cell's rendered tree share may drift before its distance is
+ * refreshed — expressed in SHARE, not in metres, and that is the whole point.
+ *
+ * A metre threshold spends its refreshes where they cannot be seen: past
+ * `farFloorShare` the share is constant, so a distant cell can move hundreds of
+ * metres and change nothing. **Bounding the share instead makes the check
+ * self-throttling in the right direction** — silent for the many far cells,
+ * responsive for the few near ones where a step is visible.
+ *
+ * 0.02 caps a single step at 2% of the near cap. The defect this replaces
+ * stepped **7.33x at tier 1 and 11.07x at tier 0**.
+ */
+const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;
 /** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
@@ -1426,6 +1442,51 @@ export class WorldDetailRuntime {
           resident.distance = desired.distance;
           this.batchesDirty = true;
         }
+      }
+    }
+
+    // TREES POPPING IN CLOSE UP. The loop above refreshes `distance` only from
+    // `desiredCells`, and that plan is rebuilt only when `nextSignature`
+    // changes — which quantises the observer to `cellSizeMeters * 0.5`, i.e.
+    // **256 m of travel, 4.1 s at cruise**. `presentationBuild` feeds that
+    // distance straight into `renderedShareAtDistance`, so a cell's tree budget
+    // could be up to 256 m out of date.
+    //
+    // **The error is negligible far out and enormous close in**, because the
+    // share curve is flat past `farFloorShare` and steep inside the near
+    // radius. Measured against the shipping law: a tier-1 cell 150 m away
+    // rendered **13.6%** of its trees and jumped to 100% at the next crossing —
+    // a **7.33x** step, 11.07x at tier 0 — with a hard binary admission
+    // (`treeCanopyRank[i] > treeShare`) and no fade to soften it. It read as
+    // "sometimes", because whether you see it depends on where the 256 m
+    // lattice falls relative to the wood, not on the wood.
+    //
+    // **The quantisation is a rebuild throttle, not an oversight**, so this
+    // does not refresh per frame. It bounds the quantity that is actually
+    // VISIBLE — the share — instead of the one that was convenient, the
+    // distance. That is self-throttling in the right direction: beyond the
+    // floor the share is constant, so distant cells (the overwhelming majority)
+    // never trigger a rebuild at all, and the traffic is confined to the
+    // handful of near cells where the difference can be seen.
+    //
+    // **No radius, band boundary or law constant moves here.** The share simply
+    // matches the distance the cell is at, which is what the law always said.
+    const densityLaw = profile.renderedDensityLaw;
+    for (const resident of this.cells.values()) {
+      const liveDistance = detailCellMinimumDistanceMeters(
+        observer.x,
+        observer.z,
+        resident.cellX,
+        resident.cellZ,
+        resident.cellSizeMeters,
+      );
+      const drift = Math.abs(
+        renderedShareAtDistance(densityLaw, liveDistance)
+        - renderedShareAtDistance(densityLaw, resident.distance),
+      );
+      if (drift > DETAIL_DENSITY_SHARE_REFRESH_EPSILON) {
+        resident.distance = liveDistance;
+        this.batchesDirty = true;
       }
     }
 
