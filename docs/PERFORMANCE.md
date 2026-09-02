@@ -104,7 +104,7 @@ audit is why it now carries all four tiers):
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
-| Shadow cascades (`4-8b`, D15) | 2 | 2 | 3 | 4 |
+| Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
 | Shadow distance (`4-8b`) | 900 m | 1.4 km | 1.8 km | 2.4 km |
 | Vegetation casts shadows (`4.5-C1`) | no | no | yes | yes |
 | Ocean FFT resolution per cascade | 128² | 128² | 256² | 256² |
@@ -454,7 +454,7 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   160/200/500/650, debt ratios to 3.28/2.87/6.32/4.56.
   > **Superseded 2026-08-31 (`6-12`). Both figures above are historical: they
   > are what `4.5-C1` pinned, not what the tree holds.** `VEGETATION_DRAW_CEILING`
-  > is now **`[50, 58, 515, 675]`** — tiers 0 and 1 fell by roughly 3x after
+  > is now **`[50, 58, 440, 515]`** — tiers 0 and 1 fell by roughly 3x after
   > `6-8`'s canopy handoff and `6-9`'s GPU scatter, and tier 3 rose. Asserted
   > against the constant by `tests/docs-truth.test.ts`.
   >

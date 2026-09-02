@@ -75,8 +75,11 @@ describe("7-9: the moonlight-shadow trade is a measured no", () => {
       const p = resolveWebGpuQualityProfile(row.quality, row.mode);
       return duplicateCascadeSetMiB(p.shadowMapSize, p.shadowCascades);
     });
-    // 1024²×2, 1280²×2, 1536²×3, 2048²×4 at 4 B/texel.
-    expect(costs.map((c) => Math.round(c * 10) / 10)).toEqual([8, 12.5, 27, 64]);
+    // 1024²×2, 1280²×2, 1536²×2, 2048²×2 at 4 B/texel. Tiers 2 and 3 fell from
+    // 3 and 4 cascades to 2 in `7-CSM`: more cascades were measured to REDUCE
+    // shadow coverage (a log-weighted split pushes the first split nearer), so
+    // the top tiers were paying for range the tier below covered better.
+    expect(costs.map((c) => Math.round(c * 10) / 10)).toEqual([8, 12.5, 18, 32]);
     // Non-vacuity: the tiers must actually differ, or the table below is one
     // number restated four times.
     expect(new Set(costs).size).toBe(4);

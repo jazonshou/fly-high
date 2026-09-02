@@ -498,7 +498,14 @@ function resolveBaseQualityProfile(
       // Phase 1. Buying it back costs more than softer contact shadows are
       // worth here, so PCSS is a Phase 7 conversation.
       shadowMapSize: 1_536,
-      shadowCascades: 3,
+      // `7-CSM`: 3 -> 2. Cascades were bought here on the assumption that more
+      // of them means more coverage. MEASURED off `_splitFrustum` on the
+      // shipping constants, the opposite holds: a log-weighted split pushes the
+      // FIRST split nearer as cascades are added, so 3 cascades gave cascade 0
+      // only 133.8 m where 2 give it 207.4 m — and every cascade past the first
+      // was costing a full-resolution render for range the tier below covered
+      // better. Two cascades cover the whole 1,800 m at 2 renders per caster.
+      shadowCascades: 2,
       clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 1_800,
       oceanResolution: 256,
@@ -556,9 +563,20 @@ function resolveBaseQualityProfile(
     finestResidentLevel: 0,
     heightAtlasSlots: 256,
     channelAtlasSlots: 256,
-    // `4-8b`: 4 × 2048 @ 2400 m. PCSS struck here too (see tier 2).
+    // `4-8b`: 2048 @ 2400 m. PCSS struck here too (see tier 2).
     shadowMapSize: 2_048,
-    shadowCascades: 4,
+    // `7-CSM`: 4 -> 2, and this tier is why the rule was found. At 4 cascades
+    // cascade 0 reached 132.8 m — LESS near coverage than tier 1's 162.3 m,
+    // while paying for a larger map and four array layers. At 2 it reaches
+    // 274.8 m and covers the full 2,400 m.
+    //
+    // MEASURED at tier 3, three arms interleaved two runs each: rendering all
+    // FOUR cascades costs -12.6% mean fps (-21.3% worst) and +128 MiB against
+    // shipped, while TWO cascades cost nothing resolvable (+0.3% mean; the four
+    // per-shot deltas alternate sign, which is what no effect looks like).
+    // The cost tracks the number of full-resolution cascade renders, NOT the
+    // draw count: +31% draw calls was free, +96% was not.
+    shadowCascades: 2,
     clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
     shadowDistance: 2_400,
     oceanResolution: 256,

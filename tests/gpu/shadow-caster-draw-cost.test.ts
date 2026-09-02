@@ -15,24 +15,31 @@ import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/Qualit
 /**
  * **What one mesh costs in draw calls, measured rather than derived.**
  *
- * `7-9`'s draw-call decomposition produced a constant that two independent
- * features agreed on — hangars and airfield furniture, opposite construction,
- * measured by two people: **a shadow-casting mesh costs 2.00 draws, not 3.**
- * One beauty draw plus **exactly one** shadow cascade, at a tier whose profile
- * declares `shadowCascades: 2`.
+ * **This file used to pin 2.00 and it was pinning a defect.** `7-9`'s
+ * decomposition found that a shadow-casting mesh cost 2.00 draws at a tier
+ * declaring two cascades, two features agreed on it, and the number went into
+ * four draw-call raise entries. The docblock recorded honestly that the source
+ * reads `1 + shadowCascades` and said the constant was empirical "until that
+ * mechanism is found".
  *
- * **That constant contradicts the obvious source reading and is the reason this
- * file exists.** Reading `objectRenderer.js`'s shadow render list shows filters
- * for `isReady`, LOD, `isEnabled`, `isVisible`, sub-meshes and layer mask — and
- * **no per-cascade distance or frustum test** — from which 1 + `shadowCascades`
- * follows. Measurement says otherwise, so something culls casters per cascade
- * that the render-list code does not show. **Until that mechanism is found, the
- * number is empirical, and an empirical number with no home becomes folklore
- * inside a week.**
+ * **The mechanism was found on 2026-09-01 and it was our own code.**
+ * `DepthOnlyCascadedShadowGenerator` drops the shadow map's colour attachment
+ * to reclaim memory. `RenderTargetTexture.render` loops one render per cascade
+ * only when `is2DArray` is true, and `is2DArray` reads the **colour** texture —
+ * while cascade depth lives in the **depth** texture. The gate asked about the
+ * wrong texture, so the generator rendered cascade 0 and nothing else:
+ * `cascadesRendered` measured **1 at every `numCascades` from 1 to 4**, leaving
+ * 88-94% of each tier's shadow range served by array layers no pass ever wrote.
+ * **The "missing per-cascade culling" this file hypothesised did not exist.**
  *
- * Measured here directly off Babylon's own `_drawCalls` counter — the same
- * counter `FlightRenderer` reports and the capture harness pins — rather than
- * inferred from a capture difference, so it needs no worktree and no host slot.
+ * **So the pin is inverted.** It now asserts `1 + numCascades`, which is what
+ * the source always said, and the assertion messages point at the gate rather
+ * than at a culling mechanism nobody could find. **A test that pins an
+ * unexplained constant will hold a defect in place**, which is exactly what
+ * this one did for as long as it existed.
+ *
+ * Measured off Babylon's own `_drawCalls` counter — the same counter
+ * `FlightRenderer` reports and the capture harness pins.
  */
 
 let engine: WebGPUEngine;
@@ -66,12 +73,11 @@ async function drawCallsAfterRender(scene: Scene): Promise<number> {
   return Math.round(counter.current);
 }
 
-describe("7-9: what a mesh costs, and what a CASTING mesh costs", () => {
-  it("MEASURED — a casting mesh costs 2 draws, not 1 + shadowCascades", async () => {
+describe("7-CSM: what a mesh costs, and what a CASTING mesh costs", () => {
+  it("MEASURED — a casting mesh costs 1 + numCascades, one render per cascade", async () => {
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
     // The tier the capture harness runs at, and the one both features measured on.
     expect(profile.tier).toBe(1);
-    expect(profile.shadowCascades).toBe(2);
 
     const scene = new Scene(engine);
     scene.clearColor = new Color4(0, 0, 0, 1);
@@ -84,6 +90,13 @@ describe("7-9: what a mesh costs, and what a CASTING mesh costs", () => {
       new HemisphericLight("cost-fill", Vector3.Up(), scene);
       const shadows = new DepthOnlyCascadedShadowGenerator(512, sun, false, camera, true);
       shadows.numCascades = profile.shadowCascades;
+
+      // Babylon clamps `numCascades` to MIN_CASCADES_COUNT = 2 SILENTLY, so read
+      // the effective value off the generator rather than trusting the profile.
+      const cascades = shadows.numCascades;
+      expect(cascades, "the profile's cascade count was clamped by the setter").toBe(
+        profile.shadowCascades,
+      );
 
       const empty = await drawCallsAfterRender(scene);
 
@@ -105,27 +118,27 @@ describe("7-9: what a mesh costs, and what a CASTING mesh costs", () => {
       for (const box of plain) shadows.addShadowCaster(box, false);
       const withCasters = await drawCallsAfterRender(scene);
       const totalPerMesh = (withCasters - empty) / COUNT;
-      const cascadesTaken = totalPerMesh - beautyPerMesh;
+      const cascadesRendered = totalPerMesh - beautyPerMesh;
 
-      // eslint-disable-next-line no-console
-      console.log(`[mesh-cost] beauty=${beautyPerMesh} cascadesTaken=${cascadesTaken} `
-        + `total=${totalPerMesh} (profile declares shadowCascades=${profile.shadowCascades})`);
+      console.log(`[mesh-cost] beauty=${beautyPerMesh} cascadesRendered=${cascadesRendered} `
+        + `total=${totalPerMesh} (generator numCascades=${cascades})`);
 
-      // THE PIN. Two capture-side decompositions measured 2.00; this measures the
-      // same constant off the counter directly.
+      // THE PIN, AND THE REGRESSION GUARD. If this drops back to 1, the
+      // per-layer loop has been re-gated on the colour attachment — see
+      // `DepthOnlyCascadedShadowGenerator`. Shadows beyond cascade 0's split
+      // would silently vanish, which is invisible to every other test we have.
+      expect(
+        cascadesRendered,
+        `${cascadesRendered} of ${cascades} cascades rendered. At 1, the shadow map's `
+        + "per-layer loop is gated on `is2DArray`, which reads the COLOUR texture this "
+        + "generator deliberately does not allocate — the 2026-09-01 defect.",
+      ).toBe(cascades);
+
       expect(
         totalPerMesh,
-        `a casting mesh measured ${totalPerMesh} draws. Both 7-9 decompositions found 2.00 — `
-        + "if this has moved, every draw-call raise entry derived from that constant needs re-deriving.",
-      ).toBe(2);
-
-      // And state the discrepancy the constant encodes, so it cannot be quietly
-      // "corrected" to match the profile by someone reading only the source.
-      expect(
-        cascadesTaken,
-        `casters reached ${cascadesTaken} cascade(s) of the ${profile.shadowCascades} this tier `
-        + "declares. If these are now equal, the per-cascade culling that made them differ is gone.",
-      ).toBeLessThan(profile.shadowCascades);
+        `a casting mesh measured ${totalPerMesh} draws, expected ${1 + cascades}. `
+        + "Every draw-call raise entry is derived from this constant.",
+      ).toBe(1 + cascades);
     } finally {
       scene.dispose();
     }
