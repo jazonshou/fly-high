@@ -646,9 +646,9 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
  * "blue blotches over the green terrain… hard geometric shapes that go
  * through the terrain" report (Jason, 2026-09-02), which
  * scripts/hydrology-piercing-probe.mts measured (all five generated lakes
- * pierced by ground, 1.1% of lake area, worst 8.34 m) and the
- * lake-island-piercing capture photographed as a blue slash across a
- * hillside.
+ * pierced by ground, 1.1% of lake area, worst 10.1 m — two instruments
+ * converged on (20520, −14630) ±2 m; a coarse first grid read 8.34 m)
+ * and the lake-island-piercing capture sited against.
  *
  * The legacy builder was a 32-segment fan from the basin centre at
  * `surfaceHeight`: nothing sampled the interior, so any ground above the
@@ -812,7 +812,7 @@ export function appendContainedLake(
   // A cell subdivides while it straddles the waterline or spans steep
   // ground, down to ~1 m cells: the leaf size bounds how much sub-cell
   // terrain can stand above drawn water (the legacy fan's unbounded
-  // version of that error measured 8.34 m).
+  // version of that error measured 10.1 m, converged).
   const LEAF_STEP_METERS = 1.25;
   const SUBDIVIDE_SPREAD_METERS = 0.75;
   const processCell = (

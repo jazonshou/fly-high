@@ -156,7 +156,10 @@ for (const lake of hydrology.lakes) {
   };
   let pierced = 0;
   let max = 0;
-  const step = Math.max(2, (maxX - minX) / 64);
+  // A coarse grid UNDER-READS a local peak: bbox/64 (~10 m here) reported
+  // the worst intrusion as 8.34 m where a converged fine grid reads 10.10 m
+  // (two instruments agreeing at (20520, −14630) ±2 m). Sample at ~1 m.
+  const step = Math.max(1, (maxX - minX) / 640);
   for (let gx = minX; gx <= maxX; gx += step) {
     for (let gz = minZ; gz <= maxZ; gz += step) {
       if (!inside(gx, gz)) continue;

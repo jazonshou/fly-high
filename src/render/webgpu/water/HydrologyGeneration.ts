@@ -147,6 +147,16 @@ export interface HydrologyGenerationResult {
 }
 
 export const DEFAULT_HYDROLOGY_CONFIG: HydrologyGenerationConfig = Object.freeze({
+  /**
+   * The default window centres on the WORLD ORIGIN — and the airport is
+   * ~30 km away, outside it. A default-config query therefore finds ZERO
+   * rivers and lakes anywhere near where anyone flies, which reads as "the
+   * world has no hydrology" and cost two sessions an instrument round each
+   * (2026-09-02) before a third wrote this down. Production centres the
+   * window on the airport (FlightRenderer passes centerX/centerZ from
+   * AirportDefinition) and pages further windows around the observer.
+   * Probing hydrology? Centre your window where you are looking.
+   */
   centerX: 0,
   centerZ: 0,
   extentMeters: 14_400,

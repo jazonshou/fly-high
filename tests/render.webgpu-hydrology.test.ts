@@ -511,14 +511,26 @@ describe("Babylon WebGPU hydrology presentation", () => {
     // AMENDMENT (2026-09-02, PM-sanctioned rebaseline; LAKE hash only): the
     // analytic lake builder was replaced by `appendContainedLake` after the
     // legacy fan was measured drawing water over ground — every generated
-    // lake pierced (1.1% of lake area, worst 8.34 m of terrain above the
-    // plate; scripts/hydrology-piercing-probe.mts), photographed in-world as
-    // Jason's "blue slash through the terrain". The sanction's basis: Gate
+    // lake pierced (1.1% of lake area, worst 10.1 m of terrain above the
+    // plate; scripts/hydrology-piercing-probe.mts — first reported 8.34 m
+    // from a coarse grid, corrected upward on a two-instrument convergence
+    // audit with SWE II 1, both landing on (20520, −14630) ±2 m). The sanction's basis: Gate
     // W's unchanged-SSIM close proof is GIVEN (PHASE_6_OUTCOME.md, 24/24
     // green analytic shots) and the eroded path is shelved, so the frozen
     // input the old hash protected no longer guards a pending proof. The
     // RIVER hash is deliberately untouched — appendRiver remains
     // byte-identical, and this test still fails on any drift in it.
+    //
+    // BLAST-RADIUS CORRECTION (same day, SWE II 1's frustum audit): the
+    // sanction request said "no baselined PNG frames a lake" — FALSE as
+    // written. slant-10km frames lake:23:-16 at 18.1 km (~41 px wide, on
+    // the frame's azimuth edge) and lake:32:-16 at 26.1 km. The clause
+    // that is TRUE: the intrusion subtends 0.62 px there — the defect was
+    // UNRESOLVABLE, not unframed, so no baseline could have caught it and
+    // none should visibly move under this fix (if slant-10km shifts beyond
+    // noise, something other than the island holes moved). The audit is a
+    // floor: 15 locate-driven shots have unresolved camera positions and
+    // the frustum test targets lake centres only.
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const camera = new FreeCamera("legacy-pin-camera", new Vector3(0, 300, -600), scene);
