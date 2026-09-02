@@ -179,7 +179,30 @@ export interface HangarPlan {
   readonly widthMeters: number;
   readonly depthMeters: number;
   readonly eaveHeightMeters: number;
+  /**
+   * The structural ridge — **NOT the top of the building.**
+   *
+   * `7-10`'s ventilators stand `HANGAR_DETAIL.ventHeightMeters` above this, so
+   * anything asking "how tall is the hangar" wants
+   * `hangarAttachments().heightMeters`, which is asserted against the built
+   * geometry's own y extent and moves on its own if a part ever grows taller.
+   *
+   * **TWO SESSIONS READ THIS FIELD AS THE TOP ON THE SAME EVENING**, in
+   * different files, through different consumers. `hangarAttachments` returned
+   * `ridge + skirt` and would have mounted `7-14`'s top obstruction lamp BELOW
+   * the highest metal on the building; a frustum guard projected to the ridge
+   * and would have passed a frame that cropped the vents. Neither author was
+   * missing knowledge — both knew the vents existed. **"Ridge height" simply
+   * READS like the top, so the wrong answer is available without anyone ever
+   * forming a belief about it.** Hence this comment at the point of use, where
+   * an editor shows it, rather than in a docblock nobody opens.
+   */
   readonly ridgeHeightMeters: number;
+  /**
+   * Depth of the concrete skirt below the slab. `max(relief, MINIMUM_SKIRT)` —
+   * it has a FLOOR, so it is not the raw terrain relief and a hand-rolled
+   * min/max over ground samples will disagree with it on flat ground.
+   */
   readonly skirtHeightMeters: number;
   /** Segments across the span for an arched roof; ignored when gabled. */
   readonly archSegments: number;
