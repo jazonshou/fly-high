@@ -236,9 +236,50 @@ export interface TerrainObserver {
   readonly pixelsPerMeterAtUnitDistance?: number;
 }
 
+/**
+ * Why the same page is resident, counted per reason.
+ *
+ * **`residentPages` is a TOTAL over a MIXED POPULATION, and it was read as
+ * "terrain being drawn".** It is not: `updateAtlasResidency` builds its wanted
+ * set from four sources with different rights, and only the first is a
+ * candidate for any visibility test.
+ *
+ *  - `drawn` — CDLOD-selected nodes. The ONLY set a frustum test could touch.
+ *  - `parent` — every node's parent, added unconditionally because morphing
+ *    reads it. Culling one pops the child it morphs into.
+ *  - `collision` — a 5x5 L0 ring around the observer, tier-invariant and
+ *    explicitly never added to the draw list. It is CORRECTLY indifferent to
+ *    where the camera looks; physics does not have a frustum.
+ *  - `seed` — `W-2` erosion dependencies, the transitive parent closure a page
+ *    needs converged before it can be admitted. Eroded worlds only.
+ *
+ * **`drawnBeyondShadowDistance` is the number a frustum cull would be sized
+ * from**, and it is the only one of these that a fix could reduce: terrain
+ * inside `shadowDistance` casts into view from any direction and must stay
+ * resident whether or not it is on screen.
+ *
+ * Published because the totals could not answer the question they were being
+ * asked. `collisionOnly` was already computed and discarded one line after it
+ * was built; this keeps it.
+ */
+export interface TerrainResidencyReasons {
+  readonly drawn: number;
+  readonly parent: number;
+  readonly collision: number;
+  readonly seed: number;
+  /** Drawn nodes further from the observer than the shadow-caster distance. */
+  readonly drawnBeyondShadowDistance: number;
+}
+
 export interface TerrainClipmapStatistics {
   /** Height-atlas slots holding a generated page. */
   readonly residentPages: number;
+  /**
+   * Why those pages are wanted, by reason. See `TerrainResidencyReasons` —
+   * the total alone cannot distinguish terrain nobody can see from terrain
+   * physics and morphing require.
+   */
+  readonly residencyReasons: TerrainResidencyReasons;
   /** Slots whose generation dispatch is in flight. */
   readonly pendingPages: number;
   readonly triangles: number;
@@ -688,6 +729,7 @@ export class TerrainClipmapSystem {
     const trianglesPerNode = this.beautyMesh.getTotalIndices() / 3;
     return {
       residentPages: this.heightAtlas.residency.residentCount,
+      residencyReasons: this.residencyReasons,
       pendingPages: this.heightAtlas.residency.generatingCount,
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
@@ -1241,6 +1283,15 @@ export class TerrainClipmapSystem {
    * node whose parent is missing is forced to `morphK = 0` — correct, but it
    * means the transition it exists to smooth does not happen.
    */
+  /**
+   * Last frame's residency breakdown. OBSERVATION ONLY — nothing here feeds a
+   * selection, an admission or an eviction, so publishing it cannot change
+   * what it measures.
+   */
+  private residencyReasons: TerrainResidencyReasons = {
+    drawn: 0, parent: 0, collision: 0, seed: 0, drawnBeyondShadowDistance: 0,
+  };
+
   private updateAtlasResidency(): void {
     this.heightAtlas.residency.beginFrame(this.frameIndex);
     this.channelAtlas.residency.beginFrame(this.frameIndex);
@@ -1251,8 +1302,22 @@ export class TerrainClipmapSystem {
     this.channelAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
     const wanted = new Map<string, WorldPageAddress>();
     const collisionOnly = new Set<string>();
+    // Record WHY each page is wanted, in the order the sources are consulted, so
+    // the first source to claim a key owns it. That ordering is the code's own
+    // precedence, not a new rule: a page that is both drawn and in the collision
+    // ring is drawn, and culling it would still break the draw.
+    const reasonFor = new Map<string, "drawn" | "parent" | "collision" | "seed">();
+    let drawnBeyondShadow = 0;
+    const shadowRadius = this.shadowCasterDistanceMeters;
     for (const node of this.nodes) {
-      wanted.set(`${node.address.level}:${node.address.x}:${node.address.z}`, node.address);
+      const nodeKey = `${node.address.level}:${node.address.x}:${node.address.z}`;
+      if (!reasonFor.has(nodeKey)) reasonFor.set(nodeKey, "drawn");
+      // `node.distanceMeters` is the SELECTOR's own distance, not one recomputed
+      // here — the same number that decided the node's level. Re-deriving it
+      // from the origin would introduce a second definition of the same
+      // quantity, which is how two figures for one thing start disagreeing.
+      if (node.distanceMeters > shadowRadius) drawnBeyondShadow += 1;
+      wanted.set(nodeKey, node.address);
       // `4.5-B1`: no parent above the ROOT level. A node at the coarsest level
       // has `morphK = 0` by construction (there is nothing to morph into), so
       // an L10 page is streamed, generated at ~1.9 ms and given an atlas slot
@@ -1263,7 +1328,9 @@ export class TerrainClipmapSystem {
         Math.floor(node.address.x / 2),
         Math.floor(node.address.z / 2),
       );
-      wanted.set(`${parent.level}:${parent.x}:${parent.z}`, parent);
+      const parentKey = `${parent.level}:${parent.x}:${parent.z}`;
+      if (!reasonFor.has(parentKey)) reasonFor.set(parentKey, "parent");
+      wanted.set(parentKey, parent);
     }
     // Collision authority is tier-invariant. Low renders no L0 nodes, but it
     // still generates the same 5x5 L0 ring used by every other tier; those
@@ -1280,6 +1347,7 @@ export class TerrainClipmapSystem {
           const address = createWorldPageAddress(0, collisionTileX + dx, collisionTileZ + dz);
           const addressKey = `0:${address.x}:${address.z}`;
           if (!wanted.has(addressKey)) collisionOnly.add(addressKey);
+          if (!reasonFor.has(addressKey)) reasonFor.set(addressKey, "collision");
           wanted.set(addressKey, address);
         }
       }
@@ -1313,6 +1381,7 @@ export class TerrainClipmapSystem {
             // field, even where the same page was wanted collision-only.
             collisionOnly.delete(parentKey);
             if (wanted.has(parentKey)) continue;
+            if (!reasonFor.has(parentKey)) reasonFor.set(parentKey, "seed");
             wanted.set(parentKey, parent);
             next.push(parent);
           }
@@ -1320,6 +1389,21 @@ export class TerrainClipmapSystem {
         frontier = next;
       }
     }
+    // `wanted` is final here: every source has been consulted and the erosion
+    // closure has run. Counted from `reasonFor` rather than from the atlas so
+    // the split sums to the WANTED set; the atlas holds a subset of it while
+    // admission catches up, and mixing the two would produce a breakdown that
+    // does not add up to anything.
+    let drawn = 0, parents = 0, collision = 0, seed = 0;
+    for (const reason of reasonFor.values()) {
+      if (reason === "drawn") drawn += 1;
+      else if (reason === "parent") parents += 1;
+      else if (reason === "collision") collision += 1;
+      else seed += 1;
+    }
+    this.residencyReasons = {
+      drawn, parent: parents, collision, seed, drawnBeyondShadowDistance: drawnBeyondShadow,
+    };
     const missingHeight: { address: WorldPageAddress }[] = [];
     const missingCollision: { address: WorldPageAddress }[] = [];
     const missingChannel: { address: WorldPageAddress }[] = [];

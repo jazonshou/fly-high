@@ -90,6 +90,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
 
   it("reports the active WebGPU profile and compute workloads", () => {
     const diagnostics: RenderDiagnostics = {
+      residencyReasons: { drawn: 0, parent: 0, collision: 0, seed: 0, drawnBeyondShadowDistance: 0 },
       fps: 58,
       frameTime: 17.2,
       drawCalls: 42,

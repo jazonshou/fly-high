@@ -135,6 +135,25 @@ export interface RenderDiagnostics {
   lakeCount: number;
   residentTerrainPages: number;
   /**
+   * Why those pages are resident, counted per reason.
+   *
+   * `residentTerrainPages` is a TOTAL over a MIXED POPULATION and was read as
+   * "terrain being drawn". Only `drawn` is a candidate for a visibility test:
+   * the collision ring is deliberately omnidirectional because physics has no
+   * frustum, morph parents pop the children that read them, and erosion seed
+   * blocks gate admission. `drawnBeyondShadowDistance` is the only figure a
+   * frustum cull could be sized from — terrain inside the shadow distance
+   * casts into view from any direction and must stay whether or not it is on
+   * screen.
+   */
+  residencyReasons: {
+    drawn: number;
+    parent: number;
+    collision: number;
+    seed: number;
+    drawnBeyondShadowDistance: number;
+  };
+  /**
    * Physics collision samples served by the coarse analytic fallback instead
    * of the authoritative terrain grid (§1.3). Hard-wired 0 until 5-2's
    * readback lands; any non-zero value below 500 m AGL is a bug.

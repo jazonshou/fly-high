@@ -2209,6 +2209,21 @@ export interface PerfCaptureShotReport {
   readonly vegetationBatches: number;
   readonly triangles: number;
   readonly residentTerrainPages: number;
+  /**
+   * The residency total above, split by WHY each page is wanted. Only `drawn`
+   * could ever be reduced by a visibility test: the collision ring is
+   * omnidirectional on purpose, morph parents pop their children, and erosion
+   * seed blocks gate admission. `drawnBeyondShadowDistance` is the figure a
+   * frustum cull would be sized from, because terrain inside the shadow
+   * distance casts into view from any direction.
+   */
+  readonly residencyReasons: {
+    readonly drawn: number;
+    readonly parent: number;
+    readonly collision: number;
+    readonly seed: number;
+    readonly drawnBeyondShadowDistance: number;
+  };
   readonly pendingTerrainPages: number;
   /** Detail generation/presentation backlog remaining when the shot was read. */
   readonly pendingDetailWork: number;
@@ -2262,6 +2277,16 @@ export interface PerfCaptureReport {
     /** `6-11.1`: the tier these numbers describe, and whether this is a sweep run. */
     readonly tier: number;
     readonly sweep: boolean;
+  /**
+   * Frames the settle loop was cut short at, or null for a normal settled run.
+   *
+   * NON-NULL MEANS THIS REPORT IS A DIAGNOSTIC, NOT A BASELINE. The capture was
+   * taken with streaming work still in flight — deliberately, to reach the one
+   * state every other path here removes — so its pixels, its memory readings and
+   * its draw counts all describe a half-resolved world. Nothing pinned may be
+   * derived from it.
+   */
+  readonly undrained: number | null;
     /**
      * The tier-cliff A/B arm: the profile fields this run forced, verbatim, or
      * null for an unmodified run. Recorded so an archived arm carries its own

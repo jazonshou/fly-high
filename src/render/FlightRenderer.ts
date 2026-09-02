@@ -1956,6 +1956,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // these fields kept their names because their MEANING survived it —
       // resident pages are resident pages.
       residentTerrainPages: terrain.residentSlots,
+      // The TOTAL above cannot distinguish terrain nobody can see from terrain
+      // physics, morphing and generation require. `residentTerrainPages` was
+      // read as the former and is the sum of both.
+      residencyReasons: terrain.residencyReasons,
       collisionSamplesServedByFallback:
         this.currentState?.terrainAuthority?.analyticServed ?? 0,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
