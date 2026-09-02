@@ -38,17 +38,33 @@ describe("inventoried-memory ceiling provenance", () => {
   });
 
   it("was derived over the SHOT SET the ceiling is applied to", () => {
-    // The frame check. A ceiling measured over 36 shots at tier 1 says nothing
-    // about a 40-shot set or a tier-2 run, and the two are indistinguishable
-    // once the number is separated from its provenance — which is exactly the
-    // error that produced "163 MiB of slack" where the answer was 238.
+    // THE POPULATION IS EVERY SHOT, and that is not an oversight.
+    // `inventoriedMemoryFailures` is applied by `gateAlways` in an unfiltered
+    // loop (`tests/perf/perf-capture.test.ts`), and `shot.ceilings` gates only
+    // the draw-call and frame ceilings — NOT this one. So a probe with
+    // `ceilings: null` is still measured against 495, and narrowing this count
+    // to the gated shots would make the guard walk a collection narrower than
+    // the claim it protects.
+    const declared = shotCount + PERF_CAPTURE_CEILING_PROVENANCE.unmeasuredShots.length;
     expect(
       PERF_CAPTURE_SHOTS.length,
-      `The ceiling's provenance records ${shotCount} shots but the set now holds `
-      + `${PERF_CAPTURE_SHOTS.length}. Re-measure and update `
-      + "PERF_CAPTURE_CEILING_PROVENANCE in the same commit that changes the set — "
-      + "a ceiling derived over a different population is not evidence about this one.",
-    ).toBe(shotCount);
+      `The capture set holds ${PERF_CAPTURE_SHOTS.length} shots; this ceiling's `
+      + `provenance accounts for ${declared} (${shotCount} measured`
+      + `${PERF_CAPTURE_CEILING_PROVENANCE.unmeasuredShots.length > 0
+        ? `, ${PERF_CAPTURE_CEILING_PROVENANCE.unmeasuredShots.length} declared unmeasured`
+        : ""}).\n\n`
+      + "A shot has been added whose inventoried memory has never been measured, "
+      + "so nobody yet knows whether it is the new maximum. THE QUESTION IS NOT "
+      + "WHICH NUMBER TO BUMP. There are two honest exits:\n"
+      + "  1. Re-measure the maximum across the whole set and update "
+      + "PERF_CAPTURE_CEILING_PROVENANCE with the run you used.\n"
+      + "  2. Add the shot's name to `unmeasuredShots` with a comment saying why "
+      + "it has not been measured.\n\n"
+      + "Exit 2 is cheap and TRUE. Raising `shotCount` instead is equally cheap "
+      + "and FALSE — it claims a measurement that was never taken, which is how "
+      + "495 came to sit 238 MiB above the thing it gates. 'It is probably a "
+      + "light shot' is the assumption that whole episode was built on.",
+    ).toBe(declared);
     expect(tier).toBe(1);
   });
 

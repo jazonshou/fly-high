@@ -8,6 +8,7 @@ import {
   hangarFootprint,
   hangarYawRadians,
 } from "./AirfieldStructures";
+import { approachLightExclusionBoxes } from "../lighting/AirfieldLighting";
 
 /**
  * Where vegetation must not grow, because a structure is standing there.
@@ -150,9 +151,11 @@ export function structureClearanceFactor(
  * three buildings sitting on exactly parallel axes — so a hangar that moves or
  * turns takes its exclusion with it.
  *
- * The lamp rows are NOT here yet: they belong to `7-7`'s owner, who is feeding
- * them in from `AirfieldLighting`'s own placements for the same reason. The
- * box list is the seam between us.
+ * The lamp rows join here from `approachLightExclusionBoxes`, derived from
+ * `AirfieldLighting`'s own placements rather than from `approachLengthMeters`,
+ * so the approach row's exclusion follows the lamps that actually ship. A row
+ * is a LINE — `halfAcrossMeters: 0` — which is why this interface carries a
+ * half-extent per axis rather than a footprint.
  */
 export function airfieldStructureExclusions(
   airport: Readonly<AirportDefinition>,
@@ -172,5 +175,9 @@ export function airfieldStructureExclusions(
       yawRadians: hangarYawRadians(seedHash, index),
     });
   }
+  // `7-7b`: the approach lighting system. Appended rather than merged into the
+  // loop above because they are a different owner's placements and must stay
+  // separately attributable if one of the two exclusions is ever wrong.
+  boxes.push(...approachLightExclusionBoxes(airport));
   return boxes;
 }

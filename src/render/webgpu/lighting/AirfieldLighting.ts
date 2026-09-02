@@ -93,6 +93,7 @@
  * suite is not a working feature unless the thing asserted is the thing drawn.
  */
 
+import type { StructureExclusionBox } from "../airfield/StructureExclusion";
 import {
   twilightArchStrength,
   TWILIGHT_WINDOW_RELEASE_SINE,
@@ -970,6 +971,85 @@ function runwayAxis(airport: Readonly<AirportDefinition>): readonly [number, num
  * hemispherical beam facing the end it serves, expresses all three states
  * without a second material.
  */
+/**
+ * `7-7b`: keep vegetation out of the approach lighting system.
+ *
+ * **The airfield's own exclusion cannot cover these lamps and never could.**
+ * `getAirportInfluence` is a rounded rectangle of `runwayLength/2 +
+ * endSafetyArea` = 740 m half-length, blending to nothing over a further 240 m,
+ * so it is spent by 980 m. The approach row runs to **1,080 m**. MEASURED at
+ * the stations: influence is 1.000 at 720 m, then 0.926, 0.624, 0.259, 0.020,
+ * and **exactly 0.000 at 1,020 and 1,080** — the airport term does not merely
+ * weaken out there, it does nothing at all. **A footprint sized to a runway has
+ * no way to know a light row runs 420 m past it.**
+ *
+ * MEASURED on the shipping generator before this existed: **6 trees and 1 shrub
+ * had crowns reaching an approach lamp**, three of them in the crossbar — the
+ * 30 m bar of ten lights a pilot lines up on.
+ *
+ * **Derived from `airfieldFixtures`, never from `approachLengthMeters`.** The
+ * boxes read the lamps that actually ship, so changing the approach length or
+ * the crossbar moves the exclusion with it and no one has to remember.
+ *
+ * **A row is a LINE, `halfAcrossMeters: 0`, and that matters.** Lamps sit 60 m
+ * apart; a tree BETWEEN two of them is within a crown radius of the line and is
+ * excluded, where a per-lamp footprint would let it stand. The hard margin is
+ * the dominant crown radius rather than anything wider because **a crown that
+ * does not touch the line cannot occlude a lamp ON the line viewed end-on** —
+ * which is the only way an approach row is ever seen.
+ *
+ * **What this deliberately does NOT do.** Full end-on visibility from a real
+ * final is ICAO's approach SURFACE: a plane rising from the threshold, 150 m
+ * wide at the inner edge and diverging over 3 km. A 22 m canopy penetrates a 3°
+ * slope until 22 / tan(3°) = 420 m from the threshold, which is exactly where
+ * this row ends. Clearing that surface would fell a 150 m x 3 km swath and read
+ * as deforestation, and it is far beyond the reported defect. **Recorded as a
+ * known limitation rather than silently omitted: this stops trees growing IN
+ * the lights, not every tree that could ever occlude them.**
+ */
+export const APPROACH_ROW_EXCLUSION_EXTENSION_METERS = 60;
+
+export function approachLightExclusionBoxes(
+  airport: Readonly<AirportDefinition>,
+): readonly StructureExclusionBox[] {
+  const approach = airfieldFixtures(airport).filter((f) => f.kind === "approach");
+  const boxes: StructureExclusionBox[] = [];
+  for (const end of [-1, 1] as const) {
+    const mine = approach.filter((f) => Math.sign(f.along) === end);
+    if (mine.length === 0) continue;
+    const centreline = mine.filter((f) => f.across === 0);
+    const alongs = centreline.map((f) => Math.abs(f.along));
+    const nearest = Math.min(...alongs);
+    const furthest = Math.max(...alongs);
+    // One extra station past the last lamp. A tree closer than the row's own
+    // spacing reads as standing in the row from the approach; beyond that is
+    // the approach-surface question this does not answer.
+    const half = (furthest - nearest) / 2 + APPROACH_ROW_EXCLUSION_EXTENSION_METERS;
+    boxes.push({
+      name: `approach-row-${end < 0 ? "lo" : "hi"}`,
+      alongMeters: end * ((nearest + furthest) / 2),
+      acrossMeters: 0,
+      halfAlongMeters: half,
+      halfAcrossMeters: 0,
+      yawRadians: 0,
+    });
+    // The crossbar is a line across the row rather than along it: ten lamps in
+    // a 30 m bar, the widest and most recognisable element of the system, and
+    // the one measured worst affected.
+    const bar = mine.filter((f) => f.across !== 0);
+    if (bar.length === 0) continue;
+    boxes.push({
+      name: `approach-crossbar-${end < 0 ? "lo" : "hi"}`,
+      alongMeters: bar[0]!.along,
+      acrossMeters: 0,
+      halfAlongMeters: 0,
+      halfAcrossMeters: Math.max(...bar.map((f) => Math.abs(f.across))),
+      yawRadians: 0,
+    });
+  }
+  return boxes;
+}
+
 export function airfieldLightPoints(
   airport: Readonly<AirportDefinition>,
 ): LightPointFixture[] {

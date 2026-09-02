@@ -338,6 +338,16 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // fb7e670: the twilight sky's sunward half, framed for the first time.
     // Same reason as the apron shot.
     "sunset-sunward",
+    // The only vantage that frames the approach lighting system at all --
+    // `runway-on-approach` has the crossbar 62 m BEHIND its camera. Unpinned for
+    // two reasons, and the second is the one that keeps it unpinned: it has no
+    // predecessor to difference against, AND its content is expected to MOVE
+    // while the vegetation exclusion it watches is tuned. Pinning it now would
+    // baseline an appearance that is the subject of the change it exists to
+    // observe. A probe that is unpinned only because it is new becomes pinnable
+    // the moment someone measures it; this one should stay a probe until the
+    // vegetation work settles.
+    "approach-lights-outboard",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

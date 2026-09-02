@@ -246,6 +246,28 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
   measuredMinMiB: 248.3,
   /** The run's own `captureEnvironment`. A ceiling is only valid for these. */
   shotCount: 36,
+  /**
+   * Shots added SINCE that run, whose inventoried memory has never been
+   * measured — declared rather than silently folded into `shotCount`.
+   *
+   * **This is the second of the two honest exits when the set grows.** The
+   * first is to re-measure the maximum and update the figures above. This one
+   * says "a shot exists that this provenance does not describe", which is a
+   * true statement and a cheap one; **bumping `shotCount` to make the guard
+   * green would be a false statement and equally cheap, which is why the guard
+   * offers both explicitly rather than leaving the lazy exit as the obvious
+   * one.**
+   *
+   * A name here is a promise that somebody knows the shot is unmeasured — not
+   * that it is cheap. **"It is probably a light shot" is the assumption the
+   * entire 495 episode was built on.**
+   */
+  unmeasuredShots: Object.freeze([
+    // Added after the 2026-09-02 inventory run, so its inventoried memory has
+    // never been measured. 1.5 km out on the extended centreline at 60 m AGL --
+    // the only vantage that frames the approach lighting system at all.
+    "approach-lights-outboard",
+  ] as readonly string[]),
   tier: 1,
   quality: "medium",
   renderingMode: "balanced",
@@ -1738,6 +1760,49 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      */
     relativeSunBearingDegrees: 0,
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "approach-lights-outboard",
+    description:
+      "1.5 km out on the extended centreline, looking back along the approach "
+      + "light row - the only shot that frames the crossbar and the outer lamps",
+    cameraMode: "chase",
+    altitudeAglMeters: 60,
+    altitudeMslMeters: null,
+    offsetXMeters: -1_500,
+    offsetZMeters: 0,
+    pitchDownDegrees: 6,
+    airspeedMetersPerSecond: 34,
+    /**
+     * **`runway-on-approach` cannot show the approach lighting system, and that
+     * is why this exists.** Resolved through the harness's own camera
+     * construction, its crossbar sits **62 m BEHIND the camera**: short final
+     * flies past the whole system before the frame is taken. Two more lamps are
+     * behind it, two are outside the vertical FOV, exactly ONE near-end lamp is
+     * in frame, and what it does show of the system is the OPPOSITE row at
+     * 1.6-2.0 km. **A vegetation fix verified against that shot would have come
+     * back clean whatever it did.**
+     *
+     * MEASURED for this vantage instead: **16 of 16 near-end approach lamps in
+     * frame**, the ten-lamp crossbar at 540 m and 7.9 deg depression, the outer
+     * lamps at 422-482 m. `-1400/45 m/5 deg` and `-1600/80 m/7 deg` also give
+     * 16 of 16, so the framing is not knife-edge.
+     *
+     * **Why it needs framing: the exclusion around the airfield is a rounded
+     * rectangle 740 m half-length plus a 240 m blend, and the approach row runs
+     * to 1080 m.** The last four lamps sit at clearance 1.000 - the airport term
+     * does nothing at all - and the crossbar at 0.980, which measured 74.7
+     * trees/ha and 217.2 shrubs/ha against 783/ha open ground 3 km away.
+     *
+     * Daylight, because the defect being verified is VEGETATION. The lamps are
+     * why the trees matter; the trees are what the frame has to show.
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers every
+     * canonical shot index and moves every baselined wave phase.
+     */
+    clock: { dayOfYear: 171, solarTimeHours: 9.5 },
     comparesToBaseline: false,
     ceilings: null,
   },
