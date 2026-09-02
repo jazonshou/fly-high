@@ -289,9 +289,28 @@ function registerShaders(): void {
  * texture and Babylon disables colour writes for the whole shadow pass, yet
  * the stock generator still allocates a full colour attachment per cascade —
  * memory that is cleared every frame and never sampled. Overriding the target
- * creation to pass `noColorAttachment` reclaims it (~128 MiB at 4096² × 4 with
- * the R16F default). Keep `filter = FILTER_PCF`: a colour-sampling filter
- * (ESM/blur variants) would need the attachment back.
+ * creation to pass `noColorAttachment` reclaims it. Keep `filter = FILTER_PCF`:
+ * a colour-sampling filter (ESM/blur variants) would need the attachment back.
+ *
+ * **THE COLOUR ATTACHMENT ALSO GATED THE CASCADE LOOP, AND DROPPING IT BROKE
+ * THE CSM.** `RenderTargetTexture.render` renders one layer per cascade only
+ * when `is2DArray` is true (`renderTargetTexture.pure.js:759`), and `is2DArray`
+ * reads the **colour** texture (`thinTexture.js:76`) — which this override sets
+ * to null. Cascade depth lives in the **depth** texture, which is layered, so
+ * the gate asks about the wrong texture entirely.
+ *
+ * From this generator's first landing until 2026-09-01 it therefore rendered
+ * cascade 0 and nothing else. **MEASURED off Babylon's own draw counter:
+ * `cascadesRendered = 1` at every `numCascades` from 1 to 4**, leaving 88–94%
+ * of each tier's shadow range served by array layers no pass ever wrote, and
+ * making a casting mesh cost 2.00 draws where the source reads `1 + cascades`.
+ * `is2DArray` is overridden below so the loop no longer depends on an
+ * attachment that has nothing to do with where shadow depth is stored.
+ *
+ * **Do not repair this by restoring the colour attachment.** MEASURED at tier 3:
+ * that route costs **+128 MiB and −12.6% mean fps (−21.3% worst shot)**, because
+ * the cost tracks the number of full-resolution cascade renders rather than the
+ * draw count. Rendering the same cascades depth-only costs neither.
  */
 export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
   protected override _createTargetRenderTexture(): void {
@@ -325,6 +344,14 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
       `DepthStencilForCSMShadowGenerator-${this._light.name}`,
     );
     this._shadowMap.noPrePassRenderer = true;
+
+    // Decouple the per-layer loop from the colour attachment (see above). The
+    // depth texture carries `numCascades` layers and `getRenderLayers()` reads
+    // `_size.layers` directly, so this is the only link that was broken.
+    Object.defineProperty(this._shadowMap, "is2DArray", {
+      get: () => true,
+      configurable: true,
+    });
   }
 }
 
