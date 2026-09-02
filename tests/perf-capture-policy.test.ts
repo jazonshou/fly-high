@@ -11,9 +11,16 @@ import {
   tier1BalancedPerformanceFailures,
 } from "../scripts/perf-capture.mts";
 
-const driver = readFileSync(
+// COMMENTS STRIPPED, and this is load-bearing rather than tidiness.
+// `isDeliveryGated` locates an assertion by searching for its MESSAGE TEXT, so
+// any docblock in the driver that quotes a gate's message becomes a second,
+// earlier match — and the wrapper found before it belongs to an unrelated
+// assertion. That is not hypothetical: a docblock added on 2026-09-02 quoted
+// "terrain remained pending after the fixed final-pose drain" while explaining
+// why a diagnostic mode skips it, and this guard immediately reported that gate
+// as host-relaxed when nothing about it had changed.
+const driver = readSource(
   new URL("./perf/perf-capture.test.ts", import.meta.url),
-  "utf8",
 );
 const packageJson = JSON.parse(
   readSource(new URL("../package.json", import.meta.url)),
@@ -180,7 +187,13 @@ describe("perf-capture baseline policy", () => {
       "for (let frame = 0; frame < PERF_CAPTURE_TEMPORAL_FRAMES",
     );
     const postMotionDrain = driver.indexOf("const maxPostMotionDrainFrames = 600", temporalLoop);
-    const finalReadback = driver.indexOf("// Final frame and readback must share one task");
+    // ANCHORED ON CODE, NOT ON A COMMENT. This read used to locate the readback
+    // by the comment above it — "// Final frame and readback must share one
+    // task" — which made the guard depend on prose surviving verbatim, and it
+    // returned -1 the moment the driver was read with comments stripped. The
+    // `resolvePresentedFrame()` call immediately after it is the actual landmark
+    // and cannot be edited away without changing behaviour.
+    const finalReadback = driver.indexOf("resolvePresentedFrame();", postMotionDrain);
     const drainBody = driver.slice(postMotionDrain, finalReadback);
 
     expect(temporalLoop).toBeGreaterThan(-1);

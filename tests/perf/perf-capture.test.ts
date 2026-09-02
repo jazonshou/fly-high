@@ -128,6 +128,31 @@ const GPU_TIMING_ENABLED = import.meta.env.VITE_PERF_GPU_TIMING === "1";
  * A LOCAL `npm run perf:capture` never sets this and stays fully strict.
  */
 const UNPINNED_HOST = import.meta.env.VITE_PERF_UNPINNED_HOST === "1";
+
+/**
+ * Capture DURING the streaming drain rather than after it. Opt-in, off by default.
+ *
+ * **WHY THIS EXISTS: the suite is structurally blind to one class of defect.**
+ * Every shot settles first — `PERF_CAPTURE_WARMUP_FRAMES` then a stability
+ * loop — and motion shots additionally ASSERT the drain finished
+ * (*"terrain remained pending after the fixed final-pose drain"*). So an
+ * artifact that exists only while pages are resolving cannot appear in any of
+ * the 36 shots, and no gate can fail on it. **That is an asserted invariant,
+ * not a coverage gap**, which makes it worse than a shot nobody wrote.
+ *
+ * Jason reports colour slashes across terrain that *"sometimes stick, sometimes
+ * move a bit, sometimes flicker"* — behaving differently on each sighting, which
+ * is a transient rather than a stable geometry or post-process fault. The
+ * streaming window is the state the harness removes before every photograph.
+ *
+ * **This mode is a DIAGNOSTIC, never a baseline.** Set it and the run stops the
+ * settle loop at N frames with work still in flight; every gate that assumes a
+ * settled world is skipped, rebaseline is refused, and `captureEnvironment`
+ * records it so a report from this mode cannot be mistaken for a pinned one.
+ */
+const UNDRAINED_FRAMES = Number.parseInt(
+  String(import.meta.env.VITE_PERF_UNDRAINED_FRAMES ?? ""), 10);
+const IS_UNDRAINED = Number.isFinite(UNDRAINED_FRAMES) && UNDRAINED_FRAMES > 0;
 /**
  * The canonical tier-1 profile, and it must stay canonical.
  *
@@ -228,6 +253,15 @@ const SUN_BEARING_OVERRIDE = Number.parseFloat(
   String(import.meta.env.VITE_PERF_SUN_BEARING ?? ""),
 );
 const SUN_OVERRIDDEN = Number.isFinite(SUN_HOUR_OVERRIDE) || Number.isFinite(SUN_BEARING_OVERRIDE);
+if (IS_UNDRAINED && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_UNDRAINED_FRAMES and VITE_PERF_REBASELINE are mutually exclusive: "
+    + "an undrained capture photographs a half-resolved world on purpose, so its "
+    + "pixels, memory readings and draw counts are all diagnostic. Promoting one "
+    + "to a baseline would pin the transient it exists to expose.",
+  );
+}
+
 if (SUN_OVERRIDDEN && REBASELINE) {
   throw new Error(
     "VITE_PERF_SUN_HOUR / VITE_PERF_SUN_BEARING cannot be combined with "
@@ -831,6 +865,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
         renderer.render({ ...state, simulationTime }, 1 / 60);
         // Yield regularly so terrain/hydrology/detail worker results land.
         if (frame % 2 === 1) await new Promise((resolve) => setTimeout(resolve, 0));
+        // The diagnostic exit: stop with work still in flight, which is the
+        // state every other path in this file exists to eliminate.
+        if (IS_UNDRAINED && frame + 1 >= UNDRAINED_FRAMES) {
+          streamingFramesUsed = frame + 1;
+          break;
+        }
         if (frame >= PERF_CAPTURE_WARMUP_FRAMES && frame % 30 === 29) {
           const diagnostics = renderer.getDiagnostics();
           if (
@@ -1201,6 +1241,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         }
         await renderer.waitForGpuIdleForCapture();
         const finalDrainDiagnostics = renderer.getDiagnostics();
+        // The undrained diagnostic stops the settle loop with work in flight BY
+        // DESIGN, so these three would fail by construction. Skipped rather than
+        // relaxed: the assertions are untouched for every other run, and this
+        // mode is unreachable from the pinned path.
+        if (!IS_UNDRAINED) {
         expect(
           stableDrainFrames,
           `${shot.name}: final-pose streaming work did not remain drained`,
@@ -1213,6 +1258,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
           finalDrainDiagnostics.pendingDetailWork,
           `${shot.name}: detail remained pending after the fixed final-pose drain`,
         ).toBe(0);
+        }
       }
 
       // Final frame and readback must share one task: the presented WebGPU
@@ -1340,6 +1386,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         vegetationBatches: sceneDiagnostics.vegetationBatches,
         triangles: sceneDiagnostics.triangles,
         residentTerrainPages: sceneDiagnostics.residentTerrainPages,
+        residencyReasons: sceneDiagnostics.residencyReasons,
         pendingTerrainPages: sceneDiagnostics.pendingTerrainPages,
         pendingDetailWork: sceneDiagnostics.pendingDetailWork,
         streamingFramesUsed,
@@ -1385,6 +1432,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         renderingMode: CAPTURE_MODE,
         tier: CAPTURE_PROFILE.tier,
         sweep: IS_SWEEP,
+      undrained: IS_UNDRAINED ? UNDRAINED_FRAMES : null,
         // The cliff-A/B arm, verbatim. An experiment artifact whose arm has to be
         // reconstructed from a shell history is one nobody can audit later — and
         // its ABSENCE is how the lost-plumbing incident was detected.
