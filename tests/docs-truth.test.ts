@@ -85,13 +85,33 @@ function tierRow(markdown: string, label: string): number[] {
   return numbers;
 }
 
+/**
+ * Row labels of the resolved-tier table, walked from its header to the first
+ * non-table line. **Filtering for lines starting with "|" runs this table into
+ * the next one** — the first cut of this helper did that and collected the shot
+ * table's rows as well, which the completeness guard then reported as
+ * uncovered.
+ */
+function tierTableRowLabels(): string[] {
+  const lines = PERFORMANCE_MD.split("\n");
+  const header = lines.findIndex((line) => line.startsWith("| Budget | Tier 0"));
+  if (header === -1) throw new Error("docs-truth: the resolved-tier table header is gone");
+  const out: string[] = [];
+  for (let i = header + 2; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (!line.startsWith("|")) break;
+    out.push(line.split("|")[1]!.trim());
+  }
+  return out;
+}
+
 describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", () => {
   /**
    * The table's own preamble calls `QualityProfile.ts` "the source of truth —
    * this table is documentation". That sentence was true and unenforced, which
    * is exactly the shape that drifts. Now it is enforced.
    */
-  it.each([
+  const TIER_ROW_CHECKS: readonly (readonly [string, (p: (typeof PROFILES)[number]) => number])[] = [
     ["MSAA samples", (p: (typeof PROFILES)[number]) => p.msaaSamples],
     ["CDLOD node budget", (p: (typeof PROFILES)[number]) => p.cdlodNodeBudget],
     ["CDLOD split threshold", (p: (typeof PROFILES)[number]) => p.cdlodPixelThreshold],
@@ -100,12 +120,116 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Shadow map", (p: (typeof PROFILES)[number]) => p.shadowMapSize],
     ["Shadow cascades", (p: (typeof PROFILES)[number]) => p.shadowCascades],
     ["Initial/internal render-scale ceiling", (p: (typeof PROFILES)[number]) => p.renderScale],
-  ])("row %s matches the shipped profile", (label, read) => {
+    // Added when the coverage gap below was found: these ten parse cleanly and
+    // were all CORRECT at the time, so nothing here fixes a drift — they close
+    // the distance between what this block checks and what the table publishes.
+    ["Terrain material array edge", (p: (typeof PROFILES)[number]) => p.materialArrayEdge],
+    ["Ocean FFT resolution per cascade", (p: (typeof PROFILES)[number]) => p.oceanResolution],
+    ["Active ocean cascades", (p: (typeof PROFILES)[number]) => p.oceanCascades],
+    ["Cloud resolution-scale", (p: (typeof PROFILES)[number]) => p.cloudResolutionScale],
+    ["Requested cloud primary steps", (p: (typeof PROFILES)[number]) => p.cloudPrimarySteps],
+    ["Cloud light-step", (p: (typeof PROFILES)[number]) => p.cloudLightSteps],
+    ["Active-animal budget", (p: (typeof PROFILES)[number]) => p.activeAnimalBudget],
+    ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
+    ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
+    // The doc writes kilometres and the profile holds metres, so this row needs
+    // the scale rather than a second parser.
+    ["Vegetation radius", (p: (typeof PROFILES)[number]) => p.vegetationDistance / 1000],
+  ];
+
+  it.each(TIER_ROW_CHECKS.map((row) => [row[0], row[1]] as const))(
+    "row %s matches the shipped profile", (label, read) => {
     expect(
       tierRow(PERFORMANCE_MD, label as string),
       `docs/PERFORMANCE.md's "${label}" row no longer matches QualityProfile.ts. `
         + "Update the doc in this commit — the profile is the authority.",
     ).toEqual(PROFILES.map(read as (p: (typeof PROFILES)[number]) => number));
+  });
+
+  /**
+   * **A GREEN ON THIS BLOCK MUST MEAN "THE TABLE MATCHES THE PROFILE", NOT
+   * "THE ROWS SOMEBODY LISTED MATCH THE PROFILE".**
+   *
+   * Until this guard existed the block pinned 9 of the table's 26 rows and
+   * nothing anywhere said which 17 were outside it. That is not hypothetical:
+   * landing the cascade cut, `docs-truth` failed on exactly two rows, those two
+   * were updated, and **the other 24 were never checked** — had any of them gone
+   * stale in the same commit the suite would have reported green and the doc
+   * would have shipped believed-verified. The population was self-selecting, so
+   * its PASS meant something far narrower than any reader takes it to mean.
+   *
+   * **The row list is derived from the TABLE, never from a roster**, so a row
+   * added tomorrow is covered tomorrow — by failing here until someone decides
+   * which side it belongs on.
+   *
+   * **Every unverifiable row carries a REASON, not just a name.** A bare name
+   * list decays into a skip list; a reason list forces the next reader to decide
+   * whether the reason still holds. Four of the seven below could become
+   * checkable with a better parser, and saying so is the point.
+   */
+  const DECLARED_UNVERIFIABLE: readonly (readonly [string, string])[] = [
+    ["Device-pixel-ratio ceiling",
+      "No profile field. The ceiling is applied against the live device DPR in "
+      + "FlightRenderer, not resolved into the profile, so there is nothing here to compare."],
+    ["Height-atlas slots / channel-atlas slots",
+      "TWO values per cell (`144 / 100`) and `tierRow` reads the first number "
+      + "only. Both fields exist (heightAtlasSlots, channelAtlasSlots) — this is "
+      + "a parser limit, not a missing authority, and is the most worthwhile of "
+      + "the seven to fix."],
+    ["Terrain triplanar projection",
+      "Non-numeric: `planar (slope-stretched)` / `2-axis` / `3-axis`. `tierRow` "
+      + "throws on a cell with no number."],
+    ["Shadow distance",
+      "MIXED UNITS within one row — `900 m | 1.4 km | 1.8 km | 2.4 km` — so a "
+      + "single scale factor cannot convert it. Fixable by normalising the doc "
+      + "row to metres, which is a doc change and needs its author."],
+    ["Vegetation casts shadows",
+      "Non-numeric (`no` / `yes`). The field is a boolean; comparing it needs a "
+      + "predicate parser rather than a number parser."],
+    ["Card-tree LOD radius",
+      "No profile field. The near+mid band radius is derived inside the detail "
+      + "runtime from renderedDensityLaw, not published as a scalar."],
+    ["Vegetation density multiplier",
+      "No profile field. It is applied as a governor lever "
+      + "(vegetationDistanceScale) rather than resolved per tier."],
+  ];
+
+  it("every row of the table is either CHECKED or DECLARED unverifiable with a reason", () => {
+    // Stop at the FIRST non-table line. Filtering for "|" first would run this
+    // table into the next one — the first attempt did exactly that and picked up
+    // rows from the shot table further down the file.
+    const rows = tierTableRowLabels();
+
+    const covered = new Set([
+      ...TIER_ROW_CHECKS.map((row) => row[0]),
+      ...DECLARED_UNVERIFIABLE.map((row) => row[0]),
+      "Absolute pixel cap",
+    ]);
+    const uncovered = rows.filter((label) => ![...covered].some((c) => label.includes(c)));
+    expect(
+      uncovered,
+      "These rows of docs/PERFORMANCE.md's resolved-tier table are neither checked "
+      + "against the profile nor declared unverifiable. A green here would then mean "
+      + "\"the listed rows match\", which is not what anyone reads it as. Either add a "
+      + "check or add a row to DECLARED_UNVERIFIABLE with the reason it cannot be one.",
+    ).toEqual([]);
+  });
+
+  it("NON-VACUITY — the row list really was parsed out of the table", () => {
+    // If the walk found nothing, `uncovered` is empty and the guard passes while
+    // comparing two empty lists — the exact false pass this family exists to
+    // make impossible. And an upper bound too: the first attempt ran past the
+    // table's end into the next one and collected 32 labels.
+    const rows = tierTableRowLabels();
+    expect(rows.length).toBeGreaterThan(20);
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(30);
+    expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
+  });
+
+  it("every declared-unverifiable row carries a real reason", () => {
+    for (const [label, reason] of DECLARED_UNVERIFIABLE) {
+      expect(reason.length, `${label}: reason too short to be one`).toBeGreaterThan(60);
+    }
   });
 
   it("states the pixel cap in Mpx matching maxRenderPixels", () => {

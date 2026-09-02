@@ -93,14 +93,37 @@ export const BLOOM_THRESHOLD = 1.0;
  */
 export const BLOOM_KNEE = 0.5;
 
-/** Additive weight of the blurred highlight image at composite. */
-export const BLOOM_INTENSITY = 0.08;
+/**
+ * Additive weight of the blurred highlight image at composite.
+ *
+ * **0.08 -> 0.05 on Jason's note that the runway reads as "too big a blob of
+ * lights".** Paired with the sigma reduction below; the two were measured
+ * together and separately (`dusk-mesopic`, fixed window on the lamp cluster,
+ * same-scene control): sigma alone -15%, sigma plus this -23% of pixels above
+ * half-white. Turning bloom off entirely is -44% and reads clinical, so this is
+ * deliberately partway to that floor rather than at it.
+ */
+export const BLOOM_INTENSITY = 0.05;
 
 /** Taps per separable pass. Odd, so there is a centre tap. */
 export const BLOOM_BLUR_TAPS = 9;
 
-/** Gaussian sigma in texels of the HALF-RESOLUTION blur target. */
-export const BLOOM_BLUR_SIGMA = 2.0;
+/**
+ * Gaussian sigma in texels of the HALF-RESOLUTION blur target.
+ *
+ * **HALF-RESOLUTION, so the on-screen extent is TWICE this.** At 2.0 the halo
+ * reached ~12 px on a 1280x720 frame (3 sigma x 2), which is what made a line
+ * of runway lamps fuse into one mass: the lamps are ~4 px apart at approach
+ * range, so a 12 px halo per lamp guarantees overlap. Measured radial falloff
+ * on the shipped frame confirmed it -- the light-point sprite itself discards
+ * beyond `radius^2 > 1` and contributes exactly nothing past ~2 px, so
+ * everything from 4 px out was this term.
+ *
+ * **1.0 was chosen against the frame, not derived.** It is the point where the
+ * runway resolves as a runway and lamp rows separate, while the lights keep a
+ * glow rather than becoming the bare sprites that `bloomEnabled: false` gives.
+ */
+export const BLOOM_BLUR_SIGMA = 1.0;
 
 /** Blur render ratio. The bright pass stays at 1.0 — see hazard 2 above. */
 export const BLOOM_BLUR_RATIO = 0.5;
