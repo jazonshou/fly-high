@@ -667,7 +667,11 @@ export function twilightAmbientFloorFactor(sunDirectionY: number): number {
  * disc are added AFTER skyRadiance in the sky material and are untouched:
  * the glow fades to black upward and the stars stay — which is the look.
  */
-export const NIGHT_ZENITH_FALLOFF = 1.8;
+// Round G tuning, one measured turn: 1.8 rendered top/horizon 0.529 against
+// the ≤0.5 target — and its own A/B measured the true compression exponent
+// at 0.256 (display ×0.81 from radiance ×0.44), stronger than the cube-root
+// estimate. Solving for the target through the measured exponent: 2.3.
+export const NIGHT_ZENITH_FALLOFF = 2.3;
 
 /**
  * The premultiplied per-frame fade the binding carries: falloff × nightness.
