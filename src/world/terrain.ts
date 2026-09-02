@@ -614,6 +614,48 @@ export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number
  * height kernel mirrors exactly this expression; anything read here that the
  * kernel cannot read puts collision and render on different terrain, which is
  * `3-8` — 15.3 m apart on the runway, the feature this copies.
+ *
+ * ---
+ *
+ * **NOTHING CALLS THESE YET, AND FOUR REQUIREMENTS BIND WHOEVER FIRST DOES.**
+ * They are recorded here rather than in a plan document because a plan is not
+ * in the diff when someone wires this up.
+ *
+ * 1. **Physics does not reach this function inside the airport platform.**
+ *    There are FOUR airport short-circuits over two regions, and every one of
+ *    them returns before `sampleTerrainHeight`:
+ *      `getAirportInfluence(...) >= 1` — terrain.ts (sampleTerrainCollisionHeight),
+ *                                        sim/terrainGrid.ts (sampleGroundHeight)
+ *      `isPointOnRunway(...)`         — terrain.ts (sampleTerrainCollision),
+ *                                        sim/terrainGrid.ts (sampleGroundContact)
+ *    So a channel crossing the platform renders as a trench that collision has
+ *    never heard of. That is `3-8` with the sign flipped, and `airportSite.ts`
+ *    has no knowledge of hydrology, so nothing keeps a channel off the apron.
+ *
+ * 2. **CPU/GPU agreement holds at L0 ONLY, and a test must SAY it is L0-only.**
+ *    `terrainPageFilterWidthMeters(0) === 0` and `terrainSupersampleOffsets(0)`
+ *    is the single offset `[0,0]`, so L0 is bit-identical by construction. At
+ *    L1+ `samplePageTexel` AVERAGES `count` offset evaluations of
+ *    `pageHeightAt`, while this function subtracts a single centre-point
+ *    `channelCarveDepth`. A GPU carve placed inside `pageHeightAt` therefore
+ *    computes `mean(carve(p_i))` against this `carve(centre)`. They differ
+ *    wherever the carve is non-linear across a texel — which for a trapezoid
+ *    is exactly the rim, the only place anyone looks.
+ *
+ * 3. **The prop-placement samplers travel with this one, or are named as
+ *    knowingly uncarved.** The visible ground is GPU-displaced, so these are
+ *    not a third opinion about height — they are a third set of things
+ *    STANDING on it: the ground-cover height tile, hangars, tower, fence, fuel
+ *    farm, signage, the lake plate whose mesh edge IS the waterline, and the
+ *    free-fly camera clamp. Every one hangs over a riverbed otherwise.
+ *
+ * 4. **A per-page cull expansion is DERIVED, never chosen.** Rivers are
+ *    globally anchored — the source lattice is in absolute world coordinates
+ *    and page bounds only select cells, never change identity or jitter — so
+ *    the only page-dependence is `cropRiverToBounds` truncating at the rim.
+ *    That makes the margin arithmetic: maximum channel half-width plus maximum
+ *    trace segment length. Probe the seam where a channel crosses a page
+ *    boundary; a uniform grid misses precisely the case that breaks.
  */
 export function sampleCarvedTerrainHeight(
   world: WorldDefinition,

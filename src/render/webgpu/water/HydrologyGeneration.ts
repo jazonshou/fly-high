@@ -203,17 +203,59 @@ export const DEFAULT_HYDROLOGY_CONFIG: HydrologyGenerationConfig = Object.freeze
   maximumRiverGrade: 0.09,
   // `R-24b`: sized to the WORK BUDGET, not to the measurement.
   //
-  // 1,800 m x 8 hops is what the terrain wants — MEASURED 17 rivers against 4
-  // over 5,184 km2 with the grade cull inert. It does not fit: the pre-flight
-  // bound is `haloCells x (maxSteps + hops*rings) x angularSamples` against
-  // 300,000, and base tracing alone at the 100-cell cap is 100 x 180 x 16 =
-  // 288,000, or **96% of the budget before this feature exists**. That leaves
-  // `hops * rings <= 7`, and 1,800 x 8 asks for 160.
+  // **RETRACTED `5-12a`. The river counts below do not reproduce and must not
+  // be quoted. They are kept in place, struck, because they were relayed
+  // onward and a scheduling decision was made on them; a deleted figure stays
+  // in the readers who already have it and loses only its correction.**
   //
-  // So this is 270 m x 2 hops: 99.2% of the bound, and MEASURED 9 rivers
-  // against 4 — a bit over half of what the terrain would give. The remainder
-  // is not available without re-sizing a safety bound, which is a decision
-  // about the budget rather than about rivers.
+  //   ~~1,800 m x 8 hops is what the terrain wants — MEASURED 17 rivers
+  //   against 4 over 5,184 km2 with the grade cull inert.~~
+  //   ~~So this is 270 m x 2 hops: 99.2% of the bound, and MEASURED 9 rivers
+  //   against 4 — a bit over half of what the terrain would give.~~
+  //
+  // Re-measured on the same 5,184 km2, the same defaults and the production
+  // sampler: **0 rivers with this escape enabled and 0 with it disabled**, on
+  // five seeds, both origin-centred and centred on the airport as the renderer
+  // actually centres it. Lakes generate normally (3-6 per region), so the
+  // generator runs; rivers specifically reach no gate. Sweeping the grade cull
+  // to 1.00, `minimumRiverPoints` to 3 and `maximumRivers` to 20 does not
+  // change it. The trace census says why: of 76 sources at or above 80 m,
+  // **71 terminate in a basin**, and the points per trace run min 1, p50 5,
+  // p90 11 against a required 10.
+  //
+  // I do not know how the struck figures were produced. Those arms differed
+  // from these in something I did not record, and naming a cause I cannot
+  // demonstrate would be a new claim wearing a correction's clothes.
+  //
+  // The BUDGET ARITHMETIC below is independent of the retracted counts and
+  // still holds: the pre-flight bound is
+  // `haloCells x (maxSteps + hops*rings) x angularSamples` against 300,000,
+  // and base tracing alone at the 100-cell cap is 100 x 180 x 16 = 288,000,
+  // or **96% of the budget before this feature exists**. That leaves
+  // `hops * rings <= 7`; 1,800 x 8 asks for 160, and this 270 x 2 is 99.2%
+  // of the bound. What that buys is now measured at zero, so the sizing below
+  // is a budget ceiling and NOT evidence that the escape earns its place.
+  //
+  // WHY THE TERRAIN DOES THAT, and the piece that stops the next person
+  // re-running this sweep to re-derive the same zero: **the tracer has never
+  // been exercised against the world's terrain.** Of the three test files that
+  // call `generateHydrology`, only `tests/world.river-carve-ordering.test.ts`
+  // passes the real sampler; `render.webgpu-hydrology.test.ts` and
+  // `render.webgpu-hydrology-paging.test.ts` import nothing from `src/world`,
+  // and every green "rivers exist" assertion lives in them over
+  //
+  //     height: 520 - x*0.075 + sin(z*0.004)*3
+  //
+  // a constant 7.5% ramp that descends monotonically and **has no basins by
+  // construction**. Measured on that ramp: **100 rivers over the same
+  // 5,184 km2**, flat across escape off, 270 x 2 and 1,800 x 8. Measured on
+  // the world: 0. The tracer was validated on the one terrain shape where it
+  // cannot fail, and ships against the shape where it cannot succeed.
+  //
+  // So zero rivers here is the STATUS QUO, not a regression, and there is no
+  // working state to restore. Eroded worlds are unaffected either way: they do
+  // not use this tracer at all, taking rivers from the erosion channel graph
+  // via `channelGraphToHydrologyGeometry` (FlightRenderer.ts:993).
   riverPitEscapeRadiusMeters: 270,
   riverPitEscapeMaximumHops: 2,
   directionInertia: 0.18,
