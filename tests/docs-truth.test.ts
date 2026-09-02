@@ -105,6 +105,49 @@ function tierTableRowLabels(): string[] {
   return out;
 }
 
+/**
+ * Pull a TWO-VALUE tier row — cells shaped `144 / 100` — as a pair of arrays.
+ *
+ * **`tierRow` reads the first number in each cell, which is not a shortcoming
+ * until a cell holds two.** Testing the atlas row with it would have been worse
+ * than declaring it unverifiable: the first numbers are `144, 196, 256, 256`,
+ * which is `heightAtlasSlots` EXACTLY. The row would have passed in perpetuity
+ * with `channelAtlasSlots` compared to nothing — and **only tier 1
+ * discriminates the two fields**, since tiers 2-4 are `196/196` and `256/256`.
+ * One coincidence between a real check and a permanently half-blind one.
+ */
+function tierRowPair(markdown: string, label: string): [number[], number[]] {
+  const row = markdown
+    .split("\n")
+    .find((line) => line.startsWith("|") && line.split("|")[1]?.includes(label));
+  if (row === undefined) {
+    throw new Error(
+      `docs-truth: no table row whose label contains ${JSON.stringify(label)}. `
+        + "The row was renamed or deleted — update this test WITH the doc, not instead of it.",
+    );
+  }
+  const cells = row.split("|").slice(2, 6).map((cell) => cell.replace(/,/gu, "").trim());
+  if (cells.length !== 4) {
+    throw new Error(`docs-truth: row ${JSON.stringify(label)} has ${cells.length} tier cells, expected 4`);
+  }
+  const first: number[] = [];
+  const second: number[] = [];
+  for (const cell of cells) {
+    const matches = cell.match(/-?\d+(?:\.\d+)?/gu);
+    // EXACTLY two: a cell that quietly becomes single-valued fails loudly
+    // rather than reading as "both fields agree".
+    if (matches === null || matches.length !== 2) {
+      throw new Error(
+        `docs-truth: cell ${JSON.stringify(cell)} in row ${JSON.stringify(label)} holds `
+          + `${matches?.length ?? 0} numbers, expected exactly 2 (shaped "144 / 100")`,
+      );
+    }
+    first.push(Number.parseFloat(matches[0]!));
+    second.push(Number.parseFloat(matches[1]!));
+  }
+  return [first, second];
+}
+
 describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", () => {
   /**
    * The table's own preamble calls `QualityProfile.ts` "the source of truth —
@@ -171,11 +214,6 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Device-pixel-ratio ceiling",
       "No profile field. The ceiling is applied against the live device DPR in "
       + "FlightRenderer, not resolved into the profile, so there is nothing here to compare."],
-    ["Height-atlas slots / channel-atlas slots",
-      "TWO values per cell (`144 / 100`) and `tierRow` reads the first number "
-      + "only. Both fields exist (heightAtlasSlots, channelAtlasSlots) — this is "
-      + "a parser limit, not a missing authority, and is the most worthwhile of "
-      + "the seven to fix."],
     ["Terrain triplanar projection",
       "Non-numeric: `planar (slope-stretched)` / `2-axis` / `3-axis`. `tierRow` "
       + "throws on a cell with no number."],
@@ -200,7 +238,14 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // rows from the shot table further down the file.
     const rows = tierTableRowLabels();
 
-    const checkedKeys = [...TIER_ROW_CHECKS.map((row) => row[0]), "Absolute pixel cap"];
+    // Rows checked by a STANDALONE `it` rather than by the `it.each` roster.
+    // These must be named here or the coverage leg reports them uncovered —
+    // a manual step that fails LOUDLY, which is why it is not auto-discovered.
+    const checkedKeys = [
+      ...TIER_ROW_CHECKS.map((row) => row[0]),
+      "Absolute pixel cap",
+      "Height-atlas slots / channel-atlas slots",
+    ];
     const declaredKeys = DECLARED_UNVERIFIABLE.map((row) => row[0]);
     const covered = new Set([...checkedKeys, ...declaredKeys]);
     const uncovered = rows.filter((label) => ![...covered].some((c) => label.includes(c)));
@@ -251,6 +296,22 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     expect(tierRow(PERFORMANCE_MD, "Absolute pixel cap")).toEqual(
       PROFILES.map((p) => p.maxRenderPixels / 1_000_000),
     );
+  });
+
+  it("states BOTH atlas slot counts matching the shipped profile", () => {
+    const [heightSlots, channelSlots] = tierRowPair(
+      PERFORMANCE_MD,
+      "Height-atlas slots / channel-atlas slots",
+    );
+    expect(
+      heightSlots,
+      "docs/PERFORMANCE.md's height-atlas slot counts no longer match QualityProfile.ts.",
+    ).toEqual(PROFILES.map((p) => p.heightAtlasSlots));
+    expect(
+      channelSlots,
+      "docs/PERFORMANCE.md's CHANNEL-atlas slot counts no longer match QualityProfile.ts. "
+        + "This is the half a first-number-only parser could never see.",
+    ).toEqual(PROFILES.map((p) => p.channelAtlasSlots));
   });
 });
 

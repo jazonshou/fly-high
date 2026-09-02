@@ -92,6 +92,38 @@ function declarationPattern(symbol: string): RegExp {
 }
 
 describe("architecture boundaries (0-1)", () => {
+  /**
+   * NON-VACUITY ANCHOR for every guard below. **They all iterate `sourceFiles`
+   * and assert inside the loop, so an empty scan makes them all pass in
+   * silence** — measured: emptying it leaves 6 of the 8 guards green, including
+   * assertion 117's raw-`ShadowDepthWrapper` ban, the owned-symbol rule, the
+   * tier-branching containment and the physics terrain-query route.
+   *
+   * `collectSourceFiles` walks `SOURCE_ROOT` for `.ts`. A renamed `src/`, a
+   * changed root, or a narrowed extension filter each return `[]` — **and an
+   * empty collection is indistinguishable from a clean codebase in every
+   * assertion that consumes it.** This is the `horizon-shadow-far-annulus`
+   * shape: a check that cannot fail.
+   *
+   * The floor is a SANITY BOUND, not a pinned count — it exists to separate
+   * "the scan works" from "the scan returned nothing", and must not be
+   * ratcheted up to track the tree.
+   */
+  it("scanned a non-degenerate source tree, so the guards below can fail", () => {
+    expect(
+      sourceFiles.length,
+      "collectSourceFiles returned an implausibly small set. Every boundary "
+      + "assertion in this file iterates it and asserts INSIDE the loop, so a "
+      + "broken scan turns this whole suite green while checking nothing. Fix "
+      + "the scan — do not lower this floor.",
+    ).toBeGreaterThan(100);
+    expect(
+      filesByPath.size,
+      "filesByPath lost entries relative to sourceFiles — duplicate paths would "
+      + "silently drop files from the path-keyed lookups below.",
+    ).toBe(sourceFiles.length);
+  });
+
   it("keeps the manifest complete: every definition site exists or is planned", () => {
     for (const owner of ARCHITECTURAL_OWNERS) {
       const existing = owner.definitionSites.filter((site) => filesByPath.has(site));
