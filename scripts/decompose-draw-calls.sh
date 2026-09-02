@@ -96,8 +96,27 @@ fi
 
 BASE="$(git -C "$REPO" rev-parse --short "$BASE_REF")"
 HEAD_SHA="$(git -C "$REPO" rev-parse --short "$HEAD_REF")"
-WORK="${TMPDIR:-/tmp}/decompose-$HEAD_SHA"
-rm -rf "$WORK"; mkdir -p "$WORK"
+# KEY THE WORK DIR ON EVERYTHING THAT CHANGES ITS CONTENTS, AND LOCK IT.
+# It used to key on the head sha alone and `rm -rf` unconditionally, so two runs
+# that shared a head -- the same commit measured against a different base, the
+# same pair re-run with a different shot filter, or simply two of the four
+# owners on this shared host -- would silently destroy each other's artifacts
+# mid-flight. The victim's symptom is a capture whose report vanishes under it,
+# which this script reports as "the capture did not finish": a true statement
+# with the wrong cause, and hours spent on the wrong defect.
+SHOTS_KEY="$(printf '%s' "${3:-all}" | tr -c 'A-Za-z0-9' '-' | cut -c1-40)"
+WORK="${TMPDIR:-/tmp}/decompose-$BASE-$HEAD_SHA-$SHOTS_KEY"
+# `mkdir` without -p is ATOMIC and fails if the directory exists, which is what
+# makes it a lock rather than a check-then-act race. A stale directory from a
+# killed run is removed by hand, deliberately: an automatic `rm -rf` here is
+# exactly the behaviour being removed.
+if ! mkdir "$WORK" 2>/dev/null; then
+  echo "ERROR: $WORK already exists." >&2
+  echo "       Another run of this base/head/shots combination may be IN PROGRESS" >&2
+  echo "       on this shared host. If you are sure it is not, remove it by hand:" >&2
+  echo "         rm -rf $WORK" >&2
+  exit 2
+fi
 
 # Run one capture under a deadline, keeping its output. `timeout` does not exist
 # on this host -- it is `gtimeout` or nothing -- so the watchdog is bash-native.
@@ -146,6 +165,19 @@ capture() { # <sha> <outdir>
     return 3
   fi
   for pass in warmup keep; do
+    # DELETE THE REPORT BEFORE EVERY PASS. Without this the `[ ! -f ]` check
+    # below tests only that A report exists, never that THIS pass wrote it --
+    # the same shape as the provenance defect already fixed here, one level
+    # down. `run_bounded` returns 0 for any non-timeout exit by design (a
+    # capture exits non-zero whenever a gate fails, which is routine), so a
+    # keep pass that dies before writing -- a lost WebGPU device, an OOM, or
+    # vitest's own 25-minute testTimeout firing well inside this script's
+    # 40-minute watchdog -- would leave the WARM-UP's file in place, `cp` would
+    # succeed, and provenance would pass because it describes the TREE, which
+    # was correct; it is the RUN that was not. The delta would then be computed
+    # against the pass this file's header calls unusable, the one measured at
+    # 136-vs-157 draw calls on identical code.
+    rm -f "$wt/tests/perf/artifacts/report.json"
     run_bounded "$wt" "$out/capture-$pass.log"
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -258,15 +290,58 @@ shared = sorted(set(base) & set(feat))
 if not shared:
     print("ERROR: the two reports share no shots, so nothing can be differenced.", file=sys.stderr)
     raise SystemExit(3)
+
+# ASYMMETRY IS REPORTED, NEVER INTERSECTED AWAY. A commit that ADDS a capture
+# shot is the case this catches, and it is routine here -- `git log -S'name: "'
+# -- scripts/perf-capture.mts` returns seven or more, and 74bac55 adds exactly
+# `night-beacon-offset`. The new shot exists in the feature arm only, so
+# `set(base) & set(feat)` drops THE ONE VANTAGE THAT FRAMES WHAT THE COMMIT
+# BUILT. If no pre-existing shot moved, the loop below then prints "no shot
+# moved -- this commit costs no draws" and exits before any count is printed,
+# so nothing anywhere states that the two reports had different shot sets.
+# That is the false zero this harness exists to make impossible, arriving by a
+# different route than the empty report it already guards.
+#
+# The `missing` check above cannot cover this: `requested` is empty in exactly
+# the invocation the header recommends (no shot filter, because "a raise needs"
+# the full set), so its loop is inert when the tool is used as instructed.
+feat_only = sorted(set(feat) - set(base))
+base_only = sorted(set(base) - set(feat))
+if feat_only or base_only:
+    print("\n!!! THE TWO ARMS DID NOT CAPTURE THE SAME SHOTS !!!")
+    print("    The delta below covers ONLY the shots both arms ran. It is not the")
+    print("    whole commit, and a `uniform` declaration over it would be false.")
+    for n in feat_only:
+        print(f"    NEW in feature, no baseline to difference: {n:32} draws={feat[n]}")
+    for n in base_only:
+        print(f"    GONE from feature, present in baseline:    {n:32} draws={base[n]}")
+    print("    A new shot needs its own ceiling, not a delta. Record the absolute")
+    print("    count above and say in `whyNonUniform` that the shot set changed.")
 deltas = {n: feat[n] - base[n] for n in shared}
 moved = {n: d for n, d in deltas.items() if d != 0}
 print(f"\n=== {sys.argv[3]} : per-shot draw-call delta ===")
 for n in sorted(moved, key=lambda k: -moved[k]):
     print(f"  {n:32} {moved[n]:+4d}")
 if not moved:
+    # Only a TRUE zero may print the zero line. With a changed shot set the
+    # commit demonstrably did something the shared shots cannot see, and
+    # "costs no draws" would be the wrong sentence in the strongest way.
+    if feat_only or base_only:
+        print("  (no SHARED shot moved -- but the shot set changed; see above)")
+        raise SystemExit(3)
     print("  (no shot moved — this commit costs no draws)"); raise SystemExit
 values = set(moved.values())
 print(f"\nshots moved: {len(moved)} of {len(shared)}")
+if requested:
+    # A FILTERED RUN CANNOT SPEAK FOR THE COMMIT. `kind "uniform" ... naming
+    # every shot` is a claim about the whole capture set, and with a filter in
+    # place "every shot" can be as few as one. The delta above is still true of
+    # the shots named; the DECLARATION is what does not follow from them.
+    print(f"                (FILTERED RUN — only {', '.join(requested)} was measured)")
+    print("NO DECLARATION. A shot filter measures the shots you named, not the commit.")
+    print("Re-run with no filter before recording a raise; a `uniform` kind asserts")
+    print("something about every shot with a previous ceiling, which this did not see.")
+    raise SystemExit
 if len(values) == 1 and len(moved) == len(shared):
     print(f'DECLARE: kind "uniform", delta {values.pop()}, naming every shot with a previous ceiling.')
 else:
@@ -274,4 +349,17 @@ else:
           f"{len(shared) - len(moved)} shot(s) did not move.")
     print("`whyNonUniform` is REQUIRED and is the whole justification: say what varies.")
 PY
+# PROPAGATE THE ANALYSIS STEP'S EXIT STATUS. `$?` is the status of the LAST
+# command, so the closing echo below was overwriting python's -- every
+# SystemExit the heredoc raises (empty report, missing requested shot, no
+# shared shots, and the shot-set asymmetry added above) printed its message and
+# then exited the script 0, and so did any traceback. A caller checking the
+# exit code saw success on every one of them. `set -e` is deliberately not on
+# here (its exemptions are their own silent surface), so nothing else caught it.
+#
+# This is the third instance of one shape in this file: a check that runs, and a
+# result that never reaches the caller. Same family as reading `tail`'s status
+# instead of the command's -- which happened while fixing this very script.
+analysis_status=$?
 echo "artifacts under $WORK"
+exit "$analysis_status"
