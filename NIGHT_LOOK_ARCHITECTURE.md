@@ -365,6 +365,95 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a⁹) THE DIP NARROWING, AND THE TONEMAP'S FIRST TWO-EXPOSURE
+  MEASUREMENT (2026-09-02).** Jason: *"the sunward twilight frame is too
+  dark"* — against his own Option B darkness, resolved without touching
+  it: SWE II 2 narrowed the exposure DIP'S RISE only, +0.02..−0.05 →
+  −0.056..−0.095 (margins allocated fail-safe: dusk keeps 0.0116 of
+  sine, sunset gets 0.0037 — a protection fails safe, an objective fails
+  visible), release untouched, `twilightArchStrength` untouched, this
+  section's two-window architecture (dip: ONE consumer, exposure; arch
+  window: SIX) held byte-green by the behavioral release pins. The
+  28→15–18 minute duration change is flagged to Jason explicitly as the
+  part he has not been asked about. The round's original protection —
+  "sunward R/B unchanged" — was WITHDRAWN BY ITS AUTHOR before capture
+  for firing on its own success, replaced by structure: a channel-equal
+  exposure scalar cannot shift radiance hue, so diff-confinement + the
+  byte-green pins prove what a capture cannot, and R/B is reported as
+  DATA testing THIS DOC'S display mapping. That inversion was accepted
+  by the mapping's owner, and the data came back worth the trade:
+  across dip 0.55→1.00 (exposure ×1.818, same tree; fixed-exposure
+  control `dusk-mesopic` R/B 0.4570→0.4570, stable to four decimals)
+  the sunward warm band read R/B 1.374→1.289 and the whole-sky
+  luminance-weighted band 1.1164→1.0938 — LOG-RATIO COMPRESSION FACTOR
+  0.799 AND 0.815, two bands, two operating levels, one factor. The
+  upper band read 0.979→0.981: a ratio at 1 has nothing to compress —
+  the model PREDICTS the blue protection's invariance rather than
+  assuming it. G/B compressed only ×0.925, so the single factor is an
+  R/B-range approximation, not a law; the mechanism is per-channel
+  level-dependent gain of the concave curve (warm band measured R ×1.370
+  vs B ×1.462, and 1.374 × 1.370/1.462 = 1.288 ≈ 1.289 — the arithmetic
+  closes). Display medians moved ×1.522 (sky) / ×1.586 (terrain) against
+  exposure ×1.818: secant slopes 0.70/0.77, slope falling with level.
+  THE ^0.43 OF (a⁷) IS HEREBY BOUNDED: fitted across radiance-ratio
+  changes at FIXED exposure, it carries no level dependence — and the
+  owner's own cross-arm prediction (1.364 → 1.20–1.25) overstated the
+  curvature ~2× and stands on record as wrong. Bands are not
+  interchangeable: 1.374 vs 1.1164 is the SAME FRAME under two
+  instruments (region + weighting), and round O's 1.364 reproduced at
+  1.374 on an independent capture. The accents SURVIVE the undip —
+  warm band R/B 1.289 with byte levels up ~1.4×: a more visible sunset,
+  which was the ask.
+
+- **(a⁸) ROUND O — accents on the blue, landed (3ab02c5).** Jason's
+  ruling that closed the violet line and opened this round, verbatim:
+  *"Not a fan of the violet — let's go back to blue with more
+  yellow/red/orange/pink accents from the dimming sun."* Mechanism:
+  round W's lobes re-tinted and DEPTH-BLENDED — `TWILIGHT_WARM_TINT`
+  [1.0, 0.42, 0.18] shifts toward `TWILIGHT_WARM_DEEP_TINT`
+  [1.0, 0.55, 0.65] by depthT = clamp(−sunY/0.26, 0, 1), the physical
+  afterglow sequence (orange at the rim, pink as the sun sinks); the
+  Belt carries the pink outright. Turn 2 of the arm BREACHED the dusk
+  terrain-median protection (0.3771 vs 0.37) and the ruling held: A
+  PROTECTION THAT BINDS IS NEVER WIDENED — the fix was round O(b),
+  the Belt's OWN elevation fold 0.06 (the tight arc the Belt of Venus
+  physically is; W's 0.12 was the sunset lobe's shape, not the Belt's),
+  which cut the sky flux reaching terrain and cleared the median to
+  0.3576. Better physics, forced by the protection binding. The knob:
+  `TWILIGHT_WARM_STRENGTH` re-registered [0.03, 0.30] on Jason's new
+  words, spent 0.22→0.26→0.30 across two turns — the number decided
+  the ceiling. `TWILIGHT_BELT_RATIO` [0.35, 0.60] registered and
+  UNSPENT — banked against Jason wanting more pink. Criteria resolved
+  green: sunward band R/B 1.364 (≥ 1.2), upper-band blue held at 0.979
+  (≤ 1.0 — the "back to blue" half of the ruling, measured), dusk
+  terrain median 0.3576 (≤ 0.37), night byte-identical to the same-run
+  null. Landed by the PM at 3ab02c5 after frame review.
+
+- **(a⁷) THE T LINEAGE — ozone, two named deaths, and the violet
+  ruling.** Jason: *"still a bit too blue — do some research online…
+  more realistic without sacrificing performance."* The research
+  answer: twilight's zenith blue is not Rayleigh but Chappuis-band
+  OZONE absorption along the limb — geometric density-weighted path
+  348 km (the lineage's only geometric fact; every corrected path
+  after it is a solve, not physics), k = [0.65, 1.881, 0.085]e-6.
+  T DIED AT THE TONEMAP: its "luma-invariant by construction" was a
+  RADIANCE claim, and the display sky moved +21% — RADIANCE CLAIMS DIE
+  AT THE TONEMAP is named HERE, with the first measured display law:
+  display ratio ≈ radiance ratio^0.43, fitted at fixed exposure
+  (bounded later by (a⁹)). T2 DIED ON ITS OWN CLAUSE: a single-path
+  model pins G/B to a power of R/B, the G solve extrapolated below its
+  calibration range, and the miss landed exactly where the constraint
+  foretold — A FITTED MAPPING DIES OUTSIDE ITS CALIBRATION RANGE. T3
+  freed the constraint with a two-parameter mixture (w = 0.317,
+  L = 2645 km) and hit both channels inside calibration; T4 solved at
+  the w-boundary (0.419, L capped 5000 km) and breached the terrain
+  median 1.5% — the same mapping's TINT-dependence, the
+  calibration-DIMENSION error's second appearance. Jason ruled the
+  look out (see (a⁸) for his words); branches `s78/ozone-tint` (T3)
+  and `s78/ozone-tint-t4` (T4) are HELD UNLANDED as the lineage
+  record, PM-confirmed. The mechanism knowledge — and both named error
+  classes — outlive the rejected look.
+
 - **(a⁶) ROUND W — the sunset exists now, and the Belt of Venus with it.**
   Jason: *"I would much prefer more reds/yellow/orange which eventually
   transforms into the bright night sky… The extreme blue in the current
