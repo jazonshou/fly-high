@@ -1069,9 +1069,18 @@ export const RETRACTED_DRAW_READINGS: readonly RetractedDrawReading[] = Object.f
       + "compared have unknown, different distances. The comparison could not "
       + "bear on the question.",
     correctedTo:
-      "Over the 15 shots with `locate: null`, where offsets ARE comparable, "
+      "Over the shots WITHOUT a `locate` key, where offsets ARE comparable, "
       + "distance separates the groups cleanly: +24 at 661-4472 m, +12 at "
-      + "5629-8944 m. Held as PROVISIONAL -- 15 of 31 is not a random half.",
+      + "5629-8944 m. Held as PROVISIONAL -- the unlocated shots are not a "
+      + "RANDOM subset: located shots are chosen by terrain feature and "
+      + "unlocated ones are fixed vantages, so the split is selected, not "
+      + "sampled. That is the caveat; the fraction never was. "
+      + "RE-MEASURED 2026-09-01: 17 of 34, an exact half. The original read "
+      + "`15 of 31` and cited `locate: null` -- BOTH WRONG TODAY. 31 was a "
+      + "stale shot count (the set is 34), and there is no `locate: null` "
+      + "form in the tree at all: `locate` is an optional string, absent "
+      + "when unused. A denominator inside a retraction is still a live "
+      + "number and rots like any other.",
     costAfterRetraction:
       "Handed to three sessions as evidence against distance before it was "
       + "withdrawn. Two of them built on it.",

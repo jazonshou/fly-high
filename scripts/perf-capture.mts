@@ -1581,7 +1581,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * `simulationTime = 500 + index * 120`, and both flashing rates divide
      * 120 s into whole periods — 45 fpm gives 90 and 60 fpm gives 120. So
      * **every** shot samples beacon phase 0 and strobe phase 0.5: beacon lit,
-     * strobe dark, in all 31 frames. The complementary state is captured
+     * strobe dark, in every captured frame. The complementary state is captured
      * nowhere, and a beacon wired to the strobe's timer — or either lamp stuck
      * on — would look identical in every one of them.
      *
