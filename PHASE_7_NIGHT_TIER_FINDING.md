@@ -345,14 +345,100 @@ shot at night.
 > `windSpeed` either, so the wind-dependence leg was independently untestable —
 > the smaller version of the same problem.
 >
-> **The useful bound that survives.** If no night shot contains water, the
-> ungated `:913` term **cannot affect a single frame in the capture set**. It is
-> invisible to every delivery gate we have — no ratchet, no SSIM check, no
-> draw-call floor can see it. That does not make it harmless; it makes it a
-> defect only a pilot flying over water at night would meet. **A term no
-> instrument can see is not a term that is not there.** Settling it empirically
-> needs a NEW night-over-water vantage, which is a shot-set change and therefore
-> needs its own ceiling rather than a delta.
+> **~~The useful bound that survives.~~ REFUTED THE SAME HOUR — do not quote it.**
+> I wrote that the ungated `:913` term *"cannot affect a single frame in the
+> capture set"* and that it is *"invisible to every delivery gate we have"*.
+> **Both are false. `night-moonlit` contains a water surface.**
+>
+> **The error: inferring frame CONTENT from shot NAMES.** The name analysis above
+> stands — the named sets really are disjoint and no `water-*` shot is at night.
+> But "no night shot is NAMED for water" does not establish "no night shot
+> CONTAINS water", and I wrote the second having checked only the first. SWE III
+> went to the frame; I went to the shot table.
+>
+> **Confirmed independently on a DIFFERENT frame.** SWE III measured their own
+> captured arms; I measured the committed baseline
+> `tests/perf/baseline/night-moonlit.png`:
+>
+> | region (baseline, 1280x720) | B/G | luma sd |
+> |---|---|---|
+> | candidate water, rows 244-254 | **1.463** | **1.16** |
+> | sky, rows 40-90 | 1.411 | 0.45 |
+> | low terrain | 1.246 | 15.98 |
+>
+> Blue-dominant — the highest B/G of the three — and **13.8x smoother than
+> terrain**. A row scan across 230-272 shows it bounded below by a transition at
+> rows 256-262 where mean climbs 6.3 -> 19.2 and texture returns: **a shoreline,
+> not a haze band.** My first window (238-252) straddled that edge and read
+> sd 2.37; the band is narrower than I first drew it, which matters because a
+> window including the edge dilutes a real effect with high-variance rows that
+> are not water.
+>
+> **Status is UNTESTED, not absent.** Containing the substrate is not the same as
+> being able to exhibit the effect: that water sits near the horizon where wave
+> faces are sub-pixel, so the tilted-face minority is averaged inside each pixel
+> rather than resolved. Leg 2's azimuthal bias in particular probably cannot
+> appear at this vantage.
+>
+> **The decisive test needs no new vantage** and SWE III is running it: two arms
+> differing only in `:913`'s floor, present versus removed, measured over that
+> region rather than whole-frame. A null from that is worth far more than the
+> absent recorded above, because it is **a null on a shot that could have shown
+> it** — and it would properly motivate a night-over-water vantage rather than
+> merely wanting one.
+>
+> **MEASURED, AND MY REGION WAS WRONG TOO (SWE III, same evening).** The A/B
+> was run — two arms differing only in `:913`'s floor — and it settles the
+> magnitude while overturning the region BOTH of us identified above.
+>
+> **Rows 244-254 are not ocean.** SWE III pre-registered that window from the
+> smoothness plateau, exactly as agreed, and got a byte-identical A/B. Then the
+> **1000x amplification control returned max delta 0 in the same window** — a
+> thousandfold amplification, invisible. That cannot be a null about the term; it
+> is a window containing none of the phenomenon. **The ocean actually draws at
+> rows 263-265 and 313-315**, and none of our rows appear.
+>
+> **So the water-versus-sky discrimination we both performed was right about what
+> the band LOOKS like and wrong about what DRAWS it.** Two people, two different
+> frames, sound discriminators (B/G, luma sd, a shoreline edge), same wrong
+> region. **Blue and smooth is necessary and nowhere near sufficient.** My table
+> above stands as a description of that band and must not be read as locating the
+> ocean.
+>
+> **At the rows where the ocean does render (y260-320, full width):**
+>
+> | arm | total | max | >=1px | >=2px |
+> |---|---|---|---|---|
+> | shipping `:913` on vs off | -0.1 | 1 | 12 | 0 |
+> | 1000x amplification control | -55.4 | 14 | 148 | 64 |
+> | noise floor (warm-up vs A) | -0.4 | 1 | 4 | 0 |
+>
+> **12 pixels at delta >= 1 against a noise floor of 4, and ZERO at delta >= 2.**
+> The term is live, reaches the GPU, and contributes at most one display byte at
+> this vantage. The 1000x control proves the instrument can see it, so **this is
+> a NULL and not an absent** — on a shot that genuinely contains the substrate.
+>
+> **What only the positive control caught.** Pre-registration defends against
+> tuning a parameter after seeing the data. It does not defend against a
+> parameter that was WRONG WHEN FIXED, and a window containing none of the
+> phenomenon yields a null indistinguishable from a real one. Neither the
+> pre-registration, nor the noise floor, nor the care taken choosing the window
+> separated them — only **"would this window show the effect if the effect were
+> enormous?"**
+>
+> **Status: measured-and-small, neither fixed nor closed.** The static case is
+> untouched — two adjacent terms, one gated by `sunColor` and one not, a `0.1 +`
+> floor, a green-dominant colour at a 1.138 scotopic ratio. The empirical case
+> for urgency is weak at every shipped vantage. The far water flattens exactly as
+> predicted (1000x shows nothing where normals filter smooth) while the nearer
+> rows carry the term, so **a near-field night-over-water vantage is now an
+> earned open question rather than a wanted one.**
+>
+> **Why this correction is written here rather than replacing the text above.**
+> The false claim landed in `d0c7ecc` and this correction was lost between my
+> writing it and that commit; it had to be re-applied. **"No instrument can see
+> it" is the specific kind of claim that stops anyone looking again**, so it must
+> not sit in the record unmarked.
 
 ## The plan's suggested light-point lever is attached to almost nothing
 
