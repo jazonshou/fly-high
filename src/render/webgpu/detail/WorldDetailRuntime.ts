@@ -628,7 +628,15 @@ const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
  * self-throttling in the right direction** — silent for the many far cells,
  * responsive for the few near ones where a step is visible.
  *
- * 0.02 caps a single step at 2% of the near cap. The defect this replaces
+ * ~~0.02 caps a single step at 2% of the near cap.~~ **STRUCK — it is a
+ * TRIGGER, not a clamp.** When the drift exceeds it the WHOLE accumulated
+ * drift is applied at once, so the step is bounded by how far the observer
+ * moved since the last evaluation, not by this constant. In the renderer
+ * that is one frame (~1 m at cruise) and the step lands near 0.026; a PROBE
+ * stepping 37 m per update sees ~0.30, which is a property of the sampler
+ * rather than of the build. Caught by `flight-simulator-66`.
+ *
+ * The defect this replaces
  * stepped **7.33x at tier 1 and 11.07x at tier 0**.
  */
 const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;

@@ -755,14 +755,32 @@ describe("perf capture (1A-1c / 2Z)", () => {
         }, { stepMeters: 500, maxRadiusMeters: 18_000 });
         return found ?? fallback;
       }
-      // Coast: over water with land ~3 km ahead on the +x heading.
-      const found = locateShotOffset((x, z) => {
+      if (shot.locate === "coast") {
+        // Over water with land ~3 km ahead on the +x heading.
+        const found = locateShotOffset((x, z) => {
         const here = sampleTerrainHeight(world, airportX + x, airportZ + z);
         if (here > world.seaLevel - 2) return false;
         const ahead = sampleTerrainHeight(world, airportX + x + 3_000, airportZ + z);
         return ahead > world.seaLevel + 5;
-      }, { maxRadiusMeters: 20_000 });
-      return found ?? fallback;
+        }, { maxRadiusMeters: 20_000 });
+        return found ?? fallback;
+      }
+      // EXHAUSTIVENESS. This was an unlabelled fallthrough, which is worse than
+      // it looks: a NEW `locate` value would have silently received the COAST
+      // search — open water with land 3 km ahead — and sited itself on a
+      // coastline looking entirely plausible. A wrong placement that looks
+      // correct is the class this project keeps shipping.
+      //
+      // It was also invisible to search: the mode's name appears nowhere in
+      // this file except a CAPITALISED comment, so `grep -c "coast"` returns an
+      // honest zero and reads as "nobody implements this". That false negative
+      // was produced, reported and relayed before it was caught.
+      const unhandled: never = shot.locate;
+      throw new Error(
+        `perf-capture: locate mode ${JSON.stringify(unhandled)} is declared on a shot but `
+        + "has no branch in resolvePlacement. Add one — the previous fallthrough "
+        + "would have silently applied the coast search to it.",
+      );
     };
 
     const shotReports: PerfCaptureShotReport[] = [];

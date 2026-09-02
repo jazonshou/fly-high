@@ -33,6 +33,15 @@ import { TerrainBiome } from "../src/world";
  * divisor of that lattice, so it does not accidentally sample only the
  * favourable phase.
  *
+ * **SCOPE — THIS GUARD IS BLIND TO ARRIVAL LATENCY.** It passes no
+ * `workerWorldSeed`, so `WorldDetailRuntime` creates no generation client and
+ * every cell is built inline and synchronously. **Streaming latency is zero by
+ * construction here.** It asserts a property of the SHARE LAW; a cell that is
+ * late because generation has not caught up is invisible to it, and an
+ * in-motion foliage DEFICIT cannot be reproduced by this file at all.
+ * Identified by `flight-simulator-66`, who found the same blindness in their
+ * own probe and checked mine rather than assuming.
+ *
  * **What is asserted is the invariant, not the fix's mechanism:** every
  * resident's stored distance must imply a share within tolerance of the share
  * its live distance implies. A future refactor that keeps the property passes;
