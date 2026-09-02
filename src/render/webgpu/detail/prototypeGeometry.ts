@@ -1184,7 +1184,7 @@ const SHRUB_SPECIES_SPECS: Readonly<Record<ShrubSpecies, ShrubSpeciesSpec>> = Ob
   },
   hazel: {
     layer: FOLIAGE_LAYER_INDEX.hazelLeaf, height: 1.0,
-    stemsMin: 3, stemsMax: 4, tiltMin: 0.2, tiltMax: 0.5, quadSize: 0.34,
+    stemsMin: 3, stemsMax: 4, tiltMin: 0.5, tiltMax: 0.95, quadSize: 0.34,
   },
   sage: {
     layer: FOLIAGE_LAYER_INDEX.sageLeaf, height: 0.55,
