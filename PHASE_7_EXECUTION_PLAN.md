@@ -852,19 +852,85 @@ Per Q3 this gate is **runway-adjacent structure only**: hangars, a tower, and th
 that makes them read as operated. No apron network, no taxiways.
 
 ### 7-10 parametric hangar (5.0 d)
-Replaces the three `CreateBox` calls in the loop at
-[AirportSystem.ts:50-73](src/render/webgpu/detail/AirportSystem.ts) (**not** `:72-83` —
-D-2). Gabled and arched roof profiles, ribbed corrugated cladding, sliding door tracks and
-panels with open/closed states, clerestory strips, ridge vents, gutters, downspouts,
-service doors, pilasters, concrete skirt. Parameterised on bay count. Corrugation is
-**geometry on the silhouette and a normal map inboard**.
-- **The ground problem is real and currently wrong.** Each hangar sits at
-  `across = runwayWidth*0.5 + 118` (~135 m) — **104 m outside the 62 m graded half-width**,
-  on the natural batter — and is re-seated by a **single centre-point** height sample, so a
-  46 × 34 m box buries one corner and floats another. 7-10's concrete skirt is the fix, and
-  it needs a real ground query over the footprint. **Keep the skirt render-only:** the
-  moment it changes ground *height* it becomes Class K, because collision short-circuits
-  through the same earthworks profile and assertion 63 pins the two to under 1 mm.
+**LANDED**: the bridge in `ddc5a63`/`82c4182`, the detail pass in `2bfe84a`. It replaced
+the three `CreateBox` calls this section pointed at; `grep -c CreateBox
+src/render/webgpu/detail/AirportSystem.ts` is now **0**, which is the Gate 7D exit
+criterion for this item and a check that cannot go stale the way the line citation did
+(the citation was corrected once already — D-2 — and the symbol outlived both versions).
+
+**SHIPPED**, derived from `HANGAR_DETAIL_PARTS` and the shell rather than restated: gabled
+and arched roof profiles, ribbed corrugated cladding, door leaves on a header, clerestory
+strips, ridge vents, gutters, downpipes, pilasters, concrete skirt. Parameterised on bay
+count.
+
+**NOT SHIPPED, and this list claimed all three.**
+- *"Panels with open/closed states"* — the door leaves are static geometry; nothing
+  animates or toggles them.
+- *"Service doors"* — no such part. `HANGAR_DETAIL_PARTS` has seven members and a
+  personnel door is not among them.
+- *Corrugation as "geometry on the silhouette AND a normal map inboard"* — **only the
+  normal map shipped.** The ribs live entirely in `synthesizeAirfieldMetal`'s height field
+  (8 rib periods per tile); every wall in `hangarShellGeometry` is a flat quad, so the
+  SILHOUETTE is smooth. `grep -n 'rib\|corrugat' AirfieldStructures.ts` returns four hits
+  and all four are prose.
+
+None is a defect in the build and all three are cheap to add later. They are recorded
+because **a feature list is a claim like any other**, and this one asserted three features
+that do not exist beside eight that do.
+
+**The third was nearly re-asserted in this very correction.** The first draft of the line
+above read "Corrugation is geometry on the silhouette and a normal map inboard, **as
+planned**" — carried forward unchecked, in an edit whose entire purpose was checking, by
+the same author who had just written that a stale "currently" commissions work. The
+sentence *reads* true because the plan says it and because the ribs plainly exist
+somewhere. **That is the same failure mode as reading `ridgeHeightMeters` as the top of the
+building** (see the comment at its declaration): the wrong answer is available without
+anyone forming a belief about it. It was caught by grepping the source, not by care.
+
+The roster is the artifact and cannot drift the way this list did: a part named in
+`HANGAR_DETAIL_PARTS` and not emitted **throws at build time**.
+- **The ground problem is FIXED and this paragraph described the pre-fix state until
+  2026-09-01.** It said "real and currently wrong" while the fix had already shipped, and
+  it cost real work: the PM assigned the defect, the assignee measured it first, and the
+  whole task evaporated. **A stale "currently" is more expensive than a stale fact,**
+  because it commissions work rather than merely misinforming.
+
+  **What ships now.** `AirportSystem` samples the WHOLE footprint via
+  `hangarFootprintSamples` at 2 m (**432 samples per hangar**) and `hangarSeatingFrom`
+  seats the slab at the **highest** sample, running a concrete skirt down to the
+  **lowest**. Measured under `phase1-perf-baseline`, every corner of every hangar sits at
+  or below its slab — nothing is buried, nothing floats:
+
+  | hangar | relief | slab | skirt | worst corner under the slab |
+  |---|---|---|---|---|
+  | 0 | 2.86 m | 39.65 m | 2.86 m | 2.86 m, exactly reached |
+  | 1 | 3.74 m | 39.47 m | 3.74 m | 3.74 m, exactly reached |
+  | 2 | 4.54 m | 39.04 m | 4.54 m | 4.54 m, exactly reached |
+
+  **The COUNTERFACTUAL — what a single centre-point sample would do — measured on the same
+  seed, and one of its two figures had drifted.** This paragraph claimed a bury of 2.70 m
+  and a float of 2.85 m. Bury reproduces at **2.69 m**; float measures **1.84 m**, not
+  2.85. **A document half-right is more dangerous than one wholly wrong**, because the half
+  that reproduces certifies the half that does not. Counterfactual bury/float by hangar:
+  0 buries 1.82 / floats 1.03; 1 buries 2.22 / floats 1.52; 2 buries 2.69 / floats 1.84.
+
+  **"104 m outside the 62 m graded half-width" was self-refuting and 62 was wrong.**
+  `runwayPlatformHalfWidth` is `runwayWidth*0.5 + shoulderWidth` = 34*0.5 + 14 = **31.0 m**.
+  The displacement is right — 135 − 31 = 104 — so **the sentence's own second figure
+  refuted its first**, and subtracting the two catches it without knowing anything about
+  terrain. (135 − 62 would be 73.)
+
+  **Residual risk, checked and bounded rather than dismissed.** "Seats at the lowest
+  SAMPLE" is not "seats at the lowest GROUND": a dip narrower than the 2 m stride would
+  leave a gap under the wall. Re-sampled every footprint at **0.25 m**: the coarse grid
+  missed the true minimum by **0.000 m on all three hangars** (36.785 / 35.731 / 34.507
+  both ways). **One seed** — this bounds the risk, it does not eliminate it, and terrain
+  with sharper features could differ.
+
+  **The Class K constraint holds by construction, not by discipline.** The skirt is
+  geometry inside `hangarShellGeometry`'s closed manifold — a mesh, not a height field — so
+  it cannot reach collision or the earthworks profile that assertion 63 pins to under 1 mm.
+  There is no way to violate it without changing what the skirt *is*.
 - **Register meshes correctly or they silently lose cloud shadows and aerial perspective.**
   `FlightRenderer` calls `airport.root.getChildMeshes(false)` **once at construction**
   (in [FlightRenderer.ts](src/render/FlightRenderer.ts) — find the three call sites by
