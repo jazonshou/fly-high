@@ -2017,17 +2017,41 @@ describe("perf capture (1A-1c / 2Z)", () => {
         //
         // `gateAlways`, not `gateDelivery`: this is arithmetic over rendered
         // positions, not host speed, so it must hold on every host.
+        // The PREDICTED DISTANCE, not merely a positive one. A sign test passes
+        // on a translation running at the wrong scale, in the wrong direction
+        // after the `hypot`, or truncated by an early exit; this catches all
+        // three, and it is deterministic arithmetic over published fields.
+        //
+        // Tolerance is exactly one frame of travel. Two cases, both legitimate:
+        // when the settle loop runs past the approach the observer lands on the
+        // nominal pose and the distance is the full `frames * speed / 60`; when
+        // the loop is cut short — the stability break, or the undrained cut —
+        // the last rendered frame still has one frame's worth to run. Measured:
+        // 240 frames at 62 m/s gives 248.0; a 200-frame cut at 80 m/s gives
+        // 265.3 against a planned 266.7, which is 1.33 m, one frame at 80 m/s.
+        //
+        // Reads `approachFrames` — the count the loop ACTUALLY ran — so a
+        // shortened approach is predicted correctly instead of going red on a
+        // capture that behaved.
+        const approachMetresPerFrame = shot.approachSpeedMetersPerSecond / 60;
+        const expectedTravelMeters = IS_TRANSLATING
+          ? (shot.approachFrames * shot.approachSpeedMetersPerSecond) / 60
+          : 0;
         gateAlways(() => expect(
-          shot.observerTravelMeters,
+          Math.abs(shot.observerTravelMeters - expectedTravelMeters),
           IS_TRANSLATING
-            ? `${shot.name}: VITE_PERF_TRANSLATE is on and the observer travelled `
-              + `${shot.observerTravelMeters} m. The settle loop is not flying it in, `
-              + "so an undrained capture still photographs a standstill and the two "
-              + "modes compose into nothing."
+            ? `${shot.name}: VITE_PERF_TRANSLATE is on. The observer travelled `
+              + `${shot.observerTravelMeters} m but ${shot.approachFrames} approach `
+              + `frames at ${shot.approachSpeedMetersPerSecond} m/s predict `
+              + `${expectedTravelMeters} m. Either the settle loop is not flying it `
+              + "in, or it is flying it in at the wrong rate — a capture that "
+              + "photographs a standstill composes with the undrained mode into "
+              + "nothing, and one at the wrong scale is not the approach history "
+              + "was measured at."
             : `${shot.name}: the observer travelled ${shot.observerTravelMeters} m `
               + "with translation OFF. A pinned capture must arrive at its pose by "
               + "teleport, or it is not the pose history was measured at.",
-        )[IS_TRANSLATING ? "toBeGreaterThan" : "toBe"](0));
+        ).toBeLessThanOrEqual(IS_TRANSLATING ? approachMetresPerFrame + 1e-6 : 0));
 
         if (!IS_SWEEP) {
           // COMPARED LIKE WITH LIKE, which it was not before. The inventory is
