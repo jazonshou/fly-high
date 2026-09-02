@@ -252,6 +252,52 @@ Per-pass attribution is not available here for the reason already recorded:
 `gpuPassMs.mainPass` is bimodal on this host. **The night shadow finding above
 stands on its own mechanism and does not depend on winning this attribution.**
 
+### Is skipping the night sun shadows a no-op on the image? Almost, and the exception is named
+
+**Predicting the sign before measuring, because the failure mode is the opposite
+of the obvious one.** If any shadowed term were NOT gated by the sun's
+contribution, disabling shadows would BRIGHTEN the night image rather than leave
+it alone, and a "free" change would ship a visible one.
+
+**The gate is exactly zero at night, verified rather than assumed.** The water
+shaders take `uniforms.sunColor` from
+`atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized)`, and
+`sunIlluminanceNormalized` is `palette.intensity / PEAK_SUN_INTENSITY`. Palette
+intensity is exactly 0.0 below -12 degrees, so **the uniform is (0,0,0) at every
+night clock** — every term of the form `... * uniforms.sunColor *
+directSunVisibility` is zero regardless of what the shadow map says. When the
+lever is off, `sampleSunShadowReceiver` returns `1.0` (fully lit) at its first
+line, so the substitution is 0 for 0.
+
+**ONE TERM IS NOT GATED THAT WAY, and it is the reason this section exists.**
+`SpectralOceanSystem.ts:913-914`:
+
+    let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
+      * nDotL * (0.1 + 0.12 * directSunVisibility);
+
+It carries a `0.1 +` FLOOR and is **not** multiplied by `sunColor`, so
+`directSunVisibility` moves it by up to 2.2x on its own. What saves it at night
+is `nDotL = max(dot(normal, light), 0.0)` with `light = normalize(sunDirection)`
+— a sun 21.5 degrees below the horizon gives a negative dot on any up-facing
+normal, so the term is zero on flat water. **It is NOT zero on wave faces
+steep enough to tilt toward a below-horizon sun**, which at the Cox-Munk
+mean-square slope for 11 m/s (RMS slope 13.8 degrees) is a **1.56 sigma** face —
+a real minority of ocean pixels rather than none:
+
+| nDotL | shadowed | lit | delta (green, scene units) |
+|---|---|---|---|
+| 0.02 | 0.00026 | 0.00057 | 0.00031 |
+| 0.05 | 0.00065 | 0.00143 | 0.00078 |
+| 0.10 | 0.00130 | 0.00286 | 0.00156 |
+
+**So this is not a strict no-op and must not be quoted as one.** It is a no-op
+everywhere the sun's contribution gates the shadow — which is everything except
+this one ocean term — and on steep night wave faces it is a bounded brightening
+of at most ~0.0016 scene units, and only where the night shadow map currently
+reports shadowed at all. **Under the scotopic response small scene values are
+not small display values**, so the honest close is a pixel check on a water shot
+at night, not an assertion. `water-3m` and `water-25ft` are both in the set.
+
 ## The plan's suggested light-point lever is attached to almost nothing
 
 7-9's body lists "light-point LOD and cull radii" as a night tier field. Priced
