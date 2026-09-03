@@ -1045,9 +1045,17 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 84,
     clock: { dayOfYear: 171, solarTimeHours: 19 },
     /**
-     * **PRE-AUTHORISED: this baseline is WRONG and must be re-shot when the
-     * bathymetry window fix lands.** Written before the fix, so whoever meets
-     * the red SSIM meets an explanation rather than a puzzle.
+     * ~~**PRE-AUTHORISED: this baseline is WRONG and must be re-shot when the
+     * bathymetry window fix lands.**~~ **CONSUMED 2026-09-03.** The window
+     * blend landed (`BATHYMETRY_NEAR_BLEND_*`), the bathymetry kernel's
+     * double-applied rectangle origin was reverted, and this baseline was
+     * re-shot in the same promotion. The `sanctionedRebaseline` field that
+     * carried the note to the failure text is gone with it: a pre-authorisation
+     * is a promise about a change that has not landed yet, and none is pending
+     * for this shot. The history stays because its figures were quoted onward.
+     *
+     * Written before the fix, so whoever met the red SSIM met an explanation
+     * rather than a puzzle:
      *
      * **THE MECHANISM.** The bathymetry NEAR-clipmap selects its window with a
      * Chebyshev box test — `max(|dx|,|dz|) <= 0.48 * window`, no blend — so
@@ -1067,12 +1075,6 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * **Because the artifact is IN the reference, every SSIM comparison since
      * has asserted it is correct.** The frame changing IS the fix working.
      */
-    sanctionedRebaseline:
-      "This baseline contains the bathymetry near-clipmap's hard window edge — a "
-      + "shading discontinuity at the 7,864 m Chebyshev boundary, drawn across "
-      + "correctly-placed water. When the window fix lands, this frame MUST change "
-      + "and this gate MUST go red. Re-shoot the baseline and review the candidate "
-      + "— the change is the fix, not a regression.",
     locate: "coast",
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.

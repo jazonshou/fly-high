@@ -140,8 +140,17 @@ describe("water shader extraction (2-8a)", () => {
     // Re-pinned once more by the final audit: the ocean's local wave-face
     // subsurface term now consumes the already illuminance-premultiplied sun
     // colour, closing the last shader-owned green emission path at night.
+    //
+    // Re-pinned 2026-09-03: VERTEX ONLY. The 1C-7 Earth-curvature drop
+    // (`displaced.y -= r^2 / 2R`) is withdrawn from the vertex stage — the
+    // terrain and the depth buffer the sea is tested against are flat, and the
+    // drop pushed every shelf bed shallower than it up through the surface at
+    // distance (a dark seabed band along each far coast in cruise-horizon).
+    // The fragment hash below is byte-for-byte unchanged, which is the claim
+    // that this moved geometry only. Deliberate, named, reviewed — the flow
+    // this assertion exists to force; the decision is in ARCHITECTURE.md.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
+      "9686627ee8433515ffff57ca467c63db3feb066684c24c1b637935f9ca218609",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
       "38d9efceb366812bdd8e89655b7e78757a0ed501a55563203a4de6614432bcd0",

@@ -810,18 +810,29 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
   let texel = bathymetryParams.water.x;
   let globalTexel = bathymetryParams.rectangle.xy + vec2i(id.xy);
   let worldXZ = vec2f(globalTexel) * texel;
-  // Wrong-coordinate bug, original to Phase 5: this bed height was sampled at
-  // the DISPATCH-LOCAL invocation coordinates (f32(id.xy) * texel) — terrain
-  // transplanted from the dispatch frame near the world origin, a different
-  // wrong offset per partial-update rectangle — while the macro blend and
-  // page overlay two lines down always used the correct texel WORLD position.
-  // So the bathymetry bed the water shaders read has been alien terrain since
-  // Phase 5. This is INVISIBLE TODAY: its consumer is the spectral-ocean
-  // depth path, and the ocean mesh does not currently render (its vertex
-  // reads patchLengths0 = 0 → NaN displacement → degenerate; separate fix).
-  // It becomes visible the moment the ocean renders, because a correct bed is
-  // what makes near-shore depth, shoaling and the shoreline band correct.
-  var height = terrainNaturalHeight(worldXZ.x, worldXZ.y);
+  // COORDINATE CONTRACT — read this before touching either argument.
+  //
+  // terrainNaturalHeight takes coordinates LOCAL to the bound kernel page.
+  // The page's world origin is folded into the lattice tables on the CPU
+  // (buildTerrainKernelPageUniform -> latticeOrigin), and kOctaveNoise
+  // adds it back split into an exact integer cell and a fraction — the
+  // split-origin form that keeps the kernel bit-stable kilometres out.
+  // dispatch() binds ONE page per rectangle, with origin rectangle.xy *
+  // texel, so this texel's local coordinate is id.xy * texel and its world
+  // coordinate is origin + local = worldXZ above. The height pyramid and the
+  // page atlas make the same call the same way.
+  //
+  // 7b2d08b "fixed" this line to pass worldXZ instead, believing the kernel
+  // took world coordinates. That applied the rectangle origin TWICE: the bed
+  // was sampled at origin + world, a different alien offset per strip. It was
+  // invisible while the ocean did not render; the moment it did, the depth
+  // feather discarded the sea wherever the transplanted terrain happened to
+  // sit above sea level — no sea at all around the aircraft in one place,
+  // open water in another. The macro blend and page overlay below take WORLD
+  // coordinates by their own contracts; that asymmetry is real, not a bug.
+  // tests/gpu/bathymetry-page-overlay.test.ts pins an analytic world's bed
+  // against the CPU kernel at world coordinates so this cannot recur unseen.
+  var height = terrainNaturalHeight(f32(id.x) * texel, f32(id.y) * texel);
   if (bathymetryParams.water.w > 0.5) {
     let macroHeight = sampleBathymetryMacroHeight(worldXZ);
     height = height + (macroHeight - height) * bathymetryMacroBlend(worldXZ);

@@ -72,6 +72,12 @@ results recorded for this continuation are:
   but **63** per-shot ratchet assertions failed across **21 of 31** pinned shots. Two
   orphaned GPU suites were concurrently using the same integrated GPU, so the result is
   not valid regression-attribution evidence and cannot justify a floor update.
+- full candidate `2026-09-03T15-48-09.890Z` (2026-09-03, after the bathymetry-origin,
+  airframe draw-order and water-datum fixes recorded in `ARCHITECTURE.md`'s decision
+  log): every visual, temporal, renderer-error, settling and lit-region gate **PASSED**;
+  its 13 failures were all delivery floors, on an unpinned M2 Pro with the Node unit
+  suite running concurrently. **All thirty baselines were promoted from it** after a
+  frame-by-frame review; no floor was re-pinned.
 
 No delivery floor or visual baseline was promoted, re-pinned, or loosened.
 
@@ -95,8 +101,11 @@ That is not a claim that the live capture list has thirty entries: the append-on
 also contains diagnostic/probe shots whose `comparesToBaseline` value is false.
 `PERF_CAPTURE_SHOTS`, never prose or the PNG count, owns the current list and order. Those
 promotions predate the fix that made the fp16 ocean presentation finite: their green
-results did not prove ocean pixels, and the thirty images remain historical comparison
-assets rather than current rendered-ocean acceptance evidence.
+results did not prove ocean pixels. ~~The thirty images remain historical comparison
+assets rather than current rendered-ocean acceptance evidence.~~ **Superseded
+2026-09-03:** the thirty images were re-shot from the rendered-ocean tree (candidate
+`2026-09-03T15-48-09.890Z`, see `docs/PERFORMANCE.md`); the table's delivery rows are
+unchanged and remain floor provenance only.
 
 ## Remaining acceptance
 

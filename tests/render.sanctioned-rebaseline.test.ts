@@ -42,24 +42,29 @@ describe("pre-authorised rebaselines reach the person who meets the failure", ()
     expect(without, "an undeclared shot must not gain a phantom authorisation")
       .not.toContain("PRE-AUTHORISED");
 
-    // And the shot that actually needs it today must carry it end to end.
-    const coast = PERF_CAPTURE_SHOTS.find((s) => s.name === "coast-10km-lowsun");
-    expect(coast?.sanctionedRebaseline, "coast-10km-lowsun lost its A-1 pre-authorisation")
-      .toBeDefined();
+    // Every shot that carries one today must reach the reader end to end.
     // Assert the DURABLE properties, not the defect's label. This expectation
     // first read `toContain("A-1")` and went red the moment the mechanism was
     // re-identified — the guard correctly caught its own staleness, but a test
-    // pinned to a name re-breaks every time the diagnosis is refined.
-    const composed = ssimBaselineFailureMessage(coast!.name, coast!.sanctionedRebaseline);
-    expect(composed).toContain("coast-10km-lowsun");
-    expect(composed).toContain("PRE-AUTHORISED");
-    expect(
-      /re-?shoot|re-?baseline|regenerate|candidate/iu.test(composed),
-      "the composed message does not tell the reader what to do",
-    ).toBe(true);
-    expect(
-      /not a regression|is the fix/iu.test(composed),
-      "the composed message does not tell the reader the red is EXPECTED",
-    ).toBe(true);
+    // pinned to a name re-breaks every time the diagnosis is refined. It was
+    // then pinned to `coast-10km-lowsun` specifically, which went stale the
+    // same way when that pre-authorisation was CONSUMED by the 2026-09-03
+    // re-shoot: a pre-authorisation is a promise about a change that has not
+    // landed, so the set of shots carrying one is legitimately empty between
+    // sanctioned churn points, and this test must not force one to exist.
+    for (const shot of PERF_CAPTURE_SHOTS) {
+      if (shot.sanctionedRebaseline === undefined) continue;
+      const composed = ssimBaselineFailureMessage(shot.name, shot.sanctionedRebaseline);
+      expect(composed).toContain(shot.name);
+      expect(composed).toContain("PRE-AUTHORISED");
+      expect(
+        /re-?shoot|re-?baseline|regenerate|candidate/iu.test(composed),
+        `${shot.name}: the composed message does not tell the reader what to do`,
+      ).toBe(true);
+      expect(
+        /not a regression|is the fix/iu.test(composed),
+        `${shot.name}: the composed message does not tell the reader the red is EXPECTED`,
+      ).toBe(true);
+    }
   });
 });

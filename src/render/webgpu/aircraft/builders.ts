@@ -1,4 +1,8 @@
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
+import {
+  AIRFRAME_TRANSPARENCY_RENDERING_GROUP_ID,
+  keepOpaqueDepthForRenderingGroup,
+} from "../core/RenderingGroups";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
@@ -95,7 +99,12 @@ export class AircraftBuildContext {
   readonly materials: Material[] = [];
   readonly textures: BaseTexture[] = [];
 
-  constructor(readonly scene: Scene) {}
+  constructor(readonly scene: Scene) {
+    // The translucent parts built below draw in their own group after the
+    // water (see `finishMesh`); that group must inherit the opaque depth or
+    // the canopy would draw over the fuselage behind it.
+    keepOpaqueDepthForRenderingGroup(scene, AIRFRAME_TRANSPARENCY_RENDERING_GROUP_ID);
+  }
 
   material(
     name: string,
@@ -116,6 +125,12 @@ export class AircraftBuildContext {
       material.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND;
       // The WebGPU frame graph supplies an explicit reactive/material mask;
       // glass alpha is no longer overloaded as a post-process classifier.
+      //
+      // The pre-pass WRITES DEPTH. That is what lets two-sided glass sort
+      // against itself, and it is also why every mesh wearing this material
+      // is moved behind the water in draw order (`finishMesh`): drawn before
+      // the sea, the propeller disc's pre-pass depth cut the ocean out of the
+      // whole lower frame in cockpit view and the seabed showed through.
       material.needDepthPrePass = true;
       material.backFaceCulling = false;
     }
@@ -571,6 +586,11 @@ export class AircraftBuildContext {
 
   private finishMesh(mesh: Mesh, material: Material, parent: TransformNode): Mesh {
     mesh.material = material;
+    if (isAlphaBlendedAirframeMaterial(material)) {
+      // Composited AFTER the water, never before it: see the material
+      // builder's note on the depth pre-pass, and `core/RenderingGroups.ts`.
+      mesh.renderingGroupId = AIRFRAME_TRANSPARENCY_RENDERING_GROUP_ID;
+    }
     mesh.parent = parent;
     mesh.isPickable = false;
     mesh.receiveShadows = true;
@@ -582,6 +602,12 @@ export class AircraftBuildContext {
     this.meshes.push(mesh);
     return mesh;
   }
+}
+
+/** The materials `material()` puts in the alpha-blend bucket, and only those. */
+export function isAlphaBlendedAirframeMaterial(material: Material): boolean {
+  return material instanceof PBRMaterial
+    && material.transparencyMode === PBRMaterial.PBRMATERIAL_ALPHABLEND;
 }
 
 function color3(color: number): Color3 {

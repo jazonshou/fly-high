@@ -24,7 +24,10 @@ session and wrong by the time they reached a third, so the distinction is not ce
 > presentation to a 90 km radius, a targeted recapture passed the explicit seam,
 > faceting, and gap review. The original 2026-08-31 conclusion is retained below as
 > provenance, but its ocean claims and promoted performance rows are not current-ocean
-> acceptance evidence; a clean full candidate rerun remains required.
+> acceptance evidence. The thirty images were re-shot from the rendered-ocean tree on
+> 2026-09-03 (candidate `2026-09-03T15-48-09.890Z`, `docs/PERFORMANCE.md`) after the
+> bathymetry-origin, airframe draw-order and water-datum fixes; a clean
+> reference-machine run is still owed for the delivery floors.
 
 ---
 

@@ -486,10 +486,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
       * detailWind * detailFade;
   }
   var displaced = vec4f(vertexInputs.position + displacement + vec3f(0.0, detailHeight, 0.0), 1.0);
-  // 1C-7: drop the surface with the Earth's curvature (camera-centred local
-  // frame, R = 6371 km). Without this the flat disk's vanishing line sits at
-  // eye level and the sea reads as a plate instead of a horizon.
-  displaced.y -= dot(vertexInputs.position.xz, vertexInputs.position.xz) / (2.0 * 6371000.0);
+  // NO Earth-curvature drop, deliberately. 1C-7 lowered the surface by
+  // r^2 / (2 R) so the disk's vanishing line would sit below eye level. But
+  // the terrain, the horizon field and the depth buffer the sea is tested
+  // against are all FLAT, and the drop is 8 m at 10 km, 31 m at 20 km and
+  // 159 m at the far plane: every shelf bed shallower than that rose through
+  // the surface and the wet seabed drew a dark band along every distant coast
+  // (cruise-horizon, 2026-09-03). The sea has to share the datum of the ground
+  // it meets. A curved world is a renderer-wide decision, not a water one.
   let world = uniforms.world * displaced;
   vertexOutputs.position = uniforms.viewProjection * world;
   vertexOutputs.worldPosition = world.xyz;

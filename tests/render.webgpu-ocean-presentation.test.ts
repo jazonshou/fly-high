@@ -127,13 +127,17 @@ describe("spectral ocean presentation topology", () => {
     expect(WATER_VERTEX_WGSL).toContain("uniforms.oceanWind");
   });
 
-  it("drops the surface with the Earth's curvature before the world transform (1C-7)", () => {
-    expect(WATER_VERTEX_WGSL).toContain(
-      "dot(vertexInputs.position.xz, vertexInputs.position.xz) / (2.0 * 6371000.0)",
-    );
-    // The drop applies to the displaced position, before the world transform.
-    expect(WATER_VERTEX_WGSL.indexOf("6371000.0"))
-      .toBeLessThan(WATER_VERTEX_WGSL.indexOf("uniforms.world * displaced"));
+  it("keeps the surface on the terrain's flat datum — 1C-7's curvature drop is withdrawn", () => {
+    // 1C-7 lowered the disk by r^2 / (2 R). The terrain and the depth buffer
+    // the sea is tested against are flat, so the drop (8 m at 10 km, 159 m at
+    // the far plane) pushed every shallower shelf bed up through the surface:
+    // a dark seabed band along each distant coast in cruise-horizon. This
+    // expectation used to assert the drop's presence; it now asserts its
+    // absence, and it must not be re-added to the water alone — a curved
+    // world is a renderer-wide decision (ARCHITECTURE.md decision log).
+    const code = WATER_VERTEX_WGSL.replace(/\/\/.*$/gmu, "");
+    expect(code).not.toContain("6371000");
+    expect(code).not.toMatch(/displaced\.y\s*-=/u);
   });
 
   it("follows the resolved WebGPU tier instead of raw scenery quality", () => {

@@ -22,6 +22,10 @@ import { RawCubeTexture } from "@babylonjs/core/Materials/Textures/rawCubeTextur
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
+import {
+  WATER_RENDERING_GROUP_ID,
+  keepOpaqueDepthForRenderingGroup,
+} from "../core/RenderingGroups";
 
 /**
  * Water is rendered after opaque terrain so its transparent surfaces can be
@@ -30,18 +34,15 @@ import type { Scene } from "@babylonjs/core/scene";
  * terrain bed it is meant to feather against and turns its camera-centred
  * presentation disk into an overlay on dry land.
  *
- * Both water owners call this idempotent scene-level setup. Keeping the group
- * id and its depth contract together prevents a newly constructed owner from
- * silently restoring Babylon's default assumption.
+ * The group id and the whole draw order live in `core/RenderingGroups.ts`
+ * (the translucent airframe has to know it draws AFTER this group). Both
+ * water owners call this idempotent scene-level setup from their constructors
+ * so a newly constructed owner cannot silently restore Babylon's default.
  */
-export const WATER_RENDERING_GROUP_ID = 1;
+export { WATER_RENDERING_GROUP_ID };
 
 export function configureDepthAwareWaterRendering(scene: Scene): void {
-  // Keep Babylon's rendering-group boundary (and its stencil clear), but
-  // deliberately carry opaque group 0's depth into the transparent water
-  // group. `autoClear=false` would preserve stencil as an accidental side
-  // effect and makes this contract broader than the water occlusion needs.
-  scene.setRenderingAutoClearDepthStencil(WATER_RENDERING_GROUP_ID, true, false, true);
+  keepOpaqueDepthForRenderingGroup(scene, WATER_RENDERING_GROUP_ID);
 }
 
 /** Shared constants block (PI). */

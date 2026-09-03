@@ -164,7 +164,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
     + cos(windPhase) * windAmplitude * windFrequency * wind;
   var displacedWorld = baseWorld;
   displacedWorld.y += waveHeight;
-  displacedWorld.y -= dot(baseWorld.xz, baseWorld.xz) / (2.0 * 6371000.0);
+  // No Earth-curvature drop: inland water sits on the same flat datum as the
+  // terrain it is depth-tested against, for the reason the ocean vertex gives.
   vertexOutputs.position = uniforms.viewProjection * displacedWorld;
   vertexOutputs.worldPosition = displacedWorld.xyz;
   vertexOutputs.absoluteWorldXZ = absoluteXZ;

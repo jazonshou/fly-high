@@ -634,7 +634,9 @@ describe("Phase 5 shared water-depth optics", () => {
     }
     expect(WATER_FRAGMENT_WGSL).not.toContain("deepAbsorption");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).not.toContain("let riverBed");
-    expect(HYDROLOGY_WATER_VERTEX_WGSL).toContain("6371000.0");
+    // Both surfaces share the terrain's flat datum: no Earth-curvature drop on
+    // either (see the ocean presentation test for why 1C-7 was withdrawn).
+    expect(HYDROLOGY_WATER_VERTEX_WGSL.replace(/\/\/.*$/gmu, "")).not.toContain("6371000");
   });
 
   it("defines ocean coverage from still water and cannot reopen dry alpha with foam", () => {

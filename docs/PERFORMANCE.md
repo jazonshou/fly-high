@@ -528,6 +528,26 @@ Their immutable input samples and candidate-directory provenance live in
 `scripts/deliveryFloors.mts`. The table therefore preserves two named
 historical snapshots rather than pretending its thirty rows came from one run.
 
+**Re-promoted 2026-09-03 — all thirty images, visual evidence only.** Every
+committed PNG was replaced from the reviewed candidate at
+`tests/perf/artifacts/rebaseline-candidates/2026-09-03T15-48-09.890Z` (Apple M2 Pro /
+Metal, headless Chrome for Testing 151, medium/balanced, canonical viewport),
+the first capture of the rendered ocean after three fixes landed together: the
+bathymetry kernel's double-applied rectangle origin (`7b2d08b` reverted), the
+translucent airframe's depth pre-pass holing the sea behind the propeller disc
+(`core/RenderingGroups.ts`), and the withdrawal of the water-only Earth-curvature
+drop (`1C-7`). Each is a row in `ARCHITECTURE.md`'s decision log. Every frame was
+reviewed individually before the copy; the sanctioned churn is the sea itself —
+the previous set showed the terrain bed wearing water shading, because the
+spectral ocean had never rendered — plus the Phase 7 night and airfield-lighting
+work that landed after R4 (`night-moonlit` moved from 0.48 SSIM for that reason
+alone). In that run every visual, temporal, renderer-error, settling and
+lit-region gate passed; its 13 failures were all delivery floors, on an unpinned
+host with the Node unit suite running concurrently, so **the table's rows and
+the delivery floors were deliberately NOT re-pinned** — the rows below remain
+the floor provenance and the reference-machine contract, and a clean
+reference-adapter run is still owed before any floor moves.
+
 > **Corrected 2026-08-31 (`6-12`). The paragraph above previously described the
 > 2026-08-26 polish-pass promotion and claimed seventeen shots.** Three things
 > were wrong, and the third is the one worth keeping:
@@ -556,7 +576,9 @@ historical snapshots rather than pretending its thirty rows came from one run.
 > first became visible at `2131a60`. These rows consequently describe the
 > pre-ocean-presentation renderer; they are historical comparison and floor
 > provenance, not performance or visual acceptance evidence for the current
-> rendered-ocean tree.
+> rendered-ocean tree. The IMAGES were re-shot from the rendered-ocean tree on
+> 2026-09-03 (candidate `2026-09-03T15-48-09.890Z`, promotion note above the
+> table); the rows' delivery figures are unchanged.
 
 The promotion did sanction the other visible Phase 6 churn — wetness, ecology
 channels, talus, the rebuilt canopy handoff, and GPU scatter. **Only 5 of the 21
@@ -631,7 +653,14 @@ or hitches), but **63** per-shot ratchet assertions failed across **21 of 31**
 pinned shots. Two orphaned GPU suites were concurrently using the same integrated
 GPU, so this run is not valid regression-attribution evidence and cannot justify
 floor changes. It must be rerun on a genuinely idle reference machine. No floor
-or baseline was promoted, re-pinned, or loosened.
+or baseline was promoted, re-pinned, or loosened from that run.
+
+**Superseded the same day.** Candidate `2026-09-03T15-48-09.890Z`, captured after
+the bathymetry-origin, airframe draw-order and water-datum fixes, passed every
+non-delivery gate and was promoted as the current thirty-image baseline set
+after a frame-by-frame review (see the promotion note above the table). Its
+delivery numbers are still not reference-adapter evidence — unpinned host,
+concurrent load — and no floor was re-pinned or loosened.
 
 The GPU and capture projects now keep independent `.vite-gpu` and `.vite-perf`
 optimizer caches with complete, discovery-disabled Babylon dependency sets. On
