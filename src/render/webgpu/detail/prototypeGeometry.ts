@@ -1297,6 +1297,14 @@ export function buildShrubPrototype(
     emitFoliageQuad(acc, quads[i]!, owners, i);
   }
   bakeSkyOcclusion(acc, quads.map(quadDisk), owners);
+  let shrubTopY = 0;
+  for (let i = 1; i < acc.positions.length; i += 3) {
+    shrubTopY = Math.max(shrubTopY, acc.positions[i]!);
+  }
+  if (shrubTopY > 1e-4) {
+    const k = 1 / shrubTopY;
+    for (let i = 0; i < acc.positions.length; i += 1) acc.positions[i]! *= k;
+  }
   return finalizeGeometry(acc);
 }
 

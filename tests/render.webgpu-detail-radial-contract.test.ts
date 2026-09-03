@@ -170,16 +170,22 @@ describe("detail prototype radial scale contract", () => {
  * `0.55 + maturity * 2.8`, a metre range), and the radius path, which derives
  * `radiusMeters` from it as a proportion.
  *
- * **This guard asserts what is TRUE TODAY, including the violation**, so the
- * discrepancy is executable rather than buried in a docblock that the code
- * contradicts. It is written to go RED when the violation is fixed — that is the
- * point. If you are here because it failed after normalising shrub prototypes,
- * flip `SHRUBS_SATISFY_THE_CONTRACT` and delete the pin below it.
+ * **This guard asserted what was TRUE at the time, including the violation**, so
+ * the discrepancy was executable rather than buried in a docblock the code
+ * contradicted. It was written to go RED when the violation was fixed — and it
+ * did, on 2026-09-02. `SHRUBS_SATISFY_THE_CONTRACT` is now true and the
+ * severity pin below it is retired; both arms are kept so the history of the
+ * violation stays readable rather than being deleted along with it.
  */
 const PROTOTYPE_HEIGHT_CONTRACT_MIN = 0.9;
 
-/** Flip when shrub prototypes are normalised. See the docblock above. */
-const SHRUBS_SATISFY_THE_CONTRACT = false;
+/**
+ * Flipped 2026-09-02 when shrub prototypes were normalised, on Jason's approval
+ * of the art consequence -- every shrub in the world got 1.4x to 2.3x taller.
+ * The guard did exactly what it was written to do: it went red on the fix, and
+ * the fix is what turned it green in the other branch.
+ */
+const SHRUBS_SATISFY_THE_CONTRACT = true;
 
 const HEIGHT_SEEDS = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23] as const;
 
