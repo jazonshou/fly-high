@@ -1133,7 +1133,18 @@ describe("WebGPU world-detail spatial presentation", () => {
       scene.dispose();
       engine.dispose();
     }
-  });
+  }, 90_000);
+  // A timeout catches a HUNG test; it is not a performance budget
+  // (vitest.config.ts says so, and raising one costs nothing because a
+  // genuinely hung test never finishes). The global 30 s was not chosen for
+  // this test — it is the suite default — and this test asserts snapshot
+  // VALIDITY during motion, which is correctness, not speed.
+  //
+  // MEASURED, which is why it needed one of its own: ~17.4 s in isolation
+  // against a 30 s default, so 1.72x of headroom over its own runtime. A full
+  // suite on a host that is also running captures took it to 36.4 s and it
+  // failed by machine, twice, looking like an unrelated intermittent defect
+  // both times. 90 s restores the margin without asserting anything new.
 
   it("keeps >96 m stale chunks visible and fail-closes only past the 768 m backstop", () => {
     const engine = new NullEngine();

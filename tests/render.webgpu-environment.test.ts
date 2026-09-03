@@ -1,12 +1,17 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  adaptedLuminanceCdM2,
   resolveEnvironmentState,
+  skyDiffuseIlluminanceLux,
   solarPosition,
   sunDirectionForClock,
+  SKY_VIEW_FRACTION,
 } from "../src/render/webgpu/nature/EnvironmentDirector";
+import { rodFractionForAdaptedLuminance } from "../src/render/webgpu/atmosphere/ScotopicVision";
 import { dayLengthHours, solarDeclinationRadians } from "../src/world/environmentClock";
+import { readSource } from "./support/sourceText";
 
 /**
  * 1C-1 — the environment director's NOAA solar position, and 1C-9's
@@ -109,12 +114,56 @@ describe("time-of-day label containment (1C-9, assertion 30)", () => {
           continue;
         }
         if (!/\.(ts|tsx)$/.test(entry)) continue;
-        if (readFileSync(path, "utf8").includes("TimeOfDayPreset")) {
+        if (readSource(path).includes("TimeOfDayPreset")) {
           offenders.push(path);
         }
       }
     };
     walk(root);
     expect(offenders, "TimeOfDayPreset is a UI label, not a rendering input").toEqual([]);
+  });
+});
+
+describe("field-weighted adaptation (NIGHT_LOOK 2.6 round 3)", () => {
+  // Adaptation is what fills the VISUAL FIELD, not what lights the ground.
+  // The sky term is the PHYSICAL illuminance model's diffuse sky over pi -
+  // never the rendered art dome, which is orders of magnitude art-bright
+  // and would slam night photopic. These pins are the five ladder clocks:
+  // the ONLY clock the change may move is dusk.
+  const rodAt = (dayOfYear: number, solarTimeHours: number): number =>
+    rodFractionForAdaptedLuminance(adaptedLuminanceCdM2(resolveEnvironmentState({
+      clock: { dayOfYear, solarTimeHours },
+      latitudeDegrees: 45,
+      weather: "clear",
+    })));
+
+  it("moves dusk out of deep rod, and no other ladder clock at all", () => {
+    // Day and golden hour: photopic, exactly 0 - the field is brighter than
+    // the photopic threshold whichever way it is weighted.
+    expect(rodAt(171, 12.5)).toBe(0);
+    expect(rodAt(179, 19.0)).toBe(0);
+    // Night rungs: the physical sky term is zero below sine -0.31, so the
+    // field is 0.55x the old ground value - further BELOW the scotopic
+    // threshold. Rod stays exactly 1 by the model's shape, and the approved
+    // frames cannot move through this function.
+    expect(rodAt(179, 23.75)).toBe(1);
+    expect(rodAt(171, 0)).toBe(1);
+    // Dusk: the dome dominates the field and rod leaves the deep-rod regime.
+    // A band, not a point - the exact value belongs to the model, and the
+    // property that matters is "mesopic, nearer the middle than the top".
+    const dusk = rodAt(171, 20.45);
+    expect(dusk).toBeGreaterThan(0.25);
+    expect(dusk).toBeLessThan(0.5);
+  });
+
+  it("keeps the sky term the same expression the illuminance model composes", () => {
+    // The dome term must be skyDiffuseIlluminanceLux - the extracted shared
+    // expression - so the two cannot drift. Probe by linearity: adding pure
+    // dome (weather and moon fixed) at a sunY where only the tail is alive.
+    expect(skyDiffuseIlluminanceLux(-0.35)).toBe(0);
+    expect(skyDiffuseIlluminanceLux(-0.107)).toBeGreaterThan(2);
+    expect(skyDiffuseIlluminanceLux(-0.107)).toBeLessThan(3.4);
+    expect(SKY_VIEW_FRACTION).toBeGreaterThan(0);
+    expect(SKY_VIEW_FRACTION).toBeLessThan(1);
   });
 });

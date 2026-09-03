@@ -752,7 +752,7 @@ function emitSkeletonCards(
     let tangent = cross3(UP, normal);
     if (Math.hypot(tangent.x, tangent.y, tangent.z) < 1e-4) tangent = { x: 1, y: 0, z: 0 };
     tangent = norm3(tangent.x, tangent.y, tangent.z);
-    const bitangent = cross3(normal, tangent);
+    const bitangent = cross3(tangent, normal);
     const halfWidth = skeleton.cardHalfWidth * anchor.size * budget.cardScale;
     const elongation = 0.72 + ((anchor.pick * 7.13) % 1) * 0.5;
     const halfHeight = halfWidth * elongation;
@@ -930,8 +930,14 @@ function emitBroadleafCrownHull(
       occlusion,
     );
   }
-  for (let index = 0; index < faces.length; index += 1) {
-    acc.indices.push(base + faces[index]!);
+  // Winding: emitted REVERSED so the triangle order matches Babylon's
+  // convention (its own primitives measure agreement -1.000 between
+  // cross(b-a, c-a) and the outward normal). Only the INDEX order moves;
+  // the normals above are already outward and must not be re-derived from
+  // the reversed order, which would flip them back and leave the surface
+  // self-consistently inside-out.
+  for (let f = 0; f < faces.length; f += 3) {
+    acc.indices.push(base + faces[f]!, base + faces[f + 2]!, base + faces[f + 1]!);
   }
 }
 
@@ -997,7 +1003,7 @@ function emitConiferWhorl(
         0.68 + 0.2 * (1 - v),
       );
     }
-    acc.indices.push(sideBase, sideBase + 1, sideBase + 2);
+    acc.indices.push(sideBase, sideBase + 2, sideBase + 1);
 
     const capBase = acc.positions.length / 3;
     const capTangent = { x: 1, y: 0, z: 0 };
@@ -1016,7 +1022,7 @@ function emitConiferWhorl(
         0.5,
       );
     }
-    acc.indices.push(capBase, capBase + 1, capBase + 2);
+    acc.indices.push(capBase, capBase + 2, capBase + 1);
   }
 }
 
@@ -1178,7 +1184,7 @@ const SHRUB_SPECIES_SPECS: Readonly<Record<ShrubSpecies, ShrubSpeciesSpec>> = Ob
   },
   hazel: {
     layer: FOLIAGE_LAYER_INDEX.hazelLeaf, height: 1.0,
-    stemsMin: 3, stemsMax: 4, tiltMin: 0.2, tiltMax: 0.5, quadSize: 0.34,
+    stemsMin: 3, stemsMax: 4, tiltMin: 0.5, tiltMax: 0.95, quadSize: 0.34,
   },
   sage: {
     layer: FOLIAGE_LAYER_INDEX.sageLeaf, height: 0.55,
@@ -1279,7 +1285,7 @@ export function buildShrubPrototype(
     tangent = tangentLength > 1e-4
       ? norm3(tangent.x, tangent.y, tangent.z)
       : { x: 1, y: 0, z: 0 };
-    const bitangent = cross3(normal, tangent);
+    const bitangent = cross3(tangent, normal);
     const size = spec.quadSize * (0.8 + rng() * 0.5);
     quads.push({
       center, normal, tangent, bitangent,
@@ -1291,6 +1297,14 @@ export function buildShrubPrototype(
     emitFoliageQuad(acc, quads[i]!, owners, i);
   }
   bakeSkyOcclusion(acc, quads.map(quadDisk), owners);
+  let shrubTopY = 0;
+  for (let i = 1; i < acc.positions.length; i += 3) {
+    shrubTopY = Math.max(shrubTopY, acc.positions[i]!);
+  }
+  if (shrubTopY > 1e-4) {
+    const k = 1 / shrubTopY;
+    for (let i = 0; i < acc.positions.length; i += 1) acc.positions[i]! *= k;
+  }
   return finalizeGeometry(acc);
 }
 
@@ -1411,7 +1425,9 @@ export function buildRockPrototype(variant: RockVariant, seed: number): Prototyp
         1,
       );
     }
-    for (const index of faces) acc.indices.push(index);
+    for (let f = 0; f < faces.length; f += 3) {
+      acc.indices.push(faces[f]!, faces[f + 2]!, faces[f + 1]!);
+    }
   } else {
     for (let f = 0; f < faces.length; f += 3) {
       const corners = [faces[f]!, faces[f + 1]!, faces[f + 2]!];
@@ -1439,7 +1455,7 @@ export function buildRockPrototype(variant: RockVariant, seed: number): Prototyp
           1,
         );
       }
-      acc.indices.push(base, base + 1, base + 2);
+      acc.indices.push(base, base + 2, base + 1);
     }
   }
   return finalizeGeometry(acc);
@@ -1562,8 +1578,8 @@ function buildMossCushion(rng: RandomSource, noiseSeed: number, acc: GeometryAcc
   const ring1 = ringStarts[1]!;
   for (let s = 0; s < sides; s += 1) {
     const next = (s + 1) % sides;
-    acc.indices.push(ring0 + s, ring1 + s, ring1 + next, ring0 + s, ring1 + next, ring0 + next);
-    acc.indices.push(ring1 + s, apex, ring1 + next);
+    acc.indices.push(ring0 + s, ring1 + next, ring1 + s, ring0 + s, ring0 + next, ring1 + next);
+    acc.indices.push(ring1 + s, ring1 + next, apex);
   }
 }
 
@@ -1661,7 +1677,7 @@ export function buildGrassPatchPrototype(
       1, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
     pushVertex(acc, highMinus.x, highMinus.y, highMinus.z, normal.x, normal.y, normal.z,
       0, v1, tangent.x, tangent.y, tangent.z, 1, spec.layer, alpha1);
-    acc.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    acc.indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
   };
 
   for (let i = 0; i < bladeCount; i += 1) {

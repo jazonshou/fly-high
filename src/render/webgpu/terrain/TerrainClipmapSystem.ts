@@ -1,3 +1,5 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 // Side-effect import: Babylon 9 tree-shakes the thin-instance API, and
 // `Mesh.prototype.thinInstanceSetBuffer` / `thinInstanceCount` do not exist
 // without it. Missing, they are `undefined` rather than an error — the mesh
@@ -48,6 +50,7 @@ import {
   type TerrainCollisionPagePublisher,
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
+import { terrainErosionAdmissionDependencies } from "./TerrainPageErosion";
 import type { TerrainSlotKey } from "./TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
@@ -67,9 +70,13 @@ import {
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
   TERRAIN_NODE_ATTRIBUTE_STRIDE,
+  TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
 import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
+// 6-5: the shore sea state travels as 6-2's own published type — one
+// definition, forwarded, never restated on the terrain side.
+import type { WaterShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
 import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
 
 /**
@@ -85,13 +92,33 @@ import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
 export interface TerrainPageProducer {
   /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
   gpuMillisecondsInFrame?(): number | null;
-  generate(slots: readonly TerrainAtlasSlot[]): Promise<void>;
+  /**
+   * `admittedDispatches` is what the meter allowed this frame. The analytic
+   * batch is already sliced to it and ignores the argument; the `W-1d` GPU
+   * erosion DAG spends it on DAG stages instead of pages.
+   */
+  generate(slots: readonly TerrainAtlasSlot[], admittedDispatches?: number): Promise<void>;
   /** Fill Phase-5 aux fields for channel slots admitted after height. */
   ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
   setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
   setAuxPagePublisher?(publisher: TerrainAuxPagePublisher | null): void;
   setMacroEvolution?(macro: Readonly<TerrainMacroEvolutionExport> | null): void;
   consumeMeasuredDispatchCostMs(): number | null;
+  /**
+   * `W-1d`: the multi-frame erosion DAG's demand for this frame, in dispatches
+   * at the CURRENT stage's measured price. Null (or absent) means this
+   * producer erodes on the CPU worker and the historical one-demand-per-page
+   * shape applies.
+   */
+  erosionDagDemand?(
+    pendingPageCount: number,
+  ): { readonly count: number; readonly costMs: number } | null;
+  /** `W-1d`: true while a page's DAG holds the producer across frames. */
+  hasActiveErosionDag?(): boolean;
+  /** `4.5-B2(a)` for `erosionCompute`; the DAG's measured per-dispatch cost. */
+  consumeMeasuredErosionDispatchCostMs?(): number | null;
+  /** `W-2`: whether this page's parent seed block has fully converged. */
+  erosionDependenciesResident?(address: WorldPageAddress): boolean;
   dispose(): void;
 }
 
@@ -125,6 +152,13 @@ export interface TerrainSplatProducer {
 export interface TerrainHeightPyramidProducer {
   recenter(x: number, z: number): Promise<unknown>;
   readonly isResident: boolean;
+  /**
+   * `6-11`: the global horizon field's bake, admitted separately from the
+   * height recentre because it is ~25x the work and recurs on every 512 m of
+   * travel — the one part of the pyramid a frame may legitimately defer.
+   */
+  readonly needsHorizonBake?: boolean;
+  bakeHorizon?(): Promise<boolean>;
   dispose(): void;
 }
 
@@ -202,9 +236,72 @@ export interface TerrainObserver {
   readonly pixelsPerMeterAtUnitDistance?: number;
 }
 
+/**
+ * Why the same page is resident, counted per reason.
+ *
+ * **`residentPages` is a TOTAL over a MIXED POPULATION, and it was read as
+ * "terrain being drawn".** It is not: `updateAtlasResidency` builds its wanted
+ * set from four sources with different rights, and only the first is a
+ * candidate for any visibility test.
+ *
+ *  - `drawn` — CDLOD-selected nodes. The ONLY set a frustum test could touch.
+ *  - `parent` — every node's parent, added unconditionally because morphing
+ *    reads it. Culling one pops the child it morphs into.
+ *  - `collision` — a 5x5 L0 ring around the observer, tier-invariant and
+ *    explicitly never added to the draw list. It is CORRECTLY indifferent to
+ *    where the camera looks; physics does not have a frustum.
+ *  - `seed` — `W-2` erosion dependencies, the transitive parent closure a page
+ *    needs converged before it can be admitted. Eroded worlds only.
+ *
+ * **`drawnBeyondShadowDistance` is the number a frustum cull would be sized
+ * from**, and it is the only one of these that a fix could reduce: terrain
+ * inside `shadowDistance` casts into view from any direction and must stay
+ * resident whether or not it is on screen.
+ *
+ * **SIZING A CULL FROM IT — the bound, and the way to misread it.**
+ *
+ *     ceiling on any frustum cull  =  drawnBeyondShadowDistance x >0.828
+ *
+ * The 0.828 is `1 - fov/360` at the shipped horizontal FOV of 62 degrees
+ * (`FlightRenderer.ts:799-800`, `FOVMODE_HORIZONTAL_FIXED`). **It is a LOWER
+ * BOUND on the out-of-frustum share, NOT the share.** The wedge is an AZIMUTH
+ * fraction and a frustum also has top and bottom planes, so near-field ground
+ * below the bottom plane is inside the wedge and outside the frustum: the true
+ * out-of-frustum share is strictly larger, and a cull sized on 0.828 will
+ * under-claim rather than over-claim.
+ *
+ * **And it holds for a narrower reason than the obvious one.** It is NOT that
+ * selection is rotation-invariant so the selected set is radially symmetric —
+ * that premise is false, because `deviationFor` and `heightRangeFor` are
+ * strongly anisotropic and the node lattice is world-anchored rather than
+ * camera-anchored. It holds because **heading is not an input to selection at
+ * all** (`TerrainNodeSelectionInput` carries `cameraX/Y/Z` and scalars, no
+ * direction), so for any fixed selected set under uniform heading the expected
+ * wedge share is exactly `theta / 2pi`. The symmetry argument reaches the same
+ * number and does not survive contact with the code.
+ *
+ * Published because the totals could not answer the question they were being
+ * asked. `collisionOnly` was already computed and discarded one line after it
+ * was built; this keeps it.
+ */
+export interface TerrainResidencyReasons {
+  readonly drawn: number;
+  readonly parent: number;
+  readonly collision: number;
+  readonly seed: number;
+  /** Drawn nodes further from the observer than the shadow-caster distance. */
+  readonly drawnBeyondShadowDistance: number;
+}
+
 export interface TerrainClipmapStatistics {
   /** Height-atlas slots holding a generated page. */
   readonly residentPages: number;
+  /**
+   * Why those pages are wanted, by reason. See `TerrainResidencyReasons` —
+   * the total alone cannot distinguish terrain nobody can see from terrain
+   * physics and morphing require.
+   */
+  readonly residencyReasons: TerrainResidencyReasons;
   /** Slots whose generation dispatch is in flight. */
   readonly pendingPages: number;
   readonly triangles: number;
@@ -257,6 +354,7 @@ const TERRAIN_STREAMING_PRIORITY_OPTIONS: Partial<WorldPageStreamingPriorityOpti
  */
 export function createTerrainMaterial(scene: Scene): PBRMaterial {
   const material = new PBRMaterial("terrain-pbr", scene);
+  prepareMaterialForClusteredLighting(material);
   material.metallic = 0;
   // 3-7 replaces this per fragment from the 3-0 BRDF table. It survives as
   // the value the material compiles with before the arrays are bound (and
@@ -429,6 +527,14 @@ export class TerrainClipmapSystem {
     this.surfacePlugin.setSamplingProfile(
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
+    );
+    // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
+    // the rendered-density law's, carried on the profile since the perf-debt
+    // pass, so terrain reads them as data and never re-derives a radius.
+    this.surfacePlugin.setCanopyBands(
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      profile.renderedDensityLaw.far.outerRadiusMeters,
+      profile.renderedDensityLaw.farFloorShare,
     );
     this.surfacePlugin.setSeason(this.seasonDayOfYear, world.latitudeDegrees, world.seaLevel);
     // 3-9: the runway is painted into this material by the analytic airport
@@ -645,6 +751,7 @@ export class TerrainClipmapSystem {
     const trianglesPerNode = this.beautyMesh.getTotalIndices() / 3;
     return {
       residentPages: this.heightAtlas.residency.residentCount,
+      residencyReasons: this.residencyReasons,
       pendingPages: this.heightAtlas.residency.generatingCount,
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
@@ -691,6 +798,11 @@ export class TerrainClipmapSystem {
     this.surfacePlugin.setSamplingProfile(
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
+    );
+    this.surfacePlugin.setCanopyBands(
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      profile.renderedDensityLaw.far.outerRadiusMeters,
+      profile.renderedDensityLaw.farFloorShare,
     );
     this.materialArrayEdge = profile.materialArrayEdge;
     this.computeBudget.setProfile(profile);
@@ -764,9 +876,63 @@ export class TerrainClipmapSystem {
     this.computeBudget.setBudgetScale(scale);
   }
 
+  /**
+   * `6-9`: the SHARED meter, for the producers that live outside this system.
+   *
+   * `owners.ts` says "every GPU compute producer admits through it", and this
+   * system happens to be where the one instance is constructed — a location,
+   * not an ownership claim. The per-frame ground-cover field is admitted
+   * through this same object rather than through a second meter, because two
+   * meters would be two caps and the whole point of `4-0b` is that there is
+   * one. Its demand is declared after this system has already read its own
+   * admissions, which is safe because the meter settles a client when its
+   * admission is read rather than because of any ordering luck.
+   */
+  get computeBudgetMeter(): ComputeBudget {
+    return this.computeBudget;
+  }
+
   /** The direction TOWARD the sun; only 4-7's horizon shadow reads it. */
   setSunDirection(x: number, y: number, z: number): void {
     this.surfacePlugin.setSunDirection(x, y, z);
+  }
+
+  /**
+   * `6-11`: the global horizon field, for consumers outside terrain.
+   *
+   * Null until the first horizon bake completes, and null on a non-WebGPU
+   * engine — a consumer that gets null must fall back to fully lit, which is
+   * today's behaviour and therefore the parity sentinel.
+   */
+  get globalHorizonField(): {
+    readonly layerA: BaseTexture;
+    readonly layerB: BaseTexture;
+    readonly originX: number;
+    readonly originZ: number;
+    readonly spanMeters: number;
+  } | null {
+    const pyramid = this.pyramid as GlobalHeightPyramid | null;
+    if (!pyramid?.isHorizonResident) return null;
+    const layerA = pyramid.horizonTextureA;
+    const layerB = pyramid.horizonTextureB;
+    if (!layerA || !layerB) return null;
+    return {
+      layerA,
+      layerB,
+      originX: pyramid.horizonOriginX,
+      originZ: pyramid.horizonOriginZ,
+      spanMeters: TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
+    };
+  }
+
+  /**
+   * `6-5`: the shore sea state and the water's own clock, forwarded from the
+   * ocean system on the same snapshot pattern the sun and the cloud shadow
+   * use. The terrain has no cascade textures to run the shader's dominant-band
+   * rule against, which is exactly why 6-2 publishes a CPU twin.
+   */
+  setShoreWetness(swell: Readonly<WaterShoreSwell>, timeSeconds: number): void {
+    this.surfacePlugin.setShoreWetness(swell, timeSeconds);
   }
 
   cycleDebugOverlay(): TerrainDebugOverlayMode {
@@ -968,6 +1134,13 @@ export class TerrainClipmapSystem {
         input.heightAtlas,
         input.channelAtlas,
         this.world.seedHash,
+        // The vegetation lattices `6-8` appends belong to the DETAIL
+        // realisation, which keys on `hashSeed(String(world.seed))` — see
+        // `FlightRenderer`'s GroundCoverSystem construction, which says so in
+        // as many words. A guaranteed-airport world has `seedHash !==
+        // sourceSeedHash`, and passing the terrain seed here baked a
+        // different world's canopy into the closure channel.
+        this.world.sourceSeedHash,
         this.world.seaLevel,
         this.world.latitudeDegrees,
         this.world.airport ?? null,
@@ -1062,6 +1235,17 @@ export class TerrainClipmapSystem {
         this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightLo),
         this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightHi),
       ],
+      // 6-6: the first caller of hydrologyTextures(). Only an eroded world's
+      // channel atlas requires hydrology, so an analytic world passes null and
+      // the fragment's wet-litter block never enters the compiled shader.
+      this.channelAtlas.requiresHydrology
+        ? this.channelAtlas.hydrologyTextures().shoreDistance
+        : null,
+      // 6-5: `lakeDepth` on the same gate, from the same accessor. C-9's last
+      // dark channel gets its first named consumer here.
+      this.channelAtlas.requiresHydrology
+        ? this.channelAtlas.hydrologyTextures().lakeDepth
+        : null,
       {
         atlasEdge: this.channelAtlas.atlasEdge,
         slotEdge: TERRAIN_CHANNEL_SLOT_EDGE,
@@ -1121,6 +1305,15 @@ export class TerrainClipmapSystem {
    * node whose parent is missing is forced to `morphK = 0` — correct, but it
    * means the transition it exists to smooth does not happen.
    */
+  /**
+   * Last frame's residency breakdown. OBSERVATION ONLY — nothing here feeds a
+   * selection, an admission or an eviction, so publishing it cannot change
+   * what it measures.
+   */
+  private residencyReasons: TerrainResidencyReasons = {
+    drawn: 0, parent: 0, collision: 0, seed: 0, drawnBeyondShadowDistance: 0,
+  };
+
   private updateAtlasResidency(): void {
     this.heightAtlas.residency.beginFrame(this.frameIndex);
     this.channelAtlas.residency.beginFrame(this.frameIndex);
@@ -1131,8 +1324,30 @@ export class TerrainClipmapSystem {
     this.channelAtlas.residency.reclaimStalledGenerating(STALLED_SLOT_RECLAIM_FRAMES);
     const wanted = new Map<string, WorldPageAddress>();
     const collisionOnly = new Set<string>();
+    // Record WHY each page is wanted, in the order the sources are consulted, so
+    // the first source to claim a key owns it. That ordering is the code's own
+    // precedence, not a new rule: a page that is both drawn and in the collision
+    // ring is drawn, and culling it would still break the draw.
+    const reasonFor = new Map<string, "drawn" | "parent" | "collision" | "seed">();
+    const pageHasNearNode = new Map<string, boolean>();
+    const shadowRadius = this.shadowCasterDistanceMeters;
     for (const node of this.nodes) {
-      wanted.set(`${node.address.level}:${node.address.x}:${node.address.z}`, node.address);
+      const nodeKey = `${node.address.level}:${node.address.x}:${node.address.z}`;
+      if (!reasonFor.has(nodeKey)) reasonFor.set(nodeKey, "drawn");
+      // PAGES, not nodes — the same unit as `drawn`. Up to
+      // TERRAIN_NODES_PER_SLOT_EDGE^2 nodes share one page address, so counting
+      // nodes here produced 251 against a `drawn` of 14: two different units
+      // presented side by side as if they were comparable, which is the exact
+      // defect this whole breakdown exists to prevent.
+      //
+      // A page is beyond the shadow distance only if EVERY node on it is. One
+      // node inside the radius casts into view, so the page must stay resident
+      // whatever the others do — the cullable set is the intersection, not the
+      // union.
+      const near = node.distanceMeters <= shadowRadius;
+      const prior = pageHasNearNode.get(nodeKey);
+      if (prior === undefined || near) pageHasNearNode.set(nodeKey, near);
+      wanted.set(nodeKey, node.address);
       // `4.5-B1`: no parent above the ROOT level. A node at the coarsest level
       // has `morphK = 0` by construction (there is nothing to morph into), so
       // an L10 page is streamed, generated at ~1.9 ms and given an atlas slot
@@ -1143,7 +1358,9 @@ export class TerrainClipmapSystem {
         Math.floor(node.address.x / 2),
         Math.floor(node.address.z / 2),
       );
-      wanted.set(`${parent.level}:${parent.x}:${parent.z}`, parent);
+      const parentKey = `${parent.level}:${parent.x}:${parent.z}`;
+      if (!reasonFor.has(parentKey)) reasonFor.set(parentKey, "parent");
+      wanted.set(parentKey, parent);
     }
     // Collision authority is tier-invariant. Low renders no L0 nodes, but it
     // still generates the same 5x5 L0 ring used by every other tier; those
@@ -1160,10 +1377,67 @@ export class TerrainClipmapSystem {
           const address = createWorldPageAddress(0, collisionTileX + dx, collisionTileZ + dz);
           const addressKey = `0:${address.x}:${address.z}`;
           if (!wanted.has(addressKey)) collisionOnly.add(addressKey);
+          if (!reasonFor.has(addressKey)) reasonFor.set(addressKey, "collision");
           wanted.set(addressKey, address);
         }
       }
     }
+    // `W-2`: a page that seeds from converged parents needs its whole 2x2
+    // parent seed block RESIDENT (height and hydrology both — the GPU seed
+    // pass reads the parents' stored r32f heights and the channel atlas's f16
+    // log-flow field). Two consequences, in this order:
+    //
+    //  1. the block members join `wanted`, so they are streamed and touched
+    //     (an untouched parent is an eviction candidate the moment its child
+    //     stops needing it, and evicting a parent mid-DAG cancels the child);
+    //  2. the child is not ADMITTED until they have converged.
+    //
+    // No deadlock: the dependency set is a pure function of the address and
+    // always names STRICTLY COARSER levels, and the chain terminates at the
+    // first macro-seeded level, whose pages are never gated. The L0 collision
+    // ring is exempted from nothing — it simply waits for level 1, which is
+    // admitted by exactly the same ladder and ranks ahead of it by distance.
+    if (this.world.worldEvolution === "eroded") {
+      // Transitive closure, so raising the chain depth needs no change here.
+      // It terminates because every step strictly increases the level and the
+      // rule stops naming dependencies above its max level.
+      let frontier = [...wanted.values()];
+      while (frontier.length > 0) {
+        const next: WorldPageAddress[] = [];
+        for (const address of frontier) {
+          for (const parent of terrainErosionAdmissionDependencies(address)) {
+            const parentKey = `${parent.level}:${parent.x}:${parent.z}`;
+            // A seed-block member always needs its channel slot for the flow
+            // field, even where the same page was wanted collision-only.
+            collisionOnly.delete(parentKey);
+            if (wanted.has(parentKey)) continue;
+            if (!reasonFor.has(parentKey)) reasonFor.set(parentKey, "seed");
+            wanted.set(parentKey, parent);
+            next.push(parent);
+          }
+        }
+        frontier = next;
+      }
+    }
+    // `wanted` is final here: every source has been consulted and the erosion
+    // closure has run. Counted from `reasonFor` rather than from the atlas so
+    // the split sums to the WANTED set; the atlas holds a subset of it while
+    // admission catches up, and mixing the two would produce a breakdown that
+    // does not add up to anything.
+    let drawnBeyondShadow = 0;
+    for (const [key, hasNear] of pageHasNearNode) {
+      if (!hasNear && reasonFor.get(key) === "drawn") drawnBeyondShadow += 1;
+    }
+    let drawn = 0, parents = 0, collision = 0, seed = 0;
+    for (const reason of reasonFor.values()) {
+      if (reason === "drawn") drawn += 1;
+      else if (reason === "parent") parents += 1;
+      else if (reason === "collision") collision += 1;
+      else seed += 1;
+    }
+    this.residencyReasons = {
+      drawn, parent: parents, collision, seed, drawnBeyondShadowDistance: drawnBeyondShadow,
+    };
     const missingHeight: { address: WorldPageAddress }[] = [];
     const missingCollision: { address: WorldPageAddress }[] = [];
     const missingChannel: { address: WorldPageAddress }[] = [];
@@ -1203,6 +1477,10 @@ export class TerrainClipmapSystem {
       );
       for (const entry of ranked) {
         if (admitted >= this.requestBudgetPerPump) return;
+        // `W-2`'s gate. `continue`, never `return`: a child waiting on its
+        // parents must not hold the ladder shut behind it, and the parents it
+        // waits on are candidates in this very ranking.
+        if (!this.erosionSeedBlockConverged(entry.candidate.address)) continue;
         const key = invariantSlotKey(entry.candidate.address);
         if (request(key, entry.candidate.address) === null) return;
         admitted += 1;
@@ -1217,6 +1495,27 @@ export class TerrainClipmapSystem {
     });
     admit(missingCollision, (key, address) => this.heightAtlas.residency.request(key, address));
     admit(missingChannel, (key, address) => this.channelAtlas.residency.request(key, address));
+  }
+
+  /**
+   * `W-2`'s admission gate, as a predicate so a residency fixture can assert
+   * the ordering directly. True for every page in an analytic world, for every
+   * macro-seeded level, and for a parent-seeded page whose 2x2 block has
+   * converged in BOTH atlases.
+   */
+  private erosionSeedBlockConverged(address: WorldPageAddress): boolean {
+    if (this.world.worldEvolution !== "eroded") return true;
+    const dependencies = terrainErosionAdmissionDependencies(address);
+    if (dependencies.length === 0) return true;
+    return dependencies.every((parent) => {
+      const key = invariantSlotKey(parent);
+      // The parent's log-flow texels land with `markHydrologyReady`, which is
+      // strictly earlier than channel residency (the occlusion and splat bakes
+      // still have to run, and neither writes the flow field). Waiting for
+      // full channel residency here would gate the chain on shading.
+      return this.heightAtlas.residency.slotIndexOf(key) >= 0
+        && this.channelAtlas.residency.get(key)?.hydrologyReady === true;
+    });
   }
 
   /**
@@ -1314,14 +1613,45 @@ export class TerrainClipmapSystem {
     const heightClient = this.world.worldEvolution === "eroded"
       ? "erosionCompute"
       : "terrainCompute";
-    if (heightPending.length > 0) {
+    // `W-1d`: the GPU page DAG prices DISPATCHES, not pages. One page's DAG is
+    // ~80 dispatches spread over many frames, so a page-shaped demand at a
+    // page-shaped cost would either ride the floor-of-one at 80x the cap or
+    // stall on the first frame. The producer answers with what its CURRENT
+    // stage would spend; a null answer is the historical CPU-worker shape.
+    const erosionDagDemand = this.world.worldEvolution === "eroded"
+      ? this.pageGenerator?.erosionDagDemand?.(heightPending.length) ?? null
+      : null;
+    if (erosionDagDemand) {
+      if (erosionDagDemand.count > 0) {
+        this.computeBudget.submit(
+          "erosionCompute",
+          erosionDagDemand.count,
+          erosionDagDemand.costMs,
+        );
+      }
+    } else if (heightPending.length > 0) {
       // The activated worker pass is the Phase-5 erosion client even though
       // its final bytes upload through the height atlas. Booking it as
       // terrainCompute would silently bypass the only tier pacing lever the
       // evolution contract permits (D11 / assertion 105).
       this.computeBudget.submit(heightClient, heightPending.length);
     }
-    if (channelPending.length > 0) {
+    // `6-11`: the global horizon bake shares the OCCLUSION row rather than
+    // taking one of its own, and the reason is a wall the row table records
+    // rather than a preference: `SubsystemBudgetMs.groundCoverCompute` notes
+    // that tier 2 sums to 13.65 ms against a 13.7 ms target, leaving 0.05 ms
+    // of slack, and that "the next row addition finds the wall". This is that
+    // addition. Sharing costs the table nothing, and the two are honestly the
+    // same family — the same operator over a coarser field.
+    //
+    // It is priced at the channel PAIR's cost, not its own (~0.27 ms scaled
+    // from the occlusion seed's measured 0.301 ms/page at 136² over this
+    // bake's 128²). Over-pricing only ever admits it LESS often, which is the
+    // safe direction for a term that degrades to "last position's field".
+    const horizonOwed = this.pyramid?.needsHorizonBake ?? false;
+    const channelPairCostMs = this.computeBudget.estimatedCostMs("occlusionCompute")
+      + this.computeBudget.estimatedCostMs("splatCompute");
+    if (channelPending.length > 0 || horizonOwed) {
       // A channel slot's TWO bakes are ONE admission: occlusion writes three
       // textures, the splat writes four, both into the same slot, and the slot
       // is published only once both have run — publishing between them puts
@@ -1331,9 +1661,8 @@ export class TerrainClipmapSystem {
       // of work must not jump the queue on the strength of its cheaper half.
       this.computeBudget.submit(
         "occlusionCompute",
-        channelPending.length,
-        this.computeBudget.estimatedCostMs("occlusionCompute")
-          + this.computeBudget.estimatedCostMs("splatCompute"),
+        channelPending.length + (horizonOwed ? 1 : 0),
+        channelPairCostMs,
       );
     }
     if (splatRebakes.length > 0) {
@@ -1341,8 +1670,18 @@ export class TerrainClipmapSystem {
       // geometry-only and never goes stale.
       this.computeBudget.submit("splatCompute", splatRebakes.length);
     }
-    this.dispatchPageGeneration(heightPending);
-    this.dispatchChannelBake(channelPending);
+    this.dispatchPageGeneration(heightPending, erosionDagDemand !== null);
+    // Read ONCE — `admitted` settles the client, so a second read would report
+    // a plan this frame has already dispatched against (`6-9`'s rule).
+    let occlusionAdmitted = this.computeBudget.admitted("occlusionCompute");
+    if (horizonOwed && occlusionAdmitted > 0) {
+      // The horizon bake takes the first admission when one is owed. Deferring
+      // a PAGE bake by a frame is invisible by design; deferring the horizon
+      // bake leaves the far field lit for another 512 m of travel.
+      occlusionAdmitted -= 1;
+      void this.pyramid?.bakeHorizon?.().catch(() => undefined);
+    }
+    this.dispatchChannelBake(channelPending, occlusionAdmitted);
     this.dispatchSplatRebake(splatRebakes);
   }
 
@@ -1372,6 +1711,15 @@ export class TerrainClipmapSystem {
     if (splat !== null && splat !== undefined) {
       this.computeBudget.observeDispatchCostMs("splatCompute", splat);
     }
+    // `W-1d`: `erosionCompute` shipped with NO cost observation at all, so its
+    // estimate sat on the placeholder seed forever while the page DAG became
+    // the heaviest compute client in eroded mode. The producer averages every
+    // stage counter that resolved this frame; the meter's own smoothing then
+    // tracks whichever stage mix is running.
+    const erosion = this.pageGenerator?.consumeMeasuredErosionDispatchCostMs?.();
+    if (erosion !== null && erosion !== undefined) {
+      this.computeBudget.observeDispatchCostMs("erosionCompute", erosion);
+    }
   }
 
   private pendingHeightGeneration(): readonly TerrainAtlasSlot[] {
@@ -1387,17 +1735,32 @@ export class TerrainClipmapSystem {
     );
   }
 
-  private dispatchPageGeneration(pending: readonly TerrainAtlasSlot[]): void {
+  private dispatchPageGeneration(
+    pending: readonly TerrainAtlasSlot[],
+    dagProducer: boolean,
+  ): void {
     const generator = this.pageGenerator;
-    if (!generator || pending.length === 0) return;
-    const admitted = this.computeBudget.admitted(
-      this.world.worldEvolution === "eroded" ? "erosionCompute" : "terrainCompute",
-    );
+    if (!generator) return;
+    const eroded = this.world.worldEvolution === "eroded";
+    const admitted = this.computeBudget.admitted(eroded ? "erosionCompute" : "terrainCompute");
     if (admitted <= 0) return;
-    const batch = this.rankForDispatch(pending).slice(0, admitted);
+    // `W-1d`: a DAG already holding a page must be pumped even on a frame with
+    // no pending admissions left — otherwise the page that is 90% eroded stops
+    // the moment the atlas runs out of new work and the slot never converges.
+    const dagActive = dagProducer && (generator.hasActiveErosionDag?.() ?? false);
+    if (pending.length === 0 && !dagActive) return;
+    const ranked = this.rankForDispatch(pending);
+    // The erosion producer takes ONE page at a time and needs the whole ranked
+    // set to choose it; the analytic batch is sliced to its admitted count.
+    const batch = dagProducer ? ranked : ranked.slice(0, admitted);
     this.generationInFlight = true;
-    void generator.generate(batch)
-      .catch(() => this.releaseBatch(this.heightAtlas, batch, "page generation failed"))
+    void generator.generate(batch, admitted)
+      .catch(() => {
+        // The DAG owns exactly one of these slots and fails it on its own
+        // token; releasing the whole ranked candidate set here would evict
+        // every queued page because one dispatch went wrong.
+        if (!dagProducer) this.releaseBatch(this.heightAtlas, batch, "page generation failed");
+      })
       .finally(() => {
         this.generationInFlight = false;
       });
@@ -1415,10 +1778,9 @@ export class TerrainClipmapSystem {
     );
   }
 
-  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[]): void {
+  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[], admitted: number): void {
     const bake = this.occlusionBake;
     if (!bake || pending.length === 0) return;
-    const admitted = this.computeBudget.admitted("occlusionCompute");
     if (admitted <= 0) return;
     const batch = this.rankForDispatch(pending).slice(0, admitted);
     this.occlusionInFlight = true;

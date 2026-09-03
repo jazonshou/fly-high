@@ -222,6 +222,13 @@ describe("jet stability augmentation", () => {
 
     // The washout primed on the first call; a subsequent yaw-rate change is
     // exactly what the damper must oppose once the axes go neutral.
+    //
+    // D-6 sign note: this block feeds RAW omega_y, and with +Z = starboard a
+    // swing from omega_y +0.5 to -0.4 is a swing toward NOSE-RIGHT in pilot
+    // terms (nose-right is -omega_y), so the damper now answers with LEFT
+    // rudder. The pre-D-6 assertion expected +yaw for the same raw numbers
+    // because the old basis read them as a nose-left swing -- the damper's
+    // physical law (oppose the washed pilot-sign rate) is unchanged.
     simulator.state.angularVelocity.y = -0.4;
     const neutral: FlightControls = { ...DEFAULT_CONTROLS, throttle: 0.5, gear: 0 };
     const damped = augmentation.apply(
@@ -230,7 +237,7 @@ describe("jet stability augmentation", () => {
       simulator.state,
       simulator.telemetry(),
     );
-    expect(damped.yaw).toBeGreaterThan(0.01);
+    expect(damped.yaw).toBeLessThan(-0.01);
     expect(damped.roll).not.toBe(neutral.roll);
   });
 

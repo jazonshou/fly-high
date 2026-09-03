@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
-const source = readFileSync(new URL("../src/game/FlightGame.tsx", import.meta.url), "utf8");
+const source = readSource(new URL("../src/game/FlightGame.tsx", import.meta.url));
 const pauseMenu = source.match(
   /\{phase === "paused" \? \([\s\S]*?\) : null\}\n\n      \{settingsOpen \?/u,
 )?.[0] ?? "";

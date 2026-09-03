@@ -70,6 +70,29 @@ describe("terrain authority contract (0-5)", () => {
         // still hold exactly is that the natural terrain contributes nothing
         // inside it — the collision fast path evaluates the profile and
         // nothing else.
+        //
+        // `5-12a`: THIS ASSERTION IS BLIND IN ONE DIRECTION, and the direction
+        // it is blind in is the dangerous one. It was written to catch `3-8`
+        // — collision short-circuiting to the platform while render evaluated
+        // the fade, 15.3 m apart — but it can only ever catch the SAFE half.
+        //
+        // Four airport short-circuits return before `sampleTerrainHeight`, in
+        // two files and over two different regions:
+        //   `getAirportInfluence(...) >= 1`  src/world/terrain.ts, src/sim/terrainGrid.ts
+        //   `isPointOnRunway(...)`           src/world/terrain.ts, src/sim/terrainGrid.ts
+        //
+        // So if a term is ever subtracted at `sampleTerrainHeight` — a river
+        // carve is the live example — physics keeps returning exactly
+        // `runwayPlatformHeight` and THIS TEST STAYS GREEN, while the render
+        // path evaluates the term and draws a trench through the runway. It
+        // fails only in the opposite case, where physics DOES see the term,
+        // which is the case that is safe.
+        //
+        // A gate that reports success precisely when the two authorities have
+        // diverged is worse than no gate: it emits nothing to argue with.
+        // Anyone adding a term below `sampleTerrainHeight` must add a probe
+        // that compares the two authorities against EACH OTHER, not each
+        // against the platform profile they both agree to return.
         expect(sampleGroundHeight(world, point.x, point.z)).toBeCloseTo(
           runwayPlatformHeight(airport, across),
           9,

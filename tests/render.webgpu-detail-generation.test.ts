@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { TerrainBiome, type TerrainBiomeId } from "../src/world";
 import {
+  TerrainBiome,
+  createWorld,
+  sampleTerrain,
+  type TerrainBiomeId,
+} from "../src/world";
+import {
+  terrainSlopeAngleFromNormalizedSteepness,
+  terrainSoilDepthMeters,
+  terrainTopographicWetnessIndex,
+} from "../src/render/webgpu/terrain/TerrainPageHydrology";
+import {
+  GROUND_COVER_GRID,
   detailCellKey,
   generateDetailCell,
 } from "../src/render/webgpu/detail/generation";
@@ -236,5 +247,169 @@ describe("WebGPU paged world-detail generation", () => {
       cellSizeMeters: 0,
       terrainSample,
     })).toThrow(RangeError);
+  });
+});
+
+/**
+ * `6-6` — the ecology channels' generation-side consumers.
+ *
+ * Two claims are tested here and nothing else can test them:
+ *
+ *  1. **Analytic parity is BYTE identity, not "close".** The shipping default
+ *     is an analytic world, where no hydrology page exists; every 6-6 consumer
+ *     therefore has to reduce to its pre-6-6 expression exactly. The digest
+ *     below is the pin (measured against the pre-6-6 sources on 2026-08-30 and
+ *     equal), and it moves only at a sanctioned rebaseline.
+ *  2. **Net stem count falls** (§5.3's fidelity rule: when budget binds, reduce
+ *     the NUMBER of plants before the fidelity of any plant). Soil depth is a
+ *     weaker litter driver than the moisture stand-in it replaces over the
+ *     measured soil distribution, so the eroded world places FEWER clutter
+ *     pieces, and it never touches the stem law at all.
+ */
+const ECOLOGY_CELLS: readonly (readonly [number, number])[] = [
+  [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 0], [0, 1], [1, -1], [1, 0], [1, 1],
+];
+
+interface EcologyChannels {
+  readonly soil?: boolean;
+  readonly shore?: boolean;
+}
+
+const ECOLOGY_WORLD = createWorld("ecology-channels-6-6");
+
+/** Deterministic stand-in for the erosion page's contributing area/curvature. */
+function ecologyHash(x: number, z: number): number {
+  let hash = Math.imul(Math.round(x * 7.31) ^ 0x9e3779b9, 0x85ebca6b);
+  hash ^= Math.imul(Math.round(z * 5.17) ^ 0x165667b1, 0xc2b2ae35);
+  hash ^= hash >>> 15;
+  return ((hash >>> 0) % 100_000) / 100_000;
+}
+
+function ecologySampler(channels: EcologyChannels): DetailTerrainSampler {
+  return (x, z) => {
+    const terrain = sampleTerrain(ECOLOGY_WORLD, x, z);
+    // Real climate, and soil from the OWNED producer rather than a made-up
+    // ramp: `terrainSoilDepthMeters` is what a hydrology page actually stores,
+    // so the measured count change below is the change the eroded world sees.
+    const slopeRadians = terrainSlopeAngleFromNormalizedSteepness(
+      Math.min(0.98, terrain.slope),
+    );
+    const soilDepthMeters = terrainSoilDepthMeters(
+      slopeRadians,
+      (ecologyHash(x, z) - 0.5) * 0.06,
+      terrainTopographicWetnessIndex(20 + ecologyHash(z, x) * 4_000, slopeRadians),
+    );
+    // A synthetic channel network: a few metres of wetted lane every ~600 m.
+    const shoreDistanceMeters = Math.abs(((x * 0.6 + z * 0.8) % 600) - 300) - 6;
+    return {
+      height: terrain.height,
+      slope: terrain.slope,
+      moisture: terrain.moisture,
+      biome: terrain.biome,
+      ...(terrain.normal ? { normal: terrain.normal } : {}),
+      ...(channels.soil ? { soilDepthMeters } : {}),
+      ...(channels.shore ? { shoreDistanceMeters } : {}),
+    };
+  };
+}
+
+function ecologyRun(channels: EcologyChannels): {
+  trees: number;
+  shrubs: number;
+  clutter: number;
+  moss: number;
+  reeds: number;
+  ferns: number;
+  digest: string;
+} {
+  let trees = 0;
+  let shrubs = 0;
+  let clutter = 0;
+  let moss = 0;
+  let reeds = 0;
+  let ferns = 0;
+  const parts: string[] = [];
+  const terrainSample = ecologySampler(channels);
+  for (const [cellX, cellZ] of ECOLOGY_CELLS) {
+    const cell = generateDetailCell({
+      worldSeed: ECOLOGY_WORLD.seed,
+      cellX,
+      cellZ,
+      terrainSample,
+      seaLevelMeters: ECOLOGY_WORLD.seaLevel,
+      dayOfYear: 171,
+    });
+    trees += cell.trees.length;
+    shrubs += cell.shrubs.length;
+    clutter += cell.clutter.length;
+    moss += cell.clutter.filter((piece) => piece.clutterKind === "mossCushion").length;
+    reeds += cell.groundCover.filter((node) => node.archetype === "reed").length;
+    ferns += cell.groundCover.filter((node) => node.archetype === "fern").length;
+    // Scoped to the two things 6-6 changes — the clutter layer and the ground-
+    // cover habitat grid — so this pin stays a 6-6 instrument rather than a
+    // tripwire on every unrelated vegetation retune.
+    parts.push(JSON.stringify([
+      cell.clutter.map((piece) => [
+        piece.clutterKind,
+        piece.x.toFixed(4),
+        piece.z.toFixed(4),
+        piece.sizeMeters.toFixed(5),
+      ]),
+      cell.groundCover.map((node) => [
+        node.archetype,
+        node.coverage.toFixed(6),
+        node.color.map((value) => value.toFixed(6)),
+      ]),
+    ]));
+  }
+  let digest = 0x811c9dc5;
+  const joined = parts.join("|");
+  for (let index = 0; index < joined.length; index += 1) {
+    digest ^= joined.charCodeAt(index);
+    digest = Math.imul(digest, 0x01000193) >>> 0;
+  }
+  return { trees, shrubs, clutter, moss, reeds, ferns, digest: digest.toString(16) };
+}
+
+describe("6-6 ecology channels in generation", () => {
+  it("leaves an analytic world byte-identical", () => {
+    // Measured on 2026-08-30 against a tree with the pre-6-6 versions of
+    // densityField.ts, generation.ts, types.ts and LandCoverClassifier.ts
+    // restored and every other in-flight change left in place: the digest was
+    // `a46e54b1` there and is `a46e54b1` here. The sentinel branches reproduce
+    // the 2-15 expressions exactly, so the shipping analytic build does not
+    // move a pixel for this item.
+    expect(ecologyRun({}).digest).toBe("a46e54b1");
+    expect(ecologyRun({}).digest).toBe(ecologyRun({}).digest);
+  });
+
+  it("cuts clutter COUNT, not clutter fidelity, once soil depth is real", () => {
+    const analytic = ecologyRun({});
+    const eroded = ecologyRun({ soil: true });
+    // The channel is live: something changed.
+    expect(eroded.digest).not.toBe(analytic.digest);
+    // §5.3's rule: the number of placed pieces falls.
+    expect(eroded.clutter).toBeLessThan(analytic.clutter);
+    expect(eroded.moss).toBeLessThan(analytic.moss);
+    // And the stem law is untouched — soil depth never enters it, so no plant
+    // appears or disappears and no plant is made cheaper.
+    expect(eroded.trees).toBe(analytic.trees);
+    expect(eroded.shrubs).toBe(analytic.shrubs);
+  });
+
+  it("moves ground-cover SPECIES with shore distance without moving counts", () => {
+    const analytic = ecologyRun({});
+    const riparian = ecologyRun({ shore: true });
+    // Reeds are a water-edge species now, so the corridor grows them where the
+    // climatic moisture proxy alone never would.
+    expect(riparian.reeds).toBeGreaterThan(analytic.reeds);
+    // The habitat grid is fixed-size: species is appearance, never count.
+    expect(riparian.reeds + riparian.ferns).toBeLessThanOrEqual(
+      ECOLOGY_CELLS.length * GROUND_COVER_GRID * GROUND_COVER_GRID,
+    );
+    // Both channels together still spend fewer clutter placements than the
+    // stand-in world did: the item's net-stem-count-falls claim, end to end.
+    const both = ecologyRun({ soil: true, shore: true });
+    expect(both.clutter).toBeLessThan(analytic.clutter);
   });
 });

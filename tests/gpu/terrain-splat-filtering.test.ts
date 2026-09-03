@@ -211,31 +211,45 @@ describe("terrain splat filtering and the provisional fallback (4.5-A)", () => {
       }
     };
 
+    // 6-8: the weight textures' ALPHA lane carries canopy closure, and the
+    // fourth material weight is reconstructed as the residual of a NORMALISED
+    // top-4 vector. Every fixture texel below therefore keeps lanes 0-2 summing
+    // to at most 255, and lane 3 holds a closure byte the gather must ignore
+    // for material accumulation. (Before 6-8 these vectors were arbitrary; with
+    // the residual reconstruction an unnormalised fixture tests nothing the
+    // bake can produce.)
+    const CLOSURE_BYTE = 140;
+
     // Preserve the original 1 -> 4 categorical boundary controls at x 0..1.
     for (let y = 0; y < 2; y += 1) {
-      writeTexel(0, y, [lowId, 0, 0, 0], [255, 0, 0, 0], [255, 0, 0, 0]);
-      writeTexel(1, y, [highId, 0, 0, 0], [255, 0, 0, 0], [255, 0, 0, 0]);
+      writeTexel(0, y, [lowId, 0, 0, 0], [255, 0, 0, CLOSURE_BYTE],
+        [255, 0, 0, CLOSURE_BYTE]);
+      writeTexel(1, y, [highId, 0, 0, 0], [255, 0, 0, CLOSURE_BYTE],
+        [255, 0, 0, CLOSURE_BYTE]);
     }
 
-    // Every encoded material id participates with a non-zero weight.
-    writeTexel(3, 0, [0, 1, 2, 3], [255, 128, 64, 32], [19, 29, 39, 49]);
-    writeTexel(4, 0, [4, 5, 6, 7], [220, 170, 120, 70], [59, 69, 79, 89]);
-    writeTexel(3, 1, [8, 9, 0, 1], [210, 160, 110, 60], [99, 109, 119, 129]);
-    writeTexel(4, 1, [2, 3, 4, 5], [200, 150, 100, 50], [139, 149, 159, 169]);
+    // Every encoded material id participates with a non-zero weight — the
+    // fourth of each quad through the RECONSTRUCTED residual.
+    writeTexel(3, 0, [0, 1, 2, 3], [102, 77, 51, CLOSURE_BYTE], [51, 64, 77, CLOSURE_BYTE]);
+    writeTexel(4, 0, [4, 5, 6, 7], [90, 70, 50, CLOSURE_BYTE], [60, 55, 45, CLOSURE_BYTE]);
+    writeTexel(3, 1, [8, 9, 0, 1], [80, 60, 45, CLOSURE_BYTE], [70, 65, 40, CLOSURE_BYTE]);
+    writeTexel(4, 1, [2, 3, 4, 5], [75, 65, 55, CLOSURE_BYTE], [66, 56, 46, CLOSURE_BYTE]);
 
-    // Material 7 moves from x to y to z to w across the four corners. Both
-    // seasonal atlases contribute at blend 0.37, but every addition must land
-    // in the same scalar accumulator.
-    writeTexel(6, 0, [7, 0, 0, 0], [100, 0, 0, 0], [200, 0, 0, 0]);
-    writeTexel(7, 0, [0, 7, 0, 0], [0, 110, 0, 0], [0, 210, 0, 0]);
-    writeTexel(6, 1, [0, 0, 7, 0], [0, 0, 120, 0], [0, 0, 220, 0]);
-    writeTexel(7, 1, [0, 0, 0, 7], [0, 0, 0, 130], [0, 0, 0, 230]);
+    // Material 7 moves from x to y to z to w across the four corners, against a
+    // constant material-3 companion. Both seasonal atlases contribute at blend
+    // 0.37, but every addition must land in the same scalar accumulator — and
+    // the fourth corner exercises the reconstructed lane.
+    writeTexel(6, 0, [7, 3, 0, 0], [179, 76, 0, CLOSURE_BYTE], [153, 102, 0, CLOSURE_BYTE]);
+    writeTexel(7, 0, [3, 7, 0, 0], [76, 179, 0, CLOSURE_BYTE], [102, 153, 0, CLOSURE_BYTE]);
+    writeTexel(6, 1, [3, 0, 7, 0], [76, 0, 179, CLOSURE_BYTE], [102, 0, 153, CLOSURE_BYTE]);
+    writeTexel(7, 1, [3, 0, 0, 7], [76, 0, 0, CLOSURE_BYTE], [102, 0, 0, CLOSURE_BYTE]);
 
     // Equal material-2/material-5 weights in every corner form an exact tie.
     // Ascending strict-`>` selection must keep 2 primary and 5 secondary.
     for (let y = 0; y < 2; y += 1) {
       for (let x = 9; x <= 10; x += 1) {
-        writeTexel(x, y, [2, 5, 9, 9], [31, 47, 0, 0], [255, 255, 0, 0]);
+        writeTexel(x, y, [2, 5, 9, 9], [102, 153, 0, CLOSURE_BYTE],
+          [128, 128, 0, CLOSURE_BYTE]);
       }
     }
 
@@ -261,10 +275,18 @@ describe("terrain splat filtering and the provisional fallback (4.5-A)", () => {
       for (let corner = 0; corner < 4; corner += 1) {
         const [x, y] = coordinates[corner]!;
         const offset = (y * textureWidth + x) * 4;
+        // 6-8: lane 3 is the residual of the normalised vector, not a stored
+        // weight — the shipping gather reconstructs it and so must the oracle.
+        const residual = (weights: Uint8Array): number => Math.max(
+          0,
+          1 - (weights[offset]! + weights[offset + 1]! + weights[offset + 2]!) / 255,
+        );
+        const lowResidual = residual(weightsLo);
+        const highResidual = residual(weightsHi);
         for (let lane = 0; lane < 4; lane += 1) {
           const materialId = decodeId(ids[offset + lane]!);
-          const low = weightsLo[offset + lane]! / 255;
-          const high = weightsHi[offset + lane]! / 255;
+          const low = lane === 3 ? lowResidual : weightsLo[offset + lane]! / 255;
+          const high = lane === 3 ? highResidual : weightsHi[offset + lane]! / 255;
           const weight = (low * (1 - blend) + high * blend) * cornerWeights[corner]!;
           accumulated[materialId] = accumulated[materialId]! + weight;
         }
@@ -361,7 +383,7 @@ describe("terrain splat filtering and the provisional fallback (4.5-A)", () => {
         expect(actual[2], `probe ${probeIndex} secondary share`).toBeCloseTo(expected[2], 5);
       }
       expect(read.slice(16, 20)[0]).toBe(7);
-      expect(read.slice(16, 20)[2]).toBe(0);
+      expect(read.slice(16, 20)[1]).toBe(3);
       expect(read.slice(20, 24)[0]).toBe(2);
       expect(read.slice(20, 24)[1]).toBe(5);
       expect(read.slice(20, 24)[2]).toBeCloseTo(0.5, 6);

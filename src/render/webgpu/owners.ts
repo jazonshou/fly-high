@@ -176,6 +176,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     consumers: ["terrain-geometry", "terrain-material"],
     ownedSymbols: [
       "TERRAIN_KERNEL_WGSL",
+      "TERRAIN_KERNEL_SCALAR_WGSL",
       "TERRAIN_KERNEL_CONSTANTS",
       "TERRAIN_KERNEL_LATTICES",
       "buildTerrainKernelPageUniform",
@@ -203,7 +204,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "TerrainAuxPagePublisher",
     ],
     notes:
-      "Terrain-material consumes atlases; it does not create them. Phase-5 aux uploads use four heterogeneous resources and publish only after the complete channel slot becomes resident.",
+      "Terrain-material consumes atlases; it does not create them. Phase-5 aux uploads use four heterogeneous resources and publish only after the complete channel slot becomes resident, and 6-6's aux publication carries both CPU-consumed ecology channels (signed shore distance and soil depth) with their decode scales.",
   },
   {
     // 4-3: the false-colour overlay RENDERING_PLAN.md mandates before the
@@ -222,13 +223,44 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
   },
   {
+    // 6-11: the horizon operator itself — the march that turns a height field
+    // into a packed 8-azimuth horizon, and the lookup that turns that packing
+    // plus a sun direction into a visibility scalar.
+    //
+    // It exists as its own artifact because 6-8 declined the vegetation
+    // horizon-shadow term rather than let a second answer to "is this point in
+    // terrain shadow" into the tree, and named the condition: extract the
+    // operator so both consumers run one of it. Two producers compose the
+    // march (the page bake and the global pyramid, with different height
+    // sources through one composition hole) and two consumers compose the
+    // lookup (terrain surface, far impostors). `consumers: "any"` for the
+    // reason the density field's WGSL half has it — a shader-side consumer is
+    // what this exists for.
+    artifact: "horizon-field-operator",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/HorizonField.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "HORIZON_FIELD_MARCH_WGSL",
+      "HORIZON_FIELD_LOOKUP_WGSL",
+      "HORIZON_FIELD_AZIMUTHS_MARCHED",
+      "HORIZON_FIELD_AZIMUTHS_STORED",
+      "HORIZON_FIELD_MARCH_STEPS",
+    ],
+  },
+  {
     // 4-7: the coarse global height field the occlusion bake marches beyond a
     // page, so there is no shadow discontinuity at page edges.
+    // 6-11 added the global horizon layers, baked by the shared operator.
     artifact: "global-height-pyramid",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/GlobalHeightPyramid.ts"],
-    consumers: ["terrain-geometry", "lighting"],
-    ownedSymbols: ["GlobalHeightPyramid", "GLOBAL_HEIGHT_PYRAMID_WGSL"],
+    consumers: ["terrain-geometry", "lighting", "vegetation"],
+    ownedSymbols: [
+      "GlobalHeightPyramid",
+      "GLOBAL_HEIGHT_PYRAMID_WGSL",
+      "GLOBAL_HORIZON_PYRAMID_WGSL",
+    ],
   },
   {
     // 4-7: ONE bake, one owner, one format. Four subsystem designs baked
@@ -279,6 +311,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "src/render/webgpu/terrain/TerrainErosionCompute.ts",
       "src/render/webgpu/terrain/TerrainPageErosion.ts",
       "src/render/webgpu/terrain/TerrainPageErosionClient.ts",
+      "src/render/webgpu/terrain/TerrainPageErosionGpu.ts",
       "src/workers/terrainErosionProtocol.ts",
       "src/workers/terrainErosion.worker.ts",
     ],
@@ -286,12 +319,16 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "TerrainErosionCompute",
       "TerrainPageErosionClient",
+      "TerrainPageErosionGpu",
       "generateTerrainErodedPage",
       "isTerrainErosionWorkerEvent",
     ],
     notes:
-      "Deterministic CPU-worker reference implementation for the bounded Phase-5 page DAG; "
-      + "the atlas admits one page at a time and retains the same client boundary for a future GPU producer.",
+      "W-1d: TerrainPageErosionGpu is the producer, a multi-frame GPU DAG amortised under "
+      + "ComputeBudget.erosionCompute; the CPU worker path remains the no-device fallback, the "
+      + "ensureHydrology recovery path and the tolerance oracle. Still ONE page in flight, still "
+      + "behind the same client boundary. The order-dependent MFD stays CPU and round-trips "
+      + "through the worker's erode-stage-* protocol mid-DAG.",
   },
   {
     artifact: "terrain-macro-evolution",
@@ -336,7 +373,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "sampleTerrainMacroLakeField",
     ],
     notes:
-      "The sole producer of quantized flow, lake-depth, soil-depth and signed-shore-distance page fields; products are built before erosion scratch disposal and transferred together. Signed shore distance is live through the bounded detail authority and detail-worker riparian consumer; lake and soil remain exposed future inputs.",
+      "The sole producer of quantized flow, lake-depth, soil-depth and signed-shore-distance page fields; products are built before erosion scratch disposal and transferred together. 6-6 discharged half of register row C-9: soil depth now drives 2-15 clutter density and the forest-floor splat's litter term, and shore distance gained its species/appearance consumers beside the live riparian density law. Lake depth is 6-5's by the recorded split and is the one channel still without a named consumer (asserted by tests/render.webgpu-terrain-page-hydrology.test.ts).",
   },
   {
     artifact: "simulation-terrain-readback",
@@ -590,8 +627,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityField.ts"],
     consumers: ["vegetation", "terrain-material"],
-    ownedSymbols: ["densityField", "forestFraction"],
-    notes: "Terrain-material reads it for the canopy splat channel; it does not reimplement it.",
+    ownedSymbols: [
+      "densityField",
+      "forestFraction",
+      "riparianVegetationFactors",
+      "soilLitterFactor",
+      "canopyClosure",
+      "canopyHandoff",
+      "canopyRenderedShare",
+      "canopyGrassCover",
+    ],
+    notes:
+      "Terrain-material reads it for the canopy splat channel; it does not "
+      + "reimplement it. 6-6 added two shared ecology laws here for the same "
+      + "reason: the riparian corridor's shape and the soil-depth -> litter "
+      + "mapping are read by terrain (through this one sanctioned entry point) "
+      + "as well as by vegetation, and neither may acquire a second answer. "
+      + "6-8 adds the canopy laws on the same terms: closure, the grass-cover "
+      + "complement, the rendered/terrain split of that closure at a range, "
+      + "and the canopy's measured appearance. The far-band cull window "
+      + "(DETAIL_FAR_CULL_FADE_METERS) lives here too, because the terrain "
+      + "ramp and the impostor dither have to fade over ONE window.",
   },
   {
     // 2-0: the second instance of the payload.ts institutional failure,
@@ -629,11 +685,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "WATER_ENVIRONMENT_MIP_WGSL",
       "waterReflectedSkyWgsl",
       "fallbackWaterEnvironmentCube",
+      // 6-1: composed into the INLAND fragment only (every input is
+      // channel-graph hydraulics), but defined here with the rest of the water
+      // shader library so a second copy cannot appear beside HydrologySystem's
+      // material — the same rule, applied to a block only one surface uses.
+      "WATER_CHANNEL_FLOW_WGSL",
+      "waterChannelGradePayload",
+      "waterLakeFetchPayload",
+      "waterLakeEffectiveFetchMeters",
+      "waterStandingWave",
+      "waterLakeChop",
+      "waterFlowPhase",
+      "waterFlowSpeedGain",
+      "waterFlowCycleSeconds",
     ],
     notes:
       "A second textual fresnelSchlick/sunSpecular/reflectedSky in a water "
       + "material is the drift 2-8a exists to prevent; 2-9 unified the sun "
-      + "lobe, foam, crest SSS and environment-mip helpers here.",
+      + "lobe, foam, crest SSS and environment-mip helpers here. 6-1 added the "
+      + "channel-flow block and its TypeScript parity oracle: the payload "
+      + "encoders are the single authority for what HydrologySystem writes "
+      + "into waterData.w and what the shader decodes from it.",
   },
   {
     // 2-11: the CPU array-mip reducer (Babylon mips only layer 0 of a
@@ -688,6 +760,32 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "exists to catch exactly that.",
   },
   {
+    // 6-7: the talus/scree placement law. 2-15 owns how a rock is DRAWN;
+    // this owns where one rests, how many rest there and how big a block is.
+    artifact: "talus-placement-law",
+    owner: "vegetation",
+    definitionSites: ["src/render/webgpu/detail/talusField.ts"],
+    consumers: ["vegetation"],
+    ownedSymbols: [
+      "talusPlacement",
+      "talusRestWeight",
+      "talusFailureFraction",
+      "talusBlockiness",
+      "talusReposeSteepness",
+      "TalusSupplyProbe",
+      "TALUS_NO_SUPPLY",
+    ],
+    notes:
+      "Class P and season-INVARIANT by design: the permanent-snow burial term "
+      + "keys on the world's reference snowline offset, never on the "
+      + "descending seasonal one, so this file is deliberately not a member of "
+      + "SEASONAL_FIELD_FAMILY. Lithology enters through exactly one owned "
+      + "number — sampleTerrainEvolutionGeology's reposeDegrees — and soil "
+      + "depth through TerrainPageHydrology's terrainSoilDepthMeters, whose "
+      + "analytic fallback is that same law at zero curvature and zero "
+      + "contributing area rather than a second soil model.",
+  },
+  {
     // 2-11a: the ONE instance record every detail batch uploads and the ONE
     // decoder that turns it into a world transform.
     artifact: "detail-instance-format",
@@ -727,10 +825,19 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/groundCoverLaw.ts"],
     consumers: ["vegetation", "performance"],
-    ownedSymbols: ["GROUND_COVER_LAWS", "estimateGroundCoverVertexLoad"],
+    ownedSymbols: [
+      "GROUND_COVER_LAWS",
+      "estimateGroundCoverVertexLoad",
+      "GROUND_COVER_ARCHETYPE_SHAPES",
+      "groundCoverHandoffRadiusMeters",
+      "groundCoverDrawCount",
+    ],
     notes:
       "A second blades-per-square-metre constant outside this file is the "
-      + "R-21 failure class applied to grass.",
+      + "R-21 failure class applied to grass. 6-9 added the archetype shape "
+      + "table (read by BOTH the placement compute and the blade material "
+      + "plugin), the card-path handoff radius, and the conservative "
+      + "draw-count ratchet the GPU cull reads back into.",
   },
   {
     // Wave G: the per-frame compute blade system, its WGSL and its material
@@ -741,12 +848,21 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "src/render/webgpu/detail/GroundCoverSystem.ts",
       "src/render/webgpu/detail/groundCoverWgsl.ts",
       "src/render/webgpu/detail/GroundCoverMaterialPlugin.ts",
+      "src/render/webgpu/detail/indirectDrawCapability.ts",
     ],
     consumers: ["vegetation"],
     notes:
-      "Blades stand on the consumer authority's rendered surface and wear "
+      "Cover stands on the consumer authority's rendered surface and wears "
       + "the classifier's harmonised ground albedo; no streaming state "
-      + "exists anywhere in the path.",
+      + "exists anywhere in the path. 6-9 generalised it beyond grass (the "
+      + "composed archetype law places fern, heather and reed inside the "
+      + "handoff radius, and the card path keeps them outside it), admitted "
+      + "it through ComputeBudget as groundCoverCompute, gave the governor "
+      + "its gate rung, and added the compaction cull: lanes claim slots "
+      + "through a workgroup-reduced atomic, the count returns through a "
+      + "readback ring (the DEFAULT path), and the GPU-written indirect "
+      + "count is an opt-in optimisation over Babylon private state behind "
+      + "one loud assertion (RENDERING_PLAN §7 R4).",
   },
   {
     // R-21: the rendered-density law — 2-12/2-14/2-17 and the runtime
@@ -794,7 +910,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "toroidalBathymetryTexel",
     ],
     notes:
-      "Two toroidal R16F levels. Eroded mode currently samples the canonical macro authority with its cell-centred 16-texel rim blend; analytic mode remains bit-compatible.",
+      "Two toroidal R16F levels. Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
   },
   {
     // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,
@@ -818,7 +934,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "Ten smooth suitability functions, softmaxed and top-4 renormalised, "
       + "replacing classifyBiome's threshold cascade. dayOfYear is in the "
-      + "signature from the first line (seasonal-family rule). Phase-5 flow accumulation supplies the live TWI wetness input when resident.",
+      + "signature from the first line (seasonal-family rule). Phase-5 flow accumulation supplies the live TWI wetness input when resident, and 6-6 adds the soil-depth litter term on the forest floor through the same optional-input-plus-zero-sentinel shape.",
   },
   {
     // 4-6b (D12): densityField's WGSL half. ONE shared include consumed by
@@ -827,8 +943,22 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "vegetation",
     definitionSites: ["src/render/webgpu/detail/densityFieldWgsl.ts"],
     consumers: "any",
-    ownedSymbols: ["VEGETATION_DENSITY_FIELD_WGSL"],
-    notes: "Transliteration of densityField.ts; the TS remains the authority.",
+    ownedSymbols: [
+      "VEGETATION_DENSITY_FIELD_WGSL",
+      "VEGETATION_GROUND_COVER_LAW_WGSL",
+      "VEGETATION_CANOPY_HANDOFF_WGSL",
+      "VEGETATION_DENSITY_KERNEL_LATTICES",
+    ],
+    notes:
+      "Transliteration of densityField.ts; the TS remains the authority. 6-8 "
+      + "made it the first LIVE composer (the terrain page splat bake) and "
+      + "added the lattice table it always said the caller would append, plus "
+      + "the canopy-handoff half the terrain material composes. 6-9 split out "
+      + "the ground-cover half (archetype mix, closure, grass cover) as its "
+      + "own export because it needs no lattice and no page uniform: the "
+      + "per-frame ground-cover placement compute composes THAT and the "
+      + "terrain kernel's three scalar helpers, so the field and the splat "
+      + "bake read one archetype law rather than two.",
   },
   {
     // 4-4: renamed from `terrainQueue.ts`/`BoundedTerrainQueue`. It is the
@@ -913,6 +1043,247 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "Off-thread terrain material synthesis (4.5-C2b). The client falls back to the in-frame path wherever no Worker exists, which is what the Node suite and every headless tool run.",
   },
+  {
+    // Pre-existing and previously unowned, which PHASE_7_EXECUTION_PLAN.md
+    // 2.8 calls out by name. `AirportSystem` PLACES the airport's objects;
+    // `runway-surface-painter` PAINTS the runway into the terrain surface.
+    // Two artifacts, one airfield -- recording the split is the point, because
+    // 3-9 deleted 28 coplanar z-fighting boxes that had grown from exactly
+    // this ambiguity. Phase 7 moves this file to `airfield/` when 7D opens
+    // (D-11); until then the row is enforced where the file actually is.
+    // RENDERING_PLAN.md Phase 7's citations into this file are STALE
+    // (`:72-83`, `:111`), and `AirportSystemOptions.includeHangars` -- which
+    // that plan builds on -- never existed at all (D-2).
+    artifact: "airport-system",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/detail/AirportSystem.ts"],
+    consumers: "any",
+    ownedSymbols: ["AirportSystem"],
+    notes:
+      "The runway SURFACE is not here: RunwaySurface.ts paints it from the "
+      + "analytic SDF in src/world/airport.ts. Placement consumes that SDF and "
+      + "does not re-derive it -- a second SDF is the drift that once gave the "
+      + "water two sun discs.",
+  },
+  {
+    // 7-4b: the ONE integration of Babylon's `ClusteredLightContainer`. The
+    // container is itself a Light and occupies a `maxSimultaneousLights` slot,
+    // so a second integration does not merely duplicate code -- it silently
+    // stops the first contributing, because `PrepareDefinesForLights` breaks
+    // at the cap rather than reporting. Phase 7's emitters get their own
+    // directory: `atmosphere/` keeps sky and light-in-transit, `lighting/`
+    // owns discrete emitters. Owner is a responsibility and path is a
+    // location, so `lighting`-owned artifacts still live elsewhere too.
+    artifact: "clustered-light-container",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/ClusteredLighting.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: [
+      // Corrected at 7-4b's landing against the module that actually shipped.
+      // The planned row named `CLUSTERED_LIGHTING_WGSL` and
+      // `resolveClusteredLightBinding`; neither exists, because Babylon's
+      // container owns its own shader and binding and this module configures
+      // it rather than re-implementing either. A `plannedBy` row can name
+      // symbols that never get built -- clearing it is what makes the list
+      // enforced, so the list has to become true in the same change.
+      "ClusteredLightingSystem",
+      "CLUSTERED_LIGHTING_DEFAULT_GEOMETRY",
+      "CLUSTERED_MAX_SIMULTANEOUS_LIGHTS",
+      "prepareMaterialForClusteredLighting",
+    ],
+    notes:
+      "Tile dimensions and slice count come from WebGpuQualityProfile data "
+      + "rather than a per-tier branch. CORRECTED against Babylon's source: the "
+      + "container flushes the WebGPU framebuffer and rewrites its entire light "
+      + "buffer ONCE PER FRAME, UNCONDITIONALLY. `_updateLightData` guards on the "
+      + "scene RENDER ID, not on whether any light changed, so the flush is a "
+      + "standing per-frame cost of having the container at all -- animating a "
+      + "fixture's intensity adds nothing to it. Price the flush into 7-4b's "
+      + "baseline; do NOT treat static fixture data as a way to avoid it. "
+      + "Receiver cost per container, MEASURED on the adapter by 7-0-d: one "
+      + "texture binding, one fragment storage buffer, one inter-stage varying "
+      + "(terrain 13 -> 14 of 16 with the 4-cascade CSM), and 2 + 4x "
+      + "CLUSTLIGHT_SLICES floats of light UBO. ZERO samplers -- the light data "
+      + "is read with textureLoad, which is why a sampler-count measurement "
+      + "would have reported no change on a feature that does add a binding.",
+  },
+  {
+    // 7-5: the ~200 lights you SEE. Instanced emissive billboards that
+    // illuminate nothing; the illumination is 7-4b's. Cloning
+    // `StarFieldSystem`'s constant-flux PSF is deliberate -- two point-source
+    // brightness models would drift exactly as two sun discs once did.
+    artifact: "light-points",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/LightPoints.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["LightPointSystem", "LIGHT_POINT_WGSL"],
+    notes:
+      "ONE instanced draw -- a design constraint, not an aspiration: the night "
+      + "shot's draw ceiling is 160. Extinction is applied by hand through "
+      + "`applyAerialPerspectiveToShaderMaterial`, because `isOpaqueAerialReceiver` "
+      + "rejects additive billboards and a second extinction model is the drift "
+      + "the aerial include exists to prevent.",
+  },
+  {
+    // 7-5: bloom. Owned by lighting rather than by a post-process subsystem
+    // because what it is FOR is making sources read as sources -- it is the
+    // display half of the same job `LightPoints` does in the scene.
+    artifact: "bloom",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/BloomPass.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["BloomPass", "BLOOM_BRIGHT_WGSL", "bloomBrightPassWeight", "bloomBlurWeights"],
+    notes:
+      "The blur weights in the WGSL are GENERATED from `bloomBlurWeights` and "
+      + "unrolled, so the test asserting they sum to one is asserting the "
+      + "numbers that ship rather than a parallel table. The bright pass is "
+      + "ratio 1.0, NOT the usual half: it becomes the first post-process "
+      + "whenever `ScotopicVision` detaches for daylight, and the first pass's "
+      + "ratio sets the size of the target the SCENE renders into -- a "
+      + "half-resolution bright pass would have halved scene resolution for "
+      + "most of the day. MSAA ownership across the three possible chain heads "
+      + "is derived in `FlightRenderer.applyFirstPassOwnership`, not branched "
+      + "per site.",
+  },
+  {
+    // 7-13: the airfield's furniture. Arithmetic and geometry only -- the
+    // windsock's siting, its wind response, and the tanks/fence/signage
+    // surfaces. It owns no material and no light: signage rides 7-5's
+    // light-point path rather than adding a second emissive one, and nothing
+    // here constructs a scene light, so `render.scene-light-slots.test.ts`
+    // stays at its pinned counts.
+    artifact: "airfield-furniture",
+    owner: "aircraft",
+    definitionSites: ["src/render/webgpu/detail/AirfieldFurniture.ts"],
+    // `lighting` is a declared consumer because 7-13's signage rides 7-5's
+    // light-point path rather than carrying a second emissive material --
+    // `AirfieldLightingSystem` imports `signLightPoints` from here.
+    consumers: ["aircraft", "lighting"],
+    ownedSymbols: [
+      "airfieldFurnitureWindingCases",
+      "windsockWorldPosition",
+      "windsockAxisDirection",
+      "windsockBoreScale",
+      "buildPerimeterFenceGeometry",
+      "signLightPoints",
+    ],
+    notes:
+      "The windsock takes its OWN wind sample. The renderer's other consumer "
+      + "samples at the aircraft and forwards four scalars, and a sock driven by "
+      + "that snapshot still points, swings and gusts -- no frame distinguishes "
+      + "it, so `lighting.windsock.test.ts` asserts the two samples DIFFER rather "
+      + "than asserting the angle looks right. `airfieldFurnitureWindingCases` is "
+      + "spread by the winding guard, so furniture added here is wound-checked "
+      + "with no change to the test; both `sweptTube` and `flatPanel` came out "
+      + "INVERTED on first write, in OPPOSITE directions, which is why there is "
+      + "no house winding convention recorded anywhere -- only a measurement to "
+      + "take. Lateral band, shared with three other sessions: signage at the "
+      + "runway edge (derived), windsock 55 m, tower runwayWidth/2 + 95, hangars "
+      + "118 m, fuel farm 135 m, fence 168 m and outermost by construction.",
+  },
+  {
+    // 7-7: runway edge/threshold/centreline fixtures and the PAPI. The PAPI's
+    // angular law is authored ANALYTICALLY here and deliberately not as IES:
+    // but NOT for D-3's stated reason, which is FALSE and corrected here.
+    // `LoadIESData` is not one-dimensional: it builds a `Float32Array(360*180)`
+    // and interpolates across theta (`iesLoader.js:124-141`). It merely RETURNS
+    // `{ width: 180, height: 1 }` because, in its own words, "we only need the
+    // first half of the first row ... as we only support IES for spot light".
+    // The real reason is RESOLUTION: 180 samples over 180 degrees of elevation
+    // is 1.0 deg/sample against 7-7's 0.1 deg pin -- ten times too coarse, and
+    // interpolating across a step renders the red/white transition as a 1 degree
+    // ramp rather than an edge. A perfectly 2D IES still could not carry that
+    // law, so this reason survives whatever the loader does next.
+    artifact: "airfield-lighting",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/AirfieldLighting.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["AirfieldLightingSystem", "PAPI_ANGLE_PROFILE", "papiColourForAngle"],
+    notes:
+      "Taxiway and apron lighting are re-scoped away (D-0): that ground does not "
+      + "exist and 3-9 declined to build it. Mounts 7-14's obstruction lights. "
+      + "The site exists as of 7-7's angular law; AirfieldLightingSystem itself "
+      + "lands with 7-5, which owns the billboard path a PAPI is drawn through, "
+      + "so the row is enforced from now and one owned symbol is still to come. "
+      + "MEMORY, corrected: ONE IES profile is 64,800 floats = 253.1 KiB on the "
+      + "CPU, not the 180 floats Q2 summed -- 360x low, and 2.5x Q2's entire "
+      + "claimed 7B budget from a single profile. What reaches the DEVICE depends "
+      + "on an upload policy nobody has stated: uploading per the returned "
+      + "descriptor gives 720 bytes AND the theta=0 column only -- the cheap case "
+      + "and the wrong-data case at once. Decide the policy before quoting either.",
+  },
+  {
+    // 7-8: navigation, beacon, strobe and landing lights. Sited under
+    // `lighting/` rather than `aircraft/` on purpose -- the aircraft subsystem
+    // owns form and mount points, while the emission law is one model shared
+    // with the airfield, or the two drift apart in colour and falloff.
+    artifact: "aircraft-lighting",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/AircraftLighting.ts"],
+    consumers: ["lighting", "aircraft"],
+    // `7-8` landed as a pure LAW module rather than a system class: the
+    // lighting has no per-frame state to own, so a class would have been an
+    // empty shell added to satisfy this row. Recorded rather than silently
+    // substituted.
+    ownedSymbols: [
+      "resolveAircraftLights",
+      "BEACON_PERIOD_SECONDS",
+      "STROBE_PERIOD_SECONDS",
+      "NAV_LIGHT_ARC_DEGREES",
+    ],
+    notes:
+      "Recorded consequence of 7-4b: `IsLightSupported` rejects any light "
+      + "carrying a shadow generator, so clustered landing lights cast NO "
+      + "shadows. Periods are owned here because the capture driver pins "
+      + "simulationTime -- a beacon sampled at its own period renders static in "
+      + "every frame, which is what 7-0-a's offset shot exists to catch.",
+  },
+  {
+    // 7-10 + 7-15: the parametric hangar and the ATC tower. Second scale
+    // reference on final after the runway, and the mount for 7-7's rotating
+    // beacon and 7-14's obstruction lights. `AirportSystem.ts` moves here from
+    // `detail/` when 7D opens (D-11).
+    artifact: "airfield-structures",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/airfield/AirfieldStructures.ts"],
+    consumers: ["world"],
+    ownedSymbols: ["buildHangar", "buildControlTower", "AIRFIELD_STRUCTURE_LOD"],
+    notes:
+      "Budgeted against the same hard draw ceilings as the light points -- read "
+      + "them from the shots' own drawCallCeiling rather than from here. This "
+      + "note used to quote 169 and 158, which were the PRE-TIGHTENING values; "
+      + "R4 removed 6-10 draws of undocumented margin and bloom then added 4, so "
+      + "a reader budgeting against the old pair would have believed in four "
+      + "draws that do not exist. Any shadow caster here is "
+      + "built through the guarded factory in core/, never constructed directly. "
+      + "And every prototype it adds is registered in the prototype winding "
+      + "guard AS IT IS BUILT: six inverted surfaces were found on 2026-08-31 "
+      + "and a green test was asserting the inverted convention as correct.",
+  },
+  {
+    // 7-11: the structure materials — synthesized once, shared by every
+    // hangar, the tower and the furniture. One author; the geometry files
+    // assign these and never edit this one (and vice versa).
+    artifact: "airfield-materials",
+    owner: "world",
+    definitionSites: ["src/render/webgpu/airfield/AirfieldMaterials.ts"],
+    consumers: ["world"],
+    ownedSymbols: [
+      "createAirfieldMaterials",
+      "synthesizeAirfieldMetal",
+      "synthesizeAirfieldConcrete",
+      "AIRFIELD_ASPECT_V_START",
+    ],
+    notes:
+      "Follows the Gate A aircraft-paint convention: CPU-authored bytes, "
+      + "explicit Toksvig mips through the shared reducer, RawTexture upload "
+      + "boundary. Budget is derived from the capture inventory's worst shot "
+      + "against the 495 pin, never from a transcribed figure, and the module "
+      + "pins its own byte total by test. UV contract: U wraps along the "
+      + "surface over the exported tile period; V CLAMPS downward from each "
+      + "face's runway-relative aspect start, so weathering is gravity plus "
+      + "neglect, not a compass claim the geometry would have to bake in.",
+  },
 ];
 
 /**
@@ -954,6 +1325,5 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
   {
     artifact: "land-cover-classifier",
     definitionSites: ["src/render/webgpu/terrain/LandCoverClassifier.ts"],
-    plannedBy: "4-6",
   },
 ];

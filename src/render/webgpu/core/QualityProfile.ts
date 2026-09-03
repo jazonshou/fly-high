@@ -62,6 +62,34 @@ export interface WebGpuQualityProfile {
    * off, so alpha-tested foliage gets no MSAA benefit — this fixes ridge
    * lines, runway edges and wing silhouettes, not tree canopies.
    */
+  /**
+   * `7-5`: whether the bloom post-process runs.
+   *
+   * DATA, NOT A `profile.tier` BRANCH, per the tier rule -- and here that rule
+   * is load-bearing rather than stylistic. Whether tier 2 should carry 4x MSAA
+   * at all is a fidelity call for Jason, and if it drops to 1x, tier 2's bloom
+   * question reopens with real headroom. Keeping this a data field makes that
+   * a GATE FLIP rather than a redesign.
+   *
+   * Why the rows below are what they are, with the reason per row rather than
+   * one blanket justification -- they are not the same reason:
+   *  - tier 0: UNMEASURED, not refused. Nobody has priced bloom there.
+   *  - tier 1: ON. The gate was ratified here, and this is the tier whose
+   *    headroom is actually measured.
+   *  - tiers 2 and Ultra: UNFUNDED. The plan funded bloom against tier 2's
+   *    0.05 ms of *modelled* slack (D-4, §2.3(g)); the sweep measured a
+   *    10.0-46.7 ms deficit at 0 of 21 shot-configurations, of which 32.79 ms
+   *    is `msaaSamples` alone. There is no slack to fund against, and the sign
+   *    is wrong rather than the magnitude.
+   *
+   * COST AND SAMPLES. Bloom is not the first post-process, so it reads a
+   * RESOLVED target -- `toneMap.samples = 1` already records that non-first
+   * passes are single-sampled. Its marginal cost should therefore be
+   * independent of `msaaSamples`, which is the opposite of the assumption that
+   * a post-process cost must carry a sample count. That is a claim to be
+   * MEASURED at both 1x and 4x before it is quoted, not asserted here.
+   */
+  readonly bloomEnabled: boolean;
   readonly msaaSamples: number;
   /**
    * The tier's controllable frame-time target (Z-2), mirrored from
@@ -165,6 +193,31 @@ export interface WebGpuQualityProfile {
    * splat — the co-residency rule `4-2` states.
    */
   readonly channelAtlasSlots: number;
+  /**
+   * `7-4b`/`7-9`: the clustered light container's tile and slice geometry.
+   *
+   * **Profile data rather than a runtime lever, and that is a Babylon
+   * constraint rather than a preference.** Changing any of the three
+   * reallocates the tile-mask texture, the storage buffer and the thin-instance
+   * matrix buffer, so `ClusteredLightingSystem` applies them once at
+   * construction and never again.
+   *
+   * **UNIFORM ACROSS TIERS TODAY, AND THAT IS DELIBERATE RATHER THAN
+   * UNFINISHED.** Slices drive the per-light-slot UBO — `vSliceData: vec2f`
+   * plus `vSliceRanges: array<vec4f, CLUSTLIGHT_SLICES>`, so 2 + 4x slices
+   * floats, 264 B at 16 — which is far too small to differentiate on memory
+   * against the 2.7 MiB of inventoried headroom. The real cost of coarser tiles
+   * is MORE LIGHTS PER TILE and therefore more per-pixel shading, and that is a
+   * frame-time question. **Differentiating these rows without measuring it
+   * would be inventing four numbers and calling them a tier row**, which is the
+   * failure `7-9` exists to avoid. The mechanism is wired so the sweep can tune
+   * it; the sweep is blocked on a quiet host.
+   */
+  readonly clusteredLighting: {
+    readonly horizontalTiles: number;
+    readonly verticalTiles: number;
+    readonly depthSlices: number;
+  };
   readonly shadowMapSize: number;
   readonly shadowCascades: number;
   readonly shadowDistance: number;
@@ -239,7 +292,7 @@ function clampTier(value: number): 0 | 1 | 2 | 3 {
 }
 
 /** Resolve one bounded profile instead of scattering quality branches across systems. */
-export function resolveWebGpuQualityProfile(
+function resolveBaseQualityProfile(
   quality: QualityLevel,
   mode: RenderingMode,
 ): WebGpuQualityProfile {
@@ -252,6 +305,7 @@ export function resolveWebGpuQualityProfile(
       renderScale: 0.72,
       maxRenderPixels: 1_000_000,
       maxDevicePixelRatio: 1,
+      bloomEnabled: false,
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
@@ -287,6 +341,7 @@ export function resolveWebGpuQualityProfile(
       // texel density inside them roughly triples at every tier.
       shadowMapSize: 1_024,
       shadowCascades: 2,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 900,
       oceanResolution: 128,
       oceanCascades: 3,
@@ -326,6 +381,7 @@ export function resolveWebGpuQualityProfile(
       // duplicates its dominant colour/depth traffic. FXAA is already the
       // renderer's sample-count-1 path, so Balanced spends this row on frame
       // cadence rather than hardware MSAA; higher tiers retain multisampling.
+      bloomEnabled: true,
       msaaSamples: 1,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
@@ -370,6 +426,7 @@ export function resolveWebGpuQualityProfile(
       // which is the HIGH row plus a filter that cannot run (tier-2 note).
       shadowMapSize: 1_280,
       shadowCascades: 2,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 1_400,
       oceanResolution: 128,
       oceanCascades: 4,
@@ -414,6 +471,7 @@ export function resolveWebGpuQualityProfile(
       // rows above have now paid for it. Note this COSTS 54.9 MiB raw here —
       // more than the shadow refund — so `4-8b` is net +8.7 MiB at this tier.
       // It is not a refund, and the D3 table carries it as a cost.
+      bloomEnabled: false,
       msaaSamples: 4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
@@ -440,7 +498,15 @@ export function resolveWebGpuQualityProfile(
       // Phase 1. Buying it back costs more than softer contact shadows are
       // worth here, so PCSS is a Phase 7 conversation.
       shadowMapSize: 1_536,
-      shadowCascades: 3,
+      // `7-CSM`: 3 -> 2. Cascades were bought here on the assumption that more
+      // of them means more coverage. MEASURED off `_splitFrustum` on the
+      // shipping constants, the opposite holds: a log-weighted split pushes the
+      // FIRST split nearer as cascades are added, so 3 cascades gave cascade 0
+      // only 133.8 m where 2 give it 207.4 m — and every cascade past the first
+      // was costing a full-resolution render for range the tier below covered
+      // better. Two cascades cover the whole 1,800 m at 2 renders per caster.
+      shadowCascades: 2,
+      clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
       shadowDistance: 1_800,
       oceanResolution: 256,
       oceanCascades: 5,
@@ -480,6 +546,7 @@ export function resolveWebGpuQualityProfile(
     renderScale: 1,
     maxRenderPixels: 4_000_000,
     maxDevicePixelRatio: 2,
+    bloomEnabled: false,
     msaaSamples: 4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
@@ -496,9 +563,38 @@ export function resolveWebGpuQualityProfile(
     finestResidentLevel: 0,
     heightAtlasSlots: 256,
     channelAtlasSlots: 256,
-    // `4-8b`: 4 × 2048 @ 2400 m. PCSS struck here too (see tier 2).
+    // `4-8b`: 2048 @ 2400 m. PCSS struck here too (see tier 2).
     shadowMapSize: 2_048,
-    shadowCascades: 4,
+    // `7-CSM`: 4 -> 2, and this tier is why the rule was found. At 4 cascades
+    // cascade 0 reached 132.8 m — LESS near coverage than tier 1's 162.3 m,
+    // while paying for a larger map and four array layers. At 2 it reaches
+    // 274.8 m and covers the full 2,400 m.
+    //
+    // MEASURED at tier 3, three arms interleaved two runs each: rendering all
+    // FOUR cascades costs -12.6% mean fps (-21.3% worst shot), while TWO cost
+    // nothing resolvable (+0.3% mean; the four per-shot deltas alternate sign,
+    // which is what no effect looks like). The cost tracks the number of
+    // full-resolution cascade renders, NOT the draw count: +31% draw calls was
+    // free, +96% was not.
+    //
+    // Those arms reached "all cascades render" via `noColorAttachment: false`,
+    // so they also carried a colour attachment and +128 MiB. 034aedd renders
+    // every cascade WITHOUT it, so THE MEMORY FIGURE DOES NOT APPLY HERE and
+    // must not be quoted against the shipping build. The fps figure is the one
+    // that carries over, because the cost tracks renders rather than the
+    // attachment — though the exact shipping configuration is unmeasured.
+    //
+    // This MUST stay paired with the `is2DArray` decoupling landed in 034aedd.
+    // Before that commit these counts were INERT — only cascade 0 ever
+    // rendered, so 4 cost exactly what 2 cost, which is what hid the defect for
+    // as long as it existed. After it, every declared cascade is a full render,
+    // so leaving this at 4 would ship the measured -12.6% arm.
+    //
+    // ENFORCED rather than remembered: `tests/gpu/shadow-caster-draw-cost.test.ts`
+    // pins `1 + numCascades` draws per caster and reads the count off the
+    // GENERATOR, because Babylon's setter clamps to MIN_CASCADES_COUNT silently.
+    shadowCascades: 2,
+    clusteredLighting: { horizontalTiles: 64, verticalTiles: 64, depthSlices: 16 },
     shadowDistance: 2_400,
     oceanResolution: 256,
     oceanCascades: 5,
@@ -519,6 +615,71 @@ export function resolveWebGpuQualityProfile(
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
   };
+}
+
+/**
+ * Fields the override may never touch, because they are IDENTITY rather than
+ * configuration: other code keys on them (`FRAME_BUDGET_MS[tier]`,
+ * `OTHER_DETAIL_ALLOWANCE_MIB[tier]`, the capture's delivery contract), so
+ * overriding one corrupts every downstream lookup instead of testing a field.
+ * Stripped here rather than left to the caller's discipline — the experiment's
+ * scope exclusion is enforced by construction, the same reason the override
+ * lives at the single point of resolution.
+ */
+const PROFILE_OVERRIDE_FORBIDDEN_KEYS = ["tier", "quality", "mode", "frameTargetMs"] as const;
+
+let captureExperimentProfileOverride: Partial<WebGpuQualityProfile> | null = null;
+
+/**
+ * TEST-ONLY. Force individual profile fields for the tier-cliff A/B capture.
+ *
+ * **What it is for.** Tier 2 misses its 13.7 ms frame contract on 0 of 21
+ * measured shot-configurations, by 10.0-46.7 ms, and **30 of 35 profile fields
+ * differ between tier 1 and tier 2**, so the cause cannot be isolated by
+ * reading the diff. The A/B reverts one group of fields at a time from tier 2
+ * toward tier 1 and measures the recovery. Nothing else can vary a single
+ * field: the profile is a frozen literal per tier.
+ *
+ * **Why it lives here rather than in `FlightRendererOptions`.** The profile is
+ * resolved at THREE sites in `FlightRenderer` (construction, the async create
+ * path, and the runtime quality switch). An override threaded through options
+ * could be applied at some and not others, producing an experiment arm that
+ * silently tested a MIXTURE of tier-1 and tier-2 fields — and that arm would
+ * look like a clean measurement. Applying it at the single point of resolution
+ * makes that inconsistency impossible rather than unlikely.
+ *
+ * **What removes it.** Delete this, its clearer, and the wrapper below once the
+ * cliff has a cause — the finding is the deliverable, not the scaffold. If the
+ * A/B returns NULL (the cliff is not in the profile at all) it should be
+ * deleted too, because a scaffold kept for a question it could not answer is
+ * how an experiment hook becomes API. It has no other caller by design, and
+ * `tests/render.webgpu-profile-override-absent.test.ts` fails the build if one
+ * appears under `src/`.
+ */
+export function __setProfileOverrideForCaptureExperimentsOnly(
+  override: Partial<WebGpuQualityProfile> | null,
+): void {
+  if (!override) {
+    captureExperimentProfileOverride = null;
+    return;
+  }
+  const safe: Record<string, unknown> = { ...override };
+  for (const key of PROFILE_OVERRIDE_FORBIDDEN_KEYS) delete safe[key];
+  captureExperimentProfileOverride = safe as Partial<WebGpuQualityProfile>;
+}
+
+/**
+ * Resolve the tier profile, applying the capture experiment's override if one
+ * is set. Inert — and identical to `resolveBaseQualityProfile` — when it is not,
+ * which is every path that is not the A/B harness.
+ */
+export function resolveWebGpuQualityProfile(
+  quality: QualityLevel,
+  mode: RenderingMode,
+): WebGpuQualityProfile {
+  const base = resolveBaseQualityProfile(quality, mode);
+  if (!captureExperimentProfileOverride) return base;
+  return Object.freeze({ ...base, ...captureExperimentProfileOverride });
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   groundCoverBladeTriangles,
   groundCoverBladeVertices,
   groundCoverBufferBytes,
+  groundCoverCounterBytes,
   groundCoverLaneCount,
 } from "../src/render/webgpu/detail/groundCoverLaw";
 import { GROUND_COVER_COMPUTE_WGSL } from "../src/render/webgpu/detail/groundCoverWgsl";
@@ -77,8 +78,11 @@ describe("ground-cover blade law (wave G)", () => {
   });
 
   it("keeps the budget row covering the buffers plus the domain tile", () => {
+    // 6-9: TWO 64² attribute tiles now — the wave-G albedo/grass-weight tile
+    // and the archetype driver tile — plus the compaction counter ring.
     const tileBytes = GROUND_COVER_HEIGHT_TILE_EDGE ** 2 * 4
-      + GROUND_COVER_ATTRIBUTE_TILE_EDGE ** 2 * 4;
+      + 2 * GROUND_COVER_ATTRIBUTE_TILE_EDGE ** 2 * 4
+      + groundCoverCounterBytes();
     GROUND_COVER_LAWS.forEach((law, tier) => {
       const actualMiB = (groundCoverBufferBytes(law) + tileBytes) / MIB;
       const row = DYNAMIC_ALLOCATIONS.groundCoverMiB[tier as 0 | 1 | 2 | 3];

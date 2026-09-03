@@ -90,6 +90,7 @@ describe("flight HUD camera and terminal-state presentation", () => {
 
   it("reports the active WebGPU profile and compute workloads", () => {
     const diagnostics: RenderDiagnostics = {
+      residencyReasons: { drawn: 0, parent: 0, collision: 0, seed: 0, drawnBeyondShadowDistance: 0 },
       fps: 58,
       frameTime: 17.2,
       drawCalls: 42,
@@ -138,7 +139,14 @@ describe("flight HUD camera and terminal-state presentation", () => {
       pendingDetailWork: 0,
       terrainComputeDispatches: 4,
       estimatedGpuMemoryMiB: 402.4,
+      // Below the unrestricted figure, as the real one always is: misc, the
+      // eroded-only reservations and the slack factor are out of it.
+      estimatedInventoriableGpuMemoryMiB: 306.9,
       inventoriedGpuMemoryMiB: 312.9,
+      // Lanes sum to the total above, as the real walk's do — a fixture whose
+      // parts contradict its whole would let a reconciliation check pass here
+      // and fail on any real frame.
+      inventoriedGpuMemoryLanes: { textureMiB: 280.4, geometryMiB: 24.5, bufferMiB: 8.0 },
       budgetProbeActive: false,
       budgetProbeReport: [{ pass: "world-page-visibility", gpuP95DeltaMs: 0.6 }],
       gpuPassMs: { mainPass: 8.1, shadows: 1.4, terrainCompute: 1.9, total: 11.4 },

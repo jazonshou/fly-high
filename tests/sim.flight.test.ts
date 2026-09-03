@@ -79,7 +79,13 @@ describe("flight simulation", () => {
     expect(rollSimulator.telemetry().bank).toBeGreaterThan(0.02);
   });
 
-  it("carries the rendered A/D compatibility signs through the simulator", () => {
+  it("maps A to a left bank and D to a right bank with no compensation", () => {
+    // D-6: the predecessor of this test was titled "carries the rendered A/D
+    // compatibility signs through the simulator" and pinned A -> bank>0 -- a
+    // green test whose subject was the workaround for the body-axis mirror.
+    // With +Z = starboard settled end to end, A is simply the negative pilot
+    // roll command and D the positive one. The world-space half of the
+    // contract lives in sim.body-axis-contract.test.ts.
     const left = new FlightSimulator({
       spawn: { heading: Math.PI / 2, pitch: 0, airspeed: 52 },
       controls: { ...DEFAULT_CONTROLS, roll: keyboardRollDirection("KeyA") },
@@ -91,10 +97,8 @@ describe("flight simulation", () => {
     flyFor(left, 0.75);
     flyFor(right, 0.75);
 
-    // Telemetry follows the simulator's documented sign; the renderer's
-    // current lateral basis displays these as left for A and right for D.
-    expect(left.telemetry().bank).toBeGreaterThan(0.02);
-    expect(right.telemetry().bank).toBeLessThan(-0.02);
+    expect(left.telemetry().bank).toBeLessThan(-0.02);
+    expect(right.telemetry().bank).toBeGreaterThan(0.02);
   });
 
   it("holds a bounded, trim-like cruise without divergent rotation", () => {

@@ -12,6 +12,11 @@ import {
   computeMfdFlowAccumulation,
   fingerprintEvolutionFields,
 } from "./TerrainMacroEvolution";
+import {
+  terrainFineBandSurvival,
+  terrainSoilDepthMeters,
+  terrainTopographicWetnessIndex,
+} from "./TerrainPageHydrology";
 
 /**
  * Page erosion's scratch border. It is intentionally independent from the
@@ -86,6 +91,11 @@ export interface TerrainErosionInput {
   readonly reposeDegrees?: ArrayLike<number>;
   /** Values >= 0.5 protect runway/apron earthworks bit-for-bit. */
   readonly erosionMask?: ArrayLike<number>;
+  /**
+   * `W-4`: per-texel fine-band relief in metres, applied AFTER the operators
+   * under the soil/curvature mask. Absent for fixtures and analytic parity.
+   */
+  readonly fineBandRelief?: ArrayLike<number>;
   /** Optional perimeter-ditch receiver overrides, scratch-local indices. */
   readonly receiverOverrides?: ArrayLike<number>;
   readonly config?: Partial<TerrainErosionConfig>;
@@ -317,6 +327,85 @@ export function breachLocalPits(
   });
 }
 
+/**
+ * `W-4` (register C-4): apply the fine ridged bands to an ALREADY-EVOLVED
+ * surface, under the soil-depth/curvature mask.
+ *
+ * The band VALUE (`sampleTerrainFineBandRelief`, metres, mean-removed) arrives
+ * per texel from the caller's seed loop — the erosion operators never sample
+ * world noise themselves, and the GPU DAG's twin of this pass evaluates the
+ * same sampler in WGSL. What lives here is the MASK: the pass reads the
+ * pre-band evolved surface for slope and curvature, the accumulation field for
+ * contributing area, and composes the shared soil proxy from them.
+ *
+ * WHY AT HEIGHT-TEXEL RESOLUTION, not from the hydrology product. The page
+ * hydrology already computes `terrainSoilDepthMeters` per CHANNEL texel — but
+ * (a) it is built from the height this pass modifies, so consuming it would be
+ * circular, (b) it is half resolution (4 m at L0) against a 9 m band, and (c)
+ * it exists only over the channel core+gutter, while the band must cover the
+ * stored rectangle plus the derivative apron. The FUNCTION is shared; the
+ * evaluation is local.
+ *
+ * The whole stencil is one texel wide, so the pass adds exactly 1 to the
+ * composed operator reach W-8 audits (72 -> 73 against the 64-texel halo,
+ * whose real bound is the measured seam audit, not the theorem).
+ */
+export function applyTerrainFineBandRelief(options: {
+  readonly edge: number;
+  readonly texelSizeMeters: number;
+  /** Evolved surface, mutated in place. */
+  readonly height: Float32Array;
+  /** Contributing area in texel counts — the erosion result's own field. */
+  readonly flowAccumulation: ArrayLike<number>;
+  /** Per-texel band relief in metres. */
+  readonly fineBandRelief: ArrayLike<number>;
+  readonly erosionMask?: ArrayLike<number>;
+}): void {
+  const edge = requireInteger(options.edge, 3, "fine-band edge");
+  requireFinitePositive(options.texelSizeMeters, "fine-band texel size");
+  const count = edge * edge;
+  for (const [label, field] of [
+    ["height", options.height],
+    ["flow accumulation", options.flowAccumulation],
+    ["fine-band relief", options.fineBandRelief],
+  ] as const) {
+    if (field.length !== count) throw new RangeError(`Fine-band ${label} length mismatch`);
+  }
+  requireField(options.erosionMask, count, "fine-band erosion mask");
+  const texelArea = options.texelSizeMeters * options.texelSizeMeters;
+  // The stencil must never read a value this pass has already written.
+  const base = Float32Array.from(options.height);
+  for (let z = 1; z < edge - 1; z += 1) {
+    for (let x = 1; x < edge - 1; x += 1) {
+      const index = z * edge + x;
+      if ((options.erosionMask?.[index] ?? 0) >= 0.5) continue;
+      const relief = options.fineBandRelief[index]!;
+      if (!Number.isFinite(relief)) {
+        throw new RangeError(`Fine-band relief[${index}] must be finite`);
+      }
+      const centre = base[index]!;
+      const west = base[index - 1]!;
+      const east = base[index + 1]!;
+      const north = base[index - edge]!;
+      const south = base[index + edge]!;
+      const gradientX = (east - west) / (2 * options.texelSizeMeters);
+      const gradientZ = (south - north) / (2 * options.texelSizeMeters);
+      const slopeRadians = Math.atan(Math.hypot(gradientX, gradientZ));
+      const convergenceCurvature =
+        (centre - (west + east + north + south) * 0.25) / options.texelSizeMeters;
+      const areaM2 = Math.max(0, options.flowAccumulation[index]!) * texelArea;
+      const soilDepthMeters = terrainSoilDepthMeters(
+        slopeRadians,
+        convergenceCurvature,
+        terrainTopographicWetnessIndex(areaM2, slopeRadians),
+      );
+      const survival = terrainFineBandSurvival(soilDepthMeters, convergenceCurvature);
+      if (survival <= 0) continue;
+      options.height[index] = Math.fround(centre + relief * survival);
+    }
+  }
+}
+
 function validateErosionInput(
   input: TerrainErosionInput,
   config: Readonly<TerrainErosionConfig>,
@@ -342,6 +431,7 @@ function validateErosionInput(
   requireField(input.erodibility, count, "erodibility");
   requireField(input.reposeDegrees, count, "repose");
   requireField(input.erosionMask, count, "erosion mask");
+  requireField(input.fineBandRelief, count, "fine-band relief");
   requireField(input.receiverOverrides, count, "receiver overrides");
   for (let index = 0; index < count; index += 1) {
     if (!Number.isFinite(input.heights[index])) {
@@ -414,6 +504,19 @@ export function erodeTerrainPage(input: TerrainErosionInput): TerrainErosionResu
     ...(input.reposeDegrees ? { reposeDegrees: input.reposeDegrees } : {}),
     erosionMask: mask,
   });
+  // W-4: the fine bands are applied HERE — after breach/MFD/stream power/talus
+  // have run, so the mask can read the eroded surface's own soil depth and
+  // curvature instead of the tectonic input's lithology.
+  if (input.fineBandRelief) {
+    applyTerrainFineBandRelief({
+      edge: scratchEdge,
+      texelSizeMeters: input.texelSizeMeters,
+      height: evolvedHeight,
+      flowAccumulation,
+      fineBandRelief: input.fineBandRelief,
+      erosionMask: mask,
+    });
+  }
   // Preserve authored pavement using the exact Float32 source representation,
   // even if a future operator accidentally writes a masked cell internally.
   for (let index = 0; index < count; index += 1) {

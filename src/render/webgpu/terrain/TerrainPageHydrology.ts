@@ -12,6 +12,7 @@ import {
   type TerrainEvolutionPageExport,
 } from "./TerrainEvolutionContract";
 import type { TerrainErosionResult } from "./TerrainErosionCompute";
+import { smoothstep } from "@/src/world/noise";
 import {
   WORLD_PAGE_BASE_EXTENT_METERS,
   WORLD_PAGE_CHANNEL_CORE,
@@ -38,9 +39,21 @@ import {
 
 /** The epsilon in the canonical `ln((1 + A) / (tan(S) + epsilon))` TWI. */
 export const TERRAIN_TWI_SLOPE_EPSILON = 1e-4;
-/** Stable mapping range used when TWI becomes a unit wetness classifier driver. */
-export const TERRAIN_TWI_DRY = 4;
-export const TERRAIN_TWI_WET = 18;
+/**
+ * Stable mapping range used when TWI becomes a unit wetness classifier driver.
+ *
+ * W-9 (Phase 6 Gate W, register C-11 / RESOLUTION_PLAN A-3): re-windowed from
+ * the original guess of [4, 18] against measured eroded page statistics
+ * (`scripts/twi-stats.mts`, 24 L0 pages x 2 seeds, ~431k channel texels each):
+ * the real distribution runs ~13.3 (p1) to ~29 (p99.9) with a median near 18,
+ * so [4, 18] had an empty dry half (nothing below 13) and saturated ~half of
+ * all land fully wet. [15, 24] puts ridges/upper slopes at 0, spreads
+ * mid-slopes across the ramp, and reserves saturation for valley floors
+ * (p95+ on both measured seeds). Eroded-only: the analytic classifier path
+ * falls back to the moisture proxy before this window is consulted.
+ */
+export const TERRAIN_TWI_DRY = 15;
+export const TERRAIN_TWI_WET = 24;
 
 const MAX_LAKE_DEPTH_METERS = 65_535
   * TERRAIN_PAGE_HYDROLOGY_ENCODING.lakeDepthMetersPerUnit;
@@ -111,6 +124,74 @@ export function terrainSoilDepthMeters(
       * (0.4 + 0.6 * depositional)
       * (0.65 + 0.35 * wetness),
   ));
+}
+
+/**
+ * `W-4` (Phase 6, Gate W, register C-4): how much of the post-erosion fine
+ * band (`sampleTerrainFineBandRelief`) survives at a texel.
+ *
+ * This is the mask that REPLACES the uplift term's `localRock * lithology`
+ * envelope. Its two inputs are the ones §12.1's landscape model names: soil
+ * depth and convergence curvature, both read off the EVOLVED surface rather
+ * than off the tectonic input, which is the whole substance of the move.
+ * Structure shows through thin soil on a convex crest or a steep rock face,
+ * and is buried under the deep soil of a convergent, wet, low-gradient hollow.
+ *
+ * SHARED ACCESSOR, DELIBERATELY. The mask lives here, beside
+ * {@link terrainSoilDepthMeters}, because soil depth has exactly one
+ * definition site and the band must not acquire a second one. What it does NOT
+ * do is read the hydrology PRODUCT: the page's quantized `soilDepth` channel
+ * is computed on the 4 m channel grid from the height the band has already
+ * modified, so consuming it would be circular and half-resolution. The erosion
+ * pass instead evaluates this function per HEIGHT texel (2 m at L0) from the
+ * pre-band evolved surface — see `applyTerrainFineBandRelief`.
+ *
+ * Thresholds are measured, not guessed. Over the W-7 page spread, sampled at
+ * height-texel resolution on the eroded surface (2026-08-30, ~17k samples):
+ *
+ *   regime   p5     p25    p50    p75    p95
+ *   ridge    0.65   1.77   2.41   2.96   3.85   m of soil proxy
+ *   slope    0.89   2.22   2.73   3.34   4.54
+ *   valley   1.29   2.88   3.60   4.40   5.16
+ *
+ * [1.0, 4.0] m therefore spans the whole crest-to-floor range: steep rock and
+ * the driest crest texels saturate at full survival, valley floors sit at or
+ * past the deep end, and the mid-slopes land on the ramp. The resulting mean
+ * survival is 0.28 overall — 0.33 on ridge pages, 0.29 on slope pages, 0.13 on
+ * valley pages, which is the 2.5:1 crest-to-floor selectivity the mask exists
+ * to produce.
+ */
+export const TERRAIN_FINE_BAND_SOIL_THIN_METERS = 1;
+export const TERRAIN_FINE_BAND_SOIL_DEEP_METERS = 4;
+/**
+ * Curvature window, in 1/m, on the same `(centre - mean of four neighbours) /
+ * spacing` convention {@link buildTerrainPageHydrology} uses: positive is a
+ * crest, negative a convergent hollow. Read at the height texel's own arm.
+ */
+export const TERRAIN_FINE_BAND_CONCAVE_CURVATURE = -0.02;
+export const TERRAIN_FINE_BAND_CONVEX_CURVATURE = 0.01;
+
+export function terrainFineBandSurvival(
+  soilDepthMeters: number,
+  convergenceCurvature: number,
+): number {
+  if (!Number.isFinite(soilDepthMeters) || soilDepthMeters < 0) {
+    throw new RangeError("Fine-band soil depth must be finite and non-negative");
+  }
+  if (!Number.isFinite(convergenceCurvature)) {
+    throw new RangeError("Fine-band curvature must be finite");
+  }
+  const thinSoil = 1 - smoothstep(
+    TERRAIN_FINE_BAND_SOIL_THIN_METERS,
+    TERRAIN_FINE_BAND_SOIL_DEEP_METERS,
+    soilDepthMeters,
+  );
+  const convex = smoothstep(
+    TERRAIN_FINE_BAND_CONCAVE_CURVATURE,
+    TERRAIN_FINE_BAND_CONVEX_CURVATURE,
+    convergenceCurvature,
+  );
+  return thinSoil * convex;
 }
 
 export interface TerrainMacroLakeFieldLayout {

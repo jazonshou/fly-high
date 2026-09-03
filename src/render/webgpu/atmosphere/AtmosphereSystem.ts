@@ -24,6 +24,7 @@ import {
   horizontalIlluminanceLux,
   REFERENCE_ILLUMINANCE_LUX,
   SCENE_UNIT_TO_NITS,
+  twilightExposureDipFactor,
 } from "@/src/render/webgpu/nature/EnvironmentDirector";
 import {
   equatorialToWorld,
@@ -42,7 +43,13 @@ import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
   AERIAL_PERSPECTIVE_WGSL,
+  aerialNightness,
   applyAerialPerspectiveToShaderMaterial,
+  twilightAmbientFloorFactor,
+  twilightArchRadiance,
+  twilightArchStrength,
+  MOON_TWILIGHT_RECESSION,
+  TWILIGHT_ARCH_KEY_FACTOR,
   type AerialPerspectiveBinding,
 } from "./AerialPerspective";
 
@@ -74,7 +81,14 @@ const PEAK_SUN_INTENSITY = 5.2;
  * viewer perceives is driven by real photometry even though the buffer is
  * not.
  */
-export const MOON_PEAK_LIGHT_INTENSITY = 0.055;
+export const MOON_PEAK_LIGHT_INTENSITY = 0.18;
+// ART DIRECTION 2026-09-01: raised from 0.055 (3.3x) on Jason's direction —
+// *"there should be a stronger lighting effect from the moon ... the moon can
+// be stronger than expected"*. The docblock above already says the ABSOLUTE
+// level is chosen rather than physical, so this moves a number that was always
+// art-directed; everything RELATIVE (phase, opposition surge, altitude,
+// distance) still comes from real photometry. See SCOTOPIC_CHROMA_RETENTION
+// for the rest of the night art direction and the reason it is deliberate.
 
 /**
  * Scene-linear radiance of the moon's disc at full. The disc is far brighter
@@ -97,6 +111,48 @@ export const MOON_DISC_RADIANCE = 2.1;
  * night value with a reason, which is what the realignment asked for.
  */
 export const NIGHT_AMBIENT_FLOOR_SCALE = 0.2;
+
+/**
+ * The physical horizontal-illuminance law shared by CPU light ownership and
+ * additive shader radiance. Deliberately excludes the HemisphericLight's
+ * fp16 floor: that floor keeps reflected ground bounce representable, while
+ * applying it to an already-calibrated radiance term makes the term emit at
+ * night. Exactly 1 at the unoccluded reference daylight key.
+ */
+export function skylightIlluminanceNormalized(
+  state: EnvironmentState,
+  moonLux: number,
+): number {
+  const overcast = 1 - state.weather.cloudCoverage * 0.42;
+  return Math.min(
+    1.6,
+    (horizontalIlluminanceLux(state, moonLux) * overcast) / REFERENCE_ILLUMINANCE_LUX,
+  );
+}
+
+/**
+ * §2.6 round S — the DIRECTIONAL sun's geometric horizon gate.
+ *
+ * Exactly 1 at and above sine +0.02, exactly 0 at and below −0.02: a
+ * ground-level DirectionalLight from a sun below the horizon is a
+ * geometric impossibility (atmospheric refraction lifts the disc ~0.5°,
+ * ≈0.009 of sine — inside this band). This is a HORIZON FACT, deliberately
+ * NOT the §2.6 twilight art window (`twilightArchStrength` engages at
+ * sunset and releases at −0.26; this gate is closed before the window has
+ * meaningfully opened): routing it through the shared window would couple
+ * a geometric truth to an art schedule.
+ *
+ * Gates the LIGHT and (through the shared `sunIntensity` variable) σ's sun
+ * term — which `max(sunY, 0)` already zeroed below the horizon, so the two
+ * now agree instead of σ being blind to a burning light. The SCATTER path
+ * (`sunIntensityScatter` → the snapshot's `sunIlluminanceNormalized` → the
+ * aerial source, clouds, water glint) stays on the ungated palette ramp:
+ * the atmosphere genuinely sees a below-horizon sun.
+ */
+export function sunDirectionalHorizonGate(sunElevationSine: number): number {
+  const t = Math.min(1, Math.max(0, (sunElevationSine + 0.02) / 0.04));
+  return t * t * (3 - 2 * t);
+}
 
 const SKY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -125,6 +181,11 @@ uniform sunDiscVisibility: f32;
 // sky's own sun direction, so the drawn phase can never disagree with the
 // lighting.
 uniform moonDirection: vec3f;
+// NIGHT_LOOK_ARCHITECTURE 2.1: the TRUE sun, for the moon's phase only.
+// aerialSunDirection becomes the MOON below twilight (the integral's night
+// source), and a phase computed against it would light the moon with itself
+// - permanently full. The terminator must follow the real sun.
+uniform moonPhaseSunDirection: vec3f;
 uniform moonFrame: vec4f;
 uniform moonRadiance: vec3f;
 uniform galacticPole: vec3f;
@@ -209,7 +270,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     // that its direction from the moon equals its direction from us, so the
     // terminator falls out of one dot product — no phase parameter is
     // needed and the phase can never disagree with the sky's own sun.
-    let lit = clamp(dot(surfaceNormal, uniforms.aerialSunDirection), 0.0, 1.0);
+    let lit = clamp(dot(surfaceNormal, uniforms.moonPhaseSunDirection), 0.0, 1.0);
     // Lommel-Seeliger-ish limb behaviour: the moon is famously FLAT, not
     // Lambertian — a full moon is a uniform disc, not a bright centre.
     let limb = lit / max(lit + max(discZ, 0.02), 0.05) * 1.9;
@@ -246,9 +307,33 @@ function registerShaders(): void {
  * texture and Babylon disables colour writes for the whole shadow pass, yet
  * the stock generator still allocates a full colour attachment per cascade —
  * memory that is cleared every frame and never sampled. Overriding the target
- * creation to pass `noColorAttachment` reclaims it (~128 MiB at 4096² × 4 with
- * the R16F default). Keep `filter = FILTER_PCF`: a colour-sampling filter
- * (ESM/blur variants) would need the attachment back.
+ * creation to pass `noColorAttachment` reclaims it. Keep `filter = FILTER_PCF`:
+ * a colour-sampling filter (ESM/blur variants) would need the attachment back.
+ *
+ * **THE COLOUR ATTACHMENT ALSO GATED THE CASCADE LOOP, AND DROPPING IT BROKE
+ * THE CSM.** `RenderTargetTexture.render` renders one layer per cascade only
+ * when `is2DArray` is true (`renderTargetTexture.pure.js:759`), and `is2DArray`
+ * reads the **colour** texture (`thinTexture.js:76`) — which this override sets
+ * to null. Cascade depth lives in the **depth** texture, which is layered, so
+ * the gate asks about the wrong texture entirely.
+ *
+ * From this generator's first landing until 2026-09-01 it therefore rendered
+ * cascade 0 and nothing else. **MEASURED off Babylon's own draw counter:
+ * `cascadesRendered = 1` at every `numCascades` from 1 to 4**, leaving 88–94%
+ * of each tier's shadow range served by array layers no pass ever wrote, and
+ * making a casting mesh cost 2.00 draws where the source reads `1 + cascades`.
+ * `is2DArray` is overridden below so the loop no longer depends on an
+ * attachment that has nothing to do with where shadow depth is stored.
+ * The same colour-texture dependency exists in `ThinTexture.getSize()`: with
+ * no colour attachment it returns its zero-valued cache, and CSM turns that
+ * width into the PCF texel size (`1 / width`). Prime that public cache from
+ * the render-target dimensions so the receiver samples the depth array with
+ * a finite texel size.
+ *
+ * **Do not repair this by restoring the colour attachment.** MEASURED at tier 3:
+ * that route costs **+128 MiB and −12.6% mean fps (−21.3% worst shot)**, because
+ * the cost tracks the number of full-resolution cascade renders rather than the
+ * draw count. Rendering the same cascades depth-only costs neither.
  */
 export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
   protected override _createTargetRenderTexture(): void {
@@ -282,6 +367,21 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
       `DepthStencilForCSMShadowGenerator-${this._light.name}`,
     );
     this._shadowMap.noPrePassRenderer = true;
+
+    // `RenderTargetTexture.getSize()` delegates to its colour texture. A
+    // depth-only target has none, so initialise the returned cache explicitly;
+    // CascadedShadowGenerator.bindShadowLight() reads this width for PCF.
+    const sampledSize = this._shadowMap.getSize();
+    sampledSize.width = size.width;
+    sampledSize.height = size.height;
+
+    // Decouple the per-layer loop from the colour attachment (see above). The
+    // depth texture carries `numCascades` layers and `getRenderLayers()` reads
+    // `_size.layers` directly, so restore this separate cascade-loop signal.
+    Object.defineProperty(this._shadowMap, "is2DArray", {
+      get: () => true,
+      configurable: true,
+    });
   }
 }
 
@@ -386,6 +486,13 @@ export interface AtmosphereSnapshot {
   readonly skyHorizon: Color3;
   readonly ambientColor: Color3;
   /**
+   * Physical horizontal sky/sun/moon illuminance over the reference key,
+   * before the HemisphericLight's documented fp16 floor. Additive shader
+   * radiance must use this law: the floor is a ground-bounce representation
+   * workaround, not permission for self-emissive water at night.
+   */
+  readonly skylightIlluminanceNormalized: number;
+  /**
    * sunIntensity over the clear-noon peak (1C-2): the named replacement for
    * the /5.2 normalisers that lived in three shaders. Multiply sunColor by
    * this; never re-derive the constant.
@@ -468,6 +575,7 @@ export class AtmosphereSystem {
           "worldViewProjection",
           "sunDiscVisibility",
           "moonDirection",
+          "moonPhaseSunDirection",
           "moonFrame",
           "moonRadiance",
           "galacticPole",
@@ -486,6 +594,7 @@ export class AtmosphereSystem {
     this.skyMaterial.setFloat("sunDiscVisibility", 1);
     // 7-1/7-3 defaults: no moon, no night sky, until the first clock lands.
     this.skyMaterial.setVector3("moonDirection", new Vector3(0, -1, 0));
+    this.skyMaterial.setVector3("moonPhaseSunDirection", new Vector3(0, 1, 0));
     this.skyMaterial.setVector4("moonFrame", new Vector4(0.00453, 0, 1, 0));
     this.skyMaterial.setVector3("moonRadiance", new Vector3(0, 0, 0));
     this.skyMaterial.setVector3("galacticPole", new Vector3(0, 1, 0));
@@ -537,6 +646,14 @@ export class AtmosphereSystem {
     // sheet, lofted aircraft, closed crown hulls), which is the case this
     // technique is standard for.
     this.shadows.forceBackFacesOnly = true;
+    // **THIS LINE IS THE PCSS DECISION.** Not the note in `QualityProfile.ts`
+    // that explains why PCSS was declined -- that is prose ABOUT this, and two
+    // independent readers have now gone there instead of here: a guard whose
+    // own describe read "PCSS stays declined" asserted on the note and could
+    // not see this assignment change (repaired, `62cc447`), and the 7-9 plan
+    // bullet cited the note by line number, which then drifted onto an
+    // unrelated subject. Anything asserting or citing the shipped filter must
+    // read THIS statement. `render.night-moonlight-shadow-trade.test.ts` does.
     this.shadows.filter = ShadowGenerator.FILTER_PCF;
     this.shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
 
@@ -548,6 +665,9 @@ export class AtmosphereSystem {
       skyZenith: initialPalette.zenith,
       skyHorizon: initialPalette.horizon,
       ambientColor: initialPalette.zenith.scale(0.58),
+      // `applyEnvironment` immediately replaces this bootstrap value with
+      // the exact physical scale returned by `skylightScale` below.
+      skylightIlluminanceNormalized: 1,
       sunIlluminanceNormalized: initialPalette.intensity / PEAK_SUN_INTENSITY,
       sunAngularRadiusRadians: DEFAULT_ENVIRONMENT_STATE.sun.angularRadiusRadians,
       cloudCoverage: 0.18,
@@ -655,7 +775,22 @@ export class AtmosphereSystem {
       state.windLayers[0]?.velocityMetersPerSecond[1] ?? 0,
     ) / 0.56;
     const overcastDimming = 1 - cloudCoverage * 0.42;
-    const sunIntensity = palette.intensity * overcastDimming;
+    // §2.6 round S — the SPLIT is the point: the palette ramp keeps feeding
+    // the SCATTER path ungated (the sky's sunset afterglow, high clouds and
+    // the water's dusk glint are real physics — the atmosphere and clouds DO
+    // see a below-horizon sun), while the DIRECTIONAL light gets a narrow
+    // GEOMETRIC horizon gate: ground-level direct sunlight from a sun 6°
+    // below the horizon is impossible (refraction buys ~0.5°), yet the
+    // palette's linear 1.1@0° → 0.0@−12° ramp was driving the light at ~0.54
+    // there — a warm directional that σ was structurally blind to
+    // (sceneKeyLuminance multiplies the sun term by max(sunY, 0)). That
+    // σ-blind warmth was the cream tree-crown defect through six capture
+    // rounds; gating the light makes σ and the light rig AGREE. The gate is
+    // a horizon FACT, not the §2.6 twilight art window — do not route it
+    // through twilightArchStrength.
+    const sunIntensityScatter = palette.intensity * overcastDimming;
+    const sunIntensity = sunIntensityScatter
+      * sunDirectionalHorizonGate(sunDirection.y);
 
     // 7-1: the moon, from the clock the environment director already
     // resolved the sun from. Without a clock (the constructor's default
@@ -668,15 +803,44 @@ export class AtmosphereSystem {
     // Physical in every RELATIVE term — phase, opposition surge, altitude,
     // perigee distance — and normalised to the full-moon value, so only the
     // absolute level is art-directed (see MOON_PEAK_LIGHT_INTENSITY).
+    //
+    // §2.6 round M — the moon RECEDES through twilight (window consumer #6).
+    // MOON_PEAK is calibrated so moonlit ground reads at NIGHT; carried into
+    // civil twilight unwindowed it made the moon comparable to the entire
+    // sky's ground irradiance, when a real 2.7-lux dusk sky swamps a
+    // ≤0.25-lux moon ~10×. Scaled HERE, at the derivation, so the light and
+    // σ's moon term (which reads this same variable below) recede together
+    // by construction; at and below the release the factor is exactly 1 and
+    // every night quantity — including the moon anchor's arithmetic — is
+    // byte-for-byte the shipped one.
+    //
+    // ~~That warm directional was the cream tree-crown defect~~ — WITHDRAWN
+    // by round M's own capture (crowns moved 2.3% when the moon receded
+    // 90%; both pre-registered stops fired). The crown-warmer was the
+    // ungated below-horizon SUN directional (see round S above); this
+    // recession stands as a correctness fix on its own terms — the moon
+    // really is ~10× over its physical share at civil twilight — not as
+    // the crown remedy it was first sold as.
     const moonIntensity = (moonLux / FULL_MOON_ILLUMINANCE_LUX)
-      * MOON_PEAK_LIGHT_INTENSITY * overcastDimming;
+      * MOON_PEAK_LIGHT_INTENSITY * overcastDimming
+      * (1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(state.sun.direction[1]));
     this.moon.direction.copyFrom(moonDirection).scaleInPlace(-1);
     this.moon.intensity = moonIntensity;
 
     // 1C-2: the ONE exposure curve. The relative-EV100 formula preserves the
     // day+clear look exactly; every private shader exposure is deleted. 7-2
     // reopened its ceiling — a derived constant now, not a magic 2.6.
-    this.scene.imageProcessingConfiguration.exposure = exposureForState(state, moonLux);
+    //
+    // NIGHT_LOOK_ARCHITECTURE §2.1, Option B (Jason, 2026-09-01): the
+    // twilight dip is keyed to SUN ELEVATION — golden hour bright and warm,
+    // blue hour properly dark — with both endpoints pinned by the window's
+    // shape (golden hour above it, the approved night-moonlit frame 0.11 of
+    // sine below its release). Applied HERE, on the CPU, at the one exposure
+    // site — assertion 29 still holds and exposureForState's own pins are
+    // untouched (the dip is the consumer's, not the curve's).
+    this.scene.imageProcessingConfiguration.exposure =
+      exposureForState(state, moonLux)
+      * twilightExposureDipFactor(state.sun.direction[1]);
     // 1C-6: IBL now carries the skylight. The hemispheric light survives
     // only as a small ground-bounce approximation, so skylight is not
     // double-counted; the snapshot's ambientColor keeps the old scale — it
@@ -688,8 +852,17 @@ export class AtmosphereSystem {
     // it is on a blue one, which is precisely "night is dim daylight". It
     // follows the sky's own light now, and is EXACTLY 0.05 at the reference
     // day+clear key so daylight is unchanged.
+    // §2.6(b): the floor is a NIGHT constant (fp16 range, rod input) that
+    // twilight inherited by accident of max() — it is 10× the physical
+    // skylight scale at sunset, so ambient flat-lined from late afternoon
+    // to midnight while the dome fell three orders of magnitude. The arch
+    // window cuts it through the blue hour only; outside the window the
+    // factor is exactly 1 and this line is the shipped expression.
     const ambientIntensity =
-      0.05 * Math.max(this.skylightScale(state, moonLux), NIGHT_AMBIENT_FLOOR_SCALE);
+      0.05 * Math.max(
+        this.skylightScale(state, moonLux),
+        NIGHT_AMBIENT_FLOOR_SCALE * twilightAmbientFloorFactor(state.sun.direction[1]),
+      );
     const snapshotAmbientScale = 0.48 + humidity * 0.22;
     const skyZenith = Color3.Lerp(
       palette.zenith,
@@ -721,6 +894,15 @@ export class AtmosphereSystem {
     // 7-1/7-3: the sky's night inputs.
     const nightStrength = Math.min(1, Math.max(0, (-sunDirection.y - 0.03) / 0.25));
     this.skyMaterial.setVector3("moonDirection", moonDirection);
+    this.skyMaterial.setVector3("moonPhaseSunDirection", sunDirection);
+    // 2.1: as the aerial source hands over to the moon, the SUN-disc branch
+    // must not paint a 40x disc at the moon's position - the moon draws its
+    // own disc. The probe capture's zeroing still composes (it multiplies
+    // through the same uniform in onBeforeBind).
+    this.skyMaterial.setFloat(
+      "sunDiscVisibility",
+      1 - aerialNightness(sunDirection.y),
+    );
     this.skyMaterial.setVector4("moonFrame", new Vector4(
       moon?.angularRadiusRadians ?? 0.00453,
       moon?.illuminatedFraction ?? 0,
@@ -745,9 +927,21 @@ export class AtmosphereSystem {
     // will read pixels in. Lambertian ground under the frame's actual lights
     // — this is what σ has to be, because the buffer is not photometrically
     // scaled at night (see ScotopicState.adaptedLuminanceCdM2).
+    //
+    // §2.6: the twilight arch is part of the frame's actual light — the IBL
+    // probe integrates it onto every material — so σ must count it or the
+    // rod response re-exposes the frame around a key that is smaller than
+    // the scene (round 1 measured that: terrain up 2.1×, sky up 5.9×).
+    // TWILIGHT_ARCH_KEY_FACTOR is the closed-form Lambertian irradiance of
+    // the arch's gradient (E/π); the term is exactly zero outside the
+    // window, so day and night σ are bit-identical by construction.
+    const archRadiance = twilightArchRadiance(state.sun.direction[1]);
+    const archKeyIntensity = TWILIGHT_ARCH_KEY_FACTOR
+      * (0.2126 * archRadiance[0] + 0.7152 * archRadiance[1] + 0.0722 * archRadiance[2]);
     const sceneKeyLuminance = ((sunIntensity * Math.max(sunDirection.y, 0)
       + moonIntensity * Math.max(moonDirection.y, 0)
-      + ambientIntensity)
+      + ambientIntensity
+      + archKeyIntensity)
       * state.atmosphere.groundAlbedo[1]) / Math.PI;
 
     const adaptationTarget = adaptedLuminanceCdM2(state, moonLux);
@@ -758,11 +952,16 @@ export class AtmosphereSystem {
     this.snapshotValue = {
       sunDirection: sunDirection.clone(),
       sunColor: palette.sunColor.clone(),
-      sunIntensity,
+      // Round S: the snapshot carries the SCATTER intensity, ungated — its
+      // consumers (the aerial source via sunIlluminanceNormalized, clouds,
+      // the water glint) model the atmosphere, which sees a below-horizon
+      // sun. Only the DirectionalLight and σ carry the horizon gate.
+      sunIntensity: sunIntensityScatter,
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
       ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
-      sunIlluminanceNormalized: sunIntensity / PEAK_SUN_INTENSITY,
+      skylightIlluminanceNormalized: this.skylightScale(state, moonLux),
+      sunIlluminanceNormalized: sunIntensityScatter / PEAK_SUN_INTENSITY,
       sunAngularRadiusRadians: state.sun.angularRadiusRadians,
       cloudCoverage,
       humidity,
@@ -802,11 +1001,7 @@ export class AtmosphereSystem {
    * is the point.
    */
   private skylightScale(state: EnvironmentState, moonLux: number): number {
-    const overcast = 1 - state.weather.cloudCoverage * 0.42;
-    return Math.min(
-      1.6,
-      (horizontalIlluminanceLux(state, moonLux) * overcast) / REFERENCE_ILLUMINANCE_LUX,
-    );
+    return skylightIlluminanceNormalized(state, moonLux);
   }
 
   update(cameraLocalPosition: Vector3): void {

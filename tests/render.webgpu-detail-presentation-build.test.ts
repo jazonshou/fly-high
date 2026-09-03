@@ -288,6 +288,108 @@ describe("pure detail presentation build", () => {
     expect(() => structuredClone(buildCatalog(true))).not.toThrow();
   });
 
+  /**
+   * `6-9` — the ground-cover handoff, measured rather than asserted.
+   *
+   * Wave G retired the GRASS cards globally when the GPU field is live,
+   * because nothing else draws grass once it exists. `6-9` generalises the
+   * field to fern, heather and reed — but only out to its own outermost ring,
+   * so those three retire by RADIUS and the cards still own everything beyond
+   * it. The two representations must partition the ground: no archetype may
+   * be drawn twice, and none may vanish.
+   */
+  it("partitions ground cover between the GPU field and the cards (6-9)", () => {
+    const law = RENDERED_DENSITY_LAWS[1]!;
+    const cell = fixtureCell(0, 0);
+    const observerX = cell.minX + 32;
+    const observerZ = cell.minZ + 32;
+    const catalog = buildCatalog(false);
+    const base: DetailPresentationBuildInput = {
+      residents: [{
+        cell,
+        treeCanopyRank: Float32Array.from([0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7]),
+        lod: "near",
+        distance: detailCellMinimumDistanceMeters(
+          observerX, observerZ, cell.cellX, cell.cellZ, cell.cellSizeMeters,
+        ),
+      }],
+      floatingOrigin: { x: 0, y: 0, z: 0 },
+      densityLaw: law,
+      treeVariantCap: 3,
+      treePrototypeMode: "species",
+      grassRadiusMeters: 64,
+      observerX,
+      observerZ,
+    };
+
+    // The CPU-only host — CI's hosted runner, and any adapter without compute
+    // shaders. Every archetype is a card, exactly as before wave G.
+    const cpuOnly = runBuild(base, catalog, Number.MAX_SAFE_INTEGER);
+    // Wave G's shipped state: grass retires, the structured archetypes stay.
+    const bladesOnly = runBuild(
+      { ...base, groundCoverBladesActive: true },
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+    // `6-9`: the field also carries fern/heather/reed inside its radius.
+    const handoff = runBuild(
+      { ...base, groundCoverBladesActive: true, groundCoverFieldRadiusMeters: 24 },
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    // Counts FALL at every step — §5.3's rule, and the ratchet's own
+    // direction. Cheaper scatter buys no plants.
+    expect(bladesOnly.statistics.groundCoverInstances)
+      .toBeLessThan(cpuOnly.statistics.groundCoverInstances);
+    expect(handoff.statistics.groundCoverInstances)
+      .toBeLessThan(bladesOnly.statistics.groundCoverInstances);
+    expect(handoff.statistics.groundCoverInstances).toBeGreaterThan(0);
+
+    // Non-vacuous in the other direction: the cards outside the radius really
+    // do survive, so the handoff is a partition and not a deletion. A radius
+    // covering the whole grass disc removes them all.
+    const everything = runBuild(
+      { ...base, groundCoverBladesActive: true, groundCoverFieldRadiusMeters: 1_000 },
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(everything.statistics.groundCoverInstances).toBe(0);
+
+    // And the field cannot silently take over the CPU-only path: with blades
+    // inactive the radius is inert, which is what keeps the inline path — the
+    // only path CI's runner ever takes — first-class.
+    const inertRadius = runBuild(
+      { ...base, groundCoverFieldRadiusMeters: 1_000 },
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(inertRadius.statistics).toEqual(cpuOnly.statistics);
+
+    // Every other population is untouched: this item moves ground cover and
+    // nothing else, so a tree or rock count moving here is a bug.
+    for (const other of [bladesOnly, handoff, everything] as const) {
+      expect(other.statistics.treeInstances).toBe(cpuOnly.statistics.treeInstances);
+      expect(other.statistics.shrubInstances).toBe(cpuOnly.statistics.shrubInstances);
+      expect(other.statistics.rockInstances).toBe(cpuOnly.statistics.rockInstances);
+      expect(other.statistics.clutterInstances).toBe(cpuOnly.statistics.clutterInstances);
+    }
+
+    // The measured handoff, recorded so the numbers are in the tree rather
+    // than only in a report.
+    expect({
+      cpuOnly: cpuOnly.statistics.groundCoverInstances,
+      waveG: bladesOnly.statistics.groundCoverInstances,
+      handoff: handoff.statistics.groundCoverInstances,
+    }).toMatchInlineSnapshot(`
+      {
+        "cpuOnly": 584,
+        "handoff": 149,
+        "waveG": 445,
+      }
+    `);
+  });
+
   it("matches inline bytes across modes, origins, boundaries, and slice widths", () => {
     const fixtures = [
       {

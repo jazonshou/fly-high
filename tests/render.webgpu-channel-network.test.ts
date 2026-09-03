@@ -204,6 +204,10 @@ describe("terrain channel network (5-9)", () => {
     expect(outletNode.termination).toBe("lake");
     expect(graph.nodes).toHaveLength(2);
     expect(graph.lakePolygons[0]!.verticesXZ.length).toBeGreaterThanOrEqual(8);
+    // W-5: the exact spill elevation is load-bearing — the planar-reflection
+    // matcher pairs plane heights within 0.05 m, so the surface must be a
+    // copy, never an average.
+    expect(geometry.lakes[0]!.surfaceHeight).toBe(90);
     expect(geometry.lakes[0]!.boundary.every((point) => point.y === 90)).toBe(true);
     expect(geometry.lakes[0]!.areaSquareMeters).toBe(40_000);
 
@@ -217,7 +221,7 @@ describe("terrain channel network (5-9)", () => {
     );
   });
 
-  it("does not render a one-macro-cell square or a convex cover over a concave mask", () => {
+  it("does not render a one-macro-cell square", () => {
     const layout = { width: 5, height: 5, texelSizeMeters: 100, originX: 50, originZ: 50 };
     const count = layout.width * layout.height;
     const outlet = at(2, 2, layout.width);
@@ -244,14 +248,70 @@ describe("terrain channel network (5-9)", () => {
     expect(graph.lakePolygons).toEqual([]);
     expect(channelGraphToHydrologyGeometry(graph).lakes).toEqual([]);
 
+    // W-5: the wet-texel and declared-area floors survive; the hull-overfill
+    // ratio is retired with the convex cover (a marching-squares shoreline
+    // cannot overfill its mask), so concave wet support now passes.
     const twoByTwoHull = Float32Array.of(0, 0, 200, 0, 200, 200, 0, 200);
     expect(macroLakeHasRenderableWetSupport(4, 100, 40_000, twoByTwoHull)).toBe(true);
-    // Three wet cells in an L have 30,000 m² of support, while this convex
-    // square covers 40,000 m² and would visibly flood the missing corner.
-    expect(macroLakeHasRenderableWetSupport(3, 100, 40_000, twoByTwoHull)).toBe(false);
+    expect(macroLakeHasRenderableWetSupport(3, 100, 40_000, twoByTwoHull)).toBe(true);
     expect(macroLakeHasRenderableWetSupport(1, 512, 262_144, Float32Array.of(
       0, 0, 512, 0, 512, 512, 0, 512,
     ))).toBe(false);
+    expect(macroLakeHasRenderableWetSupport(2, 100, 5_000, twoByTwoHull)).toBe(false);
+    expect(macroLakeHasRenderableWetSupport(2, 100, 40_000, Float32Array.of(0, 0, 1, 1)))
+      .toBe(false);
+  });
+
+  it("W-5: meshes a concave lake with a marching-squares shoreline the hull gate used to drop", () => {
+    const layout = { width: 6, height: 6, texelSizeMeters: 100, originX: 50, originZ: 50 };
+    const count = layout.width * layout.height;
+    const heights = new Float32Array(count).fill(150);
+    const flow = new Float32Array(count);
+    const mask = new Uint8Array(count);
+    const source = at(1, 1, layout.width);
+    const outlet = at(2, 2, layout.width);
+    heights[source] = 100;
+    heights[outlet] = 80;
+    flow[source] = 100;
+    flow[outlet] = 500;
+    // L-shaped 3-texel component: pre-W-5 the convex cover added the dry
+    // corner texel, tripped the overfill gate, and the lake stayed unmeshed.
+    for (const [x, z] of [[2, 2], [3, 2], [2, 3]]) {
+      mask[at(x!, z!, layout.width)] = 1;
+    }
+    const macro = fixtureMacro(layout, {
+      heightMeters: heights,
+      flowAccumulationAreaM2: flow,
+      lakeMask: mask,
+      channelSeedTexelIndices: Uint32Array.of(source, outlet),
+      lakes: [{
+        lakeId: 4,
+        spillElevationMeters: 91.5,
+        outletTexel: { x: 2, z: 2 },
+        maximumDepthMeters: 6,
+        surfaceAreaM2: 40_000,
+      }],
+    });
+    const receivers = new Int32Array(count).fill(-1);
+    receivers[source] = outlet;
+    const graph = new ChannelNetwork().extract(macro, { layout, receivers });
+    expect(graph.lakes).toHaveLength(1);
+    const ring = graph.lakePolygons[0]!.verticesXZ;
+    // A real shoreline, not a quad hull: enough vertices to be concave and
+    // an area that never exceeds the three-texel wet mask.
+    expect(ring.length / 2).toBeGreaterThanOrEqual(6);
+    let twiceArea = 0;
+    const vertexCount = ring.length / 2;
+    for (let index = 0; index < vertexCount; index += 1) {
+      const next = (index + 1) % vertexCount;
+      twiceArea += ring[index * 2]! * ring[next * 2 + 1]! - ring[next * 2]! * ring[index * 2 + 1]!;
+    }
+    const area = twiceArea * 0.5;
+    expect(area).toBeGreaterThan(0); // counter-clockwise export
+    expect(area).toBeLessThanOrEqual(3 * 100 * 100);
+    const lake = channelGraphToHydrologyGeometry(graph).lakes[0]!;
+    expect(lake.surfaceHeight).toBe(91.5);
+    expect(lake.boundary.every((point) => point.y === 91.5)).toBe(true);
   });
 
   it("derives the same deterministic graph from the canonical export alone", () => {

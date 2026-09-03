@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   CLOUD_RAYMARCH_SHADER,
   CLOUD_SHADER_MODULES,
@@ -466,7 +467,7 @@ describe("WGSL the spec accepts, not just the adapter in front of us", () => {
           continue;
         }
         if (!/\.ts$/.test(entry.name)) continue;
-        readFileSync(path, "utf8").split("\n").forEach((line, index) => {
+        readSource(path).split("\n").forEach((line, index) => {
           // Comments describing the rule are not violations of it.
           if (/^\s*(?:\/\/|\*)/.test(line)) return;
           if (compoundSwizzle.test(line)) {

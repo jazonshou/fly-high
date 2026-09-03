@@ -19,6 +19,7 @@ import type {
   HydrologyRiver,
   HydrologyRiverPoint,
 } from "./HydrologyGeneration";
+import { extractMacroLakeShoreline } from "./lakeShoreline";
 
 /** Production uses the canonical layout; explicit layouts exist for small deterministic fixtures. */
 export interface ChannelNetworkGridLayout {
@@ -28,6 +29,42 @@ export interface ChannelNetworkGridLayout {
   /** World coordinate of sample (0, 0), rather than the outer cell edge. */
   readonly originX: number;
   readonly originZ: number;
+}
+
+/**
+ * `W-1e` observation sink: per-leg wall time in milliseconds. Purely
+ * observational — passing one cannot change a single extracted bit, and
+ * without one `extract` takes no clock readings at all. Owned by
+ * `scripts/channel-extract-benchmark.mts`, which is the committed harness
+ * for the extraction budget.
+ */
+export interface ChannelExtractionProfile {
+  /** Canonical-field validation of the macro export. */
+  validateMacro: number;
+  /** Seed thinning: candidate mask plus the upstream-predecessor count. */
+  seedThinning: number;
+  /** Monotone downstream path tracing from thinned starts. */
+  pathTracing: number;
+  /** Kept-cell ordering, node records and edge records. */
+  graphAssembly: number;
+  /** Per-lake component flood, marching-squares shoreline and simplification. */
+  shoreline: number;
+  /** `validateTerrainChannelGraphExport` over the assembled graph. */
+  graphValidation: number;
+  /** Whole-call wall time. */
+  total: number;
+}
+
+export function createChannelExtractionProfile(): ChannelExtractionProfile {
+  return {
+    validateMacro: 0,
+    seedThinning: 0,
+    pathTracing: 0,
+    graphAssembly: 0,
+    shoreline: 0,
+    graphValidation: 0,
+    total: 0,
+  };
 }
 
 export interface ChannelNetworkExtractionOptions {
@@ -40,6 +77,8 @@ export interface ChannelNetworkExtractionOptions {
   readonly receivers?: ArrayLike<number>;
   /** Test/tuning seam. Production consumes the canonical exported seed mask. */
   readonly minimumFlowAccumulationAreaM2?: number;
+  /** Optional `W-1e` timing sink; see ChannelExtractionProfile. */
+  readonly profile?: ChannelExtractionProfile;
 }
 
 export interface SerializedChannelGraph {
@@ -53,14 +92,11 @@ export interface ChannelHydrologyGeometry {
   readonly lakes: readonly HydrologyLake[];
 }
 
-interface Corner {
-  readonly x: number;
-  readonly z: number;
-}
-
-/** Immediate safety gate until fine-page shore contours own lake geometry. */
+/**
+ * A rendered lake needs at least this many wet macro texels behind it: a
+ * single 512 m square is exactly the reported wave-R failure shape.
+ */
 export const MINIMUM_MACRO_LAKE_WET_TEXELS = 2;
-export const MAXIMUM_MACRO_LAKE_HULL_OVERFILL_RATIO = 1.02;
 
 const DEFAULT_LAYOUT: ChannelNetworkGridLayout = Object.freeze({
   width: EVOLUTION_DOMAIN_TEXELS,
@@ -235,81 +271,6 @@ function localBankHeight(
   return bank;
 }
 
-function cross(origin: Corner, first: Corner, second: Corner): number {
-  return (first.x - origin.x) * (second.z - origin.z)
-    - (first.z - origin.z) * (second.x - origin.x);
-}
-
-/** Conservative, deterministic outer cover of a connected macro-lake component. */
-function convexLakeCover(
-  component: readonly number[],
-  outletIndex: number,
-  macro: TerrainMacroEvolutionExport,
-  layout: ChannelNetworkGridLayout,
-): Float32Array {
-  const members = component.length > 0 ? new Set(component) : new Set([outletIndex]);
-  const half = layout.texelSizeMeters * 0.5;
-  const corners: Corner[] = [];
-  for (const index of members) {
-    const x = index % layout.width;
-    const z = Math.floor(index / layout.width);
-    let boundary = false;
-    for (const offset of [
-      { x: -1, z: 0 },
-      { x: 1, z: 0 },
-      { x: 0, z: -1 },
-      { x: 0, z: 1 },
-    ]) {
-      const nx = x + offset.x;
-      const nz = z + offset.z;
-      if (nx < 0 || nz < 0 || nx >= layout.width || nz >= layout.height) {
-        boundary = true;
-        break;
-      }
-      if (!members.has(nz * layout.width + nx)) {
-        boundary = true;
-        break;
-      }
-    }
-    if (!boundary && macro.lakeMask[index] === 1) continue;
-    const worldX = layout.originX + x * layout.texelSizeMeters;
-    const worldZ = layout.originZ + z * layout.texelSizeMeters;
-    corners.push(
-      { x: worldX - half, z: worldZ - half },
-      { x: worldX + half, z: worldZ - half },
-      { x: worldX + half, z: worldZ + half },
-      { x: worldX - half, z: worldZ + half },
-    );
-  }
-  corners.sort((first, second) => first.x - second.x || first.z - second.z);
-  const unique: Corner[] = [];
-  for (const corner of corners) {
-    const previous = unique[unique.length - 1];
-    if (!previous || previous.x !== corner.x || previous.z !== corner.z) unique.push(corner);
-  }
-  if (unique.length < 3) throw new Error("A macro lake cover requires at least three corners");
-  const lower: Corner[] = [];
-  for (const point of unique) {
-    while (lower.length >= 2 && cross(lower.at(-2)!, lower.at(-1)!, point) <= 0) lower.pop();
-    lower.push(point);
-  }
-  const upper: Corner[] = [];
-  for (let index = unique.length - 1; index >= 0; index -= 1) {
-    const point = unique[index]!;
-    while (upper.length >= 2 && cross(upper.at(-2)!, upper.at(-1)!, point) <= 0) upper.pop();
-    upper.push(point);
-  }
-  lower.pop();
-  upper.pop();
-  const hull = lower.concat(upper);
-  const vertices = new Float32Array(hull.length * 2);
-  for (let index = 0; index < hull.length; index += 1) {
-    vertices[index * 2] = hull[index]!.x;
-    vertices[index * 2 + 1] = hull[index]!.z;
-  }
-  return vertices;
-}
-
 /** Shoelace area of an interleaved X/Z polygon. */
 export function lakePolygonAreaSquareMeters(verticesXZ: ArrayLike<number>): number {
   const vertexCount = Math.floor(verticesXZ.length / 2);
@@ -325,9 +286,14 @@ export function lakePolygonAreaSquareMeters(verticesXZ: ArrayLike<number>): numb
 
 /**
  * Whether a coarse macro mask safely supports a rendered polygon. A single
- * wet texel is exactly the reported 512 m square failure. Convex covers of
- * concave/diagonal masks are also rejected when they add meaningful dry area;
- * those lakes remain wet terrain until a fine shoreline is available.
+ * wet texel is exactly the reported 512 m square failure, and the declared
+ * surface area must cover at least one texel.
+ *
+ * W-5: the hull-overfill ratio check this gate used to carry existed to
+ * reject CONVEX covers of concave/diagonal masks. The marching-squares
+ * shoreline cannot overfill — its 0.5 iso-contour of bilinear coverage lies
+ * at or inside the wet texel outline by construction — so that check is
+ * retired with the convex cover and concave lakes mesh again.
  */
 export function macroLakeHasRenderableWetSupport(
   wetTexelCount: number,
@@ -340,12 +306,8 @@ export function macroLakeHasRenderableWetSupport(
   }
   if (!Number.isFinite(texelSizeMeters) || texelSizeMeters <= 0) return false;
   if (!Number.isFinite(declaredSurfaceAreaM2) || declaredSurfaceAreaM2 <= 0) return false;
-  const texelArea = texelSizeMeters * texelSizeMeters;
-  if (declaredSurfaceAreaM2 < texelArea) return false;
-  const wetMaskArea = wetTexelCount * texelArea;
-  const polygonArea = lakePolygonAreaSquareMeters(verticesXZ);
-  return polygonArea > 0
-    && polygonArea <= wetMaskArea * MAXIMUM_MACRO_LAKE_HULL_OVERFILL_RATIO;
+  if (declaredSurfaceAreaM2 < texelSizeMeters * texelSizeMeters) return false;
+  return lakePolygonAreaSquareMeters(verticesXZ) > 0;
 }
 
 function collectLakeComponent(
@@ -389,8 +351,18 @@ export class ChannelNetwork {
     macro: TerrainMacroEvolutionExport,
     options: ChannelNetworkExtractionOptions = {},
   ): TerrainChannelGraphExport {
+    const profile = options.profile;
+    const startedAt = profile ? performance.now() : 0;
+    let legStartedAt = startedAt;
+    const leg = (key: keyof ChannelExtractionProfile): void => {
+      if (!profile) return;
+      const at = performance.now();
+      profile[key] += at - legStartedAt;
+      legStartedAt = at;
+    };
     const layout = requireLayout(options.layout ?? DEFAULT_LAYOUT);
     validateMacro(macro, layout, options.receivers);
+    leg("validateMacro");
     const count = layout.width * layout.height;
     const forcedTerminations = new Uint8Array(count);
     for (const base of macro.drainageBaseLevels) {
@@ -490,6 +462,8 @@ export class ChannelNetwork {
       }
     }
 
+    leg("seedThinning");
+
     const successor = new Int32Array(count);
     successor.fill(-1);
     const status = new Uint8Array(count);
@@ -551,6 +525,8 @@ export class ChannelNetwork {
       }
     }
 
+    leg("pathTracing");
+
     const kept: number[] = [];
     for (let index = 0; index < count; index += 1) {
       if (status[index] === STATUS_VALID) kept.push(index);
@@ -609,6 +585,8 @@ export class ChannelNetwork {
       }));
     }
 
+    leg("graphAssembly");
+
     const lakePolygons: TerrainLakePolygonExport[] = [];
     const lakes: TerrainLakeExport[] = [];
     const claimedLakeTexels = new Uint8Array(count);
@@ -623,8 +601,18 @@ export class ChannelNetwork {
         layout,
         claimedLakeTexels,
       );
-      const verticesXZ = convexLakeCover(component, outletIndex, macro, layout);
-      if (!macroLakeHasRenderableWetSupport(
+      if (component.length < MINIMUM_MACRO_LAKE_WET_TEXELS) continue;
+      // W-5: the shoreline is the 0.5 contour of the canonical coverage
+      // field on a fine per-lake grid (marching squares → Douglas-Peucker),
+      // replacing the convex 512 m texel-corner cover.
+      const verticesXZ = extractMacroLakeShoreline({
+        component,
+        outletIndex,
+        spillElevationMeters: lake.spillElevationMeters,
+        lakeId: lake.lakeId,
+        layout,
+      });
+      if (!verticesXZ || !macroLakeHasRenderableWetSupport(
         component.length,
         layout.texelSizeMeters,
         lake.surfaceAreaM2,
@@ -646,6 +634,8 @@ export class ChannelNetwork {
       }));
     }
 
+    leg("shoreline");
+
     const graph: TerrainChannelGraphExport = Object.freeze({
       contractVersion: TERRAIN_EVOLUTION_CONTRACT_VERSION,
       provenance: macro.provenance,
@@ -659,6 +649,8 @@ export class ChannelNetwork {
       const first = issues[0]!;
       throw new Error(`Channel graph failed validation at ${first.path}: ${first.message}`);
     }
+    leg("graphValidation");
+    if (profile) profile.total += performance.now() - startedAt;
     return graph;
   }
 

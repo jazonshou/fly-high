@@ -20,20 +20,42 @@ import type {
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   exposureForState,
+  horizontalIlluminanceLux,
   resolveEnvironmentState,
   SCENE_UNIT_TO_NITS,
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
+import { LightPointSystem } from "./webgpu/lighting/LightPoints";
+import {
+  AirfieldLightingSystem,
+  airfieldLampDaylightAttenuation,
+} from "./webgpu/lighting/AirfieldLighting";
+import {
+  AIRCRAFT_CAST_POOLS,
+  aircraftWashLights,
+  castPoolWorldPosition,
+  observerAzimuthDegrees,
+  resolveAircraftLights,
+} from "./webgpu/lighting/AircraftLighting";
+import {
+  towerObstructionFixtures,
+  hangarObstructionFixtures,
+  hangarFaceFloodlights,
+  HANGAR_FLOOD_INTENSITY,
+} from "./webgpu/lighting/ObstructionLighting";
+import { BloomPass } from "./webgpu/lighting/BloomPass";
 import {
   rodFractionForAdaptedLuminance,
   shouldRunScotopicPass,
   ScotopicVisionPass,
 } from "./webgpu/atmosphere/ScotopicVision";
+import { ClusteredLightingSystem } from "./webgpu/lighting/ClusteredLighting";
 import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
 import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import { FULL_MOON_ILLUMINANCE_LUX } from "./webgpu/atmosphere/Ephemeris";
 import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
@@ -50,6 +72,7 @@ import {
   GpuUncapturedErrorGuard,
 } from "./webgpu/core/GpuUncapturedErrorGuard";
 import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
+import { inventoriedGpuBufferBytes } from "./webgpu/core/GpuBufferInventory";
 import {
   FrameGraphBudgetProbe,
   PassTimingHistory,
@@ -67,7 +90,10 @@ import {
   type GovernorState,
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
-import { estimateGpuMemoryMiB } from "./webgpu/core/PerformanceBudget";
+import {
+  estimateGpuMemoryMiB,
+  estimateInventoriableGpuMemoryMiB,
+} from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
   frameTimingPercentile,
@@ -79,12 +105,17 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
 import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
+import {
+  TerrainMacroErosionGpu,
+  TerrainMacroInputsGpu,
+} from "./webgpu/terrain/TerrainMacroErosionGpu";
 import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
 import {
   TerrainConsumerAuthority,
@@ -102,7 +133,10 @@ import {
 type MutableDetailSunShadowSnapshot = {
   -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
 };
-import { BathymetryClipmap } from "./webgpu/water/BathymetryClipmap";
+import {
+  BathymetryClipmap,
+  bathymetryErodedPageOverlaySeamFromAtlas,
+} from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
@@ -146,6 +180,68 @@ function rendererAbortError(): Error {
 
 function throwIfRendererStartupAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw rendererAbortError();
+}
+
+/**
+ * `6-11.3` — the startup-stage split, recorded only when someone asks for it.
+ *
+ * Consecutive checkpoints name the complete startup critical path, including
+ * synchronous constructors and direct async waits that are not routed through
+ * `awaitRendererStartup`. This is opt-in and inert otherwise: no allocation,
+ * no clock read, and no behaviour change on the shipping path unless a harness
+ * calls `beginRendererStartupTrace()` first.
+ */
+export interface RendererStartupStage {
+  readonly label: string;
+  readonly kind: "sync" | "async";
+  readonly milliseconds: number;
+}
+
+interface ActiveRendererStartupTrace {
+  readonly stages: RendererStartupStage[];
+  lastCheckpointAt: number;
+}
+
+let rendererStartupTrace: ActiveRendererStartupTrace | null = null;
+
+/** Start recording startup-stage durations, discarding any previous trace. */
+export function beginRendererStartupTrace(): void {
+  rendererStartupTrace = {
+    stages: [],
+    lastCheckpointAt: performance.now(),
+  };
+}
+
+/** The stages recorded since `beginRendererStartupTrace`, in completion order. */
+export function readRendererStartupTrace(): readonly RendererStartupStage[] {
+  return rendererStartupTrace?.stages ?? [];
+}
+
+/** Stop recording and release the trace. */
+export function endRendererStartupTrace(): void {
+  rendererStartupTrace = null;
+}
+
+/**
+ * Close one disjoint interval of the startup critical path.
+ *
+ * Checkpoints, rather than timers wrapped around selected Promises, are
+ * intentional. Calling an async factory can do substantial synchronous work
+ * before it returns its Promise, and background work can overlap later main-
+ * thread construction. Consecutive checkpoints charge every wall-clock
+ * millisecond exactly once and therefore expose both kinds of gap without
+ * double-counting an overlapped producer.
+ */
+function checkpointRendererStartup(label: string, kind: RendererStartupStage["kind"]): void {
+  const trace = rendererStartupTrace;
+  if (trace === null) return;
+  const now = performance.now();
+  trace.stages.push({
+    label,
+    kind,
+    milliseconds: now - trace.lastCheckpointAt,
+  });
+  trace.lastCheckpointAt = now;
 }
 
 function awaitRendererStartup<T>(
@@ -240,6 +336,41 @@ export function chaseCameraProfile(
 
 export function atmosphereFogNear(weather: WeatherPreset): number {
   return weather === "cloudy" ? 2_200 : weather === "clear" ? 4_500 : 3_800;
+}
+
+/** Sample counts for the three post-processes that can head the camera chain. */
+export interface FirstPassSamples {
+  readonly scotopic: number;
+  readonly bloom: number;
+  readonly toneMap: number;
+}
+
+/**
+ * Decide which post-process owns the multisampled beauty target.
+ *
+ * `1B-11`'s rule is that the FIRST post-process owns the offscreen scene target
+ * and therefore its sample count. The part that is easy to get wrong is that
+ * ownership is DYNAMIC: `ScotopicVision` detaches in photopic daylight, so the
+ * head of the chain changes with the time of day, and `7-5` put a third
+ * candidate behind it. Chain order is fixed -- rod vision, bloom, tone map --
+ * so the owner is simply the first one attached.
+ *
+ * Pure, and separate from `applyFirstPassOwnership`, because the interesting
+ * content here is a three-way policy over eight states and none of it needs a
+ * GPU. The test that replaced the old source-string pin exercises all eight.
+ */
+export function firstPassSampleAssignment(
+  msaaSamples: number,
+  scotopicAttached: boolean,
+  bloomAttached: boolean,
+): FirstPassSamples {
+  const bloomFirst = !scotopicAttached && bloomAttached;
+  const toneMapFirst = !scotopicAttached && !bloomAttached;
+  return {
+    scotopic: scotopicAttached ? msaaSamples : 1,
+    bloom: bloomFirst ? msaaSamples : 1,
+    toneMap: toneMapFirst ? msaaSamples : 1,
+  };
 }
 
 export class AtmosphereChangeTracker {
@@ -362,8 +493,56 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly fxaa: FxaaPostProcess;
   /** 7-3: the catalogue star field, one additive draw. */
   private readonly stars: StarFieldSystem;
-  /** 7-2: rod vision, the first post-process (and therefore MSAA's owner). */
+  /**
+   * `7-5`: the lights you SEE, one additive instanced draw.
+   *
+   * POPULATED from `AirfieldLightingSystem`. It was constructed EMPTY until
+   * that system existed, and the comment here previously said the fixtures
+   * were `7-7`'s. That was wrong and it is worth recording why, because the
+   * error is what kept the airfield dark: `owners.ts` states plainly that
+   * `AirfieldLightingSystem` "lands with 7-5, which owns the billboard path a
+   * PAPI is drawn through". The scope boundary was taken from the `plannedBy`
+   * rows rather than from the note that states it, so two gates of
+   * night-lighting work shipped correct, green, and invisible.
+   */
+  private readonly lightPoints: LightPointSystem;
+  private readonly clusteredLighting: ClusteredLightingSystem;
+  /**
+   * Names of `7-14`'s hangar-face floods, for the per-frame daylight gate.
+   *
+   * Held as names rather than as definitions because `setIntensity` addresses
+   * by name and returns false for anything the container REFUSED at
+   * construction — so a rejected flood cannot silently accept intensity writes
+   * every frame, and this list stays the caller's record of what it asked for.
+   */
+  private readonly hangarFloodNames: readonly string[];
+  /**
+   * `7-8`: last frame's daylight attenuation, so the aircraft cast pools take
+   * the SAME value the floods and billboards did rather than recomputing it a
+   * third time and drifting.
+   */
+  private lastDaylightAttenuation = 1;
+  /** One-shot latch: a refused cast pool is worth saying once, not per frame. */
+  private castPoolWarned = false;
+  /**
+   * `7-7`'s fixtures, expanded into `7-5`'s light points, plus the PAPI's
+   * analytic indication. Null when the world has no airport.
+   */
+  private readonly airfieldLighting: AirfieldLightingSystem | null;
+  /**
+   * `7-2`: rod vision. First in the chain WHENEVER IT IS ATTACHED -- which is
+   * not always, so it is not unconditionally MSAA's owner. See
+   * `applyFirstPassOwnership`.
+   */
   private readonly scotopic: ScotopicVisionPass;
+  /**
+   * `7-5`: bloom, between rod vision and the tone map.
+   *
+   * Constructed at every tier and gated by ATTACHMENT, not by construction --
+   * the chain's order is fixed when its members are built, so a pass that only
+   * exists at some tiers could never be inserted in the right place later.
+   */
+  private readonly bloom: BloomPass;
   private readonly resizeObserver: ResizeObserver;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
@@ -388,6 +567,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly dynamicShadowCasters = new Map<number, Mesh>();
   private readonly adapterLabel: string;
   private readonly seaLevel: number;
+  /** `7-15`: which lamp geometry the wash lights follow. Both airframes ship. */
+  private readonly aircraftKind: AircraftKind;
   private readonly latitudeDegrees: number;
   /** The chase rig's ground clamp samples the terrain directly. */
   private readonly cameraTerrainSample: TerrainSampleFunction;
@@ -459,7 +640,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaPostProcess,
     stars: StarFieldSystem,
+    lightPoints: LightPointSystem,
+    clusteredLighting: ClusteredLightingSystem,
+    hangarFloodNames: readonly string[],
+    airfieldLighting: AirfieldLightingSystem | null,
     scotopic: ScotopicVisionPass,
+    bloom: BloomPass,
     atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
@@ -488,9 +674,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.toneMap = toneMap;
     this.fxaa = fxaa;
     this.stars = stars;
+    this.lightPoints = lightPoints;
+    this.clusteredLighting = clusteredLighting;
+    this.hangarFloodNames = hangarFloodNames;
+    this.airfieldLighting = airfieldLighting;
     this.scotopic = scotopic;
+    this.bloom = bloom;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
+    this.aircraftKind = options.aircraft;
     this.latitudeDegrees = options.world.latitudeDegrees;
     this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
@@ -550,6 +742,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       "WebGPU capability discovery",
       15_000,
     );
+    checkpointRendererStartup("WebGPU capability discovery", "async");
     if (!capability.supported) throw new Error(capability.reason ?? "WebGPU is unavailable.");
     throwIfRendererStartupAborted(options.signal);
     // Opting out at device creation is load-bearing. Babylon records the next
@@ -590,6 +783,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       30_000,
       (lateEngine) => lateEngine.dispose(),
     );
+    checkpointRendererStartup("WebGPU engine creation", "async");
     // Install the authoritative raw-device channel before constructing any
     // scene resource or compiling any pipeline. Babylon only logs these
     // asynchronous failures; without this guard a rejected whole-frame submit
@@ -642,7 +836,34 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.activeCamera = camera;
 
       const profile = resolveWebGpuQualityProfile(options.quality, options.renderingMode);
-      const terrainEvolution = new TerrainEvolutionRuntime();
+      // W-1a hybrid macro erosion: the engine is already initialized here, so
+      // the eroded path may run its one-shot stream-power/talus GPU leg
+      // between the worker's two CPU stages. Analytic worlds construct no
+      // producer and take the byte-identical single-shot path.
+      const gpuMacroErosion = options.world.worldEvolution === "eroded"
+        ? new TerrainMacroErosionGpu(engine)
+        : null;
+      if (gpuMacroErosion) cleanup.push(() => gpuMacroErosion.dispose());
+      // W-1b: the macro INPUT sampling also runs on this device. The trade is
+      // measured, not assumed — moving sampling here serialises it behind the
+      // synchronous construction below instead of overlapping it in the
+      // worker, so it only wins while that construction is shorter than the
+      // ~1.03 s of worker sampling it would otherwise hide. Instrumented on
+      // the reference host (2026-08-30): the construction below is 13.9 ms,
+      // 74x under the crossover — the "eager start" overlaps essentially
+      // nothing and the worker's ~1,011 ms CPU sampling was serial latency in
+      // all but name. On device that sampling costs ~29 ms and leaves the
+      // worker only its ~344 ms flood/MFD head, turning a ~1,355 ms stage 1
+      // into ~373 ms. Sampling fails open to the worker's CPU pass.
+      const gpuMacroInputs = options.world.worldEvolution === "eroded"
+        ? new TerrainMacroInputsGpu(engine)
+        : null;
+      if (gpuMacroInputs) cleanup.push(() => gpuMacroInputs.dispose());
+      const terrainEvolution = new TerrainEvolutionRuntime(
+        gpuMacroErosion
+          ? { gpuMacroErosion, ...(gpuMacroInputs ? { gpuMacroInputs } : {}) }
+          : {},
+      );
       cleanup.push(() => terrainEvolution.dispose());
       // Start the eager macro pass as early as possible. It runs in its own
       // worker while the main thread constructs the first device resources,
@@ -658,12 +879,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
         options.signal,
         "terrain macro evolution",
         TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("terrain macro evolution wait", "async");
+      // The macro pass ran once; return its ~36 MiB of 1024² erosion scratch
+      // and ~12 MiB of sampling scratch before page atlases allocate (dispose
+      // is idempotent under cleanup).
+      gpuMacroErosion?.dispose();
+      gpuMacroInputs?.dispose();
       terrain.setMacroEvolution(evolutionResult.evolution);
       let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
       let consumerTerrainSample = options.terrainSample;
@@ -680,9 +908,22 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainConsumerAuthority,
         );
       }
-      const bathymetry = new BathymetryClipmap(scene, options.world);
+      // W-6 (C-6): eroded bathymetry overlays resident L0 eroded pages inside
+      // its own update dispatch (ARCHITECTURE 5-10 row — water consumers may
+      // not implement this independently). The seam is read-only, resolved
+      // through callbacks because setQuality can rebuild the height atlas,
+      // and wired only in eroded mode so analytic worlds keep the inert
+      // empty-table sentinel.
+      const bathymetry = new BathymetryClipmap(
+        scene,
+        options.world,
+        evolutionResult.mode === "eroded"
+          ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
+          : null,
+      );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
+      checkpointRendererStartup("terrain authority and bathymetry construction", "sync");
       await awaitRendererStartup(
         bathymetry.initialize(
           options.world.airport?.centerX ?? 0,
@@ -693,12 +934,14 @@ export class FlightRenderer implements FlightRenderingSystem {
         "bathymetry clipmap",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("bathymetry clipmap startup", "async");
       const aircraft = createWebGpuAircraft(scene, options.aircraft);
       cleanup.push(() => aircraft.dispose());
       for (const mesh of aircraft.meshes) {
         if (mesh.metadata?.castsShadow === false) continue;
         atmosphere.shadows.addShadowCaster(mesh, false);
       }
+      checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
       // 3-9: the hangars are the only airport meshes left, and the apron they
       // stood on is gone — they read the ground the earthworks made.
@@ -707,6 +950,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           scene,
           airportDefinition,
           (x, z) => options.terrainSample(x, z).height,
+          options.world.seedHash,
         )
         : null;
       if (airport) cleanup.push(() => airport.dispose());
@@ -714,6 +958,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         airport.setFloatingOrigin(0, 0);
         for (const mesh of airport.shadowCasters) atmosphere.addShadowCaster(mesh, false);
       }
+      checkpointRendererStartup("airport construction", "sync");
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: consumerTerrainSample,
@@ -723,12 +968,23 @@ export class FlightRenderer implements FlightRenderingSystem {
         workerWorld: options.world,
       });
       cleanup.push(() => detail.dispose());
+      checkpointRendererStartup("detail runtime construction", "sync");
       // Wave G: the blade system reads the SAME consumer sampler as detail
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
         terrainSample: consumerTerrainSample,
+        // `6-9` debt 1: the per-frame field is admitted through the SAME
+        // amortised-compute meter as every other GPU compute producer, which
+        // is what `owners.ts` has claimed since `4-0b` and wave G left false.
+        computeBudget: terrain.computeBudgetMeter,
+        // The detail scatter hashes `String(world.seed)`, which is exactly
+        // `sourceSeedHash` — the field and the cards must key the SAME
+        // realisation or the handoff at the field radius swaps species.
+        seedHash: options.world.sourceSeedHash,
+        seaLevelMeters: options.world.seaLevel,
       });
       cleanup.push(() => groundCover.dispose());
+      checkpointRendererStartup("ground-cover construction", "sync");
       if (evolutionResult.mode === "eroded") {
         detail.publishTerrainMacro(
           terrainMacroGridFromEvolution(evolutionResult.evolution),
@@ -739,6 +995,25 @@ export class FlightRenderer implements FlightRenderingSystem {
         terrainSample: consumerTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
+      checkpointRendererStartup("wildlife construction", "sync");
+      // W-1e: the channel graph is awaited HERE — immediately before its only
+      // consumer — rather than inside the evolution runtime's initialize. The
+      // staged producer extracts it in its worker, so everything constructed
+      // since the macro export landed (bathymetry, aircraft, airport, detail,
+      // ground cover, wildlife) overlapped ~250 ms of extraction that used to
+      // block this thread. Renderer-ready semantics are unchanged: hydrology
+      // is still fully built before startup resolves.
+      const channelGraph = evolutionResult.mode === "eroded"
+        ? await awaitRendererStartup(
+          evolutionResult.channelGraph,
+          options.signal,
+          "terrain channel graph",
+          TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
+        )
+        : null;
+      if (evolutionResult.mode === "eroded") {
+        checkpointRendererStartup("terrain channel graph wait", "async");
+      }
       const hydrology = await HydrologySystem.create(
         scene,
         camera,
@@ -756,16 +1031,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           // surfaces. Inland water took its direction from here and its speed
           // from the atmosphere's cloud-layer wind, which can disagree 3x.
           windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
-          ...(evolutionResult.mode === "eroded"
-            ? {
-              graphHydrology: channelGraphToHydrologyGeometry(
-                evolutionResult.channelGraph,
-              ),
-            }
+          ...(channelGraph
+            ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
         },
         options.signal,
       );
+      checkpointRendererStartup("hydrology startup", "async");
       cleanup.push(() => hydrology.dispose());
       hydrology.setFloatingOrigin(0, 0);
       // 2-0a: the atmosphere-owned GPU resources the adopted cloud pipeline
@@ -783,7 +1055,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphereResources,
       );
       cleanup.push(() => clouds.dispose());
+      checkpointRendererStartup("atmosphere and cloud construction", "sync");
       await clouds.whenReadyAsync(options.signal);
+      checkpointRendererStartup("cloud pipeline startup", "async");
       const ocean = await SpectralOceanSystem.create(
         scene,
         camera,
@@ -796,6 +1070,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.signal,
         bathymetry,
       );
+      checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
       cleanup.push(() => cloudShadowReceivers.dispose());
@@ -843,6 +1118,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           initialSnapshot.skyHorizon.b,
         ],
         sunIlluminanceNormalized: initialSnapshot.sunIlluminanceNormalized,
+        moonDirection: [
+          initialSnapshot.moonDirection.x,
+          initialSnapshot.moonDirection.y,
+          initialSnapshot.moonDirection.z,
+        ],
+        moonIlluminanceNormalizedToFull:
+          initialSnapshot.moonIlluminanceLux / FULL_MOON_ILLUMINANCE_LUX,
       }, 0, 0);
       const initialAerialBinding = aerialReceivers.currentBinding;
       if (initialAerialBinding) {
@@ -880,6 +1162,119 @@ export class FlightRenderer implements FlightRenderingSystem {
       const stars = new StarFieldSystem(scene, 1);
       cleanup.push(() => stars.dispose());
 
+      // `7-5`: empty until `7-7` authors the fixtures. See the field docblock.
+      // 7-5 + 7-7 joined. `airportDefinition` is resolved far above (line ~857),
+      // so the fixtures exist by the time the billboard system is built —
+      // which matters, because `LightPointSystem` takes its fixtures in the
+      // constructor and the vertex buffer is built once.
+      // `7-14`'s obstruction lights go THROUGH `AirfieldLightingSystem` rather
+      // than being concatenated into the `LightPointSystem` constructor below.
+      // That is not a style choice: `setColors` demands one colour per fixture
+      // against a `fixtureCount` frozen at construction, and the only colour
+      // source in the tree is `colourList()`. Adding fixtures here and colours
+      // nowhere throws inside the frame graph on the first PAPI transition.
+      //
+      // They need the structures, so they are empty whenever `airport` is null
+      // — it owns the attachment points and folds each structure's placement
+      // into them, so nothing here applies a placement of its own.
+      const obstructionFixtures = airportDefinition && airport
+        ? [
+          ...towerObstructionFixtures(airportDefinition, airport.towerAttachments),
+          ...airport.hangarAttachments.flatMap((mounts) =>
+            hangarObstructionFixtures(airportDefinition, mounts)),
+        ]
+        : [];
+      const airfieldLighting = airportDefinition
+        ? new AirfieldLightingSystem(airportDefinition, obstructionFixtures)
+        : null;
+      const lightPoints = new LightPointSystem(
+        scene,
+        airfieldLighting?.fixtures ?? [],
+        1,
+      );
+      cleanup.push(() => lightPoints.dispose());
+      // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
+      // are the lamps you SEE. Constructed with no definitions on purpose —
+      // `ClusteredLightingSystem` then builds NO container, which costs
+      // nothing, because Babylon gates `vViewDepth` on `CLUSTLIGHT_BATCH > 0`
+      // rather than on whether a material has a clustered light: the moment a
+      // container exists EVERY light-loop material pays one inter-stage slot,
+      // and terrain and detail have exactly one each.
+      //
+      // It exists here so `7-8`'s landing/taxi lights and `7-14`'s obstruction
+      // lights have a surface to add to, and so the tier row reaches it: the
+      // tile and slice geometry must come from the profile, because changing it
+      // after construction reallocates the tile-mask texture, the storage
+      // buffer and the thin-instance matrix buffer.
+      // `7-14`'s hangar-face floods. They go in HERE rather than being added
+      // later because `ClusteredLightingSystem` builds its lights in the
+      // constructor and exposes no `add` — `setPosition` and `setIntensity`
+      // address existing lights by name. `7-8`'s lamps append to this same
+      // array; there is exactly ONE container in the scene and
+      // `render.scene-light-slots` pins that at 1.
+      const hangarFloods = airportDefinition && airport
+        ? airport.hangarAttachments.flatMap((mounts, index) =>
+          hangarFaceFloodlights(airportDefinition, mounts, index))
+        : [];
+      // `7-8`: the aircraft's landing and taxi cast pools APPEND to `7-14`'s
+      // array rather than constructing a second system. The container takes its
+      // definitions at construction and exposes no `add`, and
+      // `render.scene-light-slots.test.ts` pins `ClusteredLighting: 1` — a
+      // second construction fails with a map diff. Positions are placeholders;
+      // `setPosition` moves them onto the airframe every frame.
+      const clusteredLighting = new ClusteredLightingSystem(
+        scene,
+        [
+          ...hangarFloods,
+          ...AIRCRAFT_CAST_POOLS.map((pool) => ({
+            name: pool.name,
+            position: [0, 0, 0] as readonly [number, number, number],
+            color: pool.color,
+            intensity: 0,
+            rangeMeters: pool.rangeMeters,
+          })),
+          // `7-15`: the lamps' own spill onto the airframe. Appended HERE for
+          // the same reason the pools are: the container takes its definitions
+          // at construction and exposes no `add`. Separate table, separate
+          // names, so "the pools light the ground" and "the lamps light the
+          // aircraft" stay independently measurable.
+          ...aircraftWashLights(options.aircraft).map((wash) => ({
+            name: wash.name,
+            position: [0, 0, 0] as readonly [number, number, number],
+            color: wash.color,
+            intensity: 0,
+            rangeMeters: wash.rangeMeters,
+          })),
+        ],
+        profile.clusteredLighting,
+      );
+      // `IsLightSupported` refuses silently and `addLight` only warns, so a
+      // refused flood would be absent with no error. This is the only place
+      // that can tell.
+      if (clusteredLighting.rejected.length > 0) {
+        console.warn(
+          `clustered lighting refused ${clusteredLighting.rejected.length} `
+          + `definition(s): ${clusteredLighting.rejected.join(", ")}`,
+        );
+      }
+      cleanup.push(() => clusteredLighting.dispose());
+      // 7-4b: SHEEN MATERIALS MUST NOT BE REACHED BY THE CONTAINER. Babylon
+      // 9.21.2 emits its clustered sheen call inside
+      // `computeClusteredLighting{X}` -- a separate WGSL function -- while the
+      // `normalW` it passes is local to `main`, so the shader fails to parse
+      // and NO frames are written. ONE clustered light is enough; it is not a
+      // count threshold. Excluded by the PROPERTY rather than by material name,
+      // so a future sheen material cannot walk back into it.
+      //
+      // Placed after every system above has built its materials, because a mesh
+      // takes its material AFTER construction and an earlier sweep would see no
+      // sheen at all.
+      clusteredLighting.excludeSheenReceivers(scene);
+      // Bound here rather than in the fan-out above, which runs before this
+      // system exists. The per-frame fan-out carries it from the next frame on;
+      // this is the one that lands before the first.
+      if (initialAerialBinding) lightPoints.setAerialPerspective(initialAerialBinding);
+
       // 7-2: rod vision, FIRST in the chain — it must see scene-referred
       // linear radiance, because the tone map is where exposure and ACES
       // live and a perceptual model applied after them would be operating on
@@ -887,6 +1282,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       // beauty target, so 1B-11's MSAA moves here with it.
       const scotopic = new ScotopicVisionPass(camera, engine, profile.msaaSamples);
       cleanup.push(() => scotopic.dispose(camera));
+
+      // 7-5: bloom, constructed here so it lands BETWEEN rod vision and the
+      // tone map -- Babylon orders a camera's chain by attachment order, and
+      // attachment happens in the PostProcess constructor. Built at every tier
+      // and detached where it is not funded; see `BloomPass.setEnabled`.
+      const bloom = new BloomPass(camera, engine, 1);
+      cleanup.push(() => bloom.dispose(camera));
+      if (!profile.bloomEnabled) bloom.setEnabled(camera, false, 1);
 
       scene.imageProcessingConfiguration.toneMappingEnabled = true;
       scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
@@ -922,6 +1325,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       // FXAA is the no-MSAA fallback only; running both softens the image.
       if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
 
+      checkpointRendererStartup("presentation systems construction", "sync");
+
       // 1C-4's two load-bearing guards, re-asserted now that the scene and
       // the post-process chain exist: the aerial hook needs linear HDR at
       // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
@@ -946,6 +1351,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "WebGPU scene startup",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("scene shader readiness", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
@@ -965,6 +1371,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("terrain compute pre-warm", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // 2-10: the planar-reflection capture is retired — the environment
@@ -1000,10 +1407,16 @@ export class FlightRenderer implements FlightRenderingSystem {
         toneMap,
         fxaa,
         stars,
+        lightPoints,
+        clusteredLighting,
+        hangarFloods.map((flood) => flood.name),
+        airfieldLighting,
         scotopic,
+        bloom,
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
+      checkpointRendererStartup("renderer finalization", "sync");
       cleanup.length = 0;
       return renderer;
     } catch (error) {
@@ -1067,6 +1480,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     authority.publishAuxPage({
       ...page,
       shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
+      soilDepthR8Unorm: page.soilDepthR8Unorm.slice(),
     });
     // Transfer the producer-owned buffer only after retaining the main-thread copy.
     this.detail.publishTerrainAuxPage(page);
@@ -1385,6 +1799,46 @@ export class FlightRenderer implements FlightRenderingSystem {
    * high-DPR/cap-equivalent reference workload. It is intentionally refused
    * for interactive renderers, where the adaptive governor owns this state.
    */
+  /**
+   * `6-12` / P0 seam work — hide every vegetation mesh for one capture, so a
+   * second capture can be differenced against it to yield a true VEGETATION
+   * MASK.
+   *
+   * Capture-only, and it exists because every cheap post-hoc mask is
+   * confounded with the quantity under test. Measured on the seam frame: a
+   * COLOUR mask cannot work — far trees read `rgb(86,107,86)` against open
+   * ground `rgb(81,104,78)`, indistinguishable in hue and saturation. A
+   * DARKNESS mask biases toward the dark mode, and a SPATIAL-FREQUENCY mask
+   * biases toward the alpha-tested band — both of which are exactly what a
+   * band-handoff comparison is trying to measure. Differencing against a
+   * vegetation-free render is the only mask that is independent of the thing
+   * being measured.
+   *
+   * Every vegetation mesh is named with the `detail-` prefix (`detail-tree-*`,
+   * `detail-foliage-*`, `detail-bark-*`, `detail-shrub-*`, `detail-clutter-*`,
+   * `detail-ground-*`, `detail-rock-*`, `detail-impostor`), which is the whole
+   * selector. Terrain, water, sky and aircraft are untouched.
+   */
+  setVegetationVisibleForCapture(visible: boolean): number {
+    let toggled = 0;
+    for (const mesh of this.scene.meshes) {
+      if (!mesh.name.startsWith("detail-")) continue;
+      if (mesh.isVisible === visible) continue;
+      mesh.isVisible = visible;
+      toggled += 1;
+    }
+    // The `detail-` walk above cannot reach the compute ground-cover field:
+    // its meshes are named `ground-cover-ring-N`, and — more to the point —
+    // `GroundCoverSystem` re-asserts `setEnabled()` on them every update, so
+    // an `isVisible` written from out here is overwritten on the next frame.
+    // Only the owner can stop re-asserting, so it owns the flag and this adds
+    // its count to ours. Before this, blades survived into every
+    // "vegetation-hidden" capture and were therefore differenced to ~0 and
+    // classified as TERRAIN by the very instrument built to isolate them.
+    toggled += this.groundCover.setVisibleForCapture(visible);
+    return toggled;
+  }
+
   setPinnedRenderScaleForCapture(scale: number): void {
     if (this.pinnedRenderScale === null) {
       throw new Error("Capture render scale can only change on a pinned renderer");
@@ -1402,6 +1856,61 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.graph.invalidateHistory("capture render-scale change");
   }
 
+/**
+ * Bytes per texel from a texture's TYPE **and** its FORMAT.
+ *
+ * **The format half was missing and it cost 156 MiB of fiction.** This read
+ * `type` alone and mapped `TEXTURETYPE_FLOAT` to 16 bytes — correct for
+ * RGBA32F and **four times too large for R32F**. The terrain height atlas is
+ * `RawTexture.CreateRStorageTexture(..., TEXTURETYPE_FLOAT)` — one channel,
+ * 3696² — so the inventory reported it at 208.44 MiB against a true 52.11,
+ * and the whole-renderer total read 488 MiB against a true ~332 with a 495 MiB
+ * ceiling. **Headroom was reported as −0.9 MiB when it was +163.**
+ *
+ * Two things that made the error survive. It is a CONSTANT factor on one term,
+ * so `inventoried / estimated` held a stable ratio — and that stability was
+ * read for months as evidence the ESTIMATE was missing a category, when it was
+ * evidence this function had a constant-factor bug. The same observation, the
+ * opposite conclusion. And nothing compared the arithmetic against any
+ * texture's real format, which is what
+ * `tests/render.gpu-memory-inventory-format.test.ts` now does.
+ *
+ * Integer formats carry the same channel counts as their float siblings; the
+ * component width comes from the type, so they need no separate row.
+ */
+private texelBytes(type: number | undefined, format: number | undefined): number {
+  // Component width by TYPE. `SHORT` is here because the audit of every
+  // single-channel site found `shoreDistance` created as
+  // `TEXTUREFORMAT_RED_INTEGER` + `TEXTURETYPE_SHORT` — two bytes, which the
+  // first version of this fix counted as one. **The fix for a 4x over-count
+  // shipped with a 2x under-count in it**, on the one type nobody was looking
+  // at, and only enumerating the sites found it.
+  const componentBytes = type === Constants.TEXTURETYPE_FLOAT
+    || type === Constants.TEXTURETYPE_INT
+    || type === Constants.TEXTURETYPE_UNSIGNED_INTEGER
+    ? 4
+    : type === Constants.TEXTURETYPE_HALF_FLOAT
+      || type === Constants.TEXTURETYPE_SHORT
+      || type === Constants.TEXTURETYPE_UNSIGNED_SHORT
+      ? 2
+      // UNSIGNED_BYTE and BYTE, and the default for an undeclared type.
+      : 1;
+  const channels = format === Constants.TEXTUREFORMAT_R
+    || format === Constants.TEXTUREFORMAT_R_INTEGER
+    ? 1
+    : format === Constants.TEXTUREFORMAT_RG
+      || format === Constants.TEXTUREFORMAT_RG_INTEGER
+      ? 2
+      : format === Constants.TEXTUREFORMAT_RGB
+        || format === Constants.TEXTUREFORMAT_RGB_INTEGER
+        ? 3
+        // Undefined format means the texture never declared one; Babylon's
+        // default is RGBA and four channels is also the SAFE direction for a
+        // figure used as a ceiling check.
+        : 4;
+  return channels * componentBytes;
+}
+
   /**
    * Z-4: a best-effort inventory of what is actually allocated — textures by
    * size×format, geometry by vertex stride and indices. It cannot see MSAA
@@ -1410,6 +1919,42 @@ export class FlightRenderer implements FlightRenderingSystem {
    * never been compared against a real reading).
    */
   private inventoryGpuMemoryMiB(): number {
+    return this.inventoryGpuMemoryBreakdown().totalMiB;
+  }
+
+  /**
+   * The same walk, reporting WHAT IT SAW rather than one scalar.
+   *
+   * **The single scalar is why the estimate's re-pin trigger could fire and
+   * not be actionable.** `|estimate - inventory|` was 47.3% at tier 1 after
+   * the format fix, and the only two numbers in the report were the two ends
+   * of that subtraction — so the divergence could be measured and could not be
+   * ATTRIBUTED. Splitting `MISC_ALLOWANCE_MIB` into the part the walk can see
+   * and the part it cannot was blocked on exactly this: without a breakdown,
+   * any split is someone deciding which MiB are invisible and calling the
+   * result measured.
+   *
+   * The three lanes are the walk's three sources, and they are not
+   * interchangeable:
+   * - `textureMiB` — `scene.textures`, by size x format.
+   * - `geometryMiB` — `scene.meshes` vertex strides and indices. **This is the
+   *   lane that bounds the mesh half of `MISC_ALLOWANCE_MIB`**, whose docblock
+   *   claims "aircraft/airport meshes, sky dome" among things the estimate
+   *   allows 40 MiB for. Those meshes are in `scene.meshes`, so they are
+   *   MEASURED here and must not also be counted as invisible.
+   * - `bufferMiB` — storage buffers, which appear in neither Babylon list.
+   *
+   * Still a FLOOR, and the reason is unchanged: pipelines, shader cache, MSAA
+   * resolve targets and driver overhead are invisible to all three lanes. The
+   * point of the split is that "invisible" is now a named residual instead of
+   * a property of the whole number.
+   */
+  private inventoryGpuMemoryBreakdown(): {
+    textureMiB: number;
+    geometryMiB: number;
+    bufferMiB: number;
+    totalMiB: number;
+  } {
     let bytes = 0;
     const seenTextures = new Set<unknown>();
     for (const texture of this.scene.textures) {
@@ -1419,6 +1964,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           height?: number;
           depth?: number;
           type?: number;
+          format?: number;
           generateMipMaps?: boolean;
         } | null;
       })._texture;
@@ -1427,14 +1973,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       const width = internal.width ?? 0;
       const height = internal.height ?? 0;
       const depth = Math.max(1, internal.depth ?? 1);
-      const bytesPerTexel = internal.type === Constants.TEXTURETYPE_HALF_FLOAT
-        ? 8
-        : internal.type === Constants.TEXTURETYPE_FLOAT
-          ? 16
-          : 4;
+      const bytesPerTexel = this.texelBytes(internal.type, internal.format);
       const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
       bytes += width * height * depth * bytesPerTexel * mipFactor;
     }
+    const textureBytes = bytes;
     const seenGeometries = new Set<unknown>();
     for (const mesh of this.scene.meshes) {
       const geometry = (mesh as Mesh).geometry;
@@ -1450,7 +1993,23 @@ export class FlightRenderer implements FlightRenderingSystem {
       bytes += geometry.getTotalVertices() * strideBytes;
       bytes += geometry.getTotalIndices() * 4;
     }
-    return bytes / 1_048_576;
+    const geometryBytes = bytes - textureBytes;
+    // Storage buffers appear in neither list, and every allocation Phase 6
+    // adds is one. Without this the wall reads byte-identical no matter how
+    // much compute scratch an item allocates.
+    const bufferBytes = inventoriedGpuBufferBytes();
+    bytes += bufferBytes;
+    const MIB = 1_048_576;
+    // The total is the SUM OF THE LANES, never a separately accumulated
+    // figure: two additions of the same quantity are two things that can
+    // disagree, and a breakdown that does not reconcile to its own total is
+    // worth less than the scalar it replaced.
+    return {
+      textureMiB: textureBytes / MIB,
+      geometryMiB: geometryBytes / MIB,
+      bufferMiB: bufferBytes / MIB,
+      totalMiB: bytes / MIB,
+    };
   }
 
   getDiagnostics(): RenderDiagnostics {
@@ -1469,6 +2028,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
     // 27.4 ms is a visible missed delivery and must remain visible here.
+    const inventoryLanes = this.inventoryGpuMemoryBreakdown();
+    // One viewport for both estimates. Two reads of `clientWidth` could differ
+    // across a resize and make the restricted figure incomparable to the one
+    // it is a subset of.
+    const estimateViewport = {
+      cssWidth: Math.max(1, this.domElement.clientWidth),
+      cssHeight: Math.max(1, this.domElement.clientHeight),
+      devicePixelRatio: window.devicePixelRatio || 1,
+    };
     const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
@@ -1500,6 +2068,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       // these fields kept their names because their MEANING survived it —
       // resident pages are resident pages.
       residentTerrainPages: terrain.residentSlots,
+      // The TOTAL above cannot distinguish terrain nobody can see from terrain
+      // physics, morphing and generation require. `residentTerrainPages` was
+      // read as the former and is the sum of both.
+      residencyReasons: terrain.residencyReasons,
       collisionSamplesServedByFallback:
         this.currentState?.terrainAuthority?.analyticServed ?? 0,
       visibleInstances: this.detail.statistics.renderedThinInstances + wildlife.renderedThinInstances,
@@ -1538,12 +2110,25 @@ export class FlightRenderer implements FlightRenderingSystem {
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
-      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, {
-        cssWidth: Math.max(1, this.domElement.clientWidth),
-        cssHeight: Math.max(1, this.domElement.clientHeight),
-        devicePixelRatio: window.devicePixelRatio || 1,
-      }),
-      inventoriedGpuMemoryMiB: this.inventoryGpuMemoryMiB(),
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, estimateViewport),
+      // The subset the inventory walk can actually see, for the re-pin trigger.
+      // The unrestricted figure above stays the budgeting number — four owners
+      // budget through it — and this one exists ONLY to be compared against a
+      // measurement, which the unrestricted figure cannot honestly be.
+      estimatedInventoriableGpuMemoryMiB: estimateInventoriableGpuMemoryMiB(
+        this.profile,
+        estimateViewport,
+        { worldEvolution: this.worldDefinition.worldEvolution },
+      ),
+      // ONE walk, both readings. Calling `inventoryGpuMemoryMiB()` here as
+      // well would walk the scene twice and let the total disagree with the
+      // lanes it is supposed to be the sum of.
+      inventoriedGpuMemoryMiB: inventoryLanes.totalMiB,
+      inventoriedGpuMemoryLanes: {
+        textureMiB: inventoryLanes.textureMiB,
+        geometryMiB: inventoryLanes.geometryMiB,
+        bufferMiB: inventoryLanes.bufferMiB,
+      },
       budgetProbeActive: this.budgetProbe !== null,
       budgetProbeReport: this.budgetProbeReport,
       gpuPassMs: this.collectGpuPassAttribution(),
@@ -1651,6 +2236,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       execute: (frame) => {
         void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
+        // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
+        // ocean disk is depth-tested away above the waterline), so the sea
+        // state and the WATER's own clock cross here — same node, same frame,
+        // same `timeSeconds` the spectrum is stepped with, or the sand would
+        // dry out of time with the surf that wetted it.
+        this.terrain.setShoreWetness(this.ocean.shoreRunupSwell(), frame.timeSeconds);
         const state = this.currentState;
         this.hydrology.update(
           frame.timeSeconds,
@@ -1717,6 +2308,98 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       this.aircraft.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
       this.aircraft.update(state, this.currentDeltaSeconds);
+      // `7-8`: the lamp law needs the OBSERVER's bearing, which is the
+      // renderer's knowledge and not the aircraft's. Body-frame components, so
+      // no world convention leaks in: `D-6` settled forward +X, starboard +Z.
+      const toCamera = this.camera.position.subtract(this.aircraft.root.position);
+      const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+      const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+      const lights = resolveAircraftLights({
+        simulationTimeSeconds: state.simulationTime,
+        observerAzimuthDegrees: observerAzimuthDegrees(
+          Vector3.Dot(toCamera, bodyForward),
+          Vector3.Dot(toCamera, bodyStarboard),
+        ),
+        altitudeAglMeters: state.altitudeAgl,
+        gear: state.gear ?? 1,
+        landingSwitchOn: false,
+        // The cockpit glow rides the same environment the airfield lamps do,
+        // in the opposite direction: panel lighting comes UP as the sun sets.
+        sunElevationSine: this.environmentState.sun.direction[1],
+        horizontalLux: horizontalIlluminanceLux(this.environmentState),
+      });
+      this.aircraft.setLightState(lights);
+
+      // `7-8`: the landing and taxi CAST POOLS — separate objects from the
+      // lamps and governed by a different rule. The lamps are exempt from
+      // daylight attenuation because anti-collision lights are required lit by
+      // day; a pool of light on the ground at solar noon is invisible in life.
+      // Same law as `7-14`'s floods, not an aircraft variant of it.
+      //
+      // `setPosition` takes WORLD coordinates and rebases itself, so the
+      // floating origin is deliberately NOT applied: `state.position` is
+      // already world and subtracting the origin would double-correct.
+      const poolStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+      const poolUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+      for (const pool of AIRCRAFT_CAST_POOLS) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [poolUp.x, poolUp.y, poolUp.z],
+          [poolStarboard.x, poolStarboard.y, poolStarboard.z],
+          pool.offset,
+        );
+        // BOTH returns are checked. False means the name is unknown — which
+        // includes a definition `IsLightSupported` refused at construction, and
+        // that refusal is silent. A pool that never moves and never brightens
+        // looks exactly like a pool correctly gated off, so an unchecked call
+        // would hide the failure for the whole life of the renderer.
+        const moved = this.clusteredLighting.setPosition(pool.name, at[0], at[1], at[2]);
+        const lit = this.clusteredLighting.setIntensity(
+          pool.name,
+          pool.intensity * lights.landing * this.lastDaylightAttenuation,
+        );
+        if ((!moved || !lit) && !this.castPoolWarned) {
+          this.castPoolWarned = true;
+          console.warn(
+            `aircraft cast pool "${pool.name}" is not in the clustered container `
+            + "— it was refused at construction and will never light anything",
+          );
+        }
+      }
+
+      // `7-15`: the wash lights ride the same body axes as the pools and the
+      // same daylight law — a wash on the airframe at solar noon is invisible
+      // in life, and attenuating it is what keeps every daylight capture
+      // unchanged by this feature.
+      //
+      // Each wash is driven by ITS OWN lamp's scalar, so the beacon wash
+      // flashes with the beacon and the nav washes are steady. A wash that
+      // outlived its lamp would be a light with no source.
+      for (const wash of aircraftWashLights(this.aircraftKind)) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [poolUp.x, poolUp.y, poolUp.z],
+          [poolStarboard.x, poolStarboard.y, poolStarboard.z],
+          wash.offset,
+        );
+        const washMoved = this.clusteredLighting.setPosition(wash.name, at[0], at[1], at[2]);
+        const washLit = this.clusteredLighting.setIntensity(
+          wash.name,
+          wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
+        );
+        // Both returns checked, for the reason the pools check theirs: a
+        // silent `IsLightSupported` refusal at construction is indistinguishable
+        // from a wash correctly gated dark.
+        if ((!washMoved || !washLit) && !this.castPoolWarned) {
+          this.castPoolWarned = true;
+          console.warn(
+            `aircraft wash light "${wash.name}" is not in the clustered container `
+            + "— it was refused at construction and will never light anything",
+          );
+        }
+      }
     }
     this.updateCamera(state);
     this.cameraWorld.set(
@@ -1726,7 +2409,53 @@ export class FlightRenderer implements FlightRenderingSystem {
     );
     this.atmosphere.update(this.camera.position);
     this.stars.update(this.camera.position);
-    this.stars.setRenderSize(this.engine.getRenderWidth(), this.engine.getRenderHeight());
+    // OUTPUT size, not `getRenderWidth()`. See `StarFieldSystem.setOutputSize`:
+    // the raster is scaled and then stretched to the canvas, so feeding the
+    // raster made every sprite wider than its stated pixel count.
+    this.stars.setOutputSize(this.domElement.clientWidth, this.domElement.clientHeight);
+    this.lightPoints.setCameraPosition(this.camera.position);
+    // Daylight suppression. The lamps carry a NIGHT calibration
+    // (`AIRFIELD_LAMP_SCENE_SCALE`) applied unconditionally, so without this
+    // they burn at full strength at solar noon — measured at 10,019 clipped
+    // pixels on `runway-on-approach` against 56 in its baseline. The term is
+    // exactly 1 at or below the horizon, so every night frame is unchanged by
+    // construction rather than by measurement.
+    const daylightAttenuation = airfieldLampDaylightAttenuation(
+      this.environmentState.sun.direction[1],
+      horizontalIlluminanceLux(this.environmentState),
+    );
+    this.lastDaylightAttenuation = daylightAttenuation;
+    this.lightPoints.setDaylightAttenuation(daylightAttenuation);
+    // `7-14`'s floods take the SAME law rather than a second one. They are a
+    // different emission path — real point lights, not billboards — but "is the
+    // airfield lit" is one question and two implementations of it would drift,
+    // which is the failure the sun disc and the ocean already demonstrated.
+    //
+    // Through `setIntensity` and NOT `setEnabled`: `ClusteredLightContainer`
+    // never reads `isEnabled`, so a disabled child stays in the cluster data and
+    // keeps illuminating. Intensity is the only channel that reaches the shader.
+    for (const name of this.hangarFloodNames) {
+      this.clusteredLighting.setIntensity(name, HANGAR_FLOOD_INTENSITY * daylightAttenuation);
+    }
+    // The PAPI's indication, resolved analytically against the camera's WORLD
+    // position — `camera.position` is origin-relative, and an elevation angle
+    // taken against a rebased origin would swing by the origin every 4,096 m.
+    // Only re-uploads when an indication actually flips: it is a step function
+    // of elevation, so there is nothing between the states to interpolate.
+    if (this.airfieldLighting?.update(
+      this.camera.position.x + this.originX,
+      this.camera.position.y,
+      this.camera.position.z + this.originZ,
+    )) {
+      this.lightPoints.setColors(this.airfieldLighting.colourList());
+    }
+    // OUTPUT size, for the reason on `LightPointSystem.setOutputSize`. The CSS
+    // size is what `applyRenderScale` already reads for its own pixel cap, so
+    // this is the same authority rather than a second one.
+    this.lightPoints.setOutputSize(
+      this.domElement.clientWidth,
+      this.domElement.clientHeight,
+    );
     this.updateAerialPerspective();
   }
 
@@ -1736,26 +2465,70 @@ export class FlightRenderer implements FlightRenderingSystem {
    * shot is reproducible (the 1A-4 rule that any animated state the capture
    * gates must be a function of pinned inputs).
    */
+  /**
+   * Give MSAA to whichever post-process is currently FIRST, and make every
+   * pass behind it a single-sample consumer.
+   *
+   * `1B-11`'s rule is that the first post-process owns the offscreen scene
+   * target and therefore its sample count. What is easy to miss -- and what
+   * this method exists to stop anyone having to remember -- is that ownership
+   * is DYNAMIC. `applyScotopicState` detaches rod vision in photopic daylight,
+   * so the head of the chain changes with the time of day, and `7-5` added a
+   * third candidate behind it. Written out by hand this was two branches in
+   * two methods that had to agree; a third holder would have made it six.
+   *
+   * Derived from one place instead, so the invariant is stated once and the
+   * next pass inserted into the chain extends this method rather than
+   * discovering the rule from whichever site it happens to read.
+   */
+  private applyFirstPassOwnership(): void {
+    const samples = firstPassSampleAssignment(
+      this.profile.msaaSamples,
+      this.scotopic.enabled,
+      this.bloom.enabled,
+    );
+    this.scotopic.setSamples(samples.scotopic);
+    this.bloom.setSamples(samples.bloom);
+    this.toneMap.samples = samples.toneMap;
+    // The chain HEAD hosts the scene render, so only the head's input RTT
+    // carries a depth-stencil. Babylon re-establishes that invariant on
+    // PostProcess.dispose() (its head-change branch calls markTextureDirty)
+    // but NOT on camera.attach/detachPostProcess — the calls the runtime
+    // scotopic/bloom toggles use — so across a head flip the engine's open
+    // pass and its render bundles desync from the rebuilt RTTs. Measured on
+    // the deterministic wobble repro (dusk crossing × a resolution step,
+    // stock tier 1): "Attachment state of renderBundles[0] is not
+    // compatible" kills the frame and GpuUncapturedErrorGuard then fails
+    // every later render(); the format-COMPATIBLE variant of the same
+    // desync composites one stale intermediate silently — the in-flight
+    // "random colors slash through the terrain" report. Invalidate every
+    // chain pass whenever membership or samples change, so the next frame
+    // rebuilds all input RTTs against the new chain shape. Reached only
+    // from real chain changes (toggle edges and profile application), never
+    // per-frame.
+    for (const pass of [
+      this.scotopic.postProcess,
+      this.bloom.bright,
+      this.bloom.blurHorizontal,
+      this.bloom.blurVertical,
+      this.bloom.composite,
+      this.toneMap,
+      this.fxaa,
+    ]) {
+      pass.markTextureDirty();
+    }
+  }
+
   private applyScotopicState(): void {
     const snapshot = this.atmosphere.snapshot;
     const adapted = snapshot.adaptedLuminanceCdM2;
     const rodFraction = rodFractionForAdaptedLuminance(adapted);
     const scotopicActive = shouldRunScotopicPass(rodFraction);
     if (scotopicActive !== this.scotopic.enabled) {
-      if (scotopicActive) {
-        // Scotopic returns to slot zero and owns the multisampled scene
-        // target; ACES becomes a single-sample consumer again.
-        this.scotopic.setSamples(this.profile.msaaSamples);
-        this.toneMap.samples = 1;
-        this.scotopic.setEnabled(this.camera, true);
-      } else {
-        // In photopic daylight the scotopic shader is a half-float copy.
-        // Detach it and transfer first-pass/MSAA ownership to the already
-        // half-float, ratio-one ACES pass. RGB input and output are unchanged.
-        this.toneMap.samples = this.profile.msaaSamples;
-        this.scotopic.setSamples(1);
-        this.scotopic.setEnabled(this.camera, false);
-      }
+      // Toggle first, then derive ownership from the resulting chain. The
+      // order matters: `applyFirstPassOwnership` reads `scotopic.enabled`.
+      this.scotopic.setEnabled(this.camera, scotopicActive);
+      this.applyFirstPassOwnership();
     }
     // The rod pathway's saturated response has to land somewhere sensible
     // AFTER the one exposure curve, so its display gain is that curve's
@@ -1787,6 +2560,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       sunColor: [snapshot.sunColor.r, snapshot.sunColor.g, snapshot.sunColor.b],
       skyHorizonColor: [snapshot.skyHorizon.r, snapshot.skyHorizon.g, snapshot.skyHorizon.b],
       sunIlluminanceNormalized: snapshot.sunIlluminanceNormalized,
+      // NIGHT_LOOK_ARCHITECTURE 2.1: below twilight the aerial integral runs
+      // on the moon, so sky and night haze stay one system (1C-5 at night).
+      moonDirection: [
+        snapshot.moonDirection.x,
+        snapshot.moonDirection.y,
+        snapshot.moonDirection.z,
+      ],
+      moonIlluminanceNormalizedToFull:
+        snapshot.moonIlluminanceLux / FULL_MOON_ILLUMINANCE_LUX,
     }, this.originX, this.originZ);
     const binding = this.aerialReceivers.currentBinding;
     if (!binding) return;
@@ -1794,6 +2576,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setAerialPerspective(binding);
     this.hydrology.setAerialPerspective(binding);
     this.clouds.setAerialPerspective(binding);
+    this.lightPoints.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -1974,6 +2757,28 @@ export class FlightRenderer implements FlightRenderingSystem {
       wind.speed / MAX_WIND_SPEED,
       Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
     );
+    // 7-13: a SECOND wind sample, at the windsock. The snapshot above is taken
+    // at the aircraft and is right for the detail field, whose per-instance
+    // bytes carry the spatial variation — but a windsock is one object at one
+    // fixed place, kilometres from the aeroplane on approach, and a sock driven
+    // by the aircraft's wind still points, swings and gusts convincingly.
+    // Nothing in a frame distinguishes it, which is why
+    // `lighting.windsock.test.ts` asserts the two samples DIFFER in heading and
+    // speed rather than asserting the sock's angle looks right.
+    if (this.airport) {
+      const at = this.airport.windsockSamplePoint;
+      const sockWind = sampleWind(
+        this.worldDefinition,
+        at.x,
+        at.y,
+        at.z,
+        state.simulationTime,
+      );
+      this.airport.setWindsockState(
+        windsockHeadingRadians(sockWind.x, sockWind.z),
+        sockWind.speed,
+      );
+    }
     // 2-12's translucency term: the atmosphere system's own key light, on
     // the same forward-the-snapshot pattern the wind field uses. The
     // strength is the relative illuminance, so a backlit canopy glows in
@@ -2000,6 +2805,18 @@ export class FlightRenderer implements FlightRenderingSystem {
     // (16-fragment-input limit), so the detail plugin samples the
     // atmosphere's own depth map from these matrices instead.
     this.detail.setSunShadow(this.buildDetailSunShadowSnapshot());
+    // `6-11`: the far-field half of the same trade. The CSM above reaches
+    // `shadowDistance`; this reaches 45 km, which is where the impostors the
+    // cascades stopped covering actually are. Re-read every frame because the
+    // field re-bakes on observer travel and publishes a new origin with it.
+    const horizonField = this.terrain.globalHorizonField;
+    this.detail.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
     this.detail.update(
       {
         x: state.position.x,
@@ -2028,6 +2845,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       windStrength01: wind.speed / MAX_WIND_SPEED,
       windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
       simulationTimeSeconds: state.simulationTime,
+      // `6-9`/`P-5`: the GPU ladder's ground-cover rung, the last one on it.
+      gateScale: this.workLeverSettings.groundCoverGateScale,
     });
     this.wildlife.update(
       {
@@ -2075,6 +2894,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setFloatingOrigin(this.originX, this.originZ);
     this.hydrology.setFloatingOrigin(this.originX, this.originZ);
     this.airport?.setFloatingOrigin(this.originX, this.originZ);
+    this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
+    // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
+    // under. A clustered light gets an unrebased origin worse than a billboard
+    // does — the inverse-square falloff reads the position too, so it would not
+    // merely draw in the wrong place, it would light the wrong place.
+    this.clusteredLighting.setFloatingOrigin(this.originX, this.originZ);
     // The planar reflection pass runs before the cloud update in the frame
     // graph. Re-resolve the shared PBR receiver binding immediately so the
     // reflected scene never combines rebased geometry with the prior origin.
@@ -2115,10 +2940,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
-    // Whichever pass is first owns the multisampled scene target. Daylight
-    // bypasses scotopic; twilight/night restores it at slot zero.
-    this.scotopic.setSamples(this.scotopic.enabled ? this.profile.msaaSamples : 1);
-    this.toneMap.samples = this.scotopic.enabled ? 1 : this.profile.msaaSamples;
+    // Bloom's funding is a per-tier decision, so a profile change can add or
+    // remove it. Re-gate BEFORE deriving ownership: which pass is first
+    // depends on what is attached.
+    this.bloom.setEnabled(this.camera, this.profile.bloomEnabled, this.scotopic.enabled ? 1 : 0);
+    this.applyFirstPassOwnership();
     this.camera.detachPostProcess(this.fxaa);
     if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
     this.resetTimingWindow();

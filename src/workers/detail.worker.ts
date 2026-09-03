@@ -20,6 +20,7 @@ import {
   type TerrainConsumerSample,
 } from "@/src/render/webgpu/terrain/TerrainConsumerAuthority";
 import { createWorld, sampleTerrain, type WorldDefinition } from "@/src/world";
+import { airfieldStructureExclusions } from "@/src/render/webgpu/airfield/StructureExclusion";
 import {
   detailWorkerEventTransferables,
   type DetailRetainedCellDescriptor,
@@ -164,6 +165,13 @@ export class DetailWorkerRuntime {
         throw new Error("Detail worker has not been initialized");
       }
       const activeWorld = this.world;
+      // Structures the vegetation must not grow through. Built from the world
+      // the worker ALREADY HOLDS, so nothing crosses the message boundary and
+      // nothing can arrive stale — and built with `seedHash`, the terrain
+      // authority the hangars' own siting uses, NOT the seed string's hash.
+      const structureExclusions = activeWorld.airport
+        ? airfieldStructureExclusions(activeWorld.airport, activeWorld.seedHash)
+        : [];
       const cell = generateDetailCell({
         worldSeed: activeWorld.seed,
         cellX: command.cellX,
@@ -174,6 +182,9 @@ export class DetailWorkerRuntime {
         seaLevelMeters: this.seaLevelMeters,
         dayOfYear: command.dayOfYear,
         latitudeDegrees: activeWorld.latitudeDegrees,
+        ...(activeWorld.airport
+          ? { structureExclusions, exclusionAirport: activeWorld.airport }
+          : {}),
       });
       if (cell.key !== command.key) {
         throw new Error(`Detail worker generated ${cell.key} for request ${command.key}`);

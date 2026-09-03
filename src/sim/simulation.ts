@@ -39,10 +39,10 @@ export const STANDARD_GRAVITY = 9.80665;
 export const SEA_LEVEL_DENSITY = 1.225;
 
 const WORLD_UP: Readonly<Vec3> = Object.freeze({ x: 0, y: 1, z: 0 });
-// A right-handed x-forward/y-up body frame necessarily has +Z toward port.
-// Keeping this explicit prevents pilot-right controls from being confused with
-// a positive body-Z component.
-const BODY_RIGHT: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: -1 });
+// Babylon's rendered aircraft uses body +Z for the physical starboard side;
+// D-6 pins that end-to-end convention in world space. Pilot-positive yaw is
+// therefore a negative rotation about body +Y (handled at the moment law).
+const BODY_RIGHT: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: 1 });
 const BODY_UP: Readonly<Vec3> = WORLD_UP;
 const BODY_FORWARD: Readonly<Vec3> = Object.freeze({ x: 1, y: 0, z: 0 });
 const ZERO_VECTOR: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: 0 });
@@ -976,10 +976,11 @@ function integrateSubstep(
     airspeed > 0.25
       ? clamp(Math.atan2(-scratch.relativeBody.y, scratch.relativeBody.x), -Math.PI / 2, Math.PI / 2)
       : 0;
+  // Positive sideslip is relative wind from starboard; starboard is body +Z.
   const sideslip =
     airspeed > 0.25
       ? clamp(
-          Math.atan2(-scratch.relativeBody.z, Math.max(0.1, scratch.relativeBody.x)),
+          Math.atan2(scratch.relativeBody.z, Math.max(0.1, scratch.relativeBody.x)),
           -1.2,
           1.2,
         )
@@ -1019,9 +1020,9 @@ function integrateSubstep(
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;
 
   // Lift is perpendicular to relative motion and the starboard span direction,
-  // pointing body-up in normal flight. BODY_RIGHT is -Z in this right-handed
-  // coordinate frame.
-  crossInto(scratch.liftDirectionBody, scratch.velocityDirectionBody, BODY_RIGHT);
+  // pointing body-up in normal flight: starboard x velocity = up when the
+  // relative wind is on the nose (Z x X = Y).
+  crossInto(scratch.liftDirectionBody, BODY_RIGHT, scratch.velocityDirectionBody);
   normalizeInto(scratch.liftDirectionBody, scratch.liftDirectionBody, BODY_UP);
   const sideForce =
     -dynamicPressure *
@@ -1071,12 +1072,19 @@ function integrateSubstep(
     aircraft.pitchMomentAlpha * angleOfAttack +
     aircraft.pitchMomentElevator * elevator * postStallAuthority +
     aircraft.pitchDamping * ((pitchRate * aircraft.meanChord) / (2 * safeAirspeed));
+  // Sign derivations for +Z = starboard (D-6): pilot-positive roll is
+  // right-wing-down, which is +omega_x (up rotates toward +Z), so aileron
+  // moment carries the command's sign. Positive sideslip (wind from
+  // starboard) rolls away from the wind via dihedral (-) and weathervanes the
+  // nose into it, nose-right, which is -omega_y (nose rotates toward +Z), so
+  // both beta terms and the rudder term are negative. Damping terms oppose
+  // whatever rate exists and are basis-invariant.
   const rollCoefficient =
-    -aircraft.rollMomentAileron * state.actuators.roll * postStallAuthority +
+    aircraft.rollMomentAileron * state.actuators.roll * postStallAuthority -
     aircraft.rollMomentBeta * sideslip +
     aircraft.rollDamping * ((rollRate * aircraft.wingSpan) / (2 * safeAirspeed));
   const yawCoefficient =
-    aircraft.yawMomentRudder * state.actuators.yaw * postStallAuthority +
+    -aircraft.yawMomentRudder * state.actuators.yaw * postStallAuthority -
     aircraft.yawMomentBeta * sideslip +
     aircraft.yawDamping * ((yawRate * aircraft.wingSpan) / (2 * safeAirspeed));
   const pitchMoment = dynamicPressure * aircraft.wingArea * aircraft.meanChord * pitchCoefficient;

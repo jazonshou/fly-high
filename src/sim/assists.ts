@@ -49,14 +49,23 @@ export function applyFlightAssistance(
         Math.sin((groundHeadingTarget ?? telemetry.heading) - telemetry.heading),
         Math.cos((groundHeadingTarget ?? telemetry.heading) - telemetry.heading),
       );
-      out.yaw = clamp(headingError * 1.65 - state.angularVelocity.y * 0.42, -0.5, 0.5);
+      // INTERIM under the pre-D-6 compass definition, where heading increases
+      // with +omega_y. Pilot-positive yaw is nose-right = -omega_y (D-6), so
+      // it DECREASES that heading, a positive heading error needs a NEGATIVE
+      // pilot command, and the damping opposes the pilot-sign rate. If the
+      // compass flip (option (a) of the D-6 brief) lands, this law reverts to
+      // +headingError with the same damping form.
+      const pilotYawRate = -state.angularVelocity.y;
+      out.yaw = clamp(-headingError * 1.65 - pilotYawRate * 0.42, -0.5, 0.5);
     }
     return out;
   }
 
+  // Pilot-sign rates with +Z = starboard (D-6): +omega_x is right-bank rate,
+  // -omega_y is nose-right rate, +omega_z is nose-up rate.
   const pitchRate = state.angularVelocity.z;
-  const rollRate = -state.angularVelocity.x;
-  const yawRate = state.angularVelocity.y;
+  const rollRate = state.angularVelocity.x;
+  const yawRate = -state.angularVelocity.y;
 
   if (mode === "pilot") {
     out.pitch = clamp(requested.pitch - pitchRate * 0.16, -1, 1);

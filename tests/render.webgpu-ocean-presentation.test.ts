@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
+  OCEAN_PRESENTATION_RADIUS_METERS,
   WATER_FRAGMENT_WGSL,
   WATER_VERTEX_WGSL,
   oceanMeshCascadeFadeRadius,
@@ -18,6 +19,14 @@ const oceanPresentationTopology = (
 ) => profile.oceanPresentation;
 
 describe("spectral ocean presentation topology", () => {
+  it("covers off-axis far-plane corners without adding presentation topology", () => {
+    // The camera far plane is view depth, not a radial sphere. A disk equal to
+    // 45 km exposed its circular edge in the downward material capture. Only
+    // the final coverage-skirt ring moves; the assertions below pin the prior
+    // 40 km detail lattice and its mesh-Nyquist fade radii.
+    expect(OCEAN_PRESENTATION_RADIUS_METERS).toBe(90_000);
+  });
+
   it("uses a depth-aware, variance-filtered physical surface without a duplicate cloud field", () => {
     // 2-8: distance filtering is Toksvig — the moment mips' slope variance
     // becomes roughness; the old ad-hoc smoothstep distance term is gone.
@@ -118,13 +127,17 @@ describe("spectral ocean presentation topology", () => {
     expect(WATER_VERTEX_WGSL).toContain("uniforms.oceanWind");
   });
 
-  it("drops the surface with the Earth's curvature before the world transform (1C-7)", () => {
-    expect(WATER_VERTEX_WGSL).toContain(
-      "dot(vertexInputs.position.xz, vertexInputs.position.xz) / (2.0 * 6371000.0)",
-    );
-    // The drop applies to the displaced position, before the world transform.
-    expect(WATER_VERTEX_WGSL.indexOf("6371000.0"))
-      .toBeLessThan(WATER_VERTEX_WGSL.indexOf("uniforms.world * displaced"));
+  it("keeps the surface on the terrain's flat datum — 1C-7's curvature drop is withdrawn", () => {
+    // 1C-7 lowered the disk by r^2 / (2 R). The terrain and the depth buffer
+    // the sea is tested against are flat, so the drop (8 m at 10 km, 159 m at
+    // the far plane) pushed every shallower shelf bed up through the surface:
+    // a dark seabed band along each distant coast in cruise-horizon. This
+    // expectation used to assert the drop's presence; it now asserts its
+    // absence, and it must not be re-added to the water alone — a curved
+    // world is a renderer-wide decision (ARCHITECTURE.md decision log).
+    const code = WATER_VERTEX_WGSL.replace(/\/\/.*$/gmu, "");
+    expect(code).not.toContain("6371000");
+    expect(code).not.toMatch(/displaced\.y\s*-=/u);
   });
 
   it("follows the resolved WebGPU tier instead of raw scenery quality", () => {

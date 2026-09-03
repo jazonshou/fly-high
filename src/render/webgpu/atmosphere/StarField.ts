@@ -57,7 +57,26 @@ const STAR_SHADER_NAME = "aerolithStarField";
  * extinction and twilight suppression. See the scale note above: this is the
  * one art-directed constant, and Sirius at −1.46 lands 3.8× above it.
  */
-export const STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5;
+// `7-units`: 0.5 -> 0.677, compensating the sprite units fix (13c63db) so the
+// APPROVED star brightness survives a correctness change.
+//
+// This constant was art-directed in `46bc24a` -- the same commit that shipped
+// `stars.setRenderSize(getRenderWidth(), ...)` and tier 1's 0.86 renderScale.
+// So the look was signed off while the sprite was already 16.3% over-wide and
+// carrying ~35% more flux than the constants nominally specify. Correcting the
+// units without this would remove 26% of star flux from a calibration Jason
+// approved: a regression against an approved look, not merely a visible change.
+// 0.5 / 0.7385 = 0.677 restores the flux.
+//
+// LIMIT: this restores total FLUX, not appearance. Stars are now smaller and
+// brighter at the same energy -- tighter and punchier rather than dimmer.
+//
+// The runway lamps carry the identical bug and are deliberately NOT compensated:
+// Jason's standing note is that the runway reads as too big a blob, so the
+// units fix shrinking and dimming them is part of the answer he asked for. Same
+// cause, opposite treatment, because one calibration was approved and the other
+// is the one being changed.
+export const STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.677;
 
 /** Gaussian PSF radius in output pixels. Flux is normalised against it. */
 export const STAR_PSF_RADIUS_PIXELS = 1.7;
@@ -284,8 +303,17 @@ export class StarFieldSystem {
     this.mesh.setEnabled(visibility > 0.002);
   }
 
-  /** Keeps the sprite size in pixels as the render target resizes. */
-  setRenderSize(widthPixels: number, heightPixels: number): void {
+  /**
+   * Keeps the sprite size in OUTPUT pixels as the canvas resizes.
+   *
+   * **Was `setRenderSize`, and the caller passed the scaled raster**, so at any
+   * render scale below 1 a star drew wider than its stated pixel size -- 16.3%
+   * at tier 1's 0.86. The constructor above initialises `starPixelSize` to
+   * `2 / 1280, 2 / 720`, the OUTPUT size, so the intent was never in doubt;
+   * only the setter's argument was. Same defect and same fix as
+   * `LightPointSystem.setOutputSize`.
+   */
+  setOutputSize(widthPixels: number, heightPixels: number): void {
     this.material.setVector2(
       "starPixelSize",
       new Vector2(2 / Math.max(1, widthPixels), 2 / Math.max(1, heightPixels)),

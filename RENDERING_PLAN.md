@@ -258,7 +258,7 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 | 1C-4 | **`aerial-include`** — the shared analytic aerial-perspective WGSL include | 5.0 | 1C-2, 1C-3 | See §3.6. The single biggest change in the plan. |
 | 1C-5 | `physical-sky` — `skyRadiance()` from the same include, plus a real sun disc with limb darkening | 2.0 | 1C-4 | Terrain haze and sky then agree **by construction** — they are literally the same integral. |
 | 1C-6 | `ibl` — SH irradiance + a 128 px specular cube → `scene.environmentTexture`; retire `HemisphericLight`; `specularIntensity` 0.22 → 1.0 everywhere | 3.0 | 1C-5 | See §3.6. `specularIntensity` lives in three files (`TerrainClipmapSystem.ts:280`, `WorldDetailRuntime.ts:1107`, `AirportSystem.ts:111`) and they **must move together**. |
-| 1C-7 | Water consumes AP + earth curvature; ocean radius 120 km → 40 km | 1.0 | 1C-4 | `displaced.y -= dot(localXZ, localXZ) / (2 × 6371000)` before the world transform. Without curvature the flat disk's vanishing line sits at eye level. **Reconcile with `camera.maxZ` = 45 km** — a 60 km disk inside a 45 km far plane is clipped and the horizon vanishes. |
+| 1C-7 | Water consumes AP + earth curvature; ocean radius 120 km → 40 km | 1.0 | 1C-4 | `displaced.y -= dot(localXZ, localXZ) / (2 × 6371000)` before the world transform. Without curvature the flat disk's vanishing line sits at eye level. **Reconcile with `camera.maxZ` = 45 km** — a 60 km disk inside a 45 km far plane is clipped and the horizon vanishes.  **Withdrawn 2026-09-03:** the drop was removed from both water vertex shaders. The terrain and the depth buffer are flat, so lowering only the water pushed every shelf bed shallower than r²/(2R) through the surface — a dark seabed band along each distant coast. See `ARCHITECTURE.md`'s decision log. |
 | 1C-8 | Clouds `radiometry-and-haze` | 1.5 | 1C-4 | |
 | 1C-9 | `environment-clock` — `EnvironmentClock` scalars, `WorldDefinition.latitudeDegrees`, settings plumbing, and the UI: two continuous sliders plus named preset buttons that write them | 1.5 | 1C-1 | §1.6. `SettingsPanel.tsx:407-422` already has the Time-of-day and Weather selects — the selects become preset *buttons* over sliders. `TimeOfDayPreset` survives as a label, not a rendering input. |
 | 1C-10 | `night-sky-basic` — sun below horizon handled without breaking, twilight-through-night exposure range, placeholder moon disc and star dome | 1.5 | 1C-5, 1C-9 | **Deliberately minimal.** Full night is Phase 7. This item exists only so that scrubbing the clock past dusk during Phases 1–6 looks unfinished rather than broken. Do not gold-plate it — Phase 7 replaces the moon and stars outright. |
@@ -431,6 +431,19 @@ Each phase below has internal gates. **A gate is a shippable commit.** No gate l
 ---
 
 ### Phase 7 — Night operations and airfield identity
+
+> **Governed by [`PHASE_7_EXECUTION_PLAN.md`](PHASE_7_EXECUTION_PLAN.md), which is binding over this table.** That plan states the order itself: `ARCHITECTURE.md` decision log (normative) → the execution plan → this section. It also warns that **§Phase 7's citations below are stale** — `AirportSystem.ts:72-83` and `:111` both are, and `AirportSystemOptions.includeHangars` never existed (D-2).
+>
+> **D-0 cut scope this table still promises, and the cuts are load-bearing rather than editorial: the ground those items sit on does not exist.** `3-9` deleted the apron slab and recorded a deviation declining to replace it, and no taxiway geometry was ever built — `AirportDefinition` carries nine scalars and no apron or taxiway at all, so there is nothing to generate the fixtures *from*. Struck by D-0, and still written as deliverables below:
+> - **`7-7`'s row** — taxiway blue-edge and green-centreline lights. `AirfieldFixtureKind` is `edge | threshold | centreline | touchdownZone | approach`; there is no taxiway kind. Re-priced 3.5 d (was 4.0).
+> - **`7-13`'s row** — apron markings, tie-down anchors and ground support equipment. Re-priced 2.0 d (was 3.5).
+> - **`7-14`'s row** — apron floodlighting, **re-pointed to hangar-face floods** (there is no apron). Shipped that way: `ObstructionLighting.ts` emits tower and hangar-roof obstruction lights plus hangar-face floods, and no apron emitter.
+> - **§1.6's "Lights you *see*" table** and **this section's "What you will see"**, which still describe taxiway edge lights and "hangar apron floods".
+> - **The Phase 7 summary table far below** repeats `7-13` at 3.5 d and `7-14` at 1.0 d — the pre-cut figures, a second time.
+>
+> Referenced by row identifier rather than by line, deliberately: **inserting this note shifted every row beneath it and invalidated the line citations in its own first draft** — which is the failure it documents, committed inside the correction. Row ids survive an edit; line numbers do not.
+>
+> **Why this note exists at all, recorded because the gap was itself the defect.** Phases 3, 4 and 5 each carry a supersession note in place, three sections above. **Phase 7 had none — `PHASE_7_EXECUTION_PLAN.md` was referenced nowhere in this file** — while the 2026-08-19 amendment at the top still reads *"Only Phases 5–7 (less 7A) remain pre-Phase-0 tables"*, presenting this table as standing. A reader who greps this file for their item finds a cut feature written as a deliverable, with nothing nearby to contradict it. That happened: `7-14` was built against its row here, and apron floodlighting was designed before the cut was found. **Rows are struck in place rather than deleted, per house convention — a reader needs to see that they were once promised.**
 
 **Goal.** Deliver the complete night experience — moon, stars, night vision, and real airfield and aircraft lighting — and replace the three placeholder hangar boxes with an airfield that has a recognisable identity.
 
@@ -755,6 +768,79 @@ Because `filter = FILTER_PCF` (`AtmosphereSystem.ts:209`) binds only the depth t
 Balanced is the tightest row at 13% headroom. First cuts if it overshoots, in order: material arrays 256² at Balanced (−28), MSAA 2× at Balanced (−36), channel atlas slot count 196 → 144 (−18).
 
 ### 5.3 Redesigned `QualityProfile`
+
+> **Annotated 2026-08-31 (Phase 6 item `6-12`). Four rows below no longer
+> describe what ships.** This table is the Phase-4 *design*, and it is kept as
+> written because it is what the tier decisions were argued against. It is not a
+> record of the shipped profile. `src/render/webgpu/core/QualityProfile.ts` is
+> the only authority for that, and the deltas are now pinned against it by
+> `tests/docs-truth.test.ts` — so this annotation cannot itself go stale without
+> a red test.
+>
+> | Row | Published here | Shipped (`QualityProfile.ts`) |
+> |---|---|---|
+> | `msaaSamples` | 1 / **4** / 4 / 4 | 1 / **1** / 4 / 4 |
+> | CDLOD node budget *(both rows)* | 160 / 240 / 320 / 448 | **224 / 320 / 448 / 640** |
+> | Ocean cascades / N | 3 @ 128 / **4 @ 256** / 5 @ 256 / **6 @ 256 (+ capillary)** | 3 @ 128 / **4 @ 128** / 5 @ 256 / **5 @ 256** |
+>
+> **The node-budget row moved for a recorded reason and the τ row did not move
+> with it.** `4.5-A` found the budget binds before `cdlodPixelThreshold` at every
+> tier, so the budget was raised and the threshold deliberately left alone. The
+> combined "CDLOD τ / node budget" row above therefore reads as one decision when
+> it is two, and its second half is stale while its first half is current.
+>
+> **Ultra's ocean row was never built.** Cascade 6 and the capillary band belong
+> to phases that did not run; `QualityProfile.ts:474` says so at the tier-3
+> return. Ultra matches tier 2's ocean, and PCSS was struck outright by `4-8b`.
+>
+> **The GPU memory ceiling row is true but no longer sufficient**, and this is
+> the sharper problem. Its 480 MiB matches `MEMORY_CEILING_MIB[1]`, which gates
+> the *estimate* model — and `6-11.4` measured that model reading 367.5–380.7 MiB
+> while the actual inventory reads 483.9–492.3 MiB, a stable 1.29–1.32x shortfall
+> across 24 shots. **The tier-1 inventory is therefore already OVER the 480 row
+> this table publishes**, and passes only because a second, higher ceiling
+> (`PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB = 495`) is what actually gates.
+> A reader taking 480 as headroom is wrong twice: wrong quantity, and wrong
+> direction. ~~Real tier-1 headroom is **2.7 MiB (0.5%)**. Never quote the
+> estimate.~~
+>
+> **STRUCK 2026-09-01. BOTH SENTENCES ARE WRONG, AND THEY FAIL IN OPPOSITE
+> DIRECTIONS — which is why striking one without the other would be worse than
+> leaving both.**
+>
+> **The 2.7 MiB is not a real quantity.** `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB`
+> was derived FROM the inventory, twice, and from nothing else — there is no
+> device limit, no product requirement, no physical budget behind it:
+>
+>     489.0 measured (2026-08-30)  +  6.0 slack  =  495.0   the constant, exactly
+>     492.3 re-measured (6-11.4)   +  2.7        =  495.0   same constant, re-justified
+>
+> So "headroom" here is the distance between a measurement and a number chosen
+> to sit just above that measurement. **The inventory over-counts via the
+> `bytesPerTexel` type-versus-format error, and the ceiling inherits the whole
+> error.** The Senior Principal established the inflation is R32F-site-selective
+> and therefore constant-additive at a fixed tier — which is exactly why the
+> ratchet kept catching real growth all week while being absolutely wrong, and
+> why **no reclaimable figure is quoted here.** Both terms of (inflation at the
+> binding shot) − (growth absorbed since 08-30) are unknowable until SWE II 2's
+> four-site audit lands and the fixed instrument is re-measured at the current
+> 36-shot set.
+>
+> **And "never quote the estimate" invites the opposite error, which is equally
+> available.** The estimator is not the fallback. Measured by the Principle
+> Engineer across the cascade arms: `estimatedGpuMemoryMiB` read **591.3 in both
+> the shipped and the naive arm** while `inventoriedGpuMemoryMiB` read **657.7
+> and 785.7** — **a 128 MiB allocation change completely invisible to the
+> estimator.** One instrument is blind to whole categories of allocation; the
+> other counts bytes that are not there. **Neither is the truth, and the honest
+> reading of any memory number in this repository today is that it names an
+> instrument, not a quantity.**
+>
+> Until the audit and re-measure land: quote the inventory for RELATIVE change
+> at a fixed tier, where the constant-additive error cancels; quote neither for
+> an absolute figure; and treat one concrete decision as reopened rather than
+> settled — `7-11`'s 512² refusal at 2.67 MiB, which the Senior Principal finds
+> affordable roughly 60× over.
 
 | Parameter | Low | **Balanced (default)** | High | Ultra |
 |---|---|---|---|---|

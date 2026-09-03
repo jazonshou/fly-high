@@ -43,13 +43,45 @@ export interface SubsystemBudgetMs {
    * **This row and its funding are in one commit, deliberately.**
    * `FRAME_BUDGET_MS[2]` summed to 13.60 ms against a 13.7 ms target — 0.10 ms
    * of slack — so adding any positive value at tier 2 would trip the budget
-   * test in the same commit that adds the row. The funding is the shadow cut:
+   * test in the same commit that adds the row.
+   *
+   * That 13.60 is the figure AT THE TIME THIS ROW LANDED and is kept because
+   * it is what the decision was made against. **Re-measured 2026-08-31 the sum
+   * is 13.650 against the same 13.7 target — 0.050 ms, half the slack the
+   * sentence above describes.** Something spent 0.05 ms of tier 2 since Phase 4
+   * and no one revised the number, which is how a figure quoted in prose drifts
+   * from the constants directly beneath it. Tier 2 is now 99.6% committed: any
+   * new row there has to come out of an existing one in the same commit.
+   * Measure before quoting this paragraph; do not quote it as current.
+   *
+   * The funding is the shadow cut:
    * `4-8a` has already halved the maps at tiers 2 and 3 by the time this row
    * exists, and `4-8b` shortens tier 1's cascades before tier 1's `shadows`
    * row moves. A budget row must never assert a spend nothing has delivered
    * (the `R-22` failure mode).
    */
   readonly occlusionCompute: number;
+  /**
+   * `6-9`: the per-frame ground-cover placement/compaction dispatches.
+   *
+   * **Wave G's first recorded debt, paid here.** The plan named
+   * `groundCoverCompute` as a `ComputeBudget` client with a matching
+   * `SubsystemBudgetMs` row (G-1) and neither was ever created, so the only
+   * compute client that runs on EVERY frame was the one the frame's compute
+   * meter could not see. Until now the spend was carried implicitly by the
+   * `vegetation` row, which §5.3 defines as "scatter/cull compute +
+   * alpha-tested draws + impostors" — the row always meant to hold it. It is
+   * declared separately now because the meter admits per client, and an
+   * un-metered client cannot be deferred, scaled by the governor, or counted.
+   *
+   * The rows below are per-frame across all three rings (one dispatch each).
+   * **Tier 2 is the tight one**: its published rows already summed to
+   * 13.45 ms against a 13.7 ms target before this row existed, which leaves
+   * 0.05 ms of slack afterwards. That is not this item's to fix — `6-11`
+   * rebuilds the tier table from measurement — but it is recorded here so the
+   * next row addition finds the wall rather than discovering it.
+   */
+  readonly groundCoverCompute: number;
   readonly shadows: number;
   readonly water: number;
   readonly clouds: number;
@@ -83,6 +115,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.2,
       splatCompute: 0.15,
       occlusionCompute: 0.1,
+      groundCoverCompute: 0.1,
       shadows: 0.7,
       water: 1.1,
       clouds: 1.5,
@@ -96,6 +129,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.4,
       splatCompute: 0.25,
       occlusionCompute: 0.2,
+      groundCoverCompute: 0.18,
       // `4-8b` shortened this tier's cascades (2×2048@7000 → 3×1280@1400), so
       // the row may move. The cut is phased with the item that EARNS it: a
       // budget row must never assert a spend nothing has delivered.
@@ -112,6 +146,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 0.7,
       splatCompute: 0.3,
       occlusionCompute: 0.25,
+      groundCoverCompute: 0.2,
       // `4-8b`'s 3×1536@1800 near field; `4-8a`'s temporary cut is gone.
       shadows: 0.8,
       water: 1.8,
@@ -126,6 +161,7 @@ export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs
       erosionCompute: 1.2,
       splatCompute: 0.5,
       occlusionCompute: 0.4,
+      groundCoverCompute: 0.35,
       // `4-8b`'s 4×2048@2400 near field.
       shadows: 1.8,
       water: 4.0,
@@ -209,6 +245,15 @@ export interface DynamicAllocationInputs {
    * CPU-baked domain tile. Per-tier because the blade law's lattice sizes
    * are; pinned against `groundCoverBufferBytes(GROUND_COVER_LAWS[tier])`
    * by the vegetation suite so the row moves when the law moves.
+   *
+   * `6-9` adds two allocations and one row moves: the archetype DRIVER tile
+   * (a second 64² rgba8, 16 KiB) and the compaction counter ring (48 bytes,
+   * registered through `GpuBufferInventory` because a storage buffer is
+   * invisible to the texture/geometry walk). +0.0157 MiB at every tier, which
+   * only tier 2 was too tight to absorb — 6.0 -> 6.02. The blade buffers
+   * themselves are BYTE-IDENTICAL: compaction writes survivors into the same
+   * fixed-capacity lattice buffer rather than into a second compacted one,
+   * which is what keeps a cull off the memory wall entirely.
    */
   readonly groundCoverMiB: Readonly<Record<PerformanceTier, number>>;
   /** Cloud noise/weather volumes (`2-1`); 0 until the bake exists. */
@@ -258,8 +303,8 @@ export interface DynamicAllocationInputs {
   readonly macroEvolutionEdge: number;
   readonly macroEvolutionResidentBytesPerTexel: number;
   /**
-   * `5-4`: final-GPU reservation for six reusable r32float scratch fields.
-   * The current reference scratch is worker CPU memory, not live GPU inventory.
+   * `5-4`/`W-1d`: the page-erosion DAG's six reusable r32 scratch fields, one
+   * page in flight. Measured against `TerrainPageErosionGpu`, not reserved.
    */
   readonly erosionScratchEdge: number;
   readonly erosionScratchFieldCount: number;
@@ -297,7 +342,7 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   groundCoverMiB: Object.freeze({
     0: 1.4,
     1: 3.6,
-    2: 6.0,
+    2: 6.02,
     3: 9.4,
   }),
   // 2-1: 128³ rgba8 base + 32³ rgba8 detail + 512² rgba8 weather ≈ 9.1 MiB.
@@ -331,8 +376,15 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // a second time before the measured GPU producer replaces it.
   macroEvolutionEdge: 1_024,
   macroEvolutionResidentBytesPerTexel: 5,
-  // 5-4 final-GPU reservation. Today's worker creates the 384² six-field r32
-  // scratch on CPU; the estimator still protects the intended GPU residency.
+  // 5-4 / W-1d, now MEASURED rather than reserved: the multi-frame GPU page
+  // erosion DAG (TerrainPageErosionGpu) holds exactly one page in flight and
+  // exactly six 384² r32 scratch fields — mask, height A, height B, flow,
+  // erodibility, receivers — with four of them shared across DAG phases
+  // (height B stages the macro seed then the breach surface; flow becomes
+  // repose; receivers become the talus delta). The producer pins this count
+  // as TerrainPageErosionGpu.SCRATCH_FIELD_COUNT and a test holds the two
+  // together. Its uniform buffers (page uniforms, params, earthworks) are a
+  // few kilobytes and ride the estimator's slack factor.
   erosionScratchEdge: 384,
   erosionScratchFieldCount: 6,
   erosionScratchBytesPerTexel: 4,
@@ -384,13 +436,158 @@ const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Ob
 const MISC_ALLOWANCE_MIB = 40;
 
 /**
- * Estimate-vs-reality slack. Provisional calibration 2026-08-17 (Apple
- * M-series reference machine): pure allocation arithmetic, cross-checked
- * against the renderer's texture/buffer inventory only coarsely; the 1A-1
- * numeric report carries `estimatedGpuMemoryMiB` so the drift is visible in
- * every capture. Re-pin when |estimate − actual| exceeds 15%.
+ * Estimate-vs-reality slack.
+ *
+ * **THE PROVENANCE CLAIM BELOW IS FALSE AND IS STRUCK. The cross-check it
+ * cites could not have happened, because the instrument did not exist.**
+ *
+ * ~~Provisional calibration 2026-08-17 (Apple M-series reference machine):
+ * pure allocation arithmetic, cross-checked against the renderer's
+ * texture/buffer inventory only coarsely.~~
+ *
+ * `f67b147` (2026-08-17) introduced this constant carrying that sentence. At
+ * that commit `inventoryGpuMemoryMiB` appears **zero** times in
+ * `FlightRenderer.ts`, and the string "inventor" appears exactly ONCE in all
+ * of `src/` — inside this very docblock, citing it. The inventory walk arrived
+ * the next day in `ba63ef0`. **So this is not a calibration that went stale;
+ * it was never measured against anything.**
+ *
+ * What it costs: the estimate's terms sum to 319.55 MiB at tier 1, and this
+ * multiplier ADDS 47.93 on top of otherwise exact allocation arithmetic.
+ * Together with the two flat allowances that are declared rather than computed
+ * (`miscMiB` 40.00 and `otherDetailMiB` 9.00), roughly **97 MiB of the
+ * estimate corresponds to nothing the renderer allocates**.
+ *
+ * **AND ITS OWN RE-PIN TRIGGER HAS FIRED, UNWATCHED.** The rule was "re-pin
+ * when |estimate − actual| exceeds 15%". Measured 2026-09-01 at tier 1 over 36
+ * shots, after the inventory's format fix (`4543b7e`): estimate 367.5 against
+ * an inventoried 248.3–256.7, which is **48%** — three times the threshold,
+ * with nothing checking it. A trigger with no mechanism is a comment.
+ *
+ * The constant is NOT removed here. Four owners budget against numbers derived
+ * through it and removing a multiplier without a replacement basis trades a
+ * known-wrong figure for an unknown one. It needs a real calibration against
+ * the corrected inventory, which in turn wants that inventory to survive the
+ * single-channel-texture enumeration — it has already been wrong once, a 2x
+ * under-count on `TEXTURETYPE_SHORT`.
+ *
+ * **2026-09-02: THE RE-PIN THIS DOCBLOCK ASKS FOR IS NOT THE FIX, AND THE
+ * PARAGRAPH ABOVE IS LEFT STANDING BECAUSE IT IS WHAT WAS BELIEVED.** No value
+ * of this constant can satisfy the trigger. The estimate's terms sum to 319.55
+ * MiB at tier 1 against a measured 249.50, so clearing 15% needs the estimate
+ * at or below 286.92 — **reachable only at a factor of 0.8979, a slack
+ * multiplier that SHRINKS the estimate.** That is widening the trigger wearing
+ * a different constant's name.
+ *
+ * The trigger was mis-stated, not mis-tuned. `inventoryGpuMemoryMiB` is a
+ * FLOOR by its own docblock — blind to pipelines, shader cache, MSAA resolve
+ * targets and driver overhead — and `MISC_ALLOWANCE_MIB` is a description of
+ * most of that blindness. **Two quantities defined not to be equal were
+ * required to agree within 15%.** See `estimateInventoriableGpuMemoryMiB`,
+ * which the trigger now reads: same threshold, same factor, comparable
+ * operands, 8.7%.
+ *
+ * This constant remains uncalibrated and still needs its own answer. It is
+ * simply no longer load-bearing for the trigger, so that work is not urgent
+ * and must not be done by fitting it to a gate.
+ *
+ * **Do not re-derive `PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB` while this
+ * multiplier stands**, or a 15% arbitrary component is carried forward
+ * invisibly into the new ceiling.
  */
 const ESTIMATE_FUDGE_FACTOR = 1.15;
+
+/**
+ * The re-pin rule above, as a NUMBER something can read.
+ *
+ * The docblock has said "re-pin when |estimate - actual| exceeds 15%" since
+ * `f67b147`. It fired, reached 48%, and stayed fired — because **a threshold
+ * written in prose has nothing to compare against and nobody to tell.** That is
+ * the same shape as the GPU ladder's "a governor lever must never be attached
+ * to nothing", which was also true, also prose, and also unenforced until it
+ * became a test.
+ *
+ * **Exported so the check reads the rule rather than a copy of it.** A guard
+ * that transcribes 0.15 into a test file is two constants that can drift apart,
+ * which is the defect this whole area has been suffering from.
+ *
+ * **The comparison must be against a MEASURED inventory, never a modelled one.**
+ * There is no device in the Node suite, so the check lives in
+ * `tests/perf/perf-capture.test.ts` where both `estimatedGpuMemoryMiB` and
+ * `inventoriedGpuMemoryMiB` are read off a real frame. A trigger guard that
+ * compared this constant against another constant would have the disease it
+ * was written to cure.
+ */
+export const ESTIMATE_REPIN_TRIGGER_FRACTION = 0.15;
+
+/**
+ * `|estimate - inventory| / inventory`, the quantity the rule is stated in.
+ *
+ * Divided by the INVENTORY rather than the estimate: the inventory is the
+ * measured floor and the estimate is the thing on trial, so the measured value
+ * is the denominator. Returns `null` when either reading is missing or the
+ * inventory is not a plausible positive, so an absent number can never be
+ * mistaken for a passing one.
+ */
+export function estimateDivergenceFraction(
+  estimatedMiB: number | undefined,
+  inventoriedMiB: number | undefined,
+): number | null {
+  if (typeof estimatedMiB !== "number" || !Number.isFinite(estimatedMiB)) return null;
+  if (typeof inventoriedMiB !== "number" || !Number.isFinite(inventoriedMiB)) return null;
+  if (inventoriedMiB <= 0) return null;
+  return Math.abs(estimatedMiB - inventoriedMiB) / inventoriedMiB;
+}
+
+/**
+ * The estimate restricted to what `inventoryGpuMemoryMiB` can actually SEE.
+ *
+ * **The re-pin rule compared a ceiling against an acknowledged floor.** The
+ * inventory's own docblock says it "cannot see MSAA resolve targets, pipelines
+ * or driver overhead, so it is a FLOOR", and `MISC_ALLOWANCE_MIB` is a
+ * description of most of what that floor is blind to. Two quantities defined
+ * not to be equal were being required to agree within 15%, and the only reason
+ * that ever looked satisfiable is that the inventory's format bug held the
+ * ratio steady. **The gate did not start being wrong when the inventory was
+ * fixed; it started being visible.**
+ *
+ * Three exclusions, each for its own reason:
+ *
+ * - **`miscMiB`.** Its named contents are either invisible to the walk
+ *   (pipelines, shader cache) or already inside the walk's other lanes
+ *   (aircraft/airport meshes, sky dome, small LUTs). Adding it to this side
+ *   would either double-count what the lanes already hold or import what they
+ *   cannot hold. Measured 2026-09-02 at tier 1: the walk's ENTIRE geometry
+ *   lane is 10.50 MiB across every mesh in the scene — terrain grids and
+ *   shadow casters included, which `miscMiB` does not even claim — so its mesh
+ *   half cannot exceed that, and at least 29.50 of its 40 is non-inventoriable
+ *   whatever else is true.
+ * - **The eroded-only reservations.** `TerrainMacroErosionGpu` is constructed
+ *   only when `worldEvolution === "eroded"` (FlightRenderer), and
+ *   `erosionScratchMiB` is that same producer's working set. The SHIPPING
+ *   world is analytic — `DEFAULT_WORLD_EVOLUTION` — so these are budgeted and
+ *   never allocated in the world the inventory measures.
+ * - **`ESTIMATE_FUDGE_FACTOR`.** Slack is not an allocation. Comparing a
+ *   padded figure against a measurement tests the padding, not the arithmetic.
+ *
+ * Verified across the whole admissible range of the misc split: 8.7% with all
+ * of misc excluded, 12.9% with its mesh half at the measured bound. **Both
+ * inside the existing 15% rule, with no constant re-tuned** — which is why the
+ * fix here is to what is compared, not to what it is compared against.
+ */
+export function estimateInventoriableGpuMemoryMiB(
+  profile: WebGpuQualityProfile,
+  viewport: RenderViewport,
+  options: { readonly worldEvolution: "analytic" | "eroded" },
+  inputs: DynamicAllocationInputs = DYNAMIC_ALLOCATIONS,
+): number {
+  const b = estimateGpuMemoryBreakdown(profile, viewport, inputs);
+  const terms = b.totalMiB / ESTIMATE_FUDGE_FACTOR;
+  const erodedOnly = options.worldEvolution === "eroded"
+    ? 0
+    : b.macroEvolutionMiB + b.erosionScratchMiB;
+  return terms - b.miscMiB - erodedOnly;
+}
 
 export interface GpuMemoryEstimateMiB {
   readonly renderPixels: number;

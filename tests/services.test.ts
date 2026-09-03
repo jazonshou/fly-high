@@ -49,12 +49,15 @@ describe("input shaping", () => {
   });
 
   it("maps A to left bank and D to right bank for taps and held keys", () => {
-    // Compatibility sign for the current rendered aircraft/body basis.
-    expect(keyboardRollDirection("KeyA")).toBe(1);
-    expect(keyboardRollDirection("KeyD")).toBe(-1);
+    // D-6: standard pilot signs with no compensation — A is the negative
+    // (left) roll command and D the positive (right) one. The pre-D-6
+    // inversion ("A -> +1") was the keyboard workaround for the body-axis
+    // mirror and is deleted.
+    expect(keyboardRollDirection("KeyA")).toBe(-1);
+    expect(keyboardRollDirection("KeyD")).toBe(1);
     expect(keyboardRollDirection("KeyQ")).toBe(0);
-    expect(keyboardRollCommand(new Set(["KeyA"]))).toBe(1);
-    expect(keyboardRollCommand(new Set(["KeyD"]))).toBe(-1);
+    expect(keyboardRollCommand(new Set(["KeyA"]))).toBe(-1);
+    expect(keyboardRollCommand(new Set(["KeyD"]))).toBe(1);
     expect(keyboardRollCommand(new Set(["KeyA", "KeyD"]))).toBe(0);
   });
 

@@ -66,6 +66,7 @@ function createHarness() {
     skyZenith: new Color3(0.2, 0.45, 0.85),
     skyHorizon: new Color3(0.7, 0.78, 0.88),
     ambientColor: new Color3(0.4, 0.45, 0.55),
+    skylightIlluminanceNormalized: 1,
     sunIlluminanceNormalized: 0.88,
     sunAngularRadiusRadians: 0.004675,
     cloudCoverage: 0.35,

@@ -15,7 +15,7 @@ export interface QuaternionState extends Vec3State {
 export type CameraMode = "chase" | "cockpit" | "cinematic" | "freefly";
 export type FlightMode = "scenic" | "pilot" | "unassisted";
 export type QualityLevel = "low" | "medium" | "high";
-export type TimeOfDayPreset = "dawn" | "day" | "golden";
+export type TimeOfDayPreset = "dawn" | "day" | "golden" | "night";
 export type WeatherPreset = "clear" | "breezy" | "cloudy";
 /** WebGPU feature intent. Quality controls asset density; this controls expensive GPU techniques. */
 export type RequestedRenderingMode = "performance" | "balanced" | "ultra";
@@ -135,6 +135,25 @@ export interface RenderDiagnostics {
   lakeCount: number;
   residentTerrainPages: number;
   /**
+   * Why those pages are resident, counted per reason.
+   *
+   * `residentTerrainPages` is a TOTAL over a MIXED POPULATION and was read as
+   * "terrain being drawn". Only `drawn` is a candidate for a visibility test:
+   * the collision ring is deliberately omnidirectional because physics has no
+   * frustum, morph parents pop the children that read them, and erosion seed
+   * blocks gate admission. `drawnBeyondShadowDistance` is the only figure a
+   * frustum cull could be sized from — terrain inside the shadow distance
+   * casts into view from any direction and must stay whether or not it is on
+   * screen.
+   */
+  residencyReasons: {
+    drawn: number;
+    parent: number;
+    collision: number;
+    seed: number;
+    drawnBeyondShadowDistance: number;
+  };
+  /**
    * Physics collision samples served by the coarse analytic fallback instead
    * of the authoritative terrain grid (§1.3). Hard-wired 0 until 5-2's
    * readback lands; any non-zero value below 500 m AGL is a bug.
@@ -181,10 +200,29 @@ export interface RenderDiagnostics {
   terrainComputeDispatches: number;
   estimatedGpuMemoryMiB: number;
   /**
+   * The estimate restricted to allocations the inventory walk can see — the
+   * only figure it is honest to compare against a measurement. The
+   * unrestricted number above remains the budgeting one.
+   */
+  estimatedInventoriableGpuMemoryMiB: number;
+  /**
    * Z-4: best-effort walk of actual texture/geometry allocations — a floor
    * reading the estimate's fudge factor is sanity-checked against.
    */
   inventoriedGpuMemoryMiB: number;
+  /**
+   * The same walk's three lanes, so a divergence can be ATTRIBUTED and not
+   * merely measured. Sums to `inventoriedGpuMemoryMiB` by construction.
+   *
+   * Required rather than optional deliberately: an absent breakdown would let
+   * a gate that reads it pass on nothing, which is the failure mode this whole
+   * area already has one of.
+   */
+  inventoriedGpuMemoryLanes: {
+    readonly textureMiB: number;
+    readonly geometryMiB: number;
+    readonly bufferMiB: number;
+  };
   budgetProbeActive: boolean;
   budgetProbeReport: readonly BudgetProbeResultRow[] | null;
   /**

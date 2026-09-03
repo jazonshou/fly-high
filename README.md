@@ -2,6 +2,10 @@
 
 fly high is an original, endless-flight browser simulator inspired by the calm, procedural rhythm of *slow roads*. It combines a deterministic world, a fixed-step six-degree-of-freedom light-aircraft model, synthesized audio, and a Babylon.js renderer built exclusively on WebGPU. The aircraft, terrain, vegetation, wildlife, water, atmosphere, and clouds are generated at runtime; no downloaded game-asset pipeline or remote service is required.
 
+> **Project status:** see [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md)
+> for the completed implementation, current verification and capture state, remaining
+> acceptance, and explicitly parked work.
+
 ## Run locally
 
 Requirements:
@@ -25,7 +29,9 @@ For a production-like check:
 npm run verify
 ```
 
-`verify` runs ESLint, strict TypeScript checks, all deterministic tests, and a production build.
+`verify` runs ESLint, strict TypeScript checks, all deterministic tests, and the Cloudflare
+production build. It intentionally does not run the separate GitHub Pages build, real-WebGPU
+suite, cold-start gate, or hardware capture suite.
 
 ## Controls
 
@@ -51,11 +57,11 @@ Keyboard, optional pointer-lock mouse yoke, standard gamepads, and non-standard 
 - Six-degree-of-freedom rigid-body integration with lift, induced/parasitic drag, sideslip, control-surface authority, propeller thrust, gravity, angular damping, load factor, and ground interaction.
 - Nonlinear angle-of-attack response, gradual stall onset, buffet warning, flap/trim effects, runway takeoff and landing, wheel braking, and crash/reset handling.
 - Direct/unassisted control by default, with explicit opt-in pilot damping and Scenic attitude control layered around the same aircraft model.
-- A Babylon.js `WebGPUEngine` scene using a right-handed coordinate system, reversed-Z depth, cascaded shadows, adaptive internal resolution, per-tier MSAA on the offscreen beauty target, an explicit half-float image-processing pass for ACES tone mapping, and a final FXAA pass as the no-MSAA fallback. There is no active prepass, TAA, bloom, or sharpening pipeline. The renderer reports the `forward-spectral-volumetric` technique and never selects another backend. A raw-device validation guard is attached before scene, shader, and resource construction; the first uncaptured WebGPU error terminalizes the renderer and stops the game loop with an explicit reload path instead of silently presenting black frames at display-rate FPS.
+- A Babylon.js `WebGPUEngine` scene using a right-handed coordinate system, reversed-Z depth, cascaded shadows, adaptive internal resolution, per-tier MSAA on the offscreen beauty target, a half-float scotopic/bloom/ACES image-processing chain (bloom is funded on Balanced/tier 1), and a final FXAA pass as the no-MSAA fallback. There is no active prepass, TAA, or sharpening pipeline. The renderer reports the `forward-spectral-volumetric` technique and never selects another backend. A raw-device validation guard is attached before scene, shader, and resource construction; the first uncaptured WebGPU error terminalizes the renderer and stops the game loop with an explicit reload path instead of silently presenting black frames at display-rate FPS.
 - A small explicit frame graph that orders simulation presentation, world visibility, spectral-ocean compute, volumetric-cloud integration, and final color presentation. Babylon owns command encoding and resource transitions; the game graph owns dependency order, update cadence, timings, and system invalidation hooks.
 - GPU-generated terrain drawn as a single screen-space-error CDLOD quadtree. The height kernel runs as a WGSL compute shader into an r32float page atlas — one 264² slot per page, surplus slots serving as the LRU cache — and one 33×33 unit grid is thin-instanced over the selected nodes, so the whole world's ground is one draw call plus one per shadow cascade. Nodes split when their *measured* deviation from their parent subtends more than a per-tier pixel threshold, and geomorph into the parent's vertex lattice before they are replaced, so cracks close analytically and there are no skirts and no popping. The GPU kernel agrees with the physics kernel to within 4 mm anywhere in the world — the split-origin lattice addressing removes the coordinate-magnitude error entirely, so the agreement does not degrade with distance from the origin — and an L0 page matches the surface the wheels touch to 0.06 mm. Sky visibility, a bent normal and an eight-azimuth horizon map are baked per page against a coarse global height field, so a ridge shadows the valley behind it at 40 km, where a cascaded shadow map has never reached. A land-cover classifier — ten smooth suitability functions, softmaxed and top-4 renormalised — is the single authority for what the ground is made of, which trees stand on it and which animals live in them; its output is baked into season-keyed splat pages and cross-faded, so the snowline migrates with the calendar while the species mix stays climatic. One PBR material plugin owns the whole of terrain surface appearance: ten procedurally synthesised land-cover materials — grass, dry grass, forest floor, shrub, sand, gravel, rock, snow, asphalt and concrete — live in two mipped, 16×-anisotropic `Texture2DArray`s and are sampled per fragment, so material resolution is independent of mesh resolution. The plugin composes them with three decorrelated de-tiling scales, true triplanar projection with reoriented normal blending on slopes, height-based blending between materials, per-material roughness/F0/Oren-Nayar response, and a day-of-year tint and roughness curve. Distant mips fold their flattened normal maps back into roughness (a Toksvig term), which is what stops far terrain acquiring a false sharp highlight. Every GPU compute producer is admitted by one per-frame millisecond meter, and floating-origin shifts keep GPU coordinates stable on long flights.
-- A WebGPU-native spectral ocean: seeded, band-limited JONSWAP-style spectra, time evolution, Stockham 2D inverse FFT, displacement/Jacobian derivation, per-cascade slope storage, and cadence-correct decayed foam across several wavelength cascades. Cascades store slopes rather than renormalised normals and carry a real mip chain sampled with explicit gradients, so range folds each band's missing energy into roughness (a Toksvig term) instead of aliasing it into sparkle, and a cascade fades out — displacement included — where its longest wavelength falls below two rendered pixels. A crack-free 40 km camera-centered radial grid (reconciled with the 45 km far plane) concentrates geometric samples near the aircraft, while fine cascade slopes/foam are combined per pixel for dielectric Fresnel, one physical GGX sun lobe, sky/cloud response, backlit crest scattering, lit foam advected with the surface, and environment reflections sampled from a bounded sky probe cube over the analytic fallback. Direct glint and sunlit scatter reuse the shared cascaded-shadow depth array as well as the cloud-transmittance map; there is no water-only shadow pass and no planar-reflection capture. FFT resources swap atomically when the live quality tier changes.
-- Deterministic rivers and lakes generated from terrain samples in velocity-ahead, overlapping world regions. A cancellable hydrology Worker streams replacement regions while the current region remains visible; a no-hole two-phase crossfade hides handoff latency. Each page traces globally owned upstream sources from a bounded max-length halo before clipping stable river geometry, so a downstream reach cannot disappear merely because its headwater left the page. Flow-aligned meshes use a separate WGSL water material with ripples, Fresnel response, sun highlights, shared sky/cloud lighting, and the same cascaded sun-shadow receiver as the ocean. Rivers and lakes sample the same bounded sky-probe environment reflections as the ocean, with the stable analytic reflection as fallback.
+- A WebGPU-native spectral ocean: seeded, band-limited JONSWAP-style spectra, time evolution, Stockham 2D inverse FFT, displacement/Jacobian derivation, per-cascade slope and slope-moment storage, and cadence-correct decayed foam across several wavelength cascades. Cascades store slopes rather than renormalised normals and carry a real mip chain sampled with explicit gradients, so range folds each band's missing energy into roughness (a Toksvig term) instead of aliasing it into sparkle, and a cascade fades out — displacement included — where its longest wavelength falls below two rendered pixels. A crack-free camera-centered radial grid retains its established 40 km detail lattice and moves only the final coarse coverage ring to 90 km, covering the 45 km far-plane corners without spending more topology or coarsening near-water geometry. Fine cascade slopes/foam are combined per pixel for dielectric Fresnel, one physical GGX sun lobe, sky/cloud response, backlit crest scattering, lit foam advected with the surface, and environment reflections sampled from a bounded sky probe cube over the analytic fallback. Direct glint and sunlit scatter reuse the shared cascaded-shadow depth array as well as the cloud-transmittance map; there is no water-only shadow pass and no planar-reflection capture. FFT resources swap atomically when the live quality tier changes.
+- Deterministic river and lake generation from terrain samples in velocity-ahead, overlapping world regions. A cancellable hydrology Worker streams replacement regions while the current region remains visible; a no-hole two-phase crossfade hides handoff latency. Each page traces globally owned upstream sources from a bounded max-length halo before clipping stable river geometry, so a downstream reach cannot disappear merely because its headwater left the page. A seed may legitimately yield lakes but no accepted river trace in the active region (the canonical shipping capture seed currently does); the richer channel-graph source remains parked with the opt-in eroded world. Flow-aligned meshes use a separate WGSL water material with ripples, Fresnel response, sun highlights, shared sky/cloud lighting, and the same cascaded sun-shadow receiver as the ocean. Rivers and lakes sample the same bounded sky-probe environment reflections as the ocean, with the stable analytic reflection as fallback.
 - Camera-centered volumetric clouds ray-marched in WGSL. The density bake, the march and the shadow pass all run as WebGPU compute shaders writing storage textures, over period-wrapped 3D noise volumes baked on the GPU at startup. Coverage and humidity come from an endless field of unwrapped world-cell hashes read through a camera-following window, so the weather pattern cannot repeat at any distance; layered shape noise sampled at two incommensurate scales, erosion, height-dependent wind shear, height profile, Beer extinction, anisotropic phase functions, powder backscatter, decaying multiple-scattering octaves, sun transmittance, and stochastic per-frame sampling produce varying forms and lighting without per-cloud meshes or sprite cards. The march skips empty space and grows every stride with ray distance, so horizon-grazing rays cost what near ones do. Low-resolution integration is temporally resolved and composited at full resolution, while a bounded 24 km transmittance map supplies height-aware cloud shadows to terrain, water, vegetation and opaque PBR scenery; transparent glass and emissive lights remain optically independent.
 - An analytic HDR atmosphere computed from one shared closed-form Rayleigh/Mie/ozone single-scattering integral: the WGSL sky, the aerial perspective on terrain, water, vegetation and clouds, and a limb-darkened true-angular-size sun disc all evaluate the same functions, driven by a continuous solar clock (NOAA solar position from day-of-year, solar time, and latitude) and clear/breezy/gusty-cloudy weather shared by sky, clouds, and water.
 - A real night sky on the same clock. Constellations are correct: ~190 bright stars carry their true J2000 positions, magnitudes and colour indices, a background fills in to the observed magnitude-count law, and the whole field rotates with local sidereal time so the sky arrives four minutes earlier each night and turns with the seasons. Atmospheric extinction is per star, so faint stars go out near the horizon while bright ones hold. The moon has an ephemeris position, a phase drawn from the real sun–moon geometry (with the opposition surge that makes a full moon far brighter than its lit fraction suggests), maria, limb darkening, earthshine on the dark limb, and its own warm ~4,100 K directional light. A scotopic post-process then does what a human eye does below about 0.03 cd/m²: colour discrimination collapses, blues brighten relative to reds, acuity drops, and adaptation into the dark takes far longer than adaptation out of it.
@@ -117,8 +123,9 @@ Playability acceptance targets:
   balanced/medium, with frame-interval p95 at or below 16.67 ms, no frame over
   50 ms, and at most five >27.4 ms hitches per 240-frame canonical shot. These
   ceilings are code-owned and cannot be relaxed by rebaselining screenshots.
-- Other supported hardware uses the governor and bounded quality tiers; its
-  selected tier is acceptable only when it meets the same raw delivery gate.
+- Other supported hardware uses the governor and bounded quality tiers. Tiers 0–2 retain
+  the 60 fps / 16.67 ms gate; tier 3 Ultra is explicitly a 30 fps / 33.34 ms tier with
+  doubled hitch and maximum-frame thresholds.
 - High-DPI display: confirm adaptive render scale prevents sustained fill-rate collapse.
 
 See `docs/PERFORMANCE.md` for exact tier budgets, subsystem ownership, streaming limits, measurement guidance, and current implementation boundaries.
@@ -128,14 +135,16 @@ See `docs/PERFORMANCE.md` for exact tier budgets, subsystem ownership, streaming
 ```bash
 npm run lint       # ESLint
 npm run typecheck  # strict TypeScript
-npm test           # all Vitest suites
+npm test           # deterministic Node/headless Vitest suite (not GPU/perf)
 npm run test:sim   # flight-model suite
 npm run test:world # world-generation suite
 npm run benchmark  # deterministic flight scenarios
 npm run test:gpu   # WebGPU suite; needs a hardware adapter
 npm run material:preview # writes the terrain-material contact sheet to tests/perf/artifacts/
-npm run perf:capture   # sixteen-shot, read-only-baseline capture gate on a real GPU
-npm run perf:capture:candidate # full validated candidate under tests/perf/artifacts/; never promotes
+npm run perf:cold-start # fresh-browser analytic readable/GPU-complete time-to-ready gate
+npm run perf:capture   # canonical hardware capture suite; PERF_CAPTURE_SHOTS owns the list
+npm run perf:capture:candidate # full candidate; APPROVABLE only after every gate; never promotes
+npm run perf:capture:rebaseline # legacy alias of candidate; does not edit the baseline
 npm run build      # production bundle (Cloudflare Worker)
 npm run build:pages # static bundle for GitHub Pages
 ```
@@ -155,7 +164,12 @@ PAGES_BASE=/fly-high/ npx vite preview --config vite.static.config.ts
 
 CI derives `PAGES_BASE` from the repository name, so renaming the repo moves the site without a workflow edit.
 
-The WebGPU suite (`tests/gpu`) is not in the required CI path: it needs a real adapter. `.github/workflows/gpu-tests.yml` runs it on a macOS runner on manual dispatch.
+The hardware WebGPU and capture suites live in the separate
+`.github/workflows/gpu-tests.yml` workflow because they need a real adapter. It runs on
+pull requests, pushes to `main`, a weekly schedule, and manual dispatch. Pull requests run
+the focused capture subset; the other triggers run the full capture. Hosted-runner frame
+delivery is report-only because it is not the pinned reference machine, while shader,
+visual, temporal, renderer-error, settling, and baseline-integrity failures remain gating.
 
 ### The lockfile must resolve to the public npm registry
 

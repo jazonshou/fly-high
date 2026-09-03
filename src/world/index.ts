@@ -10,7 +10,11 @@ export {
 } from "./airport";
 export {
   assessAirportSite,
+  DETAILED_PRIMARY_COUNT,
   findGeneratedAirportSite,
+  HEADINGS_PER_DETAILED_CANDIDATE,
+  readAirportSiteEvaluationCount,
+  resetAirportSiteEvaluationCount,
   resolveGuaranteedAirportRegion,
 } from "./airportSite";
 export type {
@@ -26,7 +30,10 @@ export {
   TERRAIN_NORMAL_SAMPLE_DISTANCE,
   sampleNaturalTerrainHeight,
   sampleTerrainEvolutionGeology,
+  sampleTerrainFineBandRelief,
   sampleTerrainUpliftHeight,
+  TERRAIN_FINE_BAND_24M_AMPLITUDE_METERS,
+  TERRAIN_FINE_BAND_9M_AMPLITUDE_METERS,
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
   sampleTerrain,

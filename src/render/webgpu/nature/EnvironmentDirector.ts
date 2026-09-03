@@ -242,11 +242,21 @@ export function horizontalIlluminanceLux(
   const luminous =
     0.2126 * transmittance[0] + 0.7152 * transmittance[1] + 0.0722 * transmittance[2];
   const direct = state.sun.illuminanceLux * Math.max(sunY, 0) * luminous;
-  // Diffuse skylight proxy with a twilight tail. The tail runs to the real
-  // night floor now rather than stopping at a placeholder 40 lux.
-  const sky = 14_000 * smoothstepValue(-0.1, 0.35, sunY)
-    + 3.4 * smoothstepValue(-0.31, -0.02, sunY);
-  return direct + sky + moonIlluminanceLux + MOONLESS_NIGHT_ILLUMINANCE_LUX;
+  return direct + skyDiffuseIlluminanceLux(sunY)
+    + moonIlluminanceLux + MOONLESS_NIGHT_ILLUMINANCE_LUX;
+}
+
+/**
+ * The diffuse-sky portion of the illuminance model, physical lux — a proxy
+ * with a twilight tail that runs to the real night floor rather than
+ * stopping at a placeholder 40 lux. Extracted so `adaptedLuminanceCdM2`'s
+ * sky-view term and `horizontalIlluminanceLux` compose the SAME expression
+ * and cannot drift — a mirrored copy of this formula is exactly the kind
+ * that rots.
+ */
+export function skyDiffuseIlluminanceLux(sunDirectionY: number): number {
+  return 14_000 * smoothstepValue(-0.1, 0.35, sunDirectionY)
+    + 3.4 * smoothstepValue(-0.31, -0.02, sunDirectionY);
 }
 
 export const REFERENCE_ILLUMINANCE_LUX = ((): number => {
@@ -283,12 +293,97 @@ export const SCOTOPIC_FLOOR_ILLUMINANCE_LUX = (0.03 * Math.PI) / 0.2;
  * stated rationale: the curve keeps opening down to the illuminance at
  * which human vision hands over to the rods, and stops there, because past
  * that point brightening the cone image is not what a person's night vision
- * does — `ScotopicVision`'s Naka–Rushton response is. It evaluates to ~4.66
- * at the shipped constants; the number moves only if the curve or the
- * scotopic threshold moves, which is the point.
+ * does — `ScotopicVision`'s Naka–Rushton response is. It evaluates to
+ * **4.698026433055187** at the shipped constants; the number moves only if the
+ * curve or the scotopic threshold moves, which is the point.
+ *
+ * `7-4a`: this docblock said "~4.66" from Phase 2.5 until 2026-09-01, against a
+ * value test-pinned at 4.698. Nothing consumed the prose, so nothing caught it —
+ * the figure is now asserted in `tests/render.scotopic-dynamic-range.test.ts`
+ * so the docstring and the constant cannot drift apart again.
  */
 export const MAX_EXPOSURE = BASE_EXPOSURE
   * Math.pow(REFERENCE_ILLUMINANCE_LUX / SCOTOPIC_FLOOR_ILLUMINANCE_LUX, ADAPTATION_STRENGTH);
+
+/**
+ * NIGHT_LOOK_ARCHITECTURE §2.1 — how dark twilight FEELS, keyed to SUN
+ * ELEVATION. Jason's Option B, chosen 2026-09-01: *"golden hour bright and
+ * warm, blue hour properly dark"* — two targets minutes apart in elevation
+ * and similar in raw luminance, which is exactly why an adaptation-keyed dip
+ * could not deliver them and this is keyed to the sun instead.
+ *
+ * His round-1 anchors: the moonlit night at terrain median 0.124 is "on the
+ * right track"; `dusk-mesopic` at 0.347 is "wayyy too bright". Dusk was NOT
+ * regressed by the probe (the moon lift added 0.0071 scene units there and
+ * dusk's exposure computes to 3.851, unclamped) — the rung had simply never
+ * been seen. So this is ART DIRECTION, not a bug fix.
+ *
+ * The window, in sun-elevation SINE, derived from the shipping ephemeris at
+ * the capture latitude/day rather than picked (day 179, 45°N: golden hour
+ * 19.0h = +0.111, sunset 19.75h = −0.008, `dusk-mesopic` 20.45h = −0.109,
+ * `night-moonlit` 23.75h = −0.369):
+ *
+ *   rises  +0.02 → −0.05   sunset into early blue hour begins to dim
+ *   holds  −0.05 → −0.16   the blue hour, `dusk-mesopic` mid-band
+ *   falls  −0.16 → −0.26   astronomical twilight releases to zero
+ *
+ * ENDPOINTS PINNED BY SHAPE on the new parameterisation, same discipline as
+ * the rod-keyed draft this replaces: golden hour (+0.111) is above the
+ * window — bright and warm, untouched; `night-moonlit` (−0.369) is 0.11 of
+ * sine below the release — the ONE approved frame cannot move. 0.45 targets
+ * dusk terrain ≈0.19 from 0.347, tuned by capture against the terrain-band
+ * median, never by eye alone.
+ */
+export const TWILIGHT_EXPOSURE_DIP = 0.45;
+
+function smooth01(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * The §2.1 twilight dip factor from the sun-elevation sine (Option B).
+ *
+ * **THE RISE NARROWED 2026-09-02 ON NEW INPUT FROM JASON**, the same
+ * objective-bound-moves-on-new-information pattern this record already uses
+ * twice. His original direction stands — *"golden hour bright and warm, blue
+ * hour properly dark"* — and he has now seen the sunward twilight frame and
+ * finds it **too dark**. He chose to NARROW THE BAND rather than weaken the
+ * dip, so 0.45 is untouched and `dusk-mesopic`'s approved darkness is
+ * preserved exactly.
+ *
+ *     rise was  -0.05 .. +0.02  (width 0.07)   both shots took the full dip
+ *     rise now  -0.095 .. -0.056 (width 0.039)  sunset out, dusk unchanged
+ *
+ * **THE ENGINEERING PROBLEM IS THE TIGHTNESS.** `sunset-sunward` sits at sine
+ * −0.0523 and `dusk-mesopic` at −0.1067 — **0.0543 apart** — and the whole
+ * transition has to fit between them, so margin on both sides in the amounts
+ * one would like is not available. **The margin is deliberately ASYMMETRIC:
+ * 0.0116 of sine for dusk below the full-dip end against 0.0037 for sunset
+ * above the release.** Dusk's darkness is the protection and sunward brightness
+ * is the objective; a protection should fail safe and an objective should fail
+ * visible, so if the ephemeris moves, sunset flips back to dimmed before dusk
+ * brightens.
+ *
+ * **THE RELEASE IS UNTOUCHED AND MUST STAY SO.** `twilightArchStrength`
+ * (§2.6, `AerialPerspective`) is a separate function that shares ONLY these
+ * release edges, deliberately, and six consumers hang on it — the dome arch,
+ * the ambient-floor cut, σ's arch key, the lamp twilight ramp, the moon
+ * recession, and Jason's warm lobe and Belt premultipliers. The shared edges
+ * are pinned behaviourally at −0.16 and −0.26 in
+ * `render.webgpu-aerial-perspective.test.ts`. Narrowing the RISE is safe by
+ * construction; moving the release is not.
+ *
+ * **In time, the narrower window is 15-18 minutes against the previous 28**,
+ * measured against the shipping ephemeris near sunset — a real change to how
+ * fast blue hour arrives, and the one part of this Jason has not been asked
+ * about directly.
+ */
+export function twilightExposureDipFactor(sunElevationSine: number): number {
+  const rise = 1 - smooth01((sunElevationSine + 0.095) / 0.039);
+  const fall = smooth01((sunElevationSine + 0.26) / 0.1);
+  return 1 - TWILIGHT_EXPOSURE_DIP * rise * fall;
+}
 
 export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0): number {
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
@@ -316,10 +411,43 @@ export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0
 export const SCENE_UNIT_TO_NITS = 120_000 / (5.2 * Math.PI);
 
 /**
- * Mean scene luminance a viewer is adapted to, cd/m². Lambertian ground at
- * the world's mean albedo under the current illuminance — the standard
- * approximation, and it needs no framebuffer readback, so the capture stays
- * a function of pinned inputs (the `1A-4` stale-state rule).
+ * How much of the visual field the sky dome occupies, for adaptation. A
+ * canonical level-flight cockpit view holds the sky across roughly the
+ * upper half of the field; 0.45 splits the difference between straight
+ * cruise (~0.5) and the slightly nose-down capture vantages (~0.35–0.4).
+ * A camera-pitch-dependent share would need renderer state here and would
+ * make the capture depend on unpinned inputs — the `1A-4` rule — so the
+ * share is canonical, and the adaptation smoothing absorbs the error.
+ */
+export const SKY_VIEW_FRACTION = 0.45;
+
+/**
+ * Mean scene luminance a viewer is adapted to, cd/m² — what fills the
+ * VISUAL FIELD, not what lights the ground.
+ *
+ * Until NIGHT_LOOK §2.6 round 3 this was Lambertian ground alone, and at
+ * twilight that is the wrong question: the brightest thing a pilot sees at
+ * civil dusk is the sky dome across the upper half of the field, and the
+ * eye adapts to it. Ground-only adaptation read 0.14 cd/m² at `dusk-
+ * mesopic` and put the rod fraction at 0.73 — and two measured capture
+ * rounds showed the consequences (the rod response re-centring ground and
+ * compressing the sky/ground order the twilight arch was built to create).
+ * Field-weighted, dusk reads 0.46 cd/m² and rod 0.36, by the perceptual
+ * model's own arithmetic — the call stays physical; its INPUT was wrong.
+ *
+ * The sky term is the PHYSICAL illuminance model's diffuse sky over π (a
+ * uniform-dome mean), never the rendered dome: the art-directed sky is
+ * ~20–100× physical at twilight and ~3000× at night (a visible night sky
+ * IS art-bright), and adapting to the art dome would read ~78 cd/m² at
+ * night and slam the rod fraction to 0 — the approved night look would
+ * die. The physical sky term is zero below sine −0.31, so at every night
+ * clock this function returns 0.55× its old value, far below the scotopic
+ * threshold either way: night rod stays exactly 1 by the model's shape,
+ * and noon/golden stay exactly 0 (verified at all five ladder clocks in
+ * render.webgpu-environment.test.ts).
+ *
+ * Still no framebuffer readback — the capture stays a function of pinned
+ * inputs (the `1A-4` stale-state rule).
  */
 export function adaptedLuminanceCdM2(
   state: EnvironmentState,
@@ -327,7 +455,10 @@ export function adaptedLuminanceCdM2(
 ): number {
   const albedo = state.atmosphere.groundAlbedo[1];
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
-  return (horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast * albedo) / Math.PI;
+  const ground =
+    (horizontalIlluminanceLux(state, moonIlluminanceLux) * overcast * albedo) / Math.PI;
+  const dome = (skyDiffuseIlluminanceLux(state.sun.direction[1]) * overcast) / Math.PI;
+  return (1 - SKY_VIEW_FRACTION) * ground + SKY_VIEW_FRACTION * dome;
 }
 
 /**

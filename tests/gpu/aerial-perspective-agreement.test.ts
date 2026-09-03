@@ -35,7 +35,12 @@ struct AerialUniforms {
   aerialSunRadiance: vec3f,
   aerialAmbient: vec3f,
   aerialSunTransmittance: vec3f,
+  aerialTwilightArch: vec3f,
+  aerialNightZenithFade: f32,
   aerialParams: vec4f,
+  aerialTwilightWarm: vec3f,
+  aerialTwilightBelt: vec3f,
+  aerialSunsetDir: vec3f,
 };
 
 @group(0) @binding(0) var<storage, read> uniforms: AerialUniforms;
@@ -54,9 +59,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
-/** Struct layout above: vec3f aligns to 16 bytes, so 10 fields span 40 floats. */
+/**
+ * Struct layout above: the f32 after the vec3 packs into float 39 (a vec3's
+ * tail slot), then aerialParams aligns to 16 bytes at float 40 — 44 floats.
+ */
 function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
-  const data = new Float32Array(40);
+  const data = new Float32Array(56);
   data[0] = binding.cameraAltitudeMeters;
   data.set(binding.sunDirection, 4);
   data.set(binding.coefficients.rayleighScattering, 8);
@@ -66,10 +74,17 @@ function packUniforms(binding: AerialPerspectiveBinding): Float32Array {
   data.set(binding.sunRadiance, 24);
   data.set(binding.ambient, 28);
   data.set(binding.sunTransmittance, 32);
-  data[36] = RAYLEIGH_SCALE_HEIGHT_METERS;
-  data[37] = MIE_SCALE_HEIGHT_METERS;
-  data[38] = binding.coefficients.mieAnisotropy;
-  data[39] = binding.strength;
+  data.set(binding.twilightArch, 36);
+  data[39] = binding.nightZenithFade;
+  data[40] = RAYLEIGH_SCALE_HEIGHT_METERS;
+  data[41] = MIE_SCALE_HEIGHT_METERS;
+  data[42] = binding.coefficients.mieAnisotropy;
+  data[43] = binding.strength;
+  data.set(binding.twilightWarm, 44);
+  data.set(binding.twilightBelt, 48);
+  data[52] = binding.sunsetDirection[0];
+  data[53] = 0;
+  data[54] = binding.sunsetDirection[1];
   return data;
 }
 
@@ -132,8 +147,12 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
           0.87,
         );
 
-        const uniformBuffer = new StorageBuffer(engine, 40 * 4);
-        uniformBuffer.update(packUniforms(binding));
+        // Sized from the packed data itself, so the struct, the packer and
+        // the allocation cannot drift apart — the 40*4 literal this replaces
+        // survived one field addition and cost a buffer-overrun hunt.
+        const packedUniforms = packUniforms(binding);
+        const uniformBuffer = new StorageBuffer(engine, packedUniforms.byteLength);
+        uniformBuffer.update(packedUniforms);
         const probeBuffer = new StorageBuffer(engine, probeData.byteLength);
         probeBuffer.update(probeData);
         const resultBuffer = new StorageBuffer(engine, probes.length * 2 * 4 * 4);

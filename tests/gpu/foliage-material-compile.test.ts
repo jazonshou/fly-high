@@ -11,6 +11,8 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShadowDepthWrapper } from "@babylonjs/core/Materials/shadowDepthWrapper";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -269,6 +271,12 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         opaqueCrown = false,
       ) => {
         const material = new PBRMaterial(name, scene);
+        // 7-4b: production sets this on every detail material
+        // (`WorldDetailRuntime.createMaterial`). Mirrored here because a
+        // budget measured on a permutation that does not ship is worth
+        // nothing -- and without it this rig would pin 16 while production
+        // compiles 15.
+        material.forceIrradianceInFragment = true;
         material.albedoColor = new Color3(0.4, 0.5, 0.35);
         material.metallic = 0;
         material.roughness = 0.9;
@@ -363,6 +371,7 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
       // rule. Impostors neither cast nor receive shadows.
       const impostorAtlas = createImpostorAtlas(scene, "foliage-compile-test");
       const impostorMaterial = new PBRMaterial("compile-impostor-material", scene);
+      impostorMaterial.forceIrradianceInFragment = true;
       impostorMaterial.albedoColor = new Color3(1, 1, 1);
       impostorMaterial.metallic = 0;
       impostorMaterial.roughness = 0.95;
@@ -387,6 +396,25 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
         }),
       );
       impostorPlugin.setImpostorSeason(0.3);
+      // `6-11`: bind the global horizon field so DETAIL_HORIZON_SHADOW is ON
+      // for this permutation. Without this the far-field receiver compiles
+      // out and the whole block would ship never having met an adapter —
+      // which is the 2-12 failure mode this file exists for.
+      //
+      // An all-zero field is the parity sentinel: horizon sin 0 means nothing
+      // occludes the sun, so the term returns 1 and the rasterization
+      // assertion below still reads an unshadowed, chromatic tree.
+      const horizonLayers = [0, 1].map(() => RawTexture.CreateRGBATexture(
+        new Uint8Array(8 * 8 * 4),
+        8,
+        8,
+        scene,
+        false,
+        false,
+        Texture.BILINEAR_SAMPLINGMODE,
+      ));
+      impostorPlugin.setHorizonField(
+        horizonLayers[0]!, horizonLayers[1]!, -4_000, -4_000, 8_000);
       impostorMaterial.backFaceCulling = false;
       impostorMaterial.twoSidedLighting = true;
       impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
@@ -438,6 +466,141 @@ describe("detail material stack compiles on-adapter (2-12)", () => {
 
       expect(gpuErrors, describeGpuErrors()).toEqual([]);
       expect(depthReady, "shadow depth effects never became ready").toBe(true);
+
+      // `6-11`, non-vacuity: a zero-error render proves nothing about a block
+      // that compiled OUT. An undeclared plugin define survives only through
+      // `MaterialDefines.rebuild()`'s Object.keys re-derivation, and the
+      // recorded incident (DETAIL_BAND_FADES) is exactly a define that read
+      // false in silence while every binding stayed correct — an invisible
+      // forest. So assert the far-field receiver reached the adapter.
+      expect(
+        shaderModules.some((record) => record.code.includes("fn detailHorizonShadow(")),
+        "DETAIL_HORIZON_SHADOW never reached a compiled shader — the far-field "
+        + "horizon receiver was stripped, and the zero-error render above is vacuous",
+      ).toBe(true);
+      // And that it runs the SHARED operator rather than a restatement.
+      expect(
+        shaderModules.some((record) => record.code.includes("fn horizonFieldShadow(")),
+        "the impostor shader does not compose HorizonField's lookup",
+      ).toBe(true);
+
+      // `6-11`: the per-stage binding budget, measured on the COMPILED source
+      // rather than declared.
+      //
+      // This assertion exists because a declared budget is not the real one.
+      // The terrain material's hand-maintained `TERRAIN_SAMPLED_BINDINGS` list
+      // is checked only for uniqueness and against 16, and it both lists PBR
+      // samplers the material never binds and omits the shadow and
+      // cloud-shadow projection samplers it does — nothing compares it to a
+      // shader. The detail material had no such list at all, and this item
+      // added two samplers to the heaviest permutation in the project (PBR +
+      // impostor atlases + CSM depth array + cloud shadow + aerial
+      // perspective). Exceeding a per-stage limit is a pipeline-creation
+      // failure, not a graceful fallback, so the count is pinned here where a
+      // real adapter has already compiled it.
+      const impostorFragment = [...shaderModules]
+        .reverse()
+        .find((record) => record.code.includes("fn detailHorizonShadow("));
+      expect(impostorFragment, "no compiled impostor fragment shader was recorded")
+        .toBeDefined();
+      const declarations = impostorFragment!.code;
+      const samplers = declarations.match(/var\s+\w+\s*:\s*sampler(_comparison)?\s*;/g) ?? [];
+      const textures = declarations.match(/var\s+\w+\s*:\s*texture_\w+</g) ?? [];
+      // WebGPU's base limits are 16 sampled textures and 16 samplers per stage.
+      // MEASURED on the reference adapter: this permutation compiles to 7
+      // samplers, of which `6-11` added 2 — so the far-field receiver spends
+      // 2 of 11 remaining slots and leaves 9. Report the margin in the failure
+      // message so a future addition sees the room it is spending rather than
+      // discovering the wall at pipeline creation.
+      expect(
+        samplers.length,
+        `compiled impostor fragment declares ${samplers.length} samplers (limit 16)`,
+      ).toBeLessThanOrEqual(16);
+      expect(
+        textures.length,
+        `compiled impostor fragment declares ${textures.length} sampled textures (limit 16)`,
+      ).toBeLessThanOrEqual(16);
+      // Non-vacuity: a regex that matched nothing would pass both bounds.
+      expect(samplers.length).toBeGreaterThan(3);
+      expect(textures.length).toBeGreaterThan(3);
+
+      // 7-4b: THE ATTENUATION SPLIT LANDED IN THE ARTIFACT, not merely in the
+      // source. A `!regex` injection anchor that matches NOTHING is SILENT --
+      // Babylon reports no error and the plugin's code simply never appears --
+      // so a test that only checks the foliage still renders would pass on a
+      // split that does not exist, and the impostor branch would quietly go
+      // back to dimming clustered lamps by SUN occlusion.
+      const impostorShader = [...shaderModules].reverse()
+        .find((record) => record.code.includes("detailImpostorC"));
+      expect(impostorShader, "no impostor fragment shader was compiled").toBeDefined();
+      expect(
+        /diffuse\d+\s*=\s*vec4f\(\s*diffuse\d+\.rgb\s*\*\s*impostorSunShadow/u
+          .test(impostorShader!.code),
+        "the per-light sun attenuation did not inject -- the CUSTOM_LIGHT{X}_COLOR "
+        + "anchor matched nothing, which Babylon does not report",
+      ).toBe(true);
+      expect(
+        impostorShader!.code.includes("finalDiffuse *= impostorSunShadow"),
+        "the OLD accumulator multiply is back; it dims clustered lights by sun occlusion",
+      ).toBe(false);
+
+      // 7-4b: THE INTER-STAGE BUDGET, which is the tight one and had nothing
+      // watching it. This material sits at EXACTLY the device limit with zero
+      // slots free, so the next varying anyone adds does not degrade — it
+      // fails pipeline creation and the mesh stops drawing entirely.
+      //
+      // COUNT IT THE WAY THE DEVICE DOES. The adapter's own message is
+      // "Total fragment input variables count (17 = 16 (user-defined) + 1
+      // (front_facing)) exceeds the maximum (16)" — so `@location` plus
+      // `front_facing`, and `@builtin(position)` is NOT counted. Counting all
+      // builtins over-reports by one and makes a material with a free slot
+      // look full; counting locations alone under-reports and makes a full one
+      // look free. Both mistakes were made before this line existed.
+      //
+      // MEASURED, both arms, same tree, one flag: attaching a
+      // `ClusteredLightContainer` adds exactly +1 `@location` to every
+      // permutation of this material. Before 7-4b that took the peak from
+      // 16/16 to 17/16 and the crowns, trunks and impostors ALL stopped
+      // rasterizing — a budget wall, not a wiring bug.
+      //
+      // 7-4b freed the slot with `forceIrradianceInFragment`, set above and in
+      // production, which deletes `vEnvironmentIrradiance`. The peak is now 15
+      // and the container fits with nothing to spare.
+      // The pin below is only meaningful if this rig compiled the SHIPPING
+      // shadow path. Asserted against the source, because a rig can grow a
+      // shadow generator and still compile no shadow path -- that happened in
+      // `wildlife-material-compile`, where `addShadowCasters` filtered on a
+      // thin-instance count that was still zero.
+      expect(
+        shaderModules.some((r) => r.code.includes("vPositionFromLight")),
+        "no compiled shader carries the CSM receive path; the count below is "
+        + "eight varyings lighter than the permutation that ships",
+      ).toBe(true);
+      const peakFragmentInputs = Math.max(
+        ...shaderModules.map((record) => {
+          const struct = /struct\s+FragmentInputs\s*\{([\s\S]*?)\n\}/u.exec(record.code);
+          if (!struct) return 0;
+          const locations = [...struct[1]!.matchAll(/@location\(/gu)].length;
+          const frontFacing = /@builtin\(front_facing\)/u.test(struct[1]!) ? 1 : 0;
+          return locations + frontFacing;
+        }),
+      );
+      expect(
+        peakFragmentInputs,
+        `the detail material's peak fragment-input count is ${peakFragmentInputs}, over the `
+        + "device maximum of 16. The mesh will not draw at all — this is not a soft regression.",
+      ).toBeLessThanOrEqual(16);
+      // Pinned EXACTLY, in both directions, because both are news. Going UP is
+      // the wall above. Going DOWN means a slot was freed, which is the one
+      // thing that would let the clustered container onto this material, and
+      // it must not happen silently.
+      expect(
+        peakFragmentInputs,
+        "the detail material's fragment-input count moved. UP means the ONE slot 7-4b freed "
+        + "has been spent and a clustered light container no longer fits; DOWN means another "
+        + "was freed. Either way, re-derive before repinning -- and check this rig still sets "
+        + "`forceIrradianceInFragment` the way production does.",
+      ).toBe(15);
 
       // Non-vacuity 2: the instance must actually RASTERIZE. A tree that
       // compiles cleanly but draws no pixels (degenerate decode, zero scale,

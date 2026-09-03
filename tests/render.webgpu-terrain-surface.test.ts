@@ -47,8 +47,17 @@ import {
   SurfaceMaterial,
   surfaceMaterialSpec,
 } from "../src/render/webgpu/terrain/surfaceMaterials";
+import {
+  RIPARIAN_BANK_FADE_END_METERS,
+  RIPARIAN_BANK_FADE_START_METERS,
+  RIPARIAN_BANK_FULL_METERS,
+  RIPARIAN_BANK_NEAR_METERS,
+} from "../src/render/webgpu/detail/densityField";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "../src/world";
 import { DEFAULT_AIRPORT } from "../src/world/airport";
+import { readSource } from "./support/sourceText";
 
 /**
  * 3-2/3-3/3-4/3-5/3-6/3-7/3-10 — the terrain surface plugin.
@@ -66,17 +75,23 @@ const BABYLON_WGSL = join(__dirname, "..", "node_modules", "@babylonjs", "core",
 function shippedPbrFragmentSource(): string {
   // The anchors span pbr.fragment and one of its includes; the injection runs
   // after include resolution, so the concatenation is what the regex sees.
-  const main = readFileSync(join(BABYLON_WGSL, "pbr.fragment.js"), "utf8");
+  const main = readSource(join(BABYLON_WGSL, "pbr.fragment.js"));
   const reflectance0 = readFileSync(
     join(BABYLON_WGSL, "ShadersInclude", "pbrBlockReflectance0.js"),
     "utf8",
   );
-  return `${main}\n${reflectance0}`;
+  // `7-4b` adds `sunLightColor`, whose marker lives in the light loop rather
+  // than in `pbr.fragment` — the same reason `pbrBlockReflectance0` is here.
+  const lightFragment = readFileSync(
+    join(BABYLON_WGSL, "ShadersInclude", "lightFragment.js"),
+    "utf8",
+  );
+  return `${main}\n${reflectance0}\n${lightFragment}`;
 }
 
 function shippedTerrainVertexNormalConsumers(): string {
-  const pbr = readFileSync(join(BABYLON_WGSL, "pbr.vertex.js"), "utf8");
-  const shadow = readFileSync(join(BABYLON_WGSL, "shadowMap.vertex.js"), "utf8");
+  const pbr = readSource(join(BABYLON_WGSL, "pbr.vertex.js"));
+  const shadow = readSource(join(BABYLON_WGSL, "shadowMap.vertex.js"));
   return `${pbr}\n${shadow}`;
 }
 
@@ -188,7 +203,22 @@ describe("terrain surface plugin (3-2)", () => {
         "terrainSplatId",
         "terrainSplatWeightLo",
         "terrainSplatWeightHi",
+        // 6-6's shore-distance aux resource and 6-5's lake-depth channel.
+        // THE COUNT IS THE POINT (§1.2): eleven declared names, of which
+        // terrainHeightAtlas is vertex-only, so the FRAGMENT stage declares
+        // TEN sampled textures against WebGPU's 16-per-stage base limit — and
+        // only EIGHT of those ten survive in the shipping analytic build,
+        // where TERRAIN_SURFACE_HYDROLOGY_CHANNELS is off and both bindings
+        // compile out entirely. Neither takes a companion sampler (r16sint
+        // read by textureLoad; r16float read by textureLoad), so the SAMPLER
+        // count does not move at all and stays at eight in both builds.
+        // 6-8 spent nothing here — its closure channel rides the splat
+        // weights' redundant alpha lane. Six sampled-texture slots remain;
+        // whoever adds the next one updates this arithmetic before adding it.
+        "terrainShoreDistanceAtlas",
+        "terrainLakeDepthAtlas",
       ]);
+      expect(samplers).toHaveLength(11);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("terrainMaterialTiling");
       expect(uniformNames).toContain("terrainMaterialSeason");
@@ -256,7 +286,14 @@ describe("terrain surface plugin (3-2)", () => {
       // the same four loads; adding separate neighbour fetches here would turn
       // a visual fix into a vertex-bandwidth regression.
       const samplerStart = definitions.indexOf("fn terrainSampleHeightGradient");
-      const samplerEnd = definitions.indexOf("\n}\n#else", samplerStart);
+      // Slice to the FUNCTION's closing brace. The previous boundary
+      // (`\n}\n#else`) matched nothing and `indexOf` returned −1, so the slice
+      // was the whole remaining include and the four-load assertion only held
+      // because nothing else in the vertex definitions loaded a texture. 6-8's
+      // canopy-closure helper does, which is what exposed it.
+      const samplerEnd = definitions.indexOf("\n}\n", samplerStart);
+      expect(samplerStart).toBeGreaterThanOrEqual(0);
+      expect(samplerEnd).toBeGreaterThan(samplerStart);
       const sampler = definitions.slice(samplerStart, samplerEnd);
       expect(sampler.match(/textureLoad\(/gu)).toHaveLength(4);
       expect(sampler).toContain("mix(h10 - h00, h11 - h01, fraction.y)");
@@ -805,5 +842,99 @@ describe("terrain seasonal palette (3-10)", () => {
     expect(seasonalSnowlineMeters(seaLevel, 15, 45)).toBeLessThan(1_200);
     // At the equator there is no seasonal swing to descend with.
     expect(seasonalSnowlineMeters(seaLevel, 15, 0)).toBeCloseTo(1_520, 6);
+  });
+});
+
+/**
+ * `6-6` — the wet-litter darkening, and the reason it is define-gated.
+ *
+ * §1.2's parity-sentinel pattern is pixel-dark but NOT cost-dark: an analytic
+ * shader still pays for the samples and ALU behind a runtime sentinel. The
+ * shipping default is analytic for the whole phase, so this consumer is gated
+ * on a define instead — an analytic world binds no shore-distance atlas, the
+ * define is off, and the binding, the integer textureLoad and the darkening
+ * ALU are not in the compiled shader at all.
+ */
+describe("6-6 wet-litter darkening (terrain fragment)", () => {
+  it("compiles out of the analytic build entirely", () => {
+    withPlugin((plugin) => {
+      const shape = {
+        atlasEdge: 272, slotEdge: 136, core: 128, gutter: 4, gridEdge: 2,
+        basePageExtentMeters: 512,
+      };
+      const defines: Record<string, boolean> = {};
+      plugin.setChannelAtlas(null, null, null, [null, null, null], null, null, shape);
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"]).toBe(false);
+      // And the hydrology block is guarded by that define in the emitted source
+      // rather than by a runtime branch that still costs a binding.
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      const guard = code.indexOf("#ifdef TERRAIN_SURFACE_HYDROLOGY_CHANNELS");
+      expect(guard).toBeGreaterThan(-1);
+      expect(code.indexOf("var terrainShoreDistanceAtlas: texture_2d<i32>;"))
+        .toBeGreaterThan(guard);
+      // An integer texture takes no companion sampler declaration, which is
+      // what keeps the sampler budget (as opposed to the texture budget) flat.
+      expect(code).not.toContain("terrainShoreDistanceAtlasSampler");
+    });
+  });
+
+  it("turns the block on only when a shore-distance atlas is actually bound", () => {
+    withPlugin((plugin, material) => {
+      const scene = material.getScene();
+      const shape = {
+        atlasEdge: 272, slotEdge: 136, core: 128, gutter: 4, gridEdge: 2,
+        basePageExtentMeters: 512,
+      };
+      const page = (): RawTexture => RawTexture.CreateRGBATexture(
+        new Uint8Array(4), 1, 1, scene, false, false, Texture.NEAREST_SAMPLINGMODE,
+      );
+      const defines: Record<string, boolean> = {};
+      // Channel atlas without hydrology: page channels on, hydrology off. This
+      // is what an eroded world looks like before its first aux upload, and
+      // what an analytic world looks like forever.
+      plugin.setChannelAtlas(
+        page(), page(), page(), [page(), page(), page()], null, null, shape,
+      );
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_SURFACE_PAGE_CHANNELS"]).toBe(true);
+      expect(defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"]).toBe(false);
+      plugin.setChannelAtlas(
+        page(), page(), page(), [page(), page(), page()], page(), page(), shape,
+      );
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"]).toBe(true);
+      // The hydrology define never outruns the channel define: the block reads
+      // terrainPageUv, which only exists under TERRAIN_SURFACE_PAGE_CHANNELS.
+      plugin.setChannelAtlas(
+        null, null, null, [null, null, null], page(), page(), shape,
+      );
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_SURFACE_PAGE_CHANNELS"]).toBe(false);
+      expect(defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"]).toBe(false);
+    });
+  });
+
+  it("darkens the forest-floor share of the splat, not the whole ground", () => {
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      // 6-5 owns general ground wetness; this term is gated on the classified
+      // forest-floor weight so a gravel bar beside the same stream keeps its
+      // own material. The two must not double-count when 6-5 lands.
+      expect(code).toContain("var terrainForestFloorShare = 0.0;");
+      expect(code).toContain("terrainSurfaceRiparianBand(terrainPageUv)");
+      expect(code).toContain(
+        "terrainAlbedo *= mix(1.0, 0.68, terrainWetLitter);",
+      );
+      // The corridor's four distances come from the vegetation authority.
+      for (const value of [
+        RIPARIAN_BANK_NEAR_METERS,
+        RIPARIAN_BANK_FULL_METERS,
+        RIPARIAN_BANK_FADE_START_METERS,
+        RIPARIAN_BANK_FADE_END_METERS,
+      ]) {
+        expect(code).toContain(value.toFixed(2));
+      }
+    });
   });
 });

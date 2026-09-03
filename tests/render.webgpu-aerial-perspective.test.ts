@@ -12,8 +12,27 @@ import {
   ozonePathIntegral,
   ozoneTentIntegral,
   resolveAerialPerspectiveBinding,
+  twilightArchStrength,
+  twilightAmbientFloorFactor,
+  twilightArchRadiance,
+  nightZenithFade,
+  NIGHT_ZENITH_FALLOFF,
+  twilightWarmRadiance,
+  twilightBeltRadiance,
+  TWILIGHT_WARM_TINT,
+  TWILIGHT_WARM_STRENGTH,
+  TWILIGHT_BELT_RATIO,
+  MOON_TWILIGHT_RECESSION,
+  TWILIGHT_ARCH_TINT,
+  TWILIGHT_ARCH_STRENGTH,
+  TWILIGHT_ARCH_ZENITH_FALLOFF,
+  TWILIGHT_ARCH_KEY_FACTOR,
+  TWILIGHT_AMBIENT_FLOOR_CUT,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
-import { SKY_FRAGMENT_WGSL } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import {
+  SKY_FRAGMENT_WGSL,
+  sunDirectionalHorizonGate,
+} from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
 import {
   FOG_MODE_NONE,
@@ -23,7 +42,10 @@ import {
   CAMERA_FAR_PLANE_METERS,
   resolveWebGpuQualityProfile,
 } from "../src/render/webgpu/core/QualityProfile";
-import { resolveEnvironmentState } from "../src/render/webgpu/nature/EnvironmentDirector";
+import {
+  resolveEnvironmentState,
+  twilightExposureDipFactor,
+} from "../src/render/webgpu/nature/EnvironmentDirector";
 import {
   MIE_SCALE_HEIGHT_METERS,
   OZONE_CENTER_METERS,
@@ -374,10 +396,16 @@ describe("night below the horizon (1C-10, superseded by Gate 7A)", () => {
     expect(SKY_FRAGMENT_WGSL).not.toContain("starHash");
     expect(SKY_FRAGMENT_WGSL).not.toContain("normalize(-uniforms.aerialSunDirection)");
     // The real moon: its own ephemeris direction and angular radius, and a
-    // terminator taken from the sky's OWN sun direction, so the drawn phase
-    // can never disagree with the light the scene is lit by.
+    // terminator taken from the TRUE sun direction. NIGHT_LOOK §2.1 made
+    // `aerialSunDirection` the MOON below twilight (the integral's night
+    // source), so the phase now reads a dedicated true-sun uniform — the
+    // property this pin guards is unchanged (the drawn phase can never
+    // disagree with the real sun-moon geometry), and reading
+    // `aerialSunDirection` for the phase would now recreate the self-lit
+    // always-full moon this assertion exists to prevent.
     expect(SKY_FRAGMENT_WGSL).toContain("uniform moonDirection: vec3f;");
-    expect(SKY_FRAGMENT_WGSL).toContain("dot(surfaceNormal, uniforms.aerialSunDirection)");
+    expect(SKY_FRAGMENT_WGSL).toContain("dot(surfaceNormal, uniforms.moonPhaseSunDirection)");
+    expect(SKY_FRAGMENT_WGSL).not.toContain("dot(surfaceNormal, uniforms.aerialSunDirection)");
     expect(SKY_FRAGMENT_WGSL).toContain("earthshine");
     // The Milky Way rides the star field's own galactic frame.
     expect(SKY_FRAGMENT_WGSL).toContain("uniforms.galacticPole");
@@ -396,5 +424,309 @@ describe("the include's WGSL surface (1C-4)", () => {
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).not.toMatch(/uniform aerial/);
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).toContain("fn aerialPerspective(");
     expect(AERIAL_PERSPECTIVE_FUNCTIONS_WGSL).toContain("fn applyAerialPerspective(");
+  });
+});
+
+describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
+  // ONE window feeds three consumers (dome arch, ambient-floor cut, chroma
+  // blend), so its edges are load-bearing three times over: these pins are
+  // on the WINDOW ITSELF, separate from every consumer, so a later edge
+  // change fails one obvious assertion instead of three confusing ones.
+  const sineAt = (solarTimeHours: number): number =>
+    resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours },
+      latitudeDegrees: 45,
+      weather: "clear",
+    }).sun.direction[1];
+
+  it("is zero at every pinned endpoint, by shape", () => {
+    // Golden hour (19.0h, +0.111): above the window entirely.
+    expect(twilightArchStrength(sineAt(19.0))).toBe(0);
+    // Sunset exactly: continuous engagement, zero AT the boundary.
+    expect(twilightArchStrength(0)).toBe(0);
+    // The release edge itself.
+    expect(twilightArchStrength(-0.26)).toBe(0);
+    // night-moonlit (23.75h) and night (0h): the approved frames sit well
+    // below the release and CANNOT move.
+    expect(twilightArchStrength(sineAt(23.75))).toBe(0);
+    expect(twilightArchStrength(sineAt(0))).toBe(0);
+  });
+
+  it("holds at full strength through the blue hour, dusk-mesopic mid-hold", () => {
+    const duskSine = sineAt(20.45);
+    expect(duskSine).toBeLessThan(-0.09);
+    expect(duskSine).toBeGreaterThan(-0.13);
+    expect(twilightArchStrength(duskSine)).toBeCloseTo(1, 6);
+  });
+
+  it("releases on the same edges as the 2.1 exposure dip", () => {
+    // Behavioral equality, not shared constants: the dip's release runs
+    // -0.16 (still fully held) to -0.26 (fully released). If either window
+    // moves its release alone, one of these fails.
+    expect(twilightExposureDipFactor(-0.16)).toBeCloseTo(0.55, 6);
+    expect(twilightArchStrength(-0.16)).toBeCloseTo(1, 6);
+    expect(twilightExposureDipFactor(-0.26)).toBeCloseTo(1, 6);
+    expect(twilightArchStrength(-0.26)).toBe(0);
+  });
+
+  it("shifts the warm lobe orange-to-pink with sun depth (round O)", () => {
+    // The depth blend is a SHAPE with zero new freedom: both endpoints are
+    // fixed (palette 0-deg sunColor orange; the established Belt pink) and
+    // depthT normalizes on the window's own release sine. The falsifiable
+    // consequence: deeper sun = pinker lobe (B/R rises monotonically),
+    // which is what separates the -3 deg probe (orange-leaning) from the
+    // -6 deg dusk (pinker) in the frames.
+    const shallow = twilightWarmRadiance(-0.052); // sunset-sunward's clock
+    const deep = twilightWarmRadiance(-0.107); // dusk-mesopic's clock
+    expect(shallow[2]! / shallow[0]!).toBeLessThan(deep[2]! / deep[0]!);
+    // Shallow stays in the orange family, well under the pink endpoint's
+    // 0.65 B/R; G tracks the blend upward toward pink.
+    expect(shallow[2]! / shallow[0]!).toBeLessThan(0.35);
+    expect(shallow[1]! / shallow[0]!).toBeLessThan(deep[1]! / deep[0]!);
+    // Endpoint zeros untouched: the window still gates everything.
+    expect(twilightWarmRadiance(sineAt(12.5))).toEqual([0, 0, 0]);
+    expect(twilightWarmRadiance(sineAt(23.75))).toEqual([0, 0, 0]);
+  });
+
+  it("paints the sunset lobe toward the TRUE sun, zero outside the window", () => {
+    // Round W. Premultiplied warm and belt are zero at every window
+    // endpoint by the arch window's own proven shape — no new gate.
+    for (const sine of [sineAt(12.5), sineAt(19.0), -0.26, sineAt(23.75), sineAt(0)]) {
+      expect(twilightWarmRadiance(sine)).toEqual([0, 0, 0]);
+      expect(twilightBeltRadiance(sine)).toEqual([0, 0, 0]);
+    }
+    const duskWarm = twilightWarmRadiance(sineAt(20.45));
+    expect(duskWarm[0]).toBeCloseTo(TWILIGHT_WARM_TINT[0] * TWILIGHT_WARM_STRENGTH, 9);
+    expect(duskWarm[0]).toBeGreaterThan(duskWarm[2]! * 2); // warm means R-dominant
+    // The belt is the weaker pink tail, by the fixed ratio exactly.
+    const duskBelt = twilightBeltRadiance(sineAt(20.45));
+    expect(duskBelt[0]).toBeCloseTo(duskWarm[0]! * TWILIGHT_BELT_RATIO, 9);
+
+    // The lobe aims at the TRUE sun, never the nightness-blended source: at
+    // dusk with a moon the binding's sunDirection has swung toward the moon,
+    // and sunsetDirection must not follow it.
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(
+      duskState, 152, [0.9, 0.4, 0.25], [0.08, 0.075, 0.14], 0.1,
+      [0, 1, 0], 0.8,
+    );
+    const s = duskState.sun.direction;
+    const h = Math.hypot(s[0], s[2]);
+    expect(dusk.sunsetDirection[0]).toBeCloseTo(s[0] / h, 9);
+    expect(dusk.sunsetDirection[1]).toBeCloseTo(s[2] / h, 9);
+    expect(Math.hypot(...dusk.sunsetDirection)).toBeCloseTo(1, 9);
+
+    // And the MIRROR shows the azimuthal structure the sky was measured to
+    // lack: at 5 deg elevation, sunward is warm (R/B > 1) and anti-solar
+    // carries only the fainter pink — sunward red exceeds anti-solar red.
+    const el = Math.sin((5 * Math.PI) / 180), c = Math.cos((5 * Math.PI) / 180);
+    const sunward = evaluateSkyRadiance(dusk, [
+      dusk.sunsetDirection[0] * c, el, dusk.sunsetDirection[1] * c,
+    ]);
+    const anti = evaluateSkyRadiance(dusk, [
+      -dusk.sunsetDirection[0] * c, el, -dusk.sunsetDirection[1] * c,
+    ]);
+    // STRUCTURAL claims only — the display-domain R/B threshold lives in
+    // the frame criteria where the knob budget is registered; a radiance
+    // pin that hardcoded it would re-tune the knob from a test.
+    const bare = {
+      ...dusk,
+      twilightWarm: [0, 0, 0] as [number, number, number],
+      twilightBelt: [0, 0, 0] as [number, number, number],
+    };
+    const sunwardBare = evaluateSkyRadiance(bare, [
+      dusk.sunsetDirection[0] * c, el, dusk.sunsetDirection[1] * c,
+    ]);
+    // The lobe at least doubles the sunward red over the azimuth-uniform sky…
+    expect(sunward[0]!).toBeGreaterThan(sunwardBare[0]! * 2);
+    // …asymmetrically: sunward red beats anti-solar red well past the belt.
+    expect(anti[0]!).toBeGreaterThan(0);
+    expect(sunward[0]!).toBeGreaterThan(anti[0]! * 1.5);
+    // And the anti-solar side gained ONLY the fainter belt, nothing more.
+    const antiBare = evaluateSkyRadiance(bare, [
+      -dusk.sunsetDirection[0] * c, el, -dusk.sunsetDirection[1] * c,
+    ]);
+    expect(anti[0]! - antiBare[0]!).toBeLessThan(sunward[0]! - sunwardBare[0]!);
+  });
+
+  it("fades the night zenith on the NIGHTNESS gate, and day is exactly zero", () => {
+    // Round G (Jason: "the blue transitions into black the further up you
+    // look"). Gated by aerialNightness, deliberately NOT the twilight art
+    // window — coupling a night ask to five dusk behaviours is the drift
+    // this family's tests exist to prevent.
+    expect(nightZenithFade(sineAt(12.5))).toBe(0);
+    expect(nightZenithFade(sineAt(19.0))).toBe(0);
+    expect(nightZenithFade(-0.07)).toBe(0); // nightness engages below here
+    expect(nightZenithFade(sineAt(23.75))).toBe(NIGHT_ZENITH_FALLOFF);
+    expect(nightZenithFade(sineAt(0))).toBe(NIGHT_ZENITH_FALLOFF);
+    const dusk = nightZenithFade(sineAt(20.45));
+    expect(dusk).toBeGreaterThan(0);
+    expect(dusk).toBeLessThan(NIGHT_ZENITH_FALLOFF);
+    // The mirror applies it multiplicatively over scatter AND arch: a zero
+    // fade is the identity, so a day binding's sky is bit-identical.
+    const noon = resolveAerialPerspectiveBinding(
+      DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
+    );
+    expect(noon.nightZenithFade).toBe(0);
+    expect(Math.exp(-noon.nightZenithFade * 1)).toBe(1);
+  });
+
+  it("keeps the fade (and the arch) OUT of the terrain-haze path — pinned, not assumed", () => {
+    // Load-bearing isolation: skyRadiance carries the arch and the zenith
+    // fade; applyAerialPerspective is what terrain, water and every surface
+    // consumer call. If skyRadiance is ever reached from the surface path,
+    // the ground inherits sky-only terms — round 1 measured that failure
+    // (the ground flooded). Pin the WGSL structure itself.
+    const surfacePath = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn applyAerialPerspective("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance("),
+    );
+    expect(surfacePath.length).toBeGreaterThan(100);
+    expect(surfacePath).not.toContain("skyRadiance(");
+    expect(surfacePath).not.toContain("aerialTwilightArch");
+    expect(surfacePath).not.toContain("aerialNightZenithFade");
+    expect(surfacePath).not.toContain("aerialTwilightWarm");
+    expect(surfacePath).not.toContain("aerialTwilightBelt");
+    expect(surfacePath).not.toContain("aerialSunsetDir");
+    // And the sky path DOES carry both, with the exponential shape.
+    const skyPath = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance("),
+    );
+    expect(skyPath).toContain("uniforms.aerialTwilightArch");
+    expect(skyPath).toContain("exp(-uniforms.aerialNightZenithFade * max(direction.y, 0.0))");
+  });
+
+  it("gates the directional sun at the geometric horizon, not the art window", () => {
+    // Round S: ground-level direct sun from below the horizon is impossible
+    // (refraction ~0.5° ≈ 0.009 sine, inside the ±0.02 band). Exactly 1 at
+    // every day clock — this is new code on the daylight path, and the gate
+    // being the literal 1 there is what keeps day byte-identical.
+    expect(sunDirectionalHorizonGate(sineAt(12.5))).toBe(1);
+    expect(sunDirectionalHorizonGate(sineAt(19.0))).toBe(1);
+    expect(sunDirectionalHorizonGate(0.02)).toBe(1);
+    expect(sunDirectionalHorizonGate(0)).toBeCloseTo(0.5, 9);
+    expect(sunDirectionalHorizonGate(-0.02)).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(20.45))).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(23.75))).toBe(0);
+    expect(sunDirectionalHorizonGate(sineAt(0))).toBe(0);
+    // And it is DELIBERATELY not the §2.6 twilight window: at sine −0.05 the
+    // art window is fully open while the horizon gate is long closed. If
+    // someone routes the gate through the window, this divergence assertion
+    // fails before any frame does.
+    expect(twilightArchStrength(-0.05)).toBeCloseTo(1, 6);
+    expect(sunDirectionalHorizonGate(-0.05)).toBe(0);
+  });
+
+  it("recedes the moon only inside the window (consumer #6)", () => {
+    // MOON_PEAK is a night calibration; mid-hold the moon keeps ~10% and
+    // returns to full EXACTLY at the release, so the approved night frames
+    // and the moon anchor's arithmetic are untouched by shape.
+    const recession = (sine: number): number =>
+      1 - MOON_TWILIGHT_RECESSION * twilightArchStrength(sine);
+    expect(recession(sineAt(12.5))).toBe(1);
+    expect(recession(sineAt(19.0))).toBe(1);
+    expect(recession(sineAt(23.75))).toBe(1);
+    expect(recession(sineAt(0))).toBe(1);
+    expect(recession(-0.26)).toBe(1);
+    expect(recession(sineAt(20.45))).toBeCloseTo(1 - MOON_TWILIGHT_RECESSION, 6);
+  });
+
+  it("cuts the ambient floor only inside the window", () => {
+    // Outside: EXACTLY 1 — golden hour and the approved night frames get
+    // the shipped max(scale, 0.2) byte-for-byte, preserving the floor's
+    // own fp16/rod rationale where it binds.
+    expect(twilightAmbientFloorFactor(sineAt(19.0))).toBe(1);
+    expect(twilightAmbientFloorFactor(sineAt(23.75))).toBe(1);
+    expect(twilightAmbientFloorFactor(sineAt(0))).toBe(1);
+    // Mid-hold: the floor drops to 0.2 x (1 - cut) so ground can follow
+    // the sky down through the blue hour.
+    expect(twilightAmbientFloorFactor(sineAt(20.45)))
+      .toBeCloseTo(1 - TWILIGHT_AMBIENT_FLOOR_CUT, 6);
+  });
+
+  it("feeds the binding a SKY-PATH arch at dusk and leaves day and night untouched", () => {
+    // RESHAPED after round 1: the arch rode `ambient`, which the terrain
+    // haze paints onto every distant pixel — the ground flooded (terrain
+    // +2.1x, stop condition 3). It is now its own binding field, consumed
+    // ONLY by skyRadiance(), so dome and IBL receive it and the haze does
+    // not. `ambient` stays the daylight-gated expression — [0,0,0] at dusk.
+    const horizon: [number, number, number] = [0.08, 0.075, 0.14];
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
+    expect(dusk.ambient).toEqual([0, 0, 0]);
+    expect(dusk.twilightArch[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
+    expect(dusk.twilightArch[2]).toBeGreaterThan(dusk.twilightArch[0] * 2);
+    // Night: window closed — no arch, ambient stays zero; the approved
+    // night sky cannot have gained a term.
+    const nightState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 23.75 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const night = resolveAerialPerspectiveBinding(
+      nightState, 120, [0.9, 0.4, 0.25], horizon, 0, [0, 1, 0], 0.8,
+    );
+    expect(night.ambient).toEqual([0, 0, 0]);
+    expect(night.twilightArch).toEqual([0, 0, 0]);
+    // Noon: arch zero, ambient is the daylight expression untouched.
+    const noon = resolveAerialPerspectiveBinding(
+      DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
+    );
+    expect(noon.ambient[0]).toBeCloseTo(0.58 * 0.9, 6);
+    expect(noon.twilightArch).toEqual([0, 0, 0]);
+  });
+
+  it("adds the arch in the sky integral with the explicit gradient, mirror and WGSL alike", () => {
+    const horizon: [number, number, number] = [0.08, 0.075, 0.14];
+    const duskState = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const dusk = resolveAerialPerspectiveBinding(duskState, 120, [0.9, 0.4, 0.25], horizon, 0.1);
+    const bare = { ...dusk, twilightArch: [0, 0, 0] as [number, number, number] };
+    // The mirror: sky-with-arch minus sky-without is EXACTLY the arch times
+    // the gradient times round G's zenith fade — nothing else moved. (The
+    // fade multiplies the WHOLE sky output, so it scales the arch's delta
+    // too; at dusk the premultiplied fade is partial nightness.)
+    const fadeAt = (y: number): number => Math.exp(-dusk.nightZenithFade * Math.max(y, 0));
+    const zenithDelta = evaluateSkyRadiance(dusk, [0, 1, 0])[2]!
+      - evaluateSkyRadiance(bare, [0, 1, 0])[2]!;
+    const horizonDelta = evaluateSkyRadiance(dusk, [0.9994, 0.035, 0])[2]!
+      - evaluateSkyRadiance(bare, [0.9994, 0.035, 0])[2]!;
+    expect(zenithDelta).toBeCloseTo(
+      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF) * fadeAt(1), 9,
+    );
+    expect(horizonDelta).toBeCloseTo(
+      dusk.twilightArch[2] * (1 - TWILIGHT_ARCH_ZENITH_FALLOFF * 0.035) * fadeAt(0.035), 9,
+    );
+    // Horizon stays the bright edge of the arch; zenith the dark deep blue.
+    expect(horizonDelta).toBeGreaterThan(zenithDelta);
+    // And the WGSL carries the same term: the uniform is declared, the sky
+    // function consumes it, and the falloff constant matches the export.
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("uniform aerialTwilightArch: vec3f;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      `* (1.0 - ${TWILIGHT_ARCH_ZENITH_FALLOFF} * clamp(direction.y, 0.0, 1.0))`,
+    );
+  });
+
+  it("teaches sigma the arch's ground irradiance, in closed form", () => {
+    // E/pi for the gradient s(u) = 1 - FALLOFF*u over the hemisphere is
+    // 1 - (2/3)*FALLOFF — derived FROM the falloff so they cannot drift.
+    expect(TWILIGHT_ARCH_KEY_FACTOR).toBeCloseTo(1 - (2 / 3) * TWILIGHT_ARCH_ZENITH_FALLOFF, 12);
+    // Zero outside the window: day and night sigma are bit-identical.
+    expect(twilightArchRadiance(0.5)).toEqual([0, 0, 0]);
+    expect(twilightArchRadiance(-0.369)).toEqual([0, 0, 0]);
+    // Inside: the radiance is the tint at strength, so sigma's term is real.
+    const mid = twilightArchRadiance(-0.107);
+    expect(mid[2]).toBeCloseTo(TWILIGHT_ARCH_TINT[2] * TWILIGHT_ARCH_STRENGTH, 9);
   });
 });

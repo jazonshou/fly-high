@@ -184,7 +184,34 @@ With no shared meter, a banked turn that admits many pages at once spends three 
 
 ### 3.11 The frame budget has no room at tier 2 for a row Phase 4 must add
 
-`FRAME_BUDGET_MS[2]` sums to 13.60 ms against `FRAME_TARGET_MS[2] = 13.7` — **0.10 ms of slack.** `4-7` needs an `occlusionCompute` row. Adding any positive value at tier 2 trips the budget test in the same commit that adds the row. The funding is `4-8b`'s shadow cut, which §5.4:715 already anticipates (*"Terrain leaves the caster list entirely once horizon maps land"*) — so the row and its funding must land together, in `4-0`.
+`FRAME_BUDGET_MS[2]` sums to 13.60 ms against `FRAME_TARGET_MS[2] = 13.7` — **0.10 ms of slack.** `4-7` needs an `occlusionCompute` row. Adding any positive value at tier 2 trips the budget test in the same commit that adds the row. The funding is `4-8b`'s shadow cut — so the row and its funding must land together, in `4-0`.
+
+> **Corrected 2026-08-31 (Phase 6 item `6-12`). Two things above were wrong, and
+> one of them was load-bearing.**
+>
+> **The citation was a phantom.** This section attributed to `§5.4:715` the
+> quote *"Terrain leaves the caster list entirely once horizon maps land"*. That
+> sentence **does not exist anywhere in `RENDERING_PLAN.md`** (grep: zero hits),
+> and line 715 there is blank. The only occurrences in the repository are inside
+> **this file** — here, and at §14's "Terrain leaves the *far* field, not the
+> caster list", which **already corrects it**: *"`RENDERING_PLAN.md` says terrain
+> 'leaves the caster list entirely'; taken literally that contradicts `4-5`"*.
+> So this document contained its own refutation while the funding argument above
+> continued to rest on the refuted reading. The real behaviour is smaller than
+> the quote claims — inside the shortened cascades terrain still casts, through
+> one caster mesh per cascade — which means the `occlusionCompute` row may have
+> been funded against a saving larger than the one delivered. Phase 4 is closed
+> and the tree measures well inside its targets, so this is benign in practice;
+> it is recorded because *the reasoning was unsound even though the outcome was
+> fine*, and that is the only kind of error a plan document can still teach from.
+>
+> **The figure is stale, and the slack has HALVED.** Re-measured on the current
+> tree: tier 2 sums to **13.650 against 13.7 — 0.050 ms**, not 13.60/0.10.
+> Something spent 0.05 ms of tier 2 since Phase 4 and no one revised the number.
+> Tier 2 is now **99.6% committed**: any new row there must come out of an
+> existing one in the same commit. The same stale figure lived in
+> `PerformanceBudget.ts`'s `occlusionCompute` docblock and has been annotated
+> there too. **Measure before quoting either; do not quote them as current.**
 
 ---
 

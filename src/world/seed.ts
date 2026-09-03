@@ -19,6 +19,18 @@ export function normalizeSeed(seed: WorldSeed): string {
     }
     return Object.is(seed, -0) ? "-0" : String(seed);
   }
+  // Types bind TypeScript callers only. An `as any`, a .mts script or a
+  // trusted worker payload reaches here with an object, and the failure is
+  // silent rather than loud: hashSeed iterates `text.length`, an object has
+  // none, so the loop never runs and every object seed returns the untouched
+  // FNV offset basis -- the EMPTY-STRING hash. Distinct seeds would then
+  // produce one identical world and nothing would error.
+  if (typeof seed !== "string") {
+    throw new TypeError(
+      `World seed must be a string or number, got ${typeof seed}. An object seed hashes to the `
+      + "empty-string constant, so every such world is the same world.",
+    );
+  }
   return seed;
 }
 

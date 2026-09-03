@@ -151,10 +151,19 @@ function areaWeightedNormalDots(geometry: PrototypeGeometry): readonly number[] 
     const acx = geometry.positions[ic * 3]! - ax;
     const acy = geometry.positions[ic * 3 + 1]! - ay;
     const acz = geometry.positions[ic * 3 + 2]! - az;
+    // The OUTWARD face normal under Babylon's winding convention, which is
+    // cross(ac, ab) — the negation of cross(ab, ac). This helper used the
+    // un-negated form until the winding fix, which quietly encoded the
+    // INVERTED winding as correct and is part of why that bug survived a
+    // full phase: a test was defending it. The property under test is
+    // unchanged — that the stored vertex normals ARE the area-weighted face
+    // normals — only the sense in which "outward" is defined is now the
+    // engine's. See tests/render.webgpu-prototype-winding.test.ts, which
+    // pins that convention against Babylon's own primitives.
     const cross = [
-      aby * acz - abz * acy,
-      abz * acx - abx * acz,
-      abx * acy - aby * acx,
+      acy * abz - acz * aby,
+      acz * abx - acx * abz,
+      acx * aby - acy * abx,
     ] as const;
     for (const index of [ia, ib, ic]) {
       sums[index * 3] = sums[index * 3]! + cross[0];

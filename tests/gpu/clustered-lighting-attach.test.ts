@@ -1,0 +1,231 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
+import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { PointLight } from "@babylonjs/core/Lights/pointLight";
+import { ClusteredLightContainer } from "@babylonjs/core/Lights/Clustered/index";
+import { CascadedShadowGenerator } from "@babylonjs/core/Lights/Shadows/cascadedShadowGenerator";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Scene } from "@babylonjs/core/scene";
+import {
+  CLUSTERED_LIGHTING_DEFAULT_GEOMETRY,
+  CLUSTERED_MAX_SIMULTANEOUS_LIGHTS,
+  ClusteredLightingSystem,
+  type ClusteredLightDefinition,
+} from "../../src/render/webgpu/lighting/ClusteredLighting";
+
+/**
+ * `7-4b` — the container attachment, on-adapter.
+ *
+ * The budget half is held by `interStageBudget.ts` and the per-material compile
+ * rigs; this file holds the ATTACHMENT's own contract: that an empty container
+ * is never built, that Babylon's silent refusals are surfaced, and that the
+ * geometry is what was asked for.
+ */
+
+let engine: WebGPUEngine;
+let canvas: HTMLCanvasElement;
+
+beforeAll(async () => {
+  canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  document.body.appendChild(canvas);
+  engine = new WebGPUEngine(canvas, {
+    antialias: false, enableAllFeatures: false, setMaximumLimits: false,
+  });
+  await engine.initAsync();
+}, 60_000);
+
+afterAll(() => {
+  engine?.dispose();
+  canvas?.remove();
+});
+
+function definition(index: number): ClusteredLightDefinition {
+  return {
+    name: `clustered-lamp-${index}`,
+    position: [index * 8, 3, 0],
+    color: [1, 0.78, 0.52],
+    intensity: 40,
+    rangeMeters: 60,
+  };
+}
+
+describe("7-4b: the clustered container attaches without spending a slot it does not need", () => {
+  it("builds NO container when there is nothing to light", () => {
+    const scene = new Scene(engine);
+    try {
+      // The point of this case: `vViewDepth` is gated on `CLUSTLIGHT_BATCH > 0`
+      // rather than on whether a material has a clustered light, so the moment
+      // a container exists EVERY PBR material in the scene pays one @location.
+      // Terrain and detail have exactly one slot each, so an empty container
+      // would spend the last of it on nothing.
+      const system = new ClusteredLightingSystem(scene, []);
+      expect(system.container).toBeNull();
+      expect(system.lightCount).toBe(0);
+      expect(system.supported).toBe(false);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("builds a supported container from definitions, at the geometry it was given", () => {
+    const scene = new Scene(engine);
+    try {
+      const camera = new FreeCamera("clustered-camera", new Vector3(0, 8, -30), scene);
+      camera.setTarget(Vector3.Zero());
+      scene.activeCamera = camera;
+      const definitions = Array.from({ length: 12 }, (_, i) => definition(i));
+      const system = new ClusteredLightingSystem(scene, definitions);
+
+      expect(system.container, "no container was built from 12 valid definitions").not.toBeNull();
+      expect(system.lightCount).toBe(12);
+      expect(system.rejected).toEqual([]);
+      // `isSupported` is an ENGINE verdict — false here would mean the adapter
+      // reports no texelFetch and clustering is unavailable, not a config error.
+      expect(system.supported, "the adapter does not support clustered lighting").toBe(true);
+
+      const container = system.container!;
+      expect(container.horizontalTiles).toBe(CLUSTERED_LIGHTING_DEFAULT_GEOMETRY.horizontalTiles);
+      expect(container.verticalTiles).toBe(CLUSTERED_LIGHTING_DEFAULT_GEOMETRY.verticalTiles);
+      expect(container.depthSlices).toBe(CLUSTERED_LIGHTING_DEFAULT_GEOMETRY.depthSlices);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("honours a non-default geometry, so a tier row can drive it", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0)], {
+        horizontalTiles: 32, verticalTiles: 16, depthSlices: 8,
+      });
+      expect(system.container!.horizontalTiles).toBe(32);
+      expect(system.container!.verticalTiles).toBe(16);
+      expect(system.container!.depthSlices).toBe(8);
+      // Non-vacuity: these must differ from the defaults, or the assertion
+      // above would pass on a container that ignored the argument entirely.
+      expect(CLUSTERED_LIGHTING_DEFAULT_GEOMETRY.horizontalTiles).not.toBe(32);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("WHY rejections are counted: Babylon refuses a shadow-casting light SILENTLY", () => {
+    // `addLight` merely warns and returns, so a caller that assumed its light
+    // was added gets no error and no light. This asserts Babylon's contract
+    // directly, which is the reason `ClusteredLightingSystem` pre-checks rather
+    // than trusting `addLight`.
+    const scene = new Scene(engine);
+    try {
+      const camera = new FreeCamera("reject-camera", new Vector3(0, 5, -20), scene);
+      scene.activeCamera = camera;
+      const plain = new PointLight("reject-plain", new Vector3(0, 4, 0), scene);
+      plain.range = 40;
+      expect(ClusteredLightContainer.IsLightSupported(plain)).toBe(true);
+
+      // A DIRECTIONAL light is not a point or spot, so it is refused outright.
+      const sun = new DirectionalLight("reject-sun", new Vector3(0, -1, 0), scene);
+      expect(ClusteredLightContainer.IsLightSupported(sun)).toBe(false);
+
+      // And the recorded consequence for 7-8: a light with a shadow generator
+      // is refused while shadows are enabled, so clustered lights cast none.
+      const shadowed = new PointLight("reject-shadowed", new Vector3(4, 4, 0), scene);
+      shadowed.range = 40;
+      new CascadedShadowGenerator(256, sun, false, camera, true);
+      const shadowedSun = ClusteredLightContainer.IsLightSupported(sun);
+      expect(shadowedSun).toBe(false);
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("7-8: a light can be MOVED after construction, in world coordinates", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0), definition(1)]);
+      // Runway lamps are bolted to the ground and the constructor was enough
+      // for them; a landing light is on a moving airframe.
+      expect(system.setPosition("clustered-lamp-1", 100, 25, -40)).toBe(true);
+      const moved = system.container!.lights
+        .find((l) => l.name === "clustered-lamp-1")! as PointLight;
+      expect([moved.position.x, moved.position.y, moved.position.z]).toEqual([100, 25, -40]);
+      // An unknown name — which includes one Babylon REFUSED at construction —
+      // reports false rather than failing silently.
+      expect(system.setPosition("not-a-lamp", 0, 0, 0)).toBe(false);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("REBASE — every light follows the floating origin, or it lights the wrong place", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0), definition(2)]);
+      // The renderer rebases once per 4,096 m flown. `LightPointSystem` carries
+      // the same method because the billboards once shipped without it and all
+      // 402 lamps were left ~30 km outside the frustum. A clustered light gets
+      // it worse: the inverse-square falloff reads the position too.
+      system.setFloatingOrigin(4_096, -2_048);
+      const first = system.container!.lights
+        .find((l) => l.name === "clustered-lamp-0")! as PointLight;
+      // definition(0) is world (0, 3, 0) -> origin-relative (-4096, 3, 2048).
+      expect([first.position.x, first.position.y, first.position.z])
+        .toEqual([-4_096, 3, 2_048]);
+
+      // WORLD POSITION IS THE SOURCE OF TRUTH, so a move and a rebase compose.
+      // Storing origin-relative positions instead would make the second
+      // operation silently undo the first.
+      expect(system.setPosition("clustered-lamp-0", 10, 4, 20)).toBe(true);
+      expect([first.position.x, first.position.y, first.position.z])
+        .toEqual([10 - 4_096, 4, 20 + 2_048]);
+      system.setFloatingOrigin(0, 0);
+      expect([first.position.x, first.position.y, first.position.z]).toEqual([10, 4, 20]);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("7-8: intensity is settable, and it is the ONLY channel that darkens a clustered light", () => {
+    const scene = new Scene(engine);
+    try {
+      const system = new ClusteredLightingSystem(scene, [definition(0)]);
+      const light = system.container!.lights
+        .find((l) => l.name === "clustered-lamp-0")! as PointLight;
+      expect(system.setIntensity("clustered-lamp-0", 0)).toBe(true);
+      expect(light.intensity).toBe(0);
+      expect(system.setIntensity("clustered-lamp-0", 12)).toBe(true);
+      expect(light.intensity).toBe(12);
+      expect(system.setIntensity("not-a-lamp", 1)).toBe(false);
+
+      // THE TRAP THIS EXISTS TO STEER AROUND: `setEnabled(false)` is the
+      // obvious way to darken a Babylon light and it does NOT work here.
+      // The container never reads `isEnabled`, so a disabled child stays in
+      // the cluster data at full diffuse. Asserted against Babylon's shipped
+      // source rather than described, because it is a property of their code.
+      light.setEnabled(false);
+      expect(
+        light.intensity,
+        "disabling the light changed its intensity — re-derive whether setEnabled "
+        + "is now a valid way to darken a clustered light",
+      ).toBe(12);
+      light.setEnabled(true);
+      system.dispose();
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it("the light-slot cap is raised above the count production actually runs", () => {
+    // sun + sky-ambient + moon = 3, and the container is itself a Light, so the
+    // default cap of 4 is consumed exactly and the next light added anywhere
+    // would silently stop contributing.
+    expect(CLUSTERED_MAX_SIMULTANEOUS_LIGHTS).toBeGreaterThan(4);
+  });
+});

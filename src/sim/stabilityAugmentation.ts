@@ -115,8 +115,9 @@ export class JetStabilityAugmentation {
       return out;
     }
 
+    // Pilot-sign yaw rate: nose-right is -omega_y with +Z = starboard (D-6).
     const yawRate = Number.isFinite(state.angularVelocity.y)
-      ? state.angularVelocity.y
+      ? -state.angularVelocity.y
       : 0;
     // Priming to the current rate on engagement makes the washed rate start
     // at zero, so crossing the engage speed mid-turn cannot kick the rudder.
@@ -132,8 +133,9 @@ export class JetStabilityAugmentation {
     const washedYawRate = yawRate - this.yawRateLowPass;
 
     if (Math.abs(requested.yaw) <= PILOT_COMMAND_THRESHOLD) {
-      // Positive body yaw rate is nose-right; positive rudder command is also
-      // nose-right, so the damper opposes the washed rate directly.
+      // The washed rate is pilot-sign (positive is nose-right, read as
+      // -omega_y above); positive rudder command is also nose-right, so the
+      // damper opposes the washed rate directly.
       this.lastRudderContribution = clamp(
         -YAW_DAMPER_GAIN * washedYawRate,
         -YAW_DAMPER_LIMIT,
@@ -145,10 +147,10 @@ export class JetStabilityAugmentation {
     }
 
     if (Math.abs(requested.roll) <= PILOT_COMMAND_THRESHOLD) {
-      // Body +X roll rate is a left-bank rate; the pilot-positive (right)
-      // aileron command opposes it, matching the pilot-mode damper sign.
+      // Body +X roll rate is a right-bank rate with +Z = starboard (D-6), so
+      // it is already in the pilot-positive sign the damper law expects.
       const pilotSignRollRate = Number.isFinite(state.angularVelocity.x)
-        ? -state.angularVelocity.x
+        ? state.angularVelocity.x
         : 0;
       this.lastAileronContribution = clamp(
         -ROLL_DAMPER_GAIN * pilotSignRollRate,

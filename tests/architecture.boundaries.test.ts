@@ -27,6 +27,36 @@ interface SourceFile {
  * Remove comments, import statements, and re-export-from statements, so that
  * `type Foo` inside an import brace does not read as a declaration of Foo and
  * a mention inside a comment cannot satisfy a convention check.
+ *
+ * **DOCUMENTED TRAP (`6-12`, 2026-08-31): this strips comments but NOT string
+ * literals, and the convention guards below are bare regexes over the result.**
+ * Verified by replicating this function against both forms: a comment
+ * containing `new ShadowDepthWrapper` or `.tier` is stripped and passes; the
+ * same text inside a string literal **fails the build**.
+ *
+ * The practical consequence is narrow and counter-intuitive, so it is worth
+ * stating exactly. You may freely *comment* about these constructs — that is
+ * what this function is for. What you cannot do is put their vocabulary in a
+ * **string**: an error message, a thrown `Error`, a log line, a test name. Which
+ * means the guards are hardest on the single most useful error message an
+ * author can write — the one that names the construct it forbids.
+ * The guards' own failure messages below are exempt only because this file is
+ * not under `SOURCE_ROOT`.
+ *
+ * Workaround, until the open question below is settled: phrase around the
+ * token — "a profile data field, not a per-tier read", "the guarded factory".
+ *
+ * **OPEN QUESTION, deliberately not resolved here.** Whether these guards
+ * *should* strip string literals is a real decision with a cost on both sides:
+ * a string containing `new ShadowDepthWrapper` can be a genuine dynamic
+ * construction site (a registry key, a `Function` body, a dynamic import), so
+ * stripping strings opens a hole in a guard whose whole job is to have no
+ * holes. Recorded rather than fixed, because trading a false positive for a
+ * false negative in a boundary guard is an architectural call, not a cleanup.
+ *
+ * This is the third member of a family this phase kept finding: an instrument
+ * that models "code doing X" while actually matching "text containing X", never
+ * re-checked against the difference. See `PHASE_6_EXECUTION_PLAN.md` §6-12.
  */
 function withoutImportClauses(content: string): string {
   return content
@@ -62,6 +92,38 @@ function declarationPattern(symbol: string): RegExp {
 }
 
 describe("architecture boundaries (0-1)", () => {
+  /**
+   * NON-VACUITY ANCHOR for every guard below. **They all iterate `sourceFiles`
+   * and assert inside the loop, so an empty scan makes them all pass in
+   * silence** — measured: emptying it leaves 6 of the 8 guards green, including
+   * assertion 117's raw-`ShadowDepthWrapper` ban, the owned-symbol rule, the
+   * tier-branching containment and the physics terrain-query route.
+   *
+   * `collectSourceFiles` walks `SOURCE_ROOT` for `.ts`. A renamed `src/`, a
+   * changed root, or a narrowed extension filter each return `[]` — **and an
+   * empty collection is indistinguishable from a clean codebase in every
+   * assertion that consumes it.** This is the `horizon-shadow-far-annulus`
+   * shape: a check that cannot fail.
+   *
+   * The floor is a SANITY BOUND, not a pinned count — it exists to separate
+   * "the scan works" from "the scan returned nothing", and must not be
+   * ratcheted up to track the tree.
+   */
+  it("scanned a non-degenerate source tree, so the guards below can fail", () => {
+    expect(
+      sourceFiles.length,
+      "collectSourceFiles returned an implausibly small set. Every boundary "
+      + "assertion in this file iterates it and asserts INSIDE the loop, so a "
+      + "broken scan turns this whole suite green while checking nothing. Fix "
+      + "the scan — do not lower this floor.",
+    ).toBeGreaterThan(100);
+    expect(
+      filesByPath.size,
+      "filesByPath lost entries relative to sourceFiles — duplicate paths would "
+      + "silently drop files from the path-keyed lookups below.",
+    ).toBe(sourceFiles.length);
+  });
+
   it("keeps the manifest complete: every definition site exists or is planned", () => {
     for (const owner of ARCHITECTURAL_OWNERS) {
       const existing = owner.definitionSites.filter((site) => filesByPath.has(site));
@@ -81,6 +143,18 @@ describe("architecture boundaries (0-1)", () => {
         + `${owner.definitionSites.join(", ")} but none exist and the row is not marked planned.`,
       ).toBeGreaterThan(0);
     }
+  });
+
+  it("leaves no Phase 7 artifact in a planned state after the phase's cut decisions", () => {
+    const stale = ARCHITECTURAL_OWNERS
+      .filter((owner) => owner.plannedBy?.startsWith("7-"))
+      .map((owner) => `${owner.artifact} (${owner.plannedBy})`);
+    expect(
+      stale,
+      "Phase 7 is closed: a planned Phase-7 owner row now describes either a live "
+      + "artifact whose marker must be removed, or a cut artifact whose whole row "
+      + "must be removed. Do not leave a nonexistent cut feature as future architecture.",
+    ).toEqual([]);
   });
 
   it("allows owned symbols to be declared only at their definition sites", () => {
@@ -165,7 +239,13 @@ describe("architecture boundaries (0-1)", () => {
   });
 
   it("keeps terrain/ off detail/ internals except the density-field entry point", () => {
-    const detailImport = /from\s+["'][^"']*\/detail\/(?!densityField\b)[^"']*["']/u;
+    // `6-8`: the entry point is the density field, and `densityFieldWgsl` is
+    // that same field's WGSL half — the transliteration whose owner row in
+    // `owners.ts` has always read `consumers: "any"`, because a shader-side
+    // consumer is exactly what it exists for. The two rules disagreed only
+    // because nothing on the terrain side had yet needed to COMPOSE the
+    // include; the splat bake does. Everything else in `detail/` stays shut.
+    const detailImport = /from\s+["'][^"']*\/detail\/(?!densityField(?:Wgsl)?\b)[^"']*["']/u;
     for (const file of sourceFiles) {
       if (!file.path.startsWith("src/render/webgpu/terrain/")) continue;
       expect(
@@ -208,6 +288,11 @@ describe("architecture boundaries (0-1)", () => {
           ).toBeTruthy();
           continue;
         }
+        expect(
+          member.plannedBy,
+          `Seasonal-family rot: "${member.artifact}" is marked planned (${member.plannedBy}) `
+          + `but ${site} exists — remove plannedBy so the live signature is enforced.`,
+        ).toBeUndefined();
         expect(
           // Type-position only: a parameter or property typed EnvironmentClock,
           // or a dayOfYear field/parameter. A comment cannot satisfy this

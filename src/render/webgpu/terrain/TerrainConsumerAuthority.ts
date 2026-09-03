@@ -18,10 +18,13 @@ export interface TerrainConsumerHeightAuthority {
   sampleHeight(x: number, z: number, analyticHeight?: number): number | null;
   /** Final-page signed distance; null means the neutral legacy density law. */
   sampleShoreDistance?(x: number, z: number): number | null;
+  /** `6-6`: final-page soil depth in metres; null means the 2-15 stand-in. */
+  sampleSoilDepth?(x: number, z: number): number | null;
 }
 
 export type TerrainConsumerTerrainSample = TerrainSample & {
   readonly shoreDistanceMeters?: number;
+  readonly soilDepthMeters?: number;
 };
 
 export type TerrainConsumerSample = (
@@ -33,6 +36,9 @@ interface RetainedAuxPage extends TerrainAuxPagePublication {
   sequence: number;
   active: boolean;
 }
+
+/** The two published aux fields; they share one addressing implementation. */
+type AuxChannel = "shore" | "soil";
 
 interface RetainedHeightPageAddress {
   tileX: number;
@@ -102,20 +108,26 @@ export class TerrainConsumerAuthority extends TerrainAuthority {
       publication.shoreDistanceMetersPerUnit,
       "Terrain aux shore-distance unit",
     );
+    requireFinite(publication.soilDepthMetersPerUnit, "Terrain aux soil-depth unit");
     if (publication.coreSize <= 0 || publication.gutter < 0) {
       throw new RangeError("Terrain aux core and gutter are invalid");
     }
     if (publication.storedEdge !== publication.coreSize + publication.gutter * 2) {
       throw new RangeError("Terrain aux stored edge does not match its core and gutter");
     }
-    if (publication.texelSizeMeters <= 0 || publication.shoreDistanceMetersPerUnit <= 0) {
+    if (
+      publication.texelSizeMeters <= 0
+      || publication.shoreDistanceMetersPerUnit <= 0
+      || publication.soilDepthMetersPerUnit <= 0
+    ) {
       throw new RangeError("Terrain aux sampling scales must be greater than zero");
     }
-    if (
-      publication.shoreDistanceR16Sint.length
-      !== publication.storedEdge * publication.storedEdge
-    ) {
+    const texels = publication.storedEdge * publication.storedEdge;
+    if (publication.shoreDistanceR16Sint.length !== texels) {
       throw new RangeError("Terrain aux shore-distance field length mismatch");
+    }
+    if (publication.soilDepthR8Unorm.length !== texels) {
+      throw new RangeError("Terrain aux soil-depth field length mismatch");
     }
 
     this.auxSequence += 1;
@@ -167,13 +179,32 @@ export class TerrainConsumerAuthority extends TerrainAuthority {
 
   /** Bilinear decode of the committed core+gutter field, in signed metres. */
   sampleShoreDistance(x: number, z: number): number | null {
-    requireFinite(x, "Terrain shore sample x");
-    requireFinite(z, "Terrain shore sample z");
+    return this.sampleAuxChannel(x, z, "shore");
+  }
+
+  /**
+   * `6-6`: bilinear decode of the committed soil-depth field, in metres.
+   *
+   * Null is the sentinel every consumer branches on — no provisioned page here,
+   * so the `2-15` moisture stand-in remains authoritative and analytic worlds
+   * (which never publish an aux page at all) are untouched.
+   */
+  sampleSoilDepth(x: number, z: number): number | null {
+    return this.sampleAuxChannel(x, z, "soil");
+  }
+
+  private sampleAuxChannel(
+    x: number,
+    z: number,
+    channel: AuxChannel,
+  ): number | null {
+    requireFinite(x, "Terrain aux sample x");
+    requireFinite(z, "Terrain aux sample z");
     const tileX = Math.floor(x / WORLD_PAGE_BASE_EXTENT_METERS);
     const tileZ = Math.floor(z / WORLD_PAGE_BASE_EXTENT_METERS);
     for (const page of this.auxPages) {
       if (page?.active && page.tileX === tileX && page.tileZ === tileZ) {
-        return this.sampleAuxPage(page, x, z);
+        return this.sampleAuxPage(page, x, z, channel);
       }
     }
     // A committed neighbour's four-texel gutter closes the brief interval
@@ -182,7 +213,7 @@ export class TerrainConsumerAuthority extends TerrainAuthority {
     let result: number | null = null;
     for (const page of this.auxPages) {
       if (!page?.active || page.sequence <= newestSequence) continue;
-      const sample = this.sampleAuxPage(page, x, z);
+      const sample = this.sampleAuxPage(page, x, z, channel);
       if (sample === null) continue;
       newestSequence = page.sequence;
       result = sample;
@@ -228,7 +259,12 @@ export class TerrainConsumerAuthority extends TerrainAuthority {
     );
   }
 
-  private sampleAuxPage(page: RetainedAuxPage, x: number, z: number): number | null {
+  private sampleAuxPage(
+    page: RetainedAuxPage,
+    x: number,
+    z: number,
+    channel: AuxChannel,
+  ): number | null {
     const minimumX = page.tileX * WORLD_PAGE_BASE_EXTENT_METERS;
     const minimumZ = page.tileZ * WORLD_PAGE_BASE_EXTENT_METERS;
     // Hydrology box-averages the 256-square erosion core into its 128-square
@@ -250,14 +286,20 @@ export class TerrainConsumerAuthority extends TerrainAuthority {
     const row1 = Math.min(last, row0 + 1);
     const tx = column - column0;
     const tz = row - row0;
-    const field = page.shoreDistanceR16Sint;
+    // Both channels share this addressing exactly; only the stored array and
+    // its quantisation scale differ, which is why the arithmetic is written
+    // once rather than once per channel.
+    const field = channel === "soil" ? page.soilDepthR8Unorm : page.shoreDistanceR16Sint;
+    const scale = channel === "soil"
+      ? page.soilDepthMetersPerUnit
+      : page.shoreDistanceMetersPerUnit;
     const topLeft = field[row0 * page.storedEdge + column0]!;
     const topRight = field[row0 * page.storedEdge + column1]!;
     const bottomLeft = field[row1 * page.storedEdge + column0]!;
     const bottomRight = field[row1 * page.storedEdge + column1]!;
     const top = topLeft + (topRight - topLeft) * tx;
     const bottom = bottomLeft + (bottomRight - bottomLeft) * tx;
-    return (top + (bottom - top) * tz) * page.shoreDistanceMetersPerUnit;
+    return (top + (bottom - top) * tz) * scale;
   }
 }
 
@@ -282,15 +324,24 @@ export function terrainConsumerSampleFromAuthority(
 ): TerrainConsumerSample {
   if (world.worldEvolution === "analytic") return analyticSample;
 
-  const withShoreDistance = (
+  // 6-6: the ecology channels ride the same publication and the same
+  // provisioned-or-not sentinel. A channel that has no page here is simply
+  // absent from the sample, which is what every consumer branches on.
+  const withEcologyChannels = (
     sample: TerrainConsumerTerrainSample,
     x: number,
     z: number,
   ): TerrainConsumerTerrainSample => {
     const shoreDistanceMeters = authority.sampleShoreDistance?.(x, z);
-    return shoreDistanceMeters === null || shoreDistanceMeters === undefined
-      ? sample
-      : { ...sample, shoreDistanceMeters };
+    const soilDepthMeters = authority.sampleSoilDepth?.(x, z);
+    const hasShore = shoreDistanceMeters !== null && shoreDistanceMeters !== undefined;
+    const hasSoil = soilDepthMeters !== null && soilDepthMeters !== undefined;
+    if (!hasShore && !hasSoil) return sample;
+    return {
+      ...sample,
+      ...(hasShore ? { shoreDistanceMeters } : {}),
+      ...(hasSoil ? { soilDepthMeters } : {}),
+    };
   };
 
   const heightAt = (x: number, z: number): number => {
@@ -307,7 +358,7 @@ export function terrainConsumerSampleFromAuthority(
       return analytic;
     }
     const height = authority.sampleHeight(worldX, worldZ, analytic.height);
-    if (height === null) return withShoreDistance(analytic, worldX, worldZ);
+    if (height === null) return withEcologyChannels(analytic, worldX, worldZ);
 
     const delta = TERRAIN_NORMAL_SAMPLE_DISTANCE;
     const gradientX = (
@@ -317,7 +368,7 @@ export function terrainConsumerSampleFromAuthority(
       heightAt(worldX, worldZ + delta) - heightAt(worldX, worldZ - delta)
     ) / (2 * delta);
     const inverseLength = 1 / Math.hypot(gradientX, 1, gradientZ);
-    return withShoreDistance({
+    return withEcologyChannels({
       ...analytic,
       height,
       normal: {

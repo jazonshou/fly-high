@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 import {
   gpuTimingEnabledAtStartup,
@@ -20,6 +21,25 @@ const renderRoot = join(projectRoot, "src/render");
 const TIMED_ON_PURPOSE = [
   "src/render/webgpu/terrain/TerrainPageAtlas.ts",
   "src/render/webgpu/terrain/PageOcclusionBake.ts",
+  // `W-1d`: every stage of the multi-frame page-erosion DAG runs per frame
+  // under the `erosionCompute` meter, and its consumer is
+  // `TerrainPageErosionGpu.consumeMeasuredDispatchCostMs` ->
+  // `TerrainPageGenerator.consumeMeasuredErosionDispatchCostMs` ->
+  // `TerrainClipmapSystem.observeDispatchCosts` ->
+  // `ComputeBudget.observeDispatchCostMs("erosionCompute", ...)`. Untiming
+  // them puts the DAG back on its pinned seeds forever, and the seeds are
+  // per-STAGE here — the admission price changes as the page walks the DAG.
+  "src/render/webgpu/terrain/TerrainPageErosionGpu.ts",
+  // `6-9`, wave G's first debt: the ground-cover placement dispatches used to
+  // opt OUT of timing, which was correct only while `groundCoverCompute` was
+  // not a `ComputeBudget` client. It is one now, so its counter has a
+  // consumer — `GroundCoverSystem.observeDispatchCosts` ->
+  // `ComputeBudget.observeDispatchCostMs("groundCoverCompute", ...)` — and
+  // untiming it would pin the only per-FRAME compute client on its seed
+  // estimate forever. Only ring 0's shader is sampled: the three rings run
+  // the same kernel over different lattice sizes, and the meter's job is to
+  // price a dispatch, not to average three of them.
+  "src/render/webgpu/detail/GroundCoverSystem.ts",
 ];
 
 function sourceFiles(directory: string): string[] {
@@ -34,7 +54,7 @@ function sourceFiles(directory: string): string[] {
 function computeShaderSites(): Array<{ file: string; wrapped: boolean }> {
   const sites: Array<{ file: string; wrapped: boolean }> = [];
   for (const path of sourceFiles(renderRoot)) {
-    const source = readFileSync(path, "utf8");
+    const source = readSource(path);
     let index = source.indexOf("new ComputeShader(");
     while (index >= 0) {
       const prefix = source.slice(Math.max(0, index - 24), index);

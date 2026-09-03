@@ -508,27 +508,58 @@ export const TERRAIN_HEIGHT_PARITY_MEASURED_METERS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 /**
- * Every sampled texture the terrain material binds, by stage, with a running
- * count. Texture VISIBILITY derives from which stage's `CUSTOM_*_DEFINITIONS`
- * carries the declaration, so the count is per-stage and not per-material.
- * The material factory asserts these against
- * `engine.getCaps().maxTexturesImageUnits` (assertion 70c).
+ * Every texture the terrain material SAMPLES, by stage — i.e. declared as a
+ * `texture_*` with a companion `sampler`, which is what the per-stage limit
+ * counts. A `texture_2d<i32>` read by `textureLoad` needs no sampler and is
+ * deliberately absent; that is why 6-6 could add signed shore distance without
+ * moving this budget.
+ *
+ * **These lists are DERIVED FROM THE COMPILED SHADER, not maintained by hand.**
+ * `tests/gpu/terrain-sampler-budget.test.ts` compiles the material in its
+ * shipping permutations and asserts each set exactly, so an entry added or
+ * removed anywhere — by us, by an `#ifdef`, or by a Babylon bump changing which
+ * PBR samplers a material declares — fails there. Edit these only to match a
+ * measurement.
+ *
+ * The previous revision of this constant was wrong in BOTH directions and had
+ * been wrong for some time: it listed six PBR samplers (`albedoSampler`,
+ * `bumpSampler`, `reflectivitySampler`, `reflectionSampler`,
+ * `metallicReflectanceSampler`, `lightmapSampler`) that this material never
+ * declares, listed `terrainHeightAtlas` in the fragment stage where it is
+ * vertex-only, and omitted both `environmentBrdfSampler` and the shadow sampler
+ * a `receiveShadows` mesh compiles in. It survived because the only assertions
+ * on it were uniqueness and a length check against the per-stage cap — both
+ * statements about the list, neither about the shader. Its docstring also
+ * claimed "the material factory asserts these against
+ * `engine.getCaps().maxTexturesImageUnits` (assertion 70c)"; no such assertion
+ * existed anywhere in `src/`, and the only occurrence of that capability name
+ * was inside the claim itself.
+ *
+ * Engine-owned entries are included because the per-stage limit does not care
+ * who owns a binding. `shadowTexture` is normalised: Babylon suffixes it with
+ * the light's index in the scene, which is a property of scene construction
+ * rather than of this material. Exactly one shadow generator ships
+ * (`AtmosphereSystem` builds one for the sun; the moon is deliberately not a
+ * caster), so exactly one appears.
  */
 export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
-  vertex: Object.freeze(["terrainHeightAtlas"] as const),
+  /**
+   * EMPTY, and measured so. The CDLOD vertex stage binds `terrainHeightAtlas`
+   * but reconstructs its bilinear filter from four `textureLoad`s at the texel
+   * corners, so it declares no sampler and spends none of the vertex budget.
+   * The previous revision listed the atlas here, which is what a
+   * declaration-site reading gives you rather than a compiled-source one.
+   */
+  vertex: Object.freeze([] as const),
+  /** The base shipping permutation: page atlases, triplanar, CDLOD, shadows. */
   fragment: Object.freeze([
-    // PBR's own set on the shared terrain material.
-    "albedoSampler",
-    "bumpSampler",
-    "reflectivitySampler",
-    "reflectionSampler",
-    "metallicReflectanceSampler",
-    "lightmapSampler",
+    // Engine-owned, on any shadow-receiving PBR material.
+    "environmentBrdfSampler",
+    "shadowTexture",
     // `3-1`'s material arrays.
     "terrainSurfaceAlbedo",
     "terrainSurfaceNormal",
     // Phase 4's page atlases.
-    "terrainHeightAtlas",
     "terrainOcclusionAtlas",
     "terrainHorizonAtlasA",
     "terrainHorizonAtlasB",
@@ -538,6 +569,19 @@ export const TERRAIN_SAMPLED_BINDINGS = Object.freeze({
     "terrainSplatWeightHi",
   ] as const),
 });
+
+/**
+ * 6-5's hydrology permutation costs **ZERO** additional sampled bindings, which
+ * is stronger than the item's own headroom paragraph assumed.
+ *
+ * Both channels are `textureLoad` reads: shore distance is r16sint (which needs
+ * no sampler by rule — an integer texture cannot be filtered) and lake depth is
+ * r16float read at an exact texel. So the widest shipping terrain permutation
+ * has the same fragment set as the base one, and
+ * `tests/gpu/terrain-sampler-budget.test.ts` compiles both to assert exactly
+ * that rather than leaving it as a claim.
+ */
+export const TERRAIN_HYDROLOGY_ADDS_SAMPLED_BINDINGS = 0;
 
 // ---------------------------------------------------------------------------
 // §5.6 — the global height pyramid (`4-7`) and readback alignment
@@ -549,6 +593,30 @@ export const TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS = 512;
 /** 256 × 512 m = 131 km across — beyond the 45 km far plane in every direction. */
 export const TERRAIN_HEIGHT_PYRAMID_SPAN_METERS =
   TERRAIN_HEIGHT_PYRAMID_EDGE * TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS;
+
+/**
+ * `6-11`: the GLOBAL horizon field, at half the height pyramid's linear
+ * resolution and over exactly the same span.
+ *
+ * Why coarser than the field it marches. The horizon is a max over a 45 km
+ * march, so it is band-limited far below its source by construction — two
+ * adjacent texels differ only where the FARTHEST occluder differs, which at
+ * this scale means a different ridge, not a different metre. Halving the edge
+ * quarters both the memory (128 KiB for two rgba8 layers, against 512 KiB at
+ * the pyramid's own edge) and the bake (6.3 M texture loads, against 25 M) —
+ * and the bake cost is the binding one, because this field re-bakes on every
+ * 512 m of observer travel, not once.
+ *
+ * Why the span is pinned equal rather than merely similar: the consumer maps
+ * world -> texel by a single divide against a published origin, and a span
+ * mismatch would silently shear that mapping against the height pyramid's.
+ * `tests/render.webgpu-horizon-field.test.ts` asserts the equality.
+ */
+export const TERRAIN_HORIZON_PYRAMID_EDGE = 128;
+export const TERRAIN_HORIZON_PYRAMID_TEXEL_METERS =
+  TERRAIN_HEIGHT_PYRAMID_SPAN_METERS / TERRAIN_HORIZON_PYRAMID_EDGE;
+export const TERRAIN_HORIZON_PYRAMID_SPAN_METERS =
+  TERRAIN_HORIZON_PYRAMID_EDGE * TERRAIN_HORIZON_PYRAMID_TEXEL_METERS;
 
 /**
  * WebGPU's `copyTextureToBuffer` row alignment. A 264-texel r32float row is

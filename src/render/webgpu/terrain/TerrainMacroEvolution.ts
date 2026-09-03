@@ -29,6 +29,14 @@ const NEIGHBOURS = Object.freeze([
   Object.freeze({ dx: 1, dz: 1, distance: SQRT_TWO }),
 ] as const);
 
+// Flattened mirrors of NEIGHBOURS, derived from it so the two can never drift.
+// The hot gathers below walk these instead of the frozen object list: same
+// order, same dx/dz, bit-identical distances, no property loads.
+const NEIGHBOUR_COUNT = NEIGHBOURS.length;
+const NEIGHBOUR_DX = Int32Array.from(NEIGHBOURS, (offset) => offset.dx);
+const NEIGHBOUR_DZ = Int32Array.from(NEIGHBOURS, (offset) => offset.dz);
+const NEIGHBOUR_DISTANCE = Float64Array.from(NEIGHBOURS, (offset) => offset.distance);
+
 export const MACRO_FILL_EPSILON_METERS_PER_TEXEL = 1e-3;
 export const MACRO_MFD_SLOPE_EXPONENT = 1.1;
 export const MACRO_STREAM_POWER_ITERATIONS = 24;
@@ -133,59 +141,99 @@ export interface MacroEvolutionResult {
   readonly config: Readonly<MacroEvolutionConfig>;
 }
 
-interface HeapEntry {
-  readonly index: number;
-  readonly elevation: number;
-}
-
+/**
+ * Binary min-heap over (elevation, index), held in parallel typed arrays.
+ *
+ * The ordering is the one the previous object-per-entry version expressed as
+ * `(first.elevation - second.elevation) || (first.index - second.index)`. For
+ * the finite elevations the flood produces, that subtraction is negative
+ * exactly when `first.elevation < second.elevation` and falsy exactly when the
+ * two are equal, so `compare(a, b) <= 0` is precisely
+ * `ea < eb || (ea === eb && ia <= ib)` — spelled out below. The pop sequence is
+ * therefore unchanged, which is what keeps the filled surface, the flood
+ * parents and the settlement order bit-identical. What changes is that a
+ * million-cell flood no longer allocates a million entry objects.
+ */
 class StableMinHeap {
-  private readonly entries: HeapEntry[] = [];
+  private readonly elevations: Float64Array;
+  private readonly indices: Uint32Array;
+  private length = 0;
+  /** Key of the entry the most recent `pop` returned. */
+  poppedElevation = 0;
+
+  constructor(capacity: number) {
+    this.elevations = new Float64Array(capacity);
+    this.indices = new Uint32Array(capacity);
+  }
 
   get size(): number {
-    return this.entries.length;
+    return this.length;
   }
 
-  push(entry: HeapEntry): void {
-    const entries = this.entries;
-    entries.push(entry);
-    let child = entries.length - 1;
+  push(index: number, elevation: number): void {
+    const elevations = this.elevations;
+    const indices = this.indices;
+    let child = this.length;
+    this.length = child + 1;
     while (child > 0) {
       const parent = (child - 1) >> 1;
-      const parentEntry = entries[parent];
-      if (parentEntry && compareHeapEntries(parentEntry, entry) <= 0) break;
-      entries[child] = parentEntry!;
+      const parentElevation = elevations[parent]!;
+      const parentIndex = indices[parent]!;
+      if (
+        parentElevation < elevation
+        || (parentElevation === elevation && parentIndex <= index)
+      ) break;
+      elevations[child] = parentElevation;
+      indices[child] = parentIndex;
       child = parent;
     }
-    entries[child] = entry;
+    elevations[child] = elevation;
+    indices[child] = index;
   }
 
-  pop(): HeapEntry | null {
-    const entries = this.entries;
-    const root = entries[0];
-    if (!root) return null;
-    const tail = entries.pop();
-    if (entries.length === 0 || !tail) return root;
+  /** Removes the minimum and returns its cell index; key in `poppedElevation`. */
+  pop(): number {
+    const elevations = this.elevations;
+    const indices = this.indices;
+    const rootIndex = indices[0]!;
+    this.poppedElevation = elevations[0]!;
+    const length = this.length - 1;
+    this.length = length;
+    if (length === 0) return rootIndex;
+    const tailElevation = elevations[length]!;
+    const tailIndex = indices[length]!;
     let parent = 0;
-    while (true) {
+    for (;;) {
       const left = parent * 2 + 1;
-      if (left >= entries.length) break;
+      if (left >= length) break;
       const right = left + 1;
-      const leftEntry = entries[left]!;
-      const rightEntry = entries[right];
-      const child = rightEntry && compareHeapEntries(rightEntry, leftEntry) < 0 ? right : left;
-      const childEntry = entries[child]!;
-      if (compareHeapEntries(tail, childEntry) <= 0) break;
-      entries[parent] = childEntry;
+      let child = left;
+      let childElevation = elevations[left]!;
+      let childIndex = indices[left]!;
+      if (right < length) {
+        const rightElevation = elevations[right]!;
+        const rightIndex = indices[right]!;
+        if (
+          rightElevation < childElevation
+          || (rightElevation === childElevation && rightIndex < childIndex)
+        ) {
+          child = right;
+          childElevation = rightElevation;
+          childIndex = rightIndex;
+        }
+      }
+      if (
+        tailElevation < childElevation
+        || (tailElevation === childElevation && tailIndex <= childIndex)
+      ) break;
+      elevations[parent] = childElevation;
+      indices[parent] = childIndex;
       parent = child;
     }
-    entries[parent] = tail;
-    return root;
+    elevations[parent] = tailElevation;
+    indices[parent] = tailIndex;
+    return rootIndex;
   }
-}
-
-function compareHeapEntries(first: HeapEntry, second: HeapEntry): number {
-  const elevation = first.elevation - second.elevation;
-  return elevation || first.index - second.index;
 }
 
 function requireGrid(width: number, height: number, values: ArrayLike<number>, label: string): void {
@@ -246,6 +294,93 @@ function resolveMacroConfig(
   return Object.freeze(config);
 }
 
+const FLOAT32_KEY_VALUE = new Float32Array(1);
+const FLOAT32_KEY_BITS = new Uint32Array(FLOAT32_KEY_VALUE.buffer);
+
+/**
+ * Indices ordered by (height descending, index descending) — the exact
+ * permutation `sort((a, b) => (h[b] - h[a]) || (b - a))` produces, not merely
+ * an equivalent one.
+ *
+ * When every height is exactly float32-representable — the production case,
+ * where the drainage surface is a `Float32Array` — the order is produced by a
+ * stable LSD radix sort over the standard monotonic float32-to-uint32 key.
+ * That map is an order isomorphism on float32 bit patterns, so radix ascending
+ * from the identity permutation yields (height asc, index asc) and reversing it
+ * yields the comparator's order. `-0` is folded to `+0` first because the
+ * comparator's subtraction treats the two as a tie. Any wider input (a
+ * Float64Array carrying values a float32 cannot hold) falls back to the
+ * comparator itself, so the contract holds for every caller.
+ *
+ * This matters for bits, not just speed: two cells at the same drainage height
+ * never drain into each other, but they can share a lower receiver, and the
+ * running `accumulation[receiver] +=` is float64 addition, which is not
+ * associative. Any deviation from the comparator's tie-break moves bits.
+ */
+function orderByHeightDescending(heights: ArrayLike<number>, count: number): Uint32Array {
+  const keys = new Uint32Array(count);
+  const histograms = new Int32Array(4 * 256);
+  let radixApplies = true;
+  for (let index = 0; index < count; index += 1) {
+    const value = heights[index]!;
+    if (Math.fround(value) !== value) {
+      radixApplies = false;
+      break;
+    }
+    FLOAT32_KEY_VALUE[0] = value === 0 ? 0 : value;
+    const bits = FLOAT32_KEY_BITS[0]!;
+    const key = (bits & 0x80000000) !== 0 ? (~bits >>> 0) : ((bits ^ 0x80000000) >>> 0);
+    keys[index] = key;
+    const byte0 = key & 0xff;
+    const byte1 = 256 + ((key >>> 8) & 0xff);
+    const byte2 = 512 + ((key >>> 16) & 0xff);
+    const byte3 = 768 + (key >>> 24);
+    histograms[byte0] = histograms[byte0]! + 1;
+    histograms[byte1] = histograms[byte1]! + 1;
+    histograms[byte2] = histograms[byte2]! + 1;
+    histograms[byte3] = histograms[byte3]! + 1;
+  }
+  if (!radixApplies) {
+    const comparatorOrder = Array.from({ length: count }, (_, index) => index);
+    comparatorOrder.sort((first, second) => {
+      const elevation = heights[second]! - heights[first]!;
+      return elevation || second - first;
+    });
+    return Uint32Array.from(comparatorOrder);
+  }
+
+  let source = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) source[index] = index;
+  let target = new Uint32Array(count);
+  let sourceKeys = keys;
+  let targetKeys = new Uint32Array(count);
+  const offsets = new Int32Array(256);
+  for (let pass = 0; pass < 4; pass += 1) {
+    const shift = pass * 8;
+    const base = pass * 256;
+    // Every key shares this byte, so the stable pass would be the identity.
+    if (histograms[base + ((sourceKeys[0]! >>> shift) & 0xff)] === count) continue;
+    let running = 0;
+    for (let bucket = 0; bucket < 256; bucket += 1) {
+      offsets[bucket] = running;
+      running += histograms[base + bucket]!;
+    }
+    for (let index = 0; index < count; index += 1) {
+      const key = sourceKeys[index]!;
+      const bucket = (key >>> shift) & 0xff;
+      const at = offsets[bucket]!;
+      offsets[bucket] = at + 1;
+      target[at] = source[index]!;
+      targetKeys[at] = key;
+    }
+    [source, target] = [target, source];
+    [sourceKeys, targetKeys] = [targetKeys, sourceKeys];
+  }
+  const descending = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) descending[index] = source[count - 1 - index]!;
+  return descending;
+}
+
 function isRim(index: number, width: number, height: number): boolean {
   const x = index % width;
   const z = Math.floor(index / width);
@@ -293,14 +428,19 @@ export function priorityFloodOpenRim(
   parent.fill(-1);
   const visited = new Uint8Array(count);
   const order = new Uint32Array(count);
-  const heap = new StableMinHeap();
+  // Every cell is pushed at most once (the `visited` guard), so the heap can
+  // never outgrow the grid.
+  const heap = new StableMinHeap(count);
+  // Container-only hoist: an exact float64 copy of the bed keeps the eight
+  // reads per settled cell off a polymorphic ArrayLike.
+  const bed = Float64Array.from(heights as ArrayLike<number>);
 
   const seed = (index: number): void => {
     if (visited[index]) return;
     visited[index] = 1;
-    const elevation = Math.max(heights[index]!, seaLevel);
+    const elevation = Math.max(bed[index]!, seaLevel);
     filled[index] = elevation;
-    heap.push({ index, elevation });
+    heap.push(index, elevation);
   };
   for (let x = 0; x < width; x += 1) {
     seed(x);
@@ -311,21 +451,31 @@ export function priorityFloodOpenRim(
     seed(z * width + width - 1);
   }
 
+  const neighbourOffsets = new Int32Array(NEIGHBOUR_COUNT);
+  for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+    neighbourOffsets[step] = NEIGHBOUR_DZ[step]! * width + NEIGHBOUR_DX[step]!;
+  }
   let settled = 0;
   while (heap.size > 0) {
-    const entry = heap.pop();
-    if (!entry) break;
-    order[settled] = entry.index;
+    const index = heap.pop();
+    const elevation = heap.poppedElevation;
+    order[settled] = index;
     settled += 1;
-    forEachNeighbour(entry.index, width, height, (neighbour, distance) => {
-      if (visited[neighbour]) return;
+    const x = index % width;
+    const z = (index - x) / width;
+    for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+      const nx = x + NEIGHBOUR_DX[step]!;
+      const nz = z + NEIGHBOUR_DZ[step]!;
+      if (nx < 0 || nz < 0 || nx >= width || nz >= height) continue;
+      const neighbour = index + neighbourOffsets[step]!;
+      if (visited[neighbour]) continue;
       visited[neighbour] = 1;
-      parent[neighbour] = entry.index;
-      const drainageFloor = entry.elevation + epsilonMetersPerTexel * distance;
-      const elevation = Math.max(heights[neighbour]!, seaLevel, drainageFloor);
-      filled[neighbour] = elevation;
-      heap.push({ index: neighbour, elevation });
-    });
+      parent[neighbour] = index;
+      const drainageFloor = elevation + epsilonMetersPerTexel * NEIGHBOUR_DISTANCE[step]!;
+      const neighbourElevation = Math.max(bed[neighbour]!, seaLevel, drainageFloor);
+      filled[neighbour] = neighbourElevation;
+      heap.push(neighbour, neighbourElevation);
+    }
   }
   if (settled !== count) throw new Error("Priority flood failed to visit the complete grid");
   return Object.freeze({
@@ -373,23 +523,42 @@ export function computeMfdFlowAccumulation(
   }
   const receivers = new Int32Array(count);
   receivers.fill(-1);
-  const order = Array.from({ length: count }, (_, index) => index);
-  order.sort((first, second) => {
-    const elevation = drainageHeight[second]! - drainageHeight[first]!;
-    return elevation || second - first;
-  });
+  // Containers only. The drainage surface and the exclusion predicate are
+  // hoisted into monomorphic typed arrays so the eight-neighbour gather never
+  // indexes a polymorphic ArrayLike; float64 copies of the surface are exact,
+  // and the mask stores the same `>= 0.5` decision the original evaluated
+  // inline. `floodParent` is deliberately left alone: it is read once per cell
+  // and its out-of-range/fractional edge cases are load-bearing.
+  const surface = Float64Array.from(drainageHeight as ArrayLike<number>);
+  let exclusionMask: Uint8Array | null = null;
+  if (excluded) {
+    exclusionMask = new Uint8Array(count);
+    for (let index = 0; index < count; index += 1) {
+      exclusionMask[index] = (excluded[index] ?? 0) >= 0.5 ? 1 : 0;
+    }
+  }
+  const order = orderByHeightDescending(surface, count);
 
-  const candidateIndices = new Int32Array(NEIGHBOURS.length);
-  const candidateWeights = new Float64Array(NEIGHBOURS.length);
-  for (const index of order) {
-    if (isRim(index, width, height)) continue;
-    const sourceExcluded = (excluded?.[index] ?? 0) >= 0.5;
+  const neighbourOffsets = new Int32Array(NEIGHBOUR_COUNT);
+  for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+    neighbourOffsets[step] = NEIGHBOUR_DZ[step]! * width + NEIGHBOUR_DX[step]!;
+  }
+  const candidateIndices = new Int32Array(NEIGHBOUR_COUNT);
+  const candidateWeights = new Float64Array(NEIGHBOUR_COUNT);
+  const lastX = width - 1;
+  const lastZ = height - 1;
+  for (let position = 0; position < count; position += 1) {
+    const index = order[position]!;
+    const x = index % width;
+    const z = (index - x) / width;
+    if (x === 0 || z === 0 || x === lastX || z === lastZ) continue;
+    const sourceExcluded = exclusionMask !== null && exclusionMask[index] === 1;
     const override = overrides?.[index];
     if (override !== undefined && override >= 0) {
       if (!Number.isSafeInteger(override) || override >= count || override === index) {
         throw new RangeError(`receiver override ${override} is invalid at ${index}`);
       }
-      if (!sourceExcluded && (excluded?.[override] ?? 0) >= 0.5) {
+      if (!sourceExcluded && exclusionMask !== null && exclusionMask[override] === 1) {
         throw new RangeError(`receiver override ${override} enters a protected cell at ${index}`);
       }
       receivers[index] = override;
@@ -401,12 +570,14 @@ export function computeMfdFlowAccumulation(
     let weightSum = 0;
     let primary = -1;
     let primaryWeight = Number.NEGATIVE_INFINITY;
-    const elevation = drainageHeight[index]!;
-    forEachNeighbour(index, width, height, (neighbour, distance) => {
-      if ((excluded?.[neighbour] ?? 0) >= 0.5 && !sourceExcluded) return;
-      const drop = elevation - drainageHeight[neighbour]!;
-      if (!(drop > 0)) return;
-      const weight = Math.pow(drop / distance, exponent);
+    const elevation = surface[index]!;
+    // Interior cells only, so every offset is in bounds by construction.
+    for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+      const neighbour = index + neighbourOffsets[step]!;
+      if (exclusionMask !== null && exclusionMask[neighbour] === 1 && !sourceExcluded) continue;
+      const drop = elevation - surface[neighbour]!;
+      if (!(drop > 0)) continue;
+      const weight = Math.pow(drop / NEIGHBOUR_DISTANCE[step]!, exponent);
       candidateIndices[candidates] = neighbour;
       candidateWeights[candidates] = weight;
       candidates += 1;
@@ -415,14 +586,14 @@ export function computeMfdFlowAccumulation(
         primary = neighbour;
         primaryWeight = weight;
       }
-    });
+    }
 
     if (candidates === 0 || !(weightSum > 0)) {
       const fallback = floodParent[index] ?? -1;
       if (
         fallback >= 0
         && fallback !== index
-        && (sourceExcluded || (excluded?.[fallback] ?? 0) < 0.5)
+        && (sourceExcluded || exclusionMask === null || exclusionMask[fallback] !== 1)
       ) {
         receivers[index] = fallback;
         accumulation[fallback] = accumulation[fallback]! + accumulation[index]!;
@@ -629,7 +800,10 @@ function discoverLakes(
   const lakeDepth = new Float32Array(count);
   const lakes: MacroLakeExport[] = [];
   const queue = new Int32Array(count);
-  const members: number[] = [];
+  const neighbourOffsets = new Int32Array(NEIGHBOUR_COUNT);
+  for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+    neighbourOffsets[step] = NEIGHBOUR_DZ[step]! * width + NEIGHBOUR_DX[step]!;
+  }
   for (let start = 0; start < count; start += 1) {
     if (!wet[start] || lakeMask[start] !== 0) continue;
     const id = lakes.length + 1;
@@ -638,22 +812,30 @@ function discoverLakes(
     queue[tail] = start;
     tail += 1;
     lakeMask[start] = id;
-    members.length = 0;
     while (head < tail) {
       const index = queue[head]!;
       head += 1;
-      members.push(index);
-      forEachNeighbour(index, width, height, (neighbour) => {
-        if (!wet[neighbour] || lakeMask[neighbour] !== 0) return;
+      const x = index % width;
+      const z = (index - x) / width;
+      for (let step = 0; step < NEIGHBOUR_COUNT; step += 1) {
+        const nx = x + NEIGHBOUR_DX[step]!;
+        const nz = z + NEIGHBOUR_DZ[step]!;
+        if (nx < 0 || nz < 0 || nx >= width || nz >= height) continue;
+        const neighbour = index + neighbourOffsets[step]!;
+        if (!wet[neighbour] || lakeMask[neighbour] !== 0) continue;
         lakeMask[neighbour] = id;
         queue[tail] = neighbour;
         tail += 1;
-      });
+      }
     }
-    let outletIndex = members[0]!;
+    // The BFS pops in queue order, so `queue[0 .. memberCount)` is exactly the
+    // member list the previous version accumulated into a separate array.
+    const memberCount = tail;
+    let outletIndex = queue[0]!;
     let outletReceiverIndex = receivers[outletIndex] ?? -1;
     let outletElevation = Number.POSITIVE_INFINITY;
-    for (const index of members) {
+    for (let member = 0; member < memberCount; member += 1) {
+      const index = queue[member]!;
       const receiver = receivers[index] ?? -1;
       if (receiver >= 0 && lakeMask[receiver] === id) continue;
       const elevation = filled[index]!;
@@ -665,7 +847,8 @@ function discoverLakes(
     }
     if (!Number.isFinite(outletElevation)) outletElevation = filled[outletIndex]!;
     let maxDepth = 0;
-    for (const index of members) {
+    for (let member = 0; member < memberCount; member += 1) {
+      const index = queue[member]!;
       const depth = Math.max(0, outletElevation - bed[index]!);
       lakeDepth[index] = depth;
       maxDepth = Math.max(maxDepth, depth);
@@ -676,8 +859,8 @@ function discoverLakes(
       outletReceiverIndex,
       spillElevationMeters: outletElevation,
       maxDepthMeters: maxDepth,
-      surfaceAreaM2: members.length * texelSizeMeters * texelSizeMeters,
-      texelCount: members.length,
+      surfaceAreaM2: memberCount * texelSizeMeters * texelSizeMeters,
+      texelCount: memberCount,
     }));
   }
   return { lakeMask, lakeDepth, lakes: Object.freeze(lakes) };
@@ -694,17 +877,33 @@ function deriveBaseLevels(
   const terminal = new Int32Array(count);
   terminal.fill(-2);
   const trace = new Int32Array(count);
+  // Rim membership as a lookup instead of two divisions per trace step. Only
+  // the four edges are written, so building it costs 4*(width+height) stores.
+  const rim = new Uint8Array(count);
+  for (let x = 0; x < width; x += 1) {
+    rim[x] = 1;
+    rim[(height - 1) * width + x] = 1;
+  }
+  for (let z = 0; z < height; z += 1) {
+    rim[z * width] = 1;
+    rim[z * width + width - 1] = 1;
+  }
   for (let start = 0; start < count; start += 1) {
     if (terminal[start] !== -2) continue;
     let length = 0;
     let index = start;
-    const seen = new Set<number>();
-    while (index >= 0 && terminal[index] === -2 && !seen.has(index)) {
-      seen.add(index);
+    // -3 marks "already on the current trace", replacing a `new Set()` per
+    // start cell — a million allocations on the production domain. It folds
+    // into the `=== -2` test the loop already performed, and every cell marked
+    // -3 is in `trace`, so the assignment below always clears it. Both -2 and
+    // -3 fail the `>= 0` test that resolves the terminal, so the outcome is
+    // the one the Set produced.
+    while (index >= 0 && terminal[index] === -2) {
+      terminal[index] = -3;
       trace[length] = index;
       length += 1;
       const receiver = receivers[index] ?? -1;
-      if (receiver < 0 || isRim(index, width, height)) {
+      if (receiver < 0 || rim[index] === 1) {
         terminal[index] = index;
         break;
       }
@@ -717,15 +916,21 @@ function deriveBaseLevels(
         : trace[Math.max(0, length - 1)]!;
     for (let offset = length - 1; offset >= 0; offset -= 1) terminal[trace[offset]!] = resolved;
   }
-  const outletToBasin = new Map<number, number>();
+  // Basin ids are one-based, so 0 doubles as "not yet assigned". Terminals are
+  // cell indices for every graph this module produces; the map is kept only for
+  // the off-grid receiver the previous Map-keyed lookup tolerated.
+  const basinOfOutlet = new Int32Array(count);
+  const strayOutlets = new Map<number, number>();
   const basinIds = new Uint32Array(count);
   const baseLevels: MacroBaseLevelExport[] = [];
   for (let index = 0; index < count; index += 1) {
     const outlet = terminal[index]!;
-    let id = outletToBasin.get(outlet);
-    if (id === undefined) {
-      id = outletToBasin.size + 1;
-      outletToBasin.set(outlet, id);
+    const onGrid = outlet >= 0 && outlet < count;
+    let id = onGrid ? basinOfOutlet[outlet]! : strayOutlets.get(outlet) ?? 0;
+    if (id === 0) {
+      id = baseLevels.length + 1;
+      if (onGrid) basinOfOutlet[outlet] = id;
+      else strayOutlets.set(outlet, id);
       baseLevels.push(Object.freeze({
         id,
         outletIndex: outlet,
@@ -735,6 +940,115 @@ function deriveBaseLevels(
     basinIds[index] = id;
   }
   return { basinIds, baseLevels: Object.freeze(baseLevels) };
+}
+
+/**
+ * The half of the pipeline that runs after the operators: one priority flood,
+ * one MFD gather, lake discovery, base levels and the channel-seed scan over an
+ * already-evolved surface. Both entry points funnel through it, so the
+ * single-shot and hybrid paths cannot drift apart.
+ */
+function completeMacroEvolution(
+  width: number,
+  height: number,
+  texelSizeMeters: number,
+  seaLevel: number,
+  evolvedHeight: Float32Array,
+  config: Readonly<MacroEvolutionConfig>,
+): MacroEvolutionResult {
+  const count = width * height;
+  const finalFlood = priorityFloodOpenRim(
+    width,
+    height,
+    evolvedHeight,
+    seaLevel,
+    config.fillEpsilonMetersPerTexel,
+  );
+  const finalFlow = computeMfdFlowAccumulation(
+    width,
+    height,
+    finalFlood.filledHeight,
+    finalFlood.floodParent,
+    { slopeExponent: config.mfdSlopeExponent },
+  );
+  const lakeData = discoverLakes(
+    width,
+    height,
+    evolvedHeight,
+    finalFlood.filledHeight,
+    finalFlow.receivers,
+    seaLevel,
+    config.minimumLakeDepthMeters,
+    texelSizeMeters,
+  );
+  const drainage = deriveBaseLevels(width, height, finalFlow.receivers, evolvedHeight, seaLevel);
+  const seeds: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    if (
+      evolvedHeight[index]! > seaLevel
+      && finalFlow.flowAccumulation[index]! >= config.channelInitiationAreaTexels
+    ) seeds.push(index);
+  }
+  return Object.freeze({
+    width,
+    height,
+    texelSizeMeters,
+    evolvedHeight,
+    filledHeight: finalFlood.filledHeight,
+    receivers: finalFlow.receivers,
+    flowAccumulation: finalFlow.flowAccumulation,
+    lakeDepth: lakeData.lakeDepth,
+    lakeMask: lakeData.lakeMask,
+    lakes: lakeData.lakes,
+    basinIds: drainage.basinIds,
+    baseLevels: drainage.baseLevels,
+    channelSeeds: Uint32Array.from(seeds),
+    config,
+  });
+}
+
+/**
+ * The completion half alone, for a surface whose stream-power and talus passes
+ * have already run elsewhere — the GPU, in the hybrid macro path.
+ *
+ * This returns exactly what `evolveMacroTerrain` returns when both operator
+ * counts are zero, minus the flood/MFD pair that path computes and discards.
+ * At zero iterations each operator is a `Float32Array.from(Float64Array.from(x))`
+ * round trip whose only effect is `Math.fround`, and its result feeds nothing
+ * but the next operator, so the leading flood and MFD are pure waste. The
+ * `Float32Array.from` below reproduces that rounding, which is what keeps the
+ * two paths bit-identical for an input that is not already float32; the
+ * `requireGrid` on the rounded surface reproduces the talus pass's own
+ * validation, so a height that is finite but rounds to infinity still fails the
+ * same way with the same message.
+ *
+ * `erodibility` and `reposeDegrees` are accepted and length-validated but
+ * unused: they only ever fed the operators.
+ */
+export function finishMacroEvolutionFromEvolvedHeight(
+  input: MacroEvolutionInput,
+): MacroEvolutionResult {
+  requireGrid(input.width, input.height, input.heights, "macro heights");
+  requirePositive(input.texelSizeMeters, "macro texel size");
+  if (!Number.isFinite(input.seaLevel)) throw new RangeError("seaLevel must be finite");
+  const count = input.width * input.height;
+  if (input.erodibility && input.erodibility.length !== count) {
+    throw new RangeError("macro erodibility length mismatch");
+  }
+  if (input.reposeDegrees && input.reposeDegrees.length !== count) {
+    throw new RangeError("macro repose length mismatch");
+  }
+  const config = resolveMacroConfig(input.config);
+  const evolvedHeight = Float32Array.from(input.heights);
+  requireGrid(input.width, input.height, evolvedHeight, "talus height");
+  return completeMacroEvolution(
+    input.width,
+    input.height,
+    input.texelSizeMeters,
+    input.seaLevel,
+    evolvedHeight,
+    config,
+  );
 }
 
 export function evolveMacroTerrain(input: MacroEvolutionInput): MacroEvolutionResult {
@@ -794,60 +1108,14 @@ export function evolveMacroTerrain(input: MacroEvolutionInput): MacroEvolutionRe
     ...(input.reposeDegrees ? { reposeDegrees: input.reposeDegrees } : {}),
     erosionMask: protectedMask,
   });
-  const finalFlood = priorityFloodOpenRim(
+  return completeMacroEvolution(
     input.width,
     input.height,
-    evolvedHeight,
-    input.seaLevel,
-    config.fillEpsilonMetersPerTexel,
-  );
-  const finalFlow = computeMfdFlowAccumulation(
-    input.width,
-    input.height,
-    finalFlood.filledHeight,
-    finalFlood.floodParent,
-    { slopeExponent: config.mfdSlopeExponent },
-  );
-  const lakeData = discoverLakes(
-    input.width,
-    input.height,
-    evolvedHeight,
-    finalFlood.filledHeight,
-    finalFlow.receivers,
-    input.seaLevel,
-    config.minimumLakeDepthMeters,
     input.texelSizeMeters,
-  );
-  const drainage = deriveBaseLevels(
-    input.width,
-    input.height,
-    finalFlow.receivers,
-    evolvedHeight,
     input.seaLevel,
-  );
-  const seeds: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    if (
-      evolvedHeight[index]! > input.seaLevel
-      && finalFlow.flowAccumulation[index]! >= config.channelInitiationAreaTexels
-    ) seeds.push(index);
-  }
-  return Object.freeze({
-    width: input.width,
-    height: input.height,
-    texelSizeMeters: input.texelSizeMeters,
     evolvedHeight,
-    filledHeight: finalFlood.filledHeight,
-    receivers: finalFlow.receivers,
-    flowAccumulation: finalFlow.flowAccumulation,
-    lakeDepth: lakeData.lakeDepth,
-    lakeMask: lakeData.lakeMask,
-    lakes: lakeData.lakes,
-    basinIds: drainage.basinIds,
-    baseLevels: drainage.baseLevels,
-    channelSeeds: Uint32Array.from(seeds),
     config,
-  });
+  );
 }
 
 /**

@@ -1,3 +1,5 @@
+import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { Material } from "@babylonjs/core/Materials/material";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -11,6 +13,7 @@ import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guarde
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RENDERED_DENSITY_LAWS,
+  renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import { DetailGenerationClient } from "./DetailGenerationClient";
@@ -28,9 +31,9 @@ import {
   type DetailPrototypeBoundKernel,
   type DetailPrototypeBounds,
 } from "./instanceFormat";
-import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
+import type { FoliageAtlas } from "./FoliageAtlas";
 import {
-  createImpostorAtlas,
+  createDetailAtlases,
   DETAIL_CROWN_ALBEDO,
   impostorBakeFrame,
   impostorLayerIndex,
@@ -84,6 +87,15 @@ import {
   type DetailPresentationBuildCatalog,
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
+import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
+import {
+  CANOPY_SURFACE_AMBIENT,
+  CANOPY_SURFACE_SPECULAR,
+} from "./densityField";
+import {
+  airfieldStructureExclusions,
+  type StructureExclusionBox,
+} from "../airfield/StructureExclusion";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
@@ -112,6 +124,68 @@ export {
   TREE_IMPOSTOR_PROTOTYPE_KEY,
 } from "./presentationBuild";
 export type { GroundCoverCandidateRange } from "./presentationBuild";
+
+/**
+ * `7-4b` CAPTURE SCAFFOLD — move spherical-harmonic irradiance off the vertex
+ * stage for every detail material.
+ *
+ * **This exists to buy ONE inter-stage slot, and that slot is the whole of
+ * `7-4b`.** Babylon evaluates SH irradiance per-vertex by default, which costs
+ * the `vEnvironmentIrradiance` varying. The detail material sits at EXACTLY the
+ * device's fragment-input maximum — 15 `@location` plus `front_facing` is 16 of
+ * 16 — and attaching a `ClusteredLightContainer` adds one more, so the pipeline
+ * fails to create and the foliage stops drawing entirely. `forceIrradianceInFragment`
+ * deletes that varying (`USESPHERICALINVERTEX = !useSHInFragment`), which is
+ * exactly enough. MEASURED both ways: flag on plus container compiles and
+ * renders; flag off plus container is 8 limits errors at 17/16.
+ *
+ * **The plugin's own varyings have no slack left and this is not the place to
+ * look for it.** `DetailInstanceMaterialPlugin` already packs four values into
+ * `detailAtlasData` to add no location, already excludes `detailFadeByte` from
+ * the impostor path because it "cost the 16th input slot", and already forgoes
+ * Babylon's CSM varyings on impostors in favour of a hand-packed receiver. The
+ * remaining slack is all in BABYLON's varyings, and this flag takes one of them
+ * through a supported public property rather than by forking its shadow
+ * includes — which is the alternative, and which buys three slots at the price
+ * of a fork.
+ *
+ * **MEASURED, and this is the reason the default is ON.** Two capture arms per
+ * configuration, interleaved on one tree and one host, with same-arm controls:
+ *
+ *   shot                    control floor      effect (two pairings)
+ *   grove-forest-2m         0.003% / 0.000%    2.231% / 2.228%
+ *   night-moonlit           0.050% / 0.000%    0.372% / 0.380%
+ *
+ * — an effect about 700x the control floor at grove, reproducing across two
+ * independent pairings to within 0.003 points.
+ *
+ * **The LOCATION of the change is what makes it a mechanism rather than a
+ * magnitude.** At grove, 18.19% of pixels differ in the top band of the frame
+ * and 0.00% in the bottom four: the change is confined to CANOPY and absent
+ * from ground. Mean signed delta is +0.01 / -0.06, so it is a REDISTRIBUTION
+ * and not a brightness shift — which is the signature of removing per-vertex
+ * interpolation error, and is why this is the more correct rendering rather
+ * than merely a different one. Max channel delta 21/255, invisible at 1x.
+ *
+ * **The COST is BOUNDED, NOT MEASURED, and the distinction is deliberate.**
+ * The timing channel failed: `gpuPassMs.mainPass` swung 4.6x on byte-identical
+ * geometry (see the note in `tests/perf/perf-capture.test.ts`), so its null
+ * carries no information. The bound is arithmetic — roughly nine SH dot
+ * products on the ~25% of pixels that are foliage, order 0.01 ms, against an
+ * instrument resolving ~0.07 ms at best, so a null was EXPECTED either way.
+ * **Do not restate this as "no measurable cost"**: that reads as a measurement
+ * and there was not one.
+ */
+let detailIrradianceInFragment = true;
+
+/**
+ * Set BEFORE the renderer is created — it is read when each material is built.
+ * Retained after the default flipped so the A/B remains reproducible: pass
+ * `false` to capture the pre-`7-4b` arm.
+ */
+export function setDetailIrradianceInFragmentForCapture(enabled: boolean): void {
+  detailIrradianceInFragment = enabled;
+}
 
 /**
  * The GPU side of one batch: ONE interleaved 32-byte-stride buffer plus the
@@ -427,9 +501,29 @@ type ResidentCell = InlineResidentCell | WorkerResidentCell;
  * Rendered-share thinning selects THE CANOPY, not a random sample of the
  * forest (perf-debt pass).
  *
- * The ecological field authors ~400 stems/ha of closed forest across every
- * age class — measured mean crown radius 3.40 m, median 3.15 m, p90 1.78 m:
- * mostly saplings, as a real stand is. Thinning that to the law's ~70
+ * The ecological field authors closed forest across every age class —
+ * measured mean crown radius 3.5 m, median 3.3 m, **p10 1.8 m, p90 5.6 m**:
+ * mostly saplings, as a real stand is.
+ *
+ * **The p-value was mislabelled and the label mattered.** This read
+ * "p90 1.78 m" from 2026-08-19 until it was re-measured: a 90th percentile
+ * BELOW the median is arithmetically impossible, so the three numbers never
+ * described one sample. **1.78 was the tenth percentile.** Re-measured
+ * through the shipping generator (`scripts/crown-radius-distribution.mts`,
+ * `generateDetailCell` over 105-419 ha of closed forest): p10 1.80-1.91,
+ * p90 5.53-5.92, mean 3.47-3.71, median 3.21-3.42.
+ *
+ * **Quantiles are density-independent and the ranges above are why.** Crown
+ * radius is a per-tree draw, so sweeping `densityMultiplier` over 1.7x
+ * (160-279 stems/ha) moves p10 by 0.02 m and p90 by 0.26 m. The spread is
+ * fixture, not uncertainty about the distribution.
+ *
+ * **The stems/ha figure is NOT reproduced and is left unstated rather than
+ * repeated.** The original said ~400/ha; this fixture plateaus near 290/ha
+ * and moisture does not move it. That may be drift since August or a
+ * condition not recorded at the time — either way it is the kind of number
+ * that should not be restated without a measurement behind it. The
+ * conclusion below does not rest on it. Thinning that to the law's ~70
  * rendered stems/ha by a UNIFORM key keeps saplings and dominants in equal
  * proportion, and the drawn stand's crown cover comes out at 0.26 against
  * Gate 2C's 0.55 criterion — the criterion was never automated, so this went
@@ -527,6 +621,29 @@ const DETAIL_REVEAL_RAMP_UPDATES = 42;
  * start, so newly resident cells appear through the existing range dither.
  */
 const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
+
+/**
+ * How far a cell's rendered tree share may drift before its distance is
+ * refreshed — expressed in SHARE, not in metres, and that is the whole point.
+ *
+ * A metre threshold spends its refreshes where they cannot be seen: past
+ * `farFloorShare` the share is constant, so a distant cell can move hundreds of
+ * metres and change nothing. **Bounding the share instead makes the check
+ * self-throttling in the right direction** — silent for the many far cells,
+ * responsive for the few near ones where a step is visible.
+ *
+ * ~~0.02 caps a single step at 2% of the near cap.~~ **STRUCK — it is a
+ * TRIGGER, not a clamp.** When the drift exceeds it the WHOLE accumulated
+ * drift is applied at once, so the step is bounded by how far the observer
+ * moved since the last evaluation, not by this constant. In the renderer
+ * that is one frame (~1 m at cruise) and the step lands near 0.026; a PROBE
+ * stepping 37 m per update sees ~0.30, which is a property of the sampler
+ * rather than of the build. Caught by `flight-simulator-66`.
+ *
+ * The defect this replaces
+ * stepped **7.33x at tier 1 and 11.07x at tier 0**.
+ */
+const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;
 /** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
@@ -613,6 +730,16 @@ export class WorldDetailRuntime {
    * archetype. Engine-static, so chunk signatures need no new term.
    */
   private readonly groundCoverBladesActive: boolean;
+  /**
+   * `6-9`: metres inside which the GPU field carries EVERY archetype, so the
+   * card path skips them there. 0 whenever the field is inactive, which is
+   * every CPU-only host — CI's hosted runner included.
+   *
+   * Refreshed from the profile rather than fixed at construction because it
+   * is the tier's ground-cover law that decides it, and it joins both build
+   * signatures so a tier change rebuilds the chunks the handoff moved.
+   */
+  private groundCoverFieldRadiusMeters = 0;
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -702,6 +829,14 @@ export class WorldDetailRuntime {
   private presentationObserverSignature = "";
   /** R-13: normalized environment-clock day forwarded to cell generation. */
   private dayOfYear = 0;
+
+  /**
+   * Airfield structures vegetation must not grow through, built ONCE from the
+   * world this runtime was given. Uses `seedHash` — the terrain authority the
+   * hangars' own siting reads — not the seed string's hash, which is a
+   * different number on any guaranteed-airport world.
+   */
+  private readonly structureExclusions: readonly StructureExclusionBox[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -725,6 +860,9 @@ export class WorldDetailRuntime {
     this.groundCoverBladesActive =
       (scene.getEngine().getCaps() as { supportComputeShaders?: boolean })
         .supportComputeShaders === true;
+    this.structureExclusions = options.workerWorld?.airport
+      ? airfieldStructureExclusions(options.workerWorld.airport, options.workerWorld.seedHash)
+      : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
       !Number.isFinite(this.cellSizeMeters) ||
@@ -1067,6 +1205,26 @@ export class WorldDetailRuntime {
     }
   }
 
+  /**
+   * `6-11`: forward the terrain's global horizon field to the far-band
+   * receiver, on the same snapshot pattern.
+   *
+   * One field for every plugin, because the field is world-anchored rather
+   * than chunk-anchored — which is exactly the property that lets it reach a
+   * material shared across presentation chunks at all.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    for (const plugin of this.instancePlugins) {
+      plugin.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
+    }
+  }
+
   get statistics(): WorldDetailStatistics {
     return this.statisticsValue;
   }
@@ -1314,6 +1472,51 @@ export class WorldDetailRuntime {
       }
     }
 
+    // TREES POPPING IN CLOSE UP. The loop above refreshes `distance` only from
+    // `desiredCells`, and that plan is rebuilt only when `nextSignature`
+    // changes — which quantises the observer to `cellSizeMeters * 0.5`, i.e.
+    // **256 m of travel, 4.1 s at cruise**. `presentationBuild` feeds that
+    // distance straight into `renderedShareAtDistance`, so a cell's tree budget
+    // could be up to 256 m out of date.
+    //
+    // **The error is negligible far out and enormous close in**, because the
+    // share curve is flat past `farFloorShare` and steep inside the near
+    // radius. Measured against the shipping law: a tier-1 cell 150 m away
+    // rendered **13.6%** of its trees and jumped to 100% at the next crossing —
+    // a **7.33x** step, 11.07x at tier 0 — with a hard binary admission
+    // (`treeCanopyRank[i] > treeShare`) and no fade to soften it. It read as
+    // "sometimes", because whether you see it depends on where the 256 m
+    // lattice falls relative to the wood, not on the wood.
+    //
+    // **The quantisation is a rebuild throttle, not an oversight**, so this
+    // does not refresh per frame. It bounds the quantity that is actually
+    // VISIBLE — the share — instead of the one that was convenient, the
+    // distance. That is self-throttling in the right direction: beyond the
+    // floor the share is constant, so distant cells (the overwhelming majority)
+    // never trigger a rebuild at all, and the traffic is confined to the
+    // handful of near cells where the difference can be seen.
+    //
+    // **No radius, band boundary or law constant moves here.** The share simply
+    // matches the distance the cell is at, which is what the law always said.
+    const densityLaw = profile.renderedDensityLaw;
+    for (const resident of this.cells.values()) {
+      const liveDistance = detailCellMinimumDistanceMeters(
+        observer.x,
+        observer.z,
+        resident.cellX,
+        resident.cellZ,
+        resident.cellSizeMeters,
+      );
+      const drift = Math.abs(
+        renderedShareAtDistance(densityLaw, liveDistance)
+        - renderedShareAtDistance(densityLaw, resident.distance),
+      );
+      if (drift > DETAIL_DENSITY_SHARE_REFRESH_EPSILON) {
+        resident.distance = liveDistance;
+        this.batchesDirty = true;
+      }
+    }
+
     if (this.client !== null) {
       const missingWorkerCells = this.desiredCells.reduce(
         (count, desired) => count
@@ -1393,6 +1596,14 @@ export class WorldDetailRuntime {
           seaLevelMeters: this.options.seaLevelMeters ?? 0,
           dayOfYear: this.dayOfYear,
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
+          // The inline path needs the same exclusions as the worker path, or
+          // the fix is only present on whichever one happens to run.
+          ...(this.options.workerWorld?.airport
+            ? {
+              structureExclusions: this.structureExclusions,
+              exclusionAirport: this.options.workerWorld.airport,
+            }
+            : {}),
         });
         this.replaceResident(desired.key, {
           source: "inline",
@@ -1494,6 +1705,9 @@ export class WorldDetailRuntime {
     this.pluginByMaterial.clear();
     this.foliageAtlas?.texture.dispose();
     this.foliageAtlas = null;
+    this.impostorAtlas?.albedo.dispose();
+    this.impostorAtlas?.normalDepth.dispose();
+    this.impostorAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
     this.statisticsValue = ZERO_STATISTICS;
@@ -1607,6 +1821,9 @@ export class WorldDetailRuntime {
     this.presentationMillisecondsLastUpdate = 0;
     this.lastDensityLaw = profile.renderedDensityLaw;
     this.lastGrassRadius = profile.grassRadiusMeters;
+    this.groundCoverFieldRadiusMeters = this.groundCoverBladesActive
+      ? groundCoverHandoffRadiusMeters(profile.groundCoverLaw)
+      : 0;
     this.suppressInvalidPresentationChunks();
     const grouped = new Map<
       string,
@@ -1652,6 +1869,7 @@ export class WorldDetailRuntime {
       profile.treeVariantCap,
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
+      this.groundCoverFieldRadiusMeters,
     ].join(":");
     const targets = new Map<string, DetailChunkBuildTarget>();
 
@@ -1670,6 +1888,7 @@ export class WorldDetailRuntime {
         profile.treeVariantCap,
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
+        this.groundCoverFieldRadiusMeters,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
         // single-edge baked fades actually change with camera range. An
@@ -1967,6 +2186,7 @@ export class WorldDetailRuntime {
           treePrototypeMode,
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
+          groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -2026,6 +2246,7 @@ export class WorldDetailRuntime {
           treePrototypeMode,
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
+          groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3135,10 +3356,14 @@ export class WorldDetailRuntime {
     // the atlas define — geometry and instancing stay fully testable.
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
-      this.foliageAtlas = createFoliageAtlas(this.scene, this.options.worldSeed);
+      // The impostor bake samples the foliage atlas. Build both through the
+      // shared-plan boundary so the expensive deterministic foliage synthesis
+      // runs once rather than twice byte-for-byte.
+      const atlases = createDetailAtlases(this.scene, this.options.worldSeed);
+      this.foliageAtlas = atlases.foliage;
       // 2-17: the far band's octahedral impostors, baked on the CPU from
       // the same seed (byte-deterministic; ~0.4 s once at startup).
-      this.impostorAtlas = createImpostorAtlas(this.scene, this.options.worldSeed);
+      this.impostorAtlas = atlases.impostor;
     }
 
     // Near trees use species-specific closed crown lobes/whorls and mid trees
@@ -3169,13 +3394,13 @@ export class WorldDetailRuntime {
       // dome-blended top cards face the sky — at full specular they mirrored
       // the sky probe as a teal sheen across every crown top in the noon
       // captures. Leaves are rough dielectrics; kill the sheen.
-      crownMaterial.specularIntensity = 0.4;
+      crownMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       // Wave P: the shaded card faces are ambient-dominated, and full-strength
       // sky irradiance lifted their blue channel to ~0.8×green (terrain sits
       // at ~0.64) — the residual cold cast after the specular cut. Real
       // canopies self-shadow far more than a card shell can; trim the probe
       // and let the sun carry the tone.
-      crownMaterial.environmentIntensity = 0.62;
+      crownMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
       // AFTER opaque terrain and trunks have filled the depth buffer, so
       // early-Z kills every canopy fragment behind a ridge or a trunk before
@@ -3200,11 +3425,11 @@ export class WorldDetailRuntime {
       opaqueCrownMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
       // Wave P: same probe trim as the card shell — the interior core peeks
       // through card gaps and must not read bluer than the cards over it.
-      opaqueCrownMaterial.environmentIntensity = 0.62;
+      opaqueCrownMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       // Wave Q: specular parity too — this hull kept createMaterial's 1.0
       // while the cards and impostor run 0.4, so at a grazing dusk sun the
       // mid band's interior flared against both neighbours at the handoffs.
-      opaqueCrownMaterial.specularIntensity = 0.4;
+      opaqueCrownMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),
@@ -3212,6 +3437,13 @@ export class WorldDetailRuntime {
         true,
       );
       this.registerBandFadeMaterial(barkMaterial);
+      // L-2: the far impostor bakes crown AND bark into one sprite and shades
+      // both with this response. Leaving the geometry-band trunk at the
+      // createMaterial defaults (1 / 1) made the same bark jump to 0.62 / 0.4
+      // at the handoff. This is representation parity, not a subjective bark
+      // retune, so read the existing shared response instead of copying it.
+      barkMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
+      barkMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       for (let variant = 0; variant < variantCount; variant += 1) {
         const prototype = buildTreePrototype(species, variant, prototypeSeed);
         // Wave T: EVERY part of a tree (bark skeleton, interior core, card
@@ -3359,8 +3591,8 @@ export class WorldDetailRuntime {
       impostorMaterial.backFaceCulling = false;
       impostorMaterial.twoSidedLighting = true;
       impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
-      impostorMaterial.specularIntensity = 0.4;
-      impostorMaterial.environmentIntensity = 0.62;
+      impostorMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
+      impostorMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       this.registerBandFadeMaterial(impostorMaterial);
       this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
         this.impostorAtlas.albedo,
@@ -3551,6 +3783,11 @@ export class WorldDetailRuntime {
     samplesFoliageAtlas = false,
   ): PBRMaterial {
     const material = new PBRMaterial(name, this.scene);
+    prepareMaterialForClusteredLighting(material);
+    // 7-4b: read at CREATION, before the first effect compiles, so the
+    // permutation is built with the varying already absent rather than
+    // recompiled out of it later.
+    material.forceIrradianceInFragment = detailIrradianceInFragment;
     material.albedoColor = albedo;
     material.metallic = 0;
     material.roughness = roughness;

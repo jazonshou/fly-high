@@ -1246,8 +1246,11 @@ export interface FoliageAtlas {
  * GPU boundary: synthesize, mip and upload the full atlas — every layer
  * carrying the complete coverage-preserved chain (assertion 45b).
  */
-export function createFoliageAtlas(scene: Scene, seed: WorldSeed): FoliageAtlas {
-  const plan = planFoliageAtlas(seed);
+export function createFoliageAtlas(
+  scene: Scene,
+  seed: WorldSeed,
+  plan: MippedTextureArrayPlan = planFoliageAtlas(seed),
+): FoliageAtlas {
   const texture = uploadMippedTextureArrayPlan(scene, plan, {
     name: `foliage-atlas/${normalizeSeed(seed)}`,
   });

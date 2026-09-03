@@ -7,7 +7,12 @@ import {
   uploadMippedTextureArrayPlan,
   type MippedTextureArrayPlan,
 } from "../core/TextureArrayMips";
-import { planFoliageAtlas, FOLIAGE_ATLAS_EDGE } from "./FoliageAtlas";
+import {
+  createFoliageAtlas,
+  planFoliageAtlas,
+  FOLIAGE_ATLAS_EDGE,
+  type FoliageAtlas,
+} from "./FoliageAtlas";
 import {
   buildCrownFringePrototype,
   buildTreePrototype,
@@ -235,7 +240,28 @@ function rasterizeGeometry(
     let fnz = abx * acy - aby * acx;
     const fnLength = Math.hypot(fnx, fny, fnz) || 1;
     fnx /= fnLength; fny /= fnLength; fnz /= fnLength;
-    const faceToward = fnx * dx + fny * dy + fnz * dz;
+    // Sidedness is taken from the AUTHORED normal, not from the winding.
+    //
+    // It used to read `cross(b-a, c-a) . d`, which happened to work only
+    // because the card and shrub builders emitted their bitangent as
+    // `cross3(normal, tangent)` — an INVERTED winding, under which the face
+    // cross product coincides with the authored outward normal. Correcting
+    // that winding reverses the cross product, which silently inverted this
+    // test and flipped every baked normal: the bake's compensation had been
+    // calibrated against a broken input.
+    //
+    // The authored normal is the surface's own statement of which way it
+    // faces, and it is invariant to winding convention. That makes this a
+    // NO-OP on the old inverted geometry (where cross ~ +normal) and correct
+    // on the fixed geometry (where cross ~ -normal), so the two changes are
+    // safe to land together and this one cannot be un-calibrated by a future
+    // winding change. `fn` is retained above only for the degeneracy guard.
+    const gn = geometry.normals;
+    const anx = (gn[ia * 3]! + gn[ib * 3]! + gn[ic * 3]!) / 3;
+    const any = (gn[ia * 3 + 1]! + gn[ib * 3 + 1]! + gn[ic * 3 + 1]!) / 3;
+    const anz = (gn[ia * 3 + 2]! + gn[ib * 3 + 2]! + gn[ic * 3 + 2]!) / 3;
+    const anLength = Math.hypot(anx, any, anz) || 1;
+    const faceToward = (anx * dx + any * dy + anz * dz) / anLength;
     if (sidedness === "cull-back" && faceToward < 0) continue;
     const normalFlip = sidedness === "two-sided" && faceToward < 0 ? -1 : 1;
 
@@ -400,8 +426,10 @@ function bakeSpeciesLayer(
 }
 
 /** The pure half: every layer of both arrays, mipped and packed. */
-export function planImpostorAtlas(seed: WorldSeed): ImpostorAtlasPlans {
-  const foliage = planFoliageAtlas(seed);
+export function planImpostorAtlas(
+  seed: WorldSeed,
+  foliage: MippedTextureArrayPlan = planFoliageAtlas(seed),
+): ImpostorAtlasPlans {
   const prototypeSeed = 7;
   const albedoLayers: Uint8Array[] = [];
   const normalDepthLayers: Uint8Array[] = [];
@@ -430,22 +458,63 @@ export interface ImpostorAtlas {
 }
 
 /** The single GPU boundary: upload both planned arrays. */
-export function createImpostorAtlas(scene: Scene, seed: WorldSeed): ImpostorAtlas {
-  const plans = planImpostorAtlas(seed);
+export function createImpostorAtlas(
+  scene: Scene,
+  seed: WorldSeed,
+  foliage: MippedTextureArrayPlan = planFoliageAtlas(seed),
+): ImpostorAtlas {
+  const plans = planImpostorAtlas(seed, foliage);
   const albedo = uploadMippedTextureArrayPlan(scene, plans.albedo, {
     name: "detail-impostor-albedo",
   });
-  const normalDepth = uploadMippedTextureArrayPlan(scene, plans.normalDepth, {
-    name: "detail-impostor-normal-depth",
-  });
-  const bytes = [plans.albedo, plans.normalDepth].reduce(
-    (sum, plan) => sum + plan.packedLevels.reduce((s, level) => s + level.byteLength, 0),
-    0,
-  );
-  return {
-    albedo,
-    normalDepth,
-    layerCount: plans.layerCount,
-    memoryMiB: bytes / (1024 * 1024),
-  };
+  let normalDepth: RawTexture2DArray | null = null;
+  try {
+    normalDepth = uploadMippedTextureArrayPlan(scene, plans.normalDepth, {
+      name: "detail-impostor-normal-depth",
+    });
+    const bytes = [plans.albedo, plans.normalDepth].reduce(
+      (sum, plan) => sum + plan.packedLevels.reduce((s, level) => s + level.byteLength, 0),
+      0,
+    );
+    return {
+      albedo,
+      normalDepth,
+      layerCount: plans.layerCount,
+      memoryMiB: bytes / (1024 * 1024),
+    };
+  } catch (error) {
+    // The two arrays are one owned atlas. Do not strand the first allocation
+    // when the second upload (or result assembly) fails before ownership can
+    // reach the caller.
+    normalDepth?.dispose();
+    albedo.dispose();
+    throw error;
+  }
+}
+
+export interface DetailAtlases {
+  readonly foliage: FoliageAtlas;
+  readonly impostor: ImpostorAtlas;
+}
+
+/**
+ * Build the two detail atlases from one foliage plan.
+ *
+ * The impostor rasterizer samples foliage mip 0, so planning it by calling
+ * `planFoliageAtlas` again repeats the renderer's most expensive deterministic
+ * startup synthesis byte-for-byte. Keep the direct creation functions for
+ * focused tools, but production comes through this shared-plan boundary.
+ */
+export function createDetailAtlases(scene: Scene, seed: WorldSeed): DetailAtlases {
+  const foliagePlan = planFoliageAtlas(seed);
+  const foliage = createFoliageAtlas(scene, seed, foliagePlan);
+  try {
+    return {
+      foliage,
+      impostor: createImpostorAtlas(scene, seed, foliagePlan),
+    };
+  } catch (error) {
+    foliage.texture.dispose();
+    throw error;
+  }
 }

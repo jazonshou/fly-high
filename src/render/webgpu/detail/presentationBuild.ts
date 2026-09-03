@@ -170,6 +170,18 @@ export interface DetailPresentationBuildInput {
   readonly grassRadiusMeters: number;
   /** Wave G: the compute blade system replaces the grass-archetype patches. */
   readonly groundCoverBladesActive?: boolean;
+  /**
+   * `6-9`: metres inside which the GPU field carries EVERY archetype.
+   *
+   * Wave G retired the grass cards globally because the blade field is the
+   * only thing that draws grass once it exists. Fern, heather and reed are
+   * different: the field reaches only as far as its outermost ring, and the
+   * cards still own everything beyond it out to `grassRadiusMeters`. So the
+   * handoff is a RADIUS, and it is the law's own outer radius rather than a
+   * tuned number (`groundCoverHandoffRadiusMeters`), which is what stops a
+   * tier retune from moving one half of the handoff without the other.
+   */
+  readonly groundCoverFieldRadiusMeters?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -692,9 +704,20 @@ export function* buildPresentationChunk(
           const node = cell.groundCover[nodeRow * catalog.groundCoverGrid + nodeColumn];
           if (!node || node.coverage <= 0) continue;
           // Wave G: the compute blade system carries the grass archetype
-          // wherever it is live; the card patches keep the structured
-          // archetypes (fern/heather/reed) whose forms blades cannot carry.
+          // wherever it is live, so grass cards retire globally — nothing
+          // else draws grass once the field exists.
           if (input.groundCoverBladesActive && node.archetype === "grass") continue;
+          // `6-9`: the field now carries fern, heather and reed too, but only
+          // out to its own outermost ring. Inside that radius the cards step
+          // aside; outside it they are still the only representation there
+          // is. The two partition the ground rather than overlapping, which
+          // is why this is a `<` and not a fade.
+          if (
+            input.groundCoverBladesActive
+            && patchDistance < (input.groundCoverFieldRadiusMeters ?? 0)
+          ) {
+            continue;
+          }
           const nearBoost = 1 + GROUND_COVER_NEAR_BOOST_FACTOR
             * Math.max(0, 1 - patchDistance / GROUND_COVER_NEAR_BOOST_RADIUS_METERS);
           if (groundCoverHash(x, z, 2) >= Math.min(1, ramp * node.coverage * nearBoost)) {

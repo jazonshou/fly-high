@@ -97,6 +97,27 @@ export interface WorkLeverSettings {
   readonly shadowCasterDistanceMeters: number;
   readonly vegetationDistanceScale: number;
   /**
+   * `6-9` (wave-P `P-5`, unimplemented until now): a multiplier on the
+   * ground-cover altitude gate — the last rung on the GPU ladder, after
+   * `vegetationDistanceScale`, exactly where the wave-P plan put it.
+   *
+   * **This was wave G's second recorded debt.** The blade field is the
+   * renderer's only per-frame compute client and its cost is quadratic in the
+   * gate (the gate scales ring radii AND per-lane survival), so it is the
+   * single most responsive GPU lever in the renderer — and the governor had
+   * no way to touch it. The scale multiplies the altitude gate rather than
+   * replacing the tier's law, which is what keeps lattice sizes, buffer
+   * capacities and the compute dispatch count fixed while the lever moves:
+   * a lever that reallocated GPU buffers on a governor step would spend more
+   * than it saved.
+   *
+   * Last on the ladder because it is the most visible of the GPU costs at the
+   * pose that matters — the 2 m eye — and because the compute rung above it
+   * (rung 0) already defers the same client's dispatches. This rung is what
+   * remains when deferring is not enough.
+   */
+  readonly groundCoverGateScale: number;
+  /**
    * `4-0b`, GPU ladder rung 0: a multiplier on the SHARED amortised-compute
    * cap (`ComputeBudget`). 1 is the published `FRAME_BUDGET_MS` compute rows.
    *
@@ -126,6 +147,7 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
   shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
   vegetationDistanceScale: 1,
+  groundCoverGateScale: 1,
   computeBudgetScale: 1,
 });
 
@@ -166,6 +188,12 @@ const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_800 }) },
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_200 }) },
   { lever: "vegetation-distance", apply: (s) => ({ ...s, vegetationDistanceScale: 0.75 }) },
+  // `6-9`/`P-5`: the ground-cover gate, last. Two notches for the same reason
+  // rung 0 has two — one step per 120-frame window, and a single notch from
+  // full to nothing would be a visible cliff at the one pose the whole system
+  // exists for.
+  { lever: "ground-cover-gate", apply: (s) => ({ ...s, groundCoverGateScale: 0.6 }) },
+  { lever: "ground-cover-gate", apply: (s) => ({ ...s, groundCoverGateScale: 0.3 }) },
 ]);
 
 export const CPU_WORK_MAX_LEVEL = CPU_WORK_LADDER.length;

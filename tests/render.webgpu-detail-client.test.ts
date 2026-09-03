@@ -129,6 +129,7 @@ describe("detail generation client (1B-10)", () => {
     const macroHeights = new Float32Array([10, 20, 30, 40]);
     const pageHeights = new Float32Array(256 * 256).fill(321);
     const shoreDistance = new Int16Array(136 * 136).fill(24);
+    const soilDepth = new Uint8Array(136 * 136).fill(96);
     expect(client.publishTerrainMacro({
       originX: 0,
       originZ: 0,
@@ -152,7 +153,9 @@ describe("detail generation client (1B-10)", () => {
       storedEdge: 136,
       texelSizeMeters: 4,
       shoreDistanceMetersPerUnit: 0.25,
+      soilDepthMetersPerUnit: 8 / 255,
       shoreDistanceR16Sint: shoreDistance,
+      soilDepthR8Unorm: soilDepth,
     })).toBe(true);
 
     expect(worker.commands.slice(1).map((command) => command.type)).toEqual([
@@ -162,7 +165,8 @@ describe("detail generation client (1B-10)", () => {
     ]);
     expect(worker.transfers[1]).toEqual([macroHeights.buffer]);
     expect(worker.transfers[2]).toEqual([pageHeights.buffer]);
-    expect(worker.transfers[3]).toEqual([shoreDistance.buffer]);
+    // 6-6: both ecology channels transfer with the aux page, never copy.
+    expect(worker.transfers[3]).toEqual([shoreDistance.buffer, soilDepth.buffer]);
     client.dispose();
   });
 

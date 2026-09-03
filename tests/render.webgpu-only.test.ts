@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 const projectRoot = join(import.meta.dirname, "..");
 
@@ -15,7 +16,7 @@ function sourceFiles(directory: string): string[] {
 describe("WebGPU-only renderer boundary", () => {
   it("does not ship Three.js or a WebGL/Canvas renderer dependency", () => {
     const packageJson = JSON.parse(
-      readFileSync(join(projectRoot, "package.json"), "utf8"),
+      readSource(join(projectRoot, "package.json")),
     ) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
@@ -31,7 +32,7 @@ describe("WebGPU-only renderer boundary", () => {
 
   it("contains no production imports or context creation for a legacy renderer", () => {
     const violations = sourceFiles(join(projectRoot, "src")).flatMap((path) => {
-      const source = readFileSync(path, "utf8");
+      const source = readSource(path);
       const forbidden = [
         /(?:from\s+|import\s*\()\s*["']three(?:\/[^"']*)?["']/u,
         /\bWebGLRenderer\b/u,

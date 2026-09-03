@@ -3,8 +3,12 @@ import {
   runwayEarthworksHeightLocal,
   runwayEarthworksProfile,
 } from "@/src/render/webgpu/terrain/RunwayEarthworks";
+import {
+  channelCarveDepth,
+  type CarvedChannelSet,
+} from "@/src/render/webgpu/terrain/RiverChannels";
 import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
-import { sampleGeologicalRelief } from "./geology";
+import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
 import {
   blendTowardExpectation,
   clamp,
@@ -355,27 +359,31 @@ export function sampleTerrainUpliftHeight(
   const fabricSin = Math.sin(angle);
   const fabricX = warpedX * fabricCos + warpedZ * fabricSin;
   const fabricZ = -warpedX * fabricSin + warpedZ * fabricCos;
+  // W-4: convergence is a property of the BOUNDARY the point sits on, not of
+  // a seeded noise maximum it happens to sit near. `sampleTerrainPlates`
+  // tessellates the world into Lloyd-relaxed plates, gives each its own motion
+  // vector, and returns the summed closing rate of the nearby boundaries — so
+  // a range raised by a boundary is raised along the boundary's whole length.
+  // The two noise channels this replaces (150 ridged boundary, 151 relative
+  // motion) are retired; nothing else reads them.
+  //
+  // MEASURED, NOT ASSUMED: rotating the range channel into the boundary's own
+  // across-strike frame (the obvious next step, implemented and measured
+  // 2026-08-30) makes assertion 96's local half WORSE — median range
+  // anisotropy 2.913 -> 2.050 and the share reaching 2:1 78% -> 50% — because
+  // the boundary normal turns from one site pair to the next, so within a
+  // 16 km window it is LESS coherent than the 96 km fabric field it replaced.
+  // The range channel therefore keeps the seeded fabric frame; the plates
+  // supply the amplitude, not the bearing.
+  const convergence = sampleTerrainPlates(
+    seedHash,
+    warpedX,
+    warpedZ,
+    filterWidthMeters,
+  ).convergence;
 
-  // Broad seeded plate-boundary convergence creates one or two elongated
-  // ranges across the 524 km authority domain. The 12:1 anisotropic range
-  // channel is local to the rotating fabric, never a fixed compass bearing.
-  const plateBoundary = ridgedFbm2D(
-    mixSeed(seedHash, 150),
-    warpedX / 96_000,
-    warpedZ / 96_000,
-    3,
-    96_000,
-    filterWidthMeters,
-  );
-  const relativeMotion = filteredValueNoise2D(
-    mixSeed(seedHash, 151),
-    warpedX / 210_000 + 5.4,
-    warpedZ / 210_000 - 3.8,
-    210_000,
-    filterWidthMeters,
-  );
-  const convergence = smoothstep(0.38, 0.82, plateBoundary)
-    * smoothstep(-0.28, 0.58, relativeMotion);
+  // The 12:1 anisotropic range channel is local to the rotating range frame,
+  // never a fixed compass bearing.
   const rangeRidges = ridgedFbm2D(
     mixSeed(seedHash, 152),
     fabricX / 6_000,
@@ -424,17 +432,14 @@ export function sampleTerrainUpliftHeight(
     * Math.pow(Math.max(0, inheritedRidges), 2.12)
     * 310;
 
-  // Lithology/detail is present before erosion so it can influence incision
-  // and talus. These mean-removed fine bands close the old 43 m spectral hole
-  // at 24 m and 9 m while the shared filter width removes them from coarse LODs.
-  const lithology = filteredValueNoise2D(
-    mixSeed(seedHash, 156),
-    x / 28_000,
-    z / 28_000,
-    28_000,
-    filterWidthMeters,
-  );
-  const localRock = land * (0.35 + foothills * 0.65);
+  // The 310 m detail band is uplift: it is coarse enough that drainage and
+  // talus rework it rather than merely inheriting it.
+  //
+  // W-4: the 24 m and 9 m ridged bands that USED to live here (as
+  // `fineLithology`, under a `localRock * lithology` mask) are gone. They are
+  // now applied POST-EROSION by `sampleTerrainFineBandRelief` under a
+  // soil-depth-and-curvature mask — see that function's docblock for the
+  // measurements that forced the move.
   const detail310 = fbm2D(
     mixSeed(seedHash, 121),
     x / 310,
@@ -445,6 +450,89 @@ export function sampleTerrainUpliftHeight(
     310,
     filterWidthMeters,
   ) * (5 + land * 12);
+
+  const hillStrength = land * (30 + 92 * (1 - convergence * 0.45));
+  const height = continentalProfile
+    + rolling * hillStrength
+    + foothillUplift
+    + rangeUplift
+    + detail310;
+  return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
+}
+
+/**
+ * `W-4` (Phase 6, Gate W, register C-4): the fine ridged bands, as a
+ * POST-EROSION relief field rather than an uplift input.
+ *
+ * WHY THE TERM MOVED, AND WHAT THAT DID NOT FIX. C-4's recorded deviation put
+ * the 24 m and 9 m bands into `sampleTerrainUpliftHeight` under a
+ * fabric/lithology mask, and W-7's statistics suite attributed two failures to
+ * it: assertion 87's 3.289 pits/km² at the 50 m footprint (target < 0.1) and
+ * assertion 98's INVERTED 0.608:1 valley:crest curvature (target >= 3:1). The
+ * argument was that the bands survive on crests, which erosion cannot plane,
+ * and are removed from valley floors, which it can.
+ *
+ * That attribution is measured FALSE (2026-08-30, the same suite):
+ *
+ *   variant                              87 fine     98 by flow
+ *   shipped (bands on the uplift)        3.289/km²   0.608:1
+ *   bands deleted, nothing added         2.961/km²   0.605:1
+ *   bands post-erosion, this mask, 1x    2.961/km²   0.581:1
+ *   ... 2x                               2.961/km²   0.534:1
+ *   ... 4x                               2.961/km²   0.461:1
+ *
+ * A 24 m band box-averaged over a 50 m cell has almost nothing left to make a
+ * hollow with, and at a 20 m curvature arm it is a small perturbation on top
+ * of the 74-310 m detail that dominates crest roughness. Both real mechanisms
+ * are recorded in tests/world.evolution-stats.test.ts: assertion 87's residual
+ * is 4-20 cm sills between the 32 m breach reach and the 512 m macro flood,
+ * and assertion 98's is a page contributing-area field whose 1st percentile is
+ * 2.9e5 m², i.e. no hillslope domain at all.
+ *
+ * The move is kept because it is right independently of those two numbers: a
+ * band applied to the uplift is masked by the tectonic input's lithology,
+ * while a band applied after erosion is masked by the surface that actually
+ * exists — thin soil on a convex crest exposes structure, a deep-soil
+ * convergent hollow buries it, which is §12.1's landscape model and not a
+ * proxy for it. It also removes the term from the collision-relevant seed
+ * field, where erosion could not touch it.
+ *
+ * FRAME. The band rides the seeded structural fabric exactly as before, but
+ * rotates the UNWARPED world coordinate rather than the domain-warped one. The
+ * warp is a ±2.4 km displacement applied to a 96 km/72 km direction field, so
+ * the grain it selects is the same one either way; dropping it removes two
+ * lattice evaluations from a term that is now evaluated per erosion-scratch
+ * texel (384² per page) instead of once inside the uplift sampler.
+ * `sampleTerrainEvolutionGeology` already reads the direction field in the
+ * world frame for the same reason.
+ *
+ * Amplitudes are the uplift term's verbatim 2.8 / 1.15 metre weights; the
+ * `localRock * (0.7 + lithology * 0.25)` envelope they used to carry is
+ * REPLACED (not multiplied) by the post-erosion mask, which is the whole point
+ * of the move. Mean-removed per band, so the field adds no bias.
+ */
+export const TERRAIN_FINE_BAND_24M_AMPLITUDE_METERS = 2.8;
+export const TERRAIN_FINE_BAND_9M_AMPLITUDE_METERS = 1.15;
+
+export function sampleTerrainFineBandRelief(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  assertFiniteCoordinate(x, "x");
+  assertFiniteCoordinate(z, "z");
+  assertFilterWidth(filterWidthMeters);
+  const angle = terrainEvolutionFabricDoubleAngle(
+    seedHash,
+    x,
+    z,
+    filterWidthMeters,
+  ) * 0.5;
+  const fabricCos = Math.cos(angle);
+  const fabricSin = Math.sin(angle);
+  const fabricX = x * fabricCos + z * fabricSin;
+  const fabricZ = -x * fabricSin + z * fabricCos;
   const ridges24 = ridgedFbm2D(
     mixSeed(seedHash, 158),
     fabricX / 24,
@@ -461,17 +549,8 @@ export function sampleTerrainUpliftHeight(
     9,
     filterWidthMeters,
   ) - RIDGED_OCTAVE_BAND_LIMIT_MEAN;
-  const fineLithology = localRock * (0.7 + lithology * 0.25)
-    * (ridges24 * 2.8 + ridges9 * 1.15);
-
-  const hillStrength = land * (30 + 92 * (1 - convergence * 0.45));
-  const height = continentalProfile
-    + rolling * hillStrength
-    + foothillUplift
-    + rangeUplift
-    + detail310
-    + fineLithology;
-  return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
+  return ridges24 * TERRAIN_FINE_BAND_24M_AMPLITUDE_METERS
+    + ridges9 * TERRAIN_FINE_BAND_9M_AMPLITUDE_METERS;
 }
 
 /**
@@ -520,6 +599,83 @@ export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
   return applyAirportEarthworks(world, naturalHeight, x, z);
+}
+
+/**
+ * `5-12a`: height with river channels carved in — the only carved authority.
+ *
+ * **Ordering is carried by this signature, not by a rule.** A `CarvedChannelSet`
+ * has one constructor and it takes a finished `HydrologyGenerationResult`, so a
+ * caller holding one has necessarily already traced. `sampleTerrainHeight`
+ * stays uncarved and is what hydrology samples, which holds the other half of
+ * the cycle open.
+ *
+ * **This must stay `uncarved - channelCarveDepth` with no other term.** The GPU
+ * height kernel mirrors exactly this expression; anything read here that the
+ * kernel cannot read puts collision and render on different terrain, which is
+ * `3-8` — 15.3 m apart on the runway, the feature this copies.
+ *
+ * ---
+ *
+ * **NOTHING CALLS THESE YET, AND FOUR REQUIREMENTS BIND WHOEVER FIRST DOES.**
+ * They are recorded here rather than in a plan document because a plan is not
+ * in the diff when someone wires this up.
+ *
+ * 1. **Physics does not reach this function inside the airport platform.**
+ *    There are FOUR airport short-circuits over two regions, and every one of
+ *    them returns before `sampleTerrainHeight`:
+ *      `getAirportInfluence(...) >= 1` — terrain.ts (sampleTerrainCollisionHeight),
+ *                                        sim/terrainGrid.ts (sampleGroundHeight)
+ *      `isPointOnRunway(...)`         — terrain.ts (sampleTerrainCollision),
+ *                                        sim/terrainGrid.ts (sampleGroundContact)
+ *    So a channel crossing the platform renders as a trench that collision has
+ *    never heard of. That is `3-8` with the sign flipped, and `airportSite.ts`
+ *    has no knowledge of hydrology, so nothing keeps a channel off the apron.
+ *
+ * 2. **CPU/GPU agreement holds at L0 ONLY, and a test must SAY it is L0-only.**
+ *    `terrainPageFilterWidthMeters(0) === 0` and `terrainSupersampleOffsets(0)`
+ *    is the single offset `[0,0]`, so L0 is bit-identical by construction. At
+ *    L1+ `samplePageTexel` AVERAGES `count` offset evaluations of
+ *    `pageHeightAt`, while this function subtracts a single centre-point
+ *    `channelCarveDepth`. A GPU carve placed inside `pageHeightAt` therefore
+ *    computes `mean(carve(p_i))` against this `carve(centre)`. They differ
+ *    wherever the carve is non-linear across a texel — which for a trapezoid
+ *    is exactly the rim, the only place anyone looks.
+ *
+ * 3. **The prop-placement samplers travel with this one, or are named as
+ *    knowingly uncarved.** The visible ground is GPU-displaced, so these are
+ *    not a third opinion about height — they are a third set of things
+ *    STANDING on it: the ground-cover height tile, hangars, tower, fence, fuel
+ *    farm, signage, the lake plate whose mesh edge IS the waterline, and the
+ *    free-fly camera clamp. Every one hangs over a riverbed otherwise.
+ *
+ * 4. **A per-page cull expansion is DERIVED, never chosen.** Rivers are
+ *    globally anchored — the source lattice is in absolute world coordinates
+ *    and page bounds only select cells, never change identity or jitter — so
+ *    the only page-dependence is `cropRiverToBounds` truncating at the rim.
+ *    That makes the margin arithmetic: maximum channel half-width plus maximum
+ *    trace segment length. Probe the seam where a channel crosses a page
+ *    boundary; a uniform grid misses precisely the case that breaks.
+ */
+export function sampleCarvedTerrainHeight(
+  world: WorldDefinition,
+  channels: CarvedChannelSet,
+  x: number,
+  z: number,
+): number {
+  return sampleTerrainHeight(world, x, z) - channelCarveDepth(channels, x, z);
+}
+
+/** Band-limited render-path height with channels carved in. See above. */
+export function sampleCarvedFilteredTerrainHeight(
+  world: WorldDefinition,
+  channels: CarvedChannelSet,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  return sampleFilteredTerrainHeight(world, x, z, filterWidthMeters)
+    - channelCarveDepth(channels, x, z);
 }
 
 /**

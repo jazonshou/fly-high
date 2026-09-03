@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 
 /**
  * The two deployment targets render the same game from two document shells:
@@ -12,7 +13,7 @@ const layout = readFileSync(
   new URL("../app/layout.tsx", import.meta.url),
   "utf8",
 );
-const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const page = readSource(new URL("../app/page.tsx", import.meta.url));
 const staticHtml = readFileSync(
   new URL("../static/index.html", import.meta.url),
   "utf8",

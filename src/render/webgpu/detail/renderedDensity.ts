@@ -380,10 +380,17 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
   50,
   // Modelled 53.3 draws at the medium/balanced contract tier.
   58,
-  // Species mode models 507.6 draws at tier 2 and 665.9 at tier 3 with the
+  // Species mode models 433.8 draws at tier 2 and 508.6 at tier 3 with the
   // third tree part; re-pinned as the regression guard the renderer meets.
+  //
+  // `7-CSM`: down from 507.6 / 665.9. `estimateVegetationDrawCalls` counts the
+  // near band once per cascade, and tiers 2 and 3 fell from 3 and 4 cascades to
+  // 2 when more cascades were MEASURED to reduce shadow coverage rather than
+  // extend it. Note these submissions were always modelled per cascade and, up
+  // to the same change, only cascade 0 was ever rendered — so this model has
+  // just become accurate rather than merely smaller.
+  440,
   515,
-  675,
 ]);
 
 /**
@@ -399,6 +406,11 @@ export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze
   // tiers remain well above the vegetation frame row. The strict capture,
   // not this draw-only model, decides whether skeletal trees close frame
   // time.
-  6.947,
-  4.809,
+  //
+  // `7-CSM`: down from 6.947 / 4.809 with tiers 2 and 3 cut to two cascades.
+  // Still far above 1.0 — the cascade cut did not close the vegetation row and
+  // is not claimed to. MEASURED separately at tier 3, the cut costs nothing
+  // resolvable in fps, so this ratio moving is not itself evidence of a win.
+  5.936,
+  3.674,
 ]);

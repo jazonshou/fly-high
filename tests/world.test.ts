@@ -11,6 +11,10 @@ import {
   TerrainBiome,
   assessAirportSite,
   createWorld,
+  DETAILED_PRIMARY_COUNT,
+  HEADINGS_PER_DETAILED_CANDIDATE,
+  readAirportSiteEvaluationCount,
+  resetAirportSiteEvaluationCount,
   getAirportInfluence,
   hashCoordinates,
   hashSeed,
@@ -481,13 +485,13 @@ describe("starter airport terrain", () => {
   it("guarantees independently audited runways across dense varied seeds", () => {
     let availableAirportCount = 0;
     const seedCount = 384;
-    const selectionTimes: number[] = [];
+    const selectionEvaluations: number[] = [];
     const resolvedRegionHashes = new Set<number>();
     for (let index = 0; index < seedCount; index += 1) {
       const variedSeed = `airport-safety-${index}-${Math.imul(index + 17, 2_654_435_761) >>> 0}`;
-      const selectionStarted = performance.now();
+      resetAirportSiteEvaluationCount();
       const seededWorld = createWorld(variedSeed);
-      selectionTimes.push(performance.now() - selectionStarted);
+      selectionEvaluations.push(readAirportSiteEvaluationCount());
       resolvedRegionHashes.add(seededWorld.seedHash);
       const seededAirport = seededWorld.airport;
       expect(seededWorld.seed).toBe(variedSeed);
@@ -513,17 +517,39 @@ describe("starter airport terrain", () => {
     }
     expect(availableAirportCount).toBe(seedCount);
     expect(resolvedRegionHashes.size).toBeGreaterThan(112);
-    const sortedTimes = selectionTimes.sort((left, right) => left - right);
-    const p95SelectionTime = sortedTimes[Math.floor(sortedTimes.length * 0.95)] ?? Infinity;
     // Guards against an algorithmic regression in site selection — an unbounded
-    // or badly seeded search — not against hardware speed. Apple-silicon dev
-    // machines measure p95 ≈ 50 ms; shared CI runners measure ≈ 150 ms for
-    // identical code, so a laptop-calibrated absolute number reports which
-    // machine ran the test rather than whether the search regressed. Keep the
-    // tight local budget and give shared hardware room: a genuine regression
-    // here is an order of magnitude, not the 3x spread between machines.
-    const p95SelectionBudgetMs = process.env.CI ? 500 : 150;
-    expect(p95SelectionTime).toBeLessThan(p95SelectionBudgetMs);
+    // or badly seeded search — by COUNTING the work rather than timing it.
+    //
+    // This assertion used to be a wall-clock p95 under a comment claiming it
+    // did not measure hardware speed. It did: the budget was calibrated per
+    // machine (150 ms local / 500 ms CI), drifted with load, and passed and
+    // failed on identical code twenty minutes apart on the same host. An
+    // assertion that states it does not measure hardware speed, and does, is
+    // worse than no assertion — it fails a green change and sends someone
+    // hunting a regression that is not there.
+    //
+    // Evaluations are exactly reproducible: the search is a pure function of
+    // the seed, with no clock, no concurrency and no allocation sensitivity.
+    // Measured over this sweep the per-seed count spans 576..577 — a range of
+    // ONE across 384 seeds — and three consecutive runs produced byte-identical
+    // totals. So the false-positive rate is zero by construction, not by
+    // tolerance, which is what the wall-clock version could never offer.
+    //
+    // The ceiling is DERIVED from the search's own constants, so widening the
+    // search moves the budget with it instead of silently blowing it.
+    const sortedEvaluations = selectionEvaluations.sort((left, right) => left - right);
+    const p95Evaluations = sortedEvaluations[Math.floor(sortedEvaluations.length * 0.95)]
+      ?? Infinity;
+    // The primary search is the whole budget; `+ 16` is headroom for the
+    // catalogue-region fallback, which adds one evaluation per region walked
+    // and measured at most one across this sweep.
+    const evaluationCeiling = DETAILED_PRIMARY_COUNT * HEADINGS_PER_DETAILED_CANDIDATE + 16;
+    expect(
+      p95Evaluations,
+      `p95 site evaluations ${p95Evaluations} exceeds the derived ceiling `
+      + `${evaluationCeiling}; the search is examining more candidates than its `
+      + `own constants allow, which is the regression this guards`,
+    ).toBeLessThanOrEqual(evaluationCeiling);
     // A timeout catches a hung test; it is not a performance budget
     // (vitest.config.ts). The p95 assertion directly above is this sweep's
     // performance guard, and it is already scaled for shared hardware; the

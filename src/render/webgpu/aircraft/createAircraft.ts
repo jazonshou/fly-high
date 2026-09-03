@@ -62,7 +62,7 @@ function configureRoot(root: TransformNode, kind: AircraftKind): void {
     aircraftVisual: true,
     aircraftKind: kind,
     handedness: "right",
-    bodyAxes: { forward: "+x", up: "+y", port: "+z" },
+    bodyAxes: { forward: "+x", up: "+y", starboard: "+z" },
   };
 }
 
@@ -191,6 +191,21 @@ function createTrainer(scene: Scene): AircraftVisual {
   const greenLamp = build.material("trainer-starboard-lamp", 0x5dffab, {
     emissive: 0x24ff83,
     emissiveIntensity: 2,
+  });
+  // `7-8`: the tail, beacon and strobe lamps did not exist. The item's premise
+  // ("the lamps already exist as emissive geometry") was stale for four of six
+  // — and the white TAIL light is the one the 110/110/140 split-angle
+  // partition depends on, so the pin could not be met without building it.
+  const applyLamp = createLampApplier();
+  const applyGlow = createGlowApplier();
+  const tailLamp = build.material("trainer-tail-lamp", 0xfff6e8, {
+    emissive: 0xfff2d8, emissiveIntensity: 2,
+  });
+  const beaconLamp = build.material("trainer-beacon-lamp", 0xff5a4a, {
+    emissive: 0xff1c10, emissiveIntensity: 2.6,
+  });
+  const strobeLamp = build.material("trainer-strobe-lamp", 0xffffff, {
+    emissive: 0xf2f8ff, emissiveIntensity: 3.2,
   });
   const landingLamp = build.material("trainer-landing-lamp", 0xfff1c2, {
     roughness: 0.16,
@@ -550,16 +565,53 @@ function createTrainer(scene: Scene): AircraftVisual {
   const noseHub = build.cylinder("nose-wheel-hub", 0.15, 0.15, 0.15, 12, hub, noseWheel);
   noseHub.rotation.x = Math.PI / 2;
 
+  // `D-6`: PORT (red) sits at -Z and STARBOARD (green) at +Z, because
+  // **starboard is body +Z**. Derived from the scene's own basis:
+  // `FlightRenderer` maps body +X -> forward and +Y -> up into a
+  // right-handed scene, and a camera looking along +X with up +Y reports
+  // screen-right as +Z. Screen-right for a forward-looking camera IS the
+  // pilot's right.
+  //
+  // These two lines were reversed, so every night flight showed red on the
+  // right wing and green on the left -- the exact inversion an observer uses
+  // to infer which way an aircraft is heading.
+  //
+  // The full body-axis contract was settled to match on 2026-09-01: the sim's
+  // internal basis, `bodyAxes` above, and this placement now all agree that
+  // +Z is starboard, and the keyboard roll inversion that compensated for the
+  // old mismatch is deleted. `tests/sim.body-axis-contract.test.ts` pins the
+  // chain in world space without consulting any of these declarations.
   const portLight = build.sphere("port-navigation-light", 0.18, 8, redLamp, root);
-  portLight.position.set(0.2, 0.3, 5.43);
+  portLight.position.set(0.2, 0.3, -5.43);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };
   const starboardLight = build.sphere("starboard-navigation-light", 0.18, 8, greenLamp, root);
-  starboardLight.position.set(0.2, 0.3, -5.43);
+  starboardLight.position.set(0.2, 0.3, 5.43);
   starboardLight.metadata = { ...starboardLight.metadata, castsShadow: false };
   const landingLight = build.cylinder("landing-light", 0.025, 0.24, 0.24, 10, landingLamp, root);
   landingLight.rotation.z = Math.PI / 2;
   landingLight.position.set(1.18, 0.22, 1.7);
   landingLight.metadata = { ...landingLight.metadata, castsShadow: false };
+
+  // Built with `build.sphere`, i.e. Babylon's own `CreateSphere` — their
+  // winding IS the convention the prototype winding guard reads its reference
+  // FROM, so adding guard cases would compare a Babylon primitive against
+  // itself. The 7D rule is aimed at hand-authored geometry; the tower's seven
+  // parts are that, and these deliberately are not.
+  const tailLight = build.sphere("tail-navigation-light", 0.15, 8, tailLamp, root);
+  tailLight.position.set(-3.18, 1.02, 0);
+  tailLight.metadata = { ...tailLight.metadata, castsShadow: false };
+  const beaconLight = build.sphere("anticollision-beacon", 0.16, 8, beaconLamp, root);
+  beaconLight.position.set(-0.75, 1.02, 0);
+  beaconLight.metadata = { ...beaconLight.metadata, castsShadow: false };
+  // Wingtip strobes, outboard of the nav lights rather than co-located: they
+  // flash on a different timer and overlapping them would read as one lamp
+  // changing colour.
+  for (const side of [-1, 1]) {
+    const strobe = build.sphere(
+      side < 0 ? "port-strobe-light" : "starboard-strobe-light", 0.13, 8, strobeLamp, root);
+    strobe.position.set(0.05, 0.32, side * 5.62);
+    strobe.metadata = { ...strobe.metadata, castsShadow: false };
+  }
 
   const rig: CommonRig = {
     root,
@@ -603,6 +655,16 @@ function createTrainer(scene: Scene): AircraftVisual {
       for (const blade of propellerRig.blades) blade.isVisible = true;
       propellerRig.disc.isVisible = true;
       applyCommonPose(rig, pose, delta);
+    },
+    setLightState(lights) {
+      if (disposed) return;
+      applyLamp(redLamp, lights.portNav);
+      applyLamp(greenLamp, lights.starboardNav);
+      applyLamp(tailLamp, lights.tailNav);
+      applyLamp(beaconLamp, lights.beacon);
+      applyLamp(strobeLamp, lights.strobe);
+      applyLamp(landingLamp, lights.landing);
+      applyGlow(instrumentMarking, lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;
@@ -684,6 +746,24 @@ function createJet(scene: Scene): AircraftVisual {
     emissiveIntensity: 2.4,
   });
 
+  // `7-8`: the same four lamps, on BOTH airframes rather than only the one the
+  // capture set flies — a half-lit jet is a latent inconsistency that surfaces
+  // the first time someone switches aircraft, and the split-angle partition is
+  // a property of the law, not of one model.
+  const jetApplyLamp = createLampApplier();
+  const jetApplyGlow = createGlowApplier();
+  const tailLamp = build.material("jet-tail-lamp", 0xfff6e8, {
+    emissive: 0xfff2d8, emissiveIntensity: 2.4,
+  });
+  const beaconLamp = build.material("jet-beacon-lamp", 0xff5a4a, {
+    emissive: 0xff1c10, emissiveIntensity: 3,
+  });
+  const strobeLamp = build.material("jet-strobe-lamp", 0xffffff, {
+    emissive: 0xf2f8ff, emissiveIntensity: 3.6,
+  });
+  const landingLamp = build.material("jet-landing-lamp", 0xfff1c2, {
+    emissive: 0xffe6a8, emissiveIntensity: 2.6,
+  });
   const interior = build.material("jet-interior", 0x182226, {
     roughness: 0.8,
     metallic: 0.02,
@@ -1011,11 +1091,30 @@ function createJet(scene: Scene): AircraftVisual {
     surface.position.x = -0.42;
     speedBrakes.push(speedBrake);
   }
+  // `D-6`: same reversal as the trainer, same fix -- port (red) to -Z.
   const portLight = build.sphere("port-navigation-light", 0.17, 8, redLamp, root);
-  portLight.position.set(-0.2, 0.07, 4.82);
+  portLight.position.set(-0.2, 0.07, -4.82);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };
   const starboardLight = build.sphere("starboard-navigation-light", 0.17, 8, greenLamp, root);
-  starboardLight.position.set(-0.2, 0.07, -4.82);
+  starboardLight.position.set(-0.2, 0.07, 4.82);
+  starboardLight.metadata = { ...starboardLight.metadata, castsShadow: false };
+  const tailLight = build.sphere("tail-navigation-light", 0.13, 8, tailLamp, root);
+  tailLight.position.set(-5.42, 1.18, 0);
+  tailLight.metadata = { ...tailLight.metadata, castsShadow: false };
+  const beaconLight = build.sphere("anticollision-beacon", 0.14, 8, beaconLamp, root);
+  beaconLight.position.set(-1.6, 0.92, 0);
+  beaconLight.metadata = { ...beaconLight.metadata, castsShadow: false };
+  for (const side of [-1, 1]) {
+    const strobe = build.sphere(
+      side < 0 ? "port-strobe-light" : "starboard-strobe-light", 0.11, 8, strobeLamp, root);
+    strobe.position.set(-0.34, 0.09, side * 4.98);
+    strobe.metadata = { ...strobe.metadata, castsShadow: false };
+  }
+  const jetLandingLight = build.cylinder(
+    "landing-light", 0.022, 0.2, 0.2, 10, landingLamp, root);
+  jetLandingLight.rotation.z = Math.PI / 2;
+  jetLandingLight.position.set(3.4, -0.62, 0);
+  jetLandingLight.metadata = { ...jetLandingLight.metadata, castsShadow: false };
   starboardLight.metadata = { ...starboardLight.metadata, castsShadow: false };
 
   const rig: JetRig = {
@@ -1059,6 +1158,17 @@ function createJet(scene: Scene): AircraftVisual {
         door.rotation.x = (index === 1 ? -1 : 1) * pose.gearDoorTravel;
       });
       for (const speedBrake of rig.speedBrakes) speedBrake.rotation.z = pose.speedBrake;
+    },
+    setLightState(lights) {
+      if (disposed) return;
+      jetApplyLamp(redLamp, lights.portNav);
+      jetApplyLamp(greenLamp, lights.starboardNav);
+      jetApplyLamp(tailLamp, lights.tailNav);
+      jetApplyLamp(beaconLamp, lights.beacon);
+      jetApplyLamp(strobeLamp, lights.strobe);
+      jetApplyLamp(landingLamp, lights.landing);
+      jetApplyGlow(instrumentMarking, lights.cockpitGlow);
+
     },
     setCockpitView(enabled) {
       if (disposed) return;
@@ -1115,6 +1225,50 @@ function setCockpitVisibility(rig: CommonRig, scene: Scene, enabled: boolean): v
  * Creates a procedural aircraft directly in the provided Babylon scene.
  * The scene must already be configured as right-handed.
  */
+/**
+ * `7-8`: apply a per-lamp emissive scale, remembering each material's authored
+ * intensity as its full-brightness value.
+ *
+ * Scales `emissiveIntensity` rather than toggling `isVisible` or `setEnabled`:
+ * a lamp that vanishes also stops occluding and stops contributing to bloom,
+ * so a strobe wired that way pops the whole silhouette rather than flashing.
+ * The propeller rig makes the same point about phase-dependent visibility and
+ * it applies identically here.
+ */
+/**
+ * `7-8`: the cockpit instrument glow, which legitimately EXCEEDS 1.
+ *
+ * Separate from `createLampApplier` because that one clamps to [0, 1] — right
+ * for a lamp, which is either lit or not, and wrong here: the panel's authored
+ * value is its DAYLIGHT brightness and night raises it above that. Sharing one
+ * applier would have silently clamped the night case back to daylight, which
+ * is the kind of thing that looks like the law being wrong.
+ */
+function createGlowApplier(): (material: PBRMaterial, multiple: number) => void {
+  const base = new WeakMap<PBRMaterial, number>();
+  return (material, multiple) => {
+    let authored = base.get(material);
+    if (authored === undefined) {
+      authored = material.emissiveIntensity;
+      base.set(material, authored);
+    }
+    const safe = Number.isFinite(multiple) ? Math.max(0, multiple) : 1;
+    material.emissiveIntensity = authored * safe;
+  };
+}
+
+function createLampApplier(): (material: PBRMaterial, scale: number) => void {
+  const base = new WeakMap<PBRMaterial, number>();
+  return (material, scale) => {
+    let full = base.get(material);
+    if (full === undefined) {
+      full = material.emissiveIntensity;
+      base.set(material, full);
+    }
+    material.emissiveIntensity = full * Math.min(1, Math.max(0, scale));
+  };
+}
+
 export function createAircraft(
   scene: Scene,
   kind: AircraftKind = "trainer",

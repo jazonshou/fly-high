@@ -106,9 +106,10 @@ export function quaternionFromFlightAngles(
   const yawQ = quaternionFromAxisAngle({ x: 0, y: 1, z: 0 }, heading - Math.PI / 2);
   // Positive rotation about body +Z raises the nose.
   const pitchQ = quaternionFromAxisAngle({ x: 0, y: 0, z: 1 }, pitch);
-  // Body +Z points to port in the right-handed aircraft frame. A positive
-  // pilot bank (right wing down) is therefore a negative rotation about +X.
-  const bankQ = quaternionFromAxisAngle({ x: 1, y: 0, z: 0 }, -bank);
+  // Body +Z points to starboard in the right-handed aircraft frame (D-6). A
+  // positive pilot bank (right wing down) rotates up toward +Z, a positive
+  // rotation about +X.
+  const bankQ = quaternionFromAxisAngle({ x: 1, y: 0, z: 0 }, bank);
   const intermediate = { x: 0, y: 0, z: 0, w: 1 };
   const result = { x: 0, y: 0, z: 0, w: 1 };
   multiplyQuaternionInto(intermediate, yawQ, pitchQ);

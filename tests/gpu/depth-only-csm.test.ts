@@ -124,9 +124,25 @@ describe("depth-only cascaded shadow map (1A-5)", () => {
       expect(shadowMap).not.toBeNull();
       expect(shadowMap!.depthStencilTexture).not.toBeNull();
       expect(shadowMap!.renderTarget?.texture ?? null).toBeNull();
+      expect(shadowMap!.getSize()).toMatchObject({ width: 1024, height: 1024 });
+      expect(shadowMap!.is2DArray).toBe(true);
+      expect(shadowMap!.getRenderLayers()).toBe(generator.numCascades);
+      expect(shadowMap!.depthStencilTexture!.depth).toBe(generator.numCascades);
+
+      // The array shape alone does not prove Babylon submitted every layer: the
+      // original regression exposed the right depth but rendered only layer 0.
+      // Observe the actual per-layer render passes while retaining the image
+      // assertion below as the receiver-side half of the contract.
+      const renderedCascadeLayers = new Set<number>();
+      shadowMap!.onBeforeRenderObservable.add((layer) => {
+        renderedCascadeLayers.add(layer);
+      });
 
       // Behavioural half: the ground actually receives a shadow.
       await renderFrames(scene, 20);
+      expect([...renderedCascadeLayers].sort((first, second) => first - second)).toEqual(
+        Array.from({ length: generator.numCascades }, (_, layer) => layer),
+      );
       expect(shadowedFraction(scene)).toBeGreaterThan(0.005);
     } finally {
       scene.dispose();
