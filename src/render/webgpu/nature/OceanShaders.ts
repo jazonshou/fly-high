@@ -147,8 +147,20 @@ fn initializeOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>)
   let linear_index = invocation.x + invocation.y * params.resolution;
   let random_seed = params.seed
     ^ hash32(linear_index + 0x9e3779b9u * (params.cascade_index + 1u));
-  let h0 = gaussianComplex(random_seed) * sqrt(0.5 * spectrum);
-  textureStore(initial_spectrum, coordinate, vec4<f32>(h0, spectrum, omega));
+  // Non-finite guard at the SOURCE. On the shipping config a handful of cascade-3
+  // texels produce a non-finite JONSWAP spectrum in f32 (invisible to the f64 CPU
+  // harness); sqrt carries it into h0, the radix-2 butterfly then spreads
+  // Inf-Inf=NaN across the whole field, every ocean vertex sums a NaN cascade, and
+  // the mesh collapses to nothing -- the sea you see is the terrain bed underneath.
+  // A non-finite spectral density carries no physical energy, so zero it. Do NOT
+  // "fix" this with clamp(): clamp(NaN,a,b) returns a, so a defensive clamp anywhere
+  // in this shader silently LAUNDERS a NaN into a plausible finite value and hides
+  // the defect instead of killing it. select on an explicit finite test is the only
+  // guard that actually drops the poison.
+  let spectrum_finite = spectrum >= 0.0 && spectrum <= 3.0e38;
+  let safe_spectrum = select(0.0, spectrum, spectrum_finite);
+  let h0 = gaussianComplex(random_seed) * sqrt(0.5 * safe_spectrum);
+  textureStore(initial_spectrum, coordinate, vec4<f32>(h0, safe_spectrum, omega));
   textureStore(wave_data, coordinate, vec4<f32>(k, k_length, omega));
 }
 `;
