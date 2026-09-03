@@ -808,11 +808,31 @@ const SPLAT_SOIL_MAX_METERS: f32 = ${
  * deliberately left at 0 - moving it is a separate change with its own pixels.
  */
 fn splatSlopeAspect(job: SplatJob, heightTexel: vec2f) -> vec2f {
+  // **CENTRAL difference. The forward one it replaces was wrong twice over.**
+  //
+  // It read \`here\`, \`east\`, \`south\` and divided by one texel: an O(h)
+  // estimator where a central difference is O(h^2), with \`h\` the page's own
+  // texel — 2 m at L0 but **512 m at L8** — so its error grew with every level.
+  // Measured over identical points, the fraction of land it reported at slope
+  // >= 0.40 was 1.00x a central difference at 2 m, 1.06x at 8 m, 1.25x at 32 m
+  // and **1.95x at 128 m.** At coarse levels it invented nearly twice the steep
+  // ground, and steep ground is Rock.
+  //
+  // **And it was asymmetric.** A forward difference estimates the gradient at
+  // \`here + (0.5, 0.5)\` texels, so slope was assigned half a texel toward
+  // +x/+z from the texel it painted — **256 m at L8**. That is the same family
+  // as the gutter defect fixed below, and this was the second consumer of the
+  // convention. Central differencing is centred on the texel by construction.
+  //
+  // \`WORLD_PAGE_GUTTER\` is 4 texels on every side of a slot, so the -1 reads
+  // this adds stay inside stored data for every core texel. One extra tap per
+  // axis.
   let base = vec2i(job.slots.zw) + vec2i(heightTexel);
-  let here = textureLoad(splatHeightAtlas, base, 0).r;
+  let west = textureLoad(splatHeightAtlas, base + vec2i(-1, 0), 0).r;
   let east = textureLoad(splatHeightAtlas, base + vec2i(1, 0), 0).r;
+  let north = textureLoad(splatHeightAtlas, base + vec2i(0, -1), 0).r;
   let south = textureLoad(splatHeightAtlas, base + vec2i(0, 1), 0).r;
-  let gradient = vec2f(east - here, south - here) / job.shape.y;
+  let gradient = vec2f(east - west, south - north) / (2.0 * job.shape.y);
   let normalY = 1.0 / sqrt(1.0 + dot(gradient, gradient));
   let slope = 1.0 - normalY;
   let horizontal = length(gradient);

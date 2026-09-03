@@ -148,3 +148,76 @@ a stand-in for the baked height atlas. That substitution is supported by the
 atlas measuring ~2 m from the CPU field on terrain with hundreds of metres of
 relief, but it is a substitution, and the LOD-pop magnitudes would be worth
 re-reading off the atlas itself before anyone tunes against them.
+
+---
+
+# The estimator fix, and what it did to the numbers above
+
+`splatSlopeAspect` now uses a **central** difference. Everything below was
+measured with `dc`'s gutter fix already in the tree, so the arms differ only in
+the estimator.
+
+## On the atlas, not the analytic stand-in
+
+`tests/gpu/terrain-splat-bake.test.ts`'s assertion 85 — a page's cover against
+its four children's, which is the LOD pop measured on the **baked atlas**:
+
+| | dominant-cover agreement | worst axis step where it disagrees |
+|---|---|---|
+| forward | 99.1% | 1 |
+| central | **100.0%** | **0** |
+
+**Cross-LOD disagreement on that page goes to zero.** CPU-vs-bake parity is
+unchanged (5.81 / 4.00 / 3.01 / 2.27 against 5.81 / 4.03 / 2.92 / 2.27) — a
+prediction that it would improve was wrong; those disagreements are not
+slope-driven.
+
+## The ratio shortcut does not rescue this quantity
+
+A ratio is usually steadier than its endpoints under estimator choice. **Here it
+is the opposite, and the reason is worth recording.** Rock coverage by level:
+
+| level | 0 (2 m) | 2 (8 m) | 4 (32 m) | 6 (128 m) | 8 (512 m) | ratio L0/L8 |
+|---|---|---|---|---|---|---|
+| forward | 17.01% | 16.53% | 14.33% | 8.70% | 2.41% | **7.1×** |
+| central | 16.94% | 15.83% | 12.27% | 5.45% | **0.68%** | **24.9×** |
+
+**The far endpoint approaches zero, so the ratio is a small-denominator
+quantity** and moves 3.5× where the endpoints move much less. What survives
+estimator choice is the **near** endpoint (17.01% vs 16.94%, 0.4% apart) and the
+**monotone fall**, not the ratio.
+
+**So state it as: rock coverage falls monotonically from ~17% at the finest
+level to somewhere between 0.7% and 2.4% at the coarsest.** The shape is
+established; the far endpoint carries the uncertainty. And note the correct
+estimator makes the pop **worse**, not better — the earlier table understated it,
+as predicted.
+
+## Frame delta
+
+Same-tree A/B, arms differing only in the estimator. Comparing against committed
+baselines would have folded in unrelated work, so the arms are compared to each
+other:
+
+| shot | pixels changed | mean \|Δ\| | worst |
+|---|---|---|---|
+| high-10000ft-down | **30.01%** | 7.2 | 122 |
+| slant-10km | 12.76% | 6.0 | 171 |
+| cliff-60m | 11.39% | 8.5 | 216 |
+| mountain-close | 10.81% | 5.1 | 86 |
+| terrain-material-1600ft-down | 8.43% | 2.4 | 63 |
+| cdlod-transition | 4.44% | 6.0 | 131 |
+
+Five shots outside the capture list were byte-identical across arms (0.00%),
+so the comparison is not measuring capture noise.
+
+**The ordering is the mechanism's own prediction:** the error is O(h) in the
+page texel, so the higher and more distant the shot, the more it moves.
+`high-10000ft-down` sits on the coarsest pages and moves most, by a factor of
+seven over `cdlod-transition`. **That ordering is the strongest evidence the
+change does what it claims** — it was predicted before it was measured.
+
+**These shots will need re-baselining, and the movement is an improvement rather
+than a regression.** The baseline comparison itself must be run on a current
+tree; the arms above were captured from a worktree 230 commits behind, so its
+absolute SSIM against committed baselines means nothing.
