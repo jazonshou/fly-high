@@ -143,3 +143,103 @@ describe("detail prototype radial scale contract", () => {
     expect(DETAIL_INSTANCE_HEIGHT_MAX_METERS).toBe(48);
   });
 });
+
+/**
+ * THE HEIGHT CONTRACT, WHICH IS THE ONE NOBODY WROTE.
+ *
+ * `PrototypeGeometry.boundingHeight` carries the docblock *"prototype heights
+ * are normalized to ~1"*. Everything above this point in the file guards the
+ * RADIAL contract, exhaustively, because the radial half is normalised: the CPU
+ * divides a desired world radius by the prototype's exact bound
+ * (`detailRadialScaleForWorldRadius`) and the round trip is asserted per species,
+ * per variant, per band.
+ *
+ * **The height half has no such normalisation and had no such guard.** The
+ * vertex path computes world height as `positionUpdated.y * detailHeight`, which
+ * ASSUMES the invariant rather than enforcing it, and `heightScaleMeters` is
+ * passed straight through from the generator. So a prototype that does not reach
+ * y = 1 renders short by exactly its shortfall, at full authored width.
+ *
+ * **Trees satisfy the contract. Shrubs do not, and not one of them does.**
+ * Measured across every species, every variant and ten seeds: trees 0.92-0.97,
+ * hazel 0.580-0.833, juniper 0.581-0.707, sage 0.367-0.472. Sage therefore
+ * renders at ~44% of its authored height while its radius is exact.
+ *
+ * `heightMeters` is unambiguously a world height and three things agree on it:
+ * the field name, the generator (`generation.ts` builds hazel as
+ * `0.55 + maturity * 2.8`, a metre range), and the radius path, which derives
+ * `radiusMeters` from it as a proportion.
+ *
+ * **This guard asserts what is TRUE TODAY, including the violation**, so the
+ * discrepancy is executable rather than buried in a docblock that the code
+ * contradicts. It is written to go RED when the violation is fixed — that is the
+ * point. If you are here because it failed after normalising shrub prototypes,
+ * flip `SHRUBS_SATISFY_THE_CONTRACT` and delete the pin below it.
+ */
+const PROTOTYPE_HEIGHT_CONTRACT_MIN = 0.9;
+
+/** Flip when shrub prototypes are normalised. See the docblock above. */
+const SHRUBS_SATISFY_THE_CONTRACT = false;
+
+const HEIGHT_SEEDS = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23] as const;
+
+describe("prototype height contract", () => {
+  it("holds for every tree prototype, which is what makes the shrub gap a gap", () => {
+    let checked = 0;
+    for (const species of TREE_SPECIES) {
+      for (let variant = 0; variant < TREE_VARIANT_COUNTS[species]; variant += 1) {
+        for (const band of TREE_BANDS) {
+          for (const seed of HEIGHT_SEEDS) {
+            const prototype = buildTreePrototype(species, variant, seed, band);
+            const height = Math.max(
+              prototype.crown.boundingHeight,
+              prototype.trunk.boundingHeight,
+            );
+            checked += 1;
+            expect(
+              height,
+              `${species}/v${variant}/${band}/seed${seed}: a tree prototype must reach `
+                + "the normalised height the vertex path assumes",
+            ).toBeGreaterThanOrEqual(PROTOTYPE_HEIGHT_CONTRACT_MIN);
+          }
+        }
+      }
+    }
+    // NON-VACUITY: an empty enumeration passes every assertion above it.
+    expect(checked).toBeGreaterThan(100);
+  });
+
+  it("records that NO shrub prototype satisfies it, and how far short the worst is", () => {
+    let worst = Number.POSITIVE_INFINITY;
+    let tallest = 0;
+    let checked = 0;
+    for (const species of SHRUB_SPECIES) {
+      for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
+        for (const seed of HEIGHT_SEEDS) {
+          const height = buildShrubPrototype(species, variant, seed).boundingHeight;
+          checked += 1;
+          worst = Math.min(worst, height);
+          tallest = Math.max(tallest, height);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(40);
+
+    if (SHRUBS_SATISFY_THE_CONTRACT) {
+      expect(worst).toBeGreaterThanOrEqual(PROTOTYPE_HEIGHT_CONTRACT_MIN);
+      return;
+    }
+
+    // FAILS IF: shrub prototypes are normalised. That is a fix, not a
+    // regression — flip the constant above rather than widening this.
+    expect(
+      tallest,
+      "no shrub prototype reaches the normalised height, so every shrub renders "
+        + "short at full authored width; if this failed, the violation was fixed",
+    ).toBeLessThan(PROTOTYPE_HEIGHT_CONTRACT_MIN);
+    // The severity, pinned so it cannot drift quietly in either direction.
+    // Sage is the worst: ~0.44, i.e. it renders at ~44% of its authored height.
+    expect(worst).toBeGreaterThan(0.3);
+    expect(worst).toBeLessThan(0.5);
+  });
+});
