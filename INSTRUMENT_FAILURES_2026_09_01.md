@@ -1,5 +1,9 @@
 # Instruments that answered instead of failing — 2026-09-01
 
+**The next day has its own file: `INSTRUMENT_FAILURES_2026_09_02.md`.** It is
+separate rather than a section here because this title carries its date, and
+extending it would make the title lie. The two together are the catalogue.
+
 **What this is.** One evening on **fly high**, a browser flight simulator built
 on a Babylon.js WebGPU renderer — six Claude sessions working in one repository.
 The recurring defect was not in the renderer. It was in the things we measure the
