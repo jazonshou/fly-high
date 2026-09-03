@@ -808,9 +808,20 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   kSelectPage(0u);
   let texel = bathymetryParams.water.x;
-  var height = terrainNaturalHeight(f32(id.x) * texel, f32(id.y) * texel);
   let globalTexel = bathymetryParams.rectangle.xy + vec2i(id.xy);
   let worldXZ = vec2f(globalTexel) * texel;
+  // Wrong-coordinate bug, original to Phase 5: this bed height was sampled at
+  // the DISPATCH-LOCAL invocation coordinates (f32(id.xy) * texel) — terrain
+  // transplanted from the dispatch frame near the world origin, a different
+  // wrong offset per partial-update rectangle — while the macro blend and
+  // page overlay two lines down always used the correct texel WORLD position.
+  // So the bathymetry bed the water shaders read has been alien terrain since
+  // Phase 5. This is INVISIBLE TODAY: its consumer is the spectral-ocean
+  // depth path, and the ocean mesh does not currently render (its vertex
+  // reads patchLengths0 = 0 → NaN displacement → degenerate; separate fix).
+  // It becomes visible the moment the ocean renders, because a correct bed is
+  // what makes near-shore depth, shoaling and the shoreline band correct.
+  var height = terrainNaturalHeight(worldXZ.x, worldXZ.y);
   if (bathymetryParams.water.w > 0.5) {
     let macroHeight = sampleBathymetryMacroHeight(worldXZ);
     height = height + (macroHeight - height) * bathymetryMacroBlend(worldXZ);
