@@ -46,10 +46,36 @@ import { TerrainBiome } from "../src/world";
  */
 
 /**
- * Every scattered population that can stand on the ground inside a building.
- * Ground cover is deliberately absent: it is GPU-placed through
+ * Every scattered population of INSTANCES that can stand inside a building.
+ *
+ * **THE REASON GIVEN HERE FOR OMITTING GROUND COVER WAS FALSE AND IS STRUCK.**
+ *
+ * ~~Ground cover is deliberately absent: it is GPU-placed through
  * `GroundCoverSystem` on a path this generator never touches, so asserting it
- * here would be asserting nothing.
+ * here would be asserting nothing.~~
+ *
+ * `buildGroundCoverGrid` is called from `generateDetailCell` in this very
+ * file's subject, so the card path is CPU-side and squarely reachable from
+ * here. **A false justification for an omission is worse than the omission,
+ * because it tells the next reader not to look.**
+ *
+ * Ground cover is still absent, for a reason that survives measurement:
+ * **it is a COVERAGE FIELD, not a population of instances, and the field is
+ * too coarse to carry a building-shaped exclusion.** `GROUND_COVER_GRID = 8`
+ * puts one node every 32 m, while a hangar footprint is 34 x 46 m — about
+ * 1.1 x 1.4 nodes. Zeroing a node to clear a building would strip a 32 m
+ * square. That is the same error as gating stems at the density field's 32 m
+ * block centres, which took stems inside hangars from 73 to **3** rather than
+ * to 0; the gate has to act where a blade is placed, which for the blade path
+ * is in the shader.
+ *
+ * Measured 2026-09-02 across four worlds: **every hard-zero node carries
+ * coverage**, mean ~0.40 against ~0.48 outside, and none of the three paths
+ * (`buildGroundCoverGrid`, and `GroundCoverSystem`'s two sites) consults the
+ * structure term — they thin by `airportInfluence` at 0.6, 0.6 and 0.35 and
+ * never exclude. **Whether that is visible is a separate question**: the
+ * airfield cap holds ground cover to ~0.15 m, so a hangar floor may occlude it
+ * entirely. Unowned; do not write a gate for it before someone photographs it.
  */
 const POPULATIONS = ["trees", "shrubs", "clutter", "rocks"] as const;
 type Population = (typeof POPULATIONS)[number];
