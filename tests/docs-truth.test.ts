@@ -41,7 +41,7 @@ import { readSource } from "./support/sourceText";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PERFORMANCE_MD = readSource(join(REPO_ROOT, "docs/PERFORMANCE.md"));
-const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "RENDERING_PLAN.md"));
+const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "docs/plans/RENDERING_PLAN.md"));
 const BASELINE_DIR = join(REPO_ROOT, "tests/perf/baseline");
 
 /** The (quality, mode) pair resolving to each tier — `QUALITY_WEIGHT + MODE_WEIGHT`. */

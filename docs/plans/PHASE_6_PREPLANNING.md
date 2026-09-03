@@ -24,7 +24,7 @@ Phase-5 rows in particular).
 ## 0. Three facts that shape the whole phase
 
 1. **The shipped world is analytic.** `DEFAULT_WORLD_EVOLUTION = "analytic"`
-   ([`src/world/world.ts:30`](src/world/world.ts:30), G0-1, commit `26ee76e`),
+   ([`src/world/world.ts:30`](../../src/world/world.ts:30), G0-1, commit `26ee76e`),
    and both `FlightGame.tsx:112` and `tests/perf/perf-capture.test.ts:240` take
    that default. Phase 6's water and ecology items sit on substrates that behave
    *differently in the two modes*: page hydrology channels, the channel graph and
@@ -44,10 +44,10 @@ Phase-5 rows in particular).
 ### `6-1` `river-flow-advection` (4.0 d) — **PARTIALLY PREEMPTED**
 
 **Already live (fix-pack W1–W3, 2026-08-25).**
-`WATER_CAPILLARY_DETAIL_WGSL` ([`WaterShaders.ts:247`](src/render/webgpu/water/WaterShaders.ts:247))
+`WATER_CAPILLARY_DETAIL_WGSL` ([`WaterShaders.ts:247`](../../src/render/webgpu/water/WaterShaders.ts:247))
 is a **shared** include composed by both the ocean
-([`SpectralOceanSystem.ts:422`](src/render/webgpu/water/SpectralOceanSystem.ts:422))
-and inland water ([`HydrologySystem.ts:198`](src/render/webgpu/water/HydrologySystem.ts:198)).
+([`SpectralOceanSystem.ts:422`](../../src/render/webgpu/water/SpectralOceanSystem.ts:422))
+and inland water ([`HydrologySystem.ts:198`](../../src/render/webgpu/water/HydrologySystem.ts:198)).
 It supplies two wind-advected, world-locked ripple octaves (~0.42 m and ~0.16 m)
 with per-octave pixel-footprint Nyquist fades, **plus the analytically-integrated
 unresolved mean-square slope of everything below them**, folded into GGX
@@ -67,11 +67,11 @@ channel flow, and it is not scale-decomposed the way the advection design is.
 
 | Plan-row warning | State on this tree |
 |---|---|
-| "raising the 5-cascade cap (`OceanConfig.ts:163-165`)" | Still exactly 5: [`OceanConfig.ts:163`](src/render/webgpu/nature/OceanConfig.ts:163) throws above five cascades. |
-| "`resolution` is a **single global config field**" | Confirmed — [`OceanConfig.ts:23`](src/render/webgpu/nature/OceanConfig.ts:23), applied globally at [`:109-118`](src/render/webgpu/nature/OceanConfig.ts:109). A per-cascade `N` is still a schema change. |
-| "the Nyquist assertion will throw at 0.05 m" | Confirmed — [`OceanConfig.ts:178-182`](src/render/webgpu/nature/OceanConfig.ts:178). |
-| "`assertAscending` forces the new cascade to index 0, renumbering every existing cascade" | Confirmed — [`OceanConfig.ts:166`](src/render/webgpu/nature/OceanConfig.ts:166) on patch lengths. **And it is worse than the row says:** `resolveSpectralOceanConfig` selects a tier's cascades by `cascades.slice(0, profile.oceanCascades)` ([`SpectralOceanSystem.ts:279`](src/render/webgpu/water/SpectralOceanSystem.ts:279)), so inserting at index 0 changes which bands *every* tier gets, not just the numbering. |
-| "audit the unrolled `sampleNormalFoam` loop" | **That symbol no longer exists.** The unrolled path is now the vertex displacement chain at [`SpectralOceanSystem.ts:341-344`](src/render/webgpu/water/SpectralOceanSystem.ts:341), hard-wired to **five** slots by uniform shape (`cascadeFadeRadii0: vec4f` + `cascadeFadeRadius4: f32`, `patchLengths0` + `patchLength4`, `displacement0..4`). A sixth cascade needs new uniforms and a new texture binding, not just a raised cap. |
+| "raising the 5-cascade cap (`OceanConfig.ts:163-165`)" | Still exactly 5: [`OceanConfig.ts:163`](../../src/render/webgpu/nature/OceanConfig.ts:163) throws above five cascades. |
+| "`resolution` is a **single global config field**" | Confirmed — [`OceanConfig.ts:23`](../../src/render/webgpu/nature/OceanConfig.ts:23), applied globally at [`:109-118`](../../src/render/webgpu/nature/OceanConfig.ts:109). A per-cascade `N` is still a schema change. |
+| "the Nyquist assertion will throw at 0.05 m" | Confirmed — [`OceanConfig.ts:178-182`](../../src/render/webgpu/nature/OceanConfig.ts:178). |
+| "`assertAscending` forces the new cascade to index 0, renumbering every existing cascade" | Confirmed — [`OceanConfig.ts:166`](../../src/render/webgpu/nature/OceanConfig.ts:166) on patch lengths. **And it is worse than the row says:** `resolveSpectralOceanConfig` selects a tier's cascades by `cascades.slice(0, profile.oceanCascades)` ([`SpectralOceanSystem.ts:279`](../../src/render/webgpu/water/SpectralOceanSystem.ts:279)), so inserting at index 0 changes which bands *every* tier gets, not just the numbering. |
+| "audit the unrolled `sampleNormalFoam` loop" | **That symbol no longer exists.** The unrolled path is now the vertex displacement chain at [`SpectralOceanSystem.ts:341-344`](../../src/render/webgpu/water/SpectralOceanSystem.ts:341), hard-wired to **five** slots by uniform shape (`cascadeFadeRadii0: vec4f` + `cascadeFadeRadius4: f32`, `patchLengths0` + `patchLength4`, `displacement0..4`). A sixth cascade needs new uniforms and a new texture binding, not just a raised cap. |
 
 **Stale table row to fix in `6-12`:** `RENDERING_PLAN.md` §5.3 lists Ultra as
 "6 @ 256 (+ capillary)", which the 5-cascade cap makes **unreachable**;
@@ -84,13 +84,13 @@ sampled bathymetry) was **deferred** — `VISUAL_FIXPACK_PLAN.md` deviation D-5:
 "the capillary band + roughness tail deliver the near-field realism the report
 asked for; foam is additive polish." The ocean's only foam is the `2-8`
 Jacobian-driven breaking term with history decay
-([`OceanShaders.ts:366-368`](src/render/webgpu/nature/OceanShaders.ts:366)) — a
+([`OceanShaders.ts:366-368`](../../src/render/webgpu/nature/OceanShaders.ts:366)) — a
 crest mechanism, not a shore mechanism. There is no depth-driven breaking band,
 no Hunt run-up, no shore-normal streaking, no wet-sand persistence.
 
 Inland-side: **partially live.** `HydrologySystem` already computes a
 `shoreFoam` from the water-info depth channel and a `rapidFoam` term
-([`HydrologySystem.ts:327-334`](src/render/webgpu/water/HydrologySystem.ts:327)).
+([`HydrologySystem.ts:327-334`](../../src/render/webgpu/water/HydrologySystem.ts:327)).
 Treat that as the pattern to generalise, not as the item.
 
 Substrate is ready either way: the depth field `6-2` needs is the same
@@ -126,7 +126,7 @@ alongside slope and foam. That is a genuinely cheap start.
 
 **Already live.** `TerrainSurfacePlugin` carries the full `3-7` wetness response
 in the fragment path
-([`TerrainSurfacePlugin.ts:1792-1811`](src/render/webgpu/terrain/TerrainSurfacePlugin.ts:1792)),
+([`TerrainSurfacePlugin.ts:1792-1811`](../../src/render/webgpu/terrain/TerrainSurfacePlugin.ts:1792)),
 and it is **literally the plan row's two instructions**:
 
 ```wgsl
@@ -138,8 +138,8 @@ The **submerged** half is live and load-bearing: `terrainSubmerged` is derived
 from sea level carried in `terrainSurfaceWetness.y`, and a further silt/biofilm
 tint rides on top of it — the comment records that without it "the first capture
 after this plugin landed turned every lake grey". The **driven** half is a
-constant: `private wetness = 0` ([`:1931`](src/render/webgpu/terrain/TerrainSurfacePlugin.ts:1931)),
-with the setter at [`:2074-2077`](src/render/webgpu/terrain/TerrainSurfacePlugin.ts:2074)
+constant: `private wetness = 0` ([`:1931`](../../src/render/webgpu/terrain/TerrainSurfacePlugin.ts:1931)),
+with the setter at [`:2074-2077`](../../src/render/webgpu/terrain/TerrainSurfacePlugin.ts:2074)
 annotated "`3-7`'s wetness input; `6-5` supplies the field".
 
 **So `6-5` is not a shader item at all.** Its entire open half is the **water-side
@@ -160,7 +160,7 @@ assigns it here explicitly.
 | Channel | Producer | Named consumer today |
 |---|---|---|
 | Flow accumulation / TWI | `TerrainPageHydrology` (`r16float`) | **Live** — the splat classifier (`LandCoverClassifier.ts:94-96`, WGSL at `:350-357`) |
-| Signed shore distance | `TerrainPageHydrology` (`r16sint`) | **Live** — `riparianVegetationFactors` in [`densityField.ts:186-197`](src/render/webgpu/detail/densityField.ts:186), mirrored in [`densityFieldWgsl.ts:126-128`](src/render/webgpu/detail/densityFieldWgsl.ts:126) |
+| Signed shore distance | `TerrainPageHydrology` (`r16sint`) | **Live** — `riparianVegetationFactors` in [`densityField.ts:186-197`](../../src/render/webgpu/detail/densityField.ts:186), mirrored in [`densityFieldWgsl.ts:126-128`](../../src/render/webgpu/detail/densityFieldWgsl.ts:126) |
 | **Lake depth** (`r16float`) | `TerrainPageHydrology` | **NONE.** Grepped: the name appears only in payload/validation/atlas plumbing — no shader, no detail, no water consumer |
 | **Soil depth** (`r8unorm`) | `TerrainPageHydrology` | **NONE**, same |
 
@@ -187,7 +187,7 @@ ships dark by default. See §3 Q1.
 
 No scree or talus placement anywhere in `src/render/webgpu/`. The word `talus`
 appears only in the analytic height kernel
-([`geology.ts:124-132`](src/world/geology.ts:124), a mean-removed ridged term)
+([`geology.ts:124-132`](../../src/world/geology.ts:124), a mean-removed ridged term)
 and in the erosion operator's repose pass — both *shape*, not *placement*.
 
 Its dependency `2-15` is fully live: displaced-icosphere rocks (320 tris) with
@@ -220,7 +220,7 @@ now the vegetation workload changed twice:
   impostor dither fade" claim was not written against.
 - **The rendered-density law's draw ceilings moved by an order of magnitude.**
   `VEGETATION_DRAW_CEILING` is now `[50, 58, 450, 600]`
-  ([`renderedDensity.ts:366-377`](src/render/webgpu/detail/renderedDensity.ts:366)) —
+  ([`renderedDensity.ts:366-377`](../../src/render/webgpu/detail/renderedDensity.ts:366)) —
   the 60 fps family path submits three one-variant prototypes rather than seven
   species × several variants, modelled at 41.1 draws at tier 0 and 47.8 at tier 1.
   `docs/PERFORMANCE.md`'s §Vegetation section still quotes the `4.5-C1`-era
@@ -239,7 +239,7 @@ from the current ceilings and the current 17-shot measured row, not from the
 
 Scatter is still a **CPU Worker** path: `src/workers/detail.worker.ts` +
 `detailProtocol.ts`, driven by `WorldDetailRuntime` with an `inline | worker |
-blocked` build source ([`WorldDetailRuntime.ts:223`](src/render/webgpu/detail/WorldDetailRuntime.ts:223))
+blocked` build source ([`WorldDetailRuntime.ts:223`](../../src/render/webgpu/detail/WorldDetailRuntime.ts:223))
 — and note `docs/PERFORMANCE.md` records that the GitHub-hosted runner's detail
 Worker **does not come up at all**, so every chunk is synthesised inline there.
 That is a real portability constraint on any design that assumes the worker.
@@ -254,7 +254,7 @@ a fidelity row moving in the same commit.
 
 Delivered as **`4-0b`**, per `PHASE_4_EXECUTION_PLAN.md` (and
 `RENDERING_PLAN.md:343`, which records the move). The artifact is
-[`src/render/webgpu/core/ComputeBudget.ts`](src/render/webgpu/core/ComputeBudget.ts),
+[`src/render/webgpu/core/ComputeBudget.ts`](../../src/render/webgpu/core/ComputeBudget.ts),
 listed in **ARCHITECTURE.md's ownership table as "Shared amortised-compute meter
 … live (`4-0b`, = `6-10` moved)"**, with the mechanism recorded in the
 **`4.5-B2` decision-log row** (measured per-dispatch costs, the ~1.9 ms/page

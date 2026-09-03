@@ -4,7 +4,7 @@
 > decisions, and deviations; do not read its intermediate “open” rows as current status.
 > The completed implementation, current verification and capture state, clean-reference
 > rerun, user-only N-1/N-3 verdicts, and parked scope are summarized in
-> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](../status/PROJECT_CLOSEOUT_2026_09_02.md).
 
 **Created:** 2026-08-31. **Branch:** to be cut from Phase 6's close commit (see §1).
 **Verified against:** the `jazonshou/Phase-6-Implementation` working tree at `98d87c4` plus
@@ -31,8 +31,8 @@ log, per house rule.
 
 Also standing: **Gate 7A shipped in Phase 2.5** (`46bc24a`) — 7-1 moon, 7-2 scotopic vision,
 7-3 star field are done; Phase 7 is 7B/7C/7D only. Gate 7A's own deviations hand two
-decisions forward by name: the **pre-exposure** decision to 7-4 ([AtmosphereSystem.ts:55-77](src/render/webgpu/atmosphere/AtmosphereSystem.ts),
-[docs/PERFORMANCE.md:387-389](docs/PERFORMANCE.md)) and the **moonlight-shadow trade** to
+decisions forward by name: the **pre-exposure** decision to 7-4 ([AtmosphereSystem.ts:55-77](../../src/render/webgpu/atmosphere/AtmosphereSystem.ts),
+[docs/PERFORMANCE.md:387-389](../PERFORMANCE.md)) and the **moonlight-shadow trade** to
 7-9 (`RENDERING_PLAN.md:466-470`). Both are honoured here.
 
 ---
@@ -61,10 +61,10 @@ for Phase 7's own night work, and it is stated twice on purpose.
 
 | # | Condition | Verification | Owner today |
 |---|---|---|---|
-| E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented — **LANDED in `1e526f9`** as `tests/perf/cold-start.test.ts` (158 lines), and it honours the timeout-OR-error requirement rather than only the easy half: it captures both `console.error` and Babylon's `Logger.Error`, asserts empty, **and** races a timeout whose rejection message records that the guarded class produces no console error at all. What remains for E-1 is the sweep, QR-1 and memory truth; 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d). **But nothing runs the cold-start test**: `tests/perf/**` is excluded from both `npm test` and `npm run verify` ([vitest.config.ts:15](vitest.config.ts)), `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, and `grep -rn cold-start package.json .github/workflows/*.yml` is empty. This row is therefore unmet for a **wiring** reason rather than a construction one — a smaller job than originally priced, but not a discharged one. **A correct instrument nobody invokes is the same defect as a wrong one**, and this phase has now hit that shape three times: the sampler list nothing compared against a shader, Gate W's suite that never rendered its own product, and this | tier table asserted from profile data in CI; **the cold-start test actually invoked by a workflow or an npm script**, not merely present; the sampler list derived, not hand-maintained | `SWE III` (was `flight-simulator-d7`) |
-| E-2 | **6-12 — SUBSTANTIALLY CLOSED in `6216a80`, one survivor. Re-checked against the tree 2026-08-31 late, not against the commit message.** `tests/perf/baseline/report.json` is **deleted** (the decide-once resolved to delete, which was the right call — the harness never read it and a committed fossil is how the 17-shot number kept being quoted). `docs/PERFORMANCE.md`'s two surviving "seventeen" mentions at `:513` and `:591` are **legitimate historical quotation**, not stale claims — they describe what a past promotion asserted. **The one genuine survivor was [vitest.perf.config.ts:9](vitest.perf.config.ts), whose docblock restated a canonical shot count as a word rather than pointing at `PERF_CAPTURE_SHOTS` — a live description of current behaviour that had gone stale. FIXED, and the `docs-truth` guard that now derives the count from the list caught a second instance in this very file on its first run.** It sits in a file 6-12's recorded list never named, which is exactly how a documentation pass that works the list rather than the tree leaves something behind. *(Original row, retained for what it verified:)* documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
+| E-1 | **6-11 closed** — four-tier × three-viewport sweep archived; QR-1 settled with a decision-log row (`vegetationCastsShadows` still carries 4.5-C1's `false/false/true/true` at [QualityProfile.ts:312,399,468,519](../../src/render/webgpu/core/QualityProfile.ts) and `grep QR-1 ARCHITECTURE.md` is empty); cold-start deadlines instrumented — **LANDED in `1e526f9`** as `tests/perf/cold-start.test.ts` (158 lines), and it honours the timeout-OR-error requirement rather than only the easy half: it captures both `console.error` and Babylon's `Logger.Error`, asserts empty, **and** races a timeout whose rejection message records that the guarded class produces no console error at all. What remains for E-1 is the sweep, QR-1 and memory truth; 6-11.4 memory reconciliation done; **and 6-11 item 4** — `TERRAIN_SAMPLED_BINDINGS` derived from `effect.fragmentSourceCode` and pinned against that derivation, added 2026-08-31 after this plan's recon found the list stale in both directions (see 7-0-d). **But nothing runs the cold-start test**: `tests/perf/**` is excluded from both `npm test` and `npm run verify` ([vitest.config.ts:15](../../vitest.config.ts)), `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`, and `grep -rn cold-start package.json .github/workflows/*.yml` is empty. This row is therefore unmet for a **wiring** reason rather than a construction one — a smaller job than originally priced, but not a discharged one. **A correct instrument nobody invokes is the same defect as a wrong one**, and this phase has now hit that shape three times: the sampler list nothing compared against a shader, Gate W's suite that never rendered its own product, and this | tier table asserted from profile data in CI; **the cold-start test actually invoked by a workflow or an npm script**, not merely present; the sampler list derived, not hand-maintained | `SWE III` (was `flight-simulator-d7`) |
+| E-2 | **6-12 — SUBSTANTIALLY CLOSED in `6216a80`, one survivor. Re-checked against the tree 2026-08-31 late, not against the commit message.** `tests/perf/baseline/report.json` is **deleted** (the decide-once resolved to delete, which was the right call — the harness never read it and a committed fossil is how the 17-shot number kept being quoted). `docs/PERFORMANCE.md`'s two surviving "seventeen" mentions at `:513` and `:591` are **legitimate historical quotation**, not stale claims — they describe what a past promotion asserted. **The one genuine survivor was [vitest.perf.config.ts:9](../../vitest.perf.config.ts), whose docblock restated a canonical shot count as a word rather than pointing at `PERF_CAPTURE_SHOTS` — a live description of current behaviour that had gone stale. FIXED, and the `docs-truth` guard that now derives the count from the list caught a second instance in this very file on its first run.** It sits in a file 6-12's recorded list never named, which is exactly how a documentation pass that works the list rather than the tree leaves something behind. *(Original row, retained for what it verified:)* documentation truth. Its recorded list is itself incomplete: `docs/PERFORMANCE.md:36,47-49,105-113` still describe erosion as CPU-only after Gate W shipped the GPU producer, and `RENDERING_PLAN.md` §5.3 is the staler of the two documents (msaa Balanced published 4 / shipped 1; CDLOD node budget published 160/240/320/448 / shipped 224/320/448/640; ocean published 3@128,4@256,5@256,6@256 / shipped 128/3,128/4,256/5,256/5). `ARCHITECTURE.md:67` still carries a duplicate LandCoverClassifier row marked "planned 4-6", `:98-99` still asserts the default eroded world renders completed pages, `:308` still says impostors neither cast nor receive shadows | doc-truth tests fail `npm test` on drift | `flight-simulator-d7` |
 | E-3 | **R1+R2+R3 — PROMOTED, verified 2026-08-31 late.** The baseline moved in `6216a80` (PNG mtimes Aug 31 11:57, previously Aug 28), 24 PNGs tracked, `report.json` removed. **This row is dischargeable.** *(Original row, retained for what it verified:)* promoted as one reviewed pass. The committed baseline has not moved since 2026-08-28 (`6a46742`); the post-D-19 candidate exists on disk only. `tests/perf/baseline/report.json` is still a 17-shot fossil against 24 tracked PNGs and nothing reads it — 6-12 owes a decide-once on recommit-or-delete | `tests/perf/baseline/` mtimes move; 24 shots in the promoted report | `flight-simulator-d7` |
-| ~~E-4~~ | **STRUCK 2026-08-31 — shelved with the eroded world, not discharged.** This row required D-7's canonical-split fix and D-9's bounds re-tightening. Both exist only to make the *eroded* page producer's seams sound, and both were entry conditions solely because they blocked §8's re-default. §8 has resolved NO, so **they block nothing in Phase 7** and requiring them would block this phase on work that has been deliberately shelved. **Their state is recorded, not erased**, for whoever resumes the eroded path: `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](src/render/webgpu/terrain/TerrainPageErosionGpu.ts), no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`, and D-9's loosening is therefore still outliving its cause — which is exactly the condition D-9 warned becomes permission if left | n/a — struck | shelved with the eroded path |
+| ~~E-4~~ | **STRUCK 2026-08-31 — shelved with the eroded world, not discharged.** This row required D-7's canonical-split fix and D-9's bounds re-tightening. Both exist only to make the *eroded* page producer's seams sound, and both were entry conditions solely because they blocked §8's re-default. §8 has resolved NO, so **they block nothing in Phase 7** and requiring them would block this phase on work that has been deliberately shelved. **Their state is recorded, not erased**, for whoever resumes the eroded path: `TERRAIN_PAGE_EROSION_GPU_SEAM_CRITERIA` still carries the loosened `worstAbsoluteToleranceMeters: 0.06` at [TerrainPageErosionGpu.ts:342-344](../../src/render/webgpu/terrain/TerrainPageErosionGpu.ts), no `canonicalBlock`/`worldBlock` symbol exists in `TerrainKernel.ts` or `TerrainPageErosionGpu.ts`, and D-9's loosening is therefore still outliving its cause — which is exactly the condition D-9 warned becomes permission if left | n/a — struck | shelved with the eroded path |
 | E-5 | **The horizon-shadow work has landed or been withdrawn.** Status per its own session: **implemented and verified, pending a capture pin and a merge slot** — not landed, not speculative. Worktree `nifty-williamson-2aca66`, branch `claude/nifty-williamson-2aca66`, uncommitted; Node 123 files / 1163 passed, GPU 42 files / 93 passed, typecheck and lint clean. The open item is sequencing (d7 wants it as its own churn point after the R1+R2+R3 promotion) plus an owed §2.3 same-host A/B pin on a quarantined idle host | merged at its sanctioned churn point, with its A/B pin recorded | `nifty-williamson-2aca66` + d7 |
 
 **Gate F is discharged by events, not by flying it.** The three named flights (F-1 10,000 ft
@@ -103,7 +103,7 @@ tier row so 6-11's sweep may promote it. **Nothing of E-5's collides with Phase 
 The user goal this phase must not damage: at Phase 6's last measured candidate, tier 1
 delivers **min 118.75 wall fps, worst p95 10.2 ms, zero hitches, worst single frame 17.3 ms
 over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 495 MiB pin**
-— **2.7 MiB of real headroom** ([scripts/perf-capture.mts:102](scripts/perf-capture.mts);
+— **2.7 MiB of real headroom** ([scripts/perf-capture.mts:102](../../scripts/perf-capture.mts);
 `PHASE_6_EXECUTION_PLAN.md:253-255`). The gating *estimate* reads ~380.7 MiB against a
 480 MiB tier-1 ceiling and is therefore ~112 MiB low; **the estimate is not the instrument**.
 
@@ -159,7 +159,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
        is model-derived, not measured.** It is summed from the declared `FRAME_BUDGET_MS`
        table, and that table's vegetation row rests on `VEGETATION_DRAW_COST_MS = 0.026`,
        whose own docblock at
-       [renderedDensity.ts:390-393](src/render/webgpu/detail/renderedDensity.ts) calls it a
+       [renderedDensity.ts:390-393](../../src/render/webgpu/detail/renderedDensity.ts) calls it a
        "**draw-submission-only model**" and says outright that "tier 0/1 being below one
        means submissions fit, not vegetation". It under-prices the measured caster cost by
        **~3.3×**. So the 0.05 ms is not a wall anyone has stood at. It is retained as a
@@ -172,15 +172,15 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    is asserted hard on **every host including CI**, outside the delivery row. Every
    `new StorageBuffer(` site must also call `registerGpuBufferBytes` — a source scan whose
    allowlist is `[]` and is asserted `toHaveLength(0)`
-   ([tests/render.gpu-buffer-inventory-policy.test.ts:28-79](tests/render.gpu-buffer-inventory-policy.test.ts)).
+   ([tests/render.gpu-buffer-inventory-policy.test.ts:28-79](../../tests/render.gpu-buffer-inventory-policy.test.ts)).
    **Per Q2, Phase 7's allocations are funded from the vegetation atlases — but see D-10:
    the funding mechanism stated at planning was a category error and is corrected here.**
    `foliageAtlasMiB: 6` and `impostorAtlasMiB: 9.33` are **inputs to the estimate model
-   only** ([PerformanceBudget.ts:334,339](src/render/webgpu/core/PerformanceBudget.ts));
+   only** ([PerformanceBudget.ts:334,339](../../src/render/webgpu/core/PerformanceBudget.ts));
    `grep -rn foliageAtlasMiB src --include="*.ts"` outside that file returns **nothing**, so
    no allocator reads them. Editing those numbers moves the estimate and frees **zero real
    bytes**. The real levers are the allocations themselves — `FOLIAGE_ATLAS_EDGE = 256`
-   ([FoliageAtlas.ts:33](src/render/webgpu/detail/FoliageAtlas.ts)) and its 18 layers, and
+   ([FoliageAtlas.ts:33](../../src/render/webgpu/detail/FoliageAtlas.ts)) and its 18 layers, and
    the impostor set's 7 species × 2 season buckets × 2 arrays × 64² tiles — and the row is
    then updated **to match the measurement**, which is what a row is for. **A fidelity trade
    is a visible loss of fidelity; if nothing looks worse, nothing was freed.**
@@ -194,7 +194,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    trade is re-sized against them rather than against the 495/492.3 pair quoted here.
    **Two accounting paths feed one enforced number.** `inventoryGpuMemoryMiB` walks
    `scene.textures` and mesh geometry *and then adds* `inventoriedGpuBufferBytes()`
-   ([FlightRenderer.ts](src/render/FlightRenderer.ts) (`private inventoryGpuMemoryMiB()`)). So a `RawTexture` that
+   ([FlightRenderer.ts](../../src/render/FlightRenderer.ts) (`private inventoryGpuMemoryMiB()`)). So a `RawTexture` that
    never touches `GpuBufferInventory` still counts against the capture pin exactly like an
    atlas — E-5's 0.125 MiB is precisely this case. Phase 7's photometric/IES textures and
    7-11's material arrays land in the texture walk, its cluster and light-point buffers in
@@ -206,7 +206,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    is simpler and safer than when this plan was drafted, and the Q2 trade is sized against a
    configuration that actually ships rather than hedged across two.
 5. **Draw ceilings are hard on every host.** `night` 160, `runway-on-approach` 169,
-   `approach-500ft` 158 ([scripts/perf-capture.mts:188-195](scripts/perf-capture.mts)).
+   `approach-500ft` 158 ([scripts/perf-capture.mts:188-195](../../scripts/perf-capture.mts)).
    **~200 light points must be one instanced draw — and per D-13 this is load-bearing for
    the GATE, not merely for the shot.** With draws established as the binding axis, that
    single instanced draw is what makes Gate 7B fit at all; it is not a tidiness target that
@@ -222,7 +222,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    row moving in the same commit.
 7. **The tier rule is absolute.** The `.tier`-reader grandfather list is
    `new Set<string>([])` and the regex is a bare `/\.tier\b/u` over comment-stripped
-   source ([tests/architecture.boundaries.test.ts:143-165](tests/architecture.boundaries.test.ts)).
+   source ([tests/architecture.boundaries.test.ts:143-165](../../tests/architecture.boundaries.test.ts)).
    Every per-tier light knob — cluster tiles, depth slices, clustered-light count,
    light-point count, night shadow policy — is a **`WebGpuQualityProfile` data field**.
 8. **Boundary tripwires.** Each artifact gets an `owners.ts` row **in the same commit**
@@ -234,7 +234,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    scan applies to every new WGSL string.
    **Write the owner-row notes AROUND the banned tokens — these guards match text, not
    code.** Verified: `collectSourceFiles` stores `withoutImportClauses(...)`
-   ([architecture.boundaries.test.ts:31-47](tests/architecture.boundaries.test.ts)), which
+   ([architecture.boundaries.test.ts:31-47](../../tests/architecture.boundaries.test.ts)), which
    strips comments and imports but **not string literals**, and both guards then test that
    string — assertion 117 against `/\bnew\s+ShadowDepthWrapper\b/u` (`:131`) and the tier
    rule against a bare `/\.tier\b/u` (`:155`). `owners.ts` is almost entirely string data,
@@ -247,7 +247,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
    owner row and its instruction to avoid those constructs **collide inside the same file**
    if followed literally, and this paragraph is the resolution. **Note the terrain→detail import rule**: a
    Phase 7 file under `terrain/` cannot import `mainRenderPassId` from
-   [indirectDrawCapability.ts:102-110](src/render/webgpu/detail/indirectDrawCapability.ts)
+   [indirectDrawCapability.ts:102-110](../../src/render/webgpu/detail/indirectDrawCapability.ts)
    — only `densityField`/`densityFieldWgsl` are permitted. If a lighting path needs it, the
    helper moves to `core/` with an owner row.
 9. **Measurement discipline** (house standing list): captures on an idle reference host
@@ -286,7 +286,7 @@ over 24 shots**, with **inventoried GPU memory 492.3 MiB against the enforced 49
 
 **The lighting engine is genuine greenfield.** The whole scene has **three** lights —
 `DirectionalLight("sun")`, `DirectionalLight("moon")`, `HemisphericLight("sky-ambient")`
-([AtmosphereSystem.ts:496,499,506](src/render/webgpu/atmosphere/AtmosphereSystem.ts)).
+([AtmosphereSystem.ts:496,499,506](../../src/render/webgpu/atmosphere/AtmosphereSystem.ts)).
 There is no `PointLight`, no `SpotLight`, no clustered anything in `src/`.
 
 **Babylon 9.21.2 does ship what 7-4/7-5 name** — `ClusteredLightContainer extends Light`
@@ -298,53 +298,53 @@ scene component, and a Light-independent `LoadIESData` parser. Pinned exactly at
 - `StarFieldSystem` is a working additive emissive billboard pass — quad soup, `ALPHA_ADD`,
   `disableDepthWrite`, pixel-sized in clip space, magnitude-driven Gaussian PSF whose
   **flux is held constant when the radius changes**
-  ([StarField.ts:213-260](src/render/webgpu/atmosphere/StarField.ts)). 7-5 clones this.
+  ([StarField.ts:213-260](../../src/render/webgpu/atmosphere/StarField.ts)). 7-5 clones this.
 - Point-source **atmospheric extinction** is already implemented and tested:
   `relativeAirMass` (Kasten–Young), `starIlluminanceLux`, `starVisibilityForSunElevation`
-  ([StarCatalogue.ts:523,539](src/render/webgpu/atmosphere/StarCatalogue.ts)).
+  ([StarCatalogue.ts:523,539](../../src/render/webgpu/atmosphere/StarCatalogue.ts)).
 - `AERIAL_PERSPECTIVE_WGSL` is a single owned artifact with five ShaderMaterial consumers
   and `applyAerialPerspectiveToShaderMaterial`
-  ([AerialPerspective.ts:265-499](src/render/webgpu/atmosphere/AerialPerspective.ts)).
+  ([AerialPerspective.ts:265-499](../../src/render/webgpu/atmosphere/AerialPerspective.ts)).
   `SharedReceiverRegistry`'s docblock names Phase 7's clustered lighting as **the fourth
   subclass it exists to prevent hand-rolling**
-  ([SharedReceiverRegistry.ts:14-20](src/render/webgpu/core/SharedReceiverRegistry.ts)).
+  ([SharedReceiverRegistry.ts:14-20](../../src/render/webgpu/core/SharedReceiverRegistry.ts)).
 - A **depth prepass already runs every frame** — a `DepthRenderer` storing camera-space Z
   in metres (0 = sky), in `scene.customRenderTargets`, exposed as `sceneDepth`, consumed by
-  the cloud raymarch ([AtmosphereGpuResources.ts:201-221](src/render/webgpu/atmosphere/AtmosphereGpuResources.ts)).
+  the cloud raymarch ([AtmosphereGpuResources.ts:201-221](../../src/render/webgpu/atmosphere/AtmosphereGpuResources.ts)).
   **Its render list is one mesh** — `mesh.name === "terrain-cdlod"` (`:59-63`). 7-6 extends
   and re-owns it rather than building one.
 - The **aircraft already carries lamps**: `port-navigation-light` (red, z = +5.43),
   `starboard-navigation-light` (green, z = −5.43), `landing-light` cylinder at
   (1.18, 0.22, 1.7), all emissive PBR with `castsShadow: false`, plus a **real cockpit
   interior** with five emissive gauges
-  ([createAircraft.ts:187-199,553-562,678-685](src/render/webgpu/aircraft/createAircraft.ts)).
+  ([createAircraft.ts:187-199,553-562,678-685](../../src/render/webgpu/aircraft/createAircraft.ts)).
 - The **threshold datum 7-7's PAPI needs already exists and is test-pinned**:
   `runwayCrownHeight` is exactly 0 on the centreline, so `getRunwayEndpoints`' y **is**
-  `runwayPlatformHeight(airport, 0)` ([RunwayEarthworks.ts:162-178](src/render/webgpu/terrain/RunwayEarthworks.ts);
-  pinned to 9 dp at [tests/world.test.ts:409](tests/world.test.ts) and
-  [tests/sim.terrain-authority.test.ts:98](tests/sim.terrain-authority.test.ts)). The
+  `runwayPlatformHeight(airport, 0)` ([RunwayEarthworks.ts:162-178](../../src/render/webgpu/terrain/RunwayEarthworks.ts);
+  pinned to 9 dp at [tests/world.test.ts:409](../../tests/world.test.ts) and
+  [tests/sim.terrain-authority.test.ts:98](../../tests/sim.terrain-authority.test.ts)). The
   platform is **level along its length**, so the geometric glideslope is exact, not
   ill-defined.
 - A **3° approach surface** is already in the site search:
   `permittedHeight = elevation + 18 + distance * 0.0524` swept to 4,200 m from both ends,
   with `corridorHalfWidth = 70 + distance * 0.095`
-  ([airportSite.ts:479-488](src/world/airportSite.ts)). The approach lighting system
+  ([airportSite.ts:479-488](../../src/world/airportSite.ts)). The approach lighting system
   follows that corridor rather than inventing one.
 - Threshold/TDZ/centreline paint datums exist in `runwayMarkingProfile`
   (`thresholdInsetMeters: 48`, `touchdownFromThresholdMeters: 300`,
-  `centrelineStripeMeters: 30`) ([RunwaySurface.ts:41-60](src/render/webgpu/terrain/RunwaySurface.ts)).
+  `centrelineStripeMeters: 30`) ([RunwaySurface.ts:41-60](../../src/render/webgpu/terrain/RunwaySurface.ts)).
 
 **Plan rows that are dead or wrong, corrected here:**
 - `AirportSystemOptions.includeHangars` **never existed**; `AirportSystem`'s constructor is
   three positional arguments and the file is 106 lines, with the hangar loop at `:50-73`
   and the `CreateBox` at `:53` (D-2).
 - **There is no apron, no taxiway, and no bloom.** 3-9 deleted the apron slab and recorded
-  a deviation declining to replace it ([RunwaySurface.ts:32-37](src/render/webgpu/terrain/RunwaySurface.ts));
+  a deviation declining to replace it ([RunwaySurface.ts:32-37](../../src/render/webgpu/terrain/RunwaySurface.ts));
   `rg -in taxiway src tests scripts` returns zero; the post chain is exactly
   ScotopicVision → ACES → FXAA with no `DefaultRenderingPipeline`, no glow layer
-  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). D-0 and D-4.
+  ([FlightRenderer.ts](../../src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). D-0 and D-4.
 - **There is no way to fly at night.** `TimeOfDayPreset` is `"dawn" | "day" | "golden"`
-  ([src/game/types.ts:18](src/game/types.ts)); the only route to night is dragging the
+  ([src/game/types.ts:18](../../src/game/types.ts)); the only route to night is dragging the
   solar-time slider. 7-0-c fixes this or the §8 flights cannot happen.
 - **Only one shot is below the horizon** (`night`, −21.5°) and the next lowest is
   `coast-10km-lowsun` at +6.5°. **The mesopic band — where `rodFraction ∈ (0,1)` and
@@ -366,12 +366,12 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   NOT sampler count** (see below), (d) whether the pipeline compiles at all.
   **(c) was specified wrongly in the first draft and would have produced a false pass.**
   `getClusteredLight` reads `lightDataTexture{X}` through **`textureLoad`**
-  ([clusteredLightingFunctions.js](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/clusteredLightingFunctions.js)
+  ([clusteredLightingFunctions.js](../../node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/clusteredLightingFunctions.js)
   — verified: zero occurrences of `Sampler` in that include), and a `texture_2d<f32>` read
   that way declares **no sampler at all**. So measuring samplers returns "no change", which
   reads as "it fits". The load is on **`maxSampledTexturesPerShaderStage`**. The project
   already draws exactly this distinction at
-  [TerrainSpineContract.ts:545-549](src/render/webgpu/terrain/TerrainSpineContract.ts), which
+  [TerrainSpineContract.ts:545-549](../../src/render/webgpu/terrain/TerrainSpineContract.ts), which
   is why that list records an empty vertex sampler set.
   **Prediction P1 — PREDICTED 14, DERIVED 10. Falsified, and the falsification is the
   point.** 6-11 item 4 landed: `TERRAIN_SAMPLED_BINDINGS.fragment` is now derived from
@@ -409,7 +409,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   directions** — it listed six PBR samplers the material never declares and omitted
   `environmentBrdfSampler` and the CSM `shadowTexture`, so the *set* was wrong, not merely
   the total, and "stale by four" understates it. Note also that
-  [Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`maxSampledTexturesPerShaderStage`'s comment)'s comment **still says 14**
+  [Capabilities.ts](../../src/render/webgpu/core/Capabilities.ts) (`maxSampledTexturesPerShaderStage`'s comment)'s comment **still says 14**
   and is now itself the stale artifact (routed to 6-12).
   *Recorded for whoever writes the next prediction:* **a falsified prediction did its job.**
   P1 was wrong and cost nothing, because what made it safe was refusing to trust a comment
@@ -420,7 +420,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
   **Consume the derived sampler count; do not build a second list.** Three numbers were in
   circulation for `TerrainSurfacePlugin`'s samplers — 11 from `getSamplers`, 8 module-scope
   `var terrain*Sampler` declarations, and a 15-entry `TERRAIN_SAMPLED_BINDINGS` audited list
-  ([TerrainSpineContract.ts:517-540](src/render/webgpu/terrain/TerrainSpineContract.ts)) —
+  ([TerrainSpineContract.ts:517-540](../../src/render/webgpu/terrain/TerrainSpineContract.ts)) —
   because the contract list is hand-maintained, checked only for uniqueness and against 16,
   and **stale in both directions at once**: it includes six PBR samplers the terrain material
   never binds, and omits the CSM shadow sampler, the cloud-shadow projection sampler **and
@@ -438,7 +438,7 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
 - **7-0-a Night capture shots, appended (0.75 d).** Shots are **appended, never inserted**
   — the driver pins `simulationTime = 500 + canonicalShotIndex * 120`, so an insertion
   shifts every later shot's phase and fails its SSIM with no renderer change
-  ([scripts/perf-capture.mts:567-570](scripts/perf-capture.mts)). Append:
+  ([scripts/perf-capture.mts:567-570](../../scripts/perf-capture.mts)). Append:
   `night-short-final` (the `runway-on-approach` pose — 61 m AGL, −900/0, 3° pitch down —
   at solar 23.75 h), `night-runway-ground` (2 m on the runway, hangars and tower framed),
   `dusk-mesopic` (sun ≈ −3°, the uncovered `rodFraction ∈ (0,1)` regime), and
@@ -494,8 +494,8 @@ Phase 6's instruments cannot see anything Phase 7 does. None of this is Phase 6 
 **7-4a Scene pre-exposure and highlight-preserving rods (2.0 d).** Per Q4, and per Gate
 7A's own hand-off. The problem, measured: `ScotopicVision`'s Naka–Rushton response
 `nits / (nits + sigma)` half-saturates at the **scene's key luminance**, not the physical
-adapted luminance ([ScotopicVision.ts:158-166](src/render/webgpu/atmosphere/ScotopicVision.ts);
-σ passed from [FlightRenderer.ts](src/render/FlightRenderer.ts) (`adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2`)). At the `night`
+adapted luminance ([ScotopicVision.ts:158-166](../../src/render/webgpu/atmosphere/ScotopicVision.ts);
+σ passed from [FlightRenderer.ts](../../src/render/FlightRenderer.ts) (`adaptedLuminanceCdM2: snapshot.sceneKeyLuminanceCdM2`)). At the `night`
 shot σ ≈ 4.21 cd/m² while physical adapted luminance is 8.0e-5, so `rodFraction = 1` and
 the rod image fully replaces the scene. With `displayGain = 0.16 / 4.698026 = 0.0340569`,
 scene-linear **0.01 / 1 / 1000** land at **0.032211 / 0.034037 / 0.034057** — five decades
@@ -517,7 +517,7 @@ asserted number in a test is the `Capabilities.ts` sampler comment one layer up.
 > Compression *worsens* as σ falls, because the Naka–Rushton response saturates toward 1 for
 > any `nits ≫ σ`. **The shipped scene-key choice is not the bug — it is the only reason any
 > range survives at all**, and the code says so deliberately at
-> [FlightRenderer.ts](src/render/FlightRenderer.ts) (the `sceneKeyLuminanceCdM2` hand-off, commented "σ is the SCENE's key") ("σ is the SCENE's key, not the
+> [FlightRenderer.ts](../../src/render/FlightRenderer.ts) (the `sceneKeyLuminanceCdM2` hand-off, commented "σ is the SCENE's key") ("σ is the SCENE's key, not the
 > physical adapted luminance"). The fix is the pre-exposure **and** the highlight-preserving
 > term, per Q4. This warning is written negatively on purpose: a plan that only describes a
 > defect leaves its most obvious remedy available and wrong — and this particular wrong fix
@@ -548,7 +548,7 @@ What lands: a scene pre-exposure so the fp16 beauty target carries the range; a
 highlight-preserving term so sources above σ survive the rod response; and an emissive-aware
 path so the rod blur does not smear point sources. **This reopens pinned constants** —
 `MAX_EXPOSURE = 4.698` and the assertion that it binds exactly at midnight
-([tests/render.webgpu-atmosphere-luts.test.ts:141-144](tests/render.webgpu-atmosphere-luts.test.ts)),
+([tests/render.webgpu-atmosphere-luts.test.ts:141-144](../../tests/render.webgpu-atmosphere-luts.test.ts)),
 `MOON_PEAK_LIGHT_INTENSITY = 0.055` and `STAR_ZERO_MAGNITUDE_SCENE_VALUE = 0.5`. Fix the
 source docstring while there: it claims ~4.66 against a pinned 4.698.
 *Pins:* the exposure ladder re-derived, not re-chosen, with its new derivation in the
@@ -569,25 +569,25 @@ which is a sub-item:
 - **`maxSimultaneousLights` defaults to 4 and nothing sets it.** The scene has 3 lights and
   the container **is a Light** — it takes slot 4, and `PrepareDefinesForLights` simply
   `break`s at the cap, so the next light silently stops contributing
-  ([pbrBaseMaterial.pure.js:577](node_modules/@babylonjs/core/Materials/PBR/pbrBaseMaterial.pure.js);
+  ([pbrBaseMaterial.pure.js:577](../../node_modules/@babylonjs/core/Materials/PBR/pbrBaseMaterial.pure.js);
   `materialHelper.functions.js:661-667`). Raise it explicitly and pin it.
 - **`GetSupportedSimultaneousLights` clamps to `maxUniformBuffersPerShaderStage - 4`**, and
   `REQUIRED_WEBGPU_LIMITS` declares no such limit
-  ([Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`REQUIRED_WEBGPU_LIMITS`)). Declare and probe it.
+  ([Capabilities.ts](../../src/render/webgpu/core/Capabilities.ts) (`REQUIRED_WEBGPU_LIMITS`)). Declare and probe it.
 - **`vViewDepth` is gated on `CLUSTLIGHT_BATCH > 0`, NOT on whether a material has a
-  clustered light** ([pbrFragmentExtraDeclaration.js:19-21](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/pbrFragmentExtraDeclaration.js)),
+  clustered light** ([pbrFragmentExtraDeclaration.js:19-21](../../node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/pbrFragmentExtraDeclaration.js)),
   so it lands on **every PBR material in the scene** — including the detail material, which
   E-5 leaves at 12 varyings in a project that has already hit 17 and had to disable impostor
   shadow receiving to get under the limit. 7-0-d measures this before anything is built.
 - **Receiver-side cost, stated exactly.** Per container in light slot `{X}` a receiving
   material gets `var lightDataTexture{X}: texture_2d<f32>` and
   `var<storage,read> tileMaskBuffer{X}: array<u32>`
-  ([lightUboDeclaration.js:36](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js))
+  ([lightUboDeclaration.js:36](../../node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js))
   plus `vViewDepth`. That is the whole of it — **one sampled texture, one storage buffer,
   one varying, zero samplers.**
 - **The storage-buffer question splits in two, and only half of it is open.**
   `maxStorageBuffersPerShaderStage: 8` **is** declared
-  ([Capabilities.ts](src/render/webgpu/core/Capabilities.ts) (`maxStorageBuffersPerShaderStage`)); the newer
+  ([Capabilities.ts](../../src/render/webgpu/core/Capabilities.ts) (`maxStorageBuffersPerShaderStage`)); the newer
   *per-stage-split* limit is not. Separately `maxUniformBuffersPerShaderStage` is genuinely
   absent, and that one bites: `GetSupportedSimultaneousLights` returns the requested count
   **untouched** when the cap reads null (`materialHelper.functions.js:447-456`), so on an
@@ -603,20 +603,20 @@ which is a sub-item:
 - **And there is a cliff behind it: CSM costs NINE inter-stage variables per shadow light**,
   not one — `vPositionFromLight{X}_0..3` (4) + `vDepthMetric{X}_0..3` (4) +
   `vPositionFromCamera{X}` (1)
-  ([lightUboDeclaration.js:40](node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js)).
+  ([lightUboDeclaration.js:40](../../node_modules/@babylonjs/core/ShadersWGSL/ShadersInclude/lightUboDeclaration.js)).
   That is almost certainly why impostor shadow receiving was disabled to get under the
   limit. **Consequence for 7-4b and for 7-9's night shadow policy: `vViewDepth`'s +1 is the
   cheap part.** The expensive interaction is clustered lighting *against* CSM on a material
   already at 12, and anything that re-enables shadow receiving on a material spends **9**.
 - **The per-slot UBO is 264 B and wants checking against the size cap, not the count.**
   Slices default to `DefaultDepthSlices = 16` alongside the 64×64 tiles
-  ([clusteredLightContainer.pure.js:184-185](node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)),
+  ([clusteredLightContainer.pure.js:184-185](../../node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)),
   and `vSliceData: vec2f` + `vSliceRanges: array<vec4f, CLUSTLIGHT_SLICES>` is **66 floats /
   264 B per light slot**.
 - **The terrain plugin attenuates the light *sum*.** `TerrainSurfacePlugin`'s
   BEFORE_FINALCOLORCOMPOSITION hook does `finalDiffuse *= terrainHorizonShadow *
   terrainCanopyDirect` where `finalDiffuse = diffuseBase` — the accumulator every light
-  writes into ([TerrainSurfacePlugin.ts:2783-2797](src/render/webgpu/terrain/TerrainSurfacePlugin.ts)).
+  writes into ([TerrainSurfacePlugin.ts:2783-2797](../../src/render/webgpu/terrain/TerrainSurfacePlugin.ts)).
   A runway edge light would be dimmed by *sun* occlusion. **7-4b must split the attenuation
   so it applies to the sun/moon contribution only** — there is no existing hook between the
   light loop and final composition, so this is real shader surgery across the five
@@ -626,7 +626,7 @@ which is a sub-item:
   they were.** Terrain multiplies an accumulator it did not contribute to. The detail plugin
   **adds its own hand-rolled key-light term into `finalDiffuse` first** and only then
   attenuates — verified: `finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb`
-  at [DetailInstanceMaterialPlugin.ts:1056 and :1106](src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts),
+  at [DetailInstanceMaterialPlugin.ts:1056 and :1106](../../src/render/webgpu/detail/DetailInstanceMaterialPlugin.ts),
   with `finalDiffuse *= impostorSunShadow` at `:1089`. So on detail the job is **not** "route
   the accumulator two ways" — it is that **plus reconciling a bespoke key-light path with
   the clustered one**, which is a design question (does the hand-rolled term become a
@@ -634,7 +634,7 @@ which is a sub-item:
   a plumbing one. Price the detail half accordingly; it is the harder of the two.
 - **`IsLightSupported` rejects any light with a shadow generator** while shadows are
   enabled, any non-default falloff, anything that is not a point/spot, and any spot with a
-  projection or IES texture ([clusteredLightContainer.pure.js:68-89](node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)).
+  projection or IES texture ([clusteredLightContainer.pure.js:68-89](../../node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js)).
   `addLight` merely warns and returns. **Recorded consequence: 7-8's landing lights are
   clustered and therefore cast no shadows.**
 - **Tile defaults are 64×64×16, not the plan's "start 16×8"**, and changing them at runtime
@@ -659,7 +659,7 @@ Instanced emissive billboards for the ~200 lights you *see*; they illuminate not
 constant-flux PSF. **One instanced draw** (§2.5).
 - **Photometry.** `LoadIESData` is a Light-free parser returning `{width, height: 1, data:
   Float32Array}` of candela values — upload as a `RawTexture` (the pattern already exists at
-  [SpectralOceanSystem.ts:993](src/render/webgpu/water/SpectralOceanSystem.ts)) and sample
+  [SpectralOceanSystem.ts:993](../../src/render/webgpu/water/SpectralOceanSystem.ts)) and sample
   it in the billboard shader. **But Babylon's IES is one-dimensional and rotationally
   symmetric** — 180 vertical-angle samples at horizontal angle 0, indexed as
   `acos(dot(-lightDirection, L)) / PI`. **A PAPI is azimuthally asymmetric with a sharp
@@ -668,14 +668,14 @@ constant-flux PSF. **One instanced draw** (§2.5).
   fixtures; the PAPI's law is authored analytically in 7-7.
 - **Extinction must be applied by hand.** `isOpaqueAerialReceiver` rejects alpha < 1 and any
   non-zero `transparencyMode`, so an additive billboard cannot join the aerial-perspective
-  registry ([AerialPerspective.ts:628-636](src/render/webgpu/atmosphere/AerialPerspective.ts)).
+  registry ([AerialPerspective.ts:628-636](../../src/render/webgpu/atmosphere/AerialPerspective.ts)).
   Use `applyAerialPerspectiveToShaderMaterial` — the owned include, not a second model —
   plus `relativeAirMass` for the near-horizon fixtures.
 - **Near→far transition** from a lit quad to a pure glow, or lights pop on approach.
 - **Bloom LANDED in `285eb2b`** (D-4 recorded it as absent; it is not any more). It sits
   between the scotopic pass and ACES, which required renegotiating MSAA and first-pass
   ownership with `ScotopicVisionPass` at slot 0
-  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). Gated to tier 1;
+  ([FlightRenderer.ts](../../src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)). Gated to tier 1;
   **tier 2+ recorded as unfunded** pending the cliff, because the `post` row it would
   have used was funded against tier 2's 0.05 ms of **modelled** slack (§2.3(g)) and that
   model under-predicts the machine by 1.74–4.42×.
@@ -749,7 +749,7 @@ green-centreline lights are cut** (D-0) — no taxiway geometry exists anywhere.
   **below** it. Place every one of them through `runwayPlatformHeight(airport, across)`.
 - **Budget 0.105 m for edge lights, not 0.35 m.** The camber is quadratic in
   `across / runwayPlatformHalfWidth` — **31 m** (`runwayWidth/2 + shoulderWidth`,
-  [RunwayEarthworks.ts:122-124,162-170](src/render/webgpu/terrain/RunwayEarthworks.ts)) —
+  [RunwayEarthworks.ts:122-124,162-170](../../src/render/webgpu/terrain/RunwayEarthworks.ts)) —
   **not** in the paved half-width of 17 m, so the paved edge takes only **(17/31)² = 30.1%**
   of it. Against `DEFAULT_AIRPORT`: centreline **0.000 m**, TDZ bar at 10.5 m **0.040 m**,
   PAPI at a 15 m offset **0.082 m**, paved edge **0.105 m**, edge + 3 m margin **0.146 m**,
@@ -789,7 +789,7 @@ as emissive geometry; this item makes them lights.
 - **Settle the body-axis contract first — the nav lights may be reversed.**
   `AircraftVisual`'s docblock and `configureRoot` metadata declare
   `bodyAxes: { forward: "+x", up: "+y", port: "+z" }` and place the **red**
-  `port-navigation-light` at z = +5.43. But [src/input/index.ts:36-49](src/input/index.ts)
+  `port-navigation-light` at z = +5.43. But [src/input/index.ts:36-49](../../src/input/index.ts)
   states the opposite about the rendered basis and **inverts keyboard roll to compensate**:
   *"the current aircraft mesh/chase basis presents body +Z as starboard even though the
   simulator's public comments describe it as port."* Geometrically, right-handed with
@@ -798,7 +798,7 @@ as emissive geometry; this item makes them lights.
   Settle it, fix whichever side is wrong, delete the local compensation, and record a
   decision-log row (D-6).
 - **Phase-anchor the timers to `simulationTime`**, per the propeller precedent
-  ([createAircraft.ts:594-600](src/render/webgpu/aircraft/createAircraft.ts)). **But note the
+  ([createAircraft.ts:594-600](../../src/render/webgpu/aircraft/createAircraft.ts)). **But note the
   capture trap:** shots are spaced exactly 120 s apart and both 45 fpm (0.75 Hz) and 60 fpm
   (1 Hz) divide 120 s into whole periods, so **every shot samples an identical phase**.
   Deterministic, but the capture set can never see the off phase — hence
@@ -831,16 +831,16 @@ and cull radii, night shadow policy.
   same shared operator with a different consumer. Recorded on that session's own advice.
 - **Both halves of every shortening trade.** `4-8b` shortened the shadow cascades to contact
   range on the explicit grounds that the horizon map covers the far field
-  ([QualityProfile.ts:284](src/render/webgpu/core/QualityProfile.ts)) — and only *terrain*
+  ([QualityProfile.ts:284](../../src/render/webgpu/core/QualityProfile.ts)) — and only *terrain*
   ever received the far-field half; impostors stayed unconditionally lit from
   `shadowDistance` out to `vegetationDistance` for two phases, invisibly, because each half
   was individually correct. **When 7-9 shortens or re-budgets anything on that reasoning,
   check that every representation of the affected thing got both halves.**
 - **Absorbs the PCSS residual with reason. Cite the DECISION, not the note about it.**
   The shipped decision is the assignment `this.shadows.filter = ShadowGenerator.FILTER_PCF`
-  in [AtmosphereSystem.ts](src/render/webgpu/atmosphere/AtmosphereSystem.ts); the
+  in [AtmosphereSystem.ts](../../src/render/webgpu/atmosphere/AtmosphereSystem.ts); the
   explanatory note lives separately in
-  [QualityProfile.ts](src/render/webgpu/core/QualityProfile.ts) (search `FILTER_PCF`, not a
+  [QualityProfile.ts](../../src/render/webgpu/core/QualityProfile.ts) (search `FILTER_PCF`, not a
   line number). **An earlier draft of this bullet cited only the note, and cited it by line
   — both wrong in the way this phase keeps finding.** The line has since drifted onto ocean
   ring counts, and the note was never the mechanism: `62cc447` records that the guard
@@ -851,7 +851,7 @@ and cull radii, night shadow policy.
   `1A-5` deleted the colour attachment `computeShadowWithCSMPCSS` needs. **7-9 declines it
   explicitly, against the assignment**, rather than leaving it open a fourth phase.
 - **The governor gains its first lighting rung.** The GPU ladder's nine rungs contain
-  nothing for lights ([AdaptiveGovernor.ts:174-197](src/render/webgpu/core/AdaptiveGovernor.ts)).
+  nothing for lights ([AdaptiveGovernor.ts:174-197](../../src/render/webgpu/core/AdaptiveGovernor.ts)).
   Add one — and remember the governor is **frozen under captures**, so the rung's real
   behaviour needs its own unpinned test, not a capture.
 *Pins:* per-tier night delivery reports archived (**acceptance reports, not standing
@@ -949,7 +949,7 @@ The roster is the artifact and cannot drift the way this list did: a part named 
   There is no way to violate it without changing what the skirt *is*.
 - **Register meshes correctly or they silently lose cloud shadows and aerial perspective.**
   `FlightRenderer` calls `airport.root.getChildMeshes(false)` **once at construction**
-  (in [FlightRenderer.ts](src/render/FlightRenderer.ts) — find the three call sites by
+  (in [FlightRenderer.ts](../../src/render/FlightRenderer.ts) — find the three call sites by
   symbol, **not by line**: `atmosphere.addShadowCaster(mesh, false)` over
   `airport.shadowCasters`, then `cloudShadowReceivers.registerMeshes(...)` and
   `aerialReceivers.registerMeshes(...)`, both taking `airport.root.getChildMeshes(false)`)
@@ -1072,12 +1072,12 @@ Wind-driven animated windsock, fuel tanks, perimeter fence, runway/taxiway signa
 emissive faces (doubling as 7-5 light points).
 - **The windsock needs a per-object wind sample.** The renderer's only wind consumer samples
   `sampleWind` at the **aircraft** and forwards four scalars to `detail.setWind`
-  ([FlightRenderer.ts](src/render/FlightRenderer.ts) (the single `sampleWind(` call, forwarding to `detail.setWind`)). Sample at the sock.
+  ([FlightRenderer.ts](../../src/render/FlightRenderer.ts) (the single `sampleWind(` call, forwarding to `detail.setWind`)). Sample at the sock.
 - **Validate on a crosswind seed — and the earlier claim here was overstated.** The mechanism
   is real: the runway's preferred heading and the prevailing wind are the *same* expression,
   `unitFloatFromHash(mixSeed(h, 301)) * 2π`, and the site scorer adds a 4× wind-axis penalty
-  (`preferredHeadingForRegion` at [airportSite.ts:963](src/world/airportSite.ts), `windPenalty`
-  at `:992`, wind at [world.ts:150-152](src/world/world.ts)). **But the two-seed split makes
+  (`preferredHeadingForRegion` at [airportSite.ts:963](../../src/world/airportSite.ts), `windPenalty`
+  at `:992`, wind at [world.ts:150-152](../../src/world/world.ts)). **But the two-seed split makes
   the correlation partial, not structural:** `preferredHeadingForRegion` is called with
   **`sourceHash`** (`airportSite.ts:1024`) while the wind uses **`seedHash`**, which the
   guaranteed-airport search *replaces* (`world.ts:135,145`). Verified here.
@@ -1106,8 +1106,8 @@ emissive faces (doubling as 7-5 light points).
   `createWorld("hangar-a")`, not `createWorld({ seed: "hangar-a" })`.
   **This is guidance, not a hazard — an earlier draft framed it as one and that was wrong,
   retracted here rather than quietly dropped.** The object form **cannot compile**:
-  `WorldSeed = string | number` ([types.ts:2](src/world/types.ts)), so it is a `TS2345`, and
-  `npm run typecheck` runs in CI on every PR ([ci.yml:49](.github/workflows/ci.yml)). Zero of
+  `WorldSeed = string | number` ([types.ts:2](../../src/world/types.ts)), so it is a `TS2345`, and
+  `npm run typecheck` runs in CI on every PR ([ci.yml:49](../../.github/workflows/ci.yml)). Zero of
   ~125 call sites use it, and the untyped entry point reads `searchParams.get("seed")`, which
   is `string | null`. **Verified here.**
   *Why the retraction is worth reading rather than skipping:* the measurement behind the
@@ -1119,7 +1119,7 @@ emissive faces (doubling as 7-5 light points).
   in order to run.**
   *The one detail worth keeping, because the mechanism is nastier than the reach:*
   `hashSeed` loops over `text.length` from the FNV offset basis `0x811c_9dc5`
-  ([seed.ts:38-42](src/world/seed.ts)), so a value with no `length` returns the basis
+  ([seed.ts:38-42](../../src/world/seed.ts)), so a value with no `length` returns the basis
   **untouched** — colliding not merely with other malformed seeds but with the hash of the
   **empty string**, which is itself a legal seed someone might choose deliberately. A
   `TypeError` in `normalizeSeed` now names that collision for the callers types do not bind:
@@ -1239,7 +1239,7 @@ shots hold their baselines exactly.
 
 **Assertion numbering: Phase 7 starts at 119.** Verified two ways — the highest id
 referenced anywhere in `src`, `tests`, `scripts`, `docs` or any `*.md` is **118**
-(`118a`/`118b` at [tests/gpu/shadow-depth-wrapper-reset-guard.test.ts:262,287](tests/gpu/shadow-depth-wrapper-reset-guard.test.ts)),
+(`118a`/`118b` at [tests/gpu/shadow-depth-wrapper-reset-guard.test.ts:262,287](../../tests/gpu/shadow-depth-wrapper-reset-guard.test.ts)),
 and Gate W plus Waves 1–3 allocated **no new global ids**. **Do not reuse the gaps** —
 94, 95, 99, 100, 101, 103 and 104 are allocated-but-unwritten from Phase 5's registry and
 still belong to their original items.
@@ -1419,10 +1419,10 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
 
 - **D-0 (at planning, Jason Q3):** **taxiway lighting, apron markings, tie-downs, GSE and
   apron floodlighting are re-scoped away.** Reason, verified: `AirportDefinition` carries
-  nine scalar fields and no taxiway or apron data ([src/world/types.ts:18-34](src/world/types.ts));
+  nine scalar fields and no taxiway or apron data ([src/world/types.ts:18-34](../../src/world/types.ts));
   `rg -in taxiway src tests scripts` returns zero hits; and 3-9 deleted the apron slab and
   recorded a deviation explicitly declining to replace it because the ground slopes
-  ([RunwaySurface.ts:32-37](src/render/webgpu/terrain/RunwaySurface.ts)). Building an apron
+  ([RunwaySurface.ts:32-37](../../src/render/webgpu/terrain/RunwaySurface.ts)). Building an apron
   means either extending the earthworks footprint — Class K, gated by assertion 63 and the
   on-adapter runway-earthworks parity test — or painting concrete onto a batter. Jason's
   scope is *runway, hangars, tower*. 7-7 −1.0 d, 7-13 −1.5 d, 7-14 re-pointed to the tower
@@ -1454,7 +1454,7 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   clustered lighting never touches.*
 - **D-4 (at planning):** **"bloom coupling" is not a coupling.** There is no bloom, no glow
   layer and no `DefaultRenderingPipeline` anywhere in the tree; the post chain is exactly
-  ScotopicVision → ACES → FXAA ([FlightRenderer.ts](src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)).
+  ScotopicVision → ACES → FXAA ([FlightRenderer.ts](../../src/render/FlightRenderer.ts) (find `new ScotopicVisionPass` and the two post-processes that follow it)).
   7-5 prices a new post-process, its MSAA/first-pass renegotiation with the scotopic pass at
   slot 0, and a `post` budget row against tier 2's 0.05 ms of **modelled** slack (§2.3(g)).
 - **D-5 (at planning, Jason Q4):** **the pre-exposure decision is taken, and it is the
@@ -1472,9 +1472,9 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
 - **D-6 (at planning):** **the aircraft body-axis contract is contested and the nav lights
   may be reversed.** `AircraftVisual`'s docblock and `configureRoot` metadata declare
   `port: "+z"` and the red `port-navigation-light` sits at z = +5.43
-  ([types.ts:19-24](src/render/webgpu/aircraft/types.ts),
-  [createAircraft.ts:553-562](src/render/webgpu/aircraft/createAircraft.ts)), while
-  [src/input/index.ts:36-49](src/input/index.ts) states that the rendered basis presents
+  ([types.ts:19-24](../../src/render/webgpu/aircraft/types.ts),
+  [createAircraft.ts:553-562](../../src/render/webgpu/aircraft/createAircraft.ts)), while
+  [src/input/index.ts:36-49](../../src/input/index.ts) states that the rendered basis presents
   body +Z as **starboard** and inverts keyboard roll to compensate, keeping the compensation
   local "until the complete body-axis contract can be settled". In a right-handed frame with
   forward = +X and up = +Y, starboard = forward × up = **+Z** — which agrees with the input
@@ -1604,7 +1604,7 @@ Every p95/p999 ceiling in the tree was pinned under a verdict of that kind.
   this codebase has never conflated them. A `lighting/` directory that fails to contain
   every lighting-owned artifact is therefore normal, not a defect.
   *The hazard that makes this worth a ruling rather than a guess, verified:*
-  [tests/architecture.boundaries.test.ts:67,81](tests/architecture.boundaries.test.ts)
+  [tests/architecture.boundaries.test.ts:67,81](../../tests/architecture.boundaries.test.ts)
   filters `definitionSites` to those that exist and only fails when *none* exist **and the
   row is not marked planned** — so **a `planned` row whose path never materialises is
   exempt forever, silently.** Accordingly: **every Phase 7 owner row's path must
@@ -1774,10 +1774,10 @@ decision log, per house rule.)*
   Measured by executing the shipping constructor: `new AirfieldLightingSystem(DEFAULT_AIRPORT)`
   yields **402 fixtures, every one carrying `beamCosineCutoff = 0`** — a 90° half-angle,
   which is a hemisphere, not a cone
-  ([AirfieldLighting.ts](src/render/webgpu/lighting/AirfieldLighting.ts)). 7-6 names two
+  ([AirfieldLighting.ts](../../src/render/webgpu/lighting/AirfieldLighting.ts)). 7-6 names two
   emitter sources and both are absent: **landing lights** are a `landing-light` *mesh* with
   an emissive material and no direction, intensity or cutoff
-  ([createAircraft.ts](src/render/webgpu/aircraft/createAircraft.ts)), their emitter data
+  ([createAircraft.ts](../../src/render/webgpu/aircraft/createAircraft.ts)), their emitter data
   belonging to `AircraftLightingSystem` (`plannedBy: "7-8"`, does not exist); and **floods**
   were re-scoped away by **D-0**, with hangar and tower faces belonging to
   `airfield-structures` (`plannedBy: "7-10"`, also absent). So 7-6 sits in Gate 7B while
@@ -1806,13 +1806,13 @@ decision log, per house rule.)*
      user locations back-to-back on one device, both succeeding. **This lands hardest on 7-4b,
      whose spike measured 14 and whose number moved once the builtin was counted.**
   2. **7-6's own cut trigger had no instrument.** `SubsystemBudgetMs`
-     ([PerformanceBudget.ts](src/render/webgpu/core/PerformanceBudget.ts)) has twelve rows and
+     ([PerformanceBudget.ts](../../src/render/webgpu/core/PerformanceBudget.ts)) has twelve rows and
      **no `lighting` row**, so "cut this first if the budget bites" could never have fired. The
      declared tier sums are modelled with zero samples, and assertion 20 checks only that the
      declared constants sum under target — it consumes no measurement. **This is a note on the
      trigger mechanism, not on 7-6.**
   3. **The draw-call ratchet has a sanctioned raise path**, so a feature that genuinely costs
-     draws is not blocked: `DRAW_CALL_RAISES` in [deliveryFloors.mts](scripts/deliveryFloors.mts)
+     draws is not blocked: `DRAW_CALL_RAISES` in [deliveryFloors.mts](../../scripts/deliveryFloors.mts)
      carries `uniform` and `per-shot` forms, the latter existing "so the first legitimately
      non-uniform feature does not meet a guard it cannot satisfy". Bloom's +4 is already
      declared there.
