@@ -51,7 +51,6 @@ import {
   ssimBaselineFailureMessage,
   deliveryFailuresAgainst,
   perfCaptureDeliveryContract,
-  tier1BalancedPerformanceFailures,
   tileStatistics,
   worstTileRgbSsim,
   yawForSunBearing,
@@ -71,9 +70,11 @@ import {
  * metrics asserted against committed ceilings. Z-3: per-shot clocks and
  * viewports, feature-located shots, and a temporal-stability motion scene.
  * Baselines live in tests/perf/baseline (committed and read-only); per-run
- * artifacts go to tests/perf/artifacts (ignored). A rebaseline run buffers a
- * complete candidate until all validations pass, then writes it only beneath
- * the ignored artifact directory. See vitest.perf.config.ts for the policy.
+ * artifacts go to tests/perf/artifacts (ignored). A rebaseline run buffers the
+ * complete capture, then writes its diagnostic frames and report beneath the
+ * ignored artifact directory with a NOT APPROVABLE stamp before the gates run.
+ * Only passing every gate replaces that stamp with APPROVABLE. See
+ * vitest.perf.config.ts for the policy.
  */
 
 const BASELINE_DIR = "tests/perf/baseline";
@@ -185,17 +186,6 @@ const IS_UNDRAINED = Number.isFinite(UNDRAINED_FRAMES) && UNDRAINED_FRAMES > 0;
  * is why this must never gate a baseline.
  */
 const IS_TRANSLATING = import.meta.env.VITE_PERF_TRANSLATE === "1";
-/**
- * The canonical tier-1 profile, and it must stay canonical.
- *
- * Resolved HERE, deliberately ABOVE the cliff-A/B override below: this is the
- * reference the tier-1 floors and the render-scale pin are stated against, so an
- * experiment arm must never move it. If the override block is ever hoisted above
- * this line, this silently becomes the arm's profile and every tier-1 reference
- * in the file starts describing the experiment instead.
- */
-const TIER1_CAPTURE_PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
-
 /**
  * `6-11.1` — the four-tier x three-viewport sweep knobs.
  *
@@ -1610,6 +1600,17 @@ describe("perf capture (1A-1c / 2Z)", () => {
     const candidateId = new Date().toISOString().replaceAll(":", "-");
     const candidateDir = `${CANDIDATE_ROOT}/${candidateId}`;
     if (REBASELINE) {
+      // This must be the directory's FIRST file. An interrupted screenshot or
+      // report write may leave partial diagnostic evidence, but it must never
+      // leave an unstamped directory that a reviewer could mistake for a
+      // gate-approved candidate.
+      await commands.writeFile(
+        `${candidateDir}/STATUS.txt`,
+        "NOT APPROVABLE — the capture's gates have not been evaluated.\n"
+        + "If this directory is incomplete, or this file still says NOT APPROVABLE,\n"
+        + "the run did not clear every gate: diagnose it and do not promote it.\n"
+        + "Frames are written before the gates so failed runs retain evidence.\n",
+      );
       for (const screenshot of candidateScreenshots) {
         await commands.writeFile(
           `${candidateDir}/${screenshot.name}.png`,
@@ -1620,14 +1621,6 @@ describe("perf capture (1A-1c / 2Z)", () => {
       await commands.writeFile(
         `${candidateDir}/report.json`,
         `${JSON.stringify(report, null, 2)}\n`,
-      );
-      await commands.writeFile(
-        `${candidateDir}/STATUS.txt`,
-        "NOT APPROVABLE — the capture's gates had not been evaluated when these\n"
-        + "frames were written. If this file still says NOT APPROVABLE, the run\n"
-        + "FAILED a gate: read the failure, and do not promote this directory.\n"
-        + "The frames are here for diagnosis, which is why they are written\n"
-        + "before the gates rather than after them.\n",
       );
       console.info(`Reviewable candidate frames written to ${candidateDir}`);
     }
@@ -1661,6 +1654,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     let shotsEvaluated = 0;
     /** The shot the gate loop is currently on, so a collected failure can name it. */
     let currentShotName = "";
+    const gateFailureShotNames = new Set<string>();
     /**
      * Frame-delivery is the most HOST-SENSITIVE gate in this file, and it used
      * to run before the deterministic memory and residency gates. Throwing here
@@ -1679,7 +1673,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (UNPINNED_HOST) unpinnedDeliveryNotes.push(message);
-        else gateFailures.push(`${currentShotName}: ${message}`);
+        else {
+          gateFailures.push(`${currentShotName}: ${message}`);
+          gateFailureShotNames.add(currentShotName);
+        }
       }
     };
 
@@ -1711,6 +1708,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         gateFailures.push(`${currentShotName}: ${message}`);
+        gateFailureShotNames.add(currentShotName);
       }
     };
 
@@ -2162,6 +2160,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         gateFailures.push(
           `${shot.name}: ${error instanceof Error ? error.message : String(error)}`,
         );
+        gateFailureShotNames.add(shot.name);
       }
       shotsEvaluated += 1;
     }
@@ -2175,7 +2174,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
     ).toBe(shotReports.length);
     expect(
       gateFailures,
-      `${gateFailures.length} of ${shotReports.length} shots failed a gate:\n`
+      `${gateFailures.length} gate failure(s) across ${gateFailureShotNames.size} `
+      + `of ${shotReports.length} shots:\n`
       + gateFailures.map((f) => `  - ${f}`).join("\n"),
     ).toEqual([]);
 

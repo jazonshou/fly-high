@@ -42,6 +42,7 @@ const ATMOSPHERE: AtmosphereSnapshot = {
   skyZenith: new Color3(0.1, 0.36, 0.78),
   skyHorizon: new Color3(0.58, 0.77, 0.96),
   ambientColor: new Color3(0.18, 0.27, 0.42),
+  skylightIlluminanceNormalized: 1,
   sunIlluminanceNormalized: 0.92,
   sunAngularRadiusRadians: 0.004675,
   cloudCoverage: 0.32,
@@ -299,8 +300,14 @@ describe("Babylon WebGPU hydrology presentation", () => {
   it("takes its wind speed from the world, not the cloud layer (wave R fix 8)", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
+    expect(scene.getAutoClearDepthStencilSetup(1)).toEqual({
+      autoClear: true,
+      depth: true,
+      stencil: true,
+    });
     const camera = new FreeCamera("hydrology-wind-camera", new Vector3(0, 300, -600), scene);
     const speeds: number[] = [];
+    const skylightScales: number[] = [];
     const capture = (system: HydrologySystem) => {
       const material = (system as unknown as {
         material: { setFloat(name: string, value: number): void };
@@ -308,6 +315,7 @@ describe("Babylon WebGPU hydrology presentation", () => {
       const original = material.setFloat.bind(material);
       material.setFloat = (name: string, value: number) => {
         if (name === "windSpeed") speeds.push(value);
+        if (name === "skylightIlluminanceNormalized") skylightScales.push(value);
         original(name, value);
       };
     };
@@ -324,9 +332,20 @@ describe("Babylon WebGPU hydrology presentation", () => {
       windDirectionRadians: 0.6,
       windSpeedMetersPerSecond: worldWind,
     });
+    // Water is in group 1 so it can be sorted as one transparent layer, but
+    // that group must retain group 0's opaque terrain depth. Babylon defaults
+    // to clearing it; the owner changes that scene contract at construction.
+    expect(scene.getAutoClearDepthStencilSetup(1)).toEqual({
+      autoClear: true,
+      depth: false,
+      stencil: true,
+    });
     capture(system);
     system.setAtmosphere(ATMOSPHERE);
     expect(speeds.at(-1)).toBe(worldWind);
+    expect(skylightScales.at(-1)).toBe(1);
+    system.setAtmosphere({ ...ATMOSPHERE, skylightIlluminanceNormalized: 1e-8 });
+    expect(skylightScales.at(-1)).toBe(1e-8);
 
     // Absent the option (every pre-wave-R caller and test) the atmosphere is
     // still the fallback, so nothing that did not opt in changes behaviour.

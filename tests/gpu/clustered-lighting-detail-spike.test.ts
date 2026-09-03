@@ -1,5 +1,4 @@
 import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
@@ -9,10 +8,8 @@ import { ClusteredLightContainer } from "@babylonjs/core/Lights/Clustered/index"
 import { CascadedShadowGenerator } from "@babylonjs/core/Lights/Shadows/cascadedShadowGenerator";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
-import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
-import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
@@ -27,14 +24,6 @@ import {
   DETAIL_INSTANCE_STRIDE_BYTES,
 } from "../../src/render/webgpu/detail/instanceFormat";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { TerrainSurfacePlugin } from "../../src/render/webgpu/terrain/TerrainSurfacePlugin";
-import { createSurfaceMaterialArrays } from "../../src/render/webgpu/terrain/MaterialArrayUpload";
-import {
-  TERRAIN_NODE_ATTRIBUTE_A,
-  TERRAIN_NODE_ATTRIBUTE_B,
-  TERRAIN_NODE_ATTRIBUTE_STRIDE,
-  TERRAIN_SAMPLED_BINDINGS,
-} from "../../src/render/webgpu/terrain/TerrainSpineContract";
 
 /**
  * `7-0-d`, second half of P4 — the DETAIL material's inter-stage budget.
@@ -241,7 +230,6 @@ async function compileDetail(clustered: boolean): Promise<StageProfile> {
       ready = material.isReady(mesh);
       if (gpuErrors.length > 0) break;
     }
-    // eslint-disable-next-line no-console
     console.log(`[spike-detail] clustered=${clustered} ready=${ready} gpuErrors=${gpuErrors.length}`);
     expect(ready, `the detail ${clustered ? "clustered" : "baseline"} permutation never compiled`).toBe(true);
     const effect = mesh.subMeshes[0]?.effect;
@@ -264,7 +252,6 @@ describe("7-0-d: clustered lighting on the DETAIL material", () => {
       fragmentStorageBuffers: [base.storageBuffers.length, clustered.storageBuffers.length],
       clusteredDefine: /CLUSTLIGHT/u.test(clustered.defines),
     };
-    // eslint-disable-next-line no-console
     console.log(`[spike-detail] ${JSON.stringify(report)}`);
     expect(report.clusteredDefine, "no CLUSTLIGHT define reached the detail material").toBe(true);
     // DELTAS ONLY — see this file's scope limit. The absolute counts here are

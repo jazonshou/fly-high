@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { PERF_CAPTURE_SHOTS } from "../scripts/perf-capture.mts";
 import {
+  ANALYTIC_COLD_START_DEADLINE_MS,
   COLD_START_SAMPLES,
   DELIVERY_FLOOR_PROVENANCE,
   DELIVERY_FLOOR_SAMPLES,
@@ -15,6 +16,7 @@ import {
   TAIL_DEFERRED_SHOTS,
   TAIL_DERIVED_FIELDS,
   coldStartCeilingMs,
+  coldStartReadySamplesMs,
   deliveryFloorsFrom,
   drawCallCeilingFrom,
   firstPinFrom,
@@ -196,21 +198,38 @@ describe("delivery floors are derived from recorded samples", () => {
 
 describe("cold start is pinned from samples, not from one reading", () => {
   it("keeps three samples and the rejected outlier", () => {
-    expect(COLD_START_SAMPLES.totalMs.length).toBeGreaterThanOrEqual(3);
+    expect(COLD_START_SAMPLES.createMs.length).toBeGreaterThanOrEqual(3);
+    expect(COLD_START_SAMPLES.completionMs).toHaveLength(COLD_START_SAMPLES.createMs.length);
     // The 1,412 ms reading was proposed as the pin and refused. It sits BELOW
     // all three samples, so it is an outlier and not the good end of a spread.
     // Recorded so it cannot be "restored" by someone who finds it in a log.
-    expect(Math.min(...COLD_START_SAMPLES.totalMs)).toBeGreaterThan(
-      COLD_START_SAMPLES.rejectedOutlierMs,
+    expect(Math.min(...COLD_START_SAMPLES.createMs)).toBeGreaterThan(
+      COLD_START_SAMPLES.rejectedCreateOutlierMs,
     );
   });
 
   it("derives a ceiling above every sample, with headroom", () => {
     const ceiling = coldStartCeilingMs();
-    expect(ceiling).toBeGreaterThan(Math.max(...COLD_START_SAMPLES.totalMs));
-    // Not so loose that it stops being a budget. The 120 s value in
-    // cold-start.test.ts is a HANG-CATCHER and deliberately not this number.
+    expect(ANALYTIC_COLD_START_DEADLINE_MS).toBe(ceiling);
+    expect(ceiling).toBeGreaterThan(Math.max(...coldStartReadySamplesMs(COLD_START_SAMPLES)));
+    // Not so loose that it stops being a budget. The separate 120 s value in
+    // cold-start.test.ts catches hangs and deliberately is not this deadline.
     expect(ceiling).toBeLessThan(4_000);
+  });
+
+  it("includes readable GPU completion in the deadline derivation", () => {
+    expect(coldStartCeilingMs({
+      createMs: [1_000, 1_000, 1_000],
+      completionMs: [100, 100, 100],
+    })).toBe(1_400);
+    expect(() => coldStartReadySamplesMs({
+      createMs: [1_000, 1_000],
+      completionMs: [100],
+    })).toThrow(/must be paired/u);
+    expect(() => coldStartCeilingMs({
+      createMs: [1_000, 1_000],
+      completionMs: [100, 100],
+    })).toThrow(/at least three paired samples/u);
   });
 });
 

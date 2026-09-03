@@ -23,7 +23,6 @@
  */
 import { canopyClosure, densityField } from "../src/render/webgpu/detail/densityField";
 import {
-  classifyLandCover,
   landCoverSuitabilities,
   LAND_COVER_CANOPY_CLOSURE_GAIN,
   type LandCoverInput,

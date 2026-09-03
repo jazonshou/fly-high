@@ -1,5 +1,13 @@
 # 7-9: the night tier ladder is broken above tier 1
 
+> **Current resolution (2026-09-03):** the ocean exception identified below is
+> closed. `subsurfaceScatter` now multiplies the `sunColor` uniform, which the
+> material binding premultiplies by `sunIlluminanceNormalized`; it is therefore
+> exactly zero below the physical sun cutoff instead of behaving as green
+> self-emission on steep wave faces. The source-level radiometry regression in
+> `tests/render.webgpu-water-depth.test.ts` pins that energy path. The separately
+> parked N-1 full-night-circuit product verdict remains a user acceptance step.
+
 **Measured 2026-09-01 in a worktree pinned at `1a4c1ac`, on a quiet host
 (load 3.4–3.8), warm-up discarded, two runs per tier.** Shots: `night`,
 `night-moonlit`, `dusk-mesopic`.

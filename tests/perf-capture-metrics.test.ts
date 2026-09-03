@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB,
   inventoriedMemoryFailures,
+  lowerOuterHorizontalDetailFraction,
   luminanceFromRgba,
   meanRgbSsim,
   meanSsim,
@@ -202,6 +203,31 @@ describe("perf-capture screenshot non-vacuity", () => {
       meanVariance: 0.001,
       structuredTileFraction: 0.5,
     })).toEqual([]);
+  });
+
+  it("distinguishes lower-frame foreground detail from a sky-only vertical gradient", () => {
+    const width = 128;
+    const height = 128;
+    const sky = solidRgba(width, height, [0, 0, 0, 255]);
+    for (let y = 0; y < height; y += 1) {
+      const value = 20 + Math.round(220 * y / (height - 1));
+      for (let x = 0; x < width; x += 1) {
+        sky.set([value, value, value, 255], (y * width + x) * 4);
+      }
+    }
+    const skyLuminance = luminanceFromRgba(sky, width, height);
+    expect(perfCaptureImageContentFailures(tileStatistics(skyLuminance, width, height)))
+      .toEqual([]);
+    expect(lowerOuterHorizontalDetailFraction(skyLuminance, width, height)).toBe(0);
+
+    const foreground = new Float32Array(skyLuminance);
+    for (let y = Math.floor(height * 0.55); y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x;
+        foreground[index] = foreground[index]! + (x % 2 === 0 ? 0.02 : -0.02);
+      }
+    }
+    expect(lowerOuterHorizontalDetailFraction(foreground, width, height)).toBeGreaterThan(0.5);
   });
 
   it("pins the known slate-frame regression independently of baseline SSIM", () => {

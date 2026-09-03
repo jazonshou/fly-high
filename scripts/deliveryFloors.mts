@@ -465,7 +465,11 @@ export function tailDeferredFloorsFrom(samples: DeliveryFloorSamples): DerivedDe
 }
 
 /**
- * Cold start, same treatment. Three samples taken inside the R4 runs.
+ * Cold start, same retained-sample treatment. These three fresh-browser
+ * reference-host runs use the strengthened completion definition: render,
+ * synchronous canvas readback, the raw GPU submitted-work fence, and one
+ * asynchronous error-delivery task. Pixel classification follows the clock
+ * stop and therefore does not inflate the acceptance interval.
  *
  * **A fourth reading of 1,412 ms was proposed as the pin and refused**, because
  * it is a single sample of a metric that shares the host's noise source — and
@@ -474,19 +478,43 @@ export function tailDeferredFloorsFrom(samples: DeliveryFloorSamples): DerivedDe
  * number does not get "restored" by someone who finds it in a log.
  */
 export const COLD_START_SAMPLES = Object.freeze({
-  totalMs: Object.freeze([1_594, 1_602, 1_616] as const),
-  firstFrameMs: Object.freeze([73, 73, 69] as const),
-  rejectedOutlierMs: 1_412,
+  createMs: Object.freeze([1_537.6, 1_537.1, 1_542.6] as const),
+  completionMs: Object.freeze([280.1, 278.3, 278.7] as const),
+  rejectedCreateOutlierMs: 1_412,
 });
 
+/** Shipping analytic-default deadline; guarded against the derivation below. */
+export const ANALYTIC_COLD_START_DEADLINE_MS = 2_300;
+
+export interface ColdStartSamples {
+  readonly createMs: readonly number[];
+  readonly completionMs: readonly number[];
+}
+
+/** Paired create + completed-frame samples: the renderer is not ready before both. */
+export function coldStartReadySamplesMs(samples: ColdStartSamples): readonly number[] {
+  if (samples.createMs.length !== samples.completionMs.length) {
+    throw new RangeError("cold-start create and completed-frame samples must be paired");
+  }
+  return samples.createMs.map(
+    (createMs, index) => createMs + samples.completionMs[index]!,
+  );
+}
+
 /**
- * Cold-start ceiling: median of the samples, plus 25% headroom, rounded up to
- * 50 ms. Deliberately looser than the delivery floors' 15% because startup
- * contends with page load, shader compilation and first-frame allocation —
- * none of which the steady-state capture measures.
+ * Cold time-to-ready ceiling: median of the paired create + completed-frame
+ * samples, plus 25% headroom, rounded up to 50 ms. Deliberately looser than
+ * the delivery floors' 15% because startup contends with page load, shader
+ * compilation and completed-frame allocation — none of which the steady-state
+ * capture measures.
  */
-export function coldStartCeilingMs(samples: typeof COLD_START_SAMPLES = COLD_START_SAMPLES): number {
-  const sorted = [...samples.totalMs].sort((a, b) => a - b);
+export function coldStartCeilingMs(samples: ColdStartSamples = COLD_START_SAMPLES): number {
+  const sorted = [...coldStartReadySamplesMs(samples)].sort((a, b) => a - b);
+  if (sorted.length < 3) {
+    throw new RangeError(
+      `cold-start ceiling needs at least three paired samples; got ${sorted.length}`,
+    );
+  }
   const median = sorted[sorted.length >> 1]!;
   return Math.ceil((median * 1.25) / 50) * 50;
 }

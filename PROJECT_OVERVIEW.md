@@ -1,5 +1,10 @@
 # fly high — Rendering Overhaul: Project Overview
 
+> **Historical programme snapshot.** The status and shot counts below intentionally
+> describe 2026-08-20. For the completed implementation, current verification and capture
+> state, remaining clean-reference and user acceptance, and explicit deferrals, read
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+
 **Status as of 2026-08-20.** Phases 0, 1, 2, 2.5, 3, **4** and the corrective **4.5** plus Gates B and A are complete — 239.55 of ≈358 priced effort-days shipped (~67% of the programme, and **past the v1 cut line at ≈224**). A **Phase 5 implementation candidate** now exists in the working tree, but it is not counted as shipped or phase-closed while its final GPU, visual, capture, rebaseline and timing evidence remains open. Phase 6 is next to plan.
 
 Phase 4 closed nine of the audit's twelve root causes — and then flying the shipped tree found it failing all three goals from the pilot's seat, which is why the unplanned **Phase 4.5** exists ([`PHASE_4_5_EXECUTION_PLAN.md`](PHASE_4_5_EXECUTION_PLAN.md)). It absorbed Phase 4's four unclosed exit boxes and closed three of them: assertions 83b and 85 are written, and the sanctioned rebaseline and tier re-measure are taken. **Three items remain open** — `perf:capture` is not green (fps floors unmet on a hot laptop by the pre-change tree too, and deliberately not relaxed to fit it), the 20-consecutive-cold-loads check has not been re-run, and the three named flights are carried a third time. They are recordings, not code.

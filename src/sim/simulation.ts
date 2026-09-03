@@ -39,9 +39,9 @@ export const STANDARD_GRAVITY = 9.80665;
 export const SEA_LEVEL_DENSITY = 1.225;
 
 const WORLD_UP: Readonly<Vec3> = Object.freeze({ x: 0, y: 1, z: 0 });
-// A right-handed x-forward/y-up body frame necessarily has +Z toward port.
-// Keeping this explicit prevents pilot-right controls from being confused with
-// a positive body-Z component.
+// Babylon's rendered aircraft uses body +Z for the physical starboard side;
+// D-6 pins that end-to-end convention in world space. Pilot-positive yaw is
+// therefore a negative rotation about body +Y (handled at the moment law).
 const BODY_RIGHT: Readonly<Vec3> = Object.freeze({ x: 0, y: 0, z: 1 });
 const BODY_UP: Readonly<Vec3> = WORLD_UP;
 const BODY_FORWARD: Readonly<Vec3> = Object.freeze({ x: 1, y: 0, z: 0 });

@@ -113,6 +113,24 @@ export const MOON_DISC_RADIANCE = 2.1;
 export const NIGHT_AMBIENT_FLOOR_SCALE = 0.2;
 
 /**
+ * The physical horizontal-illuminance law shared by CPU light ownership and
+ * additive shader radiance. Deliberately excludes the HemisphericLight's
+ * fp16 floor: that floor keeps reflected ground bounce representable, while
+ * applying it to an already-calibrated radiance term makes the term emit at
+ * night. Exactly 1 at the unoccluded reference daylight key.
+ */
+export function skylightIlluminanceNormalized(
+  state: EnvironmentState,
+  moonLux: number,
+): number {
+  const overcast = 1 - state.weather.cloudCoverage * 0.42;
+  return Math.min(
+    1.6,
+    (horizontalIlluminanceLux(state, moonLux) * overcast) / REFERENCE_ILLUMINANCE_LUX,
+  );
+}
+
+/**
  * §2.6 round S — the DIRECTIONAL sun's geometric horizon gate.
  *
  * Exactly 1 at and above sine +0.02, exactly 0 at and below −0.02: a
@@ -306,6 +324,11 @@ function registerShaders(): void {
  * making a casting mesh cost 2.00 draws where the source reads `1 + cascades`.
  * `is2DArray` is overridden below so the loop no longer depends on an
  * attachment that has nothing to do with where shadow depth is stored.
+ * The same colour-texture dependency exists in `ThinTexture.getSize()`: with
+ * no colour attachment it returns its zero-valued cache, and CSM turns that
+ * width into the PCF texel size (`1 / width`). Prime that public cache from
+ * the render-target dimensions so the receiver samples the depth array with
+ * a finite texel size.
  *
  * **Do not repair this by restoring the colour attachment.** MEASURED at tier 3:
  * that route costs **+128 MiB and −12.6% mean fps (−21.3% worst shot)**, because
@@ -345,9 +368,16 @@ export class DepthOnlyCascadedShadowGenerator extends CascadedShadowGenerator {
     );
     this._shadowMap.noPrePassRenderer = true;
 
+    // `RenderTargetTexture.getSize()` delegates to its colour texture. A
+    // depth-only target has none, so initialise the returned cache explicitly;
+    // CascadedShadowGenerator.bindShadowLight() reads this width for PCF.
+    const sampledSize = this._shadowMap.getSize();
+    sampledSize.width = size.width;
+    sampledSize.height = size.height;
+
     // Decouple the per-layer loop from the colour attachment (see above). The
     // depth texture carries `numCascades` layers and `getRenderLayers()` reads
-    // `_size.layers` directly, so this is the only link that was broken.
+    // `_size.layers` directly, so restore this separate cascade-loop signal.
     Object.defineProperty(this._shadowMap, "is2DArray", {
       get: () => true,
       configurable: true,
@@ -455,6 +485,13 @@ export interface AtmosphereSnapshot {
   readonly skyZenith: Color3;
   readonly skyHorizon: Color3;
   readonly ambientColor: Color3;
+  /**
+   * Physical horizontal sky/sun/moon illuminance over the reference key,
+   * before the HemisphericLight's documented fp16 floor. Additive shader
+   * radiance must use this law: the floor is a ground-bounce representation
+   * workaround, not permission for self-emissive water at night.
+   */
+  readonly skylightIlluminanceNormalized: number;
   /**
    * sunIntensity over the clear-noon peak (1C-2): the named replacement for
    * the /5.2 normalisers that lived in three shaders. Multiply sunColor by
@@ -628,6 +665,9 @@ export class AtmosphereSystem {
       skyZenith: initialPalette.zenith,
       skyHorizon: initialPalette.horizon,
       ambientColor: initialPalette.zenith.scale(0.58),
+      // `applyEnvironment` immediately replaces this bootstrap value with
+      // the exact physical scale returned by `skylightScale` below.
+      skylightIlluminanceNormalized: 1,
       sunIlluminanceNormalized: initialPalette.intensity / PEAK_SUN_INTENSITY,
       sunAngularRadiusRadians: DEFAULT_ENVIRONMENT_STATE.sun.angularRadiusRadians,
       cloudCoverage: 0.18,
@@ -920,6 +960,7 @@ export class AtmosphereSystem {
       skyZenith: skyZenith.clone(),
       skyHorizon: skyHorizon.clone(),
       ambientColor: Color3.Lerp(skyZenith, skyHorizon, 0.28).scale(snapshotAmbientScale),
+      skylightIlluminanceNormalized: this.skylightScale(state, moonLux),
       sunIlluminanceNormalized: sunIntensityScatter / PEAK_SUN_INTENSITY,
       sunAngularRadiusRadians: state.sun.angularRadiusRadians,
       cloudCoverage,
@@ -960,11 +1001,7 @@ export class AtmosphereSystem {
    * is the point.
    */
   private skylightScale(state: EnvironmentState, moonLux: number): number {
-    const overcast = 1 - state.weather.cloudCoverage * 0.42;
-    return Math.min(
-      1.6,
-      (horizontalIlluminanceLux(state, moonLux) * overcast) / REFERENCE_ILLUMINANCE_LUX,
-    );
+    return skylightIlluminanceNormalized(state, moonLux);
   }
 
   update(cameraLocalPosition: Vector3): void {

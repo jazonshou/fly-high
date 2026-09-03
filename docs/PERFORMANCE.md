@@ -2,6 +2,11 @@
 
 fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It keeps memory, generation, simulation, and draw work bounded while the deterministic coordinate space remains effectively endless.
 
+> Current release scope and acceptance state are summarized in
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](../PROJECT_CLOSEOUT_2026_09_02.md). Historical
+> promotion measurements below remain evidence; `PERF_CAPTURE_SHOTS` is the authority for
+> the live append-only capture list.
+
 ## Runtime contract
 
 - WebGPU, Web Workers, and a hardware-accelerated adapter are required. Startup requests a high-performance adapter and rejects a software/fallback adapter.
@@ -35,9 +40,9 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 | Flight model | Dedicated Worker, fixed 120 Hz; 60 Hz snapshots; independent fixed 120 Hz control/action pump | Simulation-time presentation with a recent-minimum, queue-delay-resistant worker-clock estimate, fixed 1/60 s presentation delay, monotone pause/resume floor and at most 50 ms velocity/body-rate coasting; procedural aircraft meshes |
 | Terrain | **Analytic worlds — the shipped default — use the GPU kernel.** Eroded worlds are a shelved opt-in (see below); Gate W gave them GPU producers (`TerrainMacroErosionGpu.ts`, `TerrainPageErosionGpu.ts`) beside the retained CPU-worker reference, and the simulation Worker samples L0 → macro → analytic recovery. | Completed r32float atlas pages feed the CDLOD ground; eroded pages upload through the same atlas and become visible only at final publication. |
 | World-page contract | CPU page keys, quantized payload validation, lifecycle/cache metadata, velocity priority, and the canonical flow/lake/soil/shore fields | Defines heterogeneous upload/residency boundaries; it does not itself issue draw work |
-| Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, normals, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and probe-fed environment reflections (the planar capture is retired, 2-10) |
+| Ocean | Native WebGPU compute: spectrum initialization/evolution, Stockham 2D IFFT, displacement, slopes and slope moments, Jacobian, and foam | WGSL displaced water with Fresnel, GGX sun glint, sky/cloud response, foam, and probe-fed environment reflections (the planar capture is retired, 2-10) |
 | Rivers and lakes | Eroded worlds extract one deterministic channel graph from the canonical macro export. Explicit analytic compatibility worlds retain the velocity-ahead tracer Worker and scheduled CPU fallback. | Graph-backed or legacy geometry uses the shared WGSL water response and bathymetry depth field. |
-| Clouds | Procedural density is evaluated during the WGSL fragment ray march | Low-resolution integration, ping-pong temporal resolve, representative-depth composition, and a bounded transmittance map sampled by world-space receivers |
+| Clouds | GPU-baked noise and weather-density volumes | WebGPU compute ray march, temporal resolve, and transmittance/shadow map; a `ShaderMaterial` composites the resolved result |
 | Atmosphere | CPU solar position, transmittance LUT bake, and per-frame haze binding | Analytic HDR WGSL sky and aerial perspective from one shared closed-form Rayleigh/Mie/ozone integral; Babylon fog is permanently off |
 | Trees, rocks, shrubs | Deterministic CPU detail-cell generation and LOD selection | Spatially chunked Babylon thin instances with per-instance color and tree wind deformation |
 | Wildlife | Deterministic CPU population and bounded fixed-step AI | Interpolated current thin-instance transforms for procedural animals |
@@ -45,8 +50,8 @@ The renderer makes its floating-origin decision immediately before frame-graph e
 The spectral ocean remains the only active general-purpose GPU *simulation* in
 the frame **of the shipping (analytic) world**. Terrain also uses compute for
 analytic page generation and channel bakes, and bathymetry uses compute for
-bounded toroidal strip updates. Clouds are a fragment-shader volume
-ray march, not an FFT or compute-fluid simulation. This distinction is
+bounded toroidal strip updates. Clouds are a compute-shader volume ray
+march, but not a general-purpose fluid simulation. This distinction is
 load-bearing when attributing worker CPU time, upload time, and GPU shading.
 
 > **Corrected 2026-08-31 (`6-12`).** This paragraph previously read *"Phase 5
@@ -130,17 +135,17 @@ the memory row cannot disagree with the knob.
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
 `worldEvolution` is world content and is invariant across this tier table. The
-Phase-5 memory rows in `PerformanceBudget.ts` deliberately reserve the target
-GPU macro, erosion-scratch and channel-graph layouts even though the current
-reference producer owns those structures on CPU. They are conservative
-headroom reservations, not measured live GPU inventory. The two 1024² R16F
-bathymetry textures are a live 4 MiB allocation; the macro height additionally
-has a read-only GPU storage upload for bathymetry sampling. A local
-production-shape CPU-reference run for seed `phase5-production-benchmark`
-measured 3,174 ms sampling uplift/erodibility/repose plus 4,323 ms evolution,
-7,497 ms total. That result misses the 1.5 s load target and is neither a
-reference-machine nor final-GPU acceptance measurement. No measured per-page
-erosion cost is claimed here.
+Phase-5 memory rows in `PerformanceBudget.ts` deliberately reserved the target
+GPU macro, erosion-scratch and channel-graph layouts while the CPU reference was
+still the only producer. Gate W subsequently added the GPU macro and hybrid GPU
+page DAG described below; those old reservations remain budget provenance, not
+a substitute for the live GPU inventory. The two 1024² R16F bathymetry textures
+are a live 4 MiB allocation; the macro height additionally has a read-only GPU
+storage upload for bathymetry sampling. A historical production-shape CPU-reference
+run for seed `phase5-production-benchmark` measured 3,174 ms sampling
+uplift/erodibility/repose plus 4,323 ms evolution, 7,497 ms total. That result
+missed the eroded experiment's 1.5 s load target and is neither a shipping-world
+startup measurement nor the later GPU producer's cost.
 
 The eroded startup critical path is longer than the macro algorithm alone.
 (This section predates `G0-1`: the shipped default is **analytic**, so the
@@ -158,32 +163,35 @@ readiness rejects on compile error, timeout, abort or disposal, and the renderer
 owns an outer startup deadline. A clean eroded development reload
 reached the start screen in **11,098 ms**; a cache-busted navigation against the
 built production server reached it in **13,255 ms** and then entered the cockpit
-with no current error. Full Node/build verification and all **28 files / 50
-tests** in the Chromium WebGPU suite pass. These timings are local functional
-checks, not cold/reference-machine measurements, and do not satisfy the 1.5 s
-target.
+with no reported error. The accompanying Node/build and then-current Chromium
+WebGPU checks passed. These counts and timings are retained historical evidence,
+not current suite totals, cold/reference-machine measurements, or satisfaction
+of the eroded experiment's 1.5 s target.
 
-Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. The ACES/FXAA post stack is the same across quality profiles.
+Terrain page resolution, ocean presentation density, FFT topology, and every other renderer budget follow the resolved tier rather than raw scenery quality alone. Live tier changes replace resident terrain pages behind their existing geometry and build new ocean compute textures/pipelines before atomically swapping them. ACES remains the common presentation transform; bloom is funded only at tier 1, scotopic vision attaches by luminance, and FXAA is the sample-count-1 fallback rather than a universal stack member.
 
 ## Terrain and world paging
 
 Phase 4 replaced the CPU geometry-clipmap outright. Phase 5 keeps that
 presentation spine and changes the height authority behind it:
 
-- **The default world is eroded; analytic is explicit compatibility.** Startup
-  begins a cell-centred, world-anchored 1024² × 512 m macro evolution in a
-  Worker while device resources are constructed, and waits for the canonical
-  result before eroded terrain, graph hydrology, and bathymetry become visible.
-  The runtime export is tier-independent and reused by every consumer.
-- **The current erosion implementation is the CPU reference.** A second Worker
-  executes fixed priority-breach, MFD/stream-power and talus operators inside a
-  64-texel halo. The atlas admits one page at a time so stale flight-path work
-  cannot fill the queue. Height and accumulation seed directly from the macro
-  authority plus band-limited fine detail; a resident-parent dependency chain
-  is not part of the current implementation. The full runway earthworks mask
-  is protected from erosion, and the production page generator supplies
-  deterministic strictly-downhill, acyclic receiver overrides that route
-  drainage around its perimeter.
+- **The default world is analytic; eroded is an explicit, parked experiment.**
+  `?world=eroded` begins a cell-centred, world-anchored 1024² × 512 m macro
+  evolution in a Worker while device resources are constructed, then waits for
+  the canonical result before eroded terrain, graph hydrology, and bathymetry
+  become visible. The shipping analytic path does not pay that startup cost.
+  The eroded runtime export remains tier-independent and reusable by every
+  consumer if that experiment is resumed.
+- **The parked eroded implementation has GPU production passes and a retained
+  CPU-worker reference.** `TerrainMacroErosionGpu` and
+  `TerrainPageErosionGpu` execute the production macro/page work through the
+  shared compute meter; the staged Worker remains the correctness oracle and
+  supplies the CPU-owned portions of the hybrid DAG. The atlas admits one page
+  at a time so stale flight-path work cannot fill the queue. Coarse pages seed
+  from the macro authority and fine pages can seed from resident parents; the
+  full runway earthworks mask is protected, and the page producer supplies
+  deterministic strictly-downhill, acyclic receiver overrides around its
+  perimeter. This path remains maintained but is not the shipping default.
 - **Evolution is inspectable without a capture.** The terrain debug overlay's
   live macro preview exposes flow accumulation, lake mask, drainage base levels,
   double-angle fabric and erodibility alongside the Phase-4 residency views.
@@ -204,25 +212,26 @@ presentation spine and changes the height authority behind it:
 - **A node is never split on a guess.** `maxDeviationFromParent` is measured by
   the generation pass as the largest second difference over the page; a page
   with no measurement is drawn coarse and never split.
-- **Analytic pages are GPU-generated; eroded pages are worker-generated.** The
-  analytic path retains one compute dispatch per admitted batch and the
-  `4.5-B1` split publication of texels before bounds. The eroded path transfers
-  one final stored page, uploads it into the same r32float atlas, and withholds
-  residency until its complete generation DAG and L0 collision publication
-  finish. It never exposes a half-evolved slot.
+- **Analytic pages are GPU-generated; eroded pages use a staged hybrid DAG.**
+  The analytic path retains one compute dispatch per admitted batch and the
+  `4.5-B1` split publication of texels before bounds. Eroded seed, geology,
+  breach, stream-power, talus, and fine-band stages execute on the GPU; ordered
+  MFD, deterministic inputs, readback handoffs, and final hydrology/statistics
+  remain in the Worker. The final stored page uploads into the same r32float
+  atlas, and residency is withheld until the complete DAG and L0 collision
+  publication finish. It never exposes a half-evolved slot.
 - **Detail and wildlife share the collision height ladder.**
   `TerrainConsumerAuthority` adapts L0 → macro → analytic height, normal and
   slope for those consumers while leaving the established analytic climate and
   material fields intact. Eroded worlds therefore do not place ecology against
   a second, analytic-only ground surface.
 - **One meter paces every terrain producer.** Analytic height generation,
-  occlusion and splat bakes feed measured GPU dispatch costs back from
-  `timestamp-query`. The CPU-reference erosion client uses the reserved
-  `erosionCompute` admission as a pacing boundary, but supplies no GPU timing
-  sample; its seeded cost is not evidence of measured erosion performance. A
-  measured analytic height page costs ~1.9 ms of GPU, more than the whole
-  compute cap, so the highest-priority client with demand retains the floor of
-  one dispatch.
+  occlusion, splat bakes, and the GPU stages of the eroded page DAG feed measured
+  dispatch costs back from `timestamp-query`. The hybrid DAG's Worker stages do
+  not manufacture GPU samples; its staged producer retains explicit admission
+  demand while those asynchronous handoffs are in flight. A measured analytic
+  height page costs ~1.9 ms of GPU, more than the whole compute cap, so the
+  highest-priority client with demand retains the floor of one dispatch.
 - **Channel families ride a second atlas**: sky visibility and a bent normal,
   an 8-azimuth horizon field, the season-keyed land-cover splat weights, and
   invariant flow accumulation, lake depth, soil depth and signed shore
@@ -268,9 +277,9 @@ The ocean is the renderer's native WebGPU compute workload:
 - Seeded Gaussian initialization builds band-limited JONSWAP-style spectra.
 - Time evolution produces conjugate frequency-domain waves.
 - Horizontal and vertical Stockham passes perform the 2D inverse FFT.
-- A derivation pass produces half-float displacement and normal/foam textures from float working textures. Jacobian compression drives breaking-wave foam, which decays temporally.
+- A derivation pass produces half-float displacement, slope moments, Jacobian, and foam textures from float working textures. Jacobian compression drives breaking-wave foam, which decays temporally.
 - Tier 0 allocates 128² with three cascades; Tier 1 allocates 128² with four; Tiers 2 and 3 allocate 256² with all five. The fifth cascade covers the largest 16,384 m patch and updates every eighth frame. Active cascades span different patch lengths and update cadences so farther, slower bands need not dispatch every frame.
-- The camera-centered ocean presentation surface is a single crack-free 40 km radial grid. Tiers 0/1 use 96×128 or 144×192 radial/angular topology and tiers 2/3 share 192×256; a fifth-power distribution concentrates sub-metre radial spacing near the aircraft and grows cells toward the hazed far plane.
+- The camera-centered ocean presentation surface is one crack-free radial grid. Its established fifth-power detail lattice remains bounded to 40 km; only the final existing ring moves to a coarse 90 km coverage radius, which covers the corners of the 45 km far plane without adding topology or coarsening the near field. Tiers 0/1 use 96×128 or 144×192 radial/angular topology and tiers 2/3 share 192×256.
 - The WGSL surface combines multi-cascade geometric displacement with per-fragment slope/normal and foam sampling, dielectric Fresnel, GGX sun glint, sky/cloud color, depth tint, and height-aware cloud transmittance on direct sunlight. Ocean and inland-water shaders also bind Babylon's existing cascaded-shadow depth array through its public matrices and comparison sampler; cascade splits/blends follow live quality changes, and only direct solar glare/scatter is attenuated. This reuses the terrain/scenery shadow render instead of scheduling a water-only pass. Environment reflections sample the shared sky environment probe cube with roughness-mapped mips; the planar scene capture that used to add nearby geometry is retired (2-10), and its surviving receiver contract idles at zero validity so the analytic sky/cloud response remains the fallback.
 - Lower-cadence far cascades accumulate elapsed time before applying foam decay, so their half-life is independent of update cadence. Live quality changes initialize replacement compute resources before swapping away the active ocean.
 - A shared two-level bathymetry clipmap stores `bedElevation − seaLevel` at
@@ -278,9 +287,11 @@ The ocean is the renderer's native WebGPU compute workload:
   R16F and update only newly exposed toroidal strips after their initial fill.
   Analytic mode samples the historical terrain kernel exactly. Eroded mode
   bilinearly samples the canonical cell-centred macro height and blends back to
-  analytic across the macro domain's 16-texel rim. It does **not** currently
-  overlay resident L0 erosion pages; that planned authority refinement remains
-  open.
+  analytic across the macro domain's 16-texel rim. In eroded mode, the
+  clipmap's own update dispatch also overlays fully resident L0 erosion pages
+  from the terrain height atlas, feathers macro-facing borders over two near
+  texels, and invalidates affected footprints on admission, eviction, or slot
+  movement. Water consumers retain one unchanged bathymetry binding surface.
 - Shared depth optics apply Beer-Lambert attenuation, a soft shoreline,
   turbidity, underwater-interface handling and air-to-water refraction of the
   bed coordinate. The refracted substrate colour is still a deterministic
@@ -491,7 +502,7 @@ first shot that puts the camera near the water. The measured tier row below
 was re-taken at the fix-pack close — same host, same contract, all sixteen
 prior shots plus the new one.
 
-## Current measured tier row
+## Promoted Phase 6/R4 tier row (historical baseline)
 
 The earlier 15–20 FPS measurements were traced to continuous Babylon WebGPU
 timestamp observers, not to unmeasured compositor idle. Babylon resolved and
@@ -502,13 +513,20 @@ p95 with them disabled: a 4.7 ms p95 tax and 38% throughput loss. Gameplay now
 uses the interval-minus-CPU governor signal; timestamp observation is an
 explicit create-time diagnostic only.
 
-The following is the **committed baseline** in `tests/perf/baseline/`, promoted
-**2026-08-31** (Phase 6 `R1`+`R2`+`R3`) from the reviewed candidate at
+The first twenty-four rows below preserve the Phase 6 `R1`+`R2`+`R3`
+historical snapshot promoted **2026-08-31** from the reviewed candidate at
 `tests/perf/artifacts/rebaseline-candidates/2026-08-31T16-39-53.222Z` on
 Apple Metal 3 / headless Chrome 151, medium/balanced, with 240 measured frames
 per shot after deterministic residency drain. The normal shots use the shipped
 0.86 render scale; `reference-viewport` retains its 1.485 Mpx scale-1
-cap-stress contract. The set carries **twenty-four** shots.
+cap-stress contract.
+
+The **current committed baseline set** contains thirty PNGs. R4 re-promoted all
+thirty together at `090bf2f` on 2026-09-01 after three complete idle-host runs;
+the six rows appended at the bottom of this table came from that promotion.
+Their immutable input samples and candidate-directory provenance live in
+`scripts/deliveryFloors.mts`. The table therefore preserves two named
+historical snapshots rather than pretending its thirty rows came from one run.
 
 > **Corrected 2026-08-31 (`6-12`). The paragraph above previously described the
 > 2026-08-26 polish-pass promotion and claimed seventeen shots.** Three things
@@ -531,17 +549,23 @@ cap-stress contract. The set carries **twenty-four** shots.
 > missing). It is quoted rather than re-measured because `perf:capture` may not
 > run for this pass — see the standing thermal note in §Capture harness.
 
-That promotion is the sanctioned churn point for Phase 6's visible work — flow
-advection, ocean run-up, shelf dispersion, caustics, wetness, ecology channels,
-talus, the rebuilt canopy handoff and GPU scatter. **Only 5 of the 21 comparable
-shots stayed at or above 0.99 SSIM; the other 16 moved**, and that movement is
-the substantive thing the promotion blessed rather than an artifact of it. (The
-three motion shots — `motion-banked-turn`, `page-thrash-turn`,
-`cdlod-transition` — record `null` SSIM by design, which is why 21 compare and
-not 24.)
+> **Later correction, 2026-09-03.** Neither promotion validated ocean run-up,
+> shelf dispersion, or caustics in rendered pixels. The component code and its
+> green gates existed, but the fp16 ocean spectrum was non-finite and the ocean
+> presentation remained NaN-collapsed until the current continuation. The mesh
+> first became visible at `2131a60`. These rows consequently describe the
+> pre-ocean-presentation renderer; they are historical comparison and floor
+> provenance, not performance or visual acceptance evidence for the current
+> rendered-ocean tree.
 
-**Phase 6 added all of that and came out slightly FASTER.** Against the strict
-tier-1 contract, with delivery gates enforced.
+The promotion did sanction the other visible Phase 6 churn — wetness, ecology
+channels, talus, the rebuilt canopy handoff, and GPU scatter. **Only 5 of the 21
+comparable shots stayed at or above 0.99 SSIM; the other 16 moved**, and that
+movement is the substantive thing the promotion blessed rather than an artifact
+of it. (The three motion shots — `motion-banked-turn`, `page-thrash-turn`, and
+`cdlod-transition` — record `null` SSIM by design, which is why 21 compare and
+not 24.) The pre-ocean-presentation tree came out slightly faster against the
+strict tier-1 contract; that conclusion does not transfer to the current tree.
 
 **Delivery floors were deliberately NOT re-pinned at this promotion.** One
 cool-host run samples the favourable end of a roughly 20% thermal band, so the
@@ -575,24 +599,48 @@ not evidence about where the floor belongs.
 | `forest-line-highsun` | 120.2 | 9.2 ms | 0 | 0 | 9.6 ms | 147 | 484.7 MiB |
 | `cliff-60m` | 120.1 | 9.1 ms | 0 | 0 | 10.1 ms | 163 | 486.4 MiB |
 | `water-3m` | 120.0 | 9.4 ms | 0 | 0 | 10.0 ms | 129 | 483.9 MiB |
-| `veg-seam-1600ft-oblique` | 120.2 | 10.7 ms | 0 | 0 | 9.9 ms | 144 | 484.9 MiB |
-| `veg-seam-near-500ft` | 120.2 | 10.7 ms | 0 | 0 | 9.6 ms | 152 | 484.9 MiB |
-| `terrain-material-1600ft-down` | 119.8 | 13.9 ms | 0 | 0 | 9.2 ms | 172 | 486.4 MiB |
-| `horizon-shadow-far-annulus` | 119.9 | 10.7 ms | 0 | 0 | 9.6 ms | 148 | 485.8 MiB |
-| `canopy-backlit-lowsun` | 120.3 | 10.6 ms | 0 | 0 | 10.0 ms | 156 | 485.6 MiB |
-| `night-moonlit` | 120.0 | 10.7 ms | 0 | 0 | 9.8 ms | 152 | 485.1 MiB |
+| `veg-seam-1600ft-oblique` | 120.2 | 9.9 ms | 0 | 0 | 10.7 ms | 144 | 484.9 MiB |
+| `veg-seam-near-500ft` | 120.2 | 9.6 ms | 0 | 0 | 10.7 ms | 152 | 484.9 MiB |
+| `terrain-material-1600ft-down` | 119.8 | 9.2 ms | 0 | 0 | 13.9 ms | 172 | 486.4 MiB |
+| `horizon-shadow-far-annulus` | 119.9 | 9.6 ms | 0 | 0 | 10.7 ms | 148 | 485.8 MiB |
+| `canopy-backlit-lowsun` | 120.3 | 10.0 ms | 0 | 0 | 10.6 ms | 156 | 485.6 MiB |
+| `night-moonlit` | 120.0 | 9.8 ms | 0 | 0 | 10.7 ms | 152 | 485.1 MiB |
 
-**All twenty-four clear** the strict FPS, p95, hitch-count and maximum-frame
-contract, with Phase 6's water, wetness, ecology, talus, canopy handoff and GPU
-scatter live and **delivery gates enforced** (`deliveryGatesEnforced: true` in
-the run's `captureEnvironment`): the minimum wall throughput is **117.73 FPS**,
-the worst p95 is **9.80 ms**, the worst single frame is **18.10 ms**, and there
-are **zero** intervals over 27.4 ms and **zero** hitches. Peak inventoried GPU
-memory is **492.3 MiB** at `reference-viewport`, against the 495 MiB pinned
-ceiling — **2.7 MiB, or 0.5%, of real headroom**. Every final terrain/detail
-pending count is zero. The raw-device
-validation listener, Babylon/console gates, GPU drain, black/uniform-frame
-policy and temporal checks all passed before the candidate was written.
+All twenty-four shots in the Phase 6 snapshot cleared the strict FPS, p95,
+hitch-count and maximum-frame contract on the pre-ocean-presentation tree, with
+Phase 6's wetness, ecology, talus, canopy handoff, and GPU scatter live and
+**delivery gates enforced**
+(`deliveryGatesEnforced: true` in that run's `captureEnvironment`): minimum wall
+throughput **117.73 FPS**, worst p95 **9.80 ms**, worst single frame **18.10
+ms**, zero intervals over 27.4 ms and zero hitches. Peak inventoried GPU memory
+was **492.3 MiB** at `reference-viewport`, against the 495 MiB pinned ceiling —
+**2.7 MiB, or 0.5%, of measured headroom**. R4 subsequently cleared and
+re-promoted the current thirty-shot baseline as one set and derived its standing
+floors from the three stored runs. In both promotions every final
+terrain/detail pending count was zero, and the raw-device validation listener,
+Babylon/console gates, GPU drain, black/uniform-frame policy and temporal checks
+passed before artifacts were accepted.
+
+**Current continuation status (2026-09-03).** The ocean presentation is now
+finite and bounded to a 90 km radius. A targeted recapture passed the explicit
+seam, faceting, and gap review. The latest full candidate,
+`2026-09-03T04-19-09.608Z`, is nevertheless `NOT APPROVABLE`: its generic tier-1
+gate passed (minimum wall throughput **71.84 FPS**, worst p95 **16.10 ms**, at
+most **3** intervals over 16.67 ms in any shot, and zero intervals over 27.4 ms
+or hitches), but **63** per-shot ratchet assertions failed across **21 of 31**
+pinned shots. Two orphaned GPU suites were concurrently using the same integrated
+GPU, so this run is not valid regression-attribution evidence and cannot justify
+floor changes. It must be rerun on a genuinely idle reference machine. No floor
+or baseline was promoted, re-pinned, or loosened.
+
+The GPU and capture projects now keep independent `.vite-gpu` and `.vite-perf`
+optimizer caches with complete, discovery-disabled Babylon dependency sets. On
+macOS they launch full Chrome for Testing through a checked-in shim that preserves
+Playwright's CDP descriptors while redirecting browser stderr before detached
+crashpad helpers can inherit Playwright's pipe. A cold-cache **58-file / 130-test**
+GPU run consequently passed and exited normally in **134.83 s**; this changes test
+harness ownership only and does not alter renderer feature flags or acceptance
+thresholds.
 
 > **Corrected 2026-08-31 (`6-12`).** The figures above were the 2026-08-25
 > fix-pack's (120.6 FPS / 9.4 ms / 17.6 ms across seventeen shots). Two further
@@ -638,20 +686,24 @@ strict, and a rebaseline candidate is refused outright on an unpinned host.
 
 ## Capture harness
 
-`npm run perf:capture` renders the committed shot list against
-`tests/perf/baseline`. Notes that matter when reading its output:
+`npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
+`comparesToBaseline` value is true read their committed image from `tests/perf/baseline`;
+diagnostic/probe entries deliberately run without one. The thirty committed PNGs and the
+thirty-row table above therefore describe the promoted comparison set, not the length of
+the live capture list. Notes that matter when reading its output:
 
 - A normal capture treats `tests/perf/baseline` as strictly read-only and
   hard-fails a missing or dimension-mismatched committed image. Diagnostic
   screenshots and `report.json` are written only to the ignored
   `tests/perf/artifacts/` directory.
 - `npm run perf:capture:candidate` cannot be filtered. It buffers the exact
-  full canonical shot set, applies the visual, temporal, renderer-error and
-  strict tier-1 performance gates, and only then writes
-  a fresh timestamped directory beneath
-  `tests/perf/artifacts/rebaseline-candidates/` for review. It has no baseline
-  promotion path; copying an approved candidate into the committed set is a
-  separate, deliberate review action.
+  full canonical shot set through capture, then writes the diagnostic frames
+  and report to a fresh timestamped directory beneath
+  `tests/perf/artifacts/rebaseline-candidates/` with a `NOT APPROVABLE` status
+  before evaluating the visual, temporal, renderer-error and strict tier-1
+  performance gates. Only a run that passes every gate replaces that status
+  with `APPROVABLE`. It has no baseline promotion path; copying an approved
+  candidate into the committed set is a separate, deliberate review action.
 - Medium/balanced has one non-negotiable raw frame-delivery gate over each
   240-frame window: at least 60 wall-clock fps, frame-interval p95 at most
   16.67 ms, at most five intervals over 27.4 ms, and no interval over 50 ms.
@@ -678,35 +730,74 @@ strict, and a rebaseline candidate is refused outright on an unpinned host.
   or console error**, because the failure class this guards — the `5-10` startup
   Promise — hung with no error at all, so an error check alone cannot catch it.
 
-  **Built 2026-08-31 (`6-11` item 3): `tests/perf/cold-start.test.ts`.** Nothing
-  in the project measured startup before it — `perf:capture` boots one renderer
-  and holds it for the whole shot list, so its numbers are a warm steady state
-  and describe none of the first seconds a player meets. Two design points are
-  load-bearing:
+  **Built 2026-08-31 and closed 2026-09-02 (`6-11` item 3):
+  `tests/perf/cold-start.test.ts`.** Nothing in the project measured startup
+  before it — the shot capture boots one renderer and holds it for the whole
+  list, so its numbers are a warm steady state and describe none of the first
+  seconds a player meets. `npm run perf:cold-start` owns a fresh-browser run;
+  every canonical capture command runs that command first and selects only
+  `perf-capture.test.ts` in its second process. Thus scheduler order or file
+  parallelism cannot turn the cold measurement into a warmed one. Two design
+  points are load-bearing:
   - **Both failure halves are required, and neither is redundant.** The `4.5-0`
     crash hung with *no* error, so an error-only check watches it hang forever;
     the eroded world logged nothing while taking ~90 s, so a timeout-only check
     calls that healthy right up until it crosses.
-  - **"Ready" means a frame was PRESENTED**, not that `create()` resolved. A
-    renderer that resolves and cannot draw is the black-frame failure wearing a
-    green hat.
+  - **"Ready" means a readable, GPU-complete frame**, not that `create()` or
+    `render()` returned. Completion includes the render, same-task synchronous
+    canvas readback, the raw GPU submitted-work fence, and one event-loop task
+    for asynchronous error delivery. A renderer that resolves and cannot draw
+    is the black-frame failure wearing a green hat.
 
-  **First reading, on a hot host: 1,520 ms total, first frame 84 ms** (recorded
-  in `PHASE_6_EXECUTION_PLAN.md` deviation `D-26`; a single hot-host observation,
-  not a committed measurement — no artifact in this repository holds it) —
-  already at the ≤1.5 s target before the host is even cold. **The number is NOT
-  pinned:** the only ceiling in the file is `COLD_START_HANG_CEILING_MS =
-  120_000`, a deliberate hang-catcher two orders of magnitude above the target,
-  and it stays that way until a cold-host figure exists. Do not quote 120 s as a
-  budget — it is the value chosen precisely so that it never passes for one.
-  The eroded comparison is moot: that world is shelved.
+  **The analytic-default deadline is 2,300 ms to strengthened readiness.** It is
+  derived, not transcribed: the three retained fresh-browser reference-host ready
+  totals are **1,817.7 / 1,815.4 / 1,821.3 ms**. Their diagnostic split is
+  **1,537.6 / 1,537.1 / 1,542.6 ms** through `FlightRenderer.create()` plus
+  **280.1 / 278.3 / 278.7 ms** through completed frame delivery; the create-only
+  values are not readiness evidence. The median 1,817.7 ms plus 25% startup
+  headroom is 2,272.125 ms, rounded up to 50 ms. All three completed frames
+  reported **12 terrain tiles** and **1.81%** lower-outer-frame horizontal detail;
+  those semantic checks run after the readiness clock stops. A final canonical
+  confirmation also passed at **1,809.0 ms ready** (1,529.5 ms create + 279.5 ms
+  completion) with the same 12-tile and 1.81% semantic result.
+  `scripts/deliveryFloors.mts` owns the retained paired samples and derivation;
+  `tests/delivery-floors.test.ts` pins the result to 2,300 ms, and the executable
+  cold-start test enforces it on the reference host.
+  Hosted/unpinned runs report the same number while retaining the timeout,
+  console/renderer-error, readable-frame, terrain-draw, and trace-coverage gates.
+  `COLD_START_HANG_CEILING_MS = 120_000` remains a
+  separate hang catcher and must not be quoted as a budget. Likewise, W-1's
+  1.5 s figure is the parked **eroded** experiment's target, not the shipping
+  analytic deadline.
 
-  **The stage split is the finding, and it redirects the whole optimisation
-  question.** The six named startup stages sum to **284 ms of the 1,520** —
-  roughly **81% of cold start happens outside every stage the renderer names**
-  (material synthesis, scene construction, and whatever runs between the
-  awaits). Tuning the named stages would optimise a fifth of the problem.
-  Attribute that 81% before anyone tunes startup.
+  **D-26's missing attribution is closed.** The old trace timed selected
+  Promises, so synchronous constructors and direct awaits disappeared between
+  them. The replacement is a sequence of disjoint checkpoints: every wall-clock
+  millisecond in `FlightRenderer.create()` belongs to exactly one interval,
+  intervals are marked sync/async, and the test fails if their sum differs from
+  the measured total by 5 ms or more. A representative pre-optimization run
+  from the current 1,751–1,768 ms set attributed all 1,765 ms with a 0.0 ms gap:
+  **detail-runtime construction 942 ms**, scene shader readiness 408 ms,
+  hydrology startup 81 ms, airport construction 74 ms, and atmosphere/cloud
+  construction 66 ms. Detail alone was 53% of the total and 72% of the old
+  1,302 ms unnamed remainder.
+
+  The causal duplication was exact: `WorldDetailRuntime` planned and uploaded
+  the foliage atlas, then the impostor planner synthesized the same seeded
+  foliage plan again before sampling its mip 0. Three isolated Node readings
+  put one redundant plan at 449 / 425 / 413 ms. Production now shares the first
+  immutable plan with both uploads; a full-mip byte-parity test protects both
+  impostor arrays. This removes deterministic duplicate CPU work without
+  changing atlas resolution, content, or GPU memory. Three independent
+  fresh-browser runs after the change measured create **1,574 / 1,524 / 1,541
+  ms** and trace gap **0.0 ms** on all three. Their historical **81 / 82 / 83
+  ms** suffixes measured only how long `renderer.render()` took to return; they
+  predate synchronous readback, the GPU fence, and the error-delivery task, so
+  they are retained as render-call diagnostics and are **not readiness
+  measurements**. Detail construction fell to **731 / 704 / 717 ms**. Thus
+  every post-change create is at least 177 ms (10%) below every 1,751–1,768 ms
+  pre-change reading; the strengthened final samples above own readiness and
+  headroom.
 
 - `VITE_PERF_SHOTS=name[,name]` runs a subset. A full capture is ~4–6 minutes,
   which is the wrong feedback loop for diagnosing one bad shot; the filter

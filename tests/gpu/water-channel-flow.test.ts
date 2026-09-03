@@ -232,6 +232,7 @@ const GPU_ATMOSPHERE: AtmosphereSnapshot = {
   skyZenith: new Color3(0.1, 0.36, 0.78),
   skyHorizon: new Color3(0.58, 0.77, 0.96),
   ambientColor: new Color3(0.18, 0.27, 0.42),
+  skylightIlluminanceNormalized: 1,
   sunIlluminanceNormalized: 0.92,
   sunAngularRadiusRadians: 0.004675,
   cloudCoverage: 0.32,
@@ -857,12 +858,20 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       // (the D-6 lesson: a documented fallback behind an unbounded await is not
       // a fallback).
       engine.runRenderLoop(() => {});
-      await Promise.race([
-        scene.whenReadyAsync(),
-        new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("inland water material never became ready")), 30_000);
-        }),
-      ]);
+      let readinessTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          scene.whenReadyAsync(),
+          new Promise((_, reject) => {
+            readinessTimeout = setTimeout(
+              () => reject(new Error("inland water material never became ready")),
+              30_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (readinessTimeout !== undefined) clearTimeout(readinessTimeout);
+      }
       // Readiness IS the compile: Babylon reports a material ready only once
       // its Effect has compiled, and a WGSL error leaves it false forever —
       // which is precisely the "PREPARING AIRSPACE" hang. This test

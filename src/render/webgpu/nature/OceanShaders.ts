@@ -87,6 +87,14 @@ fn bandWindow(wavelength: f32) -> f32 {
   return low * high;
 }
 
+fn finiteDepthFactor(k_length: f32) -> f32 {
+  // tanh(x) has rounded to 1.0 in f32 by x=10. Saturating its dimensionless
+  // input there is physically lossless, and avoids undefined large-argument
+  // transcendental behaviour observed through ANGLE/Metal: short-wave
+  // cascades returned zero, while a few boundary texels became non-finite.
+  return tanh(min(k_length * params.water_depth_m, 10.0));
+}
+
 fn directionalJonswapSpectrum(k: vec2<f32>, k_length: f32, omega: f32) -> f32 {
   let gravity = params.gravity_m_s2;
   let wind = max(params.wind_speed_m_s, 0.05);
@@ -102,7 +110,7 @@ fn directionalJonswapSpectrum(k: vec2<f32>, k_length: f32, omega: f32) -> f32 {
     * peak_enhancement / max(pow(omega, 5.0), 1e-8);
 
   let capillary = params.surface_tension_over_density;
-  let tanh_depth = tanh(k_length * params.water_depth_m);
+  let tanh_depth = finiteDepthFactor(k_length);
   let dispersion_numerator = gravity * k_length + capillary * k_length * k_length * k_length;
   let dispersion_derivative = max(
     (gravity + 3.0 * capillary * k_length * k_length) * tanh_depth,
@@ -141,7 +149,7 @@ fn initializeOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>)
   let gravity_term = params.gravity_m_s2 * k_length;
   let capillary_term = params.surface_tension_over_density * k_length * k_length * k_length;
   let omega = sqrt(
-    max((gravity_term + capillary_term) * tanh(k_length * params.water_depth_m), 0.0),
+    max((gravity_term + capillary_term) * finiteDepthFactor(k_length), 0.0),
   );
   let spectrum = directionalJonswapSpectrum(k, k_length, omega);
   let linear_index = invocation.x + invocation.y * params.resolution;

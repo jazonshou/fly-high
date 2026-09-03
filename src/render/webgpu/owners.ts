@@ -1182,21 +1182,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "118 m, fuel farm 135 m, fence 168 m and outermost by construction.",
   },
   {
-    // 7-6: billboard cones with a soft depth intersection, reusing the aerial
-    // include's participating-media terms rather than a second fog model.
-    artifact: "light-volumetrics",
-    owner: "lighting",
-    definitionSites: ["src/render/webgpu/lighting/LightVolumetrics.ts"],
-    consumers: ["lighting"],
-    ownedSymbols: ["LightVolumetricsSystem", "LIGHT_VOLUMETRICS_WGSL"],
-    plannedBy: "7-6",
-    notes:
-      "The phase's first cut candidate. Needs the terrain-only depth buffer "
-      + "(`renderListPredicate = isCloudRaymarchDepthOccluder`), so it extends and "
-      + "re-owns that render list -- a single-owner change against the atmosphere "
-      + "subsystem, never a parallel list.",
-  },
-  {
     // 7-7: runway edge/threshold/centreline fixtures and the PAPI. The PAPI's
     // angular law is authored ANALYTICALLY here and deliberately not as IES:
     // but NOT for D-3's stated reason, which is FALSE and corrected here.
@@ -1340,6 +1325,5 @@ export const SEASONAL_FIELD_FAMILY: readonly SeasonalFieldFamilyMember[] = [
   {
     artifact: "land-cover-classifier",
     definitionSites: ["src/render/webgpu/terrain/LandCoverClassifier.ts"],
-    plannedBy: "4-6",
   },
 ];

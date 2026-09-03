@@ -67,6 +67,7 @@ import {
 import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
+  configureDepthAwareWaterRendering,
   WATER_BATHYMETRY_DECLARATIONS_WGSL,
   WATER_CHANNEL_FLOW_WGSL,
   WATER_DEPTH_OPTICS_WGSL,
@@ -78,6 +79,7 @@ import {
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SHORE_RUNUP_WGSL,
   WATER_SUN_SPECULAR_WGSL,
+  WATER_RENDERING_GROUP_ID,
   waterChannelGradePayload,
   waterLakeEffectiveFetchMeters,
   waterLakeFetchPayload,
@@ -193,6 +195,8 @@ uniform sunColor: vec3f;
 uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
+uniform sunIlluminanceNormalized: f32;
+uniform skylightIlluminanceNormalized: f32;
 uniform cloudCoverage: f32;
 uniform windDirection: vec2f;
 uniform windSpeed: f32;
@@ -457,10 +461,15 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
+  let diffuseIlluminanceNormalized = max(
+    uniforms.sunIlluminanceNormalized,
+    uniforms.skylightIlluminanceNormalized,
+  );
   let transmitted = waterVolumeRadiance(
     input.absoluteWorldXZ,
     input.worldPosition.y,
     depth,
+    diffuseIlluminanceNormalized,
     normal,
     view,
     cameraBelow,
@@ -515,6 +524,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     uniforms.sunColor,
     uniforms.skyZenith,
     uniforms.skyHorizon,
+    uniforms.skylightIlluminanceNormalized,
     directSunVisibility,
   );
   color = mix(color, foamColor, foam);
@@ -523,6 +533,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       color,
       distance(uniforms.cameraPosition, input.worldPosition),
       directSunVisibility,
+      diffuseIlluminanceNormalized,
     );
   }
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
@@ -1131,7 +1142,7 @@ function buildMesh(
   mesh.setVerticesData("waterData", arrays.waterData, false, 4);
   mesh.isPickable = false;
   mesh.receiveShadows = true;
-  mesh.renderingGroupId = 1;
+  mesh.renderingGroupId = WATER_RENDERING_GROUP_ID;
   mesh.alphaIndex = 1;
   return {
     mesh,
@@ -1329,6 +1340,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     initializeSynchronously = true,
   ) {
     registerHydrologyShaders();
+    configureDepthAwareWaterRendering(scene);
     const {
       atmosphere,
       bathymetry,
@@ -1380,6 +1392,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
+          "sunIlluminanceNormalized",
+          "skylightIlluminanceNormalized",
           "cloudCoverage",
           "windDirection",
           "windSpeed",
@@ -1544,6 +1558,14 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setFloat("sunAngularRadius", atmosphere.sunAngularRadiusRadians);
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
+    this.material.setFloat(
+      "sunIlluminanceNormalized",
+      atmosphere.sunIlluminanceNormalized,
+    );
+    this.material.setFloat(
+      "skylightIlluminanceNormalized",
+      atmosphere.skylightIlluminanceNormalized,
+    );
     this.material.setFloat("cloudCoverage", atmosphere.cloudCoverage);
     this.material.setFloat(
       "windSpeed",

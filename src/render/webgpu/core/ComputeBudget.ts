@@ -302,16 +302,17 @@ export const COMPUTE_DISPATCH_SEED_COST_MS: Readonly<Record<ComputeBudgetClient,
     splatCompute: 0.4,
     // Measured 0.301 ms/page: 16 azimuths × 24 steps over 136² texels.
     occlusionCompute: 0.3,
-    // `W-1d`, measured: 0.241 ms is ONE dispatch of the multi-frame
-    // page-erosion DAG at the 384² scratch, averaged over the mix a page
-    // actually runs — 37.4 ms of GPU over 155 dispatches (48 seed bands, 16
-    // geology bands, 2 breach, 1 decode, 24 stream-power, 64 talus). The
-    // producer prices each SUBMIT at its current stage's own measured figure
-    // (TERRAIN_EROSION_STAGE_SEED_COST_MS, next to the shaders); this
-    // client-level number is what the meter reports before the producer's
-    // first submit and what the CPU-worker fallback path books against.
-    // Re-measured with a 4x drift alarm by
-    // tests/gpu/terrain-page-erosion-cost.test.ts.
+    // `W-1d` / `W-4`: the stage table's weighted dispatch is 0.229 ms for the
+    // multi-frame page-erosion DAG at the 384² scratch — 37.4 ms of GPU over
+    // 163 dispatches (48 seed bands, 16 geology bands, 2 breach, 1 decode, 24
+    // stream-power, 64 talus, 8 fine-band). This client seed rounds that up to
+    // 0.24 ms. The producer prices each SUBMIT at its current stage's own
+    // measured figure (TERRAIN_EROSION_STAGE_SEED_COST_MS, next to the
+    // shaders); this client-level number is what the meter reports before the
+    // producer's first submit and what the CPU-worker fallback path books
+    // against.
+    // Re-measured by the concentrated complete-page and grouped one-sided
+    // guards in tests/gpu/terrain-page-erosion-cost.test.ts.
     erosionCompute: 0.24,
     // `6-9`, measured: 0.047-0.096 ms is ONE ring's placement dispatch at
     // tier 1 on the reference adapter (107,592 lanes across the three rings,

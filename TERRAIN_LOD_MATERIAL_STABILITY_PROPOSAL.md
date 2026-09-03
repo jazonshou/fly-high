@@ -123,3 +123,150 @@ mean-of-fine-slopes arm costs 36 height samples per point per level; the two
 agree at the levels they share to within 1.4 pp. **The proposed column is a 6×6
 Monte-Carlo estimate of the child mean, not an exact reduction** — it establishes
 the shape of the improvement, not its final magnitude.
+
+---
+
+## 2026-09-02 feasibility follow-up — no production patch yet
+
+The shipping analytic path was traced end to end after this proposal was
+written:
+
+1. `TerrainPageGenerator` writes one band-limited `r32float` height per height
+   texel. It retains no sub-texel moment.
+2. `PageSplatBake` receives that atlas plus one band-limited terrain-kernel page
+   uniform per job. `splatSlopeAspect` differences the stored heights.
+3. The classifier is run four times per season bucket. The two bucket vectors
+   are aligned and stored; no later stage has enough information to repair the
+   slope input.
+
+That makes the source question concrete. **The classifier cannot derive a mean
+fine slope from the value it receives.** A `filterWidthMeters` member by itself
+would be metadata attached to missing data, not an implementation.
+
+### Direct analytic evaluation is effective, but does not fit the compute row
+
+A second deterministic control sampled 749 land points from the same
+`phase1-perf-baseline` world. The current band-limited central difference went
+from **15.62% steep at L0 to 0.00% at L8** on that subset. A 2×2 stratified mean
+of full-bandwidth 2 m slopes stayed at **15.75% at L0 and 9.75% at L8** when its
+footprint was the height texel. This independently reproduces the proposal's
+shape with fewer taps. It is evidence that the missing moment is causal; it is
+not approval of a four-tap estimator. Re-running the exact L8 control gives
+**9.7463%** for that 512 m height-texel footprint. Widening the same four points
+to the 1,024 m channel-texel footprint gives **12.6836%**; that was the 12.68%
+figure quoted in the follow-up status, but it is a different filter support.
+The 9.75% value is authoritative here because the proposal explicitly passes
+`job.shape.y`, the height-texel width.
+
+Four slope samples still require four height evaluations each. Even if the
+result is computed once per channel texel and shared by both seasons, one
+136×136 splat page therefore adds:
+
+```
+136 × 136 × 4 slopes × 4 heights = 295,936 full-bandwidth height evaluations
+295,936 × 34 value-noise calls       = 10,061,824 value-noise calls
+```
+
+That is deliberately the optimistic lower bound. Applying a separate four-tap
+mean at each of the bake's four outer splat samples would multiply it by four.
+
+For scale, the measured L3 height-page dispatch performs 264×264×4 = 278,784
+height evaluations and is pinned at **1.9 ms/page**. The existing whole splat
+dispatch is pinned at **0.4 ms/page**, while its Balanced frame row is only
+**0.25 ms**. The direct route's lower-bound work is already larger than the
+entire measured height-page sample count, and its evaluations are
+full-bandwidth rather than the cheaper coarse kernel. This comparison is a
+workload lower bound, not a GPU timing claimed for an unbuilt shader. It is
+enough to reject inlining the estimator into the splat bake without first
+funding and measuring a new compute row.
+
+It has an authority cost as well. It is valid only while the analytic kernel is
+the height authority, must fall back to the atlas for the shelved eroded mode,
+and must include or explicitly blend out the runway earthworks. Shipping an
+unconditional analytic read would repeat the cross-authority coupling warned
+about by `5-12a`.
+
+### A full-resolution companion channel does not fit the current memory pin
+
+The smallest straightforward persistent representation is one unsigned byte
+per channel texel, keyed by height slot so it exists before channel admission.
+At Balanced's 196 slots it costs **3.06 MiB for the 128² cores**, or **3.46 MiB
+with the required 136² gutter**. The last accepted analytic capture inventories
+**492.3 MiB against a 495 MiB ceiling**, leaving about **2.7 MiB**. Thus even the
+core-only form exceeds the measured headroom, while omitting the gutter makes
+bilinear reads disagree at page edges. R16 and R32 forms cost 6.91 and 13.83 MiB
+respectively.
+
+Packing to four bits could fit, but it is not a free format substitution: over
+the classifier's 0.24–0.58 steepness transition, full-range UNORM4 advances in
+0.067 steps. That quantisation is large enough to move a material boundary and
+needs its own visual and distribution evidence. It is not justified here.
+
+### Resident-child propagation cannot supply coarse-first pages
+
+The atlas is deliberately coarse-first and pages are independently
+generatable. Requiring fine children before their parent reverses that contract;
+an L8 page has 65,536 L0 descendants. A reduction over resident children would
+therefore either leave the first coarse view without the statistic or defeat
+the reason the clipmap exists. The reduction source must be independently
+available, not opportunistically resident.
+
+### Smallest architecture-compliant future shape
+
+The viable design is a **derived roughness/slope-moment authority**, not another
+classifier rule:
+
+- Build a world-anchored, coarse-first slope-moment pyramid or clipmap from the
+  active height authority. For analytic worlds its producer may compose the
+  shared terrain kernel and runway earthworks; an eroded-world revival must
+  derive it from evolved height rather than silently using the analytic field.
+- The finest statistic has a minimum support near **33 m**, then reductions
+  carry the mean of child slopes. A coarse value is a mixture moment, never the
+  slope of an averaged height.
+- `PageSplatBake` samples that one source at the channel footprint and passes
+  the resulting slope to the existing classifier. The top-four/seasonal weight
+  machinery remains unchanged.
+- Fund its storage and generation explicitly before implementation. A toroidal
+  multi-level field may be smaller than one value per resident page texel, but
+  its coverage, recenter seams, startup availability and compute admission are
+  design inputs, not details to guess inside the splat shader.
+
+This is the smallest form that preserves coarse-first residency, one active
+height authority, bounded work, and scale-stable content. Choosing its spatial
+extent/levels and funding either memory or dispatch time are the exact blockers
+left open.
+
+### The visual-scale counterfactual narrows the target, but is not a flight sign-off
+
+The canonical `mountain-close` diagnostic now holds every non-slope classifier
+input fixed and box-averages the existing normalised slope. On 57,602 qualifying
+samples, the baseline has 2,146 material chords in the reported 12–100 m band,
+3,289 Grass/DryGrass↔Rock crossings, and 23.25% Rock. The measured alternatives
+are:
+
+| slope support | reported-scale chords | mineral crossings | Rock |
+|---|---:|---:|---:|
+| current point slope | 2,146 | 3,289 | 23.25% |
+| 33 m (16 m half-width) | 1,307 | 1,955 | 21.83% |
+| 65 m (32 m half-width) | 867 | 1,304 | 19.36% |
+| 129 m (64 m half-width) | 441 | 607 | 15.00% |
+
+The 33 m support is the first production candidate: it removes 39% of the
+reported-scale chords and 41% of mineral crossings while moving Rock only
+1.42 percentage points. The 65 m row is a stronger 60% patch reduction at a
+3.89-point Rock cost; 129 m identifies the destructive end of the sweep. These
+are CPU classifier counterfactuals, **not rendered frames and not user visual
+confirmation**. A future producer must move this quantitative diagnostic and a
+reviewed visual baseline together.
+
+### Acceptance gate required with that producer
+
+Assertion 85 remains useful, but its L4↔L3 dominant-id membership is blind to
+the 24× endpoint collapse. The implementation change must add a shipping-path
+gate that reads **Rock weight/area over the same world ground** at L0, L2, L4,
+L6 and L8. It must require at least 500 land samples, require the finest level
+to contain at least 10% Rock (non-vacuity), and require the coarsest Rock share
+to retain at least half of the finest share. That last bound comfortably admits
+the measured 1.6× mixture residual and rejects 15.61% → 0.64% by construction.
+The mountain patch-population diagnostic is the independent near-field guard;
+neither test substitutes for the other.

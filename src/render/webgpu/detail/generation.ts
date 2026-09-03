@@ -1181,8 +1181,6 @@ function generateRocks(
   return rocks;
 }
 
-const CLUTTER_KINDS: readonly ClutterKind[] = ["log", "stump", "branchLitter", "mossCushion"];
-
 /**
  * `6-6`: the litter driver, and the one place the soil-depth channel replaces
  * its stand-in.

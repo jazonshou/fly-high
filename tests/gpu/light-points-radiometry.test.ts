@@ -53,10 +53,9 @@ import {
  * floats top out at 65,504: the brightest arm below peaks near 5e4, inside
  * range by design — re-check that headroom if intensities grow.
  *
- * SKIPPED — AN ENVIRONMENT WALL, NOT A FEATURE FAILURE. Recorded precisely
- * because a zero readback here looks exactly like the absent-feature failure
- * this test exists to catch. In the `vitest.gpu.config.ts` environment,
- * anything coupled to the canvas swapchain cannot be read back:
+ * The original harness was blocked by an environment wall, not a feature
+ * failure. In the `vitest.gpu.config.ts` environment, anything coupled to the
+ * canvas swapchain cannot be read back:
  *
  *   Destroyed texture [Texture "IOSurface(...WebgpuSwapChainTexture...)"]
  *   used in a submit.
@@ -71,13 +70,11 @@ import {
  * textures never ride a presented frame — the wall is specifically
  * swapchain-coupled RENDERING, not readback per se.
  *
- * The assertions below are kept intact: they are correct, and they run the
- * moment either (a) this suite gains a presentation-free render path (an
- * RTT rendered outside `scene.render()`, or an engine with no canvas), or
- * (b) the pin is ported into the perf-capture harness, which is a real
- * browser writing real PNGs and is where every working lamp measurement of
- * 2026-09-01 came from. Until then the durable regression pin for "the
- * airfield is lit" belongs beside the capture baselines, not here.
+ * The probe now takes the first route that note prescribed: render the RTT
+ * directly, outside `scene.render()`. No swapchain texture enters the submit,
+ * while the real light material, half-float blend target, and device readback
+ * remain unchanged. This makes all three assertions an active real-adapter
+ * gate instead of parked executable documentation.
  */
 
 const CANVAS_SIZE = 128;
@@ -145,69 +142,81 @@ async function readLamp(
   distanceMeters: number,
   intensity: number,
 ): Promise<LampReading> {
+  const gpuErrorOffset = gpuErrors.length;
   const scene = new Scene(engine);
-  scene.clearColor = new Color4(0, 0, 0, 1);
-  const camera = new FreeCamera("camera", Vector3.Zero(), scene);
-  camera.setTarget(new Vector3(0, 0, 1));
-  camera.minZ = 0.08;
-  camera.maxZ = Math.max(10_000, distanceMeters * 2);
-  scene.activeCamera = camera;
+  let system: LightPointSystem | null = null;
+  let target: RenderTargetTexture | null = null;
+  try {
+    scene.clearColor = new Color4(0, 0, 0, 1);
+    const camera = new FreeCamera("camera", Vector3.Zero(), scene);
+    camera.setTarget(new Vector3(0, 0, 1));
+    camera.minZ = 0.08;
+    camera.maxZ = Math.max(10_000, distanceMeters * 2);
+    scene.activeCamera = camera;
 
-  const fixture: LightPointFixture = {
-    position: [0, 0, distanceMeters],
-    aim: [0, -1, 0],
-    intensity,
-    profileRow: 0,
-    radiusMeters: AIRFIELD_LAMP_PHOTOMETRY.edge.radiusMeters,
-    color: [1, 1, 1],
-    beamCosineCutoff: -1,
-  };
+    const fixture: LightPointFixture = {
+      position: [0, 0, distanceMeters],
+      aim: [0, -1, 0],
+      intensity,
+      profileRow: 0,
+      radiusMeters: AIRFIELD_LAMP_PHOTOMETRY.edge.radiusMeters,
+      color: [1, 1, 1],
+      beamCosineCutoff: -1,
+    };
 
-  const system = new LightPointSystem(scene, [fixture], 1);
-  system.setOutputSize(RTT_SIZE, RTT_SIZE);
-  system.setCameraPosition(camera.position);
+    system = new LightPointSystem(scene, [fixture], 1);
+    system.setOutputSize(RTT_SIZE, RTT_SIZE);
+    system.setCameraPosition(camera.position);
 
-  const target = new RenderTargetTexture(
-    "lamp-radiometry-target",
-    RTT_SIZE,
-    scene,
-    {
-      type: Constants.TEXTURETYPE_HALF_FLOAT,
-      format: Constants.TEXTUREFORMAT_RGBA,
-      generateMipMaps: false,
-      generateDepthBuffer: true,
-    },
-  );
-  target.activeCamera = camera;
-  target.renderList = scene.meshes.slice();
-  target.clearColor = new Color4(0, 0, 0, 1);
-  scene.customRenderTargets.push(target);
+    target = new RenderTargetTexture(
+      "lamp-radiometry-target",
+      RTT_SIZE,
+      scene,
+      {
+        type: Constants.TEXTURETYPE_HALF_FLOAT,
+        format: Constants.TEXTUREFORMAT_RGBA,
+        generateMipMaps: false,
+        generateDepthBuffer: true,
+      },
+    );
+    target.activeCamera = camera;
+    target.renderList = scene.meshes.slice();
+    target.clearColor = new Color4(0, 0, 0, 1);
+    scene.customRenderTargets.push(target);
 
-  // Effects compile asynchronously; a fixed small frame count captures
-  // nothing (the post-process-test lesson). Bounded readiness loop, then a
-  // couple of settled frames so the read is of a complete, quiet frame.
-  let ready = false;
-  for (let frame = 0; frame < 240 && !ready; frame += 1) {
-    scene.render();
-    ready = scene.meshes.every((mesh) => mesh.isReady(true));
+    // Effects compile asynchronously; a fixed small frame count captures
+    // nothing (the post-process-test lesson). Render the target directly so the
+    // probe never acquires or submits a canvas swapchain texture.
+    let ready = false;
+    for (let frame = 0; frame < 240 && !ready; frame += 1) {
+      target.render();
+      ready = scene.meshes.every((mesh) => mesh.isReady(true));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    for (let frame = 0; frame < 3; frame += 1) target.render();
+
+    const pixels = toFloats((await target.readPixels())!);
+    let peak = 0;
+    let flux = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const r = pixels[index]!;
+      if (r > peak) peak = r;
+      flux += r;
+    }
+
+    // Device errors are delivered asynchronously. The offset gives this probe
+    // ownership of only the events emitted during its own render/readback, and
+    // the queue fence plus one task ensures those events arrive before the
+    // immutable reading is returned to its assertion.
+    const device = (engine as unknown as { readonly _device: GPUDevice })._device;
+    await device.queue.onSubmittedWorkDone();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    return { peak, flux, gpuErrorsSeen: gpuErrors.slice(gpuErrorOffset) };
+  } finally {
+    target?.dispose();
+    system?.dispose();
+    scene.dispose();
   }
-  for (let frame = 0; frame < 3; frame += 1) scene.render();
-
-  const pixels = toFloats((await target.readPixels())!);
-  let peak = 0;
-  let flux = 0;
-  for (let index = 0; index < pixels.length; index += 4) {
-    const r = pixels[index]!;
-    if (r > peak) peak = r;
-    flux += r;
-  }
-  const reading: LampReading = { peak, flux, gpuErrorsSeen: [...gpuErrors] };
-  target.dispose();
-  system.dispose();
-  scene.dispose();
-  gpuErrors.length = 0;
-  return reading;
 }
 
 /** The tint the vertex stage should produce: intensity / (d^2 * psf^2). */
@@ -216,7 +225,7 @@ function composedPeak(distanceMeters: number, intensity: number): number {
     / (distanceMeters * distanceMeters * LIGHT_POINT_PSF_RADIUS_PIXELS ** 2);
 }
 
-describe.skip("7-5 light-point radiometry on a real adapter (SKIPPED: swapchain readback wall — see docblock)", () => {
+describe("7-5 light-point radiometry on a real adapter", () => {
   it("delivers a nonzero, composition-matching HDR value for one edge lamp at approach range", async () => {
     const distance = 2_500;
     const intensity =
@@ -251,6 +260,8 @@ describe.skip("7-5 light-point radiometry on a real adapter (SKIPPED: swapchain 
     const far = await readLamp(2_500, intensity);
     const near = await readLamp(1_250, intensity);
 
+    expect(far.gpuErrorsSeen, `far reading: ${far.gpuErrorsSeen.join("\n")}`).toEqual([]);
+    expect(near.gpuErrorsSeen, `near reading: ${near.gpuErrorsSeen.join("\n")}`).toEqual([]);
     expect(far.peak).toBeGreaterThan(0);
     expect(near.peak).toBeGreaterThan(0);
     // Half the distance, four times the irradiance. Both readings sit on the
@@ -277,6 +288,11 @@ describe.skip("7-5 light-point radiometry on a real adapter (SKIPPED: swapchain 
       AIRFIELD_LAMP_PHOTOMETRY.edge.intensityCandela * AIRFIELD_LAMP_SCENE_SCALE;
     const one = await readLamp(2_500, base);
     const lifted = await readLamp(2_500, base * 157);
+    expect(one.gpuErrorsSeen, `base reading: ${one.gpuErrorsSeen.join("\n")}`).toEqual([]);
+    expect(
+      lifted.gpuErrorsSeen,
+      `lifted reading: ${lifted.gpuErrorsSeen.join("\n")}`,
+    ).toEqual([]);
     expect(one.peak).toBeGreaterThan(0);
     const ratio = lifted.peak / one.peak;
     expect(ratio).toBeGreaterThan(120);

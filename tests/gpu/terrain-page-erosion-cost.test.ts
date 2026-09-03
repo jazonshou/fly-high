@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import { COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
-import { TERRAIN_EROSION_STAGE_SEED_COST_MS } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
+import {
+  EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS,
+  TERRAIN_EROSION_PRODUCTION_CONFIG,
+} from "../../src/render/webgpu/terrain/TerrainErosionCompute";
+import {
+  TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
+  TERRAIN_EROSION_SEED_BAND_ROWS,
+  TERRAIN_EROSION_STAGE_SEED_COST_MS,
+} from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import {
   buildHarness,
@@ -19,15 +27,67 @@ import {
  * to turn it on), so these constants ARE the admission prices the meter uses
  * for the whole of a normal session; the running estimate only ever refines
  * them on a capture run. That is what makes them load-bearing rather than
- * documentation, and what this test exists to keep honest at a 4x drift alarm.
+ * documentation. This test keeps their weighted page admission cost honest:
+ * one-sided whole-page and grouped alarms over complete physical DAG runs.
  *
  * Its own file because the measurement needs a device created WITH
  * `timestamp-query`, and a browser page that has already built and disposed
  * several WebGPU devices does not reliably get one — see the harness note.
  */
 
+type CostStage = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
+type StageMeasurements = Readonly<
+  Record<CostStage, { readonly milliseconds: number; readonly dispatches: number }>
+>;
+
+const COST_STAGES = Object.keys(TERRAIN_EROSION_STAGE_SEED_COST_MS) as CostStage[];
+
+/**
+ * The complete production DAG, derived from the same geometry/configuration
+ * constants as the producer. This is the timing sample's non-vacuity guard:
+ * a cheap result with a missing shader is not a fast page.
+ */
+const EXPECTED_STAGE_DISPATCHES: Readonly<Record<CostStage, number>> = Object.freeze({
+  seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
+  // Erodibility before breach and repose after stream power.
+  geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
+  breach: 2,
+  decode: 1,
+  streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
+  // One gather and one apply per iteration.
+  talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
+  fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
+});
+
+const TIMED_PAGES = 4;
+const REQUIRED_CONCENTRATED_PAGES = TIMED_PAGES - 1;
+const TIMING_DRAIN_FRAMES = 12;
+
+const MAJOR_STAGES: readonly CostStage[] = ["seed", "talus"];
+const MINOR_STAGES: readonly CostStage[] = COST_STAGES.filter(
+  (stage) => !MAJOR_STAGES.includes(stage),
+);
+
+function pinnedCost(stages: readonly CostStage[]): number {
+  return stages.reduce(
+    (total, stage) => total
+      + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * EXPECTED_STAGE_DISPATCHES[stage],
+    0,
+  );
+}
+
+function measuredCost(sample: StageMeasurements, stages: readonly CostStage[]): number {
+  return stages.reduce((total, stage) => total + sample[stage].milliseconds, 0);
+}
+
+const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES);
+const PINNED_MAJOR_COST_MS = pinnedCost(MAJOR_STAGES);
+const PINNED_MINOR_COST_MS = pinnedCost(MINOR_STAGES);
+
 describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
-  it("measures each DAG stage's per-dispatch cost and holds the pinned seeds", async (context) => {
+  it("holds the complete DAG's concentrated cost against its pinned admission price", async (context) => {
     const capability = await inspectWebGpuCapabilities();
     if (!capability.features.has("timestamp-query")) {
       context.skip(
@@ -43,56 +103,39 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       const harness = buildHarness(engine, scene);
       try {
         const address = createWorldPageAddress(3, -3, 5);
-        // One warm page pays pipeline creation; the measurement is the second.
-        const warm = await runPage(harness, address, 4);
-        harness.producer.consumeStageMeasurements();
-        // MINIMUM of three timed pages, per stage — not one measurement.
-        //
-        // Contention can only ever make a dispatch look SLOWER (another
-        // process taking the GPU, a thermal step, a browser doing layout), so
-        // the minimum is the robust estimator for "what this costs when the
-        // machine is not fighting us", and a genuine regression still moves it.
-        // A single sample made this alarm fire three times across separate
-        // sessions on a busy host — measured 0.993-1.392 ms for `breach` under
-        // load against 0.063-0.065 ms quiet, a 20x spread that says nothing
-        // about the code. The 4x alarm below stays exactly as tight.
-        //
-        // The SEED constants are deliberately NOT re-pinned to this minimum.
-        // They serve a different purpose: ComputeBudget admits work in a live
-        // frame where contention is real, so a seed set to the best case would
-        // under-price every dispatch and over-admit. The seed wants a typical
-        // cost; the regression alarm wants a stable one. Same number, two jobs,
-        // so only the alarm's estimator changed here.
-        let timed = await runPage(harness, address, 4);
-        const first = harness.producer.consumeStageMeasurements();
-        const samples: Record<string, { milliseconds: number; dispatches: number }> = {};
-        for (const [stage, sample] of Object.entries(first)) {
-          samples[stage] = { milliseconds: sample.milliseconds, dispatches: sample.dispatches };
-        }
-        for (let repeat = 0; repeat < 2; repeat += 1) {
-          timed = await runPage(harness, address, 4);
-          for (const [stage, sample] of Object.entries(
-            harness.producer.consumeStageMeasurements(),
-          )) {
-            const best = samples[stage];
-            if (best && sample.milliseconds < best.milliseconds) {
-              best.milliseconds = sample.milliseconds;
-              best.dispatches = sample.dispatches;
-            }
+        const drainTiming = async () => {
+          // A stage's last timestamp resolves after the page promise. Drain it
+          // before assigning the counters to a page; otherwise the fine-band
+          // tail of page N can be mistaken for the first sample of page N+1.
+          for (let frame = 0; frame < TIMING_DRAIN_FRAMES; frame += 1) {
+            await nextFrame();
+            harness.producer.consumeMeasuredDispatchCostMs();
           }
-        }
-        // The last dispatches' counters resolve a frame or more later.
-        for (let wait = 0; wait < 12; wait += 1) {
-          harness.producer.consumeMeasuredDispatchCostMs();
-          await nextFrame();
-        }
-        return {
-          samples: samples as ReturnType<typeof harness.producer.consumeStageMeasurements>,
-          warmFrames: warm.frames,
-          timedFrames: timed.frames,
-          totalMilliseconds: harness.producer.lastCompletedPageTiming?.totalMilliseconds ?? 0,
-          dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0,
         };
+
+        // One warm page pays pipeline creation. Drain and discard ALL of its
+        // counters rather than letting a delayed warm timestamp enter page 1.
+        const warm = await runPage(harness, address, 4);
+        await drainTiming();
+        harness.producer.consumeStageMeasurements();
+
+        const pages: Array<{
+          readonly samples: StageMeasurements;
+          readonly frames: number;
+          readonly wallMilliseconds: number;
+          readonly dispatches: number;
+        }> = [];
+        for (let repeat = 0; repeat < TIMED_PAGES; repeat += 1) {
+          const timed = await runPage(harness, address, 4);
+          await drainTiming();
+          pages.push({
+            samples: harness.producer.consumeStageMeasurements(),
+            frames: timed.frames,
+            wallMilliseconds: harness.producer.lastCompletedPageTiming?.totalMilliseconds ?? 0,
+            dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0,
+          });
+        }
+        return { pages, warmFrames: warm.frames };
       } finally {
         harness.dispose();
       }
@@ -106,59 +149,104 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       );
       return;
     }
-    const perDispatch = Object.fromEntries(
-      Object.entries(measured.samples).map(([stage, sample]) => [
-        stage,
-        sample.dispatches > 0 ? sample.milliseconds / sample.dispatches : 0,
-      ]),
-    ) as Record<keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS, number>;
-    const stageTotals = Object.fromEntries(
-      Object.entries(measured.samples).map(([stage, sample]) => [stage, sample.milliseconds]),
-    );
-    console.log(
-      "W-1d per-dispatch stage cost (ms):",
-      JSON.stringify(perDispatch, (_, value) =>
-        typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value),
-      "| whole-page stage totals (ms):",
-      JSON.stringify(stageTotals, (_, value) =>
-        typeof value === "number" ? Math.round(value * 100) / 100 : value),
-      "| dispatches:",
-      measured.dispatches,
-      "| frames at 4 dispatches/pump:",
-      measured.timedFrames,
-      "| wall ms:",
-      Math.round(measured.totalMilliseconds),
-    );
-    // The client-level seed is what the meter starts every session at, before
-    // the producer's first per-stage submit: the average dispatch of a whole
-    // page's mix.
-    const totalMilliseconds = Object.values(measured.samples)
-      .reduce((sum, sample) => sum + sample.milliseconds, 0);
-    const totalDispatches = Object.values(measured.samples)
-      .reduce((sum, sample) => sum + sample.dispatches, 0);
-    const averageDispatchMs = totalMilliseconds / totalDispatches;
-    console.log(
-      "W-1d whole-page GPU cost:",
-      Math.round(totalMilliseconds * 100) / 100,
-      "ms over",
-      totalDispatches,
-      "dispatches; average",
-      Math.round(averageDispatchMs * 10_000) / 10_000,
-      "ms/dispatch vs the pinned",
-      COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute,
-    );
-    expect(averageDispatchMs, "the erosionCompute seed drifted below a quarter")
-      .toBeGreaterThan(COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute / 4);
-    expect(averageDispatchMs, "the erosionCompute seed drifted above 4x")
-      .toBeLessThan(COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute * 4);
 
-    for (const [stage, pinned] of Object.entries(TERRAIN_EROSION_STAGE_SEED_COST_MS)) {
-      const value = perDispatch[stage as keyof typeof perDispatch];
-      expect(measured.samples[stage as keyof typeof measured.samples].dispatches)
-        .toBeGreaterThan(0);
-      expect(value, `${stage} measured`).toBeGreaterThan(0);
-      expect(value, `${stage} drifted below the pinned seed / 4`).toBeGreaterThan(pinned / 4);
-      expect(value, `${stage} drifted above the pinned seed x 4`).toBeLessThan(pinned * 4);
-    }
+    const expectedTotalDispatches = Object.values(EXPECTED_STAGE_DISPATCHES)
+      .reduce((sum, count) => sum + count, 0);
+    const pageRows = measured.pages.map((page, pageIndex) => {
+      for (const stage of COST_STAGES) {
+        const sample = page.samples[stage];
+        expect(
+          sample.dispatches,
+          `timed page ${pageIndex + 1} did not measure every ${stage} dispatch`,
+        ).toBe(EXPECTED_STAGE_DISPATCHES[stage]);
+        expect(
+          sample.milliseconds,
+          `timed page ${pageIndex + 1} measured ${stage} dispatches but no GPU time`,
+        ).toBeGreaterThan(0);
+      }
+      expect(page.dispatches, `timed page ${pageIndex + 1} DAG dispatch count`)
+        .toBe(expectedTotalDispatches);
+      const total = measuredCost(page.samples, COST_STAGES);
+      const major = measuredCost(page.samples, MAJOR_STAGES);
+      const minor = measuredCost(page.samples, MINOR_STAGES);
+      const perDispatch = Object.fromEntries(COST_STAGES.map((stage) => [
+        stage,
+        page.samples[stage].milliseconds / page.samples[stage].dispatches,
+      ]));
+      console.log(
+        `W-1d timed page ${pageIndex + 1}/${TIMED_PAGES}:`,
+        `${total.toFixed(2)} ms GPU (${(total / expectedTotalDispatches).toFixed(4)} ms/dispatch),`,
+        `major ${major.toFixed(2)} ms, minor ${minor.toFixed(2)} ms,`,
+        `${page.frames} pump frames, ${Math.round(page.wallMilliseconds)} ms wall; stages`,
+        JSON.stringify(perDispatch, (_, value) =>
+          typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value),
+      );
+      return { pageIndex, total, major, minor };
+    });
+
+    // Timestamp queries this short report queue/driver stalls as dispatch
+    // time. One contaminated page is tolerated explicitly; a real shader or
+    // workload regression is present in the other three as well. Unlike the
+    // old per-stage minima, these are four PHYSICAL page totals — no synthetic
+    // page assembled from seven different best-case runs.
+    const wholePageLimit = PINNED_PAGE_COST_MS * 2;
+    const concentrated = pageRows.filter((page) => page.total < wholePageLimit);
+    const noisy = pageRows.filter((page) => page.total >= wholePageLimit);
+    const noiseReport = noisy.length === 0
+      ? "single noisy-page allowance unused"
+      : noisy.length === 1
+        ? `tolerated noisy page: ${noisy[0]!.pageIndex + 1}`
+        : `excess noisy pages: ${noisy.map((page) => page.pageIndex + 1).join(", ")} `
+          + "(only one is tolerated)";
+    console.log(
+      `W-1d admission check: ${concentrated.length}/${TIMED_PAGES} pages below `
+      + `${wholePageLimit.toFixed(2)} ms (2x pinned ${PINNED_PAGE_COST_MS.toFixed(2)} ms); `
+      + noiseReport,
+    );
+    expect(
+      concentrated.length,
+      `only ${concentrated.length}/${TIMED_PAGES} complete pages were below 2x the `
+      + `${PINNED_PAGE_COST_MS.toFixed(2)} ms admission price; one noisy page is `
+      + "tolerated, but a cost regression must not concentrate in two or more",
+    ).toBeGreaterThanOrEqual(REQUIRED_CONCENTRATED_PAGES);
+
+    // Drop the same single slowest physical page for both groups. Seed+talus
+    // carry 92% of the declared page price and have 112 dispatches/page, so a
+    // 2x grouped guard is stable and catches the stages that can actually
+    // break page admission. The five minor stages are only 8% of the price and
+    // include the 1-dispatch decode and 20-us stream-power counters; combining
+    // all 51 dispatches/page supports the original one-sided 4x alarm without
+    // pretending an individual short counter has that precision.
+    const retained = [...pageRows]
+      .sort((first, second) => first.total - second.total)
+      .slice(0, REQUIRED_CONCENTRATED_PAGES);
+    const retainedMajor = retained.reduce((sum, page) => sum + page.major, 0) / retained.length;
+    const retainedMinor = retained.reduce((sum, page) => sum + page.minor, 0) / retained.length;
+    console.log(
+      `W-1d retained-page groups: major ${retainedMajor.toFixed(2)} / `
+      + `${PINNED_MAJOR_COST_MS.toFixed(2)} ms pinned, minor ${retainedMinor.toFixed(2)} / `
+      + `${PINNED_MINOR_COST_MS.toFixed(2)} ms pinned; retained pages `
+      + retained.map((page) => page.pageIndex + 1).join(", "),
+    );
+    expect(
+      retainedMajor,
+      "seed+talus exceeded 2x their weighted admission price on the retained pages",
+    ).toBeLessThan(PINNED_MAJOR_COST_MS * 2);
+    expect(
+      retainedMinor,
+      "combined minor stages exceeded 4x their weighted admission price on the retained pages",
+    ).toBeLessThan(PINNED_MINOR_COST_MS * 4);
+
+    // Keep the published client seed connected to the stage table. A future
+    // seed edit cannot make the aggregate gate pass by silently changing only
+    // one side of the admission contract. It is intentionally conservative:
+    // the stage-weighted 0.229 ms rounds up to 0.24 ms, so compare the policy
+    // relationship rather than demanding false decimal equality.
+    const weightedDispatchSeed = PINNED_PAGE_COST_MS / expectedTotalDispatches;
+    expect(
+      Math.abs(weightedDispatchSeed - COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute)
+        / COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute,
+      "the client seed and weighted stage table drifted more than 10% apart",
+    ).toBeLessThan(0.1);
   }, 240_000);
 });

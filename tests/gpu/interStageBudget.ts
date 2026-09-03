@@ -162,7 +162,6 @@ export function auditInterStage(
     ? `headroom=${headroom}`
     : `NOT SHIPPING -- absent from every compiled shader: ${absent.join(", ")}`
       + `${rig.missingPaths ? ` (${rig.missingPaths})` : ""}; headroom is an artifact`;
-  // eslint-disable-next-line no-console
   console.log(`[inter-stage] ${rig.label}: peak=${peak}/${INTER_STAGE_LIMIT} ${suffix}`);
   return { peak, headroom, absent };
 }

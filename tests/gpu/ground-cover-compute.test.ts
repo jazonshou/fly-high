@@ -249,10 +249,11 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
       // The meter saw the client: a real per-dispatch cost replaced the seed.
       const measured = budget.estimatedCostMs("groundCoverCompute");
       expect(measured).toBeGreaterThan(0);
-      // Re-measured, with a 4x drift alarm in both directions. This is the
-      // number `COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute` claims and
-      // the `groundCoverCompute` budget row is sized against; a drift means
-      // the row is now fiction.
+      // Re-measured with a one-sided 4x regression alarm. This is the number
+      // `COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute` claims and the
+      // `groundCoverCompute` budget row is sized against. A slower dispatch
+      // can invalidate that row; a faster sub-0.02 ms observation cannot and
+      // is too close to timestamp granularity to support a stable lower bound.
       const seed = COMPUTE_DISPATCH_SEED_COST_MS.groundCoverCompute;
       // Without `timestamp-query` the engine never populates the counter and
       // the estimate stays exactly at its seed — report that rather than
@@ -264,7 +265,6 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
       if (measured !== seed) {
         expect(measured, `measured ${measured.toFixed(4)} ms vs seed ${seed} ms`)
           .toBeLessThan(seed * 4);
-        expect(measured).toBeGreaterThan(seed / 4);
       }
       // Uncaptured errors arrive asynchronously — drain the queue before the
       // zero-error assertion is allowed to mean anything.

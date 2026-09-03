@@ -33,8 +33,38 @@ const flightRenderer = readFileSync(
   new URL("../src/render/FlightRenderer.ts", import.meta.url),
   "utf8",
 );
+const gpuConfig = readSource(new URL("../vitest.gpu.config.ts", import.meta.url));
+const perfConfig = readSource(new URL("../vitest.perf.config.ts", import.meta.url));
+const chromiumLaunch = readSource(
+  new URL("../scripts/playwrightChromiumLaunch.ts", import.meta.url),
+);
+const chromiumShim = readSource(
+  new URL("../scripts/playwright-chromium-macos.sh", import.meta.url),
+);
 
 describe("perf-capture baseline policy", () => {
+  it("keeps the two browser projects out of the shared Node optimizer cache", () => {
+    expect(gpuConfig).toContain('cacheDir: "node_modules/.vite-gpu"');
+    expect(perfConfig).toContain('cacheDir: "node_modules/.vite-perf"');
+  });
+
+  it("prevents Chromium crashpad helpers from holding either browser project open", () => {
+    const crashpadSwitch = '"--disable-crashpad-for-testing"';
+    const crashReporterSwitch = '"--disable-crash-reporter"';
+
+    expect(gpuConfig).toContain("...chromiumStdioLaunchOptions()");
+    expect(perfConfig).toContain("...chromiumStdioLaunchOptions()");
+    expect(gpuConfig.match(new RegExp(crashpadSwitch, "gu"))).toHaveLength(1);
+    expect(perfConfig.match(new RegExp(crashpadSwitch, "gu"))).toHaveLength(1);
+    expect(gpuConfig.match(new RegExp(crashReporterSwitch, "gu"))).toHaveLength(1);
+    expect(perfConfig.match(new RegExp(crashReporterSwitch, "gu"))).toHaveLength(1);
+    expect(chromiumLaunch).toContain('platform !== "darwin"');
+    expect(chromiumLaunch).toContain("PLAYWRIGHT_CHROMIUM_EXECUTABLE_ENV");
+    expect(chromiumShim).toContain(
+      'exec "$chromium_executable" "$@" 2>/dev/null',
+    );
+  });
+
   it("has no command that writes or removes anything in the committed baseline directory", () => {
     const baselineMutations = [
       ...driver.matchAll(
@@ -52,6 +82,22 @@ describe("perf-capture baseline policy", () => {
     );
     expect(packageJson.scripts["perf:capture:rebaseline"]).toBe(
       "npm run perf:capture:candidate",
+    );
+  });
+
+  it("runs cold-start first in every canonical capture command", () => {
+    const capture = "vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts";
+    expect(packageJson.scripts["perf:capture"]).toBe(
+      `npm run perf:cold-start && ${capture}`,
+    );
+    expect(packageJson.scripts["perf:capture:ci"]).toBe(
+      "npm run perf:cold-start && "
+      + "VITE_PERF_SHOTS=reference-viewport,forest-500ft-sunbehind,"
+      + "ground-2m-lowsun,motion-banked-turn,cdlod-transition,water-3m,"
+      + `water-25ft,coast-10km-lowsun ${capture}`,
+    );
+    expect(packageJson.scripts["perf:capture:candidate"]).toBe(
+      `npm run perf:cold-start && VITE_PERF_REBASELINE=1 ${capture}`,
     );
   });
 
@@ -125,13 +171,16 @@ describe("perf-capture baseline policy", () => {
     expect(notApprovable, "the candidate is never stamped unapprovable").toBeGreaterThan(-1);
     expect(approved, "no gate-passed stamp is ever written").toBeGreaterThan(-1);
 
-    // The evidence lands first, so a failing run is diagnosable from its frames.
+    // The warning is the candidate directory's first file. An interrupted
+    // frame/report write may leave partial evidence, but never an unstamped
+    // directory that could be mistaken for something promotable.
+    expect(notApprovable).toBeLessThan(candidateWrite);
+    // The evidence still lands before the gates, so a failing run is
+    // diagnosable from its frames.
     expect(candidateWrite).toBeLessThan(strictGate);
     expect(candidateWrite).toBeLessThan(imageContentGate);
     expect(candidateWrite).toBeLessThan(gpuErrorGate);
     expect(candidateWrite).toBeLessThan(rendererErrorGate);
-    // ...carrying the warning with it, written in the same breath.
-    expect(notApprovable).toBeGreaterThan(candidateWrite);
     expect(notApprovable).toBeLessThan(strictGate);
 
     // Approval is the LAST thing, after every gate — this is the half that

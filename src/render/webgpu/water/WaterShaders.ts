@@ -23,6 +23,27 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 
+/**
+ * Water is rendered after opaque terrain so its transparent surfaces can be
+ * ordered together. Babylon clears depth before every non-zero rendering
+ * group by default; leaving that default active makes the ocean ignore the
+ * terrain bed it is meant to feather against and turns its camera-centred
+ * presentation disk into an overlay on dry land.
+ *
+ * Both water owners call this idempotent scene-level setup. Keeping the group
+ * id and its depth contract together prevents a newly constructed owner from
+ * silently restoring Babylon's default assumption.
+ */
+export const WATER_RENDERING_GROUP_ID = 1;
+
+export function configureDepthAwareWaterRendering(scene: Scene): void {
+  // Keep Babylon's rendering-group boundary (and its stencil clear), but
+  // deliberately carry opaque group 0's depth into the transparent water
+  // group. `autoClear=false` would preserve stencil as an accidental side
+  // effect and makes this contract broader than the water occlusion needs.
+  scene.setRenderingAutoClearDepthStencil(WATER_RENDERING_GROUP_ID, true, false, true);
+}
+
 /** Shared constants block (PI). */
 export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.14159265359;`;
 
@@ -30,6 +51,51 @@ export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.141592
 export const WATER_ABSORPTION_PER_METER = Object.freeze([0.45, 0.07, 0.02] as const);
 export const WATER_SHORE_FADE_METERS = 0.4;
 export const WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES = 48.6;
+/** Leave a toroidal guard at the near level's edge, as the original selector did. */
+export const BATHYMETRY_NEAR_BLEND_END_FRACTION = 0.48;
+/** Four far texels make the resolution handoff C1 over 512 m, not one hard line. */
+export const BATHYMETRY_NEAR_BLEND_FAR_TEXELS = 4;
+
+/** CPU mirror of the body/in-scatter light envelope composed in both shaders. */
+export function waterDiffuseIlluminanceNormalized(
+  sunIlluminanceNormalized: number,
+  skylightIlluminanceNormalized: number,
+): number {
+  if (
+    !Number.isFinite(sunIlluminanceNormalized)
+    || !Number.isFinite(skylightIlluminanceNormalized)
+    || sunIlluminanceNormalized < 0
+    || skylightIlluminanceNormalized < 0
+  ) {
+    throw new RangeError("Water illuminance inputs must be finite and non-negative");
+  }
+  return Math.max(sunIlluminanceNormalized, skylightIlluminanceNormalized);
+}
+
+/** CPU mirror of the near/far clipmap handoff used by source and sweep tests. */
+export function bathymetryNearBlendWeight(
+  chebyshevDistanceMeters: number,
+  nearSpanMeters: number,
+  farTexelMeters: number,
+): number {
+  if (
+    !Number.isFinite(chebyshevDistanceMeters)
+    || !Number.isFinite(nearSpanMeters)
+    || !Number.isFinite(farTexelMeters)
+    || chebyshevDistanceMeters < 0
+    || nearSpanMeters <= 0
+    || farTexelMeters <= 0
+  ) {
+    throw new RangeError("Bathymetry blend inputs must be finite and positive");
+  }
+  const end = nearSpanMeters * BATHYMETRY_NEAR_BLEND_END_FRACTION;
+  const start = end - farTexelMeters * BATHYMETRY_NEAR_BLEND_FAR_TEXELS;
+  if (start <= 0) {
+    throw new RangeError("Bathymetry blend band must fit inside the near level");
+  }
+  const t = Math.min(1, Math.max(0, (chebyshevDistanceMeters - start) / (end - start)));
+  return 1 - t * t * (3 - 2 * t);
+}
 
 /**
  * `6-4` caustics — the constants, in one place, from which both the WGSL and
@@ -517,13 +583,15 @@ fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
   let nearCenter = (uniforms.bathymetryNearPlacement.xy
     + vec2f(uniforms.bathymetryNearPlacement.w * 0.5))
     * uniforms.bathymetryNearPlacement.z;
-  let nearHalfSpan = uniforms.bathymetryNearPlacement.z
-    * uniforms.bathymetryNearPlacement.w * 0.48;
-  let insideNear = max(
+  let nearDistance = max(
     abs(worldXZ.x - nearCenter.x),
     abs(worldXZ.y - nearCenter.y),
-  ) <= nearHalfSpan;
-  if (insideNear) {
+  );
+  let nearBlendEnd = uniforms.bathymetryNearPlacement.z
+    * uniforms.bathymetryNearPlacement.w * ${BATHYMETRY_NEAR_BLEND_END_FRACTION};
+  let nearBlendStart = nearBlendEnd
+    - uniforms.bathymetryFarPlacement.z * ${BATHYMETRY_NEAR_BLEND_FAR_TEXELS}.0;
+  if (nearDistance <= nearBlendStart) {
     return textureSampleLevel(
       bathymetryNear,
       bathymetryNearSampler,
@@ -531,12 +599,23 @@ fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
       0.0,
     ).r;
   }
-  return textureSampleLevel(
+  let farDelta = textureSampleLevel(
     bathymetryFar,
     bathymetryFarSampler,
     bathymetryWrappedUv(worldXZ, uniforms.bathymetryFarPlacement),
     0.0,
   ).r;
+  if (nearDistance >= nearBlendEnd) {
+    return farDelta;
+  }
+  let nearDelta = textureSampleLevel(
+    bathymetryNear,
+    bathymetryNearSampler,
+    bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
+    0.0,
+  ).r;
+  let nearWeight = 1.0 - smoothstep(nearBlendStart, nearBlendEnd, nearDistance);
+  return mix(farDelta, nearDelta, nearWeight);
 }
 
 fn waterDepthFromBathymetry(surfaceElevation: f32, worldXZ: vec2f) -> f32 {
@@ -574,6 +653,7 @@ fn waterVolumeRadiance(
   worldXZ: vec2f,
   surfaceElevation: f32,
   depth: f32,
+  diffuseIlluminanceNormalized: f32,
   normal: vec3f,
   view: vec3f,
   cameraBelow: bool,
@@ -607,7 +687,11 @@ fn waterVolumeRadiance(
   let turbidity = vec3f(0.018, 0.115, 0.105)
     * (vec3f(1.0) - transmittance)
     * (0.38 + 0.62 * sunVisibility);
-  return bed * causticGain * transmittance + turbidity;
+  // The body terms are diffuse radiance calibrated at the atmosphere's
+  // reference daylight. Carry the stronger of its raw sun/skylight scales so
+  // they do not become self-emissive under scotopic exposure.
+  return (bed * causticGain * transmittance + turbidity)
+    * diffuseIlluminanceNormalized;
 }
 
 fn waterShorelineAlpha(depth: f32) -> f32 {
@@ -629,12 +713,18 @@ fn waterInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool) -> vec3f
   return fresnelSchlick(transmittedCos, f0);
 }
 
-fn applyUnderwaterBeerLambert(color: vec3f, pathMeters: f32, sunVisibility: f32) -> vec3f {
+fn applyUnderwaterBeerLambert(
+  color: vec3f,
+  pathMeters: f32,
+  sunVisibility: f32,
+  diffuseIlluminanceNormalized: f32,
+) -> vec3f {
   let path = clamp(pathMeters, 0.0, 80.0);
   let transmittance = exp(-WATER_ABSORPTION_PER_METER * path);
   let inScatter = vec3f(0.012, 0.085, 0.09)
     * (vec3f(1.0) - transmittance)
-    * (0.3 + 0.7 * sunVisibility);
+    * (0.3 + 0.7 * sunVisibility)
+    * diffuseIlluminanceNormalized;
   return color * transmittance + inScatter;
 }
 `;
@@ -3287,10 +3377,22 @@ fn foamBreakup(worldXZ: vec2f, advection: vec2f) -> f32 {
   return smoothstep(0.12, 0.66, coarse * 0.62 + fine * 0.38);
 }
 
-fn litFoamColor(albedo: vec3f, normal: vec3f, light: vec3f, sunColor: vec3f, skyZenith: vec3f, skyHorizon: vec3f, sunVisibility: f32) -> vec3f {
+fn litFoamColor(
+  albedo: vec3f,
+  normal: vec3f,
+  light: vec3f,
+  sunColor: vec3f,
+  skyZenith: vec3f,
+  skyHorizon: vec3f,
+  skylightIlluminanceNormalized: f32,
+  sunVisibility: f32,
+) -> vec3f {
   let nDotL = max(dot(normal, light), 0.0);
   let skyAmbient = (skyZenith + skyHorizon) * 0.5;
-  return albedo * (skyAmbient * 0.55 + sunColor * nDotL * sunVisibility);
+  return albedo * (
+    skyAmbient * 0.55 * skylightIlluminanceNormalized
+    + sunColor * nDotL * sunVisibility
+  );
 }`;
 
 /**

@@ -64,8 +64,6 @@ creates the file — the ownership decision is already binding.
 | Shared water shading helpers — fresnel, GGX assemblies, reflected sky | water | `src/render/webgpu/water/WaterShaders.ts` | live (`2-8a`) |
 | `detail.worker.ts` | vegetation | `src/workers/detail.worker.ts` | live (`1B-10`) |
 | Aircraft form, materials and cockpit presentation | aircraft | `src/render/webgpu/aircraft/` | live (Gate `A-1`–`A-4`) |
-| Land-cover classification — the one authority for terrain splat, vegetation species and wildlife habitat | terrain-material | `src/render/webgpu/terrain/LandCoverClassifier.ts` | planned `4-6` |
-
 Phase 0 added four more contracts under the same enforcement: the environment
 clock (`src/world/environmentClock.ts`), the simulation terrain authority
 (`src/sim/terrainGrid.ts`), the terrain collision mirror
@@ -358,6 +356,16 @@ list short enough to read.
 ---
 
 ## Decision log
+
+> **Current ocean correction (2026-09-03).** The historical Wave R, R1–R3,
+> and §8 rows below predate the discovery that the fp16 spectrum was non-finite
+> and the presentation was NaN-collapsed. Their green captures do not establish
+> rendered-ocean performance or visual acceptance. The continuation made every
+> cascade finite, retained the 40 km detail lattice behind a 90 km final
+> coverage ring, and passed the targeted seam/faceting/gap review. A full clean
+> reference-machine candidate is still required; no baseline or delivery floor
+> was changed from the contaminated diagnostic run. Current status lives in
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
 
 | Item | Decision | Detail |
 |---|---|---|

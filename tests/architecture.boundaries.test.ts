@@ -145,6 +145,18 @@ describe("architecture boundaries (0-1)", () => {
     }
   });
 
+  it("leaves no Phase 7 artifact in a planned state after the phase's cut decisions", () => {
+    const stale = ARCHITECTURAL_OWNERS
+      .filter((owner) => owner.plannedBy?.startsWith("7-"))
+      .map((owner) => `${owner.artifact} (${owner.plannedBy})`);
+    expect(
+      stale,
+      "Phase 7 is closed: a planned Phase-7 owner row now describes either a live "
+      + "artifact whose marker must be removed, or a cut artifact whose whole row "
+      + "must be removed. Do not leave a nonexistent cut feature as future architecture.",
+    ).toEqual([]);
+  });
+
   it("allows owned symbols to be declared only at their definition sites", () => {
     for (const owner of ARCHITECTURAL_OWNERS) {
       for (const symbol of owner.ownedSymbols ?? []) {
@@ -276,6 +288,11 @@ describe("architecture boundaries (0-1)", () => {
           ).toBeTruthy();
           continue;
         }
+        expect(
+          member.plannedBy,
+          `Seasonal-family rot: "${member.artifact}" is marked planned (${member.plannedBy}) `
+          + `but ${site} exists — remove plannedBy so the live signature is enforced.`,
+        ).toBeUndefined();
         expect(
           // Type-position only: a parameter or property typed EnvironmentClock,
           // or a dayOfYear field/parameter. A comment cannot satisfy this

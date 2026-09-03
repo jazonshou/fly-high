@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { readWorldEvolutionFromUrl } from "../src/settings";
 import { DEFAULT_WORLD_EVOLUTION } from "../src/world";

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { PERF_CAPTURE_INVENTORIED_MEMORY_CEILING_MIB } from "../scripts/perf-capture.mts";

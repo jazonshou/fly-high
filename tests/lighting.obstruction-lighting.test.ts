@@ -190,7 +190,6 @@ describe("tower obstruction fixtures", () => {
     // Printed so a run of this file surfaces the current numbers, rather than
     // the numbers someone believed when they wrote the comment.
     for (const row of table) {
-      // eslint-disable-next-line no-console
       console.log(
         `  ${row.name.padEnd(6)} hue ratio ${row.hueRatio.toFixed(2).padStart(5)}x`
         + `   applied: rod-regime ${row.appliedRodRegime.toFixed(2).padStart(5)}x`

@@ -16,10 +16,6 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
-import {
-  relativeAirMass,
-} from "@/src/render/webgpu/atmosphere/StarCatalogue";
-
 /**
  * `7-5` — the ~200 lights you SEE.
  *

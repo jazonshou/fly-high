@@ -310,8 +310,6 @@ function seedFloatsFor(latticeCount: number): number {
 function seedOffsetFloatsFor(latticeCount: number): number {
   return latticeCount * 8 + KEPT_FLOATS;
 }
-const ORIGIN_FLOATS = TERRAIN_KERNEL_LATTICE_COUNT * 4;
-const SCALE_FLOATS = TERRAIN_KERNEL_LATTICE_COUNT * 4;
 const SEED_OFFSET_FLOATS = seedOffsetFloatsFor(TERRAIN_KERNEL_LATTICE_COUNT);
 const SEED_FLOATS = seedFloatsFor(TERRAIN_KERNEL_LATTICE_COUNT);
 export const TERRAIN_KERNEL_PAGE_FLOATS = SEED_OFFSET_FLOATS + SEED_FLOATS;

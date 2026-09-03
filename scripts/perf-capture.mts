@@ -2722,6 +2722,43 @@ export function luminanceFromRgba(
   return out;
 }
 
+/**
+ * Fraction of horizontal neighbours carrying visible detail in the lower,
+ * outer frame. It rejects an x-uniform sky gradient that has excellent generic
+ * tile statistics, but is not semantic scene evidence by itself: the cold-
+ * start gate pairs it with the renderer's terrain-node draw count because a
+ * horizontally mottled cloud layer can also contain horizontal edges.
+ */
+export function lowerOuterHorizontalDetailFraction(
+  luminance: Float32Array,
+  width: number,
+  height: number,
+  minimumDifference = 2 / 255,
+): number {
+  if (luminance.length !== width * height || width < 4 || height < 2) {
+    throw new RangeError("Luminance buffer must match a frame at least 4x2 pixels");
+  }
+  if (!Number.isFinite(minimumDifference) || minimumDifference < 0) {
+    throw new RangeError("Minimum horizontal detail difference must be finite and non-negative");
+  }
+  const firstRow = Math.floor(height * 0.55);
+  const leftEnd = Math.floor(width * 0.35);
+  const rightStart = Math.ceil(width * 0.65);
+  let detailed = 0;
+  let compared = 0;
+  for (let y = firstRow; y < height; y += 1) {
+    const row = y * width;
+    for (const [start, end] of [[1, leftEnd], [rightStart + 1, width]] as const) {
+      for (let x = start; x < end; x += 1) {
+        const difference = Math.abs(luminance[row + x]! - luminance[row + x - 1]!);
+        if (difference >= minimumDifference) detailed += 1;
+        compared += 1;
+      }
+    }
+  }
+  return detailed / Math.max(1, compared);
+}
+
 export function tileStatistics(
   luminance: Float32Array,
   width: number,

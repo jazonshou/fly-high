@@ -185,30 +185,63 @@ function throwIfRendererStartupAborted(signal?: AbortSignal): void {
 /**
  * `6-11.3` — the startup-stage split, recorded only when someone asks for it.
  *
- * `awaitRendererStartup` already names and bounds every startup stage; it just
- * never said how long any of them took, so "time to ready" was a single opaque
- * number with no way to attribute a regression. This is opt-in and inert
- * otherwise: no allocation, no timing, and no behaviour change on the shipping
- * path unless a harness calls `beginRendererStartupTrace()` first.
+ * Consecutive checkpoints name the complete startup critical path, including
+ * synchronous constructors and direct async waits that are not routed through
+ * `awaitRendererStartup`. This is opt-in and inert otherwise: no allocation,
+ * no clock read, and no behaviour change on the shipping path unless a harness
+ * calls `beginRendererStartupTrace()` first.
  */
-let rendererStartupTrace: { label: string; milliseconds: number }[] | null = null;
+export interface RendererStartupStage {
+  readonly label: string;
+  readonly kind: "sync" | "async";
+  readonly milliseconds: number;
+}
+
+interface ActiveRendererStartupTrace {
+  readonly stages: RendererStartupStage[];
+  lastCheckpointAt: number;
+}
+
+let rendererStartupTrace: ActiveRendererStartupTrace | null = null;
 
 /** Start recording startup-stage durations, discarding any previous trace. */
 export function beginRendererStartupTrace(): void {
-  rendererStartupTrace = [];
+  rendererStartupTrace = {
+    stages: [],
+    lastCheckpointAt: performance.now(),
+  };
 }
 
 /** The stages recorded since `beginRendererStartupTrace`, in completion order. */
-export function readRendererStartupTrace(): readonly {
-  readonly label: string;
-  readonly milliseconds: number;
-}[] {
-  return rendererStartupTrace ?? [];
+export function readRendererStartupTrace(): readonly RendererStartupStage[] {
+  return rendererStartupTrace?.stages ?? [];
 }
 
 /** Stop recording and release the trace. */
 export function endRendererStartupTrace(): void {
   rendererStartupTrace = null;
+}
+
+/**
+ * Close one disjoint interval of the startup critical path.
+ *
+ * Checkpoints, rather than timers wrapped around selected Promises, are
+ * intentional. Calling an async factory can do substantial synchronous work
+ * before it returns its Promise, and background work can overlap later main-
+ * thread construction. Consecutive checkpoints charge every wall-clock
+ * millisecond exactly once and therefore expose both kinds of gap without
+ * double-counting an overlapped producer.
+ */
+function checkpointRendererStartup(label: string, kind: RendererStartupStage["kind"]): void {
+  const trace = rendererStartupTrace;
+  if (trace === null) return;
+  const now = performance.now();
+  trace.stages.push({
+    label,
+    kind,
+    milliseconds: now - trace.lastCheckpointAt,
+  });
+  trace.lastCheckpointAt = now;
 }
 
 function awaitRendererStartup<T>(
@@ -219,7 +252,6 @@ function awaitRendererStartup<T>(
   disposeLateValue?: (value: T) => void,
 ): Promise<T> {
   throwIfRendererStartupAborted(signal);
-  const traceStartedAt = rendererStartupTrace === null ? 0 : performance.now();
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (result: { value: T } | { error: unknown }) => {
@@ -227,10 +259,6 @@ function awaitRendererStartup<T>(
       settled = true;
       clearTimeout(timeout);
       signal?.removeEventListener("abort", onAbort);
-      rendererStartupTrace?.push({
-        label,
-        milliseconds: performance.now() - traceStartedAt,
-      });
       if ("error" in result) reject(result.error);
       else resolve(result.value);
     };
@@ -714,6 +742,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       "WebGPU capability discovery",
       15_000,
     );
+    checkpointRendererStartup("WebGPU capability discovery", "async");
     if (!capability.supported) throw new Error(capability.reason ?? "WebGPU is unavailable.");
     throwIfRendererStartupAborted(options.signal);
     // Opting out at device creation is load-bearing. Babylon records the next
@@ -754,6 +783,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       30_000,
       (lateEngine) => lateEngine.dispose(),
     );
+    checkpointRendererStartup("WebGPU engine creation", "async");
     // Install the authoritative raw-device channel before constructing any
     // scene resource or compiling any pipeline. Babylon only logs these
     // asynchronous failures; without this guard a rejected whole-frame submit
@@ -849,12 +879,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
         options.signal,
         "terrain macro evolution",
         TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("terrain macro evolution wait", "async");
       // The macro pass ran once; return its ~36 MiB of 1024² erosion scratch
       // and ~12 MiB of sampling scratch before page atlases allocate (dispose
       // is idempotent under cleanup).
@@ -891,6 +923,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
+      checkpointRendererStartup("terrain authority and bathymetry construction", "sync");
       await awaitRendererStartup(
         bathymetry.initialize(
           options.world.airport?.centerX ?? 0,
@@ -901,12 +934,14 @@ export class FlightRenderer implements FlightRenderingSystem {
         "bathymetry clipmap",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("bathymetry clipmap startup", "async");
       const aircraft = createWebGpuAircraft(scene, options.aircraft);
       cleanup.push(() => aircraft.dispose());
       for (const mesh of aircraft.meshes) {
         if (mesh.metadata?.castsShadow === false) continue;
         atmosphere.shadows.addShadowCaster(mesh, false);
       }
+      checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
       // 3-9: the hangars are the only airport meshes left, and the apron they
       // stood on is gone — they read the ground the earthworks made.
@@ -923,6 +958,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         airport.setFloatingOrigin(0, 0);
         for (const mesh of airport.shadowCasters) atmosphere.addShadowCaster(mesh, false);
       }
+      checkpointRendererStartup("airport construction", "sync");
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: consumerTerrainSample,
@@ -932,6 +968,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         workerWorld: options.world,
       });
       cleanup.push(() => detail.dispose());
+      checkpointRendererStartup("detail runtime construction", "sync");
       // Wave G: the blade system reads the SAME consumer sampler as detail
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
@@ -947,6 +984,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         seaLevelMeters: options.world.seaLevel,
       });
       cleanup.push(() => groundCover.dispose());
+      checkpointRendererStartup("ground-cover construction", "sync");
       if (evolutionResult.mode === "eroded") {
         detail.publishTerrainMacro(
           terrainMacroGridFromEvolution(evolutionResult.evolution),
@@ -957,6 +995,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         terrainSample: consumerTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
+      checkpointRendererStartup("wildlife construction", "sync");
       // W-1e: the channel graph is awaited HERE — immediately before its only
       // consumer — rather than inside the evolution runtime's initialize. The
       // staged producer extracts it in its worker, so everything constructed
@@ -972,6 +1011,9 @@ export class FlightRenderer implements FlightRenderingSystem {
           TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
         )
         : null;
+      if (evolutionResult.mode === "eroded") {
+        checkpointRendererStartup("terrain channel graph wait", "async");
+      }
       const hydrology = await HydrologySystem.create(
         scene,
         camera,
@@ -995,6 +1037,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         },
         options.signal,
       );
+      checkpointRendererStartup("hydrology startup", "async");
       cleanup.push(() => hydrology.dispose());
       hydrology.setFloatingOrigin(0, 0);
       // 2-0a: the atmosphere-owned GPU resources the adopted cloud pipeline
@@ -1012,7 +1055,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphereResources,
       );
       cleanup.push(() => clouds.dispose());
+      checkpointRendererStartup("atmosphere and cloud construction", "sync");
       await clouds.whenReadyAsync(options.signal);
+      checkpointRendererStartup("cloud pipeline startup", "async");
       const ocean = await SpectralOceanSystem.create(
         scene,
         camera,
@@ -1025,6 +1070,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.signal,
         bathymetry,
       );
+      checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
       cleanup.push(() => cloudShadowReceivers.dispose());
@@ -1279,6 +1325,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       // FXAA is the no-MSAA fallback only; running both softens the image.
       if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
 
+      checkpointRendererStartup("presentation systems construction", "sync");
+
       // 1C-4's two load-bearing guards, re-asserted now that the scene and
       // the post-process chain exist: the aerial hook needs linear HDR at
       // CUSTOM_FRAGMENT_BEFORE_FRAGCOLOR, and Babylon fog must never join it.
@@ -1303,6 +1351,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "WebGPU scene startup",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("scene shader readiness", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
@@ -1322,6 +1371,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
+      checkpointRendererStartup("terrain compute pre-warm", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
       // 2-10: the planar-reflection capture is retired — the environment
@@ -1366,6 +1416,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
+      checkpointRendererStartup("renderer finalization", "sync");
       cleanup.length = 0;
       return renderer;
     } catch (error) {

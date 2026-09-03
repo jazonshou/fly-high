@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
+import { chromiumStdioLaunchOptions } from "./scripts/playwrightChromiumLaunch";
 
 /**
  * The perf-capture project (1A-1c).
@@ -13,11 +14,13 @@ import { defineConfig } from "vitest/config";
  * tests/perf/baseline. The baseline directory is always read-only. A missing
  * or dimension-mismatched committed image is a hard failure.
  *
- * `npm run perf:capture:candidate` runs the exact full canonical set, buffers
- * every image until all visual/performance/renderer validations pass, then
- * writes only a fresh timestamped directory beneath
- * tests/perf/artifacts/rebaseline-candidates for human review. It never
- * promotes or rewrites a committed baseline.
+ * `npm run perf:capture:candidate` runs the exact full canonical set and
+ * buffers every image until the capture is complete. It then writes diagnostic
+ * evidence to a fresh timestamped directory beneath
+ * tests/perf/artifacts/rebaseline-candidates, stamped NOT APPROVABLE, before
+ * running the visual/performance/renderer gates. Only a run that passes every
+ * gate has that stamp replaced with APPROVABLE. It never promotes or rewrites
+ * a committed baseline.
  *
  * Real GPU. A focused tier-1 set runs on renderer PRs; the full set runs on
  * main and on schedule. Deliberately excluded from `npm run verify` and the
@@ -42,6 +45,10 @@ function sweepWindowSize(): { width: number; height: number } {
 }
 
 export default defineConfig({
+  // The capture/cold-start browser has a different module graph from both the
+  // Node suite and the GPU integration suite. Do not invalidate either one's
+  // optimizer state merely by running the documented acceptance sequence.
+  cacheDir: "node_modules/.vite-perf",
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
@@ -51,6 +58,10 @@ export default defineConfig({
     include: ["tests/perf/**/*.test.ts"],
     passWithNoTests: false,
     reporters: ["default"],
+    // A direct config invocation must never overlap cold-start with the warm
+    // capture. Canonical npm commands go further and launch cold-start in its
+    // own fresh browser process before selecting perf-capture.test.ts.
+    fileParallelism: false,
     // 2Z and later phases grew the shot list well past its original size and
     // streaming dominates the run. Deliberately no count here: this comment
     // said "sixteen" against a list of 29, and a restated count goes stale on
@@ -63,8 +74,15 @@ export default defineConfig({
       screenshotFailures: false,
       provider: playwright({
         launchOptions: {
+          ...chromiumStdioLaunchOptions(),
           channel: "chromium",
           args: [
+            // Chrome for Testing's macOS crashpad helpers inherit Playwright's
+            // stderr pipe and can keep an otherwise-complete capture process
+            // alive forever. Disable both Chromium's crashpad initialization
+            // and the crash reporter that official headless builds enable.
+            "--disable-crashpad-for-testing",
+            "--disable-crash-reporter",
             "--enable-unsafe-webgpu",
             "--use-angle=metal",
             "--enable-features=WebGPU",

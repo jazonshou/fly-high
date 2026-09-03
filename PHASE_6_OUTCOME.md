@@ -1,5 +1,10 @@
 # Phase 6 — what came out
 
+> **Historical phase outcome.** Its measurements and provenance remain intact; later
+> continuation status, current CI/performance wiring, remaining clean-reference and user
+> acceptance, and deliberate deferrals are authoritative in
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+
 **Written 2026-08-31 for someone who was not here; QR-1 section updated 2026-09-01.**
 Head at last update: `a982ceb`.
 Self-contained: everything needed to follow a sentence is inlined, with deviation ids
@@ -12,6 +17,15 @@ writing. "Carried from `<session>`" = rests on another session's measurement and
 independent checking. Tonight produced at least four numbers that were correct in one
 session and wrong by the time they reached a third, so the distinction is not ceremony.
 
+> **Later correction, 2026-09-03.** The R1–R3 rebaseline did not establish ocean
+> run-up, shelf dispersion, or caustics in rendered pixels despite the green component
+> gates. The fp16 ocean spectrum was non-finite and the presentation remained
+> NaN-collapsed until the current continuation made it finite. After bounding ocean
+> presentation to a 90 km radius, a targeted recapture passed the explicit seam,
+> faceting, and gap review. The original 2026-08-31 conclusion is retained below as
+> provenance, but its ocean claims and promoted performance rows are not current-ocean
+> acceptance evidence; a clean full candidate rerun remains required.
+
 ---
 
 ## 1. Read this first: "landed" does not mean "you can see it"
@@ -21,9 +35,10 @@ invisible on screen.** It is not broken and not wasted — it is the *eroded* wo
 set, waiting for a world that is not shipping. Anyone reading the plan's "landed" column
 will over-count what a player sees.
 
-**Ships and is visible** (proven in the R1–R3 rebaseline): 6-2's ocean run-up, 6-3's shelf
-dispersion, 6-4's caustics, 6-5's wetness, 6-6's ecology channels, 6-7's talus, 6-8's canopy
-handoff, 6-9's GPU scatter.
+**Original 2026-08-31 conclusion (superseded for the ocean items above): ships and is
+visible** (then attributed to the R1–R3 rebaseline): 6-2's ocean run-up, 6-3's shelf
+dispersion, 6-4's caustics, 6-5's wetness, 6-6's ecology channels, 6-7's talus, 6-8's
+canopy handoff, 6-9's GPU scatter.
 
 **Ships dark:**
 
@@ -185,11 +200,25 @@ one pointed the wrong way.
     **and above 720p, 4 of 7 shots exceed the target on CPU alone.** Both true, different
     implications — **a GPU-only fix does not reach the contract on those four.**
   *(Carried from `SWE III`'s sweep via the PM; figures not independently re-derived here.)*
-- **The cold-start instrument exists and nothing runs it.**
-  `tests/perf/cold-start.test.ts` is correct — both `console.error` and Babylon's
-  `Logger.Error`, plus a timeout race — but `tests/perf/**` is excluded from `npm test` and
-  `npm run verify`, and `.github/workflows/` holds only `ci.yml` and `gpu-tests.yml`.
-  **The residual is CI wiring, not construction.** Verified here.
+- **The cold-start gate is complete and runs before every canonical performance capture.**
+  `npm run perf:cold-start` selects `tests/perf/cold-start.test.ts` in a dedicated fresh
+  browser process; `perf:capture`, `perf:capture:ci`, and the candidate command all run it
+  before launching the warm shot renderer. Scheduler order therefore cannot overlap or warm
+  the measurement. The test catches `console.error`, Babylon `Logger.Error`, and a hung
+  startup independently; renders and synchronously reads a frame; waits for the raw GPU
+  submitted-work fence and one asynchronous error-delivery task; and enforces the
+  retained-sample-derived **2,300 ms analytic time-to-ready deadline** on the reference host
+  (reported-only on an explicitly unpinned host). Its disjoint sync/async trace accounts for
+  the whole create path within 5 ms and exposed detail-atlas construction as the dominant
+  cost; sharing the foliage plan between the foliage upload and impostor bake removes the
+  byte-identical duplicate. The historical optimization runs moved create from 1,751–1,768
+  ms to **1,524–1,574 ms**; their 81–83 ms suffix measured only `renderer.render()` returning
+  and is not readiness evidence. The final strengthened acceptance readings were the ready
+  totals **1,817.7 / 1,815.4 / 1,821.3 ms** against the 2,300 ms gate. Their diagnostic split
+  was create **1,537.6 / 1,537.1 / 1,542.6 ms** plus completed-frame delivery **280.1 /
+  278.3 / 278.7 ms**; the create-only values must not be quoted as readiness. Every final
+  frame reported **12 terrain tiles**, **1.81%** lower-outer detail, and 0.0 ms untraced
+  create time. W-1's 1.5 s target remains scoped to the parked eroded experiment.
 - **One documentation survivor**: [vitest.perf.config.ts:9](vitest.perf.config.ts) said
   the harness rendered sixteen shots while the list held **24 at the time of writing**.
   Fixed by pointing the docblock at `PERF_CAPTURE_SHOTS` rather than restating a number,

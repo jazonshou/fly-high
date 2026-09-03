@@ -15,9 +15,10 @@ import { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
-import type {
-  OceanPresentationTopology,
-  WebGpuQualityProfile,
+import {
+  CAMERA_FAR_PLANE_METERS,
+  type OceanPresentationTopology,
+  type WebGpuQualityProfile,
 } from "@/src/render/webgpu/core/QualityProfile";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
@@ -68,6 +69,7 @@ import {
 import {
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
+  configureDepthAwareWaterRendering,
   WATER_BATHYMETRY_DECLARATIONS_WGSL,
   WATER_CREST_SSS_WGSL,
   WATER_DEPTH_OPTICS_WGSL,
@@ -81,6 +83,7 @@ import {
   WATER_SHORE_RUNUP_WGSL,
   WATER_SHORE_STREAK_WGSL,
   WATER_SUN_SPECULAR_WGSL,
+  WATER_RENDERING_GROUP_ID,
   waterOceanShoreSwell,
   waterReflectedSkyWgsl,
   type WaterReflectedSkyParameters,
@@ -92,7 +95,16 @@ import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
-const OCEAN_PRESENTATION_RADIUS_METERS = 40_000;
+const OCEAN_DETAIL_RADIUS_METERS = 40_000;
+/**
+ * A camera far plane is a plane, not a sphere. Its off-axis corners are
+ * farther from the camera than `camera.maxZ`, so a disk merely as wide as the
+ * 45 km depth range exposes a circular edge in oblique/downward views. The
+ * final ring is therefore a coarse coverage skirt at two far-plane lengths.
+ * All preceding rings retain the established 40 km detail lattice, and the
+ * camera clips the unused skirt; vertex and triangle counts remain unchanged.
+ */
+export const OCEAN_PRESENTATION_RADIUS_METERS = CAMERA_FAR_PLANE_METERS * 2;
 /**
  * wave R: the same 16x the terrain material arrays upload at
  * (`terrain/MaterialArrayUpload.ts`'s `SURFACE_ARRAY_ANISOTROPY`). Water is
@@ -189,19 +201,34 @@ function waitForComputeReady(
 export type { OceanPresentationTopology };
 
 /**
- * The disk's radius as a function of ring index. Ring 0 is the centre vertex;
- * the first `radialRings` steps are `nearStepMeters` apart and the quintic
- * term carries the rest of the way to the 40 km presentation radius.
- * The 40 km radius is reconciled with the 45 km far plane (1C-4): a disk wider
- * than the far plane is clipped and loses its horizon.
+ * The detail lattice's radius as a function of ring index. Ring 0 is the
+ * centre vertex; `nearStepMeters` plus the quintic term carry the lattice to
+ * 40 km. Keeping this function independent of the final coverage skirt is
+ * important: otherwise extending the disk would coarsen every near-field ring
+ * and move the mesh-Nyquist cascade fades inward.
  */
-function oceanRingRadius(topology: OceanPresentationTopology, ring: number): number {
+function oceanDetailRingRadius(
+  topology: OceanPresentationTopology,
+  ring: number,
+): number {
   const curvedRadius = Math.max(
     0,
-    OCEAN_PRESENTATION_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
+    OCEAN_DETAIL_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
   );
   const normalized = ring / topology.radialRings;
   return topology.nearStepMeters * ring + curvedRadius * normalized ** 5;
+}
+
+/**
+ * Only the final existing ring is moved outward. Its preceding annulus is
+ * already beyond every detail cascade's usable range, so it can cover the
+ * far-plane corners without spending more topology or disturbing the detail
+ * lattice that controls near-water quality.
+ */
+function oceanRingRadius(topology: OceanPresentationTopology, ring: number): number {
+  return ring === topology.radialRings
+    ? OCEAN_PRESENTATION_RADIUS_METERS
+    : oceanDetailRingRadius(topology, ring);
 }
 
 /**
@@ -233,9 +260,9 @@ export function oceanMeshCascadeFadeRadius(
   if (halfWavelength <= topology.nearStepMeters) return 0;
   const curvedRadius = Math.max(
     0,
-    OCEAN_PRESENTATION_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
+    OCEAN_DETAIL_RADIUS_METERS - topology.nearStepMeters * topology.radialRings,
   );
-  if (curvedRadius <= 0) return OCEAN_PRESENTATION_RADIUS_METERS;
+  if (curvedRadius <= 0) return OCEAN_DETAIL_RADIUS_METERS;
   // d(radius)/d(ring) = nearStep + 5 * curvedRadius * ring^4 / rings^5, solved
   // for the ring where that reaches the half wavelength. The continuous
   // derivative is the right instrument: the discrete step between two adjacent
@@ -248,7 +275,7 @@ export function oceanMeshCascadeFadeRadius(
       / (5 * curvedRadius)
     ) ** 0.25,
   );
-  return oceanRingRadius(topology, ring);
+  return oceanDetailRingRadius(topology, ring);
 }
 
 function createOceanPresentationMesh(
@@ -506,6 +533,8 @@ uniform sunColor: vec3f;
 uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
+uniform sunIlluminanceNormalized: f32;
+uniform skylightIlluminanceNormalized: f32;
 uniform cloudCoverage: f32;
 // wave R fix 8: ONE wind. This used to be the atmosphere's cloud-layer wind
 // while the spectrum was raised by world.prevailingWindSpeed — the two can
@@ -628,9 +657,17 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     min(length(runupDerivativeX), length(runupDerivativeY)),
     max(length(runupDerivativeX), length(runupDerivativeY)) * ${(1 / 16).toFixed(6)},
   );
-  // 5-11 depth, hoisted above the capillary call by 6-4: the caustic beam gates
-  // the capillary block's curvature accumulation, so it has to exist first.
-  let depth = waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate);
+  // Ocean coverage and all shelf/run-up theory are defined against STILL-water
+  // depth. Feeding the vertically displaced/curvature-dropped vertex height
+  // here let a crest turn positive terrain into a water column and made the
+  // shoreline breathe with the presentation lattice. The terrain owns swash
+  // above this line (D-12); a fragment whose bed is not below mean sea level
+  // has no ocean work or colour at all.
+  let depth = waterDepthFromBathymetry(
+    uniforms.bathymetrySeaLevel,
+    input.oceanCoordinate,
+  );
+  if (depth <= 0.0) { discard; }
   let causticBeam = waterRefractedSunBeam(depth, light.y);
   // 2-8: heights add across cascades, so slopes add — the fade-weighted SUM
   // replaces the old weighted average of normal-recovered slopes and its
@@ -899,10 +936,19 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   // 5-11: the body is now the same real bed + Beer-Lambert + one-scatter
   // model used by inland water, rather than an additive deep-blue constant.
+  // This daylight-calibrated diffuse body follows whichever physical source
+  // is stronger. At the reference day max(1, 1) is exactly identity; at the
+  // moonless night both inputs are effectively zero instead of the ambient
+  // light's deliberately non-physical fp16 floor.
+  let diffuseIlluminanceNormalized = max(
+    uniforms.sunIlluminanceNormalized,
+    uniforms.skylightIlluminanceNormalized,
+  );
   let transmitted = waterVolumeRadiance(
     input.oceanCoordinate,
-    input.worldPosition.y,
+    uniforms.bathymetrySeaLevel,
     depth,
+    diffuseIlluminanceNormalized,
     normal,
     view,
     cameraBelow,
@@ -910,9 +956,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     caustic,
     causticBeam,
   );
+  // This is sunlight transmitted through a wave face, not emissive water.
+  // sunColor is already premultiplied by sunIlluminanceNormalized at the
+  // binding boundary, so the term is exactly dark once the sun is below the
+  // physical palette cutoff while retaining the water's teal absorption.
   let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
-    * nDotL * (0.1 + 0.12 * directSunVisibility);
-  let horizonScatter = vec3f(0.008, 0.055, 0.064) * pow(1.0 - nDotV, 2.0);
+    * uniforms.sunColor * nDotL * (0.1 + 0.12 * directSunVisibility);
+  let horizonScatter = vec3f(0.008, 0.055, 0.064)
+    * pow(1.0 - nDotV, 2.0) * uniforms.skylightIlluminanceNormalized;
   // 2-9: backlit crests transmit sunlight — driven by the summed
   // displacement height the vertex shader computes (previously discarded).
   let crestGlow = crestSubsurface(
@@ -955,7 +1006,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     (input.oceanCoordinate - uniforms.oceanWind * uniforms.time * 0.35) * 0.055,
   );
   let shoreFoam = shoreBand * smoothstep(0.12, 0.72, shoreBreakup) * 0.62;
-  let foam = clamp(max(foamAmount * 1.18, shoreFoam), 0.0, 1.0) * mix(0.35, 1.0, foamMask);
+  let wetSurfaceAlpha = waterShorelineAlpha(depth);
+  let foam = clamp(max(foamAmount * 1.18, shoreFoam), 0.0, 1.0)
+    * mix(0.35, 1.0, foamMask) * wetSurfaceAlpha;
   let foamColor = litFoamColor(
     ${OCEAN_FOAM_ALBEDO_WGSL},
     normal,
@@ -963,16 +1016,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     uniforms.sunColor,
     uniforms.skyZenith,
     uniforms.skyHorizon,
+    uniforms.skylightIlluminanceNormalized,
     directSunVisibility,
   );
   water = mix(water, foamColor, foam);
   if (cameraBelow) {
-    water = applyUnderwaterBeerLambert(water, cameraDistance, directSunVisibility);
+    water = applyUnderwaterBeerLambert(
+      water,
+      cameraDistance,
+      directSunVisibility,
+      diffuseIlluminanceNormalized,
+    );
   }
   // 1C-4: the shared aerial perspective — the ocean fades on the same curve
   // as terrain, closing the audit's hard tear at every distant coastline.
   water = applyAerialPerspective(water, input.worldPosition.y, cameraDistance, -view);
-  let shorelineAlpha = max(waterShorelineAlpha(depth), foam);
+  let shorelineAlpha = max(wetSurfaceAlpha, foam);
   fragmentOutputs.color = vec4f(max(water, vec3f(0.0)), shorelineAlpha);
 }
 `;
@@ -1454,6 +1513,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     private readonly bathymetry: BathymetryClipmap | null = null,
   ) {
     registerWaterShaders();
+    configureDepthAwareWaterRendering(scene);
     this.profile = profile;
     this.compute = new SpectralOceanCompute(
       scene,
@@ -1491,6 +1551,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
+          "sunIlluminanceNormalized",
+          "skylightIlluminanceNormalized",
           "cloudCoverage",
           "oceanWind",
           "time",
@@ -1660,6 +1722,14 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // atmosphere snapshot here — see updateSurfaceWind.
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
+    this.material.setFloat(
+      "sunIlluminanceNormalized",
+      atmosphere.sunIlluminanceNormalized,
+    );
+    this.material.setFloat(
+      "skylightIlluminanceNormalized",
+      atmosphere.skylightIlluminanceNormalized,
+    );
   }
 
   /**
@@ -1864,7 +1934,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // Depth-aware ocean first, graph-fed inland water second. Both remain in
     // one transparent group so the terrain bed is already present and shallow
     // pixels can feather instead of punching an opaque coastline silhouette.
-    mesh.renderingGroupId = 1;
+    mesh.renderingGroupId = WATER_RENDERING_GROUP_ID;
     mesh.alphaIndex = 0;
     mesh.metadata = {
       ...(mesh.metadata as Record<string, unknown> | null),

@@ -1,6 +1,7 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./support/sourceText";
 import {
   BathymetryClipmap,
   BATHYMETRY_CLIPMAP_EDGE,
@@ -36,10 +37,16 @@ import {
   type TerrainMacroEvolutionExport,
 } from "../src/render/webgpu/terrain/TerrainEvolutionContract";
 import { createWorld } from "../src/world";
+import { skylightIlluminanceNormalized } from
+  "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { createEnvironmentState } from "../src/render/webgpu/nature/EnvironmentState";
+import { resolveEnvironmentState } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { HYDROLOGY_WATER_FRAGMENT_WGSL, HYDROLOGY_WATER_VERTEX_WGSL } from
   "../src/render/webgpu/water/HydrologySystem";
 import { WATER_FRAGMENT_WGSL } from "../src/render/webgpu/water/SpectralOceanSystem";
 import {
+  BATHYMETRY_NEAR_BLEND_END_FRACTION,
+  BATHYMETRY_NEAR_BLEND_FAR_TEXELS,
   WATER_ABSORPTION_PER_METER,
   WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES,
   WATER_CAPILLARY_DETAIL_WGSL,
@@ -55,12 +62,15 @@ import {
   WATER_CAUSTIC_WGSL,
   WATER_CAUSTIC_ZERO,
   WATER_DEPTH_OPTICS_WGSL,
+  WATER_FOAM_WGSL,
   WATER_SHORE_FADE_METERS,
+  bathymetryNearBlendWeight,
   waterCausticBand,
   waterCausticBedGain,
   waterCausticCascadeBands,
   waterCausticNoiseBand,
   waterCausticSinusoidBand,
+  waterDiffuseIlluminanceNormalized,
   waterRefractedSunBeam,
   type WaterCausticAccumulator,
 } from "../src/render/webgpu/water/WaterShaders";
@@ -586,6 +596,25 @@ describe("W-6 eroded bathymetry page overlay (C-6)", () => {
 });
 
 describe("Phase 5 shared water-depth optics", () => {
+  it("crossfades the 16 m and 128 m bathymetry levels instead of drawing a box edge", () => {
+    const nearSpan = BATHYMETRY_CLIPMAP_EDGE * BATHYMETRY_NEAR_TEXEL_METERS;
+    const end = nearSpan * BATHYMETRY_NEAR_BLEND_END_FRACTION;
+    const start = end - BATHYMETRY_FAR_TEXEL_METERS * BATHYMETRY_NEAR_BLEND_FAR_TEXELS;
+    expect(end - start).toBe(512);
+    expect(bathymetryNearBlendWeight(start, nearSpan, BATHYMETRY_FAR_TEXEL_METERS)).toBe(1);
+    expect(bathymetryNearBlendWeight((start + end) / 2, nearSpan, BATHYMETRY_FAR_TEXEL_METERS))
+      .toBeCloseTo(0.5, 12);
+    expect(bathymetryNearBlendWeight(end, nearSpan, BATHYMETRY_FAR_TEXEL_METERS)).toBe(0);
+
+    const weights = Array.from({ length: 257 }, (_, index) =>
+      bathymetryNearBlendWeight(start + (end - start) * index / 256, nearSpan, BATHYMETRY_FAR_TEXEL_METERS));
+    expect(weights.every((weight, index) => index === 0 || weight <= weights[index - 1]!)).toBe(true);
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain("mix(farDelta, nearDelta, nearWeight)");
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "1.0 - smoothstep(nearBlendStart, nearBlendEnd, nearDistance)",
+    );
+  });
+
   it("pins physical absorption, shoreline and underwater-interface constants", () => {
     expect(WATER_ABSORPTION_PER_METER).toEqual([0.45, 0.07, 0.02]);
     expect(WATER_SHORE_FADE_METERS).toBe(0.4);
@@ -606,6 +635,67 @@ describe("Phase 5 shared water-depth optics", () => {
     expect(WATER_FRAGMENT_WGSL).not.toContain("deepAbsorption");
     expect(HYDROLOGY_WATER_FRAGMENT_WGSL).not.toContain("let riverBed");
     expect(HYDROLOGY_WATER_VERTEX_WGSL).toContain("6371000.0");
+  });
+
+  it("defines ocean coverage from still water and cannot reopen dry alpha with foam", () => {
+    const code = WATER_FRAGMENT_WGSL.replace(/\/\/.*$/gmu, "");
+    expect(code).toContain(
+      "waterDepthFromBathymetry(\n    uniforms.bathymetrySeaLevel,\n    input.oceanCoordinate",
+    );
+    expect(code).toContain("if (depth <= 0.0) { discard; }");
+    expect(code).toContain("* mix(0.35, 1.0, foamMask) * wetSurfaceAlpha");
+    expect(code).toContain("let shorelineAlpha = max(wetSurfaceAlpha, foam);");
+    expect(code).not.toContain(
+      "waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate)",
+    );
+  });
+
+  it("scales shader-owned diffuse water radiance by the atmosphere illuminance", () => {
+    // Reflection stays in the environment probe's radiance domain. These are
+    // the formerly unconditional body, underwater, horizon and foam terms
+    // that otherwise become cyan/white emitters under night adaptation.
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "* diffuseIlluminanceNormalized;",
+    );
+    expect(WATER_FOAM_WGSL).toContain(
+      "skyAmbient * 0.55 * skylightIlluminanceNormalized",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "pow(1.0 - nDotV, 2.0) * uniforms.skylightIlluminanceNormalized",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "* uniforms.sunColor * nDotL * (0.1 + 0.12 * directSunVisibility)",
+    );
+    expect(readSource("src/render/webgpu/water/SpectralOceanSystem.ts")).toMatch(
+      /setColor3\(\s*"sunColor",\s*atmosphere\.sunColor\.scale\(\s*atmosphere\.sunIlluminanceNormalized\s*\)/u,
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "max(\n    uniforms.sunIlluminanceNormalized,\n    uniforms.skylightIlluminanceNormalized",
+    );
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(
+      "max(\n    uniforms.sunIlluminanceNormalized,\n    uniforms.skylightIlluminanceNormalized",
+    );
+
+    // Numeric anchors for the CPU law, not just source-text wiring. The
+    // reference key is exactly identity; the actual moonless perf clock is
+    // many orders below it; and a zero-light input stays exactly zero.
+    const reference = createEnvironmentState({
+      sun: { direction: [Math.sqrt(1 - 0.82 * 0.82), 0.82, 0] },
+      weather: { cloudCoverage: 0 },
+    });
+    const referenceSkylight = skylightIlluminanceNormalized(reference, 0);
+    expect(referenceSkylight).toBe(1);
+    expect(waterDiffuseIlluminanceNormalized(1, referenceSkylight)).toBe(1);
+
+    const moonlessNight = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 23.75 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const moonlessSkylight = skylightIlluminanceNormalized(moonlessNight, 0);
+    expect(moonlessSkylight).toBeGreaterThan(0);
+    expect(moonlessSkylight).toBeLessThan(1e-6);
+    expect(waterDiffuseIlluminanceNormalized(0, 0)).toBe(0);
   });
 });
 

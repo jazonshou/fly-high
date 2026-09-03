@@ -1,5 +1,11 @@
 # Phase 7 Execution Plan — night operations, the lighting engine, and airfield identity
 
+> **Historical execution plan.** Keep this file for item-level acceptance criteria,
+> decisions, and deviations; do not read its intermediate “open” rows as current status.
+> The completed implementation, current verification and capture state, clean-reference
+> rerun, user-only N-1/N-3 verdicts, and parked scope are summarized in
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+
 **Created:** 2026-08-31. **Branch:** to be cut from Phase 6's close commit (see §1).
 **Verified against:** the `jazonshou/Phase-6-Implementation` working tree at `98d87c4` plus
 Phase 6's uncommitted Gate W + Waves 1–3. Every file:line below was re-checked in that tree

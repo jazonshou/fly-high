@@ -179,11 +179,12 @@ export type TerrainErosionGpuStage =
 /**
  * Measured per-dispatch GPU cost by stage, in milliseconds at the 384²
  * production scratch on the reference adapter (Apple silicon, ANGLE Metal,
- * 2026-08-30, seed w1d-page-erosion-gpu, an L3 page; re-measured with a 4x
- * drift alarm by tests/gpu/terrain-page-erosion-cost.test.ts, the
- * terrain-compute-cost doctrine). Production ships with GPU timing OFF, so
- * these constants ARE the admission prices for a normal session; the running
- * estimate refines them only on a pinned diagnostic capture.
+ * 2026-08-30, seed w1d-page-erosion-gpu, an L3 page; re-measured by the
+ * concentrated whole-page and grouped one-sided guards in
+ * tests/gpu/terrain-page-erosion-cost.test.ts). Production ships with GPU
+ * timing OFF, so these constants ARE the admission prices for a normal
+ * session; the running estimate refines them only on a pinned diagnostic
+ * capture.
  *
  * Whole page after `W-4`: **38.1-39.9 ms of GPU across 163 dispatches** over
  * three consecutive runs (48 seed bands, 16 geology bands over two passes, 2
@@ -197,8 +198,9 @@ export type TerrainErosionGpuStage =
  * the reference adapter `decode` was measured at 0.085, 0.091, 0.091, 0.198
  * and 0.816 ms, and `streamPower` at 0.066, 0.072, 0.073 and 0.367. Both
  * outliers are the counter, not the shader — the whole-page total moved 4% in
- * the same runs. The 4x drift alarm around these two rows will fire
- * occasionally for that reason alone; re-run before believing it.
+ * the same runs. They deliberately have no individual timing bounds: the gate
+ * requires every dispatch to be present, then measures their combined page
+ * contribution so counter granularity cannot masquerade as shader drift.
  *
  * Two stages sit ABOVE the tier-0 `erosionCompute` row of 0.2 ms — seed at
  * 0.29 and talus at 0.32 — and both are inside tier 1's 0.4 ms row, which is
@@ -227,7 +229,7 @@ export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   // One implicit-Jacobi stream-power iteration at 384². 24 of them, ~0.8 ms.
   // The noisiest row: 0.022-0.049 across four runs on one adapter, because a
   // 20-microsecond dispatch is near the counter's own resolution. Centred on
-  // the median so the 4x alarm has symmetric headroom.
+  // the median; the cost gate aggregates all 24 with the other minor stages.
   streamPower: 0.033,
   // One talus gather or one talus apply at 384². **The page's dominant cost:
   // 64 dispatches, 20.7 ms — 55% of the whole DAG.** The gather recomputes
@@ -240,7 +242,7 @@ export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   // sampler (a fabric angle and three ridged octaves) plus the soil mask's
   // five-tap stencil. Seeded at the geology row it is closest to — geology is
   // two filtered octaves plus a fabric angle over the same band height — and
-  // re-measured by the same 4x drift alarm as every other row.
+  // re-measured inside the complete-page aggregate rather than in isolation.
   fineBand: 0.082,
 });
 

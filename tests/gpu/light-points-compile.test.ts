@@ -125,18 +125,27 @@ afterAll(() => {
   canvas?.remove();
 });
 
-function renderOnce(fixtures: readonly LightPointFixture[]): LightPointSystem {
+function renderOnce(fixtures: readonly LightPointFixture[]): void {
   const scene = new Scene(engine);
-  scene.clearColor = new Color4(0, 0, 0, 1);
-  const camera = new FreeCamera("camera", new Vector3(0, 2, 0), scene);
-  camera.setTarget(new Vector3(0, 2, 20));
-  const packed = packIesProfiles(scene, [syntheticIes()]);
-  const system = new LightPointSystem(scene, fixtures, packed.rows);
-  system.setIesProfiles(packed.texture);
-  system.setOutputSize(CANVAS_SIZE, CANVAS_SIZE);
-  system.setCameraPosition(camera.position);
-  for (let frame = 0; frame < 4; frame += 1) scene.render();
-  return system;
+  let packed: ReturnType<typeof packIesProfiles> | null = null;
+  let packedOwnedBySystem = false;
+  let system: LightPointSystem | null = null;
+  try {
+    scene.clearColor = new Color4(0, 0, 0, 1);
+    const camera = new FreeCamera("camera", new Vector3(0, 2, 0), scene);
+    camera.setTarget(new Vector3(0, 2, 20));
+    packed = packIesProfiles(scene, [syntheticIes()]);
+    system = new LightPointSystem(scene, fixtures, packed.rows);
+    system.setIesProfiles(packed.texture);
+    packedOwnedBySystem = true;
+    system.setOutputSize(CANVAS_SIZE, CANVAS_SIZE);
+    system.setCameraPosition(camera.position);
+    for (let frame = 0; frame < 4; frame += 1) scene.render();
+  } finally {
+    system?.dispose();
+    if (!packedOwnedBySystem) packed?.texture.dispose();
+    scene.dispose();
+  }
 }
 
 describe("7-5 light points compile on a real adapter", () => {

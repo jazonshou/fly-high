@@ -129,11 +129,22 @@ describe("water shader extraction (2-8a)", () => {
     // term and the split sunset composition), which the water fragment
     // composes but never calls. Same reasoning as every prior re-pin:
     // water pixels cannot move. Deliberate, named, reviewed.
+    //
+    // Re-pinned by the Phase-6 ocean closeout. Unlike the declaration-only
+    // night-sky include changes above, this is deliberate water output churn:
+    // coverage now uses still-water bathymetry and discards dry fragments,
+    // foam cannot reopen dry alpha, the near/far bathymetry handoff blends,
+    // and shader-owned diffuse radiance follows the atmosphere's raw
+    // skylight/direct-sun illuminance. The focused real-adapter capture is the review
+    // artifact for that coupled coverage/radiometry correction.
+    // Re-pinned once more by the final audit: the ocean's local wave-face
+    // subsurface term now consumes the already illuminance-premultiplied sun
+    // colour, closing the last shader-owned green emission path at night.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "79edf5f734fecfa79106907ba59ad20d1d18fbefb5ba5918779ebb330affbfcf",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "5ea90f0a55d6828547526c1f9f9ee0fbe08ca79c10207a57d8ded609c5915bc4",
+      "38d9efceb366812bdd8e89655b7e78757a0ed501a55563203a4de6614432bcd0",
     );
   });
 

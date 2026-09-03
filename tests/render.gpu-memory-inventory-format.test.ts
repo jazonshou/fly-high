@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { readSource } from "./support/sourceText";

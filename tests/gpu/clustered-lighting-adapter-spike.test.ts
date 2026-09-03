@@ -247,7 +247,6 @@ async function compile(clustered: boolean): Promise<StageProfile> {
       }
       const container = new ClusteredLightContainer("spike-cluster", points, scene);
       disposables.push(container);
-      // eslint-disable-next-line no-console
       console.log(`[spike] container.isSupported = ${container.isSupported}`);
     }
 
@@ -298,7 +297,6 @@ async function compile(clustered: boolean): Promise<StageProfile> {
     }
     // P-COMPILE: reported rather than silently thrown, because "it does not
     // compile" is a RECORDED OUTCOME that re-shapes 7-4, not a test failure.
-    // eslint-disable-next-line no-console
     console.log(`[spike] clustered=${clustered} ready=${ready} gpuErrors=${gpuErrors.length}`);
     expect(ready, `the ${clustered ? "clustered" : "baseline"} permutation never compiled`)
       .toBe(true);
@@ -329,7 +327,6 @@ async function compile(clustered: boolean): Promise<StageProfile> {
       if (gpuErrors.length > errorsBeforeDepth) break;
     }
     const depthErrors = gpuErrors.slice(errorsBeforeDepth);
-    // eslint-disable-next-line no-console
     console.log(`[spike] clustered=${clustered} depthReady=${depthReady} `
       + `depthErrors=${depthErrors.length} ${JSON.stringify(depthErrors.slice(0, 2))}`);
 
@@ -358,7 +355,6 @@ describe("7-0-d: clustered lighting adapter spike", () => {
       newTextures: clustered.allTextures.filter((n) => !base.allTextures.includes(n)),
       newStorage: clustered.storageBuffers.filter((n) => !base.storageBuffers.includes(n)),
     };
-    // eslint-disable-next-line no-console
     console.log(`[spike] ${JSON.stringify(report, null, 2)}`);
 
     // Non-vacuity FIRST: if the container never reached the shader, every delta

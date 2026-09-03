@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
+  OCEAN_PRESENTATION_RADIUS_METERS,
   WATER_FRAGMENT_WGSL,
   WATER_VERTEX_WGSL,
   oceanMeshCascadeFadeRadius,
@@ -18,6 +19,14 @@ const oceanPresentationTopology = (
 ) => profile.oceanPresentation;
 
 describe("spectral ocean presentation topology", () => {
+  it("covers off-axis far-plane corners without adding presentation topology", () => {
+    // The camera far plane is view depth, not a radial sphere. A disk equal to
+    // 45 km exposed its circular edge in the downward material capture. Only
+    // the final coverage-skirt ring moves; the assertions below pin the prior
+    // 40 km detail lattice and its mesh-Nyquist fade radii.
+    expect(OCEAN_PRESENTATION_RADIUS_METERS).toBe(90_000);
+  });
+
   it("uses a depth-aware, variance-filtered physical surface without a duplicate cloud field", () => {
     // 2-8: distance filtering is Toksvig — the moment mips' slope variance
     // becomes roughness; the old ad-hoc smoothstep distance term is gone.

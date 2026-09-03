@@ -31,9 +31,9 @@ import {
   type DetailPrototypeBoundKernel,
   type DetailPrototypeBounds,
 } from "./instanceFormat";
-import { createFoliageAtlas, type FoliageAtlas } from "./FoliageAtlas";
+import type { FoliageAtlas } from "./FoliageAtlas";
 import {
-  createImpostorAtlas,
+  createDetailAtlases,
   DETAIL_CROWN_ALBEDO,
   impostorBakeFrame,
   impostorLayerIndex,
@@ -88,6 +88,10 @@ import {
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
 import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
+import {
+  CANOPY_SURFACE_AMBIENT,
+  CANOPY_SURFACE_SPECULAR,
+} from "./densityField";
 import {
   airfieldStructureExclusions,
   type StructureExclusionBox,
@@ -1701,6 +1705,9 @@ export class WorldDetailRuntime {
     this.pluginByMaterial.clear();
     this.foliageAtlas?.texture.dispose();
     this.foliageAtlas = null;
+    this.impostorAtlas?.albedo.dispose();
+    this.impostorAtlas?.normalDepth.dispose();
+    this.impostorAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
     this.statisticsValue = ZERO_STATISTICS;
@@ -3349,10 +3356,14 @@ export class WorldDetailRuntime {
     // the atlas define — geometry and instancing stay fully testable.
     const engineFlags = this.scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     if (engineFlags.isWebGPU || engineFlags._gl) {
-      this.foliageAtlas = createFoliageAtlas(this.scene, this.options.worldSeed);
+      // The impostor bake samples the foliage atlas. Build both through the
+      // shared-plan boundary so the expensive deterministic foliage synthesis
+      // runs once rather than twice byte-for-byte.
+      const atlases = createDetailAtlases(this.scene, this.options.worldSeed);
+      this.foliageAtlas = atlases.foliage;
       // 2-17: the far band's octahedral impostors, baked on the CPU from
       // the same seed (byte-deterministic; ~0.4 s once at startup).
-      this.impostorAtlas = createImpostorAtlas(this.scene, this.options.worldSeed);
+      this.impostorAtlas = atlases.impostor;
     }
 
     // Near trees use species-specific closed crown lobes/whorls and mid trees
@@ -3383,13 +3394,13 @@ export class WorldDetailRuntime {
       // dome-blended top cards face the sky — at full specular they mirrored
       // the sky probe as a teal sheen across every crown top in the noon
       // captures. Leaves are rough dielectrics; kill the sheen.
-      crownMaterial.specularIntensity = 0.4;
+      crownMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       // Wave P: the shaded card faces are ambient-dominated, and full-strength
       // sky irradiance lifted their blue channel to ~0.8×green (terrain sits
       // at ~0.64) — the residual cold cast after the specular cut. Real
       // canopies self-shadow far more than a card shell can; trim the probe
       // and let the sun carry the tone.
-      crownMaterial.environmentIntensity = 0.62;
+      crownMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       // R-2E's mandated mitigation: canopy renders in the alpha-test bucket,
       // AFTER opaque terrain and trunks have filled the depth buffer, so
       // early-Z kills every canopy fragment behind a ridge or a trunk before
@@ -3414,11 +3425,11 @@ export class WorldDetailRuntime {
       opaqueCrownMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
       // Wave P: same probe trim as the card shell — the interior core peeks
       // through card gaps and must not read bluer than the cards over it.
-      opaqueCrownMaterial.environmentIntensity = 0.62;
+      opaqueCrownMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       // Wave Q: specular parity too — this hull kept createMaterial's 1.0
       // while the cards and impostor run 0.4, so at a grazing dusk sun the
       // mid band's interior flared against both neighbours at the handoffs.
-      opaqueCrownMaterial.specularIntensity = 0.4;
+      opaqueCrownMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       const barkMaterial = this.createMaterial(
         `detail-bark-${species}`,
         new Color3(0.58, 0.52, 0.46),
@@ -3426,6 +3437,13 @@ export class WorldDetailRuntime {
         true,
       );
       this.registerBandFadeMaterial(barkMaterial);
+      // L-2: the far impostor bakes crown AND bark into one sprite and shades
+      // both with this response. Leaving the geometry-band trunk at the
+      // createMaterial defaults (1 / 1) made the same bark jump to 0.62 / 0.4
+      // at the handoff. This is representation parity, not a subjective bark
+      // retune, so read the existing shared response instead of copying it.
+      barkMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
+      barkMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
       for (let variant = 0; variant < variantCount; variant += 1) {
         const prototype = buildTreePrototype(species, variant, prototypeSeed);
         // Wave T: EVERY part of a tree (bark skeleton, interior core, card
@@ -3573,8 +3591,8 @@ export class WorldDetailRuntime {
       impostorMaterial.backFaceCulling = false;
       impostorMaterial.twoSidedLighting = true;
       impostorMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
-      impostorMaterial.specularIntensity = 0.4;
-      impostorMaterial.environmentIntensity = 0.62;
+      impostorMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
+      impostorMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
       this.registerBandFadeMaterial(impostorMaterial);
       this.materialPlugin(impostorMaterial)?.setImpostorAtlas(
         this.impostorAtlas.albedo,

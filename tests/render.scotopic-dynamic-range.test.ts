@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MAX_EXPOSURE, SCENE_UNIT_TO_NITS } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { readSource } from "./support/sourceText";

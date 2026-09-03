@@ -130,7 +130,6 @@ describe("far-field horizon shadow operator (6-11)", () => {
     const by = new Map<string, number>();
     PROBES.forEach((probe, index) => {
       by.set(probe.label, values[index]!);
-      // eslint-disable-next-line no-console
       console.log(`HORIZON-OP ${probe.label.padEnd(26)} -> ${values[index]!.toFixed(4)}`);
     });
 

@@ -188,7 +188,6 @@ describe("6-8 canopy closure is the density field's, on the rendered law's model
     expect(best.cover).toBeLessThanOrEqual(
       (1 - Math.exp(-CANOPY_RENDERED_CROWN_AREA_RATIO)) + 0.12,
     );
-    // eslint-disable-next-line no-console
     console.log(
       `6-8 closure vs real stems: field closure ${best.closure.toFixed(4)}, `
       + `rendered-half ${renderedHalf.toFixed(4)}, measured rendered cover `
@@ -307,7 +306,6 @@ describe("6-8 conserves coverage across the whole ramp", () => {
     const outside = canopyHandoff(closure, shareAt(bands.far + 1e-3));
     expect(Math.abs(outside.surface - inside.surface)).toBeLessThan(1e-6);
     expect(outside.surface).toBeCloseTo(closure, 9);
-    // eslint-disable-next-line no-console
     console.log(
       `6-8 ramp continuity: worst 1 m surface step ${worstSurface.toExponential(2)} `
       + `at ${worstAt} m (closure ${closure.toFixed(3)}), worst shade step `
@@ -403,7 +401,6 @@ describe("6-8 calibrates the LIT response across the handoff, not the albedo", (
         + `vs measured ${impostorAlbedo[channel]!.toFixed(4)}`,
       ).toBeLessThan(0.006);
     }
-    // eslint-disable-next-line no-console
     console.log(
       `6-8 canopy albedo: measured (${impostorAlbedo.map((v) => v.toFixed(4)).join(", ")}) `
       + `vs constant (${CANOPY_SURFACE_ALBEDO.join(", ")})`,
@@ -445,7 +442,6 @@ describe("6-8 calibrates the LIT response across the handoff, not the albedo", (
     // materials' directIntensity difference (1.05 vs 1.03) plus the albedo
     // constant's own rounding.
     expect(worst, `worst lit-luminance mismatch across the ring`).toBeLessThan(0.05);
-    // eslint-disable-next-line no-console
     console.log(`6-8 lit-luminance mismatch across the handoff: ${(worst * 100).toFixed(2)}%`);
   });
 
@@ -475,7 +471,6 @@ describe("6-8 calibrates the LIT response across the handoff, not the albedo", (
     const error = Math.abs(litLuminance(naive, sky) - litLuminance(vegetation, sky))
       / litLuminance(vegetation, sky);
     expect(error).toBeGreaterThan(0.28);
-    // eslint-disable-next-line no-console
     console.log(
       `6-8 negative control: albedo-identical canopy is ${(error * 100).toFixed(1)}% `
       + `off in lit luminance`,
@@ -838,7 +833,6 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // toward 0.5 the claim "retune, not rewrite" has stopped being true and
     // the number should be argued, not moved.
     expect(share).toBeLessThan(0.40);
-    // eslint-disable-next-line no-console
     console.log(
       `6-8 analytic splat movement over ${dark.probes} probes: dominant material `
       + `changes ${(share * 100).toFixed(2)}%; forest floor `

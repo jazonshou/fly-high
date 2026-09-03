@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_AIRPORT } from "../src/world/airport";
 import { readSource } from "./support/sourceText";

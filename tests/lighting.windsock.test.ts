@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createWorld, sampleWind } from "../src/world";
 import { readSource } from "./support/sourceText";

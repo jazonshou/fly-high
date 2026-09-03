@@ -13,6 +13,7 @@ import {
 } from "../src/render/webgpu/detail/ImpostorAtlas";
 import { planFoliageAtlas, FOLIAGE_LAYERS } from "../src/render/webgpu/detail/FoliageAtlas";
 import { DETAIL_IMPOSTOR_SPECIES_SLOTS } from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
+import { readSource } from "./support/sourceText";
 
 /**
  * 2-17 / 2-17a — the impostor bake's pure surfaces: the hemi-octahedral
@@ -22,6 +23,12 @@ import { DETAIL_IMPOSTOR_SPECIES_SLOTS } from "../src/render/webgpu/detail/Detai
  */
 
 const PLANS = planImpostorAtlas("impostor-test");
+const impostorAtlasSource = readSource(
+  new URL("../src/render/webgpu/detail/ImpostorAtlas.ts", import.meta.url),
+);
+const detailRuntimeSource = readSource(
+  new URL("../src/render/webgpu/detail/WorldDetailRuntime.ts", import.meta.url),
+);
 
 function layerStats(layer: number): {
   coverage: number;
@@ -66,6 +73,24 @@ describe("hemi-octahedral mapping (2-17)", () => {
 });
 
 describe("impostor bake (2-17)", () => {
+  it("keeps production on the single foliage-plan atlas route", () => {
+    const sharedRouteStart = impostorAtlasSource.indexOf("export function createDetailAtlases(");
+    const sharedRouteEnd = impostorAtlasSource.indexOf("\n}", sharedRouteStart);
+    const sharedRoute = impostorAtlasSource.slice(sharedRouteStart, sharedRouteEnd);
+    expect(sharedRouteStart).toBeGreaterThan(-1);
+    expect(sharedRoute.match(/planFoliageAtlas\(/gu)).toHaveLength(1);
+    expect(sharedRoute).toContain("createFoliageAtlas(scene, seed, foliagePlan)");
+    expect(sharedRoute).toContain("createImpostorAtlas(scene, seed, foliagePlan)");
+
+    const createBatchesStart = detailRuntimeSource.indexOf("private createBatches(): void");
+    const createBatchesEnd = detailRuntimeSource.indexOf("const prototypeSeed", createBatchesStart);
+    const productionRoute = detailRuntimeSource.slice(createBatchesStart, createBatchesEnd);
+    expect(createBatchesStart).toBeGreaterThan(-1);
+    expect(productionRoute).toContain("createDetailAtlases(this.scene, this.options.worldSeed)");
+    expect(productionRoute).not.toContain("createFoliageAtlas(");
+    expect(productionRoute).not.toContain("createImpostorAtlas(");
+  });
+
   it("pins the crown albedo shared by opaque hulls, cards and the far bake", () => {
     // Wave P warmed this (0.86,0.89,0.82 -> 0.92,0.91,0.8) as part of the
     // teal-canopy fix: red lifted over green to counter blue sky irradiance.
@@ -262,11 +287,23 @@ describe("impostor bake (2-17)", () => {
   });
 
   it("is deterministic and inside the memory headroom", () => {
-    const again = planImpostorAtlas("impostor-test");
-    expect(
-      Buffer.from(again.albedo.layerChains[3]![0]!)
-        .equals(Buffer.from(PLANS.albedo.layerChains[3]![0]!)),
-    ).toBe(true);
+    // Production reuses the foliage plan it already uploaded. Compare that
+    // optimized route against the independent default bake so removing the
+    // duplicate synthesis cannot alter either impostor texture.
+    const again = planImpostorAtlas(
+      "impostor-test",
+      planFoliageAtlas("impostor-test"),
+    );
+    for (const texture of ["albedo", "normalDepth"] as const) {
+      expect(again[texture].packedLevels).toHaveLength(PLANS[texture].packedLevels.length);
+      for (let level = 0; level < PLANS[texture].packedLevels.length; level += 1) {
+        expect(
+          Buffer.from(again[texture].packedLevels[level]!)
+            .equals(Buffer.from(PLANS[texture].packedLevels[level]!)),
+          `${texture} mip ${level} changed on the shared-foliage-plan path`,
+        ).toBe(true);
+      }
+    }
     const bytes = [PLANS.albedo, PLANS.normalDepth].reduce(
       (sum, plan) => sum + plan.packedLevels.reduce((s, level) => s + level.byteLength, 0),
       0,

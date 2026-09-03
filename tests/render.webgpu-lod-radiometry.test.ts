@@ -101,11 +101,9 @@ function measure(): MipRow[] {
         const len = Math.hypot(nx, ny, nz);
         let ux = 0;
         let uy = 1;
-        let uz = 0;
         if (len > 0.25) {
           ux = nx / len;
           uy = ny / len;
-          uz = nz / len;
         } else {
           degenerate += 1;
         }

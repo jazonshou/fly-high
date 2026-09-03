@@ -96,16 +96,23 @@ function capturedAllStages(): boolean {
  */
 async function renderUntilCompiled(): Promise<void> {
   const scene = new Scene(engine);
-  scene.clearColor = new Color4(0, 0, 0, 1);
-  const camera = new FreeCamera("camera", new Vector3(0, 2, 0), scene);
-  camera.setTarget(new Vector3(0, 2, 20));
-  const bloom = new BloomPass(camera, engine, 1);
-  for (let frame = 0; frame < 240 && !capturedAllStages(); frame += 1) {
-    scene.render();
-    await new Promise((resolve) => setTimeout(resolve, 16));
+  try {
+    scene.clearColor = new Color4(0, 0, 0, 1);
+    const camera = new FreeCamera("camera", new Vector3(0, 2, 0), scene);
+    camera.setTarget(new Vector3(0, 2, 20));
+    const bloom = new BloomPass(camera, engine, 1);
+    try {
+      for (let frame = 0; frame < 240 && !capturedAllStages(); frame += 1) {
+        scene.render();
+        await new Promise((resolve) => setTimeout(resolve, 16));
+      }
+      framesPumped = capturedAllStages();
+    } finally {
+      bloom.dispose(camera);
+    }
+  } finally {
+    scene.dispose();
   }
-  framesPumped = capturedAllStages();
-  bloom.dispose(camera);
 }
 
 let framesPumped = false;

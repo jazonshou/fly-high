@@ -452,11 +452,19 @@ export function uploadMippedTextureArrayPlan(
     undefined,
     plan.mipLevelCount,
   );
-  if (options?.name !== undefined) texture.name = options.name;
-  for (let level = 1; level < plan.mipLevelCount; level += 1) {
-    texture.updateMipLevel(plan.packedLevels[level]!, level);
+  try {
+    if (options?.name !== undefined) texture.name = options.name;
+    for (let level = 1; level < plan.mipLevelCount; level += 1) {
+      texture.updateMipLevel(plan.packedLevels[level]!, level);
+    }
+    return texture;
+  } catch (error) {
+    // The constructor has already allocated and uploaded mip 0. If a later
+    // level fails, ownership never reaches the caller, so this boundary must
+    // release the partial texture before preserving the upload failure.
+    texture.dispose();
+    throw error;
   }
-  return texture;
 }
 
 /**

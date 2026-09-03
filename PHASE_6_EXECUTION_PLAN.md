@@ -1,5 +1,10 @@
 # Phase 6 Execution Plan — the eroded world, water in motion, ecology, final tiers
 
+> **Historical execution record.** This plan and its deviation log remain the provenance
+> for Phase 6 decisions and measurements. Current release scope, verification wiring,
+> acceptance state, and deferrals are summarized in
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+
 **Created:** 2026-08-30. **Branch:** `jazonshou/Phase-6-Implementation` (off `a272d83`).
 **Verified against:** merge `a272d83` (post trees-overhaul waves V/T/G/P/Q/R + governor
 freeze `3fa0839` + CI determinism `8ec1c45`). Every file:line below was re-checked at
@@ -2121,21 +2126,66 @@ authored.
      fails on **timeout OR console error**, and neither half is redundant — the
      `4.5-0` crash hung with no error (an error-only check watches it hang
      forever), and Gate F's eroded world logged nothing while taking ~90 s (a
-     timeout-only check calls that healthy until it crosses). "Ready" means a
-     frame was PRESENTED, not that `create()` resolved, because a renderer that
-     resolves and cannot draw is the black-frame failure wearing a green hat.
+     timeout-only check calls that healthy until it crosses). The intended
+     contract was a presented frame rather than merely a resolved `create()`;
+     the first harness still stopped its suffix clock when `renderer.render()`
+     returned, a limitation corrected by the strengthened closure below.
      Needed a small addition to `FlightRenderer`: an opt-in startup-stage trace,
      inert unless a harness calls `beginRendererStartupTrace()`.
-     **First reading, on the hot host: total 1,520 ms, first frame 84 ms** —
-     which is already at W-1's ≤1.5 s line before the host is even cold. The
-     number is NOT pinned; the ceiling in the file is a loose hang-catcher until
-     a cold-host figure exists.
+     **First reading, on the hot host: create 1,520 ms, render-call return 84
+     ms** — which is already at W-1's ≤1.5 s line before the host is even cold.
+     The suffix did not include readback or GPU completion and is not a ready
+     time. The number is NOT pinned; the ceiling in the file is a loose
+     hang-catcher until a cold-host figure exists.
      **The stage split immediately paid for itself:** the six named stages sum
      to **284 ms of the 1,520**. Roughly **81% of cold start is outside every
      stage the renderer names** — material synthesis, scene construction and
      whatever else runs between the awaits. Any startup work aimed at the named
      stages would be optimising a fifth of the problem. That is the first thing
      to attribute before anyone tunes startup.
+
+     **Closed 2026-09-02.** The trace now uses consecutive, disjoint sync/async
+     checkpoints instead of timing selected Promises. A deliberate-red coverage
+     assertion requires their sum to match `FlightRenderer.create()` within
+     5 ms, so a new synchronous constructor, direct await, or tail gap cannot
+     recreate the unnamed 81%. One representative run from the repeated
+     1,751–1,768 ms current-tree set attributes all **1,765 ms (0.0 ms gap)**:
+     detail-runtime construction **942 ms**, scene shader readiness **408 ms**,
+     hydrology **81 ms**, airport **74 ms**, atmosphere/cloud construction
+     **66 ms**. Detail is 53% of the whole start and 72% of the prior 1,302 ms
+     unnamed remainder. The mechanism is a byte-identical duplicate:
+     `createFoliageAtlas` planned all 18 seeded 256² layers, then
+     `planImpostorAtlas` planned those same layers again solely to sample mip 0.
+     Isolated Node timings for one foliage plan were **449 / 425 / 413 ms**.
+     Production now passes one immutable plan through both atlas builders; full
+     packed-mip parity for both impostor arrays is asserted. Three fresh-browser
+     post-change runs measured create **1,574 / 1,524 / 1,541 ms** and trace gap
+     **0.0 ms** on all three. Their historical **81 / 82 / 83 ms** suffixes timed
+     only `renderer.render()` returning; they did not include synchronous
+     readback, GPU completion, or the asynchronous error-delivery task and are
+     therefore render-call diagnostics, never ready times. Detail construction
+     fell to **731 / 704 / 717 ms**: every post-change create is at least **177
+     ms (10%)** below every reading in the 1,751–1,768 ms pre-change set.
+
+     Item 3's acceptance half is closed against the strengthened definition.
+     Three retained fresh-browser samples pair create **1,537.6 / 1,537.1 /
+     1,542.6 ms** with completion **280.1 / 278.3 / 278.7 ms** — render,
+     synchronous canvas readback, the raw GPU submitted-work fence, and one
+     asynchronous error-delivery task — for ready **1,817.7 / 1,815.4 / 1,821.3
+     ms**. All three frames reported **12 terrain tiles** and **1.81%**
+     lower-outer-frame horizontal detail. Median ready 1,817.7 ms × 1.25 is
+     2,272.125 ms; rounded up to 50 ms, the shipping analytic deadline is
+     **2,300 ms**. The previously retained create **1,594 / 1,602 / 1,616 ms**
+     plus **73 / 73 / 69 ms** render-call-return series remains historical only:
+     the 69–73 ms suffixes never measured readiness. The refused **1,412 ms**
+     value likewise remains a create-only outlier, not a ready-time candidate.
+     The perf test enforces 2,300 ms on the reference host and reports it on an
+     explicitly unpinned host; timeout/error/frame-completeness/trace checks
+     remain enforced everywhere. The 120 s ceiling remains hang-only. This
+     number is deliberately not W-1's ≤1.5 s: that target belongs to the parked
+     eroded experiment. `perf:cold-start` launches this gate in a fresh browser
+     process before every canonical capture command; the warm shot renderer can
+     neither overlap nor precede it.
   3. **Item 5 (memory truth) — RECONCILED, and the estimate model is wrong by a
      third.** Measured on the current analytic tree: the estimate reads
      367.5–380.7 MiB while the inventory reads 483.9–492.3, a shortfall of
@@ -2211,9 +2261,10 @@ authored.
      direction, and per §7.1 these are archived acceptance reports rather than
      standing gates, so a reduced-but-sound sweep with its scope recorded always
      beats a complete one that is confounded.
-  **Outstanding and needing only a cold host:** the twelve sweep configurations,
-  QR-1's per-tier headroom decision (which is a measurement), and pinning the
-  cold-start acceptance number.
+  **Historical state when this entry was written:** the twelve sweep
+  configurations, QR-1's per-tier headroom decision (which is a measurement),
+  and the cold-start acceptance pin still needed an idle host. The strengthened
+  cold-start pin is now closed above at 2,300 ms.
 
 - **D-27 (2026-08-31, `6-13` — Jason's defect 4, the terrain camo splotches:
   TWO defects that were one, and neither is fixable alone):** the patchwork is
