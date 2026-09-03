@@ -200,8 +200,20 @@ repeat, and recipe anisotropy — with the phenomenon localised to the material
 detail normal map and confirmed world-space by a resolution sweep. None of those
 eliminations rests on an instrument in this catalogue.
 
-**The pattern across all six entries: every one was caught by a control on the
-instrument rather than by more careful use of it.** A positive control on the
+**The pattern across all six entries: every one was caught by INTERROGATING the
+instrument rather than by running it more carefully.** In these six the
+interrogation happened to take the form of a control — a positive control on the
 detector, a synthetic field through the same filter, the native frame against its
-own crop, a second estimator, a second window size. **Running the instrument more
-carefully would have caught none of them.**
+own crop, a second estimator, a second window size.
+
+**The control is the subset, not the rule.** Checked against the same day's
+findings from other sessions, the same pattern holds in forms that are not
+controls at all: a gutter unit mismatch caught by reading atlas values directly
+after five mechanisms had died; a confounded varying caught by reading Babylon's
+source when a conclusion felt too exotic; a clamped output caught by reading what
+the function actually does; a single-sample constant caught by sampling a second
+seed. Adding a control, reading the source, measuring the artefact directly,
+sampling a second axis — **all four are questioning the tool, and none is using it
+better.** That is the general form; the six above are one branch of it.
+
+**Running the instrument more carefully would have caught none of them.**
