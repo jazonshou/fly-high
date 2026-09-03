@@ -40,7 +40,7 @@ supersede `G1`–`G10` as the coverage authority:
 | **G-C** | **Medium settings run with no flicker, no lag, no inconsistency on a MacBook Pro.** | A measured number at the reference viewport, asserted in CI — not an impression. |
 
 "Medium" is **tier 1**: `QUALITY_WEIGHT.medium (1) + MODE_WEIGHT.balanced (0)`
-→ [`QualityProfile.ts:103`](src/render/webgpu/core/QualityProfile.ts:103).
+→ [`QualityProfile.ts:103`](../../src/render/webgpu/core/QualityProfile.ts:103).
 1.5 Mpx cap, `renderScale 0.86`, DPR ceiling 1.5, MSAA 4×, 2 cascades at 7 km,
 480 MiB ceiling. Every G-C number in this document is that tier at the reference
 viewport of 1512×982 CSS @ DPR 2.
@@ -57,9 +57,9 @@ disagreeing about item numbers and day totals.
 **The finding.** The user named the plane explicitly. The programme allocates
 **zero of its days to it.**
 
-- [`createAircraft.ts`](src/render/webgpu/aircraft/createAircraft.ts) is 715
+- [`createAircraft.ts`](../../src/render/webgpu/aircraft/createAircraft.ts) is 715
   lines of 44 `box`/`cylinder`/`sphere` primitive calls.
-- [`builders.ts:44-47`](src/render/webgpu/aircraft/builders.ts:44) gives every
+- [`builders.ts:44-47`](../../src/render/webgpu/aircraft/builders.ts:44) gives every
   part a `PBRMaterial` with `albedoColor` only — `metallic 0.08`,
   `roughness 0.48`, no map of any kind.
 - `grep -rn "Texture" src/render/webgpu/aircraft/` returns nothing. There are
@@ -70,7 +70,7 @@ disagreeing about item numbers and day totals.
 - The hangars the user never mentioned get **13.0 days** (`7-10`, `7-11`).
 
 The same hole exists one layer down and was not noticed at all:
-[`WildlifeSystem.ts:573,:582`](src/render/webgpu/wildlife/WildlifeSystem.ts:573)
+[`WildlifeSystem.ts:573,:582`](../../src/render/webgpu/wildlife/WildlifeSystem.ts:573)
 builds gulls, hawks, deer and boar from `CreateSphere({diameter: 1})` and
 `CreateBox({size: 1})` with one flat `PBRMaterial` each. Across all eight plan
 documents wildlife appears exactly twice — as an aerial-perspective consumer and
@@ -98,7 +98,7 @@ terrain chain**, so it is also the fallback mitigation for Phase 4's dark stretc
 | `A-5` | `wildlife-forms` — species silhouettes and fur/feather materials replacing unit spheres and boxes | 3.0 | Same recipes, different subjects. |
 
 **Also:** add an `aircraft` row to `SubsystemName` in
-[`owners.ts`](src/render/webgpu/owners.ts) and to `ARCHITECTURE.md` §1 **before**
+[`owners.ts`](../../src/render/webgpu/owners.ts) and to `ARCHITECTURE.md` §1 **before**
 `A-1`, so the ownership contract covers it the way it covers everything else.
 
 ---
@@ -107,7 +107,7 @@ terrain chain**, so it is also the fallback mitigation for Phase 4's dark stretc
 
 ### R-2 — the propeller strobes ~4.4 times a second
 
-[`createAircraft.ts:358-360`](src/render/webgpu/aircraft/createAircraft.ts:358):
+[`createAircraft.ts:358-360`](../../src/render/webgpu/aircraft/createAircraft.ts:358):
 
 ```ts
 propeller.setEnabled(
@@ -116,7 +116,7 @@ propeller.setEnabled(
 ```
 
 This disables the whole propeller node — hub and both blades — periodically.
-At cruise `rotorRadiansPerSecond ≈ 102` ([`animation.ts:70`](src/render/webgpu/aircraft/animation.ts:70)),
+At cruise `rotorRadiansPerSecond ≈ 102` ([`animation.ts:70`](../../src/render/webgpu/aircraft/animation.ts:70)),
 so the gate argument advances at 27.5 rad/s: period 0.229 s, off for 19.4% of it.
 The propeller vanishes and reappears **about 4.4 times per second**, on the
 object the user named, in the view they fly in. Deviation `D-10` fixed the
@@ -126,7 +126,7 @@ capture's *determinism*, not the flicker.
 translucent radially-blurred disc above it. Delete the `setEnabled` sinusoid.
 Assert `propeller.isEnabled()` never changes between consecutive `update()` calls
 at fixed rpm. *(The jet path does not have this defect —
-[`createAircraft.ts:657`](src/render/webgpu/aircraft/createAircraft.ts:657) sets
+[`createAircraft.ts:657`](../../src/render/webgpu/aircraft/createAircraft.ts:657) sets
 rotation only.)*
 
 ### R-3 — cockpit view deletes the fuselage from the shadow map
@@ -223,7 +223,7 @@ This is the largest structural finding. The programme's performance engineering
 is genuinely good — the absolute pixel cap, the anti-ratchet, the depth-only CSM,
 a first-principles memory estimator, a deterministic screenshot baseline. But
 **nothing in the repository asserts a measured performance number**
-([`perf-capture.test.ts:231-238`](tests/perf/perf-capture.test.ts:231) asserts
+([`perf-capture.test.ts:231-238`](../../tests/perf/perf-capture.test.ts:231) asserts
 only `meanLuminance > 0.01` and SSIM ≥ 0.985; assertion 20 only checks that a
 static table of hand-written rows sums below a hand-written target), and the
 signal the governors run on is not what it is believed to be.
@@ -241,7 +241,7 @@ instrument that will not be built until afterwards. The *measurement* half of
 
 `gpuFrameMsP95` is `null` in all three committed baseline shots
 (`tests/perf/baseline/report.json`), so the fallback at
-[`AdaptiveGovernor.ts:206`](src/render/webgpu/core/AdaptiveGovernor.ts:206) is
+[`AdaptiveGovernor.ts:206`](../../src/render/webgpu/core/AdaptiveGovernor.ts:206) is
 what ran, not a hypothetical:
 
 ```ts
@@ -256,7 +256,7 @@ Under vsync, `intervalP95` is *pacing*, not load. A frame comfortably making
 **Correction worth recording:** the null is *not* a missing browser feature.
 Instrumenting a capture-like run in the same headless Chromium reads
 `diagnostics.gpuP95Ms = 11.97 ms`. The null is a sampling-window artefact —
-[`FlightRenderer.ts:1200-1206`](src/render/FlightRenderer.ts:1200) resets the
+[`FlightRenderer.ts:1200-1206`](../../src/render/FlightRenderer.ts:1200) resets the
 sample set every window and gates on freshness and `MIN_GPU_TIMING_SAMPLES`, so
 the value is discarded before the capture reads it. That makes the fix cheap, and
 it means the proxy path is live **exactly when the window fails to fill** — which
@@ -268,7 +268,7 @@ This is the precondition for R-5 and R-6 and must be diagnosed first.
 ### R-5 — Governor B walks load *up* while the frame is GPU-bound
 
 When `classification === "gpu-bound"` **and** `resolutionInsensitive` is latched,
-[`AdaptiveGovernor.ts:286`](src/render/webgpu/core/AdaptiveGovernor.ts:286) is
+[`AdaptiveGovernor.ts:286`](../../src/render/webgpu/core/AdaptiveGovernor.ts:286) is
 skipped (the guard is `&& !next.resolutionInsensitive`), the `cpu-bound` block at
 `:321` is skipped, and control falls through to the trailing branch at `:357`:
 
@@ -289,7 +289,7 @@ Tier 1: `renderScale 0.86`, DPR ceiling 1.5, cap 1.5 Mpx. At 1512×982 @ DPR 2 t
 DPR clamps to 1.5 → 2268×1473 = 3.34 Mpx; × 0.86² = 2.47 Mpx, still above the
 1.5 Mpx cap. The cap binds, a downward `renderScale` step changes no pixels,
 `observeRenderScaleApplication` latches `resolutionInsensitive` immediately
-([`AdaptiveGovernor.ts:384`](src/render/webgpu/core/AdaptiveGovernor.ts:384)),
+([`AdaptiveGovernor.ts:384`](../../src/render/webgpu/core/AdaptiveGovernor.ts:384)),
 and the renderer's only remaining adaptation is Governor B — which by design
 fires only on `cpu-bound`. **On the exact machine and tier the user named, a
 GPU-bound frame has no closed loop behind it.**
@@ -309,7 +309,7 @@ most user-visible failure mode in G-C.**
 ### R-8 — the screenshot gate compares images that are 20.5% black
 
 `context.drawImage(canvas, 0, 0)`
-([`tests/perf/perf-capture.test.ts:183`](tests/perf/perf-capture.test.ts:183))
+([`tests/perf/perf-capture.test.ts:183`](../../tests/perf/perf-capture.test.ts:183))
 uses the 3-argument form, which copies the drawing buffer at 1:1. With tier 1's
 `renderScale 0.86` the buffer is 1100×619 inside a 1280×720 canvas, so **180 of
 880 tiles in every committed baseline are pure black** (measured, not inferred:
@@ -319,7 +319,7 @@ exactly 1100×619).
 Consequences for phases that are almost entirely pixel work: a regression
 confined to the rendered 79.5% is diluted by a fifth of constant-identical area,
 and the harness silently contradicts its own spec —
-[`vitest.perf.config.ts:9-11`](vitest.perf.config.ts:9) and
+[`vitest.perf.config.ts:9-11`](../../vitest.perf.config.ts:9) and
 `RENDERING_PLAN.md:791` both say *"DPR 1, 1280×720"*.
 
 **Correction worth recording:** the 0.86 is the **static tier-1 profile
@@ -335,7 +335,7 @@ argument that these numbers are not yet trustworthy.
 The assertion that justified `camera.maxZ = 45 km` and the terrain-ring cut is
 titled, verbatim, *"reaches ≥95% luminance opacity at the far plane in clear
 weather **at ground level**"*
-([`tests/render.webgpu-aerial-perspective.test.ts:178`](tests/render.webgpu-aerial-perspective.test.ts:178)).
+([`tests/render.webgpu-aerial-perspective.test.ts:178`](../../tests/render.webgpu-aerial-perspective.test.ts:178)).
 Evaluating the shipped closed form gives **4.6%** transmittance at 45 km at sea
 level — matching the code's own stated figure — but a fragment at the far plane
 seen from 10,000 ft is terrain at ~0 m, and that slanted path gives **T ≈ 0.25,
@@ -409,14 +409,14 @@ renderer error rather than logging it — the same gate Phase 2 wants for `2-5`.
 the threading rule does not cover
 
 The threading rule is real and enforced:
-[`architecture.boundaries.test.ts:192-200`](tests/architecture.boundaries.test.ts:192)
+[`architecture.boundaries.test.ts:192-200`](../../tests/architecture.boundaries.test.ts:192)
 fails the build for any `SEASONAL_FIELD_FAMILY` member whose source lacks a
 type-position `EnvironmentClock`/`dayOfYear`, and requires a `plannedBy` marker
 for members not yet written. `2-18`, `3-10` and `4-6` cannot quietly ship without
 it. That is good architecture and it holds.
 
 But the check is **syntactic**, and `densityField.ts` is the proof: `dayOfYear`
-is declared at [`:36`](src/render/webgpu/detail/densityField.ts:36) and read
+is declared at [`:36`](../../src/render/webgpu/detail/densityField.ts:36) and read
 nowhere in the body — honestly documented as deliberate, but it means the family
 test would pass on a field that is entirely season-blind.
 
@@ -425,7 +425,7 @@ test would pass on a field that is entirely season-blind.
 `grep -n 'dayOfYear\|EnvironmentClock' src/world/terrain.ts src/world/geology.ts`
 returns **nothing**. Yet:
 
-- `classifyBiome` ([`terrain.ts:342`](src/world/terrain.ts:342)) is what decides
+- `classifyBiome` ([`terrain.ts:342`](../../src/world/terrain.ts:342)) is what decides
   snow today: `if (temperature < 0.2 || height > world.seaLevel + 1_520) return TerrainBiome.SNOW`.
 - `ARCHITECTURE.md` §5 makes `src/world/{seed,noise,terrain,geology}.ts`
   *"simultaneously the physics authority and the source `4-1` transliterates into
@@ -435,7 +435,7 @@ returns **nothing**. Yet:
   classifier, so `3-10`'s "seasonal palette" will tint a season-invariant
   material assignment for ~35 days.
 
-Meanwhile [`EnvironmentDirector.ts:152-154`](src/render/webgpu/nature/EnvironmentDirector.ts:152)
+Meanwhile [`EnvironmentDirector.ts:152-154`](../../src/render/webgpu/nature/EnvironmentDirector.ts:152)
 hardcodes `snowCoverage`, `surfaceWetness` and `precipitation` to `0`, no plan
 item owns them, and `2-18` (canopy snow) and `4-6` (snow-pack) will each invent
 their own winter. `grep -rn snowCoverage` over all four plan documents returns
@@ -483,7 +483,7 @@ At 45°N, declination puts midsummer noon at ~68.4° and midwinter noon at ~21.6
 a **~6× longer shadow**, i.e. a directly proportional increase in cascade extent
 and shadow-caster count. Every tier table and every `FRAME_BUDGET_MS` row was set
 against a harness pinned at `dayOfYear 171, solarTimeHours 12.5`
-([`perf-capture.test.ts:96`](tests/perf/perf-capture.test.ts:96), set **once**,
+([`perf-capture.test.ts:96`](../../tests/perf/perf-capture.test.ts:96), set **once**,
 outside the shot loop). The clock configuration that maximises the shadow
 workload is the one configuration G-C's budget has never been measured at.
 
@@ -516,7 +516,7 @@ false of 7A.
 
 What ships in the meantime: stars are a hash, the moon is nailed to the exact
 anti-solar point and is therefore always full
-([`AtmosphereSystem.ts:91`](src/render/webgpu/atmosphere/AtmosphereSystem.ts:91)),
+([`AtmosphereSystem.ts:91`](../../src/render/webgpu/atmosphere/AtmosphereSystem.ts:91)),
 the sun palette's below-horizon anchor is `intensity: 0.0`, and `ambient.intensity`
 is an unconditional `0.05`. **At 22:00 the ground is black.** Half of the user's
 second-ranked goal is a placeholder for roughly 200 more days.
@@ -676,7 +676,7 @@ that §8 reasons about.
   `octaveBandWeight` flips the `weight >= 1` vs `weight > 0` branch and "moves height by
   metres". Branch B is `MEAN + (ridge² − MEAN)·weight`, which at `weight == 1` evaluates to
   exactly branch A and at `weight == 0` to exactly branch C
-  ([`noise.ts:231-245`](src/world/noise.ts:231)). The three-way switch is algebraically
+  ([`noise.ts:231-245`](../../src/world/noise.ts:231)). The three-way switch is algebraically
   continuous at both points; a flip moves height by ≲ 1e-4 m. The *recommendation* that
   survives is different and better: pass `filterWidthMeters = 0.0` at L0 so no weight is
   computed at all and the L0 page is bit-identical to the physics path by construction.
@@ -734,7 +734,7 @@ Recorded so the next reviewer does not re-litigate it:
 - The aerial-perspective *"one include, every consumer"* claim holds in code —
   terrain, ocean, hydrology, clouds, vegetation, **aircraft** and airport all
   register through `AerialPerspectiveRegistry`
-  ([`FlightRenderer.ts:506-517`](src/render/FlightRenderer.ts:506)).
+  ([`FlightRenderer.ts:506-517`](../../src/render/FlightRenderer.ts:506)).
 - The seasonal-family boundary test is real, including the `plannedBy` gate for
   files that do not exist yet.
 - The page-geometry contract, the single-exposure rule (assertion 29 greps `src/`

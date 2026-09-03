@@ -3,7 +3,7 @@
 > **Historical execution record.** This plan and its deviation log remain the provenance
 > for Phase 6 decisions and measurements. Current release scope, verification wiring,
 > acceptance state, and deferrals are summarized in
-> [`PROJECT_CLOSEOUT_2026_09_02.md`](PROJECT_CLOSEOUT_2026_09_02.md).
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](../status/PROJECT_CLOSEOUT_2026_09_02.md).
 
 **Created:** 2026-08-30. **Branch:** `jazonshou/Phase-6-Implementation` (off `a272d83`).
 **Verified against:** merge `a272d83` (post trees-overhaul waves V/T/G/P/Q/R + governor
@@ -23,14 +23,14 @@ decision log, per house rule.
 |---|---|---|
 | **Q1+Q2** | **Eroded-first.** The GPU-erosion workstream precedes Phase 6's items. Features land on real substrates (channel graphs, lakeDepth/soilDepth, eroded bathymetry) and stay dark in the shipping analytic default until the workstream re-earns the eroded default. | Gate W (§4) plans and prices the workstream now — this satisfies `PHASE_5_EXECUTION_PLAN.md` §14.2(d)'s "price it when it is planned" (a fresh price, no carried number). The analytic default **stays shipping** the whole phase; re-defaulting is a gated decision (§8), never a side effect. This does not contradict `RESOLUTION_PLAN.md`'s ship-on-analytic decision — that plan itself deferred the GPU port to "a separate later workstream", which is now scheduled. |
 | **Q3** | 6-1's capillary half is **done** — answered differently by fix-pack W1–W3, then extended by wave R (4 octaves, roughness-as-field, physical Hs). | 6-1 re-prices to flow-advection + standing waves + lake chop only. The 5th/6th-cascade question is **dropped**: every 5-slot uniform family gained a mesh-Nyquist sibling in wave R, so a sixth cascade is dearer than ever, and the fragment-side pattern is proven. |
-| **Q4** | 6-5 is a **water-side field item**. The shader response is live and verbatim ([TerrainSurfacePlugin.ts:1964-1965](src/render/webgpu/terrain/TerrainSurfacePlugin.ts)); `setWetness` has zero callers; the 5-12/D15 lakeDepth head start **does not exist** (`git log -S lakeDepth` — never entered the plugin or water systems). | 6-5 re-priced at 2.0 d including the never-wired lake-bed term and the aux-plumbing work. |
+| **Q4** | 6-5 is a **water-side field item**. The shader response is live and verbatim ([TerrainSurfacePlugin.ts:1964-1965](../../src/render/webgpu/terrain/TerrainSurfacePlugin.ts)); `setWetness` has zero callers; the 5-12/D15 lakeDepth head start **does not exist** (`git log -S lakeDepth` — never entered the plugin or water systems). | 6-5 re-priced at 2.0 d including the never-wired lake-bed term and the aux-plumbing work. |
 | **Q5** | **Full 6-11**: four-tier × three-viewport delivery sweep plus cold-start deadlines. | §7. Cold start is measured for the analytic default (acceptance) *and* the eroded path (Gate W exit input). |
 | **Q6** | **C-8 flies first.** The three named Phase 5 flights run against today's CPU-eroded world *before* implementation starts. | Gate F (§3). Findings feed Gate W's targets — the GPU port must not freeze a landscape nobody has approved. |
 | **Q7** | **QR-1 settles inside 6-11** (vegetation shadow tier rows decided from the sweep's measured headroom). QR-2 lands with 6-8. | §6, §7. |
 
 Also recorded: **6-10 is not in this phase** (shipped as 4-0b, `ComputeBudget.ts`);
 QR-3 (ocean shore foam) is **substantially discharged** by wave R fix 6
-([SpectralOceanSystem.ts:678-692](src/render/webgpu/water/SpectralOceanSystem.ts)) — only
+([SpectralOceanSystem.ts:678-692](../../src/render/webgpu/water/SpectralOceanSystem.ts)) — only
 run-up/streaking/wet-sand remain, in 6-2. **6-6's "shelter" channel is re-scoped away
 with reason** (§6). The four wave-R decision-log open items are each routed: lake/river
 geometry → W-5, horizon-shadow term → 6-8, DryGrass sward retune → Wave 2, planar shore
@@ -46,7 +46,7 @@ governor freeze), with SSIM ≥ per-shot floors against committed baselines.
 
 **Honesty first: today's gates do not protect today's numbers.** The strict tier-1
 contract floors are 60 fps / p95 16.67 ms
-([scripts/perf-capture.mts:44-48](scripts/perf-capture.mts)); the 16 legacy per-shot
+([scripts/perf-capture.mts:44-48](../../scripts/perf-capture.mts)); the 16 legacy per-shot
 `minFps` ceilings (19–57) were pinned 2026-08-18, three representation generations ago;
 and the 8 newest shots — **including both water shots** — carry `ceilings: null`. As
 the gates stand, the phase could shed ~45% of current delivery, wave by wave, with
@@ -67,7 +67,7 @@ rules, after Gate 0:
 2. **Dark-by-default via the parity-sentinel pattern — with its cost measured.** Every
    eroded-only feature reads its channel through the zero-sentinel fallback (the splat
    classifier's `flowAccumulationValid` pattern,
-   [LandCoverClassifier.ts:517-525](src/render/webgpu/terrain/LandCoverClassifier.ts)):
+   [LandCoverClassifier.ts:517-525](../../src/render/webgpu/terrain/LandCoverClassifier.ts)):
    analytic worlds sample zero-initialised atlases and keep today's behaviour. The
    shipping analytic build stays **pixel-identical except at sanctioned rebaselines**.
    But the sentinel is pixel-dark, **not cost-dark** — the analytic shader still pays
@@ -99,7 +99,7 @@ rules, after Gate 0:
    order of magnitude.
 3. **All GPU compute admits through `ComputeBudget`** (owners.ts: "every GPU compute
    producer admits through it"), under the existing per-tier caps
-   (`erosionCompute` 0.2/0.4/0.7/1.2 ms, [PerformanceBudget.ts:83/96/112/126](src/render/webgpu/core/PerformanceBudget.ts)),
+   (`erosionCompute` 0.2/0.4/0.7/1.2 ms, [PerformanceBudget.ts:83/96/112/126](../../src/render/webgpu/core/PerformanceBudget.ts)),
    with 4.5-B2 floor-of-one semantics. The governor freeze (`3fa0839`) means captures
    can no longer shed levers to hide an over-cap burst — it shows in p95 directly.
 4. **Memory is at the wall, and the gate is the wrong instrument.** At the binding
@@ -117,7 +117,7 @@ rules, after Gate 0:
    `DYNAMIC_ALLOCATIONS` row is checked against the measured inventory delta at item
    close. Full estimate-model reconciliation completes in 6-11.4 (§7).
 5. **Draw ceilings are regression guards, not budgets.** `VEGETATION_DRAW_CEILING =
-   [50, 58, 515, 675]` ([renderedDensity.ts:377-387](src/render/webgpu/detail/renderedDensity.ts))
+   [50, 58, 515, 675]` ([renderedDensity.ts:377-387](../../src/render/webgpu/detail/renderedDensity.ts))
    asserts the *model*; Gate 0's per-shot measured drawCalls ceilings guard the
    *renderer* (the model cannot see 6-9's conservative shadow-pass draws or W-5's new
    lake/river meshes). 6-8/6-9 may not raise a ceiling; B-2's crown/trunk merge stays
@@ -129,7 +129,7 @@ rules, after Gate 0:
    (4-10 is closed; the rule binds 6-11 here.) The ready-made fidelity row: wave T's
    undelivered leaf-spray atlas layers (foliageAtlasMiB 6.0 → ~8.0).
 7. **The tier rule is absolute.** The grandfathered `.tier`-reader list is now empty
-   ([architecture.boundaries.test.ts:154](tests/architecture.boundaries.test.ts)) —
+   ([architecture.boundaries.test.ts:154](../../tests/architecture.boundaries.test.ts)) —
    every tier-varying knob this phase adds lands as a `WebGpuQualityProfile` data field.
 8. **Boundary tripwires** (all enforced by `npm test`): new page channels go through
    `payload.ts` only; hydrology consumers import `TerrainPageHydrology`'s owned
@@ -170,7 +170,7 @@ changes for this plan:
   ceilings 515/675. 6-8's plan-row impostor-radius trade ("drop 4 km → 2.5 km, save
   ~110k instances") is **dead**: draws scale with chunks × meshes, a presentation chunk
   is 4,096 m, so radius moves a couple of far chunks and no near mesh
-  ([renderedDensity.ts:345-375](src/render/webgpu/detail/renderedDensity.ts)).
+  ([renderedDensity.ts:345-375](../../src/render/webgpu/detail/renderedDensity.ts)).
 - **A GPU scatter path already exists** (wave G): per-frame compute blade field, fixed
   lanes writing degenerate zeros — no atomics, counters, indirect draws or readbacks —
   behind a capability gate with a protocol-threaded CPU fallback. 6-9 re-scopes from
@@ -247,7 +247,7 @@ deterministic, capture-pinned — with the actual re-default decided in §8.
 | W-6 | C-6 | Eroded bathymetry overlays resident L0 pages (today it samples the 512 m canonical macro at cell centres — the recorded floor under any surf zone). Water consumers may not work around it independently (ARCHITECTURE 5-10 row) | 1.5 |
 | W-7 | C-7 | Eroded-mode capture. **Includes real harness work, not just a list edit**: no per-shot `worldEvolution` mechanism exists and the harness builds one renderer/world per run — mixed-mode canonical runs need a world teardown/rebuild (or second session) with settle/phase-keying re-derived and no double-resident world at the memory wall. Shots **appended** (append-only; canonical-index keying from `8ec1c45` preserved): dendritic, valley, lake, **plus one eroded motion/page-thrash shot with residencyCeilings** — the static surveys cannot see in-flight page-erosion admission bursts, which is the eroded mode's distinctive steady-state cost. First eroded baseline promoted; assertions 96/97/98 as a real statistics suite; **87 and 88 domain-wide** (88's lake-spill/fill-surface half is C-7's too); the 384-seed audit. Note: once appended, every future full-set rebaseline candidate re-runs and re-reviews these shots — priced-in review inflation | 3.0 |
 | W-8 | C-10 | Erosion-halo composed-reach guard (composed reach 72 texels > 64-texel halo; theorem currently single-operator). **Blocks re-default** — resolved before §8 can say yes | 1.0 |
-| W-9 | C-11 | RESOLUTION_PLAN A-3 TWI wetness window (`TERRAIN_TWI_DRY/WET` re-windowed against real eroded flow statistics, [TerrainPageHydrology.ts:42-43](src/render/webgpu/terrain/TerrainPageHydrology.ts)) | 0.5 |
+| W-9 | C-11 | RESOLUTION_PLAN A-3 TWI wetness window (`TERRAIN_TWI_DRY/WET` re-windowed against real eroded flow statistics, [TerrainPageHydrology.ts:42-43](../../src/render/webgpu/terrain/TerrainPageHydrology.ts)) | 0.5 |
 
 ### Gate W status — **CLOSED 2026-08-30**
 
@@ -311,7 +311,7 @@ world-locked standing waves keyed to channel grade ("water moving through a wave
 stays put"); fetch-limited lake chop from W-5 lake polygons + the wave-R gust field.
 **Fragment-side only** — no new cascade, no `OceanConfig` schema change; the wave-R
 include stack (`WATER_DETAIL_NOISE_WGSL` + rewritten `WATER_CAPILLARY_DETAIL_WGSL`,
-[WaterShaders.ts:247/372](src/render/webgpu/water/WaterShaders.ts)) is the substrate.
+[WaterShaders.ts:247/372](../../src/render/webgpu/water/WaterShaders.ts)) is the substrate.
 Wind ownership stays with the world definition (wave R fix 8).
 Pins: TS/WGSL flow-sample parity; analytic world byte-identical shader output
 (sentinel) **and** the §1.2 same-host A/B frame-cost pin; advected phase continuous
@@ -321,7 +321,7 @@ across page/lane seams.
 What ships: depth-keyed Worley-broken foam band + reachable crest foam
 (`foamThreshold` 0.88). What lands here: Hunt run-up with phase locked to the **same
 cascade the visible swell comes from** (binding rule; the per-cascade fades are
-addressable on the varyings, [SpectralOceanSystem.ts:392-398](src/render/webgpu/water/SpectralOceanSystem.ts)),
+addressable on the varyings, [SpectralOceanSystem.ts:392-398](../../src/render/webgpu/water/SpectralOceanSystem.ts)),
 shore-normal streaking, and a wet-sand persistence band that **writes the 6-5 wetness
 field** (§6) rather than a private term. Inland: generalise `shoreFoam`/`rapidFoam` to
 the run-up pattern on W-5 banks. The ocean half has no W-x dependency and may develop
@@ -341,7 +341,7 @@ grazing angles (the sin-hash/moiré lesson).
 
 ### 6-4 caustics (2.0 d)
 Jacobian-driven, shallow-gated. The Jacobian is already stored (slope_foam alpha +
-displacement_jacobian alpha, [OceanShaders.ts:372-373](src/render/webgpu/nature/OceanShaders.ts))
+displacement_jacobian alpha, [OceanShaders.ts:372-373](../../src/render/webgpu/nature/OceanShaders.ts))
 and — critically — only became physically meaningful when wave R restored real
 amplitude. Composes into the refracted-bed term of `WATER_DEPTH_OPTICS_WGSL` in both
 materials (the depth-include parity test must keep passing verbatim). May develop
@@ -428,7 +428,7 @@ distance, lakeDepth, soilDepth only. Shelter's named consumers (moss weight, dea
 accumulation) are **declined-with-reason**: noise-driven shelter terms are already
 live in the density field and archetype weighting, and 2-15 already gates moss on
 moisture and places deadfall by closure. The triple becomes:
-- **soilDepth** → swap 2-15 clutter's moisture stand-in ([generation.ts:1072](src/render/webgpu/detail/generation.ts))
+- **soilDepth** → swap 2-15 clutter's moisture stand-in ([generation.ts:1072](../../src/render/webgpu/detail/generation.ts))
   to a real `terrainSoilDepthMeters` read, + litter-depth term in the forest-floor splat.
 - **shore distance** → the species half: reed/fern archetype weight keyed to shore
   distance (today moisture-keyed at generation.ts:971-975) + wet-litter darkening in
@@ -1681,12 +1681,12 @@ authored.
      proxy", and D-10 records analytic byte-identity. **That attribution was
      wrong, and checking it rather than trusting it is the point.** The mover is
      6-8's `canopyClosure`/`grassCover` seams, which
-     [LandCoverClassifier.ts:420-423](src/render/webgpu/terrain/LandCoverClassifier.ts)
+     [LandCoverClassifier.ts:420-423](../../src/render/webgpu/terrain/LandCoverClassifier.ts)
      documents as deliberately live in BOTH worlds and carrying no zero-sentinel,
      on the stated ground that a canopy is a vegetation property, not an erosion
      product. 6-6's soilDepth is separately gated (`if (input.soilDepthValid <
      0.5) { return 0.0; }`) and
-     [generation.ts:1136](src/render/webgpu/detail/generation.ts) states the
+     [generation.ts:1136](../../src/render/webgpu/detail/generation.ts) states the
      analytic case explicitly: no soil channel, no `soilDepthMeters`, every
      downstream number bit-identical. **D-10 stands and the parity test is not
      decorative** — its "channel omitted" probe *is* the real analytic case.
@@ -1705,7 +1705,7 @@ authored.
   moves at noise level (max row delta 1.47/255).
   **Floors deliberately NOT re-pinned, against §1.2's "re-pinned at each"
   instruction.** The documented rule is
-  [`floor(min-across-runs × 0.85)`](scripts/perf-capture.mts:72) and this is ONE
+  [`floor(min-across-runs × 0.85)`](../../scripts/perf-capture.mts:72) and this is ONE
   run on a cool host. Per [[flyhigh-capture-host-thermal]] the same tree measures
   ~20% apart cold vs warm; the standing floors (98–102) came from three runs
   whose warm minima were ~101–103, and re-deriving from this run's 117.7–120.2
@@ -1924,7 +1924,7 @@ authored.
   the mechanism, not inferred from the sequencing table:
   | item | analytic | mechanism |
   |---|---|---|
-  | **6-1** flow advection, standing waves, lake chop | **DARK — both halves** | Every 6-1 term sits inside `if (input.waterInfo.w > 0.0)` ([HydrologySystem.ts:314](src/render/webgpu/water/HydrologySystem.ts)). The w lane is written by four builders: `appendRiver` and `appendLake` (analytic) push a literal `0`; only `appendGraphRiver` and `appendGraphLake` push a payload. **The lake-chop half is dark too** — fetch reaches the shader solely through `appendGraphLake`, so an analytic lake has no fetch and no chop. |
+  | **6-1** flow advection, standing waves, lake chop | **DARK — both halves** | Every 6-1 term sits inside `if (input.waterInfo.w > 0.0)` ([HydrologySystem.ts:314](../../src/render/webgpu/water/HydrologySystem.ts)). The w lane is written by four builders: `appendRiver` and `appendLake` (analytic) push a literal `0`; only `appendGraphRiver` and `appendGraphLake` push a payload. **The lake-chop half is dark too** — fetch reaches the shader solely through `appendGraphLake`, so an analytic lake has no fetch and no chop. |
   | **6-2** run-up, streaking, wet sand | **PARTIAL** | The OCEAN half is visible: it lives in `SpectralOceanSystem`/`WaterShaders` with no evolution dependency. The INLAND half (bank run-up, bank normal) is inside the same `waterInfo.w` sentinel and is dark. |
   | **6-3** shoaling and breaking | **VISIBLE** | Ocean-only by construction ("an inland lake has no continental shelf to shoal across") and driven by `BathymetryClipmap`, which has a first-class analytic path — `if (worldEvolution === "analytic" \|\| macro === null) return analyticHeightMeters`. The `6-3←W-6` row was a sequencing dependency on the eroded OVERLAY, not a data dependency; the analytic seabed predates it. |
   | **6-5** lake wetness / shore distance | **DARK** | Its fragment block is behind `TERRAIN_SURFACE_HYDROLOGY_CHANNELS`, which requires both hydrology atlases bound, and the channel atlas only requests hydrology when eroded. Compile-time dark, not merely pixel-dark. |

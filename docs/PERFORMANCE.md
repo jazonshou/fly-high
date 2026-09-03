@@ -3,7 +3,7 @@
 fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It keeps memory, generation, simulation, and draw work bounded while the deterministic coordinate space remains effectively endless.
 
 > Current release scope and acceptance state are summarized in
-> [`PROJECT_CLOSEOUT_2026_09_02.md`](../PROJECT_CLOSEOUT_2026_09_02.md). Historical
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](status/PROJECT_CLOSEOUT_2026_09_02.md). Historical
 > promotion measurements below remain evidence; `PERF_CAPTURE_SHOTS` is the authority for
 > the live append-only capture list.
 
