@@ -865,9 +865,20 @@ fn splatClassify(
   shift: f32,
   canopy: vec2f,
 ) -> LandCoverWeights {
+  // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
+  // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
+  // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
+  // channel texel is twice the height texel, so the read landed a full GUTTER
+  // of height texels past the texel being painted: 8 m at L0, **128 m per axis
+  // at L4**. Height AND slope both come from this index, so the classification
+  // was sampled off the ground it paints, further the coarser the page.
+  //
+  // Recovering the gutter in texels from the job keeps this correct if the
+  // channel/height ratio ever changes: \`GUTTER = -placement.x / channelTexel\`.
+  let gutterTexels = -job.placement.x / job.shape.x;
   let heightTexel = vec2f(
-    (localX - job.placement.x) / job.shape.y,
-    (localZ - job.placement.y) / job.shape.y,
+    localX / job.shape.y + gutterTexels,
+    localZ / job.shape.y + gutterTexels,
   );
   let elevation = textureLoad(
     splatHeightAtlas,
@@ -919,9 +930,20 @@ fn splatClassify(
  * this channel's own band limit, so it could not survive into it anyway.
  */
 fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+  // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
+  // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
+  // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
+  // channel texel is twice the height texel, so the read landed a full GUTTER
+  // of height texels past the texel being painted: 8 m at L0, **128 m per axis
+  // at L4**. Height AND slope both come from this index, so the classification
+  // was sampled off the ground it paints, further the coarser the page.
+  //
+  // Recovering the gutter in texels from the job keeps this correct if the
+  // channel/height ratio ever changes: \`GUTTER = -placement.x / channelTexel\`.
+  let gutterTexels = -job.placement.x / job.shape.x;
   let heightTexel = vec2f(
-    (localX - job.placement.x) / job.shape.y,
-    (localZ - job.placement.y) / job.shape.y,
+    localX / job.shape.y + gutterTexels,
+    localZ / job.shape.y + gutterTexels,
   );
   let elevation = textureLoad(
     splatHeightAtlas,
