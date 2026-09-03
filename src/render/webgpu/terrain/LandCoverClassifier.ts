@@ -638,11 +638,32 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let sward = kSaturate(input.grassCover);
 
   var suitability: array<f32, ${SURFACE_MATERIAL_COUNT}>;
-  suitability[${SurfaceMaterial.Sand}] = (1.0 - shore) * gentle * 1.35 + 0.02;
+  // \`0608fed\` moved the unclaimed-ground floor off Sand and onto Grass in the
+  // CPU law above and **was not mirrored here**, leaving the two laws skewed.
+  // This repairs that. The CPU side is the reference implementation.
+  //
+  // **HYGIENE, NOT A CURE — and the distinction is measured.** This changes no
+  // pixel today: the bake paints Sand on 1.8% of texels before and after, and
+  // the parity disagreement moves 1.26% -> 1.23%. A positive control confirms
+  // the edit does reach the compiled shader — forcing this term to 0.0 makes
+  // Sand vanish and Grass rise to 53.9% — so the floor genuinely is not what
+  // paints it. The floor is inert on real terrain besides: the regime it
+  // repairs, every material scoring under 0.02, occurs on 0 of 50,971 land
+  // probes across two shipping seeds.
+  //
+  // It is repaired anyway because the next edit to this region would inherit
+  // the skew, and because two laws that are meant to be identical were not.
+  // **Do not read this as the fix for the grey-tan strips.** That report is
+  // still open, and \`3e4bf32\` strikes the sentence in \`0608fed\` that claimed
+  // otherwise.
+  suitability[${SurfaceMaterial.Sand}] = (1.0 - shore) * gentle * 1.35;
   suitability[${SurfaceMaterial.Grass}] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1.0 + sward * LAND_COVER_SWARD_GAIN)
     + airfield * 2.4;
+  // A FLOOR, not a bonus: \`max\`, not \`+\`, so it raises only ground that had no
+  // claimant instead of giving Grass a universal gain over its rivals.
+  suitability[${SurfaceMaterial.Grass}] = max(suitability[${SurfaceMaterial.Grass}], 0.02);
   suitability[${SurfaceMaterial.ForestFloor}] =
     shore * wet * warm * (1.0 - kSmoothstep(900.0, 1350.0, elevation))
       * (1.0 - steep * 0.8) * 1.1
