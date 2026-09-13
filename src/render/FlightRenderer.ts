@@ -91,8 +91,10 @@ import {
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import {
+  DYNAMIC_ALLOCATIONS,
   estimateGpuMemoryMiB,
   estimateInventoriableGpuMemoryMiB,
+  type DynamicAllocationInputs,
 } from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
@@ -134,8 +136,11 @@ type MutableDetailSunShadowSnapshot = {
   -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
 };
 import {
+  BATHYMETRY_STORAGE_FORMATS,
   BathymetryClipmap,
   bathymetryErodedPageOverlaySeamFromAtlas,
+  bathymetryStorageBytesPerTexel,
+  selectBathymetryStorageFormat,
 } from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
@@ -485,6 +490,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly ocean: SpectralOceanSystem;
   private readonly hydrology: HydrologySystem;
   private readonly bathymetry: BathymetryClipmap;
+  /**
+   * The estimator's allocation inputs with the bathymetry row at the LIVE
+   * storage format: `DYNAMIC_ALLOCATIONS` itself on a tier1 adapter, and the
+   * rgba16float bytes-per-texel on the core-only fallback, so the reported
+   * estimate is the allocated figure on both.
+   */
+  private readonly dynamicAllocations: DynamicAllocationInputs;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly groundCover: GroundCoverSystem;
@@ -667,6 +679,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean = ocean;
     this.hydrology = hydrology;
     this.bathymetry = bathymetry;
+    this.dynamicAllocations = bathymetry.storageFormat === "r16float"
+      ? DYNAMIC_ALLOCATIONS
+      : Object.freeze({
+        ...DYNAMIC_ALLOCATIONS,
+        bathymetryClipmapBytesPerTexel: bathymetryStorageBytesPerTexel(bathymetry.storageFormat),
+      });
     this.airport = airport;
     this.detail = detail;
     this.groundCover = groundCover;
@@ -727,6 +745,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
+    // Which bathymetry storage path the device took, readable from the DOM so
+    // a browser without tier1 (Firefox) can be told apart from the reference.
+    this.domElement.dataset.bathymetryStorageFormat = bathymetry.storageFormat;
   }
 
   private readonly handleDebugKey = (event: KeyboardEvent): void => {
@@ -755,13 +776,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       captureGpuTiming: options.captureGpuTiming,
       pinnedCapture: options.pinnedRenderScale !== undefined,
     });
-    if (!capability.features.has("texture-formats-tier1")) {
-      throw new Error(
-        "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
-      );
-    }
+    // The bathymetry clipmap's designed r16float storage target needs the
+    // OPTIONAL `texture-formats-tier1` feature. Chrome's adapter exposes it;
+    // Firefox 155's does not, and this used to be a hard refusal ("This GPU
+    // does not expose texture-formats-tier1"). The format is chosen from the
+    // ADAPTER's features here, the feature is requested only when that
+    // choice needs it, and a core-only device gets the rgba16float fallback
+    // (see `BathymetryStorageFormat`).
+    const bathymetryStorageFormat = selectBathymetryStorageFormat(capability.features);
+    const bathymetryStorageFeature =
+      BATHYMETRY_STORAGE_FORMATS[bathymetryStorageFormat].requiredFeature;
     const requiredFeatures: GPUFeatureName[] = [
-      "texture-formats-tier1",
+      ...(bathymetryStorageFeature ? [bathymetryStorageFeature as GPUFeatureName] : []),
       ...(gpuTimingEnabled ? ["timestamp-query" as const] : []),
     ];
     const engine = await awaitRendererStartup(
@@ -920,6 +946,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         evolutionResult.mode === "eroded"
           ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
           : null,
+        { storageFormat: bathymetryStorageFormat },
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
@@ -2110,7 +2137,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
-      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, estimateViewport),
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
+        this.profile,
+        estimateViewport,
+        this.dynamicAllocations,
+      ),
       // The subset the inventory walk can actually see, for the re-pin trigger.
       // The unrestricted figure above stays the budgeting number — four owners
       // budget through it — and this one exists ONLY to be compared against a
@@ -2119,6 +2150,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.profile,
         estimateViewport,
         { worldEvolution: this.worldDefinition.worldEvolution },
+        this.dynamicAllocations,
       ),
       // ONE walk, both readings. Calling `inventoryGpuMemoryMiB()` here as
       // well would walk the scene twice and let the total disagree with the
@@ -2183,6 +2215,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => {
         delete this.domElement.dataset.rendererMode;
         delete this.domElement.dataset.renderTechnique;
+        delete this.domElement.dataset.bathymetryStorageFormat;
       },
       () => this.engine.dispose(),
       () => this.scene.dispose(),

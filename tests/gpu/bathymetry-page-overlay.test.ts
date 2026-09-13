@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
-import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
-import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { Constants } from "@babylonjs/core/Engines/constants";
-import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
-import { Scene } from "@babylonjs/core/scene";
 import {
   BathymetryClipmap,
   BATHYMETRY_CLIPMAP_EDGE,
@@ -14,7 +10,6 @@ import {
   BATHYMETRY_NEAR_CLAMP_METERS,
   BATHYMETRY_NEAR_TEXEL_METERS,
   bathymetryPageHeightAtlasTexel,
-  toroidalBathymetryTexel,
   type BathymetryErodedPageOverlaySeam,
   type BathymetryResidentErodedPage,
 } from "../../src/render/webgpu/water/BathymetryClipmap";
@@ -27,6 +22,7 @@ import { TERRAIN_HEIGHT_SLOT_EDGE } from "../../src/render/webgpu/terrain/Terrai
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "../../src/render/webgpu/world/pageGeometry";
 import { createWorld } from "../../src/world";
 import { sampleNaturalTerrainHeight } from "../../src/world/terrain";
+import { readBedDeltas, withBathymetryScene } from "./bathymetryClipmapHarness";
 
 /**
  * W-6 (C-6) end to end on a real adapter: a synthetic RESIDENT eroded L0 page
@@ -36,79 +32,6 @@ import { sampleNaturalTerrainHeight } from "../../src/world/terrain";
  * strip dispatch, textureStore, readback), including the per-delta rect
  * invalidation on admission and eviction.
  */
-
-async function withScene<T>(
-  run: (engine: WebGPUEngine, scene: Scene) => Promise<T>,
-): Promise<T> {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  document.body.appendChild(canvas);
-  const engine = new WebGPUEngine(canvas, {
-    antialias: false,
-    enableAllFeatures: false,
-    setMaximumLimits: false,
-    deviceDescriptor: {
-      // The R16F bathymetry storage textures need tier1, exactly as the
-      // renderer requires (FlightRenderer refuses adapters without it).
-      requiredFeatures: ["texture-formats-tier1"] as GPUFeatureName[],
-    },
-  });
-  let scene: Scene | null = null;
-  try {
-    await engine.initAsync();
-    engine.runRenderLoop(() => {});
-    scene = new Scene(engine);
-    return await run(engine, scene);
-  } finally {
-    scene?.dispose();
-    engine.stopRenderLoop();
-    engine.dispose();
-    canvas.remove();
-  }
-}
-
-function decodeHalf(bits: number): number {
-  const sign = (bits & 0x8000) !== 0 ? -1 : 1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  if (exponent === 0) return sign * mantissa * 2 ** -24;
-  if (exponent === 31) return mantissa !== 0 ? Number.NaN : sign * Number.POSITIVE_INFINITY;
-  return sign * (1 + mantissa / 1_024) * 2 ** (exponent - 15);
-}
-
-/** Read a whole level and return a sampler addressed by GLOBAL texel. */
-async function readBedDeltas(
-  texture: RawTexture,
-): Promise<(worldTexelX: number, worldTexelZ: number) => number> {
-  const pixels = await texture.readPixels(
-    0,
-    0,
-    undefined,
-    true,
-    false,
-    0,
-    0,
-    BATHYMETRY_CLIPMAP_EDGE,
-    BATHYMETRY_CLIPMAP_EDGE,
-  );
-  if (!pixels) throw new Error("Bathymetry readback returned no data");
-  const values = pixels instanceof Float32Array
-    ? pixels
-    : Float32Array.from(
-      new Uint16Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 2),
-      decodeHalf,
-    );
-  const texelCount = BATHYMETRY_CLIPMAP_EDGE * BATHYMETRY_CLIPMAP_EDGE;
-  const stride = values.length / texelCount;
-  if (!Number.isInteger(stride) || stride < 1) {
-    throw new Error(`Unexpected bathymetry readback length ${values.length}`);
-  }
-  return (worldTexelX, worldTexelZ) => {
-    const [u, v] = toroidalBathymetryTexel(worldTexelX, worldTexelZ);
-    return values[(v * BATHYMETRY_CLIPMAP_EDGE + u) * stride]!;
-  };
-}
 
 describe("W-6 eroded bathymetry page overlay (C-6)", () => {
   it("overlays a resident page, feathers its macro border, and reverts on eviction", async () => {
@@ -144,7 +67,7 @@ describe("W-6 eroded bathymetry page overlay (C-6)", () => {
     const [probeU, probeV] = bathymetryPageHeightAtlasTexel(page, centerX, centerZ);
     heightData[probeV * TERRAIN_HEIGHT_SLOT_EDGE + probeU] = seaLevel + probeDelta;
 
-    await withScene(async (_engine, scene) => {
+    await withBathymetryScene(async (_engine, scene) => {
       const heightTexture = RawTexture.CreateRTexture(
         heightData,
         TERRAIN_HEIGHT_SLOT_EDGE,
@@ -294,7 +217,7 @@ describe("analytic bathymetry parity", () => {
       }
     };
 
-    await withScene(async (_engine, scene) => {
+    await withBathymetryScene(async (_engine, scene) => {
       const clipmap = new BathymetryClipmap(scene, world, null);
       try {
         await clipmap.initialize(centerX, centerZ);

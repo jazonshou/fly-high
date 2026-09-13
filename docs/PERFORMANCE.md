@@ -140,7 +140,10 @@ GPU macro, erosion-scratch and channel-graph layouts while the CPU reference was
 still the only producer. Gate W subsequently added the GPU macro and hybrid GPU
 page DAG described below; those old reservations remain budget provenance, not
 a substitute for the live GPU inventory. The two 1024² R16F bathymetry textures
-are a live 4 MiB allocation; the macro height additionally has a read-only GPU
+are a live 4 MiB allocation on an adapter that exposes `texture-formats-tier1`
+(Chrome); on a core-only adapter (Firefox 155) the clipmap stores `rgba16float`
+instead and the same two textures are 16 MiB, and the estimator's bathymetry row
+follows the live format. The macro height additionally has a read-only GPU
 storage upload for bathymetry sampling. A historical production-shape CPU-reference
 run for seed `phase5-production-benchmark` measured 3,174 ms sampling
 uplift/erodibility/repose plus 4,323 ms evolution, 7,497 ms total. That result
@@ -285,6 +288,10 @@ The ocean is the renderer's native WebGPU compute workload:
 - A shared two-level bathymetry clipmap stores `bedElevation − seaLevel` at
   16 m/texel over 16.4 km and 128 m/texel over 131 km. Both 1024² levels are
   R16F and update only newly exposed toroidal strips after their initial fill.
+  R16F is a storage format only behind the optional `texture-formats-tier1`
+  feature, so on an adapter without it (Firefox 155) both levels fall back to
+  `rgba16float` storage — the same half-float in `.r`, four times the memory —
+  rather than refusing to start.
   Analytic mode samples the historical terrain kernel exactly. Eroded mode
   bilinearly samples the canonical cell-centred macro height and blends back to
   analytic across the macro domain's 16-texel rim. In eroded mode, the

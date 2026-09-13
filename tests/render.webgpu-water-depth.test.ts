@@ -10,19 +10,24 @@ import {
   BATHYMETRY_LEVELS,
   BATHYMETRY_NEAR_TEXEL_METERS,
   BATHYMETRY_PAGE_FEATHER_METERS,
+  BATHYMETRY_R16F_STORAGE_FEATURE,
+  BATHYMETRY_STORAGE_FORMATS,
   BATHYMETRY_UPDATE_WGSL,
   bathymetryClipmapBytes,
   bathymetryErodedPageOverlaySeamFromAtlas,
   bathymetryErodedPageOverlayWeight,
   bathymetryPageDirtyRect,
   bathymetryPageHeightAtlasTexel,
+  bathymetryStorageBytesPerTexel,
   bathymetryUpdateRectangles,
+  bathymetryUpdateWgsl,
   buildBathymetryPageTable,
   clipBathymetryRect,
   diffBathymetryResidentPages,
   dispatchBathymetryComputeWhenReady,
   sampleBathymetryMacroHeight,
   sampleBathymetryTerrainAuthority,
+  selectBathymetryStorageFormat,
   toroidalBathymetryTexel,
   type BathymetryComputeDispatchPort,
   type BathymetryErodedPageOverlaySeam,
@@ -129,6 +134,72 @@ describe("Phase 5 bathymetry clipmap", () => {
     expect(bathymetryClipmapBytes()).toBe(4 * 1_024 * 1_024);
     expect(BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS).toBe(30_000);
     expect(BATHYMETRY_UPDATE_WGSL).toContain("texture_storage_2d<r16float, write>");
+  });
+
+  // Firefox 155 exposes no `texture-formats-tier1`, without which r16float is
+  // not a storage format; the renderer used to refuse to start there. The
+  // format is now chosen from the adapter, the designed path is untouched,
+  // and the fallback reports what it allocates.
+  it("chooses the designed r16float storage only when the adapter exposes tier1", () => {
+    expect(BATHYMETRY_R16F_STORAGE_FEATURE).toBe("texture-formats-tier1");
+    expect(BATHYMETRY_STORAGE_FORMATS.r16float).toEqual({
+      bytesPerTexel: 2,
+      requiredFeature: "texture-formats-tier1",
+    });
+    expect(BATHYMETRY_STORAGE_FORMATS.rgba16float).toEqual({
+      bytesPerTexel: 8,
+      requiredFeature: null,
+    });
+    expect(selectBathymetryStorageFormat(new Set(["texture-formats-tier1", "timestamp-query"])))
+      .toBe("r16float");
+    expect(selectBathymetryStorageFormat(["texture-formats-tier1"])).toBe("r16float");
+    expect(selectBathymetryStorageFormat(new Set(["timestamp-query"]))).toBe("rgba16float");
+    expect(selectBathymetryStorageFormat([])).toBe("rgba16float");
+  });
+
+  it("keeps the reference kernel byte-identical and swaps one storage token for the fallback", () => {
+    expect(bathymetryUpdateWgsl("r16float")).toBe(BATHYMETRY_UPDATE_WGSL);
+    expect(bathymetryUpdateWgsl()).toBe(BATHYMETRY_UPDATE_WGSL);
+    const fallback = bathymetryUpdateWgsl("rgba16float");
+    expect(fallback).toContain("texture_storage_2d<rgba16float, write>");
+    expect(fallback).not.toContain("r16float");
+    expect(
+      fallback.replace(
+        "texture_storage_2d<rgba16float, write>",
+        "texture_storage_2d<r16float, write>",
+      ),
+    ).toBe(BATHYMETRY_UPDATE_WGSL);
+    expect(() => bathymetryUpdateWgsl("r32float" as never)).toThrow(RangeError);
+  });
+
+  it("reports the fallback's memory as allocated, not as designed", () => {
+    expect(bathymetryStorageBytesPerTexel("r16float")).toBe(2);
+    expect(bathymetryStorageBytesPerTexel("rgba16float")).toBe(8);
+    expect(bathymetryClipmapBytes(1_024, 2, 8)).toBe(16 * 1_024 * 1_024);
+    expect(() => bathymetryClipmapBytes(1_024, 2, 0)).toThrow(RangeError);
+    expect(() => bathymetryClipmapBytes(1_024, 2, 2.5)).toThrow(RangeError);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const world = createWorld(BATHYMETRY_AUTHORITY_SEED, {
+      airport: false,
+      worldEvolution: "analytic",
+    });
+    const reference = new BathymetryClipmap(scene, world);
+    const fallback = new BathymetryClipmap(scene, world, null, { storageFormat: "rgba16float" });
+    try {
+      expect(reference.storageFormat).toBe("r16float");
+      expect(reference.textureBytes).toBe(4 * 1_024 * 1_024);
+      expect(fallback.storageFormat).toBe("rgba16float");
+      expect(fallback.textureBytes).toBe(16 * 1_024 * 1_024);
+      expect(() => new BathymetryClipmap(scene, world, null, {
+        storageFormat: "r32float" as never,
+      })).toThrow(RangeError);
+    } finally {
+      reference.dispose();
+      fallback.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
   });
 
   it("rejects a WGSL compile error instead of leaving startup pending", async () => {

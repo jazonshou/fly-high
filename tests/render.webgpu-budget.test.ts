@@ -208,6 +208,15 @@ describe("performance budget (1A-2)", () => {
     expect(withBathymetryTexture.bathymetryClipmapMiB - base.bathymetryClipmapMiB)
       .toBeCloseTo(2, 6);
 
+    // The core-only (Firefox) fallback stores rgba16float, 8 bytes a texel:
+    // the same row reports the +12 MiB it actually allocates.
+    const withFallbackFormat = estimateGpuMemoryBreakdown(profile, viewport, {
+      ...DYNAMIC_ALLOCATIONS,
+      bathymetryClipmapBytesPerTexel: 8,
+    });
+    expect(withFallbackFormat.bathymetryClipmapMiB - base.bathymetryClipmapMiB)
+      .toBeCloseTo(12, 6);
+
     const withGraphMiB = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
       channelGraphBudgetBytes: DYNAMIC_ALLOCATIONS.channelGraphBudgetBytes + 1_048_576,
