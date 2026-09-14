@@ -527,7 +527,11 @@ set, the sweep fell behind in flight, and the far band arrived cell by cell as
 a straight-edged patchwork with hitches. Impostor records now have no outer
 membership edge (the shader culls at the live range), the far edge is not a
 frontier term, and impostor-only stems build through a block-charged fast path
-— a far chunk rebuilds when a cell generates, never when the observer moves.
+— a far chunk rebuilds when a cell generates, never when the observer moves. Two smaller fixes rode with it: the impostor exclusion no longer
+applies to cells beyond the mid envelope (it was leaving the widest crowns of
+every far cell without any record), and cell residency reaches one cull fade
+past the impostor radius so a new cell publishes outside the live cull and
+dithers in; `detailInstanceBudget` rows 150 k / 260 k / 560 k for tiers 1–3.
 
 ## Visual fix-pack (2026-08-25)
 

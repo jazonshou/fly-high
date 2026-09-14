@@ -503,16 +503,6 @@ export function* buildPresentationChunk(
       resident.cell.cellZ,
       resident.cell.cellSizeMeters,
     );
-    const geometryOwnedEverywhereBelow = Math.max(
-      0,
-      renderedShareAtDistance(densityLaw, cellFarCornerDistance)
-        - DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
-    );
-
-    // 2026-09-14: no far cutoff. Impostor records exist for every resident
-    // stem the drawn ceiling admits, wherever it is; the shader's live cull
-    // decides what draws (see `detailFadeBandMemberships`).
-    const treeCount = resident.cell.trees.length;
     // Beyond the mid band's residency envelope a stem can only ever be an
     // impostor, and an impostor record is one cheap row: build it directly
     // and charge the scheduler in blocks, the way rank misses are charged.
@@ -520,6 +510,25 @@ export function* buildPresentationChunk(
     // a far-only stem — this is a shortcut, not a second representation.
     const impostorOnlyBeyondMeters = densityLaw.mid.outerRadiusMeters
       + DETAIL_MEMBERSHIP_SLACK_METERS;
+    // A stem needs no impostor only where geometry owns it at EVERY range the
+    // cell spans — which requires the whole cell to sit inside the mid band's
+    // envelope. Past that envelope there is no geometry record at all, so the
+    // exclusion must not apply: the first landing applied it regardless, and
+    // in every cell beyond the mid band the top-ranked stems (key below the
+    // geometry floor minus the margin — the widest crowns) had no record of
+    // any kind (2026-09-14, from the vegetation survey).
+    const geometryOwnedEverywhereBelow = cellFarCornerDistance <= impostorOnlyBeyondMeters
+      ? Math.max(
+          0,
+          renderedShareAtDistance(densityLaw, cellFarCornerDistance)
+            - DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
+        )
+      : 0;
+
+    // 2026-09-14: no far cutoff. Impostor records exist for every resident
+    // stem the drawn ceiling admits, wherever it is; the shader's live cull
+    // decides what draws (see `detailFadeBandMemberships`).
+    const treeCount = resident.cell.trees.length;
     const appendImpostorOnlyRecord = (
       tree: GeneratedDetailCell["trees"][number],
       stemKey: number,
@@ -580,8 +589,10 @@ export function* buildPresentationChunk(
         densityLaw.nearStemsPerHectare,
       );
       const geometryAdmitted = stemKey <= geometryShareCeiling;
+      // A zero threshold means no geometry owns anything in this cell, so
+      // nothing is excluded — including the rank-0 stem, whose key IS zero.
       const impostorAdmitted = stemKey <= drawnShareCeiling
-        && stemKey > geometryOwnedEverywhereBelow;
+        && !(geometryOwnedEverywhereBelow > 0 && stemKey <= geometryOwnedEverywhereBelow);
       const stemDistance = Math.hypot(tree.x - observerX, tree.z - observerZ);
       const impostorOnly = stemDistance > impostorOnlyBeyondMeters;
       if (!(impostorOnly ? impostorAdmitted : geometryAdmitted || impostorAdmitted)) {

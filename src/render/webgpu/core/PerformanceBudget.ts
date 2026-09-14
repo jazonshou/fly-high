@@ -326,17 +326,21 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // 2026-09-13: re-derived against the impostor-fill law (renderedDensity.ts
   // `impostorFloorShare`). Saturated packed records over the whole resident
   // disc: near stems × 7 (near + mid parts plus a coexisting impostor row),
-  // mid geometry stems × 4, plus every impostor — 25 k / 80 k / 155 k /
-  // 387 k at floors 0.20 / 0.30 / 0.35 / 0.40. Tiers 0–2 stay inside the
-  // rows that were already declared; tier 3 could not and its row moved
-  // 240 k → 420 k (+5.6 MiB), inside the memory ceiling the budget test
-  // holds it to. `tests/render.webgpu-rendered-density.test.ts` pins the
-  // record estimate under these rows so the row moves when the law moves.
+  // mid geometry stems × 4, plus every impostor.
+  // 2026-09-14: impostor records have no outer edge and residency reaches one
+  // cull fade past the impostor radius (so a far chunk's record set ignores
+  // the observer and a new cell publishes outside the live cull), so every
+  // stem of every resident cell packs at the floor out to the last cell's far
+  // corner: 38 k / 138 k / 246 k / 537 k at floors 0.20 / 0.30 / 0.35 / 0.40.
+  // Rows 150 k / 260 k / 560 k for tiers 1–3 (+0.9 / +1.8 / +4.3 MiB over the
+  // 2026-09-13 rows), inside the memory ceiling the budget test holds them
+  // to. `tests/render.webgpu-rendered-density.test.ts` pins the record
+  // estimate under these rows so the row moves when the law moves.
   detailInstanceBudget: Object.freeze({
     0: 60_000,
-    1: 120_000,
-    2: 200_000,
-    3: 420_000,
+    1: 150_000,
+    2: 260_000,
+    3: 560_000,
   }),
   // Card/bark layers plus broadleaf/conifer opaque near-crown layers, with
   // complete mip chains: 18 × 256² × rgba8 × 4/3 = 6.0 MiB.
