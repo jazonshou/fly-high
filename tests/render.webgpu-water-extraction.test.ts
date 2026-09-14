@@ -159,11 +159,19 @@ describe("water shader extraction (2-8a)", () => {
     // on the short-wave slope variance, and the rough-interface Fresnel.
     // Each is pinned by name in tests/render.webgpu-water-far-field.test.ts;
     // the decision is in ARCHITECTURE.md.
+    //
+    // Re-pinned 2026-09-14 (wave S, second pass), BOTH stages: the whitecap
+    // flecks became the same screen-hashed mean-one twinkle the glints use
+    // (the per-pixel cell search cost 15 ms a frame with the sea in the lower
+    // half of the frame), the far gust's 1.5 km octave moved to a vertex
+    // varying with a warped 380 m octave per pixel (the unwarped lattice read
+    // as rows of drifting blobs in the glitter path), and the sparkle hash is
+    // a one-lane integer hash.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "df7c23cce2712c5883222d7be54520228be040f51eb4e2a05c4a13430112c7ac",
+      "b27d14cd636096ee32cef4a5862ed27ba44d333aef4e46bfa41982582cab5b3d",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "1662f0e7e5cc2e59fa7ddfa64d332b3eac412474e5b6ad3c155b796b9c5deaf0",
+      "f358998edaf78334a0b4dfe90e8f988ac43c61656bbfc3080c02e1ab97c9dcbc",
     );
   });
 

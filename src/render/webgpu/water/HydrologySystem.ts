@@ -25,6 +25,7 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   generateHydrology,
   type HydrologyGenerationOptions,
@@ -75,6 +76,12 @@ import {
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
   WATER_DETAIL_NOISE_WGSL,
+  WATER_FAR_FIELD_WGSL,
+  WATER_FAR_GUST_WGSL,
+  WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
+  WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
+  WATER_GLINT_TWINKLE_HZ,
+  WATER_ROUGH_FRESNEL_MAX_VARIANCE,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SHORE_RUNUP_WGSL,
@@ -109,6 +116,74 @@ const HYDROLOGY_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
   overcastZenithColor: [0.31, 0.36, 0.41],
   overcastHorizonColor: [0.56, 0.61, 0.65],
 };
+
+/**
+ * Terrain occlusion of the reflected sky.
+ *
+ * The inland fragment reflected a SKY-ONLY probe in every direction, so a
+ * lake in a valley at dusk showed bright horizon sky where a grazing
+ * reflection ray actually hits the hillside — a white/blue sheet against
+ * brown hills. The terrain's global horizon field (`6-11`) answers "does this
+ * direction clear the terrain horizon at this world XZ" for ANY unit
+ * direction, so the reflection direction is asked the question the sun is
+ * asked elsewhere. Below the horizon the reflection is the hillside, whose
+ * mean radiance is the atmosphere's own ground bounce.
+ *
+ * The soft band is the detail plugin's value restated (a water consumer must
+ * not import from detail/); the calibration mirrors AtmosphereSystem's
+ * GROUND_BOUNCE_CALIBRATION (`ground = skyHorizon * albedo * 1.15`, R-26).
+ * The test pins both against their sources.
+ */
+export const HYDROLOGY_HORIZON_SOFT_BAND = 0.05;
+export const HYDROLOGY_GROUND_BOUNCE_CALIBRATION = 1.15;
+/** AtmosphereSystem's default surface albedo luminance, until the renderer forwards the live one. */
+const HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE = 0.18;
+
+/** The vec4 the fragment reads as `hydrologyHorizonField`. */
+export interface HydrologyHorizonPlacement {
+  readonly originX: number;
+  readonly originZ: number;
+  /** 1 / spanMeters, or 0 — the "no field" sentinel the fragment mixes to fully visible. */
+  readonly inverseSpan: number;
+  readonly softBand: number;
+}
+
+/**
+ * Pure: the placement for a horizon field that is (`resident`) or is not
+ * bound. Anything that cannot map world to uv — no layers, a zero or
+ * non-finite span, a non-finite origin — publishes inverseSpan 0, so the
+ * fragment keeps today's behaviour (the parity sentinel) rather than
+ * smearing one edge texel across every lake.
+ */
+export function resolveHydrologyHorizonPlacement(
+  resident: boolean,
+  originX: number,
+  originZ: number,
+  spanMeters: number,
+): HydrologyHorizonPlacement {
+  const valid = resident
+    && Number.isFinite(spanMeters) && spanMeters > 0
+    && Number.isFinite(originX) && Number.isFinite(originZ);
+  return {
+    originX: valid ? originX : 0,
+    originZ: valid ? originZ : 0,
+    inverseSpan: valid ? 1 / spanMeters : 0,
+    softBand: HYDROLOGY_HORIZON_SOFT_BAND,
+  };
+}
+
+/**
+ * Pure: the scalar the fragment multiplies `skyHorizon` by for an occluded
+ * reflection — the surface albedo's luminance under the atmosphere's own
+ * calibration. The multiply by `skyHorizon` stays in the fragment, from the
+ * same uniform the analytic sky reads, so the two cannot drift in scale.
+ */
+export function resolveHydrologyGroundBounce(albedoLuminance: number): number {
+  if (!Number.isFinite(albedoLuminance)) {
+    throw new RangeError("Hydrology ground-bounce albedo must be finite");
+  }
+  return Math.min(1, Math.max(0, albedoLuminance)) * HYDROLOGY_GROUND_BOUNCE_CALIBRATION;
+}
 
 export const HYDROLOGY_WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -206,6 +281,16 @@ uniform regionOpacity: f32;
 uniform environmentValid: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
+// Terrain occlusion of the reflected sky: the terrain's global horizon field
+// ('6-11'), world-anchored — two textures and one vec4 (originX, originZ,
+// inverseSpan, softBand). inverseSpan 0 is the "no field yet" sentinel: the
+// samplers stay bound to a fallback texel and the lookup mixes to fully
+// visible. 'groundBounceAlbedo' is the surface albedo's luminance under the
+// atmosphere's ground-bounce calibration (see setGroundBounceAlbedo).
+uniform hydrologyHorizonField: vec4f;
+uniform groundBounceAlbedo: f32;
+var hydrologyHorizonASampler: sampler; var hydrologyHorizonA: texture_2d<f32>;
+var hydrologyHorizonBSampler: sampler; var hydrologyHorizonB: texture_2d<f32>;
 
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
@@ -223,6 +308,9 @@ ${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_DETAIL_NOISE_WGSL}
 
+// wave S: the far gust octaves, shared with the ocean.
+${WATER_FAR_GUST_WGSL}
+
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
 // 6-2: the shared run-up model, composed BEFORE the channel block because the
@@ -238,11 +326,49 @@ ${WATER_CHANNEL_FLOW_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
+// wave S: sparkle, twinkle and the rough-interface Fresnel, shared with the ocean.
+${WATER_FAR_FIELD_WGSL}
+
 ${WATER_FOAM_WGSL}
 
 ${WATER_ENVIRONMENT_MIP_WGSL}
 
 ${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
+
+// The shared horizon-field operator, composed verbatim (the terrain and the
+// detail plugin compose the same text; the horizon-field test pins that no
+// consumer restates its azimuth arithmetic).
+${HORIZON_FIELD_LOOKUP_WGSL}
+
+// The terminator jitter's world-locked spatial hash — the construction the
+// terrain and detail consumers use, so the field's iso-contours land as
+// unstructured penumbra rather than stripes. Spatial, not temporal: a
+// per-frame jitter would crawl across a still lake.
+fn hydrologyHorizonJitter(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+// Sky visibility along 'direction' from absolute world 'worldXZ': 1.0 above
+// the terrain horizon, 0.0 below it, smoothstepped across the band. Uniform
+// control flow and no derivatives — the field's absence is a uniform
+// sentinel folded in by a select, never a branch around the sample.
+fn hydrologyTerrainVisibility(worldXZ: vec2f, direction: vec3f) -> f32 {
+  let field = uniforms.hydrologyHorizonField;
+  let uv = (worldXZ - field.xy) * field.z;
+  let packedA = textureSampleLevel(hydrologyHorizonA, hydrologyHorizonASampler, uv, 0.0);
+  let packedB = textureSampleLevel(hydrologyHorizonB, hydrologyHorizonBSampler, uv, 0.0);
+  let visibility = horizonFieldShadow(
+    packedA,
+    packedB,
+    direction,
+    field.w,
+    hydrologyHorizonJitter(worldXZ * 0.37),
+  );
+  let resident = select(0.0, 1.0, field.z > 0.0);
+  return mix(1.0, visibility, resident);
+}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -304,6 +430,36 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let channelFootprint = max(
     channelFootprintMinor,
     channelFootprintMajor * ${(1 / 16).toFixed(6)},
+  );
+  // wave S: inland water gets the ocean's far field. A lake seen from
+  // altitude was one flat mirror of the sky — a per-wind constant
+  // roughness, Schlick on the resolved normal (≈65% of the sky at grazing
+  // incidence), a smooth sun lobe — which is why it read as a bright white
+  // sheet in a dusk valley. The far gust lanes modulate the unresolved
+  // variance, the rough-interface Fresnel reads that variance, and the sun
+  // lobe sparkles at the glint count, all faded in on the minor footprint so
+  // the near field is unchanged. The coarse octave is evaluated per pixel
+  // here (the ocean carries it as a varying); a lake is a small share of
+  // the frame.
+  let farGustWeight = smoothstep(
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_HIGH.toFixed(3)},
+    channelFootprint,
+  );
+  let farWind = uniforms.windDirection * uniforms.windSpeed;
+  let farGust = mix(
+    1.0,
+    waterFarGustGain(
+      waterFarGustCoarse(input.absoluteWorldXZ, farWind, uniforms.time),
+      input.absoluteWorldXZ,
+      farWind,
+      uniforms.time,
+      channelFootprintMajor,
+    ),
+    farGustWeight,
+  );
+  let farFootprintArea = abs(
+    channelDerivativeX.x * channelDerivativeY.y - channelDerivativeX.y * channelDerivativeY.x,
   );
   // 6-1: the sentinel. waterInfo.w is exactly 0 on every analytic-mode
   // vertex, so an analytic world executes this compare and nothing inside.
@@ -428,12 +584,18 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let baseAlpha = baseRoughness * baseRoughness;
   let roughness = clamp(
-    sqrt(sqrt(baseAlpha * baseAlpha + min(unresolvedSlope, 0.25))),
+    sqrt(sqrt(baseAlpha * baseAlpha + min(unresolvedSlope * farGust, 0.25))),
     0.075,
     0.45,
   );
   let f0 = vec3f(0.0204);
-  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
+  // wave S: the mean Fresnel of a ROUGH interface — see WATER_FAR_FIELD_WGSL (4).
+  let fresnel = waterRoughInterfaceFresnel(
+    normal,
+    view,
+    cameraBelow,
+    sqrt(min(unresolvedSlope * farGust, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+  );
 
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -455,7 +617,19 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     reflectionDirection,
     environmentRoughnessToMip(roughness),
   ).rgb;
-  let skyReflection = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  let unoccludedSky = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  // Terrain occlusion of the reflected sky: where the reflection direction
+  // dips under the terrain horizon the ray hits the hillside, not the sky,
+  // and the hillside's mean radiance is the atmosphere's own ground bounce
+  // (skyHorizon * albedo * 1.15). It occludes the SKY term only, BEFORE the
+  // planar capture blends real terrain over it where that capture is valid;
+  // the sun lobe, the body colour, the foam and the Fresnel are not sky.
+  let terrainVisibility = hydrologyTerrainVisibility(input.absoluteWorldXZ, reflectionDirection);
+  let skyReflection = mix(
+    uniforms.skyHorizon * uniforms.groundBounceAlbedo,
+    unoccludedSky,
+    terrainVisibility,
+  );
   let reflection = samplePlanarSceneReflection(
     input.planarReflectionClip,
     normal,
@@ -481,8 +655,23 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
   // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
   // the old gain-of-four multiply.
+  // wave S: the lobe is the MEAN of a Poisson count of sun-aiming facets;
+  // past the range where glints stop resolving, a mean-one twinkle at the
+  // count's own variance turns the smooth sheet back into glitter.
+  let glintHalfVector = normalize(view + light);
+  let glintExpectedCount = waterGlintExpectedCount(
+    max(dot(glintNormal, glintHalfVector), 0.0),
+    roughness * roughness,
+    uniforms.sunAngularRadius,
+    farFootprintArea,
+  );
+  let sparkle = mix(
+    1.0,
+    waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
+    farGustWeight,
+  );
   color += sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, f0)
-    * uniforms.sunColor * directSunVisibility;
+    * uniforms.sunColor * directSunVisibility * sparkle;
 
   let flowCrest = pow(max(
     sin(dot(input.absoluteWorldXZ, input.flowDirection) * 0.13
@@ -1401,6 +1590,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "time",
           "regionOpacity",
           "environmentValid",
+          "hydrologyHorizonField",
+          "groundBounceAlbedo",
           "bathymetryNearPlacement",
           "bathymetryFarPlacement",
           "bathymetrySeaLevel",
@@ -1416,6 +1607,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "environmentCube",
           "bathymetryNear",
           "bathymetryFar",
+          "hydrologyHorizonA",
+          "hydrologyHorizonB",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -1446,6 +1639,12 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    // Terrain occlusion of the reflected sky: bound from construction for the
+    // cube's reason (an unbound declared sampler keeps the material un-ready
+    // forever). The renderer forwards the real field once the first horizon
+    // bake lands; until then inverseSpan 0 reads as fully visible.
+    this.setHorizonField(null, null, 0, 0, 0);
+    this.setGroundBounceAlbedo(HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE);
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
@@ -1587,6 +1786,54 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     }
     this.material.setTexture("environmentCube", texture);
     this.material.setFloat("environmentValid", 1);
+  }
+
+  /**
+   * Terrain occlusion of the reflected sky: the terrain's global horizon
+   * field (`6-11`), on the detail plugin's signature so FlightRenderer
+   * forwards the one snapshot to both consumers on the same frame. Null
+   * layers (no bake yet, a non-WebGPU engine) rebind the fallback texel and
+   * publish inverseSpan 0, which the fragment reads as fully visible — the
+   * parity sentinel. `spanMeters` is the field's full world extent; the
+   * fragment maps absolute world XZ to uv with one subtract and one multiply.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    const placement = resolveHydrologyHorizonPlacement(
+      layerA !== null && layerB !== null,
+      originX,
+      originZ,
+      spanMeters,
+    );
+    if (placement.inverseSpan > 0 && layerA && layerB) {
+      this.material.setTexture("hydrologyHorizonA", layerA);
+      this.material.setTexture("hydrologyHorizonB", layerB);
+    } else {
+      const fallback = fallbackWaterPlanarTexture(this.scene);
+      this.material.setTexture("hydrologyHorizonA", fallback);
+      this.material.setTexture("hydrologyHorizonB", fallback);
+    }
+    this.material.setVector4("hydrologyHorizonField", new Vector4(
+      placement.originX,
+      placement.originZ,
+      placement.inverseSpan,
+      placement.softBand,
+    ));
+  }
+
+  /**
+   * The ground bounce an occluded reflection shows: AtmosphereSystem's own
+   * `skyHorizon * surfaceAlbedo * 1.15` (R-26), with the albedo's luminance
+   * forwarded here because the snapshot does not carry it. Forwarded where
+   * the renderer publishes the albedo, i.e. with the atmosphere.
+   */
+  setGroundBounceAlbedo(albedoLuminance: number): void {
+    this.material.setFloat("groundBounceAlbedo", resolveHydrologyGroundBounce(albedoLuminance));
   }
 
   update(

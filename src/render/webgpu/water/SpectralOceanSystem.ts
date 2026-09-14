@@ -75,6 +75,7 @@ import {
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
   WATER_FAR_FIELD_WGSL,
+  WATER_FAR_GUST_WGSL,
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
   WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
@@ -82,6 +83,8 @@ import {
   WATER_ROUGH_FRESNEL_MAX_VARIANCE,
   WATER_WHITECAP_FOOTPRINT_HIGH,
   WATER_WHITECAP_FOOTPRINT_LOW,
+  WATER_WHITECAP_LIFETIME_SECONDS,
+  WATER_GLINT_TWINKLE_HZ,
   WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
@@ -409,12 +412,16 @@ varying oceanCoordinate: vec2f;
 varying cascadeFades: vec4f;
 varying cascadeFade4: f32;
 varying waveCrest: f32;
+// wave S: the far cat's paws' 1.5 km octave, per vertex.
+varying farGustCoarse: f32;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
 // wave R fix 3: the SAME ripple lattices the fragment shades with, so the
 // vertex relief and the shaded normal cannot disagree.
 ${WATER_DETAIL_NOISE_WGSL}
+
+${WATER_FAR_GUST_WGSL}
 
 fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
   let coordinate = fract(worldXZ / patchLength);
@@ -518,6 +525,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.cascadeFades = fades;
   vertexOutputs.cascadeFade4 = fade4;
   vertexOutputs.waveCrest = displacement.y;
+  vertexOutputs.farGustCoarse = waterFarGustCoarse(worldXZ, uniforms.oceanWind, uniforms.time);
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * world;
 ${sunShadowVertexAssignmentWgsl("world")}
 }
@@ -547,6 +555,8 @@ varying oceanCoordinate: vec2f;
 varying cascadeFades: vec4f;
 varying cascadeFade4: f32;
 varying waveCrest: f32;
+// wave S: the far cat's paws' 1.5 km octave, per vertex.
+varying farGustCoarse: f32;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -614,6 +624,8 @@ ${WATER_FRESNEL_SCHLICK_WGSL}
 ${WATER_DEPTH_OPTICS_WGSL}
 
 ${WATER_DETAIL_NOISE_WGSL}
+
+${WATER_FAR_GUST_WGSL}
 
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
@@ -709,7 +721,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let farGust = mix(
     1.0,
-    waterFarGustField(input.oceanCoordinate, uniforms.oceanWind, uniforms.time, footprintMajor),
+    waterFarGustGain(input.farGustCoarse, input.oceanCoordinate, uniforms.oceanWind, uniforms.time, footprintMajor),
     farGustWeight,
   );
   let causticBeam = waterRefractedSunBeam(depth, light.y);
@@ -1055,10 +1067,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     ${WATER_GLINT_SPARKLE_FOOTPRINT_HIGH.toFixed(3)},
     runupFootprint,
   );
-  let sparkle = waterDistantGlintGain(
-    glintExpectedCount,
-    fragmentInputs.position.xy,
-    uniforms.time,
+  let sparkle = mix(
+    1.0,
+    waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
     sparkleWeight,
   );
   var water = mix(bodyColor, reflected, fresnel);
@@ -1091,25 +1102,21 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let wetSurfaceAlpha = waterShorelineAlpha(depth);
   // wave S: past the range where the foam texture blurs into its mean, the
   // mean is the whitecap COVERAGE — a uniform half-percent whitening. Spend
-  // it as discrete three-second patches instead (expectation unchanged; the
-  // Monte-Carlo test holds the CPU mirror to it). The Worley break-up is a
+  // it as discrete three-second caps instead: the same mean-one twinkle the
+  // glints use, at the whitecap lifetime and the expected cap count for
+  // this footprint (expectation unchanged). The Worley break-up is a
   // sheet-breaker for resolved foam, so it hands off with the texture.
   let fleckWeight = smoothstep(
     ${WATER_WHITECAP_FOOTPRINT_LOW.toFixed(1)},
     ${WATER_WHITECAP_FOOTPRINT_HIGH.toFixed(1)},
     footprintMajor,
   );
-  var whitecaps = foamAmount;
-  if (fleckWeight > 0.0) {
-    let flecks = waterDistantWhitecaps(
-      foamAmount,
-      input.oceanCoordinate,
-      runupDerivativeX,
-      runupDerivativeY,
-      uniforms.time,
-    );
-    whitecaps = mix(foamAmount, flecks.x, fleckWeight * flecks.y);
-  }
+  let whitecapCount = waterWhitecapExpectedCount(foamAmount, glintFootprintArea);
+  let whitecaps = foamAmount * mix(
+    1.0,
+    waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2),
+    fleckWeight,
+  );
   let foam = clamp(max(whitecaps * 1.18, shoreFoam), 0.0, 1.0)
     * mix(mix(0.35, 1.0, foamMask), 1.0, fleckWeight) * wetSurfaceAlpha;
   let foamColor = litFoamColor(

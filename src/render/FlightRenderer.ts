@@ -1181,6 +1181,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       hydrology.setCloudShadow(initialCloudShadow);
       ocean.setSunShadows(atmosphere.shadows);
       hydrology.setSunShadows(atmosphere.shadows);
+      // Terrain occlusion of the reflected sky: the ground bounce's albedo,
+      // forwarded again with every atmosphere change (see setAtmosphere).
+      hydrology.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
       cloudShadowReceivers.setProjection(initialCloudShadow, 0, 0);
 
       // 7-3: the star field. Built before the post-process chain so its
@@ -1560,6 +1563,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
+    // The snapshot carries no albedo; the occluded lake reflection's ground
+    // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
+    // above, so it rides the same publish.
+    this.hydrology.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
     this.graph.invalidateHistory("atmosphere changed");
   }
 
@@ -2844,6 +2851,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // field re-bakes on observer travel and publishes a new origin with it.
     const horizonField = this.terrain.globalHorizonField;
     this.detail.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // Terrain occlusion of the reflected sky: inland water asks the same
+    // field whether its REFLECTION direction clears the terrain — the one
+    // snapshot, the same frame, the same origin as the detail consumer.
+    this.hydrology.setHorizonField(
       horizonField?.layerA ?? null,
       horizonField?.layerB ?? null,
       horizonField?.originX ?? 0,
