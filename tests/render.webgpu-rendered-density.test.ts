@@ -12,7 +12,7 @@ import {
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
 import { DYNAMIC_ALLOCATIONS, FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
-import { DETAIL_MEMBERSHIP_SLACK_METERS } from "../src/render/webgpu/detail/presentationBuild";
+import { DETAIL_CULL_FADE_MARGIN_METERS } from "../src/render/webgpu/detail/presentationBuild";
 import { DETAIL_PRESENTATION_CHUNK_CELL_SPAN } from "../src/render/webgpu/detail/spatialChunks";
 import { DEFAULT_DETAIL_CELL_SIZE_METERS } from "../src/render/webgpu/detail/types";
 import { IMPOSTOR_SPECIES } from "../src/render/webgpu/detail/ImpostorAtlas";
@@ -207,24 +207,27 @@ describe("impostor fill (2026-09-13)", () => {
     // is what keeps it a function of the law rather than a fossil. A stem
     // carries at most seven 32-byte records (near parts, mid parts, one
     // coexisting impostor); a mid-geometry stem four; an impostor-only stem
-    // one; and the membership slack ring past the far radius still packs
-    // impostors at the floor.
+    // one. 2026-09-14: impostor records have no outer edge, and residency
+    // reaches one cull fade past the impostor radius, so every stem of every
+    // resident cell packs at the floor — out to the far corner of the last
+    // resident cell (residency radius plus a cell diagonal). Those rows are
+    // never drawn (the shader culls them live); they are what lets a far
+    // chunk's record set ignore the observer.
     RENDERED_DENSITY_LAWS.forEach((law, tier) => {
       const estimate = estimateRenderedWoodyLoad(law);
       const farRadius = law.far.outerRadiusMeters;
-      const slackRingHectares = Math.PI
-        * ((farRadius + DETAIL_MEMBERSHIP_SLACK_METERS) ** 2 - farRadius ** 2) / 10_000;
-      const slackRingStems = slackRingHectares * law.nearStemsPerHectare * law.impostorFloorShare;
+      const residencyReach = farRadius + DETAIL_CULL_FADE_MARGIN_METERS
+        + DEFAULT_DETAIL_CELL_SIZE_METERS * Math.SQRT2;
+      const beyondCullHectares = Math.PI * (residencyReach ** 2 - farRadius ** 2) / 10_000;
+      const beyondCullStems = beyondCullHectares * law.nearStemsPerHectare * law.impostorFloorShare;
       const records = estimate.nearStems * 7
         + estimate.midStems * 4
         + estimate.impostorStems
-        + slackRingStems;
+        + beyondCullStems;
       const row = DYNAMIC_ALLOCATIONS.detailInstanceBudget[tier as 0 | 1 | 2 | 3];
       expect(records, `tier ${tier}`).toBeLessThanOrEqual(row);
       // Non-vacuous: the row is a ceiling being approached, not a formality.
-      // Tier 0's row was declared with the most headroom (19 k of 60 k) and
-      // sets the bound; tiers 1–3 sit at 0.68 / 0.80 / 0.95 of theirs.
-      expect(records, `tier ${tier} vacuous`).toBeGreaterThan(row * 0.3);
+      expect(records, `tier ${tier} vacuous`).toBeGreaterThan(row * 0.5);
     });
   });
 });

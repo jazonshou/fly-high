@@ -79,6 +79,7 @@ import {
   detailCellMinimumDistanceMeters,
   detailFadeBandMemberships,
   detailTreeCanopyRankOrder,
+  DETAIL_CULL_FADE_MARGIN_METERS,
   DETAIL_DENSITY_SHARE_REFRESH_EPSILON,
   DETAIL_FADE_MARGIN_METERS,
   DETAIL_MEMBERSHIP_SLACK_METERS,
@@ -1725,7 +1726,24 @@ export class WorldDetailRuntime {
     predictionZ: number,
     profile: WebGpuQualityProfile,
   ): void {
-    const radius = profile.vegetationDistance;
+    // 2026-09-14: residency reaches one cull fade PAST the impostor radius.
+    // A cell requested exactly at the impostor radius is generated and
+    // published while the observer keeps closing, so at flight speed its
+    // near stems landed INSIDE the cull window at partial or full opacity in
+    // one frame — the "patches spawning on approach" the user saw in the
+    // viewer. Requested a fade earlier, a new cell publishes with every stem
+    // beyond the live cull and dithers in over the 420 m window as the
+    // observer approaches; the records beyond the cull cost four killed
+    // vertices each and are priced in `DYNAMIC_ALLOCATIONS.detailInstanceBudget`.
+    // The lead exists only when residency actually reaches the law's cull
+    // edge (the shipped profiles: vegetationDistance IS the impostor radius).
+    // A residency window that ends inside the drawn band — a truncated test
+    // fixture, or the governor's distance lever under pressure — has no fade
+    // at its edge for a lead to serve.
+    const reachesCull = profile.vegetationDistance
+      >= profile.renderedDensityLaw.far.outerRadiusMeters;
+    const radius = profile.vegetationDistance
+      + (reachesCull ? DETAIL_CULL_FADE_MARGIN_METERS : 0);
     const minCellX = Math.floor((Math.min(observer.x, predictionX) - radius) / this.cellSizeMeters);
     const maxCellX = Math.floor((Math.max(observer.x, predictionX) + radius) / this.cellSizeMeters);
     const minCellZ = Math.floor((Math.min(observer.z, predictionZ) - radius) / this.cellSizeMeters);

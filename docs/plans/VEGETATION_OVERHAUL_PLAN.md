@@ -616,6 +616,20 @@ of its resident cells; it rebuilds when a cell generates, never when the
 observer moves. Measured under matched host load on the two motion shots:
 frames over 27 ms 43 vs 90 and 10 vs 45 (branch vs baseline), where before the
 fix the branch was 4–10× worse than the baseline.
+Re-measured in a quiet window: 0 vs 0 hitches on both motion shots, frames
+over 16.7 ms identical (2 vs 2), fps within a few percent.
+
+Two more from the concurrent session's vegetation survey, same day: (a) the
+impostor exclusion (`key <= geometry share at the cell's far corner − margin`)
+applied to cells beyond the mid envelope too, where no geometry record exists,
+so in every far cell the widest crowns — the top ~0.5% of the cap — had no
+record of any kind; it now applies only when the whole cell sits inside the
+mid envelope. (b) Cell residency now reaches one cull fade (420 m) past the
+impostor radius: a cell requested at the radius itself was generated and
+published while the observer kept closing, so at flight speed its near stems
+landed inside the cull window at full opacity in one frame. `detailInstanceBudget`
+rows re-derived for the never-drawn records this keeps resident (150 k / 260 k /
+560 k for tiers 1–3).
 
 **Open.** Mid-band fill impostors begin at ~1.6× tile magnification
 (64² tiles, ~274 m at Balanced) for the NON-dominant stems between skeletal

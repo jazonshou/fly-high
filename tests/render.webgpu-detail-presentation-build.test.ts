@@ -571,7 +571,7 @@ describe("pure detail presentation build", () => {
             "tree-impostor",
           ],
           "name": "impostors at the far cull boundary in signed world space",
-          "packedFingerprint": "7b8acf1303b6380d13a6ecdf2e4b87c93d3afd8a4e5292e9a551b74069cd616d",
+          "packedFingerprint": "f179d5f68d44046aff1983b9ad8ab414c18a5805167737cb99fa1a833ef76c96",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
@@ -579,7 +579,7 @@ describe("pure detail presentation build", () => {
             "nearCells": 0,
             "rockInstances": 0,
             "shrubInstances": 0,
-            "treeInstances": 6,
+            "treeInstances": 7,
           },
           "workUnits": 2,
         },
