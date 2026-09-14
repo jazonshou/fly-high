@@ -37,7 +37,11 @@ import type { TreeSpecies } from "./types";
  * 64² tiles are a recorded decision against the plan's 128² sketch: the
  * §5.2 headroom the plan itself flags as "does not close" at 128², and a
  * far-band tree subtends ≤ ~20 px (20 m at 1.4 km), so 64² already
- * oversamples every on-screen impostor.
+ * oversamples every on-screen impostor. 2026-09-13's mid-band fill
+ * (`renderedDensity.ts` `impostorFloorShare`) draws the same tiles from the
+ * crossover (~274 m at tier 1, a 20 m tree at ~100 px — ~1.6× magnified) for
+ * the NON-dominant stems standing between the skeletal crowns; accepted with
+ * the tile as it is rather than re-arbitrating the atlas against §5.2.
  *
  * Class P: deterministic, no Babylon in the bake path; the single GPU
  * boundary is `createImpostorAtlas`'s upload calls.

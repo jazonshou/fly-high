@@ -22,8 +22,8 @@ describe("detail-instance floating-origin shader compensation (67d)", () => {
       expect(positionCode).toContain(
         "scene.vEyePosition.xyz - detailInstancePositionW",
       );
-      expect(positionCode).toContain(
-        "detailBandWindowEmpty(2.0, detailInstancePositionW, vertexInputs.instanceState.z)",
+      expect(positionCode).toMatch(
+        /detailBandWindowEmpty\(\s+2\.0,\s+detailInstancePositionW,\s+vertexInputs\.instanceState\.z,\s+detailImpostorGeometryCoexists,/,
       );
       expect(positionCode).toMatch(
         /floor\(vertexInputs\.instanceState\.x \* 255\.0 \+ 0\.5\) \/ 2\.0,\s+detailInstancePositionW,\s+vertexInputs\.instanceState\.z,/,

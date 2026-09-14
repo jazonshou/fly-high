@@ -176,6 +176,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Active-animal budget", (p: (typeof PROFILES)[number]) => p.activeAnimalBudget],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
+    ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
     // The doc writes kilometres and the profile holds metres, so this row needs
     // the scale rather than a second parser.
     ["Vegetation radius", (p: (typeof PROFILES)[number]) => p.vegetationDistance / 1000],

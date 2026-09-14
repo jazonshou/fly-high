@@ -36,6 +36,21 @@ export const DETAIL_INSTANCE_RADIAL_MAX = 4;
  */
 export const DETAIL_INSTANCE_WIND_PADDING_RATIO = 0.15;
 
+/**
+ * The scramble every decorrelation consumer of the phase lane reads through
+ * — the reveal-order hash the shader always used, promoted to THE per-stem
+ * hash (2026-09-13). Tree records carry their canopy key in the lane, and
+ * the drawn population is a key prefix, so without a scramble the drawn
+ * forest would sway in phase and the hashed mid/far switch would collapse
+ * to a ring. The TS form exists for the CPU bound kernel, which must decode
+ * the modifier-1 lean exactly as the shader does; 256 lane codes map to 256
+ * distinct phases through it.
+ */
+export function detailStemHash(lane: number): number {
+  const scrambled = lane * 157.31 + 0.371;
+  return scrambled - Math.floor(scrambled);
+}
+
 /** Authored, unscaled prototype-space AABB. */
 export interface DetailPrototypeBounds {
   readonly minimum: readonly [number, number, number];
@@ -126,7 +141,16 @@ export interface DetailInstanceRecord {
   readonly variant: number;
   /** Linear RGBA tint, 0..1 per channel. */
   readonly tint: readonly [number, number, number, number];
-  /** Wind phase in TURNS (0..1 wraps 2π). */
+  /**
+   * A stable per-instance uniform in [0, 1). Historically the wind phase in
+   * TURNS; since 2026-09-13 the shader reads every decorrelation consumer
+   * (wind phase, lean, silhouette wobble, the mid/far switch hash, reveal
+   * order) through `detailStemHash` of this lane, and TREE records carry
+   * their density-normalised canopy KEY here instead of a random phase — the
+   * per-stem LOD threshold the band windows compare against the live share.
+   * The drawn subset of a cell is a rank prefix, so the raw lane would sway
+   * every drawn tree in phase; the scramble is what keeps it a phase.
+   */
   readonly windPhase: number;
   /** Wind response, 0..1. */
   readonly windResponse: number;
@@ -414,7 +438,7 @@ export class DetailInstanceWriter {
       // Character modifier 1 shears local X by Y. Preserve the complete
       // four-corner calculation for that 15% branch.
       const prototype = kernel.prototype;
-      const windPhase = windPhaseCode / 255;
+      const windPhase = detailStemHash(windPhaseCode / 255);
       const characterLean = 0.1
         + (windPhase * 7.31 - Math.floor(windPhase * 7.31)) * 0.11;
       const minimumX = prototype.minimum[0] * radialMeters;
@@ -585,7 +609,7 @@ export class DetailInstanceBounds {
     // shader does so the culling volume encloses the geometry actually drawn.
     const variantByte = Math.min(255, Math.max(0, Math.round(record.variant)));
     const modifier = Math.floor(variantByte / 32);
-    const windPhase = unorm8(record.windPhase % 1) / 255;
+    const windPhase = detailStemHash(unorm8(record.windPhase % 1) / 255);
     const characterLean = modifier === 1
       ? 0.1 + (windPhase * 7.31 - Math.floor(windPhase * 7.31)) * 0.11
       : 0;

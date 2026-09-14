@@ -120,6 +120,7 @@ audit is why it now carries all four tiers):
 | Vegetation radius (= impostor radius = the density law's far band) | 2 km | 3 km | 4 km | 6 km |
 | Card-tree LOD radius (near + mid band) | 700 m | 1,100 m | 1,500 m | 2,000 m |
 | Rendered stems/ha at crown closure (near band) | 55 | 78 | 79 | 79 |
+| Impostor floor share (fraction of the near cap drawn in SOME representation beyond the near radius; the gap under the geometry share is 2D impostors) | 0.20 | 0.30 | 0.35 | 0.40 |
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
@@ -494,6 +495,31 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   §5.3's Balanced row; `6-11` owns the re-tier and now has a measurement to
   start from rather than an estimate.
 
+### The far field exists (tree LOD continuity, 2026-09-13)
+
+The rendered-density law carries a second floor, **`impostorFloorShare`**
+(the "Impostor floor share" row of the tier table: 0.20 / 0.30 / 0.35 / 0.40).
+It is the share of the near cap drawn in SOME representation beyond the near
+radius; the gap between the geometry share (still floored at 0.045/0.035) and
+this floor is drawn as 2D octahedral impostors, inside the mid band from the
+crossover `near / √floor` (~274 m at Balanced) as well as beyond it, and the
+GPU thins per stem against the live camera range (the canopy key rides the
+phase lane). Before it, the impostor band inherited the geometry floor —
+~3.5 stems/ha beyond ~700 m at Balanced — and a stem's first frame was its
+cell's rebuild on approach. The change is a §5.3 count-row raise, booked there
+as the user's own amendment; the woody triangle ceilings
+(`WOODY_TRIANGLE_BUDGETS` 710k / 2.3 M / 3.55 M / 7.6 M) and the tier-3
+`detailInstanceBudget` row (420 k) moved with the law and are pinned against it.
+
+Measured on the M2 Pro at Balanced, back-to-back on the same host:
+`forest-line-highsun` 101.5 fps (baseline tree) → 101.1 fps (fill at 0.30).
+The first cut measured 67 fps at every floor tried — `detailTreeStemKey`
+clamped the keys of stems the near cap never draws into the lane instead of
+rejecting them, and the near band drew the whole authored field. Impostor
+fragments now fetch only the stem's season bucket (three albedo fetches, not
+six). Vegetation baselines were re-promoted for this change; see the
+re-promotion note under the shot table.
+
 ## Visual fix-pack (2026-08-25)
 
 The four flight-test reports of 2026-08-25 (plastic foliage/ground, plastic
@@ -701,6 +727,37 @@ A candidate is review evidence, never an automatic baseline mutation: the
 capture has no write path into `tests/perf/baseline`, promotion is a separate
 deliberate action after review, and performance ceilings cannot be rebaselined
 downward.
+
+### Re-promotion 2026-09-14 — tree LOD continuity
+
+Nineteen of the thirty committed baselines were re-promoted from candidate
+`2026-09-14T19-12-19.208Z` after a frame-by-frame review, for one sanctioned
+change: the impostor fill (`impostorFloorShare`, "The far field exists" above).
+Every diverged frame shows the same thing — forest that used to end a few
+hundred metres out now continues to the horizon, and nothing else moved:
+`approach-500ft`, `slant-10km`, `reference-viewport`, `winter-noon`, `night`,
+`night-moonlit`, `forest-500ft-sunbehind`, `ground-2m-lowsun`, `canopy-1200ft`,
+`runway-on-approach`, `grove-meadow-2m`, `hills-dusk-glint`, `mountain-close`,
+`forest-line-highsun`, `cliff-60m`, `veg-seam-1600ft-oblique`,
+`veg-seam-near-500ft`, `terrain-material-1600ft-down`, `canopy-backlit-lowsun`.
+Unchanged (SSIM ≥ 0.985 against the committed frame): `high-10000ft-down`,
+`cruise-horizon`, `cruise-sun-30`, `grove-forest-2m`,
+`horizon-shadow-far-annulus`.
+
+**The four water shots were deliberately NOT re-promoted** (`water-3m`,
+`water-25ft`, `coast-10km-lowsun`, `cruise-horizon`): a concurrent far-field
+ocean branch owns those baselines and re-shoots them on merge. Their shoreline
+forest diverges by the same mechanism (0.983 / 0.984 / 0.967 SSIM here), so
+they will read as diverged until that re-shoot lands with both changes in the
+tree.
+
+**Delivery floors were NOT re-pinned**, and the candidate's fps column is not
+evidence of anything: it ran on this unpinned M2 Pro under a peer session's
+load (the last seven shots at ~30 fps). The frame-rate evidence for the change
+is the back-to-back single-shot A/B on the same host recorded above
+(`forest-line-highsun` 101.5 → 101.1, `canopy-1200ft` 109 → 113,
+`veg-seam-1600ft-oblique` 121 → 122, `forest-500ft-sunbehind` 105.2 → 104.9,
+`approach-500ft` 117.4 → 114.3, `veg-seam-near-500ft` 114.6 → 116.3).
 
 ### Where this contract is enforced
 
