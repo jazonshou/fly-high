@@ -859,13 +859,17 @@ p999, and the strict tier-1 frame-delivery gate on `water-3m`, which read
 idle host afterwards, `water-3m` and `water-25ft` ran at 121.6 and 121.9 fps
 with a 10.2 ms frame-interval p95 and zero hitches, inside every floor they
 carry, so the far-field rewrite costs nothing the near-water shots can
-measure. The draw-call ceilings are a vegetation
-contract, not a water one: nine shots, water and no-water alike, sit exactly
-one draw above their ceiling since the residency change in `751bb46` (one more
-resident chunk batch reaching a cull fade past the impostor radius), plus the
-pre-existing `canopy-backlit-lowsun` 249 against 246; the tree-LOD owner has
-the evidence and re-derives those ceilings. No visual, temporal,
-renderer-error, settling or lit-region gate failed. A clean
+measure. The draw-call ceilings were not a water finding: nine shots, water
+and no-water alike, sat exactly one draw above their ceiling in that run
+because a chunk resident one cull fade past the impostor radius carried an
+impostor batch the shader killed to the last vertex and the engine still
+submitted; `397c7b6` (tree-LOD continuity) hides such a batch from its
+per-cell bounds, returning `forest-line-highsun`, `canopy-1200ft`,
+`grove-forest-2m`, `forest-500ft-sunbehind`, `hills-dusk-glint` and
+`page-thrash-turn` to their ceilings, and declares the remaining real +1 on
+the moving `slant-10km` and `cdlod-transition` shots as the
+"tree-lod-residency-lead" raise in `scripts/deliveryFloors.mts`. No visual,
+temporal, renderer-error, settling or lit-region gate failed. A clean
 reference-adapter run is still owed before any floor moves.
 
 ### Where this contract is enforced
