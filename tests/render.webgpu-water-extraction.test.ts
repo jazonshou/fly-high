@@ -149,11 +149,21 @@ describe("water shader extraction (2-8a)", () => {
     // The fragment hash below is byte-for-byte unchanged, which is the claim
     // that this moved geometry only. Deliberate, named, reviewed — the flow
     // this assertion exists to force; the decision is in ARCHITECTURE.md.
+    //
+    // Re-pinned 2026-09-14 by wave S (the far field), BOTH stages. Vertex:
+    // the lattice-Nyquist displacement fade keys on the ring's horizontal
+    // radius and the pixel fade on slant range, instead of one min() on slant
+    // range that deleted the swell geometry from 545 m of altitude up.
+    // Fragment: a mean-one sun-glint sparkle on the Karis lobe, distant
+    // whitecap flecks spent from the foam mip mean, a drifting far gust field
+    // on the short-wave slope variance, and the rough-interface Fresnel.
+    // Each is pinned by name in tests/render.webgpu-water-far-field.test.ts;
+    // the decision is in ARCHITECTURE.md.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "9686627ee8433515ffff57ca467c63db3feb066684c24c1b637935f9ca218609",
+      "df7c23cce2712c5883222d7be54520228be040f51eb4e2a05c4a13430112c7ac",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "38d9efceb366812bdd8e89655b7e78757a0ed501a55563203a4de6614432bcd0",
+      "1662f0e7e5cc2e59fa7ddfa64d332b3eac412474e5b6ad3c155b796b9c5deaf0",
     );
   });
 

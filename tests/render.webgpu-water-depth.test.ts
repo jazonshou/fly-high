@@ -716,7 +716,9 @@ describe("Phase 5 shared water-depth optics", () => {
       "waterDepthFromBathymetry(\n    uniforms.bathymetrySeaLevel,\n    input.oceanCoordinate",
     );
     expect(code).toContain("if (depth <= 0.0) { discard; }");
-    expect(code).toContain("* mix(0.35, 1.0, foamMask) * wetSurfaceAlpha");
+    // wave S nests the Worley break-up inside a hand-off to the distant
+    // flecks; the wet-surface alpha still gates the whole product.
+    expect(code).toContain("* mix(mix(0.35, 1.0, foamMask), 1.0, fleckWeight) * wetSurfaceAlpha");
     expect(code).toContain("let shorelineAlpha = max(wetSurfaceAlpha, foam);");
     expect(code).not.toContain(
       "waterDepthFromBathymetry(input.worldPosition.y, input.oceanCoordinate)",

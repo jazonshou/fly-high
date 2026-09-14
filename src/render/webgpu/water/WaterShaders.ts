@@ -3343,6 +3343,506 @@ export const WATER_SUN_SPECULAR_WGSL = /* wgsl */ `fn sunSpecular(normal: vec3f,
     / max(4.0 * nDotV, 0.001);
 }`;
 
+/*
+ * ===========================================================================
+ * wave S — the FAR FIELD: what a pixel that covers thousands of wave facets
+ * still shows moving.
+ *
+ * 2-8's energy discipline is exactly right about the MEAN: once a pixel
+ * covers more than half a wavelength of a band, that band's slope averages to
+ * zero and its energy belongs in roughness. What that discipline throws away
+ * is the VARIANCE. A pixel at 5 km from 800 m covers ~150 m² of sea; the sun
+ * glitter inside it is not a smooth lobe, it is a Poisson count of a few
+ * dozen facets that happen to aim the 0.0047 rad sun disc at the eye, and the
+ * count changes every tenth of a second. Measured on the shipped renderer
+ * (capture A/B at +2 s of simulation time, 2026-09-13): the sea's own
+ * texture contrast past 4 km is ~1% of full scale and its two-second change
+ * is 3/255 at 5 km, 1/255 at 8 km and zero past 12 km. That is the still,
+ * plastic sea. Two terms restore the variance without touching the mean:
+ *
+ * (1) GLINT SPARKLE. The expected number of sun-reflecting facets in the
+ *     pixel is `n = (footprintArea / l²) · D(h)·(n·h) · π(θ/2)²` — the facet
+ *     count times the probability that one facet's normal lies within half
+ *     the sun's angular radius of the half vector (the reflection doubles the
+ *     angular error). The sun lobe the fragment already evaluates is the mean
+ *     radiance of that count, so the sparkle is a MULTIPLICATIVE gain with
+ *     mean exactly 1 and variance 1/n: `g = (k+1)·u^k` for uniform u has mean
+ *     1 for every k ≥ 0 and variance k²/(2k+1), and `k = (1+√(1+n))/n` is the
+ *     root of k²/(2k+1) = 1/n. At n = 0.1 the gain is a rare 20× spike on a
+ *     dark sea (countable glints); at n = 50 it is a fine ±14% grain; at n =
+ *     10⁴ it is the smooth lobe. The exponent is capped so an isolated facet
+ *     far outside the glitter path cannot become a single firefly pixel.
+ *     Twinkle: two independent draws per pixel, cross-faded at the twinkle
+ *     rate, so the mean is exact at every instant and the variance dips to
+ *     half only at the crossover. The hash is on SCREEN pixels — a glint is a
+ *     100-200 ms transient, and world-anchoring it would just make the
+ *     pattern crawl under the aliasing of a footprint that spans many cells.
+ *
+ * (2) DISTANT WHITECAPS. The foam channel's mip average is the whitecap
+ *     COVERAGE (0.2-0.7% at 7-11 m/s, Monahan's band), spread as a uniform
+ *     0.5% whitening no eye can see. A real whitecap is a ~12 m² patch at
+ *     full opacity that lives about three seconds. Past the range where the
+ *     foam texture blurs into its mean, each 32 m world cell places one
+ *     patch per lane
+ *     (two lanes, half a lifetime apart, each with a sin envelope) with
+ *     probability `cellArea · coverage / (2 · patchArea)`; the pixel's
+ *     opacity is the patch's overlap with the pixel's own footprint
+ *     parallelogram, searched over the cells that box touches. Expected
+ *     opacity per pixel is exactly the coverage (the
+ *     Monte-Carlo test in tests/render.webgpu-water-far-field.test.ts holds
+ *     the CPU mirror to it), so the sea is no whiter on average — it is
+ *     white in the right PLACES, briefly.
+ *
+ * Both terms are gated on the pixel footprint so the near field, which
+ * resolves its glints and its foam for real, is unchanged to the bit.
+ * ===========================================================================
+ */
+
+/**
+ * Slope-coherence length of the capillary/short-gravity facets that carry a
+ * sun glint, in metres. Sets only how MANY independent facets a footprint
+ * holds, i.e. where the glitter path turns from countable glints into grain:
+ * at 0.06 m a 10 m² footprint (300 m up, 2 km out) holds ~2800 facets and
+ * expects ~0.2 glints at the path's centre; a 150 m² footprint (800 m up,
+ * 5 km out) expects ~3; a 2500 m² one (20 km out) ~50. The mean is
+ * independent of this number.
+ */
+export const WATER_GLINT_FACET_LENGTH_METERS = 0.06;
+/** Twinkle rate: independent draws per pixel are cross-faded at this rate. */
+export const WATER_GLINT_TWINKLE_HZ = 5.5;
+/**
+ * Spikiness ceiling on the sparkle exponent (k ≤ 24 ⇔ n ≥ 0.085). Keeps a
+ * lone facet far outside the glitter path from rendering as a firefly.
+ */
+export const WATER_GLINT_SPARKLE_MAX_EXPONENT = 24;
+/**
+ * Sparkle fade-in window on the anisotropy-limited minor footprint (m). Below
+ * 0.12 m the finest resolved slope texels and the near-field glint jitter
+ * already produce real glints; by 0.5 m (≈ 800 m of range at 62° / 1280 px)
+ * every glint is sub-pixel and the count statistic is the truth.
+ */
+export const WATER_GLINT_SPARKLE_FOOTPRINT_LOW = 0.12;
+export const WATER_GLINT_SPARKLE_FOOTPRINT_HIGH = 0.5;
+
+/** A mature whitecap's patch area (m²) and lifetime (s); radius ≈ 2 m. */
+export const WATER_WHITECAP_PATCH_AREA_M2 = 12;
+export const WATER_WHITECAP_LIFETIME_SECONDS = 3.2;
+/**
+ * World cell of the fleck lattice (m). One patch per lane per cell, so the
+ * cell fixes the densest coverage the model represents exactly: a 32 m cell
+ * holds 1024/(2·12) · coverage = 0.85 expected caps per lane at 2% coverage,
+ * three times Monahan's 11 m/s figure. A pixel's footprint box is searched
+ * over up to WATER_WHITECAP_MAX_CELLS_PER_AXIS cells per axis; a box wider
+ * than that hands back to the mean field (its flecks would be under 2%
+ * opacity anyway).
+ */
+export const WATER_WHITECAP_CELL_METERS = 32;
+export const WATER_WHITECAP_MAX_CELLS_PER_AXIS = 4;
+/**
+ * Fleck fade-in window on the pixel's MAJOR footprint (m). Below 4 m the foam
+ * texture and its Worley break-up still resolve individual caps; by 16 m the
+ * texture is its mean.
+ */
+export const WATER_WHITECAP_FOOTPRINT_LOW = 4;
+export const WATER_WHITECAP_FOOTPRINT_HIGH = 16;
+/** Expected caps per lane per cell above which the one-patch model under-counts. */
+export const WATER_WHITECAP_DENSE_LANE_LOW = 0.8;
+export const WATER_WHITECAP_DENSE_LANE_HIGH = 1.5;
+/**
+ * Kernel-support width, in cells, past which the bounded search is clipped.
+ * A span under WATER_WHITECAP_MAX_CELLS_PER_AXIS − 1 always fits the search
+ * (a span of s cells touches at most ⌈s⌉ + 1 cells), so the clip starts
+ * just under that and hands off to the mean field by 4.6 cells.
+ */
+export const WATER_WHITECAP_CLIP_CELLS_LOW = 3.8;
+export const WATER_WHITECAP_CLIP_CELLS_HIGH = 4.6;
+
+/** CPU mirror of `waterSparkleExponent`. */
+export function waterSparkleExponent(expectedCount: number): number {
+  const n = Math.max(expectedCount, 1e-6);
+  return Math.min((1 + Math.sqrt(1 + n)) / n, WATER_GLINT_SPARKLE_MAX_EXPONENT);
+}
+
+/** CPU mirror of `waterSparkleGain`: mean 1 over uniform u for every count. */
+export function waterSparkleGain(expectedCount: number, u: number): number {
+  const k = waterSparkleExponent(expectedCount);
+  return (k + 1) * Math.max(u, 0) ** k;
+}
+
+/** CPU mirror of `waterGgxDistribution` (Trowbridge-Reitz, normalised over the hemisphere). */
+export function waterGgxDistribution(nDotH: number, alpha: number): number {
+  const alpha2 = alpha * alpha;
+  const denominator = nDotH * nDotH * (alpha2 - 1) + 1;
+  return alpha2 / Math.max(Math.PI * denominator * denominator, 1e-5);
+}
+
+/** CPU mirror of `waterGlintExpectedCount`. */
+export function waterGlintExpectedCount(
+  nDotH: number,
+  alpha: number,
+  sunAngularRadius: number,
+  footprintArea: number,
+): number {
+  const facets = footprintArea / (WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS);
+  const captureSolidAngle = Math.PI * (sunAngularRadius * 0.5) ** 2;
+  return facets * waterGgxDistribution(nDotH, alpha) * Math.max(nDotH, 0) * captureSolidAngle;
+}
+
+/** CPU mirror of `waterPcg3`: Jarzynski & Olano's pcg3d on (cell, seed). */
+export function waterPcg3(cellX: number, cellY: number, seed: number): [number, number, number] {
+  const u32 = (value: number): number => value >>> 0;
+  const mul = (a: number, b: number): number => u32(Math.imul(u32(a), u32(b)));
+  let x = u32(cellX);
+  let y = u32(cellY);
+  let z = u32(seed);
+  x = u32(mul(x, 1664525) + 1013904223);
+  y = u32(mul(y, 1664525) + 1013904223);
+  z = u32(mul(z, 1664525) + 1013904223);
+  x = u32(x + mul(y, z));
+  y = u32(y + mul(z, x));
+  z = u32(z + mul(x, y));
+  x = u32(x ^ (x >>> 16));
+  y = u32(y ^ (y >>> 16));
+  z = u32(z ^ (z >>> 16));
+  x = u32(x + mul(y, z));
+  y = u32(y + mul(z, x));
+  z = u32(z + mul(x, y));
+  return [x, y, z];
+}
+
+/** CPU mirror of `waterHash3`: three uniforms in [0, 1) from one pcg3d call. */
+export function waterHash3(cellX: number, cellY: number, seed: number): [number, number, number] {
+  const [x, y, z] = waterPcg3(cellX, cellY, seed);
+  return [(x & 0xffffff) / 16777216, (y & 0xffffff) / 16777216, (z & 0xffffff) / 16777216];
+}
+
+/** CPU mirror of `waterSmoothBox`: unit-height box of half-width w with a one-unit antialiased edge; integral 2w. */
+export function waterSmoothBox(x: number, halfWidth: number): number {
+  const t = Math.min(Math.max(Math.abs(x) - (halfWidth - 0.5), 0), 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
+/** The fleck term's result: opacity at the pixel and how much of the mean it may replace. */
+export interface WaterWhitecapFlecks {
+  readonly opacity: number;
+  readonly validity: number;
+}
+
+function waterClipWeight(spanCells: number): number {
+  const t = Math.min(Math.max(
+    (spanCells - WATER_WHITECAP_CLIP_CELLS_LOW)
+      / (WATER_WHITECAP_CLIP_CELLS_HIGH - WATER_WHITECAP_CLIP_CELLS_LOW),
+    0,
+  ), 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
+/**
+ * CPU mirror of `waterDistantWhitecaps`: the fleck opacity at one pixel.
+ * `dX`/`dY` are the pixel footprint's world-space derivatives (metres per
+ * pixel). Over pixel position the expectation of `opacity` is the coverage
+ * wherever `validity` is 1.
+ */
+export function waterDistantWhitecaps(
+  coverage: number,
+  worldX: number,
+  worldZ: number,
+  dX: readonly [number, number],
+  dY: readonly [number, number],
+  time: number,
+): WaterWhitecapFlecks {
+  const det = dX[0] * dY[1] - dX[1] * dY[0];
+  const area = Math.abs(det);
+  if (!(area > 0) || !(coverage > 0)) return { opacity: 0, validity: 0 };
+  const cell = WATER_WHITECAP_CELL_METERS;
+  const lengthX = Math.hypot(dX[0], dX[1]);
+  const lengthY = Math.hypot(dY[0], dY[1]);
+  const patchRadius = Math.sqrt(WATER_WHITECAP_PATCH_AREA_M2 / Math.PI);
+  const halfWidthA = 0.5 + patchRadius / Math.max(lengthX, 1e-6);
+  const halfWidthB = 0.5 + patchRadius / Math.max(lengthY, 1e-6);
+  const expectedPerLane = (cell * cell * coverage) / (2 * WATER_WHITECAP_PATCH_AREA_M2);
+  const denseT = Math.min(Math.max(
+    (expectedPerLane - WATER_WHITECAP_DENSE_LANE_LOW)
+      / (WATER_WHITECAP_DENSE_LANE_HIGH - WATER_WHITECAP_DENSE_LANE_LOW),
+    0,
+  ), 1);
+  const denseWeight = 1 - denseT * denseT * (3 - 2 * denseT);
+  const presence = Math.min(expectedPerLane, 1);
+  // The patch's area spread over the box's integral (4·wA·wB pixel areas), so
+  // the sum over pixels is the patch. No clamp here: the box already widens
+  // when the patch outgrows the pixel, which bounds the peak by π/4 for an
+  // unsheared footprint; the final min() guards the sheared case.
+  const peakOpacity = WATER_WHITECAP_PATCH_AREA_M2 / area / (4 * halfWidthA * halfWidthB);
+  const invDet = 1 / det;
+  // Axis-aligned bounds of the kernel's support: (halfWidth + 0.5) pixel
+  // units along each footprint axis.
+  const extentX = (halfWidthA + 0.5) * Math.abs(dX[0]) + (halfWidthB + 0.5) * Math.abs(dY[0]);
+  const extentZ = (halfWidthA + 0.5) * Math.abs(dX[1]) + (halfWidthB + 0.5) * Math.abs(dY[1]);
+  const validity = denseWeight
+    * waterClipWeight((2 * extentX) / cell)
+    * waterClipWeight((2 * extentZ) / cell);
+  if (validity <= 0) return { opacity: 0, validity: 0 };
+  const firstX = Math.floor((worldX - extentX) / cell);
+  const firstZ = Math.floor((worldZ - extentZ) / cell);
+  const lastX = Math.min(Math.floor((worldX + extentX) / cell), firstX + WATER_WHITECAP_MAX_CELLS_PER_AXIS - 1);
+  const lastZ = Math.min(Math.floor((worldZ + extentZ) / cell), firstZ + WATER_WHITECAP_MAX_CELLS_PER_AXIS - 1);
+  let opacity = 0;
+  for (let lane = 0; lane < 2; lane += 1) {
+    for (let cellZ = firstZ; cellZ <= lastZ; cellZ += 1) {
+      for (let cellX = firstX; cellX <= lastX; cellX += 1) {
+        // Per-cell clock (R2 low-discrepancy phase) so caps are staggered.
+        const phaseRaw = cellX * 0.7548777 + cellZ * 0.5698403;
+        const phase = phaseRaw - Math.floor(phaseRaw);
+        const laneTime = time / WATER_WHITECAP_LIFETIME_SECONDS + lane * 0.5 + phase;
+        const index = Math.floor(laneTime);
+        const envelope = Math.sin(Math.PI * (laneTime - index)) * (Math.PI / 2);
+        const [draw, offsetX, offsetZ] = waterHash3(cellX, cellZ, index * 2 + lane + 1);
+        if (draw >= presence) continue;
+        const deltaX = (cellX + offsetX) * cell - worldX;
+        const deltaZ = (cellZ + offsetZ) * cell - worldZ;
+        const a = (deltaX * dY[1] - deltaZ * dY[0]) * invDet;
+        const b = (dX[0] * deltaZ - dX[1] * deltaX) * invDet;
+        opacity += peakOpacity * envelope * waterSmoothBox(a, halfWidthA) * waterSmoothBox(b, halfWidthB);
+      }
+    }
+  }
+  return { opacity: Math.min(opacity, 1), validity };
+}
+
+/**
+ * wave S (3): FAR CAT'S PAWS. The near gust field (`waterGustField`, 57 m and
+ * 23 m, world-locked) fades to a constant past a 34 m footprint, so from
+ * altitude the sea's roughness was one number — and roughness is the only
+ * thing a sunless far sea can vary. Real wind is gusty at every scale: the
+ * ten-minute turbulence intensity over open water is 0.15-0.25, and the short
+ * waves that carry most of the slope variance respond to the local wind
+ * within seconds (Cox-Munk: mss ∝ U), so the sea is a patchwork of glossy and
+ * matte lanes hundreds of metres to kilometres long, stretched downwind and
+ * moving with the gusts. Two octaves (1.5 km and 380 m, 2.5:1 along the
+ * wind, drifting at 0.6 of the wind) modulate the SHORT-wave variance —
+ * cascade 0 fully, cascade 1 by half, the capillary tail fully — with a
+ * mean-one gain whose standard deviation is ~0.23, i.e. the turbulence
+ * intensity. Each octave fades on the pixel's major footprint as the near
+ * ones do, so it can never alias into shimmer.
+ *
+ * wave S (4): ROUGH-INTERFACE FRESNEL. The far plate was bright because
+ * Schlick on the resolved normal says a grazing sea reflects ~65% of the sky.
+ * A rough sea does not: the facets a grazing viewer actually sees are the
+ * ones tilted toward it (the ones tilted away are foreshortened or hidden),
+ * so the mean reflectance is that of a LESS grazing angle. Ross, Dion &
+ * Potvin (2005) measure a 10 m/s sea at 85° incidence at ~0.3-0.35 against
+ * ~0.6 for flat water. Raising the cosine by half the RMS slope, scaled to
+ * vanish at normal incidence, reproduces that: 0.087 → 0.194, F 0.65 → 0.35.
+ * It is what makes the roughness lanes VISIBLE (a rougher lane is a darker,
+ * bluer lane, the classic cat's paw) and what puts the horizon sea below the
+ * horizon sky in brightness, as it is in every photograph.
+ */
+export const WATER_FAR_GUST_COARSE_METERS = 1_500;
+export const WATER_FAR_GUST_MID_METERS = 380;
+export const WATER_FAR_GUST_STRETCH = 2.5;
+export const WATER_FAR_GUST_DRIFT_FRACTION = 0.6;
+export const WATER_FAR_GUST_COARSE_AMPLITUDE = 1.0;
+export const WATER_FAR_GUST_MID_AMPLITUDE = 0.7;
+/** Octave fade windows on the pixel's major footprint (m). */
+export const WATER_FAR_GUST_COARSE_FADE = Object.freeze([600, 2_000] as const);
+export const WATER_FAR_GUST_MID_FADE = Object.freeze([150, 500] as const);
+export const WATER_FAR_GUST_GAIN_MIN = 0.4;
+export const WATER_FAR_GUST_GAIN_MAX = 1.6;
+/** Fraction of the RMS slope the grazing Fresnel cosine is raised by. */
+export const WATER_ROUGH_FRESNEL_TILT = 0.5;
+
+/**
+ * Grazing window of the rough-interface Fresnel, on the cosine of incidence:
+ * the correction is zero at and above cos 0.45 (≤ 63°) and full below cos
+ * 0.05 (≥ 87°). The projected-area bias of the visible facets grows as
+ * σ²·tan θ, so it is a grazing effect — Ross et al. find the rough and flat
+ * reflectances within ~15% of each other at 60° and a factor of two apart at
+ * 85° — and an unwindowed cosine shift halved Schlick's (1 − cos)⁵ term at
+ * every angle.
+ */
+export const WATER_ROUGH_FRESNEL_WINDOW = Object.freeze([0.05, 0.45] as const);
+/**
+ * Ceiling on the slope variance the Fresnel reads (RMS 0.3, Cox-Munk at
+ * ~17 m/s). The BRDF caps its roughness at 0.5 (variance 0.0625) as a look
+ * ceiling; the Fresnel follows the physical mean-square slope past that, but
+ * not past what any wind produces.
+ */
+export const WATER_ROUGH_FRESNEL_MAX_VARIANCE = 0.09;
+
+/** CPU mirror of `waterRoughFresnelCosine`. */
+export function waterRoughFresnelCosine(cosTheta: number, rmsSlope: number): number {
+  const cos = Math.min(Math.max(cosTheta, 0), 1);
+  const tilt = WATER_ROUGH_FRESNEL_TILT * Math.max(rmsSlope, 0);
+  const t = Math.min(Math.max(
+    (cos - WATER_ROUGH_FRESNEL_WINDOW[0]) / (WATER_ROUGH_FRESNEL_WINDOW[1] - WATER_ROUGH_FRESNEL_WINDOW[0]),
+    0,
+  ), 1);
+  const grazing = 1 - t * t * (3 - 2 * t);
+  return Math.min(cos + tilt * (1 - cos) * grazing, 1);
+}
+
+export const WATER_FAR_FIELD_WGSL = /* wgsl */ `fn waterPcg3(cell: vec2i, seed: i32) -> vec3u {
+  var h = vec3u(bitcast<u32>(cell.x), bitcast<u32>(cell.y), bitcast<u32>(seed));
+  h = h * 1664525u + 1013904223u;
+  h.x += h.y * h.z;
+  h.y += h.z * h.x;
+  h.z += h.x * h.y;
+  h ^= h >> vec3u(16u);
+  h.x += h.y * h.z;
+  h.y += h.z * h.x;
+  h.z += h.x * h.y;
+  return h;
+}
+
+fn waterHash3(cell: vec2i, seed: i32) -> vec3f {
+  let h = waterPcg3(cell, seed);
+  return vec3f(h & vec3u(0xffffffu)) / 16777216.0;
+}
+
+fn waterSparkleExponent(expectedCount: f32) -> f32 {
+  let n = max(expectedCount, 0.000001);
+  return min((1.0 + sqrt(1.0 + n)) / n, ${WATER_GLINT_SPARKLE_MAX_EXPONENT.toFixed(1)});
+}
+
+// Mean exactly 1 over uniform u for every count; variance min(1/n, cap).
+fn waterSparkleGain(expectedCount: f32, u: f32) -> f32 {
+  let k = waterSparkleExponent(expectedCount);
+  return (k + 1.0) * pow(max(u, 0.0), k);
+}
+
+fn waterGgxDistribution(nDotH: f32, alpha: f32) -> f32 {
+  let alpha2 = alpha * alpha;
+  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+  return alpha2 / max(PI * denominator * denominator, 0.00001);
+}
+
+// Facets in the footprint times the chance one aims the sun disc at the eye.
+fn waterGlintExpectedCount(nDotH: f32, alpha: f32, sunAngularRadius: f32, footprintArea: f32) -> f32 {
+  let facets = footprintArea / ${(WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS).toFixed(6)};
+  let captureSolidAngle = PI * sunAngularRadius * sunAngularRadius * 0.25;
+  return facets * waterGgxDistribution(nDotH, alpha) * max(nDotH, 0.0) * captureSolidAngle;
+}
+
+// The far-field glitter gain: two screen-hashed draws cross-faded at the
+// twinkle rate, blended toward 1 by the footprint weight.
+fn waterDistantGlintGain(expectedCount: f32, pixel: vec2f, time: f32, weight: f32) -> f32 {
+  if (weight <= 0.0) {
+    return 1.0;
+  }
+  let cell = vec2i(floor(pixel));
+  let t = time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)};
+  let phase = i32(floor(t));
+  let blend = smoothstep(0.0, 1.0, fract(t));
+  let gainA = waterSparkleGain(expectedCount, waterHash3(cell, phase).x);
+  let gainB = waterSparkleGain(expectedCount, waterHash3(cell, phase + 1).x);
+  return mix(1.0, mix(gainA, gainB, blend), weight);
+}
+
+fn waterSmoothBox(x: f32, halfWidth: f32) -> f32 {
+  return 1.0 - smoothstep(halfWidth - 0.5, halfWidth + 0.5, abs(x));
+}
+
+fn waterWhitecapClipWeight(spanCells: f32) -> f32 {
+  return 1.0 - smoothstep(${WATER_WHITECAP_CLIP_CELLS_LOW.toFixed(2)}, ${WATER_WHITECAP_CLIP_CELLS_HIGH.toFixed(2)}, spanCells);
+}
+
+// One whitecap patch per lane per world cell, overlapped with the pixel's own
+// footprint parallelogram. Returns (opacity, validity): over pixel position
+// the expectation of opacity is the coverage wherever validity is 1.
+fn waterDistantWhitecaps(coverage: f32, worldXZ: vec2f, dX: vec2f, dY: vec2f, time: f32) -> vec2f {
+  let det = dX.x * dY.y - dX.y * dY.x;
+  let area = abs(det);
+  if (area <= 0.0 || coverage <= 0.0) {
+    return vec2f(0.0);
+  }
+  let cell = ${WATER_WHITECAP_CELL_METERS.toFixed(1)};
+  let lengthX = length(dX);
+  let lengthY = length(dY);
+  let patchRadius = ${Math.sqrt(WATER_WHITECAP_PATCH_AREA_M2 / Math.PI).toFixed(5)};
+  let halfWidthA = 0.5 + patchRadius / max(lengthX, 0.000001);
+  let halfWidthB = 0.5 + patchRadius / max(lengthY, 0.000001);
+  let expectedPerLane = cell * cell * coverage / ${(2 * WATER_WHITECAP_PATCH_AREA_M2).toFixed(1)};
+  let denseWeight = 1.0 - smoothstep(${WATER_WHITECAP_DENSE_LANE_LOW.toFixed(2)}, ${WATER_WHITECAP_DENSE_LANE_HIGH.toFixed(2)}, expectedPerLane);
+  let presence = min(expectedPerLane, 1.0);
+  let peakOpacity = ${WATER_WHITECAP_PATCH_AREA_M2.toFixed(1)} / area / (4.0 * halfWidthA * halfWidthB);
+  let invDet = 1.0 / det;
+  // The search window is the kernel's SUPPORT: each box is non-zero out to
+  // halfWidth + 0.5 pixel units, i.e. (halfWidth + 0.5)·|d| in world metres
+  // along each footprint axis.
+  let extent = (halfWidthA + 0.5) * abs(dX) + (halfWidthB + 0.5) * abs(dY);
+  let validity = denseWeight
+    * waterWhitecapClipWeight(2.0 * extent.x / cell)
+    * waterWhitecapClipWeight(2.0 * extent.y / cell);
+  if (validity <= 0.0) {
+    return vec2f(0.0);
+  }
+  let first = vec2i(floor((worldXZ - extent) / cell));
+  let last = min(vec2i(floor((worldXZ + extent) / cell)), first + vec2i(${WATER_WHITECAP_MAX_CELLS_PER_AXIS - 1}));
+  var opacity = 0.0;
+  for (var lane = 0; lane < 2; lane += 1) {
+    for (var cellZ = first.y; cellZ <= last.y; cellZ += 1) {
+      for (var cellX = first.x; cellX <= last.x; cellX += 1) {
+        let cellIndex = vec2i(cellX, cellZ);
+        // Every cell lives on its own clock (an R2 low-discrepancy phase), so
+        // the sea's caps are born and die staggered rather than in unison.
+        let phase = fract(f32(cellX) * 0.7548777 + f32(cellZ) * 0.5698403);
+        let laneTime = time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)} + f32(lane) * 0.5 + phase;
+        let index = i32(floor(laneTime));
+        let envelope = sin(PI * (laneTime - f32(index))) * (PI * 0.5);
+        let draw = waterHash3(cellIndex, index * 2 + lane + 1);
+        if (draw.x >= presence) {
+          continue;
+        }
+        let delta = (vec2f(cellIndex) + draw.yz) * cell - worldXZ;
+        let a = (delta.x * dY.y - delta.y * dY.x) * invDet;
+        let b = (dX.x * delta.y - dX.y * delta.x) * invDet;
+        opacity += peakOpacity * envelope * waterSmoothBox(a, halfWidthA) * waterSmoothBox(b, halfWidthB);
+      }
+    }
+  }
+  return vec2f(min(opacity, 1.0), validity);
+}
+
+// Far cat's paws: a mean-one gain on the short-wave slope variance from two
+// drifting, wind-stretched octaves. See the wave S (3) note.
+fn waterFarGustField(worldXZ: vec2f, windVelocity: vec2f, time: f32, footprintMajor: f32) -> f32 {
+  let windAxis = normalize(windVelocity + vec2f(0.00001, 0.0));
+  let across = vec2f(-windAxis.y, windAxis.x);
+  // UNWRAPPED drift, unlike the ripple octaves: waterRippleDrift's 4096 s
+  // wrap is a sub-cell reseed for a 0.4 m ripple but would shift these
+  // kilometre lanes by tens of kilometres in one frame. At 11 m/s the
+  // lattice coordinate reaches ~1.7e4 cells after eleven days, where f32
+  // still resolves a thousandth of a cell — 0.4 m of a 380 m octave.
+  let advected = worldXZ - windVelocity * time * ${WATER_FAR_GUST_DRIFT_FRACTION.toFixed(2)};
+  let lattice = vec2f(dot(advected, windAxis) / ${WATER_FAR_GUST_STRETCH.toFixed(2)}, dot(advected, across));
+  let coarseWeight = ${WATER_FAR_GUST_COARSE_AMPLITUDE.toFixed(2)}
+    * (1.0 - smoothstep(${WATER_FAR_GUST_COARSE_FADE[0].toFixed(1)}, ${WATER_FAR_GUST_COARSE_FADE[1].toFixed(1)}, footprintMajor));
+  let midWeight = ${WATER_FAR_GUST_MID_AMPLITUDE.toFixed(2)}
+    * (1.0 - smoothstep(${WATER_FAR_GUST_MID_FADE[0].toFixed(1)}, ${WATER_FAR_GUST_MID_FADE[1].toFixed(1)}, footprintMajor));
+  let coarse = waterDetailValue(lattice * ${(1 / WATER_FAR_GUST_COARSE_METERS).toFixed(7)}, 5.0) - 0.5;
+  let mid = waterDetailValue(lattice * ${(1 / WATER_FAR_GUST_MID_METERS).toFixed(7)} + vec2f(11.0, 29.0), 6.0) - 0.5;
+  return clamp(
+    1.0 + coarseWeight * coarse + midWeight * mid,
+    ${WATER_FAR_GUST_GAIN_MIN.toFixed(2)},
+    ${WATER_FAR_GUST_GAIN_MAX.toFixed(2)},
+  );
+}
+
+// The cosine a rough interface's mean Fresnel is evaluated at. See wave S (4).
+fn waterRoughFresnelCosine(cosTheta: f32, rmsSlope: f32) -> f32 {
+  let cosine = clamp(cosTheta, 0.0, 1.0);
+  let tilt = ${WATER_ROUGH_FRESNEL_TILT.toFixed(2)} * max(rmsSlope, 0.0);
+  let grazing = 1.0 - smoothstep(${WATER_ROUGH_FRESNEL_WINDOW[0].toFixed(2)}, ${WATER_ROUGH_FRESNEL_WINDOW[1].toFixed(2)}, cosine);
+  return min(cosine + tilt * (1.0 - cosine) * grazing, 1.0);
+}
+
+fn waterRoughInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool, rmsSlope: f32) -> vec3f {
+  if (cameraBelow) {
+    return waterInterfaceFresnel(normal, view, cameraBelow);
+  }
+  return fresnelSchlick(waterRoughFresnelCosine(dot(normal, view), rmsSlope), vec3f(0.0204));
+}`;
+
 /**
  * 2-9: lit foam. Foam is a Lambertian scatterer, not an unlit paint layer —
  * it responds to the sun and the sky like everything else. The Worley

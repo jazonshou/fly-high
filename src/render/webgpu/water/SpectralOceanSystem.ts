@@ -74,8 +74,14 @@ import {
   WATER_CREST_SSS_WGSL,
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
+  WATER_FAR_FIELD_WGSL,
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
+  WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
+  WATER_ROUGH_FRESNEL_MAX_VARIANCE,
+  WATER_WHITECAP_FOOTPRINT_HIGH,
+  WATER_WHITECAP_FOOTPRINT_LOW,
   WATER_DETAIL_NOISE_WGSL,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
@@ -448,20 +454,31 @@ fn main(input: VertexInputs) -> FragmentInputs {
   );
   let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
   // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
-  // Nyquist, min(pixelFadeEnd, meshFadeEnd). A band the radial step cannot
-  // carry is not a wave in the vertex buffer, it is aliasing — and because
-  // the disk is camera-centred that aliasing rode along with the viewer.
-  // The fragment keeps the PIXEL fade (the varyings below): its slope comes
-  // from a mip-filtered textureSampleGrad, whose reconstruction limit is the
-  // pixel and not the lattice, so the band survives there as a correctly
-  // filtered normal — strictly more information than handing it to roughness.
-  let meshFades = vec4f(
-    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)),
-    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.y, uniforms.cascadeMeshFadeRadii0.y)),
-    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.z, uniforms.cascadeMeshFadeRadii0.z)),
-    cascadeFade(slantRange, min(uniforms.cascadeFadeRadii0.w, uniforms.cascadeMeshFadeRadii0.w)),
+  // Nyquist. A band the radial step cannot carry is not a wave in the vertex
+  // buffer, it is aliasing — and because the disk is camera-centred that
+  // aliasing rode along with the viewer. The fragment keeps the PIXEL fade
+  // (the varyings below): its slope comes from a mip-filtered
+  // textureSampleGrad, whose reconstruction limit is the pixel and not the
+  // lattice, so the band survives there as a correctly filtered normal —
+  // strictly more information than handing it to roughness.
+  //
+  // wave S: the two fades key on DIFFERENT ranges. The pixel fade is a
+  // function of slant range — from altitude the sea straight below is
+  // already distant. The lattice fade is a function of the ring's HORIZONTAL
+  // radius alone: the radial step at a vertex does not change when the camera
+  // climbs. Folding both into one min() evaluated on slant range meant that
+  // from 545 m up (tier 1; 1.3 km at tier 2) every vertex on the disk,
+  // including the ones directly below the aircraft on a 1 m lattice, lost the
+  // 32-128 m swell that carries the wind's peak energy — the sea became a flat
+  // plane wearing a normal map from that altitude on, and the crest glow
+  // term (fed by displacement.y) went with it.
+  let meshFades = fades * vec4f(
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.y),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.z),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.w),
   );
-  let meshFade4 = cascadeFade(slantRange, min(uniforms.cascadeFadeRadius4, uniforms.cascadeMeshFadeRadius4));
+  let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);
   var displacement = vec3f(0.0);
   displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
   if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
@@ -618,6 +635,10 @@ ${WATER_SUN_SPECULAR_WGSL}
 
 ${WATER_FOAM_WGSL}
 
+// wave S: the far-field glint sparkle and distant whitecap flecks. Ocean-only
+// consumer for now; the block itself is surface-agnostic.
+${WATER_FAR_FIELD_WGSL}
+
 ${WATER_CREST_SSS_WGSL}
 
 ${WATER_ENVIRONMENT_MIP_WGSL}
@@ -657,9 +678,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // actually resolves.
   let runupDerivativeX = dpdx(input.oceanCoordinate);
   let runupDerivativeY = dpdy(input.oceanCoordinate);
+  let footprintMajor = max(length(runupDerivativeX), length(runupDerivativeY));
   let runupFootprint = max(
     min(length(runupDerivativeX), length(runupDerivativeY)),
-    max(length(runupDerivativeX), length(runupDerivativeY)) * ${(1 / 16).toFixed(6)},
+    footprintMajor * ${(1 / 16).toFixed(6)},
   );
   // Ocean coverage and all shelf/run-up theory are defined against STILL-water
   // depth. Feeding the vertically displaced/curvature-dropped vertex height
@@ -672,6 +694,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.oceanCoordinate,
   );
   if (depth <= 0.0) { discard; }
+  // wave S: the far cat's paws — a mean-one gain on the short-wave slope
+  // variance (cascade 0, half of cascade 1, the capillary tail) from two
+  // wind-stretched octaves drifting with the gusts. No derivatives, so it
+  // sits after the discard; it is the only thing a sunless far sea can vary.
+  // Faded in on the same minor-footprint window as the sparkle, so the near
+  // field — whose own gust field already modulates its resolved ripples —
+  // is untouched: a calm lane must be calm in the resolved octaves too, and
+  // only the far field has no resolved octaves left to disagree with.
+  let farGustWeight = smoothstep(
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_HIGH.toFixed(3)},
+    runupFootprint,
+  );
+  let farGust = mix(
+    1.0,
+    waterFarGustField(input.oceanCoordinate, uniforms.oceanWind, uniforms.time, footprintMajor),
+    farGustWeight,
+  );
   let causticBeam = waterRefractedSunBeam(depth, light.y);
   // 2-8: heights add across cascades, so slopes add — the fade-weighted SUM
   // replaces the old weighted average of normal-recovered slopes and its
@@ -691,7 +731,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   cascadeSlopesZ.x = baseSample.y * input.cascadeFades.x;
   var slopeSum = baseSample.xy * input.cascadeFades.x;
   var foamAmount = baseSample.z * input.cascadeFades.x;
-  var slopeVariance = cascadeSlopeVariance(baseSample, baseMoment, input.cascadeFades.x);
+  var slopeVariance = cascadeSlopeVariance(baseSample, baseMoment, input.cascadeFades.x) * farGust;
   // 6-4: the stored Jacobian, lane per cascade. These are plain register moves
   // from samples the shader already takes — no arithmetic happens here, so
   // water outside the caustic gate pays nothing for them. A cascade the profile
@@ -708,7 +748,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   var cascadeBandMss = vec4f(0.0);
   var cascadeBandMss4 = 0.0;
   cascadeBandMss.x = baseMoment.x + baseMoment.y;
-  if (uniforms.cascadeCount > 1.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeMoment1, slopeMoment1Sampler); cascadeSlopesX.y = sample.x * input.cascadeFades.y; cascadeSlopesZ.y = sample.y * input.cascadeFades.y; slopeSum += sample.xy * input.cascadeFades.y; foamAmount = max(foamAmount, sample.z * input.cascadeFades.y); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.y); cascadeJacobians.y = sample.w; cascadeBandMss.y = moment.x + moment.y; }
+  if (uniforms.cascadeCount > 1.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.y, slopeMoment1, slopeMoment1Sampler); cascadeSlopesX.y = sample.x * input.cascadeFades.y; cascadeSlopesZ.y = sample.y * input.cascadeFades.y; slopeSum += sample.xy * input.cascadeFades.y; foamAmount = max(foamAmount, sample.z * input.cascadeFades.y); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.y) * mix(1.0, farGust, 0.5); cascadeJacobians.y = sample.w; cascadeBandMss.y = moment.x + moment.y; }
   if (uniforms.cascadeCount > 2.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.z, slopeMoment2, slopeMoment2Sampler); cascadeSlopesX.z = sample.x * input.cascadeFades.z; cascadeSlopesZ.z = sample.y * input.cascadeFades.z; slopeSum += sample.xy * input.cascadeFades.z; foamAmount = max(foamAmount, sample.z * input.cascadeFades.z); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.z); cascadeJacobians.z = sample.w; cascadeBandMss.z = moment.x + moment.y; }
   if (uniforms.cascadeCount > 3.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLengths0.w, slopeMoment3, slopeMoment3Sampler); cascadeSlopesX.w = sample.x * input.cascadeFades.w; cascadeSlopesZ.w = sample.y * input.cascadeFades.w; slopeSum += sample.xy * input.cascadeFades.w; foamAmount = max(foamAmount, sample.z * input.cascadeFades.w); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFades.w); cascadeJacobians.w = sample.w; cascadeBandMss.w = moment.x + moment.y; }
   if (uniforms.cascadeCount > 4.5) { let sample = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler); let moment = sampleSlopeTexture(input.oceanCoordinate, uniforms.patchLength4, slopeMoment4, slopeMoment4Sampler); cascadeSlope4 = sample.xy * input.cascadeFade4; slopeSum += sample.xy * input.cascadeFade4; foamAmount = max(foamAmount, sample.z * input.cascadeFade4); slopeVariance += cascadeSlopeVariance(sample, moment, input.cascadeFade4); cascadeJacobian4 = sample.w; cascadeBandMss4 = moment.x + moment.y; }
@@ -881,7 +921,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     );
   }
   slopeSum += capillary.slope;
-  slopeVariance += capillary.unresolvedMeanSquareSlope;
+  slopeVariance += capillary.unresolvedMeanSquareSlope * farGust;
   let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
   // wave R fix 7: the sun lobe alone sees the finest jitter. Putting it in the
   // shared normal would boil the reflected sky and the Fresnel term; the sun
@@ -900,7 +940,15 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
-  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
+  // wave S: the mean Fresnel of a ROUGH interface — the grazing sea reflects
+  // far less of the sky than Schlick on the resolved normal claims, and a
+  // rougher gust lane reflects less still. See WATER_FAR_FIELD_WGSL (4).
+  let fresnel = waterRoughInterfaceFresnel(
+    normal,
+    view,
+    cameraBelow,
+    sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+  );
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
     input.sunShadowClip0,
@@ -983,8 +1031,38 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // water — the sun's angular radius replaced the 2.6 gain.
   let sunGlitter = sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, vec3f(0.0204))
     * uniforms.sunColor * directSunVisibility;
+  // wave S: the sun lobe above is the MEAN of a Poisson count of
+  // sun-aiming facets inside the footprint. Past the range where the glints
+  // stop resolving, multiply it by a mean-one gain with the count's own
+  // variance, so the glitter path is countable glints at 1-3 km, grain at
+  // 5-10 km and the smooth lobe far out — and twinkles at every range
+  // instead of sitting still. See WATER_FAR_FIELD_WGSL for the derivation.
+  // The footprint area is the pixel's own parallelogram on the sea; the
+  // fade-in keys on the anisotropy-limited minor footprint, like the
+  // capillary octaves, so the near field is untouched to the bit.
+  let glintFootprintArea = abs(
+    runupDerivativeX.x * runupDerivativeY.y - runupDerivativeX.y * runupDerivativeY.x,
+  );
+  let glintHalfVector = normalize(view + light);
+  let glintExpectedCount = waterGlintExpectedCount(
+    max(dot(glintNormal, glintHalfVector), 0.0),
+    roughness * roughness,
+    uniforms.sunAngularRadius,
+    glintFootprintArea,
+  );
+  let sparkleWeight = smoothstep(
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_HIGH.toFixed(3)},
+    runupFootprint,
+  );
+  let sparkle = waterDistantGlintGain(
+    glintExpectedCount,
+    fragmentInputs.position.xy,
+    uniforms.time,
+    sparkleWeight,
+  );
   var water = mix(bodyColor, reflected, fresnel);
-  water += sunGlitter;
+  water += sunGlitter * sparkle;
   // 2-9: lit foam with an advected Worley break-up — foam is a Lambertian
   // surface, not paint, and it drifts downwind.
   let foamMask = foamBreakup(input.oceanCoordinate, uniforms.oceanWind * uniforms.time * 0.6);
@@ -1011,8 +1089,29 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let shoreFoam = shoreBand * smoothstep(0.12, 0.72, shoreBreakup) * 0.62;
   let wetSurfaceAlpha = waterShorelineAlpha(depth);
-  let foam = clamp(max(foamAmount * 1.18, shoreFoam), 0.0, 1.0)
-    * mix(0.35, 1.0, foamMask) * wetSurfaceAlpha;
+  // wave S: past the range where the foam texture blurs into its mean, the
+  // mean is the whitecap COVERAGE — a uniform half-percent whitening. Spend
+  // it as discrete three-second patches instead (expectation unchanged; the
+  // Monte-Carlo test holds the CPU mirror to it). The Worley break-up is a
+  // sheet-breaker for resolved foam, so it hands off with the texture.
+  let fleckWeight = smoothstep(
+    ${WATER_WHITECAP_FOOTPRINT_LOW.toFixed(1)},
+    ${WATER_WHITECAP_FOOTPRINT_HIGH.toFixed(1)},
+    footprintMajor,
+  );
+  var whitecaps = foamAmount;
+  if (fleckWeight > 0.0) {
+    let flecks = waterDistantWhitecaps(
+      foamAmount,
+      input.oceanCoordinate,
+      runupDerivativeX,
+      runupDerivativeY,
+      uniforms.time,
+    );
+    whitecaps = mix(foamAmount, flecks.x, fleckWeight * flecks.y);
+  }
+  let foam = clamp(max(whitecaps * 1.18, shoreFoam), 0.0, 1.0)
+    * mix(mix(0.35, 1.0, foamMask), 1.0, fleckWeight) * wetSurfaceAlpha;
   let foamColor = litFoamColor(
     ${OCEAN_FOAM_ALBEDO_WGSL},
     normal,

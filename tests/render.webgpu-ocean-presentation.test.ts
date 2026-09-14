@@ -99,7 +99,9 @@ describe("spectral ocean presentation topology", () => {
     // pixel fade, so a mesh-faded band survives as a filtered normal instead
     // of being flattened into roughness.
     expect(WATER_VERTEX_WGSL).toContain("cascadeMeshFadeRadii0");
-    expect(WATER_VERTEX_WGSL).toContain("min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)");
+    expect(WATER_VERTEX_WGSL).toContain("cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x)");
+    expect(WATER_VERTEX_WGSL).toContain("let meshFades = fades * vec4f(");
+    expect(WATER_VERTEX_WGSL).not.toContain("min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)");
     expect(WATER_VERTEX_WGSL).toContain("displacement0Sampler) * meshFades.x");
     expect(WATER_VERTEX_WGSL).toContain("vertexOutputs.cascadeFades = fades;");
   });
