@@ -759,6 +759,48 @@ is the back-to-back single-shot A/B on the same host recorded above
 `veg-seam-1600ft-oblique` 121 → 122, `forest-500ft-sunbehind` 105.2 → 104.9,
 `approach-500ft` 117.4 → 114.3, `veg-seam-near-500ft` 114.6 → 116.3).
 
+### Re-promotion 2026-09-14 — the far sea (wave S)
+
+Eight of the thirty-eight committed baselines were re-promoted from candidate
+`2026-09-14T19-50-42.206Z` after a frame-by-frame review, for one sanctioned
+change: the ocean's far field now carries its variance and not just its mean
+(ARCHITECTURE.md decision log, "The far sea keeps its variance, not just its
+mean"). The candidate was shot with the tree-LOD continuity change already in
+the tree, so the water shots that section left diverged land here once, with
+both changes. Every re-promoted frame has open sea in it, and a luminance
+heatmap against its committed frame shows the change confined to the sea:
+`water-25ft` (0.959 SSIM), `coast-10km-lowsun` (0.961), `water-3m` (0.963),
+`forest-line-highsun` (0.974), `hills-dusk-glint` (0.981),
+`forest-500ft-sunbehind` (0.984), `cruise-horizon` (0.989), `slant-10km`
+(0.993). What the frames show is the same four things: sun glitter that is
+discrete sparkle instead of a smeared streak, a sea that sits darker than the
+horizon sky at grazing angles (the rough-interface Fresnel), drifting wind
+lanes across the mid-range sea, and — where the wind and the light allow —
+whitecap flecks. Not re-promoted: `grove-forest-2m` (0.987, a ground-level
+forest frame with no sea; run-to-run foliage variance) and everything at
+≥ 0.995 (`winter-noon`, `cruise-sun-30`, `approach-500ft`,
+`reference-viewport` and the rest), whose sea, if any, is too far or too
+small in frame for the change to register.
+
+The evidence that the change does what it claims is the +2 s simulation-time
+A/B on `coast-10km-lowsun` and `water-25ft` recorded in the decision log:
+before, the open sea's two-second luminance change was 3/255 at 5 km, 1/255 at
+8 km and zero past 12 km; after, the glitter path changes 12-16/255 at every
+range and the sunless mid-range sea carries drifting roughness lanes. The far
+plate past ~12 km on a calm world is unchanged, which is the physics.
+
+**Delivery floors were NOT re-pinned.** The candidate ran on this unpinned
+M2 Pro; its 32 gate failures were all delivery floors (fps, wall-clock fps,
+frame-interval p95, p999) plus the vegetation draw-call ceiling on
+`canopy-backlit-lowsun` (249 against 246) that predates this change, and none
+was a visual, temporal, renderer-error, settling or lit-region gate. The two
+near-water shots that carry floors (`water-3m`, `water-25ft`) cleared them in
+this run, so the added far-field fragment work — one hash and a `pow` per
+pixel for the sparkle, two value-noise octaves for the lanes, and a bounded
+cell search for the flecks that returns early wherever its result is unused —
+is inside the budget those floors express. A clean reference-adapter run is
+still owed before any floor moves.
+
 ### Where this contract is enforced
 
 The table above is a **reference-adapter** contract, and only the reference
