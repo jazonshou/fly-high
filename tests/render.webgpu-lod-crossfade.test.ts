@@ -119,10 +119,19 @@ describe("band memberships (2-17 close)", () => {
     expect(justOutside.map((entry) => entry.band)).toContain("near");
     expect(justOutside.map((entry) => entry.band)).toContain("mid");
 
+    // 2026-09-14: the far membership has no outer edge — the shader's live
+    // cull owns the far edge, and a record beyond it is four killed vertices.
+    // Cutting records at the cull made that edge a frontier and every chunk
+    // straddling it re-baked per observer quantum with its whole impostor set.
     const cullEdge = LAW.far.outerRadiusMeters;
     expect(
-      WorldDetailRuntime.fadeBandMemberships(cullEdge + DETAIL_MEMBERSHIP_SLACK_METERS + 1, LAW),
-    ).toEqual([]);
+      WorldDetailRuntime.fadeBandMemberships(cullEdge + DETAIL_MEMBERSHIP_SLACK_METERS + 1, LAW)
+        .map((entry) => entry.band),
+    ).toEqual(["far"]);
+    expect(
+      WorldDetailRuntime.fadeBandMemberships(cullEdge * 3, LAW).map((entry) => entry.band),
+    ).toEqual(["far"]);
+    expect(WorldDetailRuntime.fadeBandMemberships(-1, LAW)).toEqual([]);
   });
 
   it("keeps membership slack above the observer signature quantum", () => {

@@ -354,6 +354,18 @@ export function detailTreeStemKey(
  * not at the mid radius — impostors stand in for the stems the geometry share
  * rejects everywhere beyond the near radius, so a mid-band stem carries an
  * impostor record beside its geometry and the GPU picks one per frame.
+ *
+ * 2026-09-14: the far membership has NO outer edge. The impostor cull is the
+ * shader's, evaluated against the live camera range (band code 2's fCull), so
+ * a record beyond it costs four killed vertices and nothing else — whereas
+ * cutting records at `far + slack` made the far cull edge a FRONTIER: every
+ * chunk straddling it re-baked on each 64 m observer quantum, carrying its
+ * whole impostor set (7× heavier since the fill), and the sweep could not
+ * converge in flight. The far band was seen arriving cell by cell as a
+ * patchwork with straight edges, and the publication traffic read as
+ * hitches. A far chunk's record set is now a pure function of its resident
+ * cells and the law; it rebuilds when a cell generates, never when the
+ * observer moves.
  */
 export function detailFadeBandMemberships(
   distanceMeters: number,
@@ -361,10 +373,8 @@ export function detailFadeBandMemberships(
 ): readonly DetailFadeBandMembership[] {
   const nearEdge = law.near.outerRadiusMeters;
   const midEdge = law.mid.outerRadiusMeters;
-  const cullEdge = law.far.outerRadiusMeters;
   const slack = DETAIL_MEMBERSHIP_SLACK_METERS;
-  if (!Number.isFinite(distanceMeters) || distanceMeters < 0
-    || distanceMeters >= cullEdge + slack) {
+  if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
     return DETAIL_FADE_MEMBERSHIPS_BY_MASK[0]!;
   }
   let membershipMask = 0;
@@ -375,6 +385,9 @@ export function detailFadeBandMemberships(
   }
   return DETAIL_FADE_MEMBERSHIPS_BY_MASK[membershipMask]!;
 }
+
+/** Impostor-only stems are cheap records; charge them to the scheduler in blocks. */
+const DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE = 8;
 
 /** Composes yaw with a small lean about a hashed azimuth (2-12). */
 function yawLeanQuaternion(
@@ -496,11 +509,69 @@ export function* buildPresentationChunk(
         - DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
     );
 
-    const treeCount = currentCellDistance >= densityLaw.far.outerRadiusMeters
-        + DETAIL_MEMBERSHIP_SLACK_METERS
-      ? 0
-      : resident.cell.trees.length;
+    // 2026-09-14: no far cutoff. Impostor records exist for every resident
+    // stem the drawn ceiling admits, wherever it is; the shader's live cull
+    // decides what draws (see `detailFadeBandMemberships`).
+    const treeCount = resident.cell.trees.length;
+    // Beyond the mid band's residency envelope a stem can only ever be an
+    // impostor, and an impostor record is one cheap row: build it directly
+    // and charge the scheduler in blocks, the way rank misses are charged.
+    // The record is byte-identical to what the general path below emits for
+    // a far-only stem — this is a shortcut, not a second representation.
+    const impostorOnlyBeyondMeters = densityLaw.mid.outerRadiusMeters
+      + DETAIL_MEMBERSHIP_SLACK_METERS;
+    const appendImpostorOnlyRecord = (
+      tree: GeneratedDetailCell["trees"][number],
+      stemKey: number,
+    ): void => {
+      const treeCatalog = catalog.trees[tree.species];
+      const prototypeSpecies = treePrototypeMode === "species"
+        ? tree.species
+        : treeCatalog.prototypeFamily;
+      const usesImpostor = catalog.useImpostors;
+      const crownBatchKey = usesImpostor
+        ? TREE_IMPOSTOR_PROTOTYPE_KEY
+        : `tree-${prototypeSpecies}-v0-crown-far`;
+      const impostor = usesImpostor ? catalog.impostors[prototypeSpecies] : undefined;
+      const crownPrototypeRadius = usesImpostor
+        ? impostor?.radialUnits
+        : catalog.prototypes[crownBatchKey]?.radialUnits;
+      if (crownPrototypeRadius === undefined) {
+        throw new Error(`Missing radial contract for ${crownBatchKey}/${tree.species}`);
+      }
+      if (usesImpostor && !impostor?.frame) {
+        throw new Error(`Missing impostor bounds frame for ${prototypeSpecies}`);
+      }
+      // The far variant byte carries the species slot and the identity hash,
+      // not the character modifier — the general path computes the same.
+      const leanRadians = 0.035 + ((tree.selection * 29.3) % 1) * 0.105;
+      const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
+      sink.appendInstance(
+        crownBatchKey,
+        {
+          x: tree.x - floatingOrigin.x,
+          y: tree.y - floatingOrigin.y,
+          z: tree.z - floatingOrigin.z,
+          quaternion: yawLeanQuaternion(tree.yawRadians, leanRadians, leanAzimuth),
+          heightScaleMeters: tree.heightMeters,
+          radialScale: detailRadialScaleForWorldRadius(
+            tree.crownRadiusMeters,
+            tree.heightMeters,
+            crownPrototypeRadius,
+          ),
+          fade: 2 / 127,
+          fadeIncoming: false,
+          variant: impostorSpeciesSlot(prototypeSpecies) * 32
+            + Math.floor(((tree.selection * 97.3) % 1) * 32),
+          tint: tree.color,
+          windPhase: stemKey,
+          windResponse: clamp(tree.windResponse, 0, 1),
+        },
+        usesImpostor ? impostor?.frame : undefined,
+      );
+    };
     let rejectedTreeCandidates = 0;
+    let impostorOnlyRecords = 0;
     for (let treeIndex = 0; treeIndex < treeCount; treeIndex += 1) {
       const tree = resident.cell.trees[treeIndex]!;
       const stemKey = detailTreeStemKey(
@@ -511,7 +582,9 @@ export function* buildPresentationChunk(
       const geometryAdmitted = stemKey <= geometryShareCeiling;
       const impostorAdmitted = stemKey <= drawnShareCeiling
         && stemKey > geometryOwnedEverywhereBelow;
-      if (!geometryAdmitted && !impostorAdmitted) {
+      const stemDistance = Math.hypot(tree.x - observerX, tree.z - observerZ);
+      const impostorOnly = stemDistance > impostorOnlyBeyondMeters;
+      if (!(impostorOnly ? impostorAdmitted : geometryAdmitted || impostorAdmitted)) {
         rejectedTreeCandidates += 1;
         if (rejectedTreeCandidates === DETAIL_PRESENTATION_REJECTION_BLOCK_SIZE) {
           yield;
@@ -519,11 +592,20 @@ export function* buildPresentationChunk(
         }
         continue;
       }
+      if (impostorOnly) {
+        impostorOnlyRecords += 1;
+        if (impostorOnlyRecords === DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE) {
+          yield;
+          impostorOnlyRecords = 0;
+        }
+        appendImpostorOnlyRecord(tree, stemKey);
+        statistics.treeInstances += 1;
+        continue;
+      }
       yield;
       const localX = tree.x - floatingOrigin.x;
       const localY = tree.y - floatingOrigin.y;
       const localZ = tree.z - floatingOrigin.z;
-      const stemDistance = Math.hypot(tree.x - observerX, tree.z - observerZ);
       const memberships = detailFadeBandMemberships(stemDistance, densityLaw);
       if (memberships.length === 0) continue;
       const modifierHash = (tree.selection * 137.3) % 1;

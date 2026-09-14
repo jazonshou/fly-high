@@ -581,7 +581,7 @@ describe("pure detail presentation build", () => {
             "shrubInstances": 0,
             "treeInstances": 6,
           },
-          "workUnits": 9,
+          "workUnits": 2,
         },
         {
           "batchKeys": [

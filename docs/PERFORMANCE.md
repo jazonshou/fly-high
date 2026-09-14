@@ -520,6 +520,15 @@ fragments now fetch only the stem's season bucket (three albedo fetches, not
 six). Vegetation baselines were re-promoted for this change; see the
 re-promotion note under the shot table.
 
+**2026-09-14 follow-up.** The first landing cut impostor records at
+`far + slack` from the build-time observer, which made the far cull edge a
+frontier: chunks straddling it re-baked every 64 m with their whole impostor
+set, the sweep fell behind in flight, and the far band arrived cell by cell as
+a straight-edged patchwork with hitches. Impostor records now have no outer
+membership edge (the shader culls at the live range), the far edge is not a
+frontier term, and impostor-only stems build through a block-charged fast path
+— a far chunk rebuilds when a cell generates, never when the observer moves.
+
 ## Visual fix-pack (2026-08-25)
 
 The four flight-test reports of 2026-08-25 (plastic foliage/ground, plastic

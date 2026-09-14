@@ -79,7 +79,6 @@ import {
   detailCellMinimumDistanceMeters,
   detailFadeBandMemberships,
   detailTreeCanopyRankOrder,
-  DETAIL_CULL_FADE_MARGIN_METERS,
   DETAIL_DENSITY_SHARE_REFRESH_EPSILON,
   DETAIL_FADE_MARGIN_METERS,
   DETAIL_MEMBERSHIP_SLACK_METERS,
@@ -3222,12 +3221,16 @@ export class WorldDetailRuntime {
     );
     const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
       + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
-    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
-      + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
+    // 2026-09-14: the far cull edge is NOT a frontier. Impostor records have
+    // no outer membership edge any more (`detailFadeBandMemberships`), the
+    // shader culls at the live range, and a far chunk's record set depends on
+    // its resident cells alone — so nothing about it changes when the
+    // observer moves, and re-baking it every 64 m (with its whole impostor
+    // set, 7× heavier since the fill) was the traffic behind the in-flight
+    // hitches and the far band arriving as a patchwork.
     const edges: readonly (readonly [number, number])[] = [
       [law.near.outerRadiusMeters, pad],
       [law.mid.outerRadiusMeters, pad],
-      [law.far.outerRadiusMeters, cullPad],
       [
         this.lastGrassRadius,
         GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
