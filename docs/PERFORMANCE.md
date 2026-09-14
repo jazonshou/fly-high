@@ -814,6 +814,54 @@ cell search for the flecks that returns early wherever its result is unused —
 is inside the budget those floors express. A clean reference-adapter run is
 still owed before any floor moves.
 
+### Re-promotion 2026-09-14 — the far field, second pass
+
+The same eight sea baselines were re-promoted from candidate
+`2026-09-14T21-39-26.316Z` after a frame-by-frame review, for one sanctioned
+change: the second pass of wave S (ARCHITECTURE.md decision log, "The far
+field, second pass"). Driving the terrain viewer at the user's reported pose
+found four defects the first pass had shipped — scrolling horizontal lines
+over parked terrain, a drifting grid of dark blobs in the glitter path, valley
+lakes rendered as white sheets, and 37 fps with the sea in the lower half of
+the frame — and this pass fixes them: the whitecap flecks are a one-hash
+twinkle instead of a per-pixel cell search, the far gust's lattice is warped
+and its coarse octave is a vertex varying, the cloud shadow marches the cloud
+slab with a stable per-texel jitter, and inland water composes the far field
+and occludes its reflected sky against the terrain's global horizon field.
+Re-promoted, with the SSIM against the frame promoted this morning:
+`forest-line-highsun` (0.980), `cruise-horizon` (0.984), `water-25ft` (0.988,
+worst tile 0.57 — the sparkle in the glitter path is a different random draw
+at the shot's simulation time), `slant-10km` (0.990), `water-3m` (0.993),
+`coast-10km-lowsun` (0.995), `hills-dusk-glint` (0.995),
+`forest-500ft-sunbehind` (0.997). Only the first three would have failed a
+visual gate against the morning's frames; the other five are re-shot so every
+committed sea frame shows the shipped sea. The cloud-shadow change touches
+every daylight frame with terrain, and every other shot stayed at ≥ 0.987
+SSIM with its worst tile ≥ 0.74 — the shadow map's east-west stripes are gone
+and its shadows are otherwise in the same places — so nothing else moved.
+
+Evidence, measured live in the viewer at 8296, 16955, 662 m MSL at golden
+hour: facing the sun over the sea 37 → 120 fps; 20 m over the sea facing the
+sun 120 fps; parked terrain's maximum row change per half second 26 → 0.04
+of 255; the hill lakes grey-blue under the dusk sky instead of white.
+
+**Delivery floors were NOT re-pinned.** The candidate ran on this unpinned
+M2 Pro under a load average of 12 from concurrent sessions; its 34 gate
+failures were 23 delivery floors (fps, wall-clock fps, frame-interval p95,
+p999, and the strict tier-1 frame-delivery gate on `water-3m`, which read
+70.7 fps in that run) and 11 draw-call ceilings. Re-measured alone on the
+idle host afterwards, `water-3m` and `water-25ft` ran at 121.6 and 121.9 fps
+with a 10.2 ms frame-interval p95 and zero hitches, inside every floor they
+carry, so the far-field rewrite costs nothing the near-water shots can
+measure. The draw-call ceilings are a vegetation
+contract, not a water one: nine shots, water and no-water alike, sit exactly
+one draw above their ceiling since the residency change in `751bb46` (one more
+resident chunk batch reaching a cull fade past the impostor radius), plus the
+pre-existing `canopy-backlit-lowsun` 249 against 246; the tree-LOD owner has
+the evidence and re-derives those ceilings. No visual, temporal,
+renderer-error, settling or lit-region gate failed. A clean
+reference-adapter run is still owed before any floor moves.
+
 ### Where this contract is enforced
 
 The table above is a **reference-adapter** contract, and only the reference
