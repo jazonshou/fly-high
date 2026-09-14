@@ -610,7 +610,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 222,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (223).
+    drawCallCeiling: 223,
   },
   {
     name: "high-10000ft-down",
@@ -991,7 +998,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 208,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (209).
+    drawCallCeiling: 209,
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
