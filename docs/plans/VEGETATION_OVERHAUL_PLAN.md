@@ -600,6 +600,23 @@ the lane instead of rejecting them, so the near band drew the whole authored
 field (~7× the cap). The lesson is recorded on the function: a cost that does
 not move with the knob is not the knob's cost.
 
+**Follow-up, 2026-09-14 — the far band arrived as a patchwork and flight
+hitched.** On the merged tip the user saw hard-edged tree clumps beside bare
+ground at 0.5–2 km, nothing beyond, patches spawning on approach, and jerkier
+frames. Cause: impostor records were cut at `far + slack` from the BUILD-TIME
+observer, which made the 3 km cull edge a frontier — every chunk straddling it
+re-baked on each 64 m quantum carrying its whole impostor set (7× heavier since
+the fill), the sweep could not converge in flight, and the far band was
+whatever had managed to publish. Fix: the far membership has no outer edge
+(the shader's live cull decides what draws; a record beyond it is four killed
+vertices), the far edge is no longer a frontier term, and impostor-only stems
+beyond the mid band's envelope take a direct build path charged to the
+scheduler in blocks of eight. A far chunk's record set is now a pure function
+of its resident cells; it rebuilds when a cell generates, never when the
+observer moves. Measured under matched host load on the two motion shots:
+frames over 27 ms 43 vs 90 and 10 vs 45 (branch vs baseline), where before the
+fix the branch was 4–10× worse than the baseline.
+
 **Open.** Mid-band fill impostors begin at ~1.6× tile magnification
 (64² tiles, ~274 m at Balanced) for the NON-dominant stems between skeletal
 crowns — accepted rather than re-arbitrating the 128² tile. Stems whose key
