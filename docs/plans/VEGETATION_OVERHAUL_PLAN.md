@@ -542,3 +542,69 @@ Landed; the decision log carries the full record. Notes beyond it:
   against a mirror. Constants touched since (Fresnel ramps, fade radii,
   glint gains) were re-derived by the wave-R agent against the restored sea,
   but any OTHER water constant encountered later should be re-questioned.
+
+## 12. Continuous tree LOD — the impostor fill and the per-stem threshold (2026-09-13)
+
+Landed on `jazonshou/tree-lod-continuity`. The report: "trees mostly don't
+exist from a distance but when I go closer, they suddenly pop into place."
+
+**What was wrong.** Two mechanisms, both recorded as working as designed:
+
+- `renderedShareAtDistance` floored at 0.045/0.035, THROUGH the far band —
+  wave T's "law floors widened" row above put the floor through the mid band
+  so the profile would not invert, but the impostor band inherited the same
+  starved floor, so beyond ~700 m at Balanced only ~3.5 stems/ha existed in
+  any form and the terrain's flat canopy albedo (6-8) carried the rest.
+- Admission was binary at the CELL: `rank > treeShare` against the cell's
+  planned minimum distance, refreshed on a 0.02 share drift. A stem's first
+  frame was its chunk's rebuild, whole cohorts at a time, with nothing
+  standing in for it before.
+
+**What changed.**
+
+- `RenderedDensityLaw.impostorFloorShare` (0.20/0.30/0.35/0.40) and
+  `drawnShareAtDistance` = max(geometry share, impostor floor) beyond the
+  near radius. The gap between the two curves is drawn as 2D impostors, from
+  the crossover `near / √floor` outward — inside the mid band too. Wave T's
+  "inverted profile" objection was to the SAME stems being thinned harder
+  close in than far out; a cheaper representation standing in for the stems
+  geometry rejects is not that, and the combined profile is monotone.
+- The far (impostor) membership begins where mid does. A stem carries at
+  most seven records (near ×3, mid ×3, one impostor), and the impostor's
+  fade-byte low bit says whether a geometry record coexists in the chunk.
+- Tree records carry a density-normalised canopy KEY in the phase lane
+  (`detailTreeStemKey`: rank × stemsPerHa / cap, unorm8-quantised, keys above
+  1 never drawn). The CPU admits a SUPERSET (planned share + two refresh
+  epsilons, in share space) and `detailBandWindowEmpty` decides per stem, per
+  frame: geometry owns the stem while key ≤ geometry share at the live range;
+  the impostor owns it while key ≤ drawn share and geometry does not (or has
+  switched out at the hashed far switch, or does not exist). Every decorrelation
+  consumer of the lane (wind phase, lean, wobble, far-switch hash, reveal
+  order) reads it through `detailStemHash`, because the drawn population is a
+  key prefix and the raw lane would sway the forest in phase.
+- The terrain handoff reads the DRAWN floor (`TerrainClipmapSystem` →
+  `setCanopyBands`), so coverage stays conserved across representations; the
+  ground carries only what no representation draws.
+- `WOODY_TRIANGLE_BUDGETS` 650k/1.85M/2.7M/5.0M → 710k/2.3M/3.55M/7.6M (the
+  impostor integral, priced at the far band's 8-triangle fill proxy) and the
+  tier-3 `detailInstanceBudget` row 240k → 420k; both pinned by
+  `tests/render.webgpu-rendered-density.test.ts` against the law. Booked in
+  `RENDERING_PLAN.md` §5.3 as the user's amendment to the trade-off rule.
+- The impostor fragment fetches only the stem's season bucket (three albedo
+  fetches per fragment instead of six, identical output).
+
+**Measured (M2 Pro, Balanced, `forest-line-highsun`, back-to-back).**
+Baseline 101.5 fps → 101.1 fps with the fill at floor 0.30. A first cut
+measured 67 fps at EVERY floor: `detailTreeStemKey` clamped keys above 1 into
+the lane instead of rejecting them, so the near band drew the whole authored
+field (~7× the cap). The lesson is recorded on the function: a cost that does
+not move with the knob is not the knob's cost.
+
+**Open.** Mid-band fill impostors begin at ~1.6× tile magnification
+(64² tiles, ~274 m at Balanced) for the NON-dominant stems between skeletal
+crowns — accepted rather than re-arbitrating the 128² tile. Stems whose key
+sits above the impostor floor still vanish with a hard per-stem cut at their
+geometry threshold (158–274 m at Balanced), one stem at a time rather than a
+cell at a time. A terrain-side textured canopy (crown-scale albedo/normal
+structure under `canopySplit.surface`) remains the next lever for the far
+field if the sprite floor ever has to fall.

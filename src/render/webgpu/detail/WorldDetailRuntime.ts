@@ -80,6 +80,7 @@ import {
   detailFadeBandMemberships,
   detailTreeCanopyRankOrder,
   DETAIL_CULL_FADE_MARGIN_METERS,
+  DETAIL_DENSITY_SHARE_REFRESH_EPSILON,
   DETAIL_FADE_MARGIN_METERS,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
@@ -642,8 +643,11 @@ const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
  *
  * The defect this replaces
  * stepped **7.33x at tier 1 and 11.07x at tier 0**.
+ *
+ * The epsilon itself lives in `presentationBuild.ts` beside the admission
+ * margin that must exceed it (2026-09-13); re-exported here unchanged.
  */
-const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;
+export { DETAIL_DENSITY_SHARE_REFRESH_EPSILON };
 /** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
@@ -1169,7 +1173,8 @@ export class WorldDetailRuntime {
     const plugin = this.materialPlugin(material);
     if (!plugin) return;
     this.bandFadePlugins.add(plugin);
-    // Placeholder radii until the first update supplies the profile's law.
+    // Placeholder radii until the first update supplies the profile's law;
+    // the share floors default to 1 (draw every resident record) there.
     plugin.setBandFades(400, 1_400, 8_000);
   }
 
@@ -1630,6 +1635,8 @@ export class WorldDetailRuntime {
         profile.renderedDensityLaw.near.outerRadiusMeters,
         profile.renderedDensityLaw.mid.outerRadiusMeters,
         profile.renderedDensityLaw.far.outerRadiusMeters,
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
       );
     }
     if (this.batchesDirty) {
@@ -1866,6 +1873,7 @@ export class WorldDetailRuntime {
       densityLaw.mid.outerRadiusMeters,
       densityLaw.far.outerRadiusMeters,
       densityLaw.farFloorShare,
+      densityLaw.impostorFloorShare,
       profile.treeVariantCap,
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
@@ -1885,6 +1893,7 @@ export class WorldDetailRuntime {
         densityLaw.mid.outerRadiusMeters,
         densityLaw.far.outerRadiusMeters,
         densityLaw.farFloorShare,
+        densityLaw.impostorFloorShare,
         profile.treeVariantCap,
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
@@ -2445,7 +2454,9 @@ export class WorldDetailRuntime {
       + statistics.rockInstances
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
-    const maximumPackedRecords = statistics.treeInstances * 6
+    // A stem carries at most seven records: three near parts, three mid
+    // parts, and (2026-09-13) one impostor coexisting with either.
+    const maximumPackedRecords = statistics.treeInstances * 7
       + statistics.shrubInstances
       + statistics.rockInstances
       + statistics.clutterInstances

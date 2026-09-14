@@ -524,7 +524,7 @@ describe("pure detail presentation build", () => {
             "clutter-stump",
           ],
           "name": "family prototypes at the near/mid boundary",
-          "packedFingerprint": "04b0f21e9ad59ba0e06e6286d0c71308fd3f19caf8845b23597da643cc0fad35",
+          "packedFingerprint": "5ff0edcdfb6619991241f5226fa1995da8eab7213e97da1583d9aee79694f6a5",
           "statistics": {
             "clutterInstances": 2,
             "groundCoverInstances": 0,
@@ -540,15 +540,21 @@ describe("pure detail presentation build", () => {
           "batchKeys": [
             "tree-pine-v0-crown-mid",
             "tree-pine-v0-trunk-mid",
-            "tree-pine-v0-crown-far",
             "tree-cedar-v2-crown-mid",
             "tree-cedar-v2-trunk-mid",
             "tree-cedar-v0-crown-far",
+            "tree-spruce-v2-crown-mid",
+            "tree-spruce-v2-trunk-mid",
+            "tree-spruce-v0-crown-far",
+            "tree-oak-v0-crown-far",
+            "tree-maple-v0-crown-far",
+            "tree-birch-v0-crown-far",
+            "tree-willow-v0-crown-far",
             "shrub-juniper-v0",
             "shrub-hazel-v0",
           ],
           "name": "species prototypes at the mid/far boundary with a shifted origin",
-          "packedFingerprint": "a365bee51a5746cbea585081bf32720d065d54c1de649cfaa4880c13629197cc",
+          "packedFingerprint": "ba0e1e834febc226ef746a7a426e9fca753d6d3e89fd44ecdbaa58ef57fdc8b9",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
@@ -556,16 +562,16 @@ describe("pure detail presentation build", () => {
             "nearCells": 0,
             "rockInstances": 0,
             "shrubInstances": 2,
-            "treeInstances": 2,
+            "treeInstances": 7,
           },
-          "workUnits": 10,
+          "workUnits": 15,
         },
         {
           "batchKeys": [
             "tree-impostor",
           ],
           "name": "impostors at the far cull boundary in signed world space",
-          "packedFingerprint": "a2989111e7983d096cc37e4891a5c5e8ec5a6efe1ac4af012c3d26608cf61d8f",
+          "packedFingerprint": "7b8acf1303b6380d13a6ecdf2e4b87c93d3afd8a4e5292e9a551b74069cd616d",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
@@ -573,9 +579,9 @@ describe("pure detail presentation build", () => {
             "nearCells": 0,
             "rockInstances": 0,
             "shrubInstances": 0,
-            "treeInstances": 2,
+            "treeInstances": 6,
           },
-          "workUnits": 4,
+          "workUnits": 9,
         },
         {
           "batchKeys": [
@@ -623,7 +629,7 @@ describe("pure detail presentation build", () => {
             "ground-fern",
           ],
           "name": "ground-cover candidate bounds across a negative cell edge",
-          "packedFingerprint": "caa7ea845f3134580eb48bb7c8d0e47135e911f1134a98ef32aeef6feaa93a1c",
+          "packedFingerprint": "02e6e76e96a84153c48f42c2eb4452ff1950259fa8b44a5e03a3d3402a5ebf95",
           "statistics": {
             "clutterInstances": 4,
             "groundCoverInstances": 93,

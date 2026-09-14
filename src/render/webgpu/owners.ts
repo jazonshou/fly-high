@@ -874,6 +874,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "RENDERED_DENSITY_LAWS",
       "renderedShareAtDistance",
+      "drawnShareAtDistance",
+      "impostorFillStartMeters",
       "estimateRenderedWoodyLoad",
       "WOODY_TRIANGLE_BUDGETS",
     ],

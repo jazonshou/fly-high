@@ -2941,14 +2941,16 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private heightAtlasTexture: BaseTexture | null = null;
   private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
   /**
-   * `6-8`: (near band radius, impostor radius, far floor share, canopy height).
+   * `6-8`: (near band radius, impostor radius, drawn-share floor, canopy height).
    *
    * The default is the G-target tier's law, so a material bound before the
    * clipmap publishes a profile still hands off correctly rather than
-   * collapsing the ramp to "everything is canopy" at zero range.
+   * collapsing the ramp to "everything is canopy" at zero range. The floor is
+   * the law's `impostorFloorShare` (2026-09-13) — the share some representation
+   * draws at every range — not the geometry-only `farFloorShare`.
    */
   private canopyBands: readonly [number, number, number, number] = [
-    150, 3_000, 0.045, CANOPY_DOMINANT_HEIGHT_METERS,
+    150, 3_000, 0.3, CANOPY_DOMINANT_HEIGHT_METERS,
   ];
   private cdlodEnabled = false;
 
@@ -3232,16 +3234,21 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
    * quality profile rather than re-derived here: how far geometry reaches is a
    * vegetation fact, and the ground's job is only to carry whatever the
    * geometry does not.
+   *
+   * `drawnFloorShare` is the floor of the DRAWN share — geometry or impostor
+   * (2026-09-13's mid-band impostor fill) — because coverage is conserved
+   * across representations: the ground carries the canopy nothing draws, and
+   * an impostor draws it.
    */
   setCanopyBands(
     nearRadiusMeters: number,
     impostorRadiusMeters: number,
-    farFloorShare: number,
+    drawnFloorShare: number,
   ): void {
     if (
       !Number.isFinite(nearRadiusMeters)
       || !Number.isFinite(impostorRadiusMeters)
-      || !Number.isFinite(farFloorShare)
+      || !Number.isFinite(drawnFloorShare)
       || nearRadiusMeters <= 0
       || impostorRadiusMeters <= nearRadiusMeters
     ) {
@@ -3250,7 +3257,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.canopyBands = [
       nearRadiusMeters,
       impostorRadiusMeters,
-      Math.min(1, Math.max(0, farFloorShare)),
+      Math.min(1, Math.max(0, drawnFloorShare)),
       CANOPY_DOMINANT_HEIGHT_METERS,
     ];
   }

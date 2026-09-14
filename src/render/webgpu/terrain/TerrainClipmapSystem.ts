@@ -530,11 +530,17 @@ export class TerrainClipmapSystem {
     );
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
-    // pass, so terrain reads them as data and never re-derives a radius.
+    // pass, so terrain reads them as data and never re-derives a radius. The
+    // floor is the DRAWN share's (2026-09-13): impostors fill the mid band
+    // from the crossover outward, and the ground carries only what no
+    // representation draws.
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
-      profile.renderedDensityLaw.farFloorShare,
+      Math.max(
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
+      ),
     );
     this.surfacePlugin.setSeason(this.seasonDayOfYear, world.latitudeDegrees, world.seaLevel);
     // 3-9: the runway is painted into this material by the analytic airport
@@ -802,7 +808,10 @@ export class TerrainClipmapSystem {
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
-      profile.renderedDensityLaw.farFloorShare,
+      Math.max(
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
+      ),
     );
     this.materialArrayEdge = profile.materialArrayEdge;
     this.computeBudget.setProfile(profile);

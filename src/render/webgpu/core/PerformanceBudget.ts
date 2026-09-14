@@ -323,11 +323,20 @@ export interface DynamicAllocationInputs {
 export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // 2-11a: the 32-byte packed record replaced 96-byte matrix instancing.
   detailInstanceBytes: 32,
+  // 2026-09-13: re-derived against the impostor-fill law (renderedDensity.ts
+  // `impostorFloorShare`). Saturated packed records over the whole resident
+  // disc: near stems × 7 (near + mid parts plus a coexisting impostor row),
+  // mid geometry stems × 4, plus every impostor — 25 k / 80 k / 155 k /
+  // 387 k at floors 0.20 / 0.30 / 0.35 / 0.40. Tiers 0–2 stay inside the
+  // rows that were already declared; tier 3 could not and its row moved
+  // 240 k → 420 k (+5.6 MiB), inside the memory ceiling the budget test
+  // holds it to. `tests/render.webgpu-rendered-density.test.ts` pins the
+  // record estimate under these rows so the row moves when the law moves.
   detailInstanceBudget: Object.freeze({
     0: 60_000,
     1: 120_000,
     2: 200_000,
-    3: 240_000,
+    3: 420_000,
   }),
   // Card/bark layers plus broadleaf/conifer opaque near-crown layers, with
   // complete mip chains: 18 × 256² × rgba8 × 4/3 = 6.0 MiB.
@@ -335,7 +344,11 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // 2-17: 7 species × 2 season buckets × 2 arrays (albedo, normal+depth) of
   // 256² rgba8 with full mip chains — measured from the CPU bake. 64² tiles
   // are the recorded decision (the plan's 128² sketch did not close against
-  // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px).
+  // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px). 2026-09-13's
+  // mid-band impostor fill draws the same tiles from the crossover (~274 m at
+  // tier 1, where a 20 m tree spans ~100 px — ~1.6× magnified) for the
+  // NON-dominant stems that stand between the skeletal crowns; accepted with
+  // the atlas as it is rather than re-arbitrating the 128² tile.
   impostorAtlasMiB: 9.33,
   // Wave G: blade record buffers (32 B x lattice lanes across three rings)
   // plus the 256-metre domain tile (256 squared r32float + 64 squared rgba8).
