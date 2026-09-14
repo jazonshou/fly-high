@@ -630,6 +630,30 @@ published while the observer kept closing, so at flight speed its near stems
 landed inside the cull window at full opacity in one frame. `detailInstanceBudget`
 rows re-derived for the never-drawn records this keeps resident (150 k / 260 k /
 560 k for tiers 1–3).
+(c) Those never-drawn records made one more DRAW: a chunk resident past the
+cull carries an impostor batch the shader kills to the last vertex, and Babylon
+still submitted it — exactly one draw over the committed ceiling on nine
+capture shots (measured by the concurrent session). The runtime now keeps a
+local AABB per chunk cell of each impostor batch's records (taken from the
+packed positions at each publication) and, every update, rebuilds the mesh's
+bounding box from the cells inside the live cull only — hiding the batch
+outright when none is (`refreshRangeCulledBatches`; `isVisible`, so publication
+and retirement never see it). Babylon's frustum test therefore sees exactly the
+records that can draw. Three coarser keys were measured and rejected on the
+same shots: the batch BOUND is an axis-aligned box over records strung along an
+arc whose nearest corner sat 400 m inside the nearest record; the chunk's
+nearest RESIDENT cell was a treeless shore cell at 2.6 km while every record
+came from cells past 3 km; and a flag-per-cell hide still submitted a batch
+whose in-cull records lay outside the frustum while its beyond-cull records had
+stretched the box into it. The static shots' ceilings stand. The moving shots
+(`slant-10km` 84 m/s, `cdlod-transition` 96 m/s, `page-thrash-turn` 78 m/s)
+each gain exactly one draw, and it is real: the lead has the far band's chunk
+published — with records inside the cull, in the frustum — at the sample
+instant, where before the cells just inside the radius were still generating.
+Their ceilings move by one. `page-thrash-turn` additionally varies by six draws
+and 1,344 triangles between runs: a bird flock crossing the frustum at the
+sample instant, whose presence depends on host timing — a harness determinism
+gap, not a vegetation count.
 
 **Open.** Mid-band fill impostors begin at ~1.6× tile magnification
 (64² tiles, ~274 m at Balanced) for the NON-dominant stems between skeletal

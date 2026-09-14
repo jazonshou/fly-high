@@ -531,7 +531,13 @@ frontier term, and impostor-only stems build through a block-charged fast path
 applies to cells beyond the mid envelope (it was leaving the widest crowns of
 every far cell without any record), and cell residency reaches one cull fade
 past the impostor radius so a new cell publishes outside the live cull and
-dithers in; `detailInstanceBudget` rows 150 k / 260 k / 560 k for tiers 1–3.
+dithers in; `detailInstanceBudget` rows 150 k / 260 k / 560 k for tiers 1–3. Each impostor batch keeps a per-cell AABB of its records (from the
+packed positions at publication) and rebuilds its bounding box every update
+from the cells inside the live cull only, hiding the batch when none is — so
+frustum culling sees exactly the records that can draw, the residency lead adds
+no draw on the static shots, and their ceilings stand. The three moving shots
+gain one real draw each (the far band's chunk is now published, with in-cull
+records in frame, at the sample instant) and their ceilings move by one.
 
 ## Visual fix-pack (2026-08-25)
 
