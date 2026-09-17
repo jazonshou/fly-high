@@ -143,11 +143,16 @@ describe("hydrology terrain-occluded sky reflection: the fragment", () => {
     expect(visibility).toBeGreaterThan(unoccluded);
     expect(occluded).toBeGreaterThan(visibility);
     expect(planar).toBeGreaterThan(occluded);
-    // The occluded colour is the atmosphere's ground bounce, built from the
-    // SAME skyHorizon uniform the analytic sky reads.
+    // W-10 corrected the occluded colour: it is the sky THIS FRAGMENT would
+    // have seen, darkened by the ground's albedo, not the palette's raw
+    // skyHorizon. A hillside is lit by the sky above it, so its radiance has
+    // to live in the same domain as the reflection it replaces — and the
+    // palette row and the probe diverge badly at night, where the raw row lit
+    // a moonlit bay white on the ocean's copy of this line (measured on
+    // night-moonlit: sea mean 24 -> 68 before the correction).
     expect(statement(main, "let skyReflection = mix(")).toBe(
       "let skyReflection = mix(\n"
-      + "    uniforms.skyHorizon * uniforms.groundBounceAlbedo,\n"
+      + "    unoccludedSky * uniforms.groundBounceAlbedo,\n"
       + "    unoccludedSky,\n"
       + "    terrainVisibility,\n"
       + "  );",

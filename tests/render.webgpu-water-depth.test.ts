@@ -52,10 +52,8 @@ import { WATER_FRAGMENT_WGSL } from "../src/render/webgpu/water/SpectralOceanSys
 import {
   BATHYMETRY_NEAR_BLEND_END_FRACTION,
   BATHYMETRY_NEAR_BLEND_FAR_TEXELS,
-  WATER_ABSORPTION_PER_METER,
   WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES,
   WATER_CAPILLARY_DETAIL_WGSL,
-  WATER_CAUSTIC_DIRECT_SUN_FRACTION,
   WATER_CAUSTIC_FADE_START_METERS,
   WATER_CAUSTIC_GATE_METERS,
   WATER_CAUSTIC_JACOBIAN_SIGMA,
@@ -70,12 +68,18 @@ import {
   WATER_FOAM_WGSL,
   WATER_SHORE_FADE_METERS,
   bathymetryNearBlendWeight,
+  WATER_PURE_ABSORPTION_PER_METER,
+  WATER_PURE_BACKSCATTER_PER_METER,
+  WATER_REFERENCE_OPTICAL_TYPE,
+  WATER_SUN_IRRADIANCE_SCALE,
   waterCausticBand,
-  waterCausticBedGain,
   waterCausticCascadeBands,
   waterCausticNoiseBand,
+  waterCausticSheetGain,
   waterCausticSinusoidBand,
-  waterDiffuseIlluminanceNormalized,
+  waterDeepBodyRadiance,
+  waterDeepSubsurfaceReflectance,
+  waterDownwellingRadiance,
   waterRefractedSunBeam,
   type WaterCausticAccumulator,
 } from "../src/render/webgpu/water/WaterShaders";
@@ -686,8 +690,30 @@ describe("Phase 5 shared water-depth optics", () => {
     );
   });
 
-  it("pins physical absorption, shoreline and underwater-interface constants", () => {
-    expect(WATER_ABSORPTION_PER_METER).toEqual([0.45, 0.07, 0.02]);
+  it("pins the optical water type, shoreline and underwater-interface constants", () => {
+    // W-7 replaced the single absorption triple [0.45, 0.07, 0.02] with a pair
+    // of spectra per water type. Pure water is the measured backbone every
+    // type is built on (Pope & Fry 1997 absorption; Morel/Twardowski molecular
+    // backscatter, salted and halved), so it is pinned rather than the
+    // composite: a type may be retuned, but water itself may not.
+    expect(WATER_PURE_ABSORPTION_PER_METER).toEqual([0.2755, 0.0565, 0.0098]);
+    expect(WATER_PURE_BACKSCATTER_PER_METER).toEqual([0.00057, 0.00096, 0.00207]);
+    // Every channel of every shipped type is at least pure water: a natural
+    // water body cannot absorb or scatter LESS than the water it is made of.
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(WATER_REFERENCE_OPTICAL_TYPE.absorptionPerMeter[channel])
+        .toBeGreaterThanOrEqual(WATER_PURE_ABSORPTION_PER_METER[channel]!);
+      expect(WATER_REFERENCE_OPTICAL_TYPE.backscatterPerMeter[channel])
+        .toBeGreaterThanOrEqual(WATER_PURE_BACKSCATTER_PER_METER[channel]!);
+    }
+    // Red is absorbed first and blue scattered most: the two facts that make
+    // water look like water at every depth.
+    const absorption = WATER_REFERENCE_OPTICAL_TYPE.absorptionPerMeter;
+    const backscatter = WATER_REFERENCE_OPTICAL_TYPE.backscatterPerMeter;
+    expect(absorption[0]).toBeGreaterThan(absorption[1]);
+    expect(absorption[1]).toBeGreaterThan(absorption[2]);
+    expect(backscatter[2]).toBeGreaterThan(backscatter[1]);
+    expect(backscatter[1]).toBeGreaterThan(backscatter[0]);
     expect(WATER_SHORE_FADE_METERS).toBe(0.4);
     expect(WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES).toBe(48.6);
     expect(WATER_DEPTH_OPTICS_WGSL).toContain("smoothstep(0.0, WATER_SHORE_FADE_METERS, depth)");
@@ -725,43 +751,111 @@ describe("Phase 5 shared water-depth optics", () => {
     );
   });
 
-  it("scales shader-owned diffuse water radiance by the atmosphere illuminance", () => {
-    // Reflection stays in the environment probe's radiance domain. These are
-    // the formerly unconditional body, underwater, horizon and foam terms
-    // that otherwise become cyan/white emitters under night adaptation.
+  it("lights shader-owned water radiance with the scene's own coloured irradiance", () => {
+    // W-7. The body, the underwater veil and the foam are lit by the
+    // downwelling irradiance — sun colour times the terrain's own irradiance
+    // scale, plus the sky's share — rather than by a grey scalar. A scalar
+    // cannot carry an illuminant, which is why the pre-W-7 sea kept its teal
+    // hue under an orange sunset while the land beside it went warm.
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain("fn waterDownwelling(");
+    // The sun's irradiance at normal incidence (shadow applied once), and the
+    // horizontal share the body model reads — W-9 split them so foam can be
+    // lit by the same quantity as the water under it.
     expect(WATER_DEPTH_OPTICS_WGSL).toContain(
-      "* diffuseIlluminanceNormalized;",
+      "let sunNormal = uniforms.sunColor * (WATER_SUN_IRRADIANCE_SCALE * sunVisibility);",
     );
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain("let sun = sunNormal * max(sunElevationSine, 0.0);");
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain("uniforms.skyZenith + uniforms.skyHorizon");
+    // W-9: foam reads the SAME resolved irradiance the body does, rather than
+    // re-deriving the sky's share and lighting its sun term without the
+    // irradiance scale (which made foam 1.65x darker than an equal terrain
+    // albedo and had to be paid back in the albedo).
     expect(WATER_FOAM_WGSL).toContain(
-      "skyAmbient * 0.55 * skylightIlluminanceNormalized",
+      "return albedo * (downwelling.sky + downwelling.sunNormal * nDotL);",
     );
-    expect(WATER_FRAGMENT_WGSL).toContain(
-      "pow(1.0 - nDotV, 2.0) * uniforms.skylightIlluminanceNormalized",
-    );
-    expect(WATER_FRAGMENT_WGSL).toContain(
-      "* uniforms.sunColor * nDotL * (0.1 + 0.12 * directSunVisibility)",
-    );
+    // The retired constant-hue terms, named so they cannot come back: the
+    // scalar-lit teal in-scatter, the fixed subsurface tint and the fitted
+    // horizon brightening.
+    expect(WATER_DEPTH_OPTICS_WGSL).not.toContain("diffuseIlluminanceNormalized");
+    expect(WATER_DEPTH_OPTICS_WGSL).not.toContain("vec3f(0.018, 0.115, 0.105)");
+    // Comments are stripped: the ocean fragment NAMES both retired terms in
+    // the note that records why they went, which is the opposite of drift.
+    const oceanCode = WATER_FRAGMENT_WGSL.replace(/\/\/.*$/gmu, "");
+    expect(oceanCode).not.toContain("vec3f(0.012, 0.13, 0.115)");
+    expect(oceanCode).not.toContain("pow(1.0 - nDotV, 2.0) * uniforms.skylightIlluminanceNormalized");
+    expect(oceanCode).not.toContain("horizonScatter");
+    expect(oceanCode).not.toContain("subsurfaceScatter");
+    for (const shader of [WATER_FRAGMENT_WGSL, HYDROLOGY_WATER_FRAGMENT_WGSL]) {
+      expect(shader).toContain("waterDownwelling(light.y, directSunVisibility)");
+      expect(shader).not.toContain(
+        "max(\n    uniforms.sunIlluminanceNormalized,\n    uniforms.skylightIlluminanceNormalized",
+      );
+    }
+    // The one binding that makes the scale meaningful: sunColor arrives
+    // premultiplied by sunIlluminanceNormalized, so multiplying it by
+    // PEAK_SUN_INTENSITY/PI is the terrain's own irradiance.
     expect(readSource("src/render/webgpu/water/SpectralOceanSystem.ts")).toMatch(
       /setColor3\(\s*"sunColor",\s*atmosphere\.sunColor\.scale\(\s*atmosphere\.sunIlluminanceNormalized\s*\)/u,
     );
-    expect(WATER_FRAGMENT_WGSL).toContain(
-      "max(\n    uniforms.sunIlluminanceNormalized,\n    uniforms.skylightIlluminanceNormalized",
-    );
-    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toContain(
-      "max(\n    uniforms.sunIlluminanceNormalized,\n    uniforms.skylightIlluminanceNormalized",
-    );
+    expect(WATER_SUN_IRRADIANCE_SCALE).toBeCloseTo(5.2 / Math.PI, 12);
 
-    // Numeric anchors for the CPU law, not just source-text wiring. The
-    // reference key is exactly identity; the actual moonless perf clock is
-    // many orders below it; and a zero-light input stays exactly zero.
+    // ----------------------------------------------------------------
+    // NUMERIC ANCHORS. The reference key: a clear noon sun at elevation
+    // sine 0.82 with the palette's own noon colours, unshadowed.
+    // ----------------------------------------------------------------
     const reference = createEnvironmentState({
       sun: { direction: [Math.sqrt(1 - 0.82 * 0.82), 0.82, 0] },
       weather: { cloudCoverage: 0 },
     });
-    const referenceSkylight = skylightIlluminanceNormalized(reference, 0);
-    expect(referenceSkylight).toBe(1);
-    expect(waterDiffuseIlluminanceNormalized(1, referenceSkylight)).toBe(1);
+    expect(skylightIlluminanceNormalized(reference, 0)).toBe(1);
+    const noonIrradiance = waterDownwellingRadiance(
+      [1, 0.96, 0.88], [0.25, 0.42, 0.8], [0.6, 0.7, 0.85], 1, 0.82, 1,
+    );
+    // Sun plus sky, in the same radiance units a terrain albedo of 1 would
+    // reflect: about 1.8, i.e. 5.2/PI * 0.82 plus the sky's 0.55 share.
+    expect(noonIrradiance[1]).toBeGreaterThan(1.5);
+    expect(noonIrradiance[1]).toBeLessThan(2.2);
 
+    // The open sea's body at that key. THE acceptance number for "is the
+    // colour physical": blue dominates, green is an order of magnitude below
+    // the 0.140 the retired teal emitted, and red is nearly gone — which is
+    // what a photograph of deep water shows and what the old model could not.
+    const deep = waterDeepBodyRadiance(WATER_REFERENCE_OPTICAL_TYPE, noonIrradiance);
+    expect(deep[2]).toBeGreaterThan(deep[1]);
+    expect(deep[1]).toBeGreaterThan(deep[0]);
+    expect(deep[0]).toBeLessThan(0.005);
+    expect(deep[1]).toBeLessThan(0.02);
+    expect(deep[2]).toBeLessThan(0.06);
+    // ...and it is not black either: a deep sea under a noon sky is a dark
+    // blue that still reads as colour once the reflection sits on top.
+    expect(deep[2]).toBeGreaterThan(0.01);
+
+    // Monotonic in both spectra, which is what makes a water-type field
+    // predictable: more backscatter is a brighter body, more absorption a
+    // darker one, per channel and everywhere.
+    const brighter = waterDeepBodyRadiance({
+      absorptionPerMeter: WATER_REFERENCE_OPTICAL_TYPE.absorptionPerMeter,
+      backscatterPerMeter: [0.002, 0.003, 0.006],
+    }, noonIrradiance);
+    const darker = waterDeepBodyRadiance({
+      absorptionPerMeter: [0.9, 0.5, 0.45],
+      backscatterPerMeter: WATER_REFERENCE_OPTICAL_TYPE.backscatterPerMeter,
+    }, noonIrradiance);
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(brighter[channel]).toBeGreaterThan(deep[channel]!);
+      expect(darker[channel]).toBeLessThan(deep[channel]!);
+    }
+    // A humic (peat-stained) type is a BROWN body: the one-line proof that
+    // hue now follows the water rather than a constant.
+    const humic = waterDeepSubsurfaceReflectance({
+      absorptionPerMeter: [0.62, 1.05, 3.4],
+      backscatterPerMeter: [0.0075, 0.0068, 0.006],
+    });
+    expect(humic[0]).toBeGreaterThan(humic[1]);
+    expect(humic[1]).toBeGreaterThan(humic[2]);
+
+    // Night: no sun and no sky is no body radiance at all, exactly zero —
+    // the property the retired scalar existed to protect, kept.
     const moonlessNight = resolveEnvironmentState({
       clock: { dayOfYear: 171, solarTimeHours: 23.75 },
       latitudeDegrees: 45,
@@ -770,7 +864,20 @@ describe("Phase 5 shared water-depth optics", () => {
     const moonlessSkylight = skylightIlluminanceNormalized(moonlessNight, 0);
     expect(moonlessSkylight).toBeGreaterThan(0);
     expect(moonlessSkylight).toBeLessThan(1e-6);
-    expect(waterDiffuseIlluminanceNormalized(0, 0)).toBe(0);
+    const darkIrradiance = waterDownwellingRadiance(
+      [0, 0, 0], [0, 0, 0], [0, 0, 0], 0, -0.4, 1,
+    );
+    expect(darkIrradiance).toEqual([0, 0, 0]);
+    expect(waterDeepBodyRadiance(WATER_REFERENCE_OPTICAL_TYPE, darkIrradiance))
+      .toEqual([0, 0, 0]);
+    // A shadowed fragment loses the sun's share and keeps the sky's.
+    const shadowed = waterDownwellingRadiance(
+      [1, 0.96, 0.88], [0.25, 0.42, 0.8], [0.6, 0.7, 0.85], 1, 0.82, 0,
+    );
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(shadowed[channel]).toBeLessThan(noonIrradiance[channel]!);
+      expect(shadowed[channel]).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -851,7 +958,7 @@ function composeCapillaryCaustic(
       beam,
     );
   });
-  return { caustic, gain: waterCausticBedGain(caustic, beam, 1) };
+  return { caustic, gain: waterCausticSheetGain(caustic, beam) };
 }
 
 describe("6-4 bed caustics", () => {
@@ -860,14 +967,16 @@ describe("6-4 bed caustics", () => {
     // is what the parity test above pins into both materials verbatim — so the
     // single-authority proof is transitive rather than restated.
     expect(WATER_DEPTH_OPTICS_WGSL).toContain(WATER_CAUSTIC_WGSL);
-    expect(WATER_DEPTH_OPTICS_WGSL).toContain("bed * causticGain * transmittance + turbidity");
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "let bedIrradiance = downwelling.sun * causticSheet + downwelling.sky;",
+    );
     for (const shader of [WATER_FRAGMENT_WGSL, HYDROLOGY_WATER_FRAGMENT_WGSL]) {
       expect(shader).toContain(WATER_CAUSTIC_WGSL);
       // Exactly one definition and exactly one call, and the call is the one
       // inside waterVolumeRadiance — a second copy in one material is the
       // failure this file is named after.
-      expect(shader.split("waterCausticBedGain(")).toHaveLength(3);
-      expect(shader.split("fn waterCausticBedGain(")).toHaveLength(2);
+      expect(shader.split("waterCausticSheetGain(")).toHaveLength(3);
+      expect(shader.split("fn waterCausticSheetGain(")).toHaveLength(2);
       expect(shader.split("fn waterRefractedSunBeam(")).toHaveLength(2);
       expect(shader.split("fn waterCausticBand(")).toHaveLength(2);
     }
@@ -933,7 +1042,7 @@ describe("6-4 bed caustics", () => {
         curvature: -4,
         varianceSum: 1,
       });
-      expect(waterCausticBedGain(strongCurvature, beam, 1)).toBe(1);
+      expect(waterCausticSheetGain(strongCurvature, beam)).toBe(1);
     }
     // And it is already fading well before the gate, over a band wider than
     // the bathymetry texel — the shipped shore-foam band's lesson: a tight
@@ -942,7 +1051,7 @@ describe("6-4 bed caustics", () => {
       .toBeGreaterThan(BATHYMETRY_NEAR_TEXEL_METERS * 0.75);
     const justInside = waterRefractedSunBeam(WATER_CAUSTIC_GATE_METERS - 0.01, HIGH_SUN_SINE);
     expect(justInside.weight).toBeLessThan(1e-4);
-    expect(waterCausticBedGain(strongCurvature, justInside, 1)).toBeCloseTo(1, 4);
+    expect(waterCausticSheetGain(strongCurvature, justInside)).toBeCloseTo(1, 4);
   });
 
   it("is exactly inert where the bed is dry, at night, and in full shadow", () => {
@@ -953,22 +1062,21 @@ describe("6-4 bed caustics", () => {
     // caustic term incapable of painting anything onto dry land.)
     const dry = waterRefractedSunBeam(0, HIGH_SUN_SINE);
     expect(dry.slantMeters).toBe(0);
-    expect(waterCausticBedGain(strongCurvature, dry, 1)).toBe(1);
+    expect(waterCausticSheetGain(strongCurvature, dry)).toBe(1);
     // Night, and the low-sun cut.
     for (const sunSine of [-1, -0.2, 0, WATER_CAUSTIC_SUN_FADE_LOW]) {
       const beam = waterRefractedSunBeam(3, sunSine);
       expect(beam.weight).toBe(0);
-      expect(waterCausticBedGain(strongCurvature, beam, 1)).toBe(1);
+      expect(waterCausticSheetGain(strongCurvature, beam)).toBe(1);
     }
-    // Cloud/terrain shadow: no direct beam, no caustic.
-    expect(waterCausticBedGain(strongCurvature, waterRefractedSunBeam(3, HIGH_SUN_SINE), 0))
-      .toBe(1);
+    // W-7: cloud and terrain shadow left this function. The sheet redistributes
+    // the collimated beam; whether that beam is there at all is the body
+    // model's sun share, which carries the shadow once (waterDownwelling).
     // A flat surface is inert at every depth: zero curvature, gain 1.
     for (const depth of [0.2, 1, 3, 8, 16, 23]) {
-      expect(waterCausticBedGain(
+      expect(waterCausticSheetGain(
         WATER_CAUSTIC_ZERO,
         waterRefractedSunBeam(depth, HIGH_SUN_SINE),
-        1,
       )).toBeCloseTo(1, 12);
     }
   });
@@ -979,7 +1087,7 @@ describe("6-4 bed caustics", () => {
       DEFAULT_SPECTRAL_OCEAN_CONFIG.cascades[0]!,
       DEFAULT_SPECTRAL_OCEAN_CONFIG.choppiness,
     );
-    const gainForJacobian = (jacobian: number): number => waterCausticBedGain(
+    const gainForJacobian = (jacobian: number): number => waterCausticSheetGain(
       waterCausticBand(
         WATER_CAUSTIC_ZERO,
         scale * (jacobian - 1),
@@ -987,7 +1095,6 @@ describe("6-4 bed caustics", () => {
         beam,
       ),
       beam,
-      1,
     );
     // Compression (J < 1) is a crest: the surface is a converging lens, so the
     // bed brightens, strictly, all the way to the focus. Stretching (J > 1) is
@@ -1013,9 +1120,10 @@ describe("6-4 bed caustics", () => {
       previousDark = darker;
     }
     // The peak is bounded and lands inside the 2-4x contrast measured on
-    // sunlit seabeds, before the direct-sun fraction trims it further.
+    // sunlit seabeds. W-7: what trims it in a frame is the collimated SHARE of
+    // the bed's irradiance, which the body model measures rather than assumes.
     expect(previous).toBeGreaterThan(1.5);
-    expect(previous).toBeLessThan(1 + WATER_CAUSTIC_DIRECT_SUN_FRACTION * 2.2);
+    expect(previous).toBeLessThan(3.1);
     // Past the focus the beam has crossed over and spreads again — the term
     // has a real focal point rather than a saturating ramp. This is the same
     // reason the gate can sit at 24 m: nothing is left to place beyond it.
@@ -1095,8 +1203,14 @@ describe("6-4 bed caustics", () => {
         // darker ground, bounded on both sides.
         expect(brightest, `${label} at ${depth} m`).toBeGreaterThan(1);
         expect(darkest, `${label} at ${depth} m`).toBeLessThan(1);
-        expect(brightest, `${label} at ${depth} m`).toBeLessThan(2.6);
-        expect(darkest, `${label} at ${depth} m`).toBeGreaterThan(0.35);
+        // W-7 raised this ceiling from 2.6 to the sheet's own softening cap
+        // (3.03x, WATER_CAUSTIC_PEAK_SOFTENING): the gain is now the UNDAMPED
+        // redistribution of the collimated beam, and the 0.8 direct-sun
+        // fraction that used to trim it here is applied where it belongs — to
+        // the sun share of the irradiance the sheet multiplies. In a clear-sky
+        // frame the visible peak is unchanged.
+        expect(brightest, `${label} at ${depth} m`).toBeLessThan(3.04);
+        expect(darkest, `${label} at ${depth} m`).toBeGreaterThan(0.2);
       }
     }
   });
@@ -1132,7 +1246,7 @@ describe("6-4 bed caustics", () => {
       WATER_CAUSTIC_ZERO, [1, 1, 1, 1], 1, lanes, scales[4]!, beam,
     );
     expect(flat.curvature).toBe(0);
-    expect(waterCausticBedGain(flat, beam, 1)).toBeLessThan(1);
+    expect(waterCausticSheetGain(flat, beam)).toBeLessThan(1);
     // The inland sinusoid band: a zero-amplitude wave is exactly inert, and a
     // crest (sin > 0, so a negative Laplacian) brightens the bed.
     expect(waterCausticSinusoidBand(WATER_CAUSTIC_ZERO, 1.3, 0, beam))
@@ -1141,8 +1255,8 @@ describe("6-4 bed caustics", () => {
     const inlandTrough = waterCausticSinusoidBand(WATER_CAUSTIC_ZERO, -Math.PI / 2, 0.4, beam);
     expect(inlandCrest.curvature).toBeLessThan(0);
     expect(inlandTrough.curvature).toBeGreaterThan(0);
-    expect(waterCausticBedGain(inlandCrest, beam, 1))
-      .toBeGreaterThan(waterCausticBedGain(inlandTrough, beam, 1));
+    expect(waterCausticSheetGain(inlandCrest, beam))
+      .toBeGreaterThan(waterCausticSheetGain(inlandTrough, beam));
   });
 
   it("converts each cascade's Jacobian at its own band's wavenumber", () => {

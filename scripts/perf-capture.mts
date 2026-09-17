@@ -2534,6 +2534,18 @@ export interface PerfCaptureShotReport {
 }
 
 export interface PerfCaptureReport {
+  /**
+   * ISO timestamp of the run that wrote this report.
+   *
+   * An A/B that switches arms by checking source in and out reads this file
+   * between runs, and a run that DIES leaves the previous arm's report in
+   * place — a dropped browser connection did exactly that during the water
+   * wave's A/B on 2026-09-17, and the stale numbers were caught only because
+   * eight shots matched the previous arm to 0.1 fps, which is not a thing that
+   * happens. A consumer that checks this field against its own start time
+   * cannot be fooled by it at all.
+   */
+  readonly capturedAtIso: string;
   readonly seed: string;
   readonly width: number;
   readonly height: number;

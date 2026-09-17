@@ -10,7 +10,7 @@ import {
   WATER_CAUSTIC_ZERO,
   WATER_DETAIL_NOISE_WGSL,
   waterCausticBand,
-  waterCausticBedGain,
+  waterCausticSheetGain,
   waterCausticCascadeBands,
   waterCausticNoiseBand,
   waterCausticSinusoidBand,
@@ -87,7 +87,7 @@ fn evaluateCaustics(@builtin(global_invocation_id) id: vec3<u32>) {
     beam.slantMeters,
     beam.weight,
     caustic.curvature,
-    waterCausticBedGain(caustic, beam, probe.sunVisibility),
+    waterCausticSheetGain(caustic, beam),
   );
 }
 `;
@@ -178,7 +178,7 @@ function expected(probe: Probe): readonly [number, number, number, number] {
     beam.slantMeters,
     beam.weight,
     caustic.curvature,
-    waterCausticBedGain(caustic, beam, probe.sunVisibility),
+    waterCausticSheetGain(caustic, beam),
   ];
 }
 
@@ -283,18 +283,20 @@ describe("water bed caustics (6-4)", () => {
       expect(weightOf("deep ocean")).toBe(0);
       expect(gainOf("deep ocean")).toBe(1);
       expect(gainOf("night")).toBe(1);
-      expect(gainOf("full shadow")).toBe(1);
       expect(gainOf("gate edge")).toBeCloseTo(1, 3);
       // Crests brighten, troughs darken, and the focus is the peak.
       expect(gainOf("shallow crest")).toBeGreaterThan(1);
       expect(gainOf("shallow trough")).toBeLessThan(1);
       expect(gainOf("at the focus")).toBeGreaterThan(gainOf("past the focus"));
       expect(gainOf("at the focus")).toBeGreaterThan(1.5);
-      // Shadow scales the term rather than switching it: same surface, same
-      // depth, 35% of the direct beam.
-      expect(gainOf("partial shadow")).toBeGreaterThan(1);
-      expect(gainOf("partial shadow") - 1)
-        .toBeCloseTo(0.35 * (gainOf("full sun twin") - 1), 5);
+      // W-7 moved SHADOW out of this function. The sheet is now the pure
+      // redistribution of the collimated beam, and the beam it multiplies is
+      // the body model's own sun share, which already carries cloud and
+      // terrain shadow (waterDownwelling). So the same surface at the same
+      // depth returns the same sheet whatever the visibility — the darkening
+      // is in the irradiance, once, instead of being applied here as well.
+      expect(gainOf("partial shadow")).toBeCloseTo(gainOf("full sun twin"), 6);
+      expect(gainOf("full shadow")).toBeCloseTo(gainOf("full sun twin"), 6);
       // The spectral cascade lanes: a compressed surface brightens the bed and
       // a stretched one darkens it, and dropping the unused lanes to a zero
       // scale changes nothing measurable (cascades 2-4 convert at 1/32 of
@@ -365,7 +367,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     beam,
   );
   caustic = waterCausticSinusoidBand(caustic, 2.1, 0.9, beam);
-  let gain = waterCausticBedGain(caustic, beam, 1.0);
+  let gain = waterCausticSheetGain(caustic, beam);
   return vec4f(detail.slope, detail.unresolvedMeanSquareSlope, gain);
 }
 `;

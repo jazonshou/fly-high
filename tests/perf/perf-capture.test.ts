@@ -1542,6 +1542,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const report: PerfCaptureReport = {
+      capturedAtIso: new Date().toISOString(),
       seed: PERF_CAPTURE_SEED,
       width: PERF_CAPTURE_WIDTH,
       height: PERF_CAPTURE_HEIGHT,

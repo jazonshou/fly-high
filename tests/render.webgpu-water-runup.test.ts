@@ -227,8 +227,13 @@ describe("6-2 composition", () => {
     // And the analytic ramp is untouched: the max only runs when the sentinel
     // produced something, so an analytic world executes the pre-6-2 statement
     // and one compare.
+    // W-9 multiplied the analytic ramp by bankEnergy (the lake's own
+    // fetch-limited chop height, or the reach's flow speed): an unconditional
+    // white collar on every calm shore was half of "always white foam". The
+    // structure the sentinel discipline pins is unchanged — the max() below
+    // still only runs when the sentinel produced something.
     expect(code).toContain(
-      "var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;",
+      "var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3 * bankEnergy;",
     );
     expect(code).toContain("if (channelBankRunup > 0.0) {");
     expect(code).toContain("shoreFoam = max(shoreFoam, channelBankRunup);");
