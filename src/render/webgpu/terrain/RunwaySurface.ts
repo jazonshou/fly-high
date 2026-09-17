@@ -162,6 +162,11 @@ fn terrainRunwaySurface(
   cavity: ptr<function, f32>,
   f0: ptr<function, f32>,
   diffuseRoughness: ptr<function, f32>,
+  // W-1: the pavement coverage this call applied. Ground terms that run AFTER
+  // the paint — the scrub clumps and their cast shadows — read it so nothing
+  // is planted on a runway. Both early returns leave it at the caller's zero,
+  // which is the correct answer for ground the paint never reached.
+  pavedOut: ptr<function, f32>,
 ) {
   let frame = uniforms.terrainRunwayFrame;
   let shape = uniforms.terrainRunwayShape;
@@ -279,5 +284,6 @@ fn terrainRunwaySurface(
   *cavity = mix(*cavity, surfaceCavity, paved);
   *f0 = mix(*f0, mix(asphalt.f0, concrete.f0, paint), paved);
   *diffuseRoughness = mix(*diffuseRoughness, asphalt.diffuseRoughness, paved);
+  *pavedOut = paved;
 }
 `;
