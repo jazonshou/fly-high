@@ -101,6 +101,14 @@ export const RUNWAY_SURFACE_UNIFORMS: readonly {
  * `0-4` portability: no `pow`, no branch on float equality, no reliance on
  * f64 — `max`, `min`, `abs` and one `length`, all of which f32 reproduces.
  */
+/**
+ * `W-1`'s graded surround, metres from the pavement edge: fully airfield to
+ * the inner radius, fully open country past the outer one. The figures are the
+ * apron/threshold scale the airport SDF grades, not a visual taste.
+ */
+export const RUNWAY_AIRFIELD_INNER_METERS = 40;
+export const RUNWAY_AIRFIELD_OUTER_METERS = 260;
+
 export const RUNWAY_SDF_WGSL = /* wgsl */ `
 // Transliteration of roundedRectangleSignedDistance (src/world/airport.ts).
 fn terrainRunwayRoundedRect(
@@ -122,6 +130,32 @@ fn terrainRunwayLocal(worldXz: vec2f, center: vec2f, sinHeading: f32, cosHeading
     delta.x * sinHeading + delta.y * cosHeading,
     delta.x * cosHeading - delta.y * sinHeading,
   );
+}
+
+/**
+ * W-1: how much of this fragment is AIRFIELD rather than open country.
+ *
+ * One beyond the pavement edge, falling to zero over the graded surround. The
+ * ground patchwork reads it to keep mown airfield grass uniform: a meadow's
+ * patchwork, its scrub and its worn ground all belong to country nobody mows,
+ * and painting them across a threshold or an approach end is the kind of
+ * detail that reads as a defect precisely because the eye knows what an
+ * airfield looks like.
+ *
+ * The distance is the pavement SDF the surface painter already uses, so the
+ * two cannot disagree about where the airfield is; only the falloff is this
+ * function's own. The frame and shape are PARAMETERS rather than uniform
+ * reads, because this block is composed into a compute shader as well, where
+ * no such uniform exists.
+ */
+fn terrainRunwayAirfieldInfluence(worldXz: vec2f, frame: vec4f, shape: vec4f) -> f32 {
+  if (shape.x <= 0.0) { return 0.0; }
+  let local = terrainRunwayLocal(worldXz, frame.xy, frame.z, frame.w);
+  let distance = terrainRunwayRoundedRect(local.x, local.y, shape.x, shape.y);
+  return 1.0 - smoothstep(
+    ${RUNWAY_AIRFIELD_INNER_METERS.toFixed(1)},
+    ${RUNWAY_AIRFIELD_OUTER_METERS.toFixed(1)},
+    distance);
 }
 `;
 

@@ -15,6 +15,15 @@ import {
   GROUND_NOISE_SIGMA,
   GROUND_SCRUB_COVERAGE_FIT,
   GROUND_SCRUB_HEIGHT_FIT,
+  GROUND_VIGOUR_COARSE_AMPLITUDE,
+  GROUND_VIGOUR_CREASE_AMPLITUDE,
+  GROUND_VIGOUR_CREASE_MEAN,
+  GROUND_VIGOUR_CREASE_OFFSET,
+  GROUND_VIGOUR_CREASE_SHARPNESS,
+  GROUND_VIGOUR_FINE_AMPLITUDE,
+  GROUND_VIGOUR_LOG_AXIS,
+  GROUND_VIGOUR_MID_AMPLITUDE,
+  GROUND_VIGOUR_STACK_VARIANCE,
   TERRAIN_GROUND_PATCHWORK_WGSL,
 } from "@/src/render/webgpu/terrain/GroundPatchwork";
 import { SurfaceMaterial, surfaceMaterialSpec } from "@/src/render/webgpu/terrain/surfaceMaterials";
@@ -118,6 +127,85 @@ describe("W-1 the dryness remap", () => {
         Math.log(dryGrass[channel]! / grass[channel]!),
         10,
       );
+    }
+  });
+});
+
+describe("W-1b the vigour axis", () => {
+  const softThreshold = (width: number, value: number): number => {
+    const t = Math.min(1, Math.max(0, (value + width) / (2 * width)));
+    return t * t * (3 - 2 * t) - 0.5;
+  };
+
+  it("centres every mask exactly, at any threshold width", () => {
+    // The masks are symmetric about the field's own zero, so their mean is a
+    // half whatever the width. That is what makes the stack mean-zero BY
+    // CONSTRUCTION rather than by a correction that a footprint could break.
+    for (const width of [0.12, 0.35, 0.85, 2]) {
+      const { mean } = sampleField(120_000, 5, (x, y) =>
+        softThreshold(width, groundNoise(x / 53, y / 53, 0x91f3)));
+      expect(Math.abs(mean)).toBeLessThan(0.02);
+    }
+  });
+
+  it("matches the crease term's measured mean", () => {
+    const { mean } = sampleField(200_000, 9, (x, y) =>
+      Math.max(0, 1 - Math.abs(groundNoise(x / 53, y / 53, 0x91f3) - GROUND_VIGOUR_CREASE_OFFSET)
+        * GROUND_VIGOUR_CREASE_SHARPNESS));
+    expect(mean).toBeGreaterThan(GROUND_VIGOUR_CREASE_MEAN - 0.02);
+    expect(mean).toBeLessThan(GROUND_VIGOUR_CREASE_MEAN + 0.02);
+  });
+
+  it("keeps the stack's variance the mean-one correction was derived from", () => {
+    const { mean, variance } = sampleField(200_000, 15, (x, y) => {
+      const coarse = groundNoise(x / 163, y / 163, 0x4d1);
+      const mid = groundNoise(x / 53, y / 53, 0x91f3);
+      const fine = groundNoise(x / 18.4, y / 18.4, 0x6b27);
+      const crease = Math.max(0, 1 - Math.abs(mid - GROUND_VIGOUR_CREASE_OFFSET)
+        * GROUND_VIGOUR_CREASE_SHARPNESS);
+      return softThreshold(0.35, coarse) * GROUND_VIGOUR_COARSE_AMPLITUDE
+        + softThreshold(0.35, mid) * GROUND_VIGOUR_MID_AMPLITUDE
+        + softThreshold(0.35, fine) * GROUND_VIGOUR_FINE_AMPLITUDE
+        - (crease - GROUND_VIGOUR_CREASE_MEAN) * GROUND_VIGOUR_CREASE_AMPLITUDE;
+    });
+    expect(Math.abs(mean)).toBeLessThan(0.06);
+    expect(variance).toBeGreaterThan(GROUND_VIGOUR_STACK_VARIANCE * 0.6);
+    expect(variance).toBeLessThan(GROUND_VIGOUR_STACK_VARIANCE * 1.7);
+  });
+
+  it("swings luminance by about a fifth and carries hue with it", () => {
+    // A brightness ramp alone is the macro wash this axis exists to beat, so
+    // the channels must not move together: pale ground goes yellow-warm.
+    const [r, g, b] = GROUND_VIGOUR_LOG_AXIS;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const sigma = Math.sqrt(GROUND_VIGOUR_STACK_VARIANCE);
+    expect(Math.exp(luma * 2 * sigma)).toBeGreaterThan(1.12);
+    expect(Math.exp(luma * 2 * sigma)).toBeLessThan(1.45);
+    // Stressed grass goes YELLOW, not merely bright: red leads, green follows,
+    // blue trails. A first draft moved blue with red and the ground marbled
+    // green against tan — two materials interleaved, which reads as camo.
+    expect(r).toBeGreaterThan(g * 1.4);
+    expect(g).toBeGreaterThan(b);
+  });
+
+  it("is mean one per channel over the stack", () => {
+    const bias = GROUND_VIGOUR_LOG_AXIS.map((channel) =>
+      Math.exp(channel * channel * 0.5 * GROUND_VIGOUR_STACK_VARIANCE));
+    for (let channel = 0; channel < 3; channel += 1) {
+      const { mean } = sampleField(150_000, 21 + channel, (x, y) => {
+        const coarse = groundNoise(x / 163, y / 163, 0x4d1);
+        const mid = groundNoise(x / 53, y / 53, 0x91f3);
+        const fine = groundNoise(x / 18.4, y / 18.4, 0x6b27);
+        const crease = Math.max(0, 1 - Math.abs(mid - GROUND_VIGOUR_CREASE_OFFSET)
+        * GROUND_VIGOUR_CREASE_SHARPNESS);
+        const vigour = softThreshold(0.35, coarse) * GROUND_VIGOUR_COARSE_AMPLITUDE
+          + softThreshold(0.35, mid) * GROUND_VIGOUR_MID_AMPLITUDE
+          + softThreshold(0.35, fine) * GROUND_VIGOUR_FINE_AMPLITUDE
+          - (crease - GROUND_VIGOUR_CREASE_MEAN) * GROUND_VIGOUR_CREASE_AMPLITUDE;
+        return Math.exp(GROUND_VIGOUR_LOG_AXIS[channel]! * vigour) / bias[channel]!;
+      });
+      expect(mean).toBeGreaterThan(0.95);
+      expect(mean).toBeLessThan(1.05);
     }
   });
 });

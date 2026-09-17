@@ -40,8 +40,11 @@ import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 // ground patchwork's question, composed here rather than restated.
 import {
   GROUND_BARE_ALBEDO,
+  GROUND_BARE_LUSH_SHARE,
   GROUND_SCRUB_ALBEDO_DRY,
   GROUND_SCRUB_CROWN_OPACITY,
+  GROUND_SCRUB_RENDERED_FAR_METERS,
+  GROUND_SCRUB_RENDERED_NEAR_METERS,
   GROUND_SCRUB_LARGE_AXIS_WGSL,
   GROUND_SCRUB_SMALL_AXIS_WGSL,
   groundAlbedoWgsl,
@@ -2510,7 +2513,18 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
 // W-1's vegetated share, the two-material path's copy.
 let terrainGroundCover = terrainGroundCoverOf(i32(terrainPrimaryId)) * terrainBlend0;
 #endif
-let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0);
+// W-1: mown airfield grass is not meadow. The graded surround comes from the
+// pavement SDF the runway painter already evaluates, so the two cannot
+// disagree about where the airfield is.
+var terrainGroundAirfield = 0.0;
+#ifdef TERRAIN_SURFACE_RUNWAY
+terrainGroundAirfield = terrainRunwayAirfieldInfluence(
+  terrainAbsolutePosition.xz,
+  uniforms.terrainRunwayFrame,
+  uniforms.terrainRunwayShape);
+#endif
+let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
+  * (1.0 - terrainGroundAirfield);
 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
 // kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
@@ -2619,22 +2633,19 @@ var terrainGroundDryness = clamp(
   terrainGroundCover.y / max(terrainGroundCover.x, 1e-4), 0.0, 1.0);
 var terrainGroundCluster = 0.0;
 var terrainGroundBare = 0.0;
-if (terrainGroundVegetation > 0.004) {
+// The threshold is a COST gate as much as a correctness one: a mountainside
+// whose classifier gives it a few per cent of gravel does not need the whole
+// patchwork evaluated to move its colour by a thousandth.
+if (terrainGroundVegetation > 0.05) {
   // LANDFORM, not more noise. Sky visibility is the only concavity signal this
   // fragment has, and slope stands in for thin soil: hollows collect water and
-  // convex ground sheds it. Both gains are deliberately small. The visibility
-  // channel is baked per page at 4 x 2^level metres, so a residency swap moves
-  // it slightly; at this gain that is a fraction of a percent of albedo, which
-  // is the difference between a landform cue and a page-LOD step.
-  // A page whose occlusion bake has not landed yet reads visibility ZERO, and
-  // an unguarded (1 - visibility) turns that page into a bright green quad the
-  // moment it becomes resident — seen, and the reason for the second factor.
-  // Genuine hollows sit between 0.4 and 0.95; below that the value is far more
-  // likely to be an unbaked page than a canyon, so the cue fades back out.
-  // Landform's authority over colour is BOUNDED, and deliberately: a dry-grass
-  // biome may grow greener swales and drier crests, but no input may turn it
-  // into pasture wholesale. The clamp is the contract; the sky-visibility term
-  // is already guarded at its source above, and this is the second layer.
+  // convex ground sheds it. The visibility channel is baked per page at
+  // 4 x 2^level metres, so a residency swap moves it slightly — which is why
+  // the gains are small and the result is CLAMPED. Landform's authority over
+  // colour is bounded on purpose: a dry-grass biome may grow greener swales
+  // and drier crests, but no input may turn it into pasture wholesale. The
+  // unbaked-page case is handled at the source, where the bake's own validity
+  // lane gates the read; this clamp is the second layer.
   let terrainGroundSky = clamp(terrainSkyVisibility, 0.0, 1.0);
   let terrainGroundTopographic = clamp(
     -(1.0 - terrainGroundSky) * 0.4 + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.5,
@@ -2649,21 +2660,39 @@ if (terrainGroundVegetation > 0.004) {
   // instead of at the lush end of one of them. On any classified page this
   // term is exactly zero.
   let terrainGroundAssumed = mix(0.35, terrainGroundDryness, terrainClassStrength);
+  // Vigour's own landform bias, bounded like dryness's: a hollow grows a
+  // richer sward than the crest above it, and a steep face grows a thinner
+  // one. Positive is PALE, so the signs are the mirror of the dryness term's.
+  let terrainGroundVigourBias = clamp(
+    (1.0 - terrainGroundSky) * -0.55 + clamp(terrainSlope - 0.08, 0.0, 0.35) * 0.95,
+    -0.3,
+    0.32);
   let terrainGroundPatch = terrainGroundPatchwork(
     terrainAbsolutePosition.xz,
     terrainSamplePosition.xz,
     terrainGroundAssumed,
     terrainGroundTopographic,
     terrainClassStrength,
+    terrainGroundVigourBias,
+    terrainWorldDdx.xz,
+    terrainWorldDdy.xz,
     terrainFootprint3D,
   );
   terrainGroundDryness = terrainGroundPatch.dryness;
   terrainGroundCluster = terrainGroundPatch.cluster;
   terrainAlbedo *= mix(vec3f(1.0), terrainGroundPatch.albedoScale, terrainGroundVegetation);
-  // Bare ground belongs to DRY sward: a lush meadow does not open to soil.
+  // Bare ground is mostly a dry-sward feature, but a lush meadow still opens
+  // to soil where the ground is steep, convex or worn — less of it, never
+  // none. The floor is what stops green country being uniformly closed.
   terrainGroundBare = terrainGroundPatch.bare
     * terrainGroundVegetation
-    * clamp(terrainGroundDryness, 0.0, 1.0);
+    * clamp(
+      ${terrainWgslFloat(GROUND_BARE_LUSH_SHARE)}
+        + (1.0 - ${terrainWgslFloat(GROUND_BARE_LUSH_SHARE)})
+          * clamp(terrainGroundDryness, 0.0, 1.0)
+        + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.9,
+      0.0,
+      1.0);
   terrainAlbedo = mix(
     terrainAlbedo,
     vec3f(${GROUND_BARE_ALBEDO.map((v) => v.toFixed(3)).join(", ")}),
@@ -2811,28 +2840,40 @@ var terrainGroundDirect = 1.0;
     * (1.0 - clamp(terrainWetness, 0.0, 1.0))
     * (1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))
     * (1.0 - clamp(terrainGroundCanopyClosure, 0.0, 1.0));
-  if (terrainScrubGate > 0.008) {
+  if (terrainScrubGate > 0.04) {
     let terrainScrubDry = clamp(terrainGroundDryness, 0.0, 1.0);
+    let terrainScrubRange = distance(fragmentInputs.vPositionW, scene.vEyePosition.xyz);
+    let terrainScrubComplement = mix(
+      smoothstep(
+        ${terrainWgslFloat(GROUND_SCRUB_RENDERED_NEAR_METERS)},
+        ${terrainWgslFloat(GROUND_SCRUB_RENDERED_FAR_METERS)},
+        terrainScrubRange),
+      1.0,
+      terrainScrubDry);
     // WHERE scrub is, not just how much of it. Salt-and-pepper over the whole
     // sward is the loudest procedural tell there is, so the threshold is
     // driven by the patchwork's own hundred-metre cluster field (thickets sit
     // where the colour already says the ground is rough), pushed denser in
     // hollows, thinner on steep crests, and off over bare ground. One means
     // sparse: it IS the threshold the field must clear.
-    // AND ONLY WHERE THE VEGETATION SYSTEM DRAWS NOTHING. The density field's
-    // shrub term runs through smoothstep(0.2, 0.5, moisture), so real shrub
-    // instances cover moist grassland out to the mid band (1,100 m at tier 1)
-    // and DRY rangeland gets none at all — which is precisely the ground the
-    // flying reports call empty. Painted scrub is the complement of that
-    // population, not a second copy of it: it thins out as the ground gets
-    // lush, exactly where the stems take over.
+    // AND ONLY WHERE THE VEGETATION SYSTEM DRAWS NOTHING — which is a question
+    // of RANGE, not of climate. Two populations meet here. On dry rangeland
+    // the density field's shrub term is zero at every range (its moisture ramp
+    // starts at 0.2), so painted scrub carries all of it. On moist ground real
+    // stems carry the near field, but their render budget falls from 60 per
+    // hectare inside 150 m to a floor by ~700 m and the band is cut outright
+    // past 1,100 m, so the ground empties out with distance exactly where the
+    // painted population should take over. The ramp is therefore camera range,
+    // deliberately and for the same reason the 6-8 canopy handoff takes one:
+    // it replaces geometry whose own density is range-dependent. It only ever
+    // fades — no clump appears or vanishes as a unit.
     let terrainScrubOpenness = clamp(
       0.55
         - terrainGroundCluster * 0.55
         - (1.0 - clamp(terrainSkyVisibility, 0.0, 1.0)) * 0.5
         + clamp(terrainSlope - 0.12, 0.0, 0.35) * 0.9
         + terrainGroundBare * 0.6
-        + (1.0 - terrainScrubDry) * 0.85,
+        + (1.0 - terrainScrubComplement) * 0.85,
       0.0,
       1.0);
     let terrainScrubDensity = terrainScrubOpenness;

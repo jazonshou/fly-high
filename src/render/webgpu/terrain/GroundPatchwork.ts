@@ -68,6 +68,84 @@ import { SurfaceMaterial, surfaceMaterialSpec } from "./surfaceMaterials";
  *    rotate away and the far sea had to warp away.
  */
 
+/**
+ * `W-1b` — the VIGOUR axis: how well the sward is doing, independent of how dry
+ * the climate is.
+ *
+ * The dryness remap answers "grass or straw", and on ground the classifier
+ * calls pure Grass it has nothing to say: measured against the base build, a
+ * lush meadow at 1,600 ft moved by less than one 8-bit level. But a real
+ * meadow is not one green. It is a patchwork of vigour — rich dark green where
+ * the soil is deep and wet, pale yellow-green where it is thin, burnt or
+ * grazed — and that patchwork has EDGES, which is the whole difference from
+ * the macro wash this shader already has: that wash is ±17% of smooth value
+ * noise, and smoothness is exactly why it reads as airbrush.
+ *
+ * So vigour is not another noise sum. It is a stack of soft-THRESHOLDED masks,
+ * one per octave, each contributing a patch with a boundary, plus a ridged
+ * crease term that lays the lusher lines a drainage net leaves in a field.
+ * Every mask is symmetric about its own zero, so its mean is exactly a half
+ * whatever the threshold width — which is what makes the stack mean-zero by
+ * construction rather than by a correction.
+ *
+ * The anti-camouflage rules, each learned from a defect in this file's
+ * history: the masks read the WARPED position, so boundaries are organic; the
+ * octaves are rotated off each other and off the world axes; the threshold
+ * SOFTNESS is itself a low-frequency field, so some boundaries are crisp and
+ * others dissolve over tens of metres; and the amplitude is carried by
+ * luminance and hue together, never by a flat brightness step.
+ */
+export const GROUND_VIGOUR_FINE_METERS = 18.4;
+export const GROUND_VIGOUR_FINE_DEGREES = 83.4;
+/** Mask amplitudes, coarse/mid/fine, and the crease's. */
+export const GROUND_VIGOUR_COARSE_AMPLITUDE = 0.22;
+export const GROUND_VIGOUR_MID_AMPLITUDE = 0.45;
+export const GROUND_VIGOUR_FINE_AMPLITUDE = 0.4;
+export const GROUND_VIGOUR_CREASE_AMPLITUDE = 0.15;
+/**
+ * The crease: a ridge along an ISO-LINE of the mid octave, not along its zero
+ * set. The zero set is exactly where that octave's own patch mask puts its
+ * boundary, so a crease there would outline every patch and read as a cartoon
+ * edge; offsetting it by 0.62 sigma decorrelates the two features for free,
+ * without a fourth noise evaluation. Mean and variance measured at the offset.
+ */
+export const GROUND_VIGOUR_CREASE_SHARPNESS = 2.2;
+export const GROUND_VIGOUR_CREASE_OFFSET = 0.62;
+export const GROUND_VIGOUR_CREASE_MEAN = 0.1452;
+/** Threshold width in field units, from crisp to dissolved. */
+export const GROUND_VIGOUR_EDGE_MIN = 0.12;
+export const GROUND_VIGOUR_EDGE_MAX = 0.85;
+/**
+ * A vigour boundary is never thinner than this on the ground. Without it a
+ * 60 m AGL pass reads the fine octave's edge as a painted line on the grass;
+ * with it the same boundary is a few metres of transition, which is what a
+ * change of sward actually looks like from a low pass.
+ */
+export const GROUND_VIGOUR_EDGE_FLOOR_METERS = 3.5;
+/**
+ * Variance of the whole stack, for the mean-one correction: the amplitudes
+ * above against a measured 0.2125 per centred mask and 0.0915 for the crease.
+ * One standard deviation is about a fifth of a stop of luminance, which is the
+ * swing a meadow shows from the air; two is the rare patch that reads as a
+ * different field.
+ */
+export const GROUND_VIGOUR_STACK_VARIANCE = 0.089;
+/**
+ * The axis itself, in log space: rich dark green to pale yellow-green.
+ *
+ * The endpoints are chosen the way stressed grass actually changes — red up
+ * hard, green up a little, blue DOWN — so the pale end is yellow rather than
+ * merely bright. A first draft raised blue with red and the ground marbled
+ * green against tan: two materials interleaved, which reads as camouflage,
+ * not as one sward doing better in some places than others.
+ *
+ * Scaled so one standard deviation of the stack is about 12% of luminance and
+ * two is about 26%. A first draft at 18% and 40% was, in a word, paint.
+ */
+export const GROUND_VIGOUR_AXIS_SCALE = 0.8;
+export const GROUND_VIGOUR_RICH: readonly [number, number, number] = [0.09, 0.15, 0.05];
+export const GROUND_VIGOUR_PALE: readonly [number, number, number] = [0.19, 0.21, 0.065];
+
 /** Gradient-noise scales, metres. Distinct, non-harmonic, none near the 35° fabric. */
 export const GROUND_PATCH_COARSE_METERS = 163;
 export const GROUND_PATCH_MID_METERS = 53;
@@ -258,8 +336,22 @@ export const GROUND_DRYNESS_LOG_RATIO: readonly [number, number, number] = [
  */
 export const GROUND_BARE_ALBEDO: readonly [number, number, number] = [0.205, 0.17, 0.128];
 
+/**
+ * Bare ground is not only a dry-climate feature. A lush meadow still opens to
+ * soil where the ground is steep, convex or worn, just less of it, so the
+ * coverage has a floor everywhere and rises with dryness and slope.
+ */
+export const GROUND_BARE_LUSH_SHARE = 0.3;
+
+/** The vigour axis as a log ratio, scaled. */
+export const GROUND_VIGOUR_LOG_AXIS: readonly [number, number, number] = [
+  Math.log(GROUND_VIGOUR_PALE[0] / GROUND_VIGOUR_RICH[0]) * GROUND_VIGOUR_AXIS_SCALE,
+  Math.log(GROUND_VIGOUR_PALE[1] / GROUND_VIGOUR_RICH[1]) * GROUND_VIGOUR_AXIS_SCALE,
+  Math.log(GROUND_VIGOUR_PALE[2] / GROUND_VIGOUR_RICH[2]) * GROUND_VIGOUR_AXIS_SCALE,
+];
+
 /** Scrub crowns, linear albedo: lush green through grey-olive when dry. */
-export const GROUND_SCRUB_ALBEDO_LUSH: readonly [number, number, number] = [0.095, 0.115, 0.055];
+export const GROUND_SCRUB_ALBEDO_LUSH: readonly [number, number, number] = [0.062, 0.088, 0.042];
 export const GROUND_SCRUB_ALBEDO_DRY: readonly [number, number, number] = [0.14, 0.128, 0.076];
 /**
  * Crown shape tone: cap versus flank. The mean over a crown is one within a
@@ -269,6 +361,17 @@ export const GROUND_SCRUB_ALBEDO_DRY: readonly [number, number, number] = [0.14,
 export const GROUND_SCRUB_TONE_CAP = 1.18;
 export const GROUND_SCRUB_TONE_FLANK = 0.42;
 export const GROUND_SCRUB_TONE_MEAN = 0.97;
+
+/**
+ * The range band over which real shrub instances thin out, metres.
+ *
+ * The vegetation system budgets drawn shrubs at 60 per hectare inside its near
+ * radius, falling to a floor by about 700 m and cut outright at the mid band.
+ * Painted scrub ramps in across the same band so the two populations hand over
+ * rather than double up, and stays full past it.
+ */
+export const GROUND_SCRUB_RENDERED_NEAR_METERS = 150;
+export const GROUND_SCRUB_RENDERED_FAR_METERS = 700;
 
 /** Crowns are rougher than the sward they stand in. */
 export const GROUND_SCRUB_ROUGHNESS = 0.94;
@@ -463,6 +566,35 @@ fn terrainGroundOctaveWeight(wavelengthMeters: f32, footprintMeters: f32) -> f32
   return 1.0 - smoothstep(wavelengthMeters * 0.125, wavelengthMeters * 0.34, footprintMeters);
 }
 
+/**
+ * A patch mask with an EDGE, centred on zero.
+ *
+ * smoothstep across the field's own zero, so the mean is exactly a half for
+ * any width and the centred mask is exactly mean-zero — which is what lets the
+ * stack keep the scene mean without a correction. The width is the largest of
+ * three claims: the softness the caller asked for, a world-space floor so a
+ * boundary is never a painted line under a low pass, and twice the screen
+ * derivative of the field, so the edge antialiases itself.
+ */
+fn terrainGroundPatchMask(
+  field: vec3f,
+  wavelength: f32,
+  axis: mat2x2f,
+  softness: f32,
+  worldDdx: vec2f,
+  worldDdy: vec2f,
+) -> f32 {
+  let worldGradient = (transpose(axis) * field.yz) * (1.0 / wavelength);
+  let gradientLength = max(length(worldGradient), 1e-5);
+  let screenWidth = length(vec2f(
+    dot(worldGradient, worldDdx),
+    dot(worldGradient, worldDdy)));
+  let width = max(
+    max(softness, gradientLength * ${wgslFloat(GROUND_VIGOUR_EDGE_FLOOR_METERS)}),
+    2.0 * screenWidth);
+  return smoothstep(-width, width, field.x) - 0.5;
+}
+
 /** exp(c0 + c1 t + c2 t^2), the fitted scrub expectations. */
 fn terrainGroundExpectation(fit: vec3f, threshold: f32) -> f32 {
   return exp(fit.x + fit.y * threshold + fit.z * threshold * threshold);
@@ -477,6 +609,8 @@ struct TerrainGroundPatch {
   dryness: f32,
   /** The patch octaves, reused as the scrub's clustering driver. */
   cluster: f32,
+  /** The vigour stack, for terms that want lush ground to differ from pale. */
+  vigour: f32,
 };
 
 /**
@@ -494,22 +628,33 @@ fn terrainGroundPatchwork(
   drynessBase: f32,
   topographic: f32,
   classified: f32,
+  vigourBias: f32,
+  worldDdx: vec2f,
+  worldDdy: vec2f,
   footprintMeters: f32,
 ) -> TerrainGroundPatch {
   let coarseWeight = terrainGroundOctaveWeight(
     ${wgslFloat(GROUND_PATCH_COARSE_METERS)}, footprintMeters);
   let midWeight = terrainGroundOctaveWeight(
     ${wgslFloat(GROUND_PATCH_MID_METERS)}, footprintMeters);
-  // The coarse octave reads the WARPED position — the de-tile warp is already a
-  // curl-free multi-scale displacement, so reusing it costs nothing and buys
-  // the coarse patches their organic outline. The mid octave reads the unwarped
-  // one, so the two cannot inherit a shared lobe.
-  let coarse = terrainGroundNoise(
-    ${rotationWgsl(GROUND_PATCH_COARSE_DEGREES)} * warpedXz
-      * ${wgslFloat(1 / GROUND_PATCH_COARSE_METERS)}, 0x4d1u) * coarseWeight;
-  let mid = terrainGroundNoise(
+  // Both octaves read the UNWARPED position. A first draft ran the coarse one
+  // through the de-tile warp, on the theory that a curl-free displacement buys
+  // organic outlines for free; what it actually buys is MARBLING — that warp is
+  // a smooth ~40 m displacement, and pushing a smooth field through it turns
+  // compact patches into long swirled bands, which is the camouflage read this
+  // whole design is trying to avoid. The noise's own shapes are organic enough;
+  // the octaves are decorrelated by rotation and salt instead.
+  // Both octaves are read WITH their gradients: the value drives dryness, the
+  // gradient antialiases the vigour masks below, and the gradient costs
+  // nothing extra — this primitive computes it either way.
+  let coarseField = terrainGroundNoiseGrad(
+    ${rotationWgsl(GROUND_PATCH_COARSE_DEGREES)} * worldXz
+      * ${wgslFloat(1 / GROUND_PATCH_COARSE_METERS)}, 0x4d1u);
+  let midField = terrainGroundNoiseGrad(
     ${rotationWgsl(GROUND_PATCH_MID_DEGREES)} * worldXz
-      * ${wgslFloat(1 / GROUND_PATCH_MID_METERS)}, 0x91f3u) * midWeight;
+      * ${wgslFloat(1 / GROUND_PATCH_MID_METERS)}, 0x91f3u);
+  let coarse = coarseField.x * coarseWeight;
+  let mid = midField.x * midWeight;
   let driver = coarse * 0.78 + mid * 0.62;
   // Odd shaping: patches with shoulders instead of a haze, and a zero mean that
   // survives the shaping exactly.
@@ -539,16 +684,83 @@ fn terrainGroundPatchwork(
   let bias = exp(axis * axis * (0.5 * variance));
   let albedoScale = exp(axis * (dryness - drynessBase)) / bias;
 
+  // ---- vigour: the patchwork a meadow actually has ------------------------
+  //
+  // Threshold softness is itself a field, so some boundaries are crisp and
+  // others dissolve: uniform edge hardness at a uniform scale is what reads as
+  // camouflage, and real land cover mixes both.
+  // Each mask's softness is driven by the OTHER octave: a mask whose softness
+  // reads its own field gets the same width at every boundary it draws, since
+  // a boundary is where that field is zero, and uniform edge hardness is the
+  // camouflage tell this is here to avoid.
+  let vigourSoftnessCoarse = mix(
+    ${wgslFloat(GROUND_VIGOUR_EDGE_MIN)},
+    ${wgslFloat(GROUND_VIGOUR_EDGE_MAX)},
+    clamp(midField.x * 0.5 + 0.5, 0.0, 1.0));
+  let vigourSoftnessFine = mix(
+    ${wgslFloat(GROUND_VIGOUR_EDGE_MIN)},
+    ${wgslFloat(GROUND_VIGOUR_EDGE_MAX)},
+    clamp(coarseField.x * 0.5 + 0.5, 0.0, 1.0));
+  let fineWeight = terrainGroundOctaveWeight(
+    ${wgslFloat(GROUND_VIGOUR_FINE_METERS)}, footprintMeters);
+  var vigour = 0.0;
+  vigour += terrainGroundPatchMask(
+    coarseField,
+    ${wgslFloat(GROUND_PATCH_COARSE_METERS)},
+    ${rotationWgsl(GROUND_PATCH_COARSE_DEGREES)},
+    vigourSoftnessCoarse,
+    worldDdx,
+    worldDdy) * ${wgslFloat(GROUND_VIGOUR_COARSE_AMPLITUDE)} * coarseWeight;
+  vigour += terrainGroundPatchMask(
+    midField,
+    ${wgslFloat(GROUND_PATCH_MID_METERS)},
+    ${rotationWgsl(GROUND_PATCH_MID_DEGREES)},
+    vigourSoftnessFine,
+    worldDdx,
+    worldDdy) * ${wgslFloat(GROUND_VIGOUR_MID_AMPLITUDE)} * midWeight;
+  if (fineWeight > 0.002) {
+    let fineField = terrainGroundNoiseGrad(
+      ${rotationWgsl(GROUND_VIGOUR_FINE_DEGREES)} * worldXz
+        * ${wgslFloat(1 / GROUND_VIGOUR_FINE_METERS)}, 0x6b27u);
+    vigour += terrainGroundPatchMask(
+      fineField,
+      ${wgslFloat(GROUND_VIGOUR_FINE_METERS)},
+      ${rotationWgsl(GROUND_VIGOUR_FINE_DEGREES)},
+      vigourSoftnessFine,
+      worldDdx,
+      worldDdy) * ${wgslFloat(GROUND_VIGOUR_FINE_AMPLITUDE)} * fineWeight;
+  }
+  // The crease: a ridge along an ISO-LINE of the mid octave, which has a
+  // drainage net's shape. Offset from that octave's zero set on purpose — the
+  // zero set is where its own patch mask puts a boundary, and a crease there
+  // would outline every patch. Read from the UNWEIGHTED value and faded as a
+  // whole, because a ridge of a field faded toward zero is a ridge everywhere.
+  let crease = max(0.0, 1.0 - abs(midField.x - ${wgslFloat(GROUND_VIGOUR_CREASE_OFFSET)})
+    * ${wgslFloat(GROUND_VIGOUR_CREASE_SHARPNESS)});
+  vigour -= (crease - ${wgslFloat(GROUND_VIGOUR_CREASE_MEAN)})
+    * ${wgslFloat(GROUND_VIGOUR_CREASE_AMPLITUDE)} * midWeight;
+  // Landform: hollows and shaded ground are richer, crests and steep ground
+  // paler. Same bounded authority as the dryness term's.
+  vigour = clamp(vigour + vigourBias, -1.35, 1.35);
+  let vigourAxis = vec3f(
+    ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[0])},
+    ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[1])},
+    ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[2])});
+  let vigourBiasCorrection = exp(
+    vigourAxis * vigourAxis * (0.5 * ${wgslFloat(GROUND_VIGOUR_STACK_VARIANCE)}));
+  let vigourScale = exp(vigourAxis * vigour) / vigourBiasCorrection;
+
+  // One octave for the bare patches, plus the MID octave this function already
+  // holds as its fine detail. A fourth evaluation bought a 6 m ripple that the
+  // material tile carries anyway at the range it is resolved, and this shader
+  // pays for every hash on every pixel of the screen.
   let bareCoarseWeight = terrainGroundOctaveWeight(
     ${wgslFloat(GROUND_BARE_COARSE_METERS)}, footprintMeters);
-  let bareFineWeight = terrainGroundOctaveWeight(
-    ${wgslFloat(GROUND_BARE_FINE_METERS)}, footprintMeters);
+  let bareFineWeight = midWeight;
   let bareField = terrainGroundNoise(
-      ${rotationWgsl(GROUND_BARE_COARSE_DEGREES)} * warpedXz
+      ${rotationWgsl(GROUND_BARE_COARSE_DEGREES)} * worldXz
         * ${wgslFloat(1 / GROUND_BARE_COARSE_METERS)}, 0x2ab7u) * bareCoarseWeight
-    + terrainGroundNoise(
-      ${rotationWgsl(GROUND_BARE_FINE_DEGREES)} * worldXz
-        * ${wgslFloat(1 / GROUND_BARE_FINE_METERS)}, 0x7c05u) * bareFineWeight * 0.5;
+    + mid * 0.5;
   let bareResolved = smoothstep(
     ${wgslFloat(GROUND_BARE_THRESHOLD_LOW)},
     ${wgslFloat(GROUND_BARE_THRESHOLD_HIGH)},
@@ -560,13 +772,14 @@ fn terrainGroundPatchwork(
   let bare = mix(${wgslFloat(GROUND_BARE_EXPECTED_COVERAGE)}, bareResolved, bareResolve);
 
   var composed: TerrainGroundPatch;
-  composed.albedoScale = albedoScale;
+  composed.albedoScale = albedoScale * vigourScale;
   composed.bare = bare;
   composed.dryness = dryness;
   // Both octaves, so the scrub's clustering follows the same hundred-metre
   // structure the colour does — a thicket in a patch the eye already reads as
   // rough ground, rather than an independent field fighting it.
   composed.cluster = coarse * 0.62 + mid * 0.5;
+  composed.vigour = vigour;
   return composed;
 }
 
