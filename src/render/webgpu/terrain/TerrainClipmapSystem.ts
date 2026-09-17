@@ -528,6 +528,7 @@ export class TerrainClipmapSystem {
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
     );
+    this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
     // pass, so terrain reads them as data and never re-derives a radius. The
@@ -805,6 +806,7 @@ export class TerrainClipmapSystem {
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
     );
+    this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,

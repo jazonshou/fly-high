@@ -27,6 +27,7 @@ import {
   TERRAIN_GROUND_PATCHWORK_WGSL,
 } from "@/src/render/webgpu/terrain/GroundPatchwork";
 import { SurfaceMaterial, surfaceMaterialSpec } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 
 /**
  * `W-1` — the ground patchwork's arithmetic, and the house rules its WGSL has
@@ -261,6 +262,24 @@ describe("W-1 the expectations the far field converges to", () => {
       previous = mean;
     }
   });
+});
+
+describe("W-1 the tier switch", () => {
+  it("is off at the tier that cannot afford it and on above", () => {
+    // Measured 5.4-8.3% of frame rate on the four capture shots where close
+    // vegetated ground fills the frame; Low does not have that headroom.
+    // Tier 0 is low/balanced; the tiers above it are the other three rows of
+    // the resolved-tier table, which is what the docs row publishes.
+    expect(resolveWebGpuQualityProfile("low", "balanced").terrainGroundPatchwork).toBe(false);
+    for (const [quality, mode] of [
+      ["medium", "balanced"],
+      ["high", "balanced"],
+      ["high", "ultra"],
+    ] as const) {
+      expect(resolveWebGpuQualityProfile(quality, mode).terrainGroundPatchwork).toBe(true);
+    }
+  });
+
 });
 
 describe("W-1 the material axis and the WGSL it emits", () => {

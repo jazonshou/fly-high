@@ -2525,6 +2525,10 @@ terrainGroundAirfield = terrainRunwayAirfieldInfluence(
 #endif
 let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
   * (1.0 - terrainGroundAirfield);
+// W-1's tier switch, read once. Low skips every term this wave adds — the
+// relief lift included, or the lowest tier would still be paying for part of
+// a feature it does not get.
+let terrainGroundPatchworkOn = select(0.0, 1.0, uniforms.terrainSurfaceTuning.y > 0.5);
 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
 // kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
@@ -2601,7 +2605,7 @@ if (terrainMesoWeightA > 0.001) {
   let terrainMesoSlope = (
     terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
     + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
-  ) * (0.4 + 0.45 * terrainGroundVegetation + 0.9 * terrainSteep);
+  ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep);
   let terrainStrataSlope = terrainStrataSlopeRaw * terrainStrataBreak * 0.32;
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainMesoSlope.x, -terrainStrataSlope, -terrainMesoSlope.y);
@@ -2636,7 +2640,9 @@ var terrainGroundBare = 0.0;
 // The threshold is a COST gate as much as a correctness one: a mountainside
 // whose classifier gives it a few per cent of gravel does not need the whole
 // patchwork evaluated to move its colour by a thousandth.
-if (terrainGroundVegetation > 0.05) {
+// The tier switch rides a uniform, so the branch is uniform across the draw
+// and costs a compare; Low skips the whole block and pays nothing for it.
+if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
   // LANDFORM, not more noise. Sky visibility is the only concavity signal this
   // fragment has, and slope stands in for thin soil: hollows collect water and
   // convex ground sheds it. The visibility channel is baked per page at
@@ -2840,7 +2846,7 @@ var terrainGroundDirect = 1.0;
     * (1.0 - clamp(terrainWetness, 0.0, 1.0))
     * (1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))
     * (1.0 - clamp(terrainGroundCanopyClosure, 0.0, 1.0));
-  if (terrainScrubGate > 0.04) {
+  if (terrainScrubGate > 0.04 && terrainGroundPatchworkOn > 0.5) {
     let terrainScrubDry = clamp(terrainGroundDryness, 0.0, 1.0);
     let terrainScrubRange = distance(fragmentInputs.vPositionW, scene.vEyePosition.xyz);
     let terrainScrubComplement = mix(
@@ -3228,6 +3234,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private runwayFrame: readonly [number, number, number, number] = [0, 0, 0, 1];
   private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
   private detileWarp = DEFAULT_DETILE_WARP;
+  private groundPatchwork = 1;
   /**
    * `6-5`'s field drivers, replacing `3-7`'s never-driven constant.
    *
@@ -3400,6 +3407,21 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   /** The phase's first tuning knob (`3-4`). */
+  /**
+   * `W-1`: whether the ground patchwork runs, as a UNIFORM rather than a
+   * define.
+   *
+   * A define would double this plugin's permutation count for a branch that
+   * costs a compare in uniform control flow, and every one of those
+   * permutations is compiled and pinned by the GPU suite. The lane it rides is
+   * `terrainSurfaceTuning.y`, which has been uploaded and unread since `3-6`
+   * inlined the near height-blend depth as a literal — so this costs no layout
+   * change either.
+   */
+  setGroundPatchwork(enabled: boolean): void {
+    this.groundPatchwork = enabled ? 1 : 0;
+  }
+
   setDetileWarp(amount: number): void {
     this.detileWarp = Number.isFinite(amount) ? Math.max(0, amount) : DEFAULT_DETILE_WARP;
   }
@@ -3750,7 +3772,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4(
       "terrainSurfaceTuning",
       this.detileWarp,
-      HEIGHT_BLEND_DEPTH_NEAR,
+      // y: W-1's patchwork switch. It carried HEIGHT_BLEND_DEPTH_NEAR, which
+      // the shader has always inlined as a literal and never read from here.
+      this.groundPatchwork,
       HEIGHT_BLEND_DEPTH_FAR,
       this.snowlineMeters,
     );
