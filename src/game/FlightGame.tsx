@@ -234,8 +234,13 @@ export function FlightGame() {
       initialState: latestStateRef.current,
     });
     renderer.setViewerMode(true);
+    // TEMP-TERRAIN-TEXTURE-HOOK (remove before commit)
+    (window as unknown as { __freeFly?: unknown; __renderer?: unknown }).__freeFly = freeFlyRef.current;
+    (window as unknown as { __freeFly?: unknown; __renderer?: unknown }).__renderer = renderer;
+    (window as unknown as Record<string, unknown>).__world = world;
+    (window as unknown as Record<string, unknown>).__sampleTerrain = sampleTerrain;
     updatePhase("viewer");
-  }, [invalidatePendingTransitions, updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase, world]);
 
   const exitViewer = useCallback(() => {
     if (phaseRef.current !== "viewer") return;
