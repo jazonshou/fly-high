@@ -758,10 +758,20 @@ describe("Phase 5 shared water-depth optics", () => {
     // cannot carry an illuminant, which is why the pre-W-7 sea kept its teal
     // hue under an orange sunset while the land beside it went warm.
     expect(WATER_DEPTH_OPTICS_WGSL).toContain("fn waterDownwelling(");
-    expect(WATER_DEPTH_OPTICS_WGSL).toContain("WATER_SUN_IRRADIANCE_SCALE * max(sunElevationSine, 0.0) * sunVisibility");
+    // The sun's irradiance at normal incidence (shadow applied once), and the
+    // horizontal share the body model reads — W-9 split them so foam can be
+    // lit by the same quantity as the water under it.
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "let sunNormal = uniforms.sunColor * (WATER_SUN_IRRADIANCE_SCALE * sunVisibility);",
+    );
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain("let sun = sunNormal * max(sunElevationSine, 0.0);");
     expect(WATER_DEPTH_OPTICS_WGSL).toContain("uniforms.skyZenith + uniforms.skyHorizon");
+    // W-9: foam reads the SAME resolved irradiance the body does, rather than
+    // re-deriving the sky's share and lighting its sun term without the
+    // irradiance scale (which made foam 1.65x darker than an equal terrain
+    // albedo and had to be paid back in the albedo).
     expect(WATER_FOAM_WGSL).toContain(
-      "skyAmbient * 0.55 * skylightIlluminanceNormalized",
+      "return albedo * (downwelling.sky + downwelling.sunNormal * nDotL);",
     );
     // The retired constant-hue terms, named so they cannot come back: the
     // scalar-lit teal in-scatter, the fixed subsurface tint and the fitted

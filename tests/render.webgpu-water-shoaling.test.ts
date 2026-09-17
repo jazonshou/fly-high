@@ -608,8 +608,12 @@ describe("6-3 and 6-2 draw the same wave", () => {
     expect(code).toContain("foamAmount = max(");
     // wave S: the accumulator is spent as discrete flecks at range
     // (`whitecaps` is `foamAmount` wherever the flecks are not active).
-    expect(code).toContain("let whitecaps = foamAmount * mix(");
-    expect(code).toContain("let foam = clamp(max(whitecaps * 1.18, shoreFoam), 0.0, 1.0)");
+    // W-9: the accumulator now feeds the physical coverage, which is what the
+    // flecks are drawn from; the shelf's whitewater reaches the foam through
+    // breakingFoam, at the surf reflectance rather than the whitecap one.
+    expect(code).toContain("let whitecaps = clamp(whitecapCoverage, 0.0, 1.0) * mix(");
+    expect(code).toContain("shelfWhitewater * WATER_SHOAL_WHITEWATER_COVERAGE * wetSurfaceAlpha");
+    expect(code).toContain("let foam = clamp(max(windFoam, breakingFoam), 0.0, 1.0)");
   });
 
   it("keeps the gating mean-preserving, so 6-2's pinned coverage does not move", () => {

@@ -167,6 +167,18 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-9 (the far field's own statistics). FRAGMENT ONLY again,
+    // and the vertex hash below has still not moved since wave S. The fragment
+    // gained the Cox-Munk anchor for sub-pixel slope variance (one identity
+    // replacing a sum of independent estimates, applied only outside the
+    // near-field window, so the near field is bit-identical), a roughness
+    // ceiling at 0.6 instead of 0.5 (0.5 IS Cox-Munk at 9.7 m/s, so the
+    // shipped world sat on the clamp), Monahan's whitecap coverage with the
+    // spectrum's breaking field normalised by its own coarsest mip, and the
+    // split of foam into wind whitecaps at Koepke's effective 0.22 and surf at
+    // fresh-foam 0.5, both lit by the shared downwelling irradiance. Deliberate,
+    // named, reviewed.
+    //
     // Re-pinned by W-7 (the optical water type and the physical body model).
     // FRAGMENT ONLY — the vertex hash below is byte-for-byte the one wave S
     // left, which is the claim that W-7 moved no displacement, no varying and
@@ -188,7 +200,7 @@ describe("water shader extraction (2-8a)", () => {
       "b27d14cd636096ee32cef4a5862ed27ba44d333aef4e46bfa41982582cab5b3d",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "bec41f392e5805f36d2da84033aa3142242f0ff9897f656c6865b23291a0f072",
+      "4ffbf02a463cb256e7a12a07672b96107a3493419ad9fba461a987dfc00af965",
     );
   });
 

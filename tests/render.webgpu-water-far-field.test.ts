@@ -189,11 +189,17 @@ describe("distant whitecap flecks", () => {
     expect(WATER_WHITECAP_FOOTPRINT_LOW).toBeGreaterThanOrEqual(4);
     expect(WATER_WHITECAP_FOOTPRINT_HIGH).toBeGreaterThan(WATER_WHITECAP_FOOTPRINT_LOW);
     expect(WATER_WHITECAP_LIFETIME_SECONDS).toBeGreaterThan(1);
-    expect(WATER_FRAGMENT_WGSL).toContain("let whitecapCount = waterWhitecapExpectedCount(foamAmount, glintFootprintArea);");
+    // W-9: the count is taken against the PHYSICAL coverage (Monahan's wind
+    // law times the spectrum's own breaking pattern, normalised by that
+    // pattern's mip mean), not against the tuned accumulator.
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain("waterWhitecapCoverage(length(uniforms.oceanWind))");
     expect(WATER_FRAGMENT_WGSL).toContain(
       `waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2)`,
     );
-    expect(WATER_FRAGMENT_WGSL).toContain("let foam = clamp(max(whitecaps * 1.18, shoreFoam), 0.0, 1.0)");
+    expect(WATER_FRAGMENT_WGSL).toContain("let foam = clamp(max(windFoam, breakingFoam), 0.0, 1.0)");
     // Roughness keeps reading the mean coverage; only the composite is discrete.
     expect(WATER_FRAGMENT_WGSL).toContain("let baseRoughness = 0.075 + foamAmount * 0.2;");
     // The per-pixel cell search is gone for good: one hash pair per pixel.

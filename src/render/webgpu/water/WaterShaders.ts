@@ -853,6 +853,10 @@ fn waterBottomPathFactor(u: vec3f) -> vec3f {
 // diffuse share (which nothing focuses). THE radiometric bridge to the
 // terrain's own lighting -- see WATER_SUN_IRRADIANCE_SCALE.
 struct WaterDownwelling {
+  // The sun's irradiance at NORMAL incidence (already shadowed): what a facet
+  // tilted toward the sun receives, which is what foam and any other
+  // Lambertian surface on the water needs.
+  sunNormal: vec3f,
   sun: vec3f,
   sky: vec3f,
   total: vec3f,
@@ -860,14 +864,14 @@ struct WaterDownwelling {
 }
 
 fn waterDownwelling(sunElevationSine: f32, sunVisibility: f32) -> WaterDownwelling {
-  let sun = uniforms.sunColor
-    * (WATER_SUN_IRRADIANCE_SCALE * max(sunElevationSine, 0.0) * sunVisibility);
+  let sunNormal = uniforms.sunColor * (WATER_SUN_IRRADIANCE_SCALE * sunVisibility);
+  let sun = sunNormal * max(sunElevationSine, 0.0);
   let sky = (uniforms.skyZenith + uniforms.skyHorizon)
     * (0.5 * WATER_SKY_IRRADIANCE_FRACTION * uniforms.skylightIlluminanceNormalized);
   let total = sun + sky;
   let directFraction = dot(sun, WATER_LUMINANCE_WEIGHTS)
     / max(dot(total, WATER_LUMINANCE_WEIGHTS), 0.000001);
-  return WaterDownwelling(sun, sky, total, directFraction);
+  return WaterDownwelling(sunNormal, sun, sky, total, directFraction);
 }
 
 // The tint a backlit crest transmits: the type's own transmittance over a
@@ -3835,6 +3839,67 @@ export const WATER_GLINT_SPARKLE_MAX_EXPONENT = 24;
 export const WATER_GLINT_SPARKLE_FOOTPRINT_LOW = 0.12;
 export const WATER_GLINT_SPARKLE_FOOTPRINT_HIGH = 0.5;
 
+/**
+ * `W-9` — WHITECAP COVERAGE IS A WIND LAW, not a look.
+ *
+ * Monahan & O'Muircheartaigh (1980) fit ship and aircraft photography of the
+ * open ocean to `W = 3.84e-6 U10^3.41`: 0.09% at 5 m/s, 0.87% at 9.6 m/s (the
+ * default world's own wind), 4% at 15 m/s. Callaghan et al. (2008) add the
+ * threshold — below about 3.7 m/s the sea does not break at all.
+ *
+ * Wave R's foam came from the spectrum's Jacobian alone, whose threshold and
+ * gain were tuned by eye, so open water carried whitecaps at every wind and
+ * the first thing Jason said about the sea was "light blue with white foam".
+ * The Jacobian still decides WHERE a cap is — it is the only term that knows
+ * which wave is breaking — but HOW MUCH is now this law, applied by
+ * normalising the foam field against its own mip-filtered mean.
+ */
+export const WATER_WHITECAP_COVERAGE_COEFFICIENT = 3.84e-6;
+export const WATER_WHITECAP_COVERAGE_EXPONENT = 3.41;
+export const WATER_WHITECAP_WIND_THRESHOLD = 3.7;
+export const WATER_WHITECAP_WIND_FULL = 5.0;
+
+/**
+ * Koepke (1984): the EFFECTIVE reflectance of a whitecap — 0.22, not the 0.5+
+ * of thick fresh foam — because a cap spends most of its life as a decaying
+ * bubble raft. It is the value that reproduces satellite radiances when
+ * multiplied by Monahan's coverage, which is exactly how it is used here.
+ *
+ * Active BREAKING foam (the surf zone, a rapid, a bore) is the thick fresh
+ * kind, so it keeps a Whitlock-style 0.5. Splitting the two is what lets the
+ * open sea stop being speckled white while surf stays surf.
+ */
+export const WATER_WHITECAP_EFFECTIVE_ALBEDO = 0.22;
+export const WATER_SURF_FOAM_ALBEDO = 0.5;
+
+/**
+ * `W-9` — Cox & Munk (1954), the measurement every sea-surface BRDF is
+ * anchored to: the total mean-square slope of a clean sea is
+ * `0.003 + 5.12e-3 U` (U at 12.5 m, m/s). 0.052 at the default world's
+ * 9.6 m/s, i.e. a GGX roughness of 0.478.
+ *
+ * The far field needs this because the renderer's own sub-pixel estimate is a
+ * SUM of independent terms (every faded cascade's band variance plus the
+ * capillary block's five octave tails) with nothing holding the total to a
+ * measured value. At 9.6 m/s that sum reaches ~0.09-0.12, which is past the
+ * roughness clamp — so every pixel of open sea arrived at the SAME clamped
+ * roughness and the gust lanes that were supposed to vary it were clipped
+ * away. A sea with one roughness everywhere is the plastic look, whatever its
+ * colour.
+ */
+export const WATER_COX_MUNK_BASE_VARIANCE = 0.003;
+export const WATER_COX_MUNK_WIND_SLOPE = 0.00512;
+
+/**
+ * Footprint window (m, on the anisotropy-limited minor axis) over which the
+ * far-field anchor takes over from the near-field sum. Identical to the
+ * sparkle's window on purpose: inside it the resolved octaves ARE the surface
+ * and the near field is bit-for-bit what wave R shipped; outside it the pixel
+ * covers whole wave trains and the statistic is the truth.
+ */
+export const WATER_COX_MUNK_FOOTPRINT_LOW = WATER_GLINT_SPARKLE_FOOTPRINT_LOW;
+export const WATER_COX_MUNK_FOOTPRINT_HIGH = WATER_GLINT_SPARKLE_FOOTPRINT_HIGH;
+
 /** A mature whitecap's patch area (m²) and lifetime (s). */
 export const WATER_WHITECAP_PATCH_AREA_M2 = 12;
 export const WATER_WHITECAP_LIFETIME_SECONDS = 3.2;
@@ -3908,6 +3973,35 @@ export function waterGlintExpectedCount(
   const facets = footprintArea / (WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS);
   const captureSolidAngle = Math.PI * (sunAngularRadius * 0.5) ** 2;
   return facets * waterGgxDistribution(nDotH, alpha) * Math.max(nDotH, 0) * captureSolidAngle;
+}
+
+/**
+ * CPU mirror of `waterCoxMunkSlopeVariance`: the total mean-square slope of a
+ * clean sea at this wind, the anchor the far field's roughness is held to.
+ */
+export function waterCoxMunkSlopeVariance(windSpeedMetersPerSecond: number): number {
+  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
+    throw new RangeError("Water wind speed must be finite and non-negative");
+  }
+  return WATER_COX_MUNK_BASE_VARIANCE + WATER_COX_MUNK_WIND_SLOPE * windSpeedMetersPerSecond;
+}
+
+/**
+ * CPU mirror of `waterWhitecapCoverage`: Monahan & O'Muircheartaigh's
+ * `3.84e-6 U^3.41`, with Callaghan's threshold faded in over 3.7-5 m/s.
+ */
+export function waterWhitecapCoverage(windSpeedMetersPerSecond: number): number {
+  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
+    throw new RangeError("Water wind speed must be finite and non-negative");
+  }
+  const threshold = smoothstepUnit(
+    WATER_WHITECAP_WIND_THRESHOLD,
+    WATER_WHITECAP_WIND_FULL,
+    windSpeedMetersPerSecond,
+  );
+  return WATER_WHITECAP_COVERAGE_COEFFICIENT
+    * windSpeedMetersPerSecond ** WATER_WHITECAP_COVERAGE_EXPONENT
+    * threshold;
 }
 
 /** CPU mirror of `waterWhitecapExpectedCount`: caps in the footprint at this coverage. */
@@ -4040,6 +4134,51 @@ fn waterWhitecapExpectedCount(coverage: f32, footprintArea: f32) -> f32 {
   return max(footprintArea, 0.0) * max(coverage, 0.0) / ${WATER_WHITECAP_PATCH_AREA_M2.toFixed(1)};
 }
 
+// W-9: Cox & Munk's clean-sea total mean-square slope at this wind.
+fn waterCoxMunkSlopeVariance(windSpeed: f32) -> f32 {
+  return ${WATER_COX_MUNK_BASE_VARIANCE.toFixed(4)}
+    + ${WATER_COX_MUNK_WIND_SLOPE.toFixed(5)} * max(windSpeed, 0.0);
+}
+
+// W-9: Monahan & O'Muircheartaigh's whitecap coverage, with Callaghan's
+// breaking threshold. This is the sea's WHITE FRACTION, and the only thing
+// that decides how much foam open water carries.
+fn waterWhitecapCoverage(windSpeed: f32) -> f32 {
+  let wind = max(windSpeed, 0.0);
+  let threshold = smoothstep(
+    ${WATER_WHITECAP_WIND_THRESHOLD.toFixed(1)},
+    ${WATER_WHITECAP_WIND_FULL.toFixed(1)},
+    wind,
+  );
+  return ${WATER_WHITECAP_COVERAGE_COEFFICIENT.toExponential(3)}
+    * pow(wind, ${WATER_WHITECAP_COVERAGE_EXPONENT.toFixed(2)}) * threshold;
+}
+
+// W-9: the sub-pixel slope variance, anchored. Inside the near-field window
+// the caller's own resolved-octave sum is the surface and this returns it
+// unchanged; outside it the pixel covers whole wave trains, and what it
+// cannot resolve is Cox-Munk's total minus whatever the rendered normal still
+// carries. One identity instead of a sum of independent estimates, so the
+// gust and slick lanes modulate a value that is no longer clamped flat.
+fn waterSubPixelSlopeVariance(
+  nearFieldVariance: f32,
+  windSpeed: f32,
+  resolvedIntoNormal: f32,
+  varianceGain: f32,
+  footprintMinor: f32,
+) -> f32 {
+  let anchored = max(
+    waterCoxMunkSlopeVariance(windSpeed) * varianceGain - max(resolvedIntoNormal, 0.0),
+    0.0,
+  );
+  let weight = smoothstep(
+    ${WATER_COX_MUNK_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_COX_MUNK_FOOTPRINT_HIGH.toFixed(3)},
+    footprintMinor,
+  );
+  return mix(nearFieldVariance, anchored, weight);
+}
+
 // The mean-one twinkle at one pixel: two screen-hashed draws cross-faded over
 // the phase's fractional part. The seed keeps the glint and whitecap clocks
 // independent.
@@ -4102,24 +4241,22 @@ fn foamBreakup(worldXZ: vec2f, advection: vec2f) -> f32 {
   return smoothstep(0.12, 0.66, coarse * 0.62 + fine * 0.38);
 }
 
+// W-9: foam is a Lambertian scatterer lit by the SAME downwelling irradiance
+// the body model resolves -- the sky's share as it stands, and the sun's own
+// normal-incidence irradiance times this facet's cosine. Before W-7 the sun
+// term was sunColor * nDotL with no irradiance scale, so foam was lit 1.65x
+// dimmer than a terrain albedo under the same sun and its brightness had to be
+// bought back in the albedo. Now the albedo is the measured reflectance
+// (Koepke's 0.22 for a whitecap, 0.5 for fresh breaking foam) and the
+// radiometry carries the rest.
 fn litFoamColor(
   albedo: vec3f,
   normal: vec3f,
   light: vec3f,
-  sunColor: vec3f,
-  skyZenith: vec3f,
-  skyHorizon: vec3f,
-  skylightIlluminanceNormalized: f32,
-  sunVisibility: f32,
+  downwelling: WaterDownwelling,
 ) -> vec3f {
   let nDotL = max(dot(normal, light), 0.0);
-  let skyAmbient = (skyZenith + skyHorizon) * 0.5;
-  // W-7: the sky's share is the SAME fraction the body model uses, from one
-  // constant -- foam and the water under it cannot be lit by two skies.
-  return albedo * (
-    skyAmbient * ${WATER_SKY_IRRADIANCE_FRACTION} * skylightIlluminanceNormalized
-    + sunColor * nDotL * sunVisibility
-  );
+  return albedo * (downwelling.sky + downwelling.sunNormal * nDotL);
 }`;
 
 /**

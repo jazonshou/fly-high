@@ -68,6 +68,8 @@ import {
 } from "./SunShadowReceiver";
 import {
   applyWaterOpticalType,
+  WATER_SURF_FOAM_ALBEDO,
+  WATER_WHITECAP_EFFECTIVE_ALBEDO,
   WATER_REFERENCE_OPTICAL_TYPE,
   type WaterOpticalType,
   fallbackWaterEnvironmentCube,
@@ -547,8 +549,18 @@ const OCEAN_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
   overcastHorizonColor: [0.58, 0.63, 0.68],
 };
 
-/** 2-9: open-sea foam albedo (the inland surface runs a brighter one). */
-const OCEAN_FOAM_ALBEDO_WGSL = "vec3f(0.69, 0.75, 0.73)";
+/**
+ * W-9: the two foam reflectances, measured rather than chosen. A wind
+ * whitecap is Koepke's (1984) EFFECTIVE 0.22 — a cap spends most of its life
+ * as a decaying bubble raft, and 0.22 is the value that reproduces satellite
+ * radiances against Monahan's coverage. Surf is thick fresh foam and keeps a
+ * Whitlock-style 0.5. The slight blue-green cast of both is the water showing
+ * through the raft.
+ */
+const OCEAN_WHITECAP_ALBEDO_WGSL =
+  `vec3f(${(WATER_WHITECAP_EFFECTIVE_ALBEDO * 0.95).toFixed(3)}, ${WATER_WHITECAP_EFFECTIVE_ALBEDO.toFixed(3)}, ${WATER_WHITECAP_EFFECTIVE_ALBEDO.toFixed(3)})`;
+const OCEAN_SURF_ALBEDO_WGSL =
+  `vec3f(${(WATER_SURF_FOAM_ALBEDO * 0.95).toFixed(3)}, ${WATER_SURF_FOAM_ALBEDO.toFixed(3)}, ${(WATER_SURF_FOAM_ALBEDO * 0.98).toFixed(3)})`;
 /** 2-9: Gate 2B's declared crest-SSS tuning knob. */
 const OCEAN_CREST_SSS_INTENSITY_WGSL = "0.55";
 
@@ -941,6 +953,29 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   }
   slopeSum += capillary.slope;
   slopeVariance += capillary.unresolvedMeanSquareSlope * farGust;
+  // W-9: the far field's sub-pixel slope variance is ANCHORED to Cox-Munk
+  // rather than summed from independent estimates. Every faded cascade's band
+  // variance plus the capillary block's five octave tails reached ~0.09-0.12
+  // at this world's 9.6 m/s, where the measurement says 0.052 — past the
+  // roughness clamp, so every open-sea pixel arrived at the SAME roughness and
+  // the gust lanes meant to vary it were clipped away. That is the plastic
+  // look with the colour already fixed. Inside the near-field window this
+  // returns the sum above unchanged, to the bit; outside it the total is the
+  // measurement and what the rendered normal still carries is subtracted, so
+  // the two never double-count.
+  //
+  // resolvedIntoNormal is each cascade's band variance scaled by its own
+  // fade SQUARED — variance of a scaled slope — which is exactly the energy
+  // the geometric normal above is already showing.
+  let resolvedIntoNormal = dot(cascadeBandMss * input.cascadeFades * input.cascadeFades, vec4f(1.0))
+    + cascadeBandMss4 * input.cascadeFade4 * input.cascadeFade4;
+  slopeVariance = waterSubPixelSlopeVariance(
+    slopeVariance,
+    length(uniforms.oceanWind),
+    resolvedIntoNormal,
+    farGust,
+    runupFootprint,
+  );
   let geometricNormal = normalize(vec3f(slopeSum.x, 1.0, slopeSum.y));
   // wave R fix 7: the sun lobe alone sees the finest jitter. Putting it in the
   // shared normal would boil the reflected sky and the Fresnel term; the sun
@@ -985,7 +1020,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // which is exactly the constant-roughness plastic look. A fully unresolved
   // sea at 11 m/s carries a mean-square slope near 0.06 (Cox-Munk), i.e. GGX
   // roughness ~0.49, so 0.5 is the physical ceiling rather than an artistic one.
-  let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.5);
+  // W-9 raised the ceiling 0.5 -> 0.6. 0.5 is exactly Cox-Munk at 9.7 m/s,
+  // so the shipped world sat ON the clamp and every gust lane above the mean
+  // was flattened into the same number. 0.6 is the mean-square slope of a
+  // 25 m/s sea, which no world generates (the wind law tops out at 11 m/s),
+  // so the clamp is once again a guard rather than a look.
+  let roughness = clamp(sqrt(sqrt(alphaSquared)), 0.065, 0.6);
   // 2-9: the sky reflection comes from the shared environment probe (the
   // rendered sky, clouds and haze included), roughness-mapped to its mips;
   // the analytic zenith/horizon mix remains only as the not-yet-valid
@@ -1119,24 +1159,40 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     ${WATER_WHITECAP_FOOTPRINT_HIGH.toFixed(1)},
     footprintMajor,
   );
-  let whitecapCount = waterWhitecapExpectedCount(foamAmount, glintFootprintArea);
-  let whitecaps = foamAmount * mix(
+  // W-9: HOW MUCH open water breaks is Monahan's wind law; the spectrum's
+  // Jacobian only says WHERE. Normalising the foam field by its own coarsest
+  // mip (the patch mean of the same channel, one extra sample) turns the
+  // tuned-by-eye accumulator into a pattern of mean one, and multiplying by
+  // the coverage makes the sea's white fraction the measured 0.87% at this
+  // world's 9.6 m/s instead of the speckle that read as white static over a
+  // dark sea.
+  //
+  // The SURF terms are not whitecaps and keep their own strength: a shoaling
+  // wave breaks because the bed made it, not because the wind did.
+  let openWaterFoamMean = max(
+    textureSampleLevel(slopeFoam0, slopeFoam0Sampler, fract(input.oceanCoordinate / uniforms.patchLengths0.x), 32.0).z,
+    0.0001,
+  );
+  let whitecapCoverage = waterWhitecapCoverage(length(uniforms.oceanWind))
+    * (foamAmount / openWaterFoamMean);
+  let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);
+  let whitecaps = clamp(whitecapCoverage, 0.0, 1.0) * mix(
     1.0,
     waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2),
     fleckWeight,
   );
-  let foam = clamp(max(whitecaps * 1.18, shoreFoam), 0.0, 1.0)
+  let breakingFoam = clamp(max(shoreFoam, shelfWhitewater * WATER_SHOAL_WHITEWATER_COVERAGE * wetSurfaceAlpha), 0.0, 1.0);
+  let windFoam = clamp(whitecaps, 0.0, 1.0);
+  let foam = clamp(max(windFoam, breakingFoam), 0.0, 1.0)
     * mix(mix(0.35, 1.0, foamMask), 1.0, fleckWeight) * wetSurfaceAlpha;
-  let foamColor = litFoamColor(
-    ${OCEAN_FOAM_ALBEDO_WGSL},
-    normal,
-    light,
-    uniforms.sunColor,
-    uniforms.skyZenith,
-    uniforms.skyHorizon,
-    uniforms.skylightIlluminanceNormalized,
-    directSunVisibility,
+  // Koepke's 0.22 for a wind whitecap, Whitlock's thick-fresh-foam 0.5 for
+  // surf, blended by which one this fragment is showing.
+  let foamAlbedo = mix(
+    ${OCEAN_WHITECAP_ALBEDO_WGSL},
+    ${OCEAN_SURF_ALBEDO_WGSL},
+    select(0.0, breakingFoam / max(max(windFoam, breakingFoam), 0.0001), breakingFoam > 0.0),
   );
+  let foamColor = litFoamColor(foamAlbedo, normal, light, downwelling);
   water = mix(water, foamColor, foam);
   if (cameraBelow) {
     water = applyUnderwaterBeerLambert(water, cameraDistance, optics, downwelling);

@@ -689,7 +689,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     dot(input.absoluteWorldXZ, vec2f(-input.flowDirection.y, input.flowDirection.x)) * 0.19
       + uniforms.time * 0.8,
   );
-  var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;
+  // W-9: the bank ring is now GATED BY ENERGY. It used to be unconditional,
+  // so every lake and every reach wore a white collar in dead calm — one of
+  // the two things Jason meant by "always white foam". Lapping needs
+  // something to lap: on a lake the fetch-limited chop the wind can raise
+  // (waterLakeChop's own height, via the sqrt-encoded fetch payload), on a
+  // river the boil of its own current. Both go to zero smoothly, so a
+  // sheltered tarn at dawn has a clean edge and a windy shore still breaks.
+  // The lane's own payload, decoded exactly as waterChannelFlow decodes it
+  // (sentinel base removed, clamped): the sqrt-encoded fetch on a lake ring,
+  // the normalised grade on a river lane. An analytic world carries 0, which
+  // reads as no fetch, so its lakes fall back to the flow-speed term.
+  let channelField = clamp(input.waterInfo.w - ${1}.0, 0.0, 1.0);
+  let lakeChop = waterLakeChop(uniforms.windSpeed, channelField);
+  let bankEnergy = clamp(max(
+    smoothstep(0.02, 0.14, lakeChop.significantHeightMeters) * lakeFactor,
+    smoothstep(0.35, 1.4, input.flowSpeed),
+  ), 0.0, 1.0);
+  var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3 * bankEnergy;
   // 6-2: on W-5's banks the shore lapping generalises into a real run-up — a
   // swash front that beats at its own driver's period (the boil train on a
   // lane, the fetch-limited chop on a lake shore) and streaks along the bank
@@ -714,15 +731,15 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.flowDirection * (uniforms.time * (0.5 + input.flowSpeed * 0.6)),
   );
   let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0) * mix(0.4, 1.0, foamMask);
+  // W-9: inland foam is breaking foam — a rapid's boil or a bank's swash —
+  // so it carries the thick-fresh-foam reflectance rather than the open sea's
+  // effective whitecap value, and it is lit by the shared downwelling
+  // irradiance like every other Lambertian surface on the water.
   let foamColor = litFoamColor(
-    vec3f(0.78, 0.84, 0.82),
+    vec3f(${(0.5 * 0.96).toFixed(3)}, ${(0.5).toFixed(3)}, ${(0.5 * 0.98).toFixed(3)}),
     normal,
     light,
-    uniforms.sunColor,
-    uniforms.skyZenith,
-    uniforms.skyHorizon,
-    uniforms.skylightIlluminanceNormalized,
-    directSunVisibility,
+    downwelling,
   );
   color = mix(color, foamColor, foam);
   if (cameraBelow) {
