@@ -528,7 +528,31 @@ const GRASS_BLADE_LIGHT: Rgb = [0.145, 0.215, 0.07];
 const GRASS_STRAW_DARK: Rgb = [0.135, 0.115, 0.05];
 const GRASS_STRAW_LIGHT: Rgb = [0.255, 0.225, 0.098];
 
-function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: number): void {
+/**
+ * `W-2` — the sward's METRE-scale contrast, as a recipe parameter.
+ *
+ * The clump field is a 1 m fbm, and every colour it drives lands in the tile's
+ * |k| <= 4 band — the band whose energy IS the tiling repeat, because it
+ * survives every mip the ground is ever seen through. Measured at seed "s3",
+ * edge 256: DryGrass carried 1.13e-4 of low-|k| albedo power against Grass's
+ * 2.66e-5, four times as much, and that is the fine repeating grid the near
+ * field shows over dry ground. The cause is the straw ramp: at strawShare 0.8
+ * the colour runs the WHOLE straw pair (0.135 -> 0.255 luma, nearly 2x) across
+ * one metre-scale field, and the bare-soil mask opens on the same field, so
+ * the two reinforce. `MaterialArraySynthesis.ts`'s own note called this out and
+ * left it for a sward retune: this is that retune.
+ *
+ * Compressing the field's COLOUR authority is the fix that keeps what the
+ * recipe is for. Blade density, blade lie and the height channel still read the
+ * full clump — the sward keeps its patchiness at blade scale, which is where a
+ * real sward's variation lives — while the metre-scale albedo swing narrows.
+ */
+function synthesizeSward(
+  context: RecipeContext,
+  strawShare: number,
+  bareShare: number,
+  clumpContrast: number,
+): void {
   const { canvas, seed, random, texelsPerMeter } = context;
   const edge = canvas.edge;
   // The base is the sward's own colour, not soil. An earlier draft used a
@@ -563,10 +587,15 @@ function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: 
       // note asks for, because the dominant coarse source is not this term but
       // the clump-driven straw ramp above. Compressing that ramp is the real
       // fix and is a sward retune, not a mask repair; left for one.
-      const bare = saturate((1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5));
+      // W-2: the colour reads a COMPRESSED clump, centred on the same mean, so
+      // the ramp keeps its direction and loses the amplitude that repeats.
+      const tone = saturate(0.5 + (clump - 0.5) * clumpContrast);
+      const bare = saturate(
+        (1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5) * clumpContrast,
+      );
       const sward = mixRgb(
-        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, clump),
-        mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, clump),
+        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, tone),
+        mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, tone),
         strawShare * 0.85,
       );
       return mixRgb(sward, GRASS_SOIL, bare);
@@ -621,8 +650,13 @@ function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: 
   }
 }
 
-const synthesizeGrass: Recipe = (context) => synthesizeSward(context, 0.12, 0.2);
-const synthesizeDryGrass: Recipe = (context) => synthesizeSward(context, 0.8, 0.34);
+// Grass keeps its full clump contrast: measured at 2.66e-5 of low-|k| power,
+// it never showed a repeat. DryGrass runs the same recipe with four times the
+// straw share, so it needs the compression — 0.42 takes it to the same order
+// as Grass without touching either material's integrated albedo, which
+// fitAlbedoToReference pins afterwards regardless.
+const synthesizeGrass: Recipe = (context) => synthesizeSward(context, 0.12, 0.2, 1);
+const synthesizeDryGrass: Recipe = (context) => synthesizeSward(context, 0.8, 0.34, 0.42);
 
 // --- Forest floor ----------------------------------------------------------
 
