@@ -66,6 +66,9 @@ import {
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
 import {
+  applyWaterOpticalType,
+  WATER_REFERENCE_OPTICAL_TYPE,
+  type WaterOpticalType,
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
   configureDepthAwareWaterRendering,
@@ -271,7 +274,6 @@ uniform sunColor: vec3f;
 uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
-uniform sunIlluminanceNormalized: f32;
 uniform skylightIlluminanceNormalized: f32;
 uniform cloudCoverage: f32;
 uniform windDirection: vec2f;
@@ -279,6 +281,11 @@ uniform windSpeed: f32;
 uniform time: f32;
 uniform regionOpacity: f32;
 uniform environmentValid: f32;
+// W-7: the optical water type — see the ocean fragment's declaration. Inland
+// water is where the type varies most (a peat tarn, a glacial lake and a
+// silty river are three different spectra), which W-8 supplies per vertex.
+uniform waterAbsorption: vec3f;
+uniform waterBackscatter: vec3f;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 // Terrain occlusion of the reflected sky: the terrain's global horizon field
@@ -636,19 +643,19 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  let diffuseIlluminanceNormalized = max(
-    uniforms.sunIlluminanceNormalized,
-    uniforms.skylightIlluminanceNormalized,
-  );
+  // W-7: the shared body model, lit by the coloured downwelling irradiance.
+  let optics = waterOpticsFromUniforms();
+  let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.absoluteWorldXZ,
     input.worldPosition.y,
     depth,
-    diffuseIlluminanceNormalized,
+    optics,
+    downwelling,
+    light,
     normal,
     view,
     cameraBelow,
-    directSunVisibility,
     caustic,
     causticBeam,
   );
@@ -722,8 +729,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     color = applyUnderwaterBeerLambert(
       color,
       distance(uniforms.cameraPosition, input.worldPosition),
-      directSunVisibility,
-      diffuseIlluminanceNormalized,
+      optics,
+      downwelling,
     );
   }
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
@@ -1582,7 +1589,6 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
-          "sunIlluminanceNormalized",
           "skylightIlluminanceNormalized",
           "cloudCoverage",
           "windDirection",
@@ -1590,6 +1596,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "time",
           "regionOpacity",
           "environmentValid",
+          "waterAbsorption",
+          "waterBackscatter",
           "hydrologyHorizonField",
           "groundBounceAlbedo",
           "bathymetryNearPlacement",
@@ -1644,6 +1652,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     // forever). The renderer forwards the real field once the first horizon
     // bake lands; until then inverseSpan 0 reads as fully visible.
     this.setHorizonField(null, null, 0, 0, 0);
+    // W-7: the optical water type. One type per material until W-8 supplies
+    // the per-region field; bound from construction because a body colour is
+    // not optional.
+    this.setWaterOpticalType(WATER_REFERENCE_OPTICAL_TYPE);
     this.setGroundBounceAlbedo(HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE);
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
@@ -1749,6 +1761,15 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     );
   }
 
+  /**
+   * `W-7`: inland water's optical type — the fallback every region starts
+   * from. `W-8` gives each lake and reach its own chemistry per vertex; this
+   * uniform remains what an analytic world (no channel graph) renders with.
+   */
+  setWaterOpticalType(type: WaterOpticalType): void {
+    applyWaterOpticalType(this.material, type);
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
@@ -1758,10 +1779,6 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setFloat("sunAngularRadius", atmosphere.sunAngularRadiusRadians);
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
-    this.material.setFloat(
-      "sunIlluminanceNormalized",
-      atmosphere.sunIlluminanceNormalized,
-    );
     this.material.setFloat(
       "skylightIlluminanceNormalized",
       atmosphere.skylightIlluminanceNormalized,

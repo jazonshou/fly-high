@@ -32,9 +32,15 @@ describe("spectral ocean presentation topology", () => {
     // becomes roughness; the old ad-hoc smoothstep distance term is gone.
     expect(WATER_FRAGMENT_WGSL).toContain("slopeVariance");
     expect(WATER_FRAGMENT_WGSL).not.toContain("distanceRoughness");
-    // 5-11: bathymetry drives Beer-Lambert transmission and the soft shore;
-    // the former constant additive deep colour and opaque alpha are retired.
-    expect(WATER_FRAGMENT_WGSL).toContain("WATER_ABSORPTION_PER_METER");
+    // 5-11: bathymetry drives the depth optics and the soft shore; the former
+    // constant additive deep colour and opaque alpha are retired.
+    // W-7: the absorption constant became a water TYPE (absorption and
+    // backscatter), and the body is Lee et al.'s shallow-water reflectance
+    // under the scene's own irradiance.
+    expect(WATER_FRAGMENT_WGSL).toContain("waterOpticsFromUniforms()");
+    expect(WATER_FRAGMENT_WGSL).toContain("uniform waterAbsorption: vec3f;");
+    expect(WATER_FRAGMENT_WGSL).toContain("uniform waterBackscatter: vec3f;");
+    expect(WATER_FRAGMENT_WGSL).toContain("waterDeepSubsurfaceReflectance(u)");
     expect(WATER_FRAGMENT_WGSL).toContain("waterShorelineAlpha(depth)");
     expect(WATER_FRAGMENT_WGSL).not.toContain("deepAbsorption");
     // Slopes are stored and summed directly (fade-weighted) — the clamped

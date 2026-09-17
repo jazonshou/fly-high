@@ -67,6 +67,9 @@ import {
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
 import {
+  applyWaterOpticalType,
+  WATER_REFERENCE_OPTICAL_TYPE,
+  type WaterOpticalType,
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
   configureDepthAwareWaterRendering,
@@ -564,7 +567,6 @@ uniform sunColor: vec3f;
 uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
-uniform sunIlluminanceNormalized: f32;
 uniform skylightIlluminanceNormalized: f32;
 uniform cloudCoverage: f32;
 // wave R fix 8: ONE wind. This used to be the atmosphere's cloud-layer wind
@@ -595,6 +597,11 @@ uniform causticCurvatureScale4: f32;
 uniform cascadeWavelengths0: vec4f;
 uniform cascadeWavelength4: f32;
 uniform environmentValid: f32;
+// W-7: the optical water type, per-metre absorption and backscatter in the
+// renderer's linear-sRGB channels. One pair of uniforms per material today;
+// W-8 modulates them per fragment from the region's own climate and depth.
+uniform waterAbsorption: vec3f;
+uniform waterBackscatter: vec3f;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 var slopeFoam0Sampler: sampler; var slopeFoam0: texture_2d<f32>;
@@ -998,36 +1005,36 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  // 5-11: the body is now the same real bed + Beer-Lambert + one-scatter
-  // model used by inland water, rather than an additive deep-blue constant.
-  // This daylight-calibrated diffuse body follows whichever physical source
-  // is stronger. At the reference day max(1, 1) is exactly identity; at the
-  // moonless night both inputs are effectively zero instead of the ambient
-  // light's deliberately non-physical fp16 floor.
-  let diffuseIlluminanceNormalized = max(
-    uniforms.sunIlluminanceNormalized,
-    uniforms.skylightIlluminanceNormalized,
-  );
+  // W-7: the body is Lee et al.'s shallow-water reflectance for THIS water
+  // type, lit by the scene's own downwelling irradiance — see
+  // waterVolumeRadiance. 5-11's grey max(sunIlluminanceNormalized,
+  // skylightIlluminanceNormalized) scalar is gone: a scalar cannot carry an
+  // illuminant, which is why the sea stayed cyan under an orange sunset.
+  let optics = waterOpticsFromUniforms();
+  let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.oceanCoordinate,
     uniforms.bathymetrySeaLevel,
     depth,
-    diffuseIlluminanceNormalized,
+    optics,
+    downwelling,
+    light,
     normal,
     view,
     cameraBelow,
-    directSunVisibility,
     caustic,
     causticBeam,
   );
-  // This is sunlight transmitted through a wave face, not emissive water.
-  // sunColor is already premultiplied by sunIlluminanceNormalized at the
-  // binding boundary, so the term is exactly dark once the sun is below the
-  // physical palette cutoff while retaining the water's teal absorption.
-  let subsurfaceScatter = vec3f(0.012, 0.13, 0.115)
-    * uniforms.sunColor * nDotL * (0.1 + 0.12 * directSunVisibility);
-  let horizonScatter = vec3f(0.008, 0.055, 0.064)
-    * pow(1.0 - nDotV, 2.0) * uniforms.skylightIlluminanceNormalized;
+  // W-7 DELETED the two fixed-teal additive terms this line used to carry.
+  // subsurfaceScatter (vec3f(0.012, 0.13, 0.115) * sunColor * nDotL) and
+  // horizonScatter (vec3f(0.008, 0.055, 0.064) * (1 - nDotV)^2) were a
+  // constant-hue stand-in for volume scattering, and together they were most
+  // of the sea's brightness at range — a bright diffuse teal sheet under a
+  // thin reflection, which is the plastic look Jason reported. The volume
+  // term above now carries that light with the type's own colour, and its
+  // view dependence comes from the real upwelling path length rather than a
+  // fitted (1 - nDotV)^2.
+  //
   // 2-9: backlit crests transmit sunlight — driven by the summed
   // displacement height the vertex shader computes (previously discarded).
   let crestGlow = crestSubsurface(
@@ -1035,10 +1042,11 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     view,
     light,
     uniforms.sunColor,
+    waterCrestTint(optics),
     directSunVisibility,
     ${OCEAN_CREST_SSS_INTENSITY_WGSL},
   );
-  let bodyColor = transmitted + subsurfaceScatter + horizonScatter + crestGlow;
+  let bodyColor = transmitted + crestGlow;
   // 2-9: the one solid-angle-correct sun lobe (Karis), shared with inland
   // water — the sun's angular radius replaced the 2.6 gain.
   let sunGlitter = sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, vec3f(0.0204))
@@ -1131,12 +1139,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   water = mix(water, foamColor, foam);
   if (cameraBelow) {
-    water = applyUnderwaterBeerLambert(
-      water,
-      cameraDistance,
-      directSunVisibility,
-      diffuseIlluminanceNormalized,
-    );
+    water = applyUnderwaterBeerLambert(water, cameraDistance, optics, downwelling);
   }
   // 1C-4: the shared aerial perspective — the ocean fades on the same curve
   // as terrain, closing the audit's hard tear at every distant coastline.
@@ -1661,12 +1664,13 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
-          "sunIlluminanceNormalized",
           "skylightIlluminanceNormalized",
           "cloudCoverage",
           "oceanWind",
           "time",
           "environmentValid",
+          "waterAbsorption",
+          "waterBackscatter",
           "bathymetryNearPlacement",
           "bathymetryFarPlacement",
           "bathymetrySeaLevel",
@@ -1698,6 +1702,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    // W-7: the optical water type. One type per material until W-8 supplies
+    // the per-region field; bound from construction because a body colour is
+    // not optional.
+    this.setWaterOpticalType(WATER_REFERENCE_OPTICAL_TYPE);
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
@@ -1820,6 +1828,16 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     this.material.setFloat("environmentValid", 1);
   }
 
+  /**
+   * `W-7`: the open sea's optical water type. The renderer resolves it from
+   * the world (and, from `W-8`, modulates it per region); the material holds
+   * the resolved pair until it changes, which is a uniform write per world
+   * rather than per frame.
+   */
+  setWaterOpticalType(type: WaterOpticalType): void {
+    applyWaterOpticalType(this.material, type);
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
@@ -1832,10 +1850,6 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // atmosphere snapshot here — see updateSurfaceWind.
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
-    this.material.setFloat(
-      "sunIlluminanceNormalized",
-      atmosphere.sunIlluminanceNormalized,
-    );
     this.material.setFloat(
       "skylightIlluminanceNormalized",
       atmosphere.skylightIlluminanceNormalized,

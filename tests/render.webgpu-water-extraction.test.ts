@@ -167,11 +167,28 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-7 (the optical water type and the physical body model).
+    // FRAGMENT ONLY — the vertex hash below is byte-for-byte the one wave S
+    // left, which is the claim that W-7 moved no displacement, no varying and
+    // no spectrum: it is a shading change and nothing else. The fragment
+    // gained the `waterAbsorption`/`waterBackscatter` uniforms and the shared
+    // depth include's new body model (Lee et al.'s two-term shallow-water
+    // reflectance, the refracted solar and upwelling path lengths, and the
+    // coloured downwelling irradiance split into its collimated and diffuse
+    // shares), and LOST three fixed-teal terms and the grey illuminance
+    // scalar: the turbidity in-scatter, `subsurfaceScatter` and
+    // `horizonScatter`. It also lost the now-unused `sunIlluminanceNormalized`
+    // uniform, and its crest-SSS call gained the water type's own transmission
+    // tint. This MOVES PIXELS on every shot with water in it, by design — deep
+    // water is now two orders of magnitude darker in green, and every water
+    // body takes its colour from the scene's own light. Those shots rebaseline
+    // once the whole W-7/W-8 wave has landed, not here. Deliberate, named,
+    // reviewed — the flow this assertion exists to force.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "b27d14cd636096ee32cef4a5862ed27ba44d333aef4e46bfa41982582cab5b3d",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "f358998edaf78334a0b4dfe90e8f988ac43c61656bbfc3080c02e1ab97c9dcbc",
+      "bec41f392e5805f36d2da84033aa3142242f0ff9897f656c6865b23291a0f072",
     );
   });
 

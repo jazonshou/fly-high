@@ -55,8 +55,16 @@ import {
 
 const SKY_SHADER_NAME = "aerolithPhysicalSky";
 
-/** The clear-noon palette peak; sunIlluminanceNormalized is relative to it. */
-const PEAK_SUN_INTENSITY = 5.2;
+/**
+ * The clear-noon palette peak; sunIlluminanceNormalized is relative to it.
+ *
+ * `W-7` exported it: it is the DirectionalLight's own intensity, so it is also
+ * the scale that converts the water materials' `sunColor` (which arrives
+ * already multiplied by `sunIlluminanceNormalized`) back into the irradiance
+ * the terrain is lit by. The water body's reflectance is only comparable to a
+ * land albedo if both are lit by this one number.
+ */
+export const PEAK_SUN_INTENSITY = 5.2;
 
 /**
  * `7-1` — the moon's directional-light intensity at full, zenith, mean
@@ -603,7 +611,7 @@ export class AtmosphereSystem {
     this.sky.material = this.skyMaterial;
 
     this.sun = new DirectionalLight("sun", new Vector3(0.36, -0.82, -0.44), scene);
-    this.sun.intensity = 5.2;
+    this.sun.intensity = PEAK_SUN_INTENSITY;
     this.sun.autoCalcShadowZBounds = false;
     this.ambient = new HemisphericLight("sky-ambient", Vector3.Up(), scene);
     this.ambient.intensity = 0.05;
