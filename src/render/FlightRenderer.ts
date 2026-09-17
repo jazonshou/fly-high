@@ -496,6 +496,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly ocean: SpectralOceanSystem;
   /** `W-8`: the sea's climate provinces, baked per 50 km of flight. */
   private readonly waterEnvironment: WaterEnvironmentField;
+  /** `W-8`: skip the first frame's bake — see the frame-graph node. */
+  private waterEnvironmentBakeDeferred = true;
   private readonly hydrology: HydrologySystem;
   private readonly bathymetry: BathymetryClipmap;
   /**
@@ -2306,7 +2308,18 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // samples and happens only when the aircraft has flown 50 km from the
         // last window centre, so this is a compare per frame and a few
         // milliseconds twice an hour of flying.
-        if (this.waterEnvironment.update(this.cameraWorld.x, this.cameraWorld.z)) {
+        //
+        // The FIRST bake is deferred past the first frame. Cold start's
+        // time-to-ready includes the first GPU-complete frame, so anything
+        // done there lands on a path gated in milliseconds; the field is the
+        // one piece of this wave that does real CPU work, and it does not have
+        // to be done then. The cost of waiting is one frame rendered against
+        // the neutral mid-province fallback, which is exactly the province
+        // where the field's own contrast curve is the identity — i.e. nothing
+        // a frame could show.
+        if (this.waterEnvironmentBakeDeferred) {
+          this.waterEnvironmentBakeDeferred = false;
+        } else if (this.waterEnvironment.update(this.cameraWorld.x, this.cameraWorld.z)) {
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);

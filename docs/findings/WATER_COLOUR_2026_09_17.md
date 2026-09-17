@@ -51,6 +51,26 @@ Measured: open-water macro variation (8-px block std) 2.39 -> 5.12 at
 cruise-horizon's mid distance; open-sea speckle energy below the pre-change
 baseline while the surf band is untouched.
 
+## Two traps this wave walked into
+
+Both were caught by looking at frames the change was not aimed at, and both are
+general rather than water-specific.
+
+**A reflection is a lobe, not a ray.** Widening the horizon test's band to the
+reflection lobe's own width was right; what was not was leaving the shared
+horizon operator's jitter in the call. That operator applies its jitter AS A
+FRACTION OF THE BAND, because it was written for a narrow sun terminator — hand
+it a lobe-wide band and the jitter becomes a per-pixel random offset of up to
+half a lobe, which printed a salt crust across `water-3m` and `water-25ft`.
+
+**A sampled field is not the function it was baked from.** The province poses
+were chosen from point samples of the climate functions, but the shader reads a
+96x96 field at 1.67 km per texel with bilinear filtering, which smooths a narrow
+extremum toward its neighbourhood. At two "extreme" poses the field's runoff
+channel read 0.49 and 0.47 — identical — so the sediment and the bed, which are
+runoff-driven, did not move, and the pair looked the same. Select poses on the
+field the shader reads, not on the function it came from.
+
 ## Still open
 
 - **The pale shallow margin is thin, and it is the terrain's.** Transects

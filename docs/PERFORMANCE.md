@@ -747,6 +747,124 @@ capture has no write path into `tests/perf/baseline`, promotion is a separate
 deliberate action after review, and performance ceilings cannot be rebaselined
 downward.
 
+### Re-promotion 2026-09-17 — water colour (W-7 through W-10)
+
+Sixteen baselines were re-promoted from candidate
+`2026-09-17T23-01-00.846Z` after a frame-by-frame review of all 38 shots, for
+one sanctioned change: the water-colour wave
+(docs/findings/WATER_COLOUR_2026_09_17.md). Jason's report was that the water
+is *"basically always the same — light blue with white foam"* and *"from a
+distance still looks like plastic"*. Four measurements answer it.
+
+**What was wrong.** `5-11` carried ONE optical water type for every water body
+in every world, and its in-scatter was ~25x too bright in green: deep water
+emitted (0.030, 0.140, 0.120) at the reference key where clear ocean emits
+(0.0008, 0.0056, 0.0203). It was lit by a grey scalar, so it kept its teal hue
+under an orange sunset. Its sub-pixel slope variance was a sum of independent
+estimates that overshot Cox & Munk's measurement and hit the roughness clamp —
+a probe capture (roughness written to the beauty buffer) read near, mid and far
+sea all within a few per cent of the ceiling, which is one BRDF for the whole
+sea. And its foam came from a tuned Jacobian threshold rather than from wind.
+
+**What it is now.** A water body is two spectra built from four concentrations
+through published mass-specific spectra; the sea's concentrations come from its
+own depth and a province field baked from the terrain's temperature and
+moisture, lakes' and rivers' from their catchment at mesh build; the body is
+lit by the scene's own coloured irradiance; the far field's variance is
+anchored to Cox & Munk minus what the rendered normal already carries; foam
+coverage is Monahan's wind law at Koepke's reflectance; and the sea has wind
+shelter in the lee of coasts, Langmuir windrows, and the terrain occlusion of
+its reflected sky that inland water has had since `6-11`.
+
+**The frame review.** Fourteen of the thirty committed baselines are within
+0.2/255 of the candidate — every pure-terrain, forest, canopy, runway and apron
+pose — and every shot that moved past 1/255 has sea or a lake in frame. The
+sixteen promoted, by how far they moved (mean absolute difference, /255):
+`water-25ft` 19.5, `water-3m` 15.6, `cdlod-transition` 15.4,
+`motion-banked-turn` 12.3, `page-thrash-turn` 8.1, `forest-line-highsun` 7.6,
+`hills-dusk-glint` 6.4, `coast-10km-lowsun` 4.7, `forest-500ft-sunbehind` 4.2,
+`terrain-material-1600ft-down` 4.2, `cruise-horizon` 3.8, `slant-10km` 2.3,
+`winter-noon` 2.2, `reference-viewport` 1.9, `approach-500ft` 1.7,
+`cruise-sun-30` 1.4. SSIM against the retired frames, where the harness
+computes it: `water-3m` 0.791, `water-25ft` 0.847,
+`terrain-material-1600ft-down` 0.915, `coast-10km-lowsun` 0.947,
+`forest-500ft-sunbehind` 0.961, `cruise-horizon` 0.965, `reference-viewport`
+0.972, `hills-dusk-glint` 0.975, `slant-10km` 0.975, `winter-noon` 0.979,
+`approach-500ft` 0.979, `cruise-sun-30` 0.987, `forest-line-highsun` 0.996.
+The headline A/B is `cdlod-transition`'s near sea magnified: bright teal under
+heavy white speckle before, deep navy-slate with sparse whitecaps and visible
+wind lanes after.
+
+**NOT promoted, and why.** Five shots moved 0.3-0.6/255 with no water in frame
+(`runway-on-approach`, `horizon-shadow-far-annulus`, `grove-forest-2m`,
+`mountain-close`, `canopy-backlit-lowsun`) and three moved under 0.2
+(`night-moonlit`, `veg-seam-1600ft-oblique`, `high-10000ft-down`). The whole
+diff touches seven source files — four water ones, the environment field, the
+renderer's construction of it, and `AtmosphereSystem` exporting
+`PEAK_SUN_INTENSITY` where the literal 5.2 stood — with zero lines in
+`terrain/`, `detail/` or `clouds/`, so these are capture noise or pre-existing
+staleness rather than water. Their baselines stand.
+
+**Performance: no measurable cost.** Guarded A/B on this host, same tree, arms
+switched back to back, four runs of the branch arm and three of the base arm,
+alternating:
+
+base fps -> branch fps (delta), with frame-interval p95 base -> branch. The
+per-shot table above is the only pipe table this document may carry — its row
+count is pinned against the committed PNGs — so this one is a list:
+
+- `water-3m` 122.1 -> 121.8 (-0.29%), p95 10.37 -> 10.10
+- `water-25ft` 121.4 -> 121.8 (+0.26%), p95 9.70 -> 10.10
+- `coast-10km-lowsun` 121.6 -> 121.6 (-0.01%), p95 9.87 -> 9.90
+- `cruise-horizon` 121.6 -> 121.5 (-0.03%), p95 9.80 -> 9.97
+- `slant-10km` 121.5 -> 121.7 (+0.10%), p95 9.97 -> 10.05
+- `reference-viewport` 88.3 -> 88.4 (+0.08%), p95 13.53 -> 12.90
+- `ground-2m-lowsun` (control) 111.1 -> 111.3 (+0.17%), p95 10.67 -> 10.82
+- `forest-500ft-sunbehind` (control) 102.6 -> 102.6 (+0.00%), p95 11.60 -> 11.22
+
+Same-arm spread over four runs: median 0.82%, max 2.63%. Every shot is inside
+±0.29%, a third of the noise floor. **Method note, and a trap worth naming:** an
+A/B that switches arms by checking source in and out reads
+`tests/perf/artifacts/report.json` between runs, and a run that DIES leaves the
+previous arm's report in place — a dropped browser connection did exactly that
+here, and the stale numbers were caught only because eight shots matched the
+previous arm to 0.1 fps, which is not a thing that happens. The arms above were
+re-run with a guard that deletes the report before each arm and fails if none
+is written, and `PerfCaptureReport` now carries `capturedAtIso` so a consumer
+can compare it against its own start time.
+
+**Delivery floors were NOT re-pinned**, and the candidate is stamped NOT
+APPROVABLE: it ran on this unpinned M2 Pro with a second session capturing
+concurrently, and its 21 gate failures are 20 delivery floors plus one
+draw-call ceiling. That ceiling is not water's: `canopy-backlit-lowsun` reads
+249 draws against its 246 ceiling on BOTH arms, as do `forest-line-highsun`
+(258), `cdlod-transition` (209) and `water-25ft` (238) — identical between
+base and branch, so it is stale in the same family as the `ground-2m-lowsun`
+and `canopy-1200ft` staleness the terrain workstream reported.
+
+**Cold start is host-marginal on both arms.** The candidate script runs
+`cold-start` first and short-circuits on failure, and it did (2534 ms against
+the 2300 ms reference-host deadline), so the candidate was captured directly
+with `VITE_PERF_REBASELINE=1`. Measured three times per arm, alternating:
+branch 2326 / 2254 / 2140 ms (mean 2240), base 2102 / 2062 / 2301 ms (mean
+2155), spreads 186 and 239 ms — overlapping distributions, and the base's own
+worst run exceeds the deadline too. Scene-shader readiness, where the larger
+water shaders would show, is 470-523 ms on the branch against 461-532 on base.
+The one piece of real startup CPU this wave added — the environment field's
+first bake — is now deferred past the first frame, because cold start's
+time-to-ready waits for the first GPU-complete frame and the field has no
+business on that path; the cost of waiting is one frame at the neutral
+mid-province fallback, which is the province where its own contrast curve is
+the identity.
+
+**Open items** (also in the findings note): inland chemistry is latent in the
+default analytic world (one ~100 m pond per 28 km window, no rivers at all —
+rivers exist only in eroded worlds); glacial turquoise needs a lake above
+~900 m and this seed's lakes sit at 29-223 m; the pale shallow margin is thin
+because the coast profile drops 3 m within 0-40 m of the waterline, which is
+terrain's to change; and the surf-zone foam reads from directly overhead as a
+lace of repeated cells.
+
 ### Re-promotion 2026-09-14 — tree LOD continuity
 
 Nineteen of the thirty committed baselines were re-promoted from candidate
