@@ -505,11 +505,18 @@ describe("6-12 documentation truth: the committed capture baseline", () => {
   });
 
   it("has a shot count docs/PERFORMANCE.md agrees with", () => {
+    // Stop at the FIRST non-table line, exactly as the tier-table reader does
+    // and for the identical reason: filtering for "|" over the whole remainder
+    // runs this table into every table below it. It did — a promotion note with
+    // two tables of its own reported 46 rows against 30 PNGs, and the message
+    // blamed a stale index mapping, which would have sent the next reader to
+    // the harness. A row counter must count ONE table.
     const table = PERFORMANCE_MD.slice(PERFORMANCE_MD.indexOf("| Shot | raw wall FPS"));
-    const rows = table
-      .split("\n")
-      .slice(2)
-      .filter((line) => line.startsWith("|"));
+    const rows: string[] = [];
+    for (const line of table.split("\n").slice(2)) {
+      if (!line.startsWith("|")) break;
+      rows.push(line);
+    }
     expect(
       rows.length,
       `docs/PERFORMANCE.md's per-shot table has ${rows.length} rows against ${shots.length} `

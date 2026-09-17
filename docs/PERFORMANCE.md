@@ -748,6 +748,76 @@ capture has no write path into `tests/perf/baseline`, promotion is a separate
 deliberate action after review, and performance ceilings cannot be rebaselined
 downward.
 
+### Re-promotion 2026-09-17 — the ground patchwork (W-1)
+
+Twenty baselines were re-promoted from candidate `2026-09-17T23-40-35.447Z`
+after a frame-by-frame review of all 38 shots, for one sanctioned change: the
+ground patchwork (docs/findings/GROUND_TEXTURE_W1.md). Jason's report was that
+open, treeless ground *"is very flat and fake"* from altitude.
+
+**What was wrong.** At 213 m AGL the 2.3–2.9 m material tiles sample near mip 7
+— their own reference colour — because `3-1` high-passes every layer and
+`fitAlbedoToReference` pins its mean, and the micro fade converges every
+patterned channel once the anisotropy-limited footprint passes 1.5–10 m. Both
+are correct and both are load-bearing. Between the tile and the 176 m macro
+wash the only structure was fix-pack `T1`'s meso band, ±13% of tone at 71 m and
+±8% at 23 m, in smooth value noise. Open ground was therefore one colour times
+a smooth ramp.
+
+**What it gained**, land-masked against the same harness on the merged base
+(mean absolute RGB difference, share of pixels past 4/255, 16-px block
+luminance std as a texture proxy):
+
+| region | MAD | moved | block-std |
+| --- | --- | --- | --- |
+| terrain-material-1600ft-down, meadow crop | 5.66 | 50% | 5.52 → 8.09 (+46.5%) |
+| high-10000ft-down, grass slopes | 3.60 | 36% | 3.07 → 4.31 (+40.4%) |
+| viewer pose 213 m / 17°, lush | 5.24 | 52% | 1.87 → 3.76 (+101%) |
+| viewer pose 213 m / 17°, dry | 5.13 | 52% | 1.71 → 3.57 (+109%) |
+
+Rock, snow, sand, water and pavement are untouched by construction: the whole
+block rides the vegetated share. The pure-water shots moved 0.06 and 0.19 of
+255, which is run-to-run noise.
+
+**What it costs.** Two runs per arm on the M2 Pro (NOT the pinned reference
+host), `report.json` deleted between runs; same-arm noise floor 2.6% at worst.
+
+| shot | base fps | branch fps | delta | base p95 ms | branch p95 ms |
+| --- | --- | --- | --- | --- | --- |
+| mountain-close | 117.1 | 107.4 | −8.3% | 10.6 | 11.5 |
+| terrain-material-1600ft-down | 114.0 | 105.2 | −7.7% | 10.8 | 11.6 |
+| winter-noon | 114.2 | 107.3 | −6.0% | 10.5 | 11.2 |
+| approach-500ft | 114.3 | 108.2 | −5.4% | 10.2 | 11.3 |
+| ground-2m-lowsun | 112.1 | 110.3 | −1.6% | 11.2 | 11.0 |
+| canopy-1200ft | 114.7 | 113.2 | −1.4% | 10.6 | 10.5 |
+| high-10000ft-down | 121.3 | 121.5 | +0.2% | 9.7 | 9.6 |
+| cruise-horizon | 121.2 | 121.3 | +0.1% | 9.5 | 9.5 |
+
+Draw calls and triangle counts are identical in both arms on every shot: this
+is ALU on vegetated fragments and moves no batch. The cost lands where close
+vegetated ground fills the frame and nowhere else. Tier 0 skips the block
+entirely through a uniform lane (no new shader permutation): at that tier a
+lush pose is capture-noise-identical to the pre-change build, 0.26 of 255 with
+no pixel past 4/255. To give back roughly a third of the cost at tiers 1–3, set
+`GROUND_VIGOUR_FINE_AMPLITUDE` to 0 in `GroundPatchwork.ts`; that is the whole
+rollback.
+
+**Margin worth knowing before a CI floor failure is diagnosed.**
+`terrain-material-1600ft-down` measures 104.5–105.8 fps on this host against a
+102 floor. This host is not the pinned reference and floors are never re-pinned
+from an unpinned host, so the reference margin is larger — but if that shot
+ever trips its floor on the reference host, this wave is the first place to
+look. Nine shots already failed their fps floors on this host BEFORE this
+change (reference-viewport, motion-banked-turn, forest-line-highsun,
+forest-500ft-sunbehind, hills-dusk-glint, grove-meadow-2m, canopy-backlit-lowsun,
+cdlod-transition, page-thrash-turn); grove-forest-2m joined them after it.
+
+**Ten shots were left alone** because they moved at or under the 0.5-of-255
+noise floor the base arm measures against its own baselines: cruise-horizon,
+winter-noon, night-moonlit, canopy-backlit-lowsun, cruise-sun-30,
+coast-10km-lowsun, water-25ft, ground-2m-lowsun, night and water-3m. Eight more
+shots have no committed baseline and were not promoted.
+
 ### Re-promotion 2026-09-17 — water colour (W-7 through W-10)
 
 Sixteen baselines were re-promoted from candidate
