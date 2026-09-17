@@ -167,6 +167,12 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-8b (the province's widened authority): the chlorophyll and
+    // CDOM responses are steeper, the analytic bed takes the province's runoff
+    // so a dry coast's sand is pale and a wet one's silt is dark, and the
+    // whitecap pattern is bounded at eight times its own mean. Deliberate,
+    // named, reviewed.
+    //
     // Re-pinned by W-10's occlusion correction: the horizon test is softened by
     // the reflection LOBE's own width and takes no jitter (the shared operator
     // applies jitter as a fraction of the band, so a wide band turned it into
@@ -226,7 +232,7 @@ describe("water shader extraction (2-8a)", () => {
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "1875fd5b120ac1cdd343e6c247c491e1de36b4d0b8cff47e28caefe0e8027f21",
+      "9a2ea69d3c45714f48eed7fee2e6c78b827f9f33e596f170854191ea7158a2d9",
     );
   });
 

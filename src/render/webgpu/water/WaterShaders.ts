@@ -960,10 +960,24 @@ fn waterBathymetryBedSlope(worldXZ: vec2f, stepMeters: f32) -> vec2f {
   ) / stepMeters;
 }
 
-fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32) -> vec3f {
+// W-8b: the bed is the OTHER half of a coast's colour, and it is not the same
+// everywhere either. A warm dry coast builds a pale carbonate-and-quartz sand
+// (the Mediterranean and the tropics); a cool wet one is fed dark terrigenous
+// silt by its rivers and grows weed on its rocks. The wetness argument is the
+// province's runoff, so the shallow margin changes with the same field the
+// water column does rather than being one sand for the whole world.
+fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32, wetness: f32) -> vec3f {
   let mineral = 0.5 + 0.5 * sin(dot(worldXZ, vec2f(0.021, 0.017)) + bedElevation * 0.08);
-  let sand = vec3f(0.31, 0.285, 0.205);
-  let rock = vec3f(0.075, 0.105, 0.095);
+  let sand = mix(
+    vec3f(0.42, 0.395, 0.315),
+    vec3f(0.22, 0.205, 0.145),
+    clamp(wetness, 0.0, 1.0),
+  );
+  let rock = mix(
+    vec3f(0.105, 0.125, 0.105),
+    vec3f(0.055, 0.080, 0.070),
+    clamp(wetness, 0.0, 1.0),
+  );
   let deepSilt = vec3f(0.028, 0.055, 0.052);
   let substrate = mix(rock, sand, mineral * 0.32);
   return mix(substrate, deepSilt, smoothstep(8.0, 45.0, -bedElevation));
@@ -1001,6 +1015,7 @@ fn waterVolumeRadiance(
   surfaceElevation: f32,
   depth: f32,
   optics: WaterOptics,
+  bedWetness: f32,
   downwelling: WaterDownwelling,
   light: vec3f,
   normal: vec3f,
@@ -1025,7 +1040,7 @@ fn waterVolumeRadiance(
     bedXZ = worldXZ + transmittedDirection.xz * (depth / verticalTravel);
     upwellingCosine = verticalTravel;
   }
-  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation);
+  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation, bedWetness);
   let attenuation = waterBeamAttenuation(optics);
   let u = waterScatteringRatio(optics);
   // Snell: the solar beam's cosine inside the water. A 10-degree sun still

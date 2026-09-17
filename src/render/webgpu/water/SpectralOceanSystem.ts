@@ -776,11 +776,18 @@ fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
   );
   let productivity = province.x;
   let runoff = province.y;
+  // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
+  // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
+  // within 60% of each other in hue — measurable, but not something a player
+  // would call a different sea. The real spread is far larger: an arid coast
+  // with no river feeding it is oligotrophic (chlorophyll under 0.3) while a
+  // wet forested one runs a spring bloom at 3-5, and CDOM tracks runoff even
+  // harder because it IS runoff.
   return WaterConstituents(
     mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
-      * (0.45 + 1.7 * productivity),
+      * (0.22 + 2.6 * productivity * productivity),
     mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
-      * (0.4 + 1.5 * runoff),
+      * (0.18 + 2.4 * runoff * runoff),
     ${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
       + ${OCEAN_SURF_SEDIMENT} * surf * surf,
     0.0,
@@ -1281,6 +1288,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     uniforms.bathymetrySeaLevel,
     depth,
     optics,
+    // W-8b: the bed follows the same province as the column — a dry coast's
+    // pale sand, a wet one's dark silt.
+    input.waterProvince.y,
     downwelling,
     light,
     normal,
@@ -1414,9 +1424,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let windrowFade = smoothstep(3.0, 6.0, shelteredWind)
     * (1.0 - smoothstep(0.35, 1.2, runupFootprint / max(windrowSpacing, 1.0)));
   let windrow = mix(1.0, windrowLobe / 0.3125, windrowFade);
-  let whitecapCoverage = waterWhitecapCoverage(shelteredWind)
-    * windrow
-    * (foamAmount / openWaterFoamMean);
+  // The pattern is bounded at eight times its own mean. A nearly calm patch
+  // can drive that ratio arbitrarily high on the few pixels that do break, and
+  // a coverage law multiplied by an unbounded pattern is no longer a coverage
+  // law. Eight is past anything the Jacobian field produces at the winds this
+  // world generates, so it is a guard rather than a shape.
+  let whitecapPattern = min(foamAmount / openWaterFoamMean, 8.0);
+  let whitecapCoverage = waterWhitecapCoverage(shelteredWind) * windrow * whitecapPattern;
   let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);
   let whitecaps = clamp(whitecapCoverage, 0.0, 1.0) * mix(
     1.0,

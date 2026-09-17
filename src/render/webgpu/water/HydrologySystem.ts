@@ -682,6 +682,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     depth,
     optics,
+    // Inland beds are terrigenous by definition: a lake or a river bed is the
+    // catchment's own silt, so it takes the wet end of the range.
+    0.75,
     downwelling,
     light,
     normal,
