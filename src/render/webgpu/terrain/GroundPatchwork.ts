@@ -129,6 +129,17 @@ export const GROUND_VIGOUR_EDGE_FLOOR_METERS = 3.5;
  * swing a meadow shows from the air; two is the rare patch that reads as a
  * different field.
  */
+/**
+ * Vigour's gain on PURE LUSH ground.
+ *
+ * The dryness axis carries the mosaic wherever the classifier has both covers
+ * to work with, but on ground it calls pure Grass that axis has nothing to say
+ * and vigour is the only structure there is. So vigour is scaled up exactly
+ * where dryness runs out: the sites already tuned against the mosaic do not
+ * move, and a lush meadow stops being one smooth green.
+ */
+export const GROUND_VIGOUR_LUSH_GAIN = 2.3;
+
 export const GROUND_VIGOUR_STACK_VARIANCE = 0.089;
 /**
  * The axis itself, in log space: rich dark green to pale yellow-green.
@@ -741,13 +752,28 @@ fn terrainGroundPatchwork(
     * ${wgslFloat(GROUND_VIGOUR_CREASE_AMPLITUDE)} * midWeight;
   // Landform: hollows and shaded ground are richer, crests and steep ground
   // paler. Same bounded authority as the dryness term's.
-  vigour = clamp(vigour + vigourBias, -1.35, 1.35);
+  //
+  // The gain rises as the dryness mosaic runs out. On pure Grass the remap
+  // above can only push toward straw and has no structure of its own, so
+  // without this a lush meadow keeps the single smooth green this whole file
+  // exists to break up; on mixed ground the gain is one and nothing that was
+  // tuned against the mosaic moves.
+  let vigourGain = mix(
+    ${wgslFloat(GROUND_VIGOUR_LUSH_GAIN)},
+    1.0,
+    clamp(drynessBase * 1.6, 0.0, 1.0));
+  vigour = clamp((vigour + vigourBias) * vigourGain, -1.6, 1.6);
   let vigourAxis = vec3f(
     ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[0])},
     ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[1])},
     ${wgslFloat(GROUND_VIGOUR_LOG_AXIS[2])});
+  // The correction is the stack's variance AT THIS GAIN: exp(k x) has mean
+  // exp(k^2 var / 2), and scaling x by g scales that variance by g squared. A
+  // fixed correction would brighten exactly the lush ground the gain exists
+  // for, which is the opposite of mean-preserving.
   let vigourBiasCorrection = exp(
-    vigourAxis * vigourAxis * (0.5 * ${wgslFloat(GROUND_VIGOUR_STACK_VARIANCE)}));
+    vigourAxis * vigourAxis
+      * (0.5 * ${wgslFloat(GROUND_VIGOUR_STACK_VARIANCE)} * vigourGain * vigourGain));
   let vigourScale = exp(vigourAxis * vigour) / vigourBiasCorrection;
 
   // One octave for the bare patches, plus the MID octave this function already
