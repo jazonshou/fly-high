@@ -195,6 +195,38 @@ export const OCEAN_OPEN_CDOM = 0.012;
 export const OCEAN_COASTAL_CDOM = 0.22;
 export const OCEAN_COASTAL_SEDIMENT = 2.2;
 export const OCEAN_SURF_SEDIMENT = 5.5;
+
+/**
+ * `W-8c` — the CONTRAST CURVE on the province index, and the one place in this
+ * wave that is world design rather than physics.
+ *
+ * The index is an invented productivity field, not a measurement, and near the
+ * spawn it only spans 0.26 to 0.74. Run linearly into the concentrations, that
+ * put the driest and the wettest coast in the world within a colorimeter's
+ * reach of each other — true to the field, useless as an answer to "the colour
+ * is always the same". This smoothstep re-shapes the INDEX (never the optics):
+ * 0.26 becomes 0.04 and 0.74 becomes 0.97, while 0.5 maps to 0.5 exactly, so
+ * the middle of the world — which is where every gated capture sits — is
+ * untouched by construction.
+ */
+export const OCEAN_PROVINCE_CONTRAST_LOW = 0.18;
+export const OCEAN_PROVINCE_CONTRAST_HIGH = 0.82;
+
+/**
+ * `W-8c` — resuspended sediment is what the LAND sheds, so the load follows
+ * the province's runoff.
+ *
+ * Before this, every shallow coast in the world carried the same ~7.7 g/m^3 of
+ * surf-zone and shelf sediment, which is why no sea bed ever read through
+ * anywhere: the water was milky green over pale sand and dark silt alike. An
+ * arid carbonate coast has clear water over a bright bed and a rain-fed silty
+ * one is turbid, and that difference is most of what "this coast looks
+ * different" means from the air. `0.4 + 2.4 r^2` is exactly 1.0 at
+ * mid-province, so the world's mean turbidity is unchanged and only its spread
+ * grows — 6.6x from the driest coast to the wettest.
+ */
+export const OCEAN_SEDIMENT_LOAD_BASE = 0.4;
+export const OCEAN_SEDIMENT_LOAD_RUNOFF = 2.4;
 /** Depths (m) over which the shelf hands over to open water, and to the surf. */
 export const OCEAN_COASTAL_DEPTH_NEAR = 22;
 export const OCEAN_COASTAL_DEPTH_FAR = 130;

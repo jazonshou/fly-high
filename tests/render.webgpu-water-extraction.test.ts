@@ -167,6 +167,13 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-8c: the province index passes through a contrast curve
+    // (smoothstep 0.18..0.82, the identity at mid-province) before it reaches
+    // the concentrations, and the resuspended sediment load follows the
+    // province's runoff instead of being the same ~7.7 g/m^3 on every coast in
+    // the world — which is why no sea bed used to read through anywhere.
+    // Deliberate, named, reviewed.
+    //
     // Re-pinned by W-8b (the province's widened authority): the chlorophyll and
     // CDOM responses are steeper, the analytic bed takes the province's runoff
     // so a dry coast's sand is pale and a wet one's silt is dark, and the
@@ -232,7 +239,7 @@ describe("water shader extraction (2-8a)", () => {
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "9a2ea69d3c45714f48eed7fee2e6c78b827f9f33e596f170854191ea7158a2d9",
+      "dbaf539b86cf7e8d8e41a6e24513d279fae3bea54f7e3adb0e971a2c269ac6fb",
     );
   });
 

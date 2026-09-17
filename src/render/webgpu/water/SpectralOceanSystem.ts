@@ -76,6 +76,10 @@ import {
   OCEAN_COASTAL_SEDIMENT,
   OCEAN_OPEN_CDOM,
   OCEAN_OPEN_CHLOROPHYLL,
+  OCEAN_PROVINCE_CONTRAST_HIGH,
+  OCEAN_PROVINCE_CONTRAST_LOW,
+  OCEAN_SEDIMENT_LOAD_BASE,
+  OCEAN_SEDIMENT_LOAD_RUNOFF,
   OCEAN_SURF_DEPTH_FAR,
   OCEAN_SURF_DEPTH_NEAR,
   OCEAN_SURF_SEDIMENT,
@@ -774,8 +778,19 @@ fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
     ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
     depth,
   );
-  let productivity = province.x;
-  let runoff = province.y;
+  // W-8c: the contrast curve. It re-shapes the INDEX, not the optics — the
+  // concentrations still go through the same published spectra — and it is
+  // exactly the identity at mid-province, so the world's middle does not move.
+  let productivity = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.x,
+  );
+  let runoff = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.y,
+  );
   // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
   // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
   // within 60% of each other in hue — measurable, but not something a player
@@ -788,8 +803,9 @@ fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
       * (0.22 + 2.6 * productivity * productivity),
     mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
       * (0.18 + 2.4 * runoff * runoff),
-    ${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
-      + ${OCEAN_SURF_SEDIMENT} * surf * surf,
+    (${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
+      + ${OCEAN_SURF_SEDIMENT} * surf * surf)
+      * (${OCEAN_SEDIMENT_LOAD_BASE} + ${OCEAN_SEDIMENT_LOAD_RUNOFF} * runoff * runoff),
     0.0,
   );
 }
@@ -1288,9 +1304,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     uniforms.bathymetrySeaLevel,
     depth,
     optics,
-    // W-8b: the bed follows the same province as the column — a dry coast's
-    // pale sand, a wet one's dark silt.
-    input.waterProvince.y,
+    // W-8b/W-8c: the bed follows the same province as the column, through the
+    // same contrast curve — a dry coast's pale sand, a wet one's dark silt.
+    smoothstep(
+      ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+      ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+      input.waterProvince.y,
+    ),
     downwelling,
     light,
     normal,
