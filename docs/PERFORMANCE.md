@@ -750,7 +750,7 @@ downward.
 ### Re-promotion 2026-09-17 — water colour (W-7 through W-10)
 
 Sixteen baselines were re-promoted from candidate
-`2026-09-17T23-01-00.846Z` after a frame-by-frame review of all 38 shots, for
+`2026-09-17T23-24-55.654Z` after a frame-by-frame review of all 38 shots, for
 one sanctioned change: the water-colour wave
 (docs/findings/WATER_COLOUR_2026_09_17.md). Jason's report was that the water
 is *"basically always the same — light blue with white foam"* and *"from a
@@ -798,7 +798,10 @@ wind lanes after.
 **NOT promoted, and why.** Five shots moved 0.3-0.6/255 with no water in frame
 (`runway-on-approach`, `horizon-shadow-far-annulus`, `grove-forest-2m`,
 `mountain-close`, `canopy-backlit-lowsun`) and three moved under 0.2
-(`night-moonlit`, `veg-seam-1600ft-oblique`, `high-10000ft-down`). The whole
+(`night-moonlit`, `veg-seam-1600ft-oblique`, `high-10000ft-down`). The last two
+and `canopy-backlit-lowsun` were checked directly on the BASE arm against these
+same committed frames: 0.157 / 0.009 / 0.207 on base against 0.165 / 0.009 /
+0.326 on the branch, i.e. the same differences with or without this wave. The whole
 diff touches seven source files — four water ones, the environment field, the
 renderer's construction of it, and `AtmosphereSystem` exporting
 `PEAK_SUN_INTENSITY` where the literal 5.2 stood — with zero lines in
@@ -824,9 +827,10 @@ count is pinned against the committed PNGs — so this one is a list:
 
 Same-arm spread over four runs: median 0.82%, max 2.63%. Every shot is inside
 ±0.29%, a third of the noise floor. **Method note, and a trap worth naming:** an
-A/B that switches arms by checking source in and out reads
-`tests/perf/artifacts/report.json` between runs, and a run that DIES leaves the
-previous arm's report in place — a dropped browser connection did exactly that
+A/B that switches arms by checking source in and out reads the harness's report
+between runs — the mutable one a capture overwrites, not the timestamped copy
+inside `tests/perf/artifacts/rebaseline-candidates/<ISO>/` — and a run that
+DIES leaves the previous arm's report in place — a dropped browser connection did exactly that
 here, and the stale numbers were caught only because eight shots matched the
 previous arm to 0.1 fps, which is not a thing that happens. The arms above were
 re-run with a guard that deletes the report before each arm and fails if none
@@ -842,13 +846,17 @@ draw-call ceiling. That ceiling is not water's: `canopy-backlit-lowsun` reads
 base and branch, so it is stale in the same family as the `ground-2m-lowsun`
 and `canopy-1200ft` staleness the terrain workstream reported.
 
-**Cold start is host-marginal on both arms.** The candidate script runs
-`cold-start` first and short-circuits on failure, and it did (2534 ms against
-the 2300 ms reference-host deadline), so the candidate was captured directly
-with `VITE_PERF_REBASELINE=1`. Measured three times per arm, alternating:
-branch 2326 / 2254 / 2140 ms (mean 2240), base 2102 / 2062 / 2301 ms (mean
-2155), spreads 186 and 239 ms — overlapping distributions, and the base's own
-worst run exceeds the deadline too. Scene-shader readiness, where the larger
+**Cold start: no regression, and one thing moved off the critical path.** The
+candidate script runs `cold-start` first and short-circuits on failure, and on
+a busy host it did (2534 ms against the 2300 ms reference-host deadline), so
+the candidates were captured directly with `VITE_PERF_REBASELINE=1`. Measured
+three times per arm, alternating, while the machine was still shared: branch
+2326 / 2254 / 2140 ms (mean 2240) against base 2102 / 2062 / 2301 ms (mean
+2155), spreads 186 and 239 ms — overlapping, with the base's own worst run over
+the deadline. Re-measured on a quiet machine with the deferred first bake in
+place: branch 2167 / 2057 / 2026 ms (mean 2083) against base 2073 / 2007 /
+2092 ms (mean 2057). A 26 ms gap inside an 85-141 ms spread, and both arms
+comfortably inside the deadline. Scene-shader readiness, where the larger
 water shaders would show, is 470-523 ms on the branch against 461-532 on base.
 The one piece of real startup CPU this wave added — the environment field's
 first bake — is now deferred past the first frame, because cold start's
