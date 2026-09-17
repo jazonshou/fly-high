@@ -138,6 +138,36 @@ vegetation suites stayed green. It was dropped for three reasons:
 
 Anyone picking this up starts from those three, not from the density constant.
 
+## The cost, and the one-line way to give it back
+
+Measured on the M2 Pro against the base commit, two runs per arm (same-arm
+noise floor: base 2.6% max, branch 2.2% max):
+
+| shot | base fps | branch fps | delta |
+| --- | --- | --- | --- |
+| mountain-close | 115.6 / 118.6 | 106.4 / 108.4 | −8.3% |
+| terrain-material-1600ft-down | 114.7 / 113.2 | 104.5 / 105.8 | −7.7% |
+| winter-noon | 114.8 / 113.5 | 107.3 / 107.2 | −6.0% |
+| approach-500ft | 114.9 / 113.7 | 108.9 / 107.4 | −5.4% |
+| ground-2m-lowsun | 112.2 / 111.9 | 111.5 / 109.1 | −1.6% |
+| canopy-1200ft | 115.4 / 114.0 | 112.5 / 113.8 | −1.4% |
+| high-10000ft-down | 121.1 / 121.4 | 121.2 / 121.7 | +0.2% |
+| cruise-horizon | 121.0 / 121.3 | 121.0 / 121.5 | +0.1% |
+
+Draw calls and triangle counts are identical in both arms on every shot: this is
+ALU on vegetated fragments and nothing else. Worst p95 is 11.6 ms against the
+tier-1 contract's 16.67 ms.
+
+**Tier 0 skips the whole block** through a uniform branch (no define, so no new
+shader permutation): at that tier a lush pose is capture-noise-identical to the
+base build, 0.26 of 255 mean absolute difference with no pixel past 4/255.
+
+**To give back roughly a third of the cost at tiers 1–3**, set
+`GROUND_VIGOUR_FINE_AMPLITUDE` to 0 in `GroundPatchwork.ts`. That is the whole
+change: the 18 m octave's evaluation is already behind its own weight guard, so
+zeroing the amplitude skips it. What it costs is the near field's finest patch
+structure, which is most visible below about 500 m.
+
 ## Named follow-ups
 
 * **The near band's soft blobs.** In the bottom third of a 213 m frame the
@@ -149,6 +179,13 @@ Anyone picking this up starts from those three, not from the density constant.
 * **Rock and gravel at range**, deferred by agreement: Toksvig-style roughness
   from unresolved normal variance, plus fracture-scale albedo and normal
   breakup in the same missing band. `high-10000ft-down`'s rock is the shot.
+* **Move the coarse octaves to the vertex stage.** The 163 m and 53 m fields
+  are smooth at near-LOD vertex spacing, so evaluating them per vertex and
+  thresholding per pixel on the interpolated value would take most of the hash
+  work out of the fragment stage. It needs care at far CDLOD levels, where
+  vertex spacing approaches the 53 m wavelength and the interpolation would
+  start eating the field — which is exactly why it is a follow-up and not a
+  last-minute change.
 
 ## Instruments that worked
 
