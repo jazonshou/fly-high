@@ -167,6 +167,12 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-10's occlusion correction: the horizon test is softened by
+    // the reflection LOBE's own width and takes no jitter (the shared operator
+    // applies jitter as a fraction of the band, so a wide band turned it into
+    // per-pixel salt), and the occluded hillside is hazed by the shared aerial
+    // operator at the fragment's own range. Deliberate, named, reviewed.
+    //
     // Re-pinned by W-10 (the far field's variation). BOTH hashes move again.
     // The VERTEX gained the extracted bathymetry lookup and the four-tap
     // upwind march that measures wind shelter, plus the two horizon-field
@@ -220,7 +226,7 @@ describe("water shader extraction (2-8a)", () => {
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "a143862c1fadc1b20e86fef6ac2cd5b796cf15eeaed2cad6728ffbd8f54c03c0",
+      "1875fd5b120ac1cdd343e6c247c491e1de36b4d0b8cff47e28caefe0e8027f21",
     );
   });
 

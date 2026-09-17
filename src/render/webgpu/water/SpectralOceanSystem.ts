@@ -825,24 +825,38 @@ ${waterReflectedSkyWgsl(OCEAN_REFLECTED_SKY_PARAMETERS)}
 // terrain, the detail plugin and inland water evaluate.
 ${HORIZON_FIELD_LOOKUP_WGSL}
 
-// The terminator jitter's world-locked spatial hash, as inland water uses it:
-// spatial and not temporal, or the penumbra would crawl across a still sea.
-fn oceanHorizonJitter(point: vec2f) -> f32 {
-  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
-  value += dot(value, value.yzx + vec3f(33.33));
-  return fract((value.x + value.y) * value.z);
-}
-
 // Sky visibility along a reflection direction: 1 where the ray clears the
 // terrain horizon, 0 where it strikes a hillside. The field's absence is a
 // uniform sentinel folded in by a mix, never a branch around a sample.
-fn oceanTerrainVisibility(worldXZ: vec2f, direction: vec3f, packedA: vec4f, packedB: vec4f) -> f32 {
+fn oceanTerrainVisibility(
+  direction: vec3f,
+  packedA: vec4f,
+  packedB: vec4f,
+  lobeWidth: f32,
+) -> f32 {
+  // The band is widened by the reflection LOBE's own angular width. A water
+  // pixel does not reflect one direction: it reflects a cone whose half-angle
+  // is about twice the surface's RMS slope (a mirror tilted by s turns a ray
+  // by 2s), so what the horizon test has to answer is "what FRACTION of the
+  // lobe clears the ridge", not "does its centre". Testing the centre alone
+  // made neighbouring pixels flip between sky and hillside as the wave normals
+  // crossed the ridge line, which rendered the whole grazing sea as a
+  // salt-crust of light flakes and dark pits (water-3m, water-25ft).
   let visibility = horizonFieldShadow(
     packedA,
     packedB,
     direction,
-    uniforms.oceanHorizonField.w,
-    oceanHorizonJitter(worldXZ * 0.37),
+    uniforms.oceanHorizonField.w + lobeWidth,
+    // NO JITTER. The sun-shadow consumers hash the terminator to break its
+    // iso-contour into penumbra, because their band is narrow (0.05) and their
+    // direction varies slowly. Here the band is the reflection lobe's own
+    // width, and horizonFieldShadow applies the jitter AS A FRACTION OF THE
+    // BAND — so the same call that softens the transition turns the jitter
+    // into a per-pixel random offset of up to half a lobe. That is precisely
+    // the salt-crust of light flakes and dark pits this term shipped with for
+    // one commit. A soft lobe has no contour left to break: 0.5 is the
+    // hash's own mean, i.e. no offset at all.
+    0.5,
   );
   let resident = select(0.0, 1.0, uniforms.oceanHorizonField.z > 0.0);
   return mix(1.0, visibility, resident);
@@ -1221,10 +1235,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // and the one inland water has had since 6-11. A sea reflecting bright sky
   // where a dark mountain stands is what makes a bay read as a blue decal.
   let terrainVisibility = oceanTerrainVisibility(
-    input.oceanCoordinate,
     reflectionDirection,
     input.oceanHorizonPackedA,
     input.oceanHorizonPackedB,
+    2.0 * sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
   );
   // The occluded value is the sky this fragment would have seen, DARKENED by
   // the ground's albedo — a hillside is lit by the sky above it, so its
@@ -1234,11 +1248,18 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // night-moonlit, the moonlit bay went from a mean of 24 to a blown-out 68
   // because the occluded branch was BRIGHTER than the night sky it stood in
   // for. Same construction, one authority, and it goes dark with the sky.
-  let skyReflection = mix(
+  // ...and the hillside is seen across the SAME air the fragment is seen
+  // through. A ridge one degree above the horizon at ten kilometres is mostly
+  // haze, so an unhazed ground bounce there is far too dark: the shared aerial
+  // operator puts the reflected hillside at the right distance, which is what
+  // keeps a grazing sea reflective instead of matte (hills-dusk-glint).
+  let occludedGround = applyAerialPerspective(
     unoccludedSky * uniforms.oceanGroundBounceAlbedo,
-    unoccludedSky,
-    terrainVisibility,
+    input.worldPosition.y,
+    cameraDistance,
+    reflectionDirection,
   );
+  let skyReflection = mix(occludedGround, unoccludedSky, terrainVisibility);
   let reflected = samplePlanarSceneReflection(
     input.planarReflectionClip,
     normal,
