@@ -647,8 +647,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // planar capture blends real terrain over it where that capture is valid;
   // the sun lobe, the body colour, the foam and the Fresnel are not sky.
   let terrainVisibility = hydrologyTerrainVisibility(input.absoluteWorldXZ, reflectionDirection);
+  // W-10 corrected the occluded value to the sky this fragment would have
+  // seen, darkened by the ground's albedo, rather than the palette's raw
+  // skyHorizon. The two are the same at midday and diverge badly at night,
+  // where the palette row is far brighter than the probe: the ocean's own
+  // version of this line lit a moonlit bay white before it was corrected, and
+  // an inland lake under a ridge had the same defect waiting.
   let skyReflection = mix(
-    uniforms.skyHorizon * uniforms.groundBounceAlbedo,
+    unoccludedSky * uniforms.groundBounceAlbedo,
     unoccludedSky,
     terrainVisibility,
   );

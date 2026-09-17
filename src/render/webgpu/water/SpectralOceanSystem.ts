@@ -1226,8 +1226,16 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.oceanHorizonPackedA,
     input.oceanHorizonPackedB,
   );
+  // The occluded value is the sky this fragment would have seen, DARKENED by
+  // the ground's albedo — a hillside is lit by the sky above it, so its
+  // radiance lives in the same domain as the reflection it replaces. Taking
+  // the palette's raw skyHorizon instead (as 6-11 does inland) sources it from
+  // a second authority that the night's probe has left far behind: measured on
+  // night-moonlit, the moonlit bay went from a mean of 24 to a blown-out 68
+  // because the occluded branch was BRIGHTER than the night sky it stood in
+  // for. Same construction, one authority, and it goes dark with the sky.
   let skyReflection = mix(
-    uniforms.skyHorizon * uniforms.oceanGroundBounceAlbedo,
+    unoccludedSky * uniforms.oceanGroundBounceAlbedo,
     unoccludedSky,
     terrainVisibility,
   );

@@ -220,7 +220,7 @@ describe("water shader extraction (2-8a)", () => {
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "109c08a6c2a3dbc29e82726f4db1ffd17e3809d5262b609db4f9f3649e391c6b",
+      "a143862c1fadc1b20e86fef6ac2cd5b796cf15eeaed2cad6728ffbd8f54c03c0",
     );
   });
 
