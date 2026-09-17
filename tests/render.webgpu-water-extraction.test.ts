@@ -167,6 +167,16 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-8 (the water-type field). BOTH hashes move, and the
+    // VERTEX one for the first time since wave S: the ocean vertex now samples
+    // the baked environment field (productivity, runoff) and carries it to the
+    // fragment as a varying, because the fragment stage has no free sampler —
+    // it declares exactly the 16 sampled textures the device limit allows.
+    // The fragment gained the shared constituent model and the sea's own
+    // chemistry law (open-ocean chlorophyll to coastal green by depth, the
+    // land's runoff from the field, and surf-zone resuspension), which
+    // replaces the single bound optical type. Deliberate, named, reviewed.
+    //
     // Re-pinned by W-9 (the far field's own statistics). FRAGMENT ONLY again,
     // and the vertex hash below has still not moved since wave S. The fragment
     // gained the Cox-Munk anchor for sub-pixel slope variance (one identity
@@ -197,10 +207,10 @@ describe("water shader extraction (2-8a)", () => {
     // once the whole W-7/W-8 wave has landed, not here. Deliberate, named,
     // reviewed — the flow this assertion exists to force.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "b27d14cd636096ee32cef4a5862ed27ba44d333aef4e46bfa41982582cab5b3d",
+      "3cdb2dc369b689ef5c2b806cf3a508cfe1c783f2cbbc655f7a0410d7f2e6d177",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "4ffbf02a463cb256e7a12a07672b96107a3493419ad9fba461a987dfc00af965",
+      "d87e5a6adb8defe72a4a5f4d8aed635f18fad34e4d9c82c671e8c91dc00d4266",
     );
   });
 

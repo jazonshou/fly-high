@@ -147,6 +147,12 @@ import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
+import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
+import {
+  sampleTerrainClimate,
+  sampleTerrainMoisture,
+  terrainTemperatureFromClimate,
+} from "@/src/world/terrain";
 import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -488,6 +494,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly aerialReceivers: AerialPerspectiveRegistry;
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
+  /** `W-8`: the sea's climate provinces, baked per 50 km of flight. */
+  private readonly waterEnvironment: WaterEnvironmentField;
   private readonly hydrology: HydrologySystem;
   private readonly bathymetry: BathymetryClipmap;
   /**
@@ -643,6 +651,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     aerialReceivers: AerialPerspectiveRegistry,
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
+    waterEnvironment: WaterEnvironmentField,
     hydrology: HydrologySystem,
     bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
@@ -677,6 +686,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.aerialReceivers = aerialReceivers;
     this.skyProbe = skyProbe;
     this.ocean = ocean;
+    this.waterEnvironment = waterEnvironment;
     this.hydrology = hydrology;
     this.bathymetry = bathymetry;
     this.dynamicAllocations = bathymetry.storageFormat === "r16float"
@@ -1058,6 +1068,18 @@ export class FlightRenderer implements FlightRenderingSystem {
           // surfaces. Inland water took its direction from here and its speed
           // from the atmosphere's cloud-layer wind, which can disagree 3x.
           windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
+          // W-8: the climate at an inland water surface, which is what its
+          // chemistry is made of. A pure function of world position and
+          // elevation, so two pages sharing a river derive the same colour.
+          climateSample: (x, z, elevation) => ({
+            temperature: terrainTemperatureFromClimate(
+              options.world,
+              sampleTerrainClimate(options.world, x, z),
+              elevation,
+            ),
+            // Point-sampled: a lake or a station is a point, not a footprint.
+            moisture: sampleTerrainMoisture(options.world, x, z, 0),
+          }),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
@@ -1099,6 +1121,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      const waterEnvironment = new WaterEnvironmentField(scene, options.world);
+      cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
       cleanup.push(() => cloudShadowReceivers.dispose());
       // Register each shared PBR material once. Detail and wildlife can render
@@ -1428,6 +1452,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         aerialReceivers,
         skyProbe,
         ocean,
+        waterEnvironment,
         hydrology,
         bathymetry,
         airport,
@@ -2275,6 +2300,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       after: ["world-page-visibility"],
       execute: (frame) => {
         void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
+        // W-8: the sea's environment field. A bake is ~9k terrain-climate
+        // samples and happens only when the aircraft has flown 50 km from the
+        // last window centre, so this is a compare per frame and a few
+        // milliseconds twice an hour of flying.
+        if (this.waterEnvironment.update(this.cameraWorld.x, this.cameraWorld.z)) {
+          this.ocean.setWaterEnvironmentField(this.waterEnvironment);
+        }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea

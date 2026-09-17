@@ -66,6 +66,21 @@ import {
   sunShadowVertexAssignmentWgsl,
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
+import type { WaterEnvironmentField } from "./WaterEnvironmentField";
+import { fallbackWaterEnvironmentField } from "./WaterEnvironmentField";
+import {
+  OCEAN_COASTAL_CDOM,
+  OCEAN_COASTAL_CHLOROPHYLL,
+  OCEAN_COASTAL_DEPTH_FAR,
+  OCEAN_COASTAL_DEPTH_NEAR,
+  OCEAN_COASTAL_SEDIMENT,
+  OCEAN_OPEN_CDOM,
+  OCEAN_OPEN_CHLOROPHYLL,
+  OCEAN_SURF_DEPTH_FAR,
+  OCEAN_SURF_DEPTH_NEAR,
+  OCEAN_SURF_SEDIMENT,
+  WATER_CONSTITUENT_WGSL,
+} from "./WaterConstituents";
 import {
   applyWaterOpticalType,
   WATER_SURF_FOAM_ALBEDO,
@@ -412,6 +427,11 @@ var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
 var displacement2Sampler: sampler; var displacement2: texture_2d<f32>;
 var displacement3Sampler: sampler; var displacement3: texture_2d<f32>;
 var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
+// W-8: the environment field (productivity, runoff), sampled HERE because the
+// fragment stage has no free sampler and the field's own lattices are
+// kilometres wide. See WaterEnvironmentField.
+uniform waterEnvironmentPlacement: vec4f;
+var waterEnvironmentSampler: sampler; var waterEnvironment: texture_2d<f32>;
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
 varying cascadeFades: vec4f;
@@ -419,6 +439,8 @@ varying cascadeFade4: f32;
 varying waveCrest: f32;
 // wave S: the far cat's paws' 1.5 km octave, per vertex.
 varying farGustCoarse: f32;
+// W-8: (productivity, runoff) at this vertex, 0..1 each.
+varying waterProvince: vec2f;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
@@ -531,6 +553,16 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.cascadeFade4 = fade4;
   vertexOutputs.waveCrest = displacement.y;
   vertexOutputs.farGustCoarse = waterFarGustCoarse(worldXZ, uniforms.oceanWind, uniforms.time);
+  // W-8: clamp-to-edge sampling and a placement whose inverseSpan is 0 until
+  // the first bake lands, which reads the fallback texel — a temperate sea.
+  let environmentUv = (worldXZ - uniforms.waterEnvironmentPlacement.xy)
+    * uniforms.waterEnvironmentPlacement.z;
+  vertexOutputs.waterProvince = textureSampleLevel(
+    waterEnvironment,
+    waterEnvironmentSampler,
+    clamp(environmentUv, vec2f(0.0), vec2f(1.0)),
+    0.0,
+  ).xy;
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * world;
 ${sunShadowVertexAssignmentWgsl("world")}
 }
@@ -572,6 +604,7 @@ varying cascadeFade4: f32;
 varying waveCrest: f32;
 // wave S: the far cat's paws' 1.5 km octave, per vertex.
 varying farGustCoarse: f32;
+varying waterProvince: vec2f;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -641,6 +674,44 @@ ${WATER_FRESNEL_SCHLICK_WGSL}
 // a function to be declared before it is called. Nothing in the depth include
 // depends on the noise or capillary blocks, so the order is free.
 ${WATER_DEPTH_OPTICS_WGSL}
+
+// W-8: the constituent model (one text, both water surfaces). It needs the
+// WaterOptics struct the depth include declares, so it is composed after it.
+${WATER_CONSTITUENT_WGSL}
+
+// W-8 — THE SEA'S OWN CHEMISTRY, from the two things a sea pixel knows
+// cheaply: its depth and its province.
+//
+// Case 1 water (open ocean) is chlorophyll and nothing else; Case 2 water (a
+// shelf, an estuary, a surf zone) adds the land's runoff and whatever the
+// waves lift off the bottom. Depth carries most of that on its own — this
+// world's bed reaches only ~110 m, so the shelf IS the coast — and the
+// environment field carries the rest: a cold wet coast makes green water and a
+// warm dry one blue, from the same climate fields the forests are placed by.
+fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
+  let coastal = 1.0 - smoothstep(
+    ${OCEAN_COASTAL_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_COASTAL_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  // Resuspension: the surf zone stirs the bed it is breaking over.
+  let surf = 1.0 - smoothstep(
+    ${OCEAN_SURF_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  let productivity = province.x;
+  let runoff = province.y;
+  return WaterConstituents(
+    mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
+      * (0.45 + 1.7 * productivity),
+    mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
+      * (0.4 + 1.5 * runoff),
+    ${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
+      + ${OCEAN_SURF_SEDIMENT} * surf * surf,
+    0.0,
+  );
+}
 
 ${WATER_DETAIL_NOISE_WGSL}
 
@@ -1050,7 +1121,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // waterVolumeRadiance. 5-11's grey max(sunIlluminanceNormalized,
   // skylightIlluminanceNormalized) scalar is gone: a scalar cannot carry an
   // illuminant, which is why the sea stayed cyan under an orange sunset.
-  let optics = waterOpticsFromUniforms();
+  // W-8: the type is a FIELD now — the open sea is indigo, the shelf green,
+  // the surf zone sandy-pale, and which of those a province leans toward is
+  // the climate of the land beside it.
+  let optics = waterOpticsFromConstituents(oceanConstituents(depth, input.waterProvince));
   let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.oceanCoordinate,
@@ -1727,6 +1801,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "environmentValid",
           "waterAbsorption",
           "waterBackscatter",
+          "waterEnvironmentPlacement",
           "bathymetryNearPlacement",
           "bathymetryFarPlacement",
           "bathymetrySeaLevel",
@@ -1747,6 +1822,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "environmentCube",
           "bathymetryNear",
           "bathymetryFar",
+          "waterEnvironment",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -1762,6 +1838,16 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // the per-region field; bound from construction because a body colour is
     // not optional.
     this.setWaterOpticalType(WATER_REFERENCE_OPTICAL_TYPE);
+    // W-8: the environment field's sampler is bound from construction with a
+    // single neutral texel and an inverseSpan of 0 (which reads that texel
+    // everywhere), for the reason the environment cube is: an unbound declared
+    // sampler keeps a WebGPU material un-ready forever. The renderer swaps in
+    // the baked field as soon as it exists.
+    this.material.setTexture(
+      "waterEnvironment",
+      fallbackWaterEnvironmentField(scene),
+    );
+    this.material.setVector4("waterEnvironmentPlacement", new Vector4(0, 0, 0, 0));
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
@@ -1882,6 +1968,22 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     }
     this.material.setTexture("environmentCube", texture);
     this.material.setFloat("environmentValid", 1);
+  }
+
+  /**
+   * `W-8`: the baked environment field and where it sits in the world. Called
+   * whenever the field re-bakes (rarely: once every 50 km of flight), never
+   * per frame.
+   */
+  setWaterEnvironmentField(field: WaterEnvironmentField): void {
+    const placement = field.placement;
+    this.material.setTexture("waterEnvironment", field.fieldTexture);
+    this.material.setVector4("waterEnvironmentPlacement", new Vector4(
+      placement.originX,
+      placement.originZ,
+      placement.inverseSpan,
+      0,
+    ));
   }
 
   /**

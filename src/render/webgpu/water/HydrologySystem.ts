@@ -66,6 +66,12 @@ import {
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
 import {
+  WATER_CONSTITUENT_WGSL,
+  resolveLakeConstituents,
+  resolveRiverConstituents,
+  type WaterConstituents,
+} from "./WaterConstituents";
+import {
   applyWaterOpticalType,
   WATER_REFERENCE_OPTICAL_TYPE,
   type WaterOpticalType,
@@ -193,6 +199,8 @@ attribute position: vec3f;
 attribute uv: vec2f;
 attribute flowData: vec4f;
 attribute waterData: vec4f;
+// W-8: this lake's or this station's chemistry, baked at mesh build.
+attribute waterChemistry: vec4f;
 uniform world: mat4x4f;
 uniform viewProjection: mat4x4f;
 uniform hydrologyWorldOrigin: vec2f;
@@ -212,6 +220,7 @@ varying whitewater: f32;
 // vec3f interpolant already occupies a full location.
 varying waterInfo: vec4f;
 varying waterUv: vec2f;
+varying waterChemistryVarying: vec4f;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
@@ -253,6 +262,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.whitewater = vertexInputs.flowData.w;
   vertexOutputs.waterInfo = vertexInputs.waterData;
   vertexOutputs.waterUv = vertexInputs.uv;
+  vertexOutputs.waterChemistryVarying = vertexInputs.waterChemistry;
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * displacedWorld;
 ${sunShadowVertexAssignmentWgsl("displacedWorld")}
 }
@@ -267,6 +277,7 @@ varying flowSpeed: f32;
 varying whitewater: f32;
 varying waterInfo: vec4f;
 varying waterUv: vec2f;
+varying waterChemistryVarying: vec4f;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -312,6 +323,10 @@ ${WATER_FRESNEL_SCHLICK_WGSL}
 // shared caustic accumulator it defines (WGSL wants declarations before use).
 // The ocean fragment composes the same blocks in the same order.
 ${WATER_DEPTH_OPTICS_WGSL}
+
+// W-8: the constituent model, composed after the depth include for the
+// WaterOptics struct it returns. The same text the ocean composes.
+${WATER_CONSTITUENT_WGSL}
 
 ${WATER_DETAIL_NOISE_WGSL}
 
@@ -643,8 +658,18 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.worldPosition.y,
     skyReflection,
   );
-  // W-7: the shared body model, lit by the coloured downwelling irradiance.
-  let optics = waterOpticsFromUniforms();
+  // W-8: this water body's own chemistry, resolved at mesh build from its
+  // catchment (a cold high lake carries rock flour, a wet forest one carries
+  // peat, a lowland river carries its own bed) and interpolated here. An
+  // analytic world with no chemistry baked carries zeros, which is pure water
+  // plus the material's fallback type -- the pre-W-8 look.
+  let chemistry = input.waterChemistryVarying;
+  var optics = waterOpticsFromUniforms();
+  if (dot(chemistry, vec4f(1.0)) > 0.0) {
+    optics = waterOpticsFromConstituents(
+      WaterConstituents(chemistry.x, chemistry.y, chemistry.z, chemistry.w),
+    );
+  }
   let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.absoluteWorldXZ,
@@ -783,6 +808,39 @@ interface MeshBuildResult {
  * exact production arrays without a Babylon device; nothing outside those
  * harnesses may construct meshes from it.
  */
+/**
+ * `W-8` — the climate at an inland water surface, which is what decides its
+ * chemistry. Supplied by the renderer (which owns the world definition) so the
+ * hydrology system does not have to re-derive a seed hash that the airport
+ * catalogue may have replaced.
+ *
+ * It is a PURE FUNCTION OF WORLD POSITION: two pages that share a river derive
+ * the same numbers for the same station, which is what makes the chemistry
+ * seam-free without any cross-page state.
+ */
+export interface HydrologyClimateSample {
+  /** Terrain temperature field, 0..1 (one unit is 15.9 K). */
+  readonly temperature: number;
+  /** Terrain moisture field, 0..1. */
+  readonly moisture: number;
+}
+
+export type HydrologyClimateSampler = (
+  worldX: number,
+  worldZ: number,
+  elevationMeters: number,
+) => HydrologyClimateSample;
+
+/**
+ * The neutral climate a system built without a sampler uses: the temperate,
+ * moderately wet middle of this world model, which is what every test fixture
+ * and every analytic harness sees.
+ */
+export const HYDROLOGY_NEUTRAL_CLIMATE: HydrologyClimateSample = Object.freeze({
+  temperature: 0.6,
+  moisture: 0.5,
+});
+
 export interface HydrologyMeshArrays {
   readonly positions: number[];
   readonly normals: number[];
@@ -790,6 +848,8 @@ export interface HydrologyMeshArrays {
   readonly indices: number[];
   readonly flowData: number[];
   readonly waterData: number[];
+  /** `W-8`: (chlorophyll, cdom440, sediment, mineral) for this vertex. */
+  readonly waterChemistry: number[];
 }
 
 type MeshArrays = HydrologyMeshArrays;
@@ -802,6 +862,7 @@ function emptyMeshArrays(): MeshArrays {
     indices: [],
     flowData: [],
     waterData: [],
+    waterChemistry: [],
   };
 }
 
@@ -814,7 +875,65 @@ function normalizedDirection(dx: number, dz: number): readonly [number, number] 
   return length > 1e-6 ? [dx / length, dz / length] : [0, 1];
 }
 
-function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
+/** Push one station's chemistry once per lane. */
+function pushChemistry(arrays: MeshArrays, chemistry: WaterConstituents, lanes: number): void {
+  for (let lane = 0; lane < lanes; lane += 1) {
+    arrays.waterChemistry.push(
+      chemistry.chlorophyll,
+      chemistry.cdom440,
+      chemistry.sediment,
+      chemistry.mineral,
+    );
+  }
+}
+
+/**
+ * `W-8`: a river station's chemistry, and the ONE place the mouth taper lives.
+ * A reach that reaches the sea hands its load over to the coastal water the
+ * ocean shader is already making there, so the waterline is a gradient rather
+ * than a step (the ocean's own surf-zone sediment meets it from the other
+ * side).
+ */
+function riverStationChemistry(
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+  x: number,
+  y: number,
+  z: number,
+  widthMeters: number,
+  flowSpeedMetersPerSecond: number,
+  grade: number,
+): WaterConstituents {
+  const elevationAboveSeaMeters = Math.max(y - seaLevel, 0);
+  const sample = climate(x, z, y);
+  const constituents = resolveRiverConstituents(
+    {
+      elevationAboveSeaMeters,
+      temperature: sample.temperature,
+      moisture: sample.moisture,
+    },
+    widthMeters,
+    flowSpeedMetersPerSecond,
+    grade,
+  );
+  // Over the last 12 m of fall the load settles out toward what the sea it is
+  // entering carries anyway.
+  const mouth = Math.min(Math.max(elevationAboveSeaMeters / 12, 0), 1);
+  const taper = mouth * mouth * (3 - 2 * mouth);
+  return {
+    chlorophyll: constituents.chlorophyll,
+    cdom440: constituents.cdom440 * (0.35 + 0.65 * taper),
+    sediment: constituents.sediment * (0.3 + 0.7 * taper),
+    mineral: constituents.mineral * taper,
+  };
+}
+
+function appendRiver(
+  arrays: MeshArrays,
+  river: HydrologyRiver,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
   if (river.points.length < 2) return;
   const baseVertex = arrays.positions.length / 3;
   let distanceAlong = 0;
@@ -852,6 +971,16 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       arrays.flowData.push(flow[0], flow[1], point.flowSpeedMetersPerSecond, whitewater);
       arrays.waterData.push(0, 0, shore, 0);
     }
+    pushChemistry(arrays, riverStationChemistry(
+      climate,
+      seaLevel,
+      point.x,
+      point.y,
+      point.z,
+      point.widthMeters,
+      point.flowSpeedMetersPerSecond,
+      grade,
+    ), 5);
   }
   for (let index = 0; index < river.points.length - 1; index += 1) {
     const row = baseVertex + index * 5;
@@ -904,10 +1033,35 @@ const LAKE_CONTAINMENT_MAX_NODES_PER_AXIS = 57;
 const LAKE_CONTAINMENT_STEP_FLOOR_METERS = 4;
 const LAKE_CONTAINMENT_CROSSING_CLAMP = 1e-3;
 
+/**
+ * `W-8`: a lake's chemistry, resolved once at its centre. One lake is one
+ * water body — a tarn does not change colour across itself — so this is a
+ * per-lake constant, which also means a lake split across a page boundary
+ * derives the same value on both sides.
+ */
+function lakeChemistry(
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+  lake: HydrologyLake,
+): WaterConstituents {
+  const sample = climate(lake.centerX, lake.centerZ, lake.surfaceHeight);
+  return resolveLakeConstituents(
+    {
+      elevationAboveSeaMeters: Math.max(lake.surfaceHeight - seaLevel, 0),
+      temperature: sample.temperature,
+      moisture: sample.moisture,
+    },
+    lake.maximumDepthMeters,
+    lake.areaSquareMeters,
+  );
+}
+
 export function appendContainedLake(
   arrays: MeshArrays,
   lake: HydrologyLake,
   ground: (x: number, z: number) => number,
+  climate: HydrologyClimateSampler = () => HYDROLOGY_NEUTRAL_CLIMATE,
+  seaLevel = 0,
 ): void {
   if (lake.boundary.length < 3) return;
   let minX = Infinity;
@@ -957,6 +1111,7 @@ export function appendContainedLake(
         : lake.surfaceHeight - ground(x, z);
     }
   }
+  const chemistry = lakeChemistry(climate, seaLevel, lake);
   const vertexIndex = new Map<number, number>();
   const invRadius = 1 / Math.max(lake.radiusMeters, 1e-6);
   const invMaxDepth = 1 / Math.max(lake.maximumDepthMeters, 1e-6);
@@ -978,6 +1133,7 @@ export function appendContainedLake(
       1 - clamp(depth * invMaxDepth, 0, 1),
       0,
     );
+    pushChemistry(arrays, chemistry, 1);
     vertexIndex.set(key, index);
     return index;
   };
@@ -1141,7 +1297,12 @@ export function appendContainedLake(
  * coordinate, waterData.z = |lane| shore proximity. Analytic worlds keep
  * `appendRiver` byte-identical (Gate W non-regression).
  */
-function appendGraphRiver(arrays: MeshArrays, river: HydrologyRiver): void {
+function appendGraphRiver(
+  arrays: MeshArrays,
+  river: HydrologyRiver,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
   const stations = resampleHydrologyRiverStations(river.points);
   if (stations.length < 2) return;
   const baseVertex = arrays.positions.length / 3;
@@ -1170,6 +1331,16 @@ function appendGraphRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       );
       arrays.waterData.push(0, 0, shore, channelPayload);
     }
+    pushChemistry(arrays, riverStationChemistry(
+      climate,
+      seaLevel,
+      station.x,
+      station.y,
+      station.z,
+      station.widthMeters,
+      station.flowSpeedMetersPerSecond,
+      station.grade,
+    ), 5);
   }
   for (let index = 0; index < stations.length - 1; index += 1) {
     const row = baseVertex + index * 5;
@@ -1220,7 +1391,13 @@ const GRAPH_LAKE_INTERIOR_EDGE_GRADING = 1;
  * re-derives wave gradients per fragment (fix-pack W3); these vertices are
  * for attribute interpolation and displacement, not normals.
  */
-function appendGraphLake(arrays: MeshArrays, lake: HydrologyLake): void {
+function appendGraphLake(
+  arrays: MeshArrays,
+  lake: HydrologyLake,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
+  const chemistry = lakeChemistry(climate, seaLevel, lake);
   const ringCount = lake.boundary.length;
   if (ringCount < 3) return;
   const ringXZ = new Array<number>(ringCount * 2);
@@ -1306,6 +1483,7 @@ function appendGraphLake(arrays: MeshArrays, lake: HydrologyLake): void {
       shore,
       channelPayload,
     );
+    pushChemistry(arrays, chemistry, 1);
   }
   // The ring is CCW; emitting (a, c, b) matches the legacy fan's winding.
   for (let index = 0; index < triangles.length; index += 3) {
@@ -1329,9 +1507,13 @@ export function buildGraphHydrologyMeshArrays(
   lakes: readonly HydrologyLake[],
 ): { readonly rivers: HydrologyMeshArrays; readonly lakes: HydrologyMeshArrays } {
   const riverArrays = emptyMeshArrays();
-  for (const river of rivers) appendGraphRiver(riverArrays, river);
+  for (const river of rivers) {
+    appendGraphRiver(riverArrays, river, () => HYDROLOGY_NEUTRAL_CLIMATE, 0);
+  }
   const lakeArrays = emptyMeshArrays();
-  for (const lake of lakes) appendGraphLake(lakeArrays, lake);
+  for (const lake of lakes) {
+    appendGraphLake(lakeArrays, lake, () => HYDROLOGY_NEUTRAL_CLIMATE, 0);
+  }
   return { rivers: riverArrays, lakes: lakeArrays };
 }
 
@@ -1354,6 +1536,7 @@ function buildMesh(
   vertexData.applyToMesh(mesh, false);
   mesh.setVerticesData("flowData", arrays.flowData, false, 4);
   mesh.setVerticesData("waterData", arrays.waterData, false, 4);
+  mesh.setVerticesData("waterChemistry", arrays.waterChemistry, false, 4);
   mesh.isPickable = false;
   mesh.receiveShadows = true;
   mesh.renderingGroupId = WATER_RENDERING_GROUP_ID;
@@ -1390,6 +1573,12 @@ export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly windSpeedMetersPerSecond?: number;
   /** Enables off-main-thread generation from the deterministic built-in world. */
   readonly workerWorldSeed?: WorldSeed;
+  /**
+   * `W-8`: the climate at an inland water surface, for its chemistry. Absent
+   * (every test fixture, every analytic harness) means the neutral temperate
+   * province, which is what the pre-W-8 single water type was.
+   */
+  readonly climateSample?: HydrologyClimateSampler;
   readonly paging?: HydrologyPagingOptions;
   /** Analytic-mode test/custom-world injection point. HydrologySystem assumes ownership. */
   readonly generationClient?: HydrologyGenerationClientLike;
@@ -1517,6 +1706,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private readonly material: ShaderMaterial;
   private readonly scene: Scene;
   private readonly generationConfig: HydrologyGenerationConfig;
+  /** `W-8`: the climate sampler the mesh builders bake chemistry from. */
+  private readonly climateSample: HydrologyClimateSampler;
   private readonly pagingConfig: HydrologyPagingConfig;
   private readonly generationClient: HydrologyGenerationClientLike | null;
   private readonly graphMode: boolean;
@@ -1568,6 +1759,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     } = options;
     this.bathymetry = bathymetry ?? null;
     this.scene = scene;
+    this.climateSample = options.climateSample ?? (() => HYDROLOGY_NEUTRAL_CLIMATE);
     const resolvedGenerationConfig = resolveHydrologyConfig(generationOptions);
     this.generationConfig = graphHydrology !== undefined
       && isHydrologyGenerationResult(graphHydrology)
@@ -1595,7 +1787,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       scene,
       HYDROLOGY_SHADER_NAME,
       {
-        attributes: ["position", "uv", "flowData", "waterData"],
+        attributes: ["position", "uv", "flowData", "waterData", "waterChemistry"],
         uniforms: [
           "world",
           "viewProjection",
@@ -1984,14 +2176,22 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       // in tests/render.webgpu-hydrology.test.ts.
       const riverBuild = buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
         hydrology.rivers.forEach((river) => (
-          this.graphMode ? appendGraphRiver(arrays, river) : appendRiver(arrays, river)
+          this.graphMode
+            ? appendGraphRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
+            : appendRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
         ));
       });
       const lakeBuild = buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
         hydrology.lakes.forEach((lake) => (
           this.graphMode
-            ? appendGraphLake(arrays, lake)
-            : appendContainedLake(arrays, lake, this.analyticGroundSample!)
+            ? appendGraphLake(arrays, lake, this.climateSample, this.generationConfig.seaLevel)
+            : appendContainedLake(
+              arrays,
+              lake,
+              this.analyticGroundSample!,
+              this.climateSample,
+              this.generationConfig.seaLevel,
+            )
         ));
       });
       const region: HydrologyRegionRuntime = {
