@@ -2106,12 +2106,28 @@ let terrainPageUv = terrainSurfacePageUv(
 // selection across atlas slots would bleed neighbouring pages into each other.
 let terrainOcclusionTexel = textureSampleLevel(
   terrainOcclusionAtlas, terrainOcclusionAtlasSampler, terrainPageUv.xy, 0.0);
-// r is baked sky visibility; a fully unbaked page reads 0, so the fallback
-// keeps it at 1 rather than plunging the ground into darkness.
-let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
-let terrainHorizonShadow = terrainSurfaceHorizonShadow(
-  terrainPageUv, uniforms.terrainSunDirection.xyz,
-  terrainSurfaceHash(terrainAbsolutePosition.xz * 0.37));
+// r is baked sky visibility. A channel slot is RESIDENT BEFORE ITS BAKE LANDS
+// — residency completes only after the bake, but the mesh carries the slot
+// lane as soon as it is assigned — so for a frame or two every lane of this
+// texel reads exactly zero, which as sky visibility means "no sky at all".
+//
+// The bake's own alpha is the validity signal, and it was designed to be one:
+// it carries the bent normal's vertical sign so "fully enclosed" is
+// distinguishable from "unwritten" (PageOcclusionBake.ts). Any real texel's
+// bent normal points up, so alpha is at least a half; an unbaked texel is 0.
+// Gating on it keeps an arriving page at full sky instead of dropping a dark
+// patch across the frame while it streams.
+let terrainOcclusionBaked = smoothstep(0.02, 0.2, terrainOcclusionTexel.a);
+let terrainOcclusionTrust = terrainPageUv.z * terrainOcclusionBaked;
+let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+// The horizon atlases are written by the same dispatch, so an unbaked page
+// would report a zero horizon in every azimuth. Fade to "the sun is up".
+let terrainHorizonShadow = mix(
+  1.0,
+  terrainSurfaceHorizonShadow(
+    terrainPageUv, uniforms.terrainSunDirection.xyz,
+    terrainSurfaceHash(terrainAbsolutePosition.xz * 0.37)),
+  terrainOcclusionBaked);
 // 4-6: the real classifier's output replaces the provisional lanes wherever a
 // channel page is resident. Where one is not, the co-residency rule applies
 // and the Phase 3 provisional splat is what the fragment gets.
