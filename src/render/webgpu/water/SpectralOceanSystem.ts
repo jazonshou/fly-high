@@ -81,6 +81,12 @@ import {
   OCEAN_SURF_SEDIMENT,
   WATER_CONSTITUENT_WGSL,
 } from "./WaterConstituents";
+import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
+import {
+  HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE,
+  resolveHydrologyGroundBounce,
+  resolveHydrologyHorizonPlacement,
+} from "./HydrologySystem";
 import {
   applyWaterOpticalType,
   WATER_SURF_FOAM_ALBEDO,
@@ -91,6 +97,9 @@ import {
   fallbackWaterPlanarTexture,
   configureDepthAwareWaterRendering,
   WATER_BATHYMETRY_DECLARATIONS_WGSL,
+  WATER_BATHYMETRY_SAMPLING_WGSL,
+  WATER_SHELTER_FLOOR,
+  WATER_WINDROW_SPACING_SECONDS,
   WATER_CREST_SSS_WGSL,
   WATER_DEPTH_OPTICS_WGSL,
   WATER_ENVIRONMENT_MIP_WGSL,
@@ -432,6 +441,14 @@ var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
 // kilometres wide. See WaterEnvironmentField.
 uniform waterEnvironmentPlacement: vec4f;
 var waterEnvironmentSampler: sampler; var waterEnvironment: texture_2d<f32>;
+// W-10: the terrain's global horizon field, sampled HERE and handed to the
+// fragment as its two packed vec4s. The fragment then evaluates the shared
+// horizon operator against its OWN per-pixel reflection direction, so the
+// occlusion is exact rather than a vertex approximation of a per-pixel test.
+uniform oceanHorizonField: vec4f;
+var oceanHorizonASampler: sampler; var oceanHorizonA: texture_2d<f32>;
+var oceanHorizonBSampler: sampler; var oceanHorizonB: texture_2d<f32>;
+${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
 varying cascadeFades: vec4f;
@@ -440,7 +457,11 @@ varying waveCrest: f32;
 // wave S: the far cat's paws' 1.5 km octave, per vertex.
 varying farGustCoarse: f32;
 // W-8: (productivity, runoff) at this vertex, 0..1 each.
-varying waterProvince: vec2f;
+// W-10 added .z: wind exposure, 0 in the lee of a coast, 1 in open water.
+varying waterProvince: vec3f;
+// W-10: this vertex's packed terrain horizon, for the reflected sky.
+varying oceanHorizonPackedA: vec4f;
+varying oceanHorizonPackedB: vec4f;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
@@ -449,6 +470,42 @@ ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 ${WATER_DETAIL_NOISE_WGSL}
 
 ${WATER_FAR_GUST_WGSL}
+
+${WATER_BATHYMETRY_SAMPLING_WGSL}
+
+// ==========================================================================
+// W-10 — WIND SHELTER. Why a real coast has a band of glass along it.
+//
+// Wind blowing off the land arrives at the water with its surface stress
+// stripped: Markfort et al. (2010) measure the stress recovering over 40-60
+// obstacle heights, and sailors know the same thing as the calm blanket a few
+// hundred metres off a windward shore. The short waves that carry almost all
+// the slope variance respond to the LOCAL wind within seconds (their damping
+// time is under a minute), so that band is genuinely smoother — which is why
+// it mirrors the sky while the open sea beside it does not, and why it never
+// carries whitecaps.
+//
+// Four taps of the bathymetry bed upwind, weighted toward the near ones (the
+// nearest obstacle is what shelters). Land is a bed delta above sea level,
+// which is exactly what the clipmap stores. The taps are per VERTEX: this is a
+// 200 m-to-2 km effect and the disk's rings are far finer than that wherever
+// it is visible, and 61k vertices x 4 taps is a rounding error against the
+// fragment work it modulates.
+// ==========================================================================
+fn oceanWindExposure(worldXZ: vec2f, windVelocity: vec2f) -> f32 {
+  let windAxis = normalize(windVelocity + vec2f(0.00001, 0.0));
+  var blocked = 0.0;
+  // Upwind is AGAINST the wind's travel: the wind arrives from there. The land
+  // test is a SMOOTHSTEP over the bed delta rather than a threshold, for two
+  // reasons: a bar that breaks the surface shelters less than a headland, and
+  // a hard step sampled at vertices that move through the world with the
+  // camera would shimmer along the shoreline. -6 m to +4 m of bed is the band.
+  blocked += 0.40 * smoothstep(-6.0, 4.0, sampleBathymetryBedDelta(worldXZ - windAxis * 150.0));
+  blocked += 0.30 * smoothstep(-6.0, 4.0, sampleBathymetryBedDelta(worldXZ - windAxis * 450.0));
+  blocked += 0.20 * smoothstep(-6.0, 4.0, sampleBathymetryBedDelta(worldXZ - windAxis * 1100.0));
+  blocked += 0.10 * smoothstep(-6.0, 4.0, sampleBathymetryBedDelta(worldXZ - windAxis * 2400.0));
+  return clamp(1.0 - blocked, ${WATER_SHELTER_FLOOR.toFixed(2)}, 1.0);
+}
 
 fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
   let coordinate = fract(worldXZ / patchLength);
@@ -557,12 +614,23 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // the first bake lands, which reads the fallback texel — a temperate sea.
   let environmentUv = (worldXZ - uniforms.waterEnvironmentPlacement.xy)
     * uniforms.waterEnvironmentPlacement.z;
-  vertexOutputs.waterProvince = textureSampleLevel(
+  let province = textureSampleLevel(
     waterEnvironment,
     waterEnvironmentSampler,
     clamp(environmentUv, vec2f(0.0), vec2f(1.0)),
     0.0,
   ).xy;
+  vertexOutputs.waterProvince = vec3f(
+    province,
+    oceanWindExposure(worldXZ, uniforms.oceanWind),
+  );
+  // W-10: the packed horizon at this vertex. inverseSpan 0 is the "no field
+  // yet" sentinel the fragment folds in, exactly as inland water does.
+  let horizonUv = (worldXZ - uniforms.oceanHorizonField.xy) * uniforms.oceanHorizonField.z;
+  vertexOutputs.oceanHorizonPackedA = textureSampleLevel(
+    oceanHorizonA, oceanHorizonASampler, horizonUv, 0.0);
+  vertexOutputs.oceanHorizonPackedB = textureSampleLevel(
+    oceanHorizonB, oceanHorizonBSampler, horizonUv, 0.0);
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * world;
 ${sunShadowVertexAssignmentWgsl("world")}
 }
@@ -604,7 +672,9 @@ varying cascadeFade4: f32;
 varying waveCrest: f32;
 // wave S: the far cat's paws' 1.5 km octave, per vertex.
 varying farGustCoarse: f32;
-varying waterProvince: vec2f;
+varying waterProvince: vec3f;
+varying oceanHorizonPackedA: vec4f;
+varying oceanHorizonPackedB: vec4f;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -647,6 +717,10 @@ uniform environmentValid: f32;
 // W-8 modulates them per fragment from the region's own climate and depth.
 uniform waterAbsorption: vec3f;
 uniform waterBackscatter: vec3f;
+// W-10: the horizon field's placement (originX, originZ, inverseSpan, band)
+// and the ground's mean radiance scale, both mirroring inland water's.
+uniform oceanHorizonField: vec4f;
+uniform oceanGroundBounceAlbedo: f32;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
 var slopeFoam0Sampler: sampler; var slopeFoam0: texture_2d<f32>;
@@ -746,6 +820,33 @@ ${WATER_CREST_SSS_WGSL}
 ${WATER_ENVIRONMENT_MIP_WGSL}
 
 ${waterReflectedSkyWgsl(OCEAN_REFLECTED_SKY_PARAMETERS)}
+
+// W-10: the shared horizon operator, composed verbatim — the same text the
+// terrain, the detail plugin and inland water evaluate.
+${HORIZON_FIELD_LOOKUP_WGSL}
+
+// The terminator jitter's world-locked spatial hash, as inland water uses it:
+// spatial and not temporal, or the penumbra would crawl across a still sea.
+fn oceanHorizonJitter(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+// Sky visibility along a reflection direction: 1 where the ray clears the
+// terrain horizon, 0 where it strikes a hillside. The field's absence is a
+// uniform sentinel folded in by a mix, never a branch around a sample.
+fn oceanTerrainVisibility(worldXZ: vec2f, direction: vec3f, packedA: vec4f, packedB: vec4f) -> f32 {
+  let visibility = horizonFieldShadow(
+    packedA,
+    packedB,
+    direction,
+    uniforms.oceanHorizonField.w,
+    oceanHorizonJitter(worldXZ * 0.37),
+  );
+  let resident = select(0.0, 1.0, uniforms.oceanHorizonField.z > 0.0);
+  return mix(1.0, visibility, resident);
+}
 
 // 2-8: derivatives come from the UNWRAPPED coordinate — fract() has a
 // derivative discontinuity at every patch seam that would spike the
@@ -1040,9 +1141,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // the geometric normal above is already showing.
   let resolvedIntoNormal = dot(cascadeBandMss * input.cascadeFades * input.cascadeFades, vec4f(1.0))
     + cascadeBandMss4 * input.cascadeFade4 * input.cascadeFade4;
+  // W-10: the LOCAL wind. In the lee of a coast the wind has been stripped of
+  // its surface stress, so the short waves it would raise are not there: the
+  // band is smoother, mirrors more sky, and carries no whitecaps at all
+  // (coverage goes as U^3.41, so half the wind is a fourteenth of the foam).
+  let shelteredWind = length(uniforms.oceanWind) * input.waterProvince.z;
   slopeVariance = waterSubPixelSlopeVariance(
     slopeVariance,
-    length(uniforms.oceanWind),
+    shelteredWind,
     resolvedIntoNormal,
     farGust,
     runupFootprint,
@@ -1109,7 +1215,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     reflectionDirection,
     environmentRoughnessToMip(roughness),
   ).rgb;
-  let skyReflection = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  let unoccludedSky = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  // W-10: where the reflected ray dips under the terrain's horizon it strikes
+  // a hillside, not the sky — the single strongest "pasted on" cue at a coast,
+  // and the one inland water has had since 6-11. A sea reflecting bright sky
+  // where a dark mountain stands is what makes a bay read as a blue decal.
+  let terrainVisibility = oceanTerrainVisibility(
+    input.oceanCoordinate,
+    reflectionDirection,
+    input.oceanHorizonPackedA,
+    input.oceanHorizonPackedB,
+  );
+  let skyReflection = mix(
+    uniforms.skyHorizon * uniforms.oceanGroundBounceAlbedo,
+    unoccludedSky,
+    terrainVisibility,
+  );
   let reflected = samplePlanarSceneReflection(
     input.planarReflectionClip,
     normal,
@@ -1124,7 +1245,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // W-8: the type is a FIELD now — the open sea is indigo, the shelf green,
   // the surf zone sandy-pale, and which of those a province leans toward is
   // the climate of the land beside it.
-  let optics = waterOpticsFromConstituents(oceanConstituents(depth, input.waterProvince));
+  let optics = waterOpticsFromConstituents(oceanConstituents(depth, input.waterProvince.xy));
   let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.oceanCoordinate,
@@ -1247,7 +1368,25 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     textureSampleLevel(slopeFoam0, slopeFoam0Sampler, fract(input.oceanCoordinate / uniforms.patchLengths0.x), 32.0).z,
     0.0001,
   );
-  let whitecapCoverage = waterWhitecapCoverage(length(uniforms.oceanWind))
+  // W-10: windrows. Above ~3 m/s the surface convergence of Langmuir cells
+  // sweeps foam into lines along the wind, spaced about 4.8 s x U (Faller &
+  // Woodcock) — 46 m at this world's wind. The comb is mean-one over its own
+  // phase (a cos^3 lobe has mean 0.3125, and it is divided by that), and its
+  // cross-wind coordinate is jittered by a coarse world-locked octave so it
+  // reads as streaks rather than a grating. It moves foam, it does not add
+  // any: the coverage law above still sets how much there is.
+  let windrowSpacing = max(${WATER_WINDROW_SPACING_SECONDS.toFixed(1)} * shelteredWind, 12.0);
+  let windrowAxis = normalize(uniforms.oceanWind + vec2f(0.00001, 0.0));
+  let windrowAcross = vec2f(-windrowAxis.y, windrowAxis.x);
+  let windrowDrift = uniforms.oceanWind * uniforms.time * 0.05;
+  let windrowPhase = dot(input.oceanCoordinate - windrowDrift, windrowAcross) / windrowSpacing
+    + 0.35 * (waterDetailValue(input.oceanCoordinate * 0.0025, 9.0) - 0.5);
+  let windrowLobe = pow(0.5 + 0.5 * cos(6.2831853 * windrowPhase), 3.0);
+  let windrowFade = smoothstep(3.0, 6.0, shelteredWind)
+    * (1.0 - smoothstep(0.35, 1.2, runupFootprint / max(windrowSpacing, 1.0)));
+  let windrow = mix(1.0, windrowLobe / 0.3125, windrowFade);
+  let whitecapCoverage = waterWhitecapCoverage(shelteredWind)
+    * windrow
     * (foamAmount / openWaterFoamMean);
   let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);
   let whitecaps = clamp(whitecapCoverage, 0.0, 1.0) * mix(
@@ -1802,6 +1941,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "waterAbsorption",
           "waterBackscatter",
           "waterEnvironmentPlacement",
+          "oceanHorizonField",
+          "oceanGroundBounceAlbedo",
           "bathymetryNearPlacement",
           "bathymetryFarPlacement",
           "bathymetrySeaLevel",
@@ -1823,6 +1964,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "bathymetryNear",
           "bathymetryFar",
           "waterEnvironment",
+          "oceanHorizonA",
+          "oceanHorizonB",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -1848,6 +1991,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       fallbackWaterEnvironmentField(scene),
     );
     this.material.setVector4("waterEnvironmentPlacement", new Vector4(0, 0, 0, 0));
+    // W-10: the horizon field, bound from construction for the same
+    // material-readiness reason; inverseSpan 0 reads as "sky fully visible".
+    this.setHorizonField(null, null, 0, 0, 0);
+    this.setGroundBounceAlbedo(HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE);
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
@@ -1968,6 +2115,50 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     }
     this.material.setTexture("environmentCube", texture);
     this.material.setFloat("environmentValid", 1);
+  }
+
+  /**
+   * `W-10`: the terrain's global horizon field, for the reflected sky. The
+   * ocean samples it in its VERTEX stage (no fragment sampler is free) and
+   * evaluates the shared operator per pixel against its own reflection
+   * direction. Same signature and same placement resolver as inland water's,
+   * because it is the same field.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    const placement = resolveHydrologyHorizonPlacement(
+      layerA !== null && layerB !== null,
+      originX,
+      originZ,
+      spanMeters,
+    );
+    if (placement.inverseSpan > 0 && layerA && layerB) {
+      this.material.setTexture("oceanHorizonA", layerA);
+      this.material.setTexture("oceanHorizonB", layerB);
+    } else {
+      const fallback = fallbackWaterPlanarTexture(this.scene);
+      this.material.setTexture("oceanHorizonA", fallback);
+      this.material.setTexture("oceanHorizonB", fallback);
+    }
+    this.material.setVector4("oceanHorizonField", new Vector4(
+      placement.originX,
+      placement.originZ,
+      placement.inverseSpan,
+      placement.softBand,
+    ));
+  }
+
+  /** `W-10`: the ground's mean radiance scale for an occluded reflection. */
+  setGroundBounceAlbedo(albedoLuminance: number): void {
+    this.material.setFloat(
+      "oceanGroundBounceAlbedo",
+      resolveHydrologyGroundBounce(albedoLuminance),
+    );
   }
 
   /**

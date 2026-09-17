@@ -195,7 +195,12 @@ describe("distant whitecap flecks", () => {
     expect(WATER_FRAGMENT_WGSL).toContain(
       "let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);",
     );
-    expect(WATER_FRAGMENT_WGSL).toContain("waterWhitecapCoverage(length(uniforms.oceanWind))");
+    // W-10: the coverage law reads the SHELTERED wind — a lee shore has no
+    // whitecaps at all, because coverage goes as U^3.41 — and the windrow comb
+    // (mean one over its own phase) moves that coverage into wind-aligned
+    // lines rather than adding any.
+    expect(WATER_FRAGMENT_WGSL).toContain("waterWhitecapCoverage(shelteredWind)");
+    expect(WATER_FRAGMENT_WGSL).toContain("let windrow = mix(1.0, windrowLobe / 0.3125, windrowFade);");
     expect(WATER_FRAGMENT_WGSL).toContain(
       `waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2)`,
     );

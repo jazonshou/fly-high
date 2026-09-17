@@ -146,7 +146,7 @@ const HYDROLOGY_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
 export const HYDROLOGY_HORIZON_SOFT_BAND = 0.05;
 export const HYDROLOGY_GROUND_BOUNCE_CALIBRATION = 1.15;
 /** AtmosphereSystem's default surface albedo luminance, until the renderer forwards the live one. */
-const HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE = 0.18;
+export const HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE = 0.18;
 
 /** The vec4 the fragment reads as `hydrologyHorizonField`. */
 export interface HydrologyHorizonPlacement {

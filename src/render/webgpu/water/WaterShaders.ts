@@ -790,6 +790,60 @@ var bathymetryFarSampler: sampler; var bathymetryFar: texture_2d<f32>;
 `;
 
 /**
+ * `W-10`: the bathymetry LOOKUP, extracted from the depth include so the ocean
+ * vertex stage can compose it alone. The vertex needs the bed to march upwind
+ * for wind shelter; it must not compose the optics block, which reads sun and
+ * sky uniforms a vertex stage does not declare. The fragment composes this
+ * inside `WATER_DEPTH_OPTICS_WGSL` exactly where the text used to sit, so the
+ * composed fragment is unchanged by the extraction itself.
+ */
+export const WATER_BATHYMETRY_SAMPLING_WGSL = /* wgsl */ `fn bathymetryWrappedUv(worldXZ: vec2f, placement: vec4f) -> vec2f {
+  let worldTexel = worldXZ / placement.z;
+  let wrapped = worldTexel - floor(worldTexel / placement.w) * placement.w;
+  return (wrapped + vec2f(0.5)) / placement.w;
+}
+
+fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
+  let nearCenter = (uniforms.bathymetryNearPlacement.xy
+    + vec2f(uniforms.bathymetryNearPlacement.w * 0.5))
+    * uniforms.bathymetryNearPlacement.z;
+  let nearDistance = max(
+    abs(worldXZ.x - nearCenter.x),
+    abs(worldXZ.y - nearCenter.y),
+  );
+  let nearBlendEnd = uniforms.bathymetryNearPlacement.z
+    * uniforms.bathymetryNearPlacement.w * ${BATHYMETRY_NEAR_BLEND_END_FRACTION};
+  let nearBlendStart = nearBlendEnd
+    - uniforms.bathymetryFarPlacement.z * ${BATHYMETRY_NEAR_BLEND_FAR_TEXELS}.0;
+  if (nearDistance <= nearBlendStart) {
+    return textureSampleLevel(
+      bathymetryNear,
+      bathymetryNearSampler,
+      bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
+      0.0,
+    ).r;
+  }
+  let farDelta = textureSampleLevel(
+    bathymetryFar,
+    bathymetryFarSampler,
+    bathymetryWrappedUv(worldXZ, uniforms.bathymetryFarPlacement),
+    0.0,
+  ).r;
+  if (nearDistance >= nearBlendEnd) {
+    return farDelta;
+  }
+  let nearDelta = textureSampleLevel(
+    bathymetryNear,
+    bathymetryNearSampler,
+    bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
+    0.0,
+  ).r;
+  let nearWeight = 1.0 - smoothstep(nearBlendStart, nearBlendEnd, nearDistance);
+  return mix(farDelta, nearDelta, nearWeight);
+}
+`;
+
+/**
  * `5-11`: shared Beer-Lambert, analytic bed, turbidity, shoreline, and
  * underwater-interface implementation. The two water materials supply only
  * their surface normal/reflection/foam; neither owns a second depth model.
@@ -882,50 +936,7 @@ fn waterCrestTint(optics: WaterOptics) -> vec3f {
   return transmitted / max(dot(transmitted, WATER_LUMINANCE_WEIGHTS), 0.001);
 }
 
-fn bathymetryWrappedUv(worldXZ: vec2f, placement: vec4f) -> vec2f {
-  let worldTexel = worldXZ / placement.z;
-  let wrapped = worldTexel - floor(worldTexel / placement.w) * placement.w;
-  return (wrapped + vec2f(0.5)) / placement.w;
-}
-
-fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
-  let nearCenter = (uniforms.bathymetryNearPlacement.xy
-    + vec2f(uniforms.bathymetryNearPlacement.w * 0.5))
-    * uniforms.bathymetryNearPlacement.z;
-  let nearDistance = max(
-    abs(worldXZ.x - nearCenter.x),
-    abs(worldXZ.y - nearCenter.y),
-  );
-  let nearBlendEnd = uniforms.bathymetryNearPlacement.z
-    * uniforms.bathymetryNearPlacement.w * ${BATHYMETRY_NEAR_BLEND_END_FRACTION};
-  let nearBlendStart = nearBlendEnd
-    - uniforms.bathymetryFarPlacement.z * ${BATHYMETRY_NEAR_BLEND_FAR_TEXELS}.0;
-  if (nearDistance <= nearBlendStart) {
-    return textureSampleLevel(
-      bathymetryNear,
-      bathymetryNearSampler,
-      bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
-      0.0,
-    ).r;
-  }
-  let farDelta = textureSampleLevel(
-    bathymetryFar,
-    bathymetryFarSampler,
-    bathymetryWrappedUv(worldXZ, uniforms.bathymetryFarPlacement),
-    0.0,
-  ).r;
-  if (nearDistance >= nearBlendEnd) {
-    return farDelta;
-  }
-  let nearDelta = textureSampleLevel(
-    bathymetryNear,
-    bathymetryNearSampler,
-    bathymetryWrappedUv(worldXZ, uniforms.bathymetryNearPlacement),
-    0.0,
-  ).r;
-  let nearWeight = 1.0 - smoothstep(nearBlendStart, nearBlendEnd, nearDistance);
-  return mix(farDelta, nearDelta, nearWeight);
-}
+${WATER_BATHYMETRY_SAMPLING_WGSL}
 
 fn waterDepthFromBathymetry(surfaceElevation: f32, worldXZ: vec2f) -> f32 {
   let bedElevation = uniforms.bathymetrySeaLevel + sampleBathymetryBedDelta(worldXZ);
@@ -3887,6 +3898,21 @@ export const WATER_SURF_FOAM_ALBEDO = 0.5;
  * away. A sea with one roughness everywhere is the plastic look, whatever its
  * colour.
  */
+/**
+ * `W-10` — how calm the most sheltered water gets, as a fraction of the
+ * prevailing wind. Never zero: a lee shore is glassy, not a mirror, because
+ * air still mixes down and swell still arrives from offshore.
+ */
+export const WATER_SHELTER_FLOOR = 0.18;
+
+/**
+ * `W-10` — Langmuir windrow spacing, seconds x wind speed. Faller & Woodcock
+ * (1964) measured L = 4.8 s x U over the open ocean (Maratos' lake fit is
+ * 2.8 s x U); 4.8 gives 46 m lines at the default world's 9.6 m/s, which is
+ * what an aerial photograph of a fresh breeze shows.
+ */
+export const WATER_WINDROW_SPACING_SECONDS = 4.8;
+
 export const WATER_COX_MUNK_BASE_VARIANCE = 0.003;
 export const WATER_COX_MUNK_WIND_SLOPE = 0.00512;
 

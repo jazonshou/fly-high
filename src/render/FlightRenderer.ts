@@ -1208,6 +1208,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // Terrain occlusion of the reflected sky: the ground bounce's albedo,
       // forwarded again with every atmosphere change (see setAtmosphere).
       hydrology.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
+      ocean.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
       cloudShadowReceivers.setProjection(initialCloudShadow, 0, 0);
 
       // 7-3: the star field. Built before the post-process chain so its
@@ -1592,6 +1593,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
     // above, so it rides the same publish.
     this.hydrology.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
+    this.ocean.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
     this.graph.invalidateHistory("atmosphere changed");
   }
 
@@ -2893,6 +2895,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // field whether its REFLECTION direction clears the terrain — the one
     // snapshot, the same frame, the same origin as the detail consumer.
     this.hydrology.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // W-10: and so does the sea, which had no terrain occlusion at all — a
+    // bay reflecting bright sky where a dark headland stands is the strongest
+    // "pasted on" cue a coast has.
+    this.ocean.setHorizonField(
       horizonField?.layerA ?? null,
       horizonField?.layerB ?? null,
       horizonField?.originX ?? 0,

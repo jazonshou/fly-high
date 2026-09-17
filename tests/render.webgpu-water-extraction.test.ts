@@ -167,6 +167,16 @@ describe("water shader extraction (2-8a)", () => {
     // varying with a warped 380 m octave per pixel (the unwarped lattice read
     // as rows of drifting blobs in the glitter path), and the sparkle hash is
     // a one-lane integer hash.
+    // Re-pinned by W-10 (the far field's variation). BOTH hashes move again.
+    // The VERTEX gained the extracted bathymetry lookup and the four-tap
+    // upwind march that measures wind shelter, plus the two horizon-field
+    // samples it hands the fragment (the fragment has no sampler free, so the
+    // packed values ride two varyings and the fragment evaluates the SHARED
+    // horizon operator against its own per-pixel reflection direction). The
+    // FRAGMENT gained that occlusion of the reflected sky, the sheltered wind
+    // driving both the Cox-Munk anchor and Monahan's coverage, and the
+    // Langmuir windrow comb. Deliberate, named, reviewed.
+    //
     // Re-pinned by W-8 (the water-type field). BOTH hashes move, and the
     // VERTEX one for the first time since wave S: the ocean vertex now samples
     // the baked environment field (productivity, runoff) and carries it to the
@@ -207,10 +217,10 @@ describe("water shader extraction (2-8a)", () => {
     // once the whole W-7/W-8 wave has landed, not here. Deliberate, named,
     // reviewed — the flow this assertion exists to force.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "3cdb2dc369b689ef5c2b806cf3a508cfe1c783f2cbbc655f7a0410d7f2e6d177",
+      "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "d87e5a6adb8defe72a4a5f4d8aed635f18fad34e4d9c82c671e8c91dc00d4266",
+      "109c08a6c2a3dbc29e82726f4db1ffd17e3809d5262b609db4f9f3649e391c6b",
     );
   });
 
