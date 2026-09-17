@@ -67,6 +67,11 @@ baseline while the surf band is untouched.
   so that regime is currently unreachable. Lowering the threshold would put
   milky turquoise in a temperate forest, which is the same error as the tropical
   lagoon this wave removed.
+- **The surf-zone foam is a lace of repeated cells.** From directly overhead the
+  shore band reads as a Worley lattice with dark holes rather than as broken
+  water. It predates this wave (it is wave R's break-up mask seen from an angle
+  that shot never framed) but it is now the place where "white foam" is most
+  visible, because everything around it stopped being white.
 - **Slicks** (surfactant damping of the 5-15 cm band, which needs wind under
   ~6 m/s) are researched but not implemented; the default world's 9.6 m/s wind
   would leave them inert. They are the next cheap source of far-field variation
