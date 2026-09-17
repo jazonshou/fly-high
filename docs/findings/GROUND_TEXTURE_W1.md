@@ -36,7 +36,10 @@ Measured from the app, not from the code, at 213 m AGL over open rangeland
    the classifier calls pure Grass, where the dryness axis has nothing to say.
    A stack of soft-THRESHOLDED masks (one per octave) plus a ridged crease
    term, not another noise sum: the existing macro wash is already ±17% of
-   smooth noise, and its smoothness is why it reads as airbrush.
+   smooth noise, and its smoothness is why it reads as airbrush. Its amplitude
+   scales up as the dryness mosaic runs out — 2.3x on pure lush, 1x where both
+   covers exist — and the mean-one correction scales with the gain SQUARED,
+   because scaling a field by g scales its variance by g².
 3. **Bare ground**, 6-17 m, floored on lush ground and rising with dryness and
    slope.
 4. **Scrub.** A procedural bush canopy as a HEIGHT FIELD: crown mask, dome
@@ -77,6 +80,26 @@ produces long filaments wherever it runs just above the threshold. Squaring the
 clearance drops those and keeps the true maxima, and the squared profile also
 gives the dome its curvature: `d(h²) = 2h·dh`.
 
+**A domain warp makes marbling, not organic outlines.** The first vigour build
+ran its coarse field through the de-tile warp, on the theory that a curl-free
+multi-scale displacement buys organic patch outlines for free. What it buys is
+camouflage: the warp is a smooth ~40 m displacement, and pushing a smooth field
+through it turns compact patches into long swirled bands. The capture is kept
+as evidence. Octaves are decorrelated by rotation and salt instead.
+
+**Stressed grass goes yellow, not bright.** The same build's colour axis raised
+blue with red toward the pale end, so "pale" meant brighter rather than
+yellower, and the ground interleaved green against tan — two materials, which
+is what camouflage IS. Red up hard, green a little, blue down.
+
+**Uniform edge hardness is a camouflage tell on its own.** Threshold softness
+is therefore a field, and each mask reads the OTHER octave's: a mask whose
+softness reads its own field gets the same width at every boundary it draws,
+because a boundary is where that field is zero.
+
+**A crease on a field's zero set outlines that field's own patches.** The ridged
+term sits on an iso-line offset from zero for exactly that reason.
+
 **`sample` and `patch` are WGSL reserved words**, and a backtick in a comment
 inside a WGSL template literal ends the template. Both cost a compile cycle.
 
@@ -115,6 +138,18 @@ vegetation suites stayed green. It was dropped for three reasons:
 
 Anyone picking this up starts from those three, not from the density constant.
 
+## Named follow-ups
+
+* **The near band's soft blobs.** In the bottom third of a 213 m frame the
+  patches are soft-edged with no fine structure, because painted scrub is
+  correctly gated out below 0.3 m/px and real shrubs do not exist on dry
+  ground. Far better than the flat base, but it is where the next wave pays.
+* **Dry-rangeland shrubs**, with the numbers in this file's "tried and dropped"
+  section as the starting point.
+* **Rock and gravel at range**, deferred by agreement: Toksvig-style roughness
+  from unresolved normal variance, plus fracture-scale albedo and normal
+  breakup in the same missing band. `high-10000ft-down`'s rock is the shot.
+
 ## Instruments that worked
 
 * **Teleport A/B for streaming defects**: same script, both arms, frames at
@@ -130,3 +165,7 @@ Anyone picking this up starts from those three, not from the density constant.
 * **The perf harness for cost**, not the viewer: the viewer is vsync-capped at
   120 fps and swings 145-175 fps on the same arm uncapped, which is wider than
   the effect being measured.
+* **Land-masked A/B metrics** for "did anything actually change": mean absolute
+  RGB difference, the share of pixels past 4/255, and 16-px block luminance std
+  over the land region, cropped to the meadow when a frame is mostly canopy.
+  A whole-frame number over a forest shot hides a meadow change completely.
