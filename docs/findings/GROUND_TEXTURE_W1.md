@@ -100,6 +100,16 @@ because a boundary is where that field is zero.
 **A crease on a field's zero set outlines that field's own patches.** The ridged
 term sits on an iso-line offset from zero for exactly that reason.
 
+**A debug patch verified out of the tree does not stay out.** The viewer hook
+this wave used to drive captures (`window.__freeFly` and three siblings, set in
+`enterViewer`) was checked out of every commit, then re-applied from its patch
+file for later captures, and a `git add -A` swept it into a feature commit
+(`782f7ac`) and through the merge into House-Keeping. It changed no behaviour,
+but it put renderer and world internals on `window` in the shipped viewer. The
+rule: stage paths explicitly on any tree carrying a debug patch, re-verify after
+EVERY re-apply rather than once, and grep the final branch for the patch's own
+marker immediately before merging.
+
 **`sample` and `patch` are WGSL reserved words**, and a backtick in a comment
 inside a WGSL template literal ends the template. Both cost a compile cycle.
 
