@@ -71,6 +71,13 @@ channel read 0.49 and 0.47 — identical — so the sediment and the bed, which 
 runoff-driven, did not move, and the pair looked the same. Select poses on the
 field the shader reads, not on the function it came from.
 
+**A filtered capture is not a full one.** `VITE_PERF_SHOTS=a,b` changes the
+streaming history each shot arrives with, so the same code renders a water shot
+0.5-0.8/255 away from its full-run frame, against a 0.06/255 floor between two
+FULL runs. Four spot re-captures taken that way looked like a regression against
+the promoted candidate and were not one — the whole candidate was re-captured to
+settle it. Compare a candidate only against another full run.
+
 ## Still open
 
 - **The pale shallow margin is thin, and it is the terrain's.** Transects
