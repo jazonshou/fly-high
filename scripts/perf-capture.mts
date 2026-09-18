@@ -610,7 +610,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 222,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (223).
+    drawCallCeiling: 223,
   },
   {
     name: "high-10000ft-down",
@@ -991,7 +998,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 208,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (209).
+    drawCallCeiling: 209,
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -2520,6 +2534,18 @@ export interface PerfCaptureShotReport {
 }
 
 export interface PerfCaptureReport {
+  /**
+   * ISO timestamp of the run that wrote this report.
+   *
+   * An A/B that switches arms by checking source in and out reads this file
+   * between runs, and a run that DIES leaves the previous arm's report in
+   * place — a dropped browser connection did exactly that during the water
+   * wave's A/B on 2026-09-17, and the stale numbers were caught only because
+   * eight shots matched the previous arm to 0.1 fps, which is not a thing that
+   * happens. A consumer that checks this field against its own start time
+   * cannot be fooled by it at all.
+   */
+  readonly capturedAtIso: string;
   readonly seed: string;
   readonly width: number;
   readonly height: number;

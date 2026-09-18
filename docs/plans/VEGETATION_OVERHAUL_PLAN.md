@@ -542,3 +542,124 @@ Landed; the decision log carries the full record. Notes beyond it:
   against a mirror. Constants touched since (Fresnel ramps, fade radii,
   glint gains) were re-derived by the wave-R agent against the restored sea,
   but any OTHER water constant encountered later should be re-questioned.
+
+## 12. Continuous tree LOD — the impostor fill and the per-stem threshold (2026-09-13)
+
+Landed on `jazonshou/tree-lod-continuity`. The report: "trees mostly don't
+exist from a distance but when I go closer, they suddenly pop into place."
+
+**What was wrong.** Two mechanisms, both recorded as working as designed:
+
+- `renderedShareAtDistance` floored at 0.045/0.035, THROUGH the far band —
+  wave T's "law floors widened" row above put the floor through the mid band
+  so the profile would not invert, but the impostor band inherited the same
+  starved floor, so beyond ~700 m at Balanced only ~3.5 stems/ha existed in
+  any form and the terrain's flat canopy albedo (6-8) carried the rest.
+- Admission was binary at the CELL: `rank > treeShare` against the cell's
+  planned minimum distance, refreshed on a 0.02 share drift. A stem's first
+  frame was its chunk's rebuild, whole cohorts at a time, with nothing
+  standing in for it before.
+
+**What changed.**
+
+- `RenderedDensityLaw.impostorFloorShare` (0.20/0.30/0.35/0.40) and
+  `drawnShareAtDistance` = max(geometry share, impostor floor) beyond the
+  near radius. The gap between the two curves is drawn as 2D impostors, from
+  the crossover `near / √floor` outward — inside the mid band too. Wave T's
+  "inverted profile" objection was to the SAME stems being thinned harder
+  close in than far out; a cheaper representation standing in for the stems
+  geometry rejects is not that, and the combined profile is monotone.
+- The far (impostor) membership begins where mid does. A stem carries at
+  most seven records (near ×3, mid ×3, one impostor), and the impostor's
+  fade-byte low bit says whether a geometry record coexists in the chunk.
+- Tree records carry a density-normalised canopy KEY in the phase lane
+  (`detailTreeStemKey`: rank × stemsPerHa / cap, unorm8-quantised, keys above
+  1 never drawn). The CPU admits a SUPERSET (planned share + two refresh
+  epsilons, in share space) and `detailBandWindowEmpty` decides per stem, per
+  frame: geometry owns the stem while key ≤ geometry share at the live range;
+  the impostor owns it while key ≤ drawn share and geometry does not (or has
+  switched out at the hashed far switch, or does not exist). Every decorrelation
+  consumer of the lane (wind phase, lean, wobble, far-switch hash, reveal
+  order) reads it through `detailStemHash`, because the drawn population is a
+  key prefix and the raw lane would sway the forest in phase.
+- The terrain handoff reads the DRAWN floor (`TerrainClipmapSystem` →
+  `setCanopyBands`), so coverage stays conserved across representations; the
+  ground carries only what no representation draws.
+- `WOODY_TRIANGLE_BUDGETS` 650k/1.85M/2.7M/5.0M → 710k/2.3M/3.55M/7.6M (the
+  impostor integral, priced at the far band's 8-triangle fill proxy) and the
+  tier-3 `detailInstanceBudget` row 240k → 420k; both pinned by
+  `tests/render.webgpu-rendered-density.test.ts` against the law. Booked in
+  `RENDERING_PLAN.md` §5.3 as the user's amendment to the trade-off rule.
+- The impostor fragment fetches only the stem's season bucket (three albedo
+  fetches per fragment instead of six, identical output).
+
+**Measured (M2 Pro, Balanced, `forest-line-highsun`, back-to-back).**
+Baseline 101.5 fps → 101.1 fps with the fill at floor 0.30. A first cut
+measured 67 fps at EVERY floor: `detailTreeStemKey` clamped keys above 1 into
+the lane instead of rejecting them, so the near band drew the whole authored
+field (~7× the cap). The lesson is recorded on the function: a cost that does
+not move with the knob is not the knob's cost.
+
+**Follow-up, 2026-09-14 — the far band arrived as a patchwork and flight
+hitched.** On the merged tip the user saw hard-edged tree clumps beside bare
+ground at 0.5–2 km, nothing beyond, patches spawning on approach, and jerkier
+frames. Cause: impostor records were cut at `far + slack` from the BUILD-TIME
+observer, which made the 3 km cull edge a frontier — every chunk straddling it
+re-baked on each 64 m quantum carrying its whole impostor set (7× heavier since
+the fill), the sweep could not converge in flight, and the far band was
+whatever had managed to publish. Fix: the far membership has no outer edge
+(the shader's live cull decides what draws; a record beyond it is four killed
+vertices), the far edge is no longer a frontier term, and impostor-only stems
+beyond the mid band's envelope take a direct build path charged to the
+scheduler in blocks of eight. A far chunk's record set is now a pure function
+of its resident cells; it rebuilds when a cell generates, never when the
+observer moves. Measured under matched host load on the two motion shots:
+frames over 27 ms 43 vs 90 and 10 vs 45 (branch vs baseline), where before the
+fix the branch was 4–10× worse than the baseline.
+Re-measured in a quiet window: 0 vs 0 hitches on both motion shots, frames
+over 16.7 ms identical (2 vs 2), fps within a few percent.
+
+Two more from the concurrent session's vegetation survey, same day: (a) the
+impostor exclusion (`key <= geometry share at the cell's far corner − margin`)
+applied to cells beyond the mid envelope too, where no geometry record exists,
+so in every far cell the widest crowns — the top ~0.5% of the cap — had no
+record of any kind; it now applies only when the whole cell sits inside the
+mid envelope. (b) Cell residency now reaches one cull fade (420 m) past the
+impostor radius: a cell requested at the radius itself was generated and
+published while the observer kept closing, so at flight speed its near stems
+landed inside the cull window at full opacity in one frame. `detailInstanceBudget`
+rows re-derived for the never-drawn records this keeps resident (150 k / 260 k /
+560 k for tiers 1–3).
+(c) Those never-drawn records made one more DRAW: a chunk resident past the
+cull carries an impostor batch the shader kills to the last vertex, and Babylon
+still submitted it — exactly one draw over the committed ceiling on nine
+capture shots (measured by the concurrent session). The runtime now keeps a
+local AABB per chunk cell of each impostor batch's records (taken from the
+packed positions at each publication) and, every update, rebuilds the mesh's
+bounding box from the cells inside the live cull only — hiding the batch
+outright when none is (`refreshRangeCulledBatches`; `isVisible`, so publication
+and retirement never see it). Babylon's frustum test therefore sees exactly the
+records that can draw. Three coarser keys were measured and rejected on the
+same shots: the batch BOUND is an axis-aligned box over records strung along an
+arc whose nearest corner sat 400 m inside the nearest record; the chunk's
+nearest RESIDENT cell was a treeless shore cell at 2.6 km while every record
+came from cells past 3 km; and a flag-per-cell hide still submitted a batch
+whose in-cull records lay outside the frustum while its beyond-cull records had
+stretched the box into it. The static shots' ceilings stand. The moving shots
+(`slant-10km` 84 m/s, `cdlod-transition` 96 m/s, `page-thrash-turn` 78 m/s)
+each gain exactly one draw, and it is real: the lead has the far band's chunk
+published — with records inside the cull, in the frustum — at the sample
+instant, where before the cells just inside the radius were still generating.
+Their ceilings move by one. `page-thrash-turn` additionally varies by six draws
+and 1,344 triangles between runs: a bird flock crossing the frustum at the
+sample instant, whose presence depends on host timing — a harness determinism
+gap, not a vegetation count.
+
+**Open.** Mid-band fill impostors begin at ~1.6× tile magnification
+(64² tiles, ~274 m at Balanced) for the NON-dominant stems between skeletal
+crowns — accepted rather than re-arbitrating the 128² tile. Stems whose key
+sits above the impostor floor still vanish with a hard per-stem cut at their
+geometry threshold (158–274 m at Balanced), one stem at a time rather than a
+cell at a time. A terrain-side textured canopy (crown-scale albedo/normal
+structure under `canopySplit.surface`) remains the next lever for the far
+field if the sprite floor ever has to fall.

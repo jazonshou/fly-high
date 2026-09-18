@@ -18,6 +18,9 @@
  * assemblies (ocean combined lobe, hydrology split pair) are deleted.
  */
 
+import { PEAK_SUN_INTENSITY } from "../atmosphere/AtmosphereSystem";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { RawCubeTexture } from "@babylonjs/core/Materials/Textures/rawCubeTexture";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
@@ -49,28 +52,227 @@ export function configureDepthAwareWaterRendering(scene: Scene): void {
 export const WATER_SHADING_CONSTANTS_WGSL = /* wgsl */ `const PI: f32 = 3.14159265359;`;
 
 /** `5-11`: one physical depth model shared by ocean, rivers, and lakes. */
-export const WATER_ABSORPTION_PER_METER = Object.freeze([0.45, 0.07, 0.02] as const);
 export const WATER_SHORE_FADE_METERS = 0.4;
 export const WATER_AIR_INTERFACE_CRITICAL_ANGLE_DEGREES = 48.6;
+
+/**
+ * `W-7` — the INHERENT OPTICAL PROPERTIES of one water body, which is what
+ * `5-11`'s single `WATER_ABSORPTION_PER_METER = [0.45, 0.07, 0.02]` was
+ * standing in for.
+ *
+ * Every natural water colour is two spectra: absorption `a` (which takes
+ * light away, and is why a metre of water is already short of red) and
+ * BACKSCATTER `b_b` (which sends light back up, and is the only reason water
+ * has a body colour at all). `5-11` carried absorption alone and paired it
+ * with one hard-coded in-scatter `vec3f(0.018, 0.115, 0.105)`, so every sea,
+ * lake and river in every world was the same teal whatever the catchment, the
+ * latitude or the depth said. With both spectra present the body colour is
+ * DERIVED (`waterDeepSubsurfaceReflectance`) and a water type is just a pair
+ * of triplets.
+ *
+ * Channels are the renderer's linear-sRGB primaries and the values are the
+ * published spectra band-averaged over them (centres ~620 nm, ~550 nm,
+ * ~460 nm).
+ */
+export interface WaterOpticalType {
+  /** Absorption `a`, per metre. */
+  readonly absorptionPerMeter: readonly [number, number, number];
+  /** Backscatter `b_b`, per metre. */
+  readonly backscatterPerMeter: readonly [number, number, number];
+}
+
+/**
+ * Pure water itself, at those three band centres: Pope & Fry (1997)
+ * absorption (0.2755 / 0.0565 / 0.0098 per metre at 620 / 550 / 460 nm) and
+ * Morel's molecular scattering as Twardowski et al. (2007) fit it,
+ * `b_w = 3.50e-3 (lambda/450)^-4.32`, raised 1.30x for sea salt and halved
+ * into the backward hemisphere. Nothing in the tree may re-type these: every
+ * water type is these numbers plus its own constituents.
+ */
+export const WATER_PURE_ABSORPTION_PER_METER = Object.freeze([0.2755, 0.0565, 0.0098] as const);
+export const WATER_PURE_BACKSCATTER_PER_METER = Object.freeze([0.00057, 0.00096, 0.00207] as const);
+
+/**
+ * `W-7` stage 1's single water type: clear temperate oceanic water
+ * (chlorophyll ~0.2 mg/m^3, CDOM 0.02/m at 440 nm) — what the open sea of a
+ * 45-degree world carries. It exists so stage 1 can move the MODEL with one
+ * type in place; `W-8` replaces it with the per-region field and this stays
+ * as the type a material binds before that field resolves.
+ *
+ * Its deep-water body radiance under the reference key is (0.0008, 0.0056,
+ * 0.0203) against the (0.030, 0.140, 0.120) bright teal `5-11` emitted at the
+ * same key: two orders of magnitude of green removed, which is the difference
+ * between a plastic sheet and open ocean.
+ */
+export const WATER_REFERENCE_OPTICAL_TYPE: WaterOpticalType = Object.freeze({
+  absorptionPerMeter: Object.freeze([0.2805, 0.0619, 0.0424] as const),
+  backscatterPerMeter: Object.freeze([0.00082, 0.00126, 0.00242] as const),
+});
+
+/**
+ * Lee et al. (2002) QAA forward model, eq. 4: the subsurface remote-sensing
+ * reflectance of an optically deep column from `u = b_b / (a + b_b)` alone,
+ * `r_rs = (g0 + g1 u) u`. This is the quasi-single-scattering result every
+ * ocean-colour inversion is built on, and it is why deep clear water is dark:
+ * u is 0.055 in the blue and 0.003 in the red, so `r_rs` is 0.005 and 0.0003
+ * per steradian — two orders of magnitude under a land albedo.
+ */
+export const WATER_DEEP_REFLECTANCE_G0 = 0.0895;
+export const WATER_DEEP_REFLECTANCE_G1 = 0.1247;
+
+/**
+ * Lee et al. (1999), eq. 4-5: how much longer the upwelling path is than the
+ * vertical, for light scattered out of the water COLUMN and for light
+ * reflected off the BOTTOM. The bottom's factor is the larger one because its
+ * photons cross the whole depth twice with no chance of being redirected on
+ * the way.
+ */
+export const WATER_COLUMN_PATH_BASE = 1.03;
+export const WATER_COLUMN_PATH_SLOPE = 2.4;
+export const WATER_BOTTOM_PATH_BASE = 1.04;
+export const WATER_BOTTOM_PATH_SLOPE = 5.4;
+
+/**
+ * Internal-reflection term of Lee et al. (2002) eq. 2,
+ * `R_rs = 0.52 r_rs / (1 - 1.7 r_rs)`. Only the DENOMINATOR is taken here:
+ * the 0.52 numerator bundles the upward interface transmission, which both
+ * water fragments already apply as their own Fresnel mix, so taking it too
+ * would charge the interface twice. What replaces it is the honest radiance
+ * refraction (`WATER_UPWELLING_REFRACTION`, declared with the other
+ * refractive-index constants below).
+ */
+export const WATER_SUBSURFACE_INTERNAL_REFLECTION = 1.7;
+
+/**
+ * Floor on the cosine of the refracted SOLAR beam (a 10-degree sun still
+ * travels at 42 degrees from vertical inside the water, so the physical floor
+ * is ~0.74; this one only stops a below-horizon sun dividing by zero) and on
+ * the upwelling VIEW path (a grazing view's in-water path is long but finite,
+ * 8.3 depths, which is already optically deep for every type).
+ */
+export const WATER_SOLAR_PATH_COSINE_FLOOR = 0.35;
+export const WATER_VIEW_PATH_COSINE_FLOOR = 0.12;
+
+/**
+ * `W-7` — THE RADIOMETRIC BRIDGE, and the reason the old body could not
+ * belong to any scene.
+ *
+ * `5-11` lit the body with `max(sunIlluminanceNormalized,
+ * skylightIlluminanceNormalized)`: a grey SCALAR. A scalar cannot carry an
+ * illuminant, so the water kept its teal hue under an orange sunset while the
+ * land beside it went warm and dark — the strongest single "this water does
+ * not belong here" cue in the coast captures. What a body colour needs is the
+ * downwelling irradiance WITH ITS COLOUR, split into the collimated share
+ * (which a wave lens can focus into caustics) and the diffuse share (which
+ * nothing focuses).
+ *
+ * The scale is not free: it is fixed by the terrain's own lighting. Babylon's
+ * PBR diffuse carries the Lambertian 1/PI, so terrain albedo `A` under the sun
+ * renders at `A * sunIntensity / PI * cos`; the water materials receive
+ * `sunColor` already multiplied by `sunIlluminanceNormalized`, so the same
+ * irradiance in the same units is `sunColor * PEAK_SUN_INTENSITY / PI`. Water
+ * and land are then lit by ONE quantity, which is what makes the new body
+ * colours verifiable against a land albedo rather than art-directed.
+ */
+export const WATER_SUN_IRRADIANCE_SCALE = PEAK_SUN_INTENSITY / Math.PI;
+
+/**
+ * The sky's share, as `litFoamColor` has always expressed it: the mean of the
+ * zenith and horizon radiance times this fraction stands in for the diffuse
+ * irradiance over PI. Foam and body now read the SAME constant, so a frame
+ * cannot light its whitecaps and the water under them by two different skies.
+ */
+export const WATER_SKY_IRRADIANCE_FRACTION = 0.55;
+
+/** Rec. 709 luminance weights — used only to reduce a colour to one scalar. */
+export const WATER_LUMINANCE_WEIGHTS = Object.freeze([0.2126, 0.7152, 0.0722] as const);
+
+/**
+ * The water path a backlit crest transmits through, metres. The crest tint is
+ * `exp(-a * this)` normalised to unit luminance, so a peat-stained tarn glows
+ * amber and a glacial one cyan while the term's calibrated BRIGHTNESS is
+ * untouched.
+ */
+export const WATER_CREST_TRANSMISSION_METERS = 1.6;
+
+/**
+ * Luminance of `2-9`'s retired crest-SSS constant `vec3f(0.06, 0.50, 0.42)`
+ * under Rec. 709 weights: 0.2126*0.06 + 0.7152*0.50 + 0.0722*0.42 = 0.4006.
+ * The tint that replaces it carries luminance 1, so this factor keeps the
+ * term's shipped brightness while its hue becomes the water's own.
+ */
+export const WATER_CREST_SSS_LEVEL = 0.401;
 /** Leave a toroidal guard at the near level's edge, as the original selector did. */
 export const BATHYMETRY_NEAR_BLEND_END_FRACTION = 0.48;
 /** Four far texels make the resolution handoff C1 over 512 m, not one hard line. */
 export const BATHYMETRY_NEAR_BLEND_FAR_TEXELS = 4;
 
-/** CPU mirror of the body/in-scatter light envelope composed in both shaders. */
-export function waterDiffuseIlluminanceNormalized(
-  sunIlluminanceNormalized: number,
-  skylightIlluminanceNormalized: number,
-): number {
-  if (
-    !Number.isFinite(sunIlluminanceNormalized)
-    || !Number.isFinite(skylightIlluminanceNormalized)
-    || sunIlluminanceNormalized < 0
-    || skylightIlluminanceNormalized < 0
-  ) {
-    throw new RangeError("Water illuminance inputs must be finite and non-negative");
+/**
+ * CPU mirror of `waterDeepSubsurfaceReflectance` — the subsurface `r_rs` of an
+ * optically deep column of this water type, per steradian. The one number
+ * that decides what colour a deep sea or lake is.
+ */
+export function waterDeepSubsurfaceReflectance(
+  optics: WaterOpticalType,
+): [number, number, number] {
+  const reflectance: [number, number, number] = [0, 0, 0];
+  for (let channel = 0; channel < 3; channel += 1) {
+    const absorption = optics.absorptionPerMeter[channel]!;
+    const backscatter = optics.backscatterPerMeter[channel]!;
+    if (
+      !Number.isFinite(absorption) || !Number.isFinite(backscatter)
+      || absorption < 0 || backscatter < 0
+    ) {
+      throw new RangeError("Water optical properties must be finite and non-negative");
+    }
+    const u = backscatter / Math.max(absorption + backscatter, 0.0001);
+    reflectance[channel] = (WATER_DEEP_REFLECTANCE_G0 + WATER_DEEP_REFLECTANCE_G1 * u) * u;
   }
-  return Math.max(sunIlluminanceNormalized, skylightIlluminanceNormalized);
+  return reflectance;
+}
+
+/**
+ * CPU mirror of `waterDownwelling`: the downwelling irradiance over PI in the
+ * renderer's radiance units, from the same uniforms the fragments read.
+ * `sunColor` is the palette colour already scaled by
+ * `sunIlluminanceNormalized`, exactly as both materials bind it.
+ */
+export function waterDownwellingRadiance(
+  sunColor: readonly [number, number, number],
+  skyZenith: readonly [number, number, number],
+  skyHorizon: readonly [number, number, number],
+  skylightIlluminanceNormalized: number,
+  sunElevationSine: number,
+  sunVisibility: number,
+): [number, number, number] {
+  if (!Number.isFinite(skylightIlluminanceNormalized) || skylightIlluminanceNormalized < 0) {
+    throw new RangeError("Water skylight scale must be finite and non-negative");
+  }
+  const sunScale = WATER_SUN_IRRADIANCE_SCALE
+    * Math.max(sunElevationSine, 0)
+    * Math.min(Math.max(sunVisibility, 0), 1);
+  const skyScale = 0.5 * WATER_SKY_IRRADIANCE_FRACTION * skylightIlluminanceNormalized;
+  return [0, 1, 2].map((channel) =>
+    sunColor[channel]! * sunScale
+    + (skyZenith[channel]! + skyHorizon[channel]!) * skyScale) as [number, number, number];
+}
+
+/**
+ * CPU mirror of the DEEP-water limit of `waterVolumeRadiance` (a depth past
+ * which the bed contributes nothing): the water-leaving radiance of this type
+ * under this irradiance. The acceptance oracle for "is the body colour
+ * physical" — what the numeric anchors in
+ * `tests/render.webgpu-water-depth.test.ts` assert against.
+ */
+export function waterDeepBodyRadiance(
+  optics: WaterOpticalType,
+  downwellingOverPi: readonly [number, number, number],
+): [number, number, number] {
+  const reflectance = waterDeepSubsurfaceReflectance(optics);
+  return reflectance.map((rrs, channel) => {
+    const internal = Math.max(1 - WATER_SUBSURFACE_INTERNAL_REFLECTION * rrs, 0.5);
+    return (Math.PI * WATER_UPWELLING_REFRACTION * rrs * downwellingOverPi[channel]!) / internal;
+  }) as [number, number, number];
 }
 
 /** CPU mirror of the near/far clipmap handoff used by source and sweep tests. */
@@ -146,12 +348,14 @@ export const WATER_REFRACTIVE_INDEX = 1.333;
  */
 export const WATER_CAUSTIC_PEAK_SOFTENING = 0.35;
 /**
- * Fraction of the bed's downwelling irradiance that arrives as the collimated
- * solar beam; the rest is diffuse skylight, which no surface lens focuses.
- * 0.8 is the clear-sky, high-sun value — the term is a lerp toward 1, so this
- * doubles as the strength dial without disturbing the mean.
+ * `W-7` DELETED the 0.8 "direct sun fraction". It ESTIMATED the collimated
+ * share of the bed's irradiance because `5-11`'s grey illuminance scalar
+ * could not say what the share actually was. The body model now splits the
+ * downwelling irradiance into its sun and sky halves and hands the caustic
+ * sheet the sun half alone (already multiplied by cloud and terrain shadow),
+ * so the estimate is replaced by the measurement — and the sheet's strength
+ * varies with sun elevation and cloud cover instead of sitting at 0.8.
  */
-export const WATER_CAUSTIC_DIRECT_SUN_FRACTION = 0.8;
 /**
  * `WATER_DETAIL_NOISE_WGSL`'s value lattice, measured over 490,000 samples at
  * a world-scale origin (scratch harness, 2026-08-30): RMS of the centred value
@@ -201,6 +405,15 @@ export const WATER_CAUSTIC_MEAN_KNEE = 3.19;
 export const WATER_CAUSTIC_REFRACTION_FACTOR = 1 - 1 / WATER_REFRACTIVE_INDEX;
 /** Snell's `1/n^2`, for the refracted sun ray's vertical cosine. */
 export const WATER_CAUSTIC_INVERSE_IOR_SQUARED = 1 / (WATER_REFRACTIVE_INDEX ** 2);
+/**
+ * `W-7`: radiance crossing a flat interface out of the denser medium is
+ * divided by `n^2` (the n-squared law — the beam's solid angle opens up).
+ * 1/1.333^2 = 0.563, and times the ~0.98 normal-incidence Fresnel
+ * transmission both fragments apply it reproduces Lee's bundled 0.52. The
+ * same quantity as the Snell factor above, named for the radiometric use so
+ * that neither call site re-derives it.
+ */
+export const WATER_UPWELLING_REFRACTION = WATER_CAUSTIC_INVERSE_IOR_SQUARED;
 /** Renormalises the softened sheet so an unfocused beam returns exactly 1. */
 export const WATER_CAUSTIC_SHEET_NORMALIZATION = Math.sqrt(
   1 + WATER_CAUSTIC_PEAK_SOFTENING ** 2,
@@ -331,11 +544,14 @@ export function waterCausticNoiseBand(
   );
 }
 
-/** The multiplier on the bed's direct-sun radiance. 1.0 means fully inert. */
-export function waterCausticBedGain(
+/**
+ * The multiplier on the COLLIMATED share of the bed's irradiance. 1.0 means
+ * fully inert. `W-7`: the sun/sky split and the shadowing now live in the
+ * irradiance this gain multiplies, so neither is an argument here.
+ */
+export function waterCausticSheetGain(
   caustic: WaterCausticAccumulator,
   beam: WaterCausticBeam,
-  sunVisibility: number,
 ): number {
   if (beam.weight <= 0) return 1;
   const focalScale = beam.slantMeters * WATER_CAUSTIC_REFRACTION_FACTOR;
@@ -346,8 +562,7 @@ export function waterCausticBedGain(
   const focusVariance = focalScale * focalScale * caustic.varianceSum;
   const meanSheet = 1
     + WATER_CAUSTIC_MEAN_EXCESS * Math.min(1, focusVariance * WATER_CAUSTIC_MEAN_KNEE);
-  return 1 + beam.weight * sunVisibility * WATER_CAUSTIC_DIRECT_SUN_FRACTION
-    * (sheet / meanSheet - 1);
+  return 1 + beam.weight * (sheet / meanSheet - 1);
 }
 
 function clamp01(value: number): number {
@@ -414,7 +629,19 @@ const WATER_CAUSTIC_PEAK_SOFTENING: f32 = ${toWgslFloat(WATER_CAUSTIC_PEAK_SOFTE
 const WATER_CAUSTIC_SHEET_NORMALIZATION: f32 = ${toWgslFloat(WATER_CAUSTIC_SHEET_NORMALIZATION)};
 const WATER_CAUSTIC_MEAN_EXCESS: f32 = ${toWgslFloat(WATER_CAUSTIC_MEAN_EXCESS)};
 const WATER_CAUSTIC_MEAN_KNEE: f32 = ${toWgslFloat(WATER_CAUSTIC_MEAN_KNEE)};
-const WATER_CAUSTIC_DIRECT_SUN_FRACTION: f32 = ${toWgslFloat(WATER_CAUSTIC_DIRECT_SUN_FRACTION)};
+const WATER_DEEP_REFLECTANCE_G0: f32 = ${toWgslFloat(WATER_DEEP_REFLECTANCE_G0)};
+const WATER_DEEP_REFLECTANCE_G1: f32 = ${toWgslFloat(WATER_DEEP_REFLECTANCE_G1)};
+const WATER_COLUMN_PATH_BASE: f32 = ${toWgslFloat(WATER_COLUMN_PATH_BASE)};
+const WATER_COLUMN_PATH_SLOPE: f32 = ${toWgslFloat(WATER_COLUMN_PATH_SLOPE)};
+const WATER_BOTTOM_PATH_BASE: f32 = ${toWgslFloat(WATER_BOTTOM_PATH_BASE)};
+const WATER_BOTTOM_PATH_SLOPE: f32 = ${toWgslFloat(WATER_BOTTOM_PATH_SLOPE)};
+const WATER_SUBSURFACE_INTERNAL_REFLECTION: f32 = ${toWgslFloat(WATER_SUBSURFACE_INTERNAL_REFLECTION)};
+const WATER_UPWELLING_REFRACTION: f32 = ${toWgslFloat(WATER_UPWELLING_REFRACTION)};
+const WATER_SOLAR_PATH_COSINE_FLOOR: f32 = ${toWgslFloat(WATER_SOLAR_PATH_COSINE_FLOOR)};
+const WATER_VIEW_PATH_COSINE_FLOOR: f32 = ${toWgslFloat(WATER_VIEW_PATH_COSINE_FLOOR)};
+const WATER_SUN_IRRADIANCE_SCALE: f32 = ${toWgslFloat(WATER_SUN_IRRADIANCE_SCALE)};
+const WATER_SKY_IRRADIANCE_FRACTION: f32 = ${toWgslFloat(WATER_SKY_IRRADIANCE_FRACTION)};
+const WATER_CREST_TRANSMISSION_METERS: f32 = ${toWgslFloat(WATER_CREST_TRANSMISSION_METERS)};
 const WATER_CAUSTIC_NOISE_LAPLACIAN: f32 = ${toWgslFloat(WATER_CAUSTIC_NOISE_LAPLACIAN)};
 const WATER_CAUSTIC_NOISE_RMS: f32 = ${toWgslFloat(WATER_CAUSTIC_NOISE_RMS)};
 const WATER_CAUSTIC_STRETCH_3_LAPLACIAN: f32 = ${toWgslFloat(WATER_CAUSTIC_STRETCH_3_LAPLACIAN)};
@@ -528,9 +755,16 @@ fn waterCausticNoiseBand(
   );
 }
 
-// The multiplier on the bed's direct-sun radiance. Exactly 1.0 outside the
-// gate, at night, in shadow, and wherever the surface is flat.
-fn waterCausticBedGain(caustic: WaterCaustic, beam: WaterCausticBeam, sunVisibility: f32) -> f32 {
+// The multiplier on the COLLIMATED share of the bed's irradiance. Exactly 1.0
+// outside the gate, at night, and wherever the surface is flat.
+//
+// W-7 removed the 0.8 direct-sun fraction and the sunVisibility argument:
+// both are now carried by the quantity this gain multiplies. The body model
+// splits the downwelling irradiance into its sun and sky shares, the sun
+// share already carries cloud and terrain shadow, and the sheet applies to
+// that share alone -- so a caustic can no longer brighten the diffuse half of
+// a shadowed bed, and its strength follows the real sun/sky split.
+fn waterCausticSheetGain(caustic: WaterCaustic, beam: WaterCausticBeam) -> f32 {
   if (beam.weight <= 0.0) { return 1.0; }
   let focalScale = beam.slantMeters * WATER_CAUSTIC_REFRACTION;
   // Differential area of the refracted beam at the bed. < 1 converging.
@@ -542,8 +776,7 @@ fn waterCausticBedGain(caustic: WaterCaustic, beam: WaterCausticBeam, sunVisibil
   let focusVariance = focalScale * focalScale * caustic.varianceSum;
   let meanSheet = 1.0
     + WATER_CAUSTIC_MEAN_EXCESS * min(1.0, focusVariance * WATER_CAUSTIC_MEAN_KNEE);
-  return 1.0 + beam.weight * sunVisibility * WATER_CAUSTIC_DIRECT_SUN_FRACTION
-    * (sheet / meanSheet - 1.0);
+  return 1.0 + beam.weight * (sheet / meanSheet - 1.0);
 }
 `;
 
@@ -557,24 +790,14 @@ var bathymetryFarSampler: sampler; var bathymetryFar: texture_2d<f32>;
 `;
 
 /**
- * `5-11`: shared Beer-Lambert, analytic bed, turbidity, shoreline, and
- * underwater-interface implementation. The two water materials supply only
- * their surface normal/reflection/foam; neither owns a second depth model.
- *
- * `6-4` composed the caustic block into this same include rather than into
- * either material: the bed's direct-sun radiance is modulated inside
- * `waterVolumeRadiance` below, which is the ONE place either surface can get a
- * refracted bed from. A second copy in one material is the drift this file
- * exists to prevent, and `tests/render.webgpu-water-depth.test.ts` pins that
- * both materials compose this text verbatim.
+ * `W-10`: the bathymetry LOOKUP, extracted from the depth include so the ocean
+ * vertex stage can compose it alone. The vertex needs the bed to march upwind
+ * for wind shelter; it must not compose the optics block, which reads sun and
+ * sky uniforms a vertex stage does not declare. The fragment composes this
+ * inside `WATER_DEPTH_OPTICS_WGSL` exactly where the text used to sit, so the
+ * composed fragment is unchanged by the extraction itself.
  */
-export const WATER_DEPTH_OPTICS_WGSL = /* wgsl */ `
-const WATER_ABSORPTION_PER_METER = vec3f(0.45, 0.07, 0.02);
-const WATER_SHORE_FADE_METERS: f32 = 0.4;
-const WATER_CRITICAL_ANGLE_DEGREES: f32 = 48.6;
-${WATER_CAUSTIC_WGSL}
-
-fn bathymetryWrappedUv(worldXZ: vec2f, placement: vec4f) -> vec2f {
+export const WATER_BATHYMETRY_SAMPLING_WGSL = /* wgsl */ `fn bathymetryWrappedUv(worldXZ: vec2f, placement: vec4f) -> vec2f {
   let worldTexel = worldXZ / placement.z;
   let wrapped = worldTexel - floor(worldTexel / placement.w) * placement.w;
   return (wrapped + vec2f(0.5)) / placement.w;
@@ -618,6 +841,102 @@ fn sampleBathymetryBedDelta(worldXZ: vec2f) -> f32 {
   let nearWeight = 1.0 - smoothstep(nearBlendStart, nearBlendEnd, nearDistance);
   return mix(farDelta, nearDelta, nearWeight);
 }
+`;
+
+/**
+ * `5-11`: shared Beer-Lambert, analytic bed, turbidity, shoreline, and
+ * underwater-interface implementation. The two water materials supply only
+ * their surface normal/reflection/foam; neither owns a second depth model.
+ *
+ * `6-4` composed the caustic block into this same include rather than into
+ * either material: the bed's direct-sun radiance is modulated inside
+ * `waterVolumeRadiance` below, which is the ONE place either surface can get a
+ * refracted bed from. A second copy in one material is the drift this file
+ * exists to prevent, and `tests/render.webgpu-water-depth.test.ts` pins that
+ * both materials compose this text verbatim.
+ */
+export const WATER_DEPTH_OPTICS_WGSL = /* wgsl */ `
+const WATER_SHORE_FADE_METERS: f32 = 0.4;
+const WATER_CRITICAL_ANGLE_DEGREES: f32 = 48.6;
+const WATER_LUMINANCE_WEIGHTS = vec3f(0.2126, 0.7152, 0.0722);
+${WATER_CAUSTIC_WGSL}
+
+// ==========================================================================
+// W-7 -- THE OPTICAL WATER TYPE, and the body colour derived from it.
+//
+// A water type is two spectra: absorption and backscatter (see
+// WaterOpticalType). Both fragments carry them as uniforms, so one material
+// can be a peat tarn and another the open sea; W-8 makes them a field within
+// one material.
+// ==========================================================================
+struct WaterOptics {
+  absorption: vec3f,
+  backscatter: vec3f,
+}
+
+fn waterOpticsFromUniforms() -> WaterOptics {
+  return WaterOptics(uniforms.waterAbsorption, uniforms.waterBackscatter);
+}
+
+// Beam attenuation a + b_b, floored so an empty type cannot divide by zero.
+fn waterBeamAttenuation(optics: WaterOptics) -> vec3f {
+  return max(optics.absorption + optics.backscatter, vec3f(0.0001));
+}
+
+// The single-scattering ratio u = b_b / (a + b_b): the whole body colour.
+fn waterScatteringRatio(optics: WaterOptics) -> vec3f {
+  return optics.backscatter / waterBeamAttenuation(optics);
+}
+
+// Lee et al. (2002) eq. 4 -- an optically deep column's subsurface r_rs.
+fn waterDeepSubsurfaceReflectance(u: vec3f) -> vec3f {
+  return (vec3f(WATER_DEEP_REFLECTANCE_G0) + WATER_DEEP_REFLECTANCE_G1 * u) * u;
+}
+
+// Lee et al. (1999) upwelling path elongation, water column and bottom.
+fn waterColumnPathFactor(u: vec3f) -> vec3f {
+  return WATER_COLUMN_PATH_BASE * sqrt(vec3f(1.0) + WATER_COLUMN_PATH_SLOPE * u);
+}
+
+fn waterBottomPathFactor(u: vec3f) -> vec3f {
+  return WATER_BOTTOM_PATH_BASE * sqrt(vec3f(1.0) + WATER_BOTTOM_PATH_SLOPE * u);
+}
+
+// The downwelling irradiance over PI, in the renderer's radiance units, split
+// into the collimated share (which wave lenses focus into caustics) and the
+// diffuse share (which nothing focuses). THE radiometric bridge to the
+// terrain's own lighting -- see WATER_SUN_IRRADIANCE_SCALE.
+struct WaterDownwelling {
+  // The sun's irradiance at NORMAL incidence (already shadowed): what a facet
+  // tilted toward the sun receives, which is what foam and any other
+  // Lambertian surface on the water needs.
+  sunNormal: vec3f,
+  sun: vec3f,
+  sky: vec3f,
+  total: vec3f,
+  directFraction: f32,
+}
+
+fn waterDownwelling(sunElevationSine: f32, sunVisibility: f32) -> WaterDownwelling {
+  let sunNormal = uniforms.sunColor * (WATER_SUN_IRRADIANCE_SCALE * sunVisibility);
+  let sun = sunNormal * max(sunElevationSine, 0.0);
+  let sky = (uniforms.skyZenith + uniforms.skyHorizon)
+    * (0.5 * WATER_SKY_IRRADIANCE_FRACTION * uniforms.skylightIlluminanceNormalized);
+  let total = sun + sky;
+  let directFraction = dot(sun, WATER_LUMINANCE_WEIGHTS)
+    / max(dot(total, WATER_LUMINANCE_WEIGHTS), 0.000001);
+  return WaterDownwelling(sunNormal, sun, sky, total, directFraction);
+}
+
+// The tint a backlit crest transmits: the type's own transmittance over a
+// crest path, normalised to unit luminance so the crest term's calibrated
+// brightness is untouched and only its HUE follows the water.
+fn waterCrestTint(optics: WaterOptics) -> vec3f {
+  let transmitted = exp(-optics.absorption * WATER_CREST_TRANSMISSION_METERS);
+  return transmitted / max(dot(transmitted, WATER_LUMINANCE_WEIGHTS), 0.001);
+}
+
+${WATER_BATHYMETRY_SAMPLING_WGSL}
 
 fn waterDepthFromBathymetry(surfaceElevation: f32, worldXZ: vec2f) -> f32 {
   let bedElevation = uniforms.bathymetrySeaLevel + sampleBathymetryBedDelta(worldXZ);
@@ -641,29 +960,75 @@ fn waterBathymetryBedSlope(worldXZ: vec2f, stepMeters: f32) -> vec2f {
   ) / stepMeters;
 }
 
-fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32) -> vec3f {
+// W-8b: the bed is the OTHER half of a coast's colour, and it is not the same
+// everywhere either. A warm dry coast builds a pale carbonate-and-quartz sand
+// (the Mediterranean and the tropics); a cool wet one is fed dark terrigenous
+// silt by its rivers and grows weed on its rocks. The wetness argument is the
+// province's runoff, so the shallow margin changes with the same field the
+// water column does rather than being one sand for the whole world.
+fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32, wetness: f32) -> vec3f {
   let mineral = 0.5 + 0.5 * sin(dot(worldXZ, vec2f(0.021, 0.017)) + bedElevation * 0.08);
-  let sand = vec3f(0.31, 0.285, 0.205);
-  let rock = vec3f(0.075, 0.105, 0.095);
+  let sand = mix(
+    vec3f(0.42, 0.395, 0.315),
+    vec3f(0.22, 0.205, 0.145),
+    clamp(wetness, 0.0, 1.0),
+  );
+  let rock = mix(
+    vec3f(0.105, 0.125, 0.105),
+    vec3f(0.055, 0.080, 0.070),
+    clamp(wetness, 0.0, 1.0),
+  );
   let deepSilt = vec3f(0.028, 0.055, 0.052);
   let substrate = mix(rock, sand, mineral * 0.32);
   return mix(substrate, deepSilt, smoothstep(8.0, 45.0, -bedElevation));
 }
 
+// W-7 -- the water-leaving radiance of one fragment: Lee et al.'s
+// shallow-water model, lit by the scene's own downwelling irradiance.
+//
+// 5-11 composed bed * exp(-a d) + turbidity * (1 - exp(-a d)) against a grey
+// scalar. Three things were wrong with it and all three were visible: the
+// in-scatter colour was a CONSTANT (so every water body in every world and
+// every light was the same teal), its magnitude was an order of magnitude
+// above any real sea (a bright diffuse sheet under a thin reflection, which
+// is what reads as plastic), and neither term carried the illuminant's colour
+// (so the sea stayed cyan under a sunset).
+//
+// What replaces it is the standard two-term decomposition of a shallow water
+// body's reflectance (Maritorena et al. 1994; Lee et al. 1999):
+//
+//   r_rs = r_deep (1 - exp(-kappa d (1/cos_sun + Du_col/cos_view)))
+//        + (rho_bed / PI) exp(-kappa d (1/cos_sun + Du_bot/cos_view))
+//
+// the column's own reflectance, saturating with depth toward the deep-water
+// value r_deep = (g0 + g1 u) u, plus the bed seen through it. Both path
+// lengths are the REAL ones: the solar beam refracts toward the vertical
+// (Snell) and the upwelling path lengthens as the view grazes, which is why
+// shallow water now deepens in colour toward the horizon without a term
+// having been written for the effect.
+//
+// Radiance is then PI * n^-2 * r_rs / (1 - 1.7 r_rs) * E_d/PI, with the
+// collimated share of E_d carrying the caustic sheet and the diffuse share
+// not. The caller's Fresnel mix supplies the upward interface transmission.
 fn waterVolumeRadiance(
   worldXZ: vec2f,
   surfaceElevation: f32,
   depth: f32,
-  diffuseIlluminanceNormalized: f32,
+  optics: WaterOptics,
+  bedWetness: f32,
+  downwelling: WaterDownwelling,
+  light: vec3f,
   normal: vec3f,
   view: vec3f,
   cameraBelow: bool,
-  sunVisibility: f32,
   caustic: WaterCaustic,
   causticBeam: WaterCausticBeam,
 ) -> vec3f {
   let bedElevation = surfaceElevation - depth;
   var bedXZ = worldXZ;
+  // Cosine of the upwelling path inside the water: straight up when the
+  // camera is below, the refracted view direction when it is above.
+  var upwellingCosine = 1.0;
   if (!cameraBelow && depth > 0.0) {
     // Trace the view ray through the air-to-water interface before evaluating
     // the stable analytic bed. Without this offset the substrate is painted
@@ -673,26 +1038,38 @@ fn waterVolumeRadiance(
     let transmittedDirection = refract(-view, normal, 1.0 / 1.333);
     let verticalTravel = max(-transmittedDirection.y, 0.02);
     bedXZ = worldXZ + transmittedDirection.xz * (depth / verticalTravel);
+    upwellingCosine = verticalTravel;
   }
-  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation);
-  let transmittance = exp(-WATER_ABSORPTION_PER_METER * depth);
+  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation, bedWetness);
+  let attenuation = waterBeamAttenuation(optics);
+  let u = waterScatteringRatio(optics);
+  // Snell: the solar beam's cosine inside the water. A 10-degree sun still
+  // travels at 42 degrees from vertical once refracted, which is why shallow
+  // water does NOT darken as fast as a naive slant path would say.
+  let incidentSin2 = max(1.0 - light.y * light.y, 0.0);
+  let solarCosine = sqrt(max(1.0 - incidentSin2 * WATER_CAUSTIC_INVERSE_IOR_SQUARED, 0.0));
+  let downPath = 1.0 / max(solarCosine, WATER_SOLAR_PATH_COSINE_FLOOR);
+  let upPath = 1.0 / max(upwellingCosine, WATER_VIEW_PATH_COSINE_FLOOR);
+  let opticalDepth = attenuation * depth;
+  let columnTransmittance = exp(-opticalDepth * (downPath + waterColumnPathFactor(u) * upPath));
+  let bedTransmittance = exp(-opticalDepth * (downPath + waterBottomPathFactor(u) * upPath));
+  let columnReflectance = waterDeepSubsurfaceReflectance(u)
+    * (vec3f(1.0) - columnTransmittance);
+  let bedReflectance = bed * (1.0 / PI) * bedTransmittance;
   // 6-4: the ONE place either water surface composes caustics. The sheet
-  // multiplies the bed's DIRECT solar radiance before the same Beer-Lambert
-  // extinction the bed already pays, so a deep bed shows none of it — no
-  // separate depth falloff was invented for the term. The one-scatter
-  // turbidity below is volume-averaged light along the whole path, which no
-  // surface lens focuses, so it is deliberately left flat.
-  let causticGain = waterCausticBedGain(caustic, causticBeam, sunVisibility);
-  // One-scatter turbidity: energy removed from the direct bed path is
-  // returned directionally as the familiar shallow turquoise glow.
-  let turbidity = vec3f(0.018, 0.115, 0.105)
-    * (vec3f(1.0) - transmittance)
-    * (0.38 + 0.62 * sunVisibility);
-  // The body terms are diffuse radiance calibrated at the atmosphere's
-  // reference daylight. Carry the stronger of its raw sun/skylight scales so
-  // they do not become self-emissive under scotopic exposure.
-  return (bed * causticGain * transmittance + turbidity)
-    * diffuseIlluminanceNormalized;
+  // multiplies the bed's COLLIMATED irradiance -- the share a wave lens can
+  // focus -- and the bed's own two-way extinction then removes it with depth,
+  // so a deep bed shows none of it and no separate depth falloff was invented
+  // for the term. The column's in-scatter is volume-averaged light along the
+  // whole path, which no surface lens focuses, so it stays on the full
+  // irradiance.
+  let causticSheet = waterCausticSheetGain(caustic, causticBeam);
+  let bedIrradiance = downwelling.sun * causticSheet + downwelling.sky;
+  let internalReflection = vec3f(1.0)
+    - WATER_SUBSURFACE_INTERNAL_REFLECTION * (columnReflectance + bedReflectance);
+  let upwelling = (PI * WATER_UPWELLING_REFRACTION)
+    / max(internalReflection, vec3f(0.5));
+  return upwelling * (columnReflectance * downwelling.total + bedReflectance * bedIrradiance);
 }
 
 fn waterShorelineAlpha(depth: f32) -> f32 {
@@ -714,19 +1091,22 @@ fn waterInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool) -> vec3f
   return fresnelSchlick(transmittedCos, f0);
 }
 
+// W-7: the same water type seen from INSIDE. The veiling radiance a long
+// underwater path adds is the column's own upwelling radiance L = r_rs E_d --
+// no interface crossing, so no n^-2 and no Fresnel -- and the extinction is
+// the type's beam attenuation rather than absorption alone, so a milky
+// glacial lake hides its far wall where clear water does not.
 fn applyUnderwaterBeerLambert(
   color: vec3f,
   pathMeters: f32,
-  sunVisibility: f32,
-  diffuseIlluminanceNormalized: f32,
+  optics: WaterOptics,
+  downwelling: WaterDownwelling,
 ) -> vec3f {
   let path = clamp(pathMeters, 0.0, 80.0);
-  let transmittance = exp(-WATER_ABSORPTION_PER_METER * path);
-  let inScatter = vec3f(0.012, 0.085, 0.09)
-    * (vec3f(1.0) - transmittance)
-    * (0.3 + 0.7 * sunVisibility)
-    * diffuseIlluminanceNormalized;
-  return color * transmittance + inScatter;
+  let transmittance = exp(-waterBeamAttenuation(optics) * path);
+  let inScatter = PI * waterDeepSubsurfaceReflectance(waterScatteringRatio(optics))
+    * downwelling.total;
+  return color * transmittance + inScatter * (vec3f(1.0) - transmittance);
 }
 `;
 
@@ -792,6 +1172,33 @@ export function fallbackWaterEnvironmentCube(scene: Scene): RawCubeTexture | nul
     FALLBACK_ENVIRONMENT_CUBES.delete(scene);
   });
   return cube;
+}
+
+/**
+ * `W-7`: bind one optical water type onto a water material. Both water owners
+ * call this rather than writing the two uniform names themselves, so the
+ * fragment declaration, the uniform manifest and the binding cannot drift
+ * (`§3.6`'s rule, applied to the newest pair of uniforms).
+ */
+export function applyWaterOpticalType(
+  material: ShaderMaterial,
+  type: WaterOpticalType,
+): void {
+  const absorption = type.absorptionPerMeter;
+  const backscatter = type.backscatterPerMeter;
+  for (const value of [...absorption, ...backscatter]) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError("Water optical properties must be finite and non-negative");
+    }
+  }
+  material.setVector3(
+    "waterAbsorption",
+    new Vector3(absorption[0], absorption[1], absorption[2]),
+  );
+  material.setVector3(
+    "waterBackscatter",
+    new Vector3(backscatter[0], backscatter[1], backscatter[2]),
+  );
 }
 
 /** Schlick Fresnel — identical on both water surfaces (F0 stays at the call site). */
@@ -3343,6 +3750,503 @@ export const WATER_SUN_SPECULAR_WGSL = /* wgsl */ `fn sunSpecular(normal: vec3f,
     / max(4.0 * nDotV, 0.001);
 }`;
 
+/*
+ * ===========================================================================
+ * wave S — the FAR FIELD: what a pixel that covers thousands of wave facets
+ * still shows moving.
+ *
+ * 2-8's energy discipline is exactly right about the MEAN: once a pixel
+ * covers more than half a wavelength of a band, that band's slope averages to
+ * zero and its energy belongs in roughness. What that discipline throws away
+ * is the VARIANCE. A pixel at 5 km from 800 m covers ~150 m² of sea; the sun
+ * glitter inside it is not a smooth lobe, it is a Poisson count of a few
+ * dozen facets that happen to aim the 0.0047 rad sun disc at the eye, and the
+ * count changes every tenth of a second. Measured on the shipped renderer
+ * (capture A/B at +2 s of simulation time, 2026-09-13): the sea's own
+ * texture contrast past 4 km is ~1% of full scale and its two-second change
+ * is 3/255 at 5 km, 1/255 at 8 km and zero past 12 km. That is the still,
+ * plastic sea. The terms below restore the variance without touching the
+ * mean, and every one of them costs a pixel a hash and a few multiplies —
+ * the first draft's per-pixel search for whitecap patches cost 15 ms a frame
+ * on an M2 Pro with the sea in the lower half of the frame, which is why the
+ * whitecaps now use the same mean-one machinery as the glints.
+ *
+ * (1) GLINT SPARKLE. The expected number of sun-reflecting facets in the
+ *     pixel is `n = (footprintArea / l²) · D(h)·(n·h) · π(θ/2)²` — the facet
+ *     count times the probability that one facet's normal lies within half
+ *     the sun's angular radius of the half vector (the reflection doubles the
+ *     angular error). The sun lobe the fragment already evaluates is the mean
+ *     radiance of that count, so the sparkle is a MULTIPLICATIVE gain with
+ *     mean exactly 1 and variance 1/n: `g = (k+1)·u^k` for uniform u has mean
+ *     1 for every k ≥ 0 and variance k²/(2k+1), and `k = (1+√(1+n))/n` is the
+ *     root of k²/(2k+1) = 1/n. At n = 0.1 the gain is a rare 20× spike on a
+ *     dark sea (countable glints); at n = 50 it is a fine ±14% grain; at n =
+ *     10⁴ it is the smooth lobe. The exponent is capped so an isolated facet
+ *     far outside the glitter path cannot become a single firefly pixel.
+ *     Twinkle: two independent draws per pixel, cross-faded at the twinkle
+ *     rate, so the mean is exact at every instant and the variance dips to
+ *     half only at the crossover. The hash is on SCREEN pixels — a glint is a
+ *     100-200 ms transient, and world-anchoring it would just make the
+ *     pattern crawl under the aliasing of a footprint that spans many cells.
+ *
+ * (2) DISTANT WHITECAPS. The foam channel's mip average is the whitecap
+ *     COVERAGE (0.2-0.7% at 7-11 m/s, Monahan's band), spread as a uniform
+ *     0.5% whitening no eye can see. A real whitecap is a ~12 m² patch that
+ *     lives about three seconds, so the expected number of caps in a pixel is
+ *     `footprintArea · coverage / patchArea`, and the SAME mean-one gain at
+ *     the whitecap lifetime spends the coverage as discrete flecks: at 0.06
+ *     expected caps per pixel most pixels carry nothing and one in sixteen
+ *     carries a cap at 25× the mean, i.e. a real patch. Expected opacity per
+ *     pixel is exactly the coverage, so the sea is no whiter on average — it
+ *     is white in the right PLACES, briefly.
+ *
+ * (3) FAR CAT'S PAWS. The near gust field (`waterGustField`, 57 m and 23 m,
+ *     world-locked) fades to a constant past a 34 m footprint, so from
+ *     altitude the sea's roughness was one number — and roughness is the only
+ *     thing a sunless far sea can vary. Real wind is gusty at every scale: the
+ *     ten-minute turbulence intensity over open water is 0.15-0.25, and the
+ *     short waves that carry most of the slope variance respond to the local
+ *     wind within seconds (Cox-Munk: mss ∝ U), so the sea is a patchwork of
+ *     glossy and matte lanes hundreds of metres to kilometres long,
+ *     stretched downwind and moving with the gusts. A 1.5 km octave,
+ *     evaluated per VERTEX (the disk's rings are finer than that wherever
+ *     the octave is visible), and a 380 m octave per pixel whose lattice is
+ *     warped by the coarse one so it cannot read as a grid of blobs, modulate
+ *     the SHORT-wave variance — cascade 0 fully, cascade 1 by half, the
+ *     capillary tail fully — with a mean-one gain of standard deviation
+ *     ~0.14. The first draft's ±0.23 on an unwarped lattice rendered in the
+ *     glitter path as rows of dark blobs drifting with the wind, because the
+ *     sun lobe's peak scales as 1/α² and amplifies any regular structure in
+ *     roughness; it looked like the very artefact the term exists to remove.
+ *     Both octaves fade on the pixel's major footprint as the near ones do,
+ *     so they can never alias into shimmer, and the whole gain fades in on
+ *     the minor footprint so the near field, whose resolved ripples already
+ *     see their own gust field, is untouched.
+ *
+ * (4) ROUGH-INTERFACE FRESNEL. The far plate was bright because Schlick on
+ *     the resolved normal says a grazing sea reflects ~65% of the sky. A
+ *     rough sea does not: the facets a grazing viewer actually sees are the
+ *     ones tilted toward it (the ones tilted away are foreshortened or
+ *     hidden), so the mean reflectance is that of a LESS grazing angle. Ross,
+ *     Dion & Potvin (2005) measure a 10 m/s sea at 85° incidence at ~0.3-0.35
+ *     against ~0.6 for flat water. Raising the cosine by half the RMS slope,
+ *     inside a window that vanishes by 63° of incidence (the projected-area
+ *     bias grows as σ²·tan θ, so it is a grazing effect), reproduces that:
+ *     0.087 → 0.19, F 0.65 → 0.36 at 85°, and no change at 60°. It is what
+ *     makes the roughness lanes VISIBLE (a rougher lane is a darker, bluer
+ *     lane, the classic cat's paw) and what puts the horizon sea below the
+ *     horizon sky in brightness, as it is in every photograph.
+ * ===========================================================================
+ */
+
+/**
+ * Slope-coherence length of the capillary/short-gravity facets that carry a
+ * sun glint, in metres. Sets only how MANY independent facets a footprint
+ * holds, i.e. where the glitter path turns from countable glints into grain:
+ * at 0.06 m a 10 m² footprint (300 m up, 2 km out) holds ~2800 facets and
+ * expects ~0.2 glints at the path's centre; a 150 m² footprint (800 m up,
+ * 5 km out) expects ~3; a 2500 m² one (20 km out) ~50. The mean is
+ * independent of this number.
+ */
+export const WATER_GLINT_FACET_LENGTH_METERS = 0.06;
+/** Twinkle rate: independent draws per pixel are cross-faded at this rate. */
+export const WATER_GLINT_TWINKLE_HZ = 5.5;
+/**
+ * Spikiness ceiling on the sparkle exponent (k ≤ 24 ⇔ n ≥ 0.085). Keeps a
+ * lone facet far outside the glitter path from rendering as a firefly.
+ */
+export const WATER_GLINT_SPARKLE_MAX_EXPONENT = 24;
+/**
+ * Sparkle fade-in window on the anisotropy-limited minor footprint (m). Below
+ * 0.12 m the finest resolved slope texels and the near-field glint jitter
+ * already produce real glints; by 0.5 m (≈ 800 m of range at 62° / 1280 px)
+ * every glint is sub-pixel and the count statistic is the truth.
+ */
+export const WATER_GLINT_SPARKLE_FOOTPRINT_LOW = 0.12;
+export const WATER_GLINT_SPARKLE_FOOTPRINT_HIGH = 0.5;
+
+/**
+ * `W-9` — WHITECAP COVERAGE IS A WIND LAW, not a look.
+ *
+ * Monahan & O'Muircheartaigh (1980) fit ship and aircraft photography of the
+ * open ocean to `W = 3.84e-6 U10^3.41`: 0.09% at 5 m/s, 0.87% at 9.6 m/s (the
+ * default world's own wind), 4% at 15 m/s. Callaghan et al. (2008) add the
+ * threshold — below about 3.7 m/s the sea does not break at all.
+ *
+ * Wave R's foam came from the spectrum's Jacobian alone, whose threshold and
+ * gain were tuned by eye, so open water carried whitecaps at every wind and
+ * the first thing Jason said about the sea was "light blue with white foam".
+ * The Jacobian still decides WHERE a cap is — it is the only term that knows
+ * which wave is breaking — but HOW MUCH is now this law, applied by
+ * normalising the foam field against its own mip-filtered mean.
+ */
+export const WATER_WHITECAP_COVERAGE_COEFFICIENT = 3.84e-6;
+export const WATER_WHITECAP_COVERAGE_EXPONENT = 3.41;
+export const WATER_WHITECAP_WIND_THRESHOLD = 3.7;
+export const WATER_WHITECAP_WIND_FULL = 5.0;
+
+/**
+ * Koepke (1984): the EFFECTIVE reflectance of a whitecap — 0.22, not the 0.5+
+ * of thick fresh foam — because a cap spends most of its life as a decaying
+ * bubble raft. It is the value that reproduces satellite radiances when
+ * multiplied by Monahan's coverage, which is exactly how it is used here.
+ *
+ * Active BREAKING foam (the surf zone, a rapid, a bore) is the thick fresh
+ * kind, so it keeps a Whitlock-style 0.5. Splitting the two is what lets the
+ * open sea stop being speckled white while surf stays surf.
+ */
+export const WATER_WHITECAP_EFFECTIVE_ALBEDO = 0.22;
+export const WATER_SURF_FOAM_ALBEDO = 0.5;
+
+/**
+ * `W-9` — Cox & Munk (1954), the measurement every sea-surface BRDF is
+ * anchored to: the total mean-square slope of a clean sea is
+ * `0.003 + 5.12e-3 U` (U at 12.5 m, m/s). 0.052 at the default world's
+ * 9.6 m/s, i.e. a GGX roughness of 0.478.
+ *
+ * The far field needs this because the renderer's own sub-pixel estimate is a
+ * SUM of independent terms (every faded cascade's band variance plus the
+ * capillary block's five octave tails) with nothing holding the total to a
+ * measured value. At 9.6 m/s that sum reaches ~0.09-0.12, which is past the
+ * roughness clamp — so every pixel of open sea arrived at the SAME clamped
+ * roughness and the gust lanes that were supposed to vary it were clipped
+ * away. A sea with one roughness everywhere is the plastic look, whatever its
+ * colour.
+ */
+/**
+ * `W-10` — how calm the most sheltered water gets, as a fraction of the
+ * prevailing wind. Never zero: a lee shore is glassy, not a mirror, because
+ * air still mixes down and swell still arrives from offshore.
+ */
+export const WATER_SHELTER_FLOOR = 0.18;
+
+/**
+ * `W-10` — Langmuir windrow spacing, seconds x wind speed. Faller & Woodcock
+ * (1964) measured L = 4.8 s x U over the open ocean (Maratos' lake fit is
+ * 2.8 s x U); 4.8 gives 46 m lines at the default world's 9.6 m/s, which is
+ * what an aerial photograph of a fresh breeze shows.
+ */
+export const WATER_WINDROW_SPACING_SECONDS = 4.8;
+
+export const WATER_COX_MUNK_BASE_VARIANCE = 0.003;
+export const WATER_COX_MUNK_WIND_SLOPE = 0.00512;
+
+/**
+ * Footprint window (m, on the anisotropy-limited minor axis) over which the
+ * far-field anchor takes over from the near-field sum. Identical to the
+ * sparkle's window on purpose: inside it the resolved octaves ARE the surface
+ * and the near field is bit-for-bit what wave R shipped; outside it the pixel
+ * covers whole wave trains and the statistic is the truth.
+ */
+export const WATER_COX_MUNK_FOOTPRINT_LOW = WATER_GLINT_SPARKLE_FOOTPRINT_LOW;
+export const WATER_COX_MUNK_FOOTPRINT_HIGH = WATER_GLINT_SPARKLE_FOOTPRINT_HIGH;
+
+/** A mature whitecap's patch area (m²) and lifetime (s). */
+export const WATER_WHITECAP_PATCH_AREA_M2 = 12;
+export const WATER_WHITECAP_LIFETIME_SECONDS = 3.2;
+/**
+ * Fleck fade-in window on the pixel's MAJOR footprint (m). Below 4 m the foam
+ * texture and its Worley break-up still resolve individual caps; by 16 m the
+ * texture is its mean.
+ */
+export const WATER_WHITECAP_FOOTPRINT_LOW = 4;
+export const WATER_WHITECAP_FOOTPRINT_HIGH = 16;
+
+export const WATER_FAR_GUST_COARSE_METERS = 1_500;
+export const WATER_FAR_GUST_MID_METERS = 380;
+export const WATER_FAR_GUST_STRETCH = 2.5;
+export const WATER_FAR_GUST_DRIFT_FRACTION = 0.6;
+export const WATER_FAR_GUST_COARSE_AMPLITUDE = 0.6;
+export const WATER_FAR_GUST_MID_AMPLITUDE = 0.45;
+/** How far (in mid cells) the coarse octave warps the mid lattice. */
+export const WATER_FAR_GUST_WARP_CELLS = 0.6;
+/** Octave fade windows on the pixel's major footprint (m). */
+export const WATER_FAR_GUST_COARSE_FADE = Object.freeze([600, 2_000] as const);
+export const WATER_FAR_GUST_MID_FADE = Object.freeze([150, 500] as const);
+export const WATER_FAR_GUST_GAIN_MIN = 0.5;
+export const WATER_FAR_GUST_GAIN_MAX = 1.5;
+/** Fraction of the RMS slope the grazing Fresnel cosine is raised by. */
+export const WATER_ROUGH_FRESNEL_TILT = 0.5;
+/**
+ * Grazing window of the rough-interface Fresnel, on the cosine of incidence:
+ * the correction is zero at and above cos 0.45 (≤ 63°) and full below cos
+ * 0.05 (≥ 87°). The projected-area bias of the visible facets grows as
+ * σ²·tan θ, so it is a grazing effect — Ross et al. find the rough and flat
+ * reflectances within ~15% of each other at 60° and a factor of two apart at
+ * 85° — and an unwindowed cosine shift halved Schlick's (1 − cos)⁵ term at
+ * every angle.
+ */
+export const WATER_ROUGH_FRESNEL_WINDOW = Object.freeze([0.05, 0.45] as const);
+/**
+ * Ceiling on the slope variance the Fresnel reads (RMS 0.3, Cox-Munk at
+ * ~17 m/s). The BRDF caps its roughness at 0.5 (variance 0.0625) as a look
+ * ceiling; the Fresnel follows the physical mean-square slope past that, but
+ * not past what any wind produces.
+ */
+export const WATER_ROUGH_FRESNEL_MAX_VARIANCE = 0.09;
+
+/** CPU mirror of `waterSparkleExponent`. */
+export function waterSparkleExponent(expectedCount: number): number {
+  const n = Math.max(expectedCount, 1e-6);
+  return Math.min((1 + Math.sqrt(1 + n)) / n, WATER_GLINT_SPARKLE_MAX_EXPONENT);
+}
+
+/** CPU mirror of `waterSparkleGain`: mean 1 over uniform u for every count. */
+export function waterSparkleGain(expectedCount: number, u: number): number {
+  const k = waterSparkleExponent(expectedCount);
+  return (k + 1) * Math.max(u, 0) ** k;
+}
+
+/** CPU mirror of `waterGgxDistribution` (Trowbridge-Reitz, normalised over the hemisphere). */
+export function waterGgxDistribution(nDotH: number, alpha: number): number {
+  const alpha2 = alpha * alpha;
+  const denominator = nDotH * nDotH * (alpha2 - 1) + 1;
+  return alpha2 / Math.max(Math.PI * denominator * denominator, 1e-5);
+}
+
+/** CPU mirror of `waterGlintExpectedCount`. */
+export function waterGlintExpectedCount(
+  nDotH: number,
+  alpha: number,
+  sunAngularRadius: number,
+  footprintArea: number,
+): number {
+  const facets = footprintArea / (WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS);
+  const captureSolidAngle = Math.PI * (sunAngularRadius * 0.5) ** 2;
+  return facets * waterGgxDistribution(nDotH, alpha) * Math.max(nDotH, 0) * captureSolidAngle;
+}
+
+/**
+ * CPU mirror of `waterCoxMunkSlopeVariance`: the total mean-square slope of a
+ * clean sea at this wind, the anchor the far field's roughness is held to.
+ */
+export function waterCoxMunkSlopeVariance(windSpeedMetersPerSecond: number): number {
+  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
+    throw new RangeError("Water wind speed must be finite and non-negative");
+  }
+  return WATER_COX_MUNK_BASE_VARIANCE + WATER_COX_MUNK_WIND_SLOPE * windSpeedMetersPerSecond;
+}
+
+/**
+ * CPU mirror of `waterWhitecapCoverage`: Monahan & O'Muircheartaigh's
+ * `3.84e-6 U^3.41`, with Callaghan's threshold faded in over 3.7-5 m/s.
+ */
+export function waterWhitecapCoverage(windSpeedMetersPerSecond: number): number {
+  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
+    throw new RangeError("Water wind speed must be finite and non-negative");
+  }
+  const threshold = smoothstepUnit(
+    WATER_WHITECAP_WIND_THRESHOLD,
+    WATER_WHITECAP_WIND_FULL,
+    windSpeedMetersPerSecond,
+  );
+  return WATER_WHITECAP_COVERAGE_COEFFICIENT
+    * windSpeedMetersPerSecond ** WATER_WHITECAP_COVERAGE_EXPONENT
+    * threshold;
+}
+
+/** CPU mirror of `waterWhitecapExpectedCount`: caps in the footprint at this coverage. */
+export function waterWhitecapExpectedCount(coverage: number, footprintArea: number): number {
+  return (Math.max(footprintArea, 0) * Math.max(coverage, 0)) / WATER_WHITECAP_PATCH_AREA_M2;
+}
+
+/** CPU mirror of `waterFarHash`: one uniform in [0, 1) from a cell and a seed. */
+export function waterFarHash(cellX: number, cellY: number, seed: number): number {
+  const u32 = (value: number): number => value >>> 0;
+  const mul = (a: number, b: number): number => u32(Math.imul(u32(a), u32(b)));
+  let h = u32(mul(cellX, 0x27d4eb2d) ^ mul(cellY, 0x165667b1) ^ mul(seed, 0x9e3779b9));
+  h = u32(h ^ (h >>> 15));
+  h = mul(h, 0x2c1b3c6d);
+  h = u32(h ^ (h >>> 12));
+  h = mul(h, 0x297a2d39);
+  h = u32(h ^ (h >>> 15));
+  return (h >>> 8) / 16777216;
+}
+
+/**
+ * CPU mirror of `waterTwinkleGain`: the mean-one gain at one pixel, two draws
+ * cross-faded over the phase's fractional part.
+ */
+export function waterTwinkleGain(
+  expectedCount: number,
+  cellX: number,
+  cellY: number,
+  phaseTime: number,
+  seed: number,
+): number {
+  const phase = Math.floor(phaseTime);
+  const t = phaseTime - phase;
+  const blend = t * t * (3 - 2 * t);
+  const gainA = waterSparkleGain(expectedCount, waterFarHash(cellX, cellY, phase * 2 + seed));
+  const gainB = waterSparkleGain(expectedCount, waterFarHash(cellX, cellY, (phase + 1) * 2 + seed));
+  return gainA + (gainB - gainA) * blend;
+}
+
+/** CPU mirror of `waterRoughFresnelCosine`. */
+export function waterRoughFresnelCosine(cosTheta: number, rmsSlope: number): number {
+  const cos = Math.min(Math.max(cosTheta, 0), 1);
+  const tilt = WATER_ROUGH_FRESNEL_TILT * Math.max(rmsSlope, 0);
+  const t = Math.min(Math.max(
+    (cos - WATER_ROUGH_FRESNEL_WINDOW[0]) / (WATER_ROUGH_FRESNEL_WINDOW[1] - WATER_ROUGH_FRESNEL_WINDOW[0]),
+    0,
+  ), 1);
+  const grazing = 1 - t * t * (3 - 2 * t);
+  return Math.min(cos + tilt * (1 - cos) * grazing, 1);
+}
+
+/**
+ * The far gust octaves, composed into BOTH ocean stages (after
+ * WATER_DETAIL_NOISE_WGSL): the vertex evaluates the coarse octave, the
+ * fragment the warped mid octave and the fades.
+ */
+export const WATER_FAR_GUST_WGSL = /* wgsl */ `fn waterFarGustLattice(worldXZ: vec2f, windVelocity: vec2f, time: f32) -> vec2f {
+  let windAxis = normalize(windVelocity + vec2f(0.00001, 0.0));
+  let across = vec2f(-windAxis.y, windAxis.x);
+  // UNWRAPPED drift, unlike the ripple octaves: waterRippleDrift's 4096 s
+  // wrap is a sub-cell reseed for a 0.4 m ripple but would shift these
+  // kilometre lanes by tens of kilometres in one frame. At 11 m/s the
+  // lattice coordinate reaches ~1.7e4 cells after eleven days, where f32
+  // still resolves a thousandth of a cell — 0.4 m of a 380 m octave.
+  let advected = worldXZ - windVelocity * time * ${WATER_FAR_GUST_DRIFT_FRACTION.toFixed(2)};
+  return vec2f(dot(advected, windAxis) / ${WATER_FAR_GUST_STRETCH.toFixed(2)}, dot(advected, across));
+}
+
+// The 1.5 km octave, centred on zero. Per VERTEX on the ocean disk.
+fn waterFarGustCoarse(worldXZ: vec2f, windVelocity: vec2f, time: f32) -> f32 {
+  let lattice = waterFarGustLattice(worldXZ, windVelocity, time);
+  return waterDetailValue(lattice * ${(1 / WATER_FAR_GUST_COARSE_METERS).toFixed(7)}, 5.0) - 0.5;
+}
+
+// The 380 m octave, its lattice warped by the coarse value so it has no
+// repeating grid, plus both fades on the pixel's major footprint. Per pixel.
+fn waterFarGustGain(coarse: f32, worldXZ: vec2f, windVelocity: vec2f, time: f32, footprintMajor: f32) -> f32 {
+  let lattice = waterFarGustLattice(worldXZ, windVelocity, time);
+  let warp = coarse * ${WATER_FAR_GUST_WARP_CELLS.toFixed(2)} * vec2f(1.0, -1.0);
+  let mid = waterDetailValue(lattice * ${(1 / WATER_FAR_GUST_MID_METERS).toFixed(7)} + warp + vec2f(11.0, 29.0), 6.0) - 0.5;
+  let coarseWeight = ${WATER_FAR_GUST_COARSE_AMPLITUDE.toFixed(2)}
+    * (1.0 - smoothstep(${WATER_FAR_GUST_COARSE_FADE[0].toFixed(1)}, ${WATER_FAR_GUST_COARSE_FADE[1].toFixed(1)}, footprintMajor));
+  let midWeight = ${WATER_FAR_GUST_MID_AMPLITUDE.toFixed(2)}
+    * (1.0 - smoothstep(${WATER_FAR_GUST_MID_FADE[0].toFixed(1)}, ${WATER_FAR_GUST_MID_FADE[1].toFixed(1)}, footprintMajor));
+  return clamp(
+    1.0 + coarseWeight * coarse + midWeight * mid,
+    ${WATER_FAR_GUST_GAIN_MIN.toFixed(2)},
+    ${WATER_FAR_GUST_GAIN_MAX.toFixed(2)},
+  );
+}`;
+
+export const WATER_FAR_FIELD_WGSL = /* wgsl */ `fn waterFarHash(cell: vec2i, seed: i32) -> f32 {
+  var h = (bitcast<u32>(cell.x) * 0x27d4eb2du)
+    ^ (bitcast<u32>(cell.y) * 0x165667b1u)
+    ^ (bitcast<u32>(seed) * 0x9e3779b9u);
+  h = h ^ (h >> 15u);
+  h = h * 0x2c1b3c6du;
+  h = h ^ (h >> 12u);
+  h = h * 0x297a2d39u;
+  h = h ^ (h >> 15u);
+  return f32(h >> 8u) / 16777216.0;
+}
+
+fn waterSparkleExponent(expectedCount: f32) -> f32 {
+  let n = max(expectedCount, 0.000001);
+  return min((1.0 + sqrt(1.0 + n)) / n, ${WATER_GLINT_SPARKLE_MAX_EXPONENT.toFixed(1)});
+}
+
+// Mean exactly 1 over uniform u for every count; variance min(1/n, cap).
+fn waterSparkleGain(expectedCount: f32, u: f32) -> f32 {
+  let k = waterSparkleExponent(expectedCount);
+  return (k + 1.0) * pow(max(u, 0.0), k);
+}
+
+fn waterGgxDistribution(nDotH: f32, alpha: f32) -> f32 {
+  let alpha2 = alpha * alpha;
+  let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+  return alpha2 / max(PI * denominator * denominator, 0.00001);
+}
+
+// Facets in the footprint times the chance one aims the sun disc at the eye.
+fn waterGlintExpectedCount(nDotH: f32, alpha: f32, sunAngularRadius: f32, footprintArea: f32) -> f32 {
+  let facets = footprintArea / ${(WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS).toFixed(6)};
+  let captureSolidAngle = PI * sunAngularRadius * sunAngularRadius * 0.25;
+  return facets * waterGgxDistribution(nDotH, alpha) * max(nDotH, 0.0) * captureSolidAngle;
+}
+
+// Whitecaps in the footprint at this coverage.
+fn waterWhitecapExpectedCount(coverage: f32, footprintArea: f32) -> f32 {
+  return max(footprintArea, 0.0) * max(coverage, 0.0) / ${WATER_WHITECAP_PATCH_AREA_M2.toFixed(1)};
+}
+
+// W-9: Cox & Munk's clean-sea total mean-square slope at this wind.
+fn waterCoxMunkSlopeVariance(windSpeed: f32) -> f32 {
+  return ${WATER_COX_MUNK_BASE_VARIANCE.toFixed(4)}
+    + ${WATER_COX_MUNK_WIND_SLOPE.toFixed(5)} * max(windSpeed, 0.0);
+}
+
+// W-9: Monahan & O'Muircheartaigh's whitecap coverage, with Callaghan's
+// breaking threshold. This is the sea's WHITE FRACTION, and the only thing
+// that decides how much foam open water carries.
+fn waterWhitecapCoverage(windSpeed: f32) -> f32 {
+  let wind = max(windSpeed, 0.0);
+  let threshold = smoothstep(
+    ${WATER_WHITECAP_WIND_THRESHOLD.toFixed(1)},
+    ${WATER_WHITECAP_WIND_FULL.toFixed(1)},
+    wind,
+  );
+  return ${WATER_WHITECAP_COVERAGE_COEFFICIENT.toExponential(3)}
+    * pow(wind, ${WATER_WHITECAP_COVERAGE_EXPONENT.toFixed(2)}) * threshold;
+}
+
+// W-9: the sub-pixel slope variance, anchored. Inside the near-field window
+// the caller's own resolved-octave sum is the surface and this returns it
+// unchanged; outside it the pixel covers whole wave trains, and what it
+// cannot resolve is Cox-Munk's total minus whatever the rendered normal still
+// carries. One identity instead of a sum of independent estimates, so the
+// gust and slick lanes modulate a value that is no longer clamped flat.
+fn waterSubPixelSlopeVariance(
+  nearFieldVariance: f32,
+  windSpeed: f32,
+  resolvedIntoNormal: f32,
+  varianceGain: f32,
+  footprintMinor: f32,
+) -> f32 {
+  let anchored = max(
+    waterCoxMunkSlopeVariance(windSpeed) * varianceGain - max(resolvedIntoNormal, 0.0),
+    0.0,
+  );
+  let weight = smoothstep(
+    ${WATER_COX_MUNK_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_COX_MUNK_FOOTPRINT_HIGH.toFixed(3)},
+    footprintMinor,
+  );
+  return mix(nearFieldVariance, anchored, weight);
+}
+
+// The mean-one twinkle at one pixel: two screen-hashed draws cross-faded over
+// the phase's fractional part. The seed keeps the glint and whitecap clocks
+// independent.
+fn waterTwinkleGain(expectedCount: f32, pixel: vec2f, phaseTime: f32, seed: i32) -> f32 {
+  let cell = vec2i(floor(pixel));
+  let phase = i32(floor(phaseTime));
+  let blend = smoothstep(0.0, 1.0, fract(phaseTime));
+  let gainA = waterSparkleGain(expectedCount, waterFarHash(cell, phase * 2 + seed));
+  let gainB = waterSparkleGain(expectedCount, waterFarHash(cell, (phase + 1) * 2 + seed));
+  return mix(gainA, gainB, blend);
+}
+
+// The cosine a rough interface's mean Fresnel is evaluated at. See wave S (4).
+fn waterRoughFresnelCosine(cosTheta: f32, rmsSlope: f32) -> f32 {
+  let cosine = clamp(cosTheta, 0.0, 1.0);
+  let tilt = ${WATER_ROUGH_FRESNEL_TILT.toFixed(2)} * max(rmsSlope, 0.0);
+  let grazing = 1.0 - smoothstep(${WATER_ROUGH_FRESNEL_WINDOW[0].toFixed(2)}, ${WATER_ROUGH_FRESNEL_WINDOW[1].toFixed(2)}, cosine);
+  return min(cosine + tilt * (1.0 - cosine) * grazing, 1.0);
+}
+
+fn waterRoughInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool, rmsSlope: f32) -> vec3f {
+  if (cameraBelow) {
+    return waterInterfaceFresnel(normal, view, cameraBelow);
+  }
+  return fresnelSchlick(waterRoughFresnelCosine(dot(normal, view), rmsSlope), vec3f(0.0204));
+}`;
+
 /**
  * 2-9: lit foam. Foam is a Lambertian scatterer, not an unlit paint layer —
  * it responds to the sun and the sky like everything else. The Worley
@@ -3378,22 +4282,22 @@ fn foamBreakup(worldXZ: vec2f, advection: vec2f) -> f32 {
   return smoothstep(0.12, 0.66, coarse * 0.62 + fine * 0.38);
 }
 
+// W-9: foam is a Lambertian scatterer lit by the SAME downwelling irradiance
+// the body model resolves -- the sky's share as it stands, and the sun's own
+// normal-incidence irradiance times this facet's cosine. Before W-7 the sun
+// term was sunColor * nDotL with no irradiance scale, so foam was lit 1.65x
+// dimmer than a terrain albedo under the same sun and its brightness had to be
+// bought back in the albedo. Now the albedo is the measured reflectance
+// (Koepke's 0.22 for a whitecap, 0.5 for fresh breaking foam) and the
+// radiometry carries the rest.
 fn litFoamColor(
   albedo: vec3f,
   normal: vec3f,
   light: vec3f,
-  sunColor: vec3f,
-  skyZenith: vec3f,
-  skyHorizon: vec3f,
-  skylightIlluminanceNormalized: f32,
-  sunVisibility: f32,
+  downwelling: WaterDownwelling,
 ) -> vec3f {
   let nDotL = max(dot(normal, light), 0.0);
-  let skyAmbient = (skyZenith + skyHorizon) * 0.5;
-  return albedo * (
-    skyAmbient * 0.55 * skylightIlluminanceNormalized
-    + sunColor * nDotL * sunVisibility
-  );
+  return albedo * (downwelling.sky + downwelling.sunNormal * nDotL);
 }`;
 
 /**
@@ -3402,7 +4306,7 @@ fn litFoamColor(
  * already computes; `intensity` is one of Gate 2B's two declared tuning
  * knobs and lives at the call site.
  */
-export const WATER_CREST_SSS_WGSL = /* wgsl */ `fn crestSubsurface(crestHeight: f32, view: vec3f, light: vec3f, sunColor: vec3f, sunVisibility: f32, intensity: f32) -> vec3f {
+export const WATER_CREST_SSS_WGSL = /* wgsl */ `fn crestSubsurface(crestHeight: f32, view: vec3f, light: vec3f, sunColor: vec3f, crestTint: vec3f, sunVisibility: f32, intensity: f32) -> vec3f {
   let crest = max(crestHeight, 0.0);
   let towardSun = pow(max(dot(view, -light), 0.0), 4.0);
   // view is SURFACE-TO-CAMERA: steep look-down views (view.y -> 1) see no
@@ -3410,7 +4314,11 @@ export const WATER_CREST_SSS_WGSL = /* wgsl */ `fn crestSubsurface(crestHeight: 
   // fully — the backlit-crest hero shot. (The review caught the mirrored
   // form, which was inert aloft and dimmed exactly that shot.)
   let grazing = 1.0 - max(view.y, 0.0);
-  return vec3f(0.06, 0.50, 0.42) * sunColor
+  // W-7: the hue is the WATER TYPE's own transmittance over a crest path
+  // (waterCrestTint, unit luminance), not a fixed teal -- a peat-stained lake
+  // transmits amber and a glacial one cyan. The level is unchanged: the tint
+  // carries luminance 1 where the retired constant carried 0.401.
+  return crestTint * ${WATER_CREST_SSS_LEVEL} * sunColor
     * (crest * towardSun * grazing * (0.2 + 0.8 * sunVisibility) * intensity);
 }`;
 

@@ -36,6 +36,33 @@ import {
   type SurfaceMaterialSpec,
 } from "./surfaceMaterials";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
+// W-1: what open ground looks like between one tile and the macro wash is the
+// ground patchwork's question, composed here rather than restated.
+import {
+  GROUND_BARE_ALBEDO,
+  GROUND_BARE_LUSH_SHARE,
+  GROUND_SCRUB_ALBEDO_DRY,
+  GROUND_SCRUB_CROWN_OPACITY,
+  GROUND_SCRUB_RENDERED_FAR_METERS,
+  GROUND_SCRUB_RENDERED_NEAR_METERS,
+  GROUND_SCRUB_LARGE_AXIS_WGSL,
+  GROUND_SCRUB_SMALL_AXIS_WGSL,
+  groundAlbedoWgsl,
+  GROUND_SCRUB_ALBEDO_LUSH,
+  GROUND_SCRUB_FULL_FOOTPRINT,
+  GROUND_SCRUB_NEAR_FOOTPRINT,
+  GROUND_SCRUB_LARGE_HEIGHT_METERS,
+  GROUND_SCRUB_LARGE_THRESHOLD_DENSE,
+  GROUND_SCRUB_LARGE_THRESHOLD_SPARSE,
+  GROUND_SCRUB_LARGE_WAVELENGTH_METERS,
+  GROUND_SCRUB_PARALLAX_MAX,
+  GROUND_SCRUB_ROUGHNESS,
+  GROUND_SCRUB_SMALL_HEIGHT_METERS,
+  GROUND_SCRUB_SMALL_THRESHOLD_DENSE,
+  GROUND_SCRUB_SMALL_THRESHOLD_SPARSE,
+  GROUND_SCRUB_SMALL_WAVELENGTH_METERS,
+  TERRAIN_GROUND_PATCHWORK_WGSL,
+} from "./GroundPatchwork";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
@@ -1811,6 +1838,13 @@ fn terrainSurfaceShoreWetness(
 }
 
 // ---------------------------------------------------------------------------
+// W-1's ground patchwork. Unconditional: its terms are analytic and need no
+// channel page, so open ground looks the same whether or not a page is
+// resident — which is the property that stops a residency level from showing.
+// ---------------------------------------------------------------------------
+${TERRAIN_GROUND_PATCHWORK_WGSL}
+
+// ---------------------------------------------------------------------------
 // 4-7's channel pages, consumed on the CPU TILE MESHES.
 //
 // This is what makes Gate 4B visible one gate before the quadtree exists: the
@@ -2106,12 +2140,30 @@ let terrainPageUv = terrainSurfacePageUv(
 // selection across atlas slots would bleed neighbouring pages into each other.
 let terrainOcclusionTexel = textureSampleLevel(
   terrainOcclusionAtlas, terrainOcclusionAtlasSampler, terrainPageUv.xy, 0.0);
-// r is baked sky visibility; a fully unbaked page reads 0, so the fallback
-// keeps it at 1 rather than plunging the ground into darkness.
-let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainPageUv.z);
-let terrainHorizonShadow = terrainSurfaceHorizonShadow(
-  terrainPageUv, uniforms.terrainSunDirection.xyz,
-  terrainSurfaceHash(terrainAbsolutePosition.xz * 0.37));
+// r is baked sky visibility. A channel slot is RESIDENT BEFORE ITS BAKE LANDS
+// — residency completes only after the bake, but the mesh carries the slot
+// lane as soon as it is assigned — so for a frame or two every lane of this
+// texel reads exactly zero, which as sky visibility means "no sky at all".
+//
+// The bake's own alpha is the validity signal, and it was designed to be one:
+// it carries the bent normal's vertical sign so "fully enclosed" is
+// distinguishable from "unwritten" (PageOcclusionBake.ts). Any real texel's
+// bent normal points up, so alpha is at least a half; an unbaked texel is 0.
+// Gating on it keeps an arriving page at full sky instead of dropping a dark
+// (and, for anything that reads visibility as moisture, a bright green) patch
+// across the frame while it streams. W-1 found this; the AO path had the same
+// exposure and now shares the guard.
+let terrainOcclusionBaked = smoothstep(0.02, 0.2, terrainOcclusionTexel.a);
+let terrainOcclusionTrust = terrainPageUv.z * terrainOcclusionBaked;
+let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+// The horizon atlases are written by the same dispatch, so an unbaked page
+// would report a zero horizon in every azimuth. Fade to "the sun is up".
+let terrainHorizonShadow = mix(
+  1.0,
+  terrainSurfaceHorizonShadow(
+    terrainPageUv, uniforms.terrainSunDirection.xyz,
+    terrainSurfaceHash(terrainAbsolutePosition.xz * 0.37)),
+  terrainOcclusionBaked);
 // 4-6: the real classifier's output replaces the provisional lanes wherever a
 // channel page is resident. Where one is not, the co-residency rule applies
 // and the Phase 3 provisional splat is what the fragment gets.
@@ -2386,6 +2438,12 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
     terrainDiffuseRoughness, terrainClassStrength);
 }
 #endif
+// W-1: what share of this fragment is vegetated ground, and how dry the
+// classifier says that ground is. Read off the SAME blend weights the layers
+// were composed with, so rock, snow, sand and pavement contribute nothing
+// without a branch of their own.
+let terrainGroundCover = terrainGroundCoverOf(i32(terrainLowerId)) * terrainBlend0
+  + terrainGroundCoverOf(i32(terrainUpperId)) * terrainBlend1;
 #else
 // Tier 0's cap is two materials (§5.3), so the axis is rounded to its nearest
 // integer instead of bracketed and only the strongest override survives. This
@@ -2452,7 +2510,25 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
     terrainDiffuseRoughness, terrainClassStrength);
 }
 #endif
+// W-1's vegetated share, the two-material path's copy.
+let terrainGroundCover = terrainGroundCoverOf(i32(terrainPrimaryId)) * terrainBlend0;
 #endif
+// W-1: mown airfield grass is not meadow. The graded surround comes from the
+// pavement SDF the runway painter already evaluates, so the two cannot
+// disagree about where the airfield is.
+var terrainGroundAirfield = 0.0;
+#ifdef TERRAIN_SURFACE_RUNWAY
+terrainGroundAirfield = terrainRunwayAirfieldInfluence(
+  terrainAbsolutePosition.xz,
+  uniforms.terrainRunwayFrame,
+  uniforms.terrainRunwayShape);
+#endif
+let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
+  * (1.0 - terrainGroundAirfield);
+// W-1's tier switch, read once. Low skips every term this wave adds — the
+// relief lift included, or the lowest tier would still be paying for part of
+// a feature it does not get.
+let terrainGroundPatchworkOn = select(0.0, 1.0, uniforms.terrainSurfaceTuning.y > 0.5);
 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
 // kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
@@ -2520,10 +2596,16 @@ if (terrainMesoWeightA > 0.001) {
   // the same band and the mountains read as contour-line stripes.
   let terrainStrataBreak = terrainSteep * (0.25 + 0.75 * terrainMesoA.x)
     * terrainStrataWeight;
+  // W-1 term 4: the flat-ground derate is what kept hummock shading off
+  // meadows. A steep face needs the extra relief least — it already has
+  // geometry to shade with — and open pasture needs it most, which is where
+  // the flying reports say the ground reads as paint. Vegetated ground keeps
+  // roughly twice as much of the same perturbation; rock and snow are
+  // unchanged, so the mountain faces wave Q tuned do not move.
   let terrainMesoSlope = (
     terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
     + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
-  ) * (0.4 + 0.9 * terrainSteep);
+  ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep);
   let terrainStrataSlope = terrainStrataSlopeRaw * terrainStrataBreak * 0.32;
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainMesoSlope.x, -terrainStrataSlope, -terrainMesoSlope.y);
@@ -2546,11 +2628,93 @@ if (terrainMesoWeightA > 0.001) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// W-1 — the ground patchwork's albedo half: a dryness field with edges, and
+// the bare ground it opens. Both ride the vegetated share, so this whole block
+// is a multiply by one over rock, snow, sand, water and pavement.
+// ---------------------------------------------------------------------------
+var terrainGroundDryness = clamp(
+  terrainGroundCover.y / max(terrainGroundCover.x, 1e-4), 0.0, 1.0);
+var terrainGroundCluster = 0.0;
+var terrainGroundBare = 0.0;
+// The threshold is a COST gate as much as a correctness one: a mountainside
+// whose classifier gives it a few per cent of gravel does not need the whole
+// patchwork evaluated to move its colour by a thousandth.
+// The tier switch rides a uniform, so the branch is uniform across the draw
+// and costs a compare; Low skips the whole block and pays nothing for it.
+if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
+  // LANDFORM, not more noise. Sky visibility is the only concavity signal this
+  // fragment has, and slope stands in for thin soil: hollows collect water and
+  // convex ground sheds it. The visibility channel is baked per page at
+  // 4 x 2^level metres, so a residency swap moves it slightly — which is why
+  // the gains are small and the result is CLAMPED. Landform's authority over
+  // colour is bounded on purpose: a dry-grass biome may grow greener swales
+  // and drier crests, but no input may turn it into pasture wholesale. The
+  // unbaked-page case is handled at the source, where the bake's own validity
+  // lane gates the read; this clamp is the second layer.
+  let terrainGroundSky = clamp(terrainSkyVisibility, 0.0, 1.0);
+  let terrainGroundTopographic = clamp(
+    -(1.0 - terrainGroundSky) * 0.4 + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.5,
+    -0.22,
+    0.18);
+  // Unclassified ground is Grass BY ASSUMPTION — the no-page fallback's one
+  // continuous base — and Grass's reference albedo is a lush green, so a page
+  // that has not resolved yet reads as meadow whatever the climate is. The
+  // assumption cannot be improved here (this fragment has no classifier), but
+  // it can be made climate-NEUTRAL: unclassified ground is carried a third of
+  // the way toward dry, which lands it in the khaki both biomes pass through
+  // instead of at the lush end of one of them. On any classified page this
+  // term is exactly zero.
+  let terrainGroundAssumed = mix(0.35, terrainGroundDryness, terrainClassStrength);
+  // Vigour's own landform bias, bounded like dryness's: a hollow grows a
+  // richer sward than the crest above it, and a steep face grows a thinner
+  // one. Positive is PALE, so the signs are the mirror of the dryness term's.
+  let terrainGroundVigourBias = clamp(
+    (1.0 - terrainGroundSky) * -0.55 + clamp(terrainSlope - 0.08, 0.0, 0.35) * 0.95,
+    -0.3,
+    0.32);
+  let terrainGroundPatch = terrainGroundPatchwork(
+    terrainAbsolutePosition.xz,
+    terrainSamplePosition.xz,
+    terrainGroundAssumed,
+    terrainGroundTopographic,
+    terrainClassStrength,
+    terrainGroundVigourBias,
+    terrainWorldDdx.xz,
+    terrainWorldDdy.xz,
+    terrainFootprint3D,
+  );
+  terrainGroundDryness = terrainGroundPatch.dryness;
+  terrainGroundCluster = terrainGroundPatch.cluster;
+  terrainAlbedo *= mix(vec3f(1.0), terrainGroundPatch.albedoScale, terrainGroundVegetation);
+  // Bare ground is mostly a dry-sward feature, but a lush meadow still opens
+  // to soil where the ground is steep, convex or worn — less of it, never
+  // none. The floor is what stops green country being uniformly closed.
+  terrainGroundBare = terrainGroundPatch.bare
+    * terrainGroundVegetation
+    * clamp(
+      ${terrainWgslFloat(GROUND_BARE_LUSH_SHARE)}
+        + (1.0 - ${terrainWgslFloat(GROUND_BARE_LUSH_SHARE)})
+          * clamp(terrainGroundDryness, 0.0, 1.0)
+        + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.9,
+      0.0,
+      1.0);
+  terrainAlbedo = mix(
+    terrainAlbedo,
+    vec3f(${GROUND_BARE_ALBEDO.map((v) => v.toFixed(3)).join(", ")}),
+    terrainGroundBare * 0.4);
+  terrainRoughness = clamp(terrainRoughness - 0.06 * terrainGroundBare, 0.02, 1.0);
+}
+
 // 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
 // colour, and a kilometre-scale brightness ramp across a marking reads as a
 // stain rather than as weather.
 terrainAlbedo *= terrainMacroVariation * terrainMacroHue;
 
+// W-1: pavement coverage, so the scrub below is not planted on a runway. Zero
+// in every build without an airport, which is the right answer for ground the
+// paint never reached.
+var terrainRunwayPaved = 0.0;
 #ifdef TERRAIN_SURFACE_RUNWAY
 // 3-9 paints asphalt, concrete and markings from the analytic airport SDF,
 // over the top of whatever the splat says the ground is.
@@ -2558,7 +2722,7 @@ terrainRunwaySurface(
   terrainAbsolutePosition, terrainGeometricNormal,
   terrainWorldDdx, terrainWorldDdy, terrainDetailWeight,
   &terrainAlbedo, &terrainNormal, &terrainRoughness, &terrainCavity,
-  &terrainF0, &terrainDiffuseRoughness,
+  &terrainF0, &terrainDiffuseRoughness, &terrainRunwayPaved,
 );
 #endif
 
@@ -2651,10 +2815,167 @@ terrainRoughness = mix(terrainRoughness, terrainRoughness * 0.62 + 0.02, terrain
 // exactly zero at the impostor band's own cull edge. There is no ring to see
 // because there is no discontinuity to see.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// W-1 term 3 — the scrub canopy.
+//
+// A height field, not a stamp: crown, dome shading, ambient occlusion and cast
+// shadow are all read off one evaluation per population, so they cannot
+// disagree about where a bush is. The shadow multiplies DIRECT light only,
+// through the canopy handoff's own multiplier, and the occlusion multiplies
+// ambient only, through the cavity — the same split every other occluder in
+// this shader observes.
+//
+// Gated on ground that could carry scrub: vegetated, not wet, not paved, and
+// not already under a canopy the vegetation system is drawing.
+// ---------------------------------------------------------------------------
+var terrainGroundCanopyClosure = 0.0;
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+terrainGroundCanopyClosure = terrainSurfaceCanopyClosure(terrainPageUv);
+#endif
+var terrainGroundDirect = 1.0;
+{
+  // Painted crowns exist only in the band where they cannot read as flat: from
+  // 0.3 m/px of footprint, below which ground cover and the material tile own
+  // the ground, and full by 0.6 m/px. Keyed per pixel, so the near bottom of a
+  // high oblique frame is handled by the same rule as the far distance.
+  let terrainScrubGate = terrainGroundVegetation
+    * smoothstep(
+      ${terrainWgslFloat(GROUND_SCRUB_NEAR_FOOTPRINT)},
+      ${terrainWgslFloat(GROUND_SCRUB_FULL_FOOTPRINT)},
+      terrainFootprint3D)
+    * (1.0 - clamp(terrainWetness, 0.0, 1.0))
+    * (1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))
+    * (1.0 - clamp(terrainGroundCanopyClosure, 0.0, 1.0));
+  if (terrainScrubGate > 0.04 && terrainGroundPatchworkOn > 0.5) {
+    let terrainScrubDry = clamp(terrainGroundDryness, 0.0, 1.0);
+    let terrainScrubRange = distance(fragmentInputs.vPositionW, scene.vEyePosition.xyz);
+    let terrainScrubComplement = mix(
+      smoothstep(
+        ${terrainWgslFloat(GROUND_SCRUB_RENDERED_NEAR_METERS)},
+        ${terrainWgslFloat(GROUND_SCRUB_RENDERED_FAR_METERS)},
+        terrainScrubRange),
+      1.0,
+      terrainScrubDry);
+    // WHERE scrub is, not just how much of it. Salt-and-pepper over the whole
+    // sward is the loudest procedural tell there is, so the threshold is
+    // driven by the patchwork's own hundred-metre cluster field (thickets sit
+    // where the colour already says the ground is rough), pushed denser in
+    // hollows, thinner on steep crests, and off over bare ground. One means
+    // sparse: it IS the threshold the field must clear.
+    // AND ONLY WHERE THE VEGETATION SYSTEM DRAWS NOTHING — which is a question
+    // of RANGE, not of climate. Two populations meet here. On dry rangeland
+    // the density field's shrub term is zero at every range (its moisture ramp
+    // starts at 0.2), so painted scrub carries all of it. On moist ground real
+    // stems carry the near field, but their render budget falls from 60 per
+    // hectare inside 150 m to a floor by ~700 m and the band is cut outright
+    // past 1,100 m, so the ground empties out with distance exactly where the
+    // painted population should take over. The ramp is therefore camera range,
+    // deliberately and for the same reason the 6-8 canopy handoff takes one:
+    // it replaces geometry whose own density is range-dependent. It only ever
+    // fades — no clump appears or vanishes as a unit.
+    let terrainScrubOpenness = clamp(
+      0.55
+        - terrainGroundCluster * 0.55
+        - (1.0 - clamp(terrainSkyVisibility, 0.0, 1.0)) * 0.5
+        + clamp(terrainSlope - 0.12, 0.0, 0.35) * 0.9
+        + terrainGroundBare * 0.6
+        + (1.0 - terrainScrubComplement) * 0.85,
+      0.0,
+      1.0);
+    let terrainScrubDensity = terrainScrubOpenness;
+    let terrainScrubSun = uniforms.terrainSunDirection.xyz;
+    let terrainScrubSunXz = max(length(terrainScrubSun.xz), 1e-4);
+    let terrainScrubTangent = max(terrainScrubSun.y, 0.0) / terrainScrubSunXz;
+    let terrainScrubStep = terrainScrubSun.xz / terrainScrubSunXz;
+    // Crown parallax: the ground texel a standing crown covers is the one
+    // BEHIND it along the view ray, which is what separates a bush from a stain
+    // at an oblique angle. The stem, its occlusion and its shadow stay put.
+    let terrainScrubEyeHeight = max(scene.vEyePosition.y - fragmentInputs.vPositionW.y, 1.0);
+    let terrainScrubViewXz = fragmentInputs.vPositionW.xz - scene.vEyePosition.xz;
+    let terrainScrubViewLength = max(length(terrainScrubViewXz), 1e-3);
+    let terrainScrubLean = terrainScrubViewXz / terrainScrubViewLength
+      * -clamp(terrainScrubViewLength / terrainScrubEyeHeight, 0.0, 6.0);
+    let terrainScrubSmall = terrainGroundScrub(
+      terrainAbsolutePosition.xz,
+      ${GROUND_SCRUB_SMALL_AXIS_WGSL},
+      ${terrainWgslFloat(GROUND_SCRUB_SMALL_WAVELENGTH_METERS)},
+      mix(
+        ${terrainWgslFloat(GROUND_SCRUB_SMALL_THRESHOLD_DENSE)},
+        ${terrainWgslFloat(GROUND_SCRUB_SMALL_THRESHOLD_SPARSE)},
+        terrainScrubDensity),
+      ${terrainWgslFloat(GROUND_SCRUB_SMALL_HEIGHT_METERS)},
+      terrainScrubLean * ${terrainWgslFloat(
+        Math.min(
+          GROUND_SCRUB_SMALL_HEIGHT_METERS * 0.5,
+          GROUND_SCRUB_PARALLAX_MAX * GROUND_SCRUB_SMALL_WAVELENGTH_METERS,
+        ),
+      )},
+      terrainScrubStep,
+      terrainScrubTangent,
+      terrainWorldDdx.xz,
+      terrainWorldDdy.xz,
+      terrainFootprint3D,
+      0x51a7u);
+    let terrainScrubLarge = terrainGroundScrub(
+      terrainAbsolutePosition.xz,
+      ${GROUND_SCRUB_LARGE_AXIS_WGSL},
+      ${terrainWgslFloat(GROUND_SCRUB_LARGE_WAVELENGTH_METERS)},
+      mix(
+        ${terrainWgslFloat(GROUND_SCRUB_LARGE_THRESHOLD_DENSE)},
+        ${terrainWgslFloat(GROUND_SCRUB_LARGE_THRESHOLD_SPARSE)},
+        terrainScrubDensity),
+      ${terrainWgslFloat(GROUND_SCRUB_LARGE_HEIGHT_METERS)},
+      terrainScrubLean * ${terrainWgslFloat(
+        Math.min(
+          GROUND_SCRUB_LARGE_HEIGHT_METERS * 0.5,
+          GROUND_SCRUB_PARALLAX_MAX * GROUND_SCRUB_LARGE_WAVELENGTH_METERS,
+        ),
+      )},
+      terrainScrubStep,
+      terrainScrubTangent,
+      terrainWorldDdx.xz,
+      terrainWorldDdy.xz,
+      terrainFootprint3D,
+      0xb3e9u);
+    // Composed as coverage rather than added: a large crown standing over small
+    // scrub is one canopy, not two.
+    let terrainScrubCrown = clamp(
+      1.0 - (1.0 - terrainScrubSmall.crown) * (1.0 - terrainScrubLarge.crown),
+      0.0,
+      1.0) * terrainScrubGate * ${terrainWgslFloat(GROUND_SCRUB_CROWN_OPACITY)};
+    let terrainScrubShade = clamp(
+      1.0 - (1.0 - terrainScrubSmall.shade) * (1.0 - terrainScrubLarge.shade),
+      0.0,
+      1.0) * terrainScrubGate;
+    let terrainScrubOcclusion = clamp(
+      max(terrainScrubSmall.occlusion, terrainScrubLarge.occlusion), 0.0, 1.0)
+      * terrainScrubGate;
+    let terrainScrubSlope = (terrainScrubSmall.slope + terrainScrubLarge.slope)
+      * terrainScrubGate;
+    // The taller population's tone wins where it covers, which is what makes a
+    // bush standing over scrub read as one crown rather than two.
+    let terrainScrubTone = mix(
+      terrainScrubSmall.tone,
+      terrainScrubLarge.tone,
+      clamp(terrainScrubLarge.crown, 0.0, 1.0));
+    let terrainScrubAlbedo = mix(
+      ${groundAlbedoWgsl(GROUND_SCRUB_ALBEDO_LUSH)},
+      ${groundAlbedoWgsl(GROUND_SCRUB_ALBEDO_DRY)},
+      terrainScrubDry) * terrainScrubTone;
+    terrainAlbedo = mix(terrainAlbedo, terrainScrubAlbedo, terrainScrubCrown);
+    terrainRoughness = mix(
+      terrainRoughness, ${terrainWgslFloat(GROUND_SCRUB_ROUGHNESS)}, terrainScrubCrown);
+    terrainCavity = terrainCavity * (1.0 - terrainScrubOcclusion);
+    terrainNormal = normalize(terrainNormal)
+      + vec3f(-terrainScrubSlope.x, 0.0, -terrainScrubSlope.y);
+    terrainGroundDirect = 1.0 - terrainScrubShade;
+  }
+}
+
 var terrainCanopyShade = 0.0;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 {
-  let terrainCanopyCover = terrainSurfaceCanopyClosure(terrainPageUv);
+  let terrainCanopyCover = terrainGroundCanopyClosure;
   if (terrainCanopyCover > 0.002) {
     let canopyRange = distance(fragmentInputs.vPositionW, scene.vEyePosition.xyz);
     let canopySplit = vegetationCanopyHandoff(
@@ -2717,7 +3038,11 @@ var terrainSurfaceF90 = clamp(
 // The strength is the canopy DEFICIT you stand under — what the near band
 // failed to draw — so ground with a fully rendered stand above it takes
 // nothing, and the term vanishes past the impostor radius.
-let terrainCanopyDirect = 1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE};
+// W-1: the scrub's cast shadow rides the same DIRECT-light multiplier, for the
+// same reason the canopy deficit does — a crown occludes the sun, and putting
+// it into ambient as well would darken one occluder's ground twice.
+let terrainCanopyDirect = (1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE})
+  * terrainGroundDirect;
 `;
 
 /**
@@ -2909,6 +3234,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private runwayFrame: readonly [number, number, number, number] = [0, 0, 0, 1];
   private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
   private detileWarp = DEFAULT_DETILE_WARP;
+  private groundPatchwork = 1;
   /**
    * `6-5`'s field drivers, replacing `3-7`'s never-driven constant.
    *
@@ -2941,14 +3267,16 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private heightAtlasTexture: BaseTexture | null = null;
   private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
   /**
-   * `6-8`: (near band radius, impostor radius, far floor share, canopy height).
+   * `6-8`: (near band radius, impostor radius, drawn-share floor, canopy height).
    *
    * The default is the G-target tier's law, so a material bound before the
    * clipmap publishes a profile still hands off correctly rather than
-   * collapsing the ramp to "everything is canopy" at zero range.
+   * collapsing the ramp to "everything is canopy" at zero range. The floor is
+   * the law's `impostorFloorShare` (2026-09-13) — the share some representation
+   * draws at every range — not the geometry-only `farFloorShare`.
    */
   private canopyBands: readonly [number, number, number, number] = [
-    150, 3_000, 0.045, CANOPY_DOMINANT_HEIGHT_METERS,
+    150, 3_000, 0.3, CANOPY_DOMINANT_HEIGHT_METERS,
   ];
   private cdlodEnabled = false;
 
@@ -3079,6 +3407,21 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   /** The phase's first tuning knob (`3-4`). */
+  /**
+   * `W-1`: whether the ground patchwork runs, as a UNIFORM rather than a
+   * define.
+   *
+   * A define would double this plugin's permutation count for a branch that
+   * costs a compare in uniform control flow, and every one of those
+   * permutations is compiled and pinned by the GPU suite. The lane it rides is
+   * `terrainSurfaceTuning.y`, which has been uploaded and unread since `3-6`
+   * inlined the near height-blend depth as a literal — so this costs no layout
+   * change either.
+   */
+  setGroundPatchwork(enabled: boolean): void {
+    this.groundPatchwork = enabled ? 1 : 0;
+  }
+
   setDetileWarp(amount: number): void {
     this.detileWarp = Number.isFinite(amount) ? Math.max(0, amount) : DEFAULT_DETILE_WARP;
   }
@@ -3232,16 +3575,21 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
    * quality profile rather than re-derived here: how far geometry reaches is a
    * vegetation fact, and the ground's job is only to carry whatever the
    * geometry does not.
+   *
+   * `drawnFloorShare` is the floor of the DRAWN share — geometry or impostor
+   * (2026-09-13's mid-band impostor fill) — because coverage is conserved
+   * across representations: the ground carries the canopy nothing draws, and
+   * an impostor draws it.
    */
   setCanopyBands(
     nearRadiusMeters: number,
     impostorRadiusMeters: number,
-    farFloorShare: number,
+    drawnFloorShare: number,
   ): void {
     if (
       !Number.isFinite(nearRadiusMeters)
       || !Number.isFinite(impostorRadiusMeters)
-      || !Number.isFinite(farFloorShare)
+      || !Number.isFinite(drawnFloorShare)
       || nearRadiusMeters <= 0
       || impostorRadiusMeters <= nearRadiusMeters
     ) {
@@ -3250,7 +3598,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.canopyBands = [
       nearRadiusMeters,
       impostorRadiusMeters,
-      Math.min(1, Math.max(0, farFloorShare)),
+      Math.min(1, Math.max(0, drawnFloorShare)),
       CANOPY_DOMINANT_HEIGHT_METERS,
     ];
   }
@@ -3424,7 +3772,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4(
       "terrainSurfaceTuning",
       this.detileWarp,
-      HEIGHT_BLEND_DEPTH_NEAR,
+      // y: W-1's patchwork switch. It carried HEIGHT_BLEND_DEPTH_NEAR, which
+      // the shader has always inlined as a literal and never read from here.
+      this.groundPatchwork,
       HEIGHT_BLEND_DEPTH_FAR,
       this.snowlineMeters,
     );

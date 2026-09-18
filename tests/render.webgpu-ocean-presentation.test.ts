@@ -32,9 +32,15 @@ describe("spectral ocean presentation topology", () => {
     // becomes roughness; the old ad-hoc smoothstep distance term is gone.
     expect(WATER_FRAGMENT_WGSL).toContain("slopeVariance");
     expect(WATER_FRAGMENT_WGSL).not.toContain("distanceRoughness");
-    // 5-11: bathymetry drives Beer-Lambert transmission and the soft shore;
-    // the former constant additive deep colour and opaque alpha are retired.
-    expect(WATER_FRAGMENT_WGSL).toContain("WATER_ABSORPTION_PER_METER");
+    // 5-11: bathymetry drives the depth optics and the soft shore; the former
+    // constant additive deep colour and opaque alpha are retired.
+    // W-7: the absorption constant became a water TYPE (absorption and
+    // backscatter), and the body is Lee et al.'s shallow-water reflectance
+    // under the scene's own irradiance.
+    expect(WATER_FRAGMENT_WGSL).toContain("waterOpticsFromUniforms()");
+    expect(WATER_FRAGMENT_WGSL).toContain("uniform waterAbsorption: vec3f;");
+    expect(WATER_FRAGMENT_WGSL).toContain("uniform waterBackscatter: vec3f;");
+    expect(WATER_FRAGMENT_WGSL).toContain("waterDeepSubsurfaceReflectance(u)");
     expect(WATER_FRAGMENT_WGSL).toContain("waterShorelineAlpha(depth)");
     expect(WATER_FRAGMENT_WGSL).not.toContain("deepAbsorption");
     // Slopes are stored and summed directly (fade-weighted) — the clamped
@@ -71,7 +77,10 @@ describe("spectral ocean presentation topology", () => {
     expect(WATER_FRAGMENT_WGSL).toContain("resolvedSlope");
     expect(WATER_FRAGMENT_WGSL).toContain("0.006 * wind01 * slopeGain");
     expect(WATER_FRAGMENT_WGSL).not.toContain("var unresolved = 0.014 * wind01;");
-    expect(WATER_FRAGMENT_WGSL).toContain("0.065, 0.5)");
+    // W-9 raised the ocean ceiling 0.5 -> 0.6: 0.5 IS Cox-Munk at 9.7 m/s, so
+    // the shipped world sat on the clamp and its gust lanes were flattened.
+    expect(WATER_FRAGMENT_WGSL).toContain("0.065, 0.6)");
+    expect(WATER_FRAGMENT_WGSL).toContain("waterSubPixelSlopeVariance(");
     expect(WATER_FRAGMENT_WGSL).toContain("waterGustField");
     // The gust field is anchored to ABSOLUTE world metres, so it must use the
     // integer hash — a fract-of-product hash degenerates past ~1e5 m, which is
@@ -99,7 +108,9 @@ describe("spectral ocean presentation topology", () => {
     // pixel fade, so a mesh-faded band survives as a filtered normal instead
     // of being flattened into roughness.
     expect(WATER_VERTEX_WGSL).toContain("cascadeMeshFadeRadii0");
-    expect(WATER_VERTEX_WGSL).toContain("min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)");
+    expect(WATER_VERTEX_WGSL).toContain("cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x)");
+    expect(WATER_VERTEX_WGSL).toContain("let meshFades = fades * vec4f(");
+    expect(WATER_VERTEX_WGSL).not.toContain("min(uniforms.cascadeFadeRadii0.x, uniforms.cascadeMeshFadeRadii0.x)");
     expect(WATER_VERTEX_WGSL).toContain("displacement0Sampler) * meshFades.x");
     expect(WATER_VERTEX_WGSL).toContain("vertexOutputs.cascadeFades = fades;");
   });

@@ -40,8 +40,8 @@ The realignment names five (`PRE_PHASE_4_REALIGNMENT.md` §8). Recon has now che
 | **P1** | Estimator headroom at all four tiers after Phase 3's material arrays | `3-0` | **DOES NOT FAIL — re-measured at implementation time (§4 D13).** Measured at the reference viewport on the implementation branch: 137.7 / 288.7 / 643.5 / 865.5 against 260 / 480 / 700 / 1000. `npm test` was green before Phase 4 allocated anything. The analysis below assumed Ultra's material arrays at 1024² and `SHADOW_DEPTH_BYTES = 5`; `3-0` shipped 512² and corrected the shadow row to 4, and the `2Z` free win cut tier 1 to 2× MSAA. `4-8a` still lands first, for Phase 4's OWN allocations — without it tier 2 reaches ~829/700 at `4-6`. Original text follows. **FAILS at tiers 2 and 3.** Precisely: with `3-0`'s `materialArraysMiB` row *alone*, tier 2 is **696.5 / 700 — it passes, by 3.5 MiB**. Add the cloud and vegetation rows `Z-4` splits out of `detailMiB` and it is **712 / 700**. Tier 3 breaches either way (~1029 / 1000). So the precondition fails, but not for the reason a first reading suggests, and the margin at tier 2 is one estimator row wide. **Fixed by `4-8a`** (§4 D3). |
 | **P2** | `tests/gpu` acquires an adapter and can read back an r32float storage texture | `0-8` | **VERIFIED on-adapter, ad hoc.** A throwaway probe wrote r32float by compute and read it back exactly via `copyTextureToBuffer` on the reference machine. The *adapter* reports `maxTextureDimension2D` 16384, `maxStorageTexturesPerShaderStage` 8, and `float32-filterable`; the *device* does not — §3.6. **No committed test covers this yet**: `4-0` lands the probe as `tests/gpu/webgpu-limits.test.ts` so the precondition is re-checked on every machine rather than trusted from this document. |
 | **P3** | The §1.3 invariant tests pass on the Phase 3 branch including `3-8`'s fifth earthworks assertion | `3-8` | Planned. Note §3.5: three of the four existing tests cannot fail for any Phase 4 reason. |
-| **P4** | `TerrainSurfacePlugin` is the single terrain-appearance owner, `TerrainMaterialPlugin` deleted, and the material factory is in one place | `3-2`, `C1` | Planned. Today the material is constructed inline in `TerrainClipmapSystem`'s constructor ([`TerrainClipmapSystem.ts:312`](src/render/webgpu/terrain/TerrainClipmapSystem.ts:312)) — **one** shared `PBRMaterial`, which is what makes `4-4`'s wrapper siting tractable. Phase 4 requires it extracted to a named factory (§4 D7). |
-| **P5** | The `world/` page architecture still consumed by `TerrainClipmapSystem`, not re-forked | `0-2`, `0-3` | **VERIFIED, with one correction.** `cache.ts`, `lifecycle.ts`, `pageGeometry.ts`, `pageKey.ts` and `streamingPriority.ts` are all imported at [`TerrainClipmapSystem.ts:13-38`](src/render/webgpu/terrain/TerrainClipmapSystem.ts:13). But the consumed geometry symbol is `WORLD_PAGE_BASE_EXTENT_METERS`, **not `WORLD_PAGE_LAYOUT`** — and `createWorldPageCacheMetadata` is never called; the metadata literal is hand-built at `:752-771` from five `TerrainTileData` arrays. `4-2` inherits that hand-built path and must replace its byte-length derivation, which is CPU-tile-shaped. |
+| **P4** | `TerrainSurfacePlugin` is the single terrain-appearance owner, `TerrainMaterialPlugin` deleted, and the material factory is in one place | `3-2`, `C1` | Planned. Today the material is constructed inline in `TerrainClipmapSystem`'s constructor ([`TerrainClipmapSystem.ts:312`](../../src/render/webgpu/terrain/TerrainClipmapSystem.ts:312)) — **one** shared `PBRMaterial`, which is what makes `4-4`'s wrapper siting tractable. Phase 4 requires it extracted to a named factory (§4 D7). |
+| **P5** | The `world/` page architecture still consumed by `TerrainClipmapSystem`, not re-forked | `0-2`, `0-3` | **VERIFIED, with one correction.** `cache.ts`, `lifecycle.ts`, `pageGeometry.ts`, `pageKey.ts` and `streamingPriority.ts` are all imported at [`TerrainClipmapSystem.ts:13-38`](../../src/render/webgpu/terrain/TerrainClipmapSystem.ts:13). But the consumed geometry symbol is `WORLD_PAGE_BASE_EXTENT_METERS`, **not `WORLD_PAGE_LAYOUT`** — and `createWorldPageCacheMetadata` is never called; the metadata literal is hand-built at `:752-771` from five `TerrainTileData` arrays. `4-2` inherits that hand-built path and must replace its byte-length derivation, which is CPU-tile-shaped. |
 | **P6** | The provisional splat vertex lane reserves a slot index | `3-2` | **NEEDS A PHASE 3 EDIT.** `3-2` defines the repurposed colour buffer as `(materialIdA, materialIdB, weightB, spare)`. Without the fourth lane carrying an atlas slot, `4-7`'s bake has no consumer until `4-4`, and `4-8b` cannot safely shorten the shadow distance. Zero days (§4 D4). |
 
 Two standing conditions carry forward: **Babylon stays pinned at `9.21.2`**, and **one branch per gate** (`phase4/gate-4a` … `-4d`).
@@ -72,15 +72,15 @@ Eleven findings. Four are fatal as written; the rest each cost between half a da
 
 `RENDERING_PLAN.md` §3.1 point 3 specifies the CDLOD instance buffer as one stride-8 custom thin-instance attribute. Under WebGPU that call **throws at pipeline creation.**
 
-`thinInstanceSetBuffer` with a custom kind falls to the generic branch at [`thinInstanceMesh.pure.js:278-300`](node_modules/@babylonjs/core/Meshes/thinInstanceMesh.pure.js:278), which constructs `new VertexBuffer(engine, buffer, kind, !staticBuffer, false, stride, true)` with no explicit `size`. `VertexBuffer`'s constructor resolves `this._size = size || stride || VertexBufferDeduceStride(kind)` ([`buffer.pure.js:259`](node_modules/@babylonjs/core/Buffers/buffer.pure.js:259) and the branch at `:305`), so `_size = 8`. `WebGPUCacheRenderPipeline._GetVertexInputDescriptor` then switches on size and **falls through to `throw new Error(\`Invalid Format ... size=8\`)`** ([`webgpuCacheRenderPipeline.js:565-578`](node_modules/@babylonjs/core/Engines/WebGPU/webgpuCacheRenderPipeline.js:565)) — WebGPU has no vertex format wider than four components, and `float32x4` is the last case in the table.
+`thinInstanceSetBuffer` with a custom kind falls to the generic branch at [`thinInstanceMesh.pure.js:278-300`](../../node_modules/@babylonjs/core/Meshes/thinInstanceMesh.pure.js:278), which constructs `new VertexBuffer(engine, buffer, kind, !staticBuffer, false, stride, true)` with no explicit `size`. `VertexBuffer`'s constructor resolves `this._size = size || stride || VertexBufferDeduceStride(kind)` ([`buffer.pure.js:259`](../../node_modules/@babylonjs/core/Buffers/buffer.pure.js:259) and the branch at `:305`), so `_size = 8`. `WebGPUCacheRenderPipeline._GetVertexInputDescriptor` then switches on size and **falls through to `throw new Error(\`Invalid Format ... size=8\`)`** ([`webgpuCacheRenderPipeline.js:565-578`](../../node_modules/@babylonjs/core/Engines/WebGPU/webgpuCacheRenderPipeline.js:565)) — WebGPU has no vertex format wider than four components, and `float32x4` is the last case in the table.
 
-Babylon's own precedent is the `splatIndex` branch immediately above ([`thinInstanceMesh.pure.js:266-277`](node_modules/@babylonjs/core/Meshes/thinInstanceMesh.pure.js:266)), which splits one wide buffer into **four** four-component vertex buffers over the same `Buffer` at increasing offsets.
+Babylon's own precedent is the `splatIndex` branch immediately above ([`thinInstanceMesh.pure.js:266-277`](../../node_modules/@babylonjs/core/Meshes/thinInstanceMesh.pure.js:266)), which splits one wide buffer into **four** four-component vertex buffers over the same `Buffer` at increasing offsets.
 
 **Consequence for `4-5`:** the node record is **two** stride-4 attributes, `terrainNodeA` and `terrainNodeB`, set by two `thinInstanceSetBuffer` calls over two `Float32Array`s. Layout fixed in `4-0`, not discovered in `4-5`.
 
 ### 3.2 The memory ceiling closes at tier 1 and does not close at tiers 2 and 3
 
-`estimateGpuMemoryBreakdown` ([`PerformanceBudget.ts:238-297`](src/render/webgpu/core/PerformanceBudget.ts:238)) reproduces the committed baseline exactly, so it can be projected forward with confidence. At the reference viewport (1512×982 CSS @ DPR 2 — the machine G-C names):
+`estimateGpuMemoryBreakdown` ([`PerformanceBudget.ts:238-297`](../../src/render/webgpu/core/PerformanceBudget.ts:238)) reproduces the committed baseline exactly, so it can be projected forward with confidence. At the reference viewport (1512×982 CSS @ DPR 2 — the machine G-C names):
 
 | | Low | **Balanced** | High | Ultra |
 |---|---:|---:|---:|---:|
@@ -102,7 +102,7 @@ This **corrects the realignment's stated rationale for its reorder** (`PRE_PHASE
 
 ### 3.3 §5.3's Ultra "1 m L0 texel spacing" is inexpressible
 
-Level-L texel size is `worldPageExtentMeters(L) / WORLD_PAGE_HEIGHT_CORE` = `512·2^L / 256` = `2·2^L` m — **fixed for every tier** by [`pageGeometry.ts:31-44`](src/render/webgpu/world/pageGeometry.ts:31) and [`pageKey.ts:113-123`](src/render/webgpu/world/pageKey.ts:113). Reaching 1 m needs either a 520² slot or a 256 m base extent; both create a second page geometry, which `tests/architecture.boundaries.test.ts` fails **by name**.
+Level-L texel size is `worldPageExtentMeters(L) / WORLD_PAGE_HEIGHT_CORE` = `512·2^L / 256` = `2·2^L` m — **fixed for every tier** by [`pageGeometry.ts:31-44`](../../src/render/webgpu/world/pageGeometry.ts:31) and [`pageKey.ts:113-123`](../../src/render/webgpu/world/pageKey.ts:113). Reaching 1 m needs either a 520² slot or a 256 m base extent; both create a second page geometry, which `tests/architecture.boundaries.test.ts` fails **by name**.
 
 Worse, a tier-dependent L0 spacing makes the render-height authority tier-dependent, which breaks §1.3 by construction: the surface the aircraft touches would depend on a graphics setting.
 
@@ -110,7 +110,7 @@ Worse, a tier-dependent L0 spacing makes the render-height authority tier-depend
 
 ### 3.4 The kernel ports better than feared, and the realignment's headline hazard is wrong
 
-`PRE_PHASE_4_REALIGNMENT.md:513-515` claims `ridgedFbm2D`'s `weight >= 1` vs `weight > 0` branch flips on one ULP and "moves height by metres". **Refuted by reading [`noise.ts:231-245`](src/world/noise.ts:231):** branch B is `MEAN + (ridge² − MEAN)·weight`, which at `weight == 1` evaluates to exactly branch A's `ridge²` and at `weight == 0` to exactly branch C's `MEAN`. The three-way branch is algebraically continuous at both switch points; a one-ULP flip moves height by ≲ 1e-4 m. That claim must not be re-litigated, and `4-1`'s budget must not be spent chasing it.
+`PRE_PHASE_4_REALIGNMENT.md:513-515` claims `ridgedFbm2D`'s `weight >= 1` vs `weight > 0` branch flips on one ULP and "moves height by metres". **Refuted by reading [`noise.ts:231-245`](../../src/world/noise.ts:231):** branch B is `MEAN + (ridge² − MEAN)·weight`, which at `weight == 1` evaluates to exactly branch A's `ridge²` and at `weight == 0` to exactly branch C's `MEAN`. The three-way branch is algebraically continuous at both switch points; a one-ULP flip moves height by ≲ 1e-4 m. That claim must not be re-litigated, and `4-1`'s budget must not be spent chasing it.
 
 What is real, measured by running the shipped kernel twice — once in f64, once with `Math.fround` at every operation — over 3,000 scattered points at four filter widths:
 
@@ -125,7 +125,7 @@ What is real, measured by running the shipped kernel twice — once in f64, once
 
 So **coordinate precision is the whole story**, `RENDERING_PLAN.md:347`'s criterion (`< 0.05 m` at `|x| = 5×10⁶ m`) is off by ~70×, and the honest response is to make the radius an *output* of `4-1` rather than an input (D6). Three further facts:
 
-- **Three JS builtins are not safe substitutes.** `lerp` ([`noise.ts:11`](src/world/noise.ts:11)) is `a + (b−a)·t`; WGSL `mix` is specified as `a·(1−t) + b·t` — different rounding at 102 sites per height sample. `smoothstep` ([`noise.ts:15`](src/world/noise.ts:15)) has a `low === high` guard WGSL's builtin does not. `Math.round` inside `wrapLatticeCoordinate` ([`noise.ts:51`](src/world/noise.ts:51)) is round-half-away-from-zero; WGSL `round` is round-half-to-even.
+- **Three JS builtins are not safe substitutes.** `lerp` ([`noise.ts:11`](../../src/world/noise.ts:11)) is `a + (b−a)·t`; WGSL `mix` is specified as `a·(1−t) + b·t` — different rounding at 102 sites per height sample. `smoothstep` ([`noise.ts:15`](../../src/world/noise.ts:15)) has a `low === high` guard WGSL's builtin does not. `Math.round` inside `wrapLatticeCoordinate` ([`noise.ts:51`](../../src/world/noise.ts:51)) is round-half-away-from-zero; WGSL `round` is round-half-to-even.
 - **The band-limit weights are page constants, not per-texel values.** `octaveBandWeight(wavelength, filterWidth)` depends only on the octave index and the page's texel size. Measured: at L0–L4 every weight in the `ridges` channel is exactly 1.0; the fade only starts biting at L5. They can be hoisted to the page uniform, computed by the *existing TypeScript*, which removes a divergence source entirely.
 - **Eleven measured expectation constants** (`RIDGED_OCTAVE_BAND_LIMIT_MEAN` and the ten in `terrain.ts:40-44` / `geology.ts:93,101,118`) must be *injected* from TS, not retyped into WGSL. A wrong digit changes coarse-page mean height by metres and would pass every parity test run at `filterWidth = 0`.
 
@@ -145,7 +145,7 @@ Two measured consequences:
 
 ### 3.6 The adapter is generous; the device runs at WebGPU spec defaults
 
-[`Capabilities.ts:32-36`](src/render/webgpu/core/Capabilities.ts:32) copies **adapter** limits, and the adapter on the reference machine is generous: `maxTextureDimension2D` 16384, `float32-filterable` present. But [`FlightRenderer.ts:378-386`](src/render/FlightRenderer.ts:378) passes `setMaximumLimits: false` and a `deviceDescriptor` carrying only `requiredFeatures`. Babylon populates `requiredLimits` **only** when `setMaximumLimits` is truthy (`webgpuEngine.pure.js:429-438`), so the device gets **spec defaults** — `maxTextureDimension2D` 8192, not 16384.
+[`Capabilities.ts:32-36`](../../src/render/webgpu/core/Capabilities.ts:32) copies **adapter** limits, and the adapter on the reference machine is generous: `maxTextureDimension2D` 16384, `float32-filterable` present. But [`FlightRenderer.ts:378-386`](../../src/render/FlightRenderer.ts:378) passes `setMaximumLimits: false` and a `deviceDescriptor` carrying only `requiredFeatures`. Babylon populates `requiredLimits` **only** when `setMaximumLimits` is truthy (`webgpuEngine.pure.js:429-438`), so the device gets **spec defaults** — `maxTextureDimension2D` 8192, not 16384.
 
 Two consequences, both of which `4-0` must own:
 
@@ -154,7 +154,7 @@ Two consequences, both of which `4-0` must own:
 
 ### 3.7 PCSS cannot run on Phase 1's depth-only shadow generator
 
-`4-8` specifies PCSS. `DepthOnlyCascadedShadowGenerator` ([`AtmosphereSystem.ts:120-152`](src/render/webgpu/atmosphere/AtmosphereSystem.ts:120)) constructs its RTT with `noColorAttachment = true` — that *was* `1A-5`, the single largest memory win in Phase 1. Babylon's `computeShadowWithCSMPCSS` needs a second `texture_2d_array<f32>` bound from the shadow map's **colour** attachment, which no longer exists. Its own doc comment already says so: *"Keep `filter = FILTER_PCF`: a colour-sampling filter would need the attachment back."*
+`4-8` specifies PCSS. `DepthOnlyCascadedShadowGenerator` ([`AtmosphereSystem.ts:120-152`](../../src/render/webgpu/atmosphere/AtmosphereSystem.ts:120)) constructs its RTT with `noColorAttachment = true` — that *was* `1A-5`, the single largest memory win in Phase 1. Babylon's `computeShadowWithCSMPCSS` needs a second `texture_2d_array<f32>` bound from the shadow map's **colour** attachment, which no longer exists. Its own doc comment already says so: *"Keep `filter = FILTER_PCF`: a colour-sampling filter would need the attachment back."*
 
 So `4-8b` gets `FILTER_PCF`, not PCSS, and §5.3's "PCSS at High/Ultra" rows are struck. Reinstating PCSS means undoing `1A-5` and paying its memory back — which is the opposite of what this phase needs (§3.2).
 
@@ -162,7 +162,7 @@ So `4-8b` gets `FILTER_PCF`, not PCSS, and §5.3's "PCSS at High/Ultra" rows are
 
 `4-5`'s note and `4-8`'s item text both assume per-cascade culling of terrain nodes through `getCustomRenderList`. That hook returns an **`AbstractMesh[]`** (`objectRenderer.js:195, :621-622`). After `4-5` every node is a thin instance of **one** mesh, so a per-cascade *node* subset is not expressible through it at all.
 
-Two further things break with the 151 → 1 mesh collapse: today's per-mesh shadow-caster filtering ([`TerrainClipmapSystem.ts:455-478`](src/render/webgpu/terrain/TerrainClipmapSystem.ts:455)), the per-mesh add/remove diff and Governor B lever in `FlightRenderer.ts`, and per-mesh inclusion in the planar reflection.
+Two further things break with the 151 → 1 mesh collapse: today's per-mesh shadow-caster filtering ([`TerrainClipmapSystem.ts:455-478`](../../src/render/webgpu/terrain/TerrainClipmapSystem.ts:455)), the per-mesh add/remove diff and Governor B lever in `FlightRenderer.ts`, and per-mesh inclusion in the planar reflection.
 
 Also: **thin-instance count is driven by the matrix buffer.** `thinInstanceSetBuffer` updates `instancesCount` only for kind `"matrix"` and `"splatIndex"`; the generic branch sets no count, and the `thinInstanceCount` setter clamps to `matrixData.length / 16` and silently does nothing without one.
 
@@ -170,7 +170,7 @@ Also: **thin-instance count is driven by the matrix buffer.** `thinInstanceSetBu
 
 ### 3.9 Three deletions in `RENDERING_PLAN.md`'s list are wrong
 
-`RENDERING_PLAN.md:340` says `4-4` deletes `TerrainGenerationClient`, `terrain.worker.ts`, `terrainProtocol.ts` **and `terrainQueue.ts`**. `BoundedTerrainQueue` from `src/workers/terrainQueue.ts` is imported and instantiated by [`DetailGenerationClient.ts:1,52,65`](src/render/webgpu/detail/DetailGenerationClient.ts:1) — **it is the vegetation worker's queue.** Deleting it breaks vegetation generation.
+`RENDERING_PLAN.md:340` says `4-4` deletes `TerrainGenerationClient`, `terrain.worker.ts`, `terrainProtocol.ts` **and `terrainQueue.ts`**. `BoundedTerrainQueue` from `src/workers/terrainQueue.ts` is imported and instantiated by [`DetailGenerationClient.ts:1,52,65`](../../src/render/webgpu/detail/DetailGenerationClient.ts:1) — **it is the vegetation worker's queue.** Deleting it breaks vegetation generation.
 
 Relatedly, `WORLD_PAGE_LAYOUT` **fails its own validator**: `validateWorldPageLayout` (`validation.ts:107-121`) requires `isPowerOfTwo(heightResolution - 1)` — the pre-§1.4 `2^n+1` geometry — while the shipped `heightResolution` is 256. Verified empirically: it returns exactly one issue. Nothing calls it on the canonical layout today, which is why this has survived since Phase 0.
 
@@ -178,9 +178,9 @@ Finally, **nine `§3.1`/`§3.2` line citations into `TerrainClipmapSystem.ts` ar
 
 ### 3.10 Nothing owns a millisecond-denominated compute budget
 
-`4-3` (~0.35 ms/page), `4-6` (~0.2 ms/page) and `4-7` (~0.3 ms/page) are each documented in `PerformanceBudget.ts:30-32` as *"amortised hard caps enforced by their schedulers"*. **No scheduler exists.** `FrameGraphPass.cadence` is an integer frame divisor (`frameIndex % cadence === 0`, [`FrameGraph.ts:130`](src/render/webgpu/core/FrameGraph.ts:130)) and nothing else does.
+`4-3` (~0.35 ms/page), `4-6` (~0.2 ms/page) and `4-7` (~0.3 ms/page) are each documented in `PerformanceBudget.ts:30-32` as *"amortised hard caps enforced by their schedulers"*. **No scheduler exists.** `FrameGraphPass.cadence` is an integer frame divisor (`frameIndex % cadence === 0`, [`FrameGraph.ts:130`](../../src/render/webgpu/core/FrameGraph.ts:130)) and nothing else does.
 
-With no shared meter, a banked turn that admits many pages at once spends three separate caps in one frame. Governor B's ladder ([`AdaptiveGovernor.ts:98-113`](src/render/webgpu/core/AdaptiveGovernor.ts:98)) has 14 rungs and §5.5's **rung 0 "GPU compute budget" is confirmed absent** — so the governor's first available response to a compute spike is to cut something visible.
+With no shared meter, a banked turn that admits many pages at once spends three separate caps in one frame. Governor B's ladder ([`AdaptiveGovernor.ts:98-113`](../../src/render/webgpu/core/AdaptiveGovernor.ts:98)) has 14 rungs and §5.5's **rung 0 "GPU compute budget" is confirmed absent** — so the governor's first available response to a compute spike is to cut something visible.
 
 ### 3.11 The frame budget has no room at tier 2 for a row Phase 4 must add
 
@@ -443,7 +443,7 @@ Net **+12.0 d**, of which 2.0 is `6-10` relocated (programme-neutral) and 2.0 is
 
 ### 5.1 Page identity and the season key
 
-The single most important decision in this item. `WorldPageKey` today is `world-page-v1/{level}/{x}/{z}` ([`pageKey.ts:83`](src/render/webgpu/world/pageKey.ts:83)) with no room for a season.
+The single most important decision in this item. `WorldPageKey` today is `world-page-v1/{level}/{x}/{z}` ([`pageKey.ts:83`](../../src/render/webgpu/world/pageKey.ts:83)) with no room for a season.
 
 **Exactly one channel family is season-dependent.** Height is a function of `(level, x, z, seed)`; erosion (Phase 5) runs on geological time; occlusion is geometry-only; the aux channels are geometry-only. Only the **splat/land-cover page** varies with `dayOfYear`. So the key does not change — the **slot key** does:
 

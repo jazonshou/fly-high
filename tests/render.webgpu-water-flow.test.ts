@@ -257,7 +257,8 @@ describe("6-1 the analytic sentinel", () => {
     // The pre-6-1 fold sites now read the accumulators, not the raw capillary
     // struct, so there is exactly one place the channel term can enter.
     expect(fragment).toContain("-fragmentGradient.x + surfaceSlope.x,");
-    expect(fragment).toContain("min(unresolvedSlope, 0.25)");
+    // wave S: the far gust lanes modulate the unresolved variance at range.
+    expect(fragment).toContain("min(unresolvedSlope * farGust, 0.25)");
   });
 
   it("returns the exact zero struct for a dark payload", () => {

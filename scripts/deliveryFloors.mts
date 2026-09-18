@@ -620,7 +620,7 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // because a sample list is the ceiling's derivation, not its history --
   // MEASURED_DRAW_DELTAS and DRAW_CALL_RAISES carry what moved and why.
   "approach-500ft":              [261, 261, 261],
-  "slant-10km":                  [222, 222, 222],
+  "slant-10km":                  [223, 223, 223], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
   "high-10000ft-down":           [223, 223, 223],
   "reference-viewport":          [262, 262, 262],
   "cruise-horizon":              [214, 214, 214],
@@ -630,7 +630,7 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   "dusk-mesopic":                [262, 262, 262],
   "motion-banked-turn":          [268, 268, 268],
   "page-thrash-turn":            [267, 267, 267],
-  "cdlod-transition":            [208, 208, 208],
+  "cdlod-transition":            [209, 209, 209], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
   "cruise-sun-30":               [240, 240, 240],
   "forest-500ft-sunbehind":      [262, 262, 262],
   "coast-10km-lowsun":           [235, 235, 235],
@@ -1002,6 +1002,30 @@ export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
     "terrain-material-1600ft-down",
     "horizon-shadow-far-annulus",
     "canopy-backlit-lowsun",
+    ]),
+  }),
+  Object.freeze({
+    kind: "uniform" as const,
+    feature: "tree-lod-residency-lead",
+    commit: "070389a",
+    reason:
+      "Cell residency reaches one cull fade past the impostor radius so a new "
+      + "cell publishes outside the live cull and dithers in on approach (tree "
+      + "LOD continuity, 2026-09-14). Static shots are unchanged: an impostor "
+      + "batch rebuilds its bounding box every update from the cells inside the "
+      + "live cull only and is hidden when none is, so the records the shader "
+      + "kills never reach a draw. On a MOVING shot the far band's chunk is now "
+      + "published — with records inside the cull, in frame — at the sample "
+      + "instant, where before the cells just inside the radius were still "
+      + "generating: one real draw. Only a shot whose observer is moving at the "
+      + "sample instant can show it; slant-10km (84 m/s) and cdlod-transition "
+      + "(96 m/s) do, page-thrash-turn (78 m/s) measured at its ceiling with "
+      + "the lead, and every static shot measured at its ceiling. Identical "
+      + "across every run on the M2 Pro.",
+    delta: 1,
+    shots: Object.freeze([
+    "slant-10km",
+    "cdlod-transition",
     ]),
   }),
 ]);

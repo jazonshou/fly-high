@@ -6,7 +6,11 @@ import {
   type DetailInstanceRecord,
   type DetailPrototypeBoundKernel,
 } from "./instanceFormat";
-import { renderedShareAtDistance, type RenderedDensityLaw } from "./renderedDensity";
+import {
+  drawnShareAtDistance,
+  renderedShareAtDistance,
+  type RenderedDensityLaw,
+} from "./renderedDensity";
 import type {
   DetailFloatingOrigin,
   DetailLod,
@@ -39,6 +43,24 @@ export const DETAIL_CULL_FADE_MARGIN_METERS = 420;
 // non-divisor spacing leaves a bare remainder stripe along every cell edge.
 export const GROUND_COVER_CANDIDATE_SPACING_METERS = 1.6;
 export const DETAIL_MEMBERSHIP_SLACK_METERS = 96;
+/**
+ * A resident cell's planned distance is refreshed when the geometry share it
+ * implies drifts from the live share by more than this (the runtime's density
+ * drift loop). It lives here, beside the admission margin that has to exceed
+ * it, so the two cannot be tuned apart.
+ */
+export const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;
+/**
+ * 2026-09-13: how far AHEAD of the cell's planned share the CPU admits tree
+ * records, in share space. The GPU's per-stem band windows draw a stem only
+ * once the live share at ITS range reaches its key, so the CPU only has to
+ * keep the record resident before that moment. A cell's planned distance is
+ * allowed to lag the live one by one refresh epsilon, and a rebuild is
+ * asynchronous, so two epsilons of margin cover both; denominated in share
+ * rather than metres so it never over-admits the steep near end of the
+ * inverse-square curve (64 m of lookahead at 200 m is half the near cap).
+ */
+export const DETAIL_DENSITY_ADMISSION_MARGIN_SHARE = 2 * DETAIL_DENSITY_SHARE_REFRESH_EPSILON;
 export const GROUND_COVER_EDGE_FADE_METERS = 30;
 export const GROUND_COVER_FULL_DENSITY_SHARE = 0.17;
 export const GROUND_COVER_NEAR_BOOST_RADIUS_METERS = 28;
@@ -282,30 +304,90 @@ export function detailCellMinimumDistanceMeters(
   return Math.hypot(Math.max(minX - x, 0, x - maxX), Math.max(minZ - z, 0, z - maxZ));
 }
 
-/** Render bands whose padded residency envelope contains a stem. */
+/** The farthest point of a cell from the observer — its corner. */
+export function detailCellMaximumDistanceMeters(
+  x: number,
+  z: number,
+  cellX: number,
+  cellZ: number,
+  cellSize: number,
+): number {
+  const minX = cellX * cellSize;
+  const minZ = cellZ * cellSize;
+  const maxX = minX + cellSize;
+  const maxZ = minZ + cellSize;
+  return Math.hypot(Math.max(x - minX, maxX - x), Math.max(z - minZ, maxZ - z));
+}
+
+/**
+ * A tree's per-stem LOD key, as the GPU will read it back: the canopy rank
+ * scaled by the cell's authored density over the near cap, so `key <= share`
+ * is exactly the law's `rank <= min(1, cap·share / stemsPerHa)` in both the
+ * dense and the sparse regime, then rounded to the unorm8 lane it travels in
+ * so the CPU admits and the GPU thins against the IDENTICAL number.
+ *
+ * A key above 1 is a stem the near cap never draws at ANY range — in a
+ * saturated cell that is ~87% of the authored stems — and it must stay above
+ * every share ceiling rather than be clamped into the lane: the first cut of
+ * this function clamped it to the top lane code, every one of those stems
+ * gained near- and mid-band geometry records, and the near band drew the
+ * whole authored field at ~7× the cap (measured 101 → 67 fps on
+ * `forest-line-highsun`, independent of the impostor floor). Drawable keys
+ * are capped one code below 1 because the packer wraps the lane modulo 1, and
+ * a key of exactly 1 would pack as 0 and never thin.
+ */
+export const DETAIL_TREE_STEM_KEY_NEVER_DRAWN = 2;
+export function detailTreeStemKey(
+  canopyRank: number,
+  stemsPerHectare: number,
+  nearStemsPerHectare: number,
+): number {
+  const raw = canopyRank * (stemsPerHectare / Math.max(nearStemsPerHectare, 1e-6));
+  if (!(raw <= 1)) return DETAIL_TREE_STEM_KEY_NEVER_DRAWN;
+  return Math.min(254, Math.round(Math.max(0, raw) * 255)) / 255;
+}
+
+/**
+ * Render bands whose padded residency envelope contains a stem.
+ *
+ * 2026-09-13: the far (impostor) membership begins where the MID band does,
+ * not at the mid radius — impostors stand in for the stems the geometry share
+ * rejects everywhere beyond the near radius, so a mid-band stem carries an
+ * impostor record beside its geometry and the GPU picks one per frame.
+ *
+ * 2026-09-14: the far membership has NO outer edge. The impostor cull is the
+ * shader's, evaluated against the live camera range (band code 2's fCull), so
+ * a record beyond it costs four killed vertices and nothing else — whereas
+ * cutting records at `far + slack` made the far cull edge a FRONTIER: every
+ * chunk straddling it re-baked on each 64 m observer quantum, carrying its
+ * whole impostor set (7× heavier since the fill), and the sweep could not
+ * converge in flight. The far band was seen arriving cell by cell as a
+ * patchwork with straight edges, and the publication traffic read as
+ * hitches. A far chunk's record set is now a pure function of its resident
+ * cells and the law; it rebuilds when a cell generates, never when the
+ * observer moves.
+ */
 export function detailFadeBandMemberships(
   distanceMeters: number,
   law: RenderedDensityLaw,
 ): readonly DetailFadeBandMembership[] {
   const nearEdge = law.near.outerRadiusMeters;
   const midEdge = law.mid.outerRadiusMeters;
-  const cullEdge = law.far.outerRadiusMeters;
   const slack = DETAIL_MEMBERSHIP_SLACK_METERS;
-  if (!Number.isFinite(distanceMeters) || distanceMeters < 0
-    || distanceMeters >= cullEdge + slack) {
+  if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
     return DETAIL_FADE_MEMBERSHIPS_BY_MASK[0]!;
   }
   let membershipMask = 0;
   if (distanceMeters <= nearEdge + slack) membershipMask |= 1;
-  if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS - slack
-    && distanceMeters <= midEdge + slack) {
-    membershipMask |= 2;
-  }
-  if (distanceMeters > midEdge - DETAIL_FADE_MARGIN_METERS - slack) {
+  if (distanceMeters > nearEdge - DETAIL_FADE_MARGIN_METERS - slack) {
+    if (distanceMeters <= midEdge + slack) membershipMask |= 2;
     membershipMask |= 4;
   }
   return DETAIL_FADE_MEMBERSHIPS_BY_MASK[membershipMask]!;
 }
+
+/** Impostor-only stems are cheap records; charge them to the scheduler in blocks. */
+const DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE = 8;
 
 /** Composes yaw with a small lean about a hashed azimuth (2-12). */
 function yawLeanQuaternion(
@@ -377,9 +459,31 @@ export function* buildPresentationChunk(
 
     const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
     const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
-    const treeBudgetPerHa = densityLaw.nearStemsPerHectare
-      * renderedShareAtDistance(densityLaw, resident.distance);
-    const treeShare = Math.min(1, treeBudgetPerHa / Math.max(stemsPerHa, 1e-6));
+    // 2026-09-13: the CPU decides which tree records EXIST; the GPU decides
+    // which one draws, per stem and per frame, against the live camera range
+    // (`DetailInstanceMaterialPlugin`'s band windows compare the stem's key —
+    // `detailTreeStemKey`, packed in the phase lane — with the law's share at
+    // that range). Admission is therefore a SUPERSET: the share the cell's
+    // planned distance implies, plus a margin that covers the planned
+    // distance's permitted drift and the asynchronous rebuild, so a stem's
+    // record is resident before its own threshold is crossed.
+    //  - Geometry records: key within the geometry share ceiling.
+    //  - Impostor records: key within the DRAWN share ceiling, unless geometry
+    //    owns the stem at every range the cell spans (its key is within the
+    //    geometry share at the cell's far corner, margin included) — that
+    //    stem never needs a stand-in.
+    // The old rule (`rank > treeShare` at the cell's minimum distance, binary)
+    // is exactly the geometry ceiling with a zero margin.
+    const geometryShareCeiling = Math.min(
+      1,
+      renderedShareAtDistance(densityLaw, resident.distance)
+        + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
+    );
+    const drawnShareCeiling = Math.min(
+      1,
+      drawnShareAtDistance(densityLaw, resident.distance)
+        + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
+    );
     const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
     const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
     const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
@@ -392,15 +496,106 @@ export function* buildPresentationChunk(
       resident.cell.cellZ,
       resident.cell.cellSizeMeters,
     );
+    const cellFarCornerDistance = detailCellMaximumDistanceMeters(
+      observerX,
+      observerZ,
+      resident.cell.cellX,
+      resident.cell.cellZ,
+      resident.cell.cellSizeMeters,
+    );
+    // Beyond the mid band's residency envelope a stem can only ever be an
+    // impostor, and an impostor record is one cheap row: build it directly
+    // and charge the scheduler in blocks, the way rank misses are charged.
+    // The record is byte-identical to what the general path below emits for
+    // a far-only stem — this is a shortcut, not a second representation.
+    const impostorOnlyBeyondMeters = densityLaw.mid.outerRadiusMeters
+      + DETAIL_MEMBERSHIP_SLACK_METERS;
+    // A stem needs no impostor only where geometry owns it at EVERY range the
+    // cell spans — which requires the whole cell to sit inside the mid band's
+    // envelope. Past that envelope there is no geometry record at all, so the
+    // exclusion must not apply: the first landing applied it regardless, and
+    // in every cell beyond the mid band the top-ranked stems (key below the
+    // geometry floor minus the margin — the widest crowns) had no record of
+    // any kind (2026-09-14, from the vegetation survey).
+    const geometryOwnedEverywhereBelow = cellFarCornerDistance <= impostorOnlyBeyondMeters
+      ? Math.max(
+          0,
+          renderedShareAtDistance(densityLaw, cellFarCornerDistance)
+            - DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
+        )
+      : 0;
 
-    const treeCount = currentCellDistance >= densityLaw.far.outerRadiusMeters
-        + DETAIL_MEMBERSHIP_SLACK_METERS
-      ? 0
-      : resident.cell.trees.length;
+    // 2026-09-14: no far cutoff. Impostor records exist for every resident
+    // stem the drawn ceiling admits, wherever it is; the shader's live cull
+    // decides what draws (see `detailFadeBandMemberships`).
+    const treeCount = resident.cell.trees.length;
+    const appendImpostorOnlyRecord = (
+      tree: GeneratedDetailCell["trees"][number],
+      stemKey: number,
+    ): void => {
+      const treeCatalog = catalog.trees[tree.species];
+      const prototypeSpecies = treePrototypeMode === "species"
+        ? tree.species
+        : treeCatalog.prototypeFamily;
+      const usesImpostor = catalog.useImpostors;
+      const crownBatchKey = usesImpostor
+        ? TREE_IMPOSTOR_PROTOTYPE_KEY
+        : `tree-${prototypeSpecies}-v0-crown-far`;
+      const impostor = usesImpostor ? catalog.impostors[prototypeSpecies] : undefined;
+      const crownPrototypeRadius = usesImpostor
+        ? impostor?.radialUnits
+        : catalog.prototypes[crownBatchKey]?.radialUnits;
+      if (crownPrototypeRadius === undefined) {
+        throw new Error(`Missing radial contract for ${crownBatchKey}/${tree.species}`);
+      }
+      if (usesImpostor && !impostor?.frame) {
+        throw new Error(`Missing impostor bounds frame for ${prototypeSpecies}`);
+      }
+      // The far variant byte carries the species slot and the identity hash,
+      // not the character modifier — the general path computes the same.
+      const leanRadians = 0.035 + ((tree.selection * 29.3) % 1) * 0.105;
+      const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
+      sink.appendInstance(
+        crownBatchKey,
+        {
+          x: tree.x - floatingOrigin.x,
+          y: tree.y - floatingOrigin.y,
+          z: tree.z - floatingOrigin.z,
+          quaternion: yawLeanQuaternion(tree.yawRadians, leanRadians, leanAzimuth),
+          heightScaleMeters: tree.heightMeters,
+          radialScale: detailRadialScaleForWorldRadius(
+            tree.crownRadiusMeters,
+            tree.heightMeters,
+            crownPrototypeRadius,
+          ),
+          fade: 2 / 127,
+          fadeIncoming: false,
+          variant: impostorSpeciesSlot(prototypeSpecies) * 32
+            + Math.floor(((tree.selection * 97.3) % 1) * 32),
+          tint: tree.color,
+          windPhase: stemKey,
+          windResponse: clamp(tree.windResponse, 0, 1),
+        },
+        usesImpostor ? impostor?.frame : undefined,
+      );
+    };
     let rejectedTreeCandidates = 0;
+    let impostorOnlyRecords = 0;
     for (let treeIndex = 0; treeIndex < treeCount; treeIndex += 1) {
       const tree = resident.cell.trees[treeIndex]!;
-      if ((resident.treeCanopyRank[treeIndex] ?? 1) > treeShare) {
+      const stemKey = detailTreeStemKey(
+        resident.treeCanopyRank[treeIndex] ?? 1,
+        stemsPerHa,
+        densityLaw.nearStemsPerHectare,
+      );
+      const geometryAdmitted = stemKey <= geometryShareCeiling;
+      // A zero threshold means no geometry owns anything in this cell, so
+      // nothing is excluded — including the rank-0 stem, whose key IS zero.
+      const impostorAdmitted = stemKey <= drawnShareCeiling
+        && !(geometryOwnedEverywhereBelow > 0 && stemKey <= geometryOwnedEverywhereBelow);
+      const stemDistance = Math.hypot(tree.x - observerX, tree.z - observerZ);
+      const impostorOnly = stemDistance > impostorOnlyBeyondMeters;
+      if (!(impostorOnly ? impostorAdmitted : geometryAdmitted || impostorAdmitted)) {
         rejectedTreeCandidates += 1;
         if (rejectedTreeCandidates === DETAIL_PRESENTATION_REJECTION_BLOCK_SIZE) {
           yield;
@@ -408,11 +603,20 @@ export function* buildPresentationChunk(
         }
         continue;
       }
+      if (impostorOnly) {
+        impostorOnlyRecords += 1;
+        if (impostorOnlyRecords === DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE) {
+          yield;
+          impostorOnlyRecords = 0;
+        }
+        appendImpostorOnlyRecord(tree, stemKey);
+        statistics.treeInstances += 1;
+        continue;
+      }
       yield;
       const localX = tree.x - floatingOrigin.x;
       const localY = tree.y - floatingOrigin.y;
       const localZ = tree.z - floatingOrigin.z;
-      const stemDistance = Math.hypot(tree.x - observerX, tree.z - observerZ);
       const memberships = detailFadeBandMemberships(stemDistance, densityLaw);
       if (memberships.length === 0) continue;
       const modifierHash = (tree.selection * 137.3) % 1;
@@ -424,7 +628,12 @@ export function* buildPresentationChunk(
       const leanRadians = 0.035 + ((tree.selection * 29.3) % 1) * 0.105;
       const leanAzimuth = ((tree.selection * 53.9) % 1) * 2 * Math.PI;
       const quaternion = yawLeanQuaternion(tree.yawRadians, leanRadians, leanAzimuth);
-      const windPhase = tree.windPhaseRadians / (2 * Math.PI);
+      // A geometry record is resident for this stem in this chunk when it is
+      // admitted AND a geometry band's residency envelope contains the stem;
+      // the impostor record carries that fact in its fade byte's low bit so
+      // the GPU knows whether to yield to geometry or stand in alone.
+      const geometryResident = geometryAdmitted
+        && memberships.some((membership) => membership.band !== "far");
       const crownBase: DetailInstanceRecord = {
         x: localX,
         y: localY,
@@ -435,11 +644,17 @@ export function* buildPresentationChunk(
         fade: 1,
         variant: modifierBits * 32,
         tint: tree.color,
-        windPhase,
+        // The phase lane carries the LOD key (the shader hashes it for wind,
+        // lean, wobble, the far switch and reveal order — see
+        // `detailStemHash`), not the authored wind phase.
+        windPhase: stemKey,
         windResponse: clamp(tree.windResponse, 0, 1),
       };
       const variantHash = (tree.selection * 71.7) % 1;
+      let emittedRecord = false;
       for (const membership of memberships) {
+        if (membership.band === "far" ? !impostorAdmitted : !geometryAdmitted) continue;
+        emittedRecord = true;
         const usesImpostor = membership.band === "far" && catalog.useImpostors;
         const treeCatalog = catalog.trees[tree.species];
         // Wave R: the far band routes through the SAME family collapse as the
@@ -484,7 +699,7 @@ export function* buildPresentationChunk(
             crownPrototypeRadius,
           ),
           fade: bandCode / 127,
-          fadeIncoming: false,
+          fadeIncoming: membership.band === "far" && geometryResident,
           variant: membership.band === "far"
             ? impostorSpeciesSlot(prototypeSpecies) * 32
               + Math.floor(((tree.selection * 97.3) % 1) * 32)
@@ -534,7 +749,7 @@ export function* buildPresentationChunk(
           });
         }
       }
-      statistics.treeInstances += 1;
+      if (emittedRecord) statistics.treeInstances += 1;
     }
 
     let rejectedShrubCandidates = 0;

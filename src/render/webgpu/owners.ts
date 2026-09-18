@@ -874,6 +874,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "RENDERED_DENSITY_LAWS",
       "renderedShareAtDistance",
+      "drawnShareAtDistance",
+      "impostorFillStartMeters",
       "estimateRenderedWoodyLoad",
       "WOODY_TRIANGLE_BUDGETS",
     ],
@@ -910,7 +912,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "toroidalBathymetryTexel",
     ],
     notes:
-      "Two toroidal R16F levels. Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
+      "Two toroidal half-float levels: r16float storage where the adapter exposes `texture-formats-tier1`, rgba16float storage on a core-only device such as Firefox (`selectBathymetryStorageFormat`; the sampled `.r` is the same either way). Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
   },
   {
     // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,

@@ -251,6 +251,19 @@ describe("terrain surface plugin (3-2)", () => {
     });
   });
 
+  it("W-1: the ground patchwork is gated on a uniform, not on a define", () => {
+    // A define would double this plugin's permutation count for a branch that
+    // costs one compare in uniform control flow, and every one of those
+    // permutations is compiled and pinned by the GPU suite. The lane is
+    // terrainSurfaceTuning.y, uploaded and unread since 3-6 inlined the near
+    // height-blend depth as a literal.
+    withPlugin((plugin) => {
+      const beforeLights = fragmentCode(plugin)["CUSTOM_FRAGMENT_BEFORE_LIGHTS"] ?? "";
+      expect(beforeLights).toContain("uniforms.terrainSurfaceTuning.y > 0.5");
+      expect(beforeLights).not.toContain("TERRAIN_SURFACE_GROUND_PATCHWORK");
+    });
+  });
+
   it("3-3: the distance gate is gone and the detail is footprint-driven", () => {
     withPlugin((plugin) => {
       const code = fragmentCode(plugin);

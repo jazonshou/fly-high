@@ -47,7 +47,7 @@ canopy handoff, 6-9's GPU scatter.
 
 | Item | Why it is dark |
 |---|---|
-| **6-1 river/lake flow, entirely** | Every term sits inside `if (input.waterInfo.w > 0.0)` ([HydrologySystem.ts:314](src/render/webgpu/water/HydrologySystem.ts), sentinel documented at `:303`). The four writers of that lane are `appendRiver`/`appendLake` — analytic, literal `0`, `:592`/`:644` — and `appendGraphRiver`/`appendGraphLake`, the eroded payload, `:680`/`:759`. On analytic the gate never opens. The lake-chop half is dark for the same reason: fetch reaches the shader solely through `appendGraphLake`. **Verified here.** |
+| **6-1 river/lake flow, entirely** | Every term sits inside `if (input.waterInfo.w > 0.0)` ([HydrologySystem.ts:314](../../src/render/webgpu/water/HydrologySystem.ts), sentinel documented at `:303`). The four writers of that lane are `appendRiver`/`appendLake` — analytic, literal `0`, `:592`/`:644` — and `appendGraphRiver`/`appendGraphLake`, the eroded payload, `:680`/`:759`. On analytic the gate never opens. The lake-chop half is dark for the same reason: fetch reaches the shader solely through `appendGraphLake`. **Verified here.** |
 | **6-2's inland half** | Depends on eroded bank geometry. Its ocean half ships and is visible. |
 | **6-5, 6-6** | Dark by compile-time define and validity sentinel respectively. **Carried from `flight-simulator-d7`**; not re-derived here. |
 
@@ -55,7 +55,7 @@ canopy handoff, 6-9's GPU scatter.
 effectively **moonless** — its clock puts a half-lit moon on the horizon — and Phase 7's
 four new night shots inherit that clock. Gate 7A's moon, scotopic vision and star field were
 all validated against it. Shipped, correct, and not visible. **Closed:** a `night-moonlit`
-shot has since been appended ([scripts/perf-capture.mts:494](scripts/perf-capture.mts) —
+shot has since been appended ([scripts/perf-capture.mts:494](../../scripts/perf-capture.mts) —
 verified here), and the moonless clock is deliberately **kept** as the capture set's
 adversarial case, which is worth more than replacing it: a shot known to be hostile for a
 stated reason beats a shot that is merely dark.
@@ -78,7 +78,7 @@ are the distance between a model and the thing it describes. *(Carried from the 
 terminated for this phase — parked behind its `?world=eroded` flag, not deleted.**
 
 `DEFAULT_WORLD_EVOLUTION` is `"analytic"` (verified here,
-[world.ts:33](src/world/world.ts)). That is §8 of the Phase 6 plan **resolving NO**, an
+[world.ts:33](../../src/world/world.ts)). That is §8 of the Phase 6 plan **resolving NO**, an
 outcome the plan explicitly sanctions: *"the analytic default ships on and eroded stays a
 flag — that outcome is acceptable by Q1's own terms and is not a phase failure."*
 
@@ -222,7 +222,7 @@ one pointed the wrong way.
   278.3 / 278.7 ms**; the create-only values must not be quoted as readiness. Every final
   frame reported **12 terrain tiles**, **1.81%** lower-outer detail, and 0.0 ms untraced
   create time. W-1's 1.5 s target remains scoped to the parked eroded experiment.
-- **One documentation survivor**: [vitest.perf.config.ts:9](vitest.perf.config.ts) said
+- **One documentation survivor**: [vitest.perf.config.ts:9](../../vitest.perf.config.ts) said
   the harness rendered sixteen shots while the list held **24 at the time of writing**.
   Fixed by pointing the docblock at `PERF_CAPTURE_SHOTS` rather than restating a number,
   because a restated count goes stale on the next append — **which it promptly did: more

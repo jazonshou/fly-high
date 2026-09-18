@@ -166,37 +166,97 @@ fn detailRotateByQuaternion(v: vec3f, q: vec4f) -> vec3f {
   return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
 
+// THE per-stem hash (mirrors instanceFormat.ts detailStemHash — the CPU bound
+// kernel decodes the modifier-1 lean through the same scramble). Every
+// decorrelation consumer of the phase lane — wind phase, lean, silhouette
+// wobble, the mid/far switch, reveal order — reads the lane through this.
+// Tree records carry their canopy KEY in the lane (2026-09-13), and the drawn
+// population of a cell is a key prefix, so the raw lane would sway the whole
+// drawn forest in phase and collapse the hashed mid/far switch to a ring.
+fn detailStemHash(lane: f32) -> f32 {
+  return fract(lane * 157.31 + 0.371);
+}
+
 #ifdef DETAIL_BAND_FADES
+// renderedDensity.ts's law, transliterated (the TS is the authority; the
+// floors arrive as uniforms from the profile, never as literals): the share
+// of the near cap that GEOMETRY draws at a camera range, and the share SOME
+// representation draws — geometry floored by the impostor floor.
+fn detailGeometryShare(bandRange: f32) -> f32 {
+  if (bandRange <= uniforms.detailBandRadii.x) { return 1.0; }
+  let ratio = uniforms.detailBandRadii.x / max(bandRange, 1e-3);
+  return max(ratio * ratio, uniforms.detailBandShares.x);
+}
+fn detailDrawnShare(bandRange: f32) -> f32 {
+  if (bandRange <= uniforms.detailBandRadii.x) { return 1.0; }
+  return max(detailGeometryShare(bandRange), uniforms.detailBandShares.y);
+}
+
 // TRUE when the instance does not own this camera range. Near and mid use a
 // hard handoff halfway through the residency overlap: they share the exact
 // same closed crown geometry, so a hard switch preserves the silhouette and
 // avoids both opaque overlap and fragment discard. Far retains only the
 // outer cull fade. Membership slack keeps both sides resident while chunks
 // rebuild asynchronously.
-fn detailBandWindowEmpty(bandCode: f32, instancePosition: vec3f, switchSeed: f32) -> bool {
+//
+// 2026-09-13 — the per-stem LOD threshold. stemKey is the tree's
+// density-normalised canopy rank (instanceState.z): the CPU used to admit a
+// stem only when the CELL's planned share reached its rank, so every stem
+// first appeared when its chunk rebuilt on approach, whole cells at a time.
+// Now the CPU keeps a superset resident and this window decides per stem,
+// per frame, against the live range: geometry (codes 1/4) owns a stem while
+// key <= geometry share; the impostor (code 2) owns it while the geometry
+// share has fallen below its key but the drawn share has not. A stem
+// therefore changes representation at ITS OWN threshold range — and exists
+// as an impostor before geometry ever reaches it — instead of appearing from
+// nothing. geometryCoexists (the impostor record's fade-byte low bit) says
+// whether a geometry record for the same stem is resident in this chunk: when
+// none is, the impostor stands in for it unconditionally, so a stem can never
+// lose both representations to CPU/GPU disagreement about a range.
+fn detailBandWindowEmpty(
+  bandCode: f32,
+  instancePosition: vec3f,
+  stemKey: f32,
+  geometryCoexists: bool,
+) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
   let nearSwitch = uniforms.detailBandRadii.x - 50.0;
-  let farSwitchHash = fract(switchSeed);
+  let farSwitchHash = detailStemHash(stemKey);
   let farSwitch = uniforms.detailBandRadii.y - 100.0 + farSwitchHash * 100.0;
   // Code 4: the MID-band leaf-card shell (wave T). Lives between the near
   // switch and the per-stem far switch; the fragment dissolves the near edge so
   // the near/mid card handoff and the impostor handoff both stay gradual.
-  if (bandCode > 3.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
+  if (bandCode > 3.5) {
+    return bandRange < nearSwitch || bandRange >= farSwitch
+      || stemKey > detailGeometryShare(bandRange);
+  }
   // Code 3: the near-band card shell. Same hard vertex cull as near, but
   // the FRAGMENT dissolves it over the preceding 50 m (detailBandWindow), so
   // the cards never vanish in one frame at the switch radius.
   if (bandCode > 2.5) { return bandRange >= nearSwitch; }
   // Mid and far are not identical representations (skeletal mesh vs species
   // impostor), so a shared radial threshold makes an entire forest ring pop
-  // in one frame. Both records carry the same stable wind-phase seed: use it
+  // in one frame. Both records carry the same stable per-stem lane: hash it
   // to distribute each stem's hard handoff across the existing 160 m
   // residency overlap. Tint is seasonal and must not move an LOD boundary.
   let fCull = clamp(
     (uniforms.detailBandRadii.z - bandRange) / ${DETAIL_FAR_CULL_FADE_METERS.toFixed(1)},
     0.0, 1.0);
   if (bandCode < 0.5) { return bandRange >= nearSwitch; }
-  if (bandCode < 1.5) { return bandRange < nearSwitch || bandRange >= farSwitch; }
-  return bandRange < farSwitch || fCull <= 0.0;
+  if (bandCode < 1.5) {
+    return bandRange < nearSwitch || bandRange >= farSwitch
+      || stemKey > detailGeometryShare(bandRange);
+  }
+  // Code 2: the impostor. Nothing beyond the drawn share or past the cull;
+  // otherwise it yields to a resident geometry record exactly where that
+  // record's own window is open (before the hashed far switch, key within
+  // the geometry share) and draws everywhere else.
+  if (fCull <= 0.0 || stemKey > detailDrawnShare(bandRange)) { return true; }
+  if (geometryCoexists && bandRange < farSwitch
+    && stemKey <= detailGeometryShare(bandRange)) {
+    return true;
+  }
+  return false;
 }
 #endif
 `,
@@ -246,7 +306,16 @@ positionUpdated = vec3f(0.0, 0.0, 0.0)
   + vec3f(0.0, positionUpdated.y * impostorScale + impostorCenter, 0.0)
   + vertexInputs.instancePosition;
 #ifdef DETAIL_BAND_FADES
-if (detailBandWindowEmpty(2.0, detailInstancePositionW, vertexInputs.instanceState.z)) {
+// The fade byte's low bit (the record's fadeIncoming slot, unused by band
+// codes) marks an impostor whose stem also has a geometry record resident.
+let detailImpostorGeometryCoexists =
+  fract(floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0) >= 0.5;
+if (detailBandWindowEmpty(
+  2.0,
+  detailInstancePositionW,
+  vertexInputs.instanceState.z,
+  detailImpostorGeometryCoexists,
+)) {
   positionUpdated = vec3f(0.0, -100000.0, 0.0);
 }
 #endif
@@ -294,7 +363,10 @@ let detailOrientation = normalize(vertexInputs.instanceOrientation);
 let detailTip = clamp(positionUpdated.y, 0.0, 1.0);
 var detailLocal = positionUpdated
   * vec3f(detailHeight * detailRadial, detailHeight, detailHeight * detailRadial);
-let detailWindPhaseRadians = vertexInputs.instanceState.z * 6.2831853;
+// Read the phase lane through the per-stem hash: tree records carry their
+// canopy key here, and the raw key is a prefix, not a phase.
+let detailStemPhase = detailStemHash(vertexInputs.instanceState.z);
+let detailWindPhaseRadians = detailStemPhase * 6.2831853;
 let detailWindResponse = vertexInputs.instanceState.w;
 #ifdef DETAIL_FOLIAGE_ATLAS
 // 2-12: character modifiers from the variant byte's high three bits — real
@@ -304,7 +376,7 @@ let detailWindResponse = vertexInputs.instanceState.w;
 let detailVariantByte = vertexInputs.instanceState.y * 255.0;
 let detailModifierBits = floor(detailVariantByte / 32.0);
 if (detailModifierBits == 1.0) {
-  let detailLeanAngle = 0.10 + fract(vertexInputs.instanceState.z * 7.31) * 0.11;
+  let detailLeanAngle = 0.10 + fract(detailStemPhase * 7.31) * 0.11;
   detailLocal.x += detailLocal.y * detailLeanAngle;
 }
 if (detailModifierBits == 2.0 || detailModifierBits == 4.0) {
@@ -411,6 +483,7 @@ if (detailBandWindowEmpty(
   floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0,
   detailInstancePositionW,
   vertexInputs.instanceState.z,
+  false,
 )) { positionUpdated = vec3f(0.0, -100000.0, 0.0); }
 #endif
 #ifdef DETAIL_FOLIAGE_ATLAS
@@ -468,7 +541,7 @@ vertexOutputs.detailFadeByte = floor(vertexInputs.instanceState.x * 255.0 + 0.5)
 // existing vertex kill — NO fragment discard may implement this on the
 // opaque-crown path, whose early-Z is the perf keystone.
 if (uniforms.detailMeshOffset.w < 1.0
-  && fract(vertexInputs.instanceState.z * 157.31 + 0.371) > uniforms.detailMeshOffset.w) {
+  && detailStemHash(vertexInputs.instanceState.z) > uniforms.detailMeshOffset.w) {
   positionUpdated = vec3f(0.0, -100000.0, 0.0);
 }
 `,
@@ -553,9 +626,9 @@ fn detailImpostorTileUv(tileOrigin: vec2f, quadUv: vec2f) -> vec2f {
   return tileOrigin + clamp(quadUv, vec2f(0.002), vec2f(0.998)) * 0.25;
 }
 
-// One view's sample, season-blended between the leafed and bare layers.
-// The layer pair arrives per INSTANCE now (the species rides the variant
-// byte), so a single material serves every species.
+// One view's sample from the stem's season bucket (leafed or bare). The
+// layer pair arrives per INSTANCE now (the species rides the variant byte),
+// so a single material serves every species.
 fn detailImpostorSample(
   tileOrigin: vec2f,
   quadUv: vec2f,
@@ -563,21 +636,22 @@ fn detailImpostorSample(
   seasonSelector: f32,
 ) -> vec4f {
   let uv = detailImpostorTileUv(tileOrigin, quadUv);
-  let leafed = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.x));
-  let bare = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layers.y));
-  // The bake is straight-alpha with RGB dilation. Convert each bucket to
-  // premultiplied form BEFORE any view blend, otherwise silhouette
-  // disagreement leaves coloured RGB at low alpha and the final unpremultiply
-  // produces bright fringes. Season changes pick one whole distant stem at a
-  // stable per-instance threshold instead of making every deciduous pixel in
-  // the world vanish together when a global alpha mix crosses 0.5.
-  let leafedPremultiplied = vec4f(leafed.rgb * leafed.a, leafed.a);
-  let barePremultiplied = vec4f(bare.rgb * bare.a, bare.a);
-  return select(
-    leafedPremultiplied,
-    barePremultiplied,
-    uniforms.detailImpostorSeason > seasonSelector,
-  );
+  // Season changes pick one whole distant stem at a stable per-instance
+  // threshold instead of making every deciduous pixel in the world vanish
+  // together when a global alpha mix crosses 0.5 — so the choice is a per-stem
+  // LAYER, never a per-pixel blend, and exactly one bucket is ever read.
+  // 2026-09-13: fetch only that bucket. This used to sample both and select
+  // afterwards — six albedo fetches per fragment where three carry the same
+  // output — and the far band is fragment-bound: every alpha-tested sprite
+  // pays its whole shader before the discard, and Metal cannot early-Z a
+  // discarding fragment.
+  let layer = select(layers.x, layers.y, uniforms.detailImpostorSeason > seasonSelector);
+  let bucket = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layer));
+  // The bake is straight-alpha with RGB dilation. Convert to premultiplied
+  // form BEFORE any view blend, otherwise silhouette disagreement leaves
+  // coloured RGB at low alpha and the final unpremultiply produces bright
+  // fringes.
+  return vec4f(bucket.rgb * bucket.a, bucket.a);
 }
 
 // The per-fragment species row, decoded from the interpolated variant byte.
@@ -1209,6 +1283,14 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
   private bandNearEdge = 0;
   private bandMidEdge = 0;
   private bandCullEdge = 0;
+  /**
+   * 2026-09-13: the law's two floors for the per-stem windows (geometry
+   * share floor, drawn/impostor share floor). 1 = no thinning — every
+   * resident record draws — which is the safe placeholder until the profile's
+   * law arrives, because a floor of 0 would thin every mid stem to key 0.
+   */
+  private bandGeometryFloorShare = 1;
+  private bandImpostorFloorShare = 1;
   /** 2-13: (dirX, dirZ, strength01, gust01) from the shared wind field. */
   private windDirectionX = 0.70710678;
   private windDirectionZ = 0.70710678;
@@ -1353,13 +1435,25 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
    * fades (the record's fade lane then carries a band CODE 0/1/2, not a
    * level) and provides the law's radii.
    */
-  setBandFades(nearEdge: number, midEdge: number, cullEdge: number): void {
+  setBandFades(
+    nearEdge: number,
+    midEdge: number,
+    cullEdge: number,
+    geometryFloorShare = 1,
+    impostorFloorShare = 1,
+  ): void {
     const enable = Number.isFinite(nearEdge) && nearEdge > 0;
     if (enable !== this.bandFadesEnabled) this.markAllDefinesAsDirty();
     this.bandFadesEnabled = enable;
     this.bandNearEdge = nearEdge;
     this.bandMidEdge = midEdge;
     this.bandCullEdge = cullEdge;
+    this.bandGeometryFloorShare = Number.isFinite(geometryFloorShare)
+      ? Math.min(1, Math.max(0, geometryFloorShare))
+      : 1;
+    this.bandImpostorFloorShare = Number.isFinite(impostorFloorShare)
+      ? Math.min(1, Math.max(this.bandGeometryFloorShare, impostorFloorShare))
+      : 1;
   }
 
   override prepareDefines(defines: MaterialDefines): void {
@@ -1554,6 +1648,10 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         { name: "detailWorldOrigin", size: 4, type: "vec4" },
         { name: "detailImpostorSeason", size: 1, type: "float" },
         { name: "detailBandRadii", size: 4, type: "vec4" },
+        // 2026-09-13: (geometry share floor, drawn share floor, 0, 0) — the
+        // law's floors for the per-stem band windows. Define-independent
+        // layout, the house rule.
+        { name: "detailBandShares", size: 4, type: "vec4" },
         { name: "detailKeyLight", size: 4, type: "vec4" },
         { name: "detailKeyLightColor", size: 4, type: "vec4" },
         {
@@ -1610,6 +1708,13 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       this.bandNearEdge,
       this.bandMidEdge,
       this.bandCullEdge,
+      0,
+    );
+    uniformBuffer.updateFloat4(
+      "detailBandShares",
+      this.bandGeometryFloorShare,
+      this.bandImpostorFloorShare,
+      0,
       0,
     );
     uniformBuffer.updateFloat4(

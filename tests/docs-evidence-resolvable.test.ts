@@ -33,7 +33,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Mutable-path citations that predate this rule, each with what now carries the claim. */
 const DECLARED_STALE_CITATIONS: readonly (readonly [string, string])[] = [
-  ["RESOLUTION_PLAN.md",
+  ["docs/plans/RESOLUTION_PLAN.md",
     "A-1/A-2/A-3 cite four fixed artifact paths. The frames they described have "
     + "been overwritten by later runs — the files resolve and show clean scenes. "
     + "A-1's claim is now carried by the COMMITTED baseline "

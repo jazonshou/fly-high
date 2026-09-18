@@ -49,12 +49,42 @@ export interface RenderedDensityLaw {
    */
   readonly mid: RenderedDensityBand;
   /**
-   * Impostor band out to the profile's vegetation distance. Share continues
-   * the inverse-square falloff but never below this floor — the horizon
-   * forest must not fade to bare ground.
+   * Impostor band out to the profile's vegetation distance. Beyond the mid
+   * radius every drawn stem is an impostor, at the DRAWN share
+   * (`drawnShareAtDistance`, floored by `impostorFloorShare`) — the horizon
+   * forest must not fade to bare ground. `trianglesPerPlant` here prices
+   * every impostor, including 2026-09-13's mid-band fill.
    */
   readonly far: RenderedDensityBand;
+  /**
+   * Floor of the GEOMETRY share (`renderedShareAtDistance`): the fraction of
+   * the near cap that skeletal mid geometry still draws once the inverse-square
+   * falloff has run out. Applies through the mid band (wave T).
+   */
   readonly farFloorShare: number;
+  /**
+   * Floor of the DRAWN share (`drawnShareAtDistance`) — the fraction of the
+   * near cap that exists in SOME representation at every range beyond the near
+   * radius. Where the geometry share has fallen below this floor, the
+   * difference is drawn as 2D impostors (`2-17`'s octahedral quads) standing
+   * in for the stems the geometry share rejected, from the crossover
+   * `near / sqrt(impostorFloorShare)` outward — inside the mid band as well as
+   * beyond it.
+   *
+   * Recorded 2026-09-13 as a user decision. Before it, the impostor band
+   * inherited `farFloorShare` (0.045 at tier 1: ~3.5 stems/ha), so a forest
+   * beyond ~700 m read as scattered dots on the terrain's flat canopy albedo
+   * and every stem first APPEARED when its cell rebuilt on approach. The user
+   * asked for distant trees to exist and for the approach to stop popping;
+   * this floor is the count half of that request, and the per-stem GPU
+   * threshold (`DetailInstanceMaterialPlugin`'s band windows keyed on the
+   * packed canopy rank) is the continuity half. It is a count row under
+   * §5.3's vegetation trade-off rule and is booked there explicitly.
+   *
+   * Always ≥ `farFloorShare`; `tests/render.webgpu-rendered-density.test.ts`
+   * pins the ordering and the woody triangle integral that prices it.
+   */
+  readonly impostorFloorShare: number;
 }
 
 /**
@@ -96,6 +126,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
     mid: Object.freeze({ outerRadiusMeters: 640, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.045,
+    impostorFloorShare: 0.2,
   }),
   // Tier 1 — the G-target. vegetationDistance 3,000 m, 1.8 ms row.
   Object.freeze({
@@ -104,6 +135,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
     mid: Object.freeze({ outerRadiusMeters: 1_100, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 3_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.045,
+    impostorFloorShare: 0.3,
   }),
   // Tier 2 — vegetationDistance 4,000 m, 1.9 ms row.
   Object.freeze({
@@ -112,6 +144,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
     mid: Object.freeze({ outerRadiusMeters: 1_500, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 4_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.035,
+    impostorFloorShare: 0.35,
   }),
   // Tier 3 — the 3.6 ms row's slack goes to a deeper near and card band,
   // not more stems.
@@ -121,6 +154,7 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
     mid: Object.freeze({ outerRadiusMeters: 2_000, trianglesPerPlant: 340 }),
     far: Object.freeze({ outerRadiusMeters: 6_000, trianglesPerPlant: 8 }),
     farFloorShare: 0.035,
+    impostorFloorShare: 0.4,
   }),
 ]);
 
@@ -135,13 +169,54 @@ export function renderedShareAtDistance(law: RenderedDensityLaw, distanceMeters:
   // shrank to pay for skeletal trees, and a floor that only starts past the
   // mid boundary let the 0.7–1.1 km ring thin to near-bare while cheaper
   // far impostors held MORE density beyond it — an inverted profile.
+  //
+  // 2026-09-13: this is now the GEOMETRY share only. The drawn profile is
+  // `drawnShareAtDistance`, whose floor is the impostor floor; impostors fill
+  // the gap between the two from the crossover outward, so the profile is
+  // monotone in every representation combined — wave T's objection was to
+  // the SAME stems being drawn denser further away, not to a cheaper
+  // representation standing in for the ones geometry rejects.
   return Math.max(falloff, law.farFloorShare);
 }
 
+/**
+ * Share of the near cap that exists in SOME representation at range d — the
+ * geometry share, floored by the impostor floor. Everything between the two
+ * curves is drawn as an impostor; inside the near radius nothing is (the
+ * geometry share is 1 there, so the two coincide).
+ *
+ * The terrain canopy handoff (`densityField.ts`) reads THIS share as its
+ * rendered cover, and its WGSL twin reads the same floor from the profile,
+ * because coverage is conserved across representations, not just across
+ * geometry bands.
+ */
+export function drawnShareAtDistance(law: RenderedDensityLaw, distanceMeters: number): number {
+  const geometry = renderedShareAtDistance(law, distanceMeters);
+  if (distanceMeters <= law.near.outerRadiusMeters) return geometry;
+  return Math.max(geometry, law.impostorFloorShare);
+}
+
+/**
+ * The range at which impostors start to fill: where the inverse-square
+ * geometry share first drops to the impostor floor. Inside it the drawn and
+ * geometry shares coincide; from it outward the difference is 2D.
+ */
+export function impostorFillStartMeters(law: RenderedDensityLaw): number {
+  return law.near.outerRadiusMeters / Math.sqrt(law.impostorFloorShare);
+}
+
 export interface RenderedDensityEstimate {
+  /** Full-geometry stems inside the near radius. */
   readonly nearStems: number;
+  /** Skeletal mid-geometry stems between the near and mid radii. */
   readonly midStems: number;
+  /** Stems drawn beyond the mid radius — all impostors. */
   readonly farStems: number;
+  /**
+   * Every impostor: the far band plus the mid-band FILL (drawn share minus
+   * geometry share between the near and mid radii). `farStems` is a subset.
+   */
+  readonly impostorStems: number;
   readonly totalStems: number;
   readonly totalTriangles: number;
 }
@@ -150,31 +225,52 @@ export interface RenderedDensityEstimate {
  * Closed-forest worst case: the authored field saturates the cap over the
  * whole disc. The real world is patchier; the budget must survive the
  * saturated case because a player can fly over unbroken forest.
+ *
+ * Priced per representation: near and mid geometry at their band allowances,
+ * every impostor — inside the mid band or beyond it — at the far band's
+ * allowance. The 8-triangle impostor price is a fill-rate proxy (the quad is
+ * two triangles): it stands for an alpha-tested sprite of the size the far
+ * band was sized for. A mid-band fill impostor at the crossover is larger on
+ * screen than that, and the price does NOT scale it up; the strict capture,
+ * not this integral, is what decides whether the fill closes frame time.
  */
 export function estimateRenderedWoodyLoad(law: RenderedDensityLaw): RenderedDensityEstimate {
   const HECTARE = 10_000;
-  const integrate = (r0: number, r1: number): number => {
+  const integrate = (
+    r0: number,
+    r1: number,
+    share: (r: number) => number,
+  ): number => {
     const steps = 2_048;
     let stems = 0;
     for (let index = 0; index < steps; index += 1) {
       const r = r0 + ((index + 0.5) / steps) * (r1 - r0);
       stems += 2 * Math.PI * r
-        * ((law.nearStemsPerHectare * renderedShareAtDistance(law, r)) / HECTARE)
+        * ((law.nearStemsPerHectare * share(r)) / HECTARE)
         * ((r1 - r0) / steps);
     }
     return stems;
   };
-  const nearStems = integrate(0, law.near.outerRadiusMeters);
-  const midStems = integrate(law.near.outerRadiusMeters, law.mid.outerRadiusMeters);
-  const farStems = integrate(law.mid.outerRadiusMeters, law.far.outerRadiusMeters);
+  const geometry = (r: number): number => renderedShareAtDistance(law, r);
+  const drawn = (r: number): number => drawnShareAtDistance(law, r);
+  const nearStems = integrate(0, law.near.outerRadiusMeters, geometry);
+  const midStems = integrate(law.near.outerRadiusMeters, law.mid.outerRadiusMeters, geometry);
+  const midFillStems = integrate(
+    law.near.outerRadiusMeters,
+    law.mid.outerRadiusMeters,
+    (r) => drawn(r) - geometry(r),
+  );
+  const farStems = integrate(law.mid.outerRadiusMeters, law.far.outerRadiusMeters, drawn);
+  const impostorStems = midFillStems + farStems;
   return Object.freeze({
     nearStems,
     midStems,
     farStems,
-    totalStems: nearStems + midStems + farStems,
+    impostorStems,
+    totalStems: nearStems + midStems + impostorStems,
     totalTriangles: nearStems * law.near.trianglesPerPlant
       + midStems * law.mid.trianglesPerPlant
-      + farStems * law.far.trianglesPerPlant,
+      + impostorStems * law.far.trianglesPerPlant,
   });
 }
 
@@ -185,14 +281,21 @@ export function estimateRenderedWoodyLoad(law: RenderedDensityLaw): RenderedDens
  * a real assertion.
  */
 export const WOODY_TRIANGLE_BUDGETS: readonly number[] = Object.freeze([
-  650_000,
+  // 2026-09-13: each ceiling moved up by the impostor fill's priced integral
+  // (tier 0 594k → 677k, tier 1 1.74 M → 2.18 M, tier 2 2.41 M → 3.40 M,
+  // tier 3 4.69 M → 7.27 M at the floors the law carries), plus ~5% so the
+  // pin is a ceiling being approached and not a tautology. This is a
+  // count-row raise under §5.3's vegetation trade-off rule, booked there as
+  // the user's 2026-09-13 decision that distant forest must exist; it is not
+  // headroom the frame row offered. The geometry terms are unchanged.
+  710_000,
   // Exact opaque mid trees intentionally exchange alpha-tested fragment
   // overdraw for the near band's closed geometry. Keep each ceiling tight to
   // that representation instead of retaining the obsolete 48-triangle card
   // row; the raw frame gate remains the acceptance authority.
-  1_850_000,
-  2_700_000,
-  5_000_000,
+  2_300_000,
+  3_550_000,
+  7_600_000,
 ]);
 
 // ---------------------------------------------------------------------------

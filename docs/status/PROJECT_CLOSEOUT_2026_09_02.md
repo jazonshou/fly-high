@@ -96,7 +96,7 @@ acceptance evidence. Median ready plus 25% headroom, rounded up to 50 ms, yields
 the final 1,809.0 ms confirmation above passed the same semantic checks.
 
 The committed performance table and baseline directory contain the thirty images from
-the two named promotions documented in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+the two named promotions documented in [`docs/PERFORMANCE.md`](../PERFORMANCE.md).
 That is not a claim that the live capture list has thirty entries: the append-only list
 also contains diagnostic/probe shots whose `comparesToBaseline` value is false.
 `PERF_CAPTURE_SHOTS`, never prose or the PNG count, owns the current list and order. Those
@@ -141,7 +141,7 @@ player-visible defect in an automated frame.
   shipping seed is therefore the recorded state, not a new regression.
 - **Slope-moment terrain material stability — deferred with a bounded design.** The
   current splat classifier loses fine-scale slope statistics as terrain LOD coarsens.
-  [`TERRAIN_LOD_MATERIAL_STABILITY_PROPOSAL.md`](TERRAIN_LOD_MATERIAL_STABILITY_PROPOSAL.md)
+  [`TERRAIN_LOD_MATERIAL_STABILITY_PROPOSAL.md`](../plans/TERRAIN_LOD_MATERIAL_STABILITY_PROPOSAL.md)
   records why threshold retuning, direct full-band analytic sampling, and a naive
   one-byte-per-texel channel are not acceptable. The smallest viable continuation is a
   funded, world-anchored slope-moment pyramid/clipmap; its 33 m diagnostic is a CPU
@@ -162,11 +162,11 @@ retuning at closeout.
 ## Reading order from here
 
 1. This closeout for current scope and acceptance state.
-2. [`README.md`](README.md) and [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for operation,
+2. [`README.md`](../../README.md) and [`docs/PERFORMANCE.md`](../PERFORMANCE.md) for operation,
    commands, CI, and the measured delivery contract.
-3. [`ARCHITECTURE.md`](ARCHITECTURE.md) for normative ownership and decisions.
-4. [`PHASE_6_EXECUTION_PLAN.md`](PHASE_6_EXECUTION_PLAN.md),
+3. [`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md) for normative ownership and decisions.
+4. [`PHASE_6_EXECUTION_PLAN.md`](../plans/PHASE_6_EXECUTION_PLAN.md),
    [`PHASE_6_OUTCOME.md`](PHASE_6_OUTCOME.md),
-   [`PHASE_7_EXECUTION_PLAN.md`](PHASE_7_EXECUTION_PLAN.md), and
+   [`PHASE_7_EXECUTION_PLAN.md`](../plans/PHASE_7_EXECUTION_PLAN.md), and
    [`HANDOVER_2026_09_02.md`](HANDOVER_2026_09_02.md) for historical reasoning,
    measurements, deviations, and provenance.

@@ -471,11 +471,13 @@ struct VegetationCanopyHandoff {
 };
 
 /**
- * The share of the canopy's crown area rendered stems still supply at a range.
+ * The share of the canopy's crown area DRAWN stems still supply at a range.
  *
- * bands = (near radius, far/impostor radius, far floor share, unused).
+ * bands = (near radius, far/impostor radius, drawn-share floor, canopy height).
  * Both factors are LIVE mechanisms: renderedDensity.ts's inverse-square
- * falloff with its floor, and the impostor band's outer dither fade.
+ * falloff with the law's impostor floor (drawnShareAtDistance — since
+ * 2026-09-13 impostors fill the mid band below it, so this is the share SOME
+ * representation draws), and the impostor band's outer dither fade.
  */
 /**
  * The impostor band's outer dither survival alone: 1 while the far band draws,

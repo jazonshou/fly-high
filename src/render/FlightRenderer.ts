@@ -91,8 +91,10 @@ import {
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import {
+  DYNAMIC_ALLOCATIONS,
   estimateGpuMemoryMiB,
   estimateInventoriableGpuMemoryMiB,
+  type DynamicAllocationInputs,
 } from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
@@ -134,14 +136,23 @@ type MutableDetailSunShadowSnapshot = {
   -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
 };
 import {
+  BATHYMETRY_STORAGE_FORMATS,
   BathymetryClipmap,
   bathymetryErodedPageOverlaySeamFromAtlas,
+  bathymetryStorageBytesPerTexel,
+  selectBathymetryStorageFormat,
 } from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
+import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
+import {
+  sampleTerrainClimate,
+  sampleTerrainMoisture,
+  terrainTemperatureFromClimate,
+} from "@/src/world/terrain";
 import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -483,8 +494,19 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly aerialReceivers: AerialPerspectiveRegistry;
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
+  /** `W-8`: the sea's climate provinces, baked per 50 km of flight. */
+  private readonly waterEnvironment: WaterEnvironmentField;
+  /** `W-8`: skip the first frame's bake — see the frame-graph node. */
+  private waterEnvironmentBakeDeferred = true;
   private readonly hydrology: HydrologySystem;
   private readonly bathymetry: BathymetryClipmap;
+  /**
+   * The estimator's allocation inputs with the bathymetry row at the LIVE
+   * storage format: `DYNAMIC_ALLOCATIONS` itself on a tier1 adapter, and the
+   * rgba16float bytes-per-texel on the core-only fallback, so the reported
+   * estimate is the allocated figure on both.
+   */
+  private readonly dynamicAllocations: DynamicAllocationInputs;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly groundCover: GroundCoverSystem;
@@ -631,6 +653,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     aerialReceivers: AerialPerspectiveRegistry,
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
+    waterEnvironment: WaterEnvironmentField,
     hydrology: HydrologySystem,
     bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
@@ -665,8 +688,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.aerialReceivers = aerialReceivers;
     this.skyProbe = skyProbe;
     this.ocean = ocean;
+    this.waterEnvironment = waterEnvironment;
     this.hydrology = hydrology;
     this.bathymetry = bathymetry;
+    this.dynamicAllocations = bathymetry.storageFormat === "r16float"
+      ? DYNAMIC_ALLOCATIONS
+      : Object.freeze({
+        ...DYNAMIC_ALLOCATIONS,
+        bathymetryClipmapBytesPerTexel: bathymetryStorageBytesPerTexel(bathymetry.storageFormat),
+      });
     this.airport = airport;
     this.detail = detail;
     this.groundCover = groundCover;
@@ -727,6 +757,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
+    // Which bathymetry storage path the device took, readable from the DOM so
+    // a browser without tier1 (Firefox) can be told apart from the reference.
+    this.domElement.dataset.bathymetryStorageFormat = bathymetry.storageFormat;
   }
 
   private readonly handleDebugKey = (event: KeyboardEvent): void => {
@@ -755,13 +788,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       captureGpuTiming: options.captureGpuTiming,
       pinnedCapture: options.pinnedRenderScale !== undefined,
     });
-    if (!capability.features.has("texture-formats-tier1")) {
-      throw new Error(
-        "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
-      );
-    }
+    // The bathymetry clipmap's designed r16float storage target needs the
+    // OPTIONAL `texture-formats-tier1` feature. Chrome's adapter exposes it;
+    // Firefox 155's does not, and this used to be a hard refusal ("This GPU
+    // does not expose texture-formats-tier1"). The format is chosen from the
+    // ADAPTER's features here, the feature is requested only when that
+    // choice needs it, and a core-only device gets the rgba16float fallback
+    // (see `BathymetryStorageFormat`).
+    const bathymetryStorageFormat = selectBathymetryStorageFormat(capability.features);
+    const bathymetryStorageFeature =
+      BATHYMETRY_STORAGE_FORMATS[bathymetryStorageFormat].requiredFeature;
     const requiredFeatures: GPUFeatureName[] = [
-      "texture-formats-tier1",
+      ...(bathymetryStorageFeature ? [bathymetryStorageFeature as GPUFeatureName] : []),
       ...(gpuTimingEnabled ? ["timestamp-query" as const] : []),
     ];
     const engine = await awaitRendererStartup(
@@ -920,6 +958,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         evolutionResult.mode === "eroded"
           ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
           : null,
+        { storageFormat: bathymetryStorageFormat },
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
@@ -1031,6 +1070,18 @@ export class FlightRenderer implements FlightRenderingSystem {
           // surfaces. Inland water took its direction from here and its speed
           // from the atmosphere's cloud-layer wind, which can disagree 3x.
           windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
+          // W-8: the climate at an inland water surface, which is what its
+          // chemistry is made of. A pure function of world position and
+          // elevation, so two pages sharing a river derive the same colour.
+          climateSample: (x, z, elevation) => ({
+            temperature: terrainTemperatureFromClimate(
+              options.world,
+              sampleTerrainClimate(options.world, x, z),
+              elevation,
+            ),
+            // Point-sampled: a lake or a station is a point, not a footprint.
+            moisture: sampleTerrainMoisture(options.world, x, z, 0),
+          }),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
@@ -1072,6 +1123,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      const waterEnvironment = new WaterEnvironmentField(scene, options.world);
+      cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
       cleanup.push(() => cloudShadowReceivers.dispose());
       // Register each shared PBR material once. Detail and wildlife can render
@@ -1154,6 +1207,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       hydrology.setCloudShadow(initialCloudShadow);
       ocean.setSunShadows(atmosphere.shadows);
       hydrology.setSunShadows(atmosphere.shadows);
+      // Terrain occlusion of the reflected sky: the ground bounce's albedo,
+      // forwarded again with every atmosphere change (see setAtmosphere).
+      hydrology.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
+      ocean.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
       cloudShadowReceivers.setProjection(initialCloudShadow, 0, 0);
 
       // 7-3: the star field. Built before the post-process chain so its
@@ -1398,6 +1455,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         aerialReceivers,
         skyProbe,
         ocean,
+        waterEnvironment,
         hydrology,
         bathymetry,
         airport,
@@ -1533,6 +1591,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
+    // The snapshot carries no albedo; the occluded lake reflection's ground
+    // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
+    // above, so it rides the same publish.
+    this.hydrology.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
+    this.ocean.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
     this.graph.invalidateHistory("atmosphere changed");
   }
 
@@ -2110,7 +2173,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
-      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, estimateViewport),
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
+        this.profile,
+        estimateViewport,
+        this.dynamicAllocations,
+      ),
       // The subset the inventory walk can actually see, for the re-pin trigger.
       // The unrestricted figure above stays the budgeting number — four owners
       // budget through it — and this one exists ONLY to be compared against a
@@ -2119,6 +2186,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.profile,
         estimateViewport,
         { worldEvolution: this.worldDefinition.worldEvolution },
+        this.dynamicAllocations,
       ),
       // ONE walk, both readings. Calling `inventoryGpuMemoryMiB()` here as
       // well would walk the scene twice and let the total disagree with the
@@ -2183,6 +2251,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => {
         delete this.domElement.dataset.rendererMode;
         delete this.domElement.dataset.renderTechnique;
+        delete this.domElement.dataset.bathymetryStorageFormat;
       },
       () => this.engine.dispose(),
       () => this.scene.dispose(),
@@ -2235,6 +2304,24 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       after: ["world-page-visibility"],
       execute: (frame) => {
         void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
+        // W-8: the sea's environment field. A bake is ~9k terrain-climate
+        // samples and happens only when the aircraft has flown 50 km from the
+        // last window centre, so this is a compare per frame and a few
+        // milliseconds twice an hour of flying.
+        //
+        // The FIRST bake is deferred past the first frame. Cold start's
+        // time-to-ready includes the first GPU-complete frame, so anything
+        // done there lands on a path gated in milliseconds; the field is the
+        // one piece of this wave that does real CPU work, and it does not have
+        // to be done then. The cost of waiting is one frame rendered against
+        // the neutral mid-province fallback, which is exactly the province
+        // where the field's own contrast curve is the identity — i.e. nothing
+        // a frame could show.
+        if (this.waterEnvironmentBakeDeferred) {
+          this.waterEnvironmentBakeDeferred = false;
+        } else if (this.waterEnvironment.update(this.cameraWorld.x, this.cameraWorld.z)) {
+          this.ocean.setWaterEnvironmentField(this.waterEnvironment);
+        }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
@@ -2811,6 +2898,26 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // field re-bakes on observer travel and publishes a new origin with it.
     const horizonField = this.terrain.globalHorizonField;
     this.detail.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // Terrain occlusion of the reflected sky: inland water asks the same
+    // field whether its REFLECTION direction clears the terrain — the one
+    // snapshot, the same frame, the same origin as the detail consumer.
+    this.hydrology.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // W-10: and so does the sea, which had no terrain occlusion at all — a
+    // bay reflecting bright sky where a dark headland stands is the strongest
+    // "pasted on" cue a coast has.
+    this.ocean.setHorizonField(
       horizonField?.layerA ?? null,
       horizonField?.layerB ?? null,
       horizonField?.originX ?? 0,

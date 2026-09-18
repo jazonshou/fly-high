@@ -3,7 +3,7 @@
 fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It keeps memory, generation, simulation, and draw work bounded while the deterministic coordinate space remains effectively endless.
 
 > Current release scope and acceptance state are summarized in
-> [`PROJECT_CLOSEOUT_2026_09_02.md`](../PROJECT_CLOSEOUT_2026_09_02.md). Historical
+> [`PROJECT_CLOSEOUT_2026_09_02.md`](status/PROJECT_CLOSEOUT_2026_09_02.md). Historical
 > promotion measurements below remain evidence; `PERF_CAPTURE_SHOTS` is the authority for
 > the live append-only capture list.
 
@@ -107,6 +107,7 @@ audit is why it now carries all four tiers):
 | Height-atlas slots / channel-atlas slots (`4-0`) | 144 / 100 | 196 / 196 | 256 / 256 | 256 / 256 |
 | Terrain material array edge (3-0) | 256² | 512² | 512² | 512² |
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
+| Ground patchwork (W-1) | off | on | on | on |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
@@ -120,6 +121,7 @@ audit is why it now carries all four tiers):
 | Vegetation radius (= impostor radius = the density law's far band) | 2 km | 3 km | 4 km | 6 km |
 | Card-tree LOD radius (near + mid band) | 700 m | 1,100 m | 1,500 m | 2,000 m |
 | Rendered stems/ha at crown closure (near band) | 55 | 78 | 79 | 79 |
+| Impostor floor share (fraction of the near cap drawn in SOME representation beyond the near radius; the gap under the geometry share is 2D impostors) | 0.20 | 0.30 | 0.35 | 0.40 |
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
@@ -140,7 +142,10 @@ GPU macro, erosion-scratch and channel-graph layouts while the CPU reference was
 still the only producer. Gate W subsequently added the GPU macro and hybrid GPU
 page DAG described below; those old reservations remain budget provenance, not
 a substitute for the live GPU inventory. The two 1024² R16F bathymetry textures
-are a live 4 MiB allocation; the macro height additionally has a read-only GPU
+are a live 4 MiB allocation on an adapter that exposes `texture-formats-tier1`
+(Chrome); on a core-only adapter (Firefox 155) the clipmap stores `rgba16float`
+instead and the same two textures are 16 MiB, and the estimator's bathymetry row
+follows the live format. The macro height additionally has a read-only GPU
 storage upload for bathymetry sampling. A historical production-shape CPU-reference
 run for seed `phase5-production-benchmark` measured 3,174 ms sampling
 uplift/erodibility/repose plus 4,323 ms evolution, 7,497 ms total. That result
@@ -285,6 +290,10 @@ The ocean is the renderer's native WebGPU compute workload:
 - A shared two-level bathymetry clipmap stores `bedElevation − seaLevel` at
   16 m/texel over 16.4 km and 128 m/texel over 131 km. Both 1024² levels are
   R16F and update only newly exposed toroidal strips after their initial fill.
+  R16F is a storage format only behind the optional `texture-formats-tier1`
+  feature, so on an adapter without it (Firefox 155) both levels fall back to
+  `rgba16float` storage — the same half-float in `.r`, four times the memory —
+  rather than refusing to start.
   Analytic mode samples the historical terrain kernel exactly. Eroded mode
   bilinearly samples the canonical cell-centred macro height and blends back to
   analytic across the macro domain's 16-texel rim. In eroded mode, the
@@ -486,6 +495,50 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   knob works — and that shot's GPU p95 by 0.11 ms, which is noise. Left at
   §5.3's Balanced row; `6-11` owns the re-tier and now has a measurement to
   start from rather than an estimate.
+
+### The far field exists (tree LOD continuity, 2026-09-13)
+
+The rendered-density law carries a second floor, **`impostorFloorShare`**
+(the "Impostor floor share" row of the tier table: 0.20 / 0.30 / 0.35 / 0.40).
+It is the share of the near cap drawn in SOME representation beyond the near
+radius; the gap between the geometry share (still floored at 0.045/0.035) and
+this floor is drawn as 2D octahedral impostors, inside the mid band from the
+crossover `near / √floor` (~274 m at Balanced) as well as beyond it, and the
+GPU thins per stem against the live camera range (the canopy key rides the
+phase lane). Before it, the impostor band inherited the geometry floor —
+~3.5 stems/ha beyond ~700 m at Balanced — and a stem's first frame was its
+cell's rebuild on approach. The change is a §5.3 count-row raise, booked there
+as the user's own amendment; the woody triangle ceilings
+(`WOODY_TRIANGLE_BUDGETS` 710k / 2.3 M / 3.55 M / 7.6 M) and the tier-3
+`detailInstanceBudget` row (420 k) moved with the law and are pinned against it.
+
+Measured on the M2 Pro at Balanced, back-to-back on the same host:
+`forest-line-highsun` 101.5 fps (baseline tree) → 101.1 fps (fill at 0.30).
+The first cut measured 67 fps at every floor tried — `detailTreeStemKey`
+clamped the keys of stems the near cap never draws into the lane instead of
+rejecting them, and the near band drew the whole authored field. Impostor
+fragments now fetch only the stem's season bucket (three albedo fetches, not
+six). Vegetation baselines were re-promoted for this change; see the
+re-promotion note under the shot table.
+
+**2026-09-14 follow-up.** The first landing cut impostor records at
+`far + slack` from the build-time observer, which made the far cull edge a
+frontier: chunks straddling it re-baked every 64 m with their whole impostor
+set, the sweep fell behind in flight, and the far band arrived cell by cell as
+a straight-edged patchwork with hitches. Impostor records now have no outer
+membership edge (the shader culls at the live range), the far edge is not a
+frontier term, and impostor-only stems build through a block-charged fast path
+— a far chunk rebuilds when a cell generates, never when the observer moves. Two smaller fixes rode with it: the impostor exclusion no longer
+applies to cells beyond the mid envelope (it was leaving the widest crowns of
+every far cell without any record), and cell residency reaches one cull fade
+past the impostor radius so a new cell publishes outside the live cull and
+dithers in; `detailInstanceBudget` rows 150 k / 260 k / 560 k for tiers 1–3. Each impostor batch keeps a per-cell AABB of its records (from the
+packed positions at publication) and rebuilds its bounding box every update
+from the cells inside the live cull only, hiding the batch when none is — so
+frustum culling sees exactly the records that can draw, the residency lead adds
+no draw on the static shots, and their ceilings stand. The three moving shots
+gain one real draw each (the far band's chunk is now published, with in-cull
+records in frame, at the sample instant) and their ceilings move by one.
 
 ## Visual fix-pack (2026-08-25)
 
@@ -694,6 +747,327 @@ A candidate is review evidence, never an automatic baseline mutation: the
 capture has no write path into `tests/perf/baseline`, promotion is a separate
 deliberate action after review, and performance ceilings cannot be rebaselined
 downward.
+
+### Re-promotion 2026-09-17 — the ground patchwork (W-1)
+
+Twenty baselines were re-promoted from candidate `2026-09-17T23-40-35.447Z`
+after a frame-by-frame review of all 38 shots, for one sanctioned change: the
+ground patchwork (docs/findings/GROUND_TEXTURE_W1.md). Jason's report was that
+open, treeless ground *"is very flat and fake"* from altitude.
+
+**What was wrong.** At 213 m AGL the 2.3–2.9 m material tiles sample near mip 7
+— their own reference colour — because `3-1` high-passes every layer and
+`fitAlbedoToReference` pins its mean, and the micro fade converges every
+patterned channel once the anisotropy-limited footprint passes 1.5–10 m. Both
+are correct and both are load-bearing. Between the tile and the 176 m macro
+wash the only structure was fix-pack `T1`'s meso band, ±13% of tone at 71 m and
+±8% at 23 m, in smooth value noise. Open ground was therefore one colour times
+a smooth ramp.
+
+**What it gained**, land-masked against the same harness on the merged base
+(mean absolute RGB difference, share of pixels past 4/255, 16-px block
+luminance std as a texture proxy):
+
+| region | MAD | moved | block-std |
+| --- | --- | --- | --- |
+| terrain-material-1600ft-down, meadow crop | 5.66 | 50% | 5.52 → 8.09 (+46.5%) |
+| high-10000ft-down, grass slopes | 3.60 | 36% | 3.07 → 4.31 (+40.4%) |
+| viewer pose 213 m / 17°, lush | 5.24 | 52% | 1.87 → 3.76 (+101%) |
+| viewer pose 213 m / 17°, dry | 5.13 | 52% | 1.71 → 3.57 (+109%) |
+
+Rock, snow, sand, water and pavement are untouched by construction: the whole
+block rides the vegetated share. The pure-water shots moved 0.06 and 0.19 of
+255, which is run-to-run noise.
+
+**What it costs.** Two runs per arm on the M2 Pro (NOT the pinned reference
+host), `report.json` deleted between runs; same-arm noise floor 2.6% at worst.
+
+| shot | base fps | branch fps | delta | base p95 ms | branch p95 ms |
+| --- | --- | --- | --- | --- | --- |
+| mountain-close | 117.1 | 107.4 | −8.3% | 10.6 | 11.5 |
+| terrain-material-1600ft-down | 114.0 | 105.2 | −7.7% | 10.8 | 11.6 |
+| winter-noon | 114.2 | 107.3 | −6.0% | 10.5 | 11.2 |
+| approach-500ft | 114.3 | 108.2 | −5.4% | 10.2 | 11.3 |
+| ground-2m-lowsun | 112.1 | 110.3 | −1.6% | 11.2 | 11.0 |
+| canopy-1200ft | 114.7 | 113.2 | −1.4% | 10.6 | 10.5 |
+| high-10000ft-down | 121.3 | 121.5 | +0.2% | 9.7 | 9.6 |
+| cruise-horizon | 121.2 | 121.3 | +0.1% | 9.5 | 9.5 |
+
+Draw calls and triangle counts are identical in both arms on every shot: this
+is ALU on vegetated fragments and moves no batch. The cost lands where close
+vegetated ground fills the frame and nowhere else. Tier 0 skips the block
+entirely through a uniform lane (no new shader permutation): at that tier a
+lush pose is capture-noise-identical to the pre-change build, 0.26 of 255 with
+no pixel past 4/255. To give back roughly a third of the cost at tiers 1–3, set
+`GROUND_VIGOUR_FINE_AMPLITUDE` to 0 in `GroundPatchwork.ts`; that is the whole
+rollback.
+
+**Margin worth knowing before a CI floor failure is diagnosed.**
+`terrain-material-1600ft-down` measures 104.5–105.8 fps on this host against a
+102 floor. This host is not the pinned reference and floors are never re-pinned
+from an unpinned host, so the reference margin is larger — but if that shot
+ever trips its floor on the reference host, this wave is the first place to
+look. Nine shots already failed their fps floors on this host BEFORE this
+change (reference-viewport, motion-banked-turn, forest-line-highsun,
+forest-500ft-sunbehind, hills-dusk-glint, grove-meadow-2m, canopy-backlit-lowsun,
+cdlod-transition, page-thrash-turn); grove-forest-2m joined them after it.
+
+**Ten shots were left alone** because they moved at or under the 0.5-of-255
+noise floor the base arm measures against its own baselines: cruise-horizon,
+winter-noon, night-moonlit, canopy-backlit-lowsun, cruise-sun-30,
+coast-10km-lowsun, water-25ft, ground-2m-lowsun, night and water-3m. Eight more
+shots have no committed baseline and were not promoted.
+
+### Re-promotion 2026-09-17 — water colour (W-7 through W-10)
+
+Sixteen baselines were re-promoted from candidate
+`2026-09-17T23-24-55.654Z` after a frame-by-frame review of all 38 shots, for
+one sanctioned change: the water-colour wave
+(docs/findings/WATER_COLOUR_2026_09_17.md). Jason's report was that the water
+is *"basically always the same — light blue with white foam"* and *"from a
+distance still looks like plastic"*. Four measurements answer it.
+
+**What was wrong.** `5-11` carried ONE optical water type for every water body
+in every world, and its in-scatter was ~25x too bright in green: deep water
+emitted (0.030, 0.140, 0.120) at the reference key where clear ocean emits
+(0.0008, 0.0056, 0.0203). It was lit by a grey scalar, so it kept its teal hue
+under an orange sunset. Its sub-pixel slope variance was a sum of independent
+estimates that overshot Cox & Munk's measurement and hit the roughness clamp —
+a probe capture (roughness written to the beauty buffer) read near, mid and far
+sea all within a few per cent of the ceiling, which is one BRDF for the whole
+sea. And its foam came from a tuned Jacobian threshold rather than from wind.
+
+**What it is now.** A water body is two spectra built from four concentrations
+through published mass-specific spectra; the sea's concentrations come from its
+own depth and a province field baked from the terrain's temperature and
+moisture, lakes' and rivers' from their catchment at mesh build; the body is
+lit by the scene's own coloured irradiance; the far field's variance is
+anchored to Cox & Munk minus what the rendered normal already carries; foam
+coverage is Monahan's wind law at Koepke's reflectance; and the sea has wind
+shelter in the lee of coasts, Langmuir windrows, and the terrain occlusion of
+its reflected sky that inland water has had since `6-11`.
+
+**The frame review.** Fourteen of the thirty committed baselines are within
+0.2/255 of the candidate — every pure-terrain, forest, canopy, runway and apron
+pose — and every shot that moved past 1/255 has sea or a lake in frame. The
+sixteen promoted, by how far they moved (mean absolute difference, /255):
+`water-25ft` 19.5, `water-3m` 15.6, `cdlod-transition` 15.4,
+`motion-banked-turn` 12.3, `page-thrash-turn` 8.1, `forest-line-highsun` 7.6,
+`hills-dusk-glint` 6.4, `coast-10km-lowsun` 4.7, `forest-500ft-sunbehind` 4.2,
+`terrain-material-1600ft-down` 4.2, `cruise-horizon` 3.8, `slant-10km` 2.3,
+`winter-noon` 2.2, `reference-viewport` 1.9, `approach-500ft` 1.7,
+`cruise-sun-30` 1.4. SSIM against the retired frames, where the harness
+computes it: `water-3m` 0.791, `water-25ft` 0.847,
+`terrain-material-1600ft-down` 0.915, `coast-10km-lowsun` 0.947,
+`forest-500ft-sunbehind` 0.961, `cruise-horizon` 0.965, `reference-viewport`
+0.972, `hills-dusk-glint` 0.975, `slant-10km` 0.975, `winter-noon` 0.979,
+`approach-500ft` 0.979, `cruise-sun-30` 0.987, `forest-line-highsun` 0.996.
+The headline A/B is `cdlod-transition`'s near sea magnified: bright teal under
+heavy white speckle before, deep navy-slate with sparse whitecaps and visible
+wind lanes after.
+
+**NOT promoted, and why.** Five shots moved 0.3-0.6/255 with no water in frame
+(`runway-on-approach`, `horizon-shadow-far-annulus`, `grove-forest-2m`,
+`mountain-close`, `canopy-backlit-lowsun`) and three moved under 0.2
+(`night-moonlit`, `veg-seam-1600ft-oblique`, `high-10000ft-down`). The last two
+and `canopy-backlit-lowsun` were checked directly on the BASE arm against these
+same committed frames: 0.157 / 0.009 / 0.207 on base against 0.165 / 0.009 /
+0.326 on the branch, i.e. the same differences with or without this wave. The whole
+diff touches seven source files — four water ones, the environment field, the
+renderer's construction of it, and `AtmosphereSystem` exporting
+`PEAK_SUN_INTENSITY` where the literal 5.2 stood — with zero lines in
+`terrain/`, `detail/` or `clouds/`, so these are capture noise or pre-existing
+staleness rather than water. Their baselines stand.
+
+**Performance: no measurable cost.** Guarded A/B on this host, same tree, arms
+switched back to back, four runs of the branch arm and three of the base arm,
+alternating:
+
+base fps -> branch fps (delta), with frame-interval p95 base -> branch. The
+per-shot table above is the only pipe table this document may carry — its row
+count is pinned against the committed PNGs — so this one is a list:
+
+- `water-3m` 122.1 -> 121.8 (-0.29%), p95 10.37 -> 10.10
+- `water-25ft` 121.4 -> 121.8 (+0.26%), p95 9.70 -> 10.10
+- `coast-10km-lowsun` 121.6 -> 121.6 (-0.01%), p95 9.87 -> 9.90
+- `cruise-horizon` 121.6 -> 121.5 (-0.03%), p95 9.80 -> 9.97
+- `slant-10km` 121.5 -> 121.7 (+0.10%), p95 9.97 -> 10.05
+- `reference-viewport` 88.3 -> 88.4 (+0.08%), p95 13.53 -> 12.90
+- `ground-2m-lowsun` (control) 111.1 -> 111.3 (+0.17%), p95 10.67 -> 10.82
+- `forest-500ft-sunbehind` (control) 102.6 -> 102.6 (+0.00%), p95 11.60 -> 11.22
+
+Same-arm spread over four runs: median 0.82%, max 2.63%. Every shot is inside
+±0.29%, a third of the noise floor. **Method note, and a trap worth naming:** an
+A/B that switches arms by checking source in and out reads the harness's report
+between runs — the mutable one a capture overwrites, not the timestamped copy
+inside `tests/perf/artifacts/rebaseline-candidates/<ISO>/` — and a run that
+DIES leaves the previous arm's report in place — a dropped browser connection did exactly that
+here, and the stale numbers were caught only because eight shots matched the
+previous arm to 0.1 fps, which is not a thing that happens. The arms above were
+re-run with a guard that deletes the report before each arm and fails if none
+is written, and `PerfCaptureReport` now carries `capturedAtIso` so a consumer
+can compare it against its own start time.
+
+**Delivery floors were NOT re-pinned**, and the candidate is stamped NOT
+APPROVABLE: it ran on this unpinned M2 Pro with a second session capturing
+concurrently, and its 21 gate failures are 20 delivery floors plus one
+draw-call ceiling. That ceiling is not water's: `canopy-backlit-lowsun` reads
+249 draws against its 246 ceiling on BOTH arms, as do `forest-line-highsun`
+(258), `cdlod-transition` (209) and `water-25ft` (238) — identical between
+base and branch, so it is stale in the same family as the `ground-2m-lowsun`
+and `canopy-1200ft` staleness the terrain workstream reported.
+
+**Cold start: no regression, and one thing moved off the critical path.** The
+candidate script runs `cold-start` first and short-circuits on failure, and on
+a busy host it did (2534 ms against the 2300 ms reference-host deadline), so
+the candidates were captured directly with `VITE_PERF_REBASELINE=1`. Measured
+three times per arm, alternating, while the machine was still shared: branch
+2326 / 2254 / 2140 ms (mean 2240) against base 2102 / 2062 / 2301 ms (mean
+2155), spreads 186 and 239 ms — overlapping, with the base's own worst run over
+the deadline. Re-measured on a quiet machine with the deferred first bake in
+place: branch 2167 / 2057 / 2026 ms (mean 2083) against base 2073 / 2007 /
+2092 ms (mean 2057). A 26 ms gap inside an 85-141 ms spread, and both arms
+comfortably inside the deadline. Scene-shader readiness, where the larger
+water shaders would show, is 470-523 ms on the branch against 461-532 on base.
+The one piece of real startup CPU this wave added — the environment field's
+first bake — is now deferred past the first frame, because cold start's
+time-to-ready waits for the first GPU-complete frame and the field has no
+business on that path; the cost of waiting is one frame at the neutral
+mid-province fallback, which is the province where its own contrast curve is
+the identity.
+
+**Open items** (also in the findings note): inland chemistry is latent in the
+default analytic world (one ~100 m pond per 28 km window, no rivers at all —
+rivers exist only in eroded worlds); glacial turquoise needs a lake above
+~900 m and this seed's lakes sit at 29-223 m; the pale shallow margin is thin
+because the coast profile drops 3 m within 0-40 m of the waterline, which is
+terrain's to change; and the surf-zone foam reads from directly overhead as a
+lace of repeated cells.
+
+### Re-promotion 2026-09-14 — tree LOD continuity
+
+Nineteen of the thirty committed baselines were re-promoted from candidate
+`2026-09-14T19-12-19.208Z` after a frame-by-frame review, for one sanctioned
+change: the impostor fill (`impostorFloorShare`, "The far field exists" above).
+Every diverged frame shows the same thing — forest that used to end a few
+hundred metres out now continues to the horizon, and nothing else moved:
+`approach-500ft`, `slant-10km`, `reference-viewport`, `winter-noon`, `night`,
+`night-moonlit`, `forest-500ft-sunbehind`, `ground-2m-lowsun`, `canopy-1200ft`,
+`runway-on-approach`, `grove-meadow-2m`, `hills-dusk-glint`, `mountain-close`,
+`forest-line-highsun`, `cliff-60m`, `veg-seam-1600ft-oblique`,
+`veg-seam-near-500ft`, `terrain-material-1600ft-down`, `canopy-backlit-lowsun`.
+Unchanged (SSIM ≥ 0.985 against the committed frame): `high-10000ft-down`,
+`cruise-horizon`, `cruise-sun-30`, `grove-forest-2m`,
+`horizon-shadow-far-annulus`.
+
+**The four water shots were deliberately NOT re-promoted** (`water-3m`,
+`water-25ft`, `coast-10km-lowsun`, `cruise-horizon`): a concurrent far-field
+ocean branch owns those baselines and re-shoots them on merge. Their shoreline
+forest diverges by the same mechanism (0.983 / 0.984 / 0.967 SSIM here), so
+they will read as diverged until that re-shoot lands with both changes in the
+tree.
+
+**Delivery floors were NOT re-pinned**, and the candidate's fps column is not
+evidence of anything: it ran on this unpinned M2 Pro under a peer session's
+load (the last seven shots at ~30 fps). The frame-rate evidence for the change
+is the back-to-back single-shot A/B on the same host recorded above
+(`forest-line-highsun` 101.5 → 101.1, `canopy-1200ft` 109 → 113,
+`veg-seam-1600ft-oblique` 121 → 122, `forest-500ft-sunbehind` 105.2 → 104.9,
+`approach-500ft` 117.4 → 114.3, `veg-seam-near-500ft` 114.6 → 116.3).
+
+### Re-promotion 2026-09-14 — the far sea (wave S)
+
+Eight of the thirty-eight committed baselines were re-promoted from candidate
+`2026-09-14T19-50-42.206Z` after a frame-by-frame review, for one sanctioned
+change: the ocean's far field now carries its variance and not just its mean
+(ARCHITECTURE.md decision log, "The far sea keeps its variance, not just its
+mean"). The candidate was shot with the tree-LOD continuity change already in
+the tree, so the water shots that section left diverged land here once, with
+both changes. Every re-promoted frame has open sea in it, and a luminance
+heatmap against its committed frame shows the change confined to the sea:
+`water-25ft` (0.959 SSIM), `coast-10km-lowsun` (0.961), `water-3m` (0.963),
+`forest-line-highsun` (0.974), `hills-dusk-glint` (0.981),
+`forest-500ft-sunbehind` (0.984), `cruise-horizon` (0.989), `slant-10km`
+(0.993). What the frames show is the same four things: sun glitter that is
+discrete sparkle instead of a smeared streak, a sea that sits darker than the
+horizon sky at grazing angles (the rough-interface Fresnel), drifting wind
+lanes across the mid-range sea, and — where the wind and the light allow —
+whitecap flecks. Not re-promoted: `grove-forest-2m` (0.987, a ground-level
+forest frame with no sea; run-to-run foliage variance) and everything at
+≥ 0.995 (`winter-noon`, `cruise-sun-30`, `approach-500ft`,
+`reference-viewport` and the rest), whose sea, if any, is too far or too
+small in frame for the change to register.
+
+The evidence that the change does what it claims is the +2 s simulation-time
+A/B on `coast-10km-lowsun` and `water-25ft` recorded in the decision log:
+before, the open sea's two-second luminance change was 3/255 at 5 km, 1/255 at
+8 km and zero past 12 km; after, the glitter path changes 12-16/255 at every
+range and the sunless mid-range sea carries drifting roughness lanes. The far
+plate past ~12 km on a calm world is unchanged, which is the physics.
+
+**Delivery floors were NOT re-pinned.** The candidate ran on this unpinned
+M2 Pro; its 32 gate failures were all delivery floors (fps, wall-clock fps,
+frame-interval p95, p999) plus the vegetation draw-call ceiling on
+`canopy-backlit-lowsun` (249 against 246) that predates this change, and none
+was a visual, temporal, renderer-error, settling or lit-region gate. The two
+near-water shots that carry floors (`water-3m`, `water-25ft`) cleared them in
+this run, so the added far-field fragment work — one hash and a `pow` per
+pixel for the sparkle, two value-noise octaves for the lanes, and a bounded
+cell search for the flecks that returns early wherever its result is unused —
+is inside the budget those floors express. A clean reference-adapter run is
+still owed before any floor moves.
+
+### Re-promotion 2026-09-14 — the far field, second pass
+
+The same eight sea baselines were re-promoted from candidate
+`2026-09-14T21-39-26.316Z` after a frame-by-frame review, for one sanctioned
+change: the second pass of wave S (ARCHITECTURE.md decision log, "The far
+field, second pass"). Driving the terrain viewer at the user's reported pose
+found four defects the first pass had shipped — scrolling horizontal lines
+over parked terrain, a drifting grid of dark blobs in the glitter path, valley
+lakes rendered as white sheets, and 37 fps with the sea in the lower half of
+the frame — and this pass fixes them: the whitecap flecks are a one-hash
+twinkle instead of a per-pixel cell search, the far gust's lattice is warped
+and its coarse octave is a vertex varying, the cloud shadow marches the cloud
+slab with a stable per-texel jitter, and inland water composes the far field
+and occludes its reflected sky against the terrain's global horizon field.
+Re-promoted, with the SSIM against the frame promoted this morning:
+`forest-line-highsun` (0.980), `cruise-horizon` (0.984), `water-25ft` (0.988,
+worst tile 0.57 — the sparkle in the glitter path is a different random draw
+at the shot's simulation time), `slant-10km` (0.990), `water-3m` (0.993),
+`coast-10km-lowsun` (0.995), `hills-dusk-glint` (0.995),
+`forest-500ft-sunbehind` (0.997). Only the first three would have failed a
+visual gate against the morning's frames; the other five are re-shot so every
+committed sea frame shows the shipped sea. The cloud-shadow change touches
+every daylight frame with terrain, and every other shot stayed at ≥ 0.987
+SSIM with its worst tile ≥ 0.74 — the shadow map's east-west stripes are gone
+and its shadows are otherwise in the same places — so nothing else moved.
+
+Evidence, measured live in the viewer at 8296, 16955, 662 m MSL at golden
+hour: facing the sun over the sea 37 → 120 fps; 20 m over the sea facing the
+sun 120 fps; parked terrain's maximum row change per half second 26 → 0.04
+of 255; the hill lakes grey-blue under the dusk sky instead of white.
+
+**Delivery floors were NOT re-pinned.** The candidate ran on this unpinned
+M2 Pro under a load average of 12 from concurrent sessions; its 34 gate
+failures were 23 delivery floors (fps, wall-clock fps, frame-interval p95,
+p999, and the strict tier-1 frame-delivery gate on `water-3m`, which read
+70.7 fps in that run) and 11 draw-call ceilings. Re-measured alone on the
+idle host afterwards, `water-3m` and `water-25ft` ran at 121.6 and 121.9 fps
+with a 10.2 ms frame-interval p95 and zero hitches, inside every floor they
+carry, so the far-field rewrite costs nothing the near-water shots can
+measure. The draw-call ceilings were not a water finding: nine shots, water
+and no-water alike, sat exactly one draw above their ceiling in that run
+because a chunk resident one cull fade past the impostor radius carried an
+impostor batch the shader killed to the last vertex and the engine still
+submitted; `397c7b6` (tree-LOD continuity) hides such a batch from its
+per-cell bounds, returning `forest-line-highsun`, `canopy-1200ft`,
+`grove-forest-2m`, `forest-500ft-sunbehind`, `hills-dusk-glint` and
+`page-thrash-turn` to their ceilings, and declares the remaining real +1 on
+the moving `slant-10km` and `cdlod-transition` shots as the
+"tree-lod-residency-lead" raise in `scripts/deliveryFloors.mts`. No visual,
+temporal, renderer-error, settling or lit-region gate failed. A clean
+reference-adapter run is still owed before any floor moves.
 
 ### Where this contract is enforced
 

@@ -25,6 +25,7 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   generateHydrology,
   type HydrologyGenerationOptions,
@@ -65,6 +66,15 @@ import {
   type SunShadowReceiverBinding,
 } from "./SunShadowReceiver";
 import {
+  WATER_CONSTITUENT_WGSL,
+  resolveLakeConstituents,
+  resolveRiverConstituents,
+  type WaterConstituents,
+} from "./WaterConstituents";
+import {
+  applyWaterOpticalType,
+  WATER_REFERENCE_OPTICAL_TYPE,
+  type WaterOpticalType,
   fallbackWaterEnvironmentCube,
   fallbackWaterPlanarTexture,
   configureDepthAwareWaterRendering,
@@ -75,6 +85,12 @@ import {
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
   WATER_DETAIL_NOISE_WGSL,
+  WATER_FAR_FIELD_WGSL,
+  WATER_FAR_GUST_WGSL,
+  WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
+  WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
+  WATER_GLINT_TWINKLE_HZ,
+  WATER_ROUGH_FRESNEL_MAX_VARIANCE,
   WATER_FRESNEL_SCHLICK_WGSL,
   WATER_SHADING_CONSTANTS_WGSL,
   WATER_SHORE_RUNUP_WGSL,
@@ -110,11 +126,81 @@ const HYDROLOGY_REFLECTED_SKY_PARAMETERS: WaterReflectedSkyParameters = {
   overcastHorizonColor: [0.56, 0.61, 0.65],
 };
 
+/**
+ * Terrain occlusion of the reflected sky.
+ *
+ * The inland fragment reflected a SKY-ONLY probe in every direction, so a
+ * lake in a valley at dusk showed bright horizon sky where a grazing
+ * reflection ray actually hits the hillside — a white/blue sheet against
+ * brown hills. The terrain's global horizon field (`6-11`) answers "does this
+ * direction clear the terrain horizon at this world XZ" for ANY unit
+ * direction, so the reflection direction is asked the question the sun is
+ * asked elsewhere. Below the horizon the reflection is the hillside, whose
+ * mean radiance is the atmosphere's own ground bounce.
+ *
+ * The soft band is the detail plugin's value restated (a water consumer must
+ * not import from detail/); the calibration mirrors AtmosphereSystem's
+ * GROUND_BOUNCE_CALIBRATION (`ground = skyHorizon * albedo * 1.15`, R-26).
+ * The test pins both against their sources.
+ */
+export const HYDROLOGY_HORIZON_SOFT_BAND = 0.05;
+export const HYDROLOGY_GROUND_BOUNCE_CALIBRATION = 1.15;
+/** AtmosphereSystem's default surface albedo luminance, until the renderer forwards the live one. */
+export const HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE = 0.18;
+
+/** The vec4 the fragment reads as `hydrologyHorizonField`. */
+export interface HydrologyHorizonPlacement {
+  readonly originX: number;
+  readonly originZ: number;
+  /** 1 / spanMeters, or 0 — the "no field" sentinel the fragment mixes to fully visible. */
+  readonly inverseSpan: number;
+  readonly softBand: number;
+}
+
+/**
+ * Pure: the placement for a horizon field that is (`resident`) or is not
+ * bound. Anything that cannot map world to uv — no layers, a zero or
+ * non-finite span, a non-finite origin — publishes inverseSpan 0, so the
+ * fragment keeps today's behaviour (the parity sentinel) rather than
+ * smearing one edge texel across every lake.
+ */
+export function resolveHydrologyHorizonPlacement(
+  resident: boolean,
+  originX: number,
+  originZ: number,
+  spanMeters: number,
+): HydrologyHorizonPlacement {
+  const valid = resident
+    && Number.isFinite(spanMeters) && spanMeters > 0
+    && Number.isFinite(originX) && Number.isFinite(originZ);
+  return {
+    originX: valid ? originX : 0,
+    originZ: valid ? originZ : 0,
+    inverseSpan: valid ? 1 / spanMeters : 0,
+    softBand: HYDROLOGY_HORIZON_SOFT_BAND,
+  };
+}
+
+/**
+ * Pure: the scalar the fragment multiplies `skyHorizon` by for an occluded
+ * reflection — the surface albedo's luminance under the atmosphere's own
+ * calibration. The multiply by `skyHorizon` stays in the fragment, from the
+ * same uniform the analytic sky reads, so the two cannot drift in scale.
+ */
+export function resolveHydrologyGroundBounce(albedoLuminance: number): number {
+  if (!Number.isFinite(albedoLuminance)) {
+    throw new RangeError("Hydrology ground-bounce albedo must be finite");
+  }
+  return Math.min(1, Math.max(0, albedoLuminance)) * HYDROLOGY_GROUND_BOUNCE_CALIBRATION;
+}
+
 export const HYDROLOGY_WATER_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
 attribute uv: vec2f;
 attribute flowData: vec4f;
 attribute waterData: vec4f;
+// W-8: this lake's or this station's chemistry, baked at mesh build.
+attribute waterChemistry: vec4f;
 uniform world: mat4x4f;
 uniform viewProjection: mat4x4f;
 uniform hydrologyWorldOrigin: vec2f;
@@ -134,6 +220,7 @@ varying whitewater: f32;
 // vec3f interpolant already occupies a full location.
 varying waterInfo: vec4f;
 varying waterUv: vec2f;
+varying waterChemistryVarying: vec4f;
 varying planarReflectionClip: vec4f;
 ${SUN_SHADOW_VERTEX_DECLARATIONS_WGSL}
 
@@ -175,6 +262,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.whitewater = vertexInputs.flowData.w;
   vertexOutputs.waterInfo = vertexInputs.waterData;
   vertexOutputs.waterUv = vertexInputs.uv;
+  vertexOutputs.waterChemistryVarying = vertexInputs.waterChemistry;
   vertexOutputs.planarReflectionClip = uniforms.planarReflectionViewProjection * displacedWorld;
 ${sunShadowVertexAssignmentWgsl("displacedWorld")}
 }
@@ -189,6 +277,7 @@ varying flowSpeed: f32;
 varying whitewater: f32;
 varying waterInfo: vec4f;
 varying waterUv: vec2f;
+varying waterChemistryVarying: vec4f;
 varying planarReflectionClip: vec4f;
 uniform cameraPosition: vec3f;
 uniform sunDirection: vec3f;
@@ -196,7 +285,6 @@ uniform sunColor: vec3f;
 uniform sunAngularRadius: f32;
 uniform skyZenith: vec3f;
 uniform skyHorizon: vec3f;
-uniform sunIlluminanceNormalized: f32;
 uniform skylightIlluminanceNormalized: f32;
 uniform cloudCoverage: f32;
 uniform windDirection: vec2f;
@@ -204,8 +292,23 @@ uniform windSpeed: f32;
 uniform time: f32;
 uniform regionOpacity: f32;
 uniform environmentValid: f32;
+// W-7: the optical water type — see the ocean fragment's declaration. Inland
+// water is where the type varies most (a peat tarn, a glacial lake and a
+// silty river are three different spectra), which W-8 supplies per vertex.
+uniform waterAbsorption: vec3f;
+uniform waterBackscatter: vec3f;
 var environmentCubeSampler: sampler; var environmentCube: texture_cube<f32>;
 ${WATER_BATHYMETRY_DECLARATIONS_WGSL}
+// Terrain occlusion of the reflected sky: the terrain's global horizon field
+// ('6-11'), world-anchored — two textures and one vec4 (originX, originZ,
+// inverseSpan, softBand). inverseSpan 0 is the "no field yet" sentinel: the
+// samplers stay bound to a fallback texel and the lookup mixes to fully
+// visible. 'groundBounceAlbedo' is the surface albedo's luminance under the
+// atmosphere's ground-bounce calibration (see setGroundBounceAlbedo).
+uniform hydrologyHorizonField: vec4f;
+uniform groundBounceAlbedo: f32;
+var hydrologyHorizonASampler: sampler; var hydrologyHorizonA: texture_2d<f32>;
+var hydrologyHorizonBSampler: sampler; var hydrologyHorizonB: texture_2d<f32>;
 
 ${CLOUD_SHADOW_RECEIVER_WGSL}
 ${PLANAR_REFLECTION_FRAGMENT_WGSL}
@@ -221,7 +324,14 @@ ${WATER_FRESNEL_SCHLICK_WGSL}
 // The ocean fragment composes the same blocks in the same order.
 ${WATER_DEPTH_OPTICS_WGSL}
 
+// W-8: the constituent model, composed after the depth include for the
+// WaterOptics struct it returns. The same text the ocean composes.
+${WATER_CONSTITUENT_WGSL}
+
 ${WATER_DETAIL_NOISE_WGSL}
+
+// wave S: the far gust octaves, shared with the ocean.
+${WATER_FAR_GUST_WGSL}
 
 ${WATER_CAPILLARY_DETAIL_WGSL}
 
@@ -238,11 +348,49 @@ ${WATER_CHANNEL_FLOW_WGSL}
 
 ${WATER_SUN_SPECULAR_WGSL}
 
+// wave S: sparkle, twinkle and the rough-interface Fresnel, shared with the ocean.
+${WATER_FAR_FIELD_WGSL}
+
 ${WATER_FOAM_WGSL}
 
 ${WATER_ENVIRONMENT_MIP_WGSL}
 
 ${waterReflectedSkyWgsl(HYDROLOGY_REFLECTED_SKY_PARAMETERS)}
+
+// The shared horizon-field operator, composed verbatim (the terrain and the
+// detail plugin compose the same text; the horizon-field test pins that no
+// consumer restates its azimuth arithmetic).
+${HORIZON_FIELD_LOOKUP_WGSL}
+
+// The terminator jitter's world-locked spatial hash — the construction the
+// terrain and detail consumers use, so the field's iso-contours land as
+// unstructured penumbra rather than stripes. Spatial, not temporal: a
+// per-frame jitter would crawl across a still lake.
+fn hydrologyHorizonJitter(point: vec2f) -> f32 {
+  var value = fract(vec3f(point.x, point.y, point.x) * 0.1031);
+  value += dot(value, value.yzx + vec3f(33.33));
+  return fract((value.x + value.y) * value.z);
+}
+
+// Sky visibility along 'direction' from absolute world 'worldXZ': 1.0 above
+// the terrain horizon, 0.0 below it, smoothstepped across the band. Uniform
+// control flow and no derivatives — the field's absence is a uniform
+// sentinel folded in by a select, never a branch around the sample.
+fn hydrologyTerrainVisibility(worldXZ: vec2f, direction: vec3f) -> f32 {
+  let field = uniforms.hydrologyHorizonField;
+  let uv = (worldXZ - field.xy) * field.z;
+  let packedA = textureSampleLevel(hydrologyHorizonA, hydrologyHorizonASampler, uv, 0.0);
+  let packedB = textureSampleLevel(hydrologyHorizonB, hydrologyHorizonBSampler, uv, 0.0);
+  let visibility = horizonFieldShadow(
+    packedA,
+    packedB,
+    direction,
+    field.w,
+    hydrologyHorizonJitter(worldXZ * 0.37),
+  );
+  let resident = select(0.0, 1.0, field.z > 0.0);
+  return mix(1.0, visibility, resident);
+}
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -304,6 +452,36 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let channelFootprint = max(
     channelFootprintMinor,
     channelFootprintMajor * ${(1 / 16).toFixed(6)},
+  );
+  // wave S: inland water gets the ocean's far field. A lake seen from
+  // altitude was one flat mirror of the sky — a per-wind constant
+  // roughness, Schlick on the resolved normal (≈65% of the sky at grazing
+  // incidence), a smooth sun lobe — which is why it read as a bright white
+  // sheet in a dusk valley. The far gust lanes modulate the unresolved
+  // variance, the rough-interface Fresnel reads that variance, and the sun
+  // lobe sparkles at the glint count, all faded in on the minor footprint so
+  // the near field is unchanged. The coarse octave is evaluated per pixel
+  // here (the ocean carries it as a varying); a lake is a small share of
+  // the frame.
+  let farGustWeight = smoothstep(
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_LOW.toFixed(3)},
+    ${WATER_GLINT_SPARKLE_FOOTPRINT_HIGH.toFixed(3)},
+    channelFootprint,
+  );
+  let farWind = uniforms.windDirection * uniforms.windSpeed;
+  let farGust = mix(
+    1.0,
+    waterFarGustGain(
+      waterFarGustCoarse(input.absoluteWorldXZ, farWind, uniforms.time),
+      input.absoluteWorldXZ,
+      farWind,
+      uniforms.time,
+      channelFootprintMajor,
+    ),
+    farGustWeight,
+  );
+  let farFootprintArea = abs(
+    channelDerivativeX.x * channelDerivativeY.y - channelDerivativeX.y * channelDerivativeY.x,
   );
   // 6-1: the sentinel. waterInfo.w is exactly 0 on every analytic-mode
   // vertex, so an analytic world executes this compare and nothing inside.
@@ -428,12 +606,18 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let baseAlpha = baseRoughness * baseRoughness;
   let roughness = clamp(
-    sqrt(sqrt(baseAlpha * baseAlpha + min(unresolvedSlope, 0.25))),
+    sqrt(sqrt(baseAlpha * baseAlpha + min(unresolvedSlope * farGust, 0.25))),
     0.075,
     0.45,
   );
   let f0 = vec3f(0.0204);
-  let fresnel = waterInterfaceFresnel(normal, view, cameraBelow);
+  // wave S: the mean Fresnel of a ROUGH interface — see WATER_FAR_FIELD_WGSL (4).
+  let fresnel = waterRoughInterfaceFresnel(
+    normal,
+    view,
+    cameraBelow,
+    sqrt(min(unresolvedSlope * farGust, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+  );
 
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -455,34 +639,80 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     reflectionDirection,
     environmentRoughnessToMip(roughness),
   ).rgb;
-  let skyReflection = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  let unoccludedSky = mix(analyticSky, environmentSky, uniforms.environmentValid);
+  // Terrain occlusion of the reflected sky: where the reflection direction
+  // dips under the terrain horizon the ray hits the hillside, not the sky,
+  // and the hillside's mean radiance is the atmosphere's own ground bounce
+  // (skyHorizon * albedo * 1.15). It occludes the SKY term only, BEFORE the
+  // planar capture blends real terrain over it where that capture is valid;
+  // the sun lobe, the body colour, the foam and the Fresnel are not sky.
+  let terrainVisibility = hydrologyTerrainVisibility(input.absoluteWorldXZ, reflectionDirection);
+  // W-10 corrected the occluded value to the sky this fragment would have
+  // seen, darkened by the ground's albedo, rather than the palette's raw
+  // skyHorizon. The two are the same at midday and diverge badly at night,
+  // where the palette row is far brighter than the probe: the ocean's own
+  // version of this line lit a moonlit bay white before it was corrected, and
+  // an inland lake under a ridge had the same defect waiting.
+  let skyReflection = mix(
+    unoccludedSky * uniforms.groundBounceAlbedo,
+    unoccludedSky,
+    terrainVisibility,
+  );
   let reflection = samplePlanarSceneReflection(
     input.planarReflectionClip,
     normal,
     input.worldPosition.y,
     skyReflection,
   );
-  let diffuseIlluminanceNormalized = max(
-    uniforms.sunIlluminanceNormalized,
-    uniforms.skylightIlluminanceNormalized,
-  );
+  // W-8: this water body's own chemistry, resolved at mesh build from its
+  // catchment (a cold high lake carries rock flour, a wet forest one carries
+  // peat, a lowland river carries its own bed) and interpolated here. An
+  // analytic world with no chemistry baked carries zeros, which is pure water
+  // plus the material's fallback type -- the pre-W-8 look.
+  let chemistry = input.waterChemistryVarying;
+  var optics = waterOpticsFromUniforms();
+  if (dot(chemistry, vec4f(1.0)) > 0.0) {
+    optics = waterOpticsFromConstituents(
+      WaterConstituents(chemistry.x, chemistry.y, chemistry.z, chemistry.w),
+    );
+  }
+  let downwelling = waterDownwelling(light.y, directSunVisibility);
   let transmitted = waterVolumeRadiance(
     input.absoluteWorldXZ,
     input.worldPosition.y,
     depth,
-    diffuseIlluminanceNormalized,
+    optics,
+    // Inland beds are terrigenous by definition: a lake or a river bed is the
+    // catchment's own silt, so it takes the wet end of the range.
+    0.75,
+    downwelling,
+    light,
     normal,
     view,
     cameraBelow,
-    directSunVisibility,
     caustic,
     causticBeam,
   );
   var color = transmitted * (vec3f(1.0) - fresnel) + reflection * fresnel;
   // 2-9: the shared solid-angle sun lobe — the sun's angular radius replaced
   // the old gain-of-four multiply.
+  // wave S: the lobe is the MEAN of a Poisson count of sun-aiming facets;
+  // past the range where glints stop resolving, a mean-one twinkle at the
+  // count's own variance turns the smooth sheet back into glitter.
+  let glintHalfVector = normalize(view + light);
+  let glintExpectedCount = waterGlintExpectedCount(
+    max(dot(glintNormal, glintHalfVector), 0.0),
+    roughness * roughness,
+    uniforms.sunAngularRadius,
+    farFootprintArea,
+  );
+  let sparkle = mix(
+    1.0,
+    waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
+    farGustWeight,
+  );
   color += sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, f0)
-    * uniforms.sunColor * directSunVisibility;
+    * uniforms.sunColor * directSunVisibility * sparkle;
 
   let flowCrest = pow(max(
     sin(dot(input.absoluteWorldXZ, input.flowDirection) * 0.13
@@ -493,7 +723,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     dot(input.absoluteWorldXZ, vec2f(-input.flowDirection.y, input.flowDirection.x)) * 0.19
       + uniforms.time * 0.8,
   );
-  var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3;
+  // W-9: the bank ring is now GATED BY ENERGY. It used to be unconditional,
+  // so every lake and every reach wore a white collar in dead calm — one of
+  // the two things Jason meant by "always white foam". Lapping needs
+  // something to lap: on a lake the fetch-limited chop the wind can raise
+  // (waterLakeChop's own height, via the sqrt-encoded fetch payload), on a
+  // river the boil of its own current. Both go to zero smoothly, so a
+  // sheltered tarn at dawn has a clean edge and a windy shore still breaks.
+  // The lane's own payload, decoded exactly as waterChannelFlow decodes it
+  // (sentinel base removed, clamped): the sqrt-encoded fetch on a lake ring,
+  // the normalised grade on a river lane. An analytic world carries 0, which
+  // reads as no fetch, so its lakes fall back to the flow-speed term.
+  let channelField = clamp(input.waterInfo.w - ${1}.0, 0.0, 1.0);
+  let lakeChop = waterLakeChop(uniforms.windSpeed, channelField);
+  let bankEnergy = clamp(max(
+    smoothstep(0.02, 0.14, lakeChop.significantHeightMeters) * lakeFactor,
+    smoothstep(0.35, 1.4, input.flowSpeed),
+  ), 0.0, 1.0);
+  var shoreFoam = smoothstep(0.76, 1.0, input.waterInfo.z) * shorePattern * 0.3 * bankEnergy;
   // 6-2: on W-5's banks the shore lapping generalises into a real run-up — a
   // swash front that beats at its own driver's period (the boil train on a
   // lane, the fetch-limited chop on a lake shore) and streaks along the bank
@@ -518,23 +765,23 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.flowDirection * (uniforms.time * (0.5 + input.flowSpeed * 0.6)),
   );
   let foam = clamp(shoreFoam + rapidFoam, 0.0, 1.0) * mix(0.4, 1.0, foamMask);
+  // W-9: inland foam is breaking foam — a rapid's boil or a bank's swash —
+  // so it carries the thick-fresh-foam reflectance rather than the open sea's
+  // effective whitecap value, and it is lit by the shared downwelling
+  // irradiance like every other Lambertian surface on the water.
   let foamColor = litFoamColor(
-    vec3f(0.78, 0.84, 0.82),
+    vec3f(${(0.5 * 0.96).toFixed(3)}, ${(0.5).toFixed(3)}, ${(0.5 * 0.98).toFixed(3)}),
     normal,
     light,
-    uniforms.sunColor,
-    uniforms.skyZenith,
-    uniforms.skyHorizon,
-    uniforms.skylightIlluminanceNormalized,
-    directSunVisibility,
+    downwelling,
   );
   color = mix(color, foamColor, foam);
   if (cameraBelow) {
     color = applyUnderwaterBeerLambert(
       color,
       distance(uniforms.cameraPosition, input.worldPosition),
-      directSunVisibility,
-      diffuseIlluminanceNormalized,
+      optics,
+      downwelling,
     );
   }
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
@@ -570,6 +817,39 @@ interface MeshBuildResult {
  * exact production arrays without a Babylon device; nothing outside those
  * harnesses may construct meshes from it.
  */
+/**
+ * `W-8` — the climate at an inland water surface, which is what decides its
+ * chemistry. Supplied by the renderer (which owns the world definition) so the
+ * hydrology system does not have to re-derive a seed hash that the airport
+ * catalogue may have replaced.
+ *
+ * It is a PURE FUNCTION OF WORLD POSITION: two pages that share a river derive
+ * the same numbers for the same station, which is what makes the chemistry
+ * seam-free without any cross-page state.
+ */
+export interface HydrologyClimateSample {
+  /** Terrain temperature field, 0..1 (one unit is 15.9 K). */
+  readonly temperature: number;
+  /** Terrain moisture field, 0..1. */
+  readonly moisture: number;
+}
+
+export type HydrologyClimateSampler = (
+  worldX: number,
+  worldZ: number,
+  elevationMeters: number,
+) => HydrologyClimateSample;
+
+/**
+ * The neutral climate a system built without a sampler uses: the temperate,
+ * moderately wet middle of this world model, which is what every test fixture
+ * and every analytic harness sees.
+ */
+export const HYDROLOGY_NEUTRAL_CLIMATE: HydrologyClimateSample = Object.freeze({
+  temperature: 0.6,
+  moisture: 0.5,
+});
+
 export interface HydrologyMeshArrays {
   readonly positions: number[];
   readonly normals: number[];
@@ -577,6 +857,8 @@ export interface HydrologyMeshArrays {
   readonly indices: number[];
   readonly flowData: number[];
   readonly waterData: number[];
+  /** `W-8`: (chlorophyll, cdom440, sediment, mineral) for this vertex. */
+  readonly waterChemistry: number[];
 }
 
 type MeshArrays = HydrologyMeshArrays;
@@ -589,6 +871,7 @@ function emptyMeshArrays(): MeshArrays {
     indices: [],
     flowData: [],
     waterData: [],
+    waterChemistry: [],
   };
 }
 
@@ -601,7 +884,65 @@ function normalizedDirection(dx: number, dz: number): readonly [number, number] 
   return length > 1e-6 ? [dx / length, dz / length] : [0, 1];
 }
 
-function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
+/** Push one station's chemistry once per lane. */
+function pushChemistry(arrays: MeshArrays, chemistry: WaterConstituents, lanes: number): void {
+  for (let lane = 0; lane < lanes; lane += 1) {
+    arrays.waterChemistry.push(
+      chemistry.chlorophyll,
+      chemistry.cdom440,
+      chemistry.sediment,
+      chemistry.mineral,
+    );
+  }
+}
+
+/**
+ * `W-8`: a river station's chemistry, and the ONE place the mouth taper lives.
+ * A reach that reaches the sea hands its load over to the coastal water the
+ * ocean shader is already making there, so the waterline is a gradient rather
+ * than a step (the ocean's own surf-zone sediment meets it from the other
+ * side).
+ */
+function riverStationChemistry(
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+  x: number,
+  y: number,
+  z: number,
+  widthMeters: number,
+  flowSpeedMetersPerSecond: number,
+  grade: number,
+): WaterConstituents {
+  const elevationAboveSeaMeters = Math.max(y - seaLevel, 0);
+  const sample = climate(x, z, y);
+  const constituents = resolveRiverConstituents(
+    {
+      elevationAboveSeaMeters,
+      temperature: sample.temperature,
+      moisture: sample.moisture,
+    },
+    widthMeters,
+    flowSpeedMetersPerSecond,
+    grade,
+  );
+  // Over the last 12 m of fall the load settles out toward what the sea it is
+  // entering carries anyway.
+  const mouth = Math.min(Math.max(elevationAboveSeaMeters / 12, 0), 1);
+  const taper = mouth * mouth * (3 - 2 * mouth);
+  return {
+    chlorophyll: constituents.chlorophyll,
+    cdom440: constituents.cdom440 * (0.35 + 0.65 * taper),
+    sediment: constituents.sediment * (0.3 + 0.7 * taper),
+    mineral: constituents.mineral * taper,
+  };
+}
+
+function appendRiver(
+  arrays: MeshArrays,
+  river: HydrologyRiver,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
   if (river.points.length < 2) return;
   const baseVertex = arrays.positions.length / 3;
   let distanceAlong = 0;
@@ -639,6 +980,16 @@ function appendRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       arrays.flowData.push(flow[0], flow[1], point.flowSpeedMetersPerSecond, whitewater);
       arrays.waterData.push(0, 0, shore, 0);
     }
+    pushChemistry(arrays, riverStationChemistry(
+      climate,
+      seaLevel,
+      point.x,
+      point.y,
+      point.z,
+      point.widthMeters,
+      point.flowSpeedMetersPerSecond,
+      grade,
+    ), 5);
   }
   for (let index = 0; index < river.points.length - 1; index += 1) {
     const row = baseVertex + index * 5;
@@ -691,10 +1042,35 @@ const LAKE_CONTAINMENT_MAX_NODES_PER_AXIS = 57;
 const LAKE_CONTAINMENT_STEP_FLOOR_METERS = 4;
 const LAKE_CONTAINMENT_CROSSING_CLAMP = 1e-3;
 
+/**
+ * `W-8`: a lake's chemistry, resolved once at its centre. One lake is one
+ * water body — a tarn does not change colour across itself — so this is a
+ * per-lake constant, which also means a lake split across a page boundary
+ * derives the same value on both sides.
+ */
+function lakeChemistry(
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+  lake: HydrologyLake,
+): WaterConstituents {
+  const sample = climate(lake.centerX, lake.centerZ, lake.surfaceHeight);
+  return resolveLakeConstituents(
+    {
+      elevationAboveSeaMeters: Math.max(lake.surfaceHeight - seaLevel, 0),
+      temperature: sample.temperature,
+      moisture: sample.moisture,
+    },
+    lake.maximumDepthMeters,
+    lake.areaSquareMeters,
+  );
+}
+
 export function appendContainedLake(
   arrays: MeshArrays,
   lake: HydrologyLake,
   ground: (x: number, z: number) => number,
+  climate: HydrologyClimateSampler = () => HYDROLOGY_NEUTRAL_CLIMATE,
+  seaLevel = 0,
 ): void {
   if (lake.boundary.length < 3) return;
   let minX = Infinity;
@@ -744,6 +1120,7 @@ export function appendContainedLake(
         : lake.surfaceHeight - ground(x, z);
     }
   }
+  const chemistry = lakeChemistry(climate, seaLevel, lake);
   const vertexIndex = new Map<number, number>();
   const invRadius = 1 / Math.max(lake.radiusMeters, 1e-6);
   const invMaxDepth = 1 / Math.max(lake.maximumDepthMeters, 1e-6);
@@ -765,6 +1142,7 @@ export function appendContainedLake(
       1 - clamp(depth * invMaxDepth, 0, 1),
       0,
     );
+    pushChemistry(arrays, chemistry, 1);
     vertexIndex.set(key, index);
     return index;
   };
@@ -928,7 +1306,12 @@ export function appendContainedLake(
  * coordinate, waterData.z = |lane| shore proximity. Analytic worlds keep
  * `appendRiver` byte-identical (Gate W non-regression).
  */
-function appendGraphRiver(arrays: MeshArrays, river: HydrologyRiver): void {
+function appendGraphRiver(
+  arrays: MeshArrays,
+  river: HydrologyRiver,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
   const stations = resampleHydrologyRiverStations(river.points);
   if (stations.length < 2) return;
   const baseVertex = arrays.positions.length / 3;
@@ -957,6 +1340,16 @@ function appendGraphRiver(arrays: MeshArrays, river: HydrologyRiver): void {
       );
       arrays.waterData.push(0, 0, shore, channelPayload);
     }
+    pushChemistry(arrays, riverStationChemistry(
+      climate,
+      seaLevel,
+      station.x,
+      station.y,
+      station.z,
+      station.widthMeters,
+      station.flowSpeedMetersPerSecond,
+      station.grade,
+    ), 5);
   }
   for (let index = 0; index < stations.length - 1; index += 1) {
     const row = baseVertex + index * 5;
@@ -1007,7 +1400,13 @@ const GRAPH_LAKE_INTERIOR_EDGE_GRADING = 1;
  * re-derives wave gradients per fragment (fix-pack W3); these vertices are
  * for attribute interpolation and displacement, not normals.
  */
-function appendGraphLake(arrays: MeshArrays, lake: HydrologyLake): void {
+function appendGraphLake(
+  arrays: MeshArrays,
+  lake: HydrologyLake,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): void {
+  const chemistry = lakeChemistry(climate, seaLevel, lake);
   const ringCount = lake.boundary.length;
   if (ringCount < 3) return;
   const ringXZ = new Array<number>(ringCount * 2);
@@ -1093,6 +1492,7 @@ function appendGraphLake(arrays: MeshArrays, lake: HydrologyLake): void {
       shore,
       channelPayload,
     );
+    pushChemistry(arrays, chemistry, 1);
   }
   // The ring is CCW; emitting (a, c, b) matches the legacy fan's winding.
   for (let index = 0; index < triangles.length; index += 3) {
@@ -1116,9 +1516,13 @@ export function buildGraphHydrologyMeshArrays(
   lakes: readonly HydrologyLake[],
 ): { readonly rivers: HydrologyMeshArrays; readonly lakes: HydrologyMeshArrays } {
   const riverArrays = emptyMeshArrays();
-  for (const river of rivers) appendGraphRiver(riverArrays, river);
+  for (const river of rivers) {
+    appendGraphRiver(riverArrays, river, () => HYDROLOGY_NEUTRAL_CLIMATE, 0);
+  }
   const lakeArrays = emptyMeshArrays();
-  for (const lake of lakes) appendGraphLake(lakeArrays, lake);
+  for (const lake of lakes) {
+    appendGraphLake(lakeArrays, lake, () => HYDROLOGY_NEUTRAL_CLIMATE, 0);
+  }
   return { rivers: riverArrays, lakes: lakeArrays };
 }
 
@@ -1141,6 +1545,7 @@ function buildMesh(
   vertexData.applyToMesh(mesh, false);
   mesh.setVerticesData("flowData", arrays.flowData, false, 4);
   mesh.setVerticesData("waterData", arrays.waterData, false, 4);
+  mesh.setVerticesData("waterChemistry", arrays.waterChemistry, false, 4);
   mesh.isPickable = false;
   mesh.receiveShadows = true;
   mesh.renderingGroupId = WATER_RENDERING_GROUP_ID;
@@ -1177,6 +1582,12 @@ export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly windSpeedMetersPerSecond?: number;
   /** Enables off-main-thread generation from the deterministic built-in world. */
   readonly workerWorldSeed?: WorldSeed;
+  /**
+   * `W-8`: the climate at an inland water surface, for its chemistry. Absent
+   * (every test fixture, every analytic harness) means the neutral temperate
+   * province, which is what the pre-W-8 single water type was.
+   */
+  readonly climateSample?: HydrologyClimateSampler;
   readonly paging?: HydrologyPagingOptions;
   /** Analytic-mode test/custom-world injection point. HydrologySystem assumes ownership. */
   readonly generationClient?: HydrologyGenerationClientLike;
@@ -1304,6 +1715,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private readonly material: ShaderMaterial;
   private readonly scene: Scene;
   private readonly generationConfig: HydrologyGenerationConfig;
+  /** `W-8`: the climate sampler the mesh builders bake chemistry from. */
+  private readonly climateSample: HydrologyClimateSampler;
   private readonly pagingConfig: HydrologyPagingConfig;
   private readonly generationClient: HydrologyGenerationClientLike | null;
   private readonly graphMode: boolean;
@@ -1355,6 +1768,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     } = options;
     this.bathymetry = bathymetry ?? null;
     this.scene = scene;
+    this.climateSample = options.climateSample ?? (() => HYDROLOGY_NEUTRAL_CLIMATE);
     const resolvedGenerationConfig = resolveHydrologyConfig(generationOptions);
     this.generationConfig = graphHydrology !== undefined
       && isHydrologyGenerationResult(graphHydrology)
@@ -1382,7 +1796,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       scene,
       HYDROLOGY_SHADER_NAME,
       {
-        attributes: ["position", "uv", "flowData", "waterData"],
+        attributes: ["position", "uv", "flowData", "waterData", "waterChemistry"],
         uniforms: [
           "world",
           "viewProjection",
@@ -1393,7 +1807,6 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "sunAngularRadius",
           "skyZenith",
           "skyHorizon",
-          "sunIlluminanceNormalized",
           "skylightIlluminanceNormalized",
           "cloudCoverage",
           "windDirection",
@@ -1401,6 +1814,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "time",
           "regionOpacity",
           "environmentValid",
+          "waterAbsorption",
+          "waterBackscatter",
+          "hydrologyHorizonField",
+          "groundBounceAlbedo",
           "bathymetryNearPlacement",
           "bathymetryFarPlacement",
           "bathymetrySeaLevel",
@@ -1416,6 +1833,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "environmentCube",
           "bathymetryNear",
           "bathymetryFar",
+          "hydrologyHorizonA",
+          "hydrologyHorizonB",
         ],
         needAlphaBlending: true,
         shaderLanguage: ShaderLanguage.WGSL,
@@ -1446,6 +1865,16 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     const fallbackCube = fallbackWaterEnvironmentCube(scene);
     if (fallbackCube) this.material.setTexture("environmentCube", fallbackCube);
     this.material.setFloat("environmentValid", 0);
+    // Terrain occlusion of the reflected sky: bound from construction for the
+    // cube's reason (an unbound declared sampler keeps the material un-ready
+    // forever). The renderer forwards the real field once the first horizon
+    // bake lands; until then inverseSpan 0 reads as fully visible.
+    this.setHorizonField(null, null, 0, 0, 0);
+    // W-7: the optical water type. One type per material until W-8 supplies
+    // the per-region field; bound from construction because a body colour is
+    // not optional.
+    this.setWaterOpticalType(WATER_REFERENCE_OPTICAL_TYPE);
+    this.setGroundBounceAlbedo(HYDROLOGY_DEFAULT_GROUND_ALBEDO_LUMINANCE);
     this.bathymetry?.bind(this.material);
     // 2-10: the planar capture is retired; the receiver sampler stays bound
     // to a zero-confidence texel until 5-12 re-points a lake capture.
@@ -1550,6 +1979,15 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     );
   }
 
+  /**
+   * `W-7`: inland water's optical type — the fallback every region starts
+   * from. `W-8` gives each lake and reach its own chemistry per vertex; this
+   * uniform remains what an analytic world (no channel graph) renders with.
+   */
+  setWaterOpticalType(type: WaterOpticalType): void {
+    applyWaterOpticalType(this.material, type);
+  }
+
   setAtmosphere(atmosphere: AtmosphereSnapshot): void {
     this.material.setVector3("sunDirection", atmosphere.sunDirection);
     this.material.setColor3(
@@ -1559,10 +1997,6 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.material.setFloat("sunAngularRadius", atmosphere.sunAngularRadiusRadians);
     this.material.setColor3("skyZenith", atmosphere.skyZenith);
     this.material.setColor3("skyHorizon", atmosphere.skyHorizon);
-    this.material.setFloat(
-      "sunIlluminanceNormalized",
-      atmosphere.sunIlluminanceNormalized,
-    );
     this.material.setFloat(
       "skylightIlluminanceNormalized",
       atmosphere.skylightIlluminanceNormalized,
@@ -1587,6 +2021,54 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     }
     this.material.setTexture("environmentCube", texture);
     this.material.setFloat("environmentValid", 1);
+  }
+
+  /**
+   * Terrain occlusion of the reflected sky: the terrain's global horizon
+   * field (`6-11`), on the detail plugin's signature so FlightRenderer
+   * forwards the one snapshot to both consumers on the same frame. Null
+   * layers (no bake yet, a non-WebGPU engine) rebind the fallback texel and
+   * publish inverseSpan 0, which the fragment reads as fully visible — the
+   * parity sentinel. `spanMeters` is the field's full world extent; the
+   * fragment maps absolute world XZ to uv with one subtract and one multiply.
+   */
+  setHorizonField(
+    layerA: BaseTexture | null,
+    layerB: BaseTexture | null,
+    originX: number,
+    originZ: number,
+    spanMeters: number,
+  ): void {
+    const placement = resolveHydrologyHorizonPlacement(
+      layerA !== null && layerB !== null,
+      originX,
+      originZ,
+      spanMeters,
+    );
+    if (placement.inverseSpan > 0 && layerA && layerB) {
+      this.material.setTexture("hydrologyHorizonA", layerA);
+      this.material.setTexture("hydrologyHorizonB", layerB);
+    } else {
+      const fallback = fallbackWaterPlanarTexture(this.scene);
+      this.material.setTexture("hydrologyHorizonA", fallback);
+      this.material.setTexture("hydrologyHorizonB", fallback);
+    }
+    this.material.setVector4("hydrologyHorizonField", new Vector4(
+      placement.originX,
+      placement.originZ,
+      placement.inverseSpan,
+      placement.softBand,
+    ));
+  }
+
+  /**
+   * The ground bounce an occluded reflection shows: AtmosphereSystem's own
+   * `skyHorizon * surfaceAlbedo * 1.15` (R-26), with the albedo's luminance
+   * forwarded here because the snapshot does not carry it. Forwarded where
+   * the renderer publishes the albedo, i.e. with the atmosphere.
+   */
+  setGroundBounceAlbedo(albedoLuminance: number): void {
+    this.material.setFloat("groundBounceAlbedo", resolveHydrologyGroundBounce(albedoLuminance));
   }
 
   update(
@@ -1703,14 +2185,22 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       // in tests/render.webgpu-hydrology.test.ts.
       const riverBuild = buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
         hydrology.rivers.forEach((river) => (
-          this.graphMode ? appendGraphRiver(arrays, river) : appendRiver(arrays, river)
+          this.graphMode
+            ? appendGraphRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
+            : appendRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
         ));
       });
       const lakeBuild = buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
         hydrology.lakes.forEach((lake) => (
           this.graphMode
-            ? appendGraphLake(arrays, lake)
-            : appendContainedLake(arrays, lake, this.analyticGroundSample!)
+            ? appendGraphLake(arrays, lake, this.climateSample, this.generationConfig.seaLevel)
+            : appendContainedLake(
+              arrays,
+              lake,
+              this.analyticGroundSample!,
+              this.climateSample,
+              this.generationConfig.seaLevel,
+            )
         ));
       });
       const region: HydrologyRegionRuntime = {
