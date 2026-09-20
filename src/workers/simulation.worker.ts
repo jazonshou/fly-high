@@ -494,6 +494,16 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // automation is still enabled, and the existing flight state is untouched.
       mode = command.mode;
       attractMode = false;
+      // The aeroplane the pilot is handed is already trimmed: the menu flight
+      // spent the last minutes learning what attitude holds THIS airframe level
+      // at THIS speed and power, and Scenic's hold runs the identical law. Take
+      // the answer instead of re-learning it from zero, which would walk the
+      // whole trim back into the commanded pitch over the first seconds of the
+      // pilot's flight -- a sag, then a recovery, on the one transition they
+      // are guaranteed to be watching.
+      if (command.mode === "scenic" && attractHold) {
+        scenicAltitudeHold.adopt(attractHold.verticalTrim);
+      }
       directPitchRetention.reset();
       jetStabilityAugmentation.reset();
     } else if (command.type === "returnToAttract") {

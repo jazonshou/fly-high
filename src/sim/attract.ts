@@ -391,6 +391,16 @@ export class AttractHold {
     this.throttleCommand = this.initialThrottle;
   }
 
+  /**
+   * The trim this flight has learned, for handing to the pilot's own hold.
+   *
+   * The menu flight and Scenic run the same law over the same aeroplane, so at
+   * `takeControl` the answer is already known; see `ScenicAltitudeHold.adopt`.
+   */
+  get verticalTrim(): VerticalSpeedPitchTrim {
+    return this.trim;
+  }
+
   reset(initialThrottle = this.initialThrottle): void {
     this.trim.reset();
     this.throttleIntegral = 0;

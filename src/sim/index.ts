@@ -40,11 +40,13 @@ export {
   SCENIC_HOLD_CAPTURE_SECONDS,
   SCENIC_HOLD_CAPTURE_VERTICAL_SPEED,
   SCENIC_HOLD_DEADBAND,
+  SCENIC_HOLD_HANDBACK_SECONDS,
   SCENIC_HOLD_MIN_CLEARANCE,
   ScenicAltitudeHold,
   type ScenicHoldInput,
 } from "./scenicHold";
 export {
+  VERTICAL_FLOOR_TRIM_BLEED,
   VERTICAL_SPEED_FLOOR,
   VerticalSpeedPitchTrim,
   type VerticalSpeedPitchInput,

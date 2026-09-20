@@ -35,6 +35,18 @@ export const VERTICAL_PITCH_I = 0.02;
  * extra steps.
  */
 export const VERTICAL_SPEED_FLOOR = 1.25;
+/**
+ * Seconds over which the speed floor bleeds away a learned nose-up trim, at
+ * full shortfall.
+ *
+ * Measured: deleting it in one frame instead (`integral = min(integral, 0)`)
+ * put the whole learned trim into the command as a single step — 11.9deg on the
+ * trainer, 14.0deg on the jet — and then did it again every 18 s, because the
+ * nose dropped, the speed came back, the trim rebuilt and the floor fired
+ * again. A hands-off idle glide is exactly the case that sits on this boundary,
+ * so it is the one the pilot would have felt.
+ */
+export const VERTICAL_FLOOR_TRIM_BLEED = 0.5;
 
 export interface VerticalSpeedPitchInput {
   /** Vertical speed the caller wants, m/s. Positive is up. */
@@ -54,6 +66,27 @@ export class VerticalSpeedPitchTrim {
 
   reset(): void {
     this.integral = 0;
+  }
+
+  /**
+   * Bleed the learned trim toward zero over `seconds`, without running the law.
+   *
+   * For handing control back — on touchdown — so the command WALKS to the raw
+   * stick instead of stepping to it. Exponential with a time constant of a
+   * quarter of `seconds`, so about 2% is left after `seconds`: below any
+   * deadband, and smooth the whole way.
+   */
+  /**
+   * Take on another instance's learned trim, for a hand-off between two holds
+   * flying the same aeroplane.
+   */
+  adopt(source: VerticalSpeedPitchTrim): void {
+    this.integral = source.integral;
+  }
+
+  decay(dt: number, seconds: number): void {
+    const timeConstant = Math.max(seconds, 1e-4) / 4;
+    this.integral *= Math.exp(-Math.max(dt, 0) / timeConstant);
   }
 
   /**
@@ -90,9 +123,19 @@ export class VerticalSpeedPitchTrim {
     const speedShortfall = floor - input.equivalentAirspeed;
     if (speedShortfall <= 0) return pitch;
     // Lower the nose in proportion to the shortfall and stop the integrator
-    // arguing for height.
+    // arguing for height. Both must be CONTINUOUS in `recovery`, because
+    // `recovery` passes through zero every time the aeroplane touches the
+    // boundary, which at idle it does over and over.
     const recovery = clamp(speedShortfall / Math.max(floor * 0.25, 1e-3), 0, 1);
-    this.integral = Math.min(this.integral, 0);
-    return clamp(Math.min(pitch, -recovery), -1, 1);
+    // Bleed a nose-up trim away rather than deleting it: at recovery 0 this is
+    // the identity, at recovery 1 it is most of the way gone in a second. A
+    // nose-DOWN integral is left alone, which is what min() meant here.
+    if (this.integral > 0) {
+      this.integral *= Math.exp(-(recovery * dt) / VERTICAL_FLOOR_TRIM_BLEED);
+    }
+    // Blend toward the floor's own command instead of switching to it. At
+    // recovery 0 this returns `pitch` exactly, so authority fades in from
+    // nothing; at recovery 1 it is full nose-down, as before.
+    return clamp(pitch + (-recovery - pitch) * recovery, -1, 1);
   }
 }
