@@ -17,6 +17,7 @@ import {
   TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH,
   TERRAIN_FALLBACK_ALPINE_START_METERS,
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
+  TERRAIN_OCCLUDED_BOUNCE_SHARE,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
   TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL,
   TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS,
@@ -690,8 +691,12 @@ describe("terrain surface plugin (3-2)", () => {
     expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.85);
     expect(terrainFallbackRockCover(0, 0)).toBe(0);
     expect(terrainFallbackRockCover(420, 0)).toBe(0);
-    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425, 12);
-    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85, 12);
+    // M-3: level alpine ground keeps 15% of the alpine strength (turf grows
+    // there now); the rest arrives with slope, all of it by 0.30.
+    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0.3)).toBeCloseTo(0.85, 12);
+    expect(terrainFallbackRockCover(700, 0.2)).toBeCloseTo(0.425 * (0.15 + 0.85 * 0.5), 12);
     expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
     expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
 
@@ -948,6 +953,29 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       ]) {
         expect(code).toContain(value.toFixed(2));
       }
+    });
+  });
+});
+
+describe("M-4: the hemisphere terrain blocks is lit terrain, not black", () => {
+  it("returns a bounded share of open-sky ambient from the blocked hemisphere", () => {
+    // Ground albedo ~0.18 seen half in sun and half in shade: a floor, never a
+    // fill light. Shot at 0.25 (2026-09-20): night, night-moonlit,
+    // hills-dusk-glint and dusk-mesopic moved <= 0.07/255 against a same-arm
+    // floor of <= 0.007, forests <= 0.12, and a gully wall stayed a shadow.
+    expect(TERRAIN_OCCLUDED_BOUNCE_SHARE).toBeGreaterThan(0.1);
+    expect(TERRAIN_OCCLUDED_BOUNCE_SHARE).toBeLessThanOrEqual(0.3);
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      // Ambient reads the floored visibility ...
+      expect(code).toContain("let terrainSkyVisibility = terrainSkyOpenness");
+      expect(code).toContain(
+        `(1.0 - terrainSkyOpenness) * ${TERRAIN_OCCLUDED_BOUNCE_SHARE}`);
+      // ... but W-1's vigour and direct-light terms are statements about how
+      // much SKY a sward sees, and keep reading the raw openness: the floor
+      // must not re-tune the ground wave through the back door.
+      expect(code.match(/clamp\(terrainSkyOpenness, 0\.0, 1\.0\)/gu)).toHaveLength(2);
+      expect(code).not.toMatch(/clamp\(terrainSkyVisibility, 0\.0, 1\.0\)/u);
     });
   });
 });

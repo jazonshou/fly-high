@@ -1,0 +1,117 @@
+# Ground up close: why descending added nothing, and what was done about it
+
+The owner's third complaint in the 2026-09-19 wave:
+
+> The current ground texture looks good from a distance. However, even when I
+> zoom in, the ground still looks blurry and similar to what it looks like from
+> a far distance. I'd like the ground texture to increase in fidelity up close
+> so it looks less fake and plasticy.
+
+This note records what that was, measured, and what landed against it. It
+follows `GROUND_TEXTURE_W1.md` (the 3-150 m band) one band lower.
+
+## 0. The tiling band (`D-0`)
+
+Found on the way, and the first thing the eye finds on open ground: a sward
+tile with power on the Fourier lines at |k| <= 4 cycles per tile draws its own
+period across a field however the shader warps it. From 30 m above dry
+grassland one dark feature of the DryGrass tile stood in a regular lattice of
+identical stamps across half the frame.
+
+`flattenLowFrequency` was supposed to own that band and cannot: a box high-pass
+has its first null at 3 cycles per tile and gain at 4, so whatever a recipe
+leaves there comes through. `suppressTilingBand` is an exact notch on those
+lines, evaluated on a 64 x 64 box reduction (16 samples per cycle at k = 4), so
+it is a few hundred thousand multiply-adds per channel rather than an FFT, and
+it touches nothing at k >= 5, which is where the 5-50 cm content a sward is
+made of lives. Applied to Grass and DryGrass after `flattenLowFrequency`,
+keeping 0.3 of the band's amplitude.
+
+Measured at seed "fly-high", edge 512, decoded linear luminance, absolute power
+in the band: Grass 4.65e-5 to 4.27e-6, DryGrass 2.35e-5 to 2.13e-6, an 11-fold
+cut on both, holding at a second seed and at the low tier's edge. No assertion
+pinned the swards' band before; the only spectral pin in the suite was Rock's
+crossed-fracture ceiling.
+
+Synthesis runs in `materialSynthesis.worker.ts`, off the main thread, so the
+notch is not on cold start's time-to-ready path: a sward tile takes about
+170 ms to synthesise on this host with it in.
+
+## 1. Why descending added nothing (`D-3`)
+
+The frames shot to verify the notch showed what the complaint actually was. At
+8 m, 30 m and 80 m above a meadow the ground was a featureless gradient with
+specks on it, identical in character to the view from 213 m.
+
+Read term by term: a sward's material tile is 2 m across and its content is
+blades and tufts under ~10 cm, deliberately flattened below 0.5 cycles per
+metre so it cannot show its repeat. `W-1`'s patchwork starts at 18 m (vigour's
+fine octave) and 6.1 m (the bare openings' fine octave). Between them NOTHING in
+the shader had a wavelength: no term from 0.2 m to 6 m. By 8 m up the tile has
+minified to its mean, and from there to the patchwork the ground is a gradient.
+Descending from 600 m to 10 m added no information to the frame, which is what
+"blurry" means. Reworking the tile's content cannot answer it: tile content
+only resolves under ~5 m AGL, and in a CPU preview its tussocks repeat as rows.
+
+`SwardRelief.ts` is that band: four incommensurate octaves (4.3 / 1.7 / 0.71 /
+0.31 m) of the ground block's own integer-hashed gradient noise, world-anchored
+in absolute metres, each faded by footprint and SKIPPED once it has, with the
+whole function returning after one compare once the coarsest has gone, so from
+cruise altitude it costs nothing. Each octave's tone is the noise pushed through
+a soft edge (blotches with outlines, not a gradient), tinted toward straw when
+pale and toward green when dark, because that is the axis a sward varies along;
+its relief is the plain noise at about 2 % of the wavelength, so light agrees
+with colour without the ground becoming a surface of objects. Zero-mean (pinned:
+mean under 0.003, sigma 8.4 %), so the scene mean, the bounce and `W-1`'s
+calibration do not move. It composes with `W-1` rather than stacking on it: its
+weight is `terrainGroundVegetation` (which already carries the airfield
+exclusion, and is zero on rock, snow, sand and pavement) less opened soil,
+steered by the patchwork's own dryness, 0.8 on lush ground to 1.3 on dry. Inside
+the patchwork's tier lane; `SWARD_RELIEF_STRENGTH = 0` is the rollback, and the
+octave count is one constant. Opened soil keeps 0.45 of the band: with none, a
+bare opening was a smooth plastic blob the moment the sward round it had
+texture.
+
+Evidence, same tree with the rollback dial at zero as the "before" arm: at 8, 30
+and 80 m AGL on lush and dry ground, noon and an 18.3 h sun, the before column
+is a blurred gradient at every altitude and the after column is grassland.
+Relief was shot at 2.5 % of the wavelength first and trimmed to 2 %: right at
+noon, and at an 8 m eye under a 10 degree sun every hollow was a black streak,
+because a normal offset casts no penumbra to soften itself. Shimmer, which is
+what a band at these wavelengths risks: forward flight in 1 cm steps (sub-pixel
+at both altitudes, so any frame-to-frame change is aliasing and not texture
+translating), band on against band off, mean absolute change per channel of
+255: 0.27 against 0.24 at 30 m AGL and 1.44 against 1.41 at 8 m (blades in the
+wind are the rest), with the share of pixels changing by more than 24 identical
+on both arms. At 2 m steps the band doubles the mean change at 30 m (4.8-5.8
+against 2.5-2.7) with the same share of large changes, which is texture moving
+across the frame as it should.
+
+### Shot and dropped
+
+* **Billowed octaves** (rounded tops, sharp hollows: the profile of a clump).
+  Read as rumpled cloth. A gradient noise's zero set is a network of long
+  meandering lines, and a crease drawn along it is a ripple, not a gap between
+  clumps.
+* **Cellular tussock domes**, one per jittered cell, present in a minority of
+  cells, with a shaded skirt. Read as raindrop rings on a pond: a perfect circle
+  with a dark rim is the one shape a meadow never shows from above.
+
+## 2. Blades lit like the ground they stand on (`D-2`)
+
+Inside 7 m a ground-cover blade's normal was its own ribbon normal, which is
+near-horizontal: under a high sun N.L of 0 to 0.37 against about 0.93 for the
+ground beneath it. At a 2 m eye the dark half of the blades rendered at 0.43 of
+the ground and bluer (sky-lit only): black spikes on every near meadow. The
+blend toward the ground's normal is now floored at 0.6, and the root albedo is
+0.7 where it was 0.5: the root is already darkened by the shadow map and the
+ambient term, and halving its albedo as well counted the same occlusion twice.
+
+The floor alone left half the blades black, and the frame said why:
+`twoSidedLighting` negates the WHOLE normal on a back face, and with the floor
+in, most of that normal is the ground's. Every blade seen from behind was lit
+from underneath: N.L below zero under any sun, ambient only. The fragment now
+mirrors the normal back above the horizon, which keeps the blade's own share
+reversed (that IS what the back of a ribbon faces) and restores the ground's:
+exact on level ground. At a 2 m and an 8 m eye at noon no blade renders black;
+at 18.3 h they take the low sun and cast their shadows as before.

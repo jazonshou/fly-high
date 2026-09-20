@@ -226,6 +226,55 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const lowland = 1 - smoothstep(320, 900, elevation);
   const airfield = saturate(airportInfluence);
 
+  // THE ALPINE COVER PARTITION ("item C").
+  //
+  // **The defect: above ~900 m no vegetated material had any suitability on
+  // gentle ground, so tall mountains rendered grey from base to summit.**
+  // `Grass` and `DryGrass` carry `lowland` (dead by 900 m) and `warm`; `Shrub`
+  // dies over 1,150-1,650 m; and `Rock` was `steep * 1.25 + alpine * 0.55` —
+  // 0.55 on perfectly FLAT alpine ground, an altitude-only claim that needs no
+  // slope at all. The owner's reference photograph shows the opposite law:
+  // light fractured rock ONLY on steep faces, sward on every gentler slope
+  // right up to the rock, and scree aprons below the faces.
+  //
+  // Three terms repair it, and **every one of them is multiplied by `alpine`**.
+  // That is the invariant this block owns, and
+  // `tests/render.webgpu-land-cover-alpine-partition.test.ts` proves it
+  // against a frozen copy of the shipped arithmetic: `alpine` is EXACTLY 0 at
+  // and below 420 m, each new term is then `x + 0`, and IEEE `x + 0 === x`, so
+  // every suitability at or below 420 m is BIT-IDENTICAL to the shipped law.
+  // Nothing here can move a lowland pixel, the airfield, the shore band or the
+  // unclaimed-ground regime (which is cold + gentle + LOW by definition).
+  //
+  // None of the three is an additive constant. This file has been burned
+  // twice by a constant acting as a universal gain (`Sand + 0.02`, then
+  // `Grass + 0.02`); these are gated products like every other claim, and
+  // they are zero wherever their gates are.
+  //
+  // 1. ALPINE TURF: the sward's claim on gentle high ground that is below the
+  //    seasonal snow band and not too cold. `cool` is deliberately a LOWER
+  //    window than `warm` (0.00-0.12 against 0.16-0.34): alpine turf tolerates
+  //    cold that lowland sward does not. `snowBand` hands the ground to Snow
+  //    below the snowline rather than at it, and rides the SAME seasonal and
+  //    aspect-shifted `snowline` the Snow term reads, so winter lowers both
+  //    together. Falling edges are `1 - smoothstep(lo, hi, x)`, never a
+  //    reversed-argument smoothstep.
+  // 2. ROCK NEEDS SLOPE AT ALTITUDE: see the Rock term.
+  // 3. SCREE APRONS: see the Gravel term.
+  const cool = smoothstep(0, 0.12, temperature);
+  const snowBand = smoothstep(snowline - 260, snowline - 40, elevation);
+  // Turf has its OWN slope window, not `gentle`: `gentle` is still 0.5 at 54
+  // degrees (steep's calibrated window), and measured with it turf reached
+  // 45-50 degree ground. A sward holds to about 35 degrees and is gone by 47.
+  const turfSlope = 1 - smoothstep(0.16, 0.32, slope);
+  const alpineTurf = shore * alpine * turfSlope * cool * (1 - snowBand);
+  // A smooth bump over slope centred on the angle of repose (the first cut's
+  // 0.11-0.17 / 0.24-0.32 window measured its peak in the 35-45 degree band, too
+  // steep for loose debris, so it moved down): 0.13 is ~30 deg,
+  // 0.21 is ~38 deg. Loose debris rests here; gentler ground holds soil and
+  // steeper ground sheds the debris onto this band.
+  const screeBand = smoothstep(0.085, 0.145, slope) * (1 - smoothstep(0.2, 0.27, slope));
+
   const closure = saturate(input.canopyClosure ?? 0);
   /**
    * `6-13`: OMISSION IS NOT ZERO CLOSURE, and the gate below is the first term
@@ -331,9 +380,17 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // Grass: the default lowland cover, and what an airfield is mown to. The
   // sward gain rides the CLIMATIC term only — an airfield is mown grass by
   // decree and must not be scaled by whether the wild sward would grow there.
+  //
+  // Item C adds the alpine-turf share as its OWN summand, outside the sward
+  // gain, so the lowland term is left exactly as it shipped. The two windows
+  // overlap across 420-900 m and their envelopes SUM there: measured,
+  // `lowland + 0.9 * alpine` never exceeds lowland Grass's own 1.0 ceiling and
+  // dips to 0.724 at 687 m, so the hand-over is a shallow saddle rather than a
+  // second peak. (Before item C that same envelope fell to 0 by 900 m.)
   suitability[SurfaceMaterial.Grass] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+    + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // The unclaimed-ground floor, moved here from Sand. Grass is what a temperate
   // lowland looks like when no stronger signal applies; beach is not.
@@ -371,18 +428,43 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   suitability[SurfaceMaterial.Shrub] =
     shore * alpine * (1 - smoothstep(1_150, 1_650, elevation)) * (0.4 + dry * 0.6) * 0.95;
   // Rock: slope first, altitude second. A cliff is rock at any height.
-  suitability[SurfaceMaterial.Rock] = shore * (steep * 1.25 + alpine * 0.55);
-  // Snow: above the seasonal snowline, and shed by steep faces.
+  //
+  // Item C: ROCK NEEDS SLOPE AT ALTITUDE. The altitude share was a flat
+  // `alpine * 0.55`, which claimed perfectly level alpine ground at 0.55 and
+  // is most of why a mountain read grey on its meadows. It is now
+  // `alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope))`: the same 0.55 by
+  // slope 0.30, but only 0.25 on the flat. `steep * 1.25` and steep's
+  // `smoothstep(0.24, 0.58, slope)` window are NOT touched — the coefficient
+  // is calibrated against that exact window (see the `6-13` note above: moving
+  // the window took Rock from 18.77% to 35.40% of land).
+  suitability[SurfaceMaterial.Rock] =
+    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope)));
+  // Snow: above the seasonal snowline, and shed by steep faces. M-3: shed over
+  // 39-55 degrees, where it was 60-72. Dry snow avalanches off anything much
+  // past 40, and at the old threshold a snowfield on the reshaped massifs showed
+  // no rock at all. This is the ONE M-3 term that acts at every altitude.
   suitability[SurfaceMaterial.Snow] =
     smoothstep(snowline - 90, snowline + 130, elevation)
-    * (1 - saturate((slope - 0.5) * 2.2))
+    * (1 - smoothstep(0.22, 0.42, slope))
     * 1.5;
   // Dry grass: the rain-shadow companion to grass, off the ecotone chain.
+  // Item C: the dry half of the alpine turf, as its own summand for the same
+  // reason Grass's is.
   suitability[SurfaceMaterial.DryGrass] =
-    shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN);
+    shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+    + alpineTurf * dry * 0.95;
   // Gravel: scree below cliffs and the wave-washed band above sand.
+  //
+  // Item C: SCREE APRONS. Gravel's altitude share was `alpine * 0.2`, which
+  // never won anything — scree did not exist as a dominant cover. It gains
+  // `alpine * screeBand * (0.5 + dry * 0.5) * 0.85`: a claim confined to the
+  // repose-angle band, stronger where the ground is dry (wet repose-angle
+  // ground holds turf instead, which is the mosaic the reference shows).
   suitability[SurfaceMaterial.Gravel] =
-    shore * (steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2);
+    shore * (
+      steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2
+      + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
+    );
   // The paved materials are never climatic: `3-9`'s airport SDF paints them.
   suitability[SurfaceMaterial.Asphalt] = 0;
   suitability[SurfaceMaterial.Concrete] = 0;
@@ -634,6 +716,14 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let alpine = kSmoothstep(420.0, 980.0, elevation);
   let lowland = 1.0 - kSmoothstep(320.0, 900.0, elevation);
   let airfield = kSaturate(input.airportInfluence);
+  // Item C, the alpine cover partition — see the TS twin. Every new term is
+  // multiplied by alpine, which is exactly 0.0 at and below 420 m, so the
+  // lowland law is bit-identical to what shipped.
+  let cool = kSmoothstep(0.0, 0.12, input.temperature);
+  let snowBand = kSmoothstep(snowline - 260.0, snowline - 40.0, elevation);
+  let turfSlope = 1.0 - kSmoothstep(0.16, 0.32, slope);
+  let alpineTurf = shore * alpine * turfSlope * cool * (1.0 - snowBand);
+  let screeBand = kSmoothstep(0.085, 0.145, slope) * (1.0 - kSmoothstep(0.2, 0.27, slope));
   let closure = kSaturate(input.canopyClosure);
   let sward = kSaturate(input.grassCover);
 
@@ -660,6 +750,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   suitability[${SurfaceMaterial.Grass}] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+    + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // A FLOOR, not a bonus: \`max\`, not \`+\`, so it raises only ground that had no
   // claimant instead of giving Grass a universal gain over its rivals.
@@ -673,14 +764,19 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   suitability[${SurfaceMaterial.Shrub}] =
     shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, elevation))
       * (0.4 + dry * 0.6) * 0.95;
-  suitability[${SurfaceMaterial.Rock}] = shore * (steep * 1.25 + alpine * 0.55);
+  suitability[${SurfaceMaterial.Rock}] =
+    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope)));
   suitability[${SurfaceMaterial.Snow}] =
     kSmoothstep(snowline - 90.0, snowline + 130.0, elevation)
-      * (1.0 - kSaturate((slope - 0.5) * 2.2)) * 1.5;
+      * (1.0 - kSmoothstep(0.22, 0.42, slope)) * 1.5;
   suitability[${SurfaceMaterial.DryGrass}] =
-    shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN);
+    shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+    + alpineTurf * dry * 0.95;
   suitability[${SurfaceMaterial.Gravel}] =
-    shore * (steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2);
+    shore * (
+      steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2
+      + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
+    );
   suitability[${SurfaceMaterial.Asphalt}] = 0.0;
   suitability[${SurfaceMaterial.Concrete}] = 0.0;
   return suitability;

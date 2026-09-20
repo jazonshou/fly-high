@@ -63,6 +63,27 @@ import {
   GROUND_SCRUB_SMALL_WAVELENGTH_METERS,
   TERRAIN_GROUND_PATCHWORK_WGSL,
 } from "./GroundPatchwork";
+import {
+  ROCK_COULOIR_ABOVE_SNOWLINE_METERS,
+  ROCK_COULOIR_BELOW_SNOWLINE_METERS,
+  ROCK_RANGE_ROUGHNESS,
+  ROCK_BOUNDARY_LOGIT_GAIN,
+  ROCK_BOUNDARY_PURE_LOW,
+  ROCK_BOUNDARY_SLOPE_GAIN,
+  ROCK_BOUNDARY_SLOPE_LIMIT,
+  ROCK_RELIEF_SLOPE_LOW,
+  ROCK_RELIEF_STRENGTH,
+  SNOW_DRIFT_OCCLUSION,
+  SNOW_DRIFT_TONE,
+  TERRAIN_ROCK_RELIEF_WGSL,
+} from "./RockRelief";
+import {
+  SWARD_RELIEF_BARE_SHARE,
+  SWARD_RELIEF_DRY_GAIN,
+  SWARD_RELIEF_LUSH_GAIN,
+  SWARD_RELIEF_TINT,
+  TERRAIN_SWARD_RELIEF_WGSL,
+} from "./SwardRelief";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
@@ -217,6 +238,18 @@ export const TERRAIN_FALLBACK_ALPINE_END_METERS = 980;
 // alpine hand-over is the cheap analytic stand-in until the fallback
 // evaluates the classifier's own suitabilities.
 export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.85;
+// M-3: the classifier stopped calling level alpine ground rock (turf grows
+// there now), so its stand-in must stop too, or a massif is green up close and
+// grey from 10 km. Share of the alpine strength that survives on LEVEL ground,
+// rising to all of it over the classifier's own 0.10-0.30 slope window.
+export const TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE = 0.15;
+/**
+ * `M-4`: ambient returned by the share of the hemisphere that terrain blocks,
+ * as a fraction of what open sky there would give. See the fragment's note.
+ */
+export const TERRAIN_OCCLUDED_BOUNCE_SHARE = 0.25;
+export const TERRAIN_FALLBACK_ALPINE_SLOPE_LOW = 0.1;
+export const TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH = 0.3;
 
 /** Pure CPU mirror of the shader's page-classification confidence. */
 export function terrainPageClassificationConfidence(channelTexelMeters: number): number {
@@ -257,8 +290,16 @@ export function terrainFallbackRockCover(
     (elevationDriverMeters - TERRAIN_FALLBACK_ALPINE_START_METERS)
       / (TERRAIN_FALLBACK_ALPINE_END_METERS - TERRAIN_FALLBACK_ALPINE_START_METERS),
   ));
+  const alpineSlopeT = Math.min(1, Math.max(
+    0,
+    (slope - TERRAIN_FALLBACK_ALPINE_SLOPE_LOW)
+      / (TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH - TERRAIN_FALLBACK_ALPINE_SLOPE_LOW),
+  ));
+  const alpineSlope = alpineSlopeT * alpineSlopeT * (3 - 2 * alpineSlopeT);
   const alpine = altitudeT * altitudeT * (3 - 2 * altitudeT)
-    * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH;
+    * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH
+    * (TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE
+      + (1 - TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE) * alpineSlope);
   const slopeT = Math.min(1, Math.max(0, (slope - 0.30) / (0.66 - 0.30)));
   const slopeRock = slopeT * slopeT * (3 - 2 * slopeT);
   return Math.max(alpine, slopeRock);
@@ -1843,6 +1884,8 @@ fn terrainSurfaceShoreWetness(
 // resident — which is the property that stops a residency level from showing.
 // ---------------------------------------------------------------------------
 ${TERRAIN_GROUND_PATCHWORK_WGSL}
+${TERRAIN_ROCK_RELIEF_WGSL}
+${TERRAIN_SWARD_RELIEF_WGSL}
 
 // ---------------------------------------------------------------------------
 // 4-7's channel pages, consumed on the CPU TILE MESHES.
@@ -2155,7 +2198,17 @@ let terrainOcclusionTexel = textureSampleLevel(
 // exposure and now shares the guard.
 let terrainOcclusionBaked = smoothstep(0.02, 0.2, terrainOcclusionTexel.a);
 let terrainOcclusionTrust = terrainPageUv.z * terrainOcclusionBaked;
-let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+let terrainSkyOpenness = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+// M-4: what the bake measures is how much SKY a texel sees, and it was
+// multiplying ALL ambient by it. But the part of the hemisphere the sky does
+// not fill is not black: it is filled by the terrain that blocks it, which is
+// itself lit. A wall in a gully lost its sky light AND the bounce from the
+// slope opposite, and rendered near-black at noon (kilo77's west face at
+// 900 m, 2026-09-19: ~12/255). The blocked share of the hemisphere now returns
+// a fraction of what open sky would: ground albedo ~0.18 seen half in sun and
+// half in shade. Ambient only; the horizon shadow still owns the sun.
+let terrainSkyVisibility = terrainSkyOpenness
+  + (1.0 - terrainSkyOpenness) * ${terrainWgslFloat(TERRAIN_OCCLUDED_BOUNCE_SHARE)};
 // The horizon atlases are written by the same dispatch, so an unbaked page
 // would report a zero horizon in every azimuth. Fade to "the sun is up".
 let terrainHorizonShadow = mix(
@@ -2170,6 +2223,7 @@ let terrainHorizonShadow = mix(
 let terrainPageSplat = terrainSurfacePageSplat(
   terrainPageUv, uniforms.terrainSunDirection.w);
 #else
+let terrainSkyOpenness = 1.0;
 let terrainSkyVisibility = 1.0;
 let terrainHorizonShadow = 1.0;
 #endif
@@ -2237,13 +2291,89 @@ let terrainClassStrength = smoothstep(
 let terrainClassStrength = 0.0;
 #endif
 let terrainClassComplement = 1.0 - terrainClassStrength;
+// ---------------------------------------------------------------------------
+// M-2 — the mineral boundary. The classifier draws rock against turf along a
+// slope iso-line, and on smooth terrain an iso-line is a smooth curve: from the
+// air every rock patch was a decal with a clean outline. The boundary reads the
+// SAME coarse crag field the faces are shaded with, as a push on the DRIVERS
+// (the pair's fraction where a page is trusted, the slope where it is not), so
+// rock runs down the big creases and turf climbs the proud edges: tongues and
+// embayments whose shapes agree with the relief drawn inside them. World-
+// anchored and footprint-faded with the field itself, so it cannot crawl.
+//
+// Evaluated once, here, and handed to the relief block below.
+// ---------------------------------------------------------------------------
+var terrainRockCoarse: TerrainRockCoarse;
+let terrainRockFootprint = max(
+  min(length(terrainWorldDdx), length(terrainWorldDdy)),
+  max(length(terrainWorldDdx), length(terrainWorldDdy)) * 0.25,
+);
+let terrainRockPair = terrainRockShareOf(i32(terrainLowerId))
+  + terrainRockShareOf(i32(terrainUpperId));
+// Steep ground with no rock in its pair only matters to the FALLBACK's slope
+// rock, which carries the class complement: on a trusted page it is nothing,
+// and the crag field was being evaluated on every steep meadow for it.
+let terrainRockCandidate = ${ROCK_RELIEF_STRENGTH > 0 ? "true" : "false"}
+  && uniforms.terrainSurfaceTuning.y > 0.5
+  && (terrainRockPair > 0.0
+    || (terrainSlope > ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW)} && terrainClassComplement > 0.02));
+var terrainRockBoundary = 0.0;
+if (terrainRockCandidate) {
+  terrainRockCoarse = terrainRockCoarseAt(
+    terrainAbsolutePosition, terrainGeometricNormal, terrainRockFootprint);
+  // The COARSE boundary signal is free: the relief needs those octaves anyway.
+  // The four fine ones are only evaluated where something reads them: a pair
+  // whose mineral share is open to the push, or a fragment the fallback can
+  // show through. Inside a face, and on a trusted page's pure ground, nothing
+  // does, and that was most of what a frame full of rock paid for.
+  terrainRockBoundary = terrainRockCoarse.boundary;
+  // Which end of the pair is the mineral one: +1 upper, -1 lower, 0 neither.
+  let terrainRockSide = terrainRockShareOf(i32(terrainUpperId))
+    - terrainRockShareOf(i32(terrainLowerId));
+  let terrainRockMineral = select(
+    1.0 - terrainAxisFraction, terrainAxisFraction, terrainRockSide > 0.0);
+  let terrainRockPushOpen = abs(terrainRockSide) > 0.25
+    && min(terrainRockMineral, 1.0 - terrainRockMineral) > ${terrainWgslFloat(ROCK_BOUNDARY_PURE_LOW)};
+  if (terrainRockPushOpen || terrainClassComplement > 0.02) {
+    terrainRockBoundary = terrainRockBoundary + terrainRockBoundaryFine(
+      terrainAbsolutePosition.xz, terrainRockFootprint);
+  }
+  if (terrainRockPushOpen) {
+    // Pushed in the LOGIT of the mineral share, where a softmax page is a wide
+    // linear ramp; pure ground is a fixed point and stays pure.
+    let terrainRockPushed = terrainRockBoundaryPushed(
+      terrainRockMineral,
+      terrainRockBoundary * abs(terrainRockSide)
+        * ${terrainWgslFloat(ROCK_BOUNDARY_LOGIT_GAIN * ROCK_RELIEF_STRENGTH)});
+    terrainAxisFraction = select(
+      1.0 - terrainRockPushed, terrainRockPushed, terrainRockSide > 0.0);
+  }
+  // The gather returns (primary, secondary, secondary's share <= 0.5), and on
+  // a coarse page the seam feather below fades the mixture toward the PRIMARY
+  // alone. So a push that carries the secondary past a half has to make it the
+  // primary, or it is thrown away exactly where a clean outline is most
+  // visible — from a few kilometres, through 32-128 m texels. Shot without
+  // this: every patch kept its decal outline, however hard the push.
+  if (terrainAxisFraction > 0.5) {
+    let terrainSwappedId = terrainLowerId;
+    terrainLowerId = terrainUpperId;
+    terrainUpperId = terrainSwappedId;
+    terrainAxisFraction = 1.0 - terrainAxisFraction;
+    terrainAxis = terrainLowerId;
+  }
+}
+// The same push on the fallback's slope driver, for ground no page classifies.
+let terrainRockSlopeDriver = terrainSlope + clamp(
+  terrainRockBoundary * ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_GAIN)},
+  ${terrainWgslFloat(-ROCK_BOUNDARY_SLOPE_LIMIT)}, ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_LIMIT)});
+
 // Wave R: the fragment-derived slope rock also carries the class
 // complement — unscaled, a slope-0.66 face was 100% this override even on a
 // trusted level-0 page, erasing the classifier's Snow/Shrub/Gravel from
 // every close mountainside (the close-range mountain was nothing but the
 // Rock recipe). The classifier owns steep ground where it is trusted; this
 // term is the fallback's cliff answer, exactly like the alpine term below.
-var terrainSlopeRock = smoothstep(0.30, 0.66, terrainSlope) * terrainClassComplement;
+var terrainSlopeRock = smoothstep(0.30, 0.66, terrainRockSlopeDriver) * terrainClassComplement;
 // This is the altitude term from the real classifier, kept deliberately
 // weaker than a true cliff. It greys alpine fallback terrain continuously
 // without walking through four categorical material palettes. Wave Q: it
@@ -2256,7 +2386,15 @@ terrainSlopeRock = max(
     ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
     ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
     terrainElevationDriver,
-  ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement,
+  ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement
+    * mix(
+      ${TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE.toFixed(2)},
+      1.0,
+      smoothstep(
+        ${TERRAIN_FALLBACK_ALPINE_SLOPE_LOW.toFixed(2)},
+        ${TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH.toFixed(2)},
+        terrainSlope),
+    ),
 );
 
 
@@ -2277,7 +2415,10 @@ let terrainSnowDescent = max(0.0, uniforms.terrainSurfaceWetness.z - terrainSnow
 let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.y;
 // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
 // ground the same way it is applied to canopy and rock.
-let terrainSnowShed = 1.0 - clamp((terrainSlope - 0.5) * 1.7, 0.0, 1.0);
+// M-2: 39 to 55 degrees, where it was 60 to 72. Dry snow avalanches off
+// anything much past 40, and on the reshaped massifs a 60-degree threshold
+// left no rock showing through a snowfield at all — a white dome.
+let terrainSnowShed = 1.0 - smoothstep(0.22, 0.42, terrainSlope);
 // Wave Q: the reference blanket carries the class complement for the same
 // reason as the alpine term above — a trusted classifier already placed
 // Snow, so the macro blanket fades in exactly as classification fades out.
@@ -2444,6 +2585,14 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
 // without a branch of their own.
 let terrainGroundCover = terrainGroundCoverOf(i32(terrainLowerId)) * terrainBlend0
   + terrainGroundCoverOf(i32(terrainUpperId)) * terrainBlend1;
+// M-2: the same reading for bedrock and scree, third candidate included —
+// the fallback's slope rock arrives through it.
+let terrainRockCover = terrainRockShareOf(i32(terrainLowerId)) * terrainBlend0
+  + terrainRockShareOf(i32(terrainUpperId)) * terrainBlend1
+  + terrainRockShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
+let terrainSnowShare = terrainSnowShareOf(i32(terrainLowerId)) * terrainBlend0
+  + terrainSnowShareOf(i32(terrainUpperId)) * terrainBlend1
+  + terrainSnowShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
 #else
 // Tier 0's cap is two materials (§5.3), so the axis is rounded to its nearest
 // integer instead of bracketed and only the strongest override survives. This
@@ -2512,6 +2661,10 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
 #endif
 // W-1's vegetated share, the two-material path's copy.
 let terrainGroundCover = terrainGroundCoverOf(i32(terrainPrimaryId)) * terrainBlend0;
+let terrainRockCover = terrainRockShareOf(i32(terrainPrimaryId)) * terrainBlend0
+  + terrainRockShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
+let terrainSnowShare = terrainSnowShareOf(i32(terrainPrimaryId)) * terrainBlend0
+  + terrainSnowShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
 #endif
 // W-1: mown airfield grass is not meadow. The graded surround comes from the
 // pavement SDF the runway painter already evaluates, so the two cannot
@@ -2533,13 +2686,12 @@ let terrainGroundPatchworkOn = select(0.0, 1.0, uniforms.terrainSurfaceTuning.y 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
 // kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
 // look at every flying distance. Two rotationally-decorrelated octaves (71 m
-// and 23 m) and an altitude-keyed strata octave supply the missing band as
-// ALU-only structure: a world-space normal perturbation, a tonal/hue
-// modulation and a roughness delta, faded by the MAJOR footprint axis so the
-// band converges before it can alias. Strata engage on steep faces only, so
-// runway and meadow flats keep their surveyed look.
+// and 23 m) supply the missing band as ALU-only structure: a world-space
+// normal perturbation, a tonal/hue modulation and a roughness delta, faded by
+// the MAJOR footprint axis so the band converges before it can alias. (T1
+// also carried an altitude-keyed strata octave; M-2 removed it — see below.)
 // Per-octave Nyquist fades on the FULL 3D derivative: the horizontal-only
-// footprint let the 9 m altitude-keyed strata alias at full amplitude on
+// footprint lets anything keyed on a steep face alias at full amplitude on
 // distant near-vertical cliffs (small ddx.xz, large ddx.y), and one shared
 // 18→110 m fade held the 23 m octave at ~full weight past one period per
 // pixel. Each octave now converges at roughly a quarter of its own
@@ -2558,7 +2710,9 @@ let terrainFootprint3D = max(
 );
 let terrainMesoWeightA = 1.0 - smoothstep(9.0, 34.0, terrainFootprint3D);
 let terrainMesoWeightB = 1.0 - smoothstep(3.0, 11.0, terrainFootprint3D);
-let terrainStrataWeight = 1.0 - smoothstep(1.2, 4.5, terrainFootprint3D);
+// M-2: how shattered a face is rides meso A, already paid for. Mid-grey when
+// the block is skipped: the crag octaves have all converged long before A has.
+var terrainRockFracture = 0.5;
 if (terrainMesoWeightA > 0.001) {
   // Wave Q (reptile-mountain fix): meso A sampled the UNROTATED world axes,
   // quilting mountainsides with soft 71 m axis-aligned rectangles. Rotated
@@ -2578,24 +2732,12 @@ if (terrainMesoWeightA > 0.001) {
   let terrainMesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
     * vec2f(terrainMesoB.y, terrainMesoB.z);
   let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
-  // Wave Q (reptile-mountain fix): the strata field was ONE value-noise
-  // octave on (altitude, x+z) — a visible 9 m x 68 m lattice, constant along
-  // the x = -z diagonal, painting long straight streaks across every cliff.
-  // Two octaves at incommensurate scales on a rotated horizontal axis keep
-  // the bedded-rock read without the lattice.
-  let terrainStrataCoordinate = vec2f(
-    terrainAbsolutePosition.y * ${(1 / 9).toFixed(9)},
-    (terrainAbsolutePosition.x * 0.829038 + terrainAbsolutePosition.z * 0.559193)
-      * ${(1 / 97).toFixed(9)});
-  let terrainStrataA = terrainSurfaceValueGrad(terrainStrataCoordinate);
-  let terrainStrataB = terrainSurfaceValueGrad(
-    terrainStrataCoordinate * vec2f(2.317, 2.731) + vec2f(13.1, 4.7));
-  let terrainStrataValue = mix(terrainStrataA.x, terrainStrataB.x, 0.35);
-  let terrainStrataSlopeRaw = mix(terrainStrataA.y, terrainStrataB.y * 2.317, 0.35);
-  // Along-strike break-up: without it every slope at the same altitude carries
-  // the same band and the mountains read as contour-line stripes.
-  let terrainStrataBreak = terrainSteep * (0.25 + 0.75 * terrainMesoA.x)
-    * terrainStrataWeight;
+  // M-2: the altitude-keyed strata octave that lived here is gone. A field
+  // keyed on world Y is constant along a contour, so however it was broken up
+  // (wave Q gave it two incommensurate octaves and an along-strike mask) it
+  // drew contour lines round every peak — the "weird black horizontal lines"
+  // of the mountain report. Nothing replaces it: RockRelief draws no strata.
+  terrainRockFracture = terrainMesoA.x;
   // W-1 term 4: the flat-ground derate is what kept hummock shading off
   // meadows. A steep face needs the extra relief least — it already has
   // geometry to shade with — and open pasture needs it most, which is where
@@ -2606,12 +2748,10 @@ if (terrainMesoWeightA > 0.001) {
     terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
     + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
   ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep);
-  let terrainStrataSlope = terrainStrataSlopeRaw * terrainStrataBreak * 0.32;
   terrainNormal = normalize(terrainNormal)
-    + vec3f(-terrainMesoSlope.x, -terrainStrataSlope, -terrainMesoSlope.y);
+    + vec3f(-terrainMesoSlope.x, 0.0, -terrainMesoSlope.y);
   let terrainMesoTone = (terrainMesoA.x - 0.5) * 0.26 * terrainMesoWeightA
-    + (terrainMesoB.x - 0.5) * 0.16 * terrainMesoWeightB
-    + (terrainStrataValue - 0.5) * 0.18 * terrainStrataBreak;
+    + (terrainMesoB.x - 0.5) * 0.16 * terrainMesoWeightB;
   let terrainMesoHue = mix(
     vec3f(0.962, 0.988, 1.034),
     vec3f(1.038, 1.008, 0.955),
@@ -2620,13 +2760,71 @@ if (terrainMesoWeightA > 0.001) {
   terrainAlbedo *= terrainMesoHue * (1.0 + terrainMesoTone) * terrainMesoWeightA
     + vec3f(1.0) * (1.0 - terrainMesoWeightA);
   terrainRoughness = clamp(
-    terrainRoughness
-      + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA
-      + (terrainStrataValue - 0.5) * 0.08 * terrainStrataBreak,
+    terrainRoughness + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA,
     0.02,
     1.0,
   );
 }
+
+// ---------------------------------------------------------------------------
+// M-2 — rock relief: a crag field on steep rock and scree, with the normal,
+// the occlusion and the tone read off one field. See RockRelief.ts. Gated by
+// the same tier lane as W-1, so Low pays nothing.
+// ---------------------------------------------------------------------------
+// The slope window fades relief out on LEVEL rock (a summit pavement has no
+// fall line to give it a grain). It must not fade it out at a patch's EDGE:
+// there cover is partial and slope sits under the window, so rock was drawn
+// flat and unshaded — lighter than the relieved interior — and every patch
+// wore a pale rim. The window therefore opens fully by the slope at which the
+// classifier itself starts to call ground rock.
+let terrainRockReliefWeight = clamp(terrainRockCover, 0.0, 1.0)
+  * smoothstep(
+    ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW * 0.5)}, ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW * 1.25)},
+    terrainSlope)
+  * terrainGroundPatchworkOn * ${terrainWgslFloat(ROCK_RELIEF_STRENGTH)};
+if (terrainRockReliefWeight > 0.02 && terrainRockCandidate) {
+  let terrainRock = terrainRockReliefAt(
+    terrainAbsolutePosition, terrainGeometricNormal, terrainFootprint3D, terrainRockFracture,
+    terrainRockCoarse);
+  terrainNormal = normalize(terrainNormal) + terrainRock.normalOffset * terrainRockReliefWeight;
+  terrainAlbedo *= mix(vec3f(1.0), terrainRock.tone, terrainRockReliefWeight);
+  terrainCavity *= mix(1.0, terrainRock.occlusion, terrainRockReliefWeight);
+  terrainRoughness = clamp(
+    terrainRoughness + terrainRock.roughness * terrainRockReliefWeight, 0.02, 1.0);
+  // Couloirs: creases hold snow well below the snowline, because a notch is
+  // shaded and collects what the faces shed. Read off the SAME crease the
+  // normal and the occlusion read, so the white lies in the notch.
+  let terrainSnowlineNow = min(uniforms.terrainSurfaceWetness.z, terrainSnowline);
+  let terrainCouloir = terrainRock.couloir * terrainRockReliefWeight
+    * smoothstep(
+      terrainSnowlineNow - ${terrainWgslFloat(ROCK_COULOIR_BELOW_SNOWLINE_METERS)},
+      terrainSnowlineNow + ${terrainWgslFloat(ROCK_COULOIR_ABOVE_SNOWLINE_METERS)},
+      terrainSnowDriver);
+  if (terrainCouloir > 0.002) {
+    let terrainCouloirSnow = terrainSurfaceReference(${SurfaceMaterial.Snow});
+    terrainAlbedo = mix(terrainAlbedo, terrainCouloirSnow.rgb, terrainCouloir);
+    terrainRoughness = mix(terrainRoughness, terrainCouloirSnow.w, terrainCouloir);
+  }
+}
+// M-2 — snow relief: wind drift, so a snowfield is not one albedo on a smooth
+// mesh. Same tier lane; the normal, the tone and the occlusion read one field.
+if (terrainSnowShare * terrainGroundPatchworkOn > 0.02) {
+  let terrainSnowDrift = terrainSnowDriftAt(terrainAbsolutePosition.xz, terrainFootprint3D);
+  terrainNormal = normalize(terrainNormal)
+    - vec3f(terrainSnowDrift.x, 0.0, terrainSnowDrift.y) * terrainSnowShare;
+  terrainAlbedo *= 1.0 + clamp(terrainSnowDrift.z, -2.0, 2.0)
+    * ${terrainWgslFloat(SNOW_DRIFT_TONE)} * terrainSnowShare;
+  terrainCavity *= 1.0 - clamp(-terrainSnowDrift.z, 0.0, 2.0)
+    * ${terrainWgslFloat(SNOW_DRIFT_OCCLUSION)} * terrainSnowShare;
+}
+// Toksvig at range: the tile's normals converge to flat with terrainDetailWeight
+// and their variance has to come back as roughness, or a far face is glossier
+// than a near one — the sheen on the peaks in the mountain report.
+terrainRoughness = mix(
+  terrainRoughness,
+  max(terrainRoughness, ${terrainWgslFloat(ROCK_RANGE_ROUGHNESS)}),
+  clamp(terrainRockCover, 0.0, 1.0) * (1.0 - terrainDetailWeight) * terrainGroundPatchworkOn,
+);
 
 // ---------------------------------------------------------------------------
 // W-1 — the ground patchwork's albedo half: a dryness field with edges, and
@@ -2652,7 +2850,7 @@ if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
   // and drier crests, but no input may turn it into pasture wholesale. The
   // unbaked-page case is handled at the source, where the bake's own validity
   // lane gates the read; this clamp is the second layer.
-  let terrainGroundSky = clamp(terrainSkyVisibility, 0.0, 1.0);
+  let terrainGroundSky = clamp(terrainSkyOpenness, 0.0, 1.0);
   let terrainGroundTopographic = clamp(
     -(1.0 - terrainGroundSky) * 0.4 + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.5,
     -0.22,
@@ -2704,6 +2902,24 @@ if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
     vec3f(${GROUND_BARE_ALBEDO.map((v) => v.toFixed(3)).join(", ")}),
     terrainGroundBare * 0.4);
   terrainRoughness = clamp(terrainRoughness - 0.06 * terrainGroundBare, 0.02, 1.0);
+  // D-3 — sward relief: the 0.3-4 m band no other term has a wavelength in.
+  // Without it the tile has minified to its mean by 8 m up and the ground is a
+  // gradient from there to the patchwork's 18 m. One field for the normal and
+  // the tone; zero-mean; world-anchored; each octave faded by footprint.
+  let terrainSward = terrainSwardReliefAt(terrainAbsolutePosition.xz, terrainFootprint3D);
+  // terrainGroundVegetation already carries the airfield exclusion (mown grass
+  // stays mown) and is zero on rock, snow, sand and pavement; opened soil keeps
+  // a reduced share. Steered by the patchwork's own dryness, so the band
+  // composes with W-1 instead of stacking on it: rougher and strawier on dry
+  // ground, calmer on lush.
+  let terrainSwardWeight = terrainGroundVegetation
+    * (1.0 - terrainGroundBare * ${terrainWgslFloat(1 - SWARD_RELIEF_BARE_SHARE)})
+    * mix(${terrainWgslFloat(SWARD_RELIEF_LUSH_GAIN)}, ${terrainWgslFloat(SWARD_RELIEF_DRY_GAIN)},
+      clamp(terrainGroundDryness, 0.0, 1.0));
+  terrainNormal = normalize(terrainNormal)
+    - vec3f(terrainSward.x, 0.0, terrainSward.y) * terrainSwardWeight;
+  terrainAlbedo *= vec3f(1.0) + vec3f(${SWARD_RELIEF_TINT.map((v) => terrainWgslFloat(v)).join(", ")})
+    * (terrainSward.z * terrainSwardWeight);
 }
 
 // 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
@@ -2876,7 +3092,7 @@ var terrainGroundDirect = 1.0;
     let terrainScrubOpenness = clamp(
       0.55
         - terrainGroundCluster * 0.55
-        - (1.0 - clamp(terrainSkyVisibility, 0.0, 1.0)) * 0.5
+        - (1.0 - clamp(terrainSkyOpenness, 0.0, 1.0)) * 0.5
         + clamp(terrainSlope - 0.12, 0.0, 0.35) * 0.9
         + terrainGroundBare * 0.6
         + (1.0 - terrainScrubComplement) * 0.85,

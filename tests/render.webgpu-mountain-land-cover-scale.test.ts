@@ -372,57 +372,87 @@ describe("mountain land-cover scale diagnostic", () => {
       addLine(grid.map((row) => row[column]!));
     }
 
-    // Non-vacuity: 57,602/90,601 samples meet the >=23 degree face threshold,
-    // and all three colours implicated by the report occupy material area.
+    const shareOf = (id: SurfaceMaterialId): string =>
+      (((slopeHistogram.get(id) ?? 0) / Math.max(1, steepPoints)) * 100).toFixed(1);
+    console.info(`mountain patch diagnostic: camera ${camera.x.toFixed(0)},${camera.z.toFixed(0)}; `
+      + `steep ${steepPoints}/${columns * rows}; dominant on steep ground: Grass ${shareOf(SurfaceMaterial.Grass)}% `
+      + `DryGrass ${shareOf(SurfaceMaterial.DryGrass)}% Rock ${shareOf(SurfaceMaterial.Rock)}% `
+      + `Gravel ${shareOf(SurfaceMaterial.Gravel)}% Shrub ${shareOf(SurfaceMaterial.Shrub)}% `
+      + `ForestFloor ${shareOf(SurfaceMaterial.ForestFloor)}%`);
+    for (const id of MATERIALS_OF_INTEREST) {
+      const runs = summary(runWidths.get(id) ?? []);
+      console.info(`  ${nameOf(id)} runs: n=${runs.count} p25 ${runs.p25} median ${runs.median} p75 ${runs.p75}`);
+    }
+    for (const [key, widths] of transitionWidths) {
+      const blend = summary(widths);
+      console.info(`  ${key}: n=${blend.count} median ${blend.median}`);
+    }
+    // RE-MEASURED for wave M (2026-09-19). M-1 reshaped the massifs, so the
+    // canonical mountain vantage re-resolves 13.8 km away, and M-3 repartitioned
+    // alpine cover, so what is ON that face changed: it was Grass / DryGrass /
+    // Rock confetti and is now Grass / Rock / Gravel (DryGrass 1.7% of steep
+    // ground here, against > 15% at the old site). THE MECHANISM THIS TEST
+    // RECORDS IS UNCHANGED, and that is the finding: patch chords are still tens
+    // of metres and mineral boundaries are still ~8 m wide and still 100%
+    // slope-driven. Gentler mountains and a better partition did not fix the
+    // slope field's own scale; the counterfactual below is still the lever.
+    //
+    // Non-vacuity: 71,121/90,601 samples meet the >=23 degree face threshold,
+    // and the three covers the partition draws all occupy material area.
     expect(steepPoints / (columns * rows)).toBeGreaterThan(0.6);
-    expect((slopeHistogram.get(SurfaceMaterial.Grass) ?? 0) / steepPoints).toBeGreaterThan(0.5);
-    expect((slopeHistogram.get(SurfaceMaterial.DryGrass) ?? 0) / steepPoints).toBeGreaterThan(0.15);
+    expect((slopeHistogram.get(SurfaceMaterial.Grass) ?? 0) / steepPoints).toBeGreaterThan(0.4);
     expect((slopeHistogram.get(SurfaceMaterial.Rock) ?? 0) / steepPoints).toBeGreaterThan(0.2);
+    expect((slopeHistogram.get(SurfaceMaterial.Gravel) ?? 0) / steepPoints).toBeGreaterThan(0.04);
 
     const grassRuns = summary(runWidths.get(SurfaceMaterial.Grass) ?? []);
-    const dryGrassRuns = summary(runWidths.get(SurfaceMaterial.DryGrass) ?? []);
+    const gravelRuns = summary(runWidths.get(SurfaceMaterial.Gravel) ?? []);
     const rockRuns = summary(runWidths.get(SurfaceMaterial.Rock) ?? []);
-    // Measured medians are 36 m for all three; their central halves span
-    // 12-92 m. That independently reproduces the handover's 13-100 m band.
-    for (const distribution of [grassRuns, dryGrassRuns, rockRuns]) {
+    // Measured medians: Grass 24 m, Rock 28 m (36 m for all three at the old
+    // site), central halves 8-56 m. Scree runs are shorter, 12 m: a band, not a
+    // patch.
+    for (const distribution of [grassRuns, rockRuns]) {
       expect(distribution.count).toBeGreaterThan(500);
-      expect(distribution.median).toBeGreaterThanOrEqual(28);
+      expect(distribution.median).toBeGreaterThanOrEqual(16);
       expect(distribution.median).toBeLessThanOrEqual(48);
       expect(distribution.p75).toBeLessThanOrEqual(100);
     }
+    expect(gravelRuns.count).toBeGreaterThan(500);
+    expect(gravelRuns.median).toBeLessThanOrEqual(24);
 
     const grassRockKey = [nameOf(SurfaceMaterial.Grass), nameOf(SurfaceMaterial.Rock)]
       .sort().join(" ↔ ");
-    const dryRockKey = [nameOf(SurfaceMaterial.DryGrass), nameOf(SurfaceMaterial.Rock)]
+    const gravelRockKey = [nameOf(SurfaceMaterial.Gravel), nameOf(SurfaceMaterial.Rock)]
       .sort().join(" ↔ ");
-    const grassDryKey = [nameOf(SurfaceMaterial.Grass), nameOf(SurfaceMaterial.DryGrass)]
+    const grassGravelKey = [nameOf(SurfaceMaterial.Grass), nameOf(SurfaceMaterial.Gravel)]
       .sort().join(" ↔ ");
     const grassRockBlend = summary(transitionWidths.get(grassRockKey) ?? []);
-    const dryRockBlend = summary(transitionWidths.get(dryRockKey) ?? []);
-    const grassDryBlend = summary(transitionWidths.get(grassDryKey) ?? []);
+    const gravelRockBlend = summary(transitionWidths.get(gravelRockKey) ?? []);
+    const grassGravelBlend = summary(transitionWidths.get(grassGravelKey) ?? []);
 
-    // Rock boundaries account for 3,037 measured crossings. Their median
-    // softness is only 8-12 m, far below the 36 m patch chord. Direct
-    // Grass/DryGrass ecotones are the opposite: a 256 m median, too broad to be
-    // the reported blobs. Widening smoothsteps therefore targets the edge, not
-    // the field that keeps creating a new patch centre.
-    expect(grassRockBlend.count + dryRockBlend.count).toBeGreaterThan(3_000);
+    // Rock boundaries account for 5,805 measured crossings (3,037 at the old
+    // site). Their median softness is only 4-8 m, far below the 24-28 m patch
+    // chord. The turf/scree ecotone is the opposite, 88 m: it is drawn by
+    // dryness as much as by slope. Widening smoothsteps therefore still targets
+    // the edge, not the field that keeps creating a new patch centre.
+    expect(grassRockBlend.count + gravelRockBlend.count).toBeGreaterThan(3_000);
     expect(grassRockBlend.median).toBeLessThanOrEqual(16);
-    expect(dryRockBlend.median).toBeLessThanOrEqual(12);
-    expect(grassDryBlend.median).toBeGreaterThanOrEqual(128);
+    expect(gravelRockBlend.median).toBeLessThanOrEqual(12);
+    expect(grassGravelBlend.median).toBeGreaterThanOrEqual(48);
     expect(grassRuns.median / grassRockBlend.median).toBeGreaterThanOrEqual(2.5);
-    expect(dryGrassRuns.median / dryRockBlend.median).toBeGreaterThanOrEqual(3);
+    expect(rockRuns.median / gravelRockBlend.median).toBeGreaterThanOrEqual(3);
 
     const driverShare = (pair: string, driver: string): number => {
       const counts = boundaryDrivers.get(pair) ?? new Map<string, number>();
       const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
       return (counts.get(driver) ?? 0) / Math.max(1, total);
     };
+    for (const [pair, counts] of boundaryDrivers) {
+      console.info(`  drivers ${pair}: ${[...counts.entries()].map(([k, v]) => `${k} ${v}`).join(", ")}`);
+    }
     // The attribution is effectively categorical: 99.9-100% slope at mineral
     // boundaries, 100% moisture at the sparse direct grass ecotones.
     expect(driverShare(grassRockKey, "slope")).toBeGreaterThan(0.99);
-    expect(driverShare(dryRockKey, "slope")).toBeGreaterThan(0.99);
-    expect(driverShare(grassDryKey, "moisture")).toBeGreaterThan(0.99);
+    expect(driverShare(gravelRockKey, "slope")).toBeGreaterThan(0.99);
 
     const baselinePopulation = patchPopulation(grid, spacing);
     const counterfactuals = [8, 16, 32, 64].map((halfWidthMeters) => ({
@@ -437,22 +467,30 @@ describe("mountain land-cover scale diagnostic", () => {
     // the scale lever's effect; it is NOT a proposed implementation. A real fix
     // must resolve the LOD authority decision (propagated statistic versus a
     // roughness channel) rather than locally inventing another slope owner.
+    console.info(`  population: chords ${baselinePopulation.reportedScaleChords} crossings `
+      + `${baselinePopulation.mineralBoundaryCrossings} rock ${baselinePopulation.rockFraction.toFixed(4)}; `
+      + counterfactuals.map((entry) => `hw${entry.halfWidthMeters}: chords `
+        + `${(entry.population.reportedScaleChords / baselinePopulation.reportedScaleChords).toFixed(2)} crossings `
+        + `${(entry.population.mineralBoundaryCrossings / baselinePopulation.mineralBoundaryCrossings).toFixed(2)} rock `
+        + `${entry.population.rockFraction.toFixed(4)}`).join("; "));
     expect(baselinePopulation.reportedScaleChords).toBeGreaterThan(2_000);
     expect(baselinePopulation.mineralBoundaryCrossings).toBeGreaterThan(3_000);
     expect(baselinePopulation.rockFraction).toBeGreaterThan(0.2);
 
     const at = (halfWidthMeters: number): PatchPopulation =>
       counterfactuals.find((entry) => entry.halfWidthMeters === halfWidthMeters)!.population;
-    // A 16 m half-width (33 m box support) removes 39% of reported-scale chords
-    // and 41% of mineral crossings, while Rock moves only 23.25% -> 21.83%.
-    // That is a viable causal region: the patches fall without Rock flooding or
-    // disappearing. The wider probes map the trade-off rather than blessing it.
+    // A 16 m half-width (33 m box support) removes 49% of reported-scale chords
+    // and 55% of mineral crossings, while Rock moves only 31.14% -> 28.47%
+    // (at the old site, before wave M: 39%, 41%, and 23.25% -> 21.83%). That is
+    // still a viable causal region, and a STRONGER one than it was: the patches
+    // fall by half without Rock flooding or disappearing. The wider probes map
+    // the trade-off rather than blessing it.
     expect(at(16).reportedScaleChords / baselinePopulation.reportedScaleChords)
       .toBeLessThan(0.7);
     expect(at(16).mineralBoundaryCrossings / baselinePopulation.mineralBoundaryCrossings)
       .toBeLessThan(0.7);
     expect(Math.abs(at(16).rockFraction - baselinePopulation.rockFraction))
-      .toBeLessThan(0.02);
+      .toBeLessThan(0.035);
     expect(at(32).reportedScaleChords / baselinePopulation.reportedScaleChords)
       .toBeLessThan(0.5);
     expect(at(32).rockFraction / baselinePopulation.rockFraction).toBeGreaterThan(0.75);

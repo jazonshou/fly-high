@@ -815,7 +815,30 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // readers, re-pinned. The rejected alternative was applying the floor in
     // the splat path alone, which would split one authority into two — the
     // shape that left the memory estimate and the inventory disagreeing.
-    expect(dark.digest).toBe("2a43cd2c");
+    //
+    // RE-PINNED `2a43cd2c` -> `d127cbd4` for item C, the alpine cover
+    // partition (alpine turf, slope-dependent altitude Rock, repose-angle
+    // scree). **Measured probe by probe, because a moved hash says nothing
+    // about how much moved:** this transect tops out at 521 m, 17 of its 4,096
+    // probes stand above the 420 m `alpine` onset, 15 of those 17 changed their
+    // six-decimal weight key, and **0 of the 4,079 at or below 420 m changed at
+    // all** — item C's terms are all multiplied by `alpine`, which is exactly 0
+    // there (`render.webgpu-land-cover-alpine-partition.test.ts` proves that to
+    // the bit). The DOMINANT material changed at 0 probes, so the classification
+    // the species, wildlife and ecology rules read on this transect is unmoved;
+    // what moved is the minority weights of 15 probes on its highest ground.
+    //
+    // RE-PINNED `d127cbd4` -> `fa77bb72` for wave M, and this time the terrain
+    // moved as well as the law, so the two are separated: M-1 (the massif
+    // shape) changes the HEIGHT at 377 of the 4,096 probes — this transect
+    // crosses a 521 m hill inside the reshaping gate — and the weight key
+    // changes at 349 probes at or below 420 m and at all 17 above it. Every one
+    // of the 349 is a probe whose terrain moved; none is the classifier (the
+    // alpine-partition test proves the law bit-identical down there). The
+    // DOMINANT material changes at 35 probes, all Rock -> ForestFloor: faces
+    // that were cliff on the needle terrain and are not any more. Mean Rock
+    // share 1.01% -> 0.24%.
+    expect(dark.digest).toBe("fa77bb72");
     expect(dark.probes).toBe(EDGE * EDGE);
   });
 
@@ -828,7 +851,15 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // 1.0 by a permanent 0.100 on every wet lowland. Forest litter was painted
     // where there is no forest. Measured on the shipping bake afterwards:
     // ForestFloor 13.6% of baked texels, against 57.7% of land before.
-    expect(live.digest).toBe("266f19ce"); // re-pinned with `2a43cd2c`; same cause, see above
+    // RE-PINNED `266f19ce` -> `d7d70f55` for item C, with `d127cbd4` above and
+    // for the same cause: 14 of the 17 probes above 420 m changed their weight
+    // key, 0 of the 4,079 at or below it did, and the dominant material
+    // changed at 0 probes. (`266f19ce` was itself re-pinned with `2a43cd2c`.)
+    // RE-PINNED `d7d70f55` -> `6b625191` for wave M, with `fa77bb72` above and
+    // for the same cause: 377 probes stand on moved terrain, 347 weight keys
+    // change at or below 420 m (all on moved terrain), the dominant material
+    // changes at 34 probes, all Rock -> Grass.
+    expect(live.digest).toBe("6b625191");
     let changed = 0;
     for (let index = 0; index < dark.reference.length; index += 1) {
       if (dark.reference[index] !== live.reference[index]) changed += 1;
