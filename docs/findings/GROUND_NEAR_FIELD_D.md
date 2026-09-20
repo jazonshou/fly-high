@@ -249,3 +249,85 @@ test for a later wave, not run here: keep a fixed dummy compute dispatch
 running to hold the clock up and time the same bake with it off and on, in one
 interleaved series; if the short dispatch gets faster and tighter with the
 dummy on, it is clocking.
+
+## 5. The brown polygon under the aeroplane: a page that said nothing
+
+Reported from 2,900 ft in the orbit camera over dry country (world LIVERY): a
+large brown, fully detailed region under and round the aeroplane, bounded by
+dead-straight edges meeting at corners, with greener, softer country beyond. A
+polygon laid on the ground, following the aircraft.
+
+The first hypothesis was that section 3's feather had put a tone step on the
+page-trust boundary. It had not, and the A/B said so: with the feather disabled
+the straight edge is unchanged and the old hard blob comes back beside it; with
+`W-1`'s assumed dryness disabled it softens slightly and stays. A tint of "is a
+page splat in use at all" put the line exactly on a gate, not on a ramp:
+`terrainSurfacePageSplat` returns before its gather when confidence is under
+0.1, confidence is 1 - 0.2 x level, so a page at level 5 and up (128 m texels,
+which from cruise height is everything beyond about 2 km) says NOTHING, and the
+fragment falls back to "one continuous Grass base": green, in every biome. At
+level 4, where trust is only 0.10, the feather's target is the page's own
+materials. So the edge was the page's dry pair against Grass-by-assumption,
+straight because levels are per page. It predates this wave (it is the "green
+no-page fallback" `GROUND_TEXTURE_W1.md` logged), and section 3 had made it
+slightly better.
+
+A resident page too coarse to trust may now name a pair of SWARDS for the
+feather to fade toward, at zero trust (the splat's confidence lane carries -1,
+so class strength is exactly zero and nothing else the page says is used). Same
+bar and same reasoning as section 3: the mixture of two swards is a climate
+gradient, smooth at any texel size, which is the one thing a 128-256 m texel can
+be believed about. Any pair with a real share of rock, gravel, snow, sand,
+pavement or forest floor keeps the Grass base and the fragment-derived third
+candidate exactly as before, so no coarse page paints a single-material plate
+and distant mountains do not move. The pair mixes by the page's share with no
+height winner (a coarse texel has no height evidence). One dial,
+`TERRAIN_FAR_SWARD_READ`: 0 off, 1 the nearest texel's own top two (3 loads),
+2 the bilinear sparse gather (12); the early return existed on purpose, because
+these fragments are most of a cruise frame.
+
+By frame, same world and pose: the polygon is gone and dry country carries its
+tone to the horizon; the cheap and the full read differ by 0.7 of 255 with no
+visible texel steps in the cheap one. Where the next boundary sits: there is
+none inside the view. Levels 5 and 6 fade toward the same kind of target, so the
+5/6 page edge carries no step, and the tint shows the far sward in use out to
+the horizon. What remains is texels whose pair holds a non-sward (hills, forest
+edge, shore): they keep the Grass base, with stair-stepped outlines at 128-256 m
+in the TINT, and in lush hill country they draw no visible edge because the
+sward mixture there is nearly Grass anyway. In dry hills they could; not seen in
+the frames shot, and logged.
+
+**Price: FULL decided, CHEAP NOT YET PRICED, and that is a condition of the
+merge.** One tree, dial toggled, four interleaved rounds of off / cheap / full on
+`cruise-horizon` and `high-10000ft-down` at a swept 2560x1440 viewport (both
+shots sit on the 120 fps cap at the canonical size on a quiet machine, which
+would hide a 1-2 % cost; that cap is also why "nothing at cruise" was easy to
+say earlier in this wave, and it should be read with that in mind). Another
+renderer was on the GPU throughout and the OFF arm's spread against itself was
+7.5 % and 5.3 %, where two quiet windows earlier had given 0.0-0.4 %. So:
+
+* FULL costs on the order of 10-20 % of a cruise frame (paired medians -13 %
+  and -4 %, mostly one-signed; a canonical-size round agreed in kind at -17 %
+  and -22 %). It does not ship under any reading, and the early return it
+  replaces is vindicated. It stays behind the dial, three lines, only so a
+  later pricing run can show what is not being bought.
+* CHEAP could not be priced: paired +6.8 / -0.5 / -8.2 / +2.3 % and -4.1 / -2.0
+  / +0.3 / +1.4 %, signs split two and two, medians +0.9 % and -0.9 %, against
+  that 5-7 % floor. Not distinguishable from zero; nothing up to about 4-5 %
+  excluded. It is a quarter of FULL's texture work with none of its ten-way
+  accumulate, which is an argument and not a measurement.
+
+CHEAP merged ON, on these terms: it is to be priced off-versus-cheap, six to
+eight interleaved rounds at the swept viewport, on a machine with NOTHING else
+rendering, BEFORE the baseline promotion. Over about 1 % at cruise, the dial
+goes to 0 (or to a cheaper read, shown first) and the polygon is logged with
+the biome-tone-map note below. The promotion captures whatever state the dial
+ends in, so the order is price, decide, promote, never the reverse.
+
+Left: an UNRESIDENT page still has no source. After a 9 km jump at 300 m AGL the
+whole frame is Grass-green for about half a second and then takes its dry tone
+at once, with no polygon; in flight the coarse pages stream ahead of the
+aircraft, so it should not show, but a fast enough aircraft could outrun them.
+The honest fix is a low-resolution biome-tone map for the whole streaming
+window: a new resource and a new binding against the 16-sampler limit. Low tier
+is unchanged: its two-material path never samples the second layer.
