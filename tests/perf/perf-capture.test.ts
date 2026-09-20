@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { afterAll, describe, expect, it } from "vitest";
+import { AIRCRAFT_KINDS } from "@/src/sim";
 import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
@@ -81,6 +82,21 @@ const BASELINE_DIR = "tests/perf/baseline";
 const ARTIFACT_DIR = "tests/perf/artifacts";
 const CANDIDATE_ROOT = `${ARTIFACT_DIR}/rebaseline-candidates`;
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
+/**
+ * `VITE_PERF_AIRCRAFT=bizjet` — fly the shot list behind a different airframe.
+ *
+ * Not for baselines: every shipped baseline is the trainer, and comparing one
+ * aircraft's capture against another's baseline would be meaningless. This
+ * exists for the SAME-TREE question "what does choosing the 747 cost a player
+ * compared with the Cessna", which a base-against-branch A/B cannot answer
+ * because no shot flies anything but the trainer.
+ */
+const CAPTURE_AIRCRAFT = (() => {
+  const wanted = String(import.meta.env.VITE_PERF_AIRCRAFT ?? "").trim();
+  return (AIRCRAFT_KINDS as readonly string[]).includes(wanted)
+    ? (wanted as (typeof AIRCRAFT_KINDS)[number])
+    : ("trainer" as const);
+})();
 /**
  * Diagnostic only; normal captures match shipping's observer-free path.
  *
@@ -573,7 +589,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // the initial renderer and any W-7 mode-boundary rebuild.
     const captureRendererOptions = () => ({
       canvas,
-      aircraft: "trainer" as const,
+      aircraft: CAPTURE_AIRCRAFT,
       terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
       world,
       seed: world.sourceSeedHash,
