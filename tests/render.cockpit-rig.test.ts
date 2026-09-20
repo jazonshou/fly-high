@@ -1,8 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { aircraftSpec } from "../src/aircraft/catalogue";
@@ -56,11 +58,11 @@ describe("cockpit lens", () => {
     expect(PERF_COCKPIT_RIG.horizontalFovDegrees).toBe(PERF_COCKPIT_HORIZONTAL_FOV_DEGREES);
   });
 
-  it("frames azimuth +-37.5 and elevation +-23.4 at 16:9, the angles the cockpit geometry is built to", () => {
+  it("frames azimuth +-37.5 and elevation +-23.35 at 16:9, the angles the cockpit geometry is built to", () => {
     const tanHalfHorizontal = Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES * Math.PI) / 360);
     const halfElevation = (Math.atan(tanHalfHorizontal * (9 / 16)) * 180) / Math.PI;
     expect(COCKPIT_HORIZONTAL_FOV_DEGREES / 2).toBe(37.5);
-    expect(halfElevation).toBeCloseTo(23.4, 1);
+    expect(halfElevation).toBeCloseTo(23.35, 1);
     // The lens this replaced put the bottom of the frame at 16.7 degrees, above
     // every instrument (17 to 25 degrees below the eye).
     const oldHalfElevation = (Math.atan(Math.tan((56 * Math.PI) / 360) * (9 / 16)) * 180) / Math.PI;
@@ -243,7 +245,18 @@ describe("cockpit rig arithmetic", () => {
 
 // --- the eye against the seat ------------------------------------------------
 
-function portSeat(kind: AircraftKind): { name: string; z: number; captainNote: string | null } {
+function worldVertices(mesh: AbstractMesh): Vector3[] {
+  const data = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!data) return [];
+  const world = mesh.getWorldMatrix();
+  const out: Vector3[] = [];
+  for (let i = 0; i + 2 < data.length; i += 3) {
+    out.push(Vector3.TransformCoordinates(new Vector3(data[i]!, data[i + 1]!, data[i + 2]!), world));
+  }
+  return out;
+}
+
+function portSeat(kind: AircraftKind): { name: string; z: number; note: string | null } {
   const engine = new NullEngine();
   const scene = new Scene(engine);
   scene.useRightHandedSystem = true;
@@ -258,17 +271,39 @@ function portSeat(kind: AircraftKind): { name: string; z: number; captainNote: s
       .map((mesh) => ({ name: mesh.name, z: mesh.getBoundingInfo().boundingBox.centerWorld.z }))
       .sort((a, b) => a.z - b.z);
     const seat = seats[0];
-    if (!seat) {
-      throw new Error(
-        `${kind}: no seat mesh found. If the flight deck's static parts were merged into one mesh, this test needs the merged mesh's seat back (or a marker on it).`,
-      );
+    if (seat) {
+      const captain = seats.find((candidate) => /captain/.test(candidate.name));
+      return {
+        ...seat,
+        note: captain
+          ? `${kind}: the mesh named "${captain.name}" sits at z ${captain.z.toFixed(2)} (${captain.z > 0 ? "STARBOARD" : "port"}); a captain sits on the left`
+          : null,
+      };
     }
-    const captain = seats.find((candidate) => /captain/.test(candidate.name));
+
+    // No mesh is named for a seat: the 747's static parts were folded into one
+    // mesh per material (House-Keeping 3d56234), so both seats live inside
+    // `airliner-flight-deck-interior` and only their NAMES survive, in
+    // `metadata.mergedFrom`. The port seat is then measured from that mesh's
+    // vertices: everything within 0.7 m of the eye's station is seating (the
+    // panel board, the only other part in the mesh, is 1.15 m ahead of it),
+    // and the port half of that is the port seat.
+    const merged = scene.meshes.find((mesh) =>
+      ((mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [])
+        .some((part) => /seat/.test(part) && !/headrest/.test(part)));
+    if (!merged) throw new Error(`${kind}: no seat mesh, and no merged mesh that lists one in mergedFrom`);
+    const stationLimit = aircraftSpec(kind).cockpitEye.forward + 0.7;
+    const port = worldVertices(merged).filter((v) => v.x < stationLimit && v.z < 0);
+    const zs = port.map((v) => v.z);
+    const zMin = Math.min(...zs);
+    const zMax = Math.max(...zs);
+    if (port.length === 0 || zMax - zMin < 0.4 || zMax - zMin > 0.8) {
+      throw new Error(`${kind}: the port cluster in "${merged.name}" is ${port.length} vertices spanning z ${zMin}..${zMax}; that is not a seat`);
+    }
     return {
-      ...seat,
-      captainNote: captain
-        ? `${kind}: the mesh named "${captain.name}" sits at z ${captain.z.toFixed(2)} (${captain.z > 0 ? "STARBOARD" : "port"}); a captain sits on the left`
-        : null,
+      name: `${merged.name} (port seat measured from vertices)`,
+      z: (zMin + zMax) / 2,
+      note: `${kind}: seats are folded into "${merged.name}"; the seat names in mergedFrom are ${JSON.stringify((merged.metadata as { mergedFrom: string[] }).mergedFrom.filter((part) => /seat/.test(part) && !/headrest/.test(part)))}, in build order (captain built first, at +Z, starboard)`,
     };
   } finally {
     scene.dispose();
@@ -279,7 +314,7 @@ function portSeat(kind: AircraftKind): { name: string; z: number; captainNote: s
 describe("cockpit eye against the pilot's seat", () => {
   it.each(AIRCRAFT_KINDS)("%s: the eye is over the port seat, or on the centreline of a single seat", (kind) => {
     const seat = portSeat(kind);
-    if (seat.captainNote) console.info(seat.captainNote);
+    if (seat.note) console.info(seat.note);
     const right = aircraftSpec(kind).cockpitEye.right;
     if (kind === "jet") {
       // One seat, on the centreline.
