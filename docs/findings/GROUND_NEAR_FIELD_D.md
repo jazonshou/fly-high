@@ -96,3 +96,22 @@ across the frame as it should.
 * **Cellular tussock domes**, one per jittered cell, present in a minority of
   cells, with a shaded skirt. Read as raindrop rings on a pond: a perfect circle
   with a dark rim is the one shape a meadow never shows from above.
+
+## 2. Blades lit like the ground they stand on (`D-2`)
+
+Inside 7 m a ground-cover blade's normal was its own ribbon normal, which is
+near-horizontal: under a high sun N.L of 0 to 0.37 against about 0.93 for the
+ground beneath it. At a 2 m eye the dark half of the blades rendered at 0.43 of
+the ground and bluer (sky-lit only): black spikes on every near meadow. The
+blend toward the ground's normal is now floored at 0.6, and the root albedo is
+0.7 where it was 0.5: the root is already darkened by the shadow map and the
+ambient term, and halving its albedo as well counted the same occlusion twice.
+
+The floor alone left half the blades black, and the frame said why:
+`twoSidedLighting` negates the WHOLE normal on a back face, and with the floor
+in, most of that normal is the ground's. Every blade seen from behind was lit
+from underneath: N.L below zero under any sun, ambient only. The fragment now
+mirrors the normal back above the horizon, which keeps the blade's own share
+reversed (that IS what the back of a ribbon faces) and restores the ground's:
+exact on level ground. At a 2 m and an 8 m eye at noon no blade renders black;
+at 18.3 h they take the low sun and cast their shadows as before.
