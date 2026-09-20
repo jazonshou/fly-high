@@ -2012,8 +2012,16 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * as an unpinned probe in `tests/delivery-floors.test.ts` and as an
      * unmeasured shot in `PERF_CAPTURE_CEILING_PROVENANCE` until somebody
      * measures it on the reference host.
+     *
+     * The DRAW-CALL ceiling is pinned, and the split is the point: draw counts
+     * are host-INDEPENDENT (byte-identical across both arms of the W-11 A/B and
+     * across every pinning run this programme has done), so measuring one here
+     * is as good as measuring it on the reference adapter. Frame timings are
+     * not. 234 is the measured count from the 2026-09-20T02-53-31.461Z
+     * candidate, pinned at the measurement rather than above it.
      */
     ceilings: null,
+    drawCallCeiling: 234,
   },
 ]);
 
