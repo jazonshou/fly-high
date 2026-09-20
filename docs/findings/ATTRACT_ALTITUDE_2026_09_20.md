@@ -40,28 +40,32 @@ clearance 450 m (the player's default). `scripts/attract-hold-probe.mts`.
 
 | | before: max clearance | before: mean | after: mean | after: max |
 | --- | ---: | ---: | ---: | ---: |
-| trainer | 1,677 m | 1,123 m | 445 m | 606 m |
-| jet | 4,907 m | 3,138 m | 919 m | 1,321 m |
-| bizjet | **9,760 m** | 7,568 m | 1,269 m | 1,597 m |
+| trainer | 1,677 m | 1,123 m | 451 m | 808 m |
+| jet | 4,907 m | 3,138 m | 945 m | 1,282 m |
+| bizjet | **9,760 m** | 7,568 m | 1,262 m | 1,657 m |
 
 The Global 8000 was flying itself to 32,000 ft on the menu screen — its service
 ceiling. Before the fix its *minimum* vertical speed over half an hour was
 **+0.11 m/s**: it never descended once, on any seed, in any aeroplane.
 
-Re-seeds per half hour, which is the honest cost side of this change:
+Re-seeds per half hour — a re-seed is a visible teleport on the menu screen, so
+this is the number that says whether the demo is actually surviving:
 
-| | before | after |
-| --- | ---: | ---: |
-| trainer | 3 / 0 / 0 | 3 / 0 / 1 |
-| jet | 0 / 0 / 0 | 1 / 2 / 1 |
-| bizjet | 0 / 0 / 0 | 0 / 0 / 0 |
+| | before | climb only | climb + turn |
+| --- | ---: | ---: | ---: |
+| trainer | 3 / 0 / 0 | 3 / 0 / 0 | **0 / 0 / 0** |
+| jet | 0 / 0 / 0 | 0 / 0 / 0 | **0 / 0 / 0** |
+| bizjet | 0 / 0 / 0 | 14 / 0 / 0 | **0 / 0 / 0** |
 
-The jets used to re-seed *never*, because at 4.9 and 9.8 km they were nowhere
-near the ground. Flying them at a sane height puts them back among the terrain,
-and the jet now re-seeds once or twice in half an hour. That is a real
-consequence of doing what was asked, not an accident, and it is why the terrain
-avoidance below exists at all. The trainer's numbers are unchanged — its 3
-re-seeds on the default seed are pre-existing.
+Zero across all nine runs, and the minimum clearance never falls below 165 m
+against a 65 m re-seed floor. The jets' "before" zeroes are not a virtue: at 4.9
+and 9.8 km they were simply nowhere near the ground.
+
+**The turn earns its place on exactly one seed, and decisively.** On the default
+seed it takes the trainer from 3 re-seeds to 0 and the Global from 14 to 0, while
+being engaged only 0–2% of the time overall — so the demo cruises straight
+almost always and turns rarely, which is the character this was supposed to
+have. On the other two seeds climbing alone is enough and the turn never fires.
 
 ## The design, and the four numbers that had to stop being constants
 
@@ -105,7 +109,7 @@ first and was measured into submission:
 4. **Terrain is reduced by the climb it DEMANDS, not by how high it is.** See
    below — this was the worst of the bugs.
 
-## Five bugs I put in and had to measure back out
+## Six bugs I put in and had to measure back out
 
 Each of these produced a confident, plausible-looking wrong answer rather than an
 error, which is the only reason they are worth writing down.
@@ -142,7 +146,22 @@ judged against a 4.4 km climb budget; the arithmetic said "you will clear it by
 328 m" and the aeroplane arrived with 65. The reduction has to be by the climb
 *rate* each point demands, which is the only form that carries the distance.
 
-**5. Even spacing steps over ridge crests.** 350 m apart over 5 km, the scan
+**5. The terrain scan pointed 57 times too close to north — and this one was
+causing all the others' symptoms.** `telemetry.heading` is RADIANS
+(`atan2(forward.x, forward.z)` straight out of the simulator); it is the worker's
+`visualState` that converts to degrees for the HUD, not the telemetry. I
+multiplied by `PI/180` as though it were degrees, so a demo tracking 45° was
+scanning along 0.9°. Terrain therefore entered the scan only when it was a few
+hundred metres away, the required-climb figure went from −4 m/s to +122 m/s in
+six seconds, and the turn fired far too late to do anything. What exposed it was
+the forensics: the trainer's three re-seeds happened at 481, 961 and 1441
+seconds — a 480-second period repeating to the second — and the logged track was
+moving 555 m east for every 542 m north while the heading read 1. **Fixing this
+one line took every aircraft on every seed to zero re-seeds.** I had seen that
+periodicity in an earlier trace, read it as "deterministic, as expected", and
+moved on; it was the loudest clue available and I walked past it.
+
+**6. Even spacing steps over ridge crests.** 350 m apart over 5 km, the scan
 reported a peak of 277 m ahead while the ground *directly beneath* the aeroplane
 was already 316 m. It was not looking too far or too close — it was looking
 through the hills. The two ends of the scan do different jobs: the near field
@@ -150,6 +169,21 @@ decides whether *this* ridge is cleared and an error there is metres from the
 ground, while the far field only has to notice a mountain early enough to start a
 turn. Quadratic spacing gives the near field ~25 m and the far field ~600 m out
 of the same budget.
+
+## The jets no longer hold the number the player set, and that is deliberate
+
+Say this plainly because it is visible: with a time-based floor the trainer holds
+the player's `airborneStartAgl` exactly (its 6-second floor of 282 m is under the
+450 m default, so it never binds), but the jet holds ~930 m and the Global ~1,270 m
+instead of 450.
+
+So pressing Start in the Global hands over an aeroplane at about 1,270 m, while a
+mid-flight restart still respawns at the 450 m the player set. The two numbers
+disagree on purpose. A Global 8000 at 450 m over this terrain has roughly two
+seconds between a ridge entering its look-ahead and being on it, which is not a
+setting anyone is choosing, it is a setting nobody thought about at 210 m/s. The
+floor never lowers the player's value — it only raises it, and only for aeroplanes
+fast enough to need it.
 
 ## What this does not fix
 

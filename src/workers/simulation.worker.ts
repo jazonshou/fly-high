@@ -242,7 +242,14 @@ function updateAttractSupervisor(): void {
     // the un-normalised forward vector, which shortens its horizon by cos(pitch)
     // exactly when the aeroplane is climbing and needs it most; that is a bug to
     // avoid inheriting, not a precedent to copy.
-    const heading = telemetry.heading * (Math.PI / 180);
+    // RADIANS. `telemetry.heading` is atan2(forward.x, forward.z) straight out
+    // of the simulator; it is `visualState` below that converts it to degrees
+    // for the HUD, not the telemetry itself. Multiplying by PI/180 here pointed
+    // the whole terrain scan 57 times too close to north: traced, the aeroplane
+    // was tracking 45 degrees while the scan looked down 0.9 degrees, so ridges
+    // appeared in it only once they were a few hundred metres away and the turn
+    // fired far too late to do anything.
+    const heading = telemetry.heading;
     const hx = Math.sin(heading);
     const hz = Math.cos(heading);
     const turn = ATTRACT_SCAN_TURN_RADIANS;

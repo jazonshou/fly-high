@@ -129,7 +129,7 @@ function flyOne(
         scanX = position.x;
         scanZ = position.z;
         scan.distance = attractScanDistance(telemetry.groundSpeed);
-        const heading = telemetry.heading * (Math.PI / 180);
+        const heading = telemetry.heading; // radians, see the worker
         const hx = Math.sin(heading);
         const hz = Math.cos(heading);
         const cos = Math.cos(ATTRACT_SCAN_TURN_RADIANS);
