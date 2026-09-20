@@ -235,11 +235,34 @@ describe("water shader extraction (2-8a)", () => {
     // body takes its colour from the scene's own light. Those shots rebaseline
     // once the whole W-7/W-8 wave has landed, not here. Deliberate, named,
     // reviewed — the flow this assertion exists to force.
+    //
+    // Re-pinned by W-11 (the sun glitter). FRAGMENT ONLY -- the vertex hash
+    // below is byte-for-byte the one W-7 left, which is the claim that W-11
+    // moved no displacement, no varying, no spectrum and no mesh fade: it
+    // changes WHERE a glint is drawn and nothing about the surface it is drawn
+    // on. The fragment gained `waterGlintCell` and `waterGlintCountGain` from
+    // the shared far-field block and two call sites for them (the sun lobe's
+    // sparkle and the distant whitecap flecks), and LOST `waterTwinkleGain`
+    // and both of its `fragmentInputs.position.xy` arguments -- the screen
+    // hash is gone from this shader and the extraction test asserts it cannot
+    // return. The count now reads the CELL's area rather than the pixel's, and
+    // the facet length that scales it moved 0.06 -> 0.0172 m.
+    //
+    // This MOVES PIXELS on every shot with a sun or moon glitter path in it,
+    // by design: the old gain put 13% of water pixels above 1x as a smear of
+    // mid-greys welded to the screen, and the new one spends the same
+    // expectation as discrete glints anchored to the water. Measured on
+    // `water-400ft-glitter`, the path's mean luminance goes 0.276 -> 0.320
+    // against 0.393 for the smooth lobe with no sparkle at all, so it is also
+    // giving back two thirds of the brightness a mean-one gain was losing
+    // through the tone map. Those shots rebaseline with this wave, and shots
+    // with no glitter path in frame do not move at all -- `night-moonlit` is
+    // bit-identical across the change at an identical shot list.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "dbaf539b86cf7e8d8e41a6e24513d279fae3bea54f7e3adb0e971a2c269ac6fb",
+      "f29919337f93a01f199e96fd49e8d64f64f5826265d58c06ab606e13bbd0b5a1",
     );
   });
 

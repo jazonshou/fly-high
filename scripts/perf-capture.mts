@@ -308,6 +308,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // vegetation at eye level against a full water plate is the shape of a new
     // maximum, not of a light shot. Nobody has measured it.
     "lake-island-piercing",
+    // W-11, after the same inventory run. 120 m over open water with the sun
+    // low and ahead. Named rather than folded in for the same reason as the
+    // shot above: a full ocean disk with its cascades resident, a coastline
+    // and its vegetation, and the bathymetry clipmap is not the shape of a
+    // light shot, and nobody has measured it.
+    "water-400ft-glitter",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -1997,7 +2003,16 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 18.4 },
     relativeSunBearingDegrees: 12,
     locate: "coast",
-    comparesToBaseline: false,
+    /**
+     * Baselined, because it is the gate for `W-11` and the only frame in the
+     * set that can fail when the glitter path regresses. NOT floor-pinned:
+     * floors are derived from three runs on the pinned reference adapter, and
+     * the machine this shot was authored on is not it, so any number measured
+     * here would be a fiction with a provenance line attached. It is declared
+     * as an unpinned probe in `tests/delivery-floors.test.ts` and as an
+     * unmeasured shot in `PERF_CAPTURE_CEILING_PROVENANCE` until somebody
+     * measures it on the reference host.
+     */
     ceilings: null,
   },
 ]);
