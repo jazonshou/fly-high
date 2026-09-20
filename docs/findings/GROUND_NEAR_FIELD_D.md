@@ -115,3 +115,47 @@ mirrors the normal back above the horizon, which keeps the blade's own share
 reversed (that IS what the back of a ribbon faces) and restores the ground's:
 exact on level ground. At a 2 m and an 8 m eye at noon no blade renders black;
 at 18.3 h they take the low sun and cast their shadows as before.
+
+## 3. Dry country from cruise height: painted regions, and what is left of them
+
+Reported from 6,000 ft AGL in the orbit camera (world 1GVEIKQ): across green
+lowland, large flat-toned pinkish-brown regions with crisp, rounded,
+vector-drawn outlines, reading as a map overlay. They are the dry-grass biome:
+the page pair (Grass, DryGrass), khaki under blue airlight. Not from this wave:
+the lowland law is pinned bit-identical, and the mechanism dates from
+2026-08-28.
+
+Wherever a page is not fully trusted, which from that height is nearly all the
+ground in frame, the seam feather fades the blend toward the page's PRIMARY
+material alone. Wave R did that on purpose: a coarse texel's sub-texel mixture
+of rock and grass is wrong while its primary is not, and fading identity to
+grass had repainted every distant mountain green. But it applied to every pair,
+and for two swards the mixture is a CLIMATE gradient hundreds of metres wide,
+smooth at any texel size. Throwing it away turns that gradient into a
+categorical switch along the half-share contour of a kilometre-scale moisture
+field. A pair of two swards (cover share at least 0.9: Grass, DryGrass, Shrub)
+now fades toward its own mixture; every pair with rock, gravel, snow, sand,
+pavement or forest floor in it keeps the primary. No samples: layer1 is already
+sampled whenever its weight clears 0.004.
+
+Settled by one A/B on the same world and pose with only the fade target
+changed: every region becomes a soft, wide ecotone and nothing else in the
+frame moves. The distant-mountain case was shot before and after at
+kilo77-approach and alps22-far: mean absolute difference 0.01 and 0.17 of 255,
+rock stays rock.
+
+Left, and logged rather than widened into this change:
+
+* **Forest-floor regions keep rectilinear edges.** A debug tint (red = forest
+  floor in the pair, green = shrub, blue = page trust, yellow = airfield mask)
+  showed the dark-green region with straight and right-angled sides inland of
+  the start airfield's bay is ground with ForestFloor in its pair, NOT the
+  airfield mask. Its outline is the classifier's own coarse channel texels
+  (stair steps, single-texel rectangular holes): membership of the top two
+  changes texel by texel, and bilinear weights make each step a ramp one texel
+  wide, straight and axis-aligned. Admitting forest floor to the mixture target
+  (a bar of 0.5 instead of 0.9) softens it and was shot, but leaves a faint
+  straight seam along the membership edge; the fix belongs in how coarse pages
+  classify litter, not in the feather.
+* **Low tier** never samples layer1 in its two-material path and keeps the hard
+  dry/lush edge; a sample was not spent on the weakest hardware.

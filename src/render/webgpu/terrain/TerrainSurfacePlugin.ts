@@ -62,6 +62,7 @@ import {
   GROUND_SCRUB_SMALL_THRESHOLD_SPARSE,
   GROUND_SCRUB_SMALL_WAVELENGTH_METERS,
   TERRAIN_GROUND_PATCHWORK_WGSL,
+  groundCoverOf,
 } from "./GroundPatchwork";
 import {
   ROCK_COULOIR_ABOVE_SNOWLINE_METERS,
@@ -248,6 +249,29 @@ export const TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE = 0.15;
  * as a fraction of what open sky there would give. See the fragment's note.
  */
 export const TERRAIN_OCCLUDED_BOUNCE_SHARE = 0.25;
+/**
+ * The seam feather's target for a pair of SWARDS: how vegetated both ids of a
+ * page pair must be (`groundCoverOf(id)[0]`) for an untrusted page to fade
+ * toward the pair's own MIXTURE instead of toward its primary alone. 0.9 admits
+ * Grass, DryGrass and Shrub and nothing else: forest floor (0.55), gravel, rock,
+ * snow, sand and pavement keep Wave R's primary-only target.
+ */
+export const TERRAIN_SEAM_SWARD_COVER_MINIMUM = 0.9;
+
+/**
+ * CPU twin of the feather's pair term: the share of the SECONDARY an untrusted
+ * page's fade target keeps. The pair's own fraction for two swards, zero (the
+ * primary alone) for everything else.
+ */
+export function terrainSeamPairShare(
+  lowerId: number,
+  upperId: number,
+  secondaryFraction: number,
+): number {
+  const bothSwards = groundCoverOf(lowerId)[0] >= TERRAIN_SEAM_SWARD_COVER_MINIMUM
+    && groundCoverOf(upperId)[0] >= TERRAIN_SEAM_SWARD_COVER_MINIMUM;
+  return bothSwards ? secondaryFraction : 0;
+}
 export const TERRAIN_FALLBACK_ALPINE_SLOPE_LOW = 0.1;
 export const TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH = 0.3;
 
@@ -2557,25 +2581,40 @@ var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
 // every distant mountain green (measured: a 700 m slope-0.4 face went
 // 0.00 -> 0.73 grass share across the residency ladder while the
 // classifier says Rock 0.91 at every level).
+//
+// ...with one exception, found from 6,000 ft over dry country (world 1GVEIKQ,
+// 2026-09-20): when BOTH ids are swards the mixture is not sub-texel detail, it
+// is a CLIMATE gradient hundreds of metres wide, smooth at any texel size.
+// Fading that to the primary alone turned it into a categorical switch along
+// the half-share contour of a kilometre-scale moisture field: flat-toned brown
+// regions with vector-drawn outlines across every dry/lush lowland, in the most
+// common view in the game. A sward pair fades toward its own mixture; every
+// pair with rock, gravel, snow, sand, pavement or forest floor in it keeps the
+// primary, so the distant-mountain case above is untouched. No samples: layer1
+// is already sampled whenever its weight clears 0.004. (Low tier's two-material
+// path never samples layer1 and keeps the hard edge: a known limit.)
 if (terrainUsePageSplat && terrainClassStrength < 0.996) {
   let terrainSeamThird = clamp(terrainThirdWeight, 0.0, 1.0);
+  let terrainSeamPair = terrainAxisFraction * select(0.0, 1.0,
+    terrainGroundCoverOf(i32(terrainLowerId)).x >= ${terrainWgslFloat(TERRAIN_SEAM_SWARD_COVER_MINIMUM)}
+      && terrainGroundCoverOf(i32(terrainUpperId)).x >= ${terrainWgslFloat(TERRAIN_SEAM_SWARD_COVER_MINIMUM)});
   terrainAlbedo = mix(
-    mix(terrainLayer0.albedo, terrainLayer2.albedo, terrainSeamThird),
+    mix(mix(terrainLayer0.albedo, terrainLayer1.albedo, terrainSeamPair), terrainLayer2.albedo, terrainSeamThird),
     terrainAlbedo, terrainClassStrength);
   terrainNormal = mix(
-    mix(terrainLayer0.normal, terrainLayer2.normal, terrainSeamThird),
+    mix(mix(terrainLayer0.normal, terrainLayer1.normal, terrainSeamPair), terrainLayer2.normal, terrainSeamThird),
     terrainNormal, terrainClassStrength);
   terrainRoughness = mix(
-    mix(terrainLayer0.roughness, terrainLayer2.roughness, terrainSeamThird),
+    mix(mix(terrainLayer0.roughness, terrainLayer1.roughness, terrainSeamPair), terrainLayer2.roughness, terrainSeamThird),
     terrainRoughness, terrainClassStrength);
   terrainCavity = mix(
-    mix(terrainLayer0.cavity, terrainLayer2.cavity, terrainSeamThird),
+    mix(mix(terrainLayer0.cavity, terrainLayer1.cavity, terrainSeamPair), terrainLayer2.cavity, terrainSeamThird),
     terrainCavity, terrainClassStrength);
   terrainF0 = mix(
-    mix(terrainLayer0.f0, terrainLayer2.f0, terrainSeamThird),
+    mix(mix(terrainLayer0.f0, terrainLayer1.f0, terrainSeamPair), terrainLayer2.f0, terrainSeamThird),
     terrainF0, terrainClassStrength);
   terrainDiffuseRoughness = mix(
-    mix(terrainLayer0.diffuseRoughness, terrainLayer2.diffuseRoughness, terrainSeamThird),
+    mix(mix(terrainLayer0.diffuseRoughness, terrainLayer1.diffuseRoughness, terrainSeamPair), terrainLayer2.diffuseRoughness, terrainSeamThird),
     terrainDiffuseRoughness, terrainClassStrength);
 }
 #endif
