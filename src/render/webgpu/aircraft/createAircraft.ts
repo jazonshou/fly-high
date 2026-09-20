@@ -1,6 +1,7 @@
 import type { Scene } from "@babylonjs/core/scene";
 import type { AircraftKind } from "@/src/sim";
 import { assertRightHandedScene } from "./airframeRig";
+import { createAirliner } from "./airlinerVisual";
 import { createBizJet } from "./bizjetVisual";
 import { createJet } from "./jetVisual";
 import { createTrainer } from "./trainerVisual";
@@ -20,6 +21,7 @@ const BUILDERS: Readonly<Record<AircraftKind, (scene: Scene) => AircraftVisual>>
     trainer: createTrainer,
     jet: createJet,
     bizjet: createBizJet,
+    airliner: createAirliner,
   });
 
 export function createAircraft(

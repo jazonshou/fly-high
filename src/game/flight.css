@@ -1318,7 +1318,38 @@
 .control-status__meter > span { color: rgba(238, 247, 245, 0.46); }
 .control-status__meter > strong { text-align: right; font-size: 8px; font-weight: 500; }
 .control-status__meter > i { height: 3px; overflow: hidden; border-radius: 999px; background: rgba(238, 247, 245, 0.18); }
+.control-status__meter > i { position: relative; }
 .control-status__meter > i b { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+
+/*
+ * The afterburner gate. A hatched strip from the gate to full travel, so a
+ * pilot can see where reheat begins before reaching it rather than discovering
+ * it by the aeroplane leaping forward.
+ */
+.control-status__reheat {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(
+    115deg,
+    rgba(255, 138, 76, 0.5) 0 2px,
+    rgba(255, 138, 76, 0.16) 2px 4px
+  );
+}
+
+/* Lit: the fill goes hot, so the bar reads at a glance and not only by width. */
+.control-status__meter > i b.is-reheat {
+  background: linear-gradient(90deg, var(--accent) 0%, #ff8a4c 72%, #ffd0a8 100%);
+}
+
+.engine-reheat {
+  color: #ff8a4c;
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
 
 .hud-help {
   position: absolute;

@@ -44,13 +44,16 @@ describe("aircraft picker", () => {
     expect(markup).not.toMatch(/<small>/);
   });
 
-  it("names the three aeroplanes the game actually ships", () => {
+  it("names the four aeroplanes the game actually ships", () => {
     // The one place the literal names are asserted: a catalogue-driven test
     // would happily pass on an empty catalogue or a renamed aeroplane.
     const markup = renderPicker("trainer");
     expect(markup).toContain("Cessna 150");
-    expect(markup).toContain("Vesper J-45");
+    expect(markup).toContain("F-16C Fighting Falcon");
     expect(markup).toContain("Bombardier Global 8000");
+    expect(markup).toContain("Boeing 747-8");
+    // The fictional sport jet this replaced is gone, not hidden.
+    expect(markup).not.toContain("Vesper");
   });
 
   it("reflects the controlled selection without producing a second checked radio", () => {

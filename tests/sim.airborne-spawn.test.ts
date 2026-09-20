@@ -7,19 +7,22 @@ import { normalizeAirborneStartAgl } from "../src/workers/protocol";
 /**
  * An airborne start must not fly the player into the ground.
  *
- * Every airborne spawn in this game begins 2.4 degrees nose-up and off-trim,
- * which excites a phugoid. On the two small aeroplanes the first swing is
- * upward and nobody notices. The Global 8000's first swing was DOWNWARD and
- * 423 m deep, out of a spawn 183 m above the ground — so choosing "start in
- * the air" in a 40-tonne jet flew it into the terrain roughly forty seconds
- * later, with the pilot holding nothing.
+ * Every airborne spawn begins 2.4 degrees nose-up and off-trim, which excites
+ * a phugoid. This test exists because the Global 8000's first swing was
+ * DOWNWARD and 423 m deep out of a 183 m spawn, so choosing "start in the air"
+ * in a 40-tonne jet flew it into the terrain about forty seconds later with
+ * the pilot holding nothing.
  *
- * It is a per-airframe trap and the next aeroplane will meet it too, so this
- * flies every kind rather than the one that had the bug. The counter-intuitive
- * part, and the reason this is pinned rather than reasoned about: LESS
- * throttle makes the dip deeper, not shallower. Trimming for level flight is
- * the wrong instinct here; the aeroplane has to be given enough energy to
- * carry it through the first trough.
+ * The cause turned out not to be aerodynamic. `createFlightState` clamped
+ * every spawn airspeed to a bare, uncommented 180 m/s, so an aeroplane asking
+ * for 210 started 30 m/s slow and bought the difference back by diving. With
+ * the clamp lifted to the solver's own speed ceiling, all three jets dip 0 m
+ * at any throttle.
+ *
+ * It is kept, and kept flying EVERY kind, because it is what caught that: the
+ * bug presented as one aeroplane's bad handling and was really a shared
+ * constant quietly overriding the catalogue. The next such override should
+ * fail here too.
  */
 
 const STEP = 1 / 120;

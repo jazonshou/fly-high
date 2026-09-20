@@ -173,7 +173,9 @@ const KINDS: readonly AircraftKind[] = AIRCRAFT_KINDS;
 
 /** The jet's tail surfaces carry their own prefix. */
 function elevatorSurfaces(kind: AircraftKind): readonly string[] {
-  if (kind === "jet") return ["starboard-jet-elevator-surface", "port-jet-elevator-surface"];
+  // The F-16 has no elevator: the whole surface pivots, so these are the
+  // stabilators themselves.
+  if (kind === "jet") return ["starboard-jet-stabilator", "port-jet-stabilator"];
   if (kind === "bizjet") {
     return ["starboard-bizjet-elevator-surface", "port-bizjet-elevator-surface"];
   }

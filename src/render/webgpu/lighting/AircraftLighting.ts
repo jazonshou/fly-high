@@ -544,11 +544,74 @@ const BIZJET_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
 ]);
 
+
+/**
+ * The 747-8's lamps. A 68.4 m span with 37.5 degrees of leading-edge sweep
+ * puts the tip a long way aft of the root, which is why the nav lamps sit far
+ * behind zero — the same trap the Global's table fell into on its first draft,
+ * where a guessed x floated the lamps ahead of the wing.
+ *
+ * x -16.5, not the -14.8 this was first written at. That earlier value was
+ * only 1.40 m aft of where a straight 37.5-degree tip would end, which capped
+ * the raked panel at an average of 45 degrees; a real -8 rakes at about 55.
+ * The lamp position was therefore constraining the wing's shape rather than
+ * describing it, so it moved and the tip was rebuilt to 37.5 -> 45.0 -> 60.1
+ * degrees behind it.
+ *
+ * `tests/lighting.aircraft-wash.test.ts` asserts every one of these sits ON a
+ * lamp in the built airframe, so these coordinates and the geometry in
+ * `airlinerVisual.ts` are a single contract: change one and the other must
+ * move with it.
+ */
+const AIRLINER_WASH: readonly AircraftWashLight[] = Object.freeze([
+  Object.freeze({
+    name: "aircraft-beacon-wash",
+    offset: [0, -4.1, 0] as const,
+    color: [1, 0.11, 0.063] as const,
+    intensity: 3.4,
+    rangeMeters: 34,
+    driver: "beacon" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-port",
+    offset: [-16.5, 0.5, -34.2] as const,
+    color: [1, 0.125, 0.094] as const,
+    intensity: 3,
+    rangeMeters: 24,
+    driver: "portNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-starboard",
+    offset: [-16.5, 0.5, 34.2] as const,
+    color: [0.141, 1, 0.514] as const,
+    intensity: 3,
+    rangeMeters: 24,
+    driver: "starboardNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-port",
+    offset: [-16.5, 0.5, -34.2] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 5,
+    rangeMeters: 28,
+    driver: "strobe" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-starboard",
+    offset: [-16.5, 0.5, 34.2] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 5,
+    rangeMeters: 28,
+    driver: "strobe" as const,
+  }),
+]);
+
 const WASH_BY_KIND: Readonly<Record<AircraftKind, readonly AircraftWashLight[]>> =
   Object.freeze({
     trainer: TRAINER_WASH,
     jet: JET_WASH,
     bizjet: BIZJET_WASH,
+    airliner: AIRLINER_WASH,
   });
 
 /**

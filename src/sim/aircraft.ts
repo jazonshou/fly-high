@@ -61,9 +61,25 @@ export function aftExtent(aircraft: AircraftDefinition): number {
   return -aft;
 }
 
-export const AIRCRAFT_KINDS = ["trainer", "jet", "bizjet"] as const;
+export const AIRCRAFT_KINDS = ["trainer", "jet", "bizjet", "airliner"] as const;
 export type AircraftKind = (typeof AIRCRAFT_KINDS)[number];
 export type PropulsionKind = "propeller" | "jet";
+
+/**
+ * Reheat: raw fuel burned in the jet pipe for thrust the core cannot make.
+ *
+ * Additive rather than a bigger `maxStaticThrust`, because that is what it
+ * physically is — the dry engine keeps running and the nozzle adds to it — and
+ * because the pilot needs to feel a distinct gate rather than a throttle that
+ * is quietly twice as strong everywhere. Below `engageThrottle` the aeroplane
+ * flies on dry thrust alone and nothing here applies.
+ */
+export interface AfterburnerDefinition {
+  /** Newtons added at full throttle, on top of dry `maxStaticThrust`. */
+  readonly thrustBoost: number;
+  /** Throttle fraction at which the nozzle lights. */
+  readonly engageThrottle: number;
+}
 
 export interface AircraftDefinition {
   kind: AircraftKind;
@@ -118,6 +134,15 @@ export interface AircraftDefinition {
   yawMomentRudder: number;
   yawMomentBeta: number;
   yawDamping: number;
+  /**
+   * Reheat, or `null` for the aeroplanes that have none.
+   *
+   * Nullable and REQUIRED rather than optional: an optional field lets a new
+   * airframe be added without anyone deciding whether it has an afterburner,
+   * and silently not having one is exactly the sort of omission that reads as
+   * a physics bug later.
+   */
+  afterburner: AfterburnerDefinition | null;
   gear: readonly LandingGearDefinition[];
   /** Visible airframe extremities used for terrain strikes and wreck clearance. */
   airframeContactPoints: readonly Readonly<Vec3>[];
@@ -215,6 +240,8 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   yawDamping: -0.3,
   // Sprung-steel main legs and an oleo nosewheel. Softer than the previous
   // airframe's in proportion to a quarter less aeroplane sitting on them.
+  // A Continental O-200 has no jet pipe to burn fuel in.
+  afterburner: null,
   gear: Object.freeze([
     Object.freeze({
       position: Object.freeze({ x: -0.26, y: -1.22, z: -1.2 }),
@@ -254,87 +281,127 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
 });
 
 /**
- * A fictional single-engine sport jet. Its dimensions and wing loading are in
- * the class of a compact advanced trainer, while the intentionally generous
- * dry thrust makes the speed difference immediately legible in a browser game.
+ * The General Dynamics F-16C Fighting Falcon, Block 50: a single-engine
+ * multirole fighter with a blended cropped-delta wing, a single fin, and one
+ * F110-GE-129 turbofan with reheat.
+ *
+ * Flown at 11,000 kg, a clean combat weight with about half fuel, rather than
+ * the 19,200 kg maximum. The same reasoning as the Global and the 747 — an
+ * aeroplane at its maximum is not the aeroplane anyone wants to fly — and at
+ * this weight it is the thrust-to-weight of roughly 1.2 in reheat that the
+ * F-16 is famous for.
  */
 export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   kind: "jet",
-  name: "Vesper J-45",
+  name: "F-16C Fighting Falcon",
   propulsion: "jet",
-  mass: 5_850,
-  wingArea: 25.8,
-  wingSpan: 9.6,
-  meanChord: 2.7,
-  inertia: Object.freeze({ x: 11_900, y: 54_000, z: 47_500 }),
+  mass: 11_000,
+  wingArea: 27.87,
+  wingSpan: 9.96,
+  meanChord: 3.45,
+  // Roll, yaw, pitch about the CG. A fighter's roll inertia is tiny against
+  // its pitch and yaw, which is most of why it rolls the way it does.
+  inertia: Object.freeze({ x: 12_900, y: 85_600, z: 75_700 }),
   // Shaft power/efficiency are not used by the jet thrust branch. Keeping the
   // fields explicit avoids optional values in the hot simulation loop.
   maxEnginePower: 0,
-  maxStaticThrust: 42_000,
+  // F110-GE-129: 76.3 kN dry, 131 kN in full reheat. The boost below is the
+  // difference, so full throttle gives the published installed figure.
+  //
+  // Down low this flies like the real aeroplane, at M 1.04 dry and M 1.21 in
+  // reheat. UP HIGH IT DOES NOT: the real F-16 reaches about M 2.0 at 11 km
+  // and this one reaches M 1.17, because the shared jet-thrust model lapses
+  // with density as rho^0.72 and that outruns the drag fall. Changing the
+  // exponent for one airframe would move every jet in the game, so it is left
+  // alone and written down instead.
+  maxStaticThrust: 76_300,
   propellerEfficiency: 0,
   // Jet engine telemetry is percent N2 rather than literal crankshaft RPM.
   idleRpm: 35,
   maxRpm: 100,
-  clZero: 0.2,
-  clAlpha: 4.55,
-  positiveStallAngle: (17 * Math.PI) / 180,
-  negativeStallAngle: (-15 * Math.PI) / 180,
-  flapLift: 0.72,
-  cdZero: 0.0185,
-  inducedDrag: 0.041,
-  stallDrag: 0.74,
-  flapDrag: 0.085,
-  gearDrag: 0.042,
-  speedBrakeDrag: 0.16,
+  clZero: 0.12,
+  clAlpha: 4.3,
+  // The real aeroplane will fly past 25 degrees; its flight control system
+  // will not let it. 22 is the usable limit rather than the aerodynamic one.
+  positiveStallAngle: (22 * Math.PI) / 180,
+  negativeStallAngle: (-16 * Math.PI) / 180,
+  flapLift: 0.62,
+  cdZero: 0.0172,
+  inducedDrag: 0.052,
+  stallDrag: 0.78,
+  flapDrag: 0.075,
+  gearDrag: 0.045,
+  speedBrakeDrag: 0.19,
   retractableGear: true,
   gearCycleRate: 0.42,
-  // The J-45 tops out near 260 m/s (M 0.76 at sea level) and never reaches a
-  // critical Mach number; Infinity/0 leaves the wave-drag term inert, keeping
-  // this airframe's drag identical to the pre-wave-drag build.
-  transonicOnsetMach: Number.POSITIVE_INFINITY,
-  transonicDragRise: 0,
+  // Unlike the aeroplane this replaces, the F-16 genuinely goes supersonic, so
+  // the wave-drag term is live. Both numbers are measured against the top
+  // speed they produce, not picked for plausibility: wave drag peaks at onset
+  // plus 0.17, so too steep a rise parks the aeroplane on the peak and reheat
+  // buys nothing. At 0.95/0.052 it managed M 1.03 dry and M 1.07 wet — the
+  // afterburner was worth 15 m/s and felt like nothing. Sweeping onset and
+  // rise together at sea level: 0.95/0.030 gives M 1.11 wet, 0.95/0.018 gives
+  // M 1.17, 0.90/0.016 gives M 1.19, and 0.90/0.012 gives M 1.04 dry against
+  // M 1.21 wet. That last pair is this aeroplane's real signature — a clean
+  // F-16 is about M 1.2 on the deck — so it is the one flown here.
+  transonicOnsetMach: 0.9,
+  transonicDragRise: 0.012,
   sideForceBeta: 0.78,
   sideForceRudder: 0.14,
   pitchMomentZero: 0.004,
   pitchMomentAlpha: -0.61,
-  pitchMomentElevator: 0.46,
-  pitchDamping: -15.2,
-  rollMomentAileron: 0.088,
-  rollMomentBeta: 0.052,
-  rollDamping: -0.74,
-  yawMomentRudder: 0.082,
-  yawMomentBeta: 0.13,
-  yawDamping: -0.38,
+  pitchMomentElevator: 0.52,
+  pitchDamping: -16.5,
+  // A famously fast roll rate: around 320 degrees per second.
+  rollMomentAileron: 0.125,
+  rollMomentBeta: 0.058,
+  rollDamping: -0.82,
+  yawMomentRudder: 0.079,
+  yawMomentBeta: 0.128,
+  yawDamping: -0.36,
+  afterburner: Object.freeze({ thrustBoost: 54_700, engageThrottle: 0.85 }),
+  // A 2.36 m main-gear track under a 9.96 m span: narrow, which is why the
+  // real aeroplane is a handful in a crosswind and why the mains sit close in.
   gear: Object.freeze([
     Object.freeze({
-      position: Object.freeze({ x: -0.72, y: -1.46, z: -1.72 }),
-      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: -0.62 }),
-      springRate: 285_000,
-      dampingRate: 31_000,
+      position: Object.freeze({ x: -0.62, y: -1.92, z: -1.18 }),
+      retractedPosition: Object.freeze({ x: -0.5, y: -0.52, z: -0.5 }),
+      springRate: 430_000,
+      dampingRate: 47_000,
     }),
     Object.freeze({
-      position: Object.freeze({ x: -0.72, y: -1.46, z: 1.72 }),
-      retractedPosition: Object.freeze({ x: -0.58, y: -0.38, z: 0.62 }),
-      springRate: 285_000,
-      dampingRate: 31_000,
+      position: Object.freeze({ x: -0.62, y: -1.92, z: 1.18 }),
+      retractedPosition: Object.freeze({ x: -0.5, y: -0.52, z: 0.5 }),
+      springRate: 430_000,
+      dampingRate: 47_000,
     }),
     Object.freeze({
-      position: Object.freeze({ x: 3.72, y: -1.32, z: 0 }),
-      retractedPosition: Object.freeze({ x: 3.35, y: -0.42, z: 0 }),
-      springRate: 190_000,
-      dampingRate: 23_000,
-      maxSteeringAngle: (18 * Math.PI) / 180,
+      position: Object.freeze({ x: 3.18, y: -1.86, z: 0 }),
+      retractedPosition: Object.freeze({ x: 2.9, y: -0.55, z: 0 }),
+      springRate: 285_000,
+      dampingRate: 33_000,
+      maxSteeringAngle: (20 * Math.PI) / 180,
     }),
   ]),
+  // Radome, canopy, belly, both wingtips, fin tip and the nozzle, on a 15.06 m
+  // fuselage. The tailcone at -7.5 against mains at -0.62 gives a tail-strike
+  // limit near 15 degrees, comfortably above the 22-degree alpha limit the
+  // wing will reach in the air but not on the runway.
   airframeContactPoints: Object.freeze([
-    Object.freeze({ x: 5.86, y: 0.25, z: 0 }),
-    Object.freeze({ x: 5.86, y: -0.25, z: 0 }),
-    Object.freeze({ x: 1.15, y: 1.2, z: 0 }),
-    Object.freeze({ x: 0, y: -0.64, z: 0 }),
-    Object.freeze({ x: -0.3, y: 0.05, z: 4.83 }),
-    Object.freeze({ x: -0.3, y: 0.05, z: -4.83 }),
-    Object.freeze({ x: -4.74, y: 2.21, z: 0 }),
-    Object.freeze({ x: -5.33, y: 0, z: 0 }),
+    Object.freeze({ x: 7.5, y: 0.2, z: 0 }),
+    Object.freeze({ x: 7.5, y: -0.3, z: 0 }),
+    Object.freeze({ x: 2.4, y: 1.24, z: 0 }),
+    Object.freeze({ x: 0, y: -0.92, z: 0 }),
+    // The ventral inlet lip, which is the lowest structure forward of the
+    // gear — 0.32 m below the belly point above it, and only 0.68 m off the
+    // ground with the gear down. That famously low intake is a real feature of
+    // the aeroplane and it should be what touches first in a nose-low arrival;
+    // this table was one point short until the built mesh was measured.
+    Object.freeze({ x: 2.6, y: -1.24, z: 0 }),
+    Object.freeze({ x: -0.4, y: -0.1, z: 4.98 }),
+    Object.freeze({ x: -0.4, y: -0.1, z: -4.98 }),
+    Object.freeze({ x: -4.6, y: 3.02, z: 0 }),
+    Object.freeze({ x: -7.5, y: 0.02, z: 0 }),
   ]),
 });
 
@@ -421,6 +488,8 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   yawMomentBeta: 0.16,
   yawDamping: -0.5,
   // Wheelbase 13.9 m, track 4.28 m, with the datum at the centre of gravity.
+  // Business jets do not carry reheat; range is the whole point of them.
+  afterburner: null,
   gear: Object.freeze([
     Object.freeze({
       position: Object.freeze({ x: -1.9, y: -2.7, z: -2.14 }),
@@ -466,11 +535,142 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   ]),
 });
 
+
+/**
+ * The Boeing 747-8 Intercontinental: four GEnx-2B67 turbofans under a swept
+ * low wing, with the raised forward deck that makes the shape unmistakable.
+ *
+ * Flown at 250 tonnes rather than its 447,700 kg maximum take-off mass, for
+ * the same reason the Global is flown light: the airfield in this game has a
+ * 1,320 m runway, and at MTOW this aeroplane needs 2,383 m to reach 5 m AGL —
+ * it simply does not fit. At 250 t it reaches 5 m in 855 m of the 1,272 m
+ * available from the threshold and lands in 696 m, which is MORE margin than
+ * the Global 8000 has. The heaviest aeroplane in the game being the one with
+ * the most comfortable field performance is counter-intuitive, and it is what
+ * four 296 kN engines on 554 m^2 of wing produce.
+ *
+ * Every figure here was flown through the same harness as the other three
+ * before the aeroplane had any geometry, precisely so the question "does it
+ * fit" was settled before anyone modelled a fuselage.
+ */
+export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
+  kind: "airliner",
+  name: "Boeing 747-8",
+  propulsion: "jet",
+  mass: 250_000,
+  wingArea: 554,
+  wingSpan: 68.4,
+  meanChord: 9,
+  inertia: Object.freeze({ x: 17_550_000, y: 32_825_000, z: 25_480_000 }),
+  maxEnginePower: 0,
+  // 4 x GEnx-2B67 at 296 kN.
+  maxStaticThrust: 1_184_000,
+  propellerEfficiency: 0,
+  idleRpm: 22,
+  maxRpm: 100,
+  clZero: 0.14,
+  clAlpha: 5.08,
+  positiveStallAngle: (14 * Math.PI) / 180,
+  negativeStallAngle: (-11 * Math.PI) / 180,
+  flapLift: 1.1,
+  cdZero: 0.018,
+  inducedDrag: 0.047,
+  stallDrag: 0.85,
+  flapDrag: 0.13,
+  gearDrag: 0.025,
+  speedBrakeDrag: 0.1,
+  retractableGear: true,
+  // Eighteen wheels on five legs take their time.
+  gearCycleRate: 0.1,
+  transonicOnsetMach: 0.84,
+  transonicDragRise: 0.05,
+  sideForceBeta: 0.95,
+  sideForceRudder: 0.12,
+  pitchMomentZero: 0.006,
+  pitchMomentAlpha: -0.95,
+  pitchMomentElevator: 0.5,
+  pitchDamping: -30,
+  rollMomentAileron: 0.04,
+  rollMomentBeta: 0.06,
+  rollDamping: -0.95,
+  yawMomentRudder: 0.08,
+  yawMomentBeta: 0.15,
+  yawDamping: -0.55,
+  afterburner: null,
+  // The real aeroplane has four main bogies; two wing-root legs stand in for
+  // them, at the track the outer pair actually sits at.
+  //
+  // Wheels at y -6.4, not -5.2. Measured across the fleet, clearance between
+  // the lowest structure and the wheels runs 0.50 m on the 150 (6.8% of its
+  // length), 0.68 m on the F-16 (4.5%) and 1.20 m on the Global (3.6%). At
+  // -5.2 this aeroplane had 1.60 m, which is 2.2% — a clear outlier below the
+  // trend, and it showed: with the gear down the 747 had almost no visible
+  // undercarriage and read as squatting on its belly. -6.4 gives 2.80 m, or
+  // 3.9%, which sits between the Global and the F-16 and is about right for a
+  // type whose main-deck sill is nearly 5 m off the ground. It also opens the
+  // tail-strike limit from 10.4 to 12.2 degrees, which is margin in the right
+  // direction.
+  gear: Object.freeze([
+    Object.freeze({
+      position: Object.freeze({ x: -3, y: -6.4, z: -6.3 }),
+      retractedPosition: Object.freeze({ x: -2.8, y: -3.2, z: -4 }),
+      springRate: 9_000_000,
+      dampingRate: 900_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: -3, y: -6.4, z: 6.3 }),
+      retractedPosition: Object.freeze({ x: -2.8, y: -3.2, z: 4 }),
+      springRate: 9_000_000,
+      dampingRate: 900_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: 22.6, y: -6.4, z: 0 }),
+      retractedPosition: Object.freeze({ x: 21.8, y: -3.4, z: 0 }),
+      springRate: 5_000_000,
+      dampingRate: 520_000,
+      maxSteeringAngle: (12 * Math.PI) / 180,
+    }),
+  ]),
+  // Radome, upper deck, belly, both wingtips, fin tip and tailcone, on a
+  // 76.3 m fuselage. The tailcone at -38 against mains at -3 gives a
+  // tail-strike limit of 10.4 degrees; a full-power rotation at 250 t reaches
+  // 7.4, and it is 9.0 even at MTOW, so the margin narrows with weight but
+  // never closes.
+  airframeContactPoints: Object.freeze([
+    Object.freeze({ x: 34, y: 0.2, z: 0 }),
+    Object.freeze({ x: 34, y: -0.4, z: 0 }),
+    Object.freeze({ x: 26, y: 4.4, z: 0 }),
+    Object.freeze({ x: 0, y: -3.6, z: 0 }),
+    // x -17.4, and this point has now been measured against the built wing
+    // twice. It began at -6, which sat 9.25 m from the tip's own mid-chord and
+    // 1.7 m below it — a wingtip strike detected against a phantom nine metres
+    // ahead of the wing. Corrected to -15.1, and then the raked tip was
+    // rebuilt to a true 60-degree outer panel, which carried the tip 2.2 m
+    // further aft again. Measured at the |z| > 34 station the chord now runs
+    // x -18.40 to -16.28 at y 0.29 to 0.71, so mid-chord is (-17.34, 0.50).
+    //
+    // The lesson, twice over: 37.5 degrees of sweep on a 34 m half-span puts
+    // the tip a very long way behind the root, and any tip coordinate written
+    // down before the wing exists will be wrong. Same trap as the Global's
+    // lamp table.
+    Object.freeze({ x: -17.4, y: 0.35, z: 34.2 }),
+    Object.freeze({ x: -17.4, y: 0.35, z: -34.2 }),
+    // y 13.0, not 14.2. The fin was built to 14.2 when the wheels sat at
+    // y -5.2; lengthening the gear to -6.4 to get the undercarriage out from
+    // under the belly raised the whole aeroplane and left it 20.60 m tall
+    // against a published 19.40. Ground-to-fin-tip is wheels-to-CG plus
+    // CG-to-fin, so the fin comes down by exactly what the gear went down.
+    Object.freeze({ x: -33, y: 13.0, z: 0 }),
+    Object.freeze({ x: -38, y: 1.2, z: 0 }),
+  ]),
+});
+
 const AIRCRAFT_DEFINITIONS: Readonly<Record<AircraftKind, Readonly<AircraftDefinition>>> =
   Object.freeze({
     trainer: LIGHT_TRAINER,
     jet: FAST_JET,
     bizjet: GLOBAL_8000,
+    airliner: BOEING_747_8,
   });
 
 export function aircraftDefinition(kind: AircraftKind): Readonly<AircraftDefinition> {
@@ -496,7 +696,19 @@ export function calculateEngineThrust(
     const densityRatio = clamp(airDensity / 1.225, 0, 1.2);
     const densityLapse = densityRatio ** 0.72;
     const inletRecovery = 1 - 0.12 * clamp((forwardAirspeed - 220) / 180, 0, 1);
-    return commandedThrottle * aircraft.maxStaticThrust * densityLapse * inletRecovery;
+    const dry = commandedThrottle * aircraft.maxStaticThrust;
+    // Reheat ramps across the throttle remaining above the gate, so the last
+    // fraction of travel is where the aeroplane transforms. It lapses with
+    // density like the core does: an afterburner is not a rocket.
+    const reheat = aircraft.afterburner
+      ? clamp(
+          (commandedThrottle - aircraft.afterburner.engageThrottle)
+            / Math.max(1e-6, 1 - aircraft.afterburner.engageThrottle),
+          0,
+          1,
+        ) * aircraft.afterburner.thrustBoost
+      : 0;
+    return (dry + reheat) * densityLapse * inletRecovery;
   }
 
   const densityRatio = clamp(airDensity / 1.225, 0.1, 1.2);

@@ -195,21 +195,21 @@ describe("Babylon WebGPU aircraft visual", () => {
   it("builds the distinct jet and applies smooth gear and speed-brake travel", () => {
     const fixture = rightHandedFixture();
     const aircraft = createWebGpuAircraft(fixture.scene, "jet");
-    expect(aircraft.group.name).toBe("vesper-fast-jet");
+    expect(aircraft.group.name).toBe("f-16c-fighting-falcon");
     expect(aircraft.propeller.name).toBe("jet-compressor");
     for (const detail of [
       "jet-fuselage",
       "port-swept-main-wing",
       "starboard-swept-main-wing",
-      "port-swept-tailplane",
-      "starboard-swept-tailplane",
+      "port-jet-stabilator-root-fairing",
+      "starboard-jet-stabilator-root-fairing",
       "radar-nose",
-      "tandem-canopy",
-      "jet-front-seat",
+      "jet-bubble-canopy",
+      "jet-ejection-seat",
       "jet-instrument-panel",
       "jet-attitude-gauge",
-      "starboard-engine-intake",
-      "port-engine-intake",
+      "starboard-jet-inlet-cheek",
+      "port-jet-inlet-cheek",
       "swept-vertical-stabilizer",
       "landing-gear-doors",
       "starboard-main-strut",
@@ -269,7 +269,7 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     expect(gear.scaling.y).toBe(1);
     expect(gear.position.y).toBeCloseTo(0, 10);
-    const canopy = mesh(fixture.scene, "tandem-canopy");
+    const canopy = mesh(fixture.scene, "jet-bubble-canopy");
     expect(aircraft.cockpitParts).not.toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);

@@ -137,7 +137,7 @@ export interface AircraftSpec {
    *
    * Not "is it a jet": it is whether the aeroplane's own dutch roll is badly
    * enough damped to need help. `JetStabilityAugmentation`'s gain is derived
-   * from the J-45's coefficients and inertia, so switching it on for an
+   * from the F-16C's coefficients and inertia, so switching it on for an
    * airframe it was not sized against would be a guess, not a feature.
    */
   readonly dutchRollDamper: boolean;
@@ -166,7 +166,16 @@ const TRAINER: AircraftSpec = Object.freeze({
   cockpitEye: Object.freeze({ forward: 1.38, up: 0.12 }),
   spawn: Object.freeze({
     airborneAirspeed: 56,
-    airborneThrottle: 0.68,
+    // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
+    // which is what a player gets after every crash recovery and airborne
+    // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
+    // 180 s for the phugoid, because the two horizons disagree and only the
+    // short one is flattering.
+    // 0.62 climbs 59 m in 20 s and never dips; 0.50 looks calmer early and
+    // then sinks 122 m, past this test's bar. The 150 shows more pitch (8.2
+    // deg) than the jets simply because 2.4 degrees of spawn attitude is a
+    // bigger deal at 56 m/s.
+    airborneThrottle: 0.62,
     runwayTrim: 0.04,
     airborneGear: 1,
     // A 150 takes off clean; its flaps are for the approach and for a short
@@ -191,31 +200,72 @@ const TRAINER: AircraftSpec = Object.freeze({
 
 const JET: AircraftSpec = Object.freeze({
   kind: "jet",
-  name: "Vesper J-45",
-  description: "Fast jet",
+  name: "F-16C Fighting Falcon",
+  description: "Fighter",
   chase: Object.freeze({
     // The speed response is the point: the rig pulls back AND pushes the aim
     // point forward, so the aircraft slides forward in frame and the world
-    // streams past it. Sized for the ~11 m J-45 — the response opens above
-    // 145 m/s and its ~260 m/s ceiling gives a 115 m/s working band, so the
-    // slopes reach their caps right at the top of the envelope
-    // (0.07*115 = 8.05 >= 8; 0.12*115 = 13.8 ~ 14; 0.05*120 = 6.0 = 6 measured
-    // from the 140 m/s field-of-view knee).
-    distance: Object.freeze({ base: 14.3, knee: 145, slope: 0.07, cap: 8 }),
-    height: 5,
-    fieldOfView: Object.freeze({ base: 62, knee: 140, slope: 0.05, cap: 6 }),
-    aimAhead: Object.freeze({ base: 16, knee: 145, slope: 0.12, cap: 14 }),
+    // streams past it.
+    //
+    // Re-derived for the F-16, which broke the old profile in both directions.
+    // It was sized for an ~11 m aeroplane with a ~260 m/s ceiling, giving a
+    // 115 m/s working band above the 145 m/s knee, and the slopes were set so
+    // the caps landed exactly at the top of that envelope. The F-16 is 15.06 m
+    // and reaches 410 m/s in reheat, so the old caps were reached at 260 and
+    // the camera then stopped opening for the fastest 150 m/s of the aeroplane's
+    // range — it would have framed Mach 1.2 exactly as it framed Mach 0.76.
+    //
+    // Bases scale with length (x 15.06/11), and the slopes are recut so the
+    // caps land at the real 410 m/s ceiling instead: a 265 m/s band above the
+    // distance knee (11/265 = 0.0415) and 270 m/s above the field-of-view knee
+    // (6/270 = 0.022).
+    distance: Object.freeze({ base: 19.5, knee: 145, slope: 0.0415, cap: 11 }),
+    height: 6.2,
+    fieldOfView: Object.freeze({ base: 62, knee: 140, slope: 0.022, cap: 6 }),
+    aimAhead: Object.freeze({ base: 22, knee: 145, slope: 0.072, cap: 19 }),
   }),
-  cinematic: Object.freeze({ radiusMeters: 24, heightMeters: 8.5, heightDriftMeters: 2 }),
-  // The J-45's tandem canopy and the trainer's cabin happen to seat the pilot
-  // at the same offsets from the centre of gravity.
-  cockpitEye: Object.freeze({ forward: 1.15, up: 1.12 }),
+  // 32 m, not the 24 this inherited from an 11 m aeroplane. Measured against
+  // the built F-16 (14.90 m long, 10.07 m across the launcher rails): 24 m put
+  // the widest dimension across 37% of frame width, where the trainer sits at
+  // 26% and the Global at 31%. 32 m gives 28%, a 19-degree look-down that is
+  // in family with both, and a radius 6.4x the half-span so the wing is never
+  // near the camera at the bottom of the height drift.
+  cinematic: Object.freeze({ radiusMeters: 32, heightMeters: 11, heightDriftMeters: 2.5 }),
+  // Measured against the built cockpit, and the values this replaces were not
+  // survivable: up 1.12 sat 0.11 m ABOVE the canopy crown at that station —
+  // the pilot's head through the glass — and forward 1.15 put the eye 1.07 m
+  // behind the seat's front edge, under the aft canopy. The comment here used
+  // to describe a "tandem canopy"; an F-16 has a single-seat one-piece bubble.
+  //
+  // From the geometry: ejection seat centred (2.00, 0.32) reclined 26 degrees,
+  // panel centred x 2.92 with its top edge at y 0.82, canopy crown y 1.233 at
+  // x 2.22. The eye clears the panel top by 0.12 m over a 0.70 m reach — 9.7
+  // degrees of down-angle, against the 150's 9.8 and the Global's 9.6 — and
+  // leaves 0.29 m of headroom, which is a helmet and no more, as an F-16
+  // canopy is. The sightline passes over the radome, so the pilot can see the
+  // nose.
+  cockpitEye: Object.freeze({ forward: 2.22, up: 0.94 }),
   spawn: Object.freeze({
-    airborneAirspeed: 155,
-    // Dry thrust is much less speed-limited than propeller thrust. This
-    // setting balances jet drag near the 155 m/s airborne spawn instead of
-    // turning a neutral handoff into a zoom climb.
-    airborneThrottle: 0.17,
+    // 210 m/s, about 408 kt: an unremarkable low-level cruise for this
+    // aeroplane, and comfortably above the speed where the spawn phugoid bites.
+    airborneAirspeed: 210,
+    // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
+    // which is what a player gets after every crash recovery and airborne
+    // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
+    // 180 s for the phugoid, because the two horizons disagree and only the
+    // short one is flattering.
+    // 0.20, not the 0.65 this started at. 0.65 is most of a 76 kN engine under
+    // 11 tonnes, and hands-off it pitched to 20 degrees and climbed at 83 m/s
+    // — the aeroplane running away from the player. I first tried to trim that
+    // out, which was the wrong lever and a dangerous one: -0.05 trim looks
+    // calmer for a few seconds and then dives 4,172 m, and -0.10 puts the nose
+    // at 90 degrees. The right lever was the throttle all along. At 0.20 the
+    // pitch never leaves the 2.4-degree spawn attitude, the aeroplane gains
+    // 74 m in 20 s and the deepest point of the phugoid is 31 m down.
+    //
+    // 0.16 and 0.18 look better still over 20 s and are traps: they dip 516 m
+    // and 180 m respectively once the phugoid comes round.
+    airborneThrottle: 0.20,
     runwayTrim: 0.015,
     airborneGear: 0,
     runwayFlaps: 0.5,
@@ -268,22 +318,26 @@ const BIZJET: AircraftSpec = Object.freeze({
   // 0.95 m reach, the same proportion the 150 flies at.
   cockpitEye: Object.freeze({ forward: 11.6, up: 1.05 }),
   spawn: Object.freeze({
-    // M 0.62 at low level: clean, comfortable, and well inside the flap and
-    // gear speeds so a pilot who reaches for either is not punished.
-    airborneAirspeed: 210,
-    // 0.62, and set by where the aeroplane ENDS UP rather than by trimming
-    // level. Every airborne spawn in this game starts 2.4 degrees nose-up and
-    // off-trim, which excites a phugoid; the sport jet's first swing is upward
-    // and nobody minds, but a 40-tonne aeroplane's first swing was DOWNWARD
-    // and deep. Measured over 180 s from a 183 m spawn: 0.25 throttle sinks
-    // 702 m and flies into the ground, 0.35 sinks 423 m, 0.50 sinks 174 m,
-    // 0.58 sinks 100 m and 0.62 sinks 73 m before climbing away like the J-45
-    // does. Less throttle makes the dip WORSE, not better, which is the
-    // opposite of what trimming for level flight would suggest and the reason
-    // this is a measured number rather than a derived one.
-    // `tests/sim.airborne-spawn.test.ts` holds every airframe to half the
-    // spawn height.
-    airborneThrottle: 0.62,
+    // 200 m/s. 210 was above the speed at which this aeroplane flies level in
+    // dense air near the ground, so it converted the excess into climb no
+    // matter what the throttle did.
+    airborneAirspeed: 200,
+    // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
+    // which is what a player gets after every crash recovery and airborne
+    // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
+    // 180 s for the phugoid, because the two horizons disagree and only the
+    // short one is flattering.
+    // 0.28 at 200 m/s: pitch stays at the 2.4-degree spawn attitude, 64 m
+    // gained in 20 s, 11 m the deepest the phugoid goes. The old 210/0.62
+    // climbed 248 m.
+    //
+    // This number previously carried a long explanation about the Global's
+    // first phugoid swing being downward and 423 m deep, with less throttle
+    // making it worse. Those measurements were real; the cause was not
+    // aerodynamic. `createFlightState` clamped every spawn airspeed to 180 m/s
+    // against a bare constant, so this aeroplane had been starting 30 m/s
+    // slower than its catalogue said and buying the difference back by diving.
+    airborneThrottle: 0.28,
     runwayTrim: 0.02,
     airborneGear: 0,
     // Half flap, which is what its 942 m take-off roll was measured at.
@@ -293,7 +347,7 @@ const BIZJET: AircraftSpec = Object.freeze({
   engineSound: Object.freeze({
     // A high-bypass fan is a lower, softer, rounder noise than the sport
     // jet's: lower fundamental, narrower climb, and a low-pass well below the
-    // J-45's so the harmonics stay felt rather than heard.
+    // fighter's so the harmonics stay felt rather than heard.
     baseHz: 52,
     spanHz: 120,
     gainBase: 0.05,
@@ -307,9 +361,81 @@ const BIZJET: AircraftSpec = Object.freeze({
   // Worked through for this airframe rather than inherited: at 210 m/s at
   // 3,000 m its two-degree-of-freedom dutch roll comes out at omega_n about
   // 2.95 rad/s with 2*zeta*omega_n about 2.45, so zeta is roughly 0.42 — a
-  // well-damped mode that wants no help, against the J-45's 0.163 which does.
+  // well-damped mode that wants no help, against the F-16's ~0.11 which does.
   // A high aspect ratio and a very large yaw inertia are why. If the mass or
   // the fin ever change materially, redo this rather than flipping it.
+  dutchRollDamper: false,
+});
+
+
+const AIRLINER: AircraftSpec = Object.freeze({
+  kind: "airliner",
+  name: "Boeing 747-8",
+  description: "Airliner",
+  chase: Object.freeze({
+    // Scaled off the Global's, which was itself scaled off the small
+    // aeroplanes': a 68.4 m span needs roughly twice the Global's standoff
+    // before the wings stop running off the sides of the frame.
+    distance: Object.freeze({ base: 112, knee: 110, slope: 0.1, cap: 26 }),
+    height: 34,
+    fieldOfView: Object.freeze({ base: 58, knee: 110, slope: 0.028, cap: 4 }),
+    aimAhead: Object.freeze({ base: 40, knee: 110, slope: 0.09, cap: 20 }),
+  }),
+  // Measured against the built airframe: a 37.44 m bounding sphere about
+  // (-2.00, 4.50, 0). At the cinematic 58-degree vertical field of view,
+  // 155/50 fills 41.5% of frame height where the Global's shipped 65/21 fills
+  // 41.6%, and the look-down angle matches at 17.9 degrees on both. The
+  // provisional 140/46 was not wrong, just 10% tighter.
+  cinematic: Object.freeze({ radiusMeters: 155, heightMeters: 50, heightDriftMeters: 10 }),
+  // Measured against the built flight deck, and both provisional values were
+  // OUTSIDE THE AEROPLANE: forward 29.5 sat ahead of the instrument panel's
+  // own front face, and up 5.1 was 0.70 m above the upper-deck crown at 4.40.
+  // The "8.5 m above the centreline" in the old note was really the eye height
+  // above the GROUND, which is a different datum from every other entry here.
+  //
+  // From the geometry: flight-deck floor y 1.95, seat cushion 1.96 to 2.80,
+  // panel 2.36 to 2.90 so its top edge is 2.90. The eye sits 1.15 m ahead of
+  // the panel face and 0.20 m above its top edge — 9.9 degrees of down-angle,
+  // against the Global's 9.6 and the 150's 9.8 — 1.15 m above the flight-deck
+  // floor and 8.30 m above the pavement.
+  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1 }),
+  spawn: Object.freeze({
+    // 205 m/s. Faster looked reasonable on paper and is above the speed this
+    // aeroplane flies level at down low, where the air is dense: at 230 it
+    // climbed away whatever the throttle did.
+    airborneAirspeed: 205,
+    // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
+    // which is what a player gets after every crash recovery and airborne
+    // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
+    // 180 s for the phugoid, because the two horizons disagree and only the
+    // short one is flattering.
+    // 0.28 at 205 m/s: 2.4 degrees, 68 m gained in 20 s, 48 m the deepest the
+    // phugoid reaches. The old 230/0.75 climbed 394 m.
+    airborneThrottle: 0.28,
+    runwayTrim: 0.02,
+    airborneGear: 0,
+    // Half flap, the setting its measured 855 m take-off was flown at.
+    runwayFlaps: 0.5,
+  }),
+  engineReadout: Object.freeze({ label: "N1", unit: "%", maximum: 100, roundTo: 1 }),
+  engineSound: Object.freeze({
+    // Four very large high-bypass fans: lower and broader than the Global's
+    // two, with the harmonics rolled off further still.
+    baseHz: 38,
+    spanHz: 92,
+    gainBase: 0.06,
+    gainSpan: 0.1,
+    filterHz: 680,
+    filterQ: 0.75,
+    waveforms: Object.freeze(["triangle", "sine"]) as readonly [OscillatorType, OscillatorType],
+  }),
+  retractableGear: true,
+  speedBrake: true,
+  // Not worked through for this airframe yet, and defaulting to off rather
+  // than inheriting: the damper's gain is sized against the F-16's
+  // coefficients, so switching it on here would be a guess. A 747's dutch roll
+  // is real and lightly damped, so this is worth revisiting with the same
+  // two-degree-of-freedom calculation the Global got.
   dutchRollDamper: false,
 });
 
@@ -317,6 +443,7 @@ export const AIRCRAFT_SPECS: Readonly<Record<AircraftKind, AircraftSpec>> = Obje
   trainer: TRAINER,
   jet: JET,
   bizjet: BIZJET,
+  airliner: AIRLINER,
 });
 
 /** Every airframe, in the order the picker offers them. */

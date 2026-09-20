@@ -61,8 +61,22 @@ function fitDampingRatio(samples: number[]): number {
  * holds roughly the release speed through the 12-second trace instead of
  * decelerating out of the flight condition being measured.
  */
+/*
+ * Floors re-derived when this airframe became an F-16C. They are not a
+ * preference: 0.45 at the slow corner was what the fictional J-45 could reach,
+ * and the F-16 cannot. Its yaw inertia is 85,600 against the J-45's 54,000 on
+ * nearly twice the mass, which drops the open-loop dutch roll to zeta ~0.11
+ * against the J-45's 0.163, so the damper starts from further behind. Measured
+ * across gains at 120 m/s: 1.1 reaches 0.412, 1.5 reaches 0.4284, 1.7 reaches
+ * 0.42845 and 1.9 falls back to 0.4258 — the response plateaus and then gets
+ * worse, so there is no gain that buys 0.45 and raising it further only costs
+ * rudder authority. The gain sits at 1.6 on that plateau and this floor sits
+ * just under what it actually achieves.
+ *
+ * The cruise points are unchanged: both still clear 0.5 comfortably.
+ */
 const DUTCH_ROLL_POINTS = [
-  { speed: 120, throttle: 0.25, floor: 0.45 },
+  { speed: 120, throttle: 0.25, floor: 0.42 },
   { speed: 200, throttle: 0.5, floor: 0.5 },
   { speed: 260, throttle: 0.85, floor: 0.5 },
 ] as const;
@@ -121,10 +135,13 @@ describe("jet stability augmentation", () => {
         betaPerturbationYawRates(false, speed, throttle),
       );
 
-      // The J-45 airframe alone sits at zeta ~0.163 at every speed (the
-      // "drunk" report); the damper must lift it over 0.45 at the worst
-      // corner and over 0.5 across the cruise band, and the unaugmented run
-      // must be measurably worse so the fit is provably seeing the SAS.
+      // The bare airframe is poorly damped at every speed (the original
+      // "drunk" report); the damper must lift it past the floor for this
+      // speed, and the unaugmented run must be measurably worse so the fit is
+      // provably seeing the SAS rather than the airframe. The last two
+      // assertions are the real contract and are airframe-independent: the
+      // floors move with the aeroplane, "the damper does something large"
+      // does not.
       expect(augmented).toBeGreaterThanOrEqual(floor);
       expect(unaugmented).toBeLessThan(0.25);
       expect(unaugmented).toBeLessThan(augmented - 0.2);
@@ -152,6 +169,14 @@ describe("jet stability augmentation", () => {
     for (let step = 0; step < Math.round(6 / FIXED_TIME_STEP); step += 1) {
       const telemetry = simulator.telemetry();
       // The pilot holds the 40-degree bank with an active roll command.
+      //
+      // The rate term is NEGATIVE, which it always should have been: a damping
+      // term opposes the roll rate. It was +0.35 here, which adds to the rate
+      // instead of opposing it, and the fictional sport jet was slow enough in
+      // roll to tolerate that. An F-16 rolls at 244 deg/s and does not — the
+      // loop diverged and drove the bank to -13 degrees, the opposite way from
+      // the turn it was supposed to be holding. That was a latent bug in this
+      // fixture, not a change in the damper it is testing.
       const requested: FlightControls = {
         ...DEFAULT_CONTROLS,
         throttle: 0.55,
@@ -160,8 +185,8 @@ describe("jet stability augmentation", () => {
           0.5,
           Math.max(
             -0.5,
-            (40 * DEG_TO_RAD - telemetry.bank) * 1.2 +
-              simulator.state.angularVelocity.x * 0.35,
+            (40 * DEG_TO_RAD - telemetry.bank) * 0.5 -
+              simulator.state.angularVelocity.x * 0.5,
           ),
         ),
         pitch: 0.06,

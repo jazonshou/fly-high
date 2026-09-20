@@ -287,8 +287,10 @@ function measureTrim(kind: AircraftKind, weather: Weather, seconds: number) {
 
 // ---------------------------------------------------------------- MAIN -----
 
-const KINDS: AircraftKind[] = ["trainer", "jet", "bizjet"];
-const SPANS: Record<AircraftKind, number> = { trainer: 10.17, jet: 9.6, bizjet: 31.7 };
+const KINDS: AircraftKind[] = ["trainer", "jet", "bizjet", "airliner"];
+const SPANS: Record<AircraftKind, number> = {
+  trainer: 10.17, jet: 9.96, bizjet: 31.7, airliner: 68.4,
+};
 
 console.log("=".repeat(78));
 console.log("1. MESH — is the built airframe its own mirror image about z=0?");
