@@ -787,18 +787,30 @@ export function FlightGame() {
               value={settings.aircraft}
               onChange={(aircraft) => applySettings({ ...settingsRef.current, aircraft })}
             />
-            <button className="primary-action start-screen__start" onClick={() => void takeControl()}>
+            {/*
+              * Names only, at Jason's request. The secondary lines are gone
+              * from the face but not from the aeroplane: the flight-mode hint
+              * moves to the accessible name and the tooltip, because it is
+              * the one piece here a player might have been relying on and it
+              * is not shown anywhere else on this screen.
+              */}
+            <button
+              className="primary-action start-screen__start"
+              type="button"
+              onClick={() => void takeControl()}
+              aria-label={`Start flying. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+              title={CONTROL_MODE_LABELS[settings.flightMode]}
+            >
               <span>Start</span>
-              <small>{CONTROL_MODE_LABELS[settings.flightMode]}</small>
             </button>
             <button
               className="primary-action start-screen__runway"
               type="button"
               onClick={() => void startOnRunway()}
               aria-label="Start on the runway, stopped and ready for take-off"
+              title="On the threshold"
             >
               <span>Runway start</span>
-              <small>On the threshold</small>
             </button>
             <button className="seed-action" onClick={chooseNewWorld} aria-label={`Generate a new world. Current seed ${seedToString(seed)}`}>
               <small>Seed</small>
@@ -814,7 +826,28 @@ export function FlightGame() {
               aria-label="Settings"
               title="Settings"
             >
-              <span aria-hidden="true">⚙</span>
+              {/*
+                * A stroked SVG gear rather than U+2699. The font only offers
+                * that glyph as a solid, heavy shape, and at the size this
+                * button needs it shouted; a thin stroke on a 24-box reads at
+                * the same optical size without the weight. The accessible
+                * name and tooltip carry the meaning, so it is aria-hidden.
+                *
+                * The outline is a real cog — eight teeth alternating between a
+                * 7.15 root radius and a 10.15 tip. The first attempt drew a
+                * circle with eight radial spokes through it, which renders as
+                * a SUN, not a gear. Teeth sit ON the rim; spokes stick out of
+                * it, and that is the whole difference.
+                */}
+              <svg
+                className="settings-action__gear"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M 18.95 10.33 L 22.03 10.41 L 22.03 13.59 L 18.95 13.67 L 18.10 15.74 L 20.21 17.97 L 17.97 20.21 L 15.74 18.10 L 13.67 18.95 L 13.59 22.03 L 10.41 22.03 L 10.33 18.95 L 8.26 18.10 L 6.03 20.21 L 3.79 17.97 L 5.90 15.74 L 5.05 13.67 L 1.97 13.59 L 1.97 10.41 L 5.05 10.33 L 5.90 8.26 L 3.79 6.03 L 6.03 3.79 L 8.26 5.90 L 10.33 5.05 L 10.41 1.97 L 13.59 1.97 L 13.67 5.05 L 15.74 5.90 L 17.97 3.79 L 20.21 6.03 L 18.10 8.26 Z" />
+                <circle cx="12" cy="12" r="3.6" />
+              </svg>
             </button>
             <button
               className="seed-action viewer-action"

@@ -56,8 +56,10 @@ const arm = process.argv[8] ?? "arm";
  * answering, and it costs one request.
  */
 const expectTree = process.argv[9] ?? "";
-const WIDTH = 1600;
-const HEIGHT = 900;
+// Overridable so the same capture can be shot at a narrow breakpoint without
+// a second script; the layout has responsive rules that only a narrow run sees.
+const WIDTH = Number(process.env.FRAMING_WIDTH ?? 1600);
+const HEIGHT = Number(process.env.FRAMING_HEIGHT ?? 900);
 
 mkdirSync(outDir, { recursive: true });
 
@@ -262,6 +264,25 @@ async function flyManoeuvre(): Promise<void> {
     await page.keyboard.press("c");
     await page.waitForTimeout(9_000);
     await page.screenshot({ path: `${outDir}/${arm}-runway-side.png`, type: "png" });
+    return;
+  }
+  if (manoeuvre === "reheat") {
+    // Full throttle and hold it: the afterburner gate is the last 15% of the
+    // travel, so anything short of the stop proves nothing. Then let the
+    // aeroplane accelerate into the band where the chase rig's trail clamp
+    // engages, which is what the chase frame here is for.
+    await page.keyboard.down("Shift");
+    await page.waitForTimeout(6_000);
+    await page.keyboard.up("Shift");
+    await page.waitForTimeout(24_000);
+    await page.screenshot({ path: `${outDir}/${arm}-reheat-chase.png`, type: "png" });
+    await page.keyboard.press("c");
+    await page.waitForTimeout(700);
+    await page.keyboard.press("c");
+    await page.waitForTimeout(6_000);
+    await page.screenshot({ path: `${outDir}/${arm}-reheat-orbit.png`, type: "png" });
+    await page.waitForTimeout(12_000);
+    await page.screenshot({ path: `${outDir}/${arm}-reheat-orbit-2.png`, type: "png" });
     return;
   }
   if (manoeuvre === "level") return;
