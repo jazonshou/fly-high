@@ -263,12 +263,23 @@
 .settings-action--icon {
   grid-template-columns: 1fr;
   justify-items: center;
-  padding: 10px 0;
+  align-items: center;
+  /* No padding: the glyph is the content, and the button is a fixed 56px
+     square in the row, so let the grid centre it rather than boxing it in. */
+  padding: 0;
 }
 
 .settings-action--icon span {
-  font-size: 32px;
+  /*
+   * Jason asked for the symbol to fill the button. The gear's ink is about
+   * 0.72 em, so 46px on a 56px square puts roughly 33px of glyph in it --
+   * around 60% -- without the line box forcing the button taller than the
+   * buttons beside it.
+   */
+  font-size: 46px;
   line-height: 1;
+  /* U+2699 sits high in its em box; this drops it onto the optical centre. */
+  transform: translateY(1px);
 }
 
 .settings-action:hover {
