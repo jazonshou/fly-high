@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
@@ -71,7 +72,18 @@ import { readSource } from "./support/sourceText";
  * run.
  */
 
-const BABYLON_WGSL = join(__dirname, "..", "node_modules", "@babylonjs", "core", "ShadersWGSL");
+/*
+ * Babylon's shipped source is found through MODULE RESOLUTION rather than by
+ * building a path from this repo's root. A git worktree has no `node_modules`
+ * of its own — Node resolves the package by walking up to the main checkout —
+ * so a root-relative path passes in a lived-in clone and fails in every fresh
+ * worktree, which is the tree an end-of-wave promotion runs from.
+ */
+const babylonCoreRoot = dirname(
+  createRequire(import.meta.url).resolve("@babylonjs/core"),
+);
+
+const BABYLON_WGSL = join(babylonCoreRoot, "ShadersWGSL");
 
 function shippedPbrFragmentSource(): string {
   // The anchors span pbr.fragment and one of its includes; the injection runs
