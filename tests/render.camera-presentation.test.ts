@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { chaseCameraProfile } from "../src/render/FlightRenderer";
 import {
+  CHASE_AIM_HEIGHT_METERS,
+  chaseRigOffsetsToRef,
   CAMERA_RESPONSE_SECONDS,
   CAMERA_RESPONSE_SECONDS_REDUCED_MOTION,
   cameraBankFollow,
@@ -240,6 +243,17 @@ describe("camera presentation", () => {
   });
 
   describe("trail", () => {
+    it("is zero for an aeroplane that is not moving", () => {
+      // The lag this replaces was produced by MOTION, so a stationary
+      // aeroplane never had one. Deriving the trail from the airspeed field
+      // instead pushed the camera tens of metres back in every chase shot of
+      // the perf set, where the position is held fixed while an airspeed is
+      // declared: 30% to 99% of pixels moved against a same-arm noise floor
+      // under 1%. That is the whole reason this argument is a ground speed.
+      expect(cameraTrailMeters("chase", false, 0)).toBe(0);
+      expect(cameraTrailMeters("cinematic", false, 0)).toBe(0);
+    });
+
     it("matches the steady-state error the old absolute smoothing produced", () => {
       // A first-order lag chasing a target moving at constant speed settles
       // speed*tau behind it. Measured in-game before the fix: 7.1 m of lag at
@@ -264,9 +278,189 @@ describe("camera presentation", () => {
         .toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS, 10);
     });
 
-    it("refuses to trail on a negative or non-finite airspeed", () => {
+    it("refuses to trail on a negative or non-finite speed", () => {
       expect(cameraTrailMeters("chase", false, -20)).toBe(0);
       expect(cameraTrailMeters("chase", false, Number.NaN)).toBe(0);
+    });
+  });
+
+  describe("the composed chase rig", () => {
+    /** The rig exactly as it stood before the tilt fix. */
+    function legacyOffsets(
+      forward: { x: number; y: number; z: number },
+      up: { x: number; y: number; z: number },
+      distance: number,
+      height: number,
+      aimAhead: number,
+    ) {
+      return {
+        camera: {
+          x: -forward.x * distance + up.x * height,
+          y: -forward.y * distance + up.y * height,
+          z: -forward.z * distance + up.z * height,
+        },
+        target: {
+          x: forward.x * aimAhead + up.x * CHASE_AIM_HEIGHT_METERS,
+          y: forward.y * aimAhead + up.y * CHASE_AIM_HEIGHT_METERS,
+          z: forward.z * aimAhead + up.z * CHASE_AIM_HEIGHT_METERS,
+        },
+      };
+    }
+
+    /** Body axes at a heading, pitch and bank, nose along world +X at zero. */
+    function attitude(heading: number, pitch: number, bank: number) {
+      const nose = { x: Math.cos(pitch), y: Math.sin(pitch), z: 0 };
+      const level = { x: -Math.sin(pitch), y: Math.cos(pitch), z: 0 };
+      const starboard = { x: 0, y: 0, z: 1 };
+      const rolled = {
+        x: level.x * Math.cos(bank) - starboard.x * Math.sin(bank),
+        y: level.y * Math.cos(bank) - starboard.y * Math.sin(bank),
+        z: level.z * Math.cos(bank) - starboard.z * Math.sin(bank),
+      };
+      const yaw = (v: { x: number; y: number; z: number }) => ({
+        x: v.x * Math.cos(heading) - v.z * Math.sin(heading),
+        y: v.y,
+        z: v.x * Math.sin(heading) + v.z * Math.cos(heading),
+      });
+      return { forward: yaw(nose), up: yaw(rolled) };
+    }
+
+    function rig(
+      forward: { x: number; y: number; z: number },
+      up: { x: number; y: number; z: number },
+      follow: number,
+      distance: number,
+      height: number,
+      aimAhead: number,
+      trail: number,
+    ) {
+      const lift = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef(forward, up, follow, lift);
+      const camera = { x: 0, y: 0, z: 0 };
+      const target = { x: 0, y: 0, z: 0 };
+      chaseRigOffsetsToRef(
+        forward, lift, distance, height, aimAhead, CHASE_AIM_HEIGHT_METERS, trail, camera, target,
+      );
+      return { camera, target };
+    }
+
+    it("is bit-for-bit the old rig on an unbanked, stationary aeroplane", () => {
+      // The claim the perf captures could not settle: at zero bank and zero
+      // motion this rig IS the pre-fix rig. Two identical capture runs on this
+      // machine moved 30% of a frame at maxima of 170/255, which is far too
+      // blunt to clear a camera change; the arithmetic is not.
+      //
+      // Every perf-capture shot is unbanked by construction —
+      // `orientationFromYawPitchBank(yaw, pitch, 0)` — and holds a fixed
+      // position, so this is the statement that they cannot move.
+      for (const heading of [0, 0.7, -2.1, Math.PI]) {
+        for (const pitch of [0, 0.12, -0.3, 0.45]) {
+          const { forward, up } = attitude(heading, pitch, 0);
+          const fixed = rig(forward, up, cameraBankFollow("chase", false), 13.5, 5.1, 16, 0);
+          const legacy = legacyOffsets(forward, up, 13.5, 5.1, 16);
+          for (const axis of ["x", "y", "z"] as const) {
+            expect(fixed.camera[axis]).toBeCloseTo(legacy.camera[axis], 12);
+            expect(fixed.target[axis]).toBeCloseTo(legacy.target[axis], 12);
+          }
+        }
+      }
+    });
+
+    it("is the old rig at every airframe, attitude and DECLARED airspeed", () => {
+      // The declared-airspeed-with-zero-motion case explicitly, because that
+      // is the one that bit: a perf shot holds a fixed position while naming
+      // an airspeed, and a trail keyed on the declared speed rather than on
+      // observed travel pushed the camera tens of metres back in every chase
+      // shot. `cameraTrailMeters` is fed the OBSERVED speed, which is zero
+      // there however fast the aeroplane claims to be going.
+      for (const kind of ["trainer", "jet"] as const) {
+        for (const airspeed of [0, 40, 56, 120, 155, 210, 260]) {
+          const profile = chaseCameraProfile(kind, airspeed);
+          const trail = cameraTrailMeters("chase", false, 0);
+          expect(trail).toBe(0);
+          for (const heading of [0, 1.9, -0.8]) {
+            for (const pitch of [0, 0.2, -0.15]) {
+              const { forward, up } = attitude(heading, pitch, 0);
+              const fixed = rig(
+                forward, up, cameraBankFollow("chase", false),
+                profile.distance, profile.height, profile.aimAhead, trail,
+              );
+              const legacy = legacyOffsets(
+                forward, up, profile.distance, profile.height, profile.aimAhead,
+              );
+              for (const axis of ["x", "y", "z"] as const) {
+                expect(fixed.camera[axis]).toBeCloseTo(legacy.camera[axis], 12);
+                expect(fixed.target[axis]).toBeCloseTo(legacy.target[axis], 12);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    it("lands a camera cut on the settled pose in one frame", () => {
+      // The offsets are persistent state, so a cut has to seed them or the
+      // first frames of every shot would be a convergence transient rather
+      // than the rig. `cameraPresentationResponse` returns exactly 1 on a cut
+      // and the smoother then writes the desired value through untouched —
+      // which is what makes the first rendered frame the settled one.
+      for (const mode of ["chase", "cinematic"] as const) {
+        expect(cameraPresentationResponse(mode, true, 1 / 60, false)).toBe(1);
+      }
+      const settled = { x: -13.5, y: 5.1, z: 0 };
+      const stale = { x: 900, y: -40, z: 17 };
+      const result = { x: 0, y: 0, z: 0 };
+      smoothCameraVectorToRef(stale, settled, 1, result);
+      // Close, not equal: the smoother is `a + (b - a) * amount`, and at
+      // amount 1 that is b only to within rounding — 5.100000000000001 here,
+      // from a stale value of -40. A nanometre of camera, and worth pinning
+      // as closeness rather than pretending it is exact.
+      for (const axis of ["x", "y", "z"] as const) {
+        expect(result[axis]).toBeCloseTo(settled[axis], 12);
+      }
+    });
+
+    it("carries the trail on both offsets, so the view direction is unchanged", () => {
+      const { forward, up } = attitude(0.4, 0.1, 0);
+      const follow = cameraBankFollow("chase", false);
+      const without = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+      const with20 = rig(forward, up, follow, 13.5, 5.1, 16, 20);
+      const direction = (r: typeof without) => ({
+        x: r.target.x - r.camera.x,
+        y: r.target.y - r.camera.y,
+        z: r.target.z - r.camera.z,
+      });
+      const a = direction(without);
+      const b = direction(with20);
+      for (const axis of ["x", "y", "z"] as const) expect(b[axis]).toBeCloseTo(a[axis], 12);
+      // And the camera really did move back by the trail, along the NOSE.
+      const back = Math.hypot(
+        with20.camera.x - without.camera.x,
+        with20.camera.y - without.camera.y,
+        with20.camera.z - without.camera.z,
+      );
+      expect(back).toBeCloseTo(20, 10);
+    });
+
+    it("does move a banked frame, which is the whole point", () => {
+      // The two shots in the canonical perf set that bank — page-thrash-turn
+      // at 60 degrees and motion-banked-turn at 45 — are expected to move, and
+      // measured at 99.99% of pixels. If this ever stops differing, the fix
+      // has been reverted.
+      const follow = cameraBankFollow("chase", false);
+      for (const bank of [(45 * Math.PI) / 180, (60 * Math.PI) / 180]) {
+        const { forward, up } = attitude(0, 0, bank);
+        const fixed = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+        const legacy = legacyOffsets(forward, up, 13.5, 5.1, 16);
+        const moved = Math.hypot(
+          fixed.camera.x - legacy.camera.x,
+          fixed.camera.y - legacy.camera.y,
+          fixed.camera.z - legacy.camera.z,
+        );
+        // Metres, not millimetres: at these angles the old rig hung the camera
+        // right out to one side of the aeroplane.
+        expect(moved).toBeGreaterThan(1.5);
+      }
     });
   });
 });

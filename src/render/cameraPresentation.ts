@@ -149,6 +149,15 @@ export const CAMERA_RESPONSE_SECONDS_REDUCED_MOTION = 1 / 12;
  *
  * Reduced motion uses the faster response and therefore a shorter trail, as
  * it did before.
+ *
+ * **The speed is the aircraft's OBSERVED motion between frames, not its
+ * airspeed.** The lag this replaces was produced by the aeroplane moving, so
+ * an aeroplane that is not moving never had one. Reading the airspeed field
+ * instead is wrong wherever the two disagree, and they disagree in exactly the
+ * place it matters: a perf-capture shot holds a fixed position while declaring
+ * an airspeed, and an airspeed-derived trail pushed the camera tens of metres
+ * back in every chase shot in the canonical set — measured as 30% to 99% of
+ * pixels moving, against a same-arm noise floor of under 1%.
  */
 export function cameraTrailMeters(
   cameraMode: CameraMode,
@@ -230,3 +239,46 @@ export function cameraRigLiftToRef(
   result.y = y;
   result.z = z;
 }
+
+/**
+ * Where the chase camera and its aim point sit, relative to the aircraft.
+ *
+ * Pure, and separated from the renderer for one reason: the claim that this
+ * rig leaves an UNBANKED frame exactly where the old one did is a claim about
+ * arithmetic, and trying to establish it from rendered pixels failed. Two
+ * identical capture runs of identical code moved 30% of a frame with maxima of
+ * 170/255 on this machine, which is a noise floor far too blunt to clear a
+ * camera change against. Here it is a fact a test can check to the last bit.
+ *
+ * At zero bank `lift` IS the aircraft's up vector (`cameraRigLiftToRef`) and
+ * at zero motion `trail` is exactly 0 (`cameraTrailMeters`), so both results
+ * below reduce, character for character, to the pre-fix formulas
+ * `-forward*distance + up*height` and `forward*aimAhead + up*1.25`.
+ *
+ * The trail is carried by BOTH offsets. That is what leaves the view direction
+ * untouched — the camera and its target move back together, so only the
+ * framing distance grows and the aeroplane stays where it was in frame.
+ */
+export function chaseRigOffsetsToRef(
+  forward: Readonly<MutablePresentationVector>,
+  lift: Readonly<MutablePresentationVector>,
+  distance: number,
+  height: number,
+  aimAhead: number,
+  aimHeight: number,
+  trail: number,
+  camera: MutablePresentationVector,
+  target: MutablePresentationVector,
+): void {
+  const behind = distance + trail;
+  camera.x = -forward.x * behind + lift.x * height;
+  camera.y = -forward.y * behind + lift.y * height;
+  camera.z = -forward.z * behind + lift.z * height;
+  const ahead = aimAhead - trail;
+  target.x = forward.x * ahead + lift.x * aimHeight;
+  target.y = forward.y * ahead + lift.y * aimHeight;
+  target.z = forward.z * ahead + lift.z * aimHeight;
+}
+
+/** The aim point's height up the rig's vertical, in metres. */
+export const CHASE_AIM_HEIGHT_METERS = 1.25;

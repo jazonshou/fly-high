@@ -161,8 +161,10 @@ import { attributePresentFrame } from "./frameAttribution";
 import {
   cameraBankFollow,
   cameraPresentationResponse,
+  CHASE_AIM_HEIGHT_METERS,
   cameraRigLiftToRef,
   cameraTrailMeters,
+  chaseRigOffsetsToRef,
   orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
@@ -582,6 +584,11 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Camera and aim point relative to the aircraft, which is what is smoothed. */
   private readonly cameraOffset = Vector3.Zero();
   private readonly cameraTargetOffset = Vector3.Zero();
+  /** Last frame's aircraft position, for the observed ground speed. */
+  private readonly previousAircraftPosition = Vector3.Zero();
+  private previousAircraftPositionValid = false;
+  /** Observed ground speed in m/s, which is what sets the chase trail. */
+  private observedGroundSpeed = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
@@ -2705,6 +2712,18 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       cameraBankFollow(this.cameraMode, this.reducedMotion),
       this.cameraRigLift,
     );
+    // How fast the aeroplane is ACTUALLY moving through the scene, which is
+    // what the chase trail is derived from. A rebase frame moves every
+    // coordinate at once, so the delta across it is meaningless and the
+    // previous value is held instead.
+    if (this.previousAircraftPositionValid && !this.originShifted) {
+      const travelled = Vector3.Distance(aircraftPosition, this.previousAircraftPosition);
+      this.observedGroundSpeed = travelled / Math.max(1e-4, this.currentDeltaSeconds);
+    } else if (!this.previousAircraftPositionValid) {
+      this.observedGroundSpeed = 0;
+    }
+    this.previousAircraftPosition.copyFrom(aircraftPosition);
+    this.previousAircraftPositionValid = true;
     if (this.cameraMode === "freefly") {
       // The synthetic viewer state's position IS the camera; its orientation
       // already produced this.forward/this.up in updatePresentation. The rig
@@ -2745,10 +2764,23 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // ground track: the settled framing players know is preserved, without
       // a crosswind pushing the airframe sideways out of frame. See
       // `cameraTrailMeters`.
-      const trail = cameraTrailMeters(this.cameraMode, this.reducedMotion, state.airspeed);
-      this.desiredCamera.copyFrom(aircraftPosition)
-        .subtractInPlace(this.forward.scale(profile.distance + trail))
-        .addInPlace(this.cameraRigLift.scale(profile.height));
+      const trail = cameraTrailMeters(
+        this.cameraMode,
+        this.reducedMotion,
+        this.observedGroundSpeed,
+      );
+      chaseRigOffsetsToRef(
+        this.forward,
+        this.cameraRigLift,
+        profile.distance,
+        profile.height,
+        profile.aimAhead,
+        CHASE_AIM_HEIGHT_METERS,
+        trail,
+        this.desiredCamera,
+        this.desiredCameraTarget,
+      );
+      this.desiredCamera.addInPlace(aircraftPosition);
       // The chase rig trails the aircraft by up to 22 m and is not collided,
       // so a pitched-up pass near the ground can otherwise place the camera
       // under the terrain. Clamp the desired position above the surface for
@@ -2773,12 +2805,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.desiredCamera.y < cameraGround + 2.5) {
         this.desiredCamera.y = cameraGround + 2.5;
       }
-      // The aim point carries the same trail as the camera, so the view
-      // direction — and therefore where the airframe sits in frame — is
+      // Both offsets were produced together above, so the aim point already
+      // carries the same trail the camera does and the view direction is
       // exactly what it was before the trail became explicit.
-      this.desiredCameraTarget.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(profile.aimAhead - trail))
-        .addInPlace(this.cameraRigLift.scale(1.25));
+      this.desiredCameraTarget.addInPlace(aircraftPosition);
       fieldOfView = profile.fieldOfView;
     }
     const response = cameraPresentationResponse(
