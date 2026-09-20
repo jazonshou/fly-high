@@ -146,16 +146,76 @@ rock stays rock.
 
 Left, and logged rather than widened into this change:
 
-* **Forest-floor regions keep rectilinear edges.** A debug tint (red = forest
-  floor in the pair, green = shrub, blue = page trust, yellow = airfield mask)
-  showed the dark-green region with straight and right-angled sides inland of
-  the start airfield's bay is ground with ForestFloor in its pair, NOT the
-  airfield mask. Its outline is the classifier's own coarse channel texels
-  (stair steps, single-texel rectangular holes): membership of the top two
-  changes texel by texel, and bilinear weights make each step a ramp one texel
-  wide, straight and axis-aligned. Admitting forest floor to the mixture target
-  (a bar of 0.5 instead of 0.9) softens it and was shot, but leaves a faint
-  straight seam along the membership edge; the fix belongs in how coarse pages
-  classify litter, not in the feather.
+* **Forest-floor regions kept rectilinear edges** after this change; that was a
+  different mechanism and is section 4.
 * **Low tier** never samples layer1 in its two-material path and keeps the hard
   dry/lush edge; a sample was not spent on the weakest hardware.
+
+## 4. Forest floor from cruise height: a canopy for each coarse tap
+
+After section 3 one kind of region still read as painted: dark-green ground with
+stair-stepped, axis-aligned sides and single-texel rectangular holes. A debug
+tint (red = forest floor's share of the pair, green = shrub, blue = page trust,
+yellow = airfield mask) showed it is ground with ForestFloor in its pair, not
+the airfield mask and not a page-level boundary.
+
+The first diagnosis was wrong in a way worth recording: "the bake's 2x2
+supersample cannot antialias closure". It does not sample closure 2x2 at all.
+`bakeSplat` called `splatCanopy` ONCE per channel texel, at the centre, and
+handed that value to all four classify taps of both seasons. The docstring gave
+the reason, and it is sound where it was written for: closure is band-limited
+at a fixed 60 m, so taps up to 16 m apart would read four copies of one number.
+From a 64 m texel up the taps sit 32-128 m apart and the argument fails. Closure
+is a THRESHOLDED function of the 260 m and 130 m glade octaves, so on a 128 or
+256 m texel it was a binary field sampled once, near its own Nyquist, and
+ForestFloor is gated on it.
+
+From `LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS` (the closure channel's own band
+limit, so level 4 and up) each of the existing 2x2 taps now reads its own
+canopy, sampled once and shared by both seasons. A coarse texel then holds a
+stand's coverage in five steps and bilinear filtering does the rest. Levels 0-3
+hand all four taps the centre's canopy, bit-for-bit what the bake did before,
+so nothing the trees are planted from can move; and the closure LANE stored
+beside the weights stays the centre sample at EVERY level, because the far
+canopy and the hand-off read it and must agree with the planted trees. Both are
+pinned. The bake-parity test's CPU model now follows the bake's tap pattern
+(lowland agreement 85.1 %, from 84.9 %); no placement digest reads the bake, so
+none was re-pinned.
+
+By frame, same world and pose: rectangular holes with hard corners become
+rounded, soft-edged glades and the straight sides become gradients; the holes
+themselves remain, because they are real 130-260 m glades. Near-range frames at
+a stand's edge and rock at range are unchanged (mean absolute difference 0.01
+of 255 on the rock frames).
+
+Costed and rejected: a 4x4 tap grid with a canopy per tap (about six times the
+bake per coarse page, ~2.3 ms against a 1.55 ms whole-compute cap); closure-only
+4x4 (3.4x, and biased, because the classifier of a MEAN closure over-grows
+forest floor at a stand's edge through the gate's nonlinearity); dithering the
+gather position in the fragment (a per-fragment cost on exactly the pages that
+fill a cruise frame, and it moves every categorical boundary, rock included).
+Priced in a quiet window, one tree with the tap gate toggled, off / on / off /
+on. Splat bake per level-5 page: 0.44 and 0.61 ms off, 0.96 and 0.79 ms on; the
+same-arm spread (0.17) is about half the effect, so the honest statement is
+"+0.2 to +0.5 ms per coarse page" and no tighter (the timer is noisy on short
+dispatches: the untouched fine-level bake read 0.19-0.33 ms across the same four
+runs while terrain and occlusion held to a hundredth). An estimate from lattice
+counts had said +0.19: a canopy sample costs several classify taps, not one and
+a half. Nothing downstream moved: cold start's time-to-ready 2,008-2,029 ms on
+both arms against a 2,300 ms deadline (one first-run outlier on the OFF arm
+discarded), and on page-thrash-turn and cdlod-transition the fps, p999, max
+frame and hitch count are the same on all four runs, because a bake is one
+floor-admitted dispatch per pump either way. Coarse splat plus its paired
+occlusion bake is about 1.05 ms against the 1.55 ms whole-compute cap, and
+`terrain-compute-cost` now times a level-5 batch and bounds exactly that (it
+priced level-3 pages only, which never take the branch, so the change had been
+invisible to the one instrument that prices a bake).
+
+That was measured with every tap recomputing its moisture chain. As shipped, a
+coarse tap's moisture and climate are evaluated once and shared by its canopy
+sample and both of its seasonal classifications: 5 moisture chains per coarse
+texel where there were 13 and 4 climate chains where there were 8, the same
+function of the same inputs, so the bake's output does not change (the parity
+test's histogram is digit-for-digit the same). It can only be cheaper than the
+figure above; it is to be re-priced with eight interleaved pairs the next time
+the machine is silent.

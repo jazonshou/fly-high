@@ -1,5 +1,6 @@
 import { saturate, smoothstep } from "@/src/world/noise";
 import {
+  CANOPY_CLOSURE_FILTER_WIDTH_METERS,
   SOIL_LITTER_DEEP_METERS,
   SOIL_LITTER_THIN_METERS,
   soilLitterFactor,
@@ -838,9 +839,35 @@ fn classifyLandCover(input: LandCoverInput) -> LandCoverWeights {
 export const LAND_COVER_SUPERSAMPLE_EDGE = 2;
 
 /**
+ * Channel texel size from which each supersample tap reads its OWN canopy.
+ *
+ * Closure is band-limited at a fixed 60 m whatever the page level, so inside a
+ * texel up to 32 m the four taps (at most 16 m apart) really would read four
+ * copies of one number, and the bake samples it once, at the centre. From a
+ * 64 m texel up the taps sit 32-128 m apart and that stops being true: closure
+ * is a THRESHOLDED function of the 260 m and 130 m glade octaves, so one
+ * centre sample per 128 m texel is a binary field sampled near its own
+ * Nyquist. Forest floor is gated on it, and from cruise height every forest-
+ * floor region had stair-stepped, axis-aligned sides and single-texel
+ * rectangular holes (world 1GVEIKQ, 2026-09-20). With a canopy per tap a coarse
+ * texel holds the stand's COVERAGE in five steps and bilinear filtering does
+ * the rest. Tied to the closure channel's own band limit, not to a level.
+ *
+ * A coarse tap's moisture and climate are evaluated once and shared by its
+ * canopy sample and both of its seasonal classifications, which would
+ * otherwise each recompute the same chain at the same point: 5 moisture
+ * chains per coarse texel where there would be 13, and 4 climate chains where
+ * there would be 8, for the same answer.
+ */
+export const LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS = CANOPY_CLOSURE_FILTER_WIDTH_METERS;
+
+/**
  * The splat bake (`4-6`).
  *
- * **Supersample 2x2 and average the WEIGHT VECTORS, not the argmax.** This is
+ * **Supersample 2x2 and average the WEIGHT VECTORS, not the argmax.** (What
+ * varies across the four taps: position, so slope, moisture and climate, at
+ * every level; and the canopy from `LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS` up.
+ * Below that the taps share the texel centre's canopy, exactly.) This is
  * the prefiltering that per-vertex point classification structurally cannot
  * do, and it is the albedo analogue of band-limiting: averaging four ids and
  * rounding gives you the id nearest their mean, which at a three-way junction
@@ -979,7 +1006,14 @@ fn splatClassify(
   localX: f32,
   localZ: f32,
   shift: f32,
-  canopy: vec2f,
+  // (canopy closure, grass cover, this point's moisture or -1, its climate).
+  // A coarse tap arrives with the moisture and climate its canopy sample and
+  // its other season already paid for, at this exact point: the same function
+  // of the same inputs, so handing them over changes no bit of the answer and
+  // saves 8 of a coarse texel's 13 moisture chains and 4 of its 8 climate
+  // ones. A fine tap arrives with -1 and evaluates both here, as it always has
+  // (moisture is saturated to [0, 1], so -1 cannot be a value).
+  tap: vec4f,
 ) -> LandCoverWeights {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
@@ -1021,10 +1055,16 @@ fn splatClassify(
   input.soilDepthMeters =
     textureLoad(splatSoilDepthAtlas, channelTexel, 0).r * SPLAT_SOIL_MAX_METERS;
   input.soilDepthValid = input.flowAccumulationValid;
-  input.canopyClosure = canopy.x;
-  input.grassCover = canopy.y;
-  input.moisture = terrainMoisture(localX, localZ);
-  input.temperature = terrainTemperatureFromClimate(terrainClimate(localX, localZ), elevation);
+  input.canopyClosure = tap.x;
+  input.grassCover = tap.y;
+  var tapClimate = tap.w;
+  if (tap.z >= 0.0) {
+    input.moisture = tap.z;
+  } else {
+    input.moisture = terrainMoisture(localX, localZ);
+    tapClimate = terrainClimate(localX, localZ);
+  }
+  input.temperature = terrainTemperatureFromClimate(tapClimate, elevation);
   input.aspect = 0.0;
   // The airport's graded platform is mown grass (1B-6), and its influence is
   // the same rounded-rectangle field the earthworks key on.
@@ -1037,15 +1077,19 @@ fn splatClassify(
 /**
  * 6-8: the canopy the ground carries here - (true closure, grass cover).
  *
- * Evaluated ONCE per channel texel rather than per supersample, and that is a
- * property of the channel rather than a saving: the vegetation lattices are
- * band-limited at a FIXED 60 m (CANOPY_CLOSURE_FILTER_WIDTH_METERS), so four
- * samples 0.5-32 m apart inside one texel would return four copies of the same
- * number. The shore-distance driver is left at its neutral out-of-domain value
+ * Evaluated ONCE per channel texel rather than per supersample wherever the
+ * texel is finer than the closure channel's band limit, and that is a property
+ * of the channel rather than a saving: the vegetation lattices are band-limited
+ * at a FIXED 60 m (CANOPY_CLOSURE_FILTER_WIDTH_METERS), so four samples up to
+ * 16 m apart inside one texel would return four copies of the same number.
+ * From a 64 m texel up that argument fails and each tap samples its own
+ * (LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); the closure LANE stored beside the
+ * weights stays the centre sample at every level, because the far canopy and
+ * the hand-off read it and must agree with the trees actually planted. The shore-distance driver is left at its neutral out-of-domain value
  * because the riparian corridor is 6-50 m wide - an order of magnitude below
  * this channel's own band limit, so it could not survive into it anyway.
  */
-fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+fn splatCanopyAt(job: SplatJob, localX: f32, localZ: f32, moisture: f32) -> vec2f {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
   // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
@@ -1070,7 +1114,7 @@ fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
   var drivers: VegetationDensityDrivers;
   drivers.elevationAboveSeaLevel = elevation;
   drivers.slope = slopeAspect.x;
-  drivers.moisture = terrainMoisture(localX, localZ);
+  drivers.moisture = moisture;
   drivers.aspect = slopeAspect.y;
   // The SAME field the classifier reads, and the same one generation.ts feeds
   // the density field: the airfield's woody-stem clearance is what keeps the
@@ -1084,23 +1128,30 @@ fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
   return vec2f(sample.canopyClosure, sample.grassCover);
 }
 
+/** The canopy at a point whose moisture nobody has evaluated yet. */
+fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+  return splatCanopyAt(job, localX, localZ, terrainMoisture(localX, localZ));
+}
+
 /** Average the WEIGHT VECTORS of a 2x2 supersample, not their argmax. */
 fn splatSupersample(
   job: SplatJob,
   localX: f32,
   localZ: f32,
   shift: f32,
-  canopy: vec2f,
+  tapCanopy: array<vec4f, 4>,
 ) -> LandCoverWeights {
   var accumulated: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
     accumulated[index] = 0.0;
   }
   let step = job.shape.x * 0.25;
+  // A value array is indexed dynamically through a var on every toolchain.
+  var taps = tapCanopy;
   for (var sample = 0u; sample < 4u; sample = sample + 1u) {
     let dx = select(-step, step, (sample & 1u) == 1u);
     let dz = select(-step, step, (sample & 2u) == 2u);
-    let weights = splatClassify(job, localX + dx, localZ + dz, shift, canopy);
+    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample]);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
       accumulated[u32(weights.ids[slot])] =
         accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
@@ -1198,8 +1249,28 @@ fn bakeSplat(
   // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
   let canopy = splatCanopy(job, localX, localZ);
-  let lo = splatSupersample(job, localX, localZ, job.placement.z, canopy);
-  let hi = splatSupersample(job, localX, localZ, job.placement.w, canopy);
+  // Coarse texels give each tap its own canopy (see
+  // LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); finer ones hand all four the
+  // centre's, which is bit-for-bit what this bake did before. Same tap order
+  // and offsets as splatSupersample. Sampled once, used by both seasons.
+  let centreTap = vec4f(canopy, -1.0, 0.0);
+  var tapCanopy = array<vec4f, 4>(centreTap, centreTap, centreTap, centreTap);
+  if (job.shape.x >= ${LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS.toFixed(1)}) {
+    let tapStep = job.shape.x * 0.25;
+    for (var tap = 0u; tap < 4u; tap = tap + 1u) {
+      let tapDx = select(-tapStep, tapStep, (tap & 1u) == 1u);
+      let tapDz = select(-tapStep, tapStep, (tap & 2u) == 2u);
+      // One moisture chain and one climate chain per tap, shared by its canopy
+      // sample and by both of its seasonal classifications.
+      let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz);
+      tapCanopy[tap] = vec4f(
+        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture),
+        tapMoisture,
+        terrainClimate(localX + tapDx, localZ + tapDz));
+    }
+  }
+  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy);
+  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy);
   let aligned = splatAlignSeasonalWeights(lo, hi);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in

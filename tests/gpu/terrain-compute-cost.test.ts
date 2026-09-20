@@ -185,13 +185,32 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         () => splat.bake(channelSlots, 171),
         () => splat.consumeMeasuredDispatchCostMs());
 
+      // The splat bake's COARSE path. From a 64 m channel texel up every
+      // supersample tap samples its own canopy (the level-3 batch above never
+      // takes that branch: 32 m texels). Level 5 is 128 m. Its height pages are
+      // generated first, because the bake reads them.
+      const coarseHeightSlots: TerrainAtlasSlot[] = [];
+      const coarseChannelSlots: TerrainAtlasSlot[] = [];
+      for (let index = 0; index < BATCH; index += 1) {
+        const address = createWorldPageAddress(5, index, 0);
+        const key = invariantSlotKey(address);
+        coarseHeightSlots.push(heightAtlas.residency.request(key, address)!.slot);
+        coarseChannelSlots.push(channelAtlas.residency.request(key, address)!.slot);
+      }
+      await generator.generate(coarseHeightSlots);
+      await nextFrame();
+      generator.consumeMeasuredDispatchCostMs();
+      const splatComputeCoarse = await time(
+        () => splat.bake(coarseChannelSlots, 171),
+        () => splat.consumeMeasuredDispatchCostMs());
+
       generator.dispose();
       occlusion.dispose();
       splat.dispose();
       pyramid.dispose();
       heightAtlas.dispose();
       channelAtlas.dispose();
-      return { terrainCompute, occlusionCompute, splatCompute };
+      return { terrainCompute, occlusionCompute, splatCompute, splatComputeCoarse };
     });
 
     console.log(
@@ -199,6 +218,24 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       JSON.stringify(measured, (_, value) =>
         typeof value === "number" ? Math.round(value * 1_000) / 1_000 : value),
     );
+
+    // A coarse page's splat bake, where every tap samples its own canopy. Bound
+    // on the ABSOLUTE figure, not on coarse / fine: a short dispatch times
+    // noisily and the fine denominator wanders (0.19-0.33 ms across four runs
+    // of one tree in a quiet window, 2026-09-20), so a ratio fails on noise.
+    // Priced in that window with the taps each recomputing their moisture
+    // chain: 0.79-0.96 ms per page against 0.44-0.61 with the taps off. What
+    // the bounds guard is the whole-compute cap: a channel slot's two bakes are
+    // ONE admission, so coarse splat + occlusion has to stay under it, and a
+    // 4x4 tap grid (~6x the fine bake) would not.
+    console.log(
+      `splat bake, coarse page: ${measured.splatComputeCoarse.toFixed(3)} ms `
+      + `(fine ${measured.splatCompute.toFixed(3)} ms); `
+      + `channel pair ${(measured.splatComputeCoarse + measured.occlusionCompute).toFixed(3)} ms`);
+    expect(measured.splatComputeCoarse, "coarse splat bake measured").toBeGreaterThan(0);
+    expect(measured.splatComputeCoarse, "a coarse page's splat bake").toBeLessThan(1.2);
+    expect(measured.splatComputeCoarse + measured.occlusionCompute,
+      "a coarse channel pair exceeds the 1.55 ms whole-compute cap").toBeLessThan(1.55);
 
     for (const client of ["terrainCompute", "occlusionCompute", "splatCompute"] as const) {
       const pinned = COMPUTE_DISPATCH_SEED_COST_MS[client];
