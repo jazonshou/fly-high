@@ -11,6 +11,7 @@ import {
   ATTRACT_SCAN_TURN_RADIANS,
   attractClimbRateFor,
   attractScanDistance,
+  attractTrackVector,
   shouldReseedAttract,
   stallSpeed,
   DEFAULT_CONTROLS,
@@ -249,9 +250,9 @@ function updateAttractSupervisor(): void {
     // was tracking 45 degrees while the scan looked down 0.9 degrees, so ridges
     // appeared in it only once they were a few hundred metres away and the turn
     // fired far too late to do anything.
-    const heading = telemetry.heading;
-    const hx = Math.sin(heading);
-    const hz = Math.cos(heading);
+    // One authority for "which way is the aeroplane going", and its docblock is
+    // where the radians-versus-degrees trap is written down.
+    const [hx, hz] = attractTrackVector(telemetry.heading);
     const turn = ATTRACT_SCAN_TURN_RADIANS;
     const cos = Math.cos(turn);
     const sin = Math.sin(turn);

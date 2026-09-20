@@ -12,9 +12,12 @@ import {
   attractScanDistance,
   attractScanOffset,
   attractScanSamples,
+  attractTrackVector,
   attractTurnRoll,
   shouldReseedAttract,
   type AttractHoldInput,
+  FlightSimulator,
+  aircraftDefinition,
 } from "../src/sim";
 
 /**
@@ -245,5 +248,92 @@ describe("the re-seed, and where the supervisor is allowed to run", () => {
     // second copy of the rule.
     expect(source).toContain("shouldReseedAttract(simulator.state.crashed");
     expect(source).not.toContain("demoState.altitudeAgl < 65");
+  });
+});
+
+describe("the scan looks where the aeroplane is actually going", () => {
+  // THE GATE FOR THE THIRD UNITS ERROR OF THE WAVE (metres for feet, feet for
+  // metres, and then degrees for radians). `telemetry.heading` is radians; the
+  // scan treated it as degrees and pointed 57 times too close to north, which
+  // caused every terrain symptom this controller appeared to have. A unit test
+  // on the conversion alone would not have caught it -- the conversion looked
+  // reasonable. What catches it is comparing the direction against the
+  // aeroplane's OWN ground track, which no amount of consistent wrongness can
+  // fake.
+  const environment = {
+    terrain: () => ({ height: 0, friction: 0.86 }),
+    terrainHeight: () => 0,
+    seaLevel: 0,
+  };
+
+  it("agrees with a flying aeroplane's ground track in all four quadrants", () => {
+    for (const degrees of [30, 120, 210, 300]) {
+      const heading = (degrees * Math.PI) / 180;
+      const simulator = new FlightSimulator({
+        aircraft: aircraftDefinition("trainer"),
+        spawn: { position: { x: 0, y: 1_200, z: 0 }, airspeed: 50, heading },
+        environment,
+      });
+      for (let step = 0; step < 120; step += 1) simulator.step(1 / 120);
+      const telemetry = simulator.telemetry();
+      const [trackX, trackZ] = attractTrackVector(telemetry.heading);
+      const { x, z } = simulator.state.velocity;
+      const speed = Math.hypot(x, z);
+      expect(speed, `${degrees} deg: not moving`).toBeGreaterThan(20);
+      // The scan direction and the real ground track must be the same ray.
+      expect(trackX, `${degrees} deg track x`).toBeCloseTo(x / speed, 2);
+      expect(trackZ, `${degrees} deg track z`).toBeCloseTo(z / speed, 2);
+    }
+  });
+
+  it("sees a wall placed on the true track, and not one placed off it", () => {
+    // A synthetic world: flat at sea level except a wall 2 km from the origin
+    // along a chosen bearing. Scan from the origin on that bearing and on the
+    // opposite one, exactly as the worker does, and check which one finds it.
+    const WALL_DISTANCE = 2_000;
+    const WALL_HALF_WIDTH = 400;
+    const WALL_HEIGHT = 1_500;
+    const altitude = 900;
+    const groundSpeed = 47;
+
+    const scanOn = (heading: number, wallBearing: number): number => {
+      const wallX = Math.sin(wallBearing) * WALL_DISTANCE;
+      const wallZ = Math.cos(wallBearing) * WALL_DISTANCE;
+      const heightAt = (x: number, z: number): number =>
+        Math.hypot(x - wallX, z - wallZ) < WALL_HALF_WIDTH ? WALL_HEIGHT : 0;
+      const [hx, hz] = attractTrackVector(heading);
+      const distance = attractScanDistance(groundSpeed);
+      const samples = attractScanSamples(distance);
+      let steepest = -Infinity;
+      for (let i = 1; i <= samples; i += 1) {
+        const along = attractScanOffset(i, samples, distance);
+        steepest = Math.max(
+          steepest,
+          attractClimbRateFor(heightAt(hx * along, hz * along), along, altitude, groundSpeed),
+        );
+      }
+      return steepest;
+    };
+
+    for (const degrees of [30, 120, 210, 300]) {
+      const bearing = (degrees * Math.PI) / 180;
+      // Flying AT the wall: it demands a climb nothing can deliver.
+      expect(scanOn(bearing, bearing), `${degrees} deg, at the wall`)
+        .toBeGreaterThan(attractAchievableClimbRate());
+      // Flying away from it: nothing to see.
+      const away = bearing + Math.PI;
+      expect(scanOn(away, bearing), `${degrees} deg, away from the wall`)
+        .toBeLessThan(0);
+    }
+  });
+
+  it("would have failed with the units bug in it", () => {
+    // The exact defect, reconstructed: treat the radian heading as degrees.
+    const heading = (45 * Math.PI) / 180;
+    const wrong = [Math.sin(heading * (Math.PI / 180)), Math.cos(heading * (Math.PI / 180))];
+    const right = attractTrackVector(heading);
+    // 45 degrees of track read as 0.45 degrees: almost due north.
+    expect(wrong[0]!).toBeLessThan(0.02);
+    expect(right[0]!).toBeCloseTo(Math.SQRT1_2, 6);
   });
 });

@@ -22,6 +22,7 @@ export {
   ATTRACT_MIN_CLEARANCE_SECONDS,
   attractScanOffset,
   attractScanSamples,
+  attractTrackVector,
   ATTRACT_SCAN_TRAVEL_METERS,
   ATTRACT_SCAN_TURN_RADIANS,
   attractScanDistance,

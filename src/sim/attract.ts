@@ -262,6 +262,29 @@ export const ATTRACT_SCAN_TURN_RADIANS = 0.6;
 export const ATTRACT_SCAN_NEAR_METERS = 60;
 
 /**
+ * The ground-projected direction the aeroplane is going, from its heading.
+ *
+ * **`telemetry.heading` is RADIANS.** It is `atan2(forward.x, forward.z)`
+ * straight out of the simulator; the worker's `visualState` converts it to
+ * degrees for the HUD, and that conversion is the only one there should be.
+ * Treating the telemetry value as degrees points this 57 times too close to
+ * north: a demo tracking 45 degrees scanned along 0.9, terrain entered the scan
+ * only once it was a few hundred metres away, and the required-climb figure
+ * jumped from -4 m/s to +122 m/s in six seconds with nothing left to do about
+ * it. That single line was the cause of every terrain symptom this controller
+ * appeared to have. It is a function so there is ONE place to get it wrong, and
+ * `sim.attract-hold.test.ts` checks it against a flying aeroplane's real ground
+ * track in all four quadrants.
+ *
+ * NORMALISED, unlike the chase camera's own look-ahead, which uses the raw
+ * forward vector and so shortens its horizon by cos(pitch) exactly when the
+ * aeroplane is climbing and needs it most.
+ */
+export function attractTrackVector(headingRadians: number): readonly [number, number] {
+  return [Math.sin(headingRadians), Math.cos(headingRadians)];
+}
+
+/**
  * Distance of the i-th sample (1-based) along a track of this length.
  *
  * **Spaced QUADRATICALLY, dense near the aeroplane.** Even spacing puts every
