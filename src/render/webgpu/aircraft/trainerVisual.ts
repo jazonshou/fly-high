@@ -228,7 +228,12 @@ export function createTrainer(scene: Scene): AircraftVisual {
     root,
   );
   cabinRoof.position.y = 0.205;
-  build.strutBetween(
+  // Goes on the cockpit-excluded layer with the skin. It is 24 mm of metal,
+  // but it sits on the centreline half a metre from the pilot's eye, so from
+  // inside it is a black bar down the middle of the windscreen — which is
+  // exactly what the cockpit layer mask exists to prevent. The jet's canopy
+  // frame has always been handled this way.
+  const windscreenFrame = build.strutBetween(
     "windscreen-center-frame",
     new Vector3(2.26, -0.02, 0),
     new Vector3(2, 0.21, 0),
@@ -678,7 +683,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
     // clearcoat/transmission canopy stays on ordinary world layers so the
     // windscreen remains visible from the pilot's camera. The cabin roof is
     // opaque and directly overhead, so it joins the shell.
-    cockpitParts: [fuselage, cabinRoof],
+    cockpitParts: [fuselage, cabinRoof, windscreenFrame],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     elevator,

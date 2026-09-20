@@ -129,7 +129,29 @@ console.log("engine diagnostics:", await page.evaluate(async ({ storeUrl }) => {
   }));
 }, { storeUrl }));
 
+async function captureViews(): Promise<void> {
+  // Three frames per airframe: the chase view a player spends their time in,
+  // and the two the camera key cycles to. `C` cycles chase -> cockpit ->
+  // cinematic, and cinematic orbits, which is what gives the three-quarter
+  // look the eye needs to read a shape.
+  await page.screenshot({ path: `${outDir}/${arm}-1-chase.png`, type: "png" });
+  await page.keyboard.press("c");
+  await page.waitForTimeout(2_500);
+  await page.screenshot({ path: `${outDir}/${arm}-2-cockpit.png`, type: "png" });
+  await page.keyboard.press("c");
+  // Long enough for the cinematic orbit to swing round to a three-quarter
+  // angle rather than catching it dead astern.
+  await page.waitForTimeout(9_000);
+  await page.screenshot({ path: `${outDir}/${arm}-3-threequarter.png`, type: "png" });
+  await page.waitForTimeout(6_000);
+  await page.screenshot({ path: `${outDir}/${arm}-4-threequarter.png`, type: "png" });
+}
+
 async function flyManoeuvre(): Promise<void> {
+  if (manoeuvre === "views") {
+    await captureViews();
+    return;
+  }
   if (manoeuvre === "aileron-right" || manoeuvre === "rudder-right") {
     // Hold one control and photograph the aeroplane mid-deflection, so the
     // surfaces can be read off a frame rather than off a node rotation.

@@ -2729,10 +2729,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       fieldOfView = 56;
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
+      const orbit = aircraftSpec(this.aircraft.kind).cinematic;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
-        Math.cos(angle) * 24,
-        8.5 + Math.sin(angle * 0.7) * 2,
-        Math.sin(angle) * 24,
+        Math.cos(angle) * orbit.radiusMeters,
+        orbit.heightMeters + Math.sin(angle * 0.7) * orbit.heightDriftMeters,
+        Math.sin(angle) * orbit.radiusMeters,
       );
       this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.cameraRigLift.scale(1.3));

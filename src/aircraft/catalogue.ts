@@ -51,6 +51,20 @@ export interface ChaseFramingSpec {
   readonly aimAhead: SpeedRamp;
 }
 
+/**
+ * The cinematic view's orbit, which has to clear the aeroplane it circles.
+ *
+ * A fixed 24 m radius was fine for a 7 m trainer and an 11 m sport jet. It is
+ * INSIDE a Global 8000's 31.7 m wingspan, so the camera flew through the wing
+ * and framed a fuselage panel instead of an aeroplane.
+ */
+export interface CinematicOrbitSpec {
+  readonly radiusMeters: number;
+  readonly heightMeters: number;
+  /** How far the height drifts above and below, for a little life. */
+  readonly heightDriftMeters: number;
+}
+
 /** Where the pilot's eye sits, in metres from the centre of gravity. */
 export interface CockpitEyeSpec {
   readonly forward: number;
@@ -101,6 +115,7 @@ export interface AircraftSpec {
   /** One or two words under the name in the picker. */
   readonly description: string;
   readonly chase: ChaseFramingSpec;
+  readonly cinematic: CinematicOrbitSpec;
   readonly cockpitEye: CockpitEyeSpec;
   readonly spawn: SpawnSpec;
   readonly engineReadout: EngineReadoutSpec;
@@ -132,11 +147,15 @@ const TRAINER: AircraftSpec = Object.freeze({
     // response; slope 0 pins it.
     aimAhead: Object.freeze({ base: 16, knee: 0, slope: 0, cap: 0 }),
   }),
-  // The 150's cabin passes UNDER its wing, so the seats are barely above the
-  // centre of gravity — nothing like the 1.12 m the old fictional airframe
-  // used, which would now put the pilot's head through the roof and above the
-  // wing.
-  cockpitEye: Object.freeze({ forward: 1.45, up: 0.02 }),
+  cinematic: Object.freeze({ radiusMeters: 24, heightMeters: 8.5, heightDriftMeters: 2 }),
+  // Measured against the built cabin, not guessed. The 150's cabin passes
+  // UNDER its wing, so everything is low: seat pan at y -0.17, cabin roof at
+  // 0.18, instrument panel top at 0.01 and 2.02 m forward. The old fictional
+  // airframe's 1.12 m would put the pilot's head through the roof; 0.02 put it
+  // level with the panel top, which filled the lower half of the windscreen
+  // with instrument. 0.12 clears the panel by 11 cm over a 0.64 m reach —
+  // about 11 degrees of down-angle — and still leaves 6 cm of headroom.
+  cockpitEye: Object.freeze({ forward: 1.38, up: 0.12 }),
   spawn: Object.freeze({
     airborneAirspeed: 56,
     airborneThrottle: 0.68,
@@ -176,6 +195,7 @@ const JET: AircraftSpec = Object.freeze({
     fieldOfView: Object.freeze({ base: 62, knee: 140, slope: 0.05, cap: 6 }),
     aimAhead: Object.freeze({ base: 16, knee: 145, slope: 0.12, cap: 14 }),
   }),
+  cinematic: Object.freeze({ radiusMeters: 24, heightMeters: 8.5, heightDriftMeters: 2 }),
   // The J-45's tandem canopy and the trainer's cabin happen to seat the pilot
   // at the same offsets from the centre of gravity.
   cockpitEye: Object.freeze({ forward: 1.15, up: 1.12 }),
@@ -221,9 +241,20 @@ const BIZJET: AircraftSpec = Object.freeze({
     fieldOfView: Object.freeze({ base: 62, knee: 200, slope: 0.05, cap: 5 }),
     aimAhead: Object.freeze({ base: 30, knee: 200, slope: 0.1, cap: 12 }),
   }),
-  // A flight deck a long way forward of the centre of gravity and well above
-  // it, which is most of what makes a large aeroplane feel large to taxi.
-  cockpitEye: Object.freeze({ forward: 12, up: 1.5 }),
+  // 65 m, not 24: the small aeroplanes orbit at about 1.8 times their chase
+  // distance, and 24 m would put this camera a long way inside a 31.7 m
+  // wingspan. Height scales with it so the orbit still looks down on the
+  // aeroplane rather than along it.
+  cinematic: Object.freeze({ radiusMeters: 65, heightMeters: 21, heightDriftMeters: 5 }),
+  // Measured against the built flight deck, on the same geometry as the
+  // trainer's: seats at x 11.44 / y 0.68, panel centred at x 12.55 / y 0.62
+  // and 0.54 m tall, so its top edge is y 0.89. Two wrong answers first —
+  // y 1.5 sat 0.88 m above the panel over a 0.55 m reach, 58 degrees down and
+  // outside a 56-degree field of view, so the cockpit rendered as an empty
+  // windscreen; y 0.82 sat BELOW the panel's top edge and filled two thirds
+  // of the screen with instrument. 1.05 clears the top edge by 0.16 m over a
+  // 0.95 m reach, the same proportion the 150 flies at.
+  cockpitEye: Object.freeze({ forward: 11.6, up: 1.05 }),
   spawn: Object.freeze({
     // M 0.62 at low level: clean, comfortable, and well inside the flap and
     // gear speeds so a pilot who reaches for either is not punished.
