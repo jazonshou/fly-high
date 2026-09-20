@@ -1,8 +1,24 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLUSTERED_MAX_SIMULTANEOUS_LIGHTS } from "../src/render/webgpu/lighting/ClusteredLighting";
 import { readSource } from "./support/sourceText";
+
+import { createRequire } from "node:module";
+
+/*
+ * Babylon's shipped source is read through MODULE RESOLUTION, not through a
+ * path built from this repo's own root.
+ *
+ * `join(projectRoot, "node_modules/...")` looks right and works in a normal
+ * clone, but a git worktree has no `node_modules` of its own — Node finds the
+ * package by walking up to the main checkout. So these assertions passed in a
+ * lived-in tree and failed in every fresh worktree, which is exactly the tree
+ * an end-of-wave promotion runs from.
+ */
+const babylonCoreRoot = dirname(
+  createRequire(import.meta.url).resolve("@babylonjs/core"),
+);
 
 /**
  * **How many lights the scene actually has, and why the answer must stay 4.**
@@ -100,7 +116,7 @@ describe("the scene's light slots", () => {
     // start silently dropping. Read from the shipped source, because that is
     // the only place the guarantee lives.
     const container = readFileSync(
-      "node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js",
+      join(babylonCoreRoot, "Lights/Clustered/clusteredLightContainer.pure.js"),
       "utf8",
     );
     expect(
@@ -118,7 +134,7 @@ describe("the scene's light slots", () => {
     // Babylon's code — if a future version starts respecting `isEnabled`, the
     // advice becomes wrong and this fails rather than quietly misleading.
     const container = readFileSync(
-      "node_modules/@babylonjs/core/Lights/Clustered/clusteredLightContainer.pure.js",
+      join(babylonCoreRoot, "Lights/Clustered/clusteredLightContainer.pure.js"),
       "utf8",
     );
     expect(

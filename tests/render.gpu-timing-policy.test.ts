@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readSource } from "./support/sourceText";
 
@@ -9,6 +10,19 @@ import {
   withoutDispatchTiming,
 } from "@/src/render/webgpu/core/GpuTimingPolicy";
 
+/*
+ * Babylon's shipped source is read through MODULE RESOLUTION, not through a
+ * path built from this repo's own root.
+ *
+ * `join(projectRoot, "node_modules/...")` looks right and works in a normal
+ * clone, but a git worktree has no `node_modules` of its own — Node finds the
+ * package by walking up to the main checkout. So these assertions passed in a
+ * lived-in tree and failed in every fresh worktree, which is exactly the tree
+ * an end-of-wave promotion runs from.
+ */
+const babylonCoreRoot = dirname(
+  createRequire(import.meta.url).resolve("@babylonjs/core"),
+);
 const projectRoot = join(import.meta.dirname, "..");
 const renderRoot = join(projectRoot, "src/render");
 
@@ -192,8 +206,8 @@ describe("G0-2 GPU dispatch timing policy", () => {
     it("still gates the timestamp write and the resolve on the counter", () => {
       const source = readFileSync(
         join(
-          projectRoot,
-          "node_modules/@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader.pure.js",
+          babylonCoreRoot,
+          "Engines/WebGPU/Extensions/engine.computeShader.pure.js",
         ),
         "utf8",
       );
@@ -205,7 +219,7 @@ describe("G0-2 GPU dispatch timing policy", () => {
 
     it("still creates the counter only when GPU timing is enabled", () => {
       const source = readFileSync(
-        join(projectRoot, "node_modules/@babylonjs/core/Compute/computeShader.pure.js"),
+        join(babylonCoreRoot, "Compute/computeShader.pure.js"),
         "utf8",
       );
       expect(source).toContain("if (engine.enableGPUTimingMeasurements)");
