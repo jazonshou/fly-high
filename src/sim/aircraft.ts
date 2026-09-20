@@ -451,9 +451,17 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
     Object.freeze({ x: 15, y: -0.4, z: 0 }),
     Object.freeze({ x: 11.5, y: 1.6, z: 0 }),
     Object.freeze({ x: 0, y: -1.5, z: 0 }),
-    Object.freeze({ x: -1, y: 0.4, z: 15.85 }),
-    Object.freeze({ x: -1, y: 0.4, z: -15.85 }),
-    Object.freeze({ x: -16, y: 6.2, z: 0 }),
+    // x -6.44, not -1. Measured at the true tip station on the rebuilt wing:
+    // at |z| 15.88 the chord runs x -6.98 to -5.90 at y 0.25 to 0.82, so the
+    // old point sat 5.4 m FORWARD of any metal. It was wrong before the wing
+    // was rebuilt too — 35 degrees of sweep on a 15.9 m half-span carries the
+    // tip a long way aft, the same trap the 747's tip points fell into twice.
+    Object.freeze({ x: -6.44, y: 0.3, z: 15.85 }),
+    Object.freeze({ x: -6.44, y: 0.3, z: -15.85 }),
+    // y 5.5: the tailplane bullet's top on a T-tail, after the fin came down
+    // 1.04 m to put the aeroplane on its published 8.2 m height. This point
+    // and `FIN_TIP_Y` in bizjetVisual move together.
+    Object.freeze({ x: -16, y: 5.5, z: 0 }),
     Object.freeze({ x: -18.5, y: 0.6, z: 0 }),
   ]),
 });

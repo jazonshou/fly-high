@@ -4,8 +4,11 @@
 // aircraft needs it: seventeen ovals a side is a real feature of this type and
 // thirty separate meshes for it is not affordable.
 import "@babylonjs/core/Meshes/thinInstanceMesh";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import {
   resolveAircraftAnimationPose,
@@ -41,98 +44,417 @@ interface BizJetRig extends CommonRig {
 }
 
 /**
- * Wing planform, written once because six different parts are cut from it.
+ * Wing planform and section, written ONCE because every piece of the wing is
+ * cut from it: the two fixed panels, both flap segments, the aileron, the
+ * fixed tip trailing edge and the seating of the spoilers. That is not tidiness
+ * — it is what makes a flap's upper surface literally BE the wing's upper
+ * surface continued, so there is no step at the hinge to catch the light.
  *
- * The real aeroplane: 31.7 m span, 94 m^2, 35 degrees of leading-edge sweep.
- * Taper follows from the published 3.4 m mean aerodynamic chord — for a
- * straight-tapered wing of this span and area, MAC 3.4 pins the taper ratio at
- * 0.21 and the centreline chord at about 4.9 m. This wing is kinked instead,
- * as the aeroplane's is: a less swept inboard trailing edge out to the flap
- * break, then a sharply swept outboard panel. Keeping the kink chord at 3.06 m
- * rather than the straight-taper value is what holds the area at 93 m^2; a
- * smaller kink chord looks plausible and quietly loses fifteen square metres.
+ * The real aeroplane: 31.70 m span over the winglet tips, 116.5 m^2 of wing
+ * (1,254 sq ft, Aviation Week's pilot report), aspect ratio 8.63, 35.3 degrees
+ * of sweep at the quarter chord. The area is the number that matters most
+ * here and the one the first draft of this file got wrong: it claimed 93 m^2
+ * in a comment while the built triangles measured 84.6, because the trailing
+ * edge was notched away wherever two control surfaces did not quite meet.
+ * 116.5 m^2 at this span needs a 6.41 m chord at the root rib against the 5.25
+ * it had — this wing is genuinely broad, and the slender one it replaces read
+ * as a sailplane's.
  *
- * The centreline leading edge at x = +5.15 is not a styling choice. It puts
- * the quarter-chord of the mean aerodynamic chord — station z = 6.2, chord
- * 3.10 — within 4 cm of x = 0, and x = 0 is the centre of gravity the sim's
- * whole definition is written about. A wing anywhere else would have the
- * aeroplane balancing on a point its own lift does not pass through.
+ * The leading edge is placed, not styled. It puts the quarter-chord of the
+ * mean aerodynamic chord (4.56 m at station z = 5.69) within 2 cm of x = 0,
+ * and x = 0 is the centre of gravity the sim's whole definition is written
+ * about. A wing anywhere else has the aeroplane balancing on a point its own
+ * lift does not pass through.
+ *
+ * DELIBERATE SHORTFALL, measured: this reaches 33.0 degrees at the quarter
+ * chord, not the published 35.3. Getting the last 2.3 degrees means sweeping
+ * the tip a further 0.4 m aft, and the tip cannot move: `BIZJET_WASH` in
+ * `lighting/AircraftLighting.ts` sites the navigation and strobe lamps at
+ * x = -6.1 and -6.2, and past about x = -6.0 of tip leading edge those lamps
+ * fall off the front of the winglet. That table is another file's.
  */
 const WING_ROOT_Z = 1.45;
 const WING_KINK_Z = 6.3;
 const WING_TIP_Z = 15;
 const WING_CHORD_PLANE_Y = -0.9;
-/** Leading edge at each of the three defining stations. */
-const WING_ROOT_LEADING_X = 4.14;
-const WING_KINK_LEADING_X = 0.74;
-const WING_TIP_LEADING_X = -5.35;
+/** Leading edge at each of the three defining stations: 37 deg, then 36 deg. */
+const WING_ROOT_LEADING_X = 4.34;
+const WING_KINK_LEADING_X = 0.685;
+const WING_TIP_LEADING_X = -5.7;
 /** True trailing edge — where the flaps and ailerons END. */
-const WING_ROOT_TRAILING_X = -1.11;
-const WING_KINK_TRAILING_X = -2.32;
-const WING_TIP_TRAILING_X = -6.5;
+const WING_ROOT_TRAILING_X = -2.072;
+const WING_KINK_TRAILING_X = -3.463;
+const WING_TIP_TRAILING_X = -6.92;
 /**
- * Hinge line, at 72% of local chord. One fraction for the whole span so the
- * flap and aileron hinges form a single unbroken line, which is what lets the
- * fixed wing be two panels instead of six.
+ * Hinge line, at 72% of local chord — just behind the 67% rear spar the
+ * Global Express flight manual gives for this wing family. One fraction for
+ * the whole span, so every flap and aileron hinge lies on one unbroken line.
  */
-const WING_ROOT_HINGE_X = 0.36;
-const WING_KINK_HINGE_X = -1.46;
-const WING_TIP_HINGE_X = -6.18;
-
-/** Linear interpolation along the inboard or outboard panel. */
-function alongPanel(rootValue: number, tipValue: number, fraction: number): number {
-  return rootValue + (tipValue - rootValue) * fraction;
-}
-
-/** Where a station sits along the inboard panel, 0 at the root rib. */
-function inboardFraction(z: number): number {
-  return (Math.abs(z) - WING_ROOT_Z) / (WING_KINK_Z - WING_ROOT_Z);
-}
-
-/** Where a station sits along the outboard panel, 0 at the kink. */
-function outboardFraction(z: number): number {
-  return (Math.abs(z) - WING_KINK_Z) / (WING_TIP_Z - WING_KINK_Z);
-}
-
+const WING_HINGE_CHORD_FRACTION = 0.72;
 /**
- * The cabin window line. The Global's seventeen-a-side window run is most of
- * why the silhouette reads as an airliner-derived business jet rather than as
- * a large fighter, and it is also the single most repetitive thing on the
- * aeroplane — one 12-sided oval, thin-instanced thirty times, one draw call.
+ * Section thickness, TAPERING root to tip rather than stepping at the kink.
+ * Bombardier says only that the 7500's transonic wing is thinner than the
+ * Global Express's 11%, so these are that statement made continuous.
+ */
+const WING_ROOT_THICKNESS = 0.108;
+const WING_KINK_THICKNESS = 0.096;
+const WING_TIP_THICKNESS = 0.083;
+/** Cambered for M 0.85 cruise, which is what the sim's cl_zero 0.14 is. */
+const WING_CAMBER = 0.004;
+/**
+ * 2.5 degrees, the Global Express figure. The wing had NONE — measured at
+ * -0.05 degrees across the built triangles — which is most of why it read as
+ * a plank bolted through the fuselage. Pivoted at the root rib so the
+ * wing-body joint does not move and the fairing still covers it.
+ */
+const WING_DIHEDRAL = (2.5 * Math.PI) / 180;
+/**
+ * The cove between a fixed panel and the surface hinged behind it.
  *
- * Fifteen a side rather than seventeen: the two forward-most are behind the
- * flight deck bulkhead on the real aeroplane and would sit on fuselage that is
- * already tapering here.
+ * 30 mm, and the number was walked down from 60 after looking at it. The two
+ * mating faces are blunt and vertical and face AWAY from each other, so they
+ * cannot z-fight however close they are — whichever one a viewer is on the
+ * side of, the other is culled and the solid body between is in front of it.
+ * The cost of a wide cove is different: it is a slot you can see daylight
+ * through. At 60 mm the close three-quarter frame showed a line of sky along
+ * the whole hinge. At 30 mm it is under a pixel at the chase camera's 38 m
+ * and reads as the hairline it should. A real wing closes the last of it with
+ * an upper-skin overhang the flap tucks under, which the shared airfoil
+ * builder cannot cut — that residue is reported rather than faked.
  */
-const CABIN_WINDOW_COUNT = 15;
-const CABIN_WINDOW_FORWARD_X = 8.8;
-const CABIN_WINDOW_PITCH = 1.06;
-/** Seated eye height, a little above the fuselage centreline. */
-const CABIN_WINDOW_Y = 0.3;
-/** Fuselage half-width at that height, so the pane sits in the skin. */
-const CABIN_WINDOW_Z = 1.32;
+const CONTROL_SURFACE_COVE = 0.03;
 /**
- * 0.40 m across by 0.58 m tall. Bombardier sells these as the largest windows
- * in the class and they are visibly taller than they are wide, which a round
- * porthole would throw away.
+ * Fowler travel. The shared pose carries ONE flap number, in radians of hinge
+ * rotation, and `SURFACE_TRAVEL.bizjet` makes 30 degrees of it full flap; the
+ * translation is scaled off that same fraction so both segments and both
+ * wings move as a single family however the pose is driven. 0.30 m aft is
+ * about a quarter of the flap's own chord, which is the order a Fowler track
+ * on this class of wing gives.
  */
-const CABIN_WINDOW_WIDTH = 0.4;
-const CABIN_WINDOW_HEIGHT_RATIO = 1.45;
+const FULL_FLAP_RADIANS = (30 * Math.PI) / 180;
+const FLAP_AFT_TRAVEL = 0.3;
+const FLAP_DOWN_TRAVEL = 0.1;
+/**
+ * How far a flap's leading edge is tucked UNDER the fixed wing at rest.
+ *
+ * It was `CONTROL_SURFACE_COVE`, 3 cm, which is right for an aileron because
+ * an aileron only rotates. A Fowler flap TRANSLATES: at 0.3 m of aft travel a
+ * 3 cm overlap becomes a 27 cm hole, and at the take-off setting the panels
+ * hung behind the wing with open sky between the trailing edge and the flap —
+ * the remaining half of the "glitchy" report.
+ *
+ * So the overlap has to exceed the travel. 0.34 m leaves 4 cm still tucked
+ * under at FULL flap, and about 19 cm at the take-off setting. At rest the
+ * whole overlap is hidden: the flap is a 6% section conformed into a 10% wing,
+ * so its surfaces sit inside the fixed wing's envelope rather than on it.
+ */
+const FLAP_LEADING_OVERLAP = FLAP_AFT_TRAVEL + 0.04;
+
+/**
+ * THE FLAP BREAK SEAL.
+ *
+ * `TRAILING_EDGE` tiles the span with 80 mm slots on purpose — that is the
+ * gap a real closed-up wing shows between flap segments — but a slot that
+ * narrow is still a hole, and swept 23 degrees it is a hole a chase camera
+ * looks straight down. Measured by ray-casting the built mesh from sixty
+ * chase-like eye points (3 ranges x 5 elevations x 4 azimuths), the ONLY
+ * daylight left anywhere between fixed wing and flap is this one break at
+ * z = 6.22..6.30: 118 mm of apparent width at flaps 0, 314 mm at take-off.
+ * Nothing leaks along the chord at any station or any angle.
+ *
+ * So it is sealed rather than closed: a dark plate on the inner flap's tip,
+ * wide enough to stand behind the gap at every deflection. The two segments
+ * hinge about lines swept 22.7 and 26.2 degrees, so they diverge slightly as
+ * they go down, and the plate carries enough overlap to cover that.
+ */
+const FLAP_SEAL_SPAN = 0.14;
+
+/**
+ * The cabin window line. Fourteen a side, which is what photographs of the
+ * aeroplane show and what the brochure's four six-window suites plus two
+ * lavatory windows come to. It is also the single most repetitive thing on
+ * the aeroplane — one 12-sided oval, thin-instanced twenty-eight times, one
+ * draw call.
+ */
+const CABIN_WINDOW_COUNT = 14;
+const CABIN_WINDOW_FORWARD_X = 8.8;
+/** 0.92 m, measured off scaled side views and uniform the length of the cabin. */
+const CABIN_WINDOW_PITCH = 0.92;
+/** Centre 0.38 m above the fuselage centreline, where seated eyes are. */
+const CABIN_WINDOW_Y = 0.38;
+/** Fuselage half-width at that height, so the pane sits in the skin. */
+const CABIN_WINDOW_Z = 1.29;
+/**
+ * 0.385 m across by 0.539 m tall. Bombardier sells these as the largest
+ * windows in the class — about 300 square inches — and they are visibly
+ * taller than they are wide, which a round porthole would throw away.
+ */
+const CABIN_WINDOW_WIDTH = 0.385;
+const CABIN_WINDOW_HEIGHT_RATIO = 1.4;
+
+/**
+ * The gold pinstripe of the Bombardier house scheme, as the 2019 EBACE
+ * demonstrator wears it: ONE thin line, below the window row at about the
+ * cabin floor, running level down the cabin and tapering out on the lower
+ * nose. It is painted with VERTEX COLOUR on the fuselage lofts rather than
+ * as a decal mesh laid on the skin, and that is the whole point — a stripe
+ * mesh a few millimetres proud of a 33 m fuselage z-fights from a couple of
+ * hundred metres out, which is exactly the kind of shimmer this pass is
+ * here to remove. A colour multiplied into the skin cannot fight anything.
+ */
+const CHEATLINE_Y = -0.46;
+const CHEATLINE_HALF_HEIGHT = 0.055;
+/** Linear-space gold: vertex colour multiplies albedo AFTER the sRGB decode. */
+const CHEATLINE_LINEAR: readonly [number, number, number] = [0.52, 0.30, 0.055];
+
+interface WingSection {
+  readonly leadingX: number;
+  readonly trailingX: number;
+  readonly hingeX: number;
+  readonly chord: number;
+  readonly thicknessRatio: number;
+}
+
+/** Linear interpolation, kept local so the planform reads as arithmetic. */
+function mix(from: number, to: number, amount: number): number {
+  return from + (to - from) * amount;
+}
+
+/** Hermite ramp; `edge0 > edge1` simply runs the ramp the other way. */
+function smoothStep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The wing at one span station. Inboard of the root rib it keeps the root
+ * section: that stub lives inside the wing-body fairing, and extending it
+ * rather than tapering it to the centreline is what makes the gross area come
+ * out at the published figure.
+ */
+function wingSection(spanZ: number): WingSection {
+  const z = Math.min(WING_TIP_Z, Math.abs(spanZ));
+  const inboard = z <= WING_KINK_Z;
+  const fraction = inboard
+    ? Math.max(0, (z - WING_ROOT_Z) / (WING_KINK_Z - WING_ROOT_Z))
+    : (z - WING_KINK_Z) / (WING_TIP_Z - WING_KINK_Z);
+  const leadingX = inboard
+    ? mix(WING_ROOT_LEADING_X, WING_KINK_LEADING_X, fraction)
+    : mix(WING_KINK_LEADING_X, WING_TIP_LEADING_X, fraction);
+  const trailingX = inboard
+    ? mix(WING_ROOT_TRAILING_X, WING_KINK_TRAILING_X, fraction)
+    : mix(WING_KINK_TRAILING_X, WING_TIP_TRAILING_X, fraction);
+  const thicknessRatio = inboard
+    ? mix(WING_ROOT_THICKNESS, WING_KINK_THICKNESS, fraction)
+    : mix(WING_KINK_THICKNESS, WING_TIP_THICKNESS, fraction);
+  const chord = leadingX - trailingX;
+  return {
+    leadingX,
+    trailingX,
+    chord,
+    thicknessRatio,
+    hingeX: leadingX - WING_HINGE_CHORD_FRACTION * chord,
+  };
+}
+
+/** Closed-trailing-edge NACA four-digit half-thickness, as the builder's. */
+function nacaHalfThickness(chordFraction: number, thicknessRatio: number): number {
+  const x = Math.min(1, Math.max(0, chordFraction));
+  return 5 * thicknessRatio * (
+    0.2969 * Math.sqrt(x)
+    - 0.126 * x
+    - 0.3516 * x * x
+    + 0.2843 * x * x * x
+    - 0.1036 * x * x * x * x
+  );
+}
+
+/**
+ * The wing's own skin, in the wing frame — the one surface every piece is cut
+ * from. `upper` picks which side; the result is height above the chord plane.
+ */
+function wingSurfaceY(spanZ: number, x: number, upper: boolean): number {
+  const section = wingSection(spanZ);
+  const chordT = Math.min(1, Math.max(0, (section.leadingX - x) / section.chord));
+  const camber = 4 * WING_CAMBER * chordT * (1 - chordT) * section.chord;
+  const half = nacaHalfThickness(chordT, section.thicknessRatio) * section.chord;
+  return camber + (upper ? half : -half);
+}
+
+/**
+ * How much of the wing's own section a tucked flap nose is allowed to fill.
+ *
+ * A Fowler flap has to be overlapped by the fixed wing at rest or its
+ * translation opens a hole, and the overlapping part therefore has to fit
+ * INSIDE the wing rather than coincide with it. Coincident is not a smaller
+ * problem than a hole, it is the same z-fighting this whole pass removed:
+ * 0.34 m of flap sharing a surface with 0.34 m of wing, the full 7.7 m of
+ * flapped span, on both wings.
+ *
+ * So the tucked part is shrunk about the chord plane, tapering to 0.45 of
+ * the section at the nose.
+ *
+ * The ramp starts at 1.0 EXACTLY on the fixed trailing edge, and that is a
+ * correction to a first attempt that started it at 0.80 to guarantee
+ * clearance. A step at the trailing edge sounds harmless because it sits
+ * under the wing — but the flap's chordwise vertices do not land on the
+ * hinge line, so the step got interpolated across the segment that straddles
+ * it and surfaced as a measured 17 mm dip in the flap's upper contour just
+ * AFT of the hinge, where it is in plain sight. A continuous ramp has no
+ * step to smear. As the flap runs out this taper becomes the flap's own
+ * nose, which is what an extended Fowler flap shows in its slot.
+ */
+const FLAP_TUCK_SCALE_AT_EDGE = 1;
+const FLAP_TUCK_SCALE_AT_NOSE = 0.45;
+
+interface WingConform {
+  /**
+   * Shrink whatever lies forward of the fixed wing's trailing edge so it
+   * nests inside the wing instead of sharing its skin. Flaps only.
+   */
+  readonly tucked?: boolean;
+  /** Added to the mesh's own coordinates to reach the wing frame. */
+  readonly offsetX: number;
+  readonly offsetZ: number;
+  /** Span range the HOST fixed panel uses, so texture rows line up across it. */
+  readonly panelRootZ: number;
+  readonly panelTipZ: number;
+}
+
+/**
+ * Re-cuts a panel the airfoil builder has already made so that its section is
+ * the wing's own section over the wing's FULL chord, evaluated where the panel
+ * actually sits.
+ *
+ * This is the load-bearing repair in this file. The builder always closes its
+ * section to a point at its own trailing edge, so a fixed panel that stops at
+ * the 72% hinge line was pinched to nothing there and the flap behind it
+ * ballooned back out to 30 mm — a measured 9.2 mm step out of contour on the
+ * upper surface and 5.9 mm on the lower, at every hinge, plus a waisted wing
+ * that no amount of texture work could hide. Rewriting y from the shared
+ * section law leaves the fixed panel blunt at the hinge, exactly as thick as
+ * the surface behind it, and drops both steps to zero by construction.
+ *
+ * It also rewrites the UVs, because the builder gives every mesh its own
+ * 0..1 tile: the fuselage stretched one tile over 26 m while a spoiler packed
+ * one into 0.8 m, so panel lines were thirty times finer on the small parts
+ * and nothing lined up across a seam. Chordwise u becomes the TRUE chord
+ * fraction and spanwise v the host panel's own span fraction, so a line that
+ * crosses from wing to flap carries straight on.
+ */
+function conformToWingSection(mesh: Mesh, conform: WingConform): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+  const indices = mesh.getIndices();
+  const metadata = mesh.metadata as { chordSegments?: number; spanSegments?: number } | null;
+  if (!positions || !uvs || !indices || !metadata?.chordSegments || !metadata.spanSegments) {
+    throw new Error(`${mesh.name} is not an airfoil panel this pass can re-cut`);
+  }
+  // The builder emits the whole top surface, then the whole bottom one.
+  const surfaceSize = (metadata.spanSegments + 1) * (metadata.chordSegments + 1);
+  const spanRange = conform.panelTipZ - conform.panelRootZ;
+  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+    const x = positions[vertex * 3]! + conform.offsetX;
+    const z = Math.abs(positions[vertex * 3 + 2]! + conform.offsetZ);
+    const section = wingSection(z);
+    // Forward of the fixed wing's trailing edge a flap is UNDER the wing, and
+    // has to be strictly inside it rather than on it.
+    const tuck = conform.tucked && x > section.hingeX
+      ? mix(
+        FLAP_TUCK_SCALE_AT_EDGE,
+        FLAP_TUCK_SCALE_AT_NOSE,
+        Math.min(1, (x - section.hingeX) / FLAP_LEADING_OVERLAP),
+      )
+      : 1;
+    positions[vertex * 3 + 1] = wingSurfaceY(z, x, vertex < surfaceSize) * tuck;
+    uvs[vertex * 2] = Math.min(1, Math.max(0, (section.leadingX - x) / section.chord));
+    uvs[vertex * 2 + 1] = (z - conform.panelRootZ) / spanRange;
+  }
+  mesh.setVerticesData(VertexBuffer.PositionKind, positions, false);
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, false);
+  const normals: number[] = [];
+  VertexData.ComputeNormals(positions, indices, normals);
+  mesh.setVerticesData(VertexBuffer.NormalKind, normals, false);
+  mesh.refreshBoundingInfo();
+}
+
+/**
+ * Multiplies a colour into a mesh's own vertices where `coverage` says so.
+ *
+ * Vertex colour lands on `surfaceAlbedo` after the albedo texture's sRGB
+ * decode, so the colour passed in is LINEAR and the paint's panel lines,
+ * rivets and soot all survive underneath it.
+ *
+ * The edge is only as sharp as the mesh is tessellated, and that is the
+ * honest limit of this technique: on the 48-segment fuselage loft a vertex
+ * every 0.14 m around the section means the stripe fades over about that
+ * much. It buys, in exchange, a line that cannot z-fight at any range —
+ * which a decal mesh a few millimetres off a 33 m fuselage certainly does.
+ */
+function paintVertexBand(
+  mesh: Mesh,
+  linearColor: readonly [number, number, number],
+  coverage: (x: number, y: number, z: number) => number,
+): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!positions) return;
+  const count = positions.length / 3;
+  const existing = mesh.getVerticesData(VertexBuffer.ColorKind);
+  const colors = existing ? [...existing] : new Array<number>(count * 4).fill(1);
+  let painted = 0;
+  for (let vertex = 0; vertex < count; vertex += 1) {
+    const amount = Math.min(1, Math.max(0, coverage(
+      positions[vertex * 3]!,
+      positions[vertex * 3 + 1]!,
+      positions[vertex * 3 + 2]!,
+    )));
+    if (amount <= 0) continue;
+    painted += 1;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const base = colors[vertex * 4 + channel]!;
+      colors[vertex * 4 + channel] = base + (linearColor[channel]! - base) * amount;
+    }
+    colors[vertex * 4 + 3] = 1;
+  }
+  // A band that caught no vertex is a line nobody will ever see, and it is the
+  // silent failure this whole pass is about. Say so at build time instead.
+  if (painted === 0) throw new Error(`${mesh.name}: livery band covered no vertices`);
+  mesh.setVerticesData(VertexBuffer.ColorKind, colors, false);
+}
 
 export function createBizJet(scene: Scene): AircraftVisual {
   const build = new AircraftBuildContext(scene);
   const root = new TransformNode("bombardier-global-8000", scene);
   configureRoot(root, "bizjet");
 
-  // Two paint recipes, not the sport jet's three. This airframe carries three
-  // times the painted area and each recipe costs three synthesized textures;
-  // a corporate scheme is a white shell with a coloured empennage and control
-  // surfaces, so a separate underside recipe would buy a distinction nobody
-  // can see from any angle the camera actually flies.
+  // ONE paint recipe now, not two, and its livery colour is its base colour.
+  //
+  // That equality is the fix for what Jason actually reported. The shared
+  // paint synthesis draws its `livery-decal` feature as a diagonal band in UV
+  // space — `fract(u - 0.37v + 0.18)` near 0.5 — and every mesh was handed its
+  // own 0..1 tile, so that one band became a different stripe on every part:
+  // a navy helix winding round the fuselage and the radome, a spanwise slash
+  // across each wing panel that jumped at the kink and again at every flap
+  // edge, and a gold diagonal across the fin. Those were the misaligned
+  // lines. They could not be aligned, because no choice of UVs makes one
+  // diagonal band land correctly on forty differently-shaped parts at once.
+  // Setting the livery colour equal to the base colour removes the band and
+  // costs nothing: `mix(value, livery, decal)` becomes the identity, and the
+  // panel lines, rivets, seams, filler, soot and leading-edge wear all stay.
+  //
+  // The real livery goes on afterwards as `paintVertexBand`, where it can be
+  // put exactly where the aeroplane wears it.
+  //
+  // Dropping the second recipe also drops three synthesized textures and a
+  // material: the navy-and-gold control surfaces it painted are not on this
+  // aeroplane. A Global's flaps, ailerons, rudder and elevator are the same
+  // white as the wing they fold into, which is also why the wing now reads as
+  // one surface instead of a mosaic of striped rectangles.
   const body = build.paintMaterial("bizjet-body", {
     seed: 0x6108_0001,
     baseColor: 0xf2f4f3,
-    liveryColor: 0x1d3f5e,
+    liveryColor: 0xf2f4f3,
     roughness: 0.29,
     metallic: 0.16,
     sootStrength: 0.34,
@@ -140,16 +462,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // The 64-pixel maps stretch over a 33 m fuselage. At full strength the
     // panel grid would read as quilting rather than as skin.
     panelStrength: 0.45,
-  });
-  const accent = build.paintMaterial("bizjet-accent", {
-    seed: 0x6108_0002,
-    baseColor: 0x1d3f5e,
-    liveryColor: 0xc9a227,
-    roughness: 0.33,
-    metallic: 0.12,
-    sootStrength: 0.42,
-    wearStrength: 0.55,
-    panelStrength: 0.6,
   });
   const dark = build.material("bizjet-dark", 0x101b22, {
     roughness: 0.26,
@@ -169,6 +481,23 @@ export function createBizJet(scene: Scene): AircraftVisual {
       tintColorAtDistance: 3.2,
     },
   });
+  /*
+   * No depth pre-pass on the glazing. `build.material` turns
+   * `needDepthPrePass` on for every alpha-blended airframe material, which is
+   * right for the propeller disc it was written for and wrong for glass: at
+   * cinematic distance it suppresses the colour pass outright while leaving it
+   * intact close up. That is what made the F-16's canopy invisible for four
+   * rounds, and the Cessna's 2.94 m cabin glazing was losing its glass the
+   * same way — captured before and after, the cabin went from a bare shell
+   * with the interior showing through to a properly glazed canopy.
+   *
+   * This aeroplane's glazing is small enough that the loss is hard to see, so
+   * it is fixed on the MECHANISM rather than on a photograph: the suppression
+   * is a function of camera distance, not of how big the pane is, and leaving
+   * known-broken glass on an airframe because it is inconspicuous is not a
+   * reason to leave it. Scoped to this material; `builders.ts` is untouched.
+   */
+  glass.needDepthPrePass = false;
   const tire = build.material("bizjet-tire", 0x06080a, { roughness: 1, metallic: 0 });
   const hub = build.material("bizjet-hub", 0x8b9498, { roughness: 0.32, metallic: 0.74 });
   const hotMetal = build.material("bizjet-hot-metal", 0x4b5153, {
@@ -217,25 +546,34 @@ export function createBizJet(scene: Scene): AircraftVisual {
     emissive: 0xffe6a8, emissiveIntensity: 2.6,
   });
 
-  // 33.88 m from radome to tailcone, in three lofts: the constant-section tube,
-  // the upswept tailcone and the drooped radome. Outside diameter 2.72 m — this
-  // is the widest cabin in the class and the tube has to look it next to the
-  // 1.4 m sport jet. The centreline is body y = 0, which puts the belly at
-  // -1.36 and, with the main wheels contacting at -2.7, gives the 0.9 m of
-  // ground clearance the real aeroplane has under its wing-body fairing.
+  // 33.5 m from radome to tailcone, in three lofts: the constant-section tube,
+  // the upswept tailcone and the drooped radome. Outside diameter 2.69 m —
+  // the Global Express section, carried over unchanged, and the widest cabin
+  // in the class. The centreline is body y = 0, which puts the belly at -1.345
+  // and, with the main wheels contacting at -2.7, gives the ground clearance
+  // the real aeroplane has under its wing-body fairing.
+  //
+  // MEASURED SHORTFALL: 33.5 m against the published 33.88. The last 0.38 m
+  // is not available here — `sim/aircraft.ts` pins the radome contact points
+  // at x = 15 and the tailcone contact at x = -18.5, and those are the ends
+  // of this loft chain. That file is not mine to change.
+  //
+  // 48 radial segments, up from 28: the livery band below is painted into
+  // these vertices, so the section's own resolution is the width of the
+  // stripe's edge. 48 also stops the tube facetting where the light grazes it.
   const fuselage = build.loft(
     "bizjet-fuselage",
     [
-      { x: -13.1, yRadius: 1.01, zRadius: 0.97, yOffset: 0.27 },
-      { x: -10.5, yRadius: 1.24, zRadius: 1.2, yOffset: 0.12 },
-      { x: -8, yRadius: 1.35, zRadius: 1.34, yOffset: 0.03 },
-      { x: -2, yRadius: 1.36, zRadius: 1.35 },
-      { x: 4.5, yRadius: 1.36, zRadius: 1.35 },
-      { x: 9.5, yRadius: 1.35, zRadius: 1.33 },
-      { x: 11.6, yRadius: 1.26, zRadius: 1.2, yOffset: 0.06 },
+      { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
+      { x: -10.5, yRadius: 1.23, zRadius: 1.19, yOffset: 0.12 },
+      { x: -8, yRadius: 1.34, zRadius: 1.33, yOffset: 0.03 },
+      { x: -2, yRadius: 1.345, zRadius: 1.345 },
+      { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
+      { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
+      { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
       { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
     ],
-    28,
+    48,
     body,
     root,
   );
@@ -251,22 +589,22 @@ export function createBizJet(scene: Scene): AircraftVisual {
       { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
       { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
     ],
-    24,
+    40,
     body,
     root,
   );
   // Upswept, ending at (-18.5, +0.62) where the sim puts its tailcone contact
   // point. The upsweep is what gives a long aeroplane its rotation angle
   // without dragging the tail, and on this type it also carries the APU.
-  build.loft(
+  const tailcone = build.loft(
     "bizjet-tailcone",
     [
       { x: -18.5, yRadius: 0.14, zRadius: 0.12, yOffset: 0.62 },
       { x: -17.2, yRadius: 0.42, zRadius: 0.36, yOffset: 0.58 },
       { x: -15.4, yRadius: 0.7, zRadius: 0.64, yOffset: 0.48 },
-      { x: -12.9, yRadius: 1.03, zRadius: 0.99, yOffset: 0.25 },
+      { x: -12.9, yRadius: 1.02, zRadius: 0.98, yOffset: 0.25 },
     ],
-    22,
+    40,
     body,
     root,
   );
@@ -274,19 +612,62 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // main gear bays and the centre tank and is wider than the fuselage itself.
   // Its underside at y = -1.80 is what the belly beacon is mounted on; without
   // it the beacon at -1.75 would float 0.4 m clear of the skin.
+  //
+  // Carried aft to x = -7.3 and out to 1.78 half-width with the broader wing:
+  // the root chord now runs to x = -2.07 and the inboard flap starts at
+  // |z| = 1.52, so the fairing has to reach past both or the wing root and the
+  // flap root stand proud of the belly instead of growing out of it.
   build.loft(
     "bizjet-belly-fairing",
     [
-      { x: -6.2, yRadius: 0.3, zRadius: 0.6, yOffset: -1.1 },
-      { x: -4.6, yRadius: 0.62, zRadius: 1.32, yOffset: -1.2 },
-      { x: -1.2, yRadius: 0.75, zRadius: 1.6, yOffset: -1.08 },
-      { x: 1.8, yRadius: 0.7, zRadius: 1.52, yOffset: -1.05 },
-      { x: 4.6, yRadius: 0.34, zRadius: 0.95, yOffset: -1 },
+      { x: -7.3, yRadius: 0.26, zRadius: 0.52, yOffset: -1.06 },
+      { x: -5.4, yRadius: 0.6, zRadius: 1.35, yOffset: -1.18 },
+      { x: -2.6, yRadius: 0.78, zRadius: 1.78, yOffset: -1.13 },
+      { x: 0.4, yRadius: 0.8, zRadius: 1.78, yOffset: -1.08 },
+      { x: 3, yRadius: 0.66, zRadius: 1.5, yOffset: -1.04 },
+      { x: 5.1, yRadius: 0.32, zRadius: 0.88, yOffset: -1 },
     ],
-    20,
+    24,
     body,
     root,
   );
+
+  // ONE chordwise coordinate for the whole body, so the fuselage, the radome
+  // and the tailcone stop being three separate 0..1 tiles with three
+  // independent panel-line grids meeting at two visible discontinuities. The
+  // loft builder normalises u over each mesh's OWN length; re-normalising over
+  // the aeroplane's 33.5 m makes the frame rings run unbroken nose to tail and
+  // puts the paint's leading-edge wear on the radome tip and the tailcone tip,
+  // which is where an aeroplane wears.
+  const BODY_MIN_X = -18.5;
+  const BODY_LENGTH = 33.5;
+  for (const loft of [fuselage, radome, tailcone]) {
+    const positions = loft.getVerticesData(VertexBuffer.PositionKind)!;
+    const uvs = loft.getVerticesData(VertexBuffer.UVKind)!;
+    for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+      uvs[vertex * 2] = (positions[vertex * 3]! - BODY_MIN_X) / BODY_LENGTH;
+    }
+    loft.setVerticesData(VertexBuffer.UVKind, uvs, false);
+  }
+
+  // The pinstripe. Level down the cabin at the floor line, then tapered out
+  // over the lower nose and faded away on the tailcone, exactly as the
+  // demonstrator wears it — and painted into the skin, so it is the one line
+  // on this aeroplane that is incapable of z-fighting.
+  for (const loft of [fuselage, radome, tailcone]) {
+    paintVertexBand(loft, CHEATLINE_LINEAR, (x, y, z) => {
+      // Drops away under the flight deck and dies out on the lower nose.
+      const fade = (1 - smoothStep(11.5, 14.6, x)) * (1 - smoothStep(-15.6, -17.6, x));
+      if (fade <= 0) return 0;
+      const droop = Math.max(0, x - 11.5) * 0.14;
+      // Only on the FLANKS: a band defined by height alone would wrap under
+      // the belly wherever the section is narrower than the cabin's.
+      const flank = Math.min(1, Math.abs(z) / 0.55);
+      return fade * flank
+        * (1 - smoothStep(CHEATLINE_HALF_HEIGHT, CHEATLINE_HALF_HEIGHT + 0.08,
+          Math.abs(y - (CHEATLINE_Y - droop))));
+    });
+  }
 
   // One 12-sided oval, thin-instanced down both sides. The instance matrix is
   // the ENTIRE transform — the base mesh keeps an identity one — because thin
@@ -332,6 +713,79 @@ export function createBizJet(scene: Scene): AircraftVisual {
   const wingSurfaces: AbstractMesh[] = [];
   const flaps: TransformNode[] = [];
   const speedBrakes: TransformNode[] = [];
+  const ailerons: TransformNode[] = [];
+  /** Every flap hinge with the rest pose its Fowler travel departs from. */
+  const flapTravel: { node: TransformNode; restX: number; restY: number }[] = [];
+  /**
+   * Every swept control surface with the LINE it actually hinges about.
+   *
+   * `applyCommonPose` deflects a surface by writing `rotation.z`, which is
+   * right for an unswept hinge and wrong for every hinge on this wing. The
+   * Global's trailing edge is swept 23 degrees, so the inner flap's outboard
+   * end sits about 2 m aft of the wing's own z axis — and a rotation about
+   * that axis drops it by 2 sin(30) = 1 m more than its root.
+   *
+   * Measured before this existed: at full flap the inner flap dropped 0.634 m
+   * at the root and 1.471 m at the break, and its outboard end moved 64 mm
+   * FORWARD while its root moved 163 mm aft. The panel was not deploying, it
+   * was being wrung out along its span — a rigid flap visibly twisting most
+   * of a metre. That is the "glitchy wing", and it is also why the slot the
+   * cove doors close measured shut inboard and gaping outboard: the gap was
+   * a function of how far down the span you looked.
+   *
+   * The repair is an axis, not a rebuild. Each hinge keeps its unswept BUILD
+   * frame — `conformToWingSection` maps vertices back to wing coordinates and
+   * would have to be reworked for a yawed parent — and takes its deflection
+   * as a rotation about the hinge line instead. The axis is kept pointing
+   * outboard on both wings so that a positive angle is trailing-edge-down on
+   * both, which is the unswept behaviour this replaces.
+   */
+  const sweptHinges: { node: TransformNode; axis: Vector3 }[] = [];
+
+  /**
+   * The trailing edge, spanwise. The old layout left 0.45 m and 0.40 m holes
+   * between the flap segments and a 0.45 m hole inboard of the inner flap, and
+   * because the fixed panels stop at the 72% hinge line those holes were
+   * BITES OUT OF THE PLANFORM — up to 1.4 m deep. That is where the missing
+   * eight square metres went, and in plan view the trailing edge read as a row
+   * of loose rectangles. These four pieces tile the whole span from the root
+   * rib to the tip with 80 mm slots, which is the flap-track gap a closed-up
+   * wing actually shows.
+   */
+  const TRAILING_EDGE = [
+    { name: "inner-flap", rootZ: 1.46, tipZ: 6.22, hinged: true },
+    { name: "outer-flap", rootZ: 6.3, tipZ: 9.18, hinged: true },
+    { name: "aileron", rootZ: 9.26, tipZ: 14.22, hinged: true },
+    { name: "tip", rootZ: 14.3, tipZ: WING_TIP_Z, hinged: false },
+  ] as const;
+
+  /**
+   * The winglet, derived rather than styled — and derived from a constraint
+   * this file does not own.
+   *
+   * `BIZJET_WASH` sites the navigation lamp at (-6.1, 0.35, +/-15.6) and the
+   * strobe at (-6.2, 0.4, +/-15.7), and `tests/lighting.aircraft-wash.test.ts`
+   * holds those to the lamp meshes. Metal therefore has to BE at those two
+   * points. Measured against the winglet it replaces, the nav lamp floated
+   * 60 mm clear of the nearest surface and the strobe 39 mm; the blend below
+   * passes through both.
+   *
+   * Two panels, because a blended winglet genuinely is two: a shallow blend
+   * off the tip at 42 degrees to the wing plane, then the fin proper at 70.
+   * The single 57-degree blade this replaces met the tip at a corner.
+   *
+   * The root starts 60 mm inboard of the wing tip with a chord entirely inside
+   * the wing's tip section, so the blunt root cap is buried rather than
+   * crossing the tip cap in the open.
+   */
+  const WINGLET_ROOT_Z = WING_TIP_Z - 0.06;
+  const WINGLET_BLEND_REACH = 0.86;
+  const WINGLET_BLEND_RISE = 0.7732;
+  const WINGLET_UPPER_REACH = 0.1123;
+  const WINGLET_UPPER_RISE = 0.3086;
+
+  /** 35 mm: a panel line's worth of edge, not a step. */
+  const SPOILER_THICKNESS = 0.035;
 
   // STARBOARD IS BODY +Z. Every side loop in this file runs [1, -1] and calls
   // +1 starboard, so the name and the sign cannot drift apart the way they did
@@ -342,331 +796,565 @@ export function createBizJet(scene: Scene): AircraftVisual {
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
 
-    // Fixed wing, in two panels split at the flap break. Thickness 11% inboard
-    // and 9.5% outboard is a supercritical section's, matching the sim's
-    // cl_zero of 0.14 — cambered for M 0.9 cruise, not for lift at approach.
+    /**
+     * THE DIHEDRAL NODE, and the reason the whole wing hangs off one.
+     *
+     * Everything below is built FLAT, in a frame whose chord plane is y = 0,
+     * and this node tilts the lot. That keeps the section law, the flap
+     * hinges and the spoiler seating as plane arithmetic — none of them has
+     * to know the wing is not level — and it guarantees that the flaps,
+     * spoilers, aileron, winglet and flap tracks cannot drift out of the
+     * dihedral one at a time, which is what would happen if each piece
+     * carried its own rotation.
+     *
+     * The nav and strobe lamps deliberately do NOT hang here: their body
+     * coordinates are transcribed in another file's wash table, so they stay
+     * parented to the root and the winglet is shaped to reach them.
+     */
+    const wing = node(`${sideName}-bizjet-wing`, root, scene);
+    wing.position.y = WING_CHORD_PLANE_Y - WING_ROOT_Z * Math.sin(WING_DIHEDRAL);
+    wing.rotation.x = -side * WING_DIHEDRAL;
+
+    const rootStation = wingSection(WING_ROOT_Z);
+    const kinkStation = wingSection(WING_KINK_Z);
+    const tipStation = wingSection(WING_TIP_Z);
+
+    // Fixed wing, in two panels split at the flap break. Each stops at the
+    // hinge line and is then re-cut by `conformToWingSection`, which is what
+    // leaves it BLUNT there — as thick as the flap behind it — instead of
+    // pinched to the knife edge the builder's own section law produces.
     const inboardWing = build.airfoilWing(
       `${sideName}-bizjet-inboard-wing`,
       {
-        rootLeadingX: WING_ROOT_LEADING_X,
-        rootTrailingX: WING_ROOT_HINGE_X,
-        tipLeadingX: WING_KINK_LEADING_X,
-        tipTrailingX: WING_KINK_HINGE_X,
+        rootLeadingX: rootStation.leadingX,
+        rootTrailingX: rootStation.hingeX,
+        tipLeadingX: kinkStation.leadingX,
+        tipTrailingX: kinkStation.hingeX,
         rootZ: side * WING_ROOT_Z,
         tipZ: side * WING_KINK_Z,
-        thicknessRatio: 0.11,
-        camberRatio: 0.004,
-        chordSegments: 14,
-        spanSegments: 3,
-      },
-      body,
-      root,
-    );
-    inboardWing.position.y = WING_CHORD_PLANE_Y;
-    const outboardWing = build.airfoilWing(
-      `${sideName}-bizjet-outboard-wing`,
-      {
-        rootLeadingX: WING_KINK_LEADING_X,
-        rootTrailingX: WING_KINK_HINGE_X,
-        tipLeadingX: WING_TIP_LEADING_X,
-        tipTrailingX: WING_TIP_HINGE_X,
-        rootZ: side * WING_KINK_Z,
-        tipZ: side * WING_TIP_Z,
-        thicknessRatio: 0.095,
-        camberRatio: 0.004,
-        chordSegments: 14,
+        thicknessRatio: WING_ROOT_THICKNESS,
+        camberRatio: WING_CAMBER,
+        chordSegments: 18,
         spanSegments: 4,
       },
       body,
-      root,
+      wing,
     );
-    outboardWing.position.y = WING_CHORD_PLANE_Y;
+    conformToWingSection(inboardWing, {
+      offsetX: 0,
+      offsetZ: 0,
+      panelRootZ: WING_ROOT_Z,
+      panelTipZ: WING_KINK_Z,
+    });
+    const outboardWing = build.airfoilWing(
+      `${sideName}-bizjet-outboard-wing`,
+      {
+        rootLeadingX: kinkStation.leadingX,
+        rootTrailingX: kinkStation.hingeX,
+        tipLeadingX: tipStation.leadingX,
+        tipTrailingX: tipStation.hingeX,
+        rootZ: side * WING_KINK_Z,
+        tipZ: side * WING_TIP_Z,
+        thicknessRatio: WING_KINK_THICKNESS,
+        camberRatio: WING_CAMBER,
+        chordSegments: 18,
+        spanSegments: 6,
+      },
+      body,
+      wing,
+    );
+    conformToWingSection(outboardWing, {
+      offsetX: 0,
+      offsetZ: 0,
+      panelRootZ: WING_KINK_Z,
+      panelTipZ: WING_TIP_Z,
+    });
     wingSurfaces.push(inboardWing, outboardWing);
 
-    // The winglet. Built flat, in the wing's own plane, then rotated about
-    // body X so it turns up and slightly outboard: 1.30 m of rise over 0.85 m
-    // of outboard reach, which lands its tip at (y +0.40, z +/-15.85) — the
-    // outermost airframe contact point in `sim/aircraft.ts`, and the first
-    // thing to touch in a wing-low landing. The rotation is derived rather
-    // than eyeballed so the tip hits that point exactly: the winglet is built
-    // hypotenuse-long and the angle is atan2 of the two legs.
-    const wingletRise = 1.3;
-    const wingletReach = 0.85;
-    const wingletSpan = Math.hypot(wingletRise, wingletReach);
-    const winglet = build.airfoilWing(
-      `${sideName}-bizjet-winglet`,
-      {
-        rootLeadingX: WING_TIP_LEADING_X,
-        rootTrailingX: WING_TIP_TRAILING_X,
-        tipLeadingX: -5.95,
-        tipTrailingX: -6.6,
-        rootZ: 0,
-        tipZ: side * wingletSpan,
-        thicknessRatio: 0.085,
-        chordSegments: 10,
-        spanSegments: 2,
-      },
-      accent,
-      root,
-    );
-    winglet.position.set(0, WING_CHORD_PLANE_Y, side * WING_TIP_Z);
-    winglet.rotation.x = -side * Math.atan2(wingletRise, wingletReach);
-    wingSurfaces.push(winglet);
-  }
-
-  // Fowler flaps, in two panels a side as the aeroplane has them: one inboard
-  // of the kink, one between the kink and the aileron. The sim leans on these
-  // hard — flapLift 0.95 is what brings a 40-tonne aeroplane's approach speed
-  // inside a 1,320 m runway — so they are built as real panels on real hinges
-  // rather than painted on.
-  //
-  // Each hinge node sits ON the hinge line at the panel's inboard end and the
-  // panel is parented to it in local coordinates, so `rotation.z` is a hinge
-  // rotation and not a translation of the whole panel. The hinge line is
-  // swept and body Z is not exactly along it; `applyCommonPose` drives every
-  // flap about body Z, which is the contract, and at 30 degrees the error
-  // across a 4 m panel is smaller than the panel's own thickness.
-  // The inner panel is cut from the inboard wing and the outer one from the
-  // outboard wing, so each reads its hinge and trailing edge off a different
-  // pair of stations; that is the only thing `insideKink` selects.
-  const flapPanels = [
-    { name: "inner", rootZ: 1.9, tipZ: 6.1, insideKink: true },
-    { name: "outer", rootZ: 6.55, tipZ: 8.95, insideKink: false },
-  ];
-  for (const side of [1, -1] as const) {
-    const sideName = side > 0 ? "starboard" : "port";
-    for (const flap of flapPanels) {
-      const fraction = (z: number) => (flap.insideKink
-        ? inboardFraction(z)
-        : outboardFraction(z));
-      const hingeAt = (z: number) => (flap.insideKink
-        ? alongPanel(WING_ROOT_HINGE_X, WING_KINK_HINGE_X, fraction(z))
-        : alongPanel(WING_KINK_HINGE_X, WING_TIP_HINGE_X, fraction(z)));
-      const trailingAt = (z: number) => (flap.insideKink
-        ? alongPanel(WING_ROOT_TRAILING_X, WING_KINK_TRAILING_X, fraction(z))
-        : alongPanel(WING_KINK_TRAILING_X, WING_TIP_TRAILING_X, fraction(z)));
-      const hingeX = hingeAt(flap.rootZ);
-      const hinge = node(`${sideName}-bizjet-${flap.name}-flap`, root, scene);
-      hinge.position.set(hingeX, WING_CHORD_PLANE_Y, side * flap.rootZ);
+    // The trailing edge: two Fowler flap segments, the outboard aileron and
+    // the fixed tip panel behind the aileron. Every one of them is cut from
+    // `wingSection` over the wing's FULL chord, so at rest its upper surface
+    // IS the wing's upper surface carried on past the hinge. The measured
+    // step this replaces was 9.2 mm up and 5.9 mm down at every flap.
+    for (const piece of TRAILING_EDGE) {
+      const pieceRoot = wingSection(piece.rootZ);
+      const pieceTip = wingSection(piece.tipZ);
+      // A translating flap is tucked far enough UNDER the fixed wing that it
+      // is still overlapped at full travel; a rotating aileron needs only the
+      // cove behind it, and a fixed panel neither.
+      //
+      // The signs are opposite and that is the whole point: +X is the nose,
+      // so a flap's leading edge goes FORWARD of the hinge line to get under
+      // the wing, and an aileron's goes AFT of it to leave a gap. Getting
+      // this backwards put a 334 mm slot across the full flap span at flaps
+      // 0 — measured, and visible as daylight from every angle above.
+      const isFlap = piece.hinged && piece.name !== "aileron";
+      const leadingEdgeAt = (station: WingSection): number => (isFlap
+        ? station.hingeX + FLAP_LEADING_OVERLAP
+        : station.hingeX - CONTROL_SURFACE_COVE);
+      // The node sits ON the panel's own leading edge, so the panel has no
+      // metal forward of its hinge. With the leading edge tucked 0.34 m under
+      // the wing, a node left back at the hinge line would have swung that
+      // overhang UP through the wing's upper skin as the flap went down.
+      const hingeX = piece.hinged ? leadingEdgeAt(pieceRoot) : 0;
+      const hingeZ = piece.hinged ? side * piece.rootZ : 0;
+      const hinge = piece.hinged
+        ? node(`${sideName}-bizjet-${piece.name}`, wing, scene)
+        : wing;
+      if (piece.hinged) hinge.position.set(hingeX, 0, hingeZ);
+      // Inboard of the kink a piece rides the inboard panel's texture rows;
+      // outboard of it, the outboard panel's. Sharing the host's span range
+      // is what carries a spanwise line unbroken from wing to flap.
+      const insideKink = piece.tipZ <= WING_KINK_Z;
       const surface = build.airfoilWing(
-        `${sideName}-bizjet-${flap.name}-flap-surface`,
+        `${sideName}-bizjet-${piece.name}-surface`,
         {
-          rootLeadingX: 0,
-          rootTrailingX: trailingAt(flap.rootZ) - hingeX,
-          tipLeadingX: hingeAt(flap.tipZ) - hingeX,
-          tipTrailingX: trailingAt(flap.tipZ) - hingeX,
-          rootZ: 0,
-          tipZ: side * (flap.tipZ - flap.rootZ),
-          thicknessRatio: 0.075,
-          camberRatio: 0.012,
-          chordSegments: 8,
-          spanSegments: 2,
+          rootLeadingX: leadingEdgeAt(pieceRoot) - hingeX,
+          rootTrailingX: pieceRoot.trailingX - hingeX,
+          tipLeadingX: leadingEdgeAt(pieceTip) - hingeX,
+          tipTrailingX: pieceTip.trailingX - hingeX,
+          rootZ: side * piece.rootZ - hingeZ,
+          tipZ: side * piece.tipZ - hingeZ,
+          thicknessRatio: 0.06,
+          camberRatio: 0.01,
+          chordSegments: 10,
+          spanSegments: 3,
         },
-        accent,
+        body,
         hinge,
       );
-      flaps.push(hinge);
+      conformToWingSection(surface, {
+        tucked: isFlap,
+        offsetX: hingeX,
+        offsetZ: hingeZ,
+        panelRootZ: insideKink ? WING_ROOT_Z : WING_KINK_Z,
+        panelTipZ: insideKink ? WING_KINK_Z : WING_TIP_Z,
+      });
       wingSurfaces.push(surface);
+      if (!piece.hinged) continue;
+      // The hinge LINE, which the deflection axis is taken from: it
+      // runs from this piece's root station to its tip station along the
+      // wing's swept hinge line, and each flap lies wholly inboard or wholly
+      // outboard of the kink, so within a piece that line is straight.
+      const rootStationHinge = wingSection(piece.rootZ);
+      const tipStationHinge = wingSection(piece.tipZ);
+      const alongX = tipStationHinge.hingeX - rootStationHinge.hingeX;
+      const alongZ = side * (piece.tipZ - piece.rootZ);
+      const alongLength = Math.hypot(alongX, alongZ);
+      // Outboard-positive on both wings: `alongZ` carries the side's sign and
+      // flipping the axis with it would deflect the port surfaces the wrong
+      // way, which is the bug the world-space side test exists to catch.
+      const outboard = alongZ >= 0 ? 1 : -1;
+      sweptHinges.push({
+        node: hinge,
+        axis: new Vector3(
+          (outboard * alongX) / alongLength,
+          0,
+          (outboard * alongZ) / alongLength,
+        ),
+      });
+      if (piece.name === "aileron") {
+        // The aileron surface keeps the bare name the world-space side test
+        // reads, and STARBOARD LANDS AT INDEX 0 because this loop runs +1
+        // first: `applyCommonPose` drives `ailerons[0]` with the starboard
+        // deflection and nothing downstream checks the name.
+        surface.name = `${sideName}-aileron-surface`;
+        hinge.name = `${sideName}-aileron`;
+        ailerons.push(hinge);
+      } else {
+        flaps.push(hinge);
+        flapTravel.push({ node: hinge, restX: hingeX, restY: 0 });
+        if (piece.name === "inner-flap") {
+          // The seal for the flap break (see `FLAP_SEAL_SPAN`). It hangs on
+          // the INNER flap and reaches 60 mm into the outer flap's root, so
+          // the two segments can hinge about their own differently swept
+          // lines without ever parting company across the gap.
+          //
+          // Built as 140 mm MORE FLAP rather than as a plate: same section
+          // law, same conform, same tuck, so it cannot stand proud of the
+          // skin at the nose the way a constant-depth box does — the flap is
+          // squeezed to 0.45 of the section there and a box is not. It wears
+          // the dark paint, because what should show through an 80 mm slot
+          // is a shadow line.
+          //
+          // Only this break. The outer flap meets the AILERON at 9.18, and
+          // that break took no daylight at any of the sixty eye points — it
+          // is further outboard, less swept, and a fixed plate for a surface
+          // that deflects both ways would be a worse artefact than the gap.
+          const sealTipZ = piece.tipZ + FLAP_SEAL_SPAN;
+          const sealTip = wingSection(sealTipZ);
+          const seal = build.airfoilWing(
+            `${sideName}-bizjet-flap-break-seal`,
+            {
+              rootLeadingX: leadingEdgeAt(pieceTip) - hingeX,
+              rootTrailingX: pieceTip.trailingX - hingeX,
+              tipLeadingX: leadingEdgeAt(sealTip) - hingeX,
+              tipTrailingX: sealTip.trailingX - hingeX,
+              rootZ: side * piece.tipZ - hingeZ,
+              tipZ: side * sealTipZ - hingeZ,
+              thicknessRatio: 0.06,
+              camberRatio: 0.01,
+              chordSegments: 10,
+              spanSegments: 1,
+            },
+            dark,
+            hinge,
+          );
+          conformToWingSection(seal, {
+            tucked: true,
+            offsetX: hingeX,
+            offsetZ: hingeZ,
+            panelRootZ: WING_ROOT_Z,
+            panelTipZ: WING_KINK_Z,
+          });
+        }
+      }
     }
 
-    // Flap track canoes. Four fairings under the wing is not decoration on
-    // this type — Fowler tracks long enough to move the panel aft as well as
-    // down will not fit inside a 10% section, so the aeroplane wears them
-    // externally and they are visible from every angle the chase camera uses.
-    for (const track of [{ z: 3, x: -0.95, length: 2.3 }, { z: 5.6, x: -1.85, length: 2 }]) {
-      const fairing = build.box(
-        `${sideName}-bizjet-flap-track-${track.z < 4 ? "inner" : "outer"}`,
-        track.length,
-        0.32,
-        0.36,
-        body,
-        root,
-      );
-      fairing.position.set(track.x, -1.15, side * track.z);
-    }
-
-    // Spoilers, on the UPPER surface just ahead of the flap hinge. This
-    // aeroplane has no fuselage airbrake — `speedBrakeDrag` 0.09 against the
-    // sport jet's 0.16 is exactly that difference — so the brake the pilot
-    // commands is these panels lifting off the wing.
+    // Flap track canoes. Fowler tracks long enough to move the panel aft as
+    // well as down will not fit inside a 10% section, so the aeroplane wears
+    // them externally, and their tails protrude well past the trailing edge.
     //
-    // WING-COLOURED AND FLUSH, which the first version was not. Built in the
-    // accent paint and standing 0.05 m proud, they read as gold-and-navy
-    // hazard decals stuck to the wing rather than as panels in it — Jason
-    // spotted it immediately. On the real aeroplane they are the wing's own
-    // skin: at rest you see a panel line, nothing more. Four a side now
-    // rather than two, which is what a Global carries, and each one sits on
-    // the SWEPT hinge line rather than at a fixed x, so its aft edge meets the
-    // flap it lives in front of at every station instead of only at one.
+    // Lofted, not boxed. As boxes their protruding tails read as two bricks
+    // stuck on the trailing edge — which is what a ray-pick through the close
+    // three-quarter frame identified them as. Seated off the section law, so
+    // the forward end is buried in the lower skin and only the tail shows.
+    for (const track of [{ z: 3.2, half: 1.25 }, { z: 7, half: 1.1 }]) {
+      const station = wingSection(track.z);
+      const centre = station.hingeX - track.half * 0.56;
+      const belly = wingSurfaceY(track.z, station.hingeX, false) - 0.09;
+      build.loft(
+        `${sideName}-bizjet-flap-track-${track.z < 5 ? "inner" : "outer"}`,
+        [
+          { x: centre - track.half, yRadius: 0.04, zRadius: 0.04, yOffset: belly, zOffset: side * track.z },
+          { x: centre - track.half * 0.45, yRadius: 0.15, zRadius: 0.17, yOffset: belly, zOffset: side * track.z },
+          { x: centre + track.half * 0.25, yRadius: 0.19, zRadius: 0.2, yOffset: belly, zOffset: side * track.z },
+          { x: centre + track.half, yRadius: 0.08, zRadius: 0.09, yOffset: belly, zOffset: side * track.z },
+        ],
+        10,
+        body,
+        wing,
+      );
+    }
+
+    /**
+     * SPOILERS: three multifunction panels and, innermost, the ground
+     * spoiler — the four-a-side the type carries.
+     *
+     * They are BURIED, and that is the headline repair in this pass. Built as
+     * flat 35 mm slabs at a guessed constant y, they measured between 5.4 mm
+     * and 177 mm clear of the wing skin they are supposed to lie in: at the
+     * inboard end, white plates visibly hovering over the wing with daylight
+     * under them, and at the outboard end a 5.4 mm gap, which is inside the
+     * depth buffer's own resolution past about 80 m and therefore a z-fight
+     * in every chase shot.
+     *
+     * Each panel is now tilted to the skin's chordwise slope and then sunk
+     * until its top face clears the curved skin everywhere, so at rest it is
+     * inside the wing and cannot be seen or fought with at any range. It is
+     * also disabled outright below a deflection of a couple of milliradians
+     * (see `update`), which makes the at-rest case unconditional.
+     */
     for (const spoiler of [
-      { name: "one", z: 3.2, span: 1.3, chord: 1.0, surfaceY: -0.703 },
-      { name: "two", z: 4.7, span: 1.3, chord: 0.95, surfaceY: -0.735 },
-      { name: "three", z: 6.3, span: 1.5, chord: 0.85, surfaceY: -0.768 },
-      { name: "four", z: 8, span: 1.6, chord: 0.75, surfaceY: -0.803 },
+      { name: "ground-spoiler", z: 3.1, span: 1.5, chord: 1.15 },
+      { name: "one-spoiler", z: 4.8, span: 1.45, chord: 1.05 },
+      { name: "two-spoiler", z: 6.5, span: 1.5, chord: 0.95 },
+      { name: "three-spoiler", z: 8.2, span: 1.5, chord: 0.85 },
     ]) {
-      const hingeLineX = spoiler.z <= WING_KINK_Z
-        ? alongPanel(WING_ROOT_HINGE_X, WING_KINK_HINGE_X, inboardFraction(spoiler.z))
-        : alongPanel(WING_KINK_HINGE_X, WING_TIP_HINGE_X, outboardFraction(spoiler.z));
-      const brake = node(`${sideName}-bizjet-${spoiler.name}-spoiler`, root, scene);
-      // The node is the panel's FORWARD edge and its hinge, so it sits one
-      // chord ahead of the flap hinge line and the panel reaches back to it.
-      brake.position.set(hingeLineX + spoiler.chord, spoiler.surfaceY, side * spoiler.z);
+      const station = wingSection(spoiler.z);
+      // The panel's aft edge stops just ahead of the flap cove, and its
+      // forward edge is its own chord ahead of that — on the SWEPT hinge
+      // line, so it meets the surface behind it at every station.
+      const aftX = station.hingeX - CONTROL_SURFACE_COVE * 0.5;
+      const forwardX = aftX + spoiler.chord;
+      const tilt = Math.atan(
+        (wingSurfaceY(spoiler.z, forwardX, true) - wingSurfaceY(spoiler.z, aftX, true))
+        / spoiler.chord,
+      );
+      // And the SPANWISE slope too. Fitting only the chordwise one left the
+      // panel having to sink by the whole spanwise drop of the skin across
+      // its 1.5 m — measured at 180 mm, three times the intended burial, so
+      // a deployed panel rose out of a slot instead of out of the skin.
+      const midX = forwardX - spoiler.chord * 0.5;
+      const spanTilt = Math.asin(Math.min(0.5, Math.max(-0.5,
+        (wingSurfaceY(side * spoiler.z + spoiler.span * 0.5, midX, true)
+          - wingSurfaceY(side * spoiler.z - spoiler.span * 0.5, midX, true))
+        / spoiler.span)));
+      const halfThickness = SPOILER_THICKNESS * 0.5;
+      // How far the flat top face would have to drop to clear the curved
+      // skin at every sampled corner. Sampled rather than reasoned about,
+      // because "it should be close enough" is what produced the 177 mm.
+      let clearance = Number.POSITIVE_INFINITY;
+      for (let step = 0; step <= 8; step += 1) {
+        const fromCentre = spoiler.chord * (0.5 - step / 8);
+        const localX = -spoiler.chord * 0.5
+          + fromCentre * Math.cos(tilt) - halfThickness * Math.sin(tilt);
+        const alongChord = fromCentre * Math.sin(tilt) + halfThickness * Math.cos(tilt);
+        for (const edge of [-0.5, -0.25, 0, 0.25, 0.5]) {
+          const spanOffset = edge * spoiler.span;
+          clearance = Math.min(
+            clearance,
+            wingSurfaceY(side * spoiler.z + spanOffset, forwardX + localX, true)
+            - (alongChord - spanOffset * Math.sin(spanTilt)),
+          );
+        }
+      }
+      // Deep enough to stay under the depth buffer's resolution out to a few
+      // hundred metres, shallow enough never to punch out through the lower
+      // skin of a section that is only so thick.
+      const sectionThickness = wingSurfaceY(spoiler.z, forwardX - spoiler.chord * 0.5, true)
+        - wingSurfaceY(spoiler.z, forwardX - spoiler.chord * 0.5, false);
+      const burial = Math.min(0.055, Math.max(0.02, (sectionThickness - SPOILER_THICKNESS) * 0.4));
+      const brake = node(`${sideName}-bizjet-${spoiler.name}`, wing, scene);
+      brake.position.set(forwardX, clearance - burial, side * spoiler.z);
       const panel = build.box(
         `${brake.name}-surface`,
         spoiler.chord,
-        // 35 mm: thick enough to catch a highlight along its edge, thin enough
-        // to be a panel line rather than a step.
-        0.035,
+        SPOILER_THICKNESS,
         spoiler.span,
         body,
         brake,
       );
-      // Hinged at its forward edge, so the panel lies entirely aft of the
+      // Hinged at its FORWARD edge, so the panel lies entirely aft of the
       // node and a negative pose angle lifts its trailing edge into the air.
+      // The tilt lives on the child because the node's own z rotation is the
+      // brake deflection the pose owns every frame.
       panel.position.x = -spoiler.chord * 0.5;
+      panel.rotation.z = tilt;
+      panel.rotation.x = -spanTilt;
       speedBrakes.push(brake);
     }
-  }
 
-  // Ailerons, outboard of the flaps on the same hinge line. STARBOARD FIRST in
-  // the tuple and at POSITIVE Z; `applyCommonPose` drives `ailerons[0]` with
-  // the starboard deflection and nothing downstream checks the name.
-  const aileronRootZ = 9.35;
-  const aileronTipZ = 14.1;
-  const aileronHingeRoot = alongPanel(
-    WING_KINK_HINGE_X, WING_TIP_HINGE_X, outboardFraction(aileronRootZ));
-  const aileronHingeTip = alongPanel(
-    WING_KINK_HINGE_X, WING_TIP_HINGE_X, outboardFraction(aileronTipZ));
-  const aileronTrailingRoot = alongPanel(
-    WING_KINK_TRAILING_X, WING_TIP_TRAILING_X, outboardFraction(aileronRootZ));
-  const aileronTrailingTip = alongPanel(
-    WING_KINK_TRAILING_X, WING_TIP_TRAILING_X, outboardFraction(aileronTipZ));
-  const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(aileronHingeRoot, WING_CHORD_PLANE_Y, aileronRootZ);
-  const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(aileronHingeRoot, WING_CHORD_PLANE_Y, -aileronRootZ);
-  for (const side of [1, -1] as const) {
-    wingSurfaces.push(build.airfoilWing(
-      side > 0 ? "starboard-aileron-surface" : "port-aileron-surface",
+    // The winglet: shallow blend off the tip, then the fin proper.
+    const blendSpan = Math.hypot(WINGLET_BLEND_REACH, WINGLET_BLEND_RISE);
+    const blend = build.airfoilWing(
+      `${sideName}-bizjet-winglet-blend`,
       {
-        rootLeadingX: 0,
-        rootTrailingX: aileronTrailingRoot - aileronHingeRoot,
-        tipLeadingX: aileronHingeTip - aileronHingeRoot,
-        tipTrailingX: aileronTrailingTip - aileronHingeRoot,
+        rootLeadingX: -5.74,
+        rootTrailingX: -6.86,
+        tipLeadingX: -5.93,
+        tipTrailingX: -6.95,
         rootZ: 0,
-        tipZ: side * (aileronTipZ - aileronRootZ),
-        thicknessRatio: 0.07,
-        chordSegments: 8,
+        // Overshoots the junction by 80 mm so the upper panel swallows the
+        // blend's tip cap instead of the two meeting edge-on and leaving a
+        // wedge of daylight between them.
+        tipZ: side * (blendSpan + 0.08),
+        thicknessRatio: 0.085,
+        chordSegments: 12,
         spanSegments: 3,
       },
-      accent,
-      side > 0 ? starboardAileron : portAileron,
-    ));
+      body,
+      wing,
+    );
+    blend.position.set(0, 0, side * WINGLET_ROOT_Z);
+    blend.rotation.x = -side * Math.atan2(WINGLET_BLEND_RISE, WINGLET_BLEND_REACH);
+    const upperSpan = Math.hypot(WINGLET_UPPER_REACH, WINGLET_UPPER_RISE);
+    const upper = build.airfoilWing(
+      `${sideName}-bizjet-winglet`,
+      {
+        rootLeadingX: -5.9,
+        rootTrailingX: -6.98,
+        tipLeadingX: -6.2,
+        tipTrailingX: -6.8,
+        rootZ: 0,
+        tipZ: side * upperSpan,
+        // Marginally fatter than the blend it takes over from, so the blend's
+        // 80 mm overshoot stays inside it rather than poking out the flanks.
+        thicknessRatio: 0.092,
+        chordSegments: 12,
+        spanSegments: 2,
+      },
+      body,
+      wing,
+    );
+    upper.position.set(
+      0,
+      WINGLET_BLEND_RISE,
+      side * (WINGLET_ROOT_Z + WINGLET_BLEND_REACH),
+    );
+    upper.rotation.x = -side * Math.atan2(WINGLET_UPPER_RISE, WINGLET_UPPER_REACH);
+    wingSurfaces.push(blend, upper);
+
+    // Landing lights in the wing roots, which is where this type carries them.
+    // Seated on the section law like everything else on this wing, so the lens
+    // sits in the leading-edge skin instead of near it.
+    const lampZ = 1.95;
+    const lamp = build.cylinder(
+      side > 0 ? "starboard-landing-light" : "port-landing-light",
+      0.03,
+      0.34,
+      0.34,
+      10,
+      landingLamp,
+      wing,
+    );
+    lamp.rotation.z = Math.PI / 2;
+    lamp.position.set(3.8, wingSurfaceY(lampZ, 3.8, false) + 0.015, side * lampZ);
+    lamp.metadata = { ...lamp.metadata, castsShadow: false };
   }
 
   // THE T-TAIL. After its length this is the most recognisable thing about the
   // aeroplane, and the tailplane belongs at the TOP of the fin — mounted on
   // the fuselage it would be a different type entirely.
   //
-  // The fin is a four-point trapezoid rather than the triangles the two small
-  // airframes use, because a T-tail fin has a real tip chord to carry the
-  // tailplane on. The profile builder fans its outline from the first vertex,
-  // so the four points are ordered to stay convex. Leading edge sweep is 48
-  // degrees, tip at (-16.1, +6.2), matching the sim's fin contact point.
-  const fin = build.verticalProfile(
+  // The fin is an AEROFOIL now, not the 0.45 m constant-thickness slab it was.
+  // A slab has hard square edges the light catches as two bright lines down
+  // the leading and trailing edges, and its eight shared vertices make every
+  // normal the average of six faces, so the flat flanks shaded as though they
+  // were curved. Built flat like a wing and stood up by a quarter turn about
+  // body X: the builder spans in Z, and after the rotation local Z is height.
+  //
+  // 48 degrees of leading-edge sweep from the vertical, and a tip at y = 6.2
+  // because `sim/aircraft.ts` puts its fin contact point there.
+  //
+  // MEASURED OVERAGE, reported rather than fixed: that contact point makes the
+  // aeroplane 9.2 m from pavement to fin tip against a published 8.2 m. The
+  // fin is a metre too tall and cannot be shortened from this file.
+  const FIN_ROOT_Y = 0.78;
+  /*
+   * 5.16, not 6.2. The tailplane bullet sits 0.34 m above this on a T-tail, so
+   * a 6.2 fin put the tallest metal at 6.54 and the aeroplane at 9.24 m on its
+   * wheels against a published 8.2. Dropping both this and TAILPLANE_Y by the
+   * same 1.04 m lands the bullet at 5.50 and the overall height on 8.20.
+   * Measured off the built mesh, not off these constants.
+   */
+  const FIN_TIP_Y = 5.16;
+  const RUDDER_HINGE_ROOT_X = -15.35;
+  const RUDDER_HINGE_TIP_X = -15.95;
+  const fin = build.airfoilWing(
     "bizjet-vertical-stabilizer",
-    [
-      { x: -9.2, y: 0.85 },
-      { x: -15.9, y: 0.85 },
-      { x: -16.3, y: 6.2 },
-      { x: -14.8, y: 6.2 },
-    ],
-    0.45,
+    {
+      rootLeadingX: -9.2,
+      rootTrailingX: RUDDER_HINGE_ROOT_X,
+      tipLeadingX: -14.8,
+      tipTrailingX: RUDDER_HINGE_TIP_X,
+      rootZ: 0,
+      tipZ: FIN_TIP_Y - FIN_ROOT_Y,
+      thicknessRatio: 0.085,
+      chordSegments: 12,
+      spanSegments: 4,
+    },
     body,
     root,
   );
+  fin.rotation.x = -Math.PI / 2;
+  fin.position.y = FIN_ROOT_Y;
   wingSurfaces.push(fin);
-  const rudder = node("rudder", root, scene);
-  rudder.position.set(-15.95, 0.95, 0);
-  // 0.26 m thick against the fin's 0.45: the section tapers aft, and a rudder
-  // as thick as its own swing would make "which way did the trailing edge go"
-  // ambiguous — `render.webgpu-control-surface-sides` reads the aftmost vertex
-  // and at 0.24 rad the panel only travels 0.36 m.
-  const rudderSurface = build.box("rudder-surface", 1.25, 5.2, 0.26, accent, rudder);
-  rudderSurface.position.set(-0.68, 2.62, 0);
-  // The hinge line leans 0.40 m aft over its 5.35 m; a box cannot be swept, so
-  // the panel is tilted to sit on that line instead of crossing it. Applied to
-  // the CHILD, because the node's own Y rotation is the rudder deflection the
-  // pose owns every frame.
-  rudderSurface.rotation.z = Math.atan2(0.4, 5.35);
 
-  // Tailplane at y = +6.2, on top of the fin. 9 m span, 25 degrees of sweep —
-  // less than the fin's, as T-tails generally are, because the tailplane is
-  // out of the fuselage's flow field and does not need it.
-  const TAILPLANE_Y = 6.2;
-  const ELEVATOR_HINGE_X = -16.28;
+  const rudder = node("rudder", root, scene);
+  rudder.position.set(RUDDER_HINGE_ROOT_X, FIN_ROOT_Y, 0);
+  // The rudder is an aerofoil too, and hinged on the fin's own swept trailing
+  // edge rather than crossing it: its leading edge follows the same line the
+  // fin stops on, one cove behind. `render.webgpu-control-surface-sides` reads
+  // the aftmost vertex, and at 0.24 rad a 0.95 m panel still travels 0.23 m.
+  const rudderSurface = build.airfoilWing(
+    "rudder-surface",
+    {
+      rootLeadingX: -CONTROL_SURFACE_COVE,
+      rootTrailingX: -1.05,
+      tipLeadingX: RUDDER_HINGE_TIP_X - CONTROL_SURFACE_COVE - RUDDER_HINGE_ROOT_X,
+      tipTrailingX: RUDDER_HINGE_TIP_X - 0.62 - RUDDER_HINGE_ROOT_X,
+      rootZ: 0,
+      tipZ: FIN_TIP_Y - FIN_ROOT_Y,
+      thicknessRatio: 0.07,
+      chordSegments: 8,
+      spanSegments: 3,
+    },
+    body,
+    rudder,
+  );
+  // Applied to the CHILD, because the node's own Y rotation is the rudder
+  // deflection the pose owns every frame.
+  rudderSurface.rotation.x = -Math.PI / 2;
+  wingSurfaces.push(rudderSurface);
+
+  // Tailplane on top of the fin. 10.8 m span, not 9.0: the Global Express
+  // carries a stabiliser 34% of its wingspan and the 7500's aft fuselage and
+  // empennage are a larger new design, so 34% of 31.7 m is the defensible
+  // figure and the 9.0 m this replaces made the tail look undersized from
+  // every head-on bearing. 5 degrees of ANHEDRAL, which is the Global
+  // Express's, and 34 degrees of sweep rather than 25.
+  const TAILPLANE_Y = 5.16;  // With FIN_TIP_Y above; the T-tail rides the fin.
+  const TAILPLANE_TIP_Z = 5.4;
+  const TAILPLANE_ANHEDRAL = (5 * Math.PI) / 180;
+  const ELEVATOR_HINGE_ROOT_X = -16.05;
+  const ELEVATOR_HINGE_TIP_X = -17.55;
   for (const side of [1, -1] as const) {
     const tailplane = build.airfoilWing(
       side > 0 ? "starboard-bizjet-tailplane" : "port-bizjet-tailplane",
       {
-        rootLeadingX: -14.6,
-        rootTrailingX: ELEVATOR_HINGE_X,
-        tipLeadingX: -16.56,
-        tipTrailingX: -17.33,
+        rootLeadingX: -14.2,
+        rootTrailingX: ELEVATOR_HINGE_ROOT_X,
+        tipLeadingX: -17.05,
+        tipTrailingX: ELEVATOR_HINGE_TIP_X,
         rootZ: side * 0.32,
-        tipZ: side * 4.5,
+        tipZ: side * TAILPLANE_TIP_Z,
         thicknessRatio: 0.09,
-        chordSegments: 10,
-        spanSegments: 3,
+        camberRatio: 0.002,
+        chordSegments: 12,
+        spanSegments: 4,
       },
       body,
       root,
     );
     tailplane.position.y = TAILPLANE_Y;
+    // Anhedral: the tip drops, so the sign is the opposite of the wing's.
+    tailplane.rotation.x = side * TAILPLANE_ANHEDRAL;
     wingSurfaces.push(tailplane);
+    // The thin gold line along the stabiliser leading edge, which is the one
+    // other marking the demonstrator carries besides the cheatline. Painted
+    // into the vertices for the same reason the cheatline is.
+    paintVertexBand(tailplane, CHEATLINE_LINEAR, (x, _y, z) => {
+      const station = Math.abs(z);
+      const leading = mix(-14.2, -17.05, (station - 0.32) / (TAILPLANE_TIP_Z - 0.32));
+      return 1 - smoothStep(0.1, 0.22, leading - x);
+    });
   }
   // The bullet fairing over the fin/tailplane junction, and it is not
-  // decoration: the fin is 0.45 m thick (z +/-0.225) and BOTH the tailplane
-  // and the elevator start at |z| = 0.32, so without it there is a 9.5 cm slot
-  // down each side of the fin top, open from x -14.6 clear through to the
-  // elevator trailing edge. You can see sky through the tail. Every real
-  // T-tail carries this fairing for the same reason — it is where the
-  // stabiliser's centre structure and its trim actuator live — so the fix is
-  // the aeroplane's own part rather than a patch. Sized to 0.39 m half-width
-  // so it overlaps both roots rather than merely meeting them, and stopping
-  // short of the elevator's travel.
+  // decoration: the fin tip is barely 0.13 m thick and BOTH the tailplane and
+  // the elevator start at |z| = 0.32, so without it there is a slot down each
+  // side of the fin top, open from x -14.2 clear through to the elevator
+  // trailing edge. You can see sky through the tail. Every real T-tail carries
+  // this fairing for the same reason — it is where the stabiliser's centre
+  // structure and its trim actuator live — so the fix is the aeroplane's own
+  // part rather than a patch. Sized to overlap both roots rather than merely
+  // meeting them, and stopping short of the elevator's travel.
   build.loft(
     "bizjet-tailplane-bullet",
     [
-      { x: -17.45, yRadius: 0.1, zRadius: 0.1, yOffset: TAILPLANE_Y },
-      { x: -16.6, yRadius: 0.3, zRadius: 0.38, yOffset: TAILPLANE_Y },
-      { x: -15.3, yRadius: 0.33, zRadius: 0.39, yOffset: TAILPLANE_Y },
-      { x: -14.25, yRadius: 0.12, zRadius: 0.16, yOffset: TAILPLANE_Y },
+      { x: -17.75, yRadius: 0.1, zRadius: 0.1, yOffset: TAILPLANE_Y },
+      { x: -16.8, yRadius: 0.3, zRadius: 0.38, yOffset: TAILPLANE_Y },
+      { x: -15.1, yRadius: 0.34, zRadius: 0.4, yOffset: TAILPLANE_Y },
+      { x: -13.9, yRadius: 0.12, zRadius: 0.16, yOffset: TAILPLANE_Y },
     ],
-    16,
+    18,
     body,
     root,
   );
 
   const elevator = node("elevator", root, scene);
-  elevator.position.set(ELEVATOR_HINGE_X, TAILPLANE_Y, 0);
+  elevator.position.set(ELEVATOR_HINGE_ROOT_X, TAILPLANE_Y, 0);
   for (const side of [1, -1] as const) {
-    wingSurfaces.push(build.airfoilWing(
+    const surface = build.airfoilWing(
       side > 0 ? "starboard-bizjet-elevator-surface" : "port-bizjet-elevator-surface",
       {
-        rootLeadingX: 0,
-        rootTrailingX: -0.72,
-        tipLeadingX: -1.05,
-        tipTrailingX: -1.38,
+        rootLeadingX: -CONTROL_SURFACE_COVE,
+        rootTrailingX: -0.92,
+        tipLeadingX: ELEVATOR_HINGE_TIP_X - CONTROL_SURFACE_COVE - ELEVATOR_HINGE_ROOT_X,
+        tipTrailingX: ELEVATOR_HINGE_TIP_X - 0.5 - ELEVATOR_HINGE_ROOT_X,
         rootZ: side * 0.32,
-        tipZ: side * 4.5,
+        tipZ: side * TAILPLANE_TIP_Z,
         thicknessRatio: 0.07,
         chordSegments: 8,
-        spanSegments: 2,
+        spanSegments: 3,
       },
-      accent,
+      body,
       elevator,
-    ));
+    );
+    // The elevator carries the stabiliser's anhedral, or it would stand proud
+    // of the surface it hinges on by a quarter of a metre at the tip.
+    surface.rotation.x = side * TAILPLANE_ANHEDRAL;
+    wingSurfaces.push(surface);
   }
 
   // FLIGHT DECK. Well forward and high, on top of the drooped radome. The
@@ -674,30 +1362,44 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // these meshes into the airframe-transparency rendering group: drawn before
   // the water their depth pre-pass cuts a hole in the sea behind them, and
   // that is a defect this renderer has shipped before.
-  const windscreen = build.box("bizjet-windscreen", 0.12, 0.66, 1.6, glass, root);
-  windscreen.position.set(12.85, 0.88, 0);
-  windscreen.rotation.z = 0.52;
+  // Let INTO the nose crown, not perched on it. Measured, the fuselage top at
+  // x = 12.85 is y 0.95, so the old 0.66 m pane centred at 0.88 stood a
+  // quarter of a metre above the skin it is supposed to be glazed into, and
+  // the centre post reached y 1.3 against a 1.15 m crown — a dark bar poking
+  // out of the nose in every forward three-quarter frame.
+  const windscreen = build.box("bizjet-windscreen", 0.16, 0.56, 1.44, glass, root);
+  windscreen.position.set(12.72, 0.7, 0);
+  windscreen.rotation.z = 0.6;
   windscreen.metadata = { ...windscreen.metadata, castsShadow: false };
   for (const side of [1, -1] as const) {
+    // EMBEDDED, not laid on. Measured, the old pane sat at |z| = 0.99 where
+    // the skin at that height is 0.89 — a 1.8 m dark slab standing 0.10 m
+    // proud of the nose, which is how it read in every three-quarter frame.
+    // A thin pane on a curved fuselage is also a shallow-angle near-tangency,
+    // which shimmers. This one is deliberately THICK and sunk well inside, so
+    // what shows is the intersection of a slab with the skin: a window-shaped
+    // patch that follows the curve and crosses it at a steep angle.
     const sideWindow = build.box(
       side > 0 ? "starboard-bizjet-flight-deck-window" : "port-bizjet-flight-deck-window",
-      1.8,
-      0.52,
-      0.08,
+      1.02,
+      0.44,
+      0.34,
       glass,
       root,
     );
-    sideWindow.position.set(11.8, 0.78, side * 0.99);
-    // Laid on to the fuselage flank: the pane's normal is its local Z, and a
-    // half-radian turn about X points it outboard and up, along the skin.
-    sideWindow.rotation.x = -side * 0.5;
+    sideWindow.position.set(11.92, 0.76, side * 0.72);
+    // Laid along the flank: a third of a radian about X points the pane
+    // outboard and up, following the skin it is let into, and a little yaw
+    // follows the nose's taper so the forward end does not surface.
+    sideWindow.rotation.x = -side * 0.3;
+    sideWindow.rotation.y = side * 0.06;
     sideWindow.metadata = { ...sideWindow.metadata, castsShadow: false };
   }
   const windscreenFrame = build.strutBetween(
     "bizjet-windscreen-center-post",
-    new Vector3(13.05, 0.52, 0),
-    new Vector3(12.2, 1.3, 0),
-    0.055,
+    new Vector3(13.0, 0.44, 0),
+    new Vector3(12.34, 1.0, 0),
+    0.05,
     dark,
     root,
   );
@@ -737,11 +1439,17 @@ export function createBizJet(scene: Scene): AircraftVisual {
     instrumentMarking,
   );
 
-  // THE ENGINES. Two on pylons off the REAR FUSELAGE, not under the wing —
-  // this is a rear-engined aeroplane and hanging them under a low wing would
-  // put a 2.1 m fan 20 cm off the runway. Nacelle centreline y = +0.75,
-  // z = +/-2.40, running x -13.4 to -9.4: a 4 m, 2.1 m diameter cowl, which is
-  // what a pair of GE Passports making 168 kN between them need to breathe.
+  // THE ENGINES. Two GE Passport 20s on pylons off the REAR FUSELAGE, not
+  // under the wing — this is a rear-engined aeroplane and hanging them under a
+  // low wing would put the fan a foot off the runway.
+  //
+  // Resized to the published engine. The Passport's fan blisk is 1.32 m across
+  // and the bare engine's maximum envelope is 1.38 m wide, which puts a
+  // long-duct mixed-flow cowl at about 1.75 m of external diameter and 4.9 m
+  // long. The nacelles here were 2.10 m across and 4.0 m long — a fifth too
+  // fat and a fifth too short, which is most of why the tail end read as two
+  // barrels rather than two engines. Centreline y = +0.75, z = +/-2.30, from
+  // the roughly 4.6 m centreline separation the three-view scales to.
   //
   // The pylon is short because the tailcone has already narrowed to about
   // 0.8 m half-width by the engine station. On the real aeroplane it is barely
@@ -752,50 +1460,99 @@ export function createBizJet(scene: Scene): AircraftVisual {
     build.loft(
       `${sideName}-bizjet-nacelle`,
       [
-        { x: -13.4, yRadius: 0.62, zRadius: 0.62, yOffset: 0.75, zOffset: side * 2.4 },
-        { x: -12.6, yRadius: 0.84, zRadius: 0.84, yOffset: 0.75, zOffset: side * 2.4 },
-        { x: -11.4, yRadius: 1.02, zRadius: 1.02, yOffset: 0.75, zOffset: side * 2.4 },
-        { x: -10.2, yRadius: 1.05, zRadius: 1.05, yOffset: 0.75, zOffset: side * 2.4 },
-        { x: -9.4, yRadius: 0.98, zRadius: 0.98, yOffset: 0.75, zOffset: side * 2.4 },
+        { x: -14.05, yRadius: 0.55, zRadius: 0.55, yOffset: 0.75, zOffset: side * 2.3 },
+        { x: -13.2, yRadius: 0.72, zRadius: 0.72, yOffset: 0.75, zOffset: side * 2.3 },
+        { x: -12.1, yRadius: 0.85, zRadius: 0.85, yOffset: 0.75, zOffset: side * 2.3 },
+        { x: -10.8, yRadius: 0.875, zRadius: 0.875, yOffset: 0.75, zOffset: side * 2.3 },
+        { x: -9.9, yRadius: 0.86, zRadius: 0.86, yOffset: 0.75, zOffset: side * 2.3 },
+        // Stops at -9.35, not -9.15. The loft caps its forward end with a
+        // flat disc, the intake ring below caps ITS forward end with another,
+        // and both face the same way: at 40 mm apart and 1.6 m across they
+        // were inside the depth buffer's resolution from about 220 m, which
+        // the two-centimetre dolly probe caught as a pair of flickering
+        // blobs on the front of the engines. 240 mm of separation, and the
+        // ring is wider here than the cap, so the cap is simply hidden.
+        { x: -9.35, yRadius: 0.78, zRadius: 0.78, yOffset: 0.75, zOffset: side * 2.3 },
       ],
-      24,
+      28,
       body,
       root,
     );
+    // FLIPPED NORMALS, and the only mesh on this aeroplane that had them.
+    // `verticalProfile` extrudes whatever outline it is handed and does not
+    // reverse the winding, so the orientation is decided by the order of the
+    // four points. The fin's outline ran clockwise in the x/y plane and was
+    // right; this one ran counter-clockwise, so both pylons were built inside
+    // out — back faces culled, the far wall drawn instead of the near one and
+    // lit by normals pointing into the structure. Measured by ray-casting the
+    // flank and reading the hit triangle's own normal: n.d = +1.0 against
+    // every other mesh's -1.0. The points below are simply reversed.
     const pylon = build.verticalProfile(
       `${sideName}-bizjet-engine-pylon`,
       [
-        { x: -9.8, y: 1.15 },
-        { x: -12.8, y: 1.15 },
-        { x: -12.4, y: 0.42 },
         { x: -10.2, y: 0.42 },
+        { x: -12.4, y: 0.42 },
+        { x: -12.8, y: 1.15 },
+        { x: -9.8, y: 1.15 },
       ],
-      1.3,
+      1.2,
       body,
       root,
     );
-    pylon.position.z = side * 1.75;
-    // The inlet lip, dark so the intake reads as a hole rather than as the
-    // white cap the loft closes its forward section with.
+    pylon.position.z = side * 1.72;
+    // The intake, and it has to read as a HOLE. The real aeroplane's lip is
+    // polished metal, and building it that way was a mistake worth recording:
+    // `build.cylinder` closes its ends, so a metal inlet turns the intake
+    // into a two-metre polished disc reflecting the sky — a pale blue lollipop
+    // on the front of each engine, which is exactly the "verified by numbers,
+    // wrong on screen" failure this pass is about. Dark wins; the polished
+    // lip would need a ring primitive this builder does not have.
+    //
+    // Long and pushed AFT so its rear face is a half-metre inside the cowl.
+    // It used to be a 0.26 m ring whose flat back sat 30 mm behind the
+    // nacelle's own flat end cap — two parallel two-metre discs, 30 mm apart,
+    // which is inside the depth buffer's resolution from about 200 m out.
     const inlet = build.cylinder(
-      `${sideName}-bizjet-engine-inlet`, 0.26, 2, 2.04, 20, dark, root);
+      `${sideName}-bizjet-engine-inlet`, 0.62, 1.5, 1.72, 24, dark, root);
     inlet.rotation.z = Math.PI / 2;
-    inlet.position.set(-9.3, 0.75, side * 2.4);
+    inlet.position.set(-9.42, 0.75, side * 2.3);
+    // Long-duct mixed-flow: one common nozzle, no exposed core. Its forward
+    // rim is deliberately WIDER than the cowl's last section (0.58 against
+    // 0.55), so it caps the loft's flat white end disc rather than sitting
+    // inside it and leaving a bright ring round the exhaust.
     const nozzle = build.cylinder(
-      `${sideName}-bizjet-exhaust-nozzle`, 0.55, 0.85, 1.05, 18, hotMetal, root);
+      `${sideName}-bizjet-exhaust-nozzle`, 0.58, 0.8, 1.16, 22, hotMetal, root);
     nozzle.rotation.z = Math.PI / 2;
-    nozzle.position.set(-13.68, 0.75, side * 2.4);
+    nozzle.position.set(-14.3, 0.75, side * 2.3);
+    // The exhaust is a HOLE. Without this the nozzle's own flat end cap is
+    // what a chase camera sees: a polished metal disc reflecting the sky,
+    // which reads as a lavender lollipop on the back of each engine in every
+    // frame from behind. A dark cone receding into the duct reads as depth,
+    // and being a cone it is parallel to nothing and cannot fight the rim.
+    const core = build.cylinder(
+      `${sideName}-bizjet-exhaust-core`, 0.5, 0.26, 0.76, 18, dark, root);
+    core.rotation.z = Math.PI / 2;
+    // 140 mm behind the nozzle's own aft rim, for the same depth-resolution
+    // reason as the intake: two aft-facing discs 60 mm apart is a coin toss
+    // at chase range.
+    core.position.set(-14.48, 0.75, side * 2.3);
 
     // The rotating assembly. On a turbofan this is the fan and the spool
     // behind it, the same thing the sport jet exposes as its compressor: the
     // node spins about body X through its OWN origin, which is why each fan
     // gets a node at its own centreline rather than one node at the aircraft
     // centreline — that one would swing both fans around the fuselage.
+    //
+    // 1.32 m across, which is the Passport 20's published blisk diameter; the
+    // 1.86 m fan this replaces was wider than the real engine's whole cowl.
+    // Sited well down the duct, behind the dark intake ring and clear of it:
+    // the fan face is another disc, and every disc on this engine has to be
+    // far enough from the next one to beat the depth buffer at chase range.
     const spool = node(`${sideName}-bizjet-fan-spool`, root, scene);
-    spool.position.set(-9.34, 0.75, side * 2.4);
-    const fanFace = build.cylinder(`${spool.name}-fan`, 0.08, 1.7, 1.86, 16, hub, spool);
+    spool.position.set(-9.95, 0.75, side * 2.3);
+    const fanFace = build.cylinder(`${spool.name}-fan`, 0.08, 1.2, 1.32, 18, hub, spool);
     fanFace.rotation.z = Math.PI / 2;
-    const spinner = build.cylinder(`${spool.name}-spinner`, 0.42, 0.02, 0.34, 10, dark, spool);
+    const spinner = build.cylinder(`${spool.name}-spinner`, 0.34, 0.02, 0.3, 10, dark, spool);
     // Point FORWARD: the negative quarter turn puts the cylinder's zero-radius
     // end at +X. Centred on the fan face so the cone stands through it and its
     // tip stops level with the inlet lip rather than out in the airstream.
@@ -891,10 +1648,11 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // Port (red) at -Z and starboard (green) at +Z, because starboard is +Z.
   // Reversing these is the one lighting error an observer can read directly:
   // it inverts which way the aeroplane appears to be heading.
-  // Moved aft with the wash table to where the winglet actually is: a 31.7 m
-  // span at 35 degrees of leading-edge sweep puts the tip 11.1 m behind the
-  // root, and the first draft of both this placement and the table guessed
-  // x = -1, which floated the lamps 4.5 m ahead of the metal.
+  // These five stay parented to the ROOT rather than to the dihedral nodes,
+  // deliberately: their body coordinates are transcribed in another file's
+  // table, so moving them is not this file's call. The winglet is shaped to
+  // reach them instead — its blend passes exactly through the nav point, where
+  // measurement put that lamp 60 mm clear of the nearest metal before.
   const portLight = build.sphere("port-navigation-light", 0.2, 8, redLamp, root);
   portLight.position.set(-6.1, 0.35, -15.6);
   portLight.metadata = { ...portLight.metadata, castsShadow: false };
@@ -913,16 +1671,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
   const tailLight = build.sphere("tail-navigation-light", 0.16, 8, tailLamp, root);
   tailLight.position.set(-18.3, 0.62, 0);
   tailLight.metadata = { ...tailLight.metadata, castsShadow: false };
-  // Landing lights in the wing roots, which is where this type carries them —
-  // not on the gear leg like the two small aeroplanes.
-  for (const side of [1, -1] as const) {
-    const lamp = build.cylinder(
-      side > 0 ? "starboard-landing-light" : "port-landing-light",
-      0.03, 0.34, 0.34, 10, landingLamp, root);
-    lamp.rotation.z = Math.PI / 2;
-    lamp.position.set(3.75, -0.95, side * 1.95);
-    lamp.metadata = { ...lamp.metadata, castsShadow: false };
-  }
+  // The landing lights are built with the wing, above: they belong to the
+  // wing roots and have to carry the dihedral with everything else there.
 
   const rig: BizJetRig = {
     root,
@@ -935,7 +1685,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // through is worse than no windscreen.
     cockpitParts: [fuselage, radome, windscreenFrame],
     wingSurfaces,
-    ailerons: [starboardAileron, portAileron],
+    // Starboard first, because the side loop runs +1 first and
+    // `applyCommonPose` drives `ailerons[0]` with the starboard deflection.
+    ailerons: [ailerons[0]!, ailerons[1]!],
     elevator,
     rudder,
     noseSteer,
@@ -965,13 +1717,46 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
+      // ...and immediately re-express every swept deflection about its own
+      // hinge line. `applyCommonPose` has just written `rotation.z`, which is
+      // read here as the ANGLE and then discarded: setting `rotationQuaternion`
+      // makes Babylon ignore `rotation` entirely, so the shared contract still
+      // owns what each surface does and this owns only which axis it does it
+      // about.
+      for (const swept of sweptHinges) {
+        swept.node.rotationQuaternion = Quaternion.RotationAxis(
+          swept.axis,
+          swept.node.rotation.z,
+        );
+      }
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;
       rig.gearDoors.forEach((door, index) => {
         door.rotation.x = (index === 1 ? -1 : 1) * pose.gearDoorTravel;
       });
-      for (const speedBrake of rig.speedBrakes) speedBrake.rotation.z = pose.speedBrake;
+      // FOWLER TRAVEL. `applyCommonPose` has just set each flap's hinge
+      // rotation, which is the whole of what the shared contract knows how to
+      // do — and a flap that only rotates is a plain hinged flap. A Global's
+      // flaps run aft on tracks as they go down, which is where most of the
+      // area they add comes from, and at 30 degrees the difference is a
+      // quarter of a metre of chord: the aeroplane visibly grows its wing.
+      // The two segments share one fraction, so they move as one family.
+      const flapFraction = pose.flap / FULL_FLAP_RADIANS;
+      for (const track of flapTravel) {
+        track.node.position.x = track.restX - FLAP_AFT_TRAVEL * flapFraction;
+        track.node.position.y = track.restY - FLAP_DOWN_TRAVEL * flapFraction;
+      }
+      // The spoiler panels live INSIDE the wing at rest (see their seating).
+      // Switching them off below a couple of milliradians makes that
+      // unconditional rather than merely deep enough: at rest there is no
+      // panel to z-fight with the skin at any distance, and because the
+      // threshold is crossed while the panel is still buried, nothing pops.
+      const braking = Math.abs(pose.speedBrake) > 0.002;
+      for (const speedBrake of rig.speedBrakes) {
+        speedBrake.setEnabled(braking);
+        speedBrake.rotation.z = pose.speedBrake;
+      }
     },
     setLightState(lights) {
       if (disposed) return;
