@@ -21,7 +21,7 @@ import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
 const outDir = process.argv[2] ?? "/tmp/aircraft-frames";
-const url = process.argv[3] ?? "http://localhost:3002/";
+const url = process.argv[3] ?? "http://localhost:3010/";
 const seconds = Number(process.argv[4] ?? 8);
 /** "trainer" | "jet" - written into the persisted settings before load. */
 const kindWanted = process.argv[5] ?? "trainer";
@@ -31,6 +31,22 @@ const manoeuvre = process.argv[6] ?? "level";
 const weather = process.argv[7] ?? "clear";
 /** Label for the output files, so two arms of an A/B do not overwrite. */
 const arm = process.argv[8] ?? "arm";
+/**
+ * Absolute path of the worktree this run is supposed to be measuring.
+ *
+ * Checked before anything else, because a dev server that cannot bind its port
+ * does not fail — `vinext dev` prints "Port 3003 is in use, trying another
+ * one..." and moves to the next free one, leaving whatever was already there
+ * answering on the port you asked for. Two of this instrument's arms were
+ * photographed off another engineer's tree that way, and nothing in the
+ * numbers said so: an unfixed rig measured through someone else's unfixed rig
+ * still reads like an unfixed rig.
+ *
+ * Vite's dev server refuses `/@fs/` paths outside its own root with a 403, so
+ * asking for a file by absolute path is a direct question about which tree is
+ * answering, and it costs one request.
+ */
+const expectTree = process.argv[9] ?? "";
 const WIDTH = 1600;
 const HEIGHT = 900;
 
@@ -63,6 +79,19 @@ await page.addInitScript(({ kind, weather }: { kind: string; weather: string }) 
     localStorage.setItem(key, JSON.stringify({ ...existing, aircraft: kind, weather }));
   } catch { /* first load has no settings yet; the default is the trainer */ }
 }, { kind: kindWanted, weather });
+if (expectTree) {
+  const probeUrl = new URL(`/@fs${expectTree}/package.json`, url).toString();
+  const response = await fetch(probeUrl);
+  if (!response.ok) {
+    throw new Error(
+      `${url} is NOT serving ${expectTree} (asked for ${probeUrl}, got `
+      + `${response.status}). Something else owns this port; nothing measured.`,
+    );
+  }
+  console.log(`serving: ${expectTree} (verified via /@fs)`);
+} else {
+  console.log("WARNING: no tree identity given, so this run cannot say which tree it measured");
+}
 await page.goto(url, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(4_000);
 await page.locator("text=Start").first().click();
@@ -247,6 +276,7 @@ const max = (k: string) => Math.max(...col(k));
 const stat = (k: string, unit = "") =>
   `${k.padEnd(13)} mean ${mean(k).toFixed(4).padStart(10)}   min ${min(k).toFixed(4).padStart(10)}   max ${max(k).toFixed(4).padStart(10)} ${unit}`;
 
+console.log(`tree: ${expectTree || "UNVERIFIED"}`);
 console.log(`aircraft: ${result.kind}; manoeuvre: ${manoeuvre}; weather: ${weather}; arm: ${arm};  ${s.length} frames over ${seconds}s (${(s.length / seconds).toFixed(1)} fps)`);
 console.log(stat("distance", "m   <- chase profile asks for 13.5 m"));
 console.log(stat("bank", "deg"));

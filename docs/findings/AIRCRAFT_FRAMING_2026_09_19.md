@@ -159,6 +159,33 @@ advances — so hooking a scene render observable silently samples nothing. Poll
 instead. And an observer that throws kills the render loop outright, which
 presents as "the engine stopped" rather than as an error.
 
+## A dev server that cannot bind its port does not fail
+
+`vinext dev --port 3003` prints *"Port 3003 is in use, trying another one..."*
+and moves to the next free port. Whatever was already there keeps answering on
+3003 — and a probe pointed at `http://localhost:3003/` measures THAT.
+
+Two arms of the in-game measurement were taken this way, off another
+engineer's worktree, and **nothing in the numbers said so**: their tree carried
+the same unfixed rig, so an unfixed rig measured through someone else's
+unfixed rig reads exactly like an unfixed rig. It was caught by reading the
+server's own startup log, not by anything in the data.
+
+Re-run against a verified tree, the affected figures reproduced to three
+decimal places (`-0.0256` against `-0.0256`, `+2.8200` against `+2.8208`), so
+the conclusions held — but that is luck, not method.
+
+Two changes, and both are cheap:
+
+- **Start servers with `--strictPort`** so a collision fails loudly instead of
+  falling through.
+- **Make the probe prove which tree is answering before it measures.** Vite
+  refuses `/@fs/` paths outside its own root with a 403, so one request for
+  `/@fs/<expected worktree>/package.json` is a direct question about identity:
+  200 means this server's root contains that path, 403 means it does not.
+  `scripts/aircraft-framing-inflight.mts` takes the expected worktree as an
+  argument, asserts it, and prints it into its own report.
+
 ## Three instrument bugs that produced confident wrong numbers
 
 Every one of these returned a plausible figure rather than an error, which is
