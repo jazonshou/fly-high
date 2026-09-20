@@ -559,7 +559,6 @@ export function createJet(scene: Scene): AircraftVisual {
   }
 
   const wingSurfaces: AbstractMesh[] = [];
-  const flaps: TransformNode[] = [];
 
   // STARBOARD IS BODY +Z. Every side loop in this file runs [1, -1] and calls
   // +1 starboard, the discipline the Global adopted after the two older
@@ -652,87 +651,72 @@ export function createJet(scene: Scene): AircraftVisual {
     wingSurfaces.push(lerx);
   }
 
-  // THE FLAPERONS. On the real aeroplane the whole trailing edge is ONE surface
-  // a side doing both jobs — there is no separate aileron — and the flight
-  // control system mixes roll and flap commands into it. The rig contract wants
-  // a flap list and an aileron pair, so the span is cut in two: the inboard
-  // segment is driven by `pose.flap` and the outboard one by the aileron
-  // deflections. That is a faithful split of one surface's duties rather than
-  // an invented pair of surfaces, and at 20 degrees of flap the two segments
-  // are not visibly on different hinge lines because they are on the same one.
-  const FLAP_ROOT_Z = 1.05;
-  const FLAP_TIP_Z = 2.55;
-  const AILERON_ROOT_Z = 2.65;
-  const AILERON_TIP_Z = 4.25;
-  const flapHingeRootX = hingeLineAt(FLAP_ROOT_Z);
+  /*
+   * THE FLAPERONS. One surface a side, doing both jobs.
+   *
+   * On the real aeroplane the whole trailing edge is a single flaperon a side
+   * -- there is no separate aileron -- and the flight control system mixes the
+   * roll and flap commands into it. This used to be cut in two to suit a rig
+   * that wanted a flap list and an aileron pair, with the inboard segment on
+   * `pose.flap` and the outboard on the aileron deflections.
+   *
+   * That split cost a hole. Measured by ray-casting the built mesh from sixty
+   * chase-like eye points, daylight came through the break between the two
+   * segments at z = 2.55..2.63: 196 mm of apparent width AT REST, 275 mm at
+   * take-off and 314 mm at full flap. At rest is the point -- it was visible
+   * in every frame of the aeroplane, not only with the flaps down. A seal
+   * cannot close it either, because the two panels diverge by up to 33 degrees
+   * (20 of flap against 12.6 of aileron) and a plate long enough to cover that
+   * would stand out through the skin.
+   *
+   * So the two are one panel over the combined span, and `CommonRig.flaperons`
+   * carries it: `applyCommonPose` sums the flap and roll commands into a
+   * single deflection rather than letting one node sit in two lists, where the
+   * second write would simply overwrite the first.
+   */
+  // Named apart from the module-level `FLAPERON_ROOT_Z`, which is where the
+  // fixed wing is SPLIT (z = 1) rather than where this panel starts.
+  const FLAPERON_INBOARD_Z = 1.05;
+  const FLAPERON_OUTBOARD_Z = 4.25;
+  const flaperonHingeRootX = hingeLineAt(FLAPERON_INBOARD_Z);
+  const flaperons: TransformNode[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
     // The hinge node sits ON the hinge line at the panel's inboard end and the
     // panel is expressed relative to it, so `rotation.z` swings the trailing
     // edge down instead of sliding the whole panel through the wing.
+    //
+    // STARBOARD LANDS AT INDEX 0 because this loop runs +1 first, and
+    // `applyCommonPose` drives `flaperons[0]` with the starboard roll
+    // deflection. Nothing downstream checks the name.
     const hinge = node(`${sideName}-jet-flaperon`, root, scene);
-    hinge.position.set(flapHingeRootX, WING_CHORD_PLANE_Y, side * FLAP_ROOT_Z);
+    hinge.position.set(flaperonHingeRootX, WING_CHORD_PLANE_Y, side * FLAPERON_INBOARD_Z);
     const surface = build.airfoilWing(
       `${sideName}-jet-flaperon-surface`,
       {
         rootLeadingX: 0,
-        rootTrailingX: trailingEdgeAt(FLAP_ROOT_Z) - flapHingeRootX,
-        tipLeadingX: hingeLineAt(FLAP_TIP_Z) - flapHingeRootX,
-        tipTrailingX: trailingEdgeAt(FLAP_TIP_Z) - flapHingeRootX,
+        rootTrailingX: trailingEdgeAt(FLAPERON_INBOARD_Z) - flaperonHingeRootX,
+        tipLeadingX: hingeLineAt(FLAPERON_OUTBOARD_Z) - flaperonHingeRootX,
+        tipTrailingX: trailingEdgeAt(FLAPERON_OUTBOARD_Z) - flaperonHingeRootX,
         rootZ: 0,
-        tipZ: side * (FLAP_TIP_Z - FLAP_ROOT_Z),
+        tipZ: side * (FLAPERON_OUTBOARD_Z - FLAPERON_INBOARD_Z),
         thicknessRatio: 0.055,
         camberRatio: 0.008,
         chordSegments: 8,
-        spanSegments: 2,
+        spanSegments: 4,
       },
       accent,
       hinge,
     );
-    flaps.push(hinge);
     wingSurfaces.push(surface);
-    // The hinge LINE, not the wing's z axis. This panel is swept: its
-    // outboard end is 0.296 m aft of the node, so turning it about z drops
-    // that end about 0.10 m further than its root at 20 degrees of flap.
-    // See `hingeAlong`.
+    // The hinge LINE, not the wing's z axis: this panel is swept, so its
+    // outboard end stands aft of the node. See `hingeAlong`.
     hingeAlong(hinge, new Vector3(
-      hingeLineAt(FLAP_TIP_Z) - flapHingeRootX,
+      hingeLineAt(FLAPERON_OUTBOARD_Z) - flaperonHingeRootX,
       0,
-      side * (FLAP_TIP_Z - FLAP_ROOT_Z),
+      side * (FLAPERON_OUTBOARD_Z - FLAPERON_INBOARD_Z),
     ), scene);
-  }
-
-  // Ailerons — the outboard flaperon segment. STARBOARD FIRST in the tuple and
-  // at POSITIVE Z: `applyCommonPose` drives `ailerons[0]` with the starboard
-  // deflection and nothing downstream checks the name, which is exactly how the
-  // old bug survived.
-  const aileronHingeRootX = hingeLineAt(AILERON_ROOT_Z);
-  const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(aileronHingeRootX, WING_CHORD_PLANE_Y, AILERON_ROOT_Z);
-  const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(aileronHingeRootX, WING_CHORD_PLANE_Y, -AILERON_ROOT_Z);
-  for (const side of [1, -1] as const) {
-    wingSurfaces.push(build.airfoilWing(
-      side > 0 ? "starboard-aileron-surface" : "port-aileron-surface",
-      {
-        rootLeadingX: 0,
-        rootTrailingX: trailingEdgeAt(AILERON_ROOT_Z) - aileronHingeRootX,
-        tipLeadingX: hingeLineAt(AILERON_TIP_Z) - aileronHingeRootX,
-        tipTrailingX: trailingEdgeAt(AILERON_TIP_Z) - aileronHingeRootX,
-        rootZ: 0,
-        tipZ: side * (AILERON_TIP_Z - AILERON_ROOT_Z),
-        thicknessRatio: 0.055,
-        chordSegments: 8,
-        spanSegments: 2,
-      },
-      accent,
-      side > 0 ? starboardAileron : portAileron,
-    ));
-    hingeAlong(side > 0 ? starboardAileron : portAileron, new Vector3(
-      hingeLineAt(AILERON_TIP_Z) - aileronHingeRootX,
-      0,
-      side * (AILERON_TIP_Z - AILERON_ROOT_Z),
-    ), scene);
+    flaperons.push(hinge);
   }
 
   // Wingtip launcher rails. Not decoration: the published 9.96 m span is
@@ -1312,11 +1296,15 @@ export function createJet(scene: Scene): AircraftVisual {
     // than no canopy, and on this aeroplane it is the whole point of the type.
     cockpitParts: [fuselage, radome, dorsalSpine],
     wingSurfaces,
-    ailerons: [starboardAileron, portAileron],
+    // No separate ailerons and no separate flaps: this aeroplane's trailing
+    // edge is one flaperon a side and `applyCommonPose` sums both commands
+    // into it.
+    ailerons: [],
+    flaperons: [flaperons[0]!, flaperons[1]!],
     elevators: [elevator],
     rudder,
     noseSteer,
-    flaps,
+    flaps: [],
     mainWheels,
     noseWheel,
     landingGear,

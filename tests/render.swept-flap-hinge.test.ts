@@ -213,7 +213,10 @@ const ALL_MOVING: readonly (readonly [AircraftKind, string])[] = [
 /** How many surfaces must deflect, so a rename cannot shrink the sweep. */
 const EXPECTED_DEFLECTING: Readonly<Record<AircraftKind, number>> = {
   trainer: 6,
-  jet: 6,
+  // Four, not six: this aeroplane's trailing edge is ONE flaperon a side,
+  // which is both its flap and its aileron, so there are two wing surfaces
+  // rather than four.
+  jet: 4,
   bizjet: 9,
   airliner: 11,
 };

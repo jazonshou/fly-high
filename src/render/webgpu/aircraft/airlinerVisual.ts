@@ -1716,6 +1716,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     inboardAilerons: [starboardInboardAileron, portInboardAileron],
+    /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */
+    flaperons: [],
     elevators,
     rudder,
     noseSteer,

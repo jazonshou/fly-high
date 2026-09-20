@@ -23,7 +23,21 @@ export interface CommonRig {
   readonly propeller: TransformNode;
   readonly cockpitParts: readonly AbstractMesh[];
   readonly wingSurfaces: readonly AbstractMesh[];
-  readonly ailerons: readonly [TransformNode, TransformNode];
+  /** Starboard first. Empty on an airframe whose ailerons ARE its flaps. */
+  readonly ailerons: readonly TransformNode[];
+  /**
+   * Surfaces that are flap and aileron at once, starboard first.
+   *
+   * The F-16 has one of these a side and no separate ailerons, which is the
+   * aeroplane: a flaperon droops with the flap selection and differentiates
+   * with the stick, both at the same time. Modelling it as two panels left a
+   * standing 196 mm hole between them that daylight came through at rest.
+   *
+   * They are a list of their OWN rather than a node appearing in both `flaps`
+   * and `ailerons`, because with one node in two lists the second write simply
+   * overwrites the first and the surface silently does only half its job.
+   */
+  readonly flaperons: readonly TransformNode[];
   /**
    * Elevator halves, each on its OWN hinge node.
    *
@@ -283,8 +297,13 @@ export function applyCommonPose(
   pose: ReturnType<typeof resolveAircraftAnimationPose>,
   deltaSeconds: number,
 ): void {
-  rig.ailerons[0].rotation.z = pose.starboardAileron;
-  rig.ailerons[1].rotation.z = pose.portAileron;
+  if (rig.ailerons[0]) rig.ailerons[0].rotation.z = pose.starboardAileron;
+  if (rig.ailerons[1]) rig.ailerons[1].rotation.z = pose.portAileron;
+  // Summed, not written twice: a flaperon's deflection IS the flap setting
+  // plus the roll command, and the surface's own travel already bounds each
+  // term through `SURFACE_TRAVEL`.
+  if (rig.flaperons[0]) rig.flaperons[0].rotation.z = pose.flap + pose.starboardAileron;
+  if (rig.flaperons[1]) rig.flaperons[1].rotation.z = pose.flap + pose.portAileron;
   for (const elevator of rig.elevators) elevator.rotation.z = pose.elevator;
   rig.rudder.rotation.y = pose.rudder;
   rig.noseSteer.rotation.y = pose.noseSteering;

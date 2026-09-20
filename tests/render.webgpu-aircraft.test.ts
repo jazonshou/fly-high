@@ -235,8 +235,11 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     const gear = transform(fixture.scene, "retractable-landing-gear");
     expect(gear.isEnabled()).toBe(false);
-    expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
-    expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
+    // The F-16 rolls on FLAPERONS: one surface a side that is also its flap,
+    // as the aeroplane's is. With the flaps up their deflection is the roll
+    // command alone, so the signs here are the ones the ailerons carried.
+    expect(transform(fixture.scene, "starboard-jet-flaperon").rotation.z).toBeLessThan(0);
+    expect(transform(fixture.scene, "port-jet-flaperon").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeGreaterThan(0);
     // Flipped with the rudder-direction fix: right rudder now swings the
     // trailing edge to STARBOARD, which is what yaws the nose right. This pin

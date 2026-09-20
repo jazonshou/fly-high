@@ -726,6 +726,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     cockpitParts: [fuselage, cabinRoof, windscreenFrame],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
+    /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */
+    flaperons: [],
     elevators: [elevator],
     rudder,
     noseSteer,

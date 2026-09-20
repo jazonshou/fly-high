@@ -1683,6 +1683,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // Starboard first, because the side loop runs +1 first and
     // `applyCommonPose` drives `ailerons[0]` with the starboard deflection.
     ailerons: [ailerons[0]!, ailerons[1]!],
+    /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */
+    flaperons: [],
     elevators,
     rudder,
     noseSteer,
