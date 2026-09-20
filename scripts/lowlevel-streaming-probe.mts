@@ -40,6 +40,13 @@ const seconds = Number(secondsRaw ?? 60);
 const spawnAglMetres = Number(spawnRaw ?? 500);
 const holdFt = Number(holdRaw ?? 1_000);
 const throttlePct = Number(throttleRaw ?? 100);
+// A missing argument becomes Number("") === 0, and every guard below is
+// relative to what was ASKED for, so a zero ask made them all vacuous: an arm
+// invoked without its throttle flew at idle, 118 m/s over mountains, and
+// reported itself as a clean dry arm.
+if (!Number.isFinite(throttlePct) || throttlePct <= 0 || throttlePct > 100) {
+  throw new Error(`throttle must be a percentage in (0, 100]; got "${throttleRaw ?? ""}"`);
+}
 const WIDTH = 1600;
 const HEIGHT = 900;
 mkdirSync(outDir, { recursive: true });
@@ -65,6 +72,25 @@ const browser = await chromium.launch({
     `--window-size=${WIDTH},${HEIGHT + 120}`,
   ],
 });
+/*
+ * A throw must still close the browser.
+ *
+ * This module uses top-level await, so any error below surfaces as an
+ * unhandled rejection and the process dies with the browser still running.
+ * Every guard added to this script -- and they exist to fail loudly -- was
+ * therefore also a guaranteed orphaned Chrome, and after an afternoon of runs
+ * there were eighteen of them left on a shared machine with nothing to say
+ * which belonged to whom.
+ */
+for (const fatal of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(fatal, (reason: unknown) => {
+    void browser.close().catch(() => {}).then(() => {
+      console.error(reason instanceof Error ? reason.stack ?? reason.message : String(reason));
+      process.exit(1);
+    });
+  });
+}
+
 const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
 await page.addInitScript(({ startAgl }: { startAgl: number }) => {
   try {

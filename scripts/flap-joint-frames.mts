@@ -36,7 +36,7 @@ const FLEET: Record<string, { wing: string[]; flaps: string[]; hinge: string; fu
     fullFlapDegrees: 30,
   },
   jet: {
-    wing: ["swept-main-wing", "swept-outer-wing"],
+    wing: ["swept-main-wing", "swept-outer-wing", "jet-outer-trailing-edge"],
     flaps: ["jet-flaperon-surface"],
     hinge: "starboard-jet-flaperon",
     fullFlapDegrees: 20,
@@ -76,6 +76,25 @@ const browser = await chromium.launch({
 // back 800 px wide. `scripts/frame-crop.mts` was tried first and its PNG
 // decoder returned scanline garbage on Playwright's output, so the crop is
 // taken natively by the browser and never round-trips through a decoder.
+/*
+ * A throw must still close the browser.
+ *
+ * This module uses top-level await, so any error below surfaces as an
+ * unhandled rejection and the process dies with the browser still running.
+ * Every guard added to this script -- and they exist to fail loudly -- was
+ * therefore also a guaranteed orphaned Chrome, and after an afternoon of runs
+ * there were eighteen of them left on a shared machine with nothing to say
+ * which belonged to whom.
+ */
+for (const fatal of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(fatal, (reason: unknown) => {
+    void browser.close().catch(() => {}).then(() => {
+      console.error(reason instanceof Error ? reason.stack ?? reason.message : String(reason));
+      process.exit(1);
+    });
+  });
+}
+
 const page = await browser.newPage({
   viewport: { width: WIDTH, height: HEIGHT },
   deviceScaleFactor: 2,
