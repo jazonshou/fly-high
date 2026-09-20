@@ -91,45 +91,47 @@ export function createTrainer(scene: Scene): AircraftVisual {
     },
   });
   /*
-   * THE CABIN GLAZING KEEPS ITS DEPTH PRE-PASS, deliberately, and this is the
-   * one airframe where the F-16's canopy fix does NOT transfer.
+   * THE CABIN GLAZING IS HIDDEN FROM THE COCKPIT CAMERA, and that is what lets
+   * it lose its depth pre-pass and finally look like glass from outside.
    *
-   * Removing it does fix the exterior: at cinematic distance the cabin goes
-   * from a bare shell with the interior showing through to properly glazed,
-   * and that pair was captured. But it destroys the view from the cockpit —
-   * the forward view drops from mountains and horizon in full daylight to a
+   * `build.material` turns `needDepthPrePass` on for every alpha-blended
+   * airframe material. On this aeroplane that was load-bearing in BOTH
+   * directions, which is why it took three attempts.
+   *
+   * Turn it off and the exterior is fixed: at cinematic distance the cabin
+   * goes from a bare shell with the interior showing through to properly
+   * glazed. Turn it off and the view from the cockpit is destroyed: forward
+   * visibility drops from mountains and horizon in full daylight to a
    * near-black blue wash. A 150's cabin is a box of flat panes with the pilot
    * INSIDE it, so without the pre-pass its own surfaces sort against each
    * other from within and the far side draws over the world. The F-16 escapes
-   * that because its bubble is a single convex shell around one seat.
+   * this because its bubble is a single convex shell around one seat.
    *
-   * Two things were tried and neither worked: dropping the cockpit alpha to
-   * 0.08, which did nothing because the fault is sorting rather than opacity;
-   * and toggling `needDepthPrePass` in `setCockpitView`, which Babylon does
-   * not honour at runtime — the pipeline decision is already baked.
+   * Two earlier attempts failed and are worth recording so they are not
+   * retried: dropping the cockpit alpha to 0.08, which changed nothing because
+   * the fault is SORTING rather than opacity; and toggling `needDepthPrePass`
+   * inside `setCockpitView`, which Babylon does not honour at runtime because
+   * the pipeline decision is already baked.
    *
-   * So the trade is a cosmetic loss outside against a functional loss inside,
-   * and the cockpit wins. The exterior glazing loss is recorded in the
-   * findings entry as a known defect with the fix that would work — excluding
-   * the glass from the cockpit camera's layer — rather than fixed badly here.
+   * The fix is to stop asking one material to serve both views. The canopy
+   * joins `cockpitParts`, so the cockpit camera's layer mask excludes it: from
+   * the pilot's seat there is no cabin glass in the scene at all, and nothing
+   * left to sort badly. From every other camera it is ordinary glazing with no
+   * pre-pass.
+   *
+   * THE COST, stated rather than buried: a pilot in the cockpit view sees no
+   * glass. No tint, no reflection, no windscreen. What he does see is the
+   * STRUCTURE -- the fuselage shell, the cabin roof and the windscreen frame
+   * are all in `cockpitParts` too and are excluded with it, so the framing of
+   * the view comes from the same place it always did. The trade was put to the
+   * PM explicitly and authorised: a cosmetic loss inside against a real defect
+   * outside, where the aeroplane is seen far more often.
+   *
+   * `render.webgpu-aircraft` pins both halves -- visible to an exterior
+   * camera, excluded from the cockpit one -- so neither can be lost quietly.
    */
-  /*
-   * THE PRE-PASS FOLLOWS THE VIEW, and this is not the same fix as the F-16's.
-   *
-   * Turning it off unconditionally made the cabin visible from outside and
-   * destroyed the view from inside: the forward view went from mountains and
-   * horizon in full daylight to a near-black blue wash. Lowering the alpha did
-   * not help, because the fault is not opacity — without the pre-pass the
-   * wraparound cabin's own surfaces sort against each other from within, and
-   * the far side of the canopy draws over the world.
-   *
-   * The F-16 escapes this with an alpha switch because its bubble is a single
-   * convex shell around one seat. A 150's cabin is a box of flat panes with
-   * the pilot inside it, so it needs the pre-pass while he is in there.
-   *
-   * Caught only because the cockpit frame was captured and opened. The
-   * exterior fix looked complete and would have shipped a blind aeroplane.
-   */
+  glass.needDepthPrePass = false;
+
   const tire = build.material("trainer-tire", 0x07090a, {
     roughness: 1,
     metallic: 0,
@@ -723,7 +725,10 @@ export function createTrainer(scene: Scene): AircraftVisual {
     // clearcoat/transmission canopy stays on ordinary world layers so the
     // windscreen remains visible from the pilot's camera. The cabin roof is
     // opaque and directly overhead, so it joins the shell.
-    cockpitParts: [fuselage, cabinRoof, windscreenFrame],
+    // The canopy is in here with the structure, which is the whole of the
+    // glazing fix: `configureCockpitLayers` puts it on the exterior layer and
+    // the cockpit camera's mask excludes it. See the glass material above.
+    cockpitParts: [fuselage, cabinRoof, windscreenFrame, canopy],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */

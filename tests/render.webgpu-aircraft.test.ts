@@ -159,8 +159,15 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
 
     const exteriorMaskBeforeCockpit = fixture.camera.layerMask;
+    // THE CABIN GLAZING IS COCKPIT-EXCLUDED, which is what lets it drop its
+    // depth pre-pass and read as glass from outside. Both halves are pinned
+    // because each alone is a defect: visible to an exterior camera, or the
+    // cabin is a bare shell with the interior showing through; hidden from the
+    // cockpit camera, or the pilot's forward view is the near-black blue wash
+    // the pre-pass was there to prevent. The trade -- no glass from the seat,
+    // correct glazing everywhere else -- was put to the PM and authorised.
     const canopy = mesh(fixture.scene, "trainer-canopy");
-    expect(aircraft.cockpitParts).not.toContain(canopy);
+    expect(aircraft.cockpitParts).toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
@@ -168,7 +175,9 @@ describe("Babylon WebGPU aircraft visual", () => {
       aircraft.cockpitParts.every((part) => part.layerMask === AIRCRAFT_EXTERIOR_LAYER_MASK),
     ).toBe(true);
     aircraft.setCockpitView(true);
-    expectVisibleToCamera(canopy, fixture.camera);
+    // Still drawn and still a shadow caster — excluded from THIS camera only.
+    expect(canopy.isVisible).toBe(true);
+    expect(canopy.layerMask & fixture.camera.layerMask).toBe(0);
     expect(
       aircraft.cockpitParts.every(
         (part) => part.isVisible && (part.layerMask & fixture.camera.layerMask) === 0,
