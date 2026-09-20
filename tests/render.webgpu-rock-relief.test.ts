@@ -13,10 +13,13 @@ import {
   ROCK_BOUNDARY_SLOPE_LIMIT,
   ROCK_CRAG_COARSE_OCTAVES,
   ROCK_CRAG_DEPTH_RATIOS,
+  ROCK_CRAG_FINE_SECOND_PLANE_HIGH,
+  ROCK_CRAG_FINE_SECOND_PLANE_LOW,
   ROCK_CRAG_OCTAVE_SIGNS,
   ROCK_CRAG_VERTICAL_STRETCH,
   ROCK_CRAG_WAVELENGTHS_METERS,
   ROCK_RELIEF_GRAVEL_SHARE,
+  ROCK_RELIEF_STRENGTH,
   TERRAIN_ROCK_RELIEF_WGSL,
   rockBoundaryPushedShare,
   rockCragBillow,
@@ -171,6 +174,37 @@ describe("M-2 the material axis and the WGSL it emits", () => {
     // On the fallback's slope driver, under half its 0.30-0.66 window, so level
     // ground can never be pushed into rock nor a cliff out of it.
     expect(ROCK_BOUNDARY_SLOPE_LIMIT).toBeLessThan(0.18);
+  });
+
+  it("pays for the fine octaves only where something reads them", () => {
+    // cliff-60m, a frame full of rock at 60 m, cost 18.7 % against the tip
+    // (2026-09-20). Most of it was fields nothing read: four boundary octaves
+    // inside faces and on pure ground, and the whole crag field on every steep
+    // meadow of a trusted page, for a fallback whose weight there is zero.
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const material = new PBRMaterial("rock-cost-test", scene);
+    const plugin = new TerrainSurfacePlugin(material);
+    const source = Object.values(
+      plugin.getCustomCode("fragment", ShaderLanguage.WGSL) ?? {}).join("\n");
+    material.dispose(true, true);
+    scene.dispose();
+    engine.dispose();
+    // One rollback dial, shipped at one; at zero the candidate test folds to
+    // false and nothing in RockRelief is evaluated.
+    expect(ROCK_RELIEF_STRENGTH).toBe(1);
+    expect(source).toContain("let terrainRockCandidate = true\n  && uniforms.terrainSurfaceTuning.y > 0.5");
+    expect(source).toContain("if (terrainRockPushOpen || terrainClassComplement > 0.02) {");
+    expect(source).toMatch(/terrainSlope > 0\.2 && terrainClassComplement > 0\.02\)\);/u);
+    // The class complement has to exist before the block that reads it.
+    expect(source.indexOf("let terrainClassComplement = 1.0 - terrainClassStrength;"))
+      .toBeLessThan(source.indexOf("var terrainRockCoarse: TerrainRockCoarse;"));
+    // The fine octaves' second plane is a RAMP of its own weight, whole on the
+    // exact diagonal, which is the one place a two-plane scheme needs it.
+    expect(ROCK_CRAG_FINE_SECOND_PLANE_LOW).toBeLessThan(ROCK_CRAG_FINE_SECOND_PLANE_HIGH);
+    expect(ROCK_CRAG_FINE_SECOND_PLANE_HIGH).toBeLessThan(0.5);
+    expect(TERRAIN_ROCK_RELIEF_WGSL).toContain("let minorFine = minorWeight * smoothstep(");
+    expect(TERRAIN_ROCK_RELIEF_WGSL).toContain("if (fineWeights.x > 0.001) {");
   });
 
   it("draws nothing that is a function of altitude alone", () => {

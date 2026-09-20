@@ -68,9 +68,11 @@ import {
   ROCK_COULOIR_BELOW_SNOWLINE_METERS,
   ROCK_RANGE_ROUGHNESS,
   ROCK_BOUNDARY_LOGIT_GAIN,
+  ROCK_BOUNDARY_PURE_LOW,
   ROCK_BOUNDARY_SLOPE_GAIN,
   ROCK_BOUNDARY_SLOPE_LIMIT,
   ROCK_RELIEF_SLOPE_LOW,
+  ROCK_RELIEF_STRENGTH,
   SNOW_DRIFT_OCCLUSION,
   SNOW_DRIFT_TONE,
   TERRAIN_ROCK_RELIEF_WGSL,
@@ -2253,66 +2255,6 @@ if (terrainUsePageSplat) {
 let terrainUsePageSplat = false;
 #endif
 
-// ---------------------------------------------------------------------------
-// M-2 — the mineral boundary. The classifier draws rock against turf along a
-// slope iso-line, and on smooth terrain an iso-line is a smooth curve: from the
-// air every rock patch was a decal with a clean outline. The boundary reads the
-// SAME coarse crag field the faces are shaded with, as a push on the DRIVERS
-// (the pair's fraction where a page is trusted, the slope where it is not), so
-// rock runs down the big creases and turf climbs the proud edges: tongues and
-// embayments whose shapes agree with the relief drawn inside them. World-
-// anchored and footprint-faded with the field itself, so it cannot crawl.
-//
-// Evaluated once, here, and handed to the relief block below.
-// ---------------------------------------------------------------------------
-var terrainRockCoarse: TerrainRockCoarse;
-let terrainRockFootprint = max(
-  min(length(terrainWorldDdx), length(terrainWorldDdy)),
-  max(length(terrainWorldDdx), length(terrainWorldDdy)) * 0.25,
-);
-let terrainRockPair = terrainRockShareOf(i32(terrainLowerId))
-  + terrainRockShareOf(i32(terrainUpperId));
-let terrainRockCandidate = uniforms.terrainSurfaceTuning.y > 0.5
-  && (terrainRockPair > 0.0 || terrainSlope > ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW)});
-var terrainRockBoundary = 0.0;
-if (terrainRockCandidate) {
-  terrainRockCoarse = terrainRockCoarseAt(
-    terrainAbsolutePosition, terrainGeometricNormal, terrainRockFootprint);
-  terrainRockBoundary = terrainRockBoundarySignal(
-    terrainRockCoarse, terrainAbsolutePosition.xz, terrainRockFootprint);
-  // Which end of the pair is the mineral one: +1 upper, -1 lower, 0 neither.
-  let terrainRockSide = terrainRockShareOf(i32(terrainUpperId))
-    - terrainRockShareOf(i32(terrainLowerId));
-  if (abs(terrainRockSide) > 0.25) {
-    // Pushed in the LOGIT of the mineral share, where a softmax page is a wide
-    // linear ramp; pure ground is a fixed point and stays pure.
-    let terrainRockMineral = select(
-      1.0 - terrainAxisFraction, terrainAxisFraction, terrainRockSide > 0.0);
-    let terrainRockPushed = terrainRockBoundaryPushed(
-      terrainRockMineral,
-      terrainRockBoundary * abs(terrainRockSide) * ${terrainWgslFloat(ROCK_BOUNDARY_LOGIT_GAIN)});
-    terrainAxisFraction = select(
-      1.0 - terrainRockPushed, terrainRockPushed, terrainRockSide > 0.0);
-  }
-  // The gather returns (primary, secondary, secondary's share <= 0.5), and on
-  // a coarse page the seam feather below fades the mixture toward the PRIMARY
-  // alone. So a push that carries the secondary past a half has to make it the
-  // primary, or it is thrown away exactly where a clean outline is most
-  // visible — from a few kilometres, through 32-128 m texels. Shot without
-  // this: every patch kept its decal outline, however hard the push.
-  if (terrainAxisFraction > 0.5) {
-    let terrainSwappedId = terrainLowerId;
-    terrainLowerId = terrainUpperId;
-    terrainUpperId = terrainSwappedId;
-    terrainAxisFraction = 1.0 - terrainAxisFraction;
-    terrainAxis = terrainLowerId;
-  }
-}
-// The same push on the fallback's slope driver, for ground no page classifies.
-let terrainRockSlopeDriver = terrainSlope + clamp(
-  terrainRockBoundary * ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_GAIN)},
-  ${terrainWgslFloat(-ROCK_BOUNDARY_SLOPE_LIMIT)}, ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_LIMIT)});
-
 // The third candidate is FRAGMENT-DERIVED ONLY.
 //
 // The provisional splat's lanes y and z carry a secondary cover and its weight,
@@ -2349,6 +2291,82 @@ let terrainClassStrength = smoothstep(
 let terrainClassStrength = 0.0;
 #endif
 let terrainClassComplement = 1.0 - terrainClassStrength;
+// ---------------------------------------------------------------------------
+// M-2 — the mineral boundary. The classifier draws rock against turf along a
+// slope iso-line, and on smooth terrain an iso-line is a smooth curve: from the
+// air every rock patch was a decal with a clean outline. The boundary reads the
+// SAME coarse crag field the faces are shaded with, as a push on the DRIVERS
+// (the pair's fraction where a page is trusted, the slope where it is not), so
+// rock runs down the big creases and turf climbs the proud edges: tongues and
+// embayments whose shapes agree with the relief drawn inside them. World-
+// anchored and footprint-faded with the field itself, so it cannot crawl.
+//
+// Evaluated once, here, and handed to the relief block below.
+// ---------------------------------------------------------------------------
+var terrainRockCoarse: TerrainRockCoarse;
+let terrainRockFootprint = max(
+  min(length(terrainWorldDdx), length(terrainWorldDdy)),
+  max(length(terrainWorldDdx), length(terrainWorldDdy)) * 0.25,
+);
+let terrainRockPair = terrainRockShareOf(i32(terrainLowerId))
+  + terrainRockShareOf(i32(terrainUpperId));
+// Steep ground with no rock in its pair only matters to the FALLBACK's slope
+// rock, which carries the class complement: on a trusted page it is nothing,
+// and the crag field was being evaluated on every steep meadow for it.
+let terrainRockCandidate = ${ROCK_RELIEF_STRENGTH > 0 ? "true" : "false"}
+  && uniforms.terrainSurfaceTuning.y > 0.5
+  && (terrainRockPair > 0.0
+    || (terrainSlope > ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW)} && terrainClassComplement > 0.02));
+var terrainRockBoundary = 0.0;
+if (terrainRockCandidate) {
+  terrainRockCoarse = terrainRockCoarseAt(
+    terrainAbsolutePosition, terrainGeometricNormal, terrainRockFootprint);
+  // The COARSE boundary signal is free: the relief needs those octaves anyway.
+  // The four fine ones are only evaluated where something reads them: a pair
+  // whose mineral share is open to the push, or a fragment the fallback can
+  // show through. Inside a face, and on a trusted page's pure ground, nothing
+  // does, and that was most of what a frame full of rock paid for.
+  terrainRockBoundary = terrainRockCoarse.boundary;
+  // Which end of the pair is the mineral one: +1 upper, -1 lower, 0 neither.
+  let terrainRockSide = terrainRockShareOf(i32(terrainUpperId))
+    - terrainRockShareOf(i32(terrainLowerId));
+  let terrainRockMineral = select(
+    1.0 - terrainAxisFraction, terrainAxisFraction, terrainRockSide > 0.0);
+  let terrainRockPushOpen = abs(terrainRockSide) > 0.25
+    && min(terrainRockMineral, 1.0 - terrainRockMineral) > ${terrainWgslFloat(ROCK_BOUNDARY_PURE_LOW)};
+  if (terrainRockPushOpen || terrainClassComplement > 0.02) {
+    terrainRockBoundary = terrainRockBoundary + terrainRockBoundaryFine(
+      terrainAbsolutePosition.xz, terrainRockFootprint);
+  }
+  if (terrainRockPushOpen) {
+    // Pushed in the LOGIT of the mineral share, where a softmax page is a wide
+    // linear ramp; pure ground is a fixed point and stays pure.
+    let terrainRockPushed = terrainRockBoundaryPushed(
+      terrainRockMineral,
+      terrainRockBoundary * abs(terrainRockSide)
+        * ${terrainWgslFloat(ROCK_BOUNDARY_LOGIT_GAIN * ROCK_RELIEF_STRENGTH)});
+    terrainAxisFraction = select(
+      1.0 - terrainRockPushed, terrainRockPushed, terrainRockSide > 0.0);
+  }
+  // The gather returns (primary, secondary, secondary's share <= 0.5), and on
+  // a coarse page the seam feather below fades the mixture toward the PRIMARY
+  // alone. So a push that carries the secondary past a half has to make it the
+  // primary, or it is thrown away exactly where a clean outline is most
+  // visible — from a few kilometres, through 32-128 m texels. Shot without
+  // this: every patch kept its decal outline, however hard the push.
+  if (terrainAxisFraction > 0.5) {
+    let terrainSwappedId = terrainLowerId;
+    terrainLowerId = terrainUpperId;
+    terrainUpperId = terrainSwappedId;
+    terrainAxisFraction = 1.0 - terrainAxisFraction;
+    terrainAxis = terrainLowerId;
+  }
+}
+// The same push on the fallback's slope driver, for ground no page classifies.
+let terrainRockSlopeDriver = terrainSlope + clamp(
+  terrainRockBoundary * ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_GAIN)},
+  ${terrainWgslFloat(-ROCK_BOUNDARY_SLOPE_LIMIT)}, ${terrainWgslFloat(ROCK_BOUNDARY_SLOPE_LIMIT)});
+
 // Wave R: the fragment-derived slope rock also carries the class
 // complement — unscaled, a slope-0.66 face was 100% this override even on a
 // trusted level-0 page, erasing the classifier's Snow/Shrub/Gravel from
@@ -2763,7 +2781,7 @@ let terrainRockReliefWeight = clamp(terrainRockCover, 0.0, 1.0)
   * smoothstep(
     ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW * 0.5)}, ${terrainWgslFloat(ROCK_RELIEF_SLOPE_LOW * 1.25)},
     terrainSlope)
-  * terrainGroundPatchworkOn;
+  * terrainGroundPatchworkOn * ${terrainWgslFloat(ROCK_RELIEF_STRENGTH)};
 if (terrainRockReliefWeight > 0.02 && terrainRockCandidate) {
   let terrainRock = terrainRockReliefAt(
     terrainAbsolutePosition, terrainGeometricNormal, terrainFootprint3D, terrainRockFracture,

@@ -100,6 +100,16 @@ export const ROCK_CRAG_CREASE_MEANS: readonly number[] =
 /** Share each octave contributes to the tone and occlusion of a crease. */
 export const ROCK_CRAG_CREASE_SHARES: readonly number[] = [0.28, 0.24, 0.22, 0.16, 0.1];
 /**
+ * The one dial a cost or look review needs. It scales the relief's weight and
+ * the boundary push together; at ZERO nothing in this file is evaluated at all
+ * (the fragment's candidate test folds to false), which is the rollback and is
+ * also how the relief's like-for-like cost is measured: same tree, same site,
+ * dial at 0 against dial at 1. Measured that way on cliff-60m, a frame filled
+ * with rock from 60 m (2026-09-20, interleaved off/on/off/on): 108.7 -> 98.6
+ * fps, 9.2 %, with cruise-horizon flat.
+ */
+export const ROCK_RELIEF_STRENGTH = 1;
+/**
  * The rock/turf boundary.
  *
  * A page's pair share is a softmax of suitabilities, so its LOGIT is linear in
@@ -163,6 +173,15 @@ export const ROCK_RELIEF_SLOPE_LOW = 0.2;
 export const ROCK_RELIEF_GRAVEL_SHARE = 0.5;
 /** Below this blend weight the second plane is not evaluated at all. */
 export const ROCK_CRAG_SECOND_PLANE_MINIMUM = 0.12;
+/**
+ * The FINE octaves' second plane ramps in over this band of its own weight and
+ * the major plane takes what it does not, so nothing pops as a face turns and
+ * the amplitude is whole at every azimuth; under the band it is a branch skip.
+ * On the exact diagonal (0.5 / 0.5) both planes are whole, which is the one
+ * place a two-plane scheme needs them.
+ */
+export const ROCK_CRAG_FINE_SECOND_PLANE_LOW = 0.18;
+export const ROCK_CRAG_FINE_SECOND_PLANE_HIGH = 0.34;
 
 /** Tone: how much darker a full crease is than the face, as a fraction of albedo. */
 export const ROCK_CRAG_CREASE_TONE = 0.42;
@@ -408,11 +427,11 @@ fn terrainRockCoarseAt(
   return coarse;
 }
 
-// What the rock/turf boundary reads: the crag field's signed block field at the
-// scales a tongue is the size of, plus one finer isotropic octave so an outline
-// is ragged as well as lobed. Positive carries rock outward. Zero mean.
-fn terrainRockBoundarySignal(coarse: TerrainRockCoarse, worldXz: vec2f, footprintMeters: f32) -> f32 {
-  var signal = coarse.boundary;
+// The boundary's fine octaves: isotropic, so an outline is ragged as well as
+// lobed. Added to the coarse set's own signed block field (coarse.boundary),
+// and only evaluated where something reads the sum. Zero mean.
+fn terrainRockBoundaryFine(worldXz: vec2f, footprintMeters: f32) -> f32 {
+  var signal = 0.0;
 ${ROCK_BOUNDARY_FINE_WAVELENGTHS_METERS.map(boundaryFineOctaveWgsl).join("\n")}
   return signal;
 }
@@ -493,19 +512,24 @@ fn terrainRockReliefAt(
   var edge = coarse.edge;
   var block = coarse.block;
   let couloir = coarse.couloir;
-  if (weights.x > ${wgslFloat(ROCK_CRAG_SECOND_PLANE_MINIMUM)}) {
+  let minorWeight = min(weights.x, weights.y);
+  let minorFine = minorWeight * smoothstep(
+    ${wgslFloat(ROCK_CRAG_FINE_SECOND_PLANE_LOW)}, ${wgslFloat(ROCK_CRAG_FINE_SECOND_PLANE_HIGH)}, minorWeight);
+  let fineWeights = select(
+    vec2f(1.0 - minorFine, minorFine), vec2f(minorFine, 1.0 - minorFine), weights.x < weights.y);
+  if (fineWeights.x > 0.001) {
     let crag = terrainRockCragPlaneFine(position.z, position.y, footprintMeters, 0x71u);
-    slopeWorld += vec3f(0.0, crag.slope.y, crag.slope.x) * weights.x;
-    crease += crag.crease * weights.x;
-    edge += crag.edge * weights.x;
-    block += crag.block * weights.x;
+    slopeWorld += vec3f(0.0, crag.slope.y, crag.slope.x) * fineWeights.x;
+    crease += crag.crease * fineWeights.x;
+    edge += crag.edge * fineWeights.x;
+    block += crag.block * fineWeights.x;
   }
-  if (weights.y > ${wgslFloat(ROCK_CRAG_SECOND_PLANE_MINIMUM)}) {
+  if (fineWeights.y > 0.001) {
     let crag = terrainRockCragPlaneFine(position.x, position.y, footprintMeters, 0x79u);
-    slopeWorld += vec3f(crag.slope.x, crag.slope.y, 0.0) * weights.y;
-    crease += crag.crease * weights.y;
-    edge += crag.edge * weights.y;
-    block += crag.block * weights.y;
+    slopeWorld += vec3f(crag.slope.x, crag.slope.y, 0.0) * fineWeights.y;
+    crease += crag.crease * fineWeights.y;
+    edge += crag.edge * fineWeights.y;
+    block += crag.block * fineWeights.y;
   }
   // The face is displaced along its normal by the (zero-mean) crag height, so
   // its normal leans against the height's gradient WITHIN the face.
