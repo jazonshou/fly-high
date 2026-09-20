@@ -1490,6 +1490,26 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.graph.invalidateHistory("camera mode changed");
   }
 
+  /**
+   * Snap the exterior rig onto its settled pose on the next frame.
+   *
+   * `setCameraMode` cannot do this — it early-returns when the mode has not
+   * changed — and a spawn needs it even though the mode is the same. Two
+   * things go wrong across a teleport without it. The frame graph's temporal
+   * history is about somewhere else, and more sharply, the chase trail is
+   * derived from how far the aircraft moved since the last frame: across a
+   * jump to the runway that difference is kilometres, which would read as a
+   * ground speed in the thousands and throw the camera far behind the
+   * aeroplane on its first frame. Forgetting the previous position is what
+   * makes the trail zero until the aircraft has actually moved again.
+   */
+  cutCamera(): void {
+    this.cameraCut = true;
+    this.previousAircraftPositionValid = false;
+    this.observedGroundSpeed = 0;
+    this.graph.invalidateHistory("camera cut");
+  }
+
   setViewerMode(enabled: boolean): void {
     if (enabled === this.viewerMode) return;
     this.viewerMode = enabled;

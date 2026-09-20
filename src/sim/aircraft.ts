@@ -20,6 +20,47 @@ export interface LandingGearDefinition {
  * a `Record<AircraftKind, ...>` will not compile until a new entry is answered
  * everywhere it matters.
  */
+/** Sea-level ISA density, the reference every published stall speed uses. */
+const SEA_LEVEL_DENSITY = 1.225;
+
+/**
+ * Level-flight stall speed in m/s at sea level, for the given flap setting.
+ *
+ * Exists because there is no `stallSpeed` FIELD and there must never appear to
+ * be one. Reading `aircraft.stallSpeed` returns undefined, every comparison
+ * against it is quietly false, and code that meant to rotate at Vr simply never
+ * rotates — which does not look like a typo, it looks like the aeroplane cannot
+ * climb. A take-off test written that way reported that a Cessna 150 needs
+ * 1,438 m of runway. Compute it here, once, where the coefficients live.
+ */
+export function stallSpeed(aircraft: AircraftDefinition, flaps = 0): number {
+  const clMax = aircraft.clZero
+    + aircraft.clAlpha * aircraft.positiveStallAngle
+    + aircraft.flapLift * clamp(flaps, 0, 1);
+  return Math.sqrt(
+    (2 * aircraft.mass * 9.80665) / (SEA_LEVEL_DENSITY * aircraft.wingArea * clMax),
+  );
+}
+
+/**
+ * How far the airframe reaches behind the CG, in metres, taken from the
+ * contact points and wheels rather than from a written-down length: those are
+ * already the tailcone, fin tip and main gear, so this cannot drift away from
+ * the shape the aeroplane actually has. It measures 7.34 m nose-to-tail on the
+ * Cessna 150 and 33.5 m on the Global 8000, against real figures of 7.34 m and
+ * 33.88 m.
+ *
+ * Used to line an aeroplane up on the threshold. A single constant would be a
+ * constant measured against one aeroplane: enough room behind a 7 m trainer
+ * hangs a 76 m airliner's tail over the grass.
+ */
+export function aftExtent(aircraft: AircraftDefinition): number {
+  let aft = 0;
+  for (const point of aircraft.airframeContactPoints) aft = Math.min(aft, point.x);
+  for (const leg of aircraft.gear) aft = Math.min(aft, leg.position.x);
+  return -aft;
+}
+
 export const AIRCRAFT_KINDS = ["trainer", "jet", "bizjet"] as const;
 export type AircraftKind = (typeof AIRCRAFT_KINDS)[number];
 export type PropulsionKind = "propeller" | "jet";

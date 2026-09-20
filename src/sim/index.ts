@@ -10,6 +10,8 @@ export {
   type AircraftDefinition,
   type LandingGearDefinition,
   type PropulsionKind,
+  aftExtent,
+  stallSpeed,
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
 export { DirectPitchRetention } from "./pitchRetention";

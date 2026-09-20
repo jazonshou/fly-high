@@ -56,7 +56,7 @@ describe("aircraft picker", () => {
     expect(inputs.find((input) => input.includes('value="jet"'))).toContain('checked=""');
   });
 
-  it("stays integrated with the minimal menu's start, seed, and settings controls", () => {
+  it("stays integrated with the minimal menu's start, runway, seed and settings controls", () => {
     const source = readFileSync(
       new URL("../src/game/FlightGame.tsx", import.meta.url),
       "utf8",
@@ -67,8 +67,21 @@ describe("aircraft picker", () => {
     expect(menu).toContain("<AircraftPicker");
     expect(menu).toContain('className="primary-action start-screen__start"');
     expect(menu).toContain('className="seed-action"');
-    expect(menu).toContain('className="settings-action"');
+    // Icon-only now, with the word replaced by an accessible name and a
+    // tooltip, so the class carries the modifier and the text does not exist.
+    expect(menu).toContain('className="settings-action settings-action--icon"');
+    expect(menu).toContain('aria-label="Settings"');
+    expect(menu).toContain('title="Settings"');
     expect(menu).toContain("<span>Start</span>");
+    // The second door, between Start and the seed as Jason placed it.
+    expect(menu).toContain('className="primary-action start-screen__runway"');
+    expect(menu).toContain("<span>Runway start</span>");
+    expect(menu?.indexOf("start-screen__runway")).toBeGreaterThan(
+      menu?.indexOf("start-screen__start") ?? 0,
+    );
+    expect(menu?.indexOf("start-screen__runway")).toBeLessThan(
+      menu?.indexOf('className="seed-action"') ?? 0,
+    );
     expect(menu).toContain("<small>Seed</small>");
     expect(menu).toContain("Generate a new world. Current seed");
     expect(menu).toContain('aria-controls="settings-dialog"');

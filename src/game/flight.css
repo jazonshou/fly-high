@@ -52,12 +52,39 @@
 
 .start-screen__minimal {
   display: grid;
-  grid-template-columns: minmax(210px, 1.15fr) minmax(155px, 0.86fr) minmax(108px, 0.58fr);
+  /*
+   * Four across: Start, Runway start, seed, settings. Start and seed give up
+   * a little width to make room for the second start, and settings drops to a
+   * fixed square because it is now the glyph alone.
+   */
+  grid-template-columns:
+    minmax(132px, 0.9fr)
+    minmax(152px, 1fr)
+    minmax(118px, 0.68fr)
+    56px;
   align-items: stretch;
-  width: min(100%, 610px);
-  gap: 12px;
+  width: min(100%, 700px);
+  gap: 10px;
   pointer-events: auto;
   filter: drop-shadow(0 16px 38px rgba(0, 7, 10, 0.26));
+}
+
+/* The terrain viewer keeps its own row rather than being squeezed into the
+   fourth column beside a 58px settings square. */
+.start-screen__minimal > .viewer-action {
+  grid-column: 1 / -1;
+}
+
+/*
+ * Below about 660px the four columns cannot hold their minimums. Two columns
+ * then let the items flow naturally — the two starts share a row, seed and
+ * settings the next — without any per-item overrides, which matters because a
+ * second `.settings-action` rule here would shadow the real one.
+ */
+@media (max-width: 660px) {
+  .start-screen__minimal {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 
 .aircraft-picker {
@@ -151,6 +178,28 @@
   min-width: 0;
 }
 
+/*
+ * The second door, and deliberately the quieter one. It is the same control
+ * as Start in every way that matters, but two identically bright primary
+ * buttons side by side make a pilot stop and read; this one keeps the shape
+ * and gives up the accent border.
+ */
+.start-screen__runway {
+  min-width: 0;
+  /* Tighter than Start's 26px so "Runway start" stays on one line. */
+  gap: 12px;
+  border-color: var(--glass-border-strong);
+  background: linear-gradient(145deg, rgba(21, 48, 57, 0.48), rgba(4, 18, 24, 0.26));
+}
+
+.start-screen__runway > span {
+  white-space: nowrap;
+}
+
+.start-screen__runway:hover {
+  border-color: rgba(225, 254, 118, 0.52);
+}
+
 .seed-action {
   appearance: none;
   display: grid;
@@ -200,6 +249,37 @@
 .settings-action span {
   color: var(--accent);
   font-size: 17px;
+}
+
+/*
+ * Icon-only: the glyph fills the button now that the word is gone, and the
+ * accessible name moved to aria-label and title so nothing is lost to anyone
+ * reading with assistive technology or hovering for a tooltip.
+ *
+ * MUST come after `.settings-action span`: both selectors are one class and
+ * one element, so they have equal specificity and only source order decides
+ * which font-size wins. Written above it first, and the glyph stayed 17px.
+ */
+.settings-action--icon {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  align-items: center;
+  /* No padding: the glyph is the content, and the button is a fixed 56px
+     square in the row, so let the grid centre it rather than boxing it in. */
+  padding: 0;
+}
+
+.settings-action--icon span {
+  /*
+   * Jason asked for the symbol to fill the button. The gear's ink is about
+   * 0.72 em, so 46px on a 56px square puts roughly 33px of glyph in it --
+   * around 60% -- without the line box forcing the button taller than the
+   * buttons beside it.
+   */
+  font-size: 46px;
+  line-height: 1;
+  /* U+2699 sits high in its em box; this drops it onto the optical centre. */
+  transform: translateY(1px);
 }
 
 .settings-action:hover {
@@ -293,7 +373,7 @@
 
 .primary-action {
   display: flex;
-  min-width: 230px;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 26px;
