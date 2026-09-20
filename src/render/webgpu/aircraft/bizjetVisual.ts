@@ -638,7 +638,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       { x: -15.4, yRadius: 0.7, zRadius: 0.64, yOffset: 0.48 },
       { x: -12.9, yRadius: 1.02, zRadius: 0.98, yOffset: 0.25 },
     ],
-    40,
+    48,
     body,
     root,
   );
