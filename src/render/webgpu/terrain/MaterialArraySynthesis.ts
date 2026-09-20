@@ -1529,6 +1529,98 @@ function flattenLowFrequency(
   }
 }
 
+/**
+ * An exact notch on the TILING BAND: every Fourier line with |k| <= 4 cycles
+ * per tile, which is the band whose energy IS the visible repeat.
+ *
+ * `flattenLowFrequency` was supposed to own this and cannot: a box high-pass
+ * has its first null at 3 cycles per tile and GAIN at 4, so whatever a recipe
+ * leaves there comes through. Seen from the app at 30 m above dry grassland
+ * (2026-09-19): one dark feature of the DryGrass tile standing in a regular
+ * lattice of identical stamps across half the frame — the de-tile warp bends a
+ * repeat, it does not remove one. Measured at seed "fly-high", edge 512, the
+ * band carried 4.65e-5 of luminance power on Grass and 2.35e-5 on DryGrass.
+ *
+ * Evaluated on a 64² box reduction (16 samples per cycle at k = 4), so it is
+ * ~0.4 M multiply-adds per channel rather than an FFT, and it touches nothing
+ * outside the band: the 5–50 cm content a sward is made of is k >= 5.
+ */
+function suppressTilingBand(
+  field: Float32Array,
+  edge: number,
+  stride: number,
+  channel: number,
+  keepFraction: number,
+): void {
+  const small = Math.min(64, edge);
+  const block = edge / small;
+  const reduced = new Float64Array(small * small);
+  for (let y = 0; y < edge; y += 1) {
+    const row = Math.floor(y / block) * small;
+    for (let x = 0; x < edge; x += 1) {
+      reduced[row + Math.floor(x / block)]! += field[(y * edge + x) * stride + channel]!;
+    }
+  }
+  const inverseBlock = 1 / (block * block);
+  for (let index = 0; index < reduced.length; index += 1) reduced[index]! *= inverseBlock;
+  const low = new Float64Array(small * small);
+  const cosines = new Float64Array(small * small);
+  const sines = new Float64Array(small * small);
+  for (let ky = -TILING_BAND_CYCLES; ky <= TILING_BAND_CYCLES; ky += 1) {
+    for (let kx = 0; kx <= TILING_BAND_CYCLES; kx += 1) {
+      // Half plane only: the (-kx, -ky) line is this one's conjugate.
+      if (kx === 0 && ky <= 0) continue;
+      if (Math.hypot(kx, ky) > TILING_BAND_CYCLES + 1e-9) continue;
+      let cosine = 0;
+      let sine = 0;
+      for (let y = 0; y < small; y += 1) {
+        for (let x = 0; x < small; x += 1) {
+          const index = y * small + x;
+          const phase = (2 * Math.PI * (kx * x + ky * y)) / small;
+          const c = Math.cos(phase);
+          const d = Math.sin(phase);
+          cosines[index] = c;
+          sines[index] = d;
+          cosine += reduced[index]! * c;
+          sine += reduced[index]! * d;
+        }
+      }
+      const scale = 2 / (small * small);
+      for (let index = 0; index < low.length; index += 1) {
+        low[index]! += scale * (cosine * cosines[index]! + sine * sines[index]!);
+      }
+    }
+  }
+  const remove = 1 - keepFraction;
+  for (let y = 0; y < edge; y += 1) {
+    const sy = (y + 0.5) / block - 0.5;
+    const y0 = Math.floor(sy);
+    const fy = sy - y0;
+    const ya = wrapCell(y0, small) * small;
+    const yb = wrapCell(y0 + 1, small) * small;
+    for (let x = 0; x < edge; x += 1) {
+      const sx = (x + 0.5) / block - 0.5;
+      const x0 = Math.floor(sx);
+      const fx = sx - x0;
+      const xa = wrapCell(x0, small);
+      const xb = wrapCell(x0 + 1, small);
+      const top = low[ya + xa]! + (low[ya + xb]! - low[ya + xa]!) * fx;
+      const bottom = low[yb + xa]! + (low[yb + xb]! - low[yb + xa]!) * fx;
+      field[(y * edge + x) * stride + channel]! -= (top + (bottom - top) * fy) * remove;
+    }
+  }
+}
+
+/** The tiling band: lines with |k| at or under this many cycles per tile. */
+export const TILING_BAND_CYCLES = 4;
+/** How much of the band a sward keeps. */
+export const SWARD_TILING_BAND_KEEP = 0.3;
+/** The layers the notch applies to: the two that carpet open country. */
+export const TILING_BAND_NOTCHED_MATERIALS: readonly SurfaceMaterialId[] = Object.freeze([
+  SurfaceMaterial.Grass,
+  SurfaceMaterial.DryGrass,
+]);
+
 /** Radius of the local mean the high-pass measures against, as a fraction of the edge. */
 const LOW_FREQUENCY_RADIUS_FRACTION = 6;
 /**
@@ -1734,6 +1826,13 @@ export function synthesizeSurfaceMaterial(
   }
   flattenLowFrequency(canvas.height, edge, 1, 0, radius, LOW_FREQUENCY_KEEP);
   flattenLowFrequency(canvas.roughness, edge, 1, 0, radius, LOW_FREQUENCY_KEEP);
+  // After the high-pass, because the high-pass is what leaves the band standing.
+  if (TILING_BAND_NOTCHED_MATERIALS.includes(id)) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      suppressTilingBand(canvas.albedo, edge, 3, channel, SWARD_TILING_BAND_KEEP);
+    }
+    suppressTilingBand(canvas.height, edge, 1, 0, SWARD_TILING_BAND_KEEP);
+  }
   normalizeHeightToHalf(canvas.height);
   fitRoughnessToSpec(canvas.roughness, spec);
   fitAlbedoToReference(canvas.albedo, spec);
