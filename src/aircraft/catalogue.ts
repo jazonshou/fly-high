@@ -204,9 +204,73 @@ const JET: AircraftSpec = Object.freeze({
   dutchRollDamper: true,
 });
 
+const BIZJET: AircraftSpec = Object.freeze({
+  kind: "bizjet",
+  name: "Bombardier Global 8000",
+  description: "Business jet",
+  chase: Object.freeze({
+    // Three times the aeroplane needs three times the rig. The framing
+    // distance is set from the airframe's LENGTH rather than copied: the
+    // trainer sits at 1.7x its own length and the sport jet at 1.3x, and a
+    // 33.9 m aeroplane at either of those would be a speck or a wall. 38 m is
+    // about 1.1x, which fills the frame the way the other two do.
+    distance: Object.freeze({ base: 38, knee: 200, slope: 0.07, cap: 8 }),
+    // Proportionally lower than the small aeroplanes' rigs: looking down on a
+    // 34 m aircraft from 0.65x its length would be a plan view.
+    height: 10.5,
+    fieldOfView: Object.freeze({ base: 62, knee: 200, slope: 0.05, cap: 5 }),
+    aimAhead: Object.freeze({ base: 30, knee: 200, slope: 0.1, cap: 12 }),
+  }),
+  // A flight deck a long way forward of the centre of gravity and well above
+  // it, which is most of what makes a large aeroplane feel large to taxi.
+  cockpitEye: Object.freeze({ forward: 12, up: 1.5 }),
+  spawn: Object.freeze({
+    // M 0.62 at low level: clean, comfortable, and well inside the flap and
+    // gear speeds so a pilot who reaches for either is not punished.
+    airborneAirspeed: 210,
+    // 0.58, and set by where the aeroplane ENDS UP rather than by trimming
+    // level. Every airborne spawn in this game starts 2.4 degrees nose-up and
+    // off-trim, which excites a phugoid; the sport jet's first swing is upward
+    // and nobody minds, but a 40-tonne aeroplane's first swing was DOWNWARD
+    // and deep. Measured over 180 s from a 183 m spawn: 0.25 throttle sinks
+    // 702 m and hits the ground, 0.35 sinks 423 m, 0.50 sinks 174 m and is
+    // still marginal. 0.58 bottoms out 100 m below the spawn — clear of the
+    // ground with room — and then climbs away like the J-45 does. Less
+    // throttle makes the dip WORSE, not better, which is the opposite of what
+    // trimming for level flight would suggest and the reason this is a
+    // measured number rather than a derived one.
+    airborneThrottle: 0.58,
+    runwayTrim: 0.02,
+    airborneGear: 0,
+  }),
+  engineReadout: Object.freeze({ label: "N2", unit: "%", maximum: 100, roundTo: 1 }),
+  engineSound: Object.freeze({
+    // A high-bypass fan is a lower, softer, rounder noise than the sport
+    // jet's: lower fundamental, narrower climb, and a low-pass well below the
+    // J-45's so the harmonics stay felt rather than heard.
+    baseHz: 52,
+    spanHz: 120,
+    gainBase: 0.05,
+    gainSpan: 0.09,
+    filterHz: 900,
+    filterQ: 0.8,
+    waveforms: Object.freeze(["triangle", "sine"]) as readonly [OscillatorType, OscillatorType],
+  }),
+  retractableGear: true,
+  speedBrake: true,
+  // Worked through for this airframe rather than inherited: at 210 m/s at
+  // 3,000 m its two-degree-of-freedom dutch roll comes out at omega_n about
+  // 2.95 rad/s with 2*zeta*omega_n about 2.45, so zeta is roughly 0.42 — a
+  // well-damped mode that wants no help, against the J-45's 0.163 which does.
+  // A high aspect ratio and a very large yaw inertia are why. If the mass or
+  // the fin ever change materially, redo this rather than flipping it.
+  dutchRollDamper: false,
+});
+
 export const AIRCRAFT_SPECS: Readonly<Record<AircraftKind, AircraftSpec>> = Object.freeze({
   trainer: TRAINER,
   jet: JET,
+  bizjet: BIZJET,
 });
 
 /** Every airframe, in the order the picker offers them. */

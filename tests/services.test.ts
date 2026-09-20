@@ -50,6 +50,7 @@ describe("input shaping", () => {
     expect(normalizedEngineSpeed("trainer", 1_375)).toBeCloseTo(0.5, 8);
     expect(normalizedEngineSpeed("jet", 100)).toBe(1);
     expect(normalizedEngineSpeed("jet", 80)).toBeCloseTo(0.8, 8);
+    expect(normalizedEngineSpeed("bizjet", 100)).toBe(1);
   });
 
   it("maps A to left bank and D to right bank for taps and held keys", () => {

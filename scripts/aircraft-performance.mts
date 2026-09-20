@@ -140,31 +140,6 @@ function climbAtAttitude(
   return { verticalSpeed: vertical / samples, airspeed: speed / samples };
 }
 
-/**
- * Best rate of climb, found by sweeping the attitude flown. A stalled or
- * decelerating arm is rejected rather than allowed to win with a transient.
- */
-function climbRate(
-  aircraft: AircraftDefinition,
-  altitudeMsl: number,
-  targetAirspeed: number,
-): { verticalSpeed: number; airspeed: number } {
-  // Kept for the callers that want a climb at a nominated speed: find the
-  // attitude whose settled speed is closest to the one asked for.
-  let closest = { verticalSpeed: 0, airspeed: 0 };
-  let bestGap = Infinity;
-  for (let degrees = 0; degrees <= 30; degrees += 2.5) {
-    const result = climbAtAttitude(aircraft, altitudeMsl, degrees);
-    if (!Number.isFinite(result.airspeed)) continue;
-    const gap = Math.abs(result.airspeed - targetAirspeed);
-    if (gap < bestGap) {
-      bestGap = gap;
-      closest = result;
-    }
-  }
-  return closest;
-}
-
 /** Best rate of climb over every attitude the aeroplane will hold. */
 function bestClimb(
   aircraft: AircraftDefinition,
@@ -421,6 +396,6 @@ function report(kind: AircraftKind, aircraft: AircraftDefinition): void {
 const requested = process.argv.slice(2) as AircraftKind[];
 const kinds: AircraftKind[] = requested.length > 0
   ? requested
-  : ["trainer", "jet"];
+  : ["trainer", "jet", "bizjet"];
 for (const kind of kinds) report(kind, aircraftDefinition(kind));
 console.log("");

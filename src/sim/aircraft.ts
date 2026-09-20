@@ -20,7 +20,7 @@ export interface LandingGearDefinition {
  * a `Record<AircraftKind, ...>` will not compile until a new entry is answered
  * everywhere it matters.
  */
-export const AIRCRAFT_KINDS = ["trainer", "jet"] as const;
+export const AIRCRAFT_KINDS = ["trainer", "jet", "bizjet"] as const;
 export type AircraftKind = (typeof AIRCRAFT_KINDS)[number];
 export type PropulsionKind = "propeller" | "jet";
 
@@ -297,10 +297,131 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   ]),
 });
 
+/**
+ * The Bombardier Global 8000: an ultra-long-range business jet. Low swept wing
+ * with winglets, T-tail, two GE Passport turbofans on the rear fuselage,
+ * retractable tricycle gear.
+ *
+ * Dimensions, wing, thrust and Mach limits are the real aeroplane's. The MASS
+ * is not its maximum: the type's MTOW is 52,163 kg and at that weight it needs
+ * about 1,890 m of runway, while this world's only field is 1,320 m of pavement
+ * (`src/world/airport.ts`). Flying it at a light ramp weight — part fuel, a few
+ * passengers — is both a real configuration and the one that lets a pilot take
+ * off, fly and land here, so that is what this definition carries. The MTOW is
+ * recorded here rather than dropped, because the next person to touch these
+ * numbers needs to know the gap is deliberate.
+ */
+export const MAXIMUM_TAKEOFF_MASS_GLOBAL_8000 = 52_163;
+
+export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
+  kind: "bizjet",
+  name: "Bombardier Global 8000",
+  propulsion: "jet",
+  // A light ramp weight, not MTOW. See the note above.
+  mass: 40_000,
+  wingArea: 94,
+  // 104 ft.
+  wingSpan: 31.7,
+  // Mean aerodynamic chord of the swept, tapered planform — larger than
+  // area/span, which would describe a rectangular wing.
+  meanChord: 3.4,
+  // Principal moments around body roll (+X), yaw (+Y), and pitch (+Z), from
+  // the usual radius-of-gyration fractions for a swept-wing transport:
+  // roll off the semi-span, pitch off the half-length, yaw off both.
+  inertia: Object.freeze({ x: 620_000, y: 1_100_000, z: 820_000 }),
+  maxEnginePower: 0,
+  // Two GE Passport 20-19BB1A at 18,920 lbf.
+  maxStaticThrust: 168_000,
+  propellerEfficiency: 0,
+  // Percent N2. A large turbofan idles lower than a small one.
+  idleRpm: 22,
+  maxRpm: 100,
+  // Aspect ratio 10.7 — high, as a long-range aeroplane's must be. The
+  // lift-curve slope follows from it (2*pi / (1 + 2/AR)); the zero-alpha term
+  // is small because the section is a supercritical one, cambered for cruise
+  // rather than for lift at low speed.
+  clZero: 0.14,
+  clAlpha: 5.2,
+  // Sweep costs stall angle.
+  positiveStallAngle: (14 * Math.PI) / 180,
+  negativeStallAngle: (-11 * Math.PI) / 180,
+  // Large Fowler flaps, which is how an aeroplane this heavy reaches an
+  // approach speed a 1,320 m runway can absorb.
+  flapLift: 0.95,
+  cdZero: 0.016,
+  // 1 / (pi * AR * e) at e = 0.8.
+  inducedDrag: 0.037,
+  stallDrag: 0.85,
+  flapDrag: 0.11,
+  gearDrag: 0.022,
+  // Spoilers rather than a fuselage airbrake, so less than the sport jet's.
+  speedBrakeDrag: 0.09,
+  retractableGear: true,
+  // Roughly eight seconds from locked down to locked up, which is what a leg
+  // this size takes.
+  gearCycleRate: 0.12,
+  // The first airframe in the game that actually reaches its critical Mach
+  // number: Mmo is 0.94 and maximum cruise is M 0.925, so the wave-drag term
+  // is live and is what stops the aeroplane short of the speed of sound.
+  transonicOnsetMach: 0.86,
+  transonicDragRise: 0.045,
+  sideForceBeta: 0.9,
+  sideForceRudder: 0.13,
+  pitchMomentZero: 0.006,
+  // Strongly stable in pitch, as a transport is.
+  pitchMomentAlpha: -0.9,
+  pitchMomentElevator: 0.5,
+  pitchDamping: -26,
+  // Big aeroplanes roll slowly and have a strong dihedral effect from sweep.
+  rollMomentAileron: 0.05,
+  rollMomentBeta: 0.07,
+  rollDamping: -0.9,
+  yawMomentRudder: 0.085,
+  yawMomentBeta: 0.16,
+  yawDamping: -0.5,
+  // Wheelbase 13.9 m, track 4.28 m, with the datum at the centre of gravity.
+  gear: Object.freeze([
+    Object.freeze({
+      position: Object.freeze({ x: -1.9, y: -2.7, z: -2.14 }),
+      retractedPosition: Object.freeze({ x: -1.7, y: -1.05, z: -1.6 }),
+      springRate: 1_950_000,
+      dampingRate: 210_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: -1.9, y: -2.7, z: 2.14 }),
+      retractedPosition: Object.freeze({ x: -1.7, y: -1.05, z: 1.6 }),
+      springRate: 1_950_000,
+      dampingRate: 210_000,
+    }),
+    Object.freeze({
+      position: Object.freeze({ x: 12, y: -2.7, z: 0 }),
+      retractedPosition: Object.freeze({ x: 11.4, y: -1.2, z: 0 }),
+      springRate: 1_300_000,
+      dampingRate: 155_000,
+      maxSteeringAngle: (15 * Math.PI) / 180,
+    }),
+  ]),
+  // Radome, cockpit roof, belly, both winglet tips, fin tip and tailcone, on a
+  // 33.88 m fuselage. The winglets are the outermost thing on this aeroplane
+  // and the first to touch in a wing-low landing, which is why they and not
+  // the wing chord plane are the contact points.
+  airframeContactPoints: Object.freeze([
+    Object.freeze({ x: 15, y: 0.1, z: 0 }),
+    Object.freeze({ x: 15, y: -0.4, z: 0 }),
+    Object.freeze({ x: 11.5, y: 1.6, z: 0 }),
+    Object.freeze({ x: 0, y: -1.5, z: 0 }),
+    Object.freeze({ x: -1, y: 0.4, z: 15.85 }),
+    Object.freeze({ x: -1, y: 0.4, z: -15.85 }),
+    Object.freeze({ x: -16, y: 6.2, z: 0 }),
+    Object.freeze({ x: -18.5, y: 0.6, z: 0 }),
+  ]),
+});
+
 const AIRCRAFT_DEFINITIONS: Readonly<Record<AircraftKind, Readonly<AircraftDefinition>>> =
   Object.freeze({
     trainer: LIGHT_TRAINER,
     jet: FAST_JET,
+    bizjet: GLOBAL_8000,
   });
 
 export function aircraftDefinition(kind: AircraftKind): Readonly<AircraftDefinition> {

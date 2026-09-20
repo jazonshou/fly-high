@@ -61,6 +61,17 @@ const SURFACE_TRAVEL: Readonly<Record<AircraftKind, SurfaceTravel>> = Object.fre
     mainWheelRadius: 0.3,
     noseWheelRadius: 0.24,
   }),
+  bizjet: Object.freeze({
+    // A large aeroplane's surfaces move through smaller angles, and its
+    // nosewheel steers less at speed than a light aircraft's.
+    aileron: 0.17,
+    elevator: 0.22,
+    rudder: 0.24,
+    noseSteering: 0.16,
+    flap: (30 * Math.PI) / 180,
+    mainWheelRadius: 0.56,
+    noseWheelRadius: 0.42,
+  }),
 });
 
 export interface PropellerPresentation {

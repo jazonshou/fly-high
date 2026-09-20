@@ -487,10 +487,68 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
 ]);
 
+/**
+ * The Global 8000's lamps. Every offset here is transcribed from
+ * `bizjetVisual`'s placements and must follow them;
+ * `tests/lighting.aircraft-wash.test.ts` asserts each wash sits ON its lamp.
+ *
+ * The ranges are larger than the small airframes': a wash whose range is 9 m
+ * on a 31.7 m wingspan lights the winglet and nothing else, where on the
+ * trainer the same figure reaches most of the wing.
+ */
+const BIZJET_WASH: readonly AircraftWashLight[] = Object.freeze([
+  Object.freeze({
+    name: "aircraft-beacon-wash",
+    offset: [0, -1.75, 0] as const,
+    color: [1, 0.11, 0.063] as const,
+    intensity: 2.8,
+    rangeMeters: 22,
+    driver: "beacon" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-port",
+    // x -6.1, not -1: a 31.7 m span at 35 degrees of leading-edge sweep moves
+    // the tip 11.1 m aft of the root, and the root is where it has to be for
+    // quarter-MAC to sit on the centre of gravity. The first draft of this
+    // table guessed -1 and would have floated the lamps 4.5 m ahead of the
+    // winglet.
+    offset: [-6.1, 0.35, -15.6] as const,
+    color: [1, 0.125, 0.094] as const,
+    intensity: 2.6,
+    rangeMeters: 16,
+    driver: "portNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-nav-wash-starboard",
+    offset: [-6.1, 0.35, 15.6] as const,
+    color: [0.141, 1, 0.514] as const,
+    intensity: 2.6,
+    rangeMeters: 16,
+    driver: "starboardNav" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-port",
+    offset: [-6.2, 0.4, -15.7] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 4.2,
+    rangeMeters: 18,
+    driver: "strobe" as const,
+  }),
+  Object.freeze({
+    name: "aircraft-strobe-wash-starboard",
+    offset: [-6.2, 0.4, 15.7] as const,
+    color: [0.949, 0.973, 1] as const,
+    intensity: 4.2,
+    rangeMeters: 18,
+    driver: "strobe" as const,
+  }),
+]);
+
 const WASH_BY_KIND: Readonly<Record<AircraftKind, readonly AircraftWashLight[]>> =
   Object.freeze({
     trainer: TRAINER_WASH,
     jet: JET_WASH,
+    bizjet: BIZJET_WASH,
   });
 
 /**

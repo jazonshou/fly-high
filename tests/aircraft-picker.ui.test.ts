@@ -38,12 +38,13 @@ describe("aircraft picker", () => {
     }
   });
 
-  it("names the aeroplanes the game actually ships", () => {
+  it("names the three aeroplanes the game actually ships", () => {
     // The one place the literal names are asserted: a catalogue-driven test
     // would happily pass on an empty catalogue or a renamed aeroplane.
     const markup = renderPicker("trainer");
     expect(markup).toContain("Cessna 150");
     expect(markup).toContain("Vesper J-45");
+    expect(markup).toContain("Bombardier Global 8000");
   });
 
   it("reflects the controlled selection without producing a second checked radio", () => {

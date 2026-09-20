@@ -174,6 +174,9 @@ const KINDS: readonly AircraftKind[] = AIRCRAFT_KINDS;
 /** The jet's tail surfaces carry their own prefix. */
 function elevatorSurfaces(kind: AircraftKind): readonly string[] {
   if (kind === "jet") return ["starboard-jet-elevator-surface", "port-jet-elevator-surface"];
+  if (kind === "bizjet") {
+    return ["starboard-bizjet-elevator-surface", "port-bizjet-elevator-surface"];
+  }
   return ["starboard-elevator-surface", "port-elevator-surface"];
 }
 
