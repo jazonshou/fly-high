@@ -36,3 +36,63 @@ crossed-fracture ceiling.
 Synthesis runs in `materialSynthesis.worker.ts`, off the main thread, so the
 notch is not on cold start's time-to-ready path: a sward tile takes about
 170 ms to synthesise on this host with it in.
+
+## 1. Why descending added nothing (`D-3`)
+
+The frames shot to verify the notch showed what the complaint actually was. At
+8 m, 30 m and 80 m above a meadow the ground was a featureless gradient with
+specks on it, identical in character to the view from 213 m.
+
+Read term by term: a sward's material tile is 2 m across and its content is
+blades and tufts under ~10 cm, deliberately flattened below 0.5 cycles per
+metre so it cannot show its repeat. `W-1`'s patchwork starts at 18 m (vigour's
+fine octave) and 6.1 m (the bare openings' fine octave). Between them NOTHING in
+the shader had a wavelength: no term from 0.2 m to 6 m. By 8 m up the tile has
+minified to its mean, and from there to the patchwork the ground is a gradient.
+Descending from 600 m to 10 m added no information to the frame, which is what
+"blurry" means. Reworking the tile's content cannot answer it: tile content
+only resolves under ~5 m AGL, and in a CPU preview its tussocks repeat as rows.
+
+`SwardRelief.ts` is that band: four incommensurate octaves (4.3 / 1.7 / 0.71 /
+0.31 m) of the ground block's own integer-hashed gradient noise, world-anchored
+in absolute metres, each faded by footprint and SKIPPED once it has, with the
+whole function returning after one compare once the coarsest has gone, so from
+cruise altitude it costs nothing. Each octave's tone is the noise pushed through
+a soft edge (blotches with outlines, not a gradient), tinted toward straw when
+pale and toward green when dark, because that is the axis a sward varies along;
+its relief is the plain noise at about 2 % of the wavelength, so light agrees
+with colour without the ground becoming a surface of objects. Zero-mean (pinned:
+mean under 0.003, sigma 8.4 %), so the scene mean, the bounce and `W-1`'s
+calibration do not move. It composes with `W-1` rather than stacking on it: its
+weight is `terrainGroundVegetation` (which already carries the airfield
+exclusion, and is zero on rock, snow, sand and pavement) less opened soil,
+steered by the patchwork's own dryness, 0.8 on lush ground to 1.3 on dry. Inside
+the patchwork's tier lane; `SWARD_RELIEF_STRENGTH = 0` is the rollback, and the
+octave count is one constant. Opened soil keeps 0.45 of the band: with none, a
+bare opening was a smooth plastic blob the moment the sward round it had
+texture.
+
+Evidence, same tree with the rollback dial at zero as the "before" arm: at 8, 30
+and 80 m AGL on lush and dry ground, noon and an 18.3 h sun, the before column
+is a blurred gradient at every altitude and the after column is grassland.
+Relief was shot at 2.5 % of the wavelength first and trimmed to 2 %: right at
+noon, and at an 8 m eye under a 10 degree sun every hollow was a black streak,
+because a normal offset casts no penumbra to soften itself. Shimmer, which is
+what a band at these wavelengths risks: forward flight in 1 cm steps (sub-pixel
+at both altitudes, so any frame-to-frame change is aliasing and not texture
+translating), band on against band off, mean absolute change per channel of
+255: 0.27 against 0.24 at 30 m AGL and 1.44 against 1.41 at 8 m (blades in the
+wind are the rest), with the share of pixels changing by more than 24 identical
+on both arms. At 2 m steps the band doubles the mean change at 30 m (4.8-5.8
+against 2.5-2.7) with the same share of large changes, which is texture moving
+across the frame as it should.
+
+### Shot and dropped
+
+* **Billowed octaves** (rounded tops, sharp hollows: the profile of a clump).
+  Read as rumpled cloth. A gradient noise's zero set is a network of long
+  meandering lines, and a crease drawn along it is a ripple, not a gap between
+  clumps.
+* **Cellular tussock domes**, one per jittered cell, present in a minority of
+  cells, with a shaded skirt. Read as raindrop rings on a pond: a perfect circle
+  with a dark rim is the one shape a meadow never shows from above.

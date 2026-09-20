@@ -75,6 +75,13 @@ import {
   SNOW_DRIFT_TONE,
   TERRAIN_ROCK_RELIEF_WGSL,
 } from "./RockRelief";
+import {
+  SWARD_RELIEF_BARE_SHARE,
+  SWARD_RELIEF_DRY_GAIN,
+  SWARD_RELIEF_LUSH_GAIN,
+  SWARD_RELIEF_TINT,
+  TERRAIN_SWARD_RELIEF_WGSL,
+} from "./SwardRelief";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
@@ -1876,6 +1883,7 @@ fn terrainSurfaceShoreWetness(
 // ---------------------------------------------------------------------------
 ${TERRAIN_GROUND_PATCHWORK_WGSL}
 ${TERRAIN_ROCK_RELIEF_WGSL}
+${TERRAIN_SWARD_RELIEF_WGSL}
 
 // ---------------------------------------------------------------------------
 // 4-7's channel pages, consumed on the CPU TILE MESHES.
@@ -2876,6 +2884,24 @@ if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
     vec3f(${GROUND_BARE_ALBEDO.map((v) => v.toFixed(3)).join(", ")}),
     terrainGroundBare * 0.4);
   terrainRoughness = clamp(terrainRoughness - 0.06 * terrainGroundBare, 0.02, 1.0);
+  // D-3 — sward relief: the 0.3-4 m band no other term has a wavelength in.
+  // Without it the tile has minified to its mean by 8 m up and the ground is a
+  // gradient from there to the patchwork's 18 m. One field for the normal and
+  // the tone; zero-mean; world-anchored; each octave faded by footprint.
+  let terrainSward = terrainSwardReliefAt(terrainAbsolutePosition.xz, terrainFootprint3D);
+  // terrainGroundVegetation already carries the airfield exclusion (mown grass
+  // stays mown) and is zero on rock, snow, sand and pavement; opened soil keeps
+  // a reduced share. Steered by the patchwork's own dryness, so the band
+  // composes with W-1 instead of stacking on it: rougher and strawier on dry
+  // ground, calmer on lush.
+  let terrainSwardWeight = terrainGroundVegetation
+    * (1.0 - terrainGroundBare * ${terrainWgslFloat(1 - SWARD_RELIEF_BARE_SHARE)})
+    * mix(${terrainWgslFloat(SWARD_RELIEF_LUSH_GAIN)}, ${terrainWgslFloat(SWARD_RELIEF_DRY_GAIN)},
+      clamp(terrainGroundDryness, 0.0, 1.0));
+  terrainNormal = normalize(terrainNormal)
+    - vec3f(terrainSward.x, 0.0, terrainSward.y) * terrainSwardWeight;
+  terrainAlbedo *= vec3f(1.0) + vec3f(${SWARD_RELIEF_TINT.map((v) => terrainWgslFloat(v)).join(", ")})
+    * (terrainSward.z * terrainSwardWeight);
 }
 
 // 3-4's macro wash goes on BEFORE the runway is painted: paint is a constant
