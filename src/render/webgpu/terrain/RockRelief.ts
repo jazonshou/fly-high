@@ -122,7 +122,7 @@ export const ROCK_BOUNDARY_SHARES: readonly number[] = [0.3, 0.5, 0.65];
  * by footprint and is not evaluated once it has.
  */
 export const ROCK_BOUNDARY_FINE_WAVELENGTHS_METERS: readonly number[] = [23, 8.9, 3.4, 1.3];
-export const ROCK_BOUNDARY_FINE_SHARES: readonly number[] = [0.55, 0.45, 0.38, 0.3];
+export const ROCK_BOUNDARY_FINE_SHARES: readonly number[] = [0.55, 0.45, 0.37, 0.3];
 export const ROCK_BOUNDARY_LOGIT_GAIN = 2.4;
 export const ROCK_BOUNDARY_LOGIT_LIMIT = 5;
 /**
