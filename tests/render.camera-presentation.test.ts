@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CAMERA_RESPONSE_SECONDS,
+  CAMERA_RESPONSE_SECONDS_REDUCED_MOTION,
   cameraBankFollow,
   cameraPresentationResponse,
+  cameraRigLiftToRef,
+  cameraTrailMeters,
   orthogonalizeCameraUpToRef,
   shouldStabilizeCameraHorizon,
   smoothCameraVectorToRef,
@@ -133,5 +137,136 @@ describe("camera presentation", () => {
 
     expect(Math.max(...chase.map(Math.abs))).toBeLessThan(0.08);
     expect(highFrequencyEnergy(chase)).toBeLessThan(highFrequencyEnergy(fullPhysical) * 0.25);
+  });
+
+  describe("rig lift", () => {
+    const lift = (
+      forward: [number, number, number],
+      up: [number, number, number],
+      follow: number,
+    ) => {
+      const result = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef(
+        { x: forward[0], y: forward[1], z: forward[2] },
+        { x: up[0], y: up[1], z: up[2] },
+        follow,
+        result,
+      );
+      return result;
+    };
+    /** Body axes at a given pitch and bank, nose along world +X (D-6). */
+    const attitude = (pitch: number, bank: number) => {
+      const forward: [number, number, number] = [Math.cos(pitch), Math.sin(pitch), 0];
+      // Up at zero bank, then rolled about the nose.
+      const up0: [number, number, number] = [-Math.sin(pitch), Math.cos(pitch), 0];
+      const starboard: [number, number, number] = [0, 0, 1];
+      const up: [number, number, number] = [
+        up0[0] * Math.cos(bank) - starboard[0] * Math.sin(bank),
+        up0[1] * Math.cos(bank) - starboard[1] * Math.sin(bank),
+        up0[2] * Math.cos(bank) - starboard[2] * Math.sin(bank),
+      ];
+      return { forward, up, up0 };
+    };
+
+    it("leaves a wings-level rig untouched at any pitch or heading", () => {
+      // The whole point of blending from wings-level rather than from world
+      // up: every unbanked frame — which is every perf-capture shot — is
+      // bit-identical to lifting along the aircraft's own up.
+      for (const pitch of [0, 0.1, -0.25, 0.6]) {
+        for (const heading of [0, 1.2, -2.7, Math.PI]) {
+          const { forward, up } = attitude(pitch, 0);
+          const rotated: [number, number, number] = [
+            forward[0] * Math.cos(heading) - forward[2] * Math.sin(heading),
+            forward[1],
+            forward[0] * Math.sin(heading) + forward[2] * Math.cos(heading),
+          ];
+          const rotatedUp: [number, number, number] = [
+            up[0] * Math.cos(heading) - up[2] * Math.sin(heading),
+            up[1],
+            up[0] * Math.sin(heading) + up[2] * Math.cos(heading),
+          ];
+          const result = lift(rotated, rotatedUp, cameraBankFollow("chase", false));
+          expect(result.x).toBeCloseTo(rotatedUp[0], 10);
+          expect(result.y).toBeCloseTo(rotatedUp[1], 10);
+          expect(result.z).toBeCloseTo(rotatedUp[2], 10);
+        }
+      }
+    });
+
+    it("adopts exactly the bank the view adopts", () => {
+      // The defect was that the rig lifted along the aircraft's up at full
+      // strength while the view rolled only 18% of the way there. Both now
+      // sit at the same roll angle, which is what keeps the airframe centred.
+      const bank = 0.35;
+      const { forward, up, up0 } = attitude(0.08, bank);
+      for (const follow of [0, 0.18, 0.3, 1]) {
+        const result = lift(forward, up, follow);
+        const expected = {
+          x: up0[0] + (up[0] - up0[0]) * follow,
+          y: up0[1] + (up[1] - up0[1]) * follow,
+          z: up0[2] + (up[2] - up0[2]) * follow,
+        };
+        const length = Math.hypot(expected.x, expected.y, expected.z);
+        expect(result.x).toBeCloseTo(expected.x / length, 10);
+        expect(result.y).toBeCloseTo(expected.y / length, 10);
+        expect(result.z).toBeCloseTo(expected.z / length, 10);
+      }
+    });
+
+    it("reproduces the aircraft's own up when the view follows bank fully", () => {
+      const { forward, up } = attitude(0.12, -0.4);
+      const result = lift(forward, up, cameraBankFollow("cockpit", false));
+      expect(result.x).toBeCloseTo(up[0], 10);
+      expect(result.y).toBeCloseTo(up[1], 10);
+      expect(result.z).toBeCloseTo(up[2], 10);
+    });
+
+    it("holds the wings-level vertical under reduced motion", () => {
+      const { forward, up, up0 } = attitude(0.05, 0.5);
+      const result = lift(forward, up, cameraBankFollow("chase", true));
+      expect(result.x).toBeCloseTo(up0[0], 10);
+      expect(result.y).toBeCloseTo(up0[1], 10);
+      expect(result.z).toBeCloseTo(up0[2], 10);
+    });
+
+    it("falls back to the aircraft's up when the nose is vertical", () => {
+      // "Wings level" has no meaning straight up; the rig must not divide by a
+      // vanishing horizontal component.
+      const up = { x: -1, y: 0, z: 0 };
+      const result = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef({ x: 0, y: 1, z: 0 }, up, 0.18, result);
+      expect(result).toEqual(up);
+    });
+  });
+
+  describe("trail", () => {
+    it("matches the steady-state error the old absolute smoothing produced", () => {
+      // A first-order lag chasing a target moving at constant speed settles
+      // speed*tau behind it. Measured in-game before the fix: 7.1 m of lag at
+      // roughly 50 m/s, and 16 m at 140.
+      expect(cameraTrailMeters("chase", false, 50)).toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS, 10);
+      expect(cameraTrailMeters("chase", false, 140)).toBeCloseTo(140 * CAMERA_RESPONSE_SECONDS, 10);
+      expect(cameraTrailMeters("chase", false, 50)).toBeGreaterThan(7);
+      expect(cameraTrailMeters("chase", false, 50)).toBeLessThan(7.5);
+    });
+
+    it("shortens with the faster reduced-motion response", () => {
+      expect(cameraTrailMeters("chase", true, 50))
+        .toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS_REDUCED_MOTION, 10);
+      expect(cameraTrailMeters("chase", true, 50))
+        .toBeLessThan(cameraTrailMeters("chase", false, 50));
+    });
+
+    it("applies only to the rigs that trail the aircraft", () => {
+      expect(cameraTrailMeters("cockpit", false, 140)).toBe(0);
+      expect(cameraTrailMeters("freefly", false, 140)).toBe(0);
+      expect(cameraTrailMeters("cinematic", false, 50))
+        .toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS, 10);
+    });
+
+    it("refuses to trail on a negative or non-finite airspeed", () => {
+      expect(cameraTrailMeters("chase", false, -20)).toBe(0);
+      expect(cameraTrailMeters("chase", false, Number.NaN)).toBe(0);
+    });
   });
 });
