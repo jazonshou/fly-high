@@ -549,6 +549,147 @@ export class AircraftBuildContext {
     return strut;
   }
 
+  /**
+   * Fold parts that never move relative to `parent` into ONE mesh, so they
+   * cost one draw instead of one each.
+   *
+   * A draw is paid per MESH, and a shadow caster pays it three times a frame
+   * (the colour pass and both sun cascades). The 747 measured +0.70 ms of CPU
+   * against the Cessna for +2% triangles, which is that and nothing else: 141
+   * meshes, most of them bolted rigidly to the same root. Geometry that shares
+   * a material and never moves apart has no reason to be more than one mesh.
+   *
+   * It REFUSES rather than guesses, because every way this goes wrong is
+   * silent — a merged mesh renders something, just not the right thing:
+   *
+   *  - A source may hang only from `parent`, or from nodes the caller lists in
+   *    `staticNodes`. A hinge, its `-frame`, a rudder `-mount`, a fan spool or
+   *    the gear node is none of those, so an animated part cannot be folded in
+   *    by accident: it would be baked at its rest pose and stop moving.
+   *  - Every source must agree on material, layer mask, rendering group,
+   *    visibility and whether it casts a shadow. One mesh has one of each, so
+   *    a mismatch would quietly change how some of the parts are drawn — the
+   *    cockpit-excluded skin bit is a layer mask, glass is a rendering group.
+   *  - No thin instances: `MergeMeshes` reads the base geometry and drops the
+   *    instance buffer, so 228 windows would come back as one.
+   *  - One vertex layout. Babylon throws on a mismatch; this says which part.
+   *
+   * `MergeMeshes` bakes each source's WORLD matrix into its vertices, so the
+   * result is carried back into `parent`'s frame before it is parented. At
+   * build time that is the identity on every airframe, and it is done anyway
+   * so the helper does not depend on when it is called.
+   *
+   * The sources are disposed and LEAVE `meshes`; the result joins it through
+   * `finishMesh` like any built part and records the names it was folded from
+   * in `metadata.mergedFrom`, so a part can still be followed by name. Metadata
+   * every source agrees on is kept; per-part geometry notes are not, since no
+   * one value would be true of the whole. Nodes in `staticNodes` that are left
+   * childless are disposed with them.
+   *
+   * What it CANNOT do is update lists the caller holds. A source that was in
+   * `cockpitParts` or `wingSurfaces` is a disposed mesh there now, and the
+   * result has to be put in its place by whoever owns the list.
+   */
+  mergeStatic(
+    name: string,
+    sources: readonly AbstractMesh[],
+    parent: TransformNode,
+    options: { readonly staticNodes?: readonly TransformNode[] } = {},
+  ): Mesh {
+    if (sources.length < 2) {
+      throw new RangeError(`Merging "${name}" needs at least two parts`);
+    }
+    const staticNodes = new Set<unknown>(options.staticNodes ?? []);
+    const parts: Mesh[] = [];
+    for (const source of sources) {
+      if (!(source instanceof Mesh)) {
+        throw new Error(`Cannot merge "${source.name}" into "${name}": it is not a Mesh`);
+      }
+      parts.push(source);
+    }
+    const first = parts[0]!;
+    const layout = (mesh: Mesh) => [...mesh.getVerticesDataKinds()].sort().join(",");
+    const shadow = (mesh: Mesh) =>
+      (mesh.metadata as { castsShadow?: boolean } | null)?.castsShadow !== false;
+    for (const [position, source] of parts.entries()) {
+      const refuse = (why: string): never => {
+        throw new Error(`Cannot merge "${source.name}" into "${name}": ${why}`);
+      };
+      if (parts.indexOf(source) !== position) refuse("it is listed twice");
+      if (source.isDisposed() || !this.meshes.includes(source)) {
+        refuse("this build does not own it");
+      }
+      if (source.hasThinInstances || source.instances.length > 0) {
+        refuse("it is instanced, and a merge keeps only the base geometry");
+      }
+      if (source.getChildren().length > 0) refuse("it has children, which would be disposed");
+      for (let walk = source.parent; walk !== parent; walk = walk.parent) {
+        if (!walk) return refuse(`it does not hang from "${parent.name}"`);
+        if (!staticNodes.has(walk)) {
+          refuse(`it hangs from "${walk.name}", which was not declared static`);
+        }
+      }
+      if (source.material !== first.material) refuse("its material differs");
+      if (source.layerMask !== first.layerMask) refuse("its layer mask differs");
+      if (source.renderingGroupId !== first.renderingGroupId) {
+        refuse("its rendering group differs");
+      }
+      if (source.isVisible !== first.isVisible || source.isEnabled() !== first.isEnabled()) {
+        refuse("its visibility differs");
+      }
+      if (source.hasVertexAlpha !== first.hasVertexAlpha) refuse("its vertex alpha differs");
+      if (shadow(source) !== shadow(first)) refuse("it disagrees about casting a shadow");
+      if (layout(source) !== layout(first)) {
+        refuse(`its vertex layout is [${layout(source)}], not [${layout(first)}]`);
+      }
+    }
+    const material = first.material;
+    if (!material) throw new Error(`Cannot merge "${name}": its parts have no material`);
+
+    // Read everything off the sources BEFORE the merge disposes them.
+    const layerMask = first.layerMask;
+    const renderingGroupId = first.renderingGroupId;
+    const mergedFrom = parts.map((part) => part.name);
+    const agreed: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(
+      (first.metadata as Record<string, unknown> | null) ?? {},
+    )) {
+      const primitive = value === null || typeof value !== "object";
+      if (primitive && parts.every(
+        (part) => (part.metadata as Record<string, unknown> | null)?.[key] === value,
+      )) agreed[key] = value;
+    }
+
+    const target = new Mesh(name, this.scene);
+    const merged = Mesh.MergeMeshes(parts, true, false, target);
+    if (!merged) {
+      // Babylon declines before it disposes anything, so the sources are
+      // intact and only the empty target needs taking back out of the scene.
+      target.dispose();
+      throw new Error(`Babylon declined to merge "${name}"`);
+    }
+    for (const part of parts) {
+      const index = this.meshes.indexOf(part);
+      if (index >= 0) this.meshes.splice(index, 1);
+    }
+    const intoParent = parent.computeWorldMatrix(true).clone().invert();
+    if (!intoParent.isIdentity()) merged.bakeTransformIntoVertices(intoParent);
+    merged.refreshBoundingInfo();
+    for (const candidate of options.staticNodes ?? []) {
+      if (candidate.getChildren().length === 0) candidate.dispose();
+    }
+
+    const finished = this.finishMesh(merged, material, parent);
+    finished.layerMask = layerMask;
+    finished.renderingGroupId = renderingGroupId;
+    finished.metadata = {
+      ...(finished.metadata as Record<string, unknown> | null),
+      ...agreed,
+      mergedFrom,
+    };
+    return finished;
+  }
+
   disposeMaterials(): void {
     for (const material of this.materials) material.dispose(false, false);
     this.materials.length = 0;

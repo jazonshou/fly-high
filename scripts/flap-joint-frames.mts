@@ -42,7 +42,11 @@ const FLEET: Record<string, { wing: string[]; flaps: string[]; hinge: string; fu
     fullFlapDegrees: 20,
   },
   airliner: {
-    wing: ["airliner-inboard-wing", "airliner-outboard-wing"],
+    // ONE fixed-wing mesh a side since the 747's static parts were folded per
+    // material (`AircraftBuildContext.mergeStatic`). It bounds the raked tip
+    // as well as the two panels the flaps hang from, so this crop is wider
+    // than it was; it still contains the joint, which is all it is for.
+    wing: ["airliner-fixed-wing"],
     flaps: ["airliner-inner-flap-surface", "airliner-outer-flap-surface"],
     hinge: "starboard-airliner-inner-flap",
     fullFlapDegrees: 30,
