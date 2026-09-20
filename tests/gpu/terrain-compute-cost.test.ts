@@ -94,6 +94,28 @@ async function withScene<T>(run: (engine: WebGPUEngine, scene: Scene) => Promise
   }
 }
 
+/**
+ * An UPPER bound on a dispatch cost is a statement about a quiet, pinned host:
+ * a run that shares the GPU can only read high. Keyed on the same variable as
+ * cold start's deadline and the perf capture's floors. Unset (the default, and
+ * CI's pinned job) it asserts; set, it reports the figure and the bound it
+ * would have applied, loudly, and passes. Lower bounds and "was anything
+ * measured at all" are not load-sensitive and stay asserted either way.
+ */
+const ENFORCE_REFERENCE_HOST_COST = import.meta.env.VITE_PERF_UNPINNED_HOST !== "1";
+
+function upperBound(measuredMs: number, boundMs: number, what: string): void {
+  if (ENFORCE_REFERENCE_HOST_COST) {
+    expect(measuredMs, `${what}: ${measuredMs.toFixed(4)} ms`).toBeLessThan(boundMs);
+    return;
+  }
+  console.warn(
+    `COMPUTE COST reported only: VITE_PERF_UNPINNED_HOST=1; ${what}: `
+      + `measured ${measuredMs.toFixed(4)} ms, bound ${boundMs.toFixed(4)} ms: `
+      + (measuredMs < boundMs ? "within it" : "EXCEEDED, and would FAIL on the reference host"),
+  );
+}
+
 describe("terrain compute dispatch cost (4.5-B2a)", () => {
   it("measures each client's per-page cost and holds the pinned seeds", async (context) => {
     // `timestamp-query` is OPTIONAL in WebGPU and a virtualised adapter need
@@ -233,17 +255,16 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       + `(fine ${measured.splatCompute.toFixed(3)} ms); `
       + `channel pair ${(measured.splatComputeCoarse + measured.occlusionCompute).toFixed(3)} ms`);
     expect(measured.splatComputeCoarse, "coarse splat bake measured").toBeGreaterThan(0);
-    expect(measured.splatComputeCoarse, "a coarse page's splat bake").toBeLessThan(1.2);
-    expect(measured.splatComputeCoarse + measured.occlusionCompute,
-      "a coarse channel pair exceeds the 1.55 ms whole-compute cap").toBeLessThan(1.55);
+    upperBound(measured.splatComputeCoarse, 1.2, "a coarse page's splat bake");
+    upperBound(measured.splatComputeCoarse + measured.occlusionCompute, 1.55,
+      "a coarse channel pair against the 1.55 ms whole-compute cap");
 
     for (const client of ["terrainCompute", "occlusionCompute", "splatCompute"] as const) {
       const pinned = COMPUTE_DISPATCH_SEED_COST_MS[client];
       expect(measured[client], `${client} measured`).toBeGreaterThan(0);
       expect(measured[client], `${client} drifted below the pinned seed / 4`)
         .toBeGreaterThan(pinned / 4);
-      expect(measured[client], `${client} drifted above the pinned seed x 4`)
-        .toBeLessThan(pinned * 4);
+      upperBound(measured[client], pinned * 4, `${client} against the pinned seed x 4`);
     }
   }, 180_000);
 });

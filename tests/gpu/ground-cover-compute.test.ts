@@ -116,6 +116,16 @@ function meadowSampler(): (x: number, z: number) => TerrainSample {
   };
 }
 
+/**
+ * A dispatch cost is a statement about a QUIET, pinned host. `cold-start.test.ts`
+ * and the perf capture already key "report, do not assert" on this variable;
+ * the 4x regression alarm below failed at machine load 8 on a commit that
+ * predated any change to this kernel, with every functional output identical
+ * (2026-09-20). Unset, which is the default and what CI's pinned job runs, the
+ * bound is asserted exactly as before.
+ */
+const ENFORCE_REFERENCE_HOST_COST = import.meta.env.VITE_PERF_UNPINNED_HOST !== "1";
+
 describe("6-9 ground-cover placement compute on a real adapter", () => {
   it("compiles the composed kernel, compacts, and reports a culled draw count", async () => {
     const scene = new Scene(engine);
@@ -263,8 +273,21 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
         "the adapter granted timestamp-query but no dispatch cost was observed",
       ).toBe(timestampsAvailable);
       if (measured !== seed) {
-        expect(measured, `measured ${measured.toFixed(4)} ms vs seed ${seed} ms`)
-          .toBeLessThan(seed * 4);
+        const bound = seed * 4;
+        if (ENFORCE_REFERENCE_HOST_COST) {
+          expect(measured, `measured ${measured.toFixed(4)} ms vs seed ${seed} ms`)
+            .toBeLessThan(bound);
+        } else {
+          // Same switch, same meaning as cold start's deadline: this host is not
+          // the pinned, quiet reference, so a dispatch timed while something
+          // else holds the GPU says nothing about the kernel. Reported loudly,
+          // never asserted; every functional assertion here is still enforced.
+          console.warn(
+            `GROUND-COVER COST reported only: VITE_PERF_UNPINNED_HOST=1; `
+              + `measured ${measured.toFixed(4)} ms vs seed ${seed} ms, bound ${bound.toFixed(4)} ms: `
+              + (measured < bound ? "within it" : "EXCEEDED, and would FAIL on the reference host"),
+          );
+        }
       }
       // Uncaptured errors arrive asynchronously — drain the queue before the
       // zero-error assertion is allowed to mean anything.
