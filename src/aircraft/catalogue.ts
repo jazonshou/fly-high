@@ -228,18 +228,19 @@ const BIZJET: AircraftSpec = Object.freeze({
     // M 0.62 at low level: clean, comfortable, and well inside the flap and
     // gear speeds so a pilot who reaches for either is not punished.
     airborneAirspeed: 210,
-    // 0.58, and set by where the aeroplane ENDS UP rather than by trimming
+    // 0.62, and set by where the aeroplane ENDS UP rather than by trimming
     // level. Every airborne spawn in this game starts 2.4 degrees nose-up and
     // off-trim, which excites a phugoid; the sport jet's first swing is upward
     // and nobody minds, but a 40-tonne aeroplane's first swing was DOWNWARD
     // and deep. Measured over 180 s from a 183 m spawn: 0.25 throttle sinks
-    // 702 m and hits the ground, 0.35 sinks 423 m, 0.50 sinks 174 m and is
-    // still marginal. 0.58 bottoms out 100 m below the spawn — clear of the
-    // ground with room — and then climbs away like the J-45 does. Less
-    // throttle makes the dip WORSE, not better, which is the opposite of what
-    // trimming for level flight would suggest and the reason this is a
-    // measured number rather than a derived one.
-    airborneThrottle: 0.58,
+    // 702 m and flies into the ground, 0.35 sinks 423 m, 0.50 sinks 174 m,
+    // 0.58 sinks 100 m and 0.62 sinks 73 m before climbing away like the J-45
+    // does. Less throttle makes the dip WORSE, not better, which is the
+    // opposite of what trimming for level flight would suggest and the reason
+    // this is a measured number rather than a derived one.
+    // `tests/sim.airborne-spawn.test.ts` holds every airframe to half the
+    // spawn height.
+    airborneThrottle: 0.62,
     runwayTrim: 0.02,
     airborneGear: 0,
   }),
