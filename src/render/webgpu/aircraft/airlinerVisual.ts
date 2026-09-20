@@ -18,6 +18,7 @@ import {
   configureRoot,
   createGlowApplier,
   createLampApplier,
+  hingeAlong,
   node,
   setCockpitVisibility,
   addInstrumentPanel,
@@ -948,6 +949,17 @@ export function createAirliner(scene: Scene): AircraftVisual {
       );
       flaps.push(hinge);
       wingSurfaces.push(surface);
+      // The hinge LINE. This is the worst case in the fleet: the inner panel
+      // spans 7.5 m on a hinge line swept back with the wing, so its outboard
+      // end stands metres aft of the node's own z axis and turning it about
+      // that axis would wring the panel out along its span. The direction
+      // carries the dihedral through `chordPlaneAt`, which is what lets
+      // `hingeAlong` subsume the roll `wingHinge` already applied.
+      hingeAlong(hinge, new Vector3(
+        hingeAt(flap.tipZ) - hingeX,
+        0,
+        side * (flap.tipZ - flap.rootZ),
+      ), scene);
     }
 
     // SPOILERS, on the upper surface just ahead of the hinge line. Five a side
@@ -1032,6 +1044,15 @@ export function createAirliner(scene: Scene): AircraftVisual {
       body,
       hinge,
     ));
+    // All four ailerons sit on the same swept hinge line as the flaps, so they
+    // take their axis from it the same way. An aileron deflects both ways, so
+    // a panel wrung out along its span reads as a twisting wing in every turn
+    // rather than only on approach.
+    hingeAlong(hinge, new Vector3(
+      hingeAt(tipZ) - hingeX,
+      0,
+      side * (tipZ - rootZ),
+    ), scene);
     return hinge;
   }
 
@@ -1167,6 +1188,24 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // because the node's own Y rotation is the rudder deflection the pose owns
   // every frame.
   rudderSurface.rotation.z = Math.atan2(4.56, 9.4);
+  // NOT raked, and the reason is measured rather than assumed.
+  //
+  // This panel's lean is a `rotation.z` applied about the BOX'S OWN CENTRE,
+  // which is how a box fakes a swept panel against a vertical hinge. That tilt
+  // swings the panel FORWARD past the hinge node: on the 747 the leading edge
+  // ends up 1.85 m ahead of it, so the hinge line runs THROUGH the panel,
+  // 2.26 m from the leading edge and 0.64 m from the trailing edge. Turning
+  // that about the fin's true rake swings the two edges opposite ways and the
+  // trailing edge goes to PORT on right rudder -- measured, and caught by
+  // `render.webgpu-control-surface-sides`.
+  //
+  // Raking it correctly means re-seating the panel so its leading edge lies on
+  // the hinge line, and a rigid rake also tilts the CHORD, which a real raked
+  // fin does not: the span leans and the chords stay level, so the panel wants
+  // to be sheared or lofted rather than rotated. That is a geometry change
+  // needing a look at the fin, not an axis change, so it is left alone here.
+  // The Global's rudder IS raked, because its panel is an aerofoil built along
+  // the hinge line and sits entirely aft of it.
 
   // Tailplane on the tailcone at y = +1.2, 22.5 m span, 32 degrees of sweep.
   // Its root rib at |z| = 1.8 is inside the tailcone's own 2.0 m half-width at
@@ -1197,9 +1236,17 @@ export function createAirliner(scene: Scene): AircraftVisual {
     wingSurfaces.push(tailplane);
   }
 
-  const elevator = node("elevator", root, scene);
-  elevator.position.set(ELEVATOR_HINGE_X, TAILPLANE_Y, 0);
+  // ONE HINGE NODE PER HALF, because the tailplane is swept 32 degrees and
+  // the two halves' hinge lines are mirror images. Shared, the node turned
+  // 11.5 degrees off either of them.
+  const elevators: TransformNode[] = [];
   for (const side of [1, -1] as const) {
+    const elevator = node(
+      side > 0 ? "starboard-elevator-hinge" : "port-elevator-hinge",
+      root,
+      scene,
+    );
+    elevator.position.set(ELEVATOR_HINGE_X, TAILPLANE_Y, 0);
     // These two names are what the control-surface side test looks for on
     // every airframe that is not the sport jet or the Global.
     wingSurfaces.push(build.airfoilWing(
@@ -1218,6 +1265,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
       accent,
       elevator,
     ));
+    hingeAlong(elevator, new Vector3(
+      ELEVATOR_TIP_HINGE_X - ELEVATOR_HINGE_X,
+      0,
+      side * (TAILPLANE_TIP_Z - TAILPLANE_ROOT_Z),
+    ), scene);
+    elevators.push(elevator);
   }
 
   // ---------------------------------------------------------- FLIGHT DECK --
@@ -1663,7 +1716,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     inboardAilerons: [starboardInboardAileron, portInboardAileron],
-    elevator,
+    elevators,
     rudder,
     noseSteer,
     flaps,

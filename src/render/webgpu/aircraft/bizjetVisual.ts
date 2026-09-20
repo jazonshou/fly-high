@@ -17,6 +17,8 @@ import {
 import {
   applyCommonPose,
   configureCockpitLayers,
+  hingeAlong,
+  yawHingeAlong,
   configureRoot,
   createGlowApplier,
   createLampApplier,
@@ -716,31 +718,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
   const ailerons: TransformNode[] = [];
   /** Every flap hinge with the rest pose its Fowler travel departs from. */
   const flapTravel: { node: TransformNode; restX: number; restY: number }[] = [];
-  /**
-   * Every swept control surface with the LINE it actually hinges about.
-   *
-   * `applyCommonPose` deflects a surface by writing `rotation.z`, which is
-   * right for an unswept hinge and wrong for every hinge on this wing. The
-   * Global's trailing edge is swept 23 degrees, so the inner flap's outboard
-   * end sits about 2 m aft of the wing's own z axis — and a rotation about
-   * that axis drops it by 2 sin(30) = 1 m more than its root.
-   *
-   * Measured before this existed: at full flap the inner flap dropped 0.634 m
-   * at the root and 1.471 m at the break, and its outboard end moved 64 mm
-   * FORWARD while its root moved 163 mm aft. The panel was not deploying, it
-   * was being wrung out along its span — a rigid flap visibly twisting most
-   * of a metre. That is the "glitchy wing", and it is also why the slot the
-   * cove doors close measured shut inboard and gaping outboard: the gap was
-   * a function of how far down the span you looked.
-   *
-   * The repair is an axis, not a rebuild. Each hinge keeps its unswept BUILD
-   * frame — `conformToWingSection` maps vertices back to wing coordinates and
-   * would have to be reworked for a yawed parent — and takes its deflection
-   * as a rotation about the hinge line instead. The axis is kept pointing
-   * outboard on both wings so that a positive angle is trailing-edge-down on
-   * both, which is the unswept behaviour this replaces.
-   */
-  const sweptHinges: { node: TransformNode; axis: Vector3 }[] = [];
 
   /**
    * The trailing edge, spanwise. The old layout left 0.45 m and 0.40 m holes
@@ -940,19 +917,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const tipStationHinge = wingSection(piece.tipZ);
       const alongX = tipStationHinge.hingeX - rootStationHinge.hingeX;
       const alongZ = side * (piece.tipZ - piece.rootZ);
-      const alongLength = Math.hypot(alongX, alongZ);
-      // Outboard-positive on both wings: `alongZ` carries the side's sign and
-      // flipping the axis with it would deflect the port surfaces the wrong
-      // way, which is the bug the world-space side test exists to catch.
-      const outboard = alongZ >= 0 ? 1 : -1;
-      sweptHinges.push({
-        node: hinge,
-        axis: new Vector3(
-          (outboard * alongX) / alongLength,
-          0,
-          (outboard * alongZ) / alongLength,
-        ),
-      });
       if (piece.name === "aileron") {
         // The aileron surface keeps the bare name the world-space side test
         // reads, and STARBOARD LANDS AT INDEX 0 because this loop runs +1
@@ -1009,6 +973,10 @@ export function createBizJet(scene: Scene): AircraftVisual {
           });
         }
       }
+      // Now that the panel (and its seal) hang off the hinge, point the hinge
+      // at the line it actually turns about. `hingeAlong` owns the rest-pose
+      // cancellation, so nothing above needs to know this happened.
+      hingeAlong(hinge, new Vector3(alongX, 0, alongZ), scene);
     }
 
     // Flap track canoes. Fowler tracks long enough to move the panel aft as
@@ -1267,6 +1235,15 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // deflection the pose owns every frame.
   rudderSurface.rotation.x = -Math.PI / 2;
   wingSurfaces.push(rudderSurface);
+  // And the rudder turns about the fin's RAKED trailing edge, not about true
+  // vertical. The hinge leans 0.60 m aft over the fin's 4.38 m of height,
+  // which is 7.8 degrees; swung about vertical, a panel built on that line
+  // scythes through the fin on one side and opens a wedge on the other.
+  yawHingeAlong(
+    rudder,
+    new Vector3(RUDDER_HINGE_TIP_X - RUDDER_HINGE_ROOT_X, FIN_TIP_Y - FIN_ROOT_Y, 0),
+    scene,
+  );
 
   // Tailplane on top of the fin. 10.8 m span, not 9.0: the Global Express
   // carries a stabiliser 34% of its wingspan and the 7500's aft fuselage and
@@ -1332,9 +1309,24 @@ export function createBizJet(scene: Scene): AircraftVisual {
     root,
   );
 
-  const elevator = node("elevator", root, scene);
-  elevator.position.set(ELEVATOR_HINGE_ROOT_X, TAILPLANE_Y, 0);
+  // ONE HINGE NODE PER HALF. The tailplane is swept 34 degrees, so the two
+  // halves hinge on lines that are mirror images of each other and no single
+  // axis matches both: with one shared node the elevator turned 17.2 degrees
+  // off its own hinge line, which is the tailplane's own sweep showing up as
+  // a panel wrung out along its span.
+  const elevators: TransformNode[] = [];
   for (const side of [1, -1] as const) {
+    const elevator = node(
+      side > 0 ? "starboard-elevator-hinge" : "port-elevator-hinge",
+      root,
+      scene,
+    );
+    elevator.position.set(ELEVATOR_HINGE_ROOT_X, TAILPLANE_Y, 0);
+    // The anhedral moves from the SURFACE on to the hinge node, so that
+    // `hingeAlong` carries it into the hinge direction rather than having to
+    // be told about it. Same rotation about the same origin, so the rest pose
+    // is unchanged; `hingeAlong` preserves it either way.
+    elevator.rotation.x = side * TAILPLANE_ANHEDRAL;
     const surface = build.airfoilWing(
       side > 0 ? "starboard-bizjet-elevator-surface" : "port-bizjet-elevator-surface",
       {
@@ -1351,10 +1343,13 @@ export function createBizJet(scene: Scene): AircraftVisual {
       body,
       elevator,
     );
-    // The elevator carries the stabiliser's anhedral, or it would stand proud
-    // of the surface it hinges on by a quarter of a metre at the tip.
-    surface.rotation.x = side * TAILPLANE_ANHEDRAL;
     wingSurfaces.push(surface);
+    hingeAlong(elevator, new Vector3(
+      ELEVATOR_HINGE_TIP_X - ELEVATOR_HINGE_ROOT_X,
+      0,
+      side * (TAILPLANE_TIP_Z - 0.32),
+    ), scene);
+    elevators.push(elevator);
   }
 
   // FLIGHT DECK. Well forward and high, on top of the drooped radome. The
@@ -1688,7 +1683,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // Starboard first, because the side loop runs +1 first and
     // `applyCommonPose` drives `ailerons[0]` with the starboard deflection.
     ailerons: [ailerons[0]!, ailerons[1]!],
-    elevator,
+    elevators,
     rudder,
     noseSteer,
     flaps,
@@ -1717,18 +1712,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
-      // ...and immediately re-express every swept deflection about its own
-      // hinge line. `applyCommonPose` has just written `rotation.z`, which is
-      // read here as the ANGLE and then discarded: setting `rotationQuaternion`
-      // makes Babylon ignore `rotation` entirely, so the shared contract still
-      // owns what each surface does and this owns only which axis it does it
-      // about.
-      for (const swept of sweptHinges) {
-        swept.node.rotationQuaternion = Quaternion.RotationAxis(
-          swept.axis,
-          swept.node.rotation.z,
-        );
-      }
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;

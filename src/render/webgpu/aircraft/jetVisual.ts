@@ -18,6 +18,7 @@ import {
   configureRoot,
   createGlowApplier,
   createLampApplier,
+  hingeAlong,
   node,
   setCockpitVisibility,
   addInstrumentPanel,
@@ -690,6 +691,15 @@ export function createJet(scene: Scene): AircraftVisual {
     );
     flaps.push(hinge);
     wingSurfaces.push(surface);
+    // The hinge LINE, not the wing's z axis. This panel is swept: its
+    // outboard end is 0.296 m aft of the node, so turning it about z drops
+    // that end about 0.10 m further than its root at 20 degrees of flap.
+    // See `hingeAlong`.
+    hingeAlong(hinge, new Vector3(
+      hingeLineAt(FLAP_TIP_Z) - flapHingeRootX,
+      0,
+      side * (FLAP_TIP_Z - FLAP_ROOT_Z),
+    ), scene);
   }
 
   // Ailerons — the outboard flaperon segment. STARBOARD FIRST in the tuple and
@@ -718,6 +728,11 @@ export function createJet(scene: Scene): AircraftVisual {
       accent,
       side > 0 ? starboardAileron : portAileron,
     ));
+    hingeAlong(side > 0 ? starboardAileron : portAileron, new Vector3(
+      hingeLineAt(AILERON_TIP_Z) - aileronHingeRootX,
+      0,
+      side * (AILERON_TIP_Z - AILERON_ROOT_Z),
+    ), scene);
   }
 
   // Wingtip launcher rails. Not decoration: the published 9.96 m span is
@@ -824,6 +839,24 @@ export function createJet(scene: Scene): AircraftVisual {
   // the CHILD, because the node's own Y rotation is the deflection the pose
   // owns every frame.
   rudderSurface.rotation.z = Math.atan2(0.5, 2.6);
+  // NOT raked, and the reason is measured rather than assumed.
+  //
+  // This panel's lean is a `rotation.z` applied about the BOX'S OWN CENTRE,
+  // which is how a box fakes a swept panel against a vertical hinge. That tilt
+  // swings the panel FORWARD past the hinge node: on the 747 the leading edge
+  // ends up 1.85 m ahead of it, so the hinge line runs THROUGH the panel,
+  // 2.26 m from the leading edge and 0.64 m from the trailing edge. Turning
+  // that about the fin's true rake swings the two edges opposite ways and the
+  // trailing edge goes to PORT on right rudder -- measured, and caught by
+  // `render.webgpu-control-surface-sides`.
+  //
+  // Raking it correctly means re-seating the panel so its leading edge lies on
+  // the hinge line, and a rigid rake also tilts the CHORD, which a real raked
+  // fin does not: the span leans and the chords stay level, so the panel wants
+  // to be sheared or lofted rather than rotated. That is a geometry change
+  // needing a look at the fin, not an axis change, so it is left alone here.
+  // The Global's rudder IS raked, because its panel is an aerofoil built along
+  // the hinge line and sits entirely aft of it.
 
   // The two ventral strakes under the tail. They are not trim: on this airframe
   // they are what keeps directional stability at high angle of attack, where
@@ -1280,7 +1313,7 @@ export function createJet(scene: Scene): AircraftVisual {
     cockpitParts: [fuselage, radome, dorsalSpine],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
-    elevator,
+    elevators: [elevator],
     rudder,
     noseSteer,
     flaps,
