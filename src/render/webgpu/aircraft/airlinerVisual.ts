@@ -555,6 +555,28 @@ const MAIN_BOGIES = [
   { name: "body", x: -6.9, z: 1.9, trunnionY: -3.45, doorZ: 0.9, doorWidth: 3 },
 ] as const;
 
+/**
+ * Take a part out of the sun shadow map, keeping whatever else it carries.
+ *
+ * A caster is drawn THREE times a frame — once in the colour pass and once
+ * into each of the two shadow cascades — and the 747 measured +0.70 ms of CPU
+ * against the Cessna on draw submission alone. So a part earns its two shadow
+ * draws only if its shadow can be SEEN, and the parts passed here cannot be:
+ * each one's shadow falls inside the shadow of the nacelle, fuselage or tyre
+ * it is buried in, or is a few centimetres proud of one. Nothing that draws
+ * the aeroplane's outline on the ground comes through here.
+ *
+ * Spread, never assigned: `finishMesh` and the loft builders have already
+ * written metadata the renderer and the tests read.
+ */
+function withoutShadow<T extends AbstractMesh>(part: T): T {
+  part.metadata = {
+    ...(part.metadata as Record<string, unknown> | null),
+    castsShadow: false,
+  };
+  return part;
+}
+
 export function createAirliner(scene: Scene): AircraftVisual {
   const build = new AircraftBuildContext(scene);
   const root = new TransformNode("boeing-747-8", scene);
@@ -796,6 +818,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
     }
     cabinWindow.thinInstanceSetBuffer("matrix", matrices, 16, true);
     cabinWindow.thinInstanceRefreshBoundingInfo(true);
+    // Each pane stands 0.05 m proud of a 6.5 m fuselage whose own shadow it
+    // falls inside from every sun angle.
+    withoutShadow(cabinWindow);
   }
 
   const wingSurfaces: AbstractMesh[] = [];
@@ -1357,14 +1382,15 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // The centre post, laid along the nose's crown line between the two No.1
   // panes. Its endpoints are the crown height at those two stations, so it
   // sits half in the skin instead of floating over it.
-  const windscreenFrame = build.strutBetween(
+  // Half sunk in the crown, so its shadow is the nose's own.
+  const windscreenFrame = withoutShadow(build.strutBetween(
     "airliner-windscreen-center-post",
     new Vector3(31.9, 2.73, 0),
     new Vector3(31.2, 3.23, 0),
     0.09,
     dark,
     root,
-  );
+  ));
 
   for (const side of [1, -1] as const) {
     const seat = build.box(
@@ -1391,7 +1417,11 @@ export function createAirliner(scene: Scene): AircraftVisual {
   }
   // Panel centred at y = 2.63 and 0.54 m tall, so its top edge is 2.90 — see
   // the catalogue note on where that puts the eye point.
-  addInstrumentPanel(
+  //
+  // Sealed inside the nose loft, as the seats are, so none of it casts. The
+  // shared builder already says so for the gauges and needles and leaves the
+  // panel board itself a caster; on this airframe the board is under a roof.
+  for (const part of addInstrumentPanel(
     build,
     "airliner",
     root,
@@ -1401,7 +1431,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     interior,
     instrumentFace,
     instrumentMarking,
-  );
+  )) withoutShadow(part);
 
   // ------------------------------------------------------------- ENGINES ---
   const fanSpools: TransformNode[] = [];
@@ -1452,7 +1482,10 @@ export function createAirliner(scene: Scene): AircraftVisual {
       // what the eye gets is a thin bright lip ring around a dark opening.
       // Tapering it inward from 2.76 to 2.40 gives the opening a shaded wall
       // rather than a flat disc.
-      const inlet = build.cylinder(`${prefix}-inlet`, 1.3, 2.4, 2.76, 20, dark, root);
+      // No shadow: the duct is inside the cowl over all but its last 0.04 m.
+      const inlet = withoutShadow(
+        build.cylinder(`${prefix}-inlet`, 1.3, 2.4, 2.76, 20, dark, root),
+      );
       inlet.rotation.z = Math.PI / 2;
       inlet.position.set(inletX - 0.61, centreY, z);
 
@@ -1495,9 +1528,17 @@ export function createAirliner(scene: Scene): AircraftVisual {
       // and the duct's own cap hides it; a solid cylinder has no open end.
       const spool = node(`${prefix}-fan-spool`, root, scene);
       spool.position.set(inletX + 0.07, centreY, z);
-      const fanFace = build.cylinder(`${spool.name}-fan`, 0.1, 2.02, 2.1, 16, hub, spool);
+      // Neither casts. A 2.1 m disc and a 0.5 m cone in the mouth of a 3.4 m
+      // cowl: the most either can add to the nacelle's shadow is a 0.3 m
+      // sliver off its front face, and eight parts were paying sixteen shadow
+      // draws a frame for it.
+      const fanFace = withoutShadow(
+        build.cylinder(`${spool.name}-fan`, 0.1, 2.02, 2.1, 16, hub, spool),
+      );
       fanFace.rotation.z = Math.PI / 2;
-      const spinner = build.cylinder(`${spool.name}-spinner`, 0.46, 0.02, 0.5, 10, dark, spool);
+      const spinner = withoutShadow(
+        build.cylinder(`${spool.name}-spinner`, 0.46, 0.02, 0.5, 10, dark, spool),
+      );
       // Points FORWARD: the negative quarter turn puts the cylinder's
       // zero-radius end at +X. Centred on the fan face so the cone stands
       // through it and stops level with the inlet lip rather than out in the
@@ -1544,6 +1585,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const chevron = build.cylinder("airliner-nacelle-chevron", 0.62, 0, 0.6, 4, dark, root);
   chevron.thinInstanceSetBuffer("matrix", chevronMatrices, 16, true);
   chevron.thinInstanceRefreshBoundingInfo(true);
+  // Tabs lying in the nozzle's own skin; their shadow is the nacelle's.
+  withoutShadow(chevron);
 
   // ---------------------------------------------------------------- GEAR ---
   const landingGear = node("airliner-retractable-landing-gear", root, scene);
@@ -1596,7 +1639,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
             axle,
           ).position.z = pair * BOGIE_HALF_TRACK;
         }
-        const shaft = build.cylinder(`${axle.name}-shaft`, 1.5, 0.34, 0.34, 10, hub, axle);
+        // The shaft is a 0.34 m rod through two 1.24 m tyres and under a
+        // bogie beam: what little of its shadow is not theirs is a 0.7 m
+        // strip between the pair. The tyres, beam and legs all still cast.
+        const shaft = withoutShadow(
+          build.cylinder(`${axle.name}-shaft`, 1.5, 0.34, 0.34, 10, hub, axle),
+        );
         shaft.rotation.x = Math.PI / 2;
         mainWheels.push(axle);
       }
@@ -1636,7 +1684,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   build.torus(
     "starboard-nose-wheel-tire", NOSE_TYRE_DIAMETER, NOSE_TYRE_THICKNESS, 12, tire, noseWheel,
   ).position.z = 0.45;
-  const noseShaft = build.cylinder("airliner-nose-axle", 1.3, 0.3, 0.3, 10, hub, noseWheel);
+  const noseShaft = withoutShadow(
+    build.cylinder("airliner-nose-axle", 1.3, 0.3, 0.3, 10, hub, noseWheel),
+  );
   noseShaft.rotation.x = Math.PI / 2;
 
   // Gear doors, each with the sign that drops its OUTBOARD edge: the door at
