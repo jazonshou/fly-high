@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { FlightSimulator, pilotSurfaceClearance } from "../src/sim";
 import type { EnvironmentInput } from "../src/sim";
+import { createSimulationSpawn } from "../src/game/spawn";
+import {
+  createWorld,
+  sampleTerrainCollision,
+  sampleTerrainCollisionHeight,
+} from "../src/world";
 
 /**
  * Pilot-facing AGL over water.
@@ -193,5 +199,33 @@ describe("the rule is ONE authority, shared with the terrain viewer", () => {
     for (let i = 1; i < readings.length; i += 1) {
       expect(readings[i]!).toBeLessThanOrEqual(readings[i - 1]!);
     }
+  });
+});
+
+describe("the real world's runway still reads exactly zero", () => {
+  it("composes with the runway start, because an airport is never at sea level", () => {
+    // The worry worth checking: a SIGNED water clearance would report a
+    // negative AGL on a runway that sat at or below the datum. It cannot
+    // happen by construction -- src/world/world.ts:108-109 floors the field
+    // elevation at `seaLevel + 10` for a generated site and `seaLevel + 14`
+    // otherwise -- and this pins it on the real world rather than on a
+    // hand-built environment, alongside the runway start the aircraft wave
+    // landed. Both the clamped terrain side and the water side must agree
+    // that a parked aeroplane is at zero.
+    const world = createWorld(0x51a7e);
+    const environment: EnvironmentInput = {
+      terrain: (x, z) => sampleTerrainCollision(world, x, z),
+      terrainHeight: (x, z) => sampleTerrainCollisionHeight(world, x, z),
+      seaLevel: world.seaLevel,
+    };
+    const parked = new FlightSimulator({
+      spawn: createSimulationSpawn(world, "runway", 975),
+      environment,
+    });
+    expect(parked.state.onGround).toBe(true);
+    expect(parked.telemetry().altitudeAgl).toBe(0);
+    // And the reason it is zero: the field really is above the sea, so the
+    // water side of the rule is nowhere near being the smaller one.
+    expect(parked.state.position.y - world.seaLevel).toBeGreaterThan(9);
   });
 });
