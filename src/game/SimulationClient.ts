@@ -141,8 +141,8 @@ export class SimulationClient {
   }
 
   /** Stops demo automation and selects pilot authority as one Worker command. */
-  handoff(mode: FlightMode): void {
-    this.send({ type: "handoff", mode });
+  handoff(mode: FlightMode, trimSeed = 0): void {
+    this.send({ type: "handoff", mode, trimSeed });
   }
 
   /** Atomically rebuilds the live menu flight with demo assistance enabled. */

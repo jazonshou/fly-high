@@ -304,6 +304,21 @@ export class InputManager {
     this.throttle = Math.min(1, Math.max(0, value));
   }
 
+  /**
+   * Seed the player's trim, for the menu-to-flight hand-off.
+   *
+   * This controller OWNS trim: it holds it, steps it on ArrowUp/ArrowDown and
+   * re-sends it with every control message. So a trim written anywhere else --
+   * in the worker, say -- is overwritten on the next message and the aeroplane
+   * slews back to neutral. Seeding has to come through here.
+   *
+   * The player can re-trim from the seeded value exactly as from any other:
+   * it is ordinary trim state, not a mode.
+   */
+  setTrim(value: number): void {
+    this.trim = Math.min(1, Math.max(-1, value));
+  }
+
   resetForSpawn(
     spawn: "airborne" | "runway",
     airborneThrottle = 0.68,

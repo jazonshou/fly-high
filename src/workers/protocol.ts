@@ -35,7 +35,12 @@ export type SimulationCommand =
   | { type: "mode"; mode: FlightMode }
   | { type: "weather"; weather: WeatherPreset }
   | { type: "attract"; enabled: boolean }
-  | { type: "handoff"; mode: FlightMode }
+  /**
+   * `trimSeed` is the player's trim in `controls.trim` units, decided on the
+   * main thread because the input controller owns trim and re-sends it. Zero
+   * for Scenic, whose own height hold carries the trim across instead.
+   */
+  | { type: "handoff"; mode: FlightMode; trimSeed: number }
   | { type: "returnToAttract"; airborneStartAgl: number }
   | { type: "pause"; paused: boolean }
   | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number }
