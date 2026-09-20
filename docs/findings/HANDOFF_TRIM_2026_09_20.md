@@ -143,11 +143,63 @@ Per the standing rule, both are recorded rather than quietly fixed.
 ## Gates
 
 `tests/sim.handoff-trim.test.ts`, kind-agnostic over `AIRCRAFT_KINDS`. Every
-flight test runs **both arms**, and asserts that the unseeded one breaks a
-bound — the positive control, in the same output, stating what these numbers
-read when the defect is present. Verified by stubbing `handoffTrimSeed` to
-return zero: 8 tests fail and print the step each saw (0.0286, 0.0258, 0.0069).
+flight test runs **both arms**, and the unseeded one is the positive control.
 An unsettled menu flight makes a run **void**, not clean.
+
+### The control went vacuous, and what fixed it
+
+The first version asserted that the unseeded arm broke an absolute bound on
+pitch excursion or vertical speed. On the aircraft branch four of those tests
+failed — **correctly**, and the failure message said so: *"this test would pass
+whether or not the seeding works"*.
+
+The cause was that the test's **exposure** — the elevator the menu flight
+happens to be holding when Start is pressed, which is exactly what an unseeded
+hand-off loses — was incidental. That branch lifts a silent 180 m/s spawn clamp,
+so the Global spawns at its catalogue speed and near trim. Held elevator at
+catalogue cruise, before and after that change:
+
+| | House-Keeping | aircraft branch |
+| --- | ---: | ---: |
+| trainer | −0.0286 | −0.0254 |
+| jet | −0.0258 | −0.0015 |
+| bizjet | −0.0069 | −0.0005 |
+| 747-8 | — | −0.0001 |
+
+Three of four kinds had nothing to lose. **For them "seeded" and "unseeded" were
+the same experiment**, so every comparison between the arms was void — not
+passed and not failed. Part of what the original control had been detecting was
+the *spawn* being off-trim, not the hand-off.
+
+Three changes make it robust, and none of them is a lowered bound:
+
+1. **The exposure is created deliberately**, not inherited: the menu flight
+   settles level at 1.2× catalogue cruise, off the zero-elevator trim point, so
+   there is a real elevator to lose on every airframe. Measured exposure is then
+   0.020–0.034 across all four kinds on both trees.
+2. **The assertion moved to the quantity the mechanism acts on** — elevator
+   continuity. The unseeded arm must lose ≥70% of the held elevator; the seeded
+   arm must keep it. That is arithmetic about the elevator, so it bites for any
+   real exposure *however placid the airframe's response*, which is what the
+   747-8 needed.
+3. **The excursion assertion became a ratio** of what the unfixed hand-off did,
+   because departure is a property of the airframe and not of the mechanism.
+
+**Faster than trim, not slower, and that was measured too.** Flying *below* the
+trim speed also creates exposure — but it drives the throttle to idle, and an
+aeroplane handed over at idle departs over the next twenty seconds whatever the
+elevator does. At 0.75× cruise the seeded jet's excursion was no better than the
+unseeded one (5.65° against 5.43°): the scenario was being measured, not the
+hand-off. Above the trim point the power to sustain it is within the engine's
+range and the seeded arm departs 7–11% as much as the unseeded one.
+
+**The exposure is printed beside every result**, so a near-zero one reads as
+void in the output itself rather than as a quiet pass, and a run below the floor
+fails saying the *scenario* needs changing rather than the bound.
+
+Verified by stubbing `handoffTrimSeed` to return zero: 8 tests fail on
+House-Keeping and 10 on the aircraft branch, each printing both arms side by
+side — with the stub they are identical, which is the point.
 
 The attract probe is byte-identical to `bee956d`, so extracting
 `TRIM_ELEVATOR_AUTHORITY` changed no flight arithmetic.

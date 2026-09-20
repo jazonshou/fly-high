@@ -46,10 +46,52 @@ const environment: EnvironmentInput = {
   seaLevel: GROUND,
 };
 
-/** Bounds, chosen from the before-trace below. */
+/**
+ * The scenario, and why it is not simply "cruise".
+ *
+ * The test's EXPOSURE is the elevator the menu flight is holding when the
+ * player presses Start, because that is exactly what the unseeded hand-off
+ * loses. An aeroplane sitting at its own zero-elevator trim point holds
+ * nothing, so for that kind "seeded" and "unseeded" are the SAME EXPERIMENT
+ * and every comparison between them is void — not passed, not failed.
+ *
+ * That is not hypothetical. At catalogue cruise the held elevator is incidental:
+ * it was −0.0286/−0.0258/−0.0069 on the trainer/jet/bizjet when this test was
+ * written, but on the aircraft branch, which lifts a silent 180 m/s spawn clamp
+ * so the Global spawns at its catalogue speed and near trim, it is
+ * −0.0254/−0.0015/−0.0005 and −0.0001 for the 747-8. Three of four kinds had
+ * nothing to lose and the control went vacuous.
+ *
+ * So the exposure is created deliberately: the menu flight settles LEVEL at a
+ * fifth above catalogue cruise, which is faster than the zero-elevator trim
+ * speed and therefore needs a real nose-down elevator to hold. Faster rather
+ * than slower on purpose — flying BELOW the trim speed also creates exposure,
+ * but it drives the throttle to idle, and an aeroplane handed over at idle
+ * departs over the next twenty seconds whatever the elevator does, which
+ * measures the scenario instead of the hand-off. Above the trim point the power
+ * to sustain it is within the engine's range.
+ */
+const CRUISE_MULTIPLE = 1.2;
+/**
+ * Exposure below which the comparison is void. A run under this floor means the
+ * SCENARIO has stopped creating exposure — a new airframe, a changed catalogue,
+ * a changed spawn — and fails loudly, because a test that cannot tell the fix
+ * from its absence must say so rather than pass.
+ */
+const EXPOSURE_FLOOR = 0.01;
+/** The unseeded arm must lose essentially all of it; the seeded arm must keep it. */
+const UNSEEDED_LOSS_FRACTION = 0.7;
+const SEEDED_KEPT_FRACTION = 0.1;
 const ELEVATOR_STEP_LIMIT = 0.005;
-const PITCH_EXCURSION_LIMIT = 2.5;
-const VERTICAL_SPEED_LIMIT = 2.5;
+/**
+ * How much of the unseeded arm's departure the seeding must remove.
+ *
+ * A RATIO, not an absolute angle, because the excursion is a property of the
+ * airframe's own response and not of the mechanism: the 747-8 barely moves when
+ * it loses a small elevator and the jet leaves violently. Measured ratios are
+ * 7-11% and under, so a third is far from every one of them.
+ */
+const EXCURSION_SHARE = 1 / 3;
 
 interface HandoffResult {
   readonly seededTrim: number;
@@ -60,6 +102,7 @@ interface HandoffResult {
   readonly stepAtHandoff: number;
   readonly pitchExcursion: number;
   readonly worstVerticalSpeed: number;
+  readonly handoverThrottle: number;
 }
 
 /**
@@ -105,7 +148,7 @@ function handOver(
         verticalSpeed: telemetry.verticalSpeed,
         groundSpeed: telemetry.groundSpeed,
         equivalentAirspeed: telemetry.indicatedAirspeed,
-        targetAirspeed: airborneAirspeedForAircraft(kind),
+        targetAirspeed: airborneAirspeedForAircraft(kind) * CRUISE_MULTIPLE,
         stallSpeed: stallSpeed(aircraft, simulator.state.actuators.flaps),
         dt: FIXED_TIME_STEP,
       },
@@ -174,6 +217,7 @@ function handOver(
   }
   return {
     seededTrim,
+    handoverThrottle: simulator.state.actuators.throttle,
     heldAtHandoff,
     settledDrift,
     stepAtHandoff,
@@ -187,62 +231,53 @@ describe.each(["unassisted", "pilot"] as const)(
   (mode) => {
     describe.each(AIRCRAFT_KINDS)("the %s", (kind) => {
       it("keeps flying what it was flying, and the unseeded arm proves the test bites", () => {
-        // Measured before the fix, 20 s hands-off from a settled menu flight:
-        //
-        //            pitch excursion   peak |V/S|   elevator drift after 1 s
-        //   trainer        8.87 deg     7.35 m/s    0.0286  (Direct)
-        //   jet           21.60 deg    49.70 m/s    0.0258
-        //   bizjet         3.93 deg    14.52 m/s    0.0069
-        //   trainer        8.39 deg     6.93 m/s    0.0310  (Pilot)
-        //   jet           19.61 deg    46.37 m/s    0.0248
-        //   bizjet         3.65 deg    13.54 m/s    0.0066
-        //
-        // and after it: 1.15/1.30, 0.07/0.12, 0.03/0.16 with drift 0.0000.
-        // The bounds below sit between the two, far from both.
         const seeded = handOver(kind, mode, true);
         const unseeded = handOver(kind, mode, false);
+        const exposure = Math.abs(unseeded.heldAtHandoff);
 
-        // The positive control, asserted rather than assumed: this instrument
-        // must FAIL on the unfixed behaviour, or a pass from the seeded arm
-        // says nothing. Whichever bound the aeroplane breaks is enough -- the
-        // trainer departs gently and the jet violently, and requiring both to
-        // break every bound would be a claim about the aeroplanes, not the fix.
-        const brokeABound = unseeded.settledDrift > ELEVATOR_STEP_LIMIT ||
-          unseeded.pitchExcursion > PITCH_EXCURSION_LIMIT ||
-          unseeded.worstVerticalSpeed > VERTICAL_SPEED_LIMIT;
-        expect(
-          brokeABound,
-          `POSITIVE CONTROL FAILED for the ${kind} in ${mode}: with the seeding ` +
-          `off the hand-off stayed inside every bound (drift ` +
-          `${unseeded.settledDrift.toFixed(4)}, pitch ` +
-          `${unseeded.pitchExcursion.toFixed(2)} deg, |V/S| ` +
-          `${unseeded.worstVerticalSpeed.toFixed(2)} m/s), so this test would ` +
-          "pass whether or not the seeding works",
-        ).toBe(true);
+        // Everything this test claims is relative to the exposure, so the
+        // exposure goes in every message. A reader who sees a conclusion here
+        // can see what it was measured against without running anything.
+        const report =
+          `${kind}/${mode}: exposure ${exposure.toFixed(5)} of elevator held at ` +
+          `the hand-off (throttle ${unseeded.handoverThrottle.toFixed(2)}); unseeded arm ` +
+          `lost ${unseeded.settledDrift.toFixed(5)} and departed ` +
+          `${unseeded.pitchExcursion.toFixed(2)} deg / ` +
+          `${unseeded.worstVerticalSpeed.toFixed(2)} m/s; seeded arm ` +
+          `lost ${seeded.settledDrift.toFixed(5)} and departed ` +
+          `${seeded.pitchExcursion.toFixed(2)} deg / ` +
+          `${seeded.worstVerticalSpeed.toFixed(2)} m/s`;
 
-        // The elevator the player inherits is the one that was flying it.
+        // THE EXPOSURE GATE. Below the floor the two arms are the same
+        // experiment and nothing below this line means anything, so the run is
+        // VOID -- which is a failure of the scenario, reported as one, rather
+        // than a quiet pass.
         expect(
-          seeded.stepAtHandoff,
-          `${kind}/${mode}: elevator step at the hand-off ` +
-          `(unseeded arm: ${unseeded.stepAtHandoff.toFixed(4)})`,
-        ).toBeLessThan(ELEVATOR_STEP_LIMIT);
-        expect(
-          seeded.settledDrift,
-          `${kind}/${mode}: elevator drift after 1 s ` +
-          `(unseeded arm: ${unseeded.settledDrift.toFixed(4)})`,
-        ).toBeLessThan(ELEVATOR_STEP_LIMIT);
+          exposure,
+          `VOID, not passed: this scenario no longer creates exposure. ${report}. ` +
+          `Flying at ${CRUISE_MULTIPLE}x catalogue cruise is supposed to sit off ` +
+          "the zero-elevator trim point; if this aeroplane trims out there, the " +
+          "scenario needs changing, not the bound",
+        ).toBeGreaterThan(EXPOSURE_FLOOR);
 
-        // And the aeroplane stays where it was put.
+        // THE MECHANISM, stated on the quantity it acts on. The unseeded arm
+        // loses the elevator it was holding; the seeded arm keeps it. This is
+        // arithmetic about the elevator, so it bites for ANY real exposure
+        // however placid the airframe's response to losing it.
         expect(
-          seeded.pitchExcursion,
-          `${kind}/${mode}: pitch excursion over 20 s ` +
-          `(unseeded arm: ${unseeded.pitchExcursion.toFixed(2)} deg)`,
-        ).toBeLessThan(PITCH_EXCURSION_LIMIT);
-        expect(
-          seeded.worstVerticalSpeed,
-          `${kind}/${mode}: peak vertical speed over 20 s ` +
-          `(unseeded arm: ${unseeded.worstVerticalSpeed.toFixed(2)} m/s)`,
-        ).toBeLessThan(VERTICAL_SPEED_LIMIT);
+          unseeded.settledDrift,
+          `POSITIVE CONTROL FAILED -- with the seeding off the elevator survived, ` +
+          `so this test cannot tell the fix from its absence. ${report}`,
+        ).toBeGreaterThan(UNSEEDED_LOSS_FRACTION * exposure);
+        expect(seeded.settledDrift, report)
+          .toBeLessThan(Math.max(SEEDED_KEPT_FRACTION * exposure, ELEVATOR_STEP_LIMIT));
+
+        // AND THE CONSEQUENCE, as a share of what the unfixed hand-off did
+        // rather than an absolute angle -- see EXCURSION_SHARE.
+        expect(seeded.pitchExcursion, report)
+          .toBeLessThan(EXCURSION_SHARE * unseeded.pitchExcursion);
+        expect(seeded.worstVerticalSpeed, report)
+          .toBeLessThan(EXCURSION_SHARE * unseeded.worstVerticalSpeed);
 
         // The seed is a trim SETTING, not an angle: same sign as the elevator
         // it replaces, twice its size because trim authority is half.
