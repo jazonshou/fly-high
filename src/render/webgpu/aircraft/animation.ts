@@ -163,7 +163,15 @@ export function resolveAircraftAnimationPose(
   }
 
   const normalizedRpm = clamp(state.engineRpm / 2_600, 0, 1.2);
-  const wheelsRolling = state.onGround || finite(state.altitudeAgl, Infinity) < 0.35;
+  // The 0.35 m band is slack around ground contact, so it has to be a band and
+  // not a half-line: AGL is SIGNED over water now, and a negative reading means
+  // the aircraft is UNDER the sea, where there is nothing for a tyre to roll on.
+  // Without the lower bound the wheels would spin all the way to the seabed.
+  // (Residual, deliberately not plumbed around: hovering under 0.35 m above the
+  // water still spins them. That is one cosmetic frame of a case that needs a
+  // float plane to reach, and the alternative is a second telemetry field.)
+  const agl = finite(state.altitudeAgl, Infinity);
+  const wheelsRolling = state.onGround || (agl >= 0 && agl < 0.35);
   return {
     // 123 rad/s at red line and zero at a stopped engine. The old artificial
     // 18 rad/s floor made a stopped propeller blur and made the A-4 solid

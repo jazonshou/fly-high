@@ -357,12 +357,84 @@ function couldReachTerrain(
   );
 }
 
-function gearClearanceAboveTerrain(
+/**
+ * The PILOT-FACING AGL rule, in one place because there are TWO readouts.
+ *
+ * The simulator computes one (below, from the aircraft's contact points) and
+ * the terrain viewer computes its own from the camera (`src/game/freeFly.ts`),
+ * and before this function existed they were separate arithmetic that happened
+ * to agree. They did not agree over water, which is how the viewer's HUD came
+ * to show a height above the SEABED in the screenshot that started this.
+ *
+ * @param terrainClearance height of the lowest point above the terrain, unclamped
+ * @param lowestPointY world Y of that same lowest point
+ * @param seaLevel still water height, or undefined for "no water datum known"
+ */
+export function pilotSurfaceClearance(
+  terrainClearance: number,
+  lowestPointY: number,
+  seaLevel: number | undefined,
+): number {
+  // Clearance above TERRAIN is clamped at zero, as it has always been:
+  // suspension compression puts tyre contact points slightly below the ideal
+  // ground plane, and a wheel clearance should read exactly 0 in ground
+  // contact rather than a small negative on a runway.
+  const clamped = Math.max(0, terrainClearance);
+  // No water datum (DEFAULT_ENVIRONMENT, and every caller that passes only
+  // terrain samplers) reports exactly what it always did, to the bit.
+  if (seaLevel === undefined) return clamped;
+  // Clearance above WATER is SIGNED, so a descent into the sea takes the
+  // number through zero instead of continuing to measure a bed nobody can see.
+  // The SMALLER of the two is what makes this right at a coastline straddle
+  // and continuous across the shoreline: as the terrain rises to meet the
+  // datum the two quantities converge, so crossing a shore has no step in it.
+  return Math.min(clamped, lowestPointY - seaLevel);
+}
+
+/**
+ * The PILOT-FACING clearance below the aircraft: height above the terrain, or
+ * above the WATER SURFACE where water stands above the terrain.
+ *
+ * **Display only.** This function has exactly one caller -- the telemetry
+ * assembly below -- and nothing in the contact, impact, friction or crash path
+ * reads it. Those use `terrainAt`, and their broad-phase gate `couldReachTerrain`
+ * uses `terrainHeightAt`; both describe the real surface the aircraft can touch,
+ * which over water is the sea BED. Flying into the sea behaves exactly as it
+ * always has: the aeroplane passes through the surface and keeps going until it
+ * reaches the bottom. What changed is the instrument, not the water.
+ *
+ * TWO MINIMA, and the asymmetry between them is the whole design:
+ *
+ *  - Clearance above TERRAIN is clamped at zero, exactly as it has always been,
+ *    because suspension compression puts tyre contact points slightly below the
+ *    ideal ground plane and a pilot-facing wheel clearance should read exactly
+ *    0 in ground contact rather than a small negative number on a runway.
+ *  - Clearance above the WATER is SIGNED. An aircraft below the surface reports
+ *    how far below, which is what Jason asked for and what a descent into the
+ *    sea should look like: the number goes through zero, instead of continuing
+ *    to measure a seabed the pilot cannot see.
+ *
+ * Taking the SMALLER of the two is what makes this correct at a coastline
+ * straddle -- nose over land, tail over water -- since each minimum is taken
+ * over all contact points independently. It is also continuous across the
+ * waterline: as the terrain rises to meet `seaLevel` the two quantities
+ * converge, so there is no step as the aircraft crosses a shore.
+ *
+ * The water datum is FLAT (the ocean mesh is drawn at `seaLevel`, and the
+ * curvature drop was deliberately withdrawn), so it costs no terrain samples at
+ * all -- one subtraction against the lowest contact point. It is therefore also
+ * blind to waves: the rendered surface oscillates about the datum with a
+ * significant wave height of roughly 0.9-2.6 m, so this reading is right on
+ * average and off by about a metre instantaneously. Matching a crest would mean
+ * reading back GPU displacement.
+ */
+function gearClearanceAboveSurface(
   state: FlightState,
   environment: EnvironmentInput,
   aircraft: AircraftDefinition,
 ): number {
   let minimumClearance = Number.POSITIVE_INFINITY;
+  let lowestContactOffsetY = Number.POSITIVE_INFINITY;
   const offset = vec3();
   const physicalPoint = vec3();
   const centreHeight = terrainHeightAt(
@@ -383,6 +455,7 @@ function gearClearanceAboveTerrain(
       minimumClearance,
       state.position.y + offset.y - surfaceHeight,
     );
+    lowestContactOffsetY = Math.min(lowestContactOffsetY, offset.y);
   };
   for (const point of aircraft.airframeContactPoints) includePoint(point);
   if (!aircraft.retractableGear || state.actuators.gear > 0.015) {
@@ -394,10 +467,9 @@ function gearClearanceAboveTerrain(
   if (!Number.isFinite(minimumClearance)) {
     minimumClearance = state.position.y - (centreHeight ?? 0);
   }
-  // Suspension compression puts tyre contact points slightly below the ideal
-  // terrain plane. AGL is a pilot-facing wheel clearance, so ground contact is
-  // exactly zero rather than the aircraft CG height above the runway.
-  return Math.max(0, minimumClearance);
+  const lowestContactY = state.position.y
+    + (Number.isFinite(lowestContactOffsetY) ? lowestContactOffsetY : 0);
+  return pilotSurfaceClearance(minimumClearance, lowestContactY, environment.seaLevel);
 }
 
 export function createFlightState(
@@ -1279,7 +1351,7 @@ export function getFlightTelemetry(
   rotateVectorInto(up, state.orientation, BODY_UP);
   const altitudeAgl = state.crashed
     ? 0
-    : gearClearanceAboveTerrain(state, environment, aircraft);
+    : gearClearanceAboveSurface(state, environment, aircraft);
   const airDensity = Math.max(0.001, state.dynamics.airDensity);
   const equivalentAirspeed = state.dynamics.airspeed * Math.sqrt(airDensity / SEA_LEVEL_DENSITY);
   // Angle of attack and sideslip are undefined when the relative airflow is
