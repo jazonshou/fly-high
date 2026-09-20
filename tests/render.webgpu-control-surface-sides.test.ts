@@ -4,7 +4,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { afterEach, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types";
 import { createWebGpuAircraft, type AircraftVisual } from "../src/render/webgpu/aircraft";
-import type { AircraftKind } from "../src/sim";
+import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
 
 /**
  * Which way do the control surfaces actually move?
@@ -169,13 +169,15 @@ function surfaceOnSide(
   return wanted.name;
 }
 
-const KINDS: readonly AircraftKind[] = ["trainer", "jet"];
+const KINDS: readonly AircraftKind[] = AIRCRAFT_KINDS;
 
 /** The jet's tail surfaces carry their own prefix. */
 function elevatorSurfaces(kind: AircraftKind): readonly string[] {
-  return kind === "jet"
-    ? ["starboard-jet-elevator-surface", "port-jet-elevator-surface"]
-    : ["starboard-elevator-surface", "port-elevator-surface"];
+  if (kind === "jet") return ["starboard-jet-elevator-surface", "port-jet-elevator-surface"];
+  if (kind === "bizjet") {
+    return ["starboard-bizjet-elevator-surface", "port-bizjet-elevator-surface"];
+  }
+  return ["starboard-elevator-surface", "port-elevator-surface"];
 }
 
 describe("control surfaces move the way the pilot's controls promise", () => {

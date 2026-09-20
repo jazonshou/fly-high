@@ -5,6 +5,7 @@ import {
   type AircraftKind,
   type SpawnOptions,
 } from "@/src/sim";
+import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   runwayToWorld,
   type WorldDefinition,
@@ -19,22 +20,19 @@ const AIRBORNE_START_PITCH = (2.4 * Math.PI) / 180;
 const RECOVERY_TERRAIN_RADII = [180, 420, 720] as const;
 
 export function airborneAirspeedForAircraft(aircraft: AircraftKind): number {
-  return aircraft === "jet" ? 155 : 56;
+  return aircraftSpec(aircraft).spawn.airborneAirspeed;
 }
 
 export function airborneThrottleForAircraft(aircraft: AircraftKind): number {
-  // Dry thrust is much less speed-limited than trainer propeller thrust. This
-  // setting balances jet drag near the 155 m/s airborne spawn instead of
-  // turning a neutral Scenic-to-Direct handoff into a zoom climb.
-  return aircraft === "jet" ? 0.17 : 0.68;
+  return aircraftSpec(aircraft).spawn.airborneThrottle;
 }
 
 export function runwayTrimForAircraft(aircraft: AircraftKind): number {
-  return aircraft === "jet" ? 0.015 : 0.04;
+  return aircraftSpec(aircraft).spawn.runwayTrim;
 }
 
 export function airborneGearForAircraft(aircraft: AircraftKind): number {
-  return aircraft === "jet" ? 0 : 1;
+  return aircraftSpec(aircraft).spawn.airborneGear;
 }
 
 /**

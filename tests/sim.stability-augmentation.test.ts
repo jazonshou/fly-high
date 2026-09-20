@@ -291,7 +291,12 @@ describe("jet stability augmentation", () => {
     );
     expect(source).toContain("new JetStabilityAugmentation()");
     expect(source).toContain('if (selectedMode !== "unassisted") return selectedControls;');
-    expect(source).toContain('aircraftKind === "jet"');
+    // The worker asks the catalogue whether THIS airframe wants a damper
+    // rather than whether it burns kerosene: the Global 8000's dutch roll is
+    // damped to zeta ~0.42 by its own inertia and aspect ratio and wants no
+    // help, while this augmentation's gain is derived from the J-45's
+    // coefficients and would be a guess anywhere else.
+    expect(source).toContain("aircraftSpec(aircraftKind).dutchRollDamper");
     // Every spawn resets the filters, exactly like DirectPitchRetention.
     expect(source.match(/jetStabilityAugmentation\.reset\(\)/g)?.length).toBeGreaterThanOrEqual(4);
   });

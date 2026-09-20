@@ -1,4 +1,5 @@
 export {
+  AIRCRAFT_KINDS,
   aircraftDefinition,
   calculateDragCoefficient,
   calculateEngineThrust,

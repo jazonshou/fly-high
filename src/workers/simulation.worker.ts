@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   applyFlightAssistance,
   aircraftDefinition,
@@ -166,10 +167,11 @@ function assistedControls(): FlightControls {
     sim.state,
     telemetry,
   );
-  // The jet's dutch-roll dampers share the Direct-mode doctrine: they run
-  // only on pilot-neutral axes and only for the jet. The trainer's control
-  // path is untouched.
-  return aircraftKind === "jet"
+  // The dutch-roll dampers share the Direct-mode doctrine: they run only on
+  // pilot-neutral axes, and only on an airframe whose own mode is poorly
+  // enough damped to want them — see `dutchRollDamper` in the catalogue, which
+  // is decided per aeroplane rather than by whether it burns kerosene.
+  return aircraftSpec(aircraftKind).dutchRollDamper
     ? jetStabilityAugmentation.apply(retained, controls, sim.state, telemetry)
     : retained;
 }

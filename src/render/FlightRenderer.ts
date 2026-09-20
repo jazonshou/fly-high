@@ -60,6 +60,7 @@ import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResourc
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
@@ -322,30 +323,11 @@ export function chaseCameraProfile(
   airspeed: number,
   out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
-  const jet = aircraft === "jet";
-  if (jet) {
-    // The speed response is the point: the "jet should sit further ahead at
-    // speed" report is answered by pulling the rig back AND pushing the aim
-    // point forward, so the aircraft slides forward in frame and the world
-    // streams past it. The old fixed +2.2 m cap read as a static rig.
-    //
-    // Sized for the ~11 m Vesper J-45 (not the 19 m airframe the fix-pack
-    // briefly flew): the base rig is the original 14.3 m / 5.0 m, and the
-    // response opens above 145 m/s — the J-45's ~260 m/s ceiling gives a
-    // 115 m/s working band, so the slopes are set to reach their caps right
-    // at the top of the envelope (0.07·115 = 8.05 ≥ 8; 0.12·115 = 13.8 ≈ 14;
-    // 0.05·120 = 6.0 = 6 measured from the 140 m/s FOV knee).
-    const speedExcess = Math.max(0, airspeed - 145);
-    out.distance = 14.3 + Math.min(8, speedExcess * 0.07);
-    out.height = 5;
-    out.fieldOfView = 62 + Math.max(0, Math.min(6, (airspeed - 140) * 0.05));
-    out.aimAhead = 16 + Math.min(14, speedExcess * 0.12);
-    return out;
-  }
-  out.distance = 13.5 + Math.max(0, Math.min(2.2, (airspeed - 45) * 0.012));
-  out.height = 5.1;
-  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - 38) * 0.035));
-  out.aimAhead = 16;
+  const { chase } = aircraftSpec(aircraft);
+  out.distance = rampAtSpeed(chase.distance, airspeed);
+  out.height = chase.height;
+  out.fieldOfView = rampAtSpeed(chase.fieldOfView, airspeed);
+  out.aimAhead = rampAtSpeed(chase.aimAhead, airspeed);
   return out;
 }
 
@@ -2736,12 +2718,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(200));
     } else if (this.cameraMode === "cockpit") {
-      // Both airframes seat the pilot at the same offsets from the CG: the
-      // J-45's tandem canopy and the trainer's cabin both sit 1.15 m forward
-      // and 1.12 m up, so no per-kind eye point is warranted here.
+      const eye = aircraftSpec(this.aircraft.kind).cockpitEye;
       this.desiredCamera.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(1.15))
-        .addInPlace(this.up.scale(1.12));
+        .addInPlace(this.forward.scale(eye.forward))
+        .addInPlace(this.up.scale(eye.up));
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(400));
       // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
@@ -2749,10 +2729,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       fieldOfView = 56;
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
+      const orbit = aircraftSpec(this.aircraft.kind).cinematic;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
-        Math.cos(angle) * 24,
-        8.5 + Math.sin(angle * 0.7) * 2,
-        Math.sin(angle) * 24,
+        Math.cos(angle) * orbit.radiusMeters,
+        orbit.heightMeters + Math.sin(angle * 0.7) * orbit.heightDriftMeters,
+        Math.sin(angle) * orbit.radiusMeters,
       );
       this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.cameraRigLift.scale(1.3));

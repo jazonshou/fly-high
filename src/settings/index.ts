@@ -9,7 +9,7 @@ import {
   DEFAULT_AIRBORNE_START_AGL,
   normalizeAirborneStartAgl,
 } from "@/src/workers/protocol";
-import type { AircraftKind } from "@/src/sim";
+import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
 
 export type UnitSystem = "aviation" | "metric";
 export type HudMode = "minimal" | "full" | "off";
@@ -139,7 +139,10 @@ export function validateSettings(value: unknown): GameSettings {
     DEFAULT_SETTINGS.timeOfDay,
   );
   return {
-    aircraft: oneOf(source.aircraft, ["trainer", "jet"] as const, DEFAULT_SETTINGS.aircraft),
+    // Reads the catalogue rather than a second hand-written list: a saved
+    // preference naming an airframe this build does not have falls back to the
+    // default, which is what makes adding or removing one safe.
+    aircraft: oneOf(source.aircraft, AIRCRAFT_KINDS, DEFAULT_SETTINGS.aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
     renderingMode: renderingMode(source.renderingMode),
     flightMode: oneOf(

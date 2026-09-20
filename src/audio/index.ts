@@ -1,5 +1,6 @@
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
+import { aircraftSpec } from "@/src/aircraft/catalogue";
 
 export interface AudioLevels {
   master: number;
@@ -12,8 +13,7 @@ export interface FlightAudioOptions extends AudioLevels {
 }
 
 export function normalizedEngineSpeed(aircraft: AircraftKind, engineRpm: number): number {
-  const maximum = aircraft === "jet" ? 100 : 2_600;
-  return Math.min(1.2, Math.max(0, engineRpm / maximum));
+  return Math.min(1.2, Math.max(0, engineRpm / aircraftSpec(aircraft).engineReadout.maximum));
 }
 
 export class FlightAudio {
@@ -73,16 +73,15 @@ export class FlightAudio {
     if (!context || !this.enabled) return;
     const now = context.currentTime;
     const rpmRatio = normalizedEngineSpeed(this.aircraft, state.engineRpm);
-    const baseFrequency = this.aircraft === "jet"
-      ? 88 + rpmRatio * 205
-      : 34 + rpmRatio * 58;
+    const sound = aircraftSpec(this.aircraft).engineSound;
+    const baseFrequency = sound.baseHz + rpmRatio * sound.spanHz;
     this.engineOscillators.forEach((oscillator, index) => {
       oscillator.frequency.setTargetAtTime(baseFrequency * (index + 1), now, 0.045);
       oscillator.detune.setTargetAtTime(index === 0 ? -4 : 6, now, 0.08);
     });
     this.engineGain?.gain.setTargetAtTime(
       this.levels.engine *
-        (this.aircraft === "jet" ? 0.045 + rpmRatio * 0.082 : 0.035 + rpmRatio * 0.1) *
+        (sound.gainBase + rpmRatio * sound.gainSpan) *
         (0.55 + state.throttle * 0.45),
       now,
       0.07,
@@ -170,18 +169,17 @@ export class FlightAudio {
     this.master.gain.value = this.levels.master;
     this.master.connect(context.destination);
 
+    const sound = aircraftSpec(this.aircraft).engineSound;
     const engineFilter = context.createBiquadFilter();
     engineFilter.type = "lowpass";
-    engineFilter.frequency.value = this.aircraft === "jet" ? 1_450 : 720;
-    engineFilter.Q.value = this.aircraft === "jet" ? 0.72 : 1.1;
+    engineFilter.frequency.value = sound.filterHz;
+    engineFilter.Q.value = sound.filterQ;
     this.engineGain = context.createGain();
     this.engineGain.gain.value = 0;
     this.engineGain.connect(engineFilter).connect(this.master);
     for (const harmonic of [1, 2]) {
       const oscillator = context.createOscillator();
-      oscillator.type = this.aircraft === "jet"
-        ? harmonic === 1 ? "triangle" : "sine"
-        : harmonic === 1 ? "sawtooth" : "triangle";
+      oscillator.type = sound.waveforms[harmonic - 1]!;
       oscillator.frequency.value = 40 * harmonic;
       oscillator.connect(this.engineGain);
       oscillator.start();
