@@ -176,6 +176,12 @@ export interface FlightTelemetry {
    * a DISPLAY quantity: nothing about impact, contact or crash reads it.
    */
   altitudeAgl: number;
+  /**
+   * RADIANS, `atan2(forward.x, forward.z)`. The worker's `visualState`
+   * converts to degrees for the HUD; nothing else should. Stated here because
+   * treating it as degrees pointed the attract flight's terrain scan 57 times
+   * too close to north and cost an afternoon.
+   */
   heading: number;
   pitch: number;
   bank: number;
