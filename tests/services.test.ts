@@ -27,8 +27,9 @@ import {
 import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
+  runwayStartAlong,
 } from "../src/game/spawn";
-import { AIRCRAFT_KINDS, FlightSimulator } from "../src/sim";
+import { aftExtent, aircraftDefinition, AIRCRAFT_KINDS, FlightSimulator } from "../src/sim";
 import {
   createWorld,
   sampleTerrainCollision,
@@ -353,10 +354,29 @@ describe("flight spawn contract", () => {
         airborneSpawn.position?.x ?? Infinity,
         airborneSpawn.position?.z ?? Infinity,
       );
-      expect(runwayLocal.along).toBeCloseTo(-airport.runwayLength * 0.36, 8);
+      // Runway starts line up on the threshold, and how far forward that is
+      // depends on how long the aeroplane is, so this asserts the contract
+      // function rather than a fraction of the runway. It used to be a flat
+      // 36% back from the midpoint, which wasted 185 m and would have hung a
+      // big airframe's tail over the grass.
+      expect(runwayLocal.along).toBeCloseTo(
+        runwayStartAlong(airport, aircraftDefinition("trainer")),
+        8,
+      );
       expect(runwayLocal.across).toBeCloseTo(0, 8);
       expect(airborneLocal.along).toBeCloseTo(-airport.runwayLength * 0.22, 8);
       expect(airborneLocal.across).toBeCloseTo(0, 8);
+
+      // The invariants the fraction was standing in for, now stated directly
+      // and checked for every airframe rather than only the default one.
+      for (const kind of AIRCRAFT_KINDS) {
+        const aircraft = aircraftDefinition(kind);
+        const along = runwayStartAlong(airport, aircraft);
+        const threshold = -airport.runwayLength * 0.5;
+        expect(along - aftExtent(aircraft), `${kind} tail behind the threshold`)
+          .toBeGreaterThan(threshold);
+        expect(along, `${kind} lined up past the midpoint`).toBeLessThan(0);
+      }
     }
   });
 

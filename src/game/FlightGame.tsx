@@ -35,6 +35,7 @@ import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
   airborneThrottleForAircraft,
+  runwayFlapsForAircraft,
   runwayTrimForAircraft,
 } from "./spawn";
 import {
@@ -108,6 +109,15 @@ export function FlightGame() {
   const transitionGateRef = useRef(createTransitionGate());
   const cameraModeRef = useRef<CameraMode>("chase");
   const spawnRef = useRef<SpawnKind>("airborne");
+  /**
+   * The same value as `spawnRef`, as state, because the pause menu RENDERS it
+   * — it names the restart after the spawn the flight began at. A ref read
+   * during render does not re-render when it changes, so the two are kept in
+   * step deliberately rather than one being derived from the other: the ref is
+   * what callbacks and the input pump read on the hot path, the state is what
+   * the markup reads.
+   */
+  const [spawnKind, setSpawnKind] = useState<SpawnKind>("airborne");
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
@@ -211,6 +221,7 @@ export function FlightGame() {
     );
     inputRef.current?.setThrottle(latestStateRef.current.throttle);
     spawnRef.current = "airborne";
+    setSpawnKind("airborne");
     simulationRef.current?.handoff(settingsRef.current.flightMode);
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
@@ -259,30 +270,51 @@ export function FlightGame() {
   }, [phase, exitViewer]);
 
   /** Starts a deliberate new flight at the chosen spawn. */
+  /**
+   * Starts a deliberate new flight at the chosen spawn.
+   *
+   * `fromMenu` exists because this used to refuse to run while the start
+   * screen was up: the menu's own Start is `takeControl`, a hand-off into the
+   * attract flight already in the air, and this path was only ever reached
+   * from a restart. A runway start needs the menu to reach it, and it needs
+   * the full reset — attract mode torn down, the simulation re-spawned — which
+   * the hand-off deliberately does not do.
+   */
   const startNewFlight = useCallback(
-    async (spawn: SpawnKind) => {
+    async (spawn: SpawnKind, fromMenu = false) => {
       const transition = beginTransition(transitionGateRef.current);
       await unlockAudio();
       if (
         !isCurrentTransition(transitionGateRef.current, transition) ||
-        phaseRef.current === "menu" ||
+        (!fromMenu && phaseRef.current === "menu") ||
         settingsOpenRef.current
       ) return;
       setError(null);
       spawnRef.current = spawn;
+      setSpawnKind(spawn);
       inputRef.current?.resetForSpawn(
         spawn,
         airborneThrottleForAircraft(settingsRef.current.aircraft),
         runwayTrimForAircraft(settingsRef.current.aircraft),
         airborneGearForAircraft(settingsRef.current.aircraft),
+        runwayFlapsForAircraft(settingsRef.current.aircraft),
       );
       simulationRef.current?.setMode(settingsRef.current.flightMode);
       simulationRef.current?.setAttractMode(false);
       simulationRef.current?.reset(spawn, settingsRef.current.airborneStartAgl);
+      // The aeroplane teleports. Without a cut the rig carries a temporal
+      // history — and an observed ground speed — that belong somewhere else.
+      rendererRef.current?.cutCamera();
       simulationRef.current?.setPaused(false);
       updatePhase("flying");
     },
     [unlockAudio, updatePhase],
+  );
+
+  /** The start screen's second door: on the threshold, stopped, ready to go. */
+  const startOnRunway = useCallback(
+    () => startNewFlight("runway", true),
+    [startNewFlight],
   );
 
   const pauseFlight = useCallback(() => {
@@ -357,15 +389,21 @@ export function FlightGame() {
       settingsOpenRef.current
     ) return;
     setError(null);
+    // A CRASH ALWAYS RECOVERS AIRBORNE, however the flight began. Being put
+    // back on the threshold after hitting a mountain forty kilometres away is
+    // worse than a re-entry, and the recovery path is built to find safe air
+    // above the wreck rather than to find the airfield.
     inputRef.current?.resetForSpawn(
       "airborne",
       airborneThrottleForAircraft(settingsRef.current.aircraft),
       runwayTrimForAircraft(settingsRef.current.aircraft),
       airborneGearForAircraft(settingsRef.current.aircraft),
+      runwayFlapsForAircraft(settingsRef.current.aircraft),
     );
     simulationRef.current?.setMode(settingsRef.current.flightMode);
     simulationRef.current?.setAttractMode(false);
     simulationRef.current?.restartAfterCrash(settingsRef.current.airborneStartAgl);
+    rendererRef.current?.cutCamera();
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [startNewFlight, unlockAudio, updatePhase]);
@@ -380,7 +418,10 @@ export function FlightGame() {
       runwayTrimForAircraft(settingsRef.current.aircraft),
       airborneGearForAircraft(settingsRef.current.aircraft),
     );
+    // A crash recovery IS an airborne start, so the restart the pause menu
+    // offers afterwards has to say so.
     spawnRef.current = "airborne";
+    setSpawnKind("airborne");
     simulationRef.current?.setMode(settingsRef.current.flightMode);
     simulationRef.current?.returnToAttract(settingsRef.current.airborneStartAgl);
     simulationRef.current?.setPaused(false);
@@ -686,6 +727,7 @@ export function FlightGame() {
     audioRef.current?.suspend();
     const nextSeed = createRandomSeed();
     spawnRef.current = "airborne";
+    setSpawnKind("airborne");
     setSeed(nextSeed);
     latestStateRef.current = INITIAL_VISUAL_STATE;
     setVisualState(INITIAL_VISUAL_STATE);
@@ -748,19 +790,29 @@ export function FlightGame() {
               <span>Start</span>
               <small>{CONTROL_MODE_LABELS[settings.flightMode]}</small>
             </button>
+            <button
+              className="primary-action start-screen__runway"
+              type="button"
+              onClick={() => void startOnRunway()}
+              aria-label="Start on the runway, stopped and ready for take-off"
+            >
+              <span>Runway start</span>
+              <small>On the threshold</small>
+            </button>
             <button className="seed-action" onClick={chooseNewWorld} aria-label={`Generate a new world. Current seed ${seedToString(seed)}`}>
               <small>Seed</small>
               <strong>{seedToString(seed)}</strong>
               <span aria-hidden="true">↻</span>
             </button>
             <button
-              className="settings-action"
+              className="settings-action settings-action--icon"
               type="button"
               onClick={openSettings}
               aria-haspopup="dialog"
               aria-controls="settings-dialog"
+              aria-label="Settings"
+              title="Settings"
             >
-              <small>Settings</small>
               <span aria-hidden="true">⚙</span>
             </button>
             <button
@@ -830,7 +882,9 @@ export function FlightGame() {
                 onClick={() => void restartFlight()}
                 aria-label={visualState.crashed
                   ? "Restart airborne above the crash location"
-                  : "Restart flight from the original start"}
+                  : spawnKind === "runway"
+                    ? "Restart on the runway, where this flight began"
+                    : "Restart airborne, where this flight began"}
               >
                 Restart flight
               </button>

@@ -309,6 +309,7 @@ export class InputManager {
     airborneThrottle = 0.68,
     runwayTrim = 0.04,
     airborneGear = 1,
+    runwayFlaps = 0,
   ): void {
     this.pressed.clear();
     this.actions.clear();
@@ -324,7 +325,7 @@ export class InputManager {
       ? 0
       : Math.min(1, Math.max(0, airborneThrottle));
     this.trim = spawn === "runway" ? runwayTrim : 0;
-    this.flaps = 0;
+    this.flaps = spawn === "runway" ? Math.min(1, Math.max(0, runwayFlaps)) : 0;
     this.gear = spawn === "runway" ? 1 : Math.min(1, Math.max(0, airborneGear));
   }
 

@@ -81,6 +81,14 @@ export interface SpawnSpec {
   readonly runwayTrim: number;
   /** Gear extension for an airborne start; fixed gear is always 1. */
   readonly airborneGear: number;
+  /**
+   * Flap setting an aeroplane sits on the runway with, ready to go.
+   *
+   * Not a cosmetic default: it is the configuration each one's measured
+   * take-off roll was flown at, so a pilot who pushes the throttle up without
+   * touching anything gets the distance the definition promises.
+   */
+  readonly runwayFlaps: number;
 }
 
 /** The engine instrument on the HUD, which is not an RPM gauge on a turbine. */
@@ -161,6 +169,9 @@ const TRAINER: AircraftSpec = Object.freeze({
     airborneThrottle: 0.68,
     runwayTrim: 0.04,
     airborneGear: 1,
+    // A 150 takes off clean; its flaps are for the approach and for a short
+    // field, not for an ordinary departure.
+    runwayFlaps: 0,
   }),
   // The O-200's red line is 2,750 rpm.
   engineReadout: Object.freeze({ label: "RPM", unit: "PROP", maximum: 2_750, roundTo: 10 }),
@@ -207,6 +218,7 @@ const JET: AircraftSpec = Object.freeze({
     airborneThrottle: 0.17,
     runwayTrim: 0.015,
     airborneGear: 0,
+    runwayFlaps: 0.5,
   }),
   // Turbine telemetry is percent N2, not crankshaft revolutions.
   engineReadout: Object.freeze({ label: "N2", unit: "%", maximum: 100, roundTo: 1 }),
@@ -274,6 +286,8 @@ const BIZJET: AircraftSpec = Object.freeze({
     airborneThrottle: 0.62,
     runwayTrim: 0.02,
     airborneGear: 0,
+    // Half flap, which is what its 942 m take-off roll was measured at.
+    runwayFlaps: 0.5,
   }),
   engineReadout: Object.freeze({ label: "N2", unit: "%", maximum: 100, roundTo: 1 }),
   engineSound: Object.freeze({

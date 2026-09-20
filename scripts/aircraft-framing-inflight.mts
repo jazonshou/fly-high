@@ -111,7 +111,24 @@ if (expectTree) {
 }
 await page.goto(url, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(4_000);
-await page.locator("text=Start").first().click();
+if (manoeuvre === "runway" || manoeuvre === "startscreen") {
+  // Wait for the menu itself, not a fixed delay: the first load spends a
+  // while on "PREPARING AIRSPACE" and a timed screenshot catches that.
+  await page.locator('[aria-label="fly high start"]').waitFor({ timeout: 90_000 });
+  await page.waitForTimeout(2_500);
+  await page.screenshot({ path: `${outDir}/${arm}-startscreen.png`, type: "png" });
+}
+if (manoeuvre === "startscreen") {
+  console.log(`start screen only: ${outDir}/${arm}-startscreen.png`);
+  await browser.close();
+  process.exit(0);
+}
+if (manoeuvre === "runway") {
+  // Exact text, because "Start" is a substring of "Runway start".
+  await page.getByRole("button", { name: /Start on the runway/ }).click();
+} else {
+  await page.getByRole("button", { name: /^Start$|^Start\b/ }).first().click();
+}
 await page.waitForTimeout(16_000);
 await page.screenshot({ path: `${outDir}/prestate.png`, type: "png" });
 console.log("visibility/fps:", await page.evaluate(() => ({
@@ -225,6 +242,26 @@ async function flyManoeuvre(): Promise<void> {
     await page.screenshot({ path: `${outDir}/surface-${kindWanted}-${manoeuvre}.png`, type: "png" });
     await page.waitForTimeout(400);
     await page.keyboard.up(key);
+    return;
+  }
+  if (manoeuvre === "runway") {
+    // Sitting still is the whole point, so this flies nothing. The frames
+    // answer the one question the arithmetic in tests/sim.runway-spawn.test.ts
+    // cannot: where the CHASE CAMERA ends up. A camera that trails 67 m behind
+    // a stationary Global is 67 m back down the runway, which is where the
+    // approach lights and the hangar line live, and no amount of centreline
+    // geometry tells you whether the player opens on a view of a shed.
+    await page.screenshot({ path: `${outDir}/${arm}-runway-chase.png`, type: "png" });
+    // Thirty seconds later, from the same fixed view: anything that moved,
+    // rolled.
+    await page.waitForTimeout(30_000);
+    await page.screenshot({ path: `${outDir}/${arm}-runway-still.png`, type: "png" });
+    await page.keyboard.press("c");
+    await page.waitForTimeout(2_500);
+    await page.screenshot({ path: `${outDir}/${arm}-runway-cockpit.png`, type: "png" });
+    await page.keyboard.press("c");
+    await page.waitForTimeout(9_000);
+    await page.screenshot({ path: `${outDir}/${arm}-runway-side.png`, type: "png" });
     return;
   }
   if (manoeuvre === "level") return;

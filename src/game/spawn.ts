@@ -1,4 +1,5 @@
 import {
+  aftExtent,
   aircraftDefinition,
   DEFAULT_CONTROLS,
   type AircraftDefinition,
@@ -8,6 +9,7 @@ import {
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   runwayToWorld,
+  type AirportDefinition,
   type WorldDefinition,
 } from "@/src/world";
 import { sampleGroundHeight } from "@/src/sim/terrainGrid";
@@ -17,6 +19,26 @@ import {
 } from "@/src/workers/protocol";
 
 const AIRBORNE_START_PITCH = (2.4 * Math.PI) / 180;
+
+/** Tarmac left behind the tail when lined up. Enough to be clearly on, not wasted. */
+const RUNWAY_THRESHOLD_MARGIN = 10;
+
+/**
+ * Where along the runway an aeroplane lines up, measured from the centre.
+ *
+ * Placed off the airframe's own aft extent rather than a shared fraction of
+ * the runway: a take-off starts at the threshold, and "far enough forward that
+ * the tail is on pavement" is a different distance for a 7 m Cessna than for a
+ * 76 m airliner. The previous constant — 36% back from the midpoint — threw
+ * away 185 m of a 1,320 m strip and would still have hung a big tail over the
+ * grass, because it was one number measured against a small aeroplane.
+ */
+export function runwayStartAlong(
+  airport: Readonly<AirportDefinition>,
+  aircraft: AircraftDefinition,
+): number {
+  return -airport.runwayLength * 0.5 + aftExtent(aircraft) + RUNWAY_THRESHOLD_MARGIN;
+}
 const RECOVERY_TERRAIN_RADII = [180, 420, 720] as const;
 
 export function airborneAirspeedForAircraft(aircraft: AircraftKind): number {
@@ -33,6 +55,10 @@ export function runwayTrimForAircraft(aircraft: AircraftKind): number {
 
 export function airborneGearForAircraft(aircraft: AircraftKind): number {
   return aircraftSpec(aircraft).spawn.airborneGear;
+}
+
+export function runwayFlapsForAircraft(aircraft: AircraftKind): number {
+  return aircraftSpec(aircraft).spawn.runwayFlaps;
 }
 
 /**
@@ -138,7 +164,7 @@ export function createSimulationSpawn(
   }
 
   if (kind === "runway") {
-    const point = runwayToWorld(airport, -airport.runwayLength * 0.36, 0);
+    const point = runwayToWorld(airport, runwayStartAlong(airport, aircraft), 0);
     return {
       onGround: true,
       terrainHeight: airport.elevation,

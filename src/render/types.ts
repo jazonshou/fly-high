@@ -21,6 +21,16 @@ export interface FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   setCameraMode(mode: CameraMode): void;
   /**
+   * Snap the exterior camera rig onto its settled pose on the next frame.
+   *
+   * Needed when the aeroplane TELEPORTS — a spawn or a crash recovery — where
+   * the mode has not changed, so `setCameraMode` early-returns and cannot do
+   * it. Without a cut the rig carries a temporal history about somewhere else
+   * and, because the chase trail is derived from how far the aircraft moved
+   * since the last frame, a ground speed in the thousands.
+   */
+  cutCamera(): void;
+  /**
    * Beta terrain viewer: hides the aircraft and switches to the free-fly
    * camera rig. The caller keeps feeding `render()` a synthetic
    * `FlightVisualState` whose position IS the camera, so streaming, the
