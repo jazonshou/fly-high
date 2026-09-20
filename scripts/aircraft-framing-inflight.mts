@@ -29,6 +29,15 @@ const kindWanted = process.argv[5] ?? "trainer";
 const manoeuvre = process.argv[6] ?? "level";
 /** Weather preset, which scales the wind: clear 0.62, breezy 1, cloudy 1.28. */
 const weather = process.argv[7] ?? "clear";
+/** Time-of-day preset, for the lamp frames: day, dawn, golden, night. */
+const timeOfDay = process.argv[10] ?? "day";
+/**
+ * Start height in feet. The default 450 is too low for an unattended
+ * turnaround: a 95-second orbit is long enough for the airborne spawn's
+ * phugoid to put a hands-off aeroplane into a mountain, which is how the
+ * Global's first turnaround came back showing a wreck.
+ */
+const startAgl = Number(process.argv[11] ?? 450);
 /** Label for the output files, so two arms of an A/B do not overwrite. */
 const arm = process.argv[8] ?? "arm";
 /**
@@ -70,15 +79,23 @@ const browser = await chromium.launch({
   ],
 });
 const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
-await page.addInitScript(({ kind, weather }: { kind: string; weather: string }) => {
+await page.addInitScript((
+  { kind, weather, timeOfDay, startAgl }:
+    { kind: string; weather: string; timeOfDay: string; startAgl: number },
+) => {
   // The picker persists to localStorage; set it before the app reads it so the
   // run starts on the requested airframe without driving the start screen UI.
   try {
     const key = Object.keys(localStorage).find((k) => k.includes("settings")) ?? "aerolith.settings.v3";
     const existing = JSON.parse(localStorage.getItem(key) ?? "{}");
-    localStorage.setItem(key, JSON.stringify({ ...existing, aircraft: kind, weather }));
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...existing, aircraft: kind, weather, timeOfDay, airborneStartAgl: startAgl,
+      }),
+    );
   } catch { /* first load has no settings yet; the default is the trainer */ }
-}, { kind: kindWanted, weather });
+}, { kind: kindWanted, weather, timeOfDay, startAgl });
 if (expectTree) {
   const probeUrl = new URL(`/@fs${expectTree}/package.json`, url).toString();
   const response = await fetch(probeUrl);
@@ -129,6 +146,44 @@ console.log("engine diagnostics:", await page.evaluate(async ({ storeUrl }) => {
   }));
 }, { storeUrl }));
 
+/**
+ * A turnaround, flown rather than posed. The cinematic camera orbits at
+ * `simulationTime * 0.075` rad/s — a full circle every 83.8 s — so frames
+ * 14 s apart are 60 degrees apart, and six of them walk the aeroplane round
+ * from nose to tail. There is no top view: nothing in the game looks straight
+ * down at the aircraft.
+ */
+async function captureTurnaround(): Promise<void> {
+  // Two presses: chase -> cockpit -> cinematic.
+  await page.keyboard.press("c");
+  await page.waitForTimeout(600);
+  await page.keyboard.press("c");
+  await page.waitForTimeout(3_000);
+  for (let index = 0; index < 6; index += 1) {
+    await page.screenshot({
+      path: `${outDir}/${arm}-turn-${index * 60}deg.png`,
+      type: "png",
+    });
+    if (index < 5) await page.waitForTimeout(13_960);
+  }
+}
+
+/** Flaps 0 and full, and for a retractable airframe gear up and down. */
+async function captureConfigurations(): Promise<void> {
+  await page.screenshot({ path: `${outDir}/${arm}-cfg-clean.png`, type: "png" });
+  // F steps flaps down by 0.5, so two presses is full.
+  await page.keyboard.press("f");
+  await page.waitForTimeout(400);
+  await page.keyboard.press("f");
+  await page.waitForTimeout(3_000);
+  await page.screenshot({ path: `${outDir}/${arm}-cfg-flaps-full.png`, type: "png" });
+  await page.keyboard.press("g");
+  // The Global's gear takes about eight seconds to travel; the sport jet's
+  // rather less. Wait out the slowest.
+  await page.waitForTimeout(11_000);
+  await page.screenshot({ path: `${outDir}/${arm}-cfg-gear-down.png`, type: "png" });
+}
+
 async function captureViews(): Promise<void> {
   // Three frames per airframe: the chase view a player spends their time in,
   // and the two the camera key cycles to. `C` cycles chase -> cockpit ->
@@ -150,6 +205,14 @@ async function captureViews(): Promise<void> {
 async function flyManoeuvre(): Promise<void> {
   if (manoeuvre === "views") {
     await captureViews();
+    return;
+  }
+  if (manoeuvre === "turnaround") {
+    await captureTurnaround();
+    return;
+  }
+  if (manoeuvre === "configurations") {
+    await captureConfigurations();
     return;
   }
   if (manoeuvre === "aileron-right" || manoeuvre === "rudder-right") {

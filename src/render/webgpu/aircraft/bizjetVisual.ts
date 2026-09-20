@@ -489,18 +489,36 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // aeroplane has no fuselage airbrake — `speedBrakeDrag` 0.09 against the
     // sport jet's 0.16 is exactly that difference — so the brake the pilot
     // commands is these panels lifting off the wing.
+    //
+    // WING-COLOURED AND FLUSH, which the first version was not. Built in the
+    // accent paint and standing 0.05 m proud, they read as gold-and-navy
+    // hazard decals stuck to the wing rather than as panels in it — Jason
+    // spotted it immediately. On the real aeroplane they are the wing's own
+    // skin: at rest you see a panel line, nothing more. Four a side now
+    // rather than two, which is what a Global carries, and each one sits on
+    // the SWEPT hinge line rather than at a fixed x, so its aft edge meets the
+    // flap it lives in front of at every station instead of only at one.
     for (const spoiler of [
-      { name: "inner", hingeX: 0.3, y: -0.72, z: 4, chord: 0.95, span: 2.8 },
-      { name: "outer", hingeX: -1.5, y: -0.8, z: 7.85, chord: 0.8, span: 2.1 },
+      { name: "one", z: 3.2, span: 1.3, chord: 1.0, surfaceY: -0.703 },
+      { name: "two", z: 4.7, span: 1.3, chord: 0.95, surfaceY: -0.735 },
+      { name: "three", z: 6.3, span: 1.5, chord: 0.85, surfaceY: -0.768 },
+      { name: "four", z: 8, span: 1.6, chord: 0.75, surfaceY: -0.803 },
     ]) {
+      const hingeLineX = spoiler.z <= WING_KINK_Z
+        ? alongPanel(WING_ROOT_HINGE_X, WING_KINK_HINGE_X, inboardFraction(spoiler.z))
+        : alongPanel(WING_KINK_HINGE_X, WING_TIP_HINGE_X, outboardFraction(spoiler.z));
       const brake = node(`${sideName}-bizjet-${spoiler.name}-spoiler`, root, scene);
-      brake.position.set(spoiler.hingeX, spoiler.y, side * spoiler.z);
+      // The node is the panel's FORWARD edge and its hinge, so it sits one
+      // chord ahead of the flap hinge line and the panel reaches back to it.
+      brake.position.set(hingeLineX + spoiler.chord, spoiler.surfaceY, side * spoiler.z);
       const panel = build.box(
         `${brake.name}-surface`,
         spoiler.chord,
-        0.05,
+        // 35 mm: thick enough to catch a highlight along its edge, thin enough
+        // to be a panel line rather than a step.
+        0.035,
         spoiler.span,
-        accent,
+        body,
         brake,
       );
       // Hinged at its forward edge, so the panel lies entirely aft of the
@@ -607,6 +625,29 @@ export function createBizJet(scene: Scene): AircraftVisual {
     tailplane.position.y = TAILPLANE_Y;
     wingSurfaces.push(tailplane);
   }
+  // The bullet fairing over the fin/tailplane junction, and it is not
+  // decoration: the fin is 0.45 m thick (z +/-0.225) and BOTH the tailplane
+  // and the elevator start at |z| = 0.32, so without it there is a 9.5 cm slot
+  // down each side of the fin top, open from x -14.6 clear through to the
+  // elevator trailing edge. You can see sky through the tail. Every real
+  // T-tail carries this fairing for the same reason — it is where the
+  // stabiliser's centre structure and its trim actuator live — so the fix is
+  // the aeroplane's own part rather than a patch. Sized to 0.39 m half-width
+  // so it overlaps both roots rather than merely meeting them, and stopping
+  // short of the elevator's travel.
+  build.loft(
+    "bizjet-tailplane-bullet",
+    [
+      { x: -17.45, yRadius: 0.1, zRadius: 0.1, yOffset: TAILPLANE_Y },
+      { x: -16.6, yRadius: 0.3, zRadius: 0.38, yOffset: TAILPLANE_Y },
+      { x: -15.3, yRadius: 0.33, zRadius: 0.39, yOffset: TAILPLANE_Y },
+      { x: -14.25, yRadius: 0.12, zRadius: 0.16, yOffset: TAILPLANE_Y },
+    ],
+    16,
+    body,
+    root,
+  );
+
   const elevator = node("elevator", root, scene);
   elevator.position.set(ELEVATOR_HINGE_X, TAILPLANE_Y, 0);
   for (const side of [1, -1] as const) {
