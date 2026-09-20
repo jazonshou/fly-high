@@ -717,6 +717,39 @@ export function createJet(scene: Scene): AircraftVisual {
       side * (FLAPERON_OUTBOARD_Z - FLAPERON_INBOARD_Z),
     ), scene);
     flaperons.push(hinge);
+
+    /*
+     * The fixed trailing edge outboard of the flaperon.
+     *
+     * The flaperon stops at z = 4.25 and the wing runs to 4.72, and the fixed
+     * panels stop at the HINGE LINE across the whole span -- so between those
+     * two stations the aeroplane had no trailing edge at all. Measured from
+     * the chase distances, 118 mm of daylight at every flap setting before
+     * this, widening to 196 mm at full flap once one panel spanned the lot and
+     * its tip swung down with the flap selection.
+     *
+     * It is the piece the real aeroplane carries there, not a patch: a
+     * flaperon that ran to the tip would foul the wingtip launcher rail.
+     */
+    const tipPanel = build.airfoilWing(
+      `${sideName}-jet-outer-trailing-edge`,
+      {
+        rootLeadingX: hingeLineAt(FLAPERON_OUTBOARD_Z),
+        rootTrailingX: trailingEdgeAt(FLAPERON_OUTBOARD_Z),
+        tipLeadingX: WING_TIP_HINGE_X,
+        tipTrailingX: trailingEdgeAt(WING_TIP_Z),
+        rootZ: side * FLAPERON_OUTBOARD_Z,
+        tipZ: side * WING_TIP_Z,
+        thicknessRatio: 0.04,
+        camberRatio: 0.005,
+        chordSegments: 6,
+        spanSegments: 2,
+      },
+      body,
+      root,
+    );
+    tipPanel.position.y = WING_CHORD_PLANE_Y;
+    wingSurfaces.push(tipPanel);
   }
 
   // Wingtip launcher rails. Not decoration: the published 9.96 m span is
