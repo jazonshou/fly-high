@@ -51,29 +51,83 @@
 }
 
 .start-screen__minimal {
+  /* One column of rows: the picker, the action row, the terrain viewer. The
+     action row lays ITSELF out (below), so nothing here has to know how many
+     buttons it holds or when they stop fitting. */
   display: grid;
-  /*
-   * Four across: Start, Runway start, seed, settings. Start and seed give up
-   * a little width to make room for the second start, and settings drops to a
-   * fixed square because it is now the glyph alone.
-   */
-  /*
-   * Start and Runway start share a single `1fr` each, so they are exactly the
-   * same width whatever their labels say — Jason asked for that directly, and
-   * it is also why their secondary lines came off. Settings is `auto` so the
-   * aspect-ratio below decides its width from the row height, which is what
-   * makes it a true square rather than a 56px slot in a taller row.
-   */
-  grid-template-columns:
-    minmax(128px, 1fr)
-    minmax(128px, 1fr)
-    minmax(118px, 0.68fr)
-    46px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   width: min(100%, 700px);
   gap: 10px;
   pointer-events: auto;
   filter: drop-shadow(0 16px 38px rgba(0, 7, 10, 0.26));
+  /* The settings square, in one place: it is the same size on one row and on
+     two, because Jason asked that it not shrink when it moves down. */
+  --start-square: 46px;
+}
+
+/*
+ * The action row: Start, Runway start, seed, settings.
+ *
+ * It wraps by CONTENT, not at a viewport breakpoint. Jason's rule is that the
+ * two starts shrink until they cannot, and only then do the seed and settings
+ * go below — and "cannot" is the width of the words "Runway start" in whatever
+ * font the machine has, which no pixel number in a media query can know. A
+ * wrapping flex row breaks a line exactly when its items' minimum sizes stop
+ * fitting, so the break lands where the label runs out of room on every
+ * machine.
+ *
+ * Two GROUPS, not four buttons, because flex wraps one item at a time: four
+ * loose buttons drop the settings square first, alone, which is the awkward
+ * state in Jason's screenshot. With the seed and settings as one item there
+ * is no width at which they can be separated.
+ *
+ * The bases reproduce the old four-column grid exactly while everything fits:
+ * that grid was `1fr 1fr 0.68fr 46px` with 10px gaps, so the starts take their
+ * inner gap plus 2 shares, the utility pair takes the square, its gap and 0.68
+ * of a share (written 200 : 68 — see the note on the grow factors below). Once the pair wraps it is alone on its line and grows to the
+ * full width, which is what stretches the seed all the way to the settings
+ * button with only the normal gap between them.
+ */
+.start-screen__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+}
+
+.start-screen__starts {
+  /*
+   * A two-track `1fr 1fr` grid rather than two flex items, so the buttons are
+   * the same width at every size. Its MAX-content width is what matters below:
+   * sized under a max-content constraint both `fr` tracks take the WIDER
+   * label's width, so the pair's max-content is two "Runway start"s and a gap.
+   * (Its MIN-content is not — there the tracks fall back to each button's own
+   * minimum, measured at 167 + 179, which let Start end up narrower than
+   * Runway start for the last few pixels before the wrap.)
+   */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  /* Grow factors are 200 and 68, not 2 and 0.68: a line whose grow factors
+     sum to LESS THAN 1 only hands out that fraction of the free space, so
+     once the utility pair was alone on its row `0.68` left a third of the row
+     empty to the right of the settings button. Same ratio, no such trap. */
+  flex: 200 1 10px;
+  /* The pair can never be narrower than two of its widest label. This is the
+     whole mechanism: it is what "until they can't any more" means, and it is
+     what makes the row wrap at that moment and not before or after. */
+  min-width: max-content;
+}
+
+.start-screen__utility {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex: 68 1 calc(var(--start-square) + 10px);
+  /* The seed's 118px floor plus the square and their gap. */
+  min-width: calc(118px + 10px + var(--start-square));
 }
 
 /* The terrain viewer keeps its own row rather than being squeezed into the
@@ -221,6 +275,18 @@
   transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
+/*
+ * In the utility pair the seed takes whatever the settings square leaves, so
+ * once the pair is on its own row the seed runs all the way to the square.
+ * Placed AFTER the base `.seed-action` rule on purpose: ui.visual-style finds a
+ * rule by the first `.seed-action {` in the file, and this selector ends in
+ * exactly that text.
+ */
+.start-screen__utility > .seed-action {
+  flex: 1 1 0;
+  min-width: 118px;
+}
+
 .settings-action {
   appearance: none;
   display: grid;
@@ -276,9 +342,12 @@
    * it at 89 px, which then stretched Start, Runway start and the seed to 89
    * too. The row was 89 px tall around a 19 px word because of this button.
    */
-  width: 46px;
-  height: 46px;
+  width: var(--start-square, 46px);
+  height: var(--start-square, 46px);
   min-width: 0;
+  /* A fixed flex item in the utility pair: it never grows, never shrinks, and
+     is the same square on one row and on two. */
+  flex: 0 0 var(--start-square, 46px);
   align-self: center;
   justify-self: center;
 }
@@ -420,6 +489,22 @@
   text-align: left;
   backdrop-filter: blur(22px) saturate(1.28);
   -webkit-backdrop-filter: blur(22px) saturate(1.28);
+}
+
+/*
+ * `width: auto`, because below 820px the base `.primary-action` is
+ * `width: 100%`, and a percentage width contributes NOTHING to its container's
+ * intrinsic size — measured, the pair then shrank to 85px with "Runway start"
+ * overflowing by 76px before anything wrapped. `min-width: 0` stays, so the two
+ * tracks always split the pair evenly; the floor lives on the pair, not on
+ * the buttons. Two classes on purpose, so this outranks the single-class rule
+ * wherever it sits in the file. It sits HERE, after the base rule, because
+ * ui.visual-style finds a rule by the first `.primary-action {` in the file and
+ * this selector ends in exactly that text.
+ */
+.start-screen__starts > .primary-action {
+  width: auto;
+  min-width: 0;
 }
 
 .primary-action::after {
@@ -1521,13 +1606,24 @@
 @media (max-width: 820px) {
   .flight-shell { min-height: 480px; }
   .start-screen { padding: 18px; background: linear-gradient(0deg, rgba(2, 10, 14, 0.34), transparent 38%); }
+  /* Width only. This block used to switch the row to THREE columns, which
+     left the settings square alone on a second row from 661 to 820px — the
+     state Jason photographed. The action row wraps itself now. */
   .start-screen__minimal {
-    grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.82fr) minmax(82px, 0.54fr);
-    width: min(100%, 540px);
+    /* 600, not the old 540: one row needs about 552px (two "Runway start"s,
+       the seed's floor, the square and three gaps), so a 540px cap forced the
+       two-row layout the moment the window crossed 820px, with room to spare.
+       The slack above 552 is for machines whose fonts run wider. */
+    width: min(100%, 600px);
   }
   .start-screen__start { min-width: 0; }
   .seed-action { min-width: 0; }
-  .settings-action { min-width: 0; padding-inline: 10px; }
+  /* No `padding-inline` here: it used to be 10px, and because this block comes
+     after `.settings-action--icon` at equal specificity it beat the icon's
+     `padding: 0`, leaving a 24px content box in a 46px square — so the gear,
+     sized at 54% of that box, SHRANK below 820px. That is the small icon Jason
+     saw once the button had dropped to the second row. */
+  .settings-action { min-width: 0; }
   .aircraft-picker {
     gap: 4px;
     padding: 4px;
@@ -1565,62 +1661,39 @@
 }
 
 /*
- * NOTE THE POSITION. This must sit AFTER the 820px block, not before it.
- * Both match below 660px, they have equal specificity, and source order
- * decides — with this block earlier the 820px rule's three columns won, which
- * put Start, Runway and the seed in one row and orphaned the settings button
- * on a row of its own.
+ * There is deliberately NO start-row breakpoint here any more. The 660px and
+ * 520px blocks used to re-template the row's columns and re-size the settings
+ * square (down to 44px), and between them and the 820px block above they
+ * produced a width range where settings sat alone on a second row. The action
+ * row now wraps by content (see .start-screen__actions), and the square is
+ * --start-square at every width, so it does not shrink when it moves down.
  */
-/*
- * Below about 660px the four columns cannot hold their minimums. Two columns
- * then let the items flow naturally — the two starts share a row, seed and
- * settings the next — without any per-item overrides, which matters because a
- * second `.settings-action` rule here would shadow the real one.
- */
-@media (max-width: 660px) {
-  .start-screen__minimal {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  /*
-   * At two columns the settings button's column is half the row, and a square
-   * that wide is enormous — the first attempt rendered a gear the size of the
-   * aircraft picker. Below this breakpoint the square is sized explicitly
-   * instead of being driven by the row, which keeps "width equals height"
-   * true without letting the column decide how big that is.
-   *
-   * Note the selector: `.settings-action--icon`, never a bare
-   * `.settings-action`, because a second base-class rule inside a media query
-   * shadows the real one and that has already broken ui.visual-style once.
-   */
-  .settings-action--icon {
-    width: 46px;
-    height: 46px;
-    justify-self: end;
-    align-self: center;
-  }
-}
-
 @media (max-width: 520px) {
   .start-screen__minimal {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: min(100%, 420px);
   }
 
-  .settings-action {
-    grid-column: 1 / -1;
-    min-height: 42px;
+  /*
+   * Phone widths. The row wrapped long before this (at about 590px), so this
+   * block changes nothing about WHEN it wraps; it says so explicitly with
+   * `flex-basis: 100%` because the next rule removes the floor that was causing
+   * the wrap. The floor has to go here: two full "Runway start"s are ~370px and
+   * a phone's menu is narrower than that, so keeping it would push the pair off
+   * the right edge. Tighter padding keeps both labels inside their buttons
+   * down to about 370px of window, still equal width.
+   */
+  .start-screen__starts,
+  .start-screen__utility {
+    flex-basis: 100%;
   }
 
-  /* The icon variant stays a square beside the seed rather than stretching
-     across the row, which `grid-column: 1 / -1` above would otherwise do to
-     it and which an aspect-ratio then turns into a full-width block. */
-  .settings-action--icon {
-    grid-column: auto;
-    width: 44px;
-    height: 44px;
-    min-height: 0;
-    justify-self: end;
+  .start-screen__starts {
+    min-width: 0;
+  }
+
+  .start-screen__starts > .primary-action {
+    gap: 8px;
+    padding-inline: 14px 12px;
   }
 
   .pause-screen { padding: 10px; }
