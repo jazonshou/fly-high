@@ -10,14 +10,49 @@
  * view-projection, so the crop cannot drift onto the wrong part of the wing
  * the way a hand-guessed rectangle does.
  *
- *   npx tsx scripts/flap-joint-frames.mts <outDir> <url> <expectTree>
+ *   npx tsx scripts/flap-joint-frames.mts <outDir> <url> <expectTree> [kind]
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
-const [outDir, url, expectTree] = process.argv.slice(2);
-if (!outDir || !url || !expectTree) throw new Error("usage: <outDir> <url> <expectTree>");
+const [outDir, url, expectTree, kindRaw] = process.argv.slice(2);
+if (!outDir || !url || !expectTree) throw new Error("usage: <outDir> <url> <expectTree> [kind]");
+const kind = kindRaw ?? "bizjet";
+
+/**
+ * Per-airframe mesh names and full-flap travel.
+ *
+ * The travel is stated here rather than inferred, so that a frame whose flaps
+ * are not where its name says fails against a NUMBER instead of against
+ * "something moved". These mirror `SURFACE_TRAVEL` in `animation.ts`; if that
+ * table changes, this run fails loudly and says by how much.
+ */
+const FLEET: Record<string, { wing: string[]; flaps: string[]; hinge: string; fullFlapDegrees: number }> = {
+  bizjet: {
+    wing: ["inboard-wing"],
+    flaps: ["inner-flap-surface", "outer-flap-surface"],
+    hinge: "starboard-bizjet-inner-flap",
+    fullFlapDegrees: 30,
+  },
+  jet: {
+    wing: ["swept-main-wing", "swept-outer-wing", "jet-outer-trailing-edge"],
+    flaps: ["jet-flaperon-surface"],
+    hinge: "starboard-jet-flaperon",
+    fullFlapDegrees: 20,
+  },
+  airliner: {
+    wing: ["airliner-inboard-wing", "airliner-outboard-wing"],
+    flaps: ["airliner-inner-flap-surface", "airliner-outer-flap-surface"],
+    hinge: "starboard-airliner-inner-flap",
+    fullFlapDegrees: 30,
+  },
+};
+const recorded = FLEET[kind];
+if (!recorded) throw new Error(`no mesh names recorded for "${kind}"`);
+const fleet = recorded;
+/** `bizjet` prefixes its wing panels with the kind; the others do not. */
+const qualify = (part: string) => (kind === "bizjet" ? `bizjet-${part}` : part);
 const WIDTH = 1920;
 const HEIGHT = 1080;
 mkdirSync(outDir, { recursive: true });
@@ -41,16 +76,40 @@ const browser = await chromium.launch({
 // back 800 px wide. `scripts/frame-crop.mts` was tried first and its PNG
 // decoder returned scanline garbage on Playwright's output, so the crop is
 // taken natively by the browser and never round-trips through a decoder.
+/*
+ * A throw must still close the browser.
+ *
+ * This module uses top-level await, so any error below surfaces as an
+ * unhandled rejection and the process dies with the browser still running.
+ * Every guard added to this script -- and they exist to fail loudly -- was
+ * therefore also a guaranteed orphaned Chrome, and after an afternoon of runs
+ * there were eighteen of them left on a shared machine with nothing to say
+ * which belonged to whom.
+ */
+for (const fatal of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(fatal, (reason: unknown) => {
+    void browser.close().catch(() => {}).then(() => {
+      console.error(reason instanceof Error ? reason.stack ?? reason.message : String(reason));
+      process.exit(1);
+    });
+  });
+}
+
 const page = await browser.newPage({
   viewport: { width: WIDTH, height: HEIGHT },
   deviceScaleFactor: 2,
 });
-await page.addInitScript(() => {
+// `kind` is PASSED, not closed over. Playwright serialises this function and
+// ships it to the browser, so a variable captured from Node's scope is simply
+// undefined there — and the try/catch below swallowed the ReferenceError, so
+// the run quietly flew the default aeroplane instead. The flap-angle guard is
+// what caught it: it found the Cessna's hinge names in an F-16 capture.
+await page.addInitScript((wantedKind: string) => {
   try {
     const key = Object.keys(localStorage).find((k) => k.includes("settings")) ?? "aerolith.settings.v3";
     localStorage.setItem(key, JSON.stringify({
       ...JSON.parse(localStorage.getItem(key) ?? "{}"),
-      aircraft: "bizjet",
+      aircraft: wantedKind,
       flightMode: "scenic",
       showDiagnostics: false,
       weather: "clear",
@@ -58,20 +117,25 @@ await page.addInitScript(() => {
       airborneStartAgl: 600,
     }));
   } catch { /* first load has no settings yet */ }
-});
+}, kind);
 await page.goto(url, { waitUntil: "domcontentloaded" });
 await page.locator('[aria-label="fly high start"]').waitFor({ timeout: 120_000 });
 await page.waitForTimeout(2_500);
 
 /** Screen-space rectangles of the named meshes, through the LIVE camera. */
 interface Rect { x: number; y: number; w: number; h: number }
-interface Projection { rects: Record<string, Rect>; flapDegrees: number }
+interface Projection {
+  rects: Record<string, Rect>;
+  flapDegrees: number;
+  hingeName: string;
+  nearby: string[];
+}
 async function projectMeshes(names: string[]): Promise<Projection> {
-  return page.evaluate(async (wanted: string[]) => {
+  return page.evaluate(async ({ wanted, hingeName }: { wanted: string[]; hingeName: string }) => {
     (globalThis as unknown as Record<string, unknown>).__name ??= (fn: unknown) => fn;
     const storeUrl = performance.getEntriesByType("resource")
       .map((r) => r.name).find((n) => /\/deps\/engineStore-[^/]*\.js/.test(n));
-    if (!storeUrl) return { rects: {}, flapDegrees: NaN };
+    if (!storeUrl) return { rects: {}, flapDegrees: NaN, hingeName, nearby: [] };
     const anyWindow = globalThis as unknown as { __jointStore?: unknown };
     if (!anyWindow.__jointStore) anyWindow.__jointStore = await import(/* @vite-ignore */ storeUrl);
     const mod = anyWindow.__jointStore as Record<string, unknown>;
@@ -85,7 +149,7 @@ async function projectMeshes(names: string[]): Promise<Projection> {
       transformNodes: { name: string; rotationQuaternion: { w: number } | null;
         rotation: { z: number } }[];
     } | undefined;
-    if (!scene) return { rects: {}, flapDegrees: NaN };
+    if (!scene) return { rects: {}, flapDegrees: NaN, hingeName, nearby: [] };
     const m = scene.getTransformMatrix().m;
     const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
     for (const name of wanted) {
@@ -117,13 +181,15 @@ async function projectMeshes(names: string[]): Promise<Projection> {
      * about the swept hinge line), so the deflection is the quaternion's own
      * magnitude, 2 acos(w).
      */
-    const hinge = scene.transformNodes.find((n) => n.name === "starboard-bizjet-inner-flap");
+    const hinge = scene.transformNodes.find((n) => n.name === hingeName);
     const q = hinge?.rotationQuaternion;
     const flapDegrees = q
       ? (2 * Math.acos(Math.min(1, Math.abs(q.w))) * 180) / Math.PI
       : ((hinge?.rotation.z ?? NaN) * 180) / Math.PI;
-    return { rects: out, flapDegrees };
-  }, names);
+    const nearby = scene.transformNodes
+      .filter((n) => /flap|flaperon/.test(n.name)).map((n) => n.name).slice(0, 8);
+    return { rects: out, flapDegrees, hingeName, nearby };
+  }, { wanted: names, hingeName: fleet.hinge });
 }
 
 async function setFlaps(detents: number): Promise<void> {
@@ -137,19 +203,18 @@ const rects: Record<string, unknown> = {};
 async function capture(label: string, detents: number): Promise<void> {
   await setFlaps(detents);
   await page.screenshot({ path: `${outDir}/${label}.png`, type: "png" });
-  const named = [
-    "starboard-bizjet-inboard-wing", "starboard-bizjet-inner-flap-surface",
-    "starboard-bizjet-outer-flap-surface",
-    "port-bizjet-inboard-wing", "port-bizjet-inner-flap-surface",
-    "port-bizjet-outer-flap-surface",
-  ];
-  const { rects: found, flapDegrees } = await projectMeshes(named);
+  const named = ["starboard", "port"].flatMap((side) => [
+    ...fleet.wing.map((part) => `${side}-${qualify(part)}`),
+    ...fleet.flaps.map((part) => `${side}-${part}`),
+  ]);
+  const { rects: found, flapDegrees, nearby } = await projectMeshes(named);
   rects[label] = { flapDegrees, ...found };
-  const wanted = detents * 15;
+  const wanted = (detents * fleet.fullFlapDegrees) / 2;
   console.log(`${label}: flap measured ${flapDegrees.toFixed(1)} deg, asked ${wanted} deg`);
   if (!Number.isFinite(flapDegrees) || Math.abs(flapDegrees - wanted) > 2) {
     throw new Error(
       `${label}: flap is at ${flapDegrees.toFixed(1)} deg, not the ${wanted} deg this frame claims. `
+      + `Looked for hinge "${fleet.hinge}"; scene has [${nearby.join(", ")}]. `
       + "Captured nothing usable; do not report a frame whose flap setting is not the one in its name.",
     );
   }

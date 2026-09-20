@@ -270,11 +270,22 @@ export function chaseRigOffsetsToRef(
   camera: MutablePresentationVector,
   target: MutablePresentationVector,
 ): void {
-  const behind = distance + trail;
+  // The trail is clamped so the aim point can never fall behind the aircraft.
+  //
+  // It reproduces a lag that was calibrated against aeroplanes doing 52 and
+  // 140 m/s, and it grows linearly with speed for ever. An F-16 in reheat does
+  // 410, where an unclamped trail is 58.6 m against a 30.5 m profile distance
+  // and drives `aimAhead - trail` to MINUS 17.6 m — the camera aiming at a
+  // point behind the aeroplane it is following. The Global crosses zero too,
+  // at about 250 m/s. Nothing below roughly 190 m/s is affected, so the
+  // framing players already know is untouched; this only stops the
+  // extrapolation running away above the speeds it was measured at.
+  const usableTrail = Math.max(0, Math.min(trail, aimAhead - MINIMUM_CHASE_AIM_AHEAD_METERS));
+  const behind = distance + usableTrail;
   camera.x = -forward.x * behind + lift.x * height;
   camera.y = -forward.y * behind + lift.y * height;
   camera.z = -forward.z * behind + lift.z * height;
-  const ahead = aimAhead - trail;
+  const ahead = aimAhead - usableTrail;
   target.x = forward.x * ahead + lift.x * aimHeight;
   target.y = forward.y * ahead + lift.y * aimHeight;
   target.z = forward.z * ahead + lift.z * aimHeight;
@@ -282,3 +293,13 @@ export function chaseRigOffsetsToRef(
 
 /** The aim point's height up the rig's vertical, in metres. */
 export const CHASE_AIM_HEIGHT_METERS = 1.25;
+
+/**
+ * How far ahead of the aircraft the chase camera must keep aiming, in metres.
+ *
+ * Not a style choice: at or below zero the camera is looking at a point behind
+ * the aeroplane, which puts the airframe above the centre of frame and moving
+ * the wrong way relative to the aim as speed changes. Four metres keeps a
+ * positive lead on every airframe at every speed either of them can reach.
+ */
+export const MINIMUM_CHASE_AIM_AHEAD_METERS = 4;

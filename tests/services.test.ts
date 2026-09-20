@@ -30,6 +30,7 @@ import {
   runwayStartAlong,
 } from "../src/game/spawn";
 import { aftExtent, aircraftDefinition, AIRCRAFT_KINDS, FlightSimulator } from "../src/sim";
+import { aircraftSpec } from "../src/aircraft/catalogue";
 import {
   createWorld,
   sampleTerrainCollision,
@@ -147,7 +148,10 @@ describe("settings", () => {
       mouseFlight: true,
       timeOfDay: "midnight",
       weather: "hurricane",
-      aircraft: "airliner",
+      // Deliberately not an airframe. This was "airliner" until the 747-8
+      // arrived and made it real, which quietly turned this into a test that
+      // a VALID value falls back to the trainer.
+      aircraft: "zeppelin",
     });
     expect(result.quality).toBe(DEFAULT_SETTINGS.quality);
     expect(result.renderingMode).toBe(DEFAULT_SETTINGS.renderingMode);
@@ -435,7 +439,10 @@ describe("flight spawn contract", () => {
     expect(spawn.position?.z).toBe(crashZ);
     expect(spawn.heading).toBe(heading);
     expect(spawn.onGround).not.toBe(true);
-    expect(spawn.controls?.throttle).toBe(0.68);
+    // From the catalogue: these are measured level-flight spawn settings that
+    // have moved once already, and the contract here is that crash recovery
+    // uses the aircraft's own configuration, not any particular number.
+    expect(spawn.controls?.throttle).toBe(aircraftSpec("trainer").spawn.airborneThrottle);
     expect(spawn.controls?.gear).toBe(1);
     expect(simulator.telemetry().altitudeAgl).toBeCloseTo(recoveryHeight, 8);
   });
@@ -453,8 +460,14 @@ describe("flight spawn contract", () => {
       "jet",
     );
 
-    expect(jetRecovery.airspeed).toBe(155);
-    expect(jetRecovery.controls?.throttle).toBe(0.17);
+    // The catalogue figure is an equivalent airspeed at sea level and the
+    // spawn corrects it for density, so this asserts the CONTRACT — recovery
+    // uses the selected aircraft's own configuration, corrected upward for
+    // the air it restarts in — rather than either raw number.
+    expect(jetRecovery.airspeed).toBeGreaterThan(aircraftSpec("jet").spawn.airborneAirspeed);
+    expect(jetRecovery.airspeed).toBeLessThan(aircraftSpec("jet").spawn.airborneAirspeed * 1.3);
+    expect(jetRecovery.controls?.throttle)
+      .toBeGreaterThanOrEqual(aircraftSpec("jet").spawn.airborneThrottle);
     expect(jetRecovery.controls?.gear).toBe(0);
     expect(invalidRecovery).toEqual(fallback);
   });

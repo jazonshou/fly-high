@@ -425,7 +425,13 @@ describe("camera presentation", () => {
       const { forward, up } = attitude(0.4, 0.1, 0);
       const follow = cameraBankFollow("chase", false);
       const without = rig(forward, up, follow, 13.5, 5.1, 16, 0);
-      const with20 = rig(forward, up, follow, 13.5, 5.1, 16, 20);
+      // 10 m of trail against a 16 m aim. This used to read 20, which the aim
+      // clamp now shortens to 12 — 20 m of trail on a 16 m aim is the very
+      // case the clamp exists for, since it aims the camera 4 m BEHIND the
+      // aeroplane. The invariant under test is unchanged: whatever trail is
+      // actually applied goes on both offsets, so the view direction is the
+      // same. The clamped case is covered below.
+      const with20 = rig(forward, up, follow, 13.5, 5.1, 16, 10);
       const direction = (r: typeof without) => ({
         x: r.target.x - r.camera.x,
         y: r.target.y - r.camera.y,
@@ -440,7 +446,33 @@ describe("camera presentation", () => {
         with20.camera.y - without.camera.y,
         with20.camera.z - without.camera.z,
       );
-      expect(back).toBeCloseTo(20, 10);
+      expect(back).toBeCloseTo(10, 10);
+    });
+
+    it("keeps the view direction unchanged even when the aim clamp shortens the trail", () => {
+      // The clamp must shorten the trail, not tilt the camera. Both offsets
+      // have to use the SAME shortened value or the rig would swing as an
+      // aeroplane accelerated through the clamp point, which is exactly the
+      // sort of thing a player notices and nobody can describe.
+      const { forward, up } = attitude(0.4, 0.1, 0);
+      const follow = cameraBankFollow("chase", false);
+      const unclamped = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+      const clamped = rig(forward, up, follow, 13.5, 5.1, 16, 40);
+      const direction = (r: typeof unclamped) => ({
+        x: r.target.x - r.camera.x,
+        y: r.target.y - r.camera.y,
+        z: r.target.z - r.camera.z,
+      });
+      const a = direction(unclamped);
+      const b = direction(clamped);
+      for (const axis of ["x", "y", "z"] as const) expect(b[axis]).toBeCloseTo(a[axis], 12);
+      // 40 m of trail on a 16 m aim is shortened to 12, not applied whole.
+      const back = Math.hypot(
+        clamped.camera.x - unclamped.camera.x,
+        clamped.camera.y - unclamped.camera.y,
+        clamped.camera.z - unclamped.camera.z,
+      );
+      expect(back).toBeCloseTo(12, 10);
     });
 
     it("does move a banked frame, which is the whole point", () => {

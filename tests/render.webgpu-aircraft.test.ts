@@ -159,8 +159,15 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
 
     const exteriorMaskBeforeCockpit = fixture.camera.layerMask;
+    // THE CABIN GLAZING IS COCKPIT-EXCLUDED, which is what lets it drop its
+    // depth pre-pass and read as glass from outside. Both halves are pinned
+    // because each alone is a defect: visible to an exterior camera, or the
+    // cabin is a bare shell with the interior showing through; hidden from the
+    // cockpit camera, or the pilot's forward view is the near-black blue wash
+    // the pre-pass was there to prevent. The trade -- no glass from the seat,
+    // correct glazing everywhere else -- was put to the PM and authorised.
     const canopy = mesh(fixture.scene, "trainer-canopy");
-    expect(aircraft.cockpitParts).not.toContain(canopy);
+    expect(aircraft.cockpitParts).toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
@@ -168,7 +175,9 @@ describe("Babylon WebGPU aircraft visual", () => {
       aircraft.cockpitParts.every((part) => part.layerMask === AIRCRAFT_EXTERIOR_LAYER_MASK),
     ).toBe(true);
     aircraft.setCockpitView(true);
-    expectVisibleToCamera(canopy, fixture.camera);
+    // Still drawn and still a shadow caster — excluded from THIS camera only.
+    expect(canopy.isVisible).toBe(true);
+    expect(canopy.layerMask & fixture.camera.layerMask).toBe(0);
     expect(
       aircraft.cockpitParts.every(
         (part) => part.isVisible && (part.layerMask & fixture.camera.layerMask) === 0,
@@ -195,21 +204,21 @@ describe("Babylon WebGPU aircraft visual", () => {
   it("builds the distinct jet and applies smooth gear and speed-brake travel", () => {
     const fixture = rightHandedFixture();
     const aircraft = createWebGpuAircraft(fixture.scene, "jet");
-    expect(aircraft.group.name).toBe("vesper-fast-jet");
+    expect(aircraft.group.name).toBe("f-16c-fighting-falcon");
     expect(aircraft.propeller.name).toBe("jet-compressor");
     for (const detail of [
       "jet-fuselage",
       "port-swept-main-wing",
       "starboard-swept-main-wing",
-      "port-swept-tailplane",
-      "starboard-swept-tailplane",
+      "port-jet-stabilator-root-fairing",
+      "starboard-jet-stabilator-root-fairing",
       "radar-nose",
-      "tandem-canopy",
-      "jet-front-seat",
+      "jet-bubble-canopy",
+      "jet-ejection-seat",
       "jet-instrument-panel",
       "jet-attitude-gauge",
-      "starboard-engine-intake",
-      "port-engine-intake",
+      "starboard-jet-inlet-cheek",
+      "port-jet-inlet-cheek",
       "swept-vertical-stabilizer",
       "landing-gear-doors",
       "starboard-main-strut",
@@ -235,8 +244,11 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     const gear = transform(fixture.scene, "retractable-landing-gear");
     expect(gear.isEnabled()).toBe(false);
-    expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
-    expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
+    // The F-16 rolls on FLAPERONS: one surface a side that is also its flap,
+    // as the aeroplane's is. With the flaps up their deflection is the roll
+    // command alone, so the signs here are the ones the ailerons carried.
+    expect(transform(fixture.scene, "starboard-jet-flaperon").rotation.z).toBeLessThan(0);
+    expect(transform(fixture.scene, "port-jet-flaperon").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeGreaterThan(0);
     // Flipped with the rudder-direction fix: right rudder now swings the
     // trailing edge to STARBOARD, which is what yaws the nose right. This pin
@@ -269,7 +281,7 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     expect(gear.scaling.y).toBe(1);
     expect(gear.position.y).toBeCloseTo(0, 10);
-    const canopy = mesh(fixture.scene, "tandem-canopy");
+    const canopy = mesh(fixture.scene, "jet-bubble-canopy");
     expect(aircraft.cockpitParts).not.toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);

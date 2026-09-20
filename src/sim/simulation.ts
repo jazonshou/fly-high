@@ -492,7 +492,13 @@ export function createFlightState(
   const pitch = finiteOr(spawn.pitch, onGround ? groundPose.pitch : (2 * Math.PI) / 180);
   const bank = finiteOr(spawn.bank, 0);
   const orientation = quaternionFromFlightAngles(heading, pitch, bank);
-  const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, 180);
+  // Clamped to the same ceiling as every other translational speed in the
+  // solver, not to a separate lower one. This was a bare 180 with no comment,
+  // which silently capped any spawn faster than that: the Global 8000 asks for
+  // 210 m/s and had been starting at 180 since the day it was added, and the
+  // F-16 and the 747-8 ask for more again. A spawn speed that is quietly
+  // ignored makes the catalogue lie about the aeroplane.
+  const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, MAX_TRANSLATIONAL_SPEED);
   const actuators = normalizedControls(spawn.controls);
   actuators.gear = onGround
     ? 1

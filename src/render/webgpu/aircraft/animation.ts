@@ -72,6 +72,18 @@ const SURFACE_TRAVEL: Readonly<Record<AircraftKind, SurfaceTravel>> = Object.fre
     mainWheelRadius: 0.56,
     noseWheelRadius: 0.42,
   }),
+  airliner: Object.freeze({
+    // Larger again than the Global: a 747's control surfaces are enormous but
+    // move through small angles, and its nosewheel barely steers at speed.
+    aileron: 0.14,
+    elevator: 0.2,
+    rudder: 0.22,
+    noseSteering: 0.12,
+    flap: (30 * Math.PI) / 180,
+    // 1.24 m tall main tyres and 1.12 m nose tyres.
+    mainWheelRadius: 0.62,
+    noseWheelRadius: 0.56,
+  }),
 });
 
 export interface PropellerPresentation {

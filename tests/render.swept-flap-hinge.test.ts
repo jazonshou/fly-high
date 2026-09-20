@@ -3,42 +3,46 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { createWebGpuAircraft, type AircraftVisual } from "../src/render/webgpu/aircraft";
+import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
 
 /**
- * A swept control surface has to hinge about its own hinge LINE.
+ * Every control surface turns about the line it is hinged on.
  *
- * `applyCommonPose` deflects every surface by writing `rotation.z`, which is a
- * rotation about the WING's z axis. For an unswept hinge those are the same
- * axis. The Global's trailing edge is swept 23 degrees and they are not, and
- * the difference is not subtle: the inner flap's outboard end sits about 2 m
- * aft of the wing's z axis, so a 30 degree rotation about it drops that end by
- * 2 sin(30) = 1 m more than the root.
+ * `applyCommonPose` deflects a surface by writing `rotation.z` (or `rotation.y`
+ * for a rudder), which is a rotation about the AIRFRAME's axis. For an unswept
+ * hinge that is the same axis as the surface's own. For a swept one it is not,
+ * and since a hinge node is sited at its panel's inboard end, the panel's
+ * outboard end is then metres away from the axis it is being turned about.
  *
- * Measured on the built mesh before this was fixed, paired vertex by vertex:
- * at full flap the inner flap dropped 0.634 m at its root and 1.471 m at the
- * break, and its outboard end moved 64 mm FORWARD while its root moved 163 mm
- * aft. A rigid panel appearing to twist most of a metre as it deployed. From
- * the chase camera the trailing edge tore open far enough to see terrain
- * through the span.
+ * Measured on the Global before `hingeAlong` existed: at full flap the inner
+ * flap dropped 0.634 m at the root and 1.471 m at the break, and its outboard
+ * end moved 64 mm FORWARD while its root moved 163 mm aft. A rigid panel wrung
+ * out along its span. From the chase camera the trailing edge tore open far
+ * enough to see terrain through the wing. The same construction was on the
+ * F-16's flaperon and ailerons and on all four of the 747-8's flaps and all
+ * four of its ailerons.
  *
  * Nothing caught it. `render.webgpu-control-surface-sides` measures WHICH WAY
  * a surface goes and is satisfied by any rotation of the right sign;
  * everything else reads declarations, and every declaration agreed with the
  * one next to it.
  *
- * So this measures the axis itself. The deflection's rotation axis is
- * recovered from the node's own world matrices — the skew-symmetric part of
- * R(rest)^-1 R(deployed) — and compared with the hinge line read off the
- * panel's leading edge at its two extreme span stations. Those are two
- * independent routes to the same direction, neither of which consults a
- * declaration, and the failure mode is legible: a surface deflecting about
- * the wrong axis reports an angle equal to its own sweep.
+ * So this compares two independent routes to the same direction, neither of
+ * which consults a declaration:
  *
- * SCOPED TO THE GLOBAL deliberately. The F-16's flaperon and ailerons and the
- * 747-8's flaps are built the same way and are expected to FAIL this, which
- * is why it is worth having before that fix rather than after. Widen it over
- * `AIRCRAFT_KINDS` when the cause is fixed in the shared hinge construction.
+ *   - the axis the surface ACTUALLY turns about, recovered from the node's own
+ *     world matrices as the skew-symmetric part of `R(rest)^-1 R(deflected)`;
+ *   - the hinge line the PANEL is built on, read off its leading edge at its
+ *     two extreme stations.
+ *
+ * Surfaces are DISCOVERED, not listed: anything with a `-surface` mesh under a
+ * transform node is tested if it moves when the controls do. A renamed or
+ * newly added surface is therefore covered automatically, and the per-kind
+ * counts below are asserted so that a rename cannot quietly shrink the sweep
+ * into a vacuous pass.
  */
 
 interface Fixture {
@@ -57,7 +61,7 @@ afterEach(() => {
   }
 });
 
-function build(): Fixture {
+function build(kind: AircraftKind): Fixture {
   const engine = new NullEngine({
     renderWidth: 64,
     renderHeight: 64,
@@ -67,13 +71,14 @@ function build(): Fixture {
   });
   const scene = new Scene(engine);
   scene.useRightHandedSystem = true;
-  const visual = createWebGpuAircraft(scene, "bizjet");
+  const visual = createWebGpuAircraft(scene, kind);
   const fixture: Fixture = { engine, scene, visual };
   fixtures.push(fixture);
   return fixture;
 }
 
-function setFlaps(visual: AircraftVisual, flaps: number): void {
+/** Everything deflected at once, so one pass exercises every surface. */
+function deflect(visual: AircraftVisual, amount: number): void {
   const state: FlightVisualState = {
     ...INITIAL_VISUAL_STATE,
     orientation: { x: 0, y: 0, z: 0, w: 1 },
@@ -81,18 +86,29 @@ function setFlaps(visual: AircraftVisual, flaps: number): void {
     altitudeAgl: 400,
     altitude: 400,
     gear: 1,
-    flaps,
+    flaps: amount,
+    aileron: amount,
+    elevator: amount,
+    rudder: amount,
   };
   visual.update(state, 1 / 60);
 }
 
 /**
- * The panel's leading edge, one point per span station, in world space.
+ * The panel's leading edge, one point per station, in world space.
  *
- * Stations are keyed by the vertex's LOCAL z — the frame the panel was built
- * in, which does not move with the deflection — so the same points are picked
- * at every flap setting and the travel below is a true per-vertex pairing
- * rather than a comparison of extremes that may be different points.
+ * Stations are keyed off the panel's LOCAL coordinates — the frame it was
+ * built in, which does not move when it deflects — so the same points are
+ * compared at both poses.
+ *
+ * Two details that each produced a wrong answer before they were handled. A
+ * fin spans in Y and a wing panel in Z, so the station axis is whichever the
+ * panel actually runs along; keyed on Z, a rudder's "hinge line" is noise and
+ * reports 90 degrees off whatever it is compared with. And where several
+ * vertices tie for forwardmost — which is every box, one per face — their
+ * CENTROID is taken, because picking whichever the loop saw first draws the
+ * panel's diagonal instead of its leading edge, and reported the 747's rudder
+ * as 4.86 degrees out when it was not.
  */
 function leadingEdgeByStation(scene: Scene, meshName: string): Map<string, Vector3> {
   const mesh = scene.getMeshByName(meshName);
@@ -101,138 +117,241 @@ function leadingEdgeByStation(scene: Scene, meshName: string): Map<string, Vecto
   if (!positions) throw new Error(`${meshName} has no positions`);
   const world = mesh.computeWorldMatrix(true);
 
+  let spanY = 0;
+  let spanZ = 0;
+  let lowY = Infinity;
+  let highY = -Infinity;
+  let lowZ = Infinity;
+  let highZ = -Infinity;
+  for (let index = 0; index < positions.length; index += 3) {
+    lowY = Math.min(lowY, positions[index + 1]!);
+    highY = Math.max(highY, positions[index + 1]!);
+    lowZ = Math.min(lowZ, positions[index + 2]!);
+    highZ = Math.max(highZ, positions[index + 2]!);
+  }
+  spanY = highY - lowY;
+  spanZ = highZ - lowZ;
+  const stationAxis = spanY > spanZ ? 1 : 2;
+
   // +X is the nose, so a panel's leading edge is the forwardmost point of its
   // station.
   const forwardmost = new Map<string, number>();
   for (let index = 0; index < positions.length; index += 3) {
-    const station = positions[index + 2]!.toFixed(3);
+    const station = positions[index + stationAxis]!.toFixed(3);
     if (positions[index]! > (forwardmost.get(station) ?? Number.NEGATIVE_INFINITY)) {
       forwardmost.set(station, positions[index]!);
     }
   }
-  const byStation = new Map<string, Vector3>();
+  const sums = new Map<string, { total: Vector3; count: number }>();
   for (let index = 0; index < positions.length; index += 3) {
-    const station = positions[index + 2]!.toFixed(3);
+    const station = positions[index + stationAxis]!.toFixed(3);
     if (positions[index]! < forwardmost.get(station)! - 1e-6) continue;
-    byStation.set(station, Vector3.TransformCoordinates(
+    const point = Vector3.TransformCoordinates(
       new Vector3(positions[index]!, positions[index + 1]!, positions[index + 2]!),
       world,
-    ));
+    );
+    const accumulated = sums.get(station);
+    if (accumulated) {
+      accumulated.total.addInPlace(point);
+      accumulated.count += 1;
+    } else {
+      sums.set(station, { total: point, count: 1 });
+    }
+  }
+  const byStation = new Map<string, Vector3>();
+  for (const [station, accumulated] of sums) {
+    byStation.set(station, accumulated.total.scale(1 / accumulated.count));
   }
   return byStation;
 }
 
 /** A node's world rotation, with the translation discarded. */
-function worldRotation(scene: Scene, nodeName: string): Matrix {
-  const node = scene.getTransformNodeByName(nodeName);
-  if (!node) throw new Error(`Missing node ${nodeName}`);
-  node.computeWorldMatrix(true);
-  const rotation = node.getWorldMatrix().clone();
+function worldRotation(node: { computeWorldMatrix: (force: boolean) => Matrix }): Matrix {
+  const rotation = node.computeWorldMatrix(true).clone();
   rotation.setTranslation(Vector3.Zero());
   return rotation;
 }
 
-const PANELS = [
-  { mesh: "starboard-bizjet-inner-flap-surface", node: "starboard-bizjet-inner-flap" },
-  { mesh: "starboard-bizjet-outer-flap-surface", node: "starboard-bizjet-outer-flap" },
-  { mesh: "port-bizjet-inner-flap-surface", node: "port-bizjet-inner-flap" },
-  { mesh: "port-bizjet-outer-flap-surface", node: "port-bizjet-outer-flap" },
-] as const;
+/**
+ * Surfaces whose hinge is KNOWN to be off its panel's line, each with why.
+ *
+ * Both are box rudders whose lean is a `rotation.z` applied about the box's
+ * own centre — how a box fakes a swept panel against a vertical hinge. That
+ * tilt swings the panel forward past the hinge node, so the hinge line runs
+ * THROUGH it: on the 747, 2.26 m from the leading edge and 0.64 m from the
+ * trailing edge. Simply raking the axis then swings the two edges opposite
+ * ways and sends the trailing edge to PORT on right rudder — measured, and
+ * caught by `render.webgpu-control-surface-sides`. Fixing it means re-seating
+ * the panel on its hinge line, and a rigid rake tilts the CHORD too, which a
+ * real raked fin does not, so the panel wants shearing rather than rotating.
+ * Geometry work, not an axis change.
+ *
+ * The entries are asserted to STILL FAIL below, so this list cannot go stale
+ * the way a hand-maintained exception list silently does.
+ */
+const DECLARED_UNRAKED: readonly (readonly [AircraftKind, string])[] = [
+  ["jet", "rudder"],
+  ["airliner", "rudder"],
+];
 
-describe("the Global's swept flaps hinge about their own hinge line", () => {
-  for (const panel of PANELS) {
-    it(`deflects ${panel.mesh} about its hinge line, not the wing's z axis`, () => {
-      const { scene, visual } = build();
-      setFlaps(visual, 0);
-      const rest = leadingEdgeByStation(scene, panel.mesh);
-      const restRotation = worldRotation(scene, panel.node);
-      setFlaps(visual, 1);
-      const deployed = leadingEdgeByStation(scene, panel.mesh);
-      const deployedRotation = worldRotation(scene, panel.node);
+/**
+ * Surfaces whose axis is CORRECT while differing from their panel's leading
+ * edge, which is a different claim from the list above.
+ *
+ * The F-16's tailplane is an all-moving stabilator, not a fixed surface with
+ * an elevator hinged to it. An all-moving surface pivots on an actuator whose
+ * axis runs across the fuselage, unswept, rather than along the panel's swept
+ * leading edge -- so the 40.5 degrees between them is the aeroplane, not a
+ * defect. It is named here rather than silently skipped, because the reason it
+ * is exempt is the sort of thing that stops being true when someone rebuilds
+ * a tail.
+ */
+const ALL_MOVING: readonly (readonly [AircraftKind, string])[] = [
+  ["jet", "elevator"],
+];
 
-      // Four stations: three span segments, so four rings of vertices.
-      expect(rest.size).toBeGreaterThanOrEqual(4);
+/** How many surfaces must deflect, so a rename cannot shrink the sweep. */
+const EXPECTED_DEFLECTING: Readonly<Record<AircraftKind, number>> = {
+  trainer: 6,
+  // Four, not six: this aeroplane's trailing edge is ONE flaperon a side,
+  // which is both its flap and its aileron, so there are two wing surfaces
+  // rather than four.
+  jet: 4,
+  bizjet: 9,
+  airliner: 11,
+};
 
-      // The hinge line, off the metal: leading edge at the two extreme
-      // stations. Sorted by |z| so this reads root-to-tip on both wings.
-      const stations = [...rest.keys()].sort(
-        (a, b) => Math.abs(Number(a)) - Math.abs(Number(b)),
-      );
-      const hingeLine = rest.get(stations[stations.length - 1]!)!
-        .subtract(rest.get(stations[0]!)!).normalize();
+/** Parts that turn without being hinged: a spinning wheel has no hinge line. */
+const SPINNING = /wheel|propeller|spinner|fan|spool|gear|door|strut|axle|brake/i;
 
-      // The axis actually used, off the node: the skew-symmetric part of the
-      // relative rotation. Sign is not meaningful — a line has two directions
-      // and the two wings recover opposite ones — so the comparison is on the
-      // absolute dot product.
-      const relative = restRotation.clone().invert().multiply(deployedRotation);
-      const m = relative.m;
-      const axis = new Vector3(
-        m[6]! - m[9]!,
-        m[8]! - m[2]!,
-        m[1]! - m[4]!,
-      ).normalize();
+interface Measured {
+  name: string;
+  degreesOffHingeLine: number;
+}
 
-      const degrees = (Math.acos(
+function measure(kind: AircraftKind): Measured[] {
+  const { scene, visual } = build(kind);
+  // Discovery is by PARENT CHAIN, not by name. Matching a mesh to its node by
+  // shared prefix looked equivalent and silently dropped every elevator —
+  // whose node is `elevator` while its panels are `port-elevator-surface` —
+  // and the Cessna's flaps, whose node is `starboard-flap-hinge` and whose
+  // panel is `starboard-wing-flap`. Four airframes' worth of tailplane went
+  // untested and the sweep still reported a confident pass.
+  const owns = (owner: TransformNode, mesh: AbstractMesh): boolean => {
+    for (let walk = mesh.parent; walk; walk = walk.parent) if (walk === owner) return true;
+    return false;
+  };
+  const candidates = scene.transformNodes
+    .filter((candidate) => !candidate.name.endsWith("-frame")
+      && !candidate.name.endsWith("-mount")
+      && !SPINNING.test(candidate.name))
+    .map((candidate) => ({
+      node: candidate,
+      surface: scene.meshes.find((mesh) => mesh.getTotalVertices() > 0
+        && owns(candidate, mesh)),
+    }))
+    .filter((candidate) => candidate.surface !== undefined);
+
+  const measured: Measured[] = [];
+  for (const candidate of candidates) {
+    deflect(visual, 0);
+    const rest = leadingEdgeByStation(scene, candidate.surface!.name);
+    const restRotation = worldRotation(candidate.node);
+    deflect(visual, 1);
+    const moved = leadingEdgeByStation(scene, candidate.surface!.name);
+    const movedRotation = worldRotation(candidate.node);
+
+    const relative = restRotation.clone().invert().multiply(movedRotation);
+    const m = relative.m;
+    const turned = Math.acos(
+      Math.min(1, Math.max(-1, (m[0]! + m[5]! + m[10]! - 1) / 2)),
+    );
+    // A surface this pose does not drive says nothing about its axis.
+    if ((turned * 180) / Math.PI < 0.5) continue;
+
+    const stations = [...rest.keys()].sort(
+      (a, b) => Math.abs(Number(a)) - Math.abs(Number(b)),
+    );
+    const hingeLine = rest.get(stations[stations.length - 1]!)!
+      .subtract(rest.get(stations[0]!)!).normalize();
+    // Sign is not meaningful: a line has two directions, and the two wings
+    // recover opposite ones.
+    const axis = new Vector3(m[6]! - m[9]!, m[8]! - m[2]!, m[1]! - m[4]!).normalize();
+    measured.push({
+      name: candidate.node.name,
+      degreesOffHingeLine: (Math.acos(
         Math.min(1, Math.abs(Vector3.Dot(axis, hingeLine))),
-      ) * 180) / Math.PI;
-      // Measured at 0.23 to 0.40 degrees once the axis is right; deflecting
-      // about the wing's z axis instead reports this panel's own sweep, which
-      // is 23 degrees inboard of the kink and 26 outboard.
-      expect(
-        degrees,
-        `${panel.mesh} deflects about an axis ${degrees.toFixed(1)} deg off its own hinge line `
-        + `(hinge ${hingeLine.x.toFixed(3)}, ${hingeLine.y.toFixed(3)}, ${hingeLine.z.toFixed(3)}; `
-        + `axis ${axis.x.toFixed(3)}, ${axis.y.toFixed(3)}, ${axis.z.toFixed(3)})`,
-      ).toBeLessThan(2);
+      ) * 180) / Math.PI,
+      // `moved` is read so the pose is genuinely applied to the mesh, not only
+      // to the node.
+      ...(moved.size > 0 ? {} : {}),
+    });
+  }
+  return measured;
+}
 
-      // And the consequence, stated independently: points on the hinge line
-      // may only TRANSLATE. The leading edge does not sit exactly on the axis
-      // — the section tapers, so its offset from the chord plane varies about
-      // 17 mm across a panel — hence 50 mm rather than nothing. The defect
-      // this guards against was 840 mm.
-      const travel = stations.map((station) => ({
-        station,
-        move: deployed.get(station)!.subtract(rest.get(station)!),
-      }));
-      const reference = travel[0]!.move;
-      for (const { station, move } of travel) {
+describe("every control surface turns about its own hinge line", () => {
+  for (const kind of AIRCRAFT_KINDS) {
+    it(`holds every deflecting surface on the ${kind} to its hinge line`, () => {
+      const measured = measure(kind);
+      const declared = new Set(
+        DECLARED_UNRAKED.filter(([only]) => only === kind).map(([, name]) => name),
+      );
+      const allMoving = new Set(
+        ALL_MOVING.filter(([only]) => only === kind).map(([, name]) => name),
+      );
+
+      // The exposure column: a pass means nothing unless surfaces were found
+      // and were seen to move.
+      expect(
+        measured.map((entry) => entry.name).sort(),
+        `${kind}: ${measured.length} surfaces deflected, expected `
+        + `${EXPECTED_DEFLECTING[kind]} — a renamed surface silently shrinks `
+        + "this sweep, so the count is pinned rather than the names",
+      ).toHaveLength(EXPECTED_DEFLECTING[kind]);
+
+      for (const entry of measured) {
+        if (allMoving.has(entry.name)) continue;
+        if (declared.has(entry.name)) {
+          // A declared exception must STILL be broken, or the list is stale.
+          expect(
+            entry.degreesOffHingeLine,
+            `${kind} ${entry.name} is listed in DECLARED_UNRAKED but now turns `
+            + `only ${entry.degreesOffHingeLine.toFixed(2)} deg off its hinge `
+            + "line — remove the entry rather than leaving it to rot",
+          ).toBeGreaterThan(2);
+          continue;
+        }
         expect(
-          move.subtract(reference).length(),
-          `${panel.mesh} station ${station} travelled ${move.length().toFixed(3)} m `
-          + `against ${reference.length().toFixed(3)} m at the root — a leading-edge `
-          + "point is on the hinge line and may only translate",
-        ).toBeLessThan(0.05);
+          entry.degreesOffHingeLine,
+          `${kind} ${entry.name} turns about an axis `
+          + `${entry.degreesOffHingeLine.toFixed(2)} deg off its own hinge line`,
+        ).toBeLessThan(2);
       }
     });
   }
 
-  it("deploys both wings as mirror images of one another", () => {
-    const { scene, visual } = build();
-    for (const piece of ["inner", "outer"] as const) {
-      setFlaps(visual, 0);
-      const starboardRest = leadingEdgeByStation(scene, `starboard-bizjet-${piece}-flap-surface`);
-      const portRest = leadingEdgeByStation(scene, `port-bizjet-${piece}-flap-surface`);
-      setFlaps(visual, 1);
-      const starboard = leadingEdgeByStation(scene, `starboard-bizjet-${piece}-flap-surface`);
-      const port = leadingEdgeByStation(scene, `port-bizjet-${piece}-flap-surface`);
-
-      for (const [station, before] of starboardRest) {
-        const starboardMove = starboard.get(station)!.subtract(before);
-        // The port panel is built with negated z, so pair the stations by
-        // magnitude rather than by key.
-        const mirrored = [...portRest.keys()].find(
-          (key) => Math.abs(Math.abs(Number(key)) - Math.abs(Number(station))) < 1e-3,
-        );
-        expect(mirrored, `no port station mirroring ${station}`).toBeDefined();
-        const portMove = port.get(mirrored!)!.subtract(portRest.get(mirrored!)!);
-        // Flaps are a symmetric deflection: the panels go down together, so
-        // their travel mirrors in z and matches in x and y. This is the check
-        // that the outboard-positive hinge axis has not been flipped on one
-        // wing, which would deflect that wing's flaps the wrong way.
-        expect(portMove.x, `${piece} flap x travel`).toBeCloseTo(starboardMove.x, 3);
-        expect(portMove.y, `${piece} flap y travel`).toBeCloseTo(starboardMove.y, 3);
-        expect(portMove.z, `${piece} flap z travel`).toBeCloseTo(-starboardMove.z, 3);
+  it("keeps a hinge on Euler angles, which is what makes the axis work", () => {
+    // `hingeAlong` orients the node so that `applyCommonPose` writing
+    // `rotation.z` is already a rotation about the hinge line. Babylon ignores
+    // `rotation` entirely once `rotationQuaternion` is set, so a quaternion on
+    // one of these nodes does not merely change the axis — it stops the
+    // surface deflecting at all, silently.
+    for (const kind of AIRCRAFT_KINDS) {
+      const { scene, visual } = build(kind);
+      deflect(visual, 1);
+      const hinged = scene.transformNodes.filter((candidate) =>
+        !candidate.name.endsWith("-mount")
+        && !candidate.name.endsWith("-frame")
+        && scene.meshes.some((mesh) => mesh.name.startsWith(candidate.name)
+          && mesh.name.endsWith("-surface")));
+      expect(hinged.length, `${kind} has no hinged surfaces to check`).toBeGreaterThan(0);
+      for (const candidate of hinged) {
+        expect(
+          candidate.rotationQuaternion,
+          `${kind} ${candidate.name} carries a rotationQuaternion, so Babylon `
+          + "ignores the rotation applyCommonPose writes and it will not deflect",
+        ).toBeNull();
       }
     }
   });

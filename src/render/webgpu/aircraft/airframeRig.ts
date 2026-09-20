@@ -1,4 +1,4 @@
-import { Quaternion } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
@@ -23,8 +23,31 @@ export interface CommonRig {
   readonly propeller: TransformNode;
   readonly cockpitParts: readonly AbstractMesh[];
   readonly wingSurfaces: readonly AbstractMesh[];
-  readonly ailerons: readonly [TransformNode, TransformNode];
-  readonly elevator: TransformNode;
+  /** Starboard first. Empty on an airframe whose ailerons ARE its flaps. */
+  readonly ailerons: readonly TransformNode[];
+  /**
+   * Surfaces that are flap and aileron at once, starboard first.
+   *
+   * The F-16 has one of these a side and no separate ailerons, which is the
+   * aeroplane: a flaperon droops with the flap selection and differentiates
+   * with the stick, both at the same time. Modelling it as two panels left a
+   * standing 196 mm hole between them that daylight came through at rest.
+   *
+   * They are a list of their OWN rather than a node appearing in both `flaps`
+   * and `ailerons`, because with one node in two lists the second write simply
+   * overwrites the first and the surface silently does only half its job.
+   */
+  readonly flaperons: readonly TransformNode[];
+  /**
+   * Elevator halves, each on its OWN hinge node.
+   *
+   * One node for both halves cannot be right on a swept tailplane: the two
+   * hinge lines are mirror images, and a single axis matches at most one of
+   * them. Measured with one node, the Global's elevator turned 17.2 degrees
+   * off its own hinge line and the 747's 11.5. Airframes with an unswept or
+   * all-moving tail supply a single-element array.
+   */
+  readonly elevators: readonly TransformNode[];
   readonly rudder: TransformNode;
   readonly noseSteer: TransformNode;
   /** Every flap panel, hinged so a positive rotation.z drops its trailing edge. */
@@ -38,6 +61,155 @@ export function node(name: string, parent: TransformNode, scene: Scene): Transfo
   const result = new TransformNode(name, scene);
   result.parent = parent;
   return result;
+}
+
+/**
+ * Point a control surface's hinge node along the line it actually hinges about.
+ *
+ * `applyCommonPose` deflects a surface by writing `rotation.z`, and Babylon
+ * composes a node's Euler angles ROLL FIRST, then pitch, then yaw. So
+ * `rotation.z` turns the surface in the node's OWN frame, before the node's
+ * orientation is applied — which means orienting the node is enough to make
+ * `rotation.z` a rotation about any axis we like, with no per-frame work and
+ * no change to the shared contract.
+ *
+ * It is worth being exact about why this is needed, because the defect is
+ * invisible in a file that looks correct. A hinge node is sited at its panel's
+ * INBOARD end, and on a swept wing the panel's outboard end is then metres AFT
+ * of the node's z axis. Rotating about that axis instead of the hinge line
+ * swings the outboard end down by `reach * sin(deflection)` more than the
+ * root. Measured on the Global before this existed: at full flap the inner
+ * flap dropped 0.634 m at the root and 1.471 m at the break, and its outboard
+ * end moved 64 mm FORWARD while its root moved 163 mm aft. A rigid panel
+ * wrung out along its span, and from the chase camera the trailing edge tore
+ * open far enough to see terrain through the wing.
+ *
+ * Since `Rz` leaves `+z` fixed, the orientation that puts local `+z` on a unit
+ * direction is a closed-form Euler PAIR, and it subsumes any pitch the node
+ * already carries: `pitch = -asin(dy)`, `yaw = atan2(dx, dz)`. The 747's flap
+ * hinges arrive already rolled to the local dihedral and come out unchanged,
+ * because a hinge line lying in the wing plane has exactly that `dy`.
+ *
+ * REST POSE IS PRESERVED by an inserted frame, not by moving geometry. The
+ * node's existing children are reparented to a child node carrying
+ * `R(old) R(new)^-1`, so at zero deflection the two cancel and every vertex is
+ * exactly where the airframe's own file put it. Baking the inverse into vertex
+ * positions would work too, but it would have to run AFTER each airframe's
+ * section conform and before anything else read the mesh, which is a sequencing
+ * rule that cannot be enforced from here.
+ *
+ * The axis is normalised to point OUTBOARD (+z) on both wings. A hinge line
+ * runs in two directions and the port wing's is the mirror of the starboard's;
+ * taking it as given would deflect one wing's surfaces the wrong way, which is
+ * the bug `render.webgpu-control-surface-sides` exists to catch.
+ *
+ * `direction` is the hinge line in the node's OWN frame — the frame its panel
+ * was specified in — and is carried through any rotation the node already
+ * holds. That is not a convenience: the 747's inboard aileron straddles the
+ * wing kink, where `chordPlaneAt` bends, so a direction assembled from wing
+ * stations was 2 degrees out where the panel's own geometry is exact.
+ *
+ * Call it AFTER the panel's geometry is parented to the hinge. Returns the
+ * inserted frame, for anything built later that belongs in the same place.
+ */
+export function hingeAlong(
+  hinge: TransformNode,
+  direction: Vector3,
+  scene: Scene,
+): TransformNode {
+  const existingRotation = Matrix.RotationYawPitchRoll(
+    hinge.rotation.y,
+    hinge.rotation.x,
+    hinge.rotation.z,
+  );
+  const along = Vector3.TransformNormal(direction, existingRotation).normalize();
+  if (along.z < 0) along.scaleInPlace(-1);
+  const pitch = -Math.asin(Math.min(1, Math.max(-1, along.y)));
+  const yaw = Math.atan2(along.x, along.z);
+
+  // A quaternion on the hinge would make Babylon ignore `rotation` entirely,
+  // and the deflection would silently stop. This owns the node's orientation,
+  // so it owns clearing that too.
+  hinge.rotationQuaternion = null;
+  const existing = existingRotation;
+  const oriented = Matrix.RotationYawPitchRoll(yaw, pitch, 0);
+
+  const children = hinge.getChildren();
+  const frame = new TransformNode(`${hinge.name}-frame`, scene);
+  for (const child of children) child.parent = frame;
+  frame.parent = hinge;
+  frame.rotationQuaternion = Quaternion.FromRotationMatrix(
+    existing.multiply(Matrix.Transpose(oriented)),
+  );
+
+  hinge.rotation.set(pitch, yaw, hinge.rotation.z);
+  return frame;
+}
+
+/**
+ * The same repair for a hinge the pose drives in YAW — which is every rudder.
+ *
+ * It needs a different mechanism, and the reason is the mirror of why
+ * `hingeAlong` works. `rotation.y` is the OUTERMOST of Babylon's Euler
+ * rotations, applied last and therefore in the PARENT's frame, so no
+ * orientation placed on the rudder's own node can change the axis it turns
+ * about. A rudder on a raked fin hinge would keep swinging about true
+ * vertical whatever was written to its own pitch and roll.
+ *
+ * So the rake goes on an inserted PARENT and is cancelled on an inserted
+ * child: `mount` (rake) -> the rudder node (yaw, written by
+ * `applyCommonPose`) -> `frame` (rake inverted) -> the geometry the airframe
+ * built. At zero deflection the two cancel exactly, and a yaw of `d` becomes
+ * a rotation of `d` about the raked line.
+ *
+ * The rudder node keeps its own name and its place in `CommonRig`, because
+ * `render.webgpu-control-surface-sides` and the pose both find it that way.
+ * Only its position moves — on to the mount, so the rake turns about the
+ * hinge point rather than about the airframe origin.
+ *
+ * Not every fin needs this. The Cessna's and the F-16's rudders are plain
+ * vertical boxes on a vertical axis, which is already consistent; it is the
+ * Global's swept fin and the 747's, whose trailing edge leans 4.8 m aft over
+ * 9.9 m of height, that were turning a raked panel about a vertical line.
+ */
+export function yawHingeAlong(
+  rudder: TransformNode,
+  direction: Vector3,
+  scene: Scene,
+  preserveRestPose = true,
+): TransformNode {
+  const along = direction.clone().normalize();
+  if (along.y < 0) along.scaleInPlace(-1);
+  const rake = Quaternion.FromUnitVectorsToRef(
+    Vector3.Up(),
+    along,
+    new Quaternion(),
+  );
+
+  // `preserveRestPose` is false where the panel is authored UPRIGHT and wants
+  // the mount to supply its lean. Both box rudders were authored the other
+  // way — tilted on to the hinge line to fake a swept panel, because the hinge
+  // was vertical and a box cannot be swept. That tilt is applied about the
+  // box's OWN centre, which swings its leading edge 1.85 m off the hinge point
+  // on the 747, and with a raked axis the trailing edge then sits 0.64 m from
+  // the line it turns about and swings the WRONG WAY. Authoring the panel
+  // upright and raking the mount puts the leading edge back on the hinge.
+  if (preserveRestPose) {
+    const children = rudder.getChildren();
+    const frame = new TransformNode(`${rudder.name}-frame`, scene);
+    for (const child of children) child.parent = frame;
+    frame.parent = rudder;
+    frame.rotationQuaternion = rake.conjugate();
+  }
+
+  const mount = new TransformNode(`${rudder.name}-mount`, scene);
+  mount.parent = rudder.parent;
+  mount.position.copyFrom(rudder.position);
+  mount.rotationQuaternion = rake;
+  rudder.parent = mount;
+  rudder.position.setAll(0);
+  rudder.rotationQuaternion = null;
+  return mount;
 }
 
 export function assertRightHandedScene(scene: Scene): void {
@@ -125,9 +297,14 @@ export function applyCommonPose(
   pose: ReturnType<typeof resolveAircraftAnimationPose>,
   deltaSeconds: number,
 ): void {
-  rig.ailerons[0].rotation.z = pose.starboardAileron;
-  rig.ailerons[1].rotation.z = pose.portAileron;
-  rig.elevator.rotation.z = pose.elevator;
+  if (rig.ailerons[0]) rig.ailerons[0].rotation.z = pose.starboardAileron;
+  if (rig.ailerons[1]) rig.ailerons[1].rotation.z = pose.portAileron;
+  // Summed, not written twice: a flaperon's deflection IS the flap setting
+  // plus the roll command, and the surface's own travel already bounds each
+  // term through `SURFACE_TRAVEL`.
+  if (rig.flaperons[0]) rig.flaperons[0].rotation.z = pose.flap + pose.starboardAileron;
+  if (rig.flaperons[1]) rig.flaperons[1].rotation.z = pose.flap + pose.portAileron;
+  for (const elevator of rig.elevators) elevator.rotation.z = pose.elevator;
   rig.rudder.rotation.y = pose.rudder;
   rig.noseSteer.rotation.y = pose.noseSteering;
   for (const flap of rig.flaps) flap.rotation.z = pose.flap;

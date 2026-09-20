@@ -5,7 +5,7 @@ import type {
   RenderDiagnostics,
 } from "@/src/game/types";
 import type { HudMode, UnitSystem } from "@/src/settings";
-import type { AircraftKind } from "@/src/sim";
+import { aircraftDefinition, type AircraftKind } from "@/src/sim";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 
 interface HudProps {
@@ -78,6 +78,11 @@ export function Hud({
 }: HudProps) {
   if (mode === "off") return null;
   const spec = aircraftSpec(aircraft);
+  // Read from the FLIGHT MODEL, not from a presentation copy of the number.
+  // The bar marks where thrust actually changes, so a HUD that disagreed with
+  // the engine would be worse than no marking at all.
+  const reheatGate = aircraftDefinition(aircraft).afterburner?.engageThrottle ?? null;
+  const inReheat = reheatGate !== null && state.throttle > reheatGate;
   const aviation = units === "aviation";
   const speed = aviation ? state.airspeed * 1.94384 : state.airspeed * 3.6;
   const altitude = aviation ? state.altitudeAgl * 3.28084 : state.altitudeAgl;
@@ -172,6 +177,7 @@ export function Hud({
                   * spec.engineReadout.roundTo}
               </strong>
               <em>{spec.engineReadout.unit}</em>
+              {inReheat ? <b className="engine-reheat">REHEAT</b> : null}
             </div>
             <div className="instrument-readout">
               <small>AOA</small>
@@ -217,7 +223,24 @@ export function Hud({
           <div className="control-status__meters">
             <div className="control-status__meter">
               <span>THR</span>
-              <i><b style={{ width: `${state.throttle * 100}%` }} /></i>
+              <i>
+                {/*
+                  * The reheat zone, drawn only for an airframe that has one.
+                  * It sits under the fill so the bar still reads as one bar,
+                  * and it starts exactly at the gate the engine uses.
+                  */}
+                {reheatGate === null ? null : (
+                  <u
+                    className="control-status__reheat"
+                    style={{ left: `${reheatGate * 100}%` }}
+                    aria-hidden="true"
+                  />
+                )}
+                <b
+                  className={inReheat ? "is-reheat" : undefined}
+                  style={{ width: `${state.throttle * 100}%` }}
+                />
+              </i>
               <strong>{Math.round(state.throttle * 100)}</strong>
             </div>
             <div className="control-status__meter">

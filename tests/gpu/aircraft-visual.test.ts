@@ -52,7 +52,7 @@ describe("jet visual render", () => {
     scene.useRightHandedSystem = true;
     scene.clearColor = new Color4(0.45, 0.6, 0.78, 1);
     try {
-      // Framed for the ~11 m Vesper J-45: the same chase-style bearing at
+      // Framed for the 15.06 m F-16C: the same chase-style bearing at
       // 13.2 m instead of 22.4 m, so the airframe fills a comparable share of
       // the frame and the structure floor below stays a real assertion rather
       // than a measurement of how much sky is in shot.

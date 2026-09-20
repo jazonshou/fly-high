@@ -265,3 +265,146 @@ both airframes.
   measurably identical across the whole sweep, so nothing else about the
   aeroplane is fictional. `tests/sim.trainer-performance.test.ts` pins both the
   shipped climb and that invariance.
+
+## Every airborne spawn was clamped to 180 m/s
+
+`createFlightState` clamped spawn airspeed with a bare, uncommented `180`,
+while the solver's own translational ceiling is 750. Nothing reported the
+clamp, so an aeroplane whose catalogue asked for more simply started slower
+than it said, and bought the difference back by diving.
+
+This is the real cause of the Global 8000's notorious downward phugoid on an
+airborne start. It asks for 210 m/s and had been starting at 180 since the day
+it was added. The long explanation previously written into its catalogue entry
+— that its first swing was downward and 423 m deep, and that *less* throttle
+made the dip worse — recorded real measurements of the wrong cause; the
+aeroplane was trading height for the 30 m/s it had been denied, and more
+throttle recovered that speed faster. That comment has been corrected rather
+than deleted, because the measurements were sound and only the attribution was
+wrong.
+
+With the clamp raised to `MAX_TRANSLATIONAL_SPEED`, measured dip from a 183 m
+spawn over 180 s, hands off:
+
+| airframe | spawn | dip before | dip now |
+| --- | --- | --- | --- |
+| Cessna 150 | 56 m/s | unaffected | 0 m at 0.62 throttle and above |
+| F-16C | 210 m/s | 109 m even at 0.90 | 0 m at every throttle 0.25–0.90 |
+| Global 8000 | 210 m/s | 423 m at 0.35, 73 m at 0.62 | 0 m at every throttle |
+| Boeing 747-8 | 230 m/s | n/a, new | 0 m at every throttle |
+
+**Blast radius for the aircraft that already shipped:** the Cessna spawns at
+56 m/s and was never near the clamp, so the aeroplane most players start in is
+bit-identical. The sport jet this branch replaced spawned at 155 m/s and was
+likewise unaffected. Only the Global changes, and it changes from a dive to a
+level start. `tests/sim.spawn-airspeed.test.ts` pins both halves — that every
+airframe now gets exactly the airspeed its catalogue asks for, and which
+airframes sat above and below the old cap.
+
+The generalisable part: this presented for weeks as one aeroplane handling
+badly and was really a shared constant silently overriding per-airframe data.
+`tests/sim.airborne-spawn.test.ts` flies *every* kind for that reason.
+
+## Every airborne spawn is now approximately trimmed level
+
+An airborne start is what a player gets after every crash recovery and every
+airborne restart, so it should hand them an aeroplane that is flying, not one
+that is going somewhere. Three of the four were not.
+
+The F-16 was the worst: hands-off it pitched to 20 degrees and climbed at
+83 m/s, because 0.65 throttle is most of a 76 kN engine under 11 tonnes. The
+first attempt to fix that reached for elevator trim, which was the wrong lever
+and a dangerous one — the trim axis has enough authority to destroy the
+aeroplane, and −0.05 looks calmer for a few seconds before diving 4,172 m while
+−0.10 puts the nose at 90 degrees. The right levers were the two the catalogue
+already has per airframe: `airborneThrottle` and `airborneAirspeed`.
+
+Two lessons came out of the sweep. The big jets were spawning ABOVE the speed
+at which they fly level in dense air near the ground, so they converted the
+excess into climb whatever the throttle did; the Global came down from 210 to
+200 m/s and the 747 from 230 to 205. And a 20-second window is actively
+misleading — the settings that look best over 20 s are frequently the ones that
+dive hardest once the phugoid comes round, so every candidate was checked over
+180 s as well. The F-16 at 0.16 throttle gains 60 m in 20 s and then sinks
+516 m; at 0.20 it gains 74 m and the phugoid bottoms out 31 m down.
+
+As shipped, hands-off from the airborne spawn:
+
+| airframe | spawn | throttle | max pitch, 20 s | height change, 20 s | deepest dip, 180 s |
+| --- | --- | --- | --- | --- | --- |
+| Cessna 150 | 56 m/s | 0.62 | 8.2 deg | 0..+59 m | 0 m |
+| F-16C | 210 m/s | 0.20 | 2.4 deg | 0..+74 m | 31 m |
+| Global 8000 | 200 m/s | 0.28 | 2.4 deg | 0..+64 m | 11 m |
+| Boeing 747-8 | 205 m/s | 0.28 | 2.4 deg | 0..+68 m | 48 m |
+
+The three jets never leave the 2.4-degree spawn attitude at all. The Cessna
+shows more pitch than any of them only because 2.4 degrees of attitude is a
+bigger deal at 56 m/s than at 205. Before this, the F-16 reached 20 degrees,
+the Global climbed 248 m and the 747 climbed 394 m.
+
+## The Cessna's cabin glazing still vanishes at orbit distance
+
+The depth pre-pass that hid the F-16's canopy hides the 150's cabin too, and
+the F-16's fix does not transfer. Removing the pre-pass fixes the exterior —
+captured, the cabin goes from a bare shell with the interior showing through
+to properly glazed — and destroys the view from the cockpit, which drops from
+mountains and horizon in full daylight to a near-black blue wash.
+
+A 150's cabin is a box of flat panes with the pilot INSIDE it, so without the
+pre-pass its own surfaces sort against each other from within and the far side
+draws over the world. The F-16 escapes this because its bubble is a single
+convex shell around one seat.
+
+Two fixes were tried and neither worked: dropping the cockpit alpha to 0.08,
+which does nothing because the fault is sorting rather than opacity; and
+toggling `needDepthPrePass` inside `setCockpitView`, which Babylon does not
+honour at runtime because the pipeline decision is already baked.
+
+The fix that should work is excluding the cabin glazing from the cockpit
+camera's layer, the way the windscreen centre frame already is — the pilot
+then sees no glass at all, which is what he effectively sees today, and the
+exterior keeps it. That needs the assertion in
+`tests/render.webgpu-aircraft.test.ts` that the glazing IS visible to the
+cockpit camera to move first, which is a deliberate contract and not mine to
+change unasked.
+
+Shipping the cosmetic loss outside rather than a functional loss inside.
+
+## Known flaky, named rather than papered over
+
+`tests/render.webgpu-detail-scatter.test.ts` — "keeps closed-forest stem
+density in the ecological band" — passes when run on its own and fails under
+full-suite parallelism. It is an order or resource dependency, not a real
+density regression, and it is left untouched deliberately: a test that only
+fails under load is worth keeping visible rather than loosening until it stops
+complaining. If it starts failing in isolation, that is a different bug.
+
+## Follow-ups logged, not fixed
+
+- **A tail strike is silent.** The airframe contact points are real — spawning
+  a Global pitched past its 11.2-degree limit drops the CG 0.91 m at 14 degrees
+  and 2.68 m at 20, so the tailcone genuinely comes down — but nothing sets
+  `crashed` and nothing tells the pilot. A HUD or audio cue is the natural
+  answer. Margins are comfortable today: a full-back-stick rotation reaches
+  10.4 of 11.2 degrees in the Global and 7.4 of 10.4 in the 747-8 at 250 t.
+- **Jet thrust lapses with density only.** `calculateEngineThrust` uses
+  `rho^0.72` with no ram recovery, which outruns the drag fall with altitude.
+  The F-16 therefore reaches M 1.21 at sea level, correctly, but only M 1.17 at
+  11 km where the real aeroplane does about M 2.0. Changing the exponent moves
+  every jet in the game, so it was left alone.
+- **The shared glass material links refraction to transparency.**
+  `subSurface.isRefractionEnabled` with `linkRefractionWithTransparency` turns
+  alpha from a blend opacity into a refraction weight, so the surface returns
+  environment rather than tint. On a windscreen seen edge-on it costs nothing;
+  on the F-16's four-metre bubble it cost the whole bubble. It survived review
+  because the GPU preview test builds its own `ReflectionProbe`, so the canopy
+  read correctly in the one frame anyone checked and vanished in the game. The
+  F-16's material no longer uses it; the Global's windscreen and the 747-8's
+  flight-deck glazing still do and should be checked the same way.
+- **Low-level streaming below 500 m AGL is untested at speed.** Sustained runs
+  at 283, 474 and 577 m/s showed zero new collision fallbacks and no trend in
+  frame interval or hitches, but all of them were at 3,400–3,700 ft AGL because
+  the test aeroplane could not be held lower at those speeds. The contract that
+  calls a non-zero fallback a bug applies specifically *below* 500 m, which is
+  the one band not covered. Re-run `scripts/lowlevel-streaming-probe.mts` there
+  once the F-16 is flyable.

@@ -1,6 +1,7 @@
 import {
   aftExtent,
   aircraftDefinition,
+  standardAirDensity,
   DEFAULT_CONTROLS,
   type AircraftDefinition,
   type AircraftKind,
@@ -19,6 +20,51 @@ import {
 } from "@/src/workers/protocol";
 
 const AIRBORNE_START_PITCH = (2.4 * Math.PI) / 180;
+
+const SEA_LEVEL_DENSITY = 1.225;
+
+/**
+ * Corrects an airborne spawn for the air it actually starts in.
+ *
+ * The catalogue's `airborneAirspeed` and `airborneThrottle` are one speed and
+ * one throttle, measured level at one altitude. But the start height is a
+ * PLAYER SETTING that runs to 3,000 m, and at the top of it the same numbers
+ * do not hold level at all: measured hands-off in the app for 90 s, the 747
+ * sank 1,634 ft, the Global 1,518 and the F-16 1,243. Even at the 450 m
+ * default the 747 drifted down 700 ft.
+ *
+ * So the catalogue figure is read as an EQUIVALENT airspeed at sea level and
+ * converted. Two standard relations, both exact in this model:
+ *
+ *   TAS = EAS / sqrt(sigma)   — same dynamic pressure, so the same angle of
+ *                               attack and the same lift at any altitude.
+ *   throttle = throttle0 / sigma  — for a JET only. `calculateEngineThrust`
+ *                               lapses jet thrust with density, so thrust
+ *                               required over thrust available scales exactly
+ *                               this way.
+ *
+ * The propeller branch is power-limited rather than density-limited, so it is
+ * deliberately left alone: the Cessna already holds level within 50 ft across
+ * the range, and applying a jet's correction to it would be a guess dressed
+ * as physics.
+ */
+function altitudeCorrectedSpawn(
+  aircraft: AircraftDefinition,
+  equivalentAirspeed: number,
+  seaLevelThrottle: number,
+  spawnAltitude: number,
+): { airspeed: number; throttle: number } {
+  const sigma = Math.max(
+    0.05,
+    standardAirDensity(spawnAltitude) / SEA_LEVEL_DENSITY,
+  );
+  return {
+    airspeed: equivalentAirspeed / Math.sqrt(sigma),
+    throttle: aircraft.propulsion === "jet"
+      ? Math.min(1, seaLevelThrottle / sigma)
+      : seaLevelThrottle,
+  };
+}
 
 /** Tarmac left behind the tail when lined up. Enough to be clearly on, not wasted. */
 const RUNWAY_THRESHOLD_MARGIN = 10;
@@ -150,16 +196,16 @@ export function createSimulationSpawn(
     const x = 0;
     const z = -500;
     const terrainHeight = sampleGroundHeight(world, x, z);
+    const y = terrainHeight + airborneCgHeight(airborneStartAgl, aircraft, airborneGear);
+    const corrected = altitudeCorrectedSpawn(aircraft, airborneAirspeed, airborneThrottle, y);
     return {
-      position: {
-        x,
-        y: terrainHeight + airborneCgHeight(airborneStartAgl, aircraft, airborneGear),
-        z,
-      },
+      position: { x, y, z },
       heading: 0,
       pitch: AIRBORNE_START_PITCH,
-      airspeed: airborneAirspeed,
-      controls: { ...DEFAULT_CONTROLS, throttle: airborneThrottle, trim: 0, gear: airborneGear },
+      airspeed: corrected.airspeed,
+      controls: {
+        ...DEFAULT_CONTROLS, throttle: corrected.throttle, trim: 0, gear: airborneGear,
+      },
     };
   }
 
@@ -176,16 +222,16 @@ export function createSimulationSpawn(
   }
 
   const point = runwayToWorld(airport, -airport.runwayLength * 0.22, 0);
+  const y = airport.elevation + airborneCgHeight(airborneStartAgl, aircraft, airborneGear);
+  const corrected = altitudeCorrectedSpawn(aircraft, airborneAirspeed, airborneThrottle, y);
   return {
-    position: {
-      x: point.x,
-      y: airport.elevation + airborneCgHeight(airborneStartAgl, aircraft, airborneGear),
-      z: point.z,
-    },
+    position: { x: point.x, y, z: point.z },
     heading: airport.headingRadians,
     pitch: AIRBORNE_START_PITCH,
-    airspeed: airborneAirspeed,
-    controls: { ...DEFAULT_CONTROLS, throttle: airborneThrottle, trim: 0, gear: airborneGear },
+    airspeed: corrected.airspeed,
+    controls: {
+      ...DEFAULT_CONTROLS, throttle: corrected.throttle, trim: 0, gear: airborneGear,
+    },
   };
 }
 
@@ -223,18 +269,25 @@ export function createCrashRecoverySpawn(
   const surfaceHeight = crashRecoverySurfaceHeight(world, x, z);
   const fallbackHeading = fallback.heading ?? 0;
 
+  const y = surfaceHeight + airborneCgHeight(airborneStartAgl, aircraft, airborneGear);
+  // Corrected for density altitude like every other airborne start. A crash
+  // recovery in the mountains is exactly where an uncorrected spawn hurts
+  // most: high ground, thin air, and a pilot who has just lost control once.
+  const corrected = altitudeCorrectedSpawn(
+    aircraft,
+    airborneAirspeedForAircraft(aircraftKind),
+    airborneThrottleForAircraft(aircraftKind),
+    y,
+  );
+
   return {
-    position: {
-      x,
-      y: surfaceHeight + airborneCgHeight(airborneStartAgl, aircraft, airborneGear),
-      z,
-    },
+    position: { x, y, z },
     heading: Number.isFinite(headingRadians) ? headingRadians : fallbackHeading,
     pitch: AIRBORNE_START_PITCH,
-    airspeed: airborneAirspeedForAircraft(aircraftKind),
+    airspeed: corrected.airspeed,
     controls: {
       ...DEFAULT_CONTROLS,
-      throttle: airborneThrottleForAircraft(aircraftKind),
+      throttle: corrected.throttle,
       trim: 0,
       gear: airborneGear,
     },

@@ -173,11 +173,29 @@ const KINDS: readonly AircraftKind[] = AIRCRAFT_KINDS;
 
 /** The jet's tail surfaces carry their own prefix. */
 function elevatorSurfaces(kind: AircraftKind): readonly string[] {
-  if (kind === "jet") return ["starboard-jet-elevator-surface", "port-jet-elevator-surface"];
+  // The F-16 has no elevator: the whole surface pivots, so these are the
+  // stabilators themselves.
+  if (kind === "jet") return ["starboard-jet-stabilator", "port-jet-stabilator"];
   if (kind === "bizjet") {
     return ["starboard-bizjet-elevator-surface", "port-bizjet-elevator-surface"];
   }
   return ["starboard-elevator-surface", "port-elevator-surface"];
+}
+
+/**
+ * The surfaces that answer the ROLL command.
+ *
+ * The F-16 has no separate ailerons: one flaperon a side is both its flap and
+ * its aileron, as the aeroplane's is. The assertions below are unchanged by
+ * that — right stick still means starboard trailing edge UP and port DOWN —
+ * and it is the right surface to hold to them, because on this airframe it is
+ * the only surface that rolls it.
+ */
+function rollSurfaces(kind: AircraftKind): readonly string[] {
+  if (kind === "jet") {
+    return ["starboard-jet-flaperon-surface", "port-jet-flaperon-surface"];
+  }
+  return ["starboard-aileron-surface", "port-aileron-surface"];
 }
 
 describe("control surfaces move the way the pilot's controls promise", () => {
@@ -185,7 +203,7 @@ describe("control surfaces move the way the pilot's controls promise", () => {
     describe(kind, () => {
       it("raises the starboard aileron and drops the port one in a roll to the right", () => {
         const { scene, visual } = build(kind);
-        const names = ["starboard-aileron-surface", "port-aileron-surface"];
+        const names = rollSurfaces(kind);
         const starboard = surfaceOnSide(scene, names, "starboard");
         const port = surfaceOnSide(scene, names, "port");
 
@@ -204,7 +222,7 @@ describe("control surfaces move the way the pilot's controls promise", () => {
 
       it("mirrors that exactly in a roll to the left", () => {
         const { scene, visual } = build(kind);
-        const names = ["starboard-aileron-surface", "port-aileron-surface"];
+        const names = rollSurfaces(kind);
         const starboard = surfaceOnSide(scene, names, "starboard");
         const port = surfaceOnSide(scene, names, "port");
 
@@ -249,7 +267,7 @@ describe("control surfaces move the way the pilot's controls promise", () => {
         const elevators = elevatorSurfaces(kind).map((name) => trailingEdge(scene, name).y);
         expect(elevators[0]).toBeCloseTo(elevators[1]!, 6);
 
-        const names = ["starboard-aileron-surface", "port-aileron-surface"];
+        const names = rollSurfaces(kind);
         const starboard = trailingEdge(scene, surfaceOnSide(scene, names, "starboard")).y;
         const port = trailingEdge(scene, surfaceOnSide(scene, names, "port")).y;
         expect(Math.sign(starboard - port)).toBe(1);
