@@ -185,13 +185,32 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         () => splat.bake(channelSlots, 171),
         () => splat.consumeMeasuredDispatchCostMs());
 
+      // The splat bake's COARSE path. From a 64 m channel texel up every
+      // supersample tap samples its own canopy (the level-3 batch above never
+      // takes that branch: 32 m texels). Level 5 is 128 m. Its height pages are
+      // generated first, because the bake reads them.
+      const coarseHeightSlots: TerrainAtlasSlot[] = [];
+      const coarseChannelSlots: TerrainAtlasSlot[] = [];
+      for (let index = 0; index < BATCH; index += 1) {
+        const address = createWorldPageAddress(5, index, 0);
+        const key = invariantSlotKey(address);
+        coarseHeightSlots.push(heightAtlas.residency.request(key, address)!.slot);
+        coarseChannelSlots.push(channelAtlas.residency.request(key, address)!.slot);
+      }
+      await generator.generate(coarseHeightSlots);
+      await nextFrame();
+      generator.consumeMeasuredDispatchCostMs();
+      const splatComputeCoarse = await time(
+        () => splat.bake(coarseChannelSlots, 171),
+        () => splat.consumeMeasuredDispatchCostMs());
+
       generator.dispose();
       occlusion.dispose();
       splat.dispose();
       pyramid.dispose();
       heightAtlas.dispose();
       channelAtlas.dispose();
-      return { terrainCompute, occlusionCompute, splatCompute };
+      return { terrainCompute, occlusionCompute, splatCompute, splatComputeCoarse };
     });
 
     console.log(
@@ -199,6 +218,16 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       JSON.stringify(measured, (_, value) =>
         typeof value === "number" ? Math.round(value * 1_000) / 1_000 : value),
     );
+
+    // A canopy per tap was costed from lattice counts at 1.5x the fine path
+    // (4 canopy + 8 classify against 1 + 8). Short dispatches time noisily, so
+    // the bound is loose; what it guards is someone raising the tap grid, which
+    // at 4x4 is ~6x and over the whole-compute cap on its own.
+    console.log(
+      `splat bake, coarse / fine: ${(measured.splatComputeCoarse / measured.splatCompute).toFixed(2)}x`);
+    expect(measured.splatComputeCoarse, "coarse splat bake measured").toBeGreaterThan(0);
+    expect(measured.splatComputeCoarse / measured.splatCompute,
+      "a coarse page's splat bake costs more than 3x a fine one").toBeLessThan(3);
 
     for (const client of ["terrainCompute", "occlusionCompute", "splatCompute"] as const) {
       const pinned = COMPUTE_DISPATCH_SEED_COST_MS[client];
