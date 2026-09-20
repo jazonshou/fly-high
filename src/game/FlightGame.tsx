@@ -44,6 +44,7 @@ import {
   type FlightVisualState,
   type RenderDiagnostics,
 } from "./types";
+import { handoffTrimSeed, heldElevator } from "@/src/sim";
 import type { SpawnKind } from "@/src/workers/protocol";
 import {
   beginTransition,
@@ -220,9 +221,28 @@ export function FlightGame() {
       airborneGearForAircraft(settingsRef.current.aircraft),
     );
     inputRef.current?.setThrottle(latestStateRef.current.throttle);
+    // Hand the player an aeroplane that is already trimmed, rather than one
+    // whose surfaces snap to neutral the moment they take it.
+    //
+    // Scenic is excluded and must stay excluded: its own height hold adopts
+    // the menu flight's learned trim (`ScenicAltitudeHold.adopt`), so seeding
+    // trim as well would be two mechanisms carrying the same elevator and the
+    // aeroplane would get twice what it needs.
+    //
+    // This runs BEFORE `handoff` and through `setTrim`, because the input
+    // controller owns trim and re-sends it: seeding anywhere else is undone by
+    // its next message. The same number goes to the worker so the trim
+    // actuator is not slewing toward a value the controller is about to
+    // replace. See `handoffTrimSeed` for the units and the sign.
+    const handoffTrim = settingsRef.current.flightMode === "scenic"
+      ? 0
+      : handoffTrimSeed(
+        heldElevator(latestStateRef.current.elevator, latestStateRef.current.trim),
+      );
+    inputRef.current?.setTrim(handoffTrim);
     spawnRef.current = "airborne";
     setSpawnKind("airborne");
-    simulationRef.current?.handoff(settingsRef.current.flightMode);
+    simulationRef.current?.handoff(settingsRef.current.flightMode, handoffTrim);
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [unlockAudio, updatePhase]);

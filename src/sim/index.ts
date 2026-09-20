@@ -35,6 +35,11 @@ export {
   type AttractHoldInput,
   type AttractHoldOutput,
 } from "./attract";
+export {
+  handoffPitchRemainder,
+  handoffTrimSeed,
+  heldElevator,
+} from "./handoffTrim";
 export { DirectPitchRetention } from "./pitchRetention";
 export {
   SCENIC_HOLD_CAPTURE_SECONDS,
@@ -62,6 +67,7 @@ export {
   pilotSurfaceClearance,
   MAX_STEP_DURATION,
   SEA_LEVEL_DENSITY,
+  TRIM_ELEVATOR_AUTHORITY,
   spawnFlight,
   STANDARD_GRAVITY,
   standardAirDensity,

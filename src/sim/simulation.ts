@@ -34,6 +34,16 @@ import type {
 } from "./types";
 
 export const FIXED_TIME_STEP = 1 / 120;
+/**
+ * Trim's share of the elevator: `elevator = actuators.pitch + trim * this`.
+ *
+ * **Trim authority is HALF of stick authority**, so carrying a held elevator on
+ * trim alone costs twice as much trim, and a held elevator beyond 0.5 cannot be
+ * carried by trim at all. Both the aerodynamics below and the hand-off seeding
+ * in `handoffTrimSeed` read this, because a seed computed against a different
+ * number than the physics uses is a seed that does not hold the aeroplane.
+ */
+export const TRIM_ELEVATOR_AUTHORITY = 0.5;
 export const MAX_STEP_DURATION = 0.25;
 export const STANDARD_GRAVITY = 9.80665;
 export const SEA_LEVEL_DENSITY = 1.225;
@@ -528,7 +538,7 @@ export function createFlightState(
         -(
           aircraft.pitchMomentZero +
           aircraft.pitchMomentElevator *
-            (actuators.pitch + actuators.trim * 0.5)
+            (actuators.pitch + actuators.trim * TRIM_ELEVATOR_AUTHORITY)
         ) / aircraft.pitchMomentAlpha,
         (-8 * Math.PI) / 180,
         (8 * Math.PI) / 180,
@@ -1131,7 +1141,8 @@ function integrateSubstep(
   const pitchRate = state.angularVelocity.z;
   const yawRate = state.angularVelocity.y;
   const rollRate = state.angularVelocity.x;
-  const elevator = state.actuators.pitch + state.actuators.trim * 0.5;
+  const elevator = state.actuators.pitch +
+    state.actuators.trim * TRIM_ELEVATOR_AUTHORITY;
   const stallExcess = Math.max(
     0,
     angleOfAttack - aircraft.positiveStallAngle,

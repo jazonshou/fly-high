@@ -19,7 +19,9 @@ import {
   DirectPitchRetention,
   FIXED_TIME_STEP,
   FlightSimulator,
+  heldElevator,
   JetStabilityAugmentation,
+  TRIM_ELEVATOR_AUTHORITY,
   type FlightControls,
   type AircraftKind,
   type SpawnOptions,
@@ -503,6 +505,34 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // are guaranteed to be watching.
       if (command.mode === "scenic" && attractHold) {
         scenicAltitudeHold.adopt(attractHold.verticalTrim);
+      } else if (command.mode !== "scenic" && simulator) {
+        // Pilot and Direct have no hold to carry the trim, so it goes onto the
+        // player's TRIM, which is the surface a real pilot would have used.
+        //
+        // The transfer is done on the actuators in one step because the two
+        // slew at wildly different rates -- the pitch actuator at 7 per second,
+        // the trim actuator at 0.45 -- so seeding only the control would let
+        // the elevator collapse and refill over a tenth of a second. Moving
+        // both at once keeps the elevator itself unchanged: what leaves the
+        // pitch actuator arrives on the trim actuator in the same frame.
+        //
+        // The remainder is computed from the elevator the simulation has RIGHT
+        // NOW rather than from the seed, so the elevator is continuous even if
+        // the main thread's snapshot was a frame stale; a slightly stale seed
+        // just leaves a little more in the pitch actuator.
+        const actuators = simulator.state.actuators;
+        const held = heldElevator(actuators.pitch, actuators.trim);
+        // The MAIN THREAD's value is authoritative, because the input
+        // controller owns trim and will re-send exactly this on its next
+        // message; deriving our own here would only make the trim actuator
+        // slew from ours to theirs. Bounded defensively as a protocol value.
+        const seeded = Math.min(1, Math.max(-1, command.trimSeed));
+        actuators.trim = seeded;
+        actuators.pitch = held - seeded * TRIM_ELEVATOR_AUTHORITY;
+        // Hold the same target locally until the input controller's next
+        // message arrives carrying it, so the trim actuator does not spend a
+        // frame slewing back toward a stale zero.
+        controls.trim = seeded;
       }
       directPitchRetention.reset();
       jetStabilityAugmentation.reset();
