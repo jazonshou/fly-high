@@ -560,12 +560,11 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const root = new TransformNode("boeing-747-8", scene);
   configureRoot(root, "airliner");
 
-  // Two paint recipes, as the Global has. This airframe carries four times the
-  // Global's painted area and each recipe costs three synthesized textures; an
-  // airline scheme is a white shell with a coloured fin, engines and control
-  // surfaces, so a third recipe would buy a distinction no camera angle in the
-  // game can find.
-  const body = build.paintMaterial("airliner-body", {
+  // Three paint recipes: the shell, the wing, and the accent. This airframe
+  // carries four times the Global's painted area and each recipe costs three
+  // synthesized 64-pixel textures, so a recipe has to buy something a camera
+  // can find — and the wing's does; see `wing` below.
+  const bodyRecipe = {
     seed: 0x7478_0001,
     baseColor: 0xf4f5f3,
     liveryColor: 0x1b3a6b,
@@ -576,6 +575,29 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // The 64-pixel maps stretch over a 72 m fuselage — twice the Global's
     // reach, so the panel grid has to be weaker again or it reads as quilting.
     panelStrength: 0.34,
+  } as const;
+  const body = build.paintMaterial("airliner-body", bodyRecipe);
+  // THE WING IS PLAIN WHITE, and it is its own recipe for exactly one reason.
+  //
+  // The shared paint synthesis draws its `livery-decal` feature as a diagonal
+  // band in UV space — `fract(u - 0.37v + 0.18)` near 0.5 — and every mesh is
+  // handed its own 0..1 tile. On a loft that band winds round the fuselage as
+  // the cheatline. On the wing it became a different blue slash on each of
+  // twenty-six separately-UV'd parts: eight fixed panels, four flaps, four
+  // ailerons and ten spoilers, every one at its own angle and none meeting
+  // its neighbour. No choice of UVs lands one diagonal band correctly on all
+  // of them at once, which is the note Jason left on the Global before its
+  // wing was fixed the same way.
+  //
+  // So this is the body recipe with the livery colour set EQUAL to the base
+  // colour: `mix(value, livery, decal)` becomes the identity, the band is
+  // gone, and the panel lines, rivets, seams, filler, soot and leading-edge
+  // wear are bit-for-bit the body's own because the seed is. The fuselage
+  // keeps its cheatline; the wing reads as one white surface from root to
+  // tip, which is what an airline's wing is.
+  const wing = build.paintMaterial("airliner-wing", {
+    ...bodyRecipe,
+    liveryColor: bodyRecipe.baseColor,
   });
   const accent = build.paintMaterial("airliner-accent", {
     seed: 0x7478_0002,
@@ -890,7 +912,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           chordSegments: 14,
           spanSegments: panel.spanSegments,
         },
-        body,
+        wing,
         anchor,
       ));
     }
@@ -940,11 +962,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
           chordSegments: 8,
           spanSegments: 2,
         },
-        // BODY paint, not the accent the Global puts on its control surfaces.
-        // A corporate scheme colours flaps and ailerons; an airline's wing is
-        // one white surface from root to tip, and painting eight panels in the
-        // livery colour turned the plan view into stripes.
-        body,
+        // WING paint, not the accent. An airline's wing is one white surface
+        // from root to tip: painting eight panels in the livery colour turned
+        // the plan view into stripes, and the body recipe's own livery band
+        // did the same thing more quietly — a blue dash across every panel,
+        // each at its own angle. See the note on `wing`.
+        wing,
         hinge,
       );
       flaps.push(hinge);
@@ -996,7 +1019,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         // to be a panel line rather than a step.
         0.045,
         spoiler.span,
-        body,
+        wing,
         brake,
       );
       // Hinged at its forward edge, so the panel lies entirely aft of the node
@@ -1040,8 +1063,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
         chordSegments: 8,
         spanSegments: 2,
       },
-      // Body paint, for the reason the flaps carry it.
-      body,
+      // Wing paint, for the reason the flaps carry it.
+      wing,
       hinge,
     ));
     // All four ailerons sit on the same swept hinge line as the flaps, so they
@@ -1084,7 +1107,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
       { x: 2, yRadius: 0.08, zRadius: 0.08 },
     ],
     8,
-    body,
+    // Wing paint: a canoe is wing structure, and in the body recipe each of
+    // the eight wore its own blue dash under an otherwise white wing.
+    wing,
     root,
   );
   {
