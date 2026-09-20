@@ -101,6 +101,18 @@ console.log("engine diagnostics:", await page.evaluate(async ({ storeUrl }) => {
 }, { storeUrl }));
 
 async function flyManoeuvre(): Promise<void> {
+  if (manoeuvre === "aileron-right" || manoeuvre === "rudder-right") {
+    // Hold one control and photograph the aeroplane mid-deflection, so the
+    // surfaces can be read off a frame rather than off a node rotation.
+    const key = manoeuvre === "aileron-right" ? "d" : "e";
+    await page.waitForTimeout(1_000);
+    await page.keyboard.down(key);
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: `${outDir}/surface-${kindWanted}-${manoeuvre}.png`, type: "png" });
+    await page.waitForTimeout(400);
+    await page.keyboard.up(key);
+    return;
+  }
   if (manoeuvre === "level") return;
   await page.waitForTimeout(1_000);
   // A right turn the way a pilot flies one: roll in, hold the bank, then

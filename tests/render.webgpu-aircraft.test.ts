@@ -149,7 +149,11 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
     expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeLessThan(0);
-    expect(transform(fixture.scene, "rudder").rotation.y).toBeLessThan(0);
+    // Flipped with the rudder-direction fix: right rudder now swings the
+    // trailing edge to STARBOARD, which is what yaws the nose right. This pin
+    // held the old inverted sign. `render.webgpu-control-surface-sides`
+    // asserts the direction in world space, where a name cannot go wrong.
+    expect(transform(fixture.scene, "rudder").rotation.y).toBeGreaterThan(0);
     expect(transform(fixture.scene, "nose-wheel-steering").rotation.y).toBeLessThan(0);
     expect(transform(fixture.scene, "starboard-main-wheel").rotation.z).toBeLessThan(0);
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
@@ -234,7 +238,11 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
     expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeGreaterThan(0);
-    expect(transform(fixture.scene, "rudder").rotation.y).toBeLessThan(0);
+    // Flipped with the rudder-direction fix: right rudder now swings the
+    // trailing edge to STARBOARD, which is what yaws the nose right. This pin
+    // held the old inverted sign. `render.webgpu-control-surface-sides`
+    // asserts the direction in world space, where a name cannot go wrong.
+    expect(transform(fixture.scene, "rudder").rotation.y).toBeGreaterThan(0);
 
     aircraft.update(
       { ...INITIAL_VISUAL_STATE, gear: 0.5, brake: 1, onGround: false },
@@ -288,7 +296,8 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(trainer.starboardAileron).toBe(-0.25);
     expect(trainer.portAileron).toBe(0.25);
     expect(trainer.elevator).toBe(0.3);
-    expect(trainer.rudder).toBe(-0.32);
+    // Flipped with the rudder-direction fix; see the note above.
+    expect(trainer.rudder).toBe(0.32);
     expect(trainer.mainWheelRadiansPerSecond).toBeCloseTo(-60 / 0.27, 8);
 
     const jet = resolveAircraftAnimationPose("jet", {
