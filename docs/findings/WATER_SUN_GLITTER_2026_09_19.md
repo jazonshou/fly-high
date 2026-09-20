@@ -248,6 +248,22 @@ show it are a fresh breeze at range, which the set does not currently hold. So
 it is a correctness fix with no visible effect on today's frames, not a
 look change, and it should not be credited with one.
 
+**The pose that WOULD photograph it**, for whoever touches whitecaps next. Three
+conditions have to hold at once. (a) Coverage high enough that flecks are a
+population rather than a rarity: Monahan's `3.84e-6·U^3.41` is 0.87% at this
+world's usual 9.6 m/s but 4% at 15 m/s and 14% at 22 m/s, and `MAX_WIND_SPEED`
+is 32, so the world can produce it — find open water where `sampleWind` is
+strong and the shelter term (`waterProvince.z`) is near 1, i.e. well offshore
+rather than in a lee. (b) The fleck branch fully faded in, which needs
+`footprintMajor` past 16 m — a grazing view, so altitude and range rather than
+a look straight down. (c) Caps still subtending more than a pixel, so they read
+as patches: a 12 m² cap is ~3.5 m across, and at 0.00084 rad per pixel that
+means range under ~4 km. Together: roughly 600–900 m of altitude looking out
+2–4 km over open, unsheltered water at a strong-wind site, with the sun high
+enough to light foam (foam is a Lambertian scatterer, so a dusk clock hides the
+term this pose exists to show). `coast-10km-lowsun` has (b) and neither (a) nor
+(c).
+
 ## Known limits and follow-ups
 
 - **Cox & Munk's slope ANISOTROPY is not implemented.** They split the total as
