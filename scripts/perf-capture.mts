@@ -1964,6 +1964,42 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     comparesToBaseline: false,
     ceilings: null,
   },
+  {
+    name: "water-400ft-glitter",
+    description:
+      "120 m over open water with the sun low and ahead - the sun glitter "
+      + "path at the altitude an aircraft actually flies it",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 120,
+    /**
+     * `W-11`: the regime Jason photographed the sparkle in, and the one gap
+     * in the water coverage. `water-25ft` sits 8 m up, where the ripples are
+     * RESOLVED and the sparkle statistic is faded out; `coast-10km-lowsun`
+     * sits 800 m up with the sun ASTERN, so it frames the matte side of the
+     * sea and no glitter path at all. Between them is the band where a pixel
+     * covers 0.1-1 m of sea - exactly the fade window the far-field sparkle
+     * turns on in - looking INTO the sun. Nothing in the set stood there, so
+     * nothing in the set could show what the sparkle does there.
+     *
+     * Same coast as the other two water shots (the `locate` predicate walks
+     * to the same shoreline), so the three differ only in altitude and sun
+     * bearing.
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers
+     * every canonical shot index and moves every baselined wave phase (the
+     * Wave R trap).
+     */
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 12,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.4 },
+    relativeSunBearingDegrees: 12,
+    locate: "coast",
+    comparesToBaseline: false,
+    ceilings: null,
+  },
 ]);
 
 export interface CaptureQuaternion {
