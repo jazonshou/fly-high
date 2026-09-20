@@ -295,8 +295,13 @@ function createTrainer(scene: Scene): AircraftVisual {
     wingSurfaces.push(forwardWing, flap);
   }
 
+  // D-6: starboard is body +Z. These two were built on each other's wings, so
+  // `applyCommonPose` drove the port surface with the starboard deflection and
+  // the aeroplane showed a left-roll aileron when the pilot rolled right. The
+  // geometry is a mirror pair, so swapping the sides changes nothing at
+  // neutral — only which surface answers which command.
   const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(-0.29, 0.28, -2.4);
+  starboardAileron.position.set(-0.29, 0.28, 2.4);
   const starboardAileronSurface = build.airfoilWing(
     "starboard-aileron-surface",
     {
@@ -305,7 +310,7 @@ function createTrainer(scene: Scene): AircraftVisual {
       tipLeadingX: 0.16,
       tipTrailingX: -0.23,
       rootZ: 0,
-      tipZ: -2.9,
+      tipZ: 2.9,
       thicknessRatio: 0.085,
       camberRatio: 0.012,
       chordSegments: 8,
@@ -315,7 +320,7 @@ function createTrainer(scene: Scene): AircraftVisual {
     starboardAileron,
   );
   const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(-0.29, 0.28, 2.4);
+  portAileron.position.set(-0.29, 0.28, -2.4);
   const portAileronSurface = build.airfoilWing(
     "port-aileron-surface",
     {
@@ -324,7 +329,7 @@ function createTrainer(scene: Scene): AircraftVisual {
       tipLeadingX: 0.16,
       tipTrailingX: -0.23,
       rootZ: 0,
-      tipZ: 2.9,
+      tipZ: -2.9,
       thicknessRatio: 0.085,
       camberRatio: 0.012,
       chordSegments: 8,
@@ -856,8 +861,9 @@ function createJet(scene: Scene): AircraftVisual {
     wingSurfaces.push(forwardWing, flap);
   }
 
+  // Same side swap as the trainer's; see the note there.
   const starboardAileron = node("starboard-aileron", root, scene);
-  starboardAileron.position.set(-0.78, 0.02, -2.76);
+  starboardAileron.position.set(-0.78, 0.02, 2.76);
   const starboardSurface = build.airfoilWing(
     "starboard-aileron-surface",
     {
@@ -866,7 +872,7 @@ function createJet(scene: Scene): AircraftVisual {
       tipLeadingX: -0.1,
       tipTrailingX: -0.5,
       rootZ: 0,
-      tipZ: -1.94,
+      tipZ: 1.94,
       thicknessRatio: 0.06,
       chordSegments: 7,
       spanSegments: 2,
@@ -875,7 +881,7 @@ function createJet(scene: Scene): AircraftVisual {
     starboardAileron,
   );
   const portAileron = node("port-aileron", root, scene);
-  portAileron.position.set(-0.78, 0.02, 2.76);
+  portAileron.position.set(-0.78, 0.02, -2.76);
   const portSurface = build.airfoilWing(
     "port-aileron-surface",
     {
@@ -884,7 +890,7 @@ function createJet(scene: Scene): AircraftVisual {
       tipLeadingX: -0.1,
       tipTrailingX: -0.5,
       rootZ: 0,
-      tipZ: 1.94,
+      tipZ: -1.94,
       thicknessRatio: 0.06,
       chordSegments: 7,
       spanSegments: 2,

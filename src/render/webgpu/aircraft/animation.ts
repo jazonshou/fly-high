@@ -81,7 +81,12 @@ export function resolveAircraftAnimationPose(
       starboardAileron: -aileron * 0.22,
       portAileron: aileron * 0.22,
       elevator: -elevator * 0.26,
-      rudder: -rudder * 0.28,
+      // Right rudder swings the trailing edge to STARBOARD, which pushes the
+      // tail to port and the nose right — the direction
+      // `sim.body-axis-contract` pins for a positive pilot yaw. This was
+      // negated, so the rudder answered every input backwards while the
+      // nosewheel beside it steered the right way.
+      rudder: rudder * 0.28,
       noseSteering: state.onGround ? -rudder * 0.2 : 0,
       mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / 0.3 : 0,
       noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / 0.24 : 0,
@@ -107,7 +112,8 @@ export function resolveAircraftAnimationPose(
     starboardAileron: -aileron * 0.25,
     portAileron: aileron * 0.25,
     elevator: -elevator * 0.3,
-    rudder: -rudder * 0.32,
+    // See the jet's note: right rudder, trailing edge to starboard.
+    rudder: rudder * 0.32,
     noseSteering: state.onGround ? -rudder * 0.24 : 0,
     mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / 0.27 : 0,
     noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / 0.21 : 0,

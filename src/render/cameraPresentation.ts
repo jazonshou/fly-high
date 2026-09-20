@@ -115,3 +115,170 @@ export function orthogonalizeCameraUpToRef(
   result.y = upY / length;
   result.z = upZ / length;
 }
+
+/**
+ * Time constant of the exterior position response, in seconds.
+ *
+ * `cameraPresentationResponse` is `1 - exp(-dt/tau)`; these are the taus it
+ * uses. Exposed because the chase rig has to reason about the response's
+ * steady-state error explicitly — see `cameraTrailMeters`.
+ */
+export const CAMERA_RESPONSE_SECONDS = 1 / 7;
+export const CAMERA_RESPONSE_SECONDS_REDUCED_MOTION = 1 / 12;
+
+/**
+ * How far behind the aircraft the chase camera USED to settle, over and above
+ * the distance its profile asks for.
+ *
+ * A first-order lag chasing a target that translates at constant speed does
+ * not converge: it settles a fixed `speed * tau` behind it. The chase rig
+ * smoothed an ABSOLUTE world position, so that error was real and large —
+ * measured in-game at 20.6 m against a 13.5 m profile for the trainer (7.1 m
+ * of it lag, predicted 52 * 1/7 = 7.4) and 30.3 m against 14.3 m for the jet
+ * (16 m of lag, predicted 140 * 1/7 = 20).
+ *
+ * The rig now smooths the offset FROM the aircraft, which has no such error,
+ * so this term is added back deliberately along the body axis to leave the
+ * settled framing exactly where players already know it. Two things make the
+ * deliberate version better than the accident it replaces:
+ *
+ *  - it lies along the aircraft's nose, not along its ground track, so a
+ *    crosswind no longer pushes the airframe sideways out of frame; and
+ *  - it is a distance, not a lag, so it no longer leaves a lateral residue
+ *    for seconds after every turn.
+ *
+ * Reduced motion uses the faster response and therefore a shorter trail, as
+ * it did before.
+ *
+ * **The speed is the aircraft's OBSERVED motion between frames, not its
+ * airspeed.** The lag this replaces was produced by the aeroplane moving, so
+ * an aeroplane that is not moving never had one. Reading the airspeed field
+ * instead is wrong wherever the two disagree, and they disagree in exactly the
+ * place it matters: a perf-capture shot holds a fixed position while declaring
+ * an airspeed, and an airspeed-derived trail pushed the camera tens of metres
+ * back in every chase shot in the canonical set — measured as 30% to 99% of
+ * pixels moving, against a same-arm noise floor of under 1%.
+ */
+export function cameraTrailMeters(
+  cameraMode: CameraMode,
+  reducedMotion: boolean,
+  airspeed: number,
+): number {
+  if (cameraMode !== "chase" && cameraMode !== "cinematic") return 0;
+  const speed = Number.isFinite(airspeed) ? Math.max(0, airspeed) : 0;
+  return speed * (reducedMotion
+    ? CAMERA_RESPONSE_SECONDS_REDUCED_MOTION
+    : CAMERA_RESPONSE_SECONDS);
+}
+
+/**
+ * The vertical reference an exterior rig should build its offsets on.
+ *
+ * `cameraBankFollow` says how much of the aircraft's BANK the view adopts, and
+ * the camera's own up vector honours it. The rig's position and aim point did
+ * not: they were raised along the aircraft's up at full strength while the
+ * view rolled only 18% of the way there, so the two disagreed by 82% of the
+ * bank. Because the aim point sits 1.25 m up the body axis and the camera
+ * 5.1 m up it, the airframe hangs about 3.3 m below the view axis — and
+ * rolling the frame under an off-axis object slides it sideways. Measured on
+ * the shipped rig: 0.155% of frame width per degree of bank, leftward in a
+ * right bank, on both airframes.
+ *
+ * Blending from `up0` — the up this aircraft would have at the same heading
+ * and pitch with its wings level — rather than from world up keeps PITCH
+ * following at full strength, so a wings-level frame is unchanged at any
+ * pitch attitude and only the roll component is attenuated.
+ */
+export function cameraRigLiftToRef(
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+  bankFollow: number,
+  result: MutablePresentationVector,
+): void {
+  const follow = Math.min(1, Math.max(0, Number.isFinite(bankFollow) ? bankFollow : 1));
+  // Horizontal starboard, h = forward x worldUp = (-fz, 0, fx). Degenerate
+  // only when the nose points straight up or down, where "wings level" has no
+  // meaning and the aircraft's own up is the best reference available.
+  const horizontal = Math.hypot(forward.x, forward.z);
+  if (!(horizontal > 1e-6)) {
+    result.x = up.x;
+    result.y = up.y;
+    result.z = up.z;
+    return;
+  }
+  const hx = -forward.z / horizontal;
+  const hz = forward.x / horizontal;
+  // up0 = h x forward. h has no y component, so this reduces to:
+  let ux = -hz * forward.y;
+  let uy = hz * forward.x - hx * forward.z;
+  let uz = hx * forward.y;
+  const length0 = Math.hypot(ux, uy, uz);
+  if (!(length0 > 1e-12)) {
+    result.x = up.x;
+    result.y = up.y;
+    result.z = up.z;
+    return;
+  }
+  ux /= length0;
+  uy /= length0;
+  uz /= length0;
+  let x = ux + (up.x - ux) * follow;
+  let y = uy + (up.y - uy) * follow;
+  let z = uz + (up.z - uz) * follow;
+  const length = Math.hypot(x, y, z);
+  if (!(length > 1e-12)) {
+    x = up.x;
+    y = up.y;
+    z = up.z;
+  } else {
+    x /= length;
+    y /= length;
+    z /= length;
+  }
+  result.x = x;
+  result.y = y;
+  result.z = z;
+}
+
+/**
+ * Where the chase camera and its aim point sit, relative to the aircraft.
+ *
+ * Pure, and separated from the renderer for one reason: the claim that this
+ * rig leaves an UNBANKED frame exactly where the old one did is a claim about
+ * arithmetic, and trying to establish it from rendered pixels failed. Two
+ * identical capture runs of identical code moved 30% of a frame with maxima of
+ * 170/255 on this machine, which is a noise floor far too blunt to clear a
+ * camera change against. Here it is a fact a test can check to the last bit.
+ *
+ * At zero bank `lift` IS the aircraft's up vector (`cameraRigLiftToRef`) and
+ * at zero motion `trail` is exactly 0 (`cameraTrailMeters`), so both results
+ * below reduce, character for character, to the pre-fix formulas
+ * `-forward*distance + up*height` and `forward*aimAhead + up*1.25`.
+ *
+ * The trail is carried by BOTH offsets. That is what leaves the view direction
+ * untouched — the camera and its target move back together, so only the
+ * framing distance grows and the aeroplane stays where it was in frame.
+ */
+export function chaseRigOffsetsToRef(
+  forward: Readonly<MutablePresentationVector>,
+  lift: Readonly<MutablePresentationVector>,
+  distance: number,
+  height: number,
+  aimAhead: number,
+  aimHeight: number,
+  trail: number,
+  camera: MutablePresentationVector,
+  target: MutablePresentationVector,
+): void {
+  const behind = distance + trail;
+  camera.x = -forward.x * behind + lift.x * height;
+  camera.y = -forward.y * behind + lift.y * height;
+  camera.z = -forward.z * behind + lift.z * height;
+  const ahead = aimAhead - trail;
+  target.x = forward.x * ahead + lift.x * aimHeight;
+  target.y = forward.y * ahead + lift.y * aimHeight;
+  target.z = forward.z * ahead + lift.z * aimHeight;
+}
+
+/** The aim point's height up the rig's vertical, in metres. */
+export const CHASE_AIM_HEIGHT_METERS = 1.25;

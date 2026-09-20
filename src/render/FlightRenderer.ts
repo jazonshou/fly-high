@@ -161,6 +161,10 @@ import { attributePresentFrame } from "./frameAttribution";
 import {
   cameraBankFollow,
   cameraPresentationResponse,
+  CHASE_AIM_HEIGHT_METERS,
+  cameraRigLiftToRef,
+  cameraTrailMeters,
+  chaseRigOffsetsToRef,
   orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
@@ -575,6 +579,16 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
+  /** The bank-blended vertical the exterior rigs build their offsets on. */
+  private readonly cameraRigLift = Vector3.Up();
+  /** Camera and aim point relative to the aircraft, which is what is smoothed. */
+  private readonly cameraOffset = Vector3.Zero();
+  private readonly cameraTargetOffset = Vector3.Zero();
+  /** Last frame's aircraft position, for the observed ground speed. */
+  private readonly previousAircraftPosition = Vector3.Zero();
+  private previousAircraftPositionValid = false;
+  /** Observed ground speed in m/s, which is what sets the chase trail. */
+  private observedGroundSpeed = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
@@ -2685,6 +2699,31 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
+    // One vertical reference for the whole rig. The exterior views adopt only
+    // part of the aircraft's bank (`cameraBankFollow`), and the camera's own
+    // up vector already honoured that while its POSITION and aim point did
+    // not — which slid the airframe sideways in frame by 0.155% of the width
+    // per degree of bank. Building every offset on the same blended vertical
+    // removes that exactly, and because the blend starts from wings-level
+    // rather than from world up, an unbanked frame is untouched at any pitch.
+    cameraRigLiftToRef(
+      this.forward,
+      this.up,
+      cameraBankFollow(this.cameraMode, this.reducedMotion),
+      this.cameraRigLift,
+    );
+    // How fast the aeroplane is ACTUALLY moving through the scene, which is
+    // what the chase trail is derived from. A rebase frame moves every
+    // coordinate at once, so the delta across it is meaningless and the
+    // previous value is held instead.
+    if (this.previousAircraftPositionValid && !this.originShifted) {
+      const travelled = Vector3.Distance(aircraftPosition, this.previousAircraftPosition);
+      this.observedGroundSpeed = travelled / Math.max(1e-4, this.currentDeltaSeconds);
+    } else if (!this.previousAircraftPositionValid) {
+      this.observedGroundSpeed = 0;
+    }
+    this.previousAircraftPosition.copyFrom(aircraftPosition);
+    this.previousAircraftPositionValid = true;
     if (this.cameraMode === "freefly") {
       // The synthetic viewer state's position IS the camera; its orientation
       // already produced this.forward/this.up in updatePresentation. The rig
@@ -2715,13 +2754,33 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         8.5 + Math.sin(angle * 0.7) * 2,
         Math.sin(angle) * 24,
       );
-      this.desiredCameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
+      this.desiredCameraTarget.copyFrom(aircraftPosition)
+        .addInPlace(this.cameraRigLift.scale(1.3));
       fieldOfView = 58;
     } else {
       const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
-      this.desiredCamera.copyFrom(aircraftPosition)
-        .subtractInPlace(this.forward.scale(profile.distance))
-        .addInPlace(this.up.scale(profile.height));
+      // The trail the old absolute-position smoothing used to produce as a
+      // lag, now asked for explicitly and along the NOSE rather than along the
+      // ground track: the settled framing players know is preserved, without
+      // a crosswind pushing the airframe sideways out of frame. See
+      // `cameraTrailMeters`.
+      const trail = cameraTrailMeters(
+        this.cameraMode,
+        this.reducedMotion,
+        this.observedGroundSpeed,
+      );
+      chaseRigOffsetsToRef(
+        this.forward,
+        this.cameraRigLift,
+        profile.distance,
+        profile.height,
+        profile.aimAhead,
+        CHASE_AIM_HEIGHT_METERS,
+        trail,
+        this.desiredCamera,
+        this.desiredCameraTarget,
+      );
+      this.desiredCamera.addInPlace(aircraftPosition);
       // The chase rig trails the aircraft by up to 22 m and is not collided,
       // so a pitched-up pass near the ground can otherwise place the camera
       // under the terrain. Clamp the desired position above the surface for
@@ -2746,9 +2805,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.desiredCamera.y < cameraGround + 2.5) {
         this.desiredCamera.y = cameraGround + 2.5;
       }
-      this.desiredCameraTarget.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(profile.aimAhead))
-        .addInPlace(this.up.scale(1.25));
+      // Both offsets were produced together above, so the aim point already
+      // carries the same trail the camera does and the view direction is
+      // exactly what it was before the trail became explicit.
+      this.desiredCameraTarget.addInPlace(aircraftPosition);
       fieldOfView = profile.fieldOfView;
     }
     const response = cameraPresentationResponse(
@@ -2757,18 +2817,37 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.currentDeltaSeconds,
       this.reducedMotion,
     );
+    // Smoothed in the AIRCRAFT's frame, not the world's. A first-order lag
+    // chasing an absolute position that is itself translating at flight speed
+    // never converges — it settles `speed * tau` behind, which measured 7.1 m
+    // on the trainer and 16 m on the jet, and left the airframe off-centre for
+    // seconds after every turn. Smoothing the offset instead has no such
+    // steady-state error, so the rig damps ROTATION and manoeuvre (which is
+    // the life in the view) without dragging on straight flight.
+    //
+    // The offsets are STATE, deliberately. Re-deriving them from the camera's
+    // absolute position each frame reintroduces exactly the error this
+    // removes: the stored position is a frame behind the aircraft, so the
+    // implied offset arrives already short by one frame of travel and the
+    // filter settles `((1-r)/r) * speed * dt` — the same `speed * tau` — away
+    // from the offset asked for. Measured at 29.4 m instead of 20.9 m before
+    // this was made persistent.
+    this.desiredCamera.subtractInPlace(aircraftPosition);
+    this.desiredCameraTarget.subtractInPlace(aircraftPosition);
     smoothCameraVectorToRef(
-      this.camera.position,
+      this.cameraOffset,
       this.desiredCamera,
       response,
-      this.camera.position,
+      this.cameraOffset,
     );
     smoothCameraVectorToRef(
-      this.cameraTarget,
+      this.cameraTargetOffset,
       this.desiredCameraTarget,
       response,
-      this.cameraTarget,
+      this.cameraTargetOffset,
     );
+    this.camera.position.copyFrom(aircraftPosition).addInPlace(this.cameraOffset);
+    this.cameraTarget.copyFrom(aircraftPosition).addInPlace(this.cameraTargetOffset);
     // Exterior views communicate a turn without attaching the horizon to
     // every physics/interpolation correction. This restores the restrained
     // 18% chase / 30% cinematic bank used by the playable renderer; cockpit
