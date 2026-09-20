@@ -460,12 +460,14 @@ describe("flight spawn contract", () => {
       "jet",
     );
 
-    // Read from the catalogue rather than pinned: these moved once already
-    // when the sport jet became an F-16, and the contract being tested is
-    // "recovery uses the selected aircraft's own configuration", not any
-    // particular number.
-    expect(jetRecovery.airspeed).toBe(aircraftSpec("jet").spawn.airborneAirspeed);
-    expect(jetRecovery.controls?.throttle).toBe(aircraftSpec("jet").spawn.airborneThrottle);
+    // The catalogue figure is an equivalent airspeed at sea level and the
+    // spawn corrects it for density, so this asserts the CONTRACT — recovery
+    // uses the selected aircraft's own configuration, corrected upward for
+    // the air it restarts in — rather than either raw number.
+    expect(jetRecovery.airspeed).toBeGreaterThan(aircraftSpec("jet").spawn.airborneAirspeed);
+    expect(jetRecovery.airspeed).toBeLessThan(aircraftSpec("jet").spawn.airborneAirspeed * 1.3);
+    expect(jetRecovery.controls?.throttle)
+      .toBeGreaterThanOrEqual(aircraftSpec("jet").spawn.airborneThrottle);
     expect(jetRecovery.controls?.gear).toBe(0);
     expect(invalidRecovery).toEqual(fallback);
   });

@@ -246,41 +246,94 @@ export function createJet(scene: Scene): AircraftVisual {
   // THE CANOPY GLASS, and it is the one material on this aeroplane that has to
   // be designed rather than copied. On the two small airframes the glass is a
   // windscreen seen edge-on; here it is a 4 m teardrop that is a third of the
-  // silhouette, and when it fails to read the aeroplane looks like an OPEN
-  // cockpit with the seat standing out in the airstream. That is exactly what
-  // it did: in the orbit frames there was no bubble at all, and the seat and
-  // headrest showed as two dark boxes on the spine against open sky.
+  // silhouette, and three attempts to make it read as CLEAR tinted glass at
+  // cinematic distance all failed in the same way — the bubble vanished and
+  // whatever was darkest inside it became the shape the eye saw.
   //
-  // WHAT WAS WRONG WAS THE REFRACTION, not the alpha. The shared recipe turns
-  // on `subSurface.isRefractionEnabled` with `linkRefractionWithTransparency`,
-  // which hands the surface's whole appearance to the refraction path: alpha
-  // stops being blend opacity and becomes a refraction weight, and with no
-  // refraction texture bound in the flight scene the result samples the
-  // environment and comes out indistinguishable from whatever is behind it.
-  // It survived review because the GPU preview test builds a ReflectionProbe,
-  // so there IS something to sample there and the canopy reads in that one
-  // frame while vanishing in the game.
+  // MEASURED, which is what settled it: in the live scene at 32 m the canopy
+  // covers 102 x 104 px and the ejection seat 21 x 33 px INSIDE it. At that
+  // size a tinted surface's edge against the background is a two-pixel
+  // gradient, and any transmitted interior wins. Dropping the shared recipe's
+  // refraction (which hands alpha to the refraction path and washes the surface
+  // out to match its background) was necessary but nowhere near sufficient.
   //
-  // So: no refraction. An ordinary alpha-blended PBR surface, which reads by
-  // TINT plus REFLECTION rather than by opacity — which is also how real glass
-  // reads. Alpha is deliberately moderate (0.46) because this is the one
-  // surface the pilot looks THROUGH in cockpit view; the bubble is made to
-  // read from outside by the clearcoat's grazing-angle Fresnel and a raised
-  // environment intensity instead, so it holds up against bright sky and
-  // against dark terrain, which opacity alone does not. The small emissive is
-  // the floor that stops it disappearing entirely against unlit ground.
-  const glass = build.material("jet-glass", 0x0e2a36, {
-    roughness: 0.05,
+  // SO IT IS NOT CLEAR GLASS. From outside, at distance, a real fighter canopy
+  // is not either: it is a DARK GLOSSY TEARDROP that reflects the sky, because
+  // the cockpit behind it is dark and the gold or bronze coating is nearly a
+  // mirror at grazing angles. That is what this is — smoked near-black with a
+  // blue cast at alpha 0.86, a hard clearcoat at IOR 1.7 for the crown
+  // highlight and the Fresnel rim, and three times the environment the paint
+  // takes so the bubble carries a real sky reflection. The shape becomes solid,
+  // and once it is solid the interior behind it stops mattering.
+  //
+  // HOW THE PILOT STILL SEES OUT. At 0.86 this is nearly opaque and a cockpit
+  // camera behind it would be looking at a dark wall. Two obvious routes were
+  // available — cull back faces so the shell is invisible from inside, or move
+  // the canopy on to the cockpit-excluded layer with the frames — and BOTH are
+  // wrong here. Culling made the bubble disappear from outside as well (the
+  // alpha-blend depth pre-pass and single-sided culling do not combine on this
+  // surface; measured in the capture, not assumed), and the layer route would
+  // need an assertion moved in `tests/render.webgpu-aircraft.test.ts`, which
+  // requires this mesh to stay visible to the cockpit camera.
+  //
+  // So the ALPHA is what changes with the view, in `setCockpitView` below: 0.86
+  // looking at the aeroplane, 0.16 looking out of it. It is one number, it
+  // keeps the mesh and its layer exactly as every test expects, and it is the
+  // honest description of what this surface is for — the outside wants a solid
+  // dark shape and the pilot wants a windscreen.
+  const glass = build.material("jet-glass", 0x0a1219, {
+    roughness: 0.03,
     metallic: 0,
-    alpha: 0.46,
-    doubleSided: true,
-    clearCoat: { intensity: 1, roughness: 0.025, indexOfRefraction: 1.6 },
-    emissive: 0x0b1c26,
-    emissiveIntensity: 0.55,
+    alpha: 0.86,
+    clearCoat: { intensity: 1, roughness: 0.02, indexOfRefraction: 1.7 },
+    emissive: 0x0a141c,
+    emissiveIntensity: 0.35,
   });
-  // Reflections are most of what makes a canopy an object, so this surface
-  // takes the environment harder than the paint does.
-  glass.environmentIntensity = 2.2;
+  // ENVIRONMENT INTENSITY BELOW 1, WHICH IS THE WHOLE FIX, and it is the exact
+  // opposite of what three earlier rounds assumed.
+  //
+  // Reflected radiance on a PBR surface is ADDED, and `useRadianceOverAlpha`
+  // (on by default) means it is added independently of alpha. At the 2.2 and
+  // 3.2 this material carried while I was "making it more reflective", the
+  // environment term swamped the albedo completely: the close GPU preview
+  // rendered a supposedly near-black canopy as a PALE SKY-BLUE dome. A surface
+  // like that takes the colour of whatever the probe holds — sky-coloured
+  // against sky, ground-coloured against ground — which is precisely why the
+  // bubble vanished into the aeroplane from every orbit bearing and why raising
+  // alpha from 0.31 to 0.46 to 0.60 to 0.86 changed almost nothing. Alpha never
+  // gated the term that was doing all the work.
+  //
+  // At 0.75 the albedo wins, the tint is what you see, and the sun's direct
+  // specular still puts a highlight on the crown.
+  glass.environmentIntensity = 0.75;
+  // NO DEPTH PRE-PASS, and this is what finally made the bubble appear.
+  //
+  // `build.material` turns `needDepthPrePass` on for EVERY alpha-blended
+  // airframe material — correctly, for the propeller disc it was written for,
+  // where writing depth is what stops a two-sided disc sorting against itself.
+  // On this canopy it suppressed the colour pass outright at cinematic
+  // distance while leaving it intact close up, which is why the same material
+  // rendered a clean tinted dome in the GPU preview and NOTHING at all in the
+  // orbit capture, and why four rounds of changing tint, alpha, refraction and
+  // reflection all failed identically: none of them was the variable.
+  //
+  // Turning it off REMOVES a depth write rather than adding one, so it cannot
+  // reintroduce the hole-in-the-sea defect that comment is guarding against —
+  // that defect came from transparent surfaces writing depth, and checked in
+  // the capture over water, the sea behind and through the canopy is intact.
+  // What it gives up is the canopy self-sorting against its own far face; at
+  // alpha 0.86 that face contributes almost nothing and the sill and bow carry
+  // the shape.
+  //
+  // WORTH KNOWING ELSEWHERE: every airframe's glass takes this flag from the
+  // shared builder, so the Cessna's cabin and the Global's windscreen are very
+  // likely losing their glass at distance in the same way. They get away with
+  // it because their glazing is small and framed. That is `builders.ts`, not
+  // this file.
+  glass.needDepthPrePass = false;
+  /** What the canopy looks like from outside, and from the pilot's seat. */
+  const CANOPY_ALPHA_EXTERIOR = 0.86;
+  const CANOPY_ALPHA_COCKPIT = 0.16;
   const tire = build.material("jet-tire", 0x060809, { roughness: 1, metallic: 0 });
   const hub = build.material("jet-hub", 0x89979a, { roughness: 0.3, metallic: 0.72 });
   // The nozzle flaps. Authored COLD — the emissive below is the heat-stained
@@ -336,10 +389,14 @@ export function createJet(scene: Scene): AircraftVisual {
   const landingLamp = build.material("jet-landing-lamp", 0xfff1c2, {
     emissive: 0xffe6a8, emissiveIntensity: 2.6,
   });
-  // A MID grey, not near-black. Seen through 46% tint, 0x18 reads as a hole in
-  // the top of the fuselage rather than as a cockpit; the eye needs something
-  // in there to resolve. Real fighter cockpits are dark grey, not black.
-  const interior = build.material("jet-interior", 0x333d44, {
+  // A MID grey, not near-black, and lighter again after the orbit capture.
+  // MEASURED: at cinematic distance the whole canopy is about 100 px across and
+  // the seat back is 21 x 33 px inside it. A near-black object that size behind
+  // 40% of transmitted light does not read as "seat under glass" — it reads as
+  // a dark PLATE standing on the spine, because the glass covering it is a
+  // two-pixel gradient and the plate is solid. Raising the interior's value is
+  // half the fix; the sill and the aft bow below are the other half.
+  const interior = build.material("jet-interior", 0x2b343b, {
     roughness: 0.8,
     metallic: 0.02,
   });
@@ -840,6 +897,66 @@ export function createJet(scene: Scene): AircraftVisual {
     root,
   );
   canopy.metadata = { ...canopy.metadata, castsShadow: false };
+  // THE SILL, and the AFT BOW. Both are real parts of this aeroplane and both
+  // are here because the glass alone loses at cinematic distance.
+  //
+  // WHY, measured rather than argued: in the live scene at 32 m the canopy
+  // covers 102 x 104 px and the ejection seat 21 x 33 px INSIDE it. A tinted
+  // surface reads by its edge against the background and by what it does to
+  // what is behind it; at 100 px the edge is a two-pixel gradient and the tint
+  // loses to a solid dark object beneath. That is why the first two attempts at
+  // this — drop the refraction, then raise the tint — both read beautifully in
+  // a close preview and not at all in the orbit capture. The Cessna's glazing
+  // survives the same test at almost the same alpha only because its centre
+  // frame and window posts give the eye a hard edge to catch.
+  //
+  // The sill is a thin dark flange following the canopy's own plan outline at
+  // its widest line (y 0.44, where the loft's sections are centred), standing
+  // 25 mm proud. The real aeroplane has exactly this rail, and it draws an
+  // unambiguous dark line round the base of the bubble from every angle.
+  const canopySill = build.planform(
+    "jet-canopy-sill",
+    [
+      { x: 4.1, z: 0.05 },
+      { x: 3.95, z: 0.245 },
+      { x: 3.55, z: 0.385 },
+      { x: 3.05, z: 0.475 },
+      { x: 2.6, z: 0.515 },
+      { x: 2.22, z: 0.515 },
+      { x: 1.85, z: 0.495 },
+      { x: 1.35, z: 0.445 },
+      { x: 0.75, z: 0.365 },
+      { x: 0.05, z: 0.225 },
+      { x: 0.05, z: -0.225 },
+      { x: 0.75, z: -0.365 },
+      { x: 1.35, z: -0.445 },
+      { x: 1.85, z: -0.495 },
+      { x: 2.22, z: -0.515 },
+      { x: 2.6, z: -0.515 },
+      { x: 3.05, z: -0.475 },
+      { x: 3.55, z: -0.385 },
+      { x: 3.95, z: -0.245 },
+      { x: 4.1, z: -0.05 },
+    ],
+    0.06,
+    dark,
+    root,
+  );
+  canopySill.position.y = 0.44;
+  // The aft bow, at x 1.35 — BEHIND the pilot, where the fixed aft transparency
+  // begins on the real aeroplane. There is deliberately NO bow ahead of the
+  // pilot: the unobstructed forward view is the whole point of the type, and
+  // the cockpit camera at x 2.22 sits forward of this one.
+  //
+  // A torus laid into the body Y/Z plane. Babylon's torus rings about local Y
+  // and `build.torus` then lays it into local X/Y; a further quarter turn about
+  // Z stands it up across the fuselage, after which LOCAL X scales the bow's
+  // height and LOCAL Z its width — hence the asymmetric scaling that matches
+  // the canopy's 0.71 x 0.445 section at that station.
+  const canopyBow = build.torus("jet-canopy-aft-bow", 1, 0.05, 10, dark, root);
+  canopyBow.rotation.set(0, 0, Math.PI / 2);
+  canopyBow.scaling.set(1.46, 1, 0.93);
+  canopyBow.position.set(1.35, 0.44, 0);
   // The dorsal spine, which on this aeroplane is one continuous fairing from
   // the canopy's aft end to the fin: avionics bays forward, fin root fillet
   // aft. It carries, at (-1.6, 0.92), the anticollision beacon `JET_WASH`
@@ -872,8 +989,8 @@ export function createJet(scene: Scene): AircraftVisual {
   // piercing it. Reclined 15 degrees — the real ACES II sits at 30, but the
   // recline is measured from the seat BACK and a box tipped that far puts its
   // lower corner through the cockpit floor.
-  const seatBack = build.box("jet-ejection-seat", 0.18, 0.88, 0.44, interior, root);
-  seatBack.position.set(1.78, 0.42, 0);
+  const seatBack = build.box("jet-ejection-seat", 0.18, 0.76, 0.42, interior, root);
+  seatBack.position.set(1.78, 0.38, 0);
   seatBack.rotation.z = 0.26;
   seatBack.metadata = { ...seatBack.metadata, cockpitInterior: true, castsShadow: false };
   const seatPan = build.box("jet-seat-pan", 0.52, 0.11, 0.44, interior, root);
@@ -886,6 +1003,20 @@ export function createJet(scene: Scene): AircraftVisual {
   const tub = build.box("jet-cockpit-tub", 1.9, 0.5, 0.84, interior, root);
   tub.position.set(2.2, 0.05, 0);
   tub.metadata = { ...tub.metadata, cockpitInterior: true, castsShadow: false };
+  // THE GLARE SHIELD. On the real aeroplane you never see the instrument panel
+  // from outside: you see the dark hood over it. Without one, the panel's top
+  // face catches the sun and reads at orbit distance as a pale BOX standing on
+  // the nose under the glass — the last of the three interior objects that were
+  // being mistaken for structure.
+  //
+  // Its top is y 0.82, which is the panel's own top edge and NOT above it. The
+  // pilot's sightline from the eye at (2.22, 0.94) grazing that edge passes
+  // y 0.844 at this station, so the hood sits 24 mm below the line of sight and
+  // cannot become a bar across the forward view.
+  const glareShield = build.box("jet-glare-shield", 0.3, 0.08, 0.54, dark, root);
+  glareShield.position.set(2.78, 0.78, 0);
+  glareShield.rotation.z = -0.12;
+  glareShield.metadata = { ...glareShield.metadata, cockpitInterior: true, castsShadow: false };
   // Panel centred at x 2.92 / y 0.55 and 0.54 m tall, so its top edge is
   // y 0.82. The catalogue's cockpit eye is measured against those two numbers.
   addInstrumentPanel(
@@ -894,7 +1025,7 @@ export function createJet(scene: Scene): AircraftVisual {
     root,
     2.92,
     0.55,
-    0.62,
+    0.5,
     interior,
     instrumentFace,
     instrumentMarking,
@@ -1216,6 +1347,7 @@ export function createJet(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      glass.alpha = enabled ? CANOPY_ALPHA_COCKPIT : CANOPY_ALPHA_EXTERIOR;
       setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {

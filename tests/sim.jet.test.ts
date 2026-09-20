@@ -97,13 +97,16 @@ describe("fast jet flight model", () => {
 
     expect(simulator.telemetry().altitudeAgl).toBeCloseTo(975, 8);
     expect(simulator.state.onGround).toBe(false);
-    // From the catalogue, not pinned: the spawn speed and throttle are
-    // measured numbers that moved when this became an F-16, and what this
-    // test is actually about is the wheel AGL above it.
-    expect(simulator.telemetry().airspeed)
-      .toBeCloseTo(aircraftSpec("jet").spawn.airborneAirspeed, 8);
+    // The catalogue figure is an EQUIVALENT airspeed at sea level; the spawn
+    // converts it for the air it starts in, so the true airspeed here is
+    // higher and the throttle is richer. Asserting the RELATIONSHIP rather
+    // than either raw number — this test is about the wheel AGL anyway, and
+    // pinning the catalogue value would just re-break when it next moves.
+    const spawnAirspeed = simulator.telemetry().airspeed;
+    expect(spawnAirspeed).toBeGreaterThan(aircraftSpec("jet").spawn.airborneAirspeed);
+    expect(spawnAirspeed).toBeLessThan(aircraftSpec("jet").spawn.airborneAirspeed * 1.3);
     expect(simulator.state.actuators.throttle)
-      .toBeCloseTo(aircraftSpec("jet").spawn.airborneThrottle, 8);
+      .toBeGreaterThanOrEqual(aircraftSpec("jet").spawn.airborneThrottle);
     expect(simulator.state.actuators.gear).toBe(0);
   });
 

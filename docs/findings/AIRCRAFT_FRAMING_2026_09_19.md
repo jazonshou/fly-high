@@ -342,6 +342,15 @@ shows more pitch than any of them only because 2.4 degrees of attitude is a
 bigger deal at 56 m/s than at 205. Before this, the F-16 reached 20 degrees,
 the Global climbed 248 m and the 747 climbed 394 m.
 
+## Known flaky, named rather than papered over
+
+`tests/render.webgpu-detail-scatter.test.ts` — "keeps closed-forest stem
+density in the ecological band" — passes when run on its own and fails under
+full-suite parallelism. It is an order or resource dependency, not a real
+density regression, and it is left untouched deliberately: a test that only
+fails under load is worth keeping visible rather than loosening until it stops
+complaining. If it starts failing in isolation, that is a different bug.
+
 ## Follow-ups logged, not fixed
 
 - **A tail strike is silent.** The airframe contact points are real — spawning
@@ -355,6 +364,15 @@ the Global climbed 248 m and the 747 climbed 394 m.
   The F-16 therefore reaches M 1.21 at sea level, correctly, but only M 1.17 at
   11 km where the real aeroplane does about M 2.0. Changing the exponent moves
   every jet in the game, so it was left alone.
+- **The shared glass material links refraction to transparency.**
+  `subSurface.isRefractionEnabled` with `linkRefractionWithTransparency` turns
+  alpha from a blend opacity into a refraction weight, so the surface returns
+  environment rather than tint. On a windscreen seen edge-on it costs nothing;
+  on the F-16's four-metre bubble it cost the whole bubble. It survived review
+  because the GPU preview test builds its own `ReflectionProbe`, so the canopy
+  read correctly in the one frame anyone checked and vanished in the game. The
+  F-16's material no longer uses it; the Global's windscreen and the 747-8's
+  flight-deck glazing still do and should be checked the same way.
 - **Low-level streaming below 500 m AGL is untested at speed.** Sustained runs
   at 283, 474 and 577 m/s showed zero new collision fallbacks and no trend in
   frame interval or hitches, but all of them were at 3,400–3,700 ft AGL because
