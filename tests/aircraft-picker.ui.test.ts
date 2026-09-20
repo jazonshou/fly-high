@@ -34,8 +34,14 @@ describe("aircraft picker", () => {
     expect(values).toEqual([...AIRCRAFT_KINDS]);
     for (const spec of AIRCRAFT_CATALOGUE) {
       expect(markup).toContain(spec.name);
-      expect(markup).toContain(spec.description);
+      // The role is a TOOLTIP now, not rendered text — Jason asked for names
+      // only on the face of the picker. This assertion passed unchanged when
+      // the <small> became a title attribute, which is exactly the sort of
+      // silent pass worth spelling out rather than leaving to look like proof
+      // that the label is still on screen.
+      expect(markup).toContain(`title="${spec.description}"`);
     }
+    expect(markup).not.toMatch(/<small>/);
   });
 
   it("names the three aeroplanes the game actually ships", () => {

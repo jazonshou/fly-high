@@ -14,6 +14,7 @@ export function AircraftPicker({ value, onChange }: AircraftPickerProps) {
         <label
           className={value === option.kind ? "is-selected" : undefined}
           key={option.kind}
+          title={option.description}
         >
           <input
             type="radio"
@@ -22,8 +23,13 @@ export function AircraftPicker({ value, onChange }: AircraftPickerProps) {
             checked={value === option.kind}
             onChange={() => onChange(option.kind)}
           />
+          {/*
+            * Name only. The role ("Trainer", "Fighter") stays in the catalogue
+            * — settings validation and the accessible name both read it — but
+            * Jason asked for it off the face of the picker, and with four
+            * aeroplanes the names alone are unambiguous.
+            */}
           <span>{option.name}</span>
-          <small>{option.description}</small>
         </label>
       ))}
     </fieldset>

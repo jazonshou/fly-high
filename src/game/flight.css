@@ -57,11 +57,18 @@
    * a little width to make room for the second start, and settings drops to a
    * fixed square because it is now the glyph alone.
    */
+  /*
+   * Start and Runway start share a single `1fr` each, so they are exactly the
+   * same width whatever their labels say — Jason asked for that directly, and
+   * it is also why their secondary lines came off. Settings is `auto` so the
+   * aspect-ratio below decides its width from the row height, which is what
+   * makes it a true square rather than a 56px slot in a taller row.
+   */
   grid-template-columns:
-    minmax(132px, 0.9fr)
-    minmax(152px, 1fr)
+    minmax(128px, 1fr)
+    minmax(128px, 1fr)
     minmax(118px, 0.68fr)
-    56px;
+    auto;
   align-items: stretch;
   width: min(100%, 700px);
   gap: 10px;
@@ -73,18 +80,6 @@
    fourth column beside a 58px settings square. */
 .start-screen__minimal > .viewer-action {
   grid-column: 1 / -1;
-}
-
-/*
- * Below about 660px the four columns cannot hold their minimums. Two columns
- * then let the items flow naturally — the two starts share a row, seed and
- * settings the next — without any per-item overrides, which matters because a
- * second `.settings-action` rule here would shadow the real one.
- */
-@media (max-width: 660px) {
-  .start-screen__minimal {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
 }
 
 .aircraft-picker {
@@ -264,9 +259,26 @@
   grid-template-columns: 1fr;
   justify-items: center;
   align-items: center;
-  /* No padding: the glyph is the content, and the button is a fixed 56px
-     square in the row, so let the grid centre it rather than boxing it in. */
+  /* No padding: the icon is the content, so let the grid centre it. */
   padding: 0;
+  /* A true square. The row stretches this button to its full height and the
+     aspect ratio then sets the width, so it stays square at every breakpoint
+     instead of being a fixed width in a row whose height moves. */
+  aspect-ratio: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.settings-action__gear {
+  width: 54%;
+  height: 54%;
+  fill: none;
+  stroke: var(--accent);
+  /* 1.25 on a 24 box. The teeth carry visual weight of their own, so a stroke
+     that looked right on a plain ring reads heavy on a cog. Jason asked for a
+     less bold icon and the font offered U+2699 only as a solid. */
+  stroke-width: 1.25;
+  stroke-linecap: round;
 }
 
 .settings-action--icon span {
@@ -1525,6 +1537,43 @@
   .settings-panel__header { gap: 14px; }
 }
 
+/*
+ * NOTE THE POSITION. This must sit AFTER the 820px block, not before it.
+ * Both match below 660px, they have equal specificity, and source order
+ * decides — with this block earlier the 820px rule's three columns won, which
+ * put Start, Runway and the seed in one row and orphaned the settings button
+ * on a row of its own.
+ */
+/*
+ * Below about 660px the four columns cannot hold their minimums. Two columns
+ * then let the items flow naturally — the two starts share a row, seed and
+ * settings the next — without any per-item overrides, which matters because a
+ * second `.settings-action` rule here would shadow the real one.
+ */
+@media (max-width: 660px) {
+  .start-screen__minimal {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  /*
+   * At two columns the settings button's column is half the row, and a square
+   * that wide is enormous — the first attempt rendered a gear the size of the
+   * aircraft picker. Below this breakpoint the square is sized explicitly
+   * instead of being driven by the row, which keeps "width equals height"
+   * true without letting the column decide how big that is.
+   *
+   * Note the selector: `.settings-action--icon`, never a bare
+   * `.settings-action`, because a second base-class rule inside a media query
+   * shadows the real one and that has already broken ui.visual-style once.
+   */
+  .settings-action--icon {
+    width: 56px;
+    height: 56px;
+    justify-self: end;
+    align-self: center;
+  }
+}
+
 @media (max-width: 520px) {
   .start-screen__minimal {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1534,6 +1583,17 @@
   .settings-action {
     grid-column: 1 / -1;
     min-height: 42px;
+  }
+
+  /* The icon variant stays a square beside the seed rather than stretching
+     across the row, which `grid-column: 1 / -1` above would otherwise do to
+     it and which an aspect-ratio then turns into a full-width block. */
+  .settings-action--icon {
+    grid-column: auto;
+    width: 52px;
+    height: 52px;
+    min-height: 0;
+    justify-self: end;
   }
 
   .pause-screen { padding: 10px; }
