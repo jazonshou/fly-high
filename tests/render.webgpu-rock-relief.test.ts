@@ -158,10 +158,13 @@ describe("M-2 the material axis and the WGSL it emits", () => {
         .toBeCloseTo(1, 12);
     }
     // Continuous where the pure gate opens: no contour drawn at the threshold.
-    expect(rockBoundaryPushedShare(0.0021, 5) - 0.0021).toBeLessThan(0.002);
+    expect(rockBoundaryPushedShare(0.0041, 5) - 0.0041).toBeLessThan(0.002);
     // It is what reaches a share the additive push (limited to 0.45 of a ramp
-    // one texel wide) could not: a 3 % share carried past a half.
-    expect(rockBoundaryPushedShare(0.03, 4)).toBeGreaterThan(0.5);
+    // one texel wide) could not: a 10 % share carried past a half ...
+    expect(rockBoundaryPushedShare(0.1, 4)).toBeGreaterThan(0.5);
+    // ... while the outline turns back well inside the envelope where the
+    // page's 8-bit share reaches zero, instead of running out to it.
+    expect(rockBoundaryPushedShare(0.02, 5)).toBeLessThan(0.1);
     // Weighted toward the octaves a tongue is the size of, not the massif's.
     expect(ROCK_BOUNDARY_SHARES.at(-1)!).toBeGreaterThan(ROCK_BOUNDARY_SHARES[0]!);
     expect(ROCK_BOUNDARY_SHARES).toHaveLength(ROCK_CRAG_COARSE_OCTAVES);

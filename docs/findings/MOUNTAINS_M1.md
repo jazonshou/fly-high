@@ -218,10 +218,14 @@ texture that makes it look fake"*. Those are the acceptance test.
    its LOGIT is linear in the suitability difference: a ramp tens of metres
    wide. The boundary signal is added there, so 0 and 1 stay fixed points (pure
    ground stays pure; a tongue only grows from rock that is present) while a
-   3 % share can be carried past a half. The signal is the crag field's signed
+   10 % share can be carried past a half. The signal is the crag field's signed
    block field re-weighted toward the octaves a tongue is the size of (0.3 /
-   0.5 / 0.65 over 251 / 109 / 43 m) plus two isotropic octaves (23 m, 8.9 m):
-   lobed by the first, ragged with islets by the second. The same signal pushes
+   0.5 / 0.65 over 251 / 109 / 43 m) plus isotropic octaves at 23, 8.9, 3.4 and
+   1.3 m: lobed by the first, ragged with islets by the rest. The last two are
+   only resolved from under ~150 m, where an outline drawn by the 8.9 m octave
+   alone is a smooth camouflage blob. The push opens slowly over a share of
+   0.004-0.08, because the page's 8-bit share reaches zero along a smooth
+   envelope and a push that is whole by 0.02 runs every tongue out to it. The same signal pushes
    the fallback's slope driver, so the two representations agree at the range
    where one hands over to the other.
 
@@ -329,6 +333,27 @@ runs (A, A again, A + the floor), mean absolute difference per channel out of
 
 By eye, kilo77's west face at 12.5 h and 15.5 h: the shaded wall stays clearly
 darker and cooler than the lit one, with its creases visible inside it.
+
+## Follow-ups this wave leaves
+
+* **The third-material hem.** The fragment's gather reports two ids, so the
+  boundary push only exists where rock is one of them. Where rock falls to third
+  behind two swards the pair holds no rock and the outline cannot pass: from
+  ~200 m, looking down, the foot of a patch still ends on that smooth line. The
+  gather already accumulates every id; returning rock's own share alongside the
+  pair would let a tongue cross it. It changes the oracle the GPU regression
+  shares with the renderer, so it is its own change.
+* **Scree cannot tell the head of a face from its foot** without a curvature
+  lane; it is keyed on slope alone, and an apron belongs below.
+* **Patch confetti on massifs.** Classifying on a ~33 m slope box instead of the
+  texel's own slope removes 49 % of boundary chords in a counterfactual.
+* **The value-noise lattice "maze"** (section 1) wants a gradient-noise basis for
+  the ridge channel; **a geometry erosion filter** would give drainage the
+  analytic kernel cannot.
+* **A dome-like crest** on terra1's inland massif from its own shoulder and from
+  12 km: the lever is ridge amplitude on the body's crest.
+* **Snow domes read soft** beside the rock around them (kilo77-approach): the
+  drift relief has a strength dial and that frame is where to turn it.
 
 ## Sources
 

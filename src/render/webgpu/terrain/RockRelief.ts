@@ -115,14 +115,25 @@ export const ROCK_CRAG_CREASE_SHARES: readonly number[] = [0.28, 0.24, 0.22, 0.1
  * stays pure: tongues and embayments, never islands out of nothing.
  */
 export const ROCK_BOUNDARY_SHARES: readonly number[] = [0.3, 0.5, 0.65];
-/** Two finer isotropic octaves: ragged as well as lobed, with islets. */
-export const ROCK_BOUNDARY_FINE_WAVELENGTHS_METERS: readonly number[] = [23, 8.9];
-export const ROCK_BOUNDARY_FINE_SHARES: readonly number[] = [0.55, 0.45];
+/**
+ * Finer isotropic octaves: ragged as well as lobed, with islets. The last two
+ * are only ever resolved from under ~150 m, where an outline drawn by the 8.9 m
+ * octave alone is a smooth camouflage blob (cliff-60m, 2026-09-20); each fades
+ * by footprint and is not evaluated once it has.
+ */
+export const ROCK_BOUNDARY_FINE_WAVELENGTHS_METERS: readonly number[] = [23, 8.9, 3.4, 1.3];
+export const ROCK_BOUNDARY_FINE_SHARES: readonly number[] = [0.55, 0.45, 0.38, 0.3];
 export const ROCK_BOUNDARY_LOGIT_GAIN = 2.4;
 export const ROCK_BOUNDARY_LOGIT_LIMIT = 5;
-/** Below the first the pair is left alone; by the second the push is whole. */
-export const ROCK_BOUNDARY_PURE_LOW = 0.002;
-export const ROCK_BOUNDARY_PURE_HIGH = 0.02;
+/**
+ * Below the first the pair is left alone; by the second the push is whole. The
+ * page stores 8-bit top-four weights, so its share reaches zero along a smooth
+ * envelope a few quanta out; with the push whole by 0.02 every strong tongue
+ * ran out to that envelope and drew it as a clean hem (shot from 200 m,
+ * 2026-09-20). Opened this slowly the outline turns back well inside it.
+ */
+export const ROCK_BOUNDARY_PURE_LOW = 0.004;
+export const ROCK_BOUNDARY_PURE_HIGH = 0.08;
 /**
  * Same signal on the fallback's slope driver, in units of slope. The fallback
  * ramps rock in over 0.30-0.66 and is what draws rock from a few kilometres
@@ -220,7 +231,7 @@ export function rockBoundaryPushedShare(mineralShare: number, push: number): num
       / (ROCK_BOUNDARY_PURE_HIGH - ROCK_BOUNDARY_PURE_LOW)));
   const open = gate * gate * (3 - 2 * gate);
   if (open <= 0) return mineralShare;
-  const bounded = Math.min(0.998, Math.max(0.002, mineralShare));
+  const bounded = Math.min(0.996, Math.max(0.004, mineralShare));
   const limited = Math.min(ROCK_BOUNDARY_LOGIT_LIMIT, Math.max(-ROCK_BOUNDARY_LOGIT_LIMIT, push));
   const logit = Math.log(bounded / (1 - bounded)) + limited * open;
   return 1 / (1 + Math.exp(-logit));
@@ -411,7 +422,7 @@ fn terrainRockBoundaryPushed(mineralShare: f32, push: f32) -> f32 {
   let open = smoothstep(${wgslFloat(ROCK_BOUNDARY_PURE_LOW)}, ${wgslFloat(ROCK_BOUNDARY_PURE_HIGH)},
     min(mineralShare, 1.0 - mineralShare));
   if (open <= 0.0) { return mineralShare; }
-  let bounded = clamp(mineralShare, 0.002, 0.998);
+  let bounded = clamp(mineralShare, 0.004, 0.996);
   let limited = clamp(push, ${wgslFloat(-ROCK_BOUNDARY_LOGIT_LIMIT)}, ${wgslFloat(ROCK_BOUNDARY_LOGIT_LIMIT)});
   return 1.0 / (1.0 + exp(-(log(bounded / (1.0 - bounded)) + limited * open)));
 }
