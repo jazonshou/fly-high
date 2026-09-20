@@ -70,6 +70,27 @@ export interface LoftSection {
    * flat-wide fuselage a pure ellipse cannot express.
    */
   readonly squareness?: number;
+  /**
+   * Half-width at the CROWN, for a section that is not the same width all the
+   * way up — an egg rather than an ellipse.
+   *
+   * A wide-body's forward fuselage is widest at the main deck floor and
+   * narrower at the top, and a superellipse cannot say that: `zRadius` applies
+   * equally above and below the section's centre. Modelling it instead as two
+   * intersecting lofts, which is what the 747's raised upper deck was, leaves
+   * a crease where the two surfaces cross — 31 degrees of included angle on
+   * that aeroplane, which reads as a second tube laid on the first.
+   *
+   * With this, the half-width stays `zRadius` over the whole lower half and
+   * eases to `crownZRadius` by the crown, so the lower lobe is untouched and
+   * the upper one leans in. The ramp is a smoothstep of the section's own
+   * height, whose derivative is zero at both ends, so the taper does not
+   * introduce a crease of its own at the equator while removing one higher up.
+   *
+   * Defaults to `zRadius`, where the arithmetic is the identity and every
+   * existing loft is bit-identical.
+   */
+  readonly crownZRadius?: number;
 }
 
 export interface AirfoilWingOptions {
@@ -319,6 +340,10 @@ export class AircraftBuildContext {
       if (!(squareness >= 2)) {
         throw new RangeError("Aircraft loft squareness must be at least 2");
       }
+      const crownZRadius = section.crownZRadius ?? section.zRadius;
+      if (!(crownZRadius > 0)) {
+        throw new RangeError("Aircraft loft crown radius must be positive");
+      }
       const shapeExponent = 2 / squareness;
       for (let radial = 0; radial <= radialSegments; radial += 1) {
         const phase = radial / radialSegments;
@@ -329,10 +354,17 @@ export class AircraftBuildContext {
         // ellipse the pre-fix-pack loft produced.
         const yShape = Math.sign(cosine) * Math.abs(cosine) ** shapeExponent;
         const zShape = Math.sign(sine) * Math.abs(sine) ** shapeExponent;
+        // The crown taper: nothing on the lower half, easing to
+        // `crownZRadius` by the top. `rise` is 0 at and below the equator and
+        // 1 at the crown; the smoothstep gives it zero slope at both ends, so
+        // the widest point stays tangent-continuous.
+        const rise = Math.max(0, yShape);
+        const lift = rise * rise * (3 - 2 * rise);
+        const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
         positions.push(
           section.x,
           (section.yOffset ?? 0) + yShape * section.yRadius,
-          (section.zOffset ?? 0) + zShape * section.zRadius,
+          (section.zOffset ?? 0) + zShape * halfWidth,
         );
         uvs.push((section.x - minimumX) / length, phase);
       }
