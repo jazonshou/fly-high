@@ -263,6 +263,48 @@ export const TERRAIN_SEAM_SWARD_COVER_MINIMUM = 0.9;
  * page's fade target keeps. The pair's own fraction for two swards, zero (the
  * primary alone) for everything else.
  */
+/**
+ * What a RESIDENT page too coarse to be trusted (level 5 and up: confidence
+ * under `TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE`) may still say about the ground.
+ *
+ * It said nothing, and the fragment fell back to "one continuous Grass base":
+ * green, in every biome. At level 4, where trust is 0.10, the seam feather's
+ * target is the page's own materials. So in dry country the level-4/5 page
+ * edge was a step from the page's dry pair to Grass-by-assumption, straight
+ * because levels are per page, about 2 km out from cruise height and following
+ * the aeroplane: a brown polygon laid on green ground (world LIVERY,
+ * 2026-09-20). A tint of "is a splat in use" put the line exactly on that gate.
+ *
+ * Such a page now supplies the feather's TARGET, at zero trust, and only when
+ * its pair is sward/sward: the mixture of two swards is a climate gradient,
+ * smooth at any texel size, which is the one thing a 128-256 m texel can be
+ * believed about. Any pair with rock, gravel, snow, sand, pavement or forest
+ * floor in it keeps the Grass base and the fragment-derived third candidate
+ * exactly as before, so Wave Q's "no single-material plates from coarse pages"
+ * and Wave R's distant mountains are untouched. Unresident pages have no source
+ * and keep the Grass base (logged in GROUND_NEAR_FIELD_D.md).
+ *
+ * ONE dial, three states, so one interleaved series prices it:
+ * 0 off (the early return, as before); 1 CHEAP, the nearest texel's own top two
+ * (3 loads); 2 FULL, the bilinear sparse gather levels 0-4 use (12 loads). The
+ * early return exists on purpose: these fragments are most of a cruise frame.
+ */
+export const TERRAIN_FAR_SWARD_READ: number = 1;
+/** A secondary under this share is not part of the pair: its id is noise. */
+export const TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE = 0.02;
+
+/** CPU twin: may a zero-trust page's pair supply the fade target? */
+export function terrainFarSwardEligible(
+  primaryId: number,
+  secondaryId: number,
+  secondaryShare: number,
+): boolean {
+  if (TERRAIN_FAR_SWARD_READ === 0) return false;
+  const sward = (id: number) => groundCoverOf(id)[0] >= TERRAIN_SEAM_SWARD_COVER_MINIMUM;
+  return sward(primaryId)
+    && (sward(secondaryId) || secondaryShare < TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE);
+}
+
 export function terrainSeamPairShare(
   lowerId: number,
   upperId: number,
@@ -2031,6 +2073,39 @@ fn terrainSurfaceCanopyClosure(uv: vec4f) -> f32 {
 }
 
 /**
+ * The nearest channel texel's own top two materials: (primary id, secondary
+ * id, secondary share). Three loads where the sparse gather makes twelve. Only
+ * ever used at zero trust, to name a pair of swards for the seam feather.
+ */
+fn terrainSurfaceNearestSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
+  let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});
+  let texel = vec2i(floor(atlasPosition + vec2f(0.5)));
+  let ids = textureLoad(terrainSplatId, texel, 0);
+  let storedLo = textureLoad(terrainSplatWeightLo, texel, 0);
+  let storedHi = textureLoad(terrainSplatWeightHi, texel, 0);
+  let weightLo = vec4f(storedLo.xyz, max(0.0, 1.0 - storedLo.x - storedLo.y - storedLo.z));
+  let weightHi = vec4f(storedHi.xyz, max(0.0, 1.0 - storedHi.x - storedHi.y - storedHi.z));
+  let weights = mix(weightLo, weightHi, blend);
+  var primaryLane = 0u;
+  var secondaryLane = 1u;
+  if (weights[1] > weights[0]) { primaryLane = 1u; secondaryLane = 0u; }
+  for (var lane = 2u; lane < 4u; lane = lane + 1u) {
+    if (weights[lane] > weights[primaryLane]) {
+      secondaryLane = primaryLane;
+      primaryLane = lane;
+    } else if (weights[lane] > weights[secondaryLane]) {
+      secondaryLane = lane;
+    }
+  }
+  let primaryWeight = max(weights[primaryLane], 0.0);
+  let secondaryWeight = max(weights[secondaryLane], 0.0);
+  return vec3f(
+    clamp(floor(ids[primaryLane] * idScale + 0.5), 0.0, idScale),
+    clamp(floor(ids[secondaryLane] * idScale + 0.5), 0.0, idScale),
+    secondaryWeight / max(1e-6, primaryWeight + secondaryWeight));
+}
+
+/**
  * Sparse bilinear page splat. Material identifiers are categorical data: a
  * filtered texture fetch would manufacture ids that none of the four texels
  * selected. Load all four neighbours exactly, accumulate their four sparse
@@ -2050,12 +2125,22 @@ fn terrainSurfacePageSplat(uv: vec4f, blend: f32) -> vec4f {
         * ${TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL.toFixed(1)},
     0.0,
     1.0);
-  // Coarse/unresident pages use the provisional axis. Return before twelve
-  // sparse texture loads so the visual safety fallback also reduces cost.
-  if (confidence < ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)} || uv.z <= 0.0) {
-    return vec4f(0.0, 0.0, 0.0, 0.0);
-  }
+  // Unresident pages use the provisional axis.
+  if (uv.z <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
   let atlasPosition = uv.xy * uniforms.terrainPageAtlas.x - vec2f(0.5);
+  // Coarse pages return before the twelve sparse loads, so the visual safety
+  // fallback also reduces cost ...
+  if (confidence < ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)}) {
+${TERRAIN_FAR_SWARD_READ === 0 ? "" : `#ifdef TERRAIN_SURFACE_THREE_MATERIALS
+    // ... except that a resident one may still name a pair of SWARDS for the
+    // seam feather to fade toward, at zero trust (w = -1 says so). See
+    // TERRAIN_FAR_SWARD_READ.
+    return vec4f(${TERRAIN_FAR_SWARD_READ === 2
+      ? "terrainSurfaceSparseSplat(atlasPosition, blend)"
+      : "terrainSurfaceNearestSplat(atlasPosition, blend)"}, -1.0);
+#endif
+`}    return vec4f(0.0, 0.0, 0.0, 0.0);
+  }
   let sparse = terrainSurfaceSparseSplat(atlasPosition, blend);
   return vec4f(sparse, confidence * uv.z);
 }
@@ -2268,7 +2353,16 @@ var terrainAxisFraction = 0.0;
 // sparse gather supplies two real ids and their filtered weights. Coarser
 // geometry pages have zero classification confidence and keep the continuous
 // macro fallback instead of painting 8..256 m single-material plates.
-let terrainUsePageSplat = terrainPageSplat.w >= ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)};
+// A resident page too coarse to trust may still name a pair of SWARDS for the
+// seam feather to fade toward (w = -1, so class strength is exactly zero and
+// nothing else it says is used). Any other pair is ignored and the Grass base
+// stands, as before.
+let terrainFarSward = terrainPageSplat.w < -0.5
+  && terrainGroundCoverOf(i32(terrainPageSplat.x)).x >= ${terrainWgslFloat(TERRAIN_SEAM_SWARD_COVER_MINIMUM)}
+  && (terrainGroundCoverOf(i32(terrainPageSplat.y)).x >= ${terrainWgslFloat(TERRAIN_SEAM_SWARD_COVER_MINIMUM)}
+    || terrainPageSplat.z < ${terrainWgslFloat(TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE)});
+let terrainUsePageSplat = terrainPageSplat.w >= ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)}
+  || terrainFarSward;
 if (terrainUsePageSplat) {
   terrainAxis = terrainPageSplat.x;
   terrainLowerId = terrainPageSplat.x;
@@ -2276,6 +2370,7 @@ if (terrainUsePageSplat) {
   terrainAxisFraction = terrainPageSplat.z;
 }
 #else
+let terrainFarSward = false;
 let terrainUsePageSplat = false;
 #endif
 
@@ -2550,6 +2645,16 @@ if (!terrainUsePageSplat) {
   // height winner created a new contour where Rock first entered the blend.
   terrainBlend0 = 1.0 - terrainThirdWeight;
   terrainBlend1 = 0.0;
+  terrainBlend2 = terrainThirdWeight;
+}
+if (terrainFarSward) {
+  // Same reason, for a zero-trust pair of swards: a 128-256 m texel has no
+  // texel-scale height evidence either, so its two layers mix by the page's
+  // share and the height winner is not consulted. (The albedo is replaced by
+  // the seam feather's target at zero trust anyway; this keeps W-1's cover and
+  // dryness, which read these weights, free of a height-winner contour.)
+  terrainBlend0 = (1.0 - terrainAxisFraction) * (1.0 - terrainThirdWeight);
+  terrainBlend1 = terrainAxisFraction * (1.0 - terrainThirdWeight);
   terrainBlend2 = terrainThirdWeight;
 }
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0
