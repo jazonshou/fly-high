@@ -36,6 +36,19 @@ export {
   type AttractHoldOutput,
 } from "./attract";
 export { DirectPitchRetention } from "./pitchRetention";
+export {
+  SCENIC_HOLD_CAPTURE_SECONDS,
+  SCENIC_HOLD_CAPTURE_VERTICAL_SPEED,
+  SCENIC_HOLD_DEADBAND,
+  SCENIC_HOLD_MIN_CLEARANCE,
+  ScenicAltitudeHold,
+  type ScenicHoldInput,
+} from "./scenicHold";
+export {
+  VERTICAL_SPEED_FLOOR,
+  VerticalSpeedPitchTrim,
+  type VerticalSpeedPitchInput,
+} from "./verticalSpeedPitch";
 export { JetStabilityAugmentation } from "./stabilityAugmentation";
 export {
   DEFAULT_CONTROLS,
