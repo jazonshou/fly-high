@@ -168,24 +168,51 @@ function build(q: Quat, eye: { forward: number; up: number }, eyeRight: number) 
 describe("cockpit rig arithmetic", () => {
   it("reproduces the camera it had before there was a lateral eye, to the last bit, when the offset is zero", () => {
     // This is what lets the fourteen perf shots stay comparable: the pinned rig
-    // must not move the camera by so much as a rounding error.
-    const eye = aircraftSpec("trainer").cockpitEye;
-    for (const [yaw, pitch, bank] of ATTITUDES) {
-      const { forward, up, camera, target } = build(orientation(yaw, pitch, bank), eye, 0);
-      const f = new Vector3(...forward);
-      const u = new Vector3(...up);
-      // The renderer's cockpit branch, verbatim, before the lateral term.
-      const legacyCamera = new Vector3(...ORIGIN)
-        .addInPlace(f.scale(eye.forward))
-        .addInPlace(u.scale(eye.up));
-      const legacyTarget = legacyCamera.clone().addInPlace(f.scale(400));
-      expect(COCKPIT_AIM_DISTANCE_METERS).toBe(400);
-      expect(camera.x).toBe(legacyCamera.x);
-      expect(camera.y).toBe(legacyCamera.y);
-      expect(camera.z).toBe(legacyCamera.z);
-      expect(target.x).toBe(legacyTarget.x);
-      expect(target.y).toBe(legacyTarget.y);
-      expect(target.z).toBe(legacyTarget.z);
+    // must not move the camera by so much as a rounding error. Floating-point
+    // addition is not associative, so a handful of tidy attitudes is not enough
+    // to notice an addition done in a different order; a few hundred seeded
+    // ones at a large, untidy origin are (the control that swaps the order of
+    // the forward and up terms fails this test and passes the tidy set).
+    expect(COCKPIT_AIM_DISTANCE_METERS).toBe(400);
+    let seed = 0x9e3779b9;
+    const random = () => {
+      // mulberry32
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const attitudes: (readonly [number, number, number])[] = [...ATTITUDES];
+    for (let i = 0; i < 400; i += 1) {
+      attitudes.push([random() * 360 - 180, random() * 120 - 60, random() * 360 - 180]);
+    }
+    for (const kind of AIRCRAFT_KINDS) {
+      const eye = aircraftSpec(kind).cockpitEye;
+      const origin: Triple = [
+        12_345.678 + random() * 1_000, 987.654 + random() * 100, -54_321.321 - random() * 1_000,
+      ];
+      for (const [yaw, pitch, bank] of attitudes) {
+        const q = orientation(yaw, pitch, bank);
+        const forward = rotate(q, [1, 0, 0]);
+        const up = rotate(q, [0, 1, 0]);
+        const camera = { x: 0, y: 0, z: 0 };
+        const target = { x: 0, y: 0, z: 0 };
+        cockpitRigPositionsToRef(
+          { x: origin[0], y: origin[1], z: origin[2] },
+          { x: forward[0], y: forward[1], z: forward[2] },
+          { x: up[0], y: up[1], z: up[2] },
+          eye, 0, COCKPIT_AIM_DISTANCE_METERS, camera, target,
+        );
+        const f = new Vector3(...forward);
+        const u = new Vector3(...up);
+        // The renderer's cockpit branch, verbatim, before the lateral term.
+        const legacyCamera = new Vector3(...origin)
+          .addInPlace(f.scale(eye.forward))
+          .addInPlace(u.scale(eye.up));
+        const legacyTarget = legacyCamera.clone().addInPlace(f.scale(400));
+        expect([camera.x, camera.y, camera.z]).toEqual([legacyCamera.x, legacyCamera.y, legacyCamera.z]);
+        expect([target.x, target.y, target.z]).toEqual([legacyTarget.x, legacyTarget.y, legacyTarget.z]);
+      }
     }
   });
 
