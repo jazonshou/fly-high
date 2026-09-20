@@ -604,6 +604,23 @@ export function createAirliner(scene: Scene): AircraftVisual {
       tintColorAtDistance: 3.4,
     },
   });
+  /*
+   * No depth pre-pass on the glazing. `build.material` turns
+   * `needDepthPrePass` on for every alpha-blended airframe material, which is
+   * right for the propeller disc it was written for and wrong for glass: at
+   * cinematic distance it suppresses the colour pass outright while leaving it
+   * intact close up. That is what made the F-16's canopy invisible for four
+   * rounds, and the Cessna's 2.94 m cabin glazing was losing its glass the
+   * same way — captured before and after, the cabin went from a bare shell
+   * with the interior showing through to a properly glazed canopy.
+   *
+   * This aeroplane's glazing is small enough that the loss is hard to see, so
+   * it is fixed on the MECHANISM rather than on a photograph: the suppression
+   * is a function of camera distance, not of how big the pane is, and leaving
+   * known-broken glass on an airframe because it is inconspicuous is not a
+   * reason to leave it. Scoped to this material; `builders.ts` is untouched.
+   */
+  glass.needDepthPrePass = false;
   const tire = build.material("airliner-tire", 0x06080a, { roughness: 1, metallic: 0 });
   const hub = build.material("airliner-hub", 0x8b9498, { roughness: 0.32, metallic: 0.74 });
   const hotMetal = build.material("airliner-hot-metal", 0x4b5153, {

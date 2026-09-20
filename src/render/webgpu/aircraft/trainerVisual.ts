@@ -90,6 +90,26 @@ export function createTrainer(scene: Scene): AircraftVisual {
       tintColorAtDistance: 2.4,
     },
   });
+  /*
+   * No depth pre-pass on the cabin glazing.
+   *
+   * `build.material` turns `needDepthPrePass` on for every alpha-blended
+   * airframe material, which is right for the propeller disc it was written
+   * for — writing depth is what stops a two-sided disc sorting against itself.
+   * On a large sheet of glass it instead suppresses the colour pass at
+   * cinematic distance while leaving it intact close up, which is what made
+   * the F-16's canopy invisible for four rounds of investigation.
+   *
+   * This canopy is 2.94 m across, the largest glazing in the game after that
+   * one, and it was losing its glass the same way: at orbit distance the cabin
+   * read as a bare shell with the dark interior showing through. The Global's
+   * windscreen (1.44 m) and the 747's flight-deck windows (1.14 m) are small
+   * enough to get away with it and are left alone.
+   *
+   * Scoped to this material only; `builders.ts` is untouched, so the propeller
+   * disc keeps the behaviour it needs.
+   */
+  glass.needDepthPrePass = false;
   const tire = build.material("trainer-tire", 0x07090a, {
     roughness: 1,
     metallic: 0,
