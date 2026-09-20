@@ -708,6 +708,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let glintCell = waterGlintCell(
     input.absoluteWorldXZ - farWind * uniforms.time * ${WATER_GLINT_DRIFT_FRACTION.toFixed(3)},
     farFootprintArea,
+    channelFootprintMinor,
     ${(WATER_GLINT_FACET_LENGTH_METERS ** 2).toExponential(4)},
     3,
   );

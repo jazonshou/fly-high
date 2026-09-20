@@ -3884,9 +3884,18 @@ export const WATER_GLINT_SPARKLE_MAX_EXPONENT = 24;
 export const WATER_GLINT_DISCRETE_COUNT_LOW = 0.7;
 export const WATER_GLINT_DISCRETE_COUNT_HIGH = 3;
 /**
- * `W-11` — the smallest a glint cell may be, as a multiple of the pixel's own
- * side (the cell is square in WORLD space and matched to the pixel by AREA, so
- * this is a length ratio on the geometric mean of the footprint).
+ * `W-11` — the smallest a glint cell may be, in pixels of its LARGER screen
+ * extent (the cell is square in WORLD space, so at a grazing angle it projects
+ * wide and flat; this floor is on the wide axis, i.e. on the pixel footprint's
+ * MINOR world extent).
+ *
+ * A cell is area-matched to the pixel by default — one draw, one pixel's worth
+ * of sea — and at the grazing angles a flight sim spends its time at, that
+ * already projects 2-4 px wide, so the floor does not bind and does not
+ * coarsen the glitter. It binds where the view is near NORMAL: looking down at
+ * a lake or a bay from altitude, where an area-matched cell is one pixel
+ * square and a glint would be one hard pixel. That is the view Jason's own
+ * screenshot was closest to, and it is where single-pixel salt lives.
  *
  * A glint is a point source at 10^7 cd/m² against a sea at 10^4, and no eye,
  * lens or sensor renders a point source as a point: it arrives with a glare
@@ -4174,11 +4183,15 @@ export function waterGlintCell(
   worldX: number,
   worldZ: number,
   footprintArea: number,
+  footprintMinor: number,
   featureArea: number,
   seed: number,
 ): WaterGlintCell {
   const target = Math.max(
-    WATER_GLINT_CELL_MIN_PIXELS * Math.sqrt(Math.max(footprintArea, 1e-9)),
+    Math.max(
+      Math.sqrt(Math.max(footprintArea, 1e-9)),
+      WATER_GLINT_CELL_MIN_PIXELS * Math.max(footprintMinor, 1e-5),
+    ),
     Math.sqrt(Math.max(featureArea, 1e-9)),
   );
   const side = 2 ** Math.floor(Math.log2(target));
@@ -4423,11 +4436,21 @@ struct WaterGlintCell {
   area: f32,
 }
 
-fn waterGlintCell(worldXZ: vec2f, footprintArea: f32, featureArea: f32, seed: i32) -> WaterGlintCell {
-  // Target side: the pixel's own area, floored at the glare width and at the
-  // feature's own size. sqrt of an area, so the floor is a LENGTH ratio.
+fn waterGlintCell(
+  worldXZ: vec2f,
+  footprintArea: f32,
+  footprintMinor: f32,
+  featureArea: f32,
+  seed: i32,
+) -> WaterGlintCell {
+  // Target side: one pixel's worth of sea, floored at the glare width (which
+  // is a floor on the cell's WIDE screen axis, so it binds only near normal
+  // incidence) and at the feature's own size.
   let targetSide = max(
-    ${WATER_GLINT_CELL_MIN_PIXELS.toFixed(2)} * sqrt(max(footprintArea, 0.000000001)),
+    max(
+      sqrt(max(footprintArea, 0.000000001)),
+      ${WATER_GLINT_CELL_MIN_PIXELS.toFixed(2)} * max(footprintMinor, 0.00001),
+    ),
     sqrt(max(featureArea, 0.000000001)),
   );
   let side = exp2(floor(log2(targetSide)));

@@ -922,8 +922,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let runupDerivativeX = dpdx(input.oceanCoordinate);
   let runupDerivativeY = dpdy(input.oceanCoordinate);
   let footprintMajor = max(length(runupDerivativeX), length(runupDerivativeY));
+  // W-11 names the unlimited minor axis: the glint cell's glare floor is a
+  // floor on the cell's WIDE screen axis, which is this one. The anisotropy
+  // limit below is a texture-filtering concern and must not be folded in.
+  let footprintMinor = min(length(runupDerivativeX), length(runupDerivativeY));
   let runupFootprint = max(
-    min(length(runupDerivativeX), length(runupDerivativeY)),
+    footprintMinor,
     footprintMajor * ${(1 / 16).toFixed(6)},
   );
   // Ocean coverage and all shelf/run-up theory are defined against STILL-water
@@ -1368,6 +1372,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let glintCell = waterGlintCell(
     input.oceanCoordinate - uniforms.oceanWind * uniforms.time * ${WATER_GLINT_DRIFT_FRACTION.toFixed(3)},
     glintFootprintArea,
+    footprintMinor,
     ${(WATER_GLINT_FACET_LENGTH_METERS ** 2).toExponential(4)},
     3,
   );
@@ -1476,6 +1481,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let whitecapCell = waterGlintCell(
     input.oceanCoordinate - uniforms.oceanWind * uniforms.time * 0.6,
     glintFootprintArea,
+    footprintMinor,
     ${WATER_WHITECAP_PATCH_AREA_M2.toFixed(1)},
     5,
   );
