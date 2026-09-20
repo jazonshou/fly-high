@@ -6,6 +6,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { densityField } from "../../src/render/webgpu/detail/densityField";
 import {
+  LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS,
   classifyLandCover,
   type LandCoverInput,
 } from "../../src/render/webgpu/terrain/LandCoverClassifier";
@@ -150,31 +151,55 @@ describe("land-cover bake parity (6-13)", () => {
 
             const sample = sampleTerrain(world, worldX, worldZ, undefined, 171);
             if (sample.height < world.seaLevel + 5) continue;
-            const field = densityField(world.sourceSeedHash, {
-              filterWidthMeters: 0,
-              x: worldX,
-              z: worldZ,
-              heightMeters: sample.height,
-              seaLevelMeters: world.seaLevel,
-              slope: sample.slope,
-              moisture: sample.moisture,
-              normalX: sample.normal.x,
-              normalZ: sample.normal.z,
-              dayOfYear: 171,
-            });
-            const input: LandCoverInput = {
-              elevationMeters: sample.height - world.seaLevel,
-              slope: sample.slope,
-              moisture: sample.moisture,
-              temperature: sample.temperature ?? 0.5,
-              aspect: 0,
-              airportInfluence: 0,
-              dayOfYear: 171,
-              seasonalTemperatureShift: 0,
-              canopyClosure: field.canopyClosure,
-              grassCover: field.groundCover?.grass,
+            // The bake's own tap pattern: four taps a quarter texel out, weight
+            // VECTORS averaged. From LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS up
+            // (this test's level 4 is 64 m, so it applies) each tap carries its
+            // own canopy; below it all four share the texel centre's.
+            const perTapCanopy = texel >= LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS;
+            const fieldAt = (x: number, z: number, at: typeof sample) => densityField(
+              world.sourceSeedHash, {
+                filterWidthMeters: 0,
+                x,
+                z,
+                heightMeters: at.height,
+                seaLevelMeters: world.seaLevel,
+                slope: at.slope,
+                moisture: at.moisture,
+                normalX: at.normal.x,
+                normalZ: at.normal.z,
+                dayOfYear: 171,
+              });
+            const centreField = fieldAt(worldX, worldZ, sample);
+            const accumulated = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+            let input: LandCoverInput | null = null;
+            for (let tap = 0; tap < 4; tap += 1) {
+              const tapX = worldX + ((tap & 1) === 1 ? 1 : -1) * texel * 0.25;
+              const tapZ = worldZ + ((tap & 2) === 2 ? 1 : -1) * texel * 0.25;
+              const tapSample = sampleTerrain(world, tapX, tapZ, undefined, 171);
+              const tapField = perTapCanopy ? fieldAt(tapX, tapZ, tapSample) : centreField;
+              const tapInput: LandCoverInput = {
+                elevationMeters: tapSample.height - world.seaLevel,
+                slope: tapSample.slope,
+                moisture: tapSample.moisture,
+                temperature: tapSample.temperature ?? 0.5,
+                aspect: 0,
+                airportInfluence: 0,
+                dayOfYear: 171,
+                seasonalTemperatureShift: 0,
+                canopyClosure: tapField.canopyClosure,
+                grassCover: tapField.groundCover?.grass,
+              };
+              input ??= { ...tapInput, elevationMeters: sample.height - world.seaLevel };
+              const tapWeights = classifyLandCover(tapInput);
+              tapWeights.ids.forEach((id, slot) => {
+                accumulated[id] = accumulated[id]! + (tapWeights.weights[slot] ?? 0) * 0.25;
+              });
+            }
+            if (input === null) continue;
+            const w = {
+              ids: accumulated.map((_, id) => id),
+              weights: accumulated,
             };
-            const w = classifyLandCover(input);
             let best = 0;
             for (let i = 1; i < w.ids.length; i += 1) {
               if (w.weights[i]! > w.weights[best]!) best = i;
