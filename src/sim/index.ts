@@ -14,6 +14,26 @@ export {
   stallSpeed,
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
+export {
+  ATTRACT_MIN_PREDICTION_SPEED,
+  ATTRACT_TURN_RATE_RADIANS_PER_SECOND,
+  ATTRACT_SCAN_SECONDS,
+  ATTRACT_SCAN_MAX_METERS,
+  ATTRACT_MIN_CLEARANCE_SECONDS,
+  attractScanOffset,
+  attractScanSamples,
+  ATTRACT_SCAN_TRAVEL_METERS,
+  ATTRACT_SCAN_TURN_RADIANS,
+  attractScanDistance,
+  attractTurnRoll,
+  ATTRACT_RESEED_CLEARANCE_METERS,
+  AttractHold,
+  attractAchievableClimbRate,
+  attractClimbRateFor,
+  shouldReseedAttract,
+  type AttractHoldInput,
+  type AttractHoldOutput,
+} from "./attract";
 export { DirectPitchRetention } from "./pitchRetention";
 export { JetStabilityAugmentation } from "./stabilityAugmentation";
 export {
