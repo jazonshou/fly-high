@@ -121,6 +121,13 @@ interface KindNotes {
   readonly sillEdge: "top" | "bottom";
   readonly panel: RegExp;
   readonly glare: RegExp | null;
+  /**
+   * A closed mesh to calibrate back-face culling against, when the panel is no
+   * longer a mesh of its own: the 747's static parts were folded into one mesh
+   * per material (House-Keeping 3d56234), so its panel board is now part of
+   * `airliner-flight-deck-interior`, which is not a closed box.
+   */
+  readonly control?: RegExp;
 }
 const NOTES: Record<AircraftKind, KindNotes> = {
   trainer: {
@@ -143,8 +150,11 @@ const NOTES: Record<AircraftKind, KindNotes> = {
   },
   airliner: {
     seat: /^airliner-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.72",
-    sill: /flight-deck-window-one$/, sillEdge: "bottom",
-    panel: /^airliner-instrument-panel$/, glare: null,
+    // The six panes are ONE mesh since the merge; its box's bottom is the lowest pane's.
+    sill: /^airliner-flight-deck-glazing$|flight-deck-window-one$/, sillEdge: "bottom",
+    // The panel board is merged into the flight-deck interior (seats, headrests, board).
+    panel: /^airliner-(instrument-panel|flight-deck-interior)$/, glare: null,
+    control: /^port-navigation-light$/,
   },
 };
 
@@ -197,6 +207,84 @@ function materialOf(mesh: AbstractMesh): PBRMaterial | null {
   return (mesh.material as PBRMaterial | null) ?? null;
 }
 
+interface SeatReading {
+  readonly name: string;
+  /** Null when the seat is a cluster inside a merged mesh, whose top would include the headrest. */
+  readonly topY: number | null;
+  readonly centreX: number;
+  readonly centreZ: number;
+}
+
+/**
+ * The pilot's (port) seat: a mesh named for a seat if there is one, else — the
+ * 747's flight deck is one merged mesh since House-Keeping 3d56234, and only
+ * the part NAMES survive, in `metadata.mergedFrom` — the port cluster of that
+ * mesh's vertices within 0.7 m of the eye's station. The panel board, the only
+ * other part in it, is 1.15 m ahead of the eye.
+ */
+function locateSeat(scene: Scene, notes: KindNotes, eyeStation: number): SeatReading | null {
+  const named = scene.meshes.find((m) => notes.seat.test(m.name));
+  if (named) {
+    const box = named.getBoundingInfo().boundingBox;
+    return { name: named.name, topY: box.maximumWorld.y, centreX: box.centerWorld.x, centreZ: box.centerWorld.z };
+  }
+  const merged = scene.meshes.find((m) =>
+    ((m.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [])
+      .some((part) => /seat/.test(part) && !/headrest/.test(part)));
+  if (!merged) return null;
+  const port = worldVertices(merged).filter((v) => v.x < eyeStation + 0.7 && v.z < 0);
+  if (port.length === 0) return null;
+  const xs = port.map((v) => v.x);
+  const zs = port.map((v) => v.z);
+  return {
+    name: `${merged.name} (port cluster of ${port.length} vertices)`,
+    topY: null,
+    centreX: (Math.min(...xs) + Math.max(...xs)) / 2,
+    centreZ: (Math.min(...zs) + Math.max(...zs)) / 2,
+  };
+}
+
+/**
+ * Where each instrument dial is: its own mesh if it has one, else the
+ * connected components of a merged `*-instrument-faces` mesh (five discs).
+ */
+function dialCentres(scene: Scene): { name: string; centre: Vector3 }[] {
+  const separate = scene.meshes.filter((m) => /-gauge$/.test(m.name));
+  if (separate.length > 0) {
+    return separate.map((mesh) => ({ name: mesh.name, centre: mesh.getBoundingInfo().boundingBox.centerWorld.clone() }));
+  }
+  const faces = scene.meshes.find((m) => /instrument-faces$/.test(m.name));
+  const indices = faces?.getIndices();
+  if (!faces || !indices) return [];
+  const vertices = worldVertices(faces);
+  const parent = vertices.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const a = find(indices[t]!);
+    parent[find(indices[t + 1]!)] = a;
+    parent[find(indices[t + 2]!)] = a;
+  }
+  const groups = new Map<number, Vector3[]>();
+  vertices.forEach((v, i) => groups.set(find(i), [...(groups.get(find(i)) ?? []), v]));
+  // A cylinder is three disconnected pieces (two caps and the wall), so the
+  // components are grouped again by proximity: pieces of one dial share a
+  // centre to within a centimetre, and dials are at least 0.15 m apart.
+  const centres = [...groups.values()].map((group) => {
+    const lo = new Vector3(Math.min(...group.map((v) => v.x)), Math.min(...group.map((v) => v.y)), Math.min(...group.map((v) => v.z)));
+    const hi = new Vector3(Math.max(...group.map((v) => v.x)), Math.max(...group.map((v) => v.y)), Math.max(...group.map((v) => v.z)));
+    return lo.add(hi).scale(0.5);
+  });
+  const dials: { sum: Vector3; count: number }[] = [];
+  for (const centre of centres) {
+    const near = dials.find((dial) => Vector3.Distance(dial.sum.scale(1 / dial.count), centre) < 0.08);
+    if (near) { near.sum.addInPlace(centre); near.count += 1; } else dials.push({ sum: centre.clone(), count: 1 });
+  }
+  return dials
+    .map((dial) => dial.sum.scale(1 / dial.count))
+    .sort((a, b) => a.z - b.z)
+    .map((centre, k) => ({ name: `${faces.name}[dial ${k + 1}]`, centre }));
+}
+
 function run(kind: AircraftKind): void {
   const spec = aircraftSpec(kind);
   const notes = NOTES[kind];
@@ -234,8 +322,9 @@ function run(kind: AircraftKind): void {
   const cullers = new Set([...visibleMeshes].filter(culls));
 
   // ---- CULL CONTROL: pick the winding sign, then prove it both ways. -------
-  const controlMesh = scene.meshes.find((m) => notes.panel.test(m.name));
-  if (!controlMesh) throw new Error(`no ${notes.panel} to calibrate culling against`);
+  const controlPattern = notes.control ?? notes.panel;
+  const controlMesh = scene.meshes.find((m) => controlPattern.test(m.name));
+  if (!controlMesh) throw new Error(`no ${controlPattern} to calibrate culling against`);
   const controlBox = controlMesh.getBoundingInfo().boundingBox.centerWorld;
   const outsideOrigin = controlBox.add(new Vector3(-2, 0, 0));
   const triangleTest = (sign: number) => (p0: Vector3, p1: Vector3, p2: Vector3, ray: Ray): boolean => {
@@ -261,7 +350,7 @@ function run(kind: AircraftKind): void {
     throw new Error(`${kind}: cull control FAILED — no winding sign hits the ${controlMesh.name} from outside and misses it from inside; every reading would be void`);
   }
   console.log(
-    `cull control: closed box ${controlMesh.name}, outside hit=${hitsControl(outsideOrigin, sign || 1)},`
+    `cull control: closed mesh ${controlMesh.name}, outside hit=${hitsControl(outsideOrigin, sign || 1)},`
     + ` inside hit=${hitsControl(controlBox, sign || 1)}, winding sign ${sign || "(culling off)"}`,
   );
   const cullPredicate = triangleTest(sign || 1);
@@ -473,21 +562,19 @@ function run(kind: AircraftKind): void {
   for (const row of rows) console.log(row);
 
   // ---- (c) the eye against the seat and the sill ---------------------------
-  const seatMesh = scene.meshes.find((m) => notes.seat.test(m.name));
+  const seat = locateSeat(scene, notes, spec.cockpitEye.forward);
   const sillMesh = scene.meshes.find((m) => notes.sill.test(m.name));
   console.log(`\n(c) EYE POSITION`);
-  if (seatMesh) {
-    const box = seatMesh.getBoundingInfo().boundingBox;
-    const seatTop = box.maximumWorld.y;
+  if (seat) {
     console.log(
-      `  seat ${seatMesh.name} (${notes.seatNote}): bbox top y ${fixed(seatTop, 3)}, centre (x ${fixed(box.centerWorld.x, 3)}, z ${fixed(box.centerWorld.z, 3)})`,
+      `  seat ${seat.name} (${notes.seatNote}): ${seat.topY === null ? "top y n/a (merged mesh, its cluster top includes the headrest)" : `top y ${fixed(seat.topY, 3)}`}, centre (x ${fixed(seat.centreX, 3)}, z ${fixed(seat.centreZ, 3)})`,
     );
     console.log(
-      `  eye above seat top: ${fixed(eye.y - seatTop, 3)} m;  eye lateral offset from seat centre: ${fixed(eye.z - box.centerWorld.z, 3)} m`
-      + ` (${eye.z - box.centerWorld.z === 0 ? "on the seat centre" : `eye is ${Math.abs(eye.z - box.centerWorld.z) < 0.02 ? "on" : eye.z > box.centerWorld.z ? "STARBOARD of" : "PORT of"} the seat centre`});`
-      + ` eye fore-aft vs seat centre: ${fixed(eye.x - box.centerWorld.x, 3)} m`,
+      `  eye above seat top: ${seat.topY === null ? "n/a" : `${fixed(eye.y - seat.topY, 3)} m`};  eye lateral offset from seat centre: ${fixed(eye.z - seat.centreZ, 3)} m`
+      + ` (${eye.z - seat.centreZ === 0 ? "on the seat centre" : `eye is ${Math.abs(eye.z - seat.centreZ) < 0.02 ? "on" : eye.z > seat.centreZ ? "STARBOARD of" : "PORT of"} the seat centre`});`
+      + ` eye fore-aft vs seat centre: ${fixed(eye.x - seat.centreX, 3)} m`,
     );
-  } else console.log(`  seat ${notes.seat}: NOT FOUND`);
+  } else console.log(`  seat ${notes.seat}: NOT FOUND (and no merged mesh lists one)`);
   if (sillMesh) {
     const box = sillMesh.getBoundingInfo().boundingBox;
     const sillY = notes.sillEdge === "top" ? box.maximumWorld.y : box.minimumWorld.y;
@@ -540,11 +627,8 @@ function run(kind: AircraftKind): void {
   const onFrame = (a: { az: number; el: number; depth: number }): boolean =>
     a.depth > NEAR_PLANE && Math.abs(Math.tan(a.az / DEG) * 1) <= tanHalfHorizontal
     && Math.abs(Math.tan(a.el / DEG) / Math.cos(a.az / DEG)) <= tanHalfVertical;
-  const gauges = scene.meshes.filter((m) => /-gauge$/.test(m.name));
-  const gaugeAngles = gauges.map((mesh) => {
-    const c = mesh.getBoundingInfo().boundingBox.centerWorld;
-    return { name: mesh.name, ...azel(c, eye) };
-  });
+  const gaugeCentres = dialCentres(scene);
+  const gaugeAngles = gaugeCentres.map((dial) => ({ name: dial.name, ...azel(dial.centre, eye) }));
   for (const g of gaugeAngles) {
     console.log(
       `  dial ${pad(g.name, 34)} az ${fixed(g.az, 1).padStart(6)}  el ${fixed(g.el, 1).padStart(6)}   on the real frame: ${onFrame(g) ? "yes" : "NO"};  inside the wide +-28 grid: ${Math.abs(g.el) <= 28 && Math.abs(g.az) <= 43.5 ? "yes" : "NO"}`,
@@ -553,7 +637,7 @@ function run(kind: AircraftKind): void {
   if (gaugeAngles.length) {
     const mean = (f: (g: typeof gaugeAngles[number]) => number) => gaugeAngles.reduce((s, g) => s + f(g), 0) / gaugeAngles.length;
     console.log(`  dial cluster centre: az ${fixed(mean((g) => g.az), 1)}, el ${fixed(mean((g) => g.el), 1)}; lowest ${fixed(Math.min(...gaugeAngles.map((g) => g.el)), 1)}, highest ${fixed(Math.max(...gaugeAngles.map((g) => g.el)), 1)}`);
-  } else console.log("  no *-gauge meshes found");
+  } else console.log("  no *-gauge meshes and no *-instrument-faces mesh found");
 
   // ---- Q5: side walls at the frame edges -----------------------------------
   const edgeNames = (columns: number[]): string => {
