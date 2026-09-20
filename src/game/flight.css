@@ -505,6 +505,11 @@
 .start-screen__starts > .primary-action {
   width: auto;
   min-width: 0;
+  /* Pinned for the same reason as the picker's boxes: the 820px block raises
+     every `.primary-action` to 50px (it is the pause menu's touch target), and
+     on this row that made Start and Runway start grow 4px as the window
+     SHRANK, leaving them taller than the 46px seed and settings beside them. */
+  min-height: 46px;
 }
 
 .primary-action::after {
@@ -1661,10 +1666,14 @@
     border-radius: 20px;
     background: rgba(7, 25, 33, 0.28);
   }
+  /* No `min-height` here. It used to be 54px, from when each label carried a
+     second line ("Trainer", "Fast jet") that needed the room; the names stand
+     alone now, so all it did was make every selection box JUMP taller the
+     moment the window crossed 820px. Jason: the boxes should not increase in
+     height when the window shrinks. Vertical padding matches the wide rule. */
   .aircraft-picker label {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
-    min-height: 54px;
     padding: 9px 10px;
     border-radius: 16px;
   }

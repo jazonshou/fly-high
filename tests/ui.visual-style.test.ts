@@ -117,4 +117,30 @@ describe("flight interface visual system", () => {
       expect(block).not.toMatch(/\.settings-action\s*\{[^}]*padding/);
     }
   });
+
+  // Jason: when the window shrinks horizontally the plane selection boxes
+  // should not increase in height. They did, from 35 to 54px at 820px, because
+  // of a `min-height` left over from when each label had a second line; the
+  // Start buttons grew 48 -> 50px the same way. Measured flat across 501 widths
+  // (1300 to 300px) when this was written; pinned here as "no media block may
+  // give either a min-height", since that is the only way it can come back.
+  it("never makes the picker's boxes or the start buttons taller as the window narrows", () => {
+    const stripped = flightStyles.replace(/\/\*[\s\S]*?\*\//g, "");
+    const mediaBlocks = stripped.match(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g) ?? [];
+    expect(mediaBlocks.length).toBeGreaterThan(3);
+    for (const block of mediaBlocks) {
+      expect(block).not.toMatch(/\.aircraft-picker label\s*\{[^}]*min-height/);
+      expect(block).not.toMatch(/\.aircraft-picker label\s*\{[^}]*padding-(?:block|top|bottom)/);
+    }
+    // The 820px block raises every `.primary-action` to 50px for the pause
+    // menu; the start row opts out with a two-class rule that outranks it.
+    expect(rule(".start-screen__starts > .primary-action")).toMatch(/min-height:\s*46px;/);
+    // And the narrow rule must not pad the labels taller than the wide one.
+    const wide = rule(".aircraft-picker label").match(/padding:\s*(\d+)px/)?.[1];
+    const narrow = stripped
+      .match(/@media \(max-width: 820px\)[\s\S]*?\.aircraft-picker label\s*\{([^}]*)\}/)?.[1]
+      ?.match(/padding:\s*(\d+)px/)?.[1];
+    expect(wide).toBeDefined();
+    expect(Number(narrow)).toBeLessThanOrEqual(Number(wide));
+  });
 });
