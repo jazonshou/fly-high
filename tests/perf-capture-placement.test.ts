@@ -8,6 +8,7 @@ import {
   PERF_CAPTURE_WIDTH,
   yawForSunBearing,
 } from "../scripts/perf-capture.mts";
+import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { createWorld, sampleTerrainHeight } from "../src/world";
 
@@ -47,6 +48,9 @@ function highDownCoverage(offsetZMeters: number) {
     terrainHeightAt: (x, z) => sampleTerrainHeight(world, x, z),
     viewportWidth: HIGH_DOWN_SHOT.viewportWidth ?? PERF_CAPTURE_WIDTH,
     viewportHeight: HIGH_DOWN_SHOT.viewportHeight ?? PERF_CAPTURE_HEIGHT,
+    // Explicit rather than the oracle's default: this shot renders with the
+    // perf harness's lens, and the test should say so.
+    horizontalFovDegrees: PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
   });
 }
 

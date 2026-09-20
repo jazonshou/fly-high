@@ -1,3 +1,4 @@
+import type { CockpitEyeSpec } from "@/src/aircraft/catalogue";
 import type { CameraMode } from "@/src/game/types";
 
 export interface MutablePresentationVector {
@@ -303,3 +304,112 @@ export const CHASE_AIM_HEIGHT_METERS = 1.25;
  * positive lead on every airframe at every speed either of them can reach.
  */
 export const MINIMUM_CHASE_AIM_AHEAD_METERS = 4;
+
+/**
+ * The gameplay cockpit lens: 75 degrees HORIZONTAL.
+ *
+ * The flight camera is `FOVMODE_HORIZONTAL_FIXED`, so every field of view the
+ * renderer sets is the horizontal one. At 16:9, 75 degrees is 46.7 vertical:
+ * azimuth +-37.5 and elevation +-23.4 at the centre line.
+ *
+ * The lens this replaced was 56 degrees — 33.5 vertical, a telephoto. It put
+ * every instrument below the bottom of the frame (the dials sit 17 to 25
+ * degrees under the eye and the frame stopped at 16.7) and left no room for a
+ * windscreen post, a sill or a glareshield to fit in view at all. A real
+ * cockpit shows the pilot a great deal more than that.
+ */
+export const COCKPIT_HORIZONTAL_FOV_DEGREES = 75;
+
+/**
+ * The lens the perf-capture harness keeps for its cockpit-mode shots.
+ *
+ * Fourteen capture shots use the cockpit camera as a free camera. They were
+ * placed, and their placement predicates written, for a 56 degree lens, and
+ * they have to stay comparable with their committed baselines, so they keep
+ * it. The harness passes `PERF_COCKPIT_RIG` to the renderer and NOTHING ELSE
+ * does (`tests/render.cockpit-rig.test.ts` scans for it): a second caller
+ * would put a player on the wrong lens without anything failing.
+ */
+export const PERF_COCKPIT_HORIZONTAL_FOV_DEGREES = 56;
+
+/** A cockpit rig that replaces the gameplay one. Perf capture only. */
+export interface CockpitRigOverride {
+  readonly horizontalFovDegrees: number;
+  /**
+   * Drop the eye's lateral offset, so the eye sits on the body centreline as
+   * it did before the pilot moved to the left seat. Without this the fourteen
+   * capture shots would still move sideways by up to 0.26 m (the trainer's
+   * seat offset) and keeping their lens would only be half of keeping them.
+   */
+  readonly pinEyeToCentreline: boolean;
+}
+
+/** The rig every perf-capture cockpit shot renders with: the previous one, exactly. */
+export const PERF_COCKPIT_RIG: CockpitRigOverride = Object.freeze({
+  horizontalFovDegrees: PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
+  pinEyeToCentreline: true,
+});
+
+/** How far ahead of the eye the cockpit camera aims, in metres. */
+export const COCKPIT_AIM_DISTANCE_METERS = 400;
+
+/** The horizontal field of view, in degrees, the cockpit camera should have. */
+export function cockpitFieldOfViewDegrees(
+  override: Readonly<CockpitRigOverride> | null,
+): number {
+  return override === null ? COCKPIT_HORIZONTAL_FOV_DEGREES : override.horizontalFovDegrees;
+}
+
+/** The eye's lateral offset in metres, positive to starboard, after any override. */
+export function cockpitEyeRightMeters(
+  eye: Readonly<Pick<CockpitEyeSpec, "right">>,
+  override: Readonly<CockpitRigOverride> | null,
+): number {
+  return override !== null && override.pinEyeToCentreline ? 0 : eye.right;
+}
+
+/**
+ * Where the cockpit camera and its aim point are, in the same space as
+ * `origin` (the aircraft's position).
+ *
+ * The eye sits `eye.forward` ahead of the origin along the nose, `eye.up`
+ * above it along the aircraft's up and `eyeRight` to starboard along
+ * `forward x up` — the body frame's +Z, so every term rolls and pitches with
+ * the airframe. The aim point is the eye plus `aimDistance` along the nose and
+ * NOTHING else: it carries the same lateral offset the eye does, which keeps
+ * the view direction parallel to the body axis wherever the eye is. Aiming at
+ * a point on the centreline instead would toe the view in by
+ * `atan(eyeRight / aimDistance)` and the HUD's centre mark would stop meaning
+ * "where the nose points".
+ *
+ * The additions run in the order the renderer used before there was a lateral
+ * term (origin, then forward, then up) and the lateral term is skipped when it
+ * is zero, so a zero `eyeRight` reproduces the previous camera to the last bit
+ * — which is what lets the perf shots stay comparable.
+ */
+export function cockpitRigPositionsToRef(
+  origin: Readonly<MutablePresentationVector>,
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+  eye: Readonly<Pick<CockpitEyeSpec, "forward" | "up">>,
+  eyeRight: number,
+  aimDistance: number,
+  camera: MutablePresentationVector,
+  target: MutablePresentationVector,
+): void {
+  camera.x = origin.x + forward.x * eye.forward;
+  camera.y = origin.y + forward.y * eye.forward;
+  camera.z = origin.z + forward.z * eye.forward;
+  camera.x += up.x * eye.up;
+  camera.y += up.y * eye.up;
+  camera.z += up.z * eye.up;
+  if (eyeRight !== 0) {
+    // forward x up: starboard, in the body frame's right-handed +X/+Y/+Z.
+    camera.x += (forward.y * up.z - forward.z * up.y) * eyeRight;
+    camera.y += (forward.z * up.x - forward.x * up.z) * eyeRight;
+    camera.z += (forward.x * up.y - forward.y * up.x) * eyeRight;
+  }
+  target.x = camera.x + forward.x * aimDistance;
+  target.y = camera.y + forward.y * aimDistance;
+  target.z = camera.z + forward.z * aimDistance;
+}

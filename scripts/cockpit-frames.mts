@@ -12,19 +12,36 @@
  *     root node's own `aircraftKind` metadata), because an earlier capture
  *     flew a Cessna under an F-16 label when a variable the init script closed
  *     over serialised to `undefined` — values are passed in as ARGUMENTS here;
- *   - the camera really sits at `cockpitEye` in the aircraft's body frame, and
- *     reports its field of view and mode, so a frame is never described by
- *     what the code is supposed to do.
+ *   - the camera really sits at the catalogue's `cockpitEye` — `forward`, `up`
+ *     AND `right` — in the aircraft's body frame, and has the lens it is
+ *     supposed to (`COCKPIT_HORIZONTAL_FOV_DEGREES`), both read from the same
+ *     modules the renderer reads and never typed here, so a frame is never
+ *     described by what the code is supposed to do. A mismatch throws.
  *
  * Nothing is written to the page or to src/: the reader is a closure inside one
  * page.evaluate that reaches the scene through Vite's optimised copy of
  * Babylon's engineStore.
  *
+ * LENS: to judge a lens before committing to it, `LENS=68` (degrees, horizontal)
+ * makes the page's copy of `cameraPresentation.ts` be served with
+ * `COCKPIT_HORIZONTAL_FOV_DEGREES` rewritten, so the RENDERER genuinely runs at
+ * that lens — terrain LOD, shadow cascades and all — with no hook in src/. The
+ * rewrite is counted and the run fails if it never matched; the live camera's
+ * field of view is then asserted against the requested lens. Output names gain
+ * `-lens68`.
+ *
  *   npx tsx scripts/cockpit-frames.mts <outDir> <url> <expectTree> [kinds] [poses]
  *   npx tsx scripts/cockpit-frames.mts /tmp/f http://localhost:3030/ "$PWD" trainer,jet air,runway
+ *   LENS=82 npx tsx scripts/cockpit-frames.mts /tmp/f http://localhost:3030/ "$PWD" trainer air,runway
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
+import { aircraftSpec } from "@/src/aircraft/catalogue";
+import {
+  COCKPIT_HORIZONTAL_FOV_DEGREES,
+  PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
+} from "@/src/render/cameraPresentation";
+import type { AircraftKind } from "@/src/sim";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
 const [outDir, url, expectTree, kindsArgument, posesArgument] = process.argv.slice(2);
@@ -38,7 +55,20 @@ const WIDTH = Number(process.env.FRAME_WIDTH ?? 1600);
 const HEIGHT = Number(process.env.FRAME_HEIGHT ?? 900);
 /** Seconds to let each start settle before switching view: a phugoid is a frame of an aeroplane doing something. */
 const SETTLE_SECONDS = { air: Number(process.env.SETTLE_AIR ?? 22), runway: Number(process.env.SETTLE_RUNWAY ?? 10) };
+/** A lens to try instead of the shipped one, in degrees horizontal; null = the shipped lens. */
+const LENS_REQUEST = process.env.LENS === undefined || process.env.LENS === "" ? null : Number(process.env.LENS);
+if (LENS_REQUEST !== null && !(LENS_REQUEST > 20 && LENS_REQUEST < 150)) {
+  throw new Error(`LENS=${process.env.LENS} is not a plausible horizontal field of view`);
+}
+/** The lens every frame in this run must have: the constant the renderer reads, unless a lens was requested. */
+const EXPECTED_LENS = LENS_REQUEST ?? COCKPIT_HORIZONTAL_FOV_DEGREES;
 mkdirSync(outDir, { recursive: true });
+console.log(
+  `lens: COCKPIT_HORIZONTAL_FOV_DEGREES = ${COCKPIT_HORIZONTAL_FOV_DEGREES} (gameplay; the perf harness keeps`
+  + ` ${PERF_COCKPIT_HORIZONTAL_FOV_DEGREES}); this run expects ${EXPECTED_LENS}`
+  + `${LENS_REQUEST === null ? "" : " (REQUESTED by LENS, served-source rewrite)"}`,
+);
+console.log("eye: catalogue cockpitEye {forward, up, right} per kind, asserted against the live camera");
 
 // Which tree is answering? A dev server that cannot bind its port does not fail.
 const identity = await fetch(new URL(`/@fs${expectTree}/package.json`, url).toString());
@@ -137,9 +167,25 @@ function hudView(hud: string): string {
 }
 
 async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
-  const label = `${kind}-${pose}`;
+  const label = `${kind}-${pose}${LENS_REQUEST === null ? "" : `-lens${LENS_REQUEST}`}`;
   const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: 1 });
+  let lensRewrites = 0;
   try {
+    if (LENS_REQUEST !== null) {
+      // Serve the renderer's own constant with the requested value, so the
+      // camera the page builds is the camera being judged.
+      await context.route(/cameraPresentation\.ts/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.text();
+        const pattern = /(export const COCKPIT_HORIZONTAL_FOV_DEGREES\s*=\s*)[0-9.]+/;
+        if (!pattern.test(body)) {
+          await route.fulfill({ response, body });
+          return;
+        }
+        lensRewrites += 1;
+        await route.fulfill({ response, body: body.replace(pattern, `$1${LENS_REQUEST}`) });
+      });
+    }
     const page = await context.newPage();
     // Passed as an ARGUMENT, never closed over: the function is serialised
     // and a captured variable arrives as undefined.
@@ -180,13 +226,42 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     if (reading.aircraftKind !== kind) {
       throw new Error(`${label}: the scene holds a "${reading.aircraftKind}", not the requested "${kind}"`);
     }
+    if (LENS_REQUEST !== null && lensRewrites === 0) {
+      throw new Error(`${label}: LENS=${LENS_REQUEST} was requested but the served cameraPresentation module was never rewritten; this frame is at the shipped lens`);
+    }
+    // The lens and the eye are asserted against the modules the renderer reads.
+    // A horizontal-fixed camera reports its horizontal field of view directly.
+    if (reading.cameraFovMode !== 1) {
+      throw new Error(`${label}: camera fovMode ${reading.cameraFovMode}, not horizontal-fixed (1); every angle in this script assumes it`);
+    }
+    if (Math.abs(reading.cameraFovDegrees - EXPECTED_LENS) > 0.01) {
+      throw new Error(`${label}: live lens ${reading.cameraFovDegrees.toFixed(3)} deg, expected ${EXPECTED_LENS}`);
+    }
+    const catalogueEye = aircraftSpec(kind as AircraftKind).cockpitEye;
+    const expectedEye = [catalogueEye.forward, catalogueEye.up, catalogueEye.right] as const;
+    const liveEye = reading.eyeInBodyFrame;
+    for (const [axis, expected] of expectedEye.entries()) {
+      if (Math.abs(liveEye[axis]! - expected) > 0.005) {
+        throw new Error(
+          `${label}: live eye (${liveEye.map((v) => v.toFixed(3)).join(", ")}) is not the catalogue's`
+          + ` (${expectedEye.join(", ")}) on axis ${["forward", "up", "right"][axis]}`,
+        );
+      }
+    }
     const png = `${outDir}/${label}.png`;
     await page.screenshot({ path: png, type: "png" });
-    writeFileSync(`${outDir}/${label}.json`, `${JSON.stringify({ label, kind, pose, url, expectTree, ...reading }, null, 2)}\n`);
+    writeFileSync(`${outDir}/${label}.json`, `${JSON.stringify({
+      label, kind, pose, url, expectTree,
+      expected: { lensDegrees: EXPECTED_LENS, lensRequested: LENS_REQUEST, eyeForwardUpRight: expectedEye },
+      lensRewrites,
+      ...reading,
+    }, null, 2)}\n`);
     const [bx, by, bz] = reading.eyeInBodyFrame;
     console.log(
       `${label}: HUD ${hudView(reading.hud)}, scene kind ${reading.aircraftKind}, eye in body frame `
-      + `(${bx.toFixed(3)}, ${by.toFixed(3)}, ${bz.toFixed(3)}), fov ${reading.cameraFovDegrees.toFixed(2)} deg `
+      + `(${bx.toFixed(3)}, ${by.toFixed(3)}, ${bz.toFixed(3)}) == catalogue (${expectedEye.join(", ")}), `
+      + `lens ${reading.cameraFovDegrees.toFixed(2)} deg == expected ${EXPECTED_LENS}${LENS_REQUEST === null ? "" : ` (${lensRewrites} module rewrite(s))`}, `
+      + `fov `
       + `${reading.cameraFovMode === 1 ? "HORIZONTAL-fixed" : reading.cameraFovMode === 0 ? "vertical-fixed" : `mode ${reading.cameraFovMode}`}, `
       + `minZ ${reading.cameraMinZ}, layerMask ${(reading.cameraLayerMask >>> 0).toString(16)} -> ${png}`,
     );

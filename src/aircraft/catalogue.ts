@@ -65,10 +65,23 @@ export interface CinematicOrbitSpec {
   readonly heightDriftMeters: number;
 }
 
-/** Where the pilot's eye sits, in metres from the centre of gravity. */
+/**
+ * Where the pilot's eye sits, in metres from the centre of gravity, in the
+ * body frame (+X nose, +Y up, +Z starboard).
+ *
+ * `right` is positive to STARBOARD. The pilot flies from the LEFT seat in the
+ * 150, the Global and the 747, so it is negative there; the F-16 has one seat
+ * on the centreline. It used to be absent, which put the eye on the centreline
+ * of every airframe — between the two seats of the three that have two.
+ *
+ * The cockpit camera aims parallel to the body axis from wherever the eye is,
+ * so this moves the viewpoint without turning the view: the HUD's centre mark
+ * still means "where the nose points".
+ */
 export interface CockpitEyeSpec {
   readonly forward: number;
   readonly up: number;
+  readonly right: number;
 }
 
 /** What the aeroplane is holding when a flight begins. */
@@ -163,7 +176,11 @@ const TRAINER: AircraftSpec = Object.freeze({
   // level with the panel top, which filled the lower half of the windscreen
   // with instrument. 0.12 clears the panel by 11 cm over a 0.64 m reach —
   // about 11 degrees of down-angle — and still leaves 6 cm of headroom.
-  cockpitEye: Object.freeze({ forward: 1.38, up: 0.12 }),
+  //
+  // `right` -0.26 is the port seat's centre (`port-seat`, z -0.26): the pilot
+  // sits on the left, and the eye used to be on the centreline between the two
+  // seats.
+  cockpitEye: Object.freeze({ forward: 1.38, up: 0.12, right: -0.26 }),
   spawn: Object.freeze({
     airborneAirspeed: 56,
     // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
@@ -244,7 +261,8 @@ const JET: AircraftSpec = Object.freeze({
   // leaves 0.29 m of headroom, which is a helmet and no more, as an F-16
   // canopy is. The sightline passes over the radome, so the pilot can see the
   // nose.
-  cockpitEye: Object.freeze({ forward: 2.22, up: 0.94 }),
+  // `right` 0: a single-seat aeroplane, and the seat is on the centreline.
+  cockpitEye: Object.freeze({ forward: 2.22, up: 0.94, right: 0 }),
   spawn: Object.freeze({
     // 210 m/s, about 408 kt: an unremarkable low-level cruise for this
     // aeroplane, and comfortably above the speed where the spawn phugoid bites.
@@ -316,7 +334,12 @@ const BIZJET: AircraftSpec = Object.freeze({
   // windscreen; y 0.82 sat BELOW the panel's top edge and filled two thirds
   // of the screen with instrument. 1.05 clears the top edge by 0.16 m over a
   // 0.95 m reach, the same proportion the 150 flies at.
-  cockpitEye: Object.freeze({ forward: 11.6, up: 1.05 }),
+  //
+  // `right` -0.52 is the PORT seat's centre. That mesh is named
+  // `bizjet-first-officer-seat` and the starboard one `bizjet-captain-seat`,
+  // which is the wrong way round for an aeroplane whose captain sits on the
+  // left; the eye follows the geometry, not the name.
+  cockpitEye: Object.freeze({ forward: 11.6, up: 1.05, right: -0.52 }),
   spawn: Object.freeze({
     // 200 m/s. 210 was above the speed at which this aeroplane flies level in
     // dense air near the ground, so it converted the excess into climb no
@@ -398,7 +421,10 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // the panel face and 0.20 m above its top edge — 9.9 degrees of down-angle,
   // against the Global's 9.6 and the 150's 9.8 — 1.15 m above the flight-deck
   // floor and 8.30 m above the pavement.
-  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1 }),
+  //
+  // `right` -0.72 is the PORT seat's centre, `airliner-first-officer-seat` by
+  // name (see the Global's note on the swapped seat names).
+  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1, right: -0.72 }),
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it

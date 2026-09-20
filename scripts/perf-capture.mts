@@ -10,6 +10,8 @@
  * everything below. Class P: no Babylon, no DOM, no Node APIs.
  */
 
+import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
 export const PERF_CAPTURE_HEIGHT = 720;
@@ -2070,7 +2072,12 @@ export interface CockpitTerrainCoverageInput {
   readonly bankDegrees?: number;
   readonly seaLevelMeters: number;
   readonly terrainHeightAt: (x: number, z: number) => number;
-  /** Shipping cockpit camera uses a horizontal-fixed 56 degree FOV. */
+  /**
+   * Horizontal field of view, in degrees. Defaults to
+   * `PERF_COCKPIT_HORIZONTAL_FOV_DEGREES` (56), the lens the harness pins its
+   * cockpit shots to (`PERF_COCKPIT_RIG`) — NOT the gameplay cockpit lens,
+   * `COCKPIT_HORIZONTAL_FOV_DEGREES` (75), which these shots do not use.
+   */
   readonly horizontalFovDegrees?: number;
   readonly viewportWidth?: number;
   readonly viewportHeight?: number;
@@ -2131,7 +2138,7 @@ export function cockpitTerrainCoverage(
   const columns = positiveInteger(input.columns ?? 41, "columns");
   const rows = positiveInteger(input.rows ?? 23, "rows");
   const raySteps = positiveInteger(input.raySteps ?? 256, "raySteps");
-  const horizontalFovDegrees = input.horizontalFovDegrees ?? 56;
+  const horizontalFovDegrees = input.horizontalFovDegrees ?? PERF_COCKPIT_HORIZONTAL_FOV_DEGREES;
   const finiteScalars = [
     ...input.aircraftPosition,
     input.yawDegrees,

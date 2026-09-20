@@ -7,14 +7,22 @@
  * body +X) through the frustum that camera really has. Every ray is classified
  * by the first OPAQUE surface the cockpit camera would draw.
  *
- * WHICH FRUSTUM. The flight camera is `FOVMODE_HORIZONTAL_FIXED` and the
- * cockpit branch sets 56 degrees, so 56 is the HORIZONTAL field of view: at
- * 16:9 the frame spans azimuth +-28 and only about +-16.6 degrees of elevation
- * at the centre line. It is NOT a 56 degree vertical field of view (which would
- * be +-43.5 horizontally). Map A below is the wide diagnostic grid — azimuth
- * +-43.5, elevation +-28 — so the parts that fall just outside the real frame
- * are still visible in it; map B is the real frame, cell for cell. `HFOV`,
+ * WHICH FRUSTUM. The flight camera is `FOVMODE_HORIZONTAL_FIXED`, so the
+ * cockpit lens is a HORIZONTAL field of view. It is read from
+ * `COCKPIT_HORIZONTAL_FOV_DEGREES` (`src/render/cameraPresentation.ts`), the
+ * constant the renderer reads, never typed here: 75 today, which at 16:9 is
+ * azimuth +-37.5 and elevation +-23.4 at the centre line. (It was 56 when this
+ * probe was first written — azimuth +-28, elevation +-16.7 — and the perf
+ * harness still renders with 56, `PERF_COCKPIT_HORIZONTAL_FOV_DEGREES`;
+ * `HFOV=56` reproduces that lens.) Map A below is the wide diagnostic grid —
+ * azimuth +-43.5, elevation +-28 — so parts that fall just outside the real
+ * frame are still visible in it; map B is the real frame, cell for cell.
  * `ASPECT` and `FOV_MODE=vertical` reproduce other assumptions.
+ *
+ * WHICH EYE. `catalogue.cockpitEye`, all three components: `forward`, `up` and
+ * `right` (metres to starboard, negative in the left seat). The renderer's
+ * cockpit branch builds the same point from the same record, and the frame
+ * script asserts the live camera against it.
  *
  * WHAT THE RENDERER DOES THAT A NAIVE PICK DOES NOT, and this honours:
  *  - the camera's LAYER MASK (exterior skin is on bit 27, which the cockpit
@@ -48,6 +56,10 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
+import {
+  COCKPIT_HORIZONTAL_FOV_DEGREES,
+  PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
+} from "@/src/render/cameraPresentation";
 import { AIRCRAFT_EXTERIOR_LAYER_MASK } from "@/src/render/webgpu/aircraft/types";
 import { createAircraft } from "@/src/render/webgpu/aircraft/createAircraft";
 import { INITIAL_VISUAL_STATE } from "@/src/game/types";
@@ -68,8 +80,11 @@ const KINDS = (process.env.KINDS ?? ALL_KINDS.join(",")).split(",").map((k) => {
   if (!(ALL_KINDS as string[]).includes(k)) throw new Error(`unknown kind "${k}"`);
   return k as AircraftKind;
 });
-/** The game's cockpit field of view, in degrees, and which axis it is on. */
-const FOV_DEGREES = numberFromEnv("HFOV", 56);
+/**
+ * The game's cockpit field of view, in degrees, and which axis it is on. The
+ * default is the renderer's own constant, so this cannot drift from the game.
+ */
+const FOV_DEGREES = numberFromEnv("HFOV", COCKPIT_HORIZONTAL_FOV_DEGREES);
 const FOV_MODE = process.env.FOV_MODE === "vertical" ? "vertical" : "horizontal";
 const ASPECT = numberFromEnv("ASPECT", 16 / 9);
 const NEAR_PLANE = 0.08;
@@ -255,7 +270,7 @@ function run(kind: AircraftKind): void {
   const eyeAt = (extra: Vector3): Vector3 => new Vector3(
     spec.cockpitEye.forward + EYE_SHIFT.x + extra.x,
     spec.cockpitEye.up + EYE_SHIFT.y + extra.y,
-    EYE_SHIFT.z + extra.z,
+    spec.cockpitEye.right + EYE_SHIFT.z + extra.z,
   );
 
   const tally: Tally = { clipped: new Map(), coincident: new Map() };
@@ -360,8 +375,8 @@ function run(kind: AircraftKind): void {
 
   console.log(`\n=== ${kind.toUpperCase()}  (${spec.name})  pose=${POSE}  skin=${SKIN ? "LEFT VISIBLE" : "hidden by layer mask"}  cull=${CULL ? "on" : "off"} ===`);
   console.log(
-    `eye ${fixed(eye.x, 3)}, ${fixed(eye.y, 3)}, ${fixed(eye.z, 3)}  (catalogue forward ${spec.cockpitEye.forward}, up ${spec.cockpitEye.up};`
-    + ` shift ${fixed(EYE_SHIFT.x)}, ${fixed(EYE_SHIFT.y)}, ${fixed(EYE_SHIFT.z)})`,
+    `eye ${fixed(eye.x, 3)}, ${fixed(eye.y, 3)}, ${fixed(eye.z, 3)}  (catalogue cockpitEye forward ${spec.cockpitEye.forward},`
+    + ` up ${spec.cockpitEye.up}, right ${spec.cockpitEye.right}; shift ${fixed(EYE_SHIFT.x)}, ${fixed(EYE_SHIFT.y)}, ${fixed(EYE_SHIFT.z)})`,
   );
   console.log(
     `camera ${FOV_DEGREES} deg ${FOV_MODE}, aspect ${fixed(ASPECT, 3)} -> frame is azimuth +-${fixed(HALF_AZIMUTH, 1)},`
@@ -595,4 +610,10 @@ function run(kind: AircraftKind): void {
 }
 
 console.log(`cockpit-view-probe  kinds=${KINDS.join(",")}  pose=${POSE}  fov=${FOV_DEGREES} ${FOV_MODE}  aspect=${fixed(ASPECT, 3)}`);
+console.log(
+  `lens: COCKPIT_HORIZONTAL_FOV_DEGREES = ${COCKPIT_HORIZONTAL_FOV_DEGREES} (gameplay; the perf harness keeps`
+  + ` PERF_COCKPIT_HORIZONTAL_FOV_DEGREES = ${PERF_COCKPIT_HORIZONTAL_FOV_DEGREES}); this run uses ${FOV_DEGREES} ${FOV_MODE}`
+  + `${FOV_DEGREES === COCKPIT_HORIZONTAL_FOV_DEGREES && FOV_MODE === "horizontal" ? " (the gameplay lens)" : "  *** NOT the gameplay lens ***"}`,
+);
+console.log("eye: catalogue cockpitEye {forward, up, right} per kind, printed in each block below");
 for (const kind of KINDS) run(kind);

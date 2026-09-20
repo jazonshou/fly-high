@@ -8,6 +8,7 @@ import {
   PERF_CAPTURE_WIDTH,
   yawForSunBearing,
 } from "../scripts/perf-capture.mts";
+import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { createWorld, sampleTerrainHeight } from "../src/world";
 import { runwayToWorld } from "../src/world/airport";
@@ -91,8 +92,12 @@ function hangarAt(index: number) {
 
 const HANGARS = [0, 1, 2].map(hangarAt);
 
-/** Cockpit rig: FOVMODE_HORIZONTAL_FIXED at 56 deg (FlightRenderer.updateCamera). */
-const HORIZONTAL_FOV_DEGREES = 56;
+/**
+ * The perf harness's cockpit rig: FOVMODE_HORIZONTAL_FIXED at the perf lens
+ * (56 deg, `PERF_COCKPIT_RIG`). Not the gameplay cockpit lens, which this shot
+ * is never rendered with.
+ */
+const HORIZONTAL_FOV_DEGREES = PERF_COCKPIT_HORIZONTAL_FOV_DEGREES;
 const VERTICAL_FOV_DEGREES = (2 * Math.atan(
   Math.tan((HORIZONTAL_FOV_DEGREES / 2) * Math.PI / 180)
   * (PERF_CAPTURE_HEIGHT / PERF_CAPTURE_WIDTH),

@@ -4,6 +4,7 @@ import { AIRCRAFT_KINDS } from "@/src/sim";
 import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
+import { PERF_COCKPIT_RIG } from "../../src/render/cameraPresentation";
 import {
   ESTIMATE_REPIN_TRIGGER_FRACTION,
   estimateDivergenceFraction,
@@ -617,6 +618,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // that tier actually ships, so the governor stays frozen at each.
       pinnedRenderScale: CAPTURE_PROFILE.renderScale,
       captureGpuTiming: GPU_TIMING_ENABLED,
+      // The fourteen cockpit-mode shots were placed for a 56 degree lens with
+      // the eye on the centreline. The gameplay cockpit is now 75 degrees from
+      // the left seat, and they must stay comparable with their baselines, so
+      // this harness renders them with the previous rig. It is the ONLY caller
+      // of the override (tests/render.cockpit-rig.test.ts scans for that).
+      cockpitRigOverride: PERF_COCKPIT_RIG,
       ...(world.airport ? { runway: world.airport } : {}),
     });
 
