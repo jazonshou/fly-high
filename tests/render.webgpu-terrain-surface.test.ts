@@ -21,6 +21,7 @@ import {
   TERRAIN_OCCLUDED_BOUNCE_SHARE,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
   TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL,
+  TERRAIN_SEAM_SWARD_COVER_MINIMUM,
   TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS,
   TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE,
   TERRAIN_FINE_HEIGHT_GRADIENT_SCALE,
@@ -29,6 +30,7 @@ import {
   TERRAIN_SURFACE_INJECTION_TOKENS,
   TERRAIN_SPARSE_SPLAT_GATHER_WGSL,
   TERRAIN_SURFACE_VERTEX_WGSL,
+  terrainSeamPairShare,
   TerrainSurfacePlugin,
   terrainNodeLocalNormalFromHeightGradients,
   terrainPageClassificationConfidence,
@@ -965,6 +967,58 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       ]) {
         expect(code).toContain(value.toFixed(2));
       }
+    });
+  });
+});
+
+describe("the seam feather's target: a sward pair keeps its mixture", () => {
+  // From 6,000 ft over dry country every dry/lush lowland was flat-toned brown
+  // regions with vector-drawn outlines (world 1GVEIKQ, 2026-09-20). Wave R fades
+  // an untrusted page toward its PRIMARY alone, which is right for rock against
+  // grass (a coarse texel's sub-texel mixture is wrong) and wrong for two
+  // swards, whose mixture is a climate gradient smooth at any texel size.
+  const sward = [SurfaceMaterial.Grass, SurfaceMaterial.DryGrass, SurfaceMaterial.Shrub];
+  const other = [SurfaceMaterial.Rock, SurfaceMaterial.Gravel, SurfaceMaterial.Snow,
+    SurfaceMaterial.Sand, SurfaceMaterial.ForestFloor, SurfaceMaterial.Asphalt,
+    SurfaceMaterial.Concrete];
+
+  it("returns the mixture for two swards at any fraction", () => {
+    for (const lower of sward) {
+      for (const upper of sward) {
+        for (const fraction of [0, 0.12, 0.37, 0.5]) {
+          expect(terrainSeamPairShare(lower, upper, fraction)).toBe(fraction);
+        }
+      }
+    }
+  });
+
+  it("returns the primary alone as soon as either id is not a sward", () => {
+    for (const mineral of other) {
+      for (const partner of [...sward, ...other]) {
+        expect(terrainSeamPairShare(mineral, partner, 0.4), `${mineral}/${partner}`).toBe(0);
+        expect(terrainSeamPairShare(partner, mineral, 0.4), `${partner}/${mineral}`).toBe(0);
+      }
+    }
+    // The bar sits between shrub (0.9) and forest floor (0.55) on purpose.
+    expect(TERRAIN_SEAM_SWARD_COVER_MINIMUM).toBeGreaterThan(0.55);
+    expect(TERRAIN_SEAM_SWARD_COVER_MINIMUM).toBeLessThanOrEqual(0.9);
+  });
+
+  it("emits that rule, and only in the three-material path", () => {
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      expect(code).toContain("let terrainSeamPair = terrainAxisFraction * select(0.0, 1.0,");
+      expect(code).toContain(
+        `terrainGroundCoverOf(i32(terrainLowerId)).x >= ${TERRAIN_SEAM_SWARD_COVER_MINIMUM}`);
+      // All six lanes fade toward the same target, or a sward pair would be
+      // blended in colour and categorical in its normal and roughness.
+      for (const lane of ["albedo", "normal", "roughness", "cavity", "f0", "diffuseRoughness"]) {
+        expect(code).toContain(
+          `mix(mix(terrainLayer0.${lane}, terrainLayer1.${lane}, terrainSeamPair), terrainLayer2.${lane}, terrainSeamThird)`);
+      }
+      // Low tier never samples layer1: its copy keeps the primary (known limit).
+      expect(code.match(/mix\(terrainLayer0\.albedo, terrainLayer2\.albedo, terrainSeamThird\)/gu))
+        .toHaveLength(1);
     });
   });
 });
