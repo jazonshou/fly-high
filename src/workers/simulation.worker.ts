@@ -103,6 +103,10 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
     environment: {
       terrain: terrainSample,
       terrainHeight: terrainHeightSample,
+      // Telemetry only -- the pilot's AGL reads to the water surface, while
+      // the two samplers above keep describing the sea BED for contact,
+      // friction and crash. Not hardcoded zero: a world sets its own.
+      seaLevel: world?.seaLevel ?? 0,
       wind: { x: 0, y: 0, z: 0 },
     },
   });
@@ -232,6 +236,7 @@ function simulationTick(): void {
     simulator.setEnvironment({
       terrain: terrainSample,
       terrainHeight: terrainHeightSample,
+      seaLevel: world?.seaLevel ?? 0,
       wind,
     });
     simulator.step(FIXED_TIME_STEP);

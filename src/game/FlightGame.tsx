@@ -242,11 +242,12 @@ export function FlightGame() {
     freeFlyRef.current = new FreeFlyController({
       canvas: renderer.domElement,
       groundHeight: (x, z) => renderer.sampleGroundHeight(x, z),
+      seaLevel: world.seaLevel,
       initialState: latestStateRef.current,
     });
     renderer.setViewerMode(true);
     updatePhase("viewer");
-  }, [invalidatePendingTransitions, updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase, world]);
 
   const exitViewer = useCallback(() => {
     if (phaseRef.current !== "viewer") return;

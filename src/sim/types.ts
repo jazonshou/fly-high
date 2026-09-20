@@ -86,6 +86,26 @@ export interface EnvironmentInput {
    * requesting normals and friction. It must describe the same surface.
    */
   terrainHeight?: TerrainHeightSampler;
+  /**
+   * Height of the still water surface, for the PILOT-FACING AGL reading only.
+   *
+   * **Telemetry, and nothing else.** Contact, friction, impact and crash
+   * detection keep reading `terrain`/`terrainHeight`, which describe the real
+   * surface the aircraft can touch -- the sea BED, over water. An aeroplane
+   * that flies into the sea still flies through it to the bottom exactly as it
+   * did before this field existed; what changes is only the number on the
+   * instrument. Keeping the two apart is the whole point of putting the datum
+   * here rather than folding it into the terrain sampler: `terrainHeight` also
+   * feeds `couldReachTerrain`, the broad-phase gate in front of the entire
+   * contact and crash path, and raising that to the waterline would open the
+   * broad phase over every ocean column in the world.
+   *
+   * Optional, and absent by default: `DEFAULT_ENVIRONMENT` does not set it, so
+   * a simulator built without one reports exactly the numbers it always has.
+   * It is NOT assumed to be zero -- `WorldDefinition.seaLevel` is
+   * `options.seaLevel ?? 0` and a world may put it elsewhere.
+   */
+  seaLevel?: number;
 }
 
 export interface SpawnOptions {
@@ -145,7 +165,16 @@ export interface FlightTelemetry {
   groundSpeed: number;
   verticalSpeed: number;
   altitude: number;
-  /** Clearance between the lowest landing-gear contact point and terrain. */
+  /**
+   * Clearance between the lowest landing-gear contact point and the surface
+   * below it: the terrain, or the WATER SURFACE where water stands above it.
+   *
+   * Over land this is non-negative and reads exactly 0 in ground contact.
+   * Over water it is SIGNED -- an aircraft below the surface reports how far
+   * below, because a pilot descending into the sea should watch the number go
+   * through zero rather than watch it measure a seabed they cannot see. It is
+   * a DISPLAY quantity: nothing about impact, contact or crash reads it.
+   */
   altitudeAgl: number;
   heading: number;
   pitch: number;

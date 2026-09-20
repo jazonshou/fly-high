@@ -23,6 +23,7 @@ export {
   FlightSimulator,
   getFlightSnapshot,
   getFlightTelemetry,
+  pilotSurfaceClearance,
   MAX_STEP_DURATION,
   SEA_LEVEL_DENSITY,
   spawnFlight,
