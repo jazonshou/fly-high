@@ -216,6 +216,36 @@ coarse tap's moisture and climate are evaluated once and shared by its canopy
 sample and both of its seasonal classifications: 5 moisture chains per coarse
 texel where there were 13 and 4 climate chains where there were 8, the same
 function of the same inputs, so the bake's output does not change (the parity
-test's histogram is digit-for-digit the same). It can only be cheaper than the
-figure above; it is to be re-priced with eight interleaved pairs the next time
-the machine is silent.
+test's histogram is digit-for-digit the same).
+
+Re-priced as shipped with eight interleaved pairs (same level-5 pages, tap gate
+toggled, load 2.4-2.7 with a browser on the GPU throughout). Coarse splat bake
+per page: off mean 0.224 ms, on mean 0.234 ms; paired on-off median +0.013 ms,
+sd 0.011, 7 of 8 pairs positive; same-arm sd 0.009 and the untouched fine-level
+bake's sd 0.009. The effect is the size of the control's noise, so the run does
+not price it to a figure: the tap path costs a coarse page no more than about
++0.02 ms, roughly 4-6 %, probably not zero. The coarse channel pair is about
+0.42 ms against the 1.55 ms cap.
+
+A correction to the paragraph above. "A canopy sample costs several classify
+taps" was a wrong inference from absolute figures. As RATIOS inside one window
+the lattice-count model was right both times: it predicted 142 / 86 = 1.65x for
+a canopy per tap with every chain recomputed and 82 / 86 = 0.95x with the
+chains shared, and the windows measured 1.66x and 1.04x.
+
+An observation, not a finding, because it cannot be proved from here: the OFF
+arm is identical shader work in both windows and read 0.44-0.61 ms in the quiet
+one and 0.21-0.24 ms in the busy one, while the fine-level bake read about 0.2
+in both and the long terrain dispatch went the other way (2.0 then 2.9-3.0 ms).
+The likeliest reading is GPU clocking: on a genuinely quiet machine the GPU
+idles down between sub-millisecond dispatches and times them slow and
+erratically (same-arm spread 0.17 ms), and something else holding the GPU up
+makes them fast and tight (0.009). The rule that follows does not depend on the
+explanation being right: on this host only WITHIN-WINDOW, interleaved ratios are
+comparable; absolute sub-millisecond figures are not comparable between windows;
+and "quiet" is not automatically the better condition for timing a short
+dispatch (it is still the right condition for fps and frame-time work). A cheap
+test for a later wave, not run here: keep a fixed dummy compute dispatch
+running to hold the clock up and time the same bake with it off and on, in one
+interleaved series; if the short dispatch gets faster and tighter with the
+dummy on, it is clocking.
