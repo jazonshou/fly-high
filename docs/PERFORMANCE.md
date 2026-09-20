@@ -1299,6 +1299,16 @@ declared in `DECLARED_DRAW_ONLY` and `DECLARED_PROBES` in
 `unmeasuredShots`, each with that reason. Its floors want three runs on the
 reference host.
 
+Suites at the promotion: Node 1933 passed / 1 skipped over 202 files,
+typecheck and lint clean, and the GPU suite **134/135 under contention,
+135/135 quiet**. The one failure is `tests/gpu/ground-cover-compute.test.ts`
+on a timing assertion (`measured 0.2530 ms vs seed 0.06 ms`), a ground-cover
+placement budget with no water in it. It passed 135/135 in the exclusive perf
+window on this same `src/`, passes in isolation, and fails only in a full run
+while two other sessions are working the same GPU. Recorded here so it is not
+rediscovered as a regression: it is contention on a shared machine, and a
+timing gate is the thing that measures it.
+
 The candidate is stamped not approvable, and that is unrelated to this change:
 the delivery floors ran host-honest and three vegetation shots failed them
 (`forest-line-highsun` 92.2 vs 103, `canopy-backlit-lowsun` 92.5 vs 103 and
