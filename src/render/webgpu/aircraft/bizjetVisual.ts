@@ -134,6 +134,21 @@ const CONTROL_SURFACE_COVE = 0.03;
 const FULL_FLAP_RADIANS = (30 * Math.PI) / 180;
 const FLAP_AFT_TRAVEL = 0.3;
 const FLAP_DOWN_TRAVEL = 0.1;
+/**
+ * How far a flap's leading edge is tucked UNDER the fixed wing at rest.
+ *
+ * It was `CONTROL_SURFACE_COVE`, 3 cm, which is right for an aileron because
+ * an aileron only rotates. A Fowler flap TRANSLATES: at 0.3 m of aft travel a
+ * 3 cm overlap becomes a 27 cm hole, and at the take-off setting the panels
+ * hung behind the wing with open sky between the trailing edge and the flap —
+ * the remaining half of the "glitchy" report.
+ *
+ * So the overlap has to exceed the travel. 0.34 m leaves 4 cm still tucked
+ * under at FULL flap, and about 19 cm at the take-off setting. At rest the
+ * whole overlap is hidden: the flap is a 6% section conformed into a 10% wing,
+ * so its surfaces sit inside the fixed wing's envelope rather than on it.
+ */
+const FLAP_LEADING_OVERLAP = FLAP_AFT_TRAVEL + 0.04;
 
 /**
  * The cabin window line. Fourteen a side, which is what photographs of the
@@ -780,6 +795,12 @@ export function createBizJet(scene: Scene): AircraftVisual {
     for (const piece of TRAILING_EDGE) {
       const pieceRoot = wingSection(piece.rootZ);
       const pieceTip = wingSection(piece.tipZ);
+      // A translating flap is tucked far enough under the fixed wing that it
+      // is still overlapped at full travel; a rotating aileron needs only the
+      // cove, and a fixed panel neither.
+      const leadingTuck = piece.hinged && piece.name !== "aileron"
+        ? FLAP_LEADING_OVERLAP
+        : CONTROL_SURFACE_COVE;
       const hingeX = piece.hinged ? pieceRoot.hingeX - CONTROL_SURFACE_COVE : 0;
       const hingeZ = piece.hinged ? side * piece.rootZ : 0;
       const hinge = piece.hinged
@@ -793,9 +814,11 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const surface = build.airfoilWing(
         `${sideName}-bizjet-${piece.name}-surface`,
         {
-          rootLeadingX: pieceRoot.hingeX - CONTROL_SURFACE_COVE - hingeX,
+          // A translating flap needs a Fowler overlap; a rotating aileron
+          // needs only the cove.
+          rootLeadingX: pieceRoot.hingeX - leadingTuck - hingeX,
           rootTrailingX: pieceRoot.trailingX - hingeX,
-          tipLeadingX: pieceTip.hingeX - CONTROL_SURFACE_COVE - hingeX,
+          tipLeadingX: pieceTip.hingeX - leadingTuck - hingeX,
           tipTrailingX: pieceTip.trailingX - hingeX,
           rootZ: side * piece.rootZ - hingeZ,
           tipZ: side * piece.tipZ - hingeZ,
