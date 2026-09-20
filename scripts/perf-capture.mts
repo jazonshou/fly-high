@@ -308,6 +308,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // vegetation at eye level against a full water plate is the shape of a new
     // maximum, not of a light shot. Nobody has measured it.
     "lake-island-piercing",
+    // W-11, after the same inventory run. 120 m over open water with the sun
+    // low and ahead. Named rather than folded in for the same reason as the
+    // shot above: a full ocean disk with its cascades resident, a coastline
+    // and its vegetation, and the bathymetry clipmap is not the shape of a
+    // light shot, and nobody has measured it.
+    "water-400ft-glitter",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -1963,6 +1969,59 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 0,
     comparesToBaseline: false,
     ceilings: null,
+  },
+  {
+    name: "water-400ft-glitter",
+    description:
+      "120 m over open water with the sun low and ahead - the sun glitter "
+      + "path at the altitude an aircraft actually flies it",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 120,
+    /**
+     * `W-11`: the regime Jason photographed the sparkle in, and the one gap
+     * in the water coverage. `water-25ft` sits 8 m up, where the ripples are
+     * RESOLVED and the sparkle statistic is faded out; `coast-10km-lowsun`
+     * sits 800 m up with the sun ASTERN, so it frames the matte side of the
+     * sea and no glitter path at all. Between them is the band where a pixel
+     * covers 0.1-1 m of sea - exactly the fade window the far-field sparkle
+     * turns on in - looking INTO the sun. Nothing in the set stood there, so
+     * nothing in the set could show what the sparkle does there.
+     *
+     * Same coast as the other two water shots (the `locate` predicate walks
+     * to the same shoreline), so the three differ only in altitude and sun
+     * bearing.
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers
+     * every canonical shot index and moves every baselined wave phase (the
+     * Wave R trap).
+     */
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 12,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.4 },
+    relativeSunBearingDegrees: 12,
+    locate: "coast",
+    /**
+     * Baselined, because it is the gate for `W-11` and the only frame in the
+     * set that can fail when the glitter path regresses. NOT floor-pinned:
+     * floors are derived from three runs on the pinned reference adapter, and
+     * the machine this shot was authored on is not it, so any number measured
+     * here would be a fiction with a provenance line attached. It is declared
+     * as an unpinned probe in `tests/delivery-floors.test.ts` and as an
+     * unmeasured shot in `PERF_CAPTURE_CEILING_PROVENANCE` until somebody
+     * measures it on the reference host.
+     *
+     * The DRAW-CALL ceiling is pinned, and the split is the point: draw counts
+     * are host-INDEPENDENT (byte-identical across both arms of the W-11 A/B and
+     * across every pinning run this programme has done), so measuring one here
+     * is as good as measuring it on the reference adapter. Frame timings are
+     * not. 234 is the measured count from the 2026-09-20T02-53-31.461Z
+     * candidate, pinned at the measurement rather than above it.
+     */
+    ceilings: null,
+    drawCallCeiling: 234,
   },
 ]);
 

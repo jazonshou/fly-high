@@ -87,6 +87,8 @@ import {
   WATER_DETAIL_NOISE_WGSL,
   WATER_FAR_FIELD_WGSL,
   WATER_FAR_GUST_WGSL,
+  WATER_GLINT_DRIFT_FRACTION,
+  WATER_GLINT_FACET_LENGTH_METERS,
   WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
   WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
   WATER_GLINT_TWINKLE_HZ,
@@ -699,16 +701,27 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // wave S: the lobe is the MEAN of a Poisson count of sun-aiming facets;
   // past the range where glints stop resolving, a mean-one twinkle at the
   // count's own variance turns the smooth sheet back into glitter.
+  // W-11: the same glint cell the ocean uses. Inland water had the screen
+  // hash too, and a lake is the worst place for it: the camera hangs still
+  // over a small body of water, and a pattern welded to the screen over a
+  // surface that is not moving is the purest form of the artefact.
+  let glintCell = waterGlintCell(
+    input.absoluteWorldXZ - farWind * uniforms.time * ${WATER_GLINT_DRIFT_FRACTION.toFixed(3)},
+    farFootprintArea,
+    channelFootprintMinor,
+    ${(WATER_GLINT_FACET_LENGTH_METERS ** 2).toExponential(4)},
+    3,
+  );
   let glintHalfVector = normalize(view + light);
   let glintExpectedCount = waterGlintExpectedCount(
     max(dot(glintNormal, glintHalfVector), 0.0),
     roughness * roughness,
     uniforms.sunAngularRadius,
-    farFootprintArea,
+    glintCell.area,
   );
   let sparkle = mix(
     1.0,
-    waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
+    waterGlintTwinkle(glintExpectedCount, glintCell.cell, uniforms.time, ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
     farGustWeight,
   );
   color += sunSpecular(glintNormal, view, light, roughness, uniforms.sunAngularRadius, f0)

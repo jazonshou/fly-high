@@ -111,8 +111,11 @@ import {
   WATER_FAR_GUST_WGSL,
   WATER_FOAM_WGSL,
   WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_GLINT_DRIFT_FRACTION,
+  WATER_GLINT_FACET_LENGTH_METERS,
   WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
   WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
+  WATER_WHITECAP_PATCH_AREA_M2,
   WATER_ROUGH_FRESNEL_MAX_VARIANCE,
   WATER_WHITECAP_FOOTPRINT_HIGH,
   WATER_WHITECAP_FOOTPRINT_LOW,
@@ -919,8 +922,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let runupDerivativeX = dpdx(input.oceanCoordinate);
   let runupDerivativeY = dpdy(input.oceanCoordinate);
   let footprintMajor = max(length(runupDerivativeX), length(runupDerivativeY));
+  // W-11 names the unlimited minor axis: the glint cell's glare floor is a
+  // floor on the cell's WIDE screen axis, which is this one. The anisotropy
+  // limit below is a texture-filtering concern and must not be folded in.
+  let footprintMinor = min(length(runupDerivativeX), length(runupDerivativeY));
   let runupFootprint = max(
-    min(length(runupDerivativeX), length(runupDerivativeY)),
+    footprintMinor,
     footprintMajor * ${(1 / 16).toFixed(6)},
   );
   // Ocean coverage and all shelf/run-up theory are defined against STILL-water
@@ -1357,12 +1364,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let glintFootprintArea = abs(
     runupDerivativeX.x * runupDerivativeY.y - runupDerivativeX.y * runupDerivativeY.x,
   );
+  // W-11: the glint lives in a square CELL of water on a power-of-two world
+  // grid, not in a screen pixel. The cell is area-matched to this fragment's
+  // footprint, floored at the glare width, and the whole grid creeps downwind
+  // at the capillary drift -- so a glint sits on the WATER and stays there
+  // while the camera moves, which is what the screen hash could never do.
+  let glintCell = waterGlintCell(
+    input.oceanCoordinate - uniforms.oceanWind * uniforms.time * ${WATER_GLINT_DRIFT_FRACTION.toFixed(3)},
+    glintFootprintArea,
+    footprintMinor,
+    ${(WATER_GLINT_FACET_LENGTH_METERS ** 2).toExponential(4)},
+    3,
+  );
   let glintHalfVector = normalize(view + light);
   let glintExpectedCount = waterGlintExpectedCount(
     max(dot(glintNormal, glintHalfVector), 0.0),
     roughness * roughness,
     uniforms.sunAngularRadius,
-    glintFootprintArea,
+    glintCell.area,
   );
   let sparkleWeight = smoothstep(
     ${WATER_GLINT_SPARKLE_FOOTPRINT_LOW.toFixed(3)},
@@ -1371,7 +1390,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   );
   let sparkle = mix(
     1.0,
-    waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
+    waterGlintTwinkle(glintExpectedCount, glintCell.cell, uniforms.time, ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1),
     sparkleWeight,
   );
   var water = mix(bodyColor, reflected, fresnel);
@@ -1451,10 +1470,25 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // world generates, so it is a guard rather than a shape.
   let whitecapPattern = min(foamAmount / openWaterFoamMean, 8.0);
   let whitecapCoverage = waterWhitecapCoverage(shelteredWind) * windrow * whitecapPattern;
-  let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);
+  // W-11: a cap is a 12 m^2 PATCH, so its cell takes the patch's own size
+  // rather than a pixel's. At 5 km a cap covers seventeen pixels, and
+  // seventeen independent draws over one patch is pixel salt with a cap's
+  // name on it; one cell per patch is a fleck. The cell area cancels the patch
+  // area in the count, so a cell fires with probability equal to the coverage,
+  // which is what a coverage law means. The grid drifts at the same rate as
+  // the foam texture it hands off from, so flecks and resolved foam move
+  // together across the hand-off.
+  let whitecapCell = waterGlintCell(
+    input.oceanCoordinate - uniforms.oceanWind * uniforms.time * 0.6,
+    glintFootprintArea,
+    footprintMinor,
+    ${WATER_WHITECAP_PATCH_AREA_M2.toFixed(1)},
+    5,
+  );
+  let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, whitecapCell.area);
   let whitecaps = clamp(whitecapCoverage, 0.0, 1.0) * mix(
     1.0,
-    waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2),
+    waterGlintTwinkle(whitecapCount, whitecapCell.cell, uniforms.time, ${(1 / WATER_WHITECAP_LIFETIME_SECONDS).toFixed(4)}, 2),
     fleckWeight,
   );
   let breakingFoam = clamp(max(shoreFoam, shelfWhitewater * WATER_SHOAL_WHITEWATER_COVERAGE * wetSurfaceAlpha), 0.0, 1.0);

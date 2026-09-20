@@ -680,6 +680,7 @@ not evidence about where the floor belongs.
 | `horizon-shadow-far-annulus` | 119.9 | 9.6 ms | 0 | 0 | 10.7 ms | 148 | 485.8 MiB |
 | `canopy-backlit-lowsun` | 120.3 | 10.0 ms | 0 | 0 | 10.6 ms | 156 | 485.6 MiB |
 | `night-moonlit` | 120.0 | 9.8 ms | 0 | 0 | 10.7 ms | 152 | 485.1 MiB |
+| `water-400ft-glitter` | 119.7 | 9.5 ms | 0 | 0 | 12.5 ms | 234 | 248.4 MiB |
 
 All twenty-four shots in the Phase 6 snapshot cleared the strict FPS, p95,
 hitch-count and maximum-frame contract on the pre-ocean-presentation tree, with
@@ -1235,3 +1236,81 @@ the live capture list. Notes that matter when reading its output:
   moved. Its production material test also removed the last renderer-error
   allowlist: cloud+aerial and aerial-only PBR effect variants must now compile
   with distinct cache keys and zero missing-sampler warnings.
+
+## W-11 promotion — sun glitter (2026-09-19)
+
+Three baselines promoted from the full candidate
+`tests/perf/artifacts/rebaseline-candidates/2026-09-20T02-53-31.461Z/`:
+`water-400ft-glitter` (new), `water-25ft` and `water-3m`. The sparkle that
+stood in for sun glitter was a white-noise field hashed on the SCREEN pixel; it
+is now a discrete glint on a power-of-two world grid. See
+`docs/findings/WATER_SUN_GLITTER_2026_09_19.md`.
+
+Measured cost, two arms per side, report deleted between arms and
+`capturedAtIso` checked:
+
+- Same-arm noise floor first, so the comparison has a stated resolution: median
+  0.21%, worst 0.96% (`hills-dusk-glint`, the heaviest shot in the list).
+- `slant-10km` 121.10 → 121.20 (+0.08%), `coast-10km-lowsun` 121.10 → 120.90
+  (−0.17%), `water-25ft` 121.15 → 121.05 (−0.08%), `hills-dusk-glint` 93.40 →
+  93.35 (−0.05%), `water-3m` 121.35 → 121.35 (0.00%), `water-400ft-glitter`
+  120.95 → 121.25 (+0.25%).
+- Every shot inside ±0.25% against that floor, with mixed signs, so this is
+  noise rather than a small cost. The new shot is the heaviest case for the new
+  code and moved least in the direction of a cost.
+- Draw calls byte-identical on every shot in both arms (223 / 235 / 238 / 258 /
+  237 / 234). Nothing new is drawn: the change is a different arithmetic inside
+  one fragment, with one extra hash and about ten flops.
+- Cold start 2048.0 ms against its 2300 ms deadline (create 1693.1, completion
+  354.9, gap 0.0). W-11 adds no first-frame work, and it did not move.
+
+Which shots the change actually moves, candidate against candidate at an
+IDENTICAL shot list, worst 64 px tile: `water-400ft-glitter` 38.0/255,
+`water-25ft` 29.2/255, `water-3m` 3.8/255. Everything else is at or under the
+floor — and the floor needs stating rather than assuming, because four shots
+with no water in them at all (`forest-line-highsun` 0.7, `canopy-backlit-lowsun`
+0.6, `cdlod-transition` 1.0, `motion-banked-turn` 1.0) put candidate-to-
+candidate noise on this machine at about 1/255, the two motion shots highest
+because their gate is temporal. `cruise-sun-30` at 1.5/255 and `cruise-horizon`
+at 0.8/255 do contain distant water and the diffs lie on it, but that is not
+separable from run noise and they were NOT promoted on it.
+
+Left drifting deliberately, with their SSIM against committed baselines in this
+candidate: `night-moonlit` 0.9904, `cruise-sun-30` 0.9887, `winter-noon` 0.9894,
+`canopy-backlit-lowsun` 0.9875, `coast-10km-lowsun` 0.9926, `cruise-horizon`
+0.9928, `forest-line-highsun` 0.9952, `ground-2m-lowsun` 0.9985, `slant-10km`
+0.9985, `hills-dusk-glint` 0.9985, `night` 0.9987,
+`terrain-material-1600ft-down` 0.9989. **None of these is W-11.** They are the
+shots the ground-texture wave did not re-promote at `0ed07bc`, plus ordinary
+drift; `night-moonlit` is the proof, reading 0.9904 here and 0.9905 on the base
+arm with none of the glitter code in the tree, and bit-identical between arms at
+an identical list. A red SSIM gate on those shots is not evidence about the
+change in front of you until a later full candidate absorbs them.
+
+Two provenance notes on the new row. Its `inventoried` figure (248.4 MiB) is
+measured under the CURRENT inventory definition and is not comparable with the
+older rows above, which predate it. And `water-400ft-glitter` carries a
+draw-call ceiling of 234 but no delivery floors: draw counts are
+host-independent — the same 234 came back on both arms of the A/B with the
+whole water shading replaced underneath, and in the candidate — while frame
+timings are not, and this host is not the pinned reference adapter. It is
+declared in `DECLARED_DRAW_ONLY` and `DECLARED_PROBES` in
+`tests/delivery-floors.test.ts`, and in `PERF_CAPTURE_CEILING_PROVENANCE`'s
+`unmeasuredShots`, each with that reason. Its floors want three runs on the
+reference host.
+
+Suites at the promotion: Node 1933 passed / 1 skipped over 202 files,
+typecheck and lint clean, and the GPU suite **134/135 under contention,
+135/135 quiet**. The one failure is `tests/gpu/ground-cover-compute.test.ts`
+on a timing assertion (`measured 0.2530 ms vs seed 0.06 ms`), a ground-cover
+placement budget with no water in it. It passed 135/135 in the exclusive perf
+window on this same `src/`, passes in isolation, and fails only in a full run
+while two other sessions are working the same GPU. Recorded here so it is not
+rediscovered as a regression: it is contention on a shared machine, and a
+timing gate is the thing that measures it.
+
+The candidate is stamped not approvable, and that is unrelated to this change:
+the delivery floors ran host-honest and three vegetation shots failed them
+(`forest-line-highsun` 92.2 vs 103, `canopy-backlit-lowsun` 92.5 vs 103 and
+draws 249 against a stale 246 ceiling, `hills-dusk-glint` p95 12.5 vs 11.8).
+Those are the known stale-on-this-host rows.

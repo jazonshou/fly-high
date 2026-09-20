@@ -11,7 +11,13 @@ import {
   WATER_FAR_GUST_GAIN_MIN,
   WATER_FAR_GUST_MID_METERS,
   WATER_FAR_GUST_WGSL,
+  WATER_GLINT_CELL_MIN_PIXELS,
+  WATER_GLINT_CELL_WGSL,
+  WATER_GLINT_DISCRETE_COUNT_HIGH,
+  WATER_GLINT_DISCRETE_COUNT_LOW,
+  WATER_GLINT_DRIFT_FRACTION,
   WATER_GLINT_FACET_LENGTH_METERS,
+  WATER_GLINT_MAX_PAYOUT,
   WATER_GLINT_SPARKLE_FOOTPRINT_HIGH,
   WATER_GLINT_SPARKLE_FOOTPRINT_LOW,
   WATER_GLINT_SPARKLE_MAX_EXPONENT,
@@ -23,11 +29,13 @@ import {
   WATER_WHITECAP_PATCH_AREA_M2,
   waterFarHash,
   waterGgxDistribution,
+  waterGlintCell,
+  waterGlintCountGain,
   waterGlintExpectedCount,
+  waterGlintTwinkle,
   waterRoughFresnelCosine,
   waterSparkleExponent,
   waterSparkleGain,
-  waterTwinkleGain,
   waterWhitecapExpectedCount,
 } from "../src/render/webgpu/water/WaterShaders";
 
@@ -94,8 +102,12 @@ describe("far-field glint sparkle", () => {
       facets * waterGgxDistribution(1, alpha) * Math.PI * (sunRadius / 2) ** 2,
       9,
     );
-    expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThan(10);
+    // W-11 moved the facet length from 0.06 m to 0.0172 m, which is 12x the
+    // facets and so 12x this count. A 150 m2 footprint (800 m up, 5 km out)
+    // now expects tens of glints at the path's peak rather than a handful,
+    // which is the difference between a grain and a smear of mid-greys.
+    expect(peak).toBeGreaterThan(20);
+    expect(peak).toBeLessThan(100);
     expect(waterGlintExpectedCount(0, alpha, sunRadius, footprint)).toBe(0);
     expect(waterGlintExpectedCount(0.5, alpha, sunRadius, footprint)).toBeLessThan(peak);
   });
@@ -124,31 +136,143 @@ describe("far-field glint sparkle", () => {
   });
 
   it("twinkles with an exact mean at every instant and continuity across phases", () => {
-    // Mean over many pixels at fixed phase fractions: the cross-fade of two
-    // mean-one draws is mean one whatever the blend.
-    for (const fraction of [0, 0.25, 0.5, 0.75]) {
+    // Mean over many cells at fixed times: the cross-fade of two mean-one
+    // draws is mean one whatever the blend.
+    for (const time of [6, 6.25, 6.5, 6.75]) {
       let sum = 0;
-      const pixels = 40_000;
-      for (let i = 0; i < pixels; i += 1) {
-        sum += waterTwinkleGain(2, i % 200, Math.floor(i / 200), 37 + fraction, 1);
+      const cells = 40_000;
+      for (let i = 0; i < cells; i += 1) {
+        sum += waterGlintTwinkle(2, i % 200, Math.floor(i / 200), time, 5.5, 1);
       }
-      expect(sum / pixels, `mean at fraction ${fraction}`).toBeCloseTo(1, 1);
+      expect(sum / cells, `mean at t=${time}`).toBeCloseTo(1, 1);
     }
-    // No pop at the phase boundary: the end of phase p is the start of p+1.
-    const before = waterTwinkleGain(2, 5, 7, 37.999999, 1);
-    const after = waterTwinkleGain(2, 5, 7, 38.000001, 1);
-    expect(Math.abs(before - after)).toBeLessThan(1e-3);
+    // No pop at a cell's own phase boundary: the end of phase p is the start
+    // of p+1. Each cell's boundary now falls at its own time, so this is read
+    // by stepping across one, not by picking a shared instant.
+    const cell = { x: 5, y: 7 };
+    let popped = 0;
+    let steps = 0;
+    for (let time = 6; time < 7; time += 1 / 600) {
+      const before = waterGlintTwinkle(0.2, cell.x, cell.y, time, 5.5, 1);
+      const after = waterGlintTwinkle(0.2, cell.x, cell.y, time + 1e-6, 5.5, 1);
+      popped = Math.max(popped, Math.abs(after - before));
+      steps += 1;
+    }
+    expect(steps).toBeGreaterThan(500);
+    expect(popped).toBeLessThan(1e-2);
     // Different seeds are different clocks.
-    expect(waterTwinkleGain(2, 5, 7, 37.3, 1)).not.toBeCloseTo(waterTwinkleGain(2, 5, 7, 37.3, 2), 6);
+    expect(waterGlintTwinkle(2, 5, 7, 6.3, 5.5, 1))
+      .not.toBeCloseTo(waterGlintTwinkle(2, 5, 7, 6.3, 5.5, 2), 6);
+  });
+
+  it("spends the count as a DISCRETE event below the hand-off and a lobe above it", () => {
+    // W-11. The mean is exactly one at every count, which is what makes the
+    // gain a redistribution of the glitter path rather than a brightening.
+    for (const count of [0.0005, 0.005, 0.05, 0.2, 0.7, 1.5, 3, 12, 300]) {
+      const steps = 400_000;
+      let sum = 0;
+      for (let step = 0; step < steps; step += 1) {
+        sum += waterGlintCountGain(count, (step + 0.5) / steps);
+      }
+      expect(sum / steps, `mean at n=${count}`).toBeCloseTo(1, 2);
+    }
+    // Below the window it is an EVENT: almost every cell is dark, and the few
+    // that fire carry the whole expectation. This is the property the old
+    // continuous gain could not produce -- capped at k = 24 it put 13% of
+    // cells above 1x as a smear of mid-greys, which is what read as static.
+    const steps = 200_000;
+    const litFraction = (gain: (u: number) => number, floor: number): number => {
+      let lit = 0;
+      for (let step = 0; step < steps; step += 1) {
+        if (gain((step + 0.5) / steps) > floor) lit += 1;
+      }
+      return lit / steps;
+    };
+    expect(litFraction((u) => waterGlintCountGain(0.02, u), 1.5)).toBeCloseTo(0.02, 2);
+    expect(litFraction((u) => waterSparkleGain(0.02, u), 1.5)).toBeGreaterThan(0.08);
+    // Above the window it is a lobe with a grain on it: nothing is dark.
+    expect(litFraction((u) => waterGlintCountGain(40, u), 0.5)).toBeGreaterThan(0.98);
+    expect(WATER_GLINT_DISCRETE_COUNT_LOW).toBeLessThan(WATER_GLINT_DISCRETE_COUNT_HIGH);
+  });
+
+  it("caps the payout by moving the withheld expectation into a smooth pedestal", () => {
+    // The opposite of the old exponent cap, which changed the distribution and
+    // said nothing about where the energy went.
+    const tiny = 1 / (4 * WATER_GLINT_MAX_PAYOUT);
+    let sum = 0;
+    const steps = 400_000;
+    let peak = 0;
+    for (let step = 0; step < steps; step += 1) {
+      const gain = waterGlintCountGain(tiny, (step + 0.5) / steps);
+      sum += gain;
+      peak = Math.max(peak, gain);
+    }
+    expect(sum / steps).toBeCloseTo(1, 2);
+    // Bounded by the cap plus its own pedestal, and no further.
+    expect(peak).toBeLessThanOrEqual(WATER_GLINT_MAX_PAYOUT + 1);
+    // It must NOT bind inside the glitter path: at a count the path actually
+    // reaches, the payout is the exact 1/n and the pedestal is zero.
+    expect(waterGlintCountGain(0.1, 0.5)).toBe(0);
+    expect(waterGlintCountGain(0.1, 0.05)).toBeCloseTo(10, 6);
+  });
+
+  it("puts the cell on a power-of-two world grid whose expected area is the target", () => {
+    // The scale is quantised so the grid is ANCHORED: a continuously scaled
+    // lattice moves its own cell boundaries by worldXZ * (ds/s) whenever the
+    // footprint changes, which re-rolls the whole field every frame the camera
+    // moves (render.webgpu-water-glint-motion.test.ts measures 29 cells per
+    // frame at 500 m). The leftover scale is spent as a stochastic quadtree,
+    // and this is the property that makes that unbiased.
+    const facetArea = WATER_GLINT_FACET_LENGTH_METERS ** 2;
+    for (const footprintArea of [0.19, 0.62, 1.0, 3.3, 41]) {
+      // Walk in strides much larger than any cell so consecutive samples land
+      // in unrelated coarse cells: a stride that beats against the grid
+      // samples the same few hashes over and over and reads 3% biased.
+      let areaSum = 0;
+      let samples = 0;
+      for (let i = 0; i < 20_000; i += 1) {
+        const cell = waterGlintCell(
+          1_000 + i * 37.13,
+          -700 - i * 61.71,
+          footprintArea,
+          Math.sqrt(footprintArea) * 0.3,
+          facetArea,
+          3,
+        );
+        const side = Math.sqrt(cell.area);
+        expect(Math.abs(Math.log2(side) % 1)).toBe(0);
+        areaSum += cell.area;
+        samples += 1;
+      }
+      const target = footprintArea;
+      expect(
+        Math.abs(areaSum / samples - target) / target,
+        `mean cell area at ${footprintArea} m2 was ${areaSum / samples}`,
+      ).toBeLessThan(0.02);
+    }
+    // The glare floor raises the target where the view is near NORMAL (a
+    // square-ish footprint) and cannot bind where it is grazing.
+    const nearNormal = waterGlintCell(4_096.5, -2_048.5, 0.09, 0.3, facetArea, 3);
+    const grazing = waterGlintCell(4_096.5, -2_048.5, 0.09, 0.03, facetArea, 3);
+    expect(nearNormal.area).toBeGreaterThanOrEqual(grazing.area);
+    expect(WATER_GLINT_CELL_MIN_PIXELS).toBeGreaterThan(1);
   });
 
   it("fades in over a footprint window that starts past the near-field glint jitter", () => {
     expect(WATER_GLINT_SPARKLE_FOOTPRINT_LOW).toBeGreaterThan(0.012);
     expect(WATER_GLINT_SPARKLE_FOOTPRINT_HIGH).toBeGreaterThan(WATER_GLINT_SPARKLE_FOOTPRINT_LOW);
     expect(WATER_FRAGMENT_WGSL).toContain("water += sunGlitter * sparkle;");
+    // W-11: the draw is keyed on a CELL OF WATER, not a screen pixel, and the
+    // clock is the cell's own. The screen-space form is gone from both water
+    // fragments and must not come back.
     expect(WATER_FRAGMENT_WGSL).toContain(
-      `waterTwinkleGain(glintExpectedCount, fragmentInputs.position.xy, uniforms.time * ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1)`,
+      `waterGlintTwinkle(glintExpectedCount, glintCell.cell, uniforms.time, ${WATER_GLINT_TWINKLE_HZ.toFixed(3)}, 1)`,
     );
+    expect(WATER_FRAGMENT_WGSL).not.toContain("fragmentInputs.position.xy");
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      `input.oceanCoordinate - uniforms.oceanWind * uniforms.time * ${WATER_GLINT_DRIFT_FRACTION.toFixed(3)}`,
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain("uniforms.sunAngularRadius,\n    glintCell.area,");
     expect(WATER_FRAGMENT_WGSL).toContain("max(dot(glintNormal, glintHalfVector), 0.0)");
     expect(WATER_FRAGMENT_WGSL).toContain("roughness * roughness,\n    uniforms.sunAngularRadius,");
     expect(WATER_FRAGMENT_WGSL).toContain("var water = mix(bodyColor, reflected, fresnel);");
@@ -165,24 +289,32 @@ describe("distant whitecap flecks", () => {
   });
 
   it("is discrete at range and mean-preserving: most pixels carry no cap, a few carry a real one", () => {
-    const count = waterWhitecapExpectedCount(0.006, 150);
+    // W-11: the count is taken over the CAP'S OWN CELL, not over the pixel, so
+    // it reduces to the coverage itself and a cell carrying a cap is a whole
+    // cap rather than the 8% of a 150 m2 pixel that one covers. Before W-11
+    // the draw was per pixel and a "cap" was a 15%-opaque smudge.
     const coverage = 0.006;
+    const count = waterWhitecapExpectedCount(coverage, WATER_WHITECAP_PATCH_AREA_M2);
+    expect(count).toBeCloseTo(coverage, 9);
     let zero = 0;
     let sum = 0;
     let peak = 0;
-    const pixels = 60_000;
-    for (let i = 0; i < pixels; i += 1) {
-      const opacity = coverage * waterTwinkleGain(count, i % 300, Math.floor(i / 300), 11.2, 2);
+    const cells = 60_000;
+    for (let i = 0; i < cells; i += 1) {
+      const opacity = coverage * waterGlintTwinkle(count, i % 300, Math.floor(i / 300), 11.2, 1 / 3.2, 2);
       if (opacity < coverage * 0.05) zero += 1;
       sum += opacity;
       peak = Math.max(peak, opacity);
     }
-    // A single draw at k = 24 leaves ~77% of pixels under 5% of the mean; the
-    // cross-fade of two draws lands near 60%.
-    expect(zero / pixels).toBeGreaterThan(0.55);
-    expect(sum / pixels / coverage).toBeCloseTo(1, 1);
-    // A cap on a pixel that carries one is a real patch, not a half-percent haze.
-    expect(peak).toBeGreaterThan(0.1);
+    // Nearly every cell is empty, the mean is still exactly the coverage, and
+    // a cell that does carry a cap is WHITE -- one cap filling its own cell.
+    expect(zero / cells).toBeGreaterThan(0.98);
+    expect(sum / cells / coverage).toBeCloseTo(1, 1);
+    expect(peak).toBeGreaterThan(0.9);
+    // And the payout cap must not bind here: at 0.6% coverage the natural
+    // payout is 167, so a ceiling below that would spend most of Monahan's
+    // coverage as a uniform haze instead of as flecks.
+    expect(WATER_GLINT_MAX_PAYOUT).toBeGreaterThan(1 / coverage);
   });
 
   it("hands off from the resolved foam texture on the major footprint at the whitecap lifetime", () => {
@@ -192,8 +324,10 @@ describe("distant whitecap flecks", () => {
     // W-9: the count is taken against the PHYSICAL coverage (Monahan's wind
     // law times the spectrum's own breaking pattern, normalised by that
     // pattern's mip mean), not against the tuned accumulator.
+    // W-11: the count is taken over the CAP's own cell, so a cell fires with
+    // probability equal to the coverage -- which is what a coverage law means.
     expect(WATER_FRAGMENT_WGSL).toContain(
-      "let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, glintFootprintArea);",
+      "let whitecapCount = waterWhitecapExpectedCount(whitecapCoverage, whitecapCell.area);",
     );
     // W-10: the coverage law reads the SHELTERED wind — a lee shore has no
     // whitecaps at all, because coverage goes as U^3.41 — and the windrow comb
@@ -202,7 +336,7 @@ describe("distant whitecap flecks", () => {
     expect(WATER_FRAGMENT_WGSL).toContain("waterWhitecapCoverage(shelteredWind)");
     expect(WATER_FRAGMENT_WGSL).toContain("let windrow = mix(1.0, windrowLobe / 0.3125, windrowFade);");
     expect(WATER_FRAGMENT_WGSL).toContain(
-      `waterTwinkleGain(whitecapCount, fragmentInputs.position.xy, uniforms.time / ${WATER_WHITECAP_LIFETIME_SECONDS.toFixed(2)}, 2)`,
+      `waterGlintTwinkle(whitecapCount, whitecapCell.cell, uniforms.time, ${(1 / WATER_WHITECAP_LIFETIME_SECONDS).toFixed(4)}, 2)`,
     );
     expect(WATER_FRAGMENT_WGSL).toContain("let foam = clamp(max(windFoam, breakingFoam), 0.0, 1.0)");
     // Roughness keeps reading the mean coverage; only the composite is discrete.
@@ -291,7 +425,13 @@ describe("far-field block composition", () => {
     expect(constants).toBeGreaterThanOrEqual(0);
     expect(block).toBeGreaterThan(constants);
     expect(WATER_VERTEX_WGSL).not.toContain("waterFarHash");
-    expect(WATER_FAR_FIELD_WGSL).toContain("fn waterTwinkleGain(");
+    expect(WATER_FAR_FIELD_WGSL).toContain("fn waterGlintTwinkle(");
+    // W-11 split the glint block out so it can be compiled and executed
+    // standalone by the GPU parity test; the far field still composes it, so
+    // every consumer sees the same text it always did.
+    expect(WATER_FAR_FIELD_WGSL.startsWith(WATER_GLINT_CELL_WGSL)).toBe(true);
+    expect(WATER_GLINT_CELL_WGSL).not.toContain("waterInterfaceFresnel");
+    expect(WATER_GLINT_CELL_WGSL).not.toContain("uniforms.");
     expect(WATER_FAR_FIELD_WGSL).toContain("fn waterWhitecapExpectedCount(");
   });
 

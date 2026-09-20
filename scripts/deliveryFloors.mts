@@ -650,6 +650,12 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   "terrain-material-1600ft-down":[282, 282, 282],
   "horizon-shadow-far-annulus":  [238, 238, 238],
   "canopy-backlit-lowsun":       [246, 246, 246],
+  // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
+  // both arms of the W-11 A/B -- two on the branch, two on House-Keeping with
+  // src/render/webgpu/water reverted, and the full candidate. A count that does
+  // not move when the shading under it is replaced is the host-independence
+  // claim being exercised rather than assumed.
+  "water-400ft-glitter":         [234, 234, 234],
 });
 
 /**

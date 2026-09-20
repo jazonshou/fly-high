@@ -3840,22 +3840,124 @@ export const WATER_SUN_SPECULAR_WGSL = /* wgsl */ `fn sunSpecular(normal: vec3f,
  */
 
 /**
- * Slope-coherence length of the capillary/short-gravity facets that carry a
- * sun glint, in metres. Sets only how MANY independent facets a footprint
- * holds, i.e. where the glitter path turns from countable glints into grain:
- * at 0.06 m a 10 m² footprint (300 m up, 2 km out) holds ~2800 facets and
- * expects ~0.2 glints at the path's centre; a 150 m² footprint (800 m up,
- * 5 km out) expects ~3; a 2500 m² one (20 km out) ~50. The mean is
- * independent of this number.
+ * Slope-coherence length of the facets that carry a sun glint, in metres.
+ *
+ * **This is a TUNED number inside a physically bounded range, and saying so is
+ * the point of this docblock.** It sets how many independent slope samples a
+ * patch of sea holds, and therefore how grainy the glitter is; it does NOT
+ * enter the mean, which is Cox-Munk's and is pinned by its own test. What it
+ * stands in for is the decorrelation length of the slope the renderer has NOT
+ * resolved, and that is a BAND rather than a length: bounded below by the
+ * capillary scale (the gravity-capillary minimum-phase-speed wavelength
+ * `2π√(σ/ρg)` is 17.2 mm, and Lynch, Dearborn & Lock, Applied Optics 50
+ * (2011), find most glitter rides those capillary waves rather than the
+ * gravity waves carrying them) and above by the pixel footprint itself, since
+ * anything longer than that is resolved and is already in the normal. 0.0172 m
+ * is the bottom of that band, chosen there because it is a real physical scale
+ * rather than a round number, and checked against frames.
+ *
+ * **`W-11` moved it from 0.06 m, which was a guess, and the guess was not a
+ * small error.** At 0.06 m EVERY pixel of EVERY glitter path this renderer
+ * draws came out under n = 0.1 (measured: a categorical capture of
+ * `glintExpectedCount` over `water-400ft-glitter` read n < 0.01 across the
+ * whole sea and n < 0.1 in the path's core), which is below the old exponent
+ * cap of k = 24 — so the CAP, not the sea, was deciding the variance of every
+ * water pixel in the programme, and it decided it as a smear of mid-greys over
+ * 13% of them. At 0.0172 m the same capture reads a clean gradient from
+ * n < 0.03 in the fringe through 0.03/0.1/0.3/1 to above 3 in the core and the
+ * horizon band, which is a glitter path.
  */
-export const WATER_GLINT_FACET_LENGTH_METERS = 0.06;
-/** Twinkle rate: independent draws per pixel are cross-faded at this rate. */
+export const WATER_GLINT_FACET_LENGTH_METERS = 0.0172;
+/** Twinkle rate: independent draws per cell are cross-faded at this rate. */
 export const WATER_GLINT_TWINKLE_HZ = 5.5;
 /**
- * Spikiness ceiling on the sparkle exponent (k ≤ 24 ⇔ n ≥ 0.085). Keeps a
- * lone facet far outside the glitter path from rendering as a firefly.
+ * Spikiness ceiling on the CONTINUOUS sparkle exponent (k ≤ 24 ⇔ n ≥ 0.085).
+ *
+ * `W-11` left this in place and took away its job. The continuous gain now
+ * runs only where the count is above ~1 (see `waterGlintCountGain`), and
+ * `waterSparkleExponent` is below 2.5 everywhere there, so nothing reaches
+ * the cap any more. It stays as the guard it was written to be rather than
+ * the look it had become.
  */
 export const WATER_GLINT_SPARKLE_MAX_EXPONENT = 24;
+/**
+ * `W-11` — the count window over which the DISCRETE draw hands over to the
+ * continuous gain. Below the low end a footprint holds less than one
+ * sun-aiming facet and the truth is an event; above the high end it holds
+ * several and the truth is a lobe with a grain on it. Both have mean one and
+ * variance 1/n, so the hand-off changes neither.
+ */
+export const WATER_GLINT_DISCRETE_COUNT_LOW = 0.7;
+export const WATER_GLINT_DISCRETE_COUNT_HIGH = 3;
+/**
+ * `W-11` — the smallest a glint cell may be, in pixels of its LARGER screen
+ * extent (the cell is square in WORLD space, so at a grazing angle it projects
+ * wide and flat; this floor is on the wide axis, i.e. on the pixel footprint's
+ * MINOR world extent).
+ *
+ * A cell is area-matched to the pixel by default — one draw, one pixel's worth
+ * of sea — and at the grazing angles a flight sim spends its time at, that
+ * already projects 2-4 px wide, so the floor does not bind and does not
+ * coarsen the glitter. It binds where the view is near NORMAL: looking down at
+ * a lake or a bay from altitude, where an area-matched cell is one pixel
+ * square and a glint would be one hard pixel. That is the view Jason's own
+ * screenshot was closest to, and it is where single-pixel salt lives.
+ *
+ * A glint is a point source at 10^7 cd/m² against a sea at 10^4, and no eye,
+ * lens or sensor renders a point source as a point: it arrives with a glare
+ * halo several arc-minutes wide. This renderer's bloom is deliberately weak
+ * (`BLOOM_INTENSITY` 0.05, tuned down so runway lamps stop fusing) and is
+ * funded on tier 1 alone, so on a tier without it a one-pixel glint would land
+ * as one hard pixel — the same salt the screen hash produced, only sparser.
+ * 1.5 is the floor that makes a glint read as a POINT OF LIGHT rather than a
+ * lit texel. It is a stand-in for glare, it is named as one, and it CONSERVES
+ * ENERGY rather than adding any: a wider cell holds proportionally more
+ * expected glints, each worth proportionally less, and the mean is untouched.
+ * So it does not double up with bloom where bloom is on.
+ *
+ * It is a floor, not a size: a whitecap's cell takes the larger of this and
+ * the cap's own 12 m², so a cap at 5 km is one patch-sized fleck rather than
+ * seventeen independent pixels.
+ */
+export const WATER_GLINT_CELL_MIN_PIXELS = 1.5;
+/**
+ * `W-11` — ceiling on the discrete payout, folded back MEAN-PRESERVINGLY.
+ *
+ * An uncapped Bernoulli pays 1/n, and n goes to zero far outside the glitter
+ * path, so the arithmetic offers arbitrarily large numbers on arbitrarily rare
+ * pixels. The radiance those pixels would carry is finite and correct — a
+ * glint is a mirror image of the sun wherever it is — but the renderer has to
+ * survive it: the scene target is half-float and the bloom bright pass would
+ * turn one such pixel into a visible disc a long way from any glitter.
+ *
+ * The cap is applied by moving the withheld expectation into a SMOOTH pedestal
+ * (`1 - n·payout`), not by discarding it, so the mean stays exactly 1 — the
+ * opposite of the old exponent cap, which changed the distribution and said
+ * nothing about where the energy went.
+ *
+ * **256 rather than 64, and the whitecaps are why.** A fleck's cell IS one
+ * cap, so its count is the coverage itself — 0.0087 at this world's wind — and
+ * its natural payout is 115, the number that makes a cell carrying a cap fully
+ * white, which is what one cap in its own cell means. A cap of 64 bound there
+ * and spent 45% of Monahan's coverage as a uniform haze instead of as flecks,
+ * which is the exact defect W-9 removed. 256 clears it with room, and it still
+ * binds for the glints only below n = 1/256 per cell — measurement puts that
+ * outside the glitter path at every range the sparkle is on. Raising it costs
+ * no brightness either way: a firing cell's radiance is `lobe/n` once the cap
+ * is clear of it, and `lobe/n` carries no `D(h)`, so it is the sun's own
+ * mirror radiance and bounded by the geometry rather than by this number.
+ */
+export const WATER_GLINT_MAX_PAYOUT = 256;
+/**
+ * `W-11` — fraction of the wind velocity the glint lattice is advected at.
+ *
+ * The facets that glint ride the capillary waves, whose own phase speed at
+ * the minimum is 0.23 m/s, plus the wind-driven surface drift of about 3% of
+ * U10. 0.06 U is the sum's order (0.6 m/s at this world's 9.6 m/s), which at
+ * 500 m of range is about one pixel a second: the glitter creeps downwind
+ * instead of either standing still or crawling.
+ */
+export const WATER_GLINT_DRIFT_FRACTION = 0.06;
 /**
  * Sparkle fade-in window on the anisotropy-limited minor footprint (m). Below
  * 0.12 m the finest resolved slope texels and the near-field glint jitter
@@ -4064,21 +4166,97 @@ export function waterFarHash(cellX: number, cellY: number, seed: number): number
 }
 
 /**
- * CPU mirror of `waterTwinkleGain`: the mean-one gain at one pixel, two draws
- * cross-faded over the phase's fractional part.
+ * CPU mirror of `waterGlintCountGain`: the discrete Bernoulli event below the
+ * hand-off window, the continuous gain above it, mean one throughout.
  */
-export function waterTwinkleGain(
+export function waterGlintCountGain(expectedCount: number, u: number): number {
+  const probability = Math.min(Math.max(expectedCount, 0), 1);
+  const payout = Math.min(1 / Math.max(probability, 1e-6), WATER_GLINT_MAX_PAYOUT);
+  const pedestal = Math.max(1 - probability * payout, 0);
+  const discrete = pedestal + (u < probability ? payout : 0);
+  const continuous = waterSparkleGain(expectedCount, u);
+  const weight = smoothstepUnit(
+    WATER_GLINT_DISCRETE_COUNT_LOW,
+    WATER_GLINT_DISCRETE_COUNT_HIGH,
+    expectedCount,
+  );
+  return discrete + (continuous - discrete) * weight;
+}
+
+/** One glint cell: a square patch of water on a power-of-two world grid. */
+export interface WaterGlintCell {
+  readonly cellX: number;
+  readonly cellY: number;
+  readonly area: number;
+}
+
+/**
+ * `2^floor(log2(value))` for a positive normal f32, by clearing the mantissa —
+ * the same bit trick the shader uses, so the two cannot disagree by an ULP.
+ */
+function clearMantissaF32(value: number): number {
+  const bytes = new Float32Array(1);
+  const bits = new Uint32Array(bytes.buffer);
+  bytes[0] = value;
+  bits[0] = (bits[0] ?? 0) & 0xff80_0000;
+  return bytes[0] ?? 0;
+}
+
+/**
+ * CPU mirror of `waterGlintCell`: the power-of-two world grid, with the
+ * leftover scale spent as a stochastic quadtree whose EXPECTED cell area is
+ * the target area exactly.
+ */
+export function waterGlintCell(
+  worldX: number,
+  worldZ: number,
+  footprintArea: number,
+  footprintMinor: number,
+  featureArea: number,
+  seed: number,
+): WaterGlintCell {
+  const f32 = Math.fround;
+  const target = f32(Math.max(
+    Math.max(
+      f32(Math.sqrt(f32(Math.max(footprintArea, 1e-9)))),
+      f32(WATER_GLINT_CELL_MIN_PIXELS * Math.max(f32(footprintMinor), 1e-5)),
+    ),
+    f32(Math.sqrt(f32(Math.max(featureArea, 1e-9)))),
+  ));
+  // The shader clears the mantissa to get 2^floor(log2(target)); do exactly
+  // that, in f32, so the two agree to the bit rather than to a tolerance.
+  const side = clearMantissaF32(target);
+  const fineX = Math.floor(Math.fround(worldX) / side);
+  const fineY = Math.floor(Math.fround(worldZ) / side);
+  const coarseX = Math.floor(fineX / 2);
+  const coarseY = Math.floor(fineY / 2);
+  const q = Math.min(Math.max(f32((f32(target * target) / f32(side * side) - 1) / 3), 0), 1);
+  const takeCoarse = waterFarHash(coarseX, coarseY, seed + 7919) < q;
+  return takeCoarse
+    ? { cellX: coarseX, cellY: coarseY, area: side * side * 4 }
+    : { cellX: fineX, cellY: fineY, area: side * side };
+}
+
+/**
+ * CPU mirror of `waterGlintTwinkle`: the mean-one gain at one lattice cell,
+ * two draws cross-faded over the fractional part of that cell's own phase.
+ */
+export function waterGlintTwinkle(
   expectedCount: number,
   cellX: number,
   cellY: number,
-  phaseTime: number,
+  time: number,
+  rate: number,
   seed: number,
 ): number {
+  const clock = waterFarHash(cellX, cellY, seed + 101);
+  const jitter = clock * 61;
+  const phaseTime = time * rate * (0.55 + 0.9 * (jitter - Math.floor(jitter))) + clock * 32;
   const phase = Math.floor(phaseTime);
   const t = phaseTime - phase;
   const blend = t * t * (3 - 2 * t);
-  const gainA = waterSparkleGain(expectedCount, waterFarHash(cellX, cellY, phase * 2 + seed));
-  const gainB = waterSparkleGain(expectedCount, waterFarHash(cellX, cellY, (phase + 1) * 2 + seed));
+  const gainA = waterGlintCountGain(expectedCount, waterFarHash(cellX, cellY, phase * 2 + seed));
+  const gainB = waterGlintCountGain(expectedCount, waterFarHash(cellX, cellY, (phase + 1) * 2 + seed));
   return gainA + (gainB - gainA) * blend;
 }
 
@@ -4134,7 +4312,19 @@ fn waterFarGustGain(coarse: f32, worldXZ: vec2f, windVelocity: vec2f, time: f32,
   );
 }`;
 
-export const WATER_FAR_FIELD_WGSL = /* wgsl */ `fn waterFarHash(cell: vec2i, seed: i32) -> f32 {
+/**
+ * `W-11` — the glint block, split out of the far field so it can be COMPILED
+ * AND EXECUTED on its own.
+ *
+ * Everything here is pure arithmetic over PI: no uniform, no texture, no
+ * derivative. That is what lets `tests/gpu/water-glint-cell.test.ts` run this
+ * exact text as a compute kernel and check it against the TypeScript mirrors,
+ * which is in turn what makes the motion evidence — all of it measured on
+ * those mirrors — evidence about the shipped shader. The rest of the far field
+ * (the rough-interface Fresnel) calls into the optics block and cannot be
+ * compiled alone, which is the whole reason for the split.
+ */
+export const WATER_GLINT_CELL_WGSL = /* wgsl */ `fn waterFarHash(cell: vec2i, seed: i32) -> f32 {
   var h = (bitcast<u32>(cell.x) * 0x27d4eb2du)
     ^ (bitcast<u32>(cell.y) * 0x165667b1u)
     ^ (bitcast<u32>(seed) * 0x9e3779b9u);
@@ -4169,6 +4359,150 @@ fn waterGlintExpectedCount(nDotH: f32, alpha: f32, sunAngularRadius: f32, footpr
   let captureSolidAngle = PI * sunAngularRadius * sunAngularRadius * 0.25;
   return facets * waterGgxDistribution(nDotH, alpha) * max(nDotH, 0.0) * captureSolidAngle;
 }
+
+// W-11: the DISCRETE gain. Where a footprint holds less than one sun-aiming
+// facet, the truth is not a noisy lobe but an EVENT: almost every cell holds
+// no glint at all, and the few that do hold a mirror image of the sun. A
+// Bernoulli of probability n paid at 1/n has mean exactly 1 and variance
+// (1 - n)/n, which is the Poisson variance to first order -- P(N >= 2) is
+// n^2/2, under a quarter of a percent across the window this branch owns --
+// and it costs one compare. Above a count of a few the lobe really is a lobe
+// and the continuous gain, whose variance is 1/n by construction, takes over.
+//
+// The consequence worth writing down: a firing cell's radiance is lobe/n, and
+// the lobe and n carry the SAME D(h)*(n.h) factor, so that ratio does not
+// depend on where in the glitter path the cell is. Every glint is the same
+// brightness -- the sun's own mirror image -- and what the glitter path varies
+// is how MANY of them there are. That is what a photograph of glitter shows,
+// and it is what the old continuous gain could not produce: capped at k = 24
+// it spread a smear of mid-grey values over 13% of every water pixel in the
+// frame, which is television static.
+fn waterGlintCountGain(expectedCount: f32, u: f32) -> f32 {
+  let probability = clamp(expectedCount, 0.0, 1.0);
+  // The payout is 1/n, capped; whatever the cap withholds becomes a SMOOTH
+  // pedestal, so the mean is exactly 1 either way and the energy is moved
+  // rather than lost.
+  let payout = min(1.0 / max(probability, 0.000001), ${WATER_GLINT_MAX_PAYOUT.toFixed(1)});
+  let pedestal = max(1.0 - probability * payout, 0.0);
+  let discrete = pedestal + select(0.0, payout, u < probability);
+  let continuous = waterSparkleGain(expectedCount, u);
+  return mix(discrete, continuous, smoothstep(
+    ${WATER_GLINT_DISCRETE_COUNT_LOW.toFixed(2)},
+    ${WATER_GLINT_DISCRETE_COUNT_HIGH.toFixed(2)},
+    expectedCount,
+  ));
+}
+
+// W-11: the glint CELL -- a square patch of WATER, on a world grid whose side
+// is a power of two in metres.
+//
+// The first draft built the lattice from the inverse of the fragment's
+// screen-to-world Jacobian, which gives exactly one cell per pixel at any
+// grazing angle and is anchored to nothing: the cell SIZE is then a continuous
+// function of range, so a cell boundary at world coordinate p moves by
+// p * (ds/s) when the footprint changes. Measured on this shot's own geometry
+// (45 m/s of straight cruise, 1/60 s), that is 29 cells of shift per frame at
+// 500 m and 7 at 1 km -- every cell id under every pixel changes every frame,
+// the whole field re-rolls, and the result is static again the moment the
+// camera moves. It would have looked perfect in a parked screenshot. THE
+// SCALE HAS TO BE QUANTISED; that is what the level pyramids in the glint
+// literature are for, not an optimisation.
+//
+// So: side = exp2(floor(log2(target))), which is EXACTLY constant between
+// level boundaries, hence perfectly anchored, and the leftover is spent as a
+// STOCHASTIC QUADTREE -- a coarse cell either acts as one cell of side 2s or
+// as its four children, chosen by a hash of the coarse cell, with the
+// probability set so the EXPECTED cell area is the target area exactly. That
+// is Deliot & Belcour's parameter-space blend rather than an output blend: no
+// visible band where the level changes, no doubled draw, one extra hash.
+//
+// The cell is SQUARE IN WORLD SPACE on purpose. A glinting facet is an
+// isotropic patch of sea, and its image is whatever the projection makes of it
+// -- a horizontal dash at a grazing angle, as photographs of glitter near the
+// horizon show. A footprint-shaped cell would be a world-anisotropic patch,
+// which nothing physical is. The price is that a grazing pixel spans about
+// sqrt(anisotropy) cells along its long axis and samples one of them; that
+// undersamples along range, but of a field that is stable in the world rather
+// than re-rolled per frame.
+struct WaterGlintCell {
+  cell: vec2i,
+  area: f32,
+}
+
+fn waterGlintCell(
+  worldXZ: vec2f,
+  footprintArea: f32,
+  footprintMinor: f32,
+  featureArea: f32,
+  seed: i32,
+) -> WaterGlintCell {
+  // Target side: one pixel's worth of sea, floored at the glare width (which
+  // is a floor on the cell's WIDE screen axis, so it binds only near normal
+  // incidence) and at the feature's own size.
+  let targetSide = max(
+    max(
+      sqrt(max(footprintArea, 0.000000001)),
+      ${WATER_GLINT_CELL_MIN_PIXELS.toFixed(2)} * max(footprintMinor, 0.00001),
+    ),
+    sqrt(max(featureArea, 0.000000001)),
+  );
+  // side = 2^floor(log2(targetSide)) is just targetSide with its mantissa
+  // cleared, and taking it that way rather than through log2/exp2 is EXACT.
+  // It has to be: the cell index is floor(world / side), so one ULP of
+  // disagreement between this shader and its CPU mirror moves a fragment into
+  // the neighbouring cell -- a different glint, not a rounding difference. The
+  // GPU parity test caught exactly that (a world coordinate landing on a cell
+  // boundary read -18009 on the CPU and -18010 here) before this line existed.
+  // It is also cheaper than a log and an exp.
+  let side = bitcast<f32>(bitcast<u32>(targetSide) & 0xFF800000u);
+  let fine = vec2i(floor(worldXZ / side));
+  let coarse = fine >> vec2u(1u, 1u);
+  // E[area] = (1 - q)s^2 + q(2s)^2 = s^2(1 + 3q); q makes it targetSide^2.
+  let q = clamp((targetSide * targetSide / (side * side) - 1.0) / 3.0, 0.0, 1.0);
+  let takeCoarse = waterFarHash(coarse, seed + 7919) < q;
+  return WaterGlintCell(
+    select(fine, coarse, takeCoarse),
+    select(side * side, side * side * 4.0, takeCoarse),
+  );
+}
+
+// The mean-one twinkle at one CELL: two draws cross-faded over the fractional
+// part of that cell's OWN phase. The seed keeps the glint and whitecap clocks
+// independent.
+//
+// W-11 gave every cell its own phase offset and its own rate. Before it the
+// phase was floor(time * rate), one number for the whole frame, so every cell
+// redrew at the same instant five and a half times a second. MEASURED, that
+// is a smaller effect than it sounds: because each cell cross-fades between
+// its own two draws, the visible transitions spread out anyway, and the
+// largest share of glint births in any one frame is 4.2% for the shared clock
+// against 2.5% for per-cell clocks, on a 1.7% uniform floor
+// (render.webgpu-water-glint-motion.test.ts). So this halves a real
+// concentration rather than removing a strobe. The defect that made the old
+// sparkle read as television static was the SCREEN anchoring, not the shared
+// clock: the same test measures a glint surviving on a fixed screen pixel with
+// probability 0.96 while the water flowed underneath it.
+fn waterGlintTwinkle(expectedCount: f32, cell: vec2i, time: f32, rate: f32, seed: i32) -> f32 {
+  // One hash, two uses: the low bits of a 24-bit uniform are as unrelated to
+  // its value as a second hash would be, and this one is on the hot path.
+  let clock = waterFarHash(cell, seed + 101);
+  let phaseTime = time * rate * (0.55 + 0.9 * fract(clock * 61.0)) + clock * 32.0;
+  let phase = i32(floor(phaseTime));
+  let blend = smoothstep(0.0, 1.0, fract(phaseTime));
+  let gainA = waterGlintCountGain(expectedCount, waterFarHash(cell, phase * 2 + seed));
+  let gainB = waterGlintCountGain(expectedCount, waterFarHash(cell, (phase + 1) * 2 + seed));
+  return mix(gainA, gainB, blend);
+}
+
+
+`;
+
+/**
+ * The rest of wave S's far field: the whitecap and wind laws, the anchored
+ * sub-pixel variance and the rough-interface Fresnel. Composed AFTER the glint
+ * block, which both water fragments already get through this constant.
+ */
+export const WATER_FAR_FIELD_WGSL = /* wgsl */ `${WATER_GLINT_CELL_WGSL}
 
 // Whitecaps in the footprint at this coverage.
 fn waterWhitecapExpectedCount(coverage: f32, footprintArea: f32) -> f32 {
@@ -4218,18 +4552,6 @@ fn waterSubPixelSlopeVariance(
     footprintMinor,
   );
   return mix(nearFieldVariance, anchored, weight);
-}
-
-// The mean-one twinkle at one pixel: two screen-hashed draws cross-faded over
-// the phase's fractional part. The seed keeps the glint and whitecap clocks
-// independent.
-fn waterTwinkleGain(expectedCount: f32, pixel: vec2f, phaseTime: f32, seed: i32) -> f32 {
-  let cell = vec2i(floor(pixel));
-  let phase = i32(floor(phaseTime));
-  let blend = smoothstep(0.0, 1.0, fract(phaseTime));
-  let gainA = waterSparkleGain(expectedCount, waterFarHash(cell, phase * 2 + seed));
-  let gainB = waterSparkleGain(expectedCount, waterFarHash(cell, (phase + 1) * 2 + seed));
-  return mix(gainA, gainB, blend);
 }
 
 // The cosine a rough interface's mean Fresnel is evaluated at. See wave S (4).

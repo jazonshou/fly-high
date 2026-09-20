@@ -304,9 +304,16 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
    * checked**, which is the shape this file has now met five times.
    *
    * Today the uncovered set is exactly the PROBES: shots carrying
-   * `ceilings: null` and `comparesToBaseline: false`, deliberately unpinned on
-   * every axis because they frame something nothing else frames and have no
-   * predecessor to be a delta against.
+   * `ceilings: null`, deliberately unpinned on the DELIVERY axes because they
+   * frame something nothing else frames and have no predecessor to be a delta
+   * against. Most of them also carry `comparesToBaseline: false`; W-11's
+   * `water-400ft-glitter` is the first that does not, and the distinction is
+   * worth keeping straight. A baseline PNG and a delivery floor answer
+   * different questions -- "does this frame still look like this" and "is this
+   * frame still fast enough" -- and a shot can honestly have the first without
+   * the second when nobody has run it on the pinned reference adapter. The
+   * assertion below filters on `ceilings === null` alone, which is the axis
+   * this file is about.
    *
    * **TWO assertions, because the coupling alone has a residual and I would
    * rather state it than discover it.** The coupling catches a HALF demotion —
@@ -318,6 +325,23 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
    * pairs whose reservation is a no-op: **becoming a probe is a decision, and a
    * decision should cost one line of justification.**
    */
+  /**
+   * Shots pinned on DRAWS but not on delivery, by name and with the reason.
+   *
+   * `W-11` is the first case, and it is a real distinction rather than a hole
+   * in the coupling. Draw counts are host-INDEPENDENT -- the W-11 A/B read the
+   * same 234 on both arms and in the candidate, with the whole water shading
+   * replaced underneath -- so a machine that is not the pinned reference
+   * adapter can measure one and pin it honestly. Frame timings are not, and on
+   * an unpinned host under a shared GPU every delivery floor already fails, so
+   * a floor taken there would be a fiction with a provenance line attached.
+   *
+   * Naming the exception rather than loosening the test keeps what the coupling
+   * is for: a shot that silently LOSES its draw ceiling still shows up here,
+   * because it would have to be added to this list to pass.
+   */
+  const DECLARED_DRAW_ONLY: readonly string[] = ["water-400ft-glitter"];
+
   it("a shot is outside draw-call coverage IF AND ONLY IF it is an unpinned probe", () => {
     const noDrawCeiling = PERF_CAPTURE_SHOTS
       .filter((shot) => shot.drawCallCeiling === undefined)
@@ -326,7 +350,18 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     const probes = PERF_CAPTURE_SHOTS
       .filter((shot) => shot.ceilings === null)
       .map((shot) => shot.name)
+      .filter((name) => !DECLARED_DRAW_ONLY.includes(name))
       .toSorted();
+    // Every declared exception must ACTUALLY be in that state, or the list is
+    // an excuse rather than a declaration.
+    for (const name of DECLARED_DRAW_ONLY) {
+      const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
+      expect(shot?.ceilings, `${name} is declared draw-only but carries floors`).toBeNull();
+      expect(
+        shot?.drawCallCeiling,
+        `${name} is declared draw-only but has no draw-call ceiling`,
+      ).toBeTypeOf("number");
+    }
     expect(
       noDrawCeiling,
       "A shot has no draw-call ceiling but IS a pinned shot, or a probe grew one. "
@@ -374,6 +409,21 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // ownership polygon still truncates real submergence at its straight edges,
     // so this frame is expected to MOVE again when that follow-up lands.
     "lake-island-piercing",
+    // W-11: 120 m over open water into a low sun, the regime the sun glitter
+    // is actually flown in and the one gap in the water coverage --
+    // `water-25ft` is 8 m up and `coast-10km-lowsun` is 800 m up with the sun
+    // astern. It is on this list for `ceilings === null` alone, and it is the
+    // least unpinned name here: it carries a baseline PNG (it is the gate for
+    // the glitter path and has to be able to fail) AND a draw-call ceiling
+    // (see DECLARED_DRAW_ONLY above -- draw counts are host-independent, so an
+    // unpinned host can measure one honestly). What it does NOT carry is
+    // delivery floors, and for a different reason from the shots above: not
+    // "no predecessor to difference against" but "no measurement on the pinned
+    // reference adapter". It was authored on a host where every floor already
+    // fails under any load, so a floor taken there would be a fiction. It
+    // becomes floor-pinnable the moment somebody runs it on the reference
+    // host, by the house method's three runs.
+    "water-400ft-glitter",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {
