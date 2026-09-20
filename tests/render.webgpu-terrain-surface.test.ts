@@ -1076,7 +1076,11 @@ describe("a page too coarse to trust may still name a pair of swards", () => {
         expect(terrainFarSwardEligible(primary, secondary, 0.5), `${primary}/${secondary}`).toBe(false);
       }
     }
-    expect(TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE).toBeLessThan(0.05);
+    // The bar is for a lane whose id is noise at weight ~0, not for a real
+    // minority: three per cent of rock is rock, and keeps today's behaviour.
+    expect(TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE).toBeLessThan(0.03);
+    expect(terrainFarSwardEligible(SurfaceMaterial.DryGrass, SurfaceMaterial.Rock, 0.03)).toBe(false);
+    expect(terrainFarSwardEligible(SurfaceMaterial.Grass, SurfaceMaterial.ForestFloor, 0.03)).toBe(false);
   });
 
   it("uses such a pair at ZERO trust, mixed linearly, and only in the three-material path", () => {

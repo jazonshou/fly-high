@@ -297,6 +297,33 @@ in the TINT, and in lush hill country they draw no visible edge because the
 sward mixture there is nearly Grass anyway. In dry hills they could; not seen in
 the frames shot, and logged.
 
+**Price: FULL decided, CHEAP NOT YET PRICED, and that is a condition of the
+merge.** One tree, dial toggled, four interleaved rounds of off / cheap / full on
+`cruise-horizon` and `high-10000ft-down` at a swept 2560x1440 viewport (both
+shots sit on the 120 fps cap at the canonical size on a quiet machine, which
+would hide a 1-2 % cost; that cap is also why "nothing at cruise" was easy to
+say earlier in this wave, and it should be read with that in mind). Another
+renderer was on the GPU throughout and the OFF arm's spread against itself was
+7.5 % and 5.3 %, where two quiet windows earlier had given 0.0-0.4 %. So:
+
+* FULL costs on the order of 10-20 % of a cruise frame (paired medians -13 %
+  and -4 %, mostly one-signed; a canonical-size round agreed in kind at -17 %
+  and -22 %). It does not ship under any reading, and the early return it
+  replaces is vindicated. It stays behind the dial, three lines, only so a
+  later pricing run can show what is not being bought.
+* CHEAP could not be priced: paired +6.8 / -0.5 / -8.2 / +2.3 % and -4.1 / -2.0
+  / +0.3 / +1.4 %, signs split two and two, medians +0.9 % and -0.9 %, against
+  that 5-7 % floor. Not distinguishable from zero; nothing up to about 4-5 %
+  excluded. It is a quarter of FULL's texture work with none of its ten-way
+  accumulate, which is an argument and not a measurement.
+
+CHEAP merged ON, on these terms: it is to be priced off-versus-cheap, six to
+eight interleaved rounds at the swept viewport, on a machine with NOTHING else
+rendering, BEFORE the baseline promotion. Over about 1 % at cruise, the dial
+goes to 0 (or to a cheaper read, shown first) and the polygon is logged with
+the biome-tone-map note below. The promotion captures whatever state the dial
+ends in, so the order is price, decide, promote, never the reverse.
+
 Left: an UNRESIDENT page still has no source. After a 9 km jump at 300 m AGL the
 whole frame is Grass-green for about half a second and then takes its dry tone
 at once, with no polygon; in flight the coarse pages stream ahead of the

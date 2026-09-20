@@ -288,6 +288,14 @@ export const TERRAIN_SEAM_SWARD_COVER_MINIMUM = 0.9;
  * 0 off (the early return, as before); 1 CHEAP, the nearest texel's own top two
  * (3 loads); 2 FULL, the bilinear sparse gather levels 0-4 use (12 loads). The
  * early return exists on purpose: these fragments are most of a cruise frame.
+ *
+ * FULL is NOT for shipping: priced at 10-20 % of a cruise frame (2026-09-20),
+ * and it looks the same as CHEAP (0.7 of 255). It stays, three lines, so a
+ * pricing run can show what is not being bought. CHEAP is UNPRICED as merged
+ * (the run that decided FULL had a 5-7 % noise floor): it must be priced off
+ * versus cheap on a machine with nothing else rendering BEFORE any baseline
+ * promotion, and goes to 0 if it costs more than about 1 % at cruise. See
+ * docs/findings/GROUND_NEAR_FIELD_D.md section 5.
  */
 export const TERRAIN_FAR_SWARD_READ: number = 1;
 /** A secondary under this share is not part of the pair: its id is noise. */
