@@ -12,7 +12,16 @@ export interface LandingGearDefinition {
   maxSteeringAngle?: number;
 }
 
-export type AircraftKind = "trainer" | "jet";
+/**
+ * Every airframe the game ships, and the source of truth for the union.
+ *
+ * Declared as a value first so the list and the type cannot drift: settings
+ * validation, the aircraft picker and `AIRCRAFT_SPECS` all read this array, and
+ * a `Record<AircraftKind, ...>` will not compile until a new entry is answered
+ * everywhere it matters.
+ */
+export const AIRCRAFT_KINDS = ["trainer", "jet"] as const;
+export type AircraftKind = (typeof AIRCRAFT_KINDS)[number];
 export type PropulsionKind = "propeller" | "jet";
 
 export interface AircraftDefinition {
@@ -73,22 +82,65 @@ export interface AircraftDefinition {
   airframeContactPoints: readonly Readonly<Vec3>[];
 }
 
-/** A fictional, deliberately unlicensed four-seat piston trainer. */
+/**
+ * The Cessna 150: a two-seat, high-wing, strut-braced piston trainer with
+ * fixed tricycle gear and a 100 hp Continental O-200.
+ *
+ * Dimensions and weights are the real aeroplane's. Where this simulator's
+ * parameter set cannot express a real quantity the number is chosen to land
+ * the OBSERVABLE performance — stall, cruise, climb, ceiling — on the type's
+ * figures, which is the thing a pilot can check out of the window; the
+ * derivations are on each field.
+ *
+ * Deliberate deviation, one: the real main-wheel track is 1.63 m. That is
+ * narrow enough to make this simulator's ground model twitchy in a crosswind
+ * landing, so the mains sit at +/-1.2 m (2.4 m track). Everything else that
+ * touches the ground is to scale.
+ */
 export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   kind: "trainer",
-  name: "Aster T-20",
+  name: "Cessna 150",
   propulsion: "propeller",
-  mass: 980,
-  wingArea: 16.2,
-  wingSpan: 10.8,
-  meanChord: 1.5,
-  // Principal moments around body roll (+X), yaw (+Y), and pitch (+Z).
-  inertia: Object.freeze({ x: 900, y: 1_900, z: 1_350 }),
-  maxEnginePower: 132_000,
-  maxStaticThrust: 2_650,
+  // Maximum take-off weight, 1,600 lb.
+  mass: 726,
+  // 157 sq ft.
+  wingArea: 14.6,
+  // 33 ft 4 in.
+  wingSpan: 10.17,
+  // wingArea / wingSpan for the 150's nearly rectangular planform.
+  meanChord: 1.44,
+  // Principal moments around body roll (+X), yaw (+Y), and pitch (+Z), scaled
+  // off the previous airframe by mass and by span or length squared.
+  inertia: Object.freeze({ x: 620, y: 1_250, z: 900 }),
+  // Continental O-200-A: 100 hp at 2,750 rpm.
+  maxEnginePower: 74_600,
+  /**
+   * Static thrust of the fixed-pitch propeller, and a DELIBERATE DEVIATION
+   * from the real aeroplane, chosen by Jason.
+   *
+   * This one number sets the climb and nothing else a pilot judges the type
+   * by. Measured across the whole sweep, stall (24.1 m/s clean, 20.7 flapped)
+   * and maximum level speed (58.7 m/s) are IDENTICAL at every value, because
+   * the stall is flown at idle and at maximum speed the propeller is
+   * power-limited (74,600 W x 0.8 / 58.7 = 1,017 N) well below any cap here.
+   * So the trade is climb against nothing.
+   *
+   *   1,200 N  book-faithful:  3.40 m/s / 669 ft/min, 324 m take-off roll,
+   *                            8.6 minutes and 22.2 km to reach 1,600 m
+   *   1,650 N  shipped:        5.34 m/s / 1,051 ft/min, 235 m roll,
+   *                            5.3 minutes and 11.3 km to 1,600 m
+   *
+   * The type's book rate of climb is 670 ft/min, which 1,200 N reproduces
+   * almost exactly. It was rejected: against this world's 1,750-1,900 m
+   * mountains a book-faithful 150 makes crossing a range a chore, and the
+   * aeroplane reads as getting worse rather than the terrain getting better.
+   * The faithful value is one edit away and `tests/sim.trainer-performance`
+   * pins both the shipped climb and the invariance that makes the trade safe.
+   */
+  maxStaticThrust: 1_650,
   propellerEfficiency: 0.8,
-  idleRpm: 750,
-  maxRpm: 2_700,
+  idleRpm: 700,
+  maxRpm: 2_750,
   clZero: 0.29,
   clAlpha: 5.05,
   positiveStallAngle: (15 * Math.PI) / 180,
@@ -120,33 +172,43 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   yawMomentRudder: 0.072,
   yawMomentBeta: 0.115,
   yawDamping: -0.3,
+  // Sprung-steel main legs and an oleo nosewheel. Softer than the previous
+  // airframe's in proportion to a quarter less aeroplane sitting on them.
   gear: Object.freeze([
     Object.freeze({
-      position: Object.freeze({ x: -0.3, y: -1.34, z: -1.52 }),
-      springRate: 65_000,
-      dampingRate: 7_800,
+      position: Object.freeze({ x: -0.26, y: -1.22, z: -1.2 }),
+      springRate: 48_000,
+      dampingRate: 5_800,
     }),
     Object.freeze({
-      position: Object.freeze({ x: -0.3, y: -1.34, z: 1.52 }),
-      springRate: 65_000,
-      dampingRate: 7_800,
+      position: Object.freeze({ x: -0.26, y: -1.22, z: 1.2 }),
+      springRate: 48_000,
+      dampingRate: 5_800,
     }),
     Object.freeze({
-      position: Object.freeze({ x: 2.55, y: -1.16, z: 0 }),
-      springRate: 50_000,
-      dampingRate: 6_000,
+      position: Object.freeze({ x: 2.36, y: -1.06, z: 0 }),
+      springRate: 37_000,
+      dampingRate: 4_500,
       maxSteeringAngle: (22 * Math.PI) / 180,
     }),
   ]),
+  // Spinner, windscreen and cabin roof, belly, both wingtips, fin tip and
+  // tailcone, on a 7.34 m fuselage with the datum at the centre of gravity.
+  // Every one of these is ON the built skin, measured against the mesh rather
+  // than sketched: three of them used to float between 0.2 m and 0.8 m clear
+  // of it, and the fin tip's fired LATE, which is the dangerous direction.
+  // The wingtips sit at the wing's own chord plane, y = 0.28, which is where
+  // `trainerVisual` builds it — physics and mesh have to agree or a wingtip
+  // strike fires at the wrong height.
   airframeContactPoints: Object.freeze([
-    Object.freeze({ x: 4.35, y: 0.22, z: 0 }),
-    Object.freeze({ x: 4.35, y: -0.22, z: 0 }),
-    Object.freeze({ x: 0.58, y: 1.08, z: 0 }),
-    Object.freeze({ x: 0.28, y: -0.56, z: 0 }),
-    Object.freeze({ x: 0.2, y: 0.2, z: 5.45 }),
-    Object.freeze({ x: 0.2, y: 0.2, z: -5.45 }),
-    Object.freeze({ x: -3.25, y: 1.78, z: 0 }),
-    Object.freeze({ x: -3.48, y: 0.36, z: 0 }),
+    Object.freeze({ x: 4.02, y: 0.2, z: 0 }),
+    Object.freeze({ x: 4.02, y: -0.2, z: 0 }),
+    Object.freeze({ x: 0.52, y: 0.23, z: 0 }),
+    Object.freeze({ x: 0.26, y: -0.72, z: 0 }),
+    Object.freeze({ x: 0.18, y: 0.28, z: 5.13 }),
+    Object.freeze({ x: 0.18, y: 0.28, z: -5.13 }),
+    Object.freeze({ x: -2.86, y: 1.36, z: 0 }),
+    Object.freeze({ x: -3.32, y: 0.34, z: 0 }),
   ]),
 });
 
@@ -235,8 +297,14 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   ]),
 });
 
+const AIRCRAFT_DEFINITIONS: Readonly<Record<AircraftKind, Readonly<AircraftDefinition>>> =
+  Object.freeze({
+    trainer: LIGHT_TRAINER,
+    jet: FAST_JET,
+  });
+
 export function aircraftDefinition(kind: AircraftKind): Readonly<AircraftDefinition> {
-  return kind === "jet" ? FAST_JET : LIGHT_TRAINER;
+  return AIRCRAFT_DEFINITIONS[kind] ?? LIGHT_TRAINER;
 }
 
 /**

@@ -500,9 +500,16 @@ describe("fast jet flight model", () => {
     expect(Math.abs(simulator.state.velocity.z)).toBeLessThanOrEqual(350);
   });
 
-  it("preserves the trainer propeller-thrust baseline", () => {
-    expect(calculateEngineThrust(LIGHT_TRAINER, 1, 1.225, 0)).toBeCloseTo(2_650, 8);
-    expect(calculateEngineThrust(LIGHT_TRAINER, 1, 1.225, 50)).toBeCloseTo(2_112, 8);
-    expect(calculateEngineThrust(LIGHT_TRAINER, 0.5, 1.225, 50)).toBeCloseTo(1_056, 8);
+  it("keeps the propeller branch power-limited above the static cap", () => {
+    // Re-pinned for the Cessna 150: 74,600 W and a 1,650 N static cap, where
+    // the previous fictional trainer had 132,000 W and 2,650 N. The SHAPE is
+    // what this asserts and what must not regress — thrust is the static cap
+    // until the power limit undercuts it, and strictly proportional to
+    // throttle. At 50 m/s the power limit is 74,600 x 0.8 / 50 = 1,193.6 N,
+    // below the cap, so the propeller is power-limited there and the cap is
+    // what governs the standing start.
+    expect(calculateEngineThrust(LIGHT_TRAINER, 1, 1.225, 0)).toBeCloseTo(1_650, 8);
+    expect(calculateEngineThrust(LIGHT_TRAINER, 1, 1.225, 50)).toBeCloseTo(1_193.6, 6);
+    expect(calculateEngineThrust(LIGHT_TRAINER, 0.5, 1.225, 50)).toBeCloseTo(596.8, 6);
   });
 });

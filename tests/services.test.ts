@@ -28,7 +28,7 @@ import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "../src/game/spawn";
-import { FlightSimulator } from "../src/sim";
+import { AIRCRAFT_KINDS, FlightSimulator } from "../src/sim";
 import {
   createWorld,
   sampleTerrainCollision,
@@ -42,8 +42,12 @@ import {
 } from "../src/workers/protocol";
 
 describe("input shaping", () => {
-  it("normalizes piston RPM and jet N2 on their own engine scales", () => {
-    expect(normalizedEngineSpeed("trainer", 2_600)).toBe(1);
+  it("normalizes piston RPM and turbine N2 on their own engine scales", () => {
+    // The piston scale is the O-200's red line, not a round number: the
+    // Cessna 150 turns 2,750 and the sound has to reach full at the same
+    // place the tachometer does.
+    expect(normalizedEngineSpeed("trainer", 2_750)).toBe(1);
+    expect(normalizedEngineSpeed("trainer", 1_375)).toBeCloseTo(0.5, 8);
     expect(normalizedEngineSpeed("jet", 100)).toBe(1);
     expect(normalizedEngineSpeed("jet", 80)).toBeCloseTo(0.8, 8);
   });
@@ -151,6 +155,18 @@ describe("settings", () => {
     expect(result.timeOfDay).toBe(DEFAULT_SETTINGS.timeOfDay);
     expect(result.weather).toBe(DEFAULT_SETTINGS.weather);
     expect(result.aircraft).toBe("trainer");
+  });
+
+  it("accepts every airframe the game ships, and only those", () => {
+    // The fallback above is the important half — a saved preference naming an
+    // aeroplane this build does not have must not strand the player on a blank
+    // screen. This is the other half: adding an airframe has to actually make
+    // it loadable, which a fallback test alone would not notice.
+    for (const kind of AIRCRAFT_KINDS) {
+      expect(validateSettings({ aircraft: kind }).aircraft).toBe(kind);
+    }
+    expect(validateSettings({ aircraft: "concorde" }).aircraft)
+      .toBe(DEFAULT_SETTINGS.aircraft);
   });
 
   it("persists explicit flight and WebGPU quality selections in v3 storage", () => {

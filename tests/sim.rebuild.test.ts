@@ -351,8 +351,11 @@ describe("rebuilt light-trainer handling", () => {
     });
 
     // onGround is a placement request, so the contradictory input Y is ignored.
-    expect(simulator.state.position.y).toBeGreaterThan(1.2);
-    expect(simulator.state.position.y).toBeLessThan(1.3);
+    // Re-pinned for the Cessna 150: its mains are at y -1.22 where the
+    // fictional trainer's were at -1.34, so it sits 0.12 m lower on its
+    // wheels. A different aeroplane, not a changed contract.
+    expect(simulator.state.position.y).toBeGreaterThan(1.1);
+    expect(simulator.state.position.y).toBeLessThan(1.2);
     expect(simulator.telemetry().pitch * RAD_TO_DEG).toBeGreaterThan(-3.2);
     expect(simulator.telemetry().pitch * RAD_TO_DEG).toBeLessThan(-2.2);
     expect(simulator.telemetry().altitudeAgl).toBe(0);
@@ -442,7 +445,13 @@ describe("rebuilt light-trainer handling", () => {
     expect(liftoffTime ?? 0).toBeLessThan(17);
     expect(liftoffDistance ?? 999).toBeGreaterThan(170);
     expect(liftoffDistance ?? 0).toBeLessThan(360);
-    expect(telemetry.altitudeAgl).toBeGreaterThan(12);
+    // Re-pinned for the Cessna 150. It is a lighter aeroplane with a lower
+    // thrust-to-weight ratio than the airframe this band was drawn around
+    // (1,650 N on 726 kg = 0.23, against 2,650 N on 980 kg = 0.28), so it is
+    // lower at twenty seconds. Measured 8.7 m; the band is widened downward,
+    // not removed, because "climbs away and keeps climbing" is still the
+    // thing being asserted.
+    expect(telemetry.altitudeAgl).toBeGreaterThan(6);
     expect(telemetry.altitudeAgl).toBeLessThan(35);
     expect(telemetry.pitch * RAD_TO_DEG).toBeGreaterThan(5);
     expect(telemetry.pitch * RAD_TO_DEG).toBeLessThan(12);
@@ -508,7 +517,10 @@ describe("rebuilt light-trainer handling", () => {
     const telemetry = simulator.telemetry();
     expect(simulator.state.position.y - 1_000).toBeGreaterThan(-30);
     expect(simulator.state.position.y - 1_000).toBeLessThan(35);
-    expect(telemetry.airspeed).toBeGreaterThan(46);
+    // Re-pinned for the Cessna 150: a 726 kg aeroplane trimmed at this preset
+    // settles a little slower than the 980 kg one the band was drawn around.
+    // Measured 45.3 m/s, comfortably above its 24.1 m/s clean stall.
+    expect(telemetry.airspeed).toBeGreaterThan(44);
     expect(telemetry.airspeed).toBeLessThan(55);
     expect(Math.abs(telemetry.bank * RAD_TO_DEG)).toBeLessThan(1);
     expect(Math.hypot(

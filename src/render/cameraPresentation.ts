@@ -162,10 +162,10 @@ export const CAMERA_RESPONSE_SECONDS_REDUCED_MOTION = 1 / 12;
 export function cameraTrailMeters(
   cameraMode: CameraMode,
   reducedMotion: boolean,
-  airspeed: number,
+  observedGroundSpeed: number,
 ): number {
   if (cameraMode !== "chase" && cameraMode !== "cinematic") return 0;
-  const speed = Number.isFinite(airspeed) ? Math.max(0, airspeed) : 0;
+  const speed = Number.isFinite(observedGroundSpeed) ? Math.max(0, observedGroundSpeed) : 0;
   return speed * (reducedMotion
     ? CAMERA_RESPONSE_SECONDS_REDUCED_MOTION
     : CAMERA_RESPONSE_SECONDS);

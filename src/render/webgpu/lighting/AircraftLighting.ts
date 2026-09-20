@@ -391,9 +391,9 @@ export interface AircraftWashLight {
  * Per-airframe, because the lamps are. The trainer and the jet place every lamp
  * differently — port nav at `(0.2, 0.3, -5.43)` on the trainer and
  * `(-0.2, 0.07, -4.82)` on the jet — and a wash sited from the wrong table
- * would glow half a metre off its own lamp. **Both airframes ship:
- * `settings/index.ts:142` accepts `["trainer", "jet"]`**, so a trainer-only
- * table would be silently wrong for every jet pilot.
+ * would glow half a metre off its own lamp. **Every airframe in
+ * `AIRCRAFT_KINDS` ships**, so a table covering only one of them would be
+ * silently wrong for everyone flying the others.
  *
  * Coordinates are transcribed from `createAircraft`'s lamp placements and must
  * follow them; `tests/lighting.aircraft-wash.test.ts` asserts each wash sits on
@@ -402,7 +402,9 @@ export interface AircraftWashLight {
 const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
   Object.freeze({
     name: "aircraft-beacon-wash",
-    offset: [-0.75, 1.02, 0] as const,
+    // On the fin tip, where a 150's is. At its old place it sat 1.1 m of open
+    // air above the reshaped cabin roof.
+    offset: [-2.8, 1.39, 0] as const,
     color: [1, 0.11, 0.063] as const,
     intensity: 2.4,
     rangeMeters: 12,
@@ -410,7 +412,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
   Object.freeze({
     name: "aircraft-nav-wash-port",
-    offset: [0.2, 0.3, -5.43] as const,
+    offset: [0.55, 0.3, -5.05] as const,
     color: [1, 0.125, 0.094] as const,
     intensity: 2.2,
     rangeMeters: 9,
@@ -418,7 +420,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
   Object.freeze({
     name: "aircraft-nav-wash-starboard",
-    offset: [0.2, 0.3, 5.43] as const,
+    offset: [0.55, 0.3, 5.05] as const,
     color: [0.141, 1, 0.514] as const,
     intensity: 2.2,
     rangeMeters: 9,
@@ -426,7 +428,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
   Object.freeze({
     name: "aircraft-strobe-wash-port",
-    offset: [0.05, 0.32, -5.62] as const,
+    offset: [-0.34, 0.3, -5.16] as const,
     color: [0.949, 0.973, 1] as const,
     intensity: 3.6,
     rangeMeters: 10,
@@ -434,7 +436,7 @@ const TRAINER_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
   Object.freeze({
     name: "aircraft-strobe-wash-starboard",
-    offset: [0.05, 0.32, 5.62] as const,
+    offset: [-0.34, 0.3, 5.16] as const,
     color: [0.949, 0.973, 1] as const,
     intensity: 3.6,
     rangeMeters: 10,
@@ -485,9 +487,21 @@ const JET_WASH: readonly AircraftWashLight[] = Object.freeze([
   }),
 ]);
 
-/** The wash set for an airframe. Both kinds ship; neither may be approximated. */
+const WASH_BY_KIND: Readonly<Record<AircraftKind, readonly AircraftWashLight[]>> =
+  Object.freeze({
+    trainer: TRAINER_WASH,
+    jet: JET_WASH,
+  });
+
+/**
+ * The wash set for an airframe. Every kind ships; none may be approximated —
+ * a wash sited from the wrong table glows half a metre off its own lamp, and
+ * `tests/lighting.aircraft-wash.test.ts` asserts each one sits ON a lamp.
+ * Keyed rather than branched so a new airframe cannot silently inherit
+ * another's lamps.
+ */
 export function aircraftWashLights(kind: AircraftKind): readonly AircraftWashLight[] {
-  return kind === "jet" ? JET_WASH : TRAINER_WASH;
+  return WASH_BY_KIND[kind] ?? TRAINER_WASH;
 }
 
 /**

@@ -256,8 +256,11 @@ describe("flight simulation", () => {
 
     flyFor(simulator, 4);
     expectFiniteState(simulator.state);
-    expect(simulator.state.position.y).toBeGreaterThan(13.15);
-    expect(simulator.state.position.y).toBeLessThan(13.65);
+    // Re-pinned for the Cessna 150, whose legs are shorter than the fictional
+    // trainer's: the mains sit at y -1.22 against -1.34, so the centre of
+    // gravity rests 0.12 m lower. Not a regression — a different aeroplane.
+    expect(simulator.state.position.y).toBeGreaterThan(13.05);
+    expect(simulator.state.position.y).toBeLessThan(13.55);
     expect(Math.abs(simulator.state.velocity.y)).toBeLessThan(1);
     expect(simulator.state.onGround).toBe(true);
     expect(simulator.state.crashed).toBe(false);

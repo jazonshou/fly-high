@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chaseCameraProfile } from "../src/render/FlightRenderer";
+import { AIRCRAFT_KINDS } from "../src/sim";
 import {
   CHASE_AIM_HEIGHT_METERS,
   chaseRigOffsetsToRef,
@@ -373,7 +374,7 @@ describe("camera presentation", () => {
       // observed travel pushed the camera tens of metres back in every chase
       // shot. `cameraTrailMeters` is fed the OBSERVED speed, which is zero
       // there however fast the aeroplane claims to be going.
-      for (const kind of ["trainer", "jet"] as const) {
+      for (const kind of AIRCRAFT_KINDS) {
         for (const airspeed of [0, 40, 56, 120, 155, 210, 260]) {
           const profile = chaseCameraProfile(kind, airspeed);
           const trail = cameraTrailMeters("chase", false, 0);

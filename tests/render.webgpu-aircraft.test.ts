@@ -251,7 +251,16 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(gear.isEnabled()).toBe(true);
     expect(gear.scaling.y).toBeGreaterThan(0.08);
     expect(gear.scaling.y).toBeLessThan(1);
-    expect(mesh(fixture.scene, "starboard-main-gear-door").rotation.x).toBeGreaterThan(1);
+    // The two main doors tip in opposite senses, which is what makes them a
+    // mirrored pair, and both return to closed at each end of the cycle.
+    // Asserted as a pair rather than as a fixed sign per side: the sign is
+    // assigned by index in `applyCommonPose`, so pinning "starboard is
+    // positive" pins the array order rather than the aeroplane, and it broke
+    // when the port/starboard names were corrected without any door moving.
+    const starboardDoor = mesh(fixture.scene, "starboard-main-gear-door").rotation.x;
+    const portDoor = mesh(fixture.scene, "port-main-gear-door").rotation.x;
+    expect(Math.abs(starboardDoor)).toBeGreaterThan(1);
+    expect(starboardDoor).toBeCloseTo(-portDoor, 8);
     expect(transform(fixture.scene, "starboard-speed-brake").rotation.z).toBeLessThan(-0.6);
 
     aircraft.update(
