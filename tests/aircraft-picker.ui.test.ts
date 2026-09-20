@@ -88,6 +88,21 @@ describe("aircraft picker", () => {
     expect(menu?.indexOf("start-screen__runway")).toBeLessThan(
       menu?.indexOf('className="seed-action"') ?? 0,
     );
+    // Two groups, so the row wraps as pairs: the seed and settings drop to a
+    // second row TOGETHER and settings is never left on a row of its own.
+    const actions = menu?.indexOf('className="start-screen__actions"') ?? -1;
+    const starts = menu?.indexOf('className="start-screen__starts"') ?? -1;
+    const utility = menu?.indexOf('className="start-screen__utility"') ?? -1;
+    expect(actions).toBeGreaterThan(-1);
+    expect(starts).toBeGreaterThan(actions);
+    expect(utility).toBeGreaterThan(starts);
+    expect(menu?.indexOf('className="primary-action start-screen__start"')).toBeGreaterThan(starts);
+    expect(menu?.indexOf('className="primary-action start-screen__runway"')).toBeLessThan(utility);
+    expect(menu?.indexOf('className="seed-action"')).toBeGreaterThan(utility);
+    expect(menu?.indexOf('className="settings-action settings-action--icon"')).toBeGreaterThan(utility);
+    expect(menu?.indexOf('className="settings-action settings-action--icon"')).toBeLessThan(
+      menu?.indexOf('className="seed-action viewer-action"') ?? 0,
+    );
     expect(menu).toContain("<small>Seed</small>");
     expect(menu).toContain("Generate a new world. Current seed");
     expect(menu).toContain('aria-controls="settings-dialog"');
