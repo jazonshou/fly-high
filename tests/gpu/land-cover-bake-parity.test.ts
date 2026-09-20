@@ -25,6 +25,7 @@ import {
 import {
   SURFACE_MATERIALS,
   SURFACE_MATERIAL_COUNT,
+  SurfaceMaterial,
 } from "../../src/render/webgpu/terrain/surfaceMaterials";
 import { WORLD_PAGE_BASE_EXTENT_METERS, WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
 import { createWorldPageAddress, worldPageBounds } from "../../src/render/webgpu/world/pageKey";
@@ -83,11 +84,25 @@ describe("land-cover bake parity (6-13)", () => {
       );
 
       // Several pages, so the comparison spans varied cover rather than one band.
-      const addresses = [
+      const lowlandAddresses = [
         createWorldPageAddress(LEVEL, 3, -2),
         createWorldPageAddress(LEVEL, 4, -2),
         createWorldPageAddress(LEVEL, 3, -1),
       ];
+      // ITEM C (the alpine cover partition): **the three pages above top out at
+      // 337 m — 0 of their 3,254 land probes stand above the 420 m `alpine`
+      // onset — so they CANNOT see a single one of item C's terms.** Every one
+      // of those terms is multiplied by `alpine`, which is exactly 0 there. A
+      // twin that had lost all three would pass the lowland comparison unmoved.
+      //
+      // So one ALPINE page rides along, chosen by a CPU scan of the 13 x 13 L4
+      // pages about the origin for the most ground above 420 m on BOTH the
+      // shipped terrain and the reshaped-mountain prototype (752 of its 1,652
+      // compared texels on the shipped terrain, summit 1,607 m). It is tallied
+      // SEPARATELY, so the lowland numbers this test has always logged stay
+      // comparable with their own history.
+      const alpineAddresses = [createWorldPageAddress(LEVEL, -4, -3)];
+      const addresses = [...lowlandAddresses, ...alpineAddresses];
       heightAtlas.residency.beginFrame(1);
       channelAtlas.residency.beginFrame(1);
       const heightSlots = addresses.map(
@@ -107,8 +122,16 @@ describe("land-cover bake parity (6-13)", () => {
       const bakeHistogram = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
       const cpuHistogram = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
       const disagreements = new Map<string, number>();
+      // Item C's tallies, over the alpine page's texels above the 420 m onset.
+      let alpineCompared = 0;
+      let alpineAgreed = 0;
+      let alpineAbove900 = 0;
+      let alpineBakedSwardAbove900 = 0;
+      const alpineBakeHistogram = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+      const alpineCpuHistogram = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
 
       for (let index = 0; index < addresses.length; index += 1) {
+        const alpinePage = index >= lowlandAddresses.length;
         const slot = channelSlots[index]!;
         const bounds = worldPageBounds(addresses[index]!, WORLD_PAGE_BASE_EXTENT_METERS);
         const origin = channelAtlas.slotOrigin(slot.slotIndex);
@@ -158,6 +181,21 @@ describe("land-cover bake parity (6-13)", () => {
             }
             const cpu = w.ids[best]!;
 
+            if (alpinePage) {
+              if (input.elevationMeters <= 420) continue;
+              alpineBakeHistogram[baked] = (alpineBakeHistogram[baked] ?? 0) + 1;
+              alpineCpuHistogram[cpu] = (alpineCpuHistogram[cpu] ?? 0) + 1;
+              alpineCompared += 1;
+              if (baked === cpu) alpineAgreed += 1;
+              if (input.elevationMeters > 900) {
+                alpineAbove900 += 1;
+                if (baked === SurfaceMaterial.Grass || baked === SurfaceMaterial.DryGrass) {
+                  alpineBakedSwardAbove900 += 1;
+                }
+              }
+              continue;
+            }
+
             bakeHistogram[baked] = (bakeHistogram[baked] ?? 0) + 1;
             cpuHistogram[cpu] = (cpuHistogram[cpu] ?? 0) + 1;
             compared += 1;
@@ -170,13 +208,15 @@ describe("land-cover bake parity (6-13)", () => {
         }
       }
 
-      const share = (h: readonly number[]) => h
-        .map((n, id) => [SURFACE_MATERIALS[id]?.name ?? `#${id}`, (n / compared) * 100] as const)
+      const share = (h: readonly number[], of = compared) => h
+        .map((n, id) => [SURFACE_MATERIALS[id]?.name ?? `#${id}`, (n / of) * 100] as const)
         .filter(([, pct]) => pct > 0.05)
         .sort((a, b) => b[1] - a[1])
         .map(([name, pct]) => `${name} ${pct.toFixed(1)}%`)
         .join("  ");
-      console.log(`BAKE-PARITY compared ${compared} texels across ${addresses.length} pages`);
+      console.log(
+        `BAKE-PARITY compared ${compared} texels across ${lowlandAddresses.length} pages`,
+      );
       console.log(`  bake: ${share(bakeHistogram)}`);
       console.log(`  cpu : ${share(cpuHistogram)}`);
       console.log(`  agreement ${((agreed / compared) * 100).toFixed(2)}%`);
@@ -195,6 +235,51 @@ describe("land-cover bake parity (6-13)", () => {
         "the baked material disagrees with the CPU classifier too widely to be "
         + "boundary noise — the WGSL twin has drifted or an input channel is empty",
       ).toBeGreaterThan(0.75);
+
+      // ---- Item C: the alpine page --------------------------------------
+      console.log(
+        `BAKE-PARITY-ALPINE compared ${alpineCompared} texels above 420 m on `
+        + `${alpineAddresses.length} page; ${alpineAbove900} of them above 900 m`,
+      );
+      console.log(`  bake: ${share(alpineBakeHistogram, alpineCompared)}`);
+      console.log(`  cpu : ${share(alpineCpuHistogram, alpineCompared)}`);
+      console.log(`  agreement ${((alpineAgreed / alpineCompared) * 100).toFixed(2)}%`);
+      console.log(
+        `  baked sward above 900 m: ${alpineBakedSwardAbove900} of ${alpineAbove900}; `
+        + `baked Gravel above 420 m: ${alpineBakeHistogram[SurfaceMaterial.Gravel]}`,
+      );
+      // Non-vacuity: the page has to actually BE alpine.
+      expect(alpineCompared).toBeGreaterThan(300);
+      expect(alpineAbove900).toBeGreaterThan(100);
+      // **Two assertions the SHIPPED law cannot pass, whatever the terrain.**
+      // Above 900 m `lowland` is exactly 0, so the shipped sward scored the
+      // 0.02 floor against Rock's >= 0.5 and could never be dominant there; and
+      // shipped Gravel (`steep * 0.35 + alpine * 0.2`) is below shipped Rock
+      // (`steep * 1.25 + alpine * 0.55`) at every inland point. So ANY baked
+      // sward above 900 m proves the alpine-turf term reached the compiled
+      // shader, and ANY baked Gravel above 420 m proves the scree term did.
+      // A CPU model of the bake (32 m central difference, 2x2 supersample)
+      // predicted 74 of 267 texels as sward above 900 m and 14 Gravel texels
+      // here; the adapter measured 76 of 267 and 21.
+      expect(
+        alpineBakedSwardAbove900 / alpineAbove900,
+        "the bake paints no alpine turf above 900 m — the WGSL twin has lost item C's turf term",
+      ).toBeGreaterThan(0.1);
+      expect(
+        alpineBakeHistogram[SurfaceMaterial.Gravel],
+        "the bake paints no scree above 420 m — the WGSL twin has lost item C's scree term",
+      ).toBeGreaterThan(0);
+      // Agreement is LOGGED, and bounded only loosely. Mountain texels disagree
+      // more than lowland ones for a reason that is not the law: the CPU side
+      // reads slope from a 2 m normal and the bake from a central difference
+      // across 32 m height texels, and on a mountain those are different
+      // numbers. Measured on the adapter: 73.01% here against 84.91% on the
+      // lowland pages, where the same CPU model of the bake had predicted
+      // 77.7% — and that model's HISTOGRAM landed within 1.6 pp of the bake's
+      // on every material (Grass 40.4% predicted / 41.1% baked, Rock 45.1 /
+      // 43.6), which is the evidence that the twin carries the same law.
+      // Broad disagreement is still a drifted twin.
+      expect(alpineAgreed / alpineCompared).toBeGreaterThan(0.5);
     } finally {
       scene?.dispose();
       engine.stopRenderLoop();

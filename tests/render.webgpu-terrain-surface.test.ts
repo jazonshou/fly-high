@@ -690,8 +690,12 @@ describe("terrain surface plugin (3-2)", () => {
     expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.85);
     expect(terrainFallbackRockCover(0, 0)).toBe(0);
     expect(terrainFallbackRockCover(420, 0)).toBe(0);
-    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425, 12);
-    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85, 12);
+    // M-3: level alpine ground keeps 15% of the alpine strength (turf grows
+    // there now); the rest arrives with slope, all of it by 0.30.
+    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0.3)).toBeCloseTo(0.85, 12);
+    expect(terrainFallbackRockCover(700, 0.2)).toBeCloseTo(0.425 * (0.15 + 0.85 * 0.5), 12);
     expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
     expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
 

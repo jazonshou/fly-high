@@ -217,6 +217,13 @@ export const TERRAIN_FALLBACK_ALPINE_END_METERS = 980;
 // alpine hand-over is the cheap analytic stand-in until the fallback
 // evaluates the classifier's own suitabilities.
 export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.85;
+// M-3: the classifier stopped calling level alpine ground rock (turf grows
+// there now), so its stand-in must stop too, or a massif is green up close and
+// grey from 10 km. Share of the alpine strength that survives on LEVEL ground,
+// rising to all of it over the classifier's own 0.10-0.30 slope window.
+export const TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE = 0.15;
+export const TERRAIN_FALLBACK_ALPINE_SLOPE_LOW = 0.1;
+export const TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH = 0.3;
 
 /** Pure CPU mirror of the shader's page-classification confidence. */
 export function terrainPageClassificationConfidence(channelTexelMeters: number): number {
@@ -257,8 +264,16 @@ export function terrainFallbackRockCover(
     (elevationDriverMeters - TERRAIN_FALLBACK_ALPINE_START_METERS)
       / (TERRAIN_FALLBACK_ALPINE_END_METERS - TERRAIN_FALLBACK_ALPINE_START_METERS),
   ));
+  const alpineSlopeT = Math.min(1, Math.max(
+    0,
+    (slope - TERRAIN_FALLBACK_ALPINE_SLOPE_LOW)
+      / (TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH - TERRAIN_FALLBACK_ALPINE_SLOPE_LOW),
+  ));
+  const alpineSlope = alpineSlopeT * alpineSlopeT * (3 - 2 * alpineSlopeT);
   const alpine = altitudeT * altitudeT * (3 - 2 * altitudeT)
-    * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH;
+    * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH
+    * (TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE
+      + (1 - TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE) * alpineSlope);
   const slopeT = Math.min(1, Math.max(0, (slope - 0.30) / (0.66 - 0.30)));
   const slopeRock = slopeT * slopeT * (3 - 2 * slopeT);
   return Math.max(alpine, slopeRock);
@@ -2256,7 +2271,15 @@ terrainSlopeRock = max(
     ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
     ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
     terrainElevationDriver,
-  ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement,
+  ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement
+    * mix(
+      ${TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE.toFixed(2)},
+      1.0,
+      smoothstep(
+        ${TERRAIN_FALLBACK_ALPINE_SLOPE_LOW.toFixed(2)},
+        ${TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH.toFixed(2)},
+        terrainSlope),
+    ),
 );
 
 
@@ -2277,7 +2300,10 @@ let terrainSnowDescent = max(0.0, uniforms.terrainSurfaceWetness.z - terrainSnow
 let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.y;
 // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
 // ground the same way it is applied to canopy and rock.
-let terrainSnowShed = 1.0 - clamp((terrainSlope - 0.5) * 1.7, 0.0, 1.0);
+// M-2: 39 to 55 degrees, where it was 60 to 72. Dry snow avalanches off
+// anything much past 40, and on the reshaped massifs a 60-degree threshold
+// left no rock showing through a snowfield at all — a white dome.
+let terrainSnowShed = 1.0 - smoothstep(0.22, 0.42, terrainSlope);
 // Wave Q: the reference blanket carries the class complement for the same
 // reason as the alpine term above — a trusted classifier already placed
 // Snow, so the macro blanket fades in exactly as classification fades out.

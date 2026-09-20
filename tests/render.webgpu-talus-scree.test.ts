@@ -390,7 +390,16 @@ describe("6-7 scree placement in the world", () => {
     };
     const mountain = character(MOUNTAIN_CELLS);
     const flat = character(FLAT_CELLS);
-    expect(mountain.slope, "mountain fixture").toBeGreaterThan(0.4);
+    console.info(`6-7 fixtures: mountain slope ${mountain.slope.toFixed(3)} height `
+      + `${mountain.height.toFixed(0)} m; flat slope ${flat.slope.toFixed(4)}`);
+    // Wave M-1 reshaped this massif: mean slope 0.489 -> 0.281 (relief per
+    // wavelength was the needle defect; see MOUNTAIN_SHAPE). The cells are kept
+    // — they are still this world's mountain — and the premise is restated for
+    // the terrain the pins below are NOW measured against. The pre-6-7 figures
+    // quoted in the tests below were measured on the shipped terrain; they are
+    // history, and the inequalities against them are kept only where they still
+    // say something (they all still hold, by a wider margin).
+    expect(mountain.slope, "mountain fixture").toBeGreaterThan(0.22);
     expect(mountain.height, "mountain fixture").toBeGreaterThan(400);
     expect(flat.slope, "flat fixture").toBeLessThan(0.02);
     expect(flat.height, "flat fixture").toBeGreaterThan(0);
@@ -424,6 +433,8 @@ describe("6-7 scree placement in the world", () => {
     // the over-repose faces lose a quarter of their loose blocks, and the net
     // count falls 19.7%. That is the redistribution, as numbers.
     const run = rockRun(ANALYTIC_SAMPLER, MOUNTAIN_CELLS);
+    console.info(`6-7 mountain run: rocks ${run.rocks} midBand ${run.midBand} bands `
+      + `${run.bands.join("/")} perCellMax ${run.perCellMaximum} digest ${run.digest}`);
         // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
     // complement of `steep` rather than a second, independently-drifting
     // window. The old pair left every climatic suitability at ~0 across
@@ -433,12 +444,30 @@ describe("6-7 scree placement in the world", () => {
     // 13,685 probes — because the partition is anchored on `steep`'s
     // existing window precisely so `Rock = steep * 1.25` keeps the
     // calibration that coefficient was tuned against.
-    expect(run.digest).toBe("bcd0d548");
+    // RE-PINNED for item C, the alpine cover partition (alpine turf, Rock's
+    // slope-dependent altitude share, repose-angle scree). Rocks read the
+    // classifier through `sample.biome`: `rockLagProbability` gives GRASSLAND
+    // 0.025 against HIGHLAND 0.18 and ALPINE 0.28, so gentle high ground that
+    // now classifies as turf carries grassland's lag instead of a boulder
+    // field's. **The digest moves far more than the law does, and that is the
+    // RNG, not item C:** `generateRocks` shares one stream per cell and an
+    // accepted rock draws more numbers than a rejected one, so ONE flipped
+    // acceptance re-rolls every later candidate in that cell. Measured over a
+    // 16 x 16-cell window around each fixture so the trend can be told from
+    // the re-roll: mountain window 4,822 -> 4,797 rocks (-0.5%), apron bands
+    // above 420 m 199 -> 186; far window 6,413 -> 6,357 (-0.9%), apron bands
+    // above 420 m 349 -> 335. Ground at or below 420 m cannot move at all
+    // (`render.webgpu-land-cover-alpine-partition.test.ts`).
+    // RE-PINNED `38cac823` -> `6dab04ee` for wave M (the massif shape, plus the
+    // partition's refined windows): rocks 106 -> 91, slope bands
+    // 0/6/13/9/50/13, so the failure-face band (0.50+) holds 13 where the
+    // shipped needle massif held 72, and the apron bands hold 19.
+    expect(run.digest).toBe("6dab04ee");
         // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
     // slope axis, so grass holds ground that previously went to rock).
     // Down is budget-safe; the +1 mid-band boulder noted above is a
     // redistribution outward, not a net increase.
-    expect(run.rocks).toBe(108);   // 6-13: 114 -> 108
+    expect(run.rocks).toBe(91);   // 6-13: 114 -> 108; item C: 108 -> 106; wave M: 106 -> 91
     expect(run.rocks, "net count falls vs the pre-6-7 142").toBeLessThan(142);
     expect(run.bands[1]! + run.bands[2]!, "apron bands vs pre-6-7 3").toBeGreaterThan(3 * 2);
     expect(run.bands[5]!, "failure-face band vs pre-6-7 95").toBeLessThan(95 * 0.85);
@@ -447,6 +476,7 @@ describe("6-7 scree placement in the world", () => {
   it("keeps the eroded soil channel a live refinement of a live law", () => {
     const analytic = rockRun(ANALYTIC_SAMPLER, MOUNTAIN_CELLS);
     const eroded = rockRun(SOIL_SAMPLER, MOUNTAIN_CELLS);
+    console.info(`6-7 eroded run: rocks ${eroded.rocks} (analytic ${analytic.rocks}) digest ${eroded.digest}`);
     // Live: the channel changes placements.
     expect(eroded.digest).not.toBe(analytic.digest);
         // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
@@ -458,7 +488,10 @@ describe("6-7 scree placement in the world", () => {
     // 13,685 probes — because the partition is anchored on `steep`'s
     // existing window precisely so `Rock = steep * 1.25` keeps the
     // calibration that coefficient was tuned against.
-    expect(eroded.digest).toBe("18b9e79d");
+    // RE-PINNED `18b9e79d` -> `8540213e` for item C; same cause and the same
+    // measurements as the analytic digest above.
+    // RE-PINNED `8540213e` -> `8f60381f` for wave M; same cause.
+    expect(eroded.digest).toBe("8f60381f");
     // And it only ever REMOVES scree — deep soil is a stable, vegetated
     // slope. Measured at 113 against the analytic 114 here; the effect is
     // small on purpose, because the soil proxy's own slope-retention term has
@@ -469,7 +502,7 @@ describe("6-7 scree placement in the world", () => {
     // slope axis, so grass holds ground that previously went to rock).
     // Down is budget-safe; the +1 mid-band boulder noted above is a
     // redistribution outward, not a net increase.
-    expect(eroded.rocks).toBe(106);  // 6-13: 113 -> 106
+    expect(eroded.rocks).toBe(91);  // 6-13: 113 -> 106; item C: 106 -> 104; wave M: 104 -> 91
     // The pre-6-7 tree read the channel not at all for rocks: 142 with and
     // without it. That is what "the channel was dark and now is not" means
     // here, and it is the same shape 6-6's evidence took.
@@ -510,6 +543,8 @@ describe("6-7 scree placement in the world", () => {
     // integer-lattice geology sampler.
     const first = rockRun(ANALYTIC_SAMPLER, FAR_CELLS);
     const second = rockRun(ANALYTIC_SAMPLER, FAR_CELLS);
+    console.info(`6-7 far run: rocks ${first.rocks} midBand ${first.midBand} bands `
+      + `${first.bands.join("/")} digest ${first.digest}`);
     expect(second.digest).toBe(first.digest);
         // RE-PINNED at `6-13` for the SLOPE half: `gentle` is now the exact
     // complement of `steep` rather than a second, independently-drifting
@@ -520,13 +555,31 @@ describe("6-7 scree placement in the world", () => {
     // 13,685 probes — because the partition is anchored on `steep`'s
     // existing window precisely so `Rock = steep * 1.25` keeps the
     // calibration that coefficient was tuned against.
-    expect(first.digest).toBe("554b8c38");
+    // RE-PINNED `554b8c38` -> `809a6f0a` for item C; same cause as the
+    // mountain digest above. The count does not move here (52 -> 52).
+    // RE-PINNED `809a6f0a` -> `986415c2` for wave M: rocks 52 -> 45, bands
+    // 2/1/9/6/18/9, so the apron bands hold 10 where they held 3.
+    expect(first.digest).toBe("986415c2");
         // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
     // slope axis, so grass holds ground that previously went to rock).
     // Down is budget-safe; the +1 mid-band boulder noted above is a
     // redistribution outward, not a net increase.
-    expect(first.rocks).toBe(52);    // 6-13: 53 -> 52
+    expect(first.rocks).toBe(45);    // 6-13: 53 -> 52; wave M: 52 -> 45
     expect(first.rocks, "net count falls vs the pre-6-7 72").toBeLessThan(72);
+    // ITEM C MOVED THIS ASSERTION, NOT JUST A PIN, and it is stated rather than
+    // absorbed. It read `toBeGreaterThan(3)` and the two cells held 4 apron
+    // rocks; they now hold 3 (bands 1 + 2 went [1, 3] -> [1, 2], the rock
+    // re-rolled one band steeper). At a 52-rock, two-cell fixture that is a
+    // ONE-ROCK margin, and the per-cell RNG re-roll described at the mountain
+    // digest is enough to cross it. Over the 256-cell window around this site
+    // the apron bands went 840 -> 830 (-1.2%), so the apron has not collapsed
+    // out here; but this fixture no longer DEMONSTRATES "more apron rock than
+    // the pre-6-7 tree's 3", only "not less". The mountain fixture above still
+    // carries the redistribution claim with room (8 against a bound of 6).
+    // If that is not good enough the fix is a larger far fixture, not item C.
+    // WAVE M RESTORES THE STRICT FORM: on the reshaped terrain these two cells
+    // hold 10 apron rocks (bands 1 + 2 = [1, 9]), so the fixture demonstrates
+    // "more apron rock than the pre-6-7 tree's 3" again, with room.
     expect(first.bands[1]! + first.bands[2]!, "apron bands vs pre-6-7 3")
       .toBeGreaterThan(3);
     // Lithology out there is a field, not a constant and not a stripe: 400
@@ -634,7 +687,25 @@ describe("6-7 budgets", () => {
     //     boundary effect at the mid radius, not a new rock regime.
     // If a reviewer decides a +1 mid-band boulder is not payable, the fix is
     // the slope partition, not this pin.
-    expect(run.midBand).toBe(10);
+    //
+    // ITEM C RAISES IT BY TWO, 10 -> 12, and the same plain statement applies:
+    //   * the invariant still holds — 12 is under the pre-6-7 14 — but the
+    //     headroom this fixture shows is now 2, down from 4;
+    //   * it is a RE-ROLL, not a new rock regime. `generateRocks` shares one
+    //     RNG stream per cell, so one flipped acceptance re-rolls every later
+    //     candidate's position AND size. Over the 256-cell window around this
+    //     fixture the mid-band population went 310 -> 317 (+2.3%) while total
+    //     rocks FELL 4,822 -> 4,797; around the far fixture 441 -> 446 (+1.1%)
+    //     against 6,413 -> 6,357. Both are inside the counting noise of the
+    //     populations (sqrt(310) is 18), and the far fixture's own mid-band
+    //     count did not move (6 -> 6);
+    //   * the budget guards above are untouched: same three batch keys, and
+    //     `perCellMaximum` went 30 -> 29.
+    // If a reviewer decides the four-cell +2 is not payable, the lever is the
+    // GRASSLAND lag `rockLagProbability` gives alpine turf, not this pin.
+    // WAVE M LOWERS IT, 12 -> 7: a massif with a fifth of the cliff has fewer
+    // loose blocks at every radius. Headroom against the pre-6-7 14 is now 7.
+    expect(run.midBand).toBe(7);
     expect(run.midBand, "mid-band draw pressure vs the pre-6-7 14").toBeLessThan(14);
   });
 
