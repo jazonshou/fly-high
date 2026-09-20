@@ -159,6 +159,30 @@ advances — so hooking a scene render observable silently samples nothing. Poll
 instead. And an observer that throws kills the render loop outright, which
 presents as "the engine stopped" rather than as an error.
 
+## The general lesson: a constant is measured against something
+
+Three defects surfaced the moment a third aeroplane arrived, and they were the
+same mistake each time — **a constant measured against a 7 m trainer and an
+11 m sport jet, applied to an aeroplane it was never measured against.**
+
+- The cinematic camera's orbit radius, 24 m. Fine around a 7 m aeroplane.
+  INSIDE a Global 8000's 31.7 m wingspan, so the camera flew through the wing.
+- The chase rig's `up.scale(height)` against an 18% bank follow. Consistent
+  enough to go unnoticed for two airframes because nobody measured where the
+  aeroplane landed in frame.
+- Two cockpit eye points, taken from estimates rather than from the built
+  cabins. One sat level with its own instrument panel, one sat 0.88 m above
+  its own panel and 58 degrees outside a 56-degree field of view.
+
+None of these were caught by a test, and none of them would have been: every
+one was a plausible number that happened to suit the aeroplanes present when
+it was written. What caught all three was **looking at the game**. The
+structural answer is the one this change also makes — put the constant in the
+per-airframe record where a new aeroplane cannot inherit it silently — but the
+habit matters more than the structure: when a dimension is three times what it
+was, re-derive every length that touches it rather than assuming the ones that
+still compile are still right.
+
 ## A dev server that cannot bind its port does not fail
 
 `vinext dev --port 3003` prints *"Port 3003 is in use, trying another one..."*
