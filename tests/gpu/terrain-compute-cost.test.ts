@@ -219,15 +219,23 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         typeof value === "number" ? Math.round(value * 1_000) / 1_000 : value),
     );
 
-    // A canopy per tap was costed from lattice counts at 1.5x the fine path
-    // (4 canopy + 8 classify against 1 + 8). Short dispatches time noisily, so
-    // the bound is loose; what it guards is someone raising the tap grid, which
-    // at 4x4 is ~6x and over the whole-compute cap on its own.
+    // A coarse page's splat bake, where every tap samples its own canopy. Bound
+    // on the ABSOLUTE figure, not on coarse / fine: a short dispatch times
+    // noisily and the fine denominator wanders (0.19-0.33 ms across four runs
+    // of one tree in a quiet window, 2026-09-20), so a ratio fails on noise.
+    // Priced in that window with the taps each recomputing their moisture
+    // chain: 0.79-0.96 ms per page against 0.44-0.61 with the taps off. What
+    // the bounds guard is the whole-compute cap: a channel slot's two bakes are
+    // ONE admission, so coarse splat + occlusion has to stay under it, and a
+    // 4x4 tap grid (~6x the fine bake) would not.
     console.log(
-      `splat bake, coarse / fine: ${(measured.splatComputeCoarse / measured.splatCompute).toFixed(2)}x`);
+      `splat bake, coarse page: ${measured.splatComputeCoarse.toFixed(3)} ms `
+      + `(fine ${measured.splatCompute.toFixed(3)} ms); `
+      + `channel pair ${(measured.splatComputeCoarse + measured.occlusionCompute).toFixed(3)} ms`);
     expect(measured.splatComputeCoarse, "coarse splat bake measured").toBeGreaterThan(0);
-    expect(measured.splatComputeCoarse / measured.splatCompute,
-      "a coarse page's splat bake costs more than 3x a fine one").toBeLessThan(3);
+    expect(measured.splatComputeCoarse, "a coarse page's splat bake").toBeLessThan(1.2);
+    expect(measured.splatComputeCoarse + measured.occlusionCompute,
+      "a coarse channel pair exceeds the 1.55 ms whole-compute cap").toBeLessThan(1.55);
 
     for (const client of ["terrainCompute", "occlusionCompute", "splatCompute"] as const) {
       const pinned = COMPUTE_DISPATCH_SEED_COST_MS[client];
