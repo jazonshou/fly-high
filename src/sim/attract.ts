@@ -1,4 +1,10 @@
 import { clamp } from "./math";
+import {
+  VERTICAL_PITCH_I,
+  VERTICAL_PITCH_P,
+  VERTICAL_SPEED_FLOOR,
+  VerticalSpeedPitchTrim,
+} from "./verticalSpeedPitch";
 
 /**
  * The attract flight's supervisor: what flies the aeroplane on the menu screen.
@@ -124,9 +130,13 @@ export const ATTRACT_TURN_SAFE_CLEARANCE = 150;
 export const ATTRACT_MIN_CLEARANCE_SECONDS = 6;
 /** Clearance error to vertical-speed demand. 100 m of error asks for 3 m/s. */
 export const ATTRACT_CLIMB_GAIN = 0.03;
-/** Proportional and integral gains on vertical-speed error, in pitch command. */
-export const ATTRACT_PITCH_P = 0.06;
-export const ATTRACT_PITCH_I = 0.02;
+/**
+ * The PI gains and the speed floor moved to `verticalSpeedPitch.ts` when Scenic
+ * grew a hold of its own. Re-exported under their old names because the numbers
+ * were measured here and the docs cite them from here; there is one definition.
+ */
+export const ATTRACT_PITCH_P = VERTICAL_PITCH_P;
+export const ATTRACT_PITCH_I = VERTICAL_PITCH_I;
 /**
  * Speed floor as a multiple of stall speed. Below this the hold stops being an
  * altitude hold: it lowers the nose and adds power whatever the altitude error
@@ -134,7 +144,7 @@ export const ATTRACT_PITCH_I = 0.02;
  * recovery starts at 11.5 degrees of incidence; this keeps the demo well clear
  * of ever reaching it.
  */
-export const ATTRACT_SPEED_FLOOR = 1.25;
+export const ATTRACT_SPEED_FLOOR = VERTICAL_SPEED_FLOOR;
 /** Throttle gains, and the rate limit that keeps the engine from being heard hunting. */
 export const ATTRACT_THROTTLE_P = 0.01;
 export const ATTRACT_THROTTLE_I = 0.004;
@@ -370,7 +380,7 @@ export function attractAchievableClimbRate(): number {
  * a fresh aeroplane does not inherit the last one's trim.
  */
 export class AttractHold {
-  private verticalIntegral = 0;
+  private readonly trim = new VerticalSpeedPitchTrim();
   private throttleIntegral = 0;
   private throttleCommand: number;
   private turningRight: boolean | null = null;
@@ -381,8 +391,18 @@ export class AttractHold {
     this.throttleCommand = this.initialThrottle;
   }
 
+  /**
+   * The trim this flight has learned, for handing to the pilot's own hold.
+   *
+   * The menu flight and Scenic run the same law over the same aeroplane, so at
+   * `takeControl` the answer is already known; see `ScenicAltitudeHold.adopt`.
+   */
+  get verticalTrim(): VerticalSpeedPitchTrim {
+    return this.trim;
+  }
+
   reset(initialThrottle = this.initialThrottle): void {
-    this.verticalIntegral = 0;
+    this.trim.reset();
     this.throttleIntegral = 0;
     this.throttleCommand = clamp(initialThrottle, 0, 1);
     this.turningRight = null;
@@ -441,28 +461,23 @@ export class AttractHold {
       -ATTRACT_MAX_VERTICAL_SPEED,
       climbCeiling,
     );
-    const verticalError = desiredVerticalSpeed - input.verticalSpeed;
-    const candidateIntegral = this.verticalIntegral + verticalError * dt;
-    const rawPitch = ATTRACT_PITCH_P * verticalError + ATTRACT_PITCH_I * candidateIntegral;
-    const pitch = clamp(rawPitch, -1, 1);
-    // Anti-windup: only accept the integration that the command could use.
-    if (pitch === rawPitch) this.verticalIntegral = candidateIntegral;
-
-    // --- The speed floor outranks the altitude hold --------------------------
-    const floor = input.stallSpeed * ATTRACT_SPEED_FLOOR;
-    const speedShortfall = floor - input.equivalentAirspeed;
-    let commandedPitch = pitch;
-    if (speedShortfall > 0) {
-      // Lower the nose in proportion to the shortfall and stop the integrator
-      // arguing for height. An altitude hold that will not give up altitude is
-      // a stall with extra steps.
-      const recovery = clamp(speedShortfall / Math.max(floor * 0.25, 1e-3), 0, 1);
-      commandedPitch = Math.min(pitch, -recovery);
-      this.verticalIntegral = Math.min(this.verticalIntegral, 0);
-    }
-    out.pitch = clamp(commandedPitch, -1, 1);
+    // The PI, its anti-windup and the speed floor now live in
+    // `VerticalSpeedPitchTrim`, shared with Scenic's own hold. The arithmetic
+    // is the same one this law was measured with -- the probe reports
+    // identical heights and the same zero re-seeds across the extraction.
+    out.pitch = this.trim.update({
+      desiredVerticalSpeed,
+      verticalSpeed: input.verticalSpeed,
+      equivalentAirspeed: input.equivalentAirspeed,
+      stallSpeed: input.stallSpeed,
+      dt,
+    });
 
     // --- Throttle: slow, and rate-limited so it cannot be heard hunting ------
+    // The same shortfall the trim above acts on, recomputed here rather than
+    // reached into: the trim owns the elevator's response to it, the throttle
+    // owns its own.
+    const speedShortfall = input.stallSpeed * ATTRACT_SPEED_FLOOR - input.equivalentAirspeed;
     const speedError = input.targetAirspeed - input.equivalentAirspeed;
     const candidateThrottleIntegral = this.throttleIntegral + speedError * dt;
     const rawThrottle = this.initialThrottle

@@ -5,6 +5,7 @@ import {
   applyFlightAssistance,
   aircraftDefinition,
   AttractHold,
+  ScenicAltitudeHold,
   attractScanOffset,
   attractScanSamples,
   ATTRACT_SCAN_TRAVEL_METERS,
@@ -74,6 +75,17 @@ let controls: ControlState = { ...DEFAULT_CONTROLS };
  * on. Player flight never reads them.
  */
 const attractControls: ControlState = { ...DEFAULT_CONTROLS };
+/**
+ * The PLAYER's controls with Scenic's height hold applied to the pitch axis.
+ *
+ * Scenic is attitude-command and its neutral was 2.5 degrees nose-up, so a
+ * centred stick asked to climb. The hold replaces that one axis with
+ * `learnedTrim + stick` -- see src/sim/scenicHold.ts -- and leaves every other
+ * axis exactly as the pilot left it. A separate object because `controls` is
+ * the raw pilot input and other things read it.
+ */
+const scenicControls: ControlState = { ...DEFAULT_CONTROLS };
+const scenicAltitudeHold = new ScenicAltitudeHold();
 const attractOutput = { pitch: 0, roll: 0, throttle: 0 };
 let attractHold: AttractHold | null = null;
 /** Look-ahead scan, refreshed on travel rather than every step (see below). */
@@ -129,6 +141,7 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
   attractControls.roll = 0;
   attractControls.throttle = controls.throttle;
   attractHold = new AttractHold(controls.throttle);
+  scenicAltitudeHold.reset();
   attractScanX = Number.NaN;
   attractScanZ = Number.NaN;
   simulator = new FlightSimulator({
@@ -289,15 +302,49 @@ function updateAttractSupervisor(): void {
   attractControls.throttle = attractOutput.throttle;
 }
 
+/** Field-for-field copy, so the hold replaces one axis and inherits the rest. */
+function copyControlState(out: ControlState, from: ControlState): void {
+  out.throttle = from.throttle;
+  out.pitch = from.pitch;
+  out.roll = from.roll;
+  out.yaw = from.yaw;
+  out.trim = from.trim;
+  out.flaps = from.flaps;
+  out.brake = from.brake;
+  out.gear = from.gear;
+}
+
 function assistedControls(): FlightControls {
   const sim = simulator;
   if (!sim) return controls;
   const telemetry = sim.telemetry();
   const selectedMode = attractMode ? "scenic" : mode;
+  // Scenic's centred stick holds height. NOT under attractMode: the menu flight
+  // carries its own complete supervisor (src/sim/attract.ts), and layering a
+  // second altitude hold beneath it would be two controllers arguing over one
+  // elevator. Not in Pilot or Direct either -- those are pass-through laws and
+  // Jason asked for this in Scenic.
+  let requestedControls = attractMode ? attractControls : controls;
+  if (!attractMode && selectedMode === "scenic") {
+    copyControlState(scenicControls, controls);
+    scenicControls.pitch = scenicAltitudeHold.update({
+      pitchStick: controls.pitch,
+      onGround: sim.state.onGround,
+      clearance: telemetry.altitudeAgl,
+      altitude: sim.state.position.y,
+      verticalSpeed: telemetry.verticalSpeed,
+      equivalentAirspeed: telemetry.indicatedAirspeed,
+      stallSpeed: stallSpeed(sim.aircraft, sim.state.actuators.flaps),
+      dt: FIXED_TIME_STEP,
+    });
+    requestedControls = scenicControls;
+  } else if (!attractMode) {
+    scenicAltitudeHold.reset();
+  }
   const selectedControls = applyFlightAssistance(
     assistedTarget,
     selectedMode,
-    attractMode ? attractControls : controls,
+    requestedControls,
     sim.state,
     telemetry,
     groundHeadingTarget ?? undefined,
@@ -447,6 +494,16 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // automation is still enabled, and the existing flight state is untouched.
       mode = command.mode;
       attractMode = false;
+      // The aeroplane the pilot is handed is already trimmed: the menu flight
+      // spent the last minutes learning what attitude holds THIS airframe level
+      // at THIS speed and power, and Scenic's hold runs the identical law. Take
+      // the answer instead of re-learning it from zero, which would walk the
+      // whole trim back into the commanded pitch over the first seconds of the
+      // pilot's flight -- a sag, then a recovery, on the one transition they
+      // are guaranteed to be watching.
+      if (command.mode === "scenic" && attractHold) {
+        scenicAltitudeHold.adopt(attractHold.verticalTrim);
+      }
       directPitchRetention.reset();
       jetStabilityAugmentation.reset();
     } else if (command.type === "returnToAttract") {

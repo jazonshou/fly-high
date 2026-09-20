@@ -239,8 +239,20 @@ describe("the re-seed, and where the supervisor is allowed to run", () => {
       "utf8",
     );
     // Scenic receives the supervisor's controls ONLY in attract; a player's own
-    // controls are what it sees otherwise.
-    expect(source).toContain("attractMode ? attractControls : controls,");
+    // controls are what it sees otherwise. (The expression moved out of the
+    // call when Scenic grew its own height hold, which is exactly the kind of
+    // edit this assertion exists to make somebody look at.)
+    expect(source).toContain("let requestedControls = attractMode ? attractControls : controls;");
+    // And the two holds never run together: the menu flight carries a complete
+    // supervisor of its own, so layering Scenic's hold beneath it would be two
+    // controllers arguing over one elevator.
+    expect(source).toContain('if (!attractMode && selectedMode === "scenic")');
+    // The one place they DO touch is the hand-off, where the pilot's hold takes
+    // the trim the menu flight already learned instead of starting from zero.
+    // It lives in the `handoff` branch and nowhere else, because anywhere else
+    // would be the two holds running at once.
+    expect(source).toContain("scenicAltitudeHold.adopt(attractHold.verticalTrim)");
+    expect(source.match(/scenicAltitudeHold\.adopt\(/g)).toHaveLength(1);
     // The supervisor runs from exactly one place, and that place is guarded.
     expect(source).toContain("if (attractMode) updateAttractSupervisor();");
     expect(source.match(/updateAttractSupervisor\(\)/g)).toHaveLength(2);
