@@ -234,6 +234,11 @@ export const TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH = 0.85;
 // grey from 10 km. Share of the alpine strength that survives on LEVEL ground,
 // rising to all of it over the classifier's own 0.10-0.30 slope window.
 export const TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE = 0.15;
+/**
+ * `M-4`: ambient returned by the share of the hemisphere that terrain blocks,
+ * as a fraction of what open sky there would give. See the fragment's note.
+ */
+export const TERRAIN_OCCLUDED_BOUNCE_SHARE = 0.25;
 export const TERRAIN_FALLBACK_ALPINE_SLOPE_LOW = 0.1;
 export const TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH = 0.3;
 
@@ -2183,7 +2188,17 @@ let terrainOcclusionTexel = textureSampleLevel(
 // exposure and now shares the guard.
 let terrainOcclusionBaked = smoothstep(0.02, 0.2, terrainOcclusionTexel.a);
 let terrainOcclusionTrust = terrainPageUv.z * terrainOcclusionBaked;
-let terrainSkyVisibility = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+let terrainSkyOpenness = mix(1.0, terrainOcclusionTexel.r, terrainOcclusionTrust);
+// M-4: what the bake measures is how much SKY a texel sees, and it was
+// multiplying ALL ambient by it. But the part of the hemisphere the sky does
+// not fill is not black: it is filled by the terrain that blocks it, which is
+// itself lit. A wall in a gully lost its sky light AND the bounce from the
+// slope opposite, and rendered near-black at noon (kilo77's west face at
+// 900 m, 2026-09-19: ~12/255). The blocked share of the hemisphere now returns
+// a fraction of what open sky would: ground albedo ~0.18 seen half in sun and
+// half in shade. Ambient only; the horizon shadow still owns the sun.
+let terrainSkyVisibility = terrainSkyOpenness
+  + (1.0 - terrainSkyOpenness) * ${terrainWgslFloat(TERRAIN_OCCLUDED_BOUNCE_SHARE)};
 // The horizon atlases are written by the same dispatch, so an unbaked page
 // would report a zero horizon in every azimuth. Fade to "the sun is up".
 let terrainHorizonShadow = mix(
@@ -2198,6 +2213,7 @@ let terrainHorizonShadow = mix(
 let terrainPageSplat = terrainSurfacePageSplat(
   terrainPageUv, uniforms.terrainSunDirection.w);
 #else
+let terrainSkyOpenness = 1.0;
 let terrainSkyVisibility = 1.0;
 let terrainHorizonShadow = 1.0;
 #endif
@@ -2808,7 +2824,7 @@ if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
   // and drier crests, but no input may turn it into pasture wholesale. The
   // unbaked-page case is handled at the source, where the bake's own validity
   // lane gates the read; this clamp is the second layer.
-  let terrainGroundSky = clamp(terrainSkyVisibility, 0.0, 1.0);
+  let terrainGroundSky = clamp(terrainSkyOpenness, 0.0, 1.0);
   let terrainGroundTopographic = clamp(
     -(1.0 - terrainGroundSky) * 0.4 + clamp(terrainSlope - 0.10, 0.0, 0.30) * 0.5,
     -0.22,
@@ -3032,7 +3048,7 @@ var terrainGroundDirect = 1.0;
     let terrainScrubOpenness = clamp(
       0.55
         - terrainGroundCluster * 0.55
-        - (1.0 - clamp(terrainSkyVisibility, 0.0, 1.0)) * 0.5
+        - (1.0 - clamp(terrainSkyOpenness, 0.0, 1.0)) * 0.5
         + clamp(terrainSlope - 0.12, 0.0, 0.35) * 0.9
         + terrainGroundBare * 0.6
         + (1.0 - terrainScrubComplement) * 0.85,

@@ -301,6 +301,35 @@ massifs stayed heath. Each is fixed in both twins.
 pages top out at 337 m — 0 of 3,254 probes above 420 m. An alpine page was
 added.
 
+## 4. The blocked hemisphere is not black (`M-4`)
+
+The occlusion bake measures how much SKY a texel sees, and the fragment
+multiplied ALL ambient by it. But the share of the hemisphere the sky does not
+fill is filled by the terrain that blocks it, which is itself lit. A wall in a
+gully lost its skylight and the bounce from the slope opposite, and rendered
+near-black at noon (kilo77's west face from 900 m: about 12/255), so the relief
+`M-2` draws inside it could not be seen. The blocked share now returns a quarter
+of what open sky there would: ground albedo near 0.18, seen half in sun and half
+in shade. Ambient only; the horizon shadow still owns the sun. W-1's vigour and
+direct-light terms keep reading the raw openness, because they are statements
+about how much sky a sward sees.
+
+Measured in a quiet window at one identical nine-shot filtered list, three
+runs (A, A again, A + the floor), mean absolute difference per channel out of
+255:
+
+* same-arm control: at most 0.007 on every shot, worst 32 px tile 0.65 except
+  `mountain-close` at 2.48. Arm B can be read against it.
+* must not move: `night` 0.014, `night-moonlit` 0.018, `hills-dusk-glint`
+  0.016, `dusk-mesopic` 0.070; no pixel over 8.
+* must not glow: `canopy-1200ft` 0.060, `grove-forest-2m` 0.119,
+  `forest-500ft-sunbehind` 0.070.
+* where it acts: `mountain-close` 1.91 (mean luma 63.7 to 65.8), `cliff-60m`
+  3.21 (92.5 to 95.9), 0.08 % of pixels over 8.
+
+By eye, kilo77's west face at 12.5 h and 15.5 h: the shaded wall stays clearly
+darker and cooler than the lit one, with its creases visible inside it.
+
 ## Sources
 
 Shape: Musgrave, *Procedural Fractal Terrains*; Quilez, *fBm*, *More noise*,
