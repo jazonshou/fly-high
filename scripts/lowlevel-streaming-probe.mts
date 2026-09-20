@@ -16,16 +16,30 @@
  * low level is the target, then flies full throttle hands-off in scenic mode,
  * which is an attitude-command controller and so holds level by itself.
  *
- * Usage: lowlevel-streaming-probe.mts <outDir> <url> <seconds> <arm> <expectTree> [startAglFt]
+ * Usage: lowlevel-streaming-probe.mts <outDir> <url> <seconds> <arm> <expectTree>
+ *          [spawnAglMetres] [holdFt] [throttlePct]
+ *
+ * The two heights are SEPARATE arguments and separately named because they are
+ * in different units and one variable used to serve both: `airborneStartAgl`
+ * is METRES (protocol.ts says so), while the HUD the hold loop reads publishes
+ * FEET. Passing 500 therefore spawned the aeroplane at 500 m and then flew it
+ * down to 500 ft without either number being wrong on its face.
+ *
+ * `throttlePct` exists because this probe predates the F-16's afterburner.
+ * Holding full throttle is now the REHEAT arm by definition — reheat engages
+ * at 0.85 — so a dry arm has to stop the ramp below that.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
-const [outDir, url, secondsRaw, arm, expectTree, startAglRaw] = process.argv.slice(2);
-if (!outDir || !url || !arm) throw new Error("usage: <outDir> <url> <seconds> <arm> <expectTree> [startAglFt]");
+const [outDir, url, secondsRaw, arm, expectTree, spawnRaw, holdRaw, throttleRaw] =
+  process.argv.slice(2);
+if (!outDir || !url || !arm) throw new Error("usage: see header");
 const seconds = Number(secondsRaw ?? 60);
-const startAgl = Number(startAglRaw ?? 500);
+const spawnAglMetres = Number(spawnRaw ?? 500);
+const holdFt = Number(holdRaw ?? 1_000);
+const throttlePct = Number(throttleRaw ?? 100);
 const WIDTH = 1600;
 const HEIGHT = 900;
 mkdirSync(outDir, { recursive: true });
@@ -68,7 +82,7 @@ await page.addInitScript(({ startAgl }: { startAgl: number }) => {
       timeOfDay: "day",
     }));
   } catch { /* first load has no settings yet */ }
-}, { startAgl });
+}, { startAgl: spawnAglMetres });
 
 await page.goto(url, { waitUntil: "domcontentloaded" });
 await page.locator('[aria-label="fly high start"]').waitFor({ timeout: 120_000 });
@@ -87,12 +101,40 @@ async function hud(): Promise<{ ias: number; agl: number; vs: number; thr: numbe
   };
 }
 
-// Full power. The spawn throttle is whatever that airframe's spec says - 17%
-// for this one - and an earlier version of this probe never touched it, then
-// reported a "Mach 1.2" run that was actually 180 m/s in a 3,000 ft/min climb.
-await page.keyboard.down("Shift");
-await page.waitForTimeout(6_000);
-await page.keyboard.up("Shift");
+// Throttle to the arm's target. The spawn throttle is whatever that airframe's
+// spec says - 17% for this one - and an earlier version of this probe never
+// touched it, then reported a "Mach 1.2" run that was actually 180 m/s in a
+// 3,000 ft/min climb.
+//
+// Ramped against the HUD rather than by holding the key for a fixed time,
+// because the dry arm has to STOP below the reheat gate and "six seconds of
+// Shift" cannot be aimed at a number.
+for (let attempt = 0; attempt < 90; attempt += 1) {
+  const now = await hud();
+  if (!Number.isFinite(now.thr)) { await page.waitForTimeout(150); continue; }
+  const remaining = throttlePct - now.thr;
+  if (Math.abs(remaining) <= 2) break;
+  // Short pulses near the target. Fixed 150 ms presses overshot an 80% ask by
+  // eight points, which put a "dry" arm at 88% — PAST the 85% reheat gate, so
+  // the arm measured the opposite of what its name said and did so silently.
+  const pulse = Math.abs(remaining) > 20 ? 150 : 40;
+  const key = remaining < 0 ? "Control" : "Shift";
+  await page.keyboard.down(key);
+  await page.waitForTimeout(pulse);
+  await page.keyboard.up(key);
+}
+{
+  const reached = await hud();
+  console.log(`throttle: asked ${throttlePct}%, reached ${reached.thr}%`);
+  // The arm's NAME is a claim about the engine state; hold it to that claim
+  // rather than trusting the ramp. Reheat engages at 0.85 on this airframe.
+  if (/dry/.test(arm) && reached.thr >= 85) {
+    throw new Error(`arm "${arm}" says dry but throttle reached ${reached.thr}% — reheat engages at 85%`);
+  }
+  if (/reheat/.test(arm) && reached.thr < 85) {
+    throw new Error(`arm "${arm}" says reheat but throttle only reached ${reached.thr}%`);
+  }
+}
 
 /**
  * Hold the target height for `ms`.
@@ -131,13 +173,15 @@ async function holdAltitude(ms: number, targetFt: number): Promise<void> {
 
 // Descend to the test height and let speed and streaming reach steady state.
 // A sample taken while still accelerating understates the backlog.
-await holdAltitude(75_000, startAgl);
+await holdAltitude(75_000, holdFt);
 const settled = await hud();
 console.log(`settled: IAS ${settled.ias} kt, AGL ${settled.agl} ft, V/S ${settled.vs} ft/min, THR ${settled.thr}%`);
 if (!Number.isFinite(settled.agl) || settled.agl === 0) {
   throw new Error("no HUD at the end of the descent: the flight ended, almost certainly a crash. Nothing measured.");
 }
-if (settled.thr < 95) throw new Error(`throttle only reached ${settled.thr}%; the run would not be at the target speed`);
+if (settled.thr < throttlePct - 6) {
+  throw new Error(`throttle settled at ${settled.thr}%, asked ${throttlePct}%; not the arm that was requested`);
+}
 await page.screenshot({ path: `${outDir}/${arm}-settled.png`, type: "png" });
 
 interface Sample {
@@ -185,7 +229,7 @@ const samples: Sample[] = [];
 const started = Date.now();
 // Altitude hold keeps running through the measurement; without it the
 // aeroplane drifts off the test height over 45 s of excess thrust.
-const holding = holdAltitude(seconds * 1000, startAgl);
+const holding = holdAltitude(seconds * 1000, holdFt);
 while ((Date.now() - started) / 1000 < seconds) {
   const text = await page.evaluate(() => {
     const panel = document.querySelector('[aria-label="Performance diagnostics"]');
@@ -198,6 +242,31 @@ while ((Date.now() - started) / 1000 < seconds) {
 await holding;
 await page.screenshot({ path: `${outDir}/${arm}-final.png`, type: "png" });
 writeFileSync(`${outDir}/${arm}-samples.json`, JSON.stringify(samples, null, 1));
+
+/*
+ * Did the aeroplane survive the measurement?
+ *
+ * The guard before the descent is not enough. `reheat-rough` flew into a
+ * mountain 23 s into its 45 s window, and because the HUD check only ran
+ * BEFORE sampling this probe exited 0 and reported a mean ground speed of
+ * 279 m/s and a flat collision-fallback counter — both of which were true of
+ * a stationary wreck and neither of which measured streaming. Half a run of
+ * junk that looks exactly like a clean run is the worst thing an instrument
+ * can hand you, so the flight is now checked on every sample.
+ */
+const flownSamples = samples.filter((sample) => {
+  const height = Number((sample.text.match(/AGL ([\d,-]+) FT/)?.[1] ?? "").replace(/,/g, ""));
+  return Number.isFinite(height) && height !== 0;
+});
+if (flownSamples.length < samples.length) {
+  const endedAt = samples[flownSamples.length]?.t ?? 0;
+  throw new Error(
+    `${arm}: the flight ended ${endedAt.toFixed(1)} s into a ${seconds} s window `
+    + `(${flownSamples.length} of ${samples.length} samples were airborne). `
+    + `Samples are written to ${outDir}/${arm}-samples.json; measure the valid `
+    + "prefix deliberately if you want it, but nothing here is a whole-run number.",
+  );
+}
 
 function numbers(pattern: RegExp): number[] {
   const out: number[] = [];
