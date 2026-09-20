@@ -555,17 +555,38 @@ const MAIN_BOGIES = [
   { name: "body", x: -6.9, z: 1.9, trunnionY: -3.45, doorZ: 0.9, doorWidth: 3 },
 ] as const;
 
+/**
+ * Take a part out of the sun shadow map, keeping whatever else it carries.
+ *
+ * A caster is drawn THREE times a frame — once in the colour pass and once
+ * into each of the two shadow cascades — and the 747 measured +0.70 ms of CPU
+ * against the Cessna on draw submission alone. So a part earns its two shadow
+ * draws only if its shadow can be SEEN, and the parts passed here cannot be:
+ * each one's shadow falls inside the shadow of the nacelle, fuselage or tyre
+ * it is buried in, or is a few centimetres proud of one. Nothing that draws
+ * the aeroplane's outline on the ground comes through here.
+ *
+ * Spread, never assigned: `finishMesh` and the loft builders have already
+ * written metadata the renderer and the tests read.
+ */
+function withoutShadow<T extends AbstractMesh>(part: T): T {
+  part.metadata = {
+    ...(part.metadata as Record<string, unknown> | null),
+    castsShadow: false,
+  };
+  return part;
+}
+
 export function createAirliner(scene: Scene): AircraftVisual {
   const build = new AircraftBuildContext(scene);
   const root = new TransformNode("boeing-747-8", scene);
   configureRoot(root, "airliner");
 
-  // Two paint recipes, as the Global has. This airframe carries four times the
-  // Global's painted area and each recipe costs three synthesized textures; an
-  // airline scheme is a white shell with a coloured fin, engines and control
-  // surfaces, so a third recipe would buy a distinction no camera angle in the
-  // game can find.
-  const body = build.paintMaterial("airliner-body", {
+  // Three paint recipes: the shell, the wing, and the accent. This airframe
+  // carries four times the Global's painted area and each recipe costs three
+  // synthesized 64-pixel textures, so a recipe has to buy something a camera
+  // can find — and the wing's does; see `wing` below.
+  const bodyRecipe = {
     seed: 0x7478_0001,
     baseColor: 0xf4f5f3,
     liveryColor: 0x1b3a6b,
@@ -576,6 +597,29 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // The 64-pixel maps stretch over a 72 m fuselage — twice the Global's
     // reach, so the panel grid has to be weaker again or it reads as quilting.
     panelStrength: 0.34,
+  } as const;
+  const body = build.paintMaterial("airliner-body", bodyRecipe);
+  // THE WING IS PLAIN WHITE, and it is its own recipe for exactly one reason.
+  //
+  // The shared paint synthesis draws its `livery-decal` feature as a diagonal
+  // band in UV space — `fract(u - 0.37v + 0.18)` near 0.5 — and every mesh is
+  // handed its own 0..1 tile. On a loft that band winds round the fuselage as
+  // the cheatline. On the wing it became a different blue slash on each of
+  // twenty-six separately-UV'd parts: eight fixed panels, four flaps, four
+  // ailerons and ten spoilers, every one at its own angle and none meeting
+  // its neighbour. No choice of UVs lands one diagonal band correctly on all
+  // of them at once, which is the note Jason left on the Global before its
+  // wing was fixed the same way.
+  //
+  // So this is the body recipe with the livery colour set EQUAL to the base
+  // colour: `mix(value, livery, decal)` becomes the identity, the band is
+  // gone, and the panel lines, rivets, seams, filler, soot and leading-edge
+  // wear are bit-for-bit the body's own because the seed is. The fuselage
+  // keeps its cheatline; the wing reads as one white surface from root to
+  // tip, which is what an airline's wing is.
+  const wing = build.paintMaterial("airliner-wing", {
+    ...bodyRecipe,
+    liveryColor: bodyRecipe.baseColor,
   });
   const accent = build.paintMaterial("airliner-accent", {
     seed: 0x7478_0002,
@@ -676,7 +720,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // point. The upsweep is what buys a 72 m aeroplane its rotation angle: the
   // mains are at x = -3, so 10.4 degrees of tail-strike margin comes entirely
   // from how fast this cone climbs.
-  build.loft(
+  //
+  // `bodyExterior` collects every body-painted part that is bolted rigidly to
+  // the root and is NOT cockpit-excluded skin, so the whole list can be folded
+  // into one mesh at the end of the build; see FOLDING THE STATIC AIRFRAME.
+  const bodyExterior: AbstractMesh[] = [];
+  bodyExterior.push(build.loft(
     "airliner-tailcone",
     [
       { x: -38, yRadius: 0.4, zRadius: 0.34, yOffset: 1.2 },
@@ -689,14 +738,14 @@ export function createAirliner(scene: Scene): AircraftVisual {
     22,
     body,
     root,
-  );
+  ));
   // The wing-to-body fairing, 9.4 m across at its widest — wider than the
   // fuselage itself, because it houses the centre wing box, the centre tank and
   // the two body gear bays. Its underside holds at -3.60, which is where the
   // sim puts its belly contact point, so a belly landing touches the metal it
   // says it touches. It also has to reach z = 3.25 at the wing's own chord
   // plane along the whole root chord or the root rib stands out in the open.
-  build.loft(
+  bodyExterior.push(build.loft(
     "airliner-belly-fairing",
     [
       { x: -17.5, yRadius: 0.4, zRadius: 1.4, yOffset: -2.95 },
@@ -711,14 +760,14 @@ export function createAirliner(scene: Scene): AircraftVisual {
     20,
     body,
     root,
-  );
+  ));
   // The beacon blister. `AIRLINER_WASH` puts the lower anticollision light at
   // y = -4.1 and the fairing above bottoms out at -3.60, so without this the
   // lamp floats half a metre clear of the skin — the exact defect the Global's
   // table was corrected for. The real aeroplane carries the beacon in a
   // streamlined housing below the fairing, so the fix is its own part rather
   // than moving the fairing down through the sim's contact point.
-  build.loft(
+  bodyExterior.push(build.loft(
     "airliner-beacon-fairing",
     [
       { x: -2.2, yRadius: 0.18, zRadius: 0.3, yOffset: -3.85 },
@@ -729,7 +778,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     12,
     body,
     root,
-  );
+  ));
 
   // The window line. One box, thin-instanced 228 times; the instance matrix is
   // the ENTIRE transform and the base mesh keeps an identity one, because thin
@@ -774,9 +823,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
     }
     cabinWindow.thinInstanceSetBuffer("matrix", matrices, 16, true);
     cabinWindow.thinInstanceRefreshBoundingInfo(true);
+    // Each pane stands 0.05 m proud of a 6.5 m fuselage whose own shadow it
+    // falls inside from every sun angle.
+    withoutShadow(cabinWindow);
   }
 
   const wingSurfaces: AbstractMesh[] = [];
+  // The fixed structure is NOT pushed to `wingSurfaces` as it is built. It is
+  // folded into one mesh a side and one for the tail at the end of the build,
+  // and the folded meshes take its place there — `setCockpitVisibility` walks
+  // that list, and a disposed panel left in it would be the wing the cockpit
+  // camera cannot see.
+  const fixedWing: Record<"starboard" | "port", { panels: AbstractMesh[]; anchors: TransformNode[] }> = {
+    starboard: { panels: [], anchors: [] },
+    port: { panels: [], anchors: [] },
+  };
+  const fixedTail: AbstractMesh[] = [];
   const flaps: TransformNode[] = [];
   const speedBrakes: TransformNode[] = [];
 
@@ -876,7 +938,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
       const anchor = node(`${sideName}-airliner-${panel.name}-wing-root`, root, scene);
       anchor.position.set(0, panel.rootY, side * panel.rootZ);
       anchor.rotation.x = -side * Math.atan2(rise, reach);
-      wingSurfaces.push(build.airfoilWing(
+      fixedWing[sideName].anchors.push(anchor);
+      fixedWing[sideName].panels.push(build.airfoilWing(
         `${sideName}-airliner-${panel.name}-wing`,
         {
           rootLeadingX: panel.rootLeadingX,
@@ -890,7 +953,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           chordSegments: 14,
           spanSegments: panel.spanSegments,
         },
-        body,
+        wing,
         anchor,
       ));
     }
@@ -940,11 +1003,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
           chordSegments: 8,
           spanSegments: 2,
         },
-        // BODY paint, not the accent the Global puts on its control surfaces.
-        // A corporate scheme colours flaps and ailerons; an airline's wing is
-        // one white surface from root to tip, and painting eight panels in the
-        // livery colour turned the plan view into stripes.
-        body,
+        // WING paint, not the accent. An airline's wing is one white surface
+        // from root to tip: painting eight panels in the livery colour turned
+        // the plan view into stripes, and the body recipe's own livery band
+        // did the same thing more quietly — a blue dash across every panel,
+        // each at its own angle. See the note on `wing`.
+        wing,
         hinge,
       );
       flaps.push(hinge);
@@ -996,7 +1060,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         // to be a panel line rather than a step.
         0.045,
         spoiler.span,
-        body,
+        wing,
         brake,
       );
       // Hinged at its forward edge, so the panel lies entirely aft of the node
@@ -1040,8 +1104,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
         chordSegments: 8,
         spanSegments: 2,
       },
-      // Body paint, for the reason the flaps carry it.
-      body,
+      // Wing paint, for the reason the flaps carry it.
+      wing,
       hinge,
     ));
     // All four ailerons sit on the same swept hinge line as the flaps, so they
@@ -1084,7 +1148,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
       { x: 2, yRadius: 0.08, zRadius: 0.08 },
     ],
     8,
-    body,
+    // Wing paint: a canoe is wing structure, and in the body recipe each of
+    // the eight wore its own blue dash under an otherwise white wing.
+    wing,
     root,
   );
   {
@@ -1152,11 +1218,11 @@ export function createAirliner(scene: Scene): AircraftVisual {
     body,
     root,
   );
-  wingSurfaces.push(fin);
+  fixedTail.push(fin);
   // The dorsal fillet ahead of the fin root. Its aft-top corner lands ON the
   // fin's leading edge at y = 5.3, so the two meet instead of overlapping into
   // a step, and its aft face is buried inside the fin's own thickness.
-  build.verticalProfile(
+  bodyExterior.push(build.verticalProfile(
     "airliner-dorsal-fin",
     [
       { x: -14.5, y: 3.05 },
@@ -1166,7 +1232,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     0.85,
     body,
     root,
-  );
+  ));
 
   const rudder = node("rudder", root, scene);
   rudder.position.set(-31.4, 3.15, 0);
@@ -1233,7 +1299,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       root,
     );
     tailplane.position.y = TAILPLANE_Y;
-    wingSurfaces.push(tailplane);
+    fixedTail.push(tailplane);
   }
 
   // ONE HINGE NODE PER HALF, because the tailplane is swept 32 degrees and
@@ -1304,6 +1370,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     { name: "two", x: 30.4, y: 2.95, length: 0.9, height: 0.64 },
     { name: "three", x: 29.5, y: 2.95, length: 0.8, height: 0.58 },
   ] as const;
+  const flightDeckGlazing: AbstractMesh[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
     for (const pane of flightDeckWindows) {
@@ -1327,20 +1394,23 @@ export function createAirliner(scene: Scene): AircraftVisual {
       glazing.rotation.y = side * Math.atan2(aft.z - forward.z, pane.length);
       glazing.rotation.x = -side * skin.tilt;
       glazing.metadata = { ...glazing.metadata, castsShadow: false };
+      flightDeckGlazing.push(glazing);
     }
   }
   // The centre post, laid along the nose's crown line between the two No.1
   // panes. Its endpoints are the crown height at those two stations, so it
   // sits half in the skin instead of floating over it.
-  const windscreenFrame = build.strutBetween(
+  // Half sunk in the crown, so its shadow is the nose's own.
+  const windscreenFrame = withoutShadow(build.strutBetween(
     "airliner-windscreen-center-post",
     new Vector3(31.9, 2.73, 0),
     new Vector3(31.2, 3.23, 0),
     0.09,
     dark,
     root,
-  );
+  ));
 
+  const flightDeckFurniture: AbstractMesh[] = [];
   for (const side of [1, -1] as const) {
     const seat = build.box(
       side > 0 ? "airliner-captain-seat" : "airliner-first-officer-seat",
@@ -1363,10 +1433,15 @@ export function createAirliner(scene: Scene): AircraftVisual {
     );
     headrest.position.set(28.58, 2.86, side * 0.72);
     headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
+    flightDeckFurniture.push(seat, headrest);
   }
   // Panel centred at y = 2.63 and 0.54 m tall, so its top edge is 2.90 — see
   // the catalogue note on where that puts the eye point.
-  addInstrumentPanel(
+  //
+  // Sealed inside the nose loft, as the seats are, so none of it casts. The
+  // shared builder already says so for the gauges and needles and leaves the
+  // panel board itself a caster; on this airframe the board is under a roof.
+  const instrumentPanel = addInstrumentPanel(
     build,
     "airliner",
     root,
@@ -1377,9 +1452,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
     instrumentFace,
     instrumentMarking,
   );
+  for (const part of instrumentPanel) withoutShadow(part);
 
   // ------------------------------------------------------------- ENGINES ---
   const fanSpools: TransformNode[] = [];
+  const engineCores: AbstractMesh[] = [];
+  const engineInlets: AbstractMesh[] = [];
   const chevronMatrices = new Float32Array(ENGINES.length * 2 * NACELLE_CHEVRON_COUNT * 16);
   let chevronOffset = 0;
   for (const side of [1, -1] as const) {
@@ -1391,7 +1469,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       const centreY = chordPlaneAt(engine.spanZ) - engine.dropBelowWing;
       const prefix = `${sideName}-airliner-${engine.name}-engine`;
 
-      build.loft(
+      bodyExterior.push(build.loft(
         `${prefix}-nacelle`,
         [
           { x: nozzleX, yRadius: NACELLE_NOZZLE_RADIUS, zRadius: NACELLE_NOZZLE_RADIUS,
@@ -1404,10 +1482,10 @@ export function createAirliner(scene: Scene): AircraftVisual {
         20,
         body,
         root,
-      );
+      ));
       // The core cowl and exhaust plug, reaching 1.75 m aft of the fan nozzle
       // and covering the nacelle loft's own aft cap on the way through.
-      build.loft(
+      engineCores.push(build.loft(
         `${prefix}-core`,
         [
           { x: nozzleX - 1.75, yRadius: 0.35, zRadius: 0.35, yOffset: centreY, zOffset: z },
@@ -1418,7 +1496,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         16,
         hotMetal,
         root,
-      );
+      ));
       // THE INTAKE, and the first version did not have one. `loft` closes its
       // forward section with a flat painted cap, so a nacelle built from a
       // loft alone is a white egg: the head-on frame showed four of them with
@@ -1427,9 +1505,13 @@ export function createAirliner(scene: Scene): AircraftVisual {
       // what the eye gets is a thin bright lip ring around a dark opening.
       // Tapering it inward from 2.76 to 2.40 gives the opening a shaded wall
       // rather than a flat disc.
-      const inlet = build.cylinder(`${prefix}-inlet`, 1.3, 2.4, 2.76, 20, dark, root);
+      // No shadow: the duct is inside the cowl over all but its last 0.04 m.
+      const inlet = withoutShadow(
+        build.cylinder(`${prefix}-inlet`, 1.3, 2.4, 2.76, 20, dark, root),
+      );
       inlet.rotation.z = Math.PI / 2;
       inlet.position.set(inletX - 0.61, centreY, z);
+      engineInlets.push(inlet);
 
       // THE PYLON, and it has to be visible. The first version topped out at
       // centreline + 1.62 against a nacelle 1.70 in radius, so it was inside
@@ -1459,6 +1541,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         root,
       );
       pylon.position.z = z;
+      bodyExterior.push(pylon);
 
       // The rotating assembly: the fan and the spool behind it. The node spins
       // about body X through its OWN origin, which is why each fan gets a node
@@ -1470,9 +1553,17 @@ export function createAirliner(scene: Scene): AircraftVisual {
       // and the duct's own cap hides it; a solid cylinder has no open end.
       const spool = node(`${prefix}-fan-spool`, root, scene);
       spool.position.set(inletX + 0.07, centreY, z);
-      const fanFace = build.cylinder(`${spool.name}-fan`, 0.1, 2.02, 2.1, 16, hub, spool);
+      // Neither casts. A 2.1 m disc and a 0.5 m cone in the mouth of a 3.4 m
+      // cowl: the most either can add to the nacelle's shadow is a 0.3 m
+      // sliver off its front face, and eight parts were paying sixteen shadow
+      // draws a frame for it.
+      const fanFace = withoutShadow(
+        build.cylinder(`${spool.name}-fan`, 0.1, 2.02, 2.1, 16, hub, spool),
+      );
       fanFace.rotation.z = Math.PI / 2;
-      const spinner = build.cylinder(`${spool.name}-spinner`, 0.46, 0.02, 0.5, 10, dark, spool);
+      const spinner = withoutShadow(
+        build.cylinder(`${spool.name}-spinner`, 0.46, 0.02, 0.5, 10, dark, spool),
+      );
       // Points FORWARD: the negative quarter turn puts the cylinder's
       // zero-radius end at +X. Centred on the fan face so the cone stands
       // through it and stops level with the inlet lip rather than out in the
@@ -1519,6 +1610,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const chevron = build.cylinder("airliner-nacelle-chevron", 0.62, 0, 0.6, 4, dark, root);
   chevron.thinInstanceSetBuffer("matrix", chevronMatrices, 16, true);
   chevron.thinInstanceRefreshBoundingInfo(true);
+  // Tabs lying in the nozzle's own skin; their shadow is the nacelle's.
+  withoutShadow(chevron);
 
   // ---------------------------------------------------------------- GEAR ---
   const landingGear = node("airliner-retractable-landing-gear", root, scene);
@@ -1571,7 +1664,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
             axle,
           ).position.z = pair * BOGIE_HALF_TRACK;
         }
-        const shaft = build.cylinder(`${axle.name}-shaft`, 1.5, 0.34, 0.34, 10, hub, axle);
+        // The shaft is a 0.34 m rod through two 1.24 m tyres and under a
+        // bogie beam: what little of its shadow is not theirs is a 0.7 m
+        // strip between the pair. The tyres, beam and legs all still cast.
+        const shaft = withoutShadow(
+          build.cylinder(`${axle.name}-shaft`, 1.5, 0.34, 0.34, 10, hub, axle),
+        );
         shaft.rotation.x = Math.PI / 2;
         mainWheels.push(axle);
       }
@@ -1611,7 +1709,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   build.torus(
     "starboard-nose-wheel-tire", NOSE_TYRE_DIAMETER, NOSE_TYRE_THICKNESS, 12, tire, noseWheel,
   ).position.z = 0.45;
-  const noseShaft = build.cylinder("airliner-nose-axle", 1.3, 0.3, 0.3, 10, hub, noseWheel);
+  const noseShaft = withoutShadow(
+    build.cylinder("airliner-nose-axle", 1.3, 0.3, 0.3, 10, hub, noseWheel),
+  );
   noseShaft.rotation.x = Math.PI / 2;
 
   // Gear doors, each with the sign that drops its OUTBOARD edge: the door at
@@ -1702,6 +1802,83 @@ export function createAirliner(scene: Scene): AircraftVisual {
     lamp.metadata = { ...lamp.metadata, castsShadow: false };
   }
 
+  // ------------------------------------------- FOLDING THE STATIC AIRFRAME --
+  //
+  // Everything above was built one part to a mesh, because that is how an
+  // aeroplane is described. It is not how one should be DRAWN: a mesh is a
+  // draw, a shadow caster is three, and this airframe measured +0.70 ms of CPU
+  // a frame against the Cessna on submission alone. So every group of parts
+  // that shares a material and is bolted rigidly to the root becomes one
+  // mesh here. `mergeStatic` refuses anything that hangs from a node not
+  // declared static, so no hinge, frame, mount, spool or gear part can be
+  // folded in by mistake — and none is offered: every flap, spoiler, aileron,
+  // elevator, the rudder, the doors, the fans and the whole undercarriage
+  // stay exactly as they were built.
+  //
+  // Left alone on purpose: the three thin-instanced meshes (a merge drops the
+  // instance buffer), the eight lamps (the wash-light test sites each one by
+  // name and position) and the centre post, which is the only dark part on
+  // the cockpit-excluded layer and so has nothing to merge with.
+  //
+  // THE COCKPIT SHELL IS ITS OWN GROUP. The three lofts that would block the
+  // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
+  // camera clears; the tailcone and fairings behind them do not. One mesh has
+  // one layer mask, so they cannot share one. The mask is put on the sources
+  // FIRST so that `mergeStatic`'s own check is a real one: offer it the
+  // tailcone here and it throws rather than hiding the tail from the pilot.
+  configureCockpitLayers([fuselage, radome, upperDeck, windscreenFrame]);
+  const fuselageShell = build.mergeStatic(
+    "airliner-fuselage-shell", [fuselage, radome, upperDeck], root);
+  build.mergeStatic("airliner-body-exterior", bodyExterior, root);
+  // The fin and tailplanes are body-painted too, and are kept apart from the
+  // group above only because they are `wingSurfaces` and the nacelles are not:
+  // that list is forced visible in cockpit view, and a part should not pick up
+  // or lose that treatment as a side effect of how it is batched.
+  wingSurfaces.push(build.mergeStatic("airliner-fixed-tail", fixedTail, root));
+  // ONE MESH A SIDE, and the name ENDS IN `wing` because instruments read it.
+  // `scripts/wing-slot-sweep.mts` classifies every ray hit by mesh name —
+  // `/wing$/` is fixed structure — and with any other name it would find no
+  // fixed wing at all; `scripts/flap-joint-frames.mts` crops each side's
+  // joint by the side-prefixed name, which is why the two wings are not one
+  // mesh. The four panels a side sit on dihedral anchors that nothing ever
+  // moves, so those are declared static and go when the panels do.
+  for (const sideName of ["starboard", "port"] as const) {
+    wingSurfaces.push(build.mergeStatic(
+      `${sideName}-airliner-fixed-wing`,
+      fixedWing[sideName].panels,
+      root,
+      { staticNodes: fixedWing[sideName].anchors },
+    ));
+  }
+  build.mergeStatic("airliner-engine-cores", engineCores, root);
+  build.mergeStatic("airliner-engine-inlets", engineInlets, root);
+  // The flight deck, one mesh per material: furniture and the panel board,
+  // the five gauge faces, the five needles.
+  build.mergeStatic(
+    "airliner-flight-deck-interior",
+    [...flightDeckFurniture, ...instrumentPanel.filter((part) => part.material === interior)],
+    root,
+  );
+  build.mergeStatic(
+    "airliner-instrument-faces",
+    instrumentPanel.filter((part) => part.material === instrumentFace),
+    root,
+  );
+  build.mergeStatic(
+    "airliner-instrument-needles",
+    instrumentPanel.filter((part) => part.material === instrumentMarking),
+    root,
+  );
+  // The glass keeps its own material, so it keeps the alpha path, the
+  // disabled depth pre-pass and the airframe-transparency rendering group
+  // that `finishMesh` derives from it. What it gives up is Babylon sorting
+  // the six panes back to front against EACH OTHER, which only matters where
+  // one pane is seen through another: side on, through the flight deck. They
+  // are one glass, blended without a depth write, and two layers of the same
+  // tint composite to the same colour in either order — but that is an
+  // argument, not a frame, and it is the one thing here a GPU should confirm.
+  build.mergeStatic("airliner-flight-deck-glazing", flightDeckGlazing, root);
+
   const rig: AirlinerRig = {
     root,
     // The contract carries ONE rotating assembly and a four-engined aeroplane
@@ -1712,7 +1889,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // stays on ordinary world layers — a windscreen the pilot cannot see
     // through is worse than no windscreen — and the upper deck is on the list
     // because on THIS aeroplane the flight deck's own roof is part of it.
-    cockpitParts: [fuselage, radome, upperDeck, windscreenFrame],
+    cockpitParts: [fuselageShell, windscreenFrame],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     inboardAilerons: [starboardInboardAileron, portInboardAileron],
