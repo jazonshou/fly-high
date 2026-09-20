@@ -342,6 +342,34 @@ shows more pitch than any of them only because 2.4 degrees of attitude is a
 bigger deal at 56 m/s than at 205. Before this, the F-16 reached 20 degrees,
 the Global climbed 248 m and the 747 climbed 394 m.
 
+## The Cessna's cabin glazing still vanishes at orbit distance
+
+The depth pre-pass that hid the F-16's canopy hides the 150's cabin too, and
+the F-16's fix does not transfer. Removing the pre-pass fixes the exterior —
+captured, the cabin goes from a bare shell with the interior showing through
+to properly glazed — and destroys the view from the cockpit, which drops from
+mountains and horizon in full daylight to a near-black blue wash.
+
+A 150's cabin is a box of flat panes with the pilot INSIDE it, so without the
+pre-pass its own surfaces sort against each other from within and the far side
+draws over the world. The F-16 escapes this because its bubble is a single
+convex shell around one seat.
+
+Two fixes were tried and neither worked: dropping the cockpit alpha to 0.08,
+which does nothing because the fault is sorting rather than opacity; and
+toggling `needDepthPrePass` inside `setCockpitView`, which Babylon does not
+honour at runtime because the pipeline decision is already baked.
+
+The fix that should work is excluding the cabin glazing from the cockpit
+camera's layer, the way the windscreen centre frame already is — the pilot
+then sees no glass at all, which is what he effectively sees today, and the
+exterior keeps it. That needs the assertion in
+`tests/render.webgpu-aircraft.test.ts` that the glazing IS visible to the
+cockpit camera to move first, which is a deliberate contract and not mine to
+change unasked.
+
+Shipping the cosmetic loss outside rather than a functional loss inside.
+
 ## Known flaky, named rather than papered over
 
 `tests/render.webgpu-detail-scatter.test.ts` — "keeps closed-forest stem

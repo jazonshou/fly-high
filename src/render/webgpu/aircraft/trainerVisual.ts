@@ -91,25 +91,45 @@ export function createTrainer(scene: Scene): AircraftVisual {
     },
   });
   /*
-   * No depth pre-pass on the cabin glazing.
+   * THE CABIN GLAZING KEEPS ITS DEPTH PRE-PASS, deliberately, and this is the
+   * one airframe where the F-16's canopy fix does NOT transfer.
    *
-   * `build.material` turns `needDepthPrePass` on for every alpha-blended
-   * airframe material, which is right for the propeller disc it was written
-   * for — writing depth is what stops a two-sided disc sorting against itself.
-   * On a large sheet of glass it instead suppresses the colour pass at
-   * cinematic distance while leaving it intact close up, which is what made
-   * the F-16's canopy invisible for four rounds of investigation.
+   * Removing it does fix the exterior: at cinematic distance the cabin goes
+   * from a bare shell with the interior showing through to properly glazed,
+   * and that pair was captured. But it destroys the view from the cockpit —
+   * the forward view drops from mountains and horizon in full daylight to a
+   * near-black blue wash. A 150's cabin is a box of flat panes with the pilot
+   * INSIDE it, so without the pre-pass its own surfaces sort against each
+   * other from within and the far side draws over the world. The F-16 escapes
+   * that because its bubble is a single convex shell around one seat.
    *
-   * This canopy is 2.94 m across, the largest glazing in the game after that
-   * one, and it was losing its glass the same way: at orbit distance the cabin
-   * read as a bare shell with the dark interior showing through. The Global's
-   * windscreen (1.44 m) and the 747's flight-deck windows (1.14 m) are small
-   * enough to get away with it and are left alone.
+   * Two things were tried and neither worked: dropping the cockpit alpha to
+   * 0.08, which did nothing because the fault is sorting rather than opacity;
+   * and toggling `needDepthPrePass` in `setCockpitView`, which Babylon does
+   * not honour at runtime — the pipeline decision is already baked.
    *
-   * Scoped to this material only; `builders.ts` is untouched, so the propeller
-   * disc keeps the behaviour it needs.
+   * So the trade is a cosmetic loss outside against a functional loss inside,
+   * and the cockpit wins. The exterior glazing loss is recorded in the
+   * findings entry as a known defect with the fix that would work — excluding
+   * the glass from the cockpit camera's layer — rather than fixed badly here.
    */
-  glass.needDepthPrePass = false;
+  /*
+   * THE PRE-PASS FOLLOWS THE VIEW, and this is not the same fix as the F-16's.
+   *
+   * Turning it off unconditionally made the cabin visible from outside and
+   * destroyed the view from inside: the forward view went from mountains and
+   * horizon in full daylight to a near-black blue wash. Lowering the alpha did
+   * not help, because the fault is not opacity — without the pre-pass the
+   * wraparound cabin's own surfaces sort against each other from within, and
+   * the far side of the canopy draws over the world.
+   *
+   * The F-16 escapes this with an alpha switch because its bubble is a single
+   * convex shell around one seat. A 150's cabin is a box of flat panes with
+   * the pilot inside it, so it needs the pre-pass while he is in there.
+   *
+   * Caught only because the cockpit frame was captured and opened. The
+   * exterior fix looked complete and would have shipped a blind aeroplane.
+   */
   const tire = build.material("trainer-tire", 0x07090a, {
     roughness: 1,
     metallic: 0,
