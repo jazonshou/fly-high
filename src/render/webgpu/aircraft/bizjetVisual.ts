@@ -151,6 +151,25 @@ const FLAP_DOWN_TRAVEL = 0.1;
 const FLAP_LEADING_OVERLAP = FLAP_AFT_TRAVEL + 0.04;
 
 /**
+ * THE FLAP BREAK SEAL.
+ *
+ * `TRAILING_EDGE` tiles the span with 80 mm slots on purpose — that is the
+ * gap a real closed-up wing shows between flap segments — but a slot that
+ * narrow is still a hole, and swept 23 degrees it is a hole a chase camera
+ * looks straight down. Measured by ray-casting the built mesh from sixty
+ * chase-like eye points (3 ranges x 5 elevations x 4 azimuths), the ONLY
+ * daylight left anywhere between fixed wing and flap is this one break at
+ * z = 6.22..6.30: 118 mm of apparent width at flaps 0, 314 mm at take-off.
+ * Nothing leaks along the chord at any station or any angle.
+ *
+ * So it is sealed rather than closed: a dark plate on the inner flap's tip,
+ * wide enough to stand behind the gap at every deflection. The two segments
+ * hinge about lines swept 22.7 and 26.2 degrees, so they diverge slightly as
+ * they go down, and the plate carries enough overlap to cover that.
+ */
+const FLAP_SEAL_SPAN = 0.14;
+
+/**
  * The cabin window line. Fourteen a side, which is what photographs of the
  * aeroplane show and what the brochure's four six-window suites plus two
  * lavatory windows come to. It is also the single most repetitive thing on
@@ -263,7 +282,38 @@ function wingSurfaceY(spanZ: number, x: number, upper: boolean): number {
   return camber + (upper ? half : -half);
 }
 
+/**
+ * How much of the wing's own section a tucked flap nose is allowed to fill.
+ *
+ * A Fowler flap has to be overlapped by the fixed wing at rest or its
+ * translation opens a hole, and the overlapping part therefore has to fit
+ * INSIDE the wing rather than coincide with it. Coincident is not a smaller
+ * problem than a hole, it is the same z-fighting this whole pass removed:
+ * 0.34 m of flap sharing a surface with 0.34 m of wing, the full 7.7 m of
+ * flapped span, on both wings.
+ *
+ * So the tucked part is shrunk about the chord plane, tapering to 0.45 of
+ * the section at the nose.
+ *
+ * The ramp starts at 1.0 EXACTLY on the fixed trailing edge, and that is a
+ * correction to a first attempt that started it at 0.80 to guarantee
+ * clearance. A step at the trailing edge sounds harmless because it sits
+ * under the wing — but the flap's chordwise vertices do not land on the
+ * hinge line, so the step got interpolated across the segment that straddles
+ * it and surfaced as a measured 17 mm dip in the flap's upper contour just
+ * AFT of the hinge, where it is in plain sight. A continuous ramp has no
+ * step to smear. As the flap runs out this taper becomes the flap's own
+ * nose, which is what an extended Fowler flap shows in its slot.
+ */
+const FLAP_TUCK_SCALE_AT_EDGE = 1;
+const FLAP_TUCK_SCALE_AT_NOSE = 0.45;
+
 interface WingConform {
+  /**
+   * Shrink whatever lies forward of the fixed wing's trailing edge so it
+   * nests inside the wing instead of sharing its skin. Flaps only.
+   */
+  readonly tucked?: boolean;
   /** Added to the mesh's own coordinates to reach the wing frame. */
   readonly offsetX: number;
   readonly offsetZ: number;
@@ -308,7 +358,16 @@ function conformToWingSection(mesh: Mesh, conform: WingConform): void {
     const x = positions[vertex * 3]! + conform.offsetX;
     const z = Math.abs(positions[vertex * 3 + 2]! + conform.offsetZ);
     const section = wingSection(z);
-    positions[vertex * 3 + 1] = wingSurfaceY(z, x, vertex < surfaceSize);
+    // Forward of the fixed wing's trailing edge a flap is UNDER the wing, and
+    // has to be strictly inside it rather than on it.
+    const tuck = conform.tucked && x > section.hingeX
+      ? mix(
+        FLAP_TUCK_SCALE_AT_EDGE,
+        FLAP_TUCK_SCALE_AT_NOSE,
+        Math.min(1, (x - section.hingeX) / FLAP_LEADING_OVERLAP),
+      )
+      : 1;
+    positions[vertex * 3 + 1] = wingSurfaceY(z, x, vertex < surfaceSize) * tuck;
     uvs[vertex * 2] = Math.min(1, Math.max(0, (section.leadingX - x) / section.chord));
     uvs[vertex * 2 + 1] = (z - conform.panelRootZ) / spanRange;
   }
@@ -657,6 +716,31 @@ export function createBizJet(scene: Scene): AircraftVisual {
   const ailerons: TransformNode[] = [];
   /** Every flap hinge with the rest pose its Fowler travel departs from. */
   const flapTravel: { node: TransformNode; restX: number; restY: number }[] = [];
+  /**
+   * Every swept control surface with the LINE it actually hinges about.
+   *
+   * `applyCommonPose` deflects a surface by writing `rotation.z`, which is
+   * right for an unswept hinge and wrong for every hinge on this wing. The
+   * Global's trailing edge is swept 23 degrees, so the inner flap's outboard
+   * end sits about 2 m aft of the wing's own z axis — and a rotation about
+   * that axis drops it by 2 sin(30) = 1 m more than its root.
+   *
+   * Measured before this existed: at full flap the inner flap dropped 0.634 m
+   * at the root and 1.471 m at the break, and its outboard end moved 64 mm
+   * FORWARD while its root moved 163 mm aft. The panel was not deploying, it
+   * was being wrung out along its span — a rigid flap visibly twisting most
+   * of a metre. That is the "glitchy wing", and it is also why the slot the
+   * cove doors close measured shut inboard and gaping outboard: the gap was
+   * a function of how far down the span you looked.
+   *
+   * The repair is an axis, not a rebuild. Each hinge keeps its unswept BUILD
+   * frame — `conformToWingSection` maps vertices back to wing coordinates and
+   * would have to be reworked for a yawed parent — and takes its deflection
+   * as a rotation about the hinge line instead. The axis is kept pointing
+   * outboard on both wings so that a positive angle is trailing-edge-down on
+   * both, which is the unswept behaviour this replaces.
+   */
+  const sweptHinges: { node: TransformNode; axis: Vector3 }[] = [];
 
   /**
    * The trailing edge, spanwise. The old layout left 0.45 m and 0.40 m holes
@@ -795,13 +879,24 @@ export function createBizJet(scene: Scene): AircraftVisual {
     for (const piece of TRAILING_EDGE) {
       const pieceRoot = wingSection(piece.rootZ);
       const pieceTip = wingSection(piece.tipZ);
-      // A translating flap is tucked far enough under the fixed wing that it
+      // A translating flap is tucked far enough UNDER the fixed wing that it
       // is still overlapped at full travel; a rotating aileron needs only the
-      // cove, and a fixed panel neither.
-      const leadingTuck = piece.hinged && piece.name !== "aileron"
-        ? FLAP_LEADING_OVERLAP
-        : CONTROL_SURFACE_COVE;
-      const hingeX = piece.hinged ? pieceRoot.hingeX - CONTROL_SURFACE_COVE : 0;
+      // cove behind it, and a fixed panel neither.
+      //
+      // The signs are opposite and that is the whole point: +X is the nose,
+      // so a flap's leading edge goes FORWARD of the hinge line to get under
+      // the wing, and an aileron's goes AFT of it to leave a gap. Getting
+      // this backwards put a 334 mm slot across the full flap span at flaps
+      // 0 — measured, and visible as daylight from every angle above.
+      const isFlap = piece.hinged && piece.name !== "aileron";
+      const leadingEdgeAt = (station: WingSection): number => (isFlap
+        ? station.hingeX + FLAP_LEADING_OVERLAP
+        : station.hingeX - CONTROL_SURFACE_COVE);
+      // The node sits ON the panel's own leading edge, so the panel has no
+      // metal forward of its hinge. With the leading edge tucked 0.34 m under
+      // the wing, a node left back at the hinge line would have swung that
+      // overhang UP through the wing's upper skin as the flap went down.
+      const hingeX = piece.hinged ? leadingEdgeAt(pieceRoot) : 0;
       const hingeZ = piece.hinged ? side * piece.rootZ : 0;
       const hinge = piece.hinged
         ? node(`${sideName}-bizjet-${piece.name}`, wing, scene)
@@ -814,11 +909,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const surface = build.airfoilWing(
         `${sideName}-bizjet-${piece.name}-surface`,
         {
-          // A translating flap needs a Fowler overlap; a rotating aileron
-          // needs only the cove.
-          rootLeadingX: pieceRoot.hingeX - leadingTuck - hingeX,
+          rootLeadingX: leadingEdgeAt(pieceRoot) - hingeX,
           rootTrailingX: pieceRoot.trailingX - hingeX,
-          tipLeadingX: pieceTip.hingeX - leadingTuck - hingeX,
+          tipLeadingX: leadingEdgeAt(pieceTip) - hingeX,
           tipTrailingX: pieceTip.trailingX - hingeX,
           rootZ: side * piece.rootZ - hingeZ,
           tipZ: side * piece.tipZ - hingeZ,
@@ -831,6 +924,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
         hinge,
       );
       conformToWingSection(surface, {
+        tucked: isFlap,
         offsetX: hingeX,
         offsetZ: hingeZ,
         panelRootZ: insideKink ? WING_ROOT_Z : WING_KINK_Z,
@@ -838,6 +932,27 @@ export function createBizJet(scene: Scene): AircraftVisual {
       });
       wingSurfaces.push(surface);
       if (!piece.hinged) continue;
+      // The hinge LINE, which the deflection axis is taken from: it
+      // runs from this piece's root station to its tip station along the
+      // wing's swept hinge line, and each flap lies wholly inboard or wholly
+      // outboard of the kink, so within a piece that line is straight.
+      const rootStationHinge = wingSection(piece.rootZ);
+      const tipStationHinge = wingSection(piece.tipZ);
+      const alongX = tipStationHinge.hingeX - rootStationHinge.hingeX;
+      const alongZ = side * (piece.tipZ - piece.rootZ);
+      const alongLength = Math.hypot(alongX, alongZ);
+      // Outboard-positive on both wings: `alongZ` carries the side's sign and
+      // flipping the axis with it would deflect the port surfaces the wrong
+      // way, which is the bug the world-space side test exists to catch.
+      const outboard = alongZ >= 0 ? 1 : -1;
+      sweptHinges.push({
+        node: hinge,
+        axis: new Vector3(
+          (outboard * alongX) / alongLength,
+          0,
+          (outboard * alongZ) / alongLength,
+        ),
+      });
       if (piece.name === "aileron") {
         // The aileron surface keeps the bare name the world-space side test
         // reads, and STARBOARD LANDS AT INDEX 0 because this loop runs +1
@@ -849,6 +964,50 @@ export function createBizJet(scene: Scene): AircraftVisual {
       } else {
         flaps.push(hinge);
         flapTravel.push({ node: hinge, restX: hingeX, restY: 0 });
+        if (piece.name === "inner-flap") {
+          // The seal for the flap break (see `FLAP_SEAL_SPAN`). It hangs on
+          // the INNER flap and reaches 60 mm into the outer flap's root, so
+          // the two segments can hinge about their own differently swept
+          // lines without ever parting company across the gap.
+          //
+          // Built as 140 mm MORE FLAP rather than as a plate: same section
+          // law, same conform, same tuck, so it cannot stand proud of the
+          // skin at the nose the way a constant-depth box does — the flap is
+          // squeezed to 0.45 of the section there and a box is not. It wears
+          // the dark paint, because what should show through an 80 mm slot
+          // is a shadow line.
+          //
+          // Only this break. The outer flap meets the AILERON at 9.18, and
+          // that break took no daylight at any of the sixty eye points — it
+          // is further outboard, less swept, and a fixed plate for a surface
+          // that deflects both ways would be a worse artefact than the gap.
+          const sealTipZ = piece.tipZ + FLAP_SEAL_SPAN;
+          const sealTip = wingSection(sealTipZ);
+          const seal = build.airfoilWing(
+            `${sideName}-bizjet-flap-break-seal`,
+            {
+              rootLeadingX: leadingEdgeAt(pieceTip) - hingeX,
+              rootTrailingX: pieceTip.trailingX - hingeX,
+              tipLeadingX: leadingEdgeAt(sealTip) - hingeX,
+              tipTrailingX: sealTip.trailingX - hingeX,
+              rootZ: side * piece.tipZ - hingeZ,
+              tipZ: side * sealTipZ - hingeZ,
+              thicknessRatio: 0.06,
+              camberRatio: 0.01,
+              chordSegments: 10,
+              spanSegments: 1,
+            },
+            dark,
+            hinge,
+          );
+          conformToWingSection(seal, {
+            tucked: true,
+            offsetX: hingeX,
+            offsetZ: hingeZ,
+            panelRootZ: WING_ROOT_Z,
+            panelTipZ: WING_KINK_Z,
+          });
+        }
       }
     }
 
@@ -1558,6 +1717,18 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
+      // ...and immediately re-express every swept deflection about its own
+      // hinge line. `applyCommonPose` has just written `rotation.z`, which is
+      // read here as the ANGLE and then discarded: setting `rotationQuaternion`
+      // makes Babylon ignore `rotation` entirely, so the shared contract still
+      // owns what each surface does and this owns only which axis it does it
+      // about.
+      for (const swept of sweptHinges) {
+        swept.node.rotationQuaternion = Quaternion.RotationAxis(
+          swept.axis,
+          swept.node.rotation.z,
+        );
+      }
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;
