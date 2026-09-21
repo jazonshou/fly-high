@@ -93,9 +93,23 @@ const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
  */
 const CAPTURE_AIRCRAFT = (() => {
   const wanted = String(import.meta.env.VITE_PERF_AIRCRAFT ?? "").trim();
-  return (AIRCRAFT_KINDS as readonly string[]).includes(wanted)
-    ? (wanted as (typeof AIRCRAFT_KINDS)[number])
-    : ("trainer" as const);
+  if (wanted === "") return "trainer" as const;
+  // THROWS rather than falling back, and that is the whole point of this
+  // branch. It used to return `trainer` for anything it did not recognise, so
+  // `VITE_PERF_AIRCRAFT=trainer,trainer,airliner,airliner` — a perfectly
+  // reasonable-looking attempt at an interleaved kind comparison, since this
+  // variable takes ONE kind — flew four trainer arms and reported them as a
+  // comparison between two aeroplanes. Four numbers that agree beautifully and
+  // measure nothing. A capture that cannot fly what it was asked to must not
+  // run.
+  if (!(AIRCRAFT_KINDS as readonly string[]).includes(wanted)) {
+    throw new Error(
+      `VITE_PERF_AIRCRAFT="${wanted}" is not an aircraft kind. One of `
+      + `${AIRCRAFT_KINDS.join(", ")}, or unset for the trainer. This variable `
+      + "takes a single kind: to compare two, run the capture once per kind.",
+    );
+  }
+  return wanted as (typeof AIRCRAFT_KINDS)[number];
 })();
 /**
  * Diagnostic only; normal captures match shipping's observer-free path.
@@ -1581,6 +1595,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // reconstructed from a shell history is one nobody can audit later — and
         // its ABSENCE is how the lost-plumbing incident was detected.
         profileOverride: PROFILE_OVERRIDE,
+        // WHICH AEROPLANE FLEW IT, for exactly the reason above — which this
+        // report did not say until a same-tree kind comparison had to prove its
+        // own arms from the draw counts and the baseline SSIM, because nothing
+        // in the file named them.
+        aircraft: CAPTURE_AIRCRAFT,
         pinnedRenderScale: CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
         // Whether the frame-delivery numbers below were contract or diagnostic.
