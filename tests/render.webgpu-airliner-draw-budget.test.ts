@@ -411,10 +411,16 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     expect(census.positionSum.y).toBeCloseTo(-26413.0229, 1);
     expect(census.positionSum.z).toBeCloseTo(-22.0320, 1);
     expect(census.positionSquares).toBeCloseTo(6853278.81, 0);
-    expect(census.normalSum.x).toBeCloseTo(-345.9461, 2);
-    expect(census.normalSum.y).toBeCloseTo(124.4928, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.0913, 2);
-    expect(census.normalMoment).toBeCloseTo(10632.1105, 1);
+    // THE FOUR NORMAL TERMS MOVED and nothing else did, which is the whole
+    // signature of welding the loft's crown seam: -345.9461 -> -346.0431,
+    // 124.4928 -> 130.6204, 0.0913 -> 0.1083, 10632.1105 -> 10625.2135, while
+    // `vertices`, `indices`, `positionSum`, `positionSquares`, `signedVolume`
+    // and `area` above are bit-identical. Two coincident vertices per section
+    // stopped being shaded as two different surfaces; no vertex moved.
+    expect(census.normalSum.x).toBeCloseTo(-346.0431, 2);
+    expect(census.normalSum.y).toBeCloseTo(130.6204, 2);
+    expect(census.normalSum.z).toBeCloseTo(0.1083, 2);
+    expect(census.normalMoment).toBeCloseTo(10625.2135, 1);
     expect(census.signedVolume).toBeCloseTo(-3232.4065, 2);
     expect(census.area).toBeCloseTo(4695.2708, 2);
   });
