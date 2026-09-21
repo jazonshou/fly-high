@@ -126,8 +126,16 @@
   align-items: stretch;
   gap: 10px;
   flex: 68 1 calc(var(--start-square) + 10px);
-  /* The seed's 118px floor plus the square and their gap. */
-  min-width: calc(118px + 10px + var(--start-square));
+  /*
+   * The pair's floor is its CONTENT: the seed's caption, its seven characters
+   * and its refresh glyph, plus the gap and the square. It used to be a
+   * hand-picked 118px for the seed, which is about 35px less than those three
+   * things need, so between the width where the seed hit 118px and the width
+   * where the row finally wrapped, the glyph was pushed out through the
+   * button's right edge (Jason's screenshot). Same rule as the two starts:
+   * the row wraps when something stops fitting, not at a number.
+   */
+  min-width: max-content;
 }
 
 /* The terrain viewer keeps its own row rather than being squeezed into the
@@ -284,7 +292,10 @@
  */
 .start-screen__utility > .seed-action {
   flex: 1 1 0;
-  min-width: 118px;
+  /* Never narrower than its own caption + value + glyph; see the pair's floor
+     above. (An intrinsic keyword cannot go inside max(), so there is no
+     pixel lower bound here; the content is the bound.) */
+  min-width: max-content;
 }
 
 .settings-action {
