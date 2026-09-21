@@ -12,6 +12,8 @@ import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   TRAINER_DIAL_DIAMETER,
   TRAINER_LEFT_POST_AZIMUTH_DEGREES,
+  TRAINER_POST_RADIUS,
+  trainerDialPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
@@ -21,10 +23,12 @@ import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainer
  * stands in for.
  *
  * The targets are the D3 list from the PM's design, as angles from the pilot's
- * left-seat eye at the 75 degree lens: glareshield top -8 to -11 degrees,
+ * left-seat eye at the 75 degree lens: glareshield top -8.2 to -11 degrees (it
+ * was built at -8.0 and the PM asked for it 5 mm lower, which reads -8.35),
  * instrument row centred at -15 (+-1.5) with each dial at least 4.5 degrees
- * across and a second row at -21, the left windscreen post between azimuth -37
- * and -28, the cowl reading about -4.7 above the glareshield. Each has a
+ * across and a second row at -21, the left windscreen post's axis between
+ * azimuth -37 and -31 (at -35), the cowl reading about -4.7 above the
+ * glareshield. Each has a
  * control: `scripts`' mutation runs move the number and watch the test fail.
  *
  * Every measurement is a ray or a vertex of the BUILT meshes, not a re-derivation
@@ -166,7 +170,7 @@ describe("the trainer's cockpit parts", () => {
     }
   });
 
-  it("read the glareshield's top edge between -8 and -11 degrees straight ahead", () => {
+  it("read the glareshield's top edge between -8.2 and -11 degrees straight ahead", () => {
     const panel = named("trainer-instrument-panel");
     const ahead = worldVertices(panel).filter((v) => v.x - EYE.forward > NEAR_PLANE);
     const top = Math.max(...ahead.map((v) => v.y));
@@ -179,13 +183,15 @@ describe("the trainer's cockpit parts", () => {
     const el = azel(left.add(right.subtract(left).scale(t))).el;
     expect(t).toBeGreaterThan(0);
     expect(t).toBeLessThan(1);
+    // The upper bound is -8.2 and not the accepted -8: the first build read
+    // -8.0 straight ahead and the PM asked for it 5 mm lower, which reads -8.35.
     expect(el).toBeGreaterThan(-11);
-    expect(el).toBeLessThan(-8);
+    expect(el).toBeLessThan(-8.2);
     // ...and it is what the eye actually meets there: the panel, not the cowl behind it.
     const seen = topLine("trainer-instrument-panel", 0);
     expect(seen).not.toBeNull();
     expect(seen!).toBeGreaterThan(-11);
-    expect(seen!).toBeLessThan(-8);
+    expect(seen!).toBeLessThan(-8.2);
   });
 
   it("let the cowl rise above the glareshield to about -4.7 degrees", () => {
@@ -197,15 +203,66 @@ describe("the trainer's cockpit parts", () => {
     expect(cowl!).toBeGreaterThan(panel);
   });
 
-  it("stand the left windscreen post between azimuth -37 and -28, and the right one nowhere near the view", () => {
-    const azimuths = worldVertices(named("trainer-windscreen-post-port"))
-      .filter((v) => v.x - EYE.forward > NEAR_PLANE).map((v) => azel(v).az);
-    expect(Math.min(...azimuths)).toBeGreaterThan(-37);
-    expect(Math.max(...azimuths)).toBeLessThan(-28);
-    expect(TRAINER_LEFT_POST_AZIMUTH_DEGREES).toBeGreaterThan(-37);
-    expect(TRAINER_LEFT_POST_AZIMUTH_DEGREES).toBeLessThan(-28);
+  it("hug the left edge of the frame with the left windscreen post's axis at azimuth -35, and keep the right one out of the view", () => {
+    const port = worldVertices(named("trainer-windscreen-post-port")).filter((v) => v.x - EYE.forward > NEAR_PLANE);
+    // The post's AXIS is the D3 target (-37 to -31): the mean azimuth of its
+    // top and its bottom, each an average over the ring of vertices there.
+    const highest = Math.max(...port.map((v) => v.y));
+    const lowest = Math.min(...port.map((v) => v.y));
+    const axisAt = (y: number) => {
+      const ring = port.filter((v) => Math.abs(v.y - y) < 1e-6).map((v) => azel(v).az);
+      return ring.reduce((sum, az) => sum + az, 0) / ring.length;
+    };
+    for (const az of [axisAt(highest), axisAt(lowest)]) {
+      expect(az).toBeGreaterThan(-37);
+      expect(az).toBeLessThan(-31);
+      expect(az).toBeCloseTo(TRAINER_LEFT_POST_AZIMUTH_DEGREES, 0);
+    }
+    // Its thickness spreads it about 2.7 degrees either side, so its outer edge
+    // reaches the frame's edge (-37.5 at 16:9) and no further than -38, and its
+    // inner edge stays out of the view, beyond -31.
+    const azimuths = port.map((v) => azel(v).az);
+    expect(Math.min(...azimuths)).toBeGreaterThan(-38);
+    expect(Math.max(...azimuths)).toBeLessThan(-31);
+    expect(TRAINER_POST_RADIUS).toBeLessThanOrEqual(0.012);
     const starboard = worldVertices(named("trainer-windscreen-post-starboard")).map((v) => azel(v).az);
     expect(Math.min(...starboard)).toBeGreaterThan(37.5);
+  });
+
+  it("draw each needle 3 mm wide with a round 6 mm hub at the dial's centre, all in the needle's own mesh", () => {
+    for (const { name, centre, normal } of trainerDialPlacements()) {
+      const needle = named(`trainer-${name}-needle`);
+      expect(needle.metadata?.mergedFrom, `${name} needle is a merge of a bar and a hub`).toHaveLength(2);
+      // In-plane coordinates: the panel-face plane, centred on the dial.
+      const across = new Vector3(0, 0, 1);
+      const up = Vector3.Cross(normal, across).normalize();
+      const plane = worldVertices(needle).map((v) => {
+        const d = v.subtract(centre);
+        return { s: Vector3.Dot(d, up), t: Vector3.Dot(d, across) };
+      });
+      const farthest = plane.reduce((a, b) => (Math.hypot(b.s, b.t) > Math.hypot(a.s, a.t) ? b : a));
+      // The bar's axis: the mean of the vertices out at the same end as its farthest
+      // corner (a corner alone is off the axis by half the bar's width).
+      const tipEnd = plane.filter((p) => Math.hypot(p.s, p.t) > 0.0075 && p.s * farthest.s + p.t * farthest.t > 0);
+      const mean = { s: tipEnd.reduce((a, p) => a + p.s, 0) / tipEnd.length, t: tipEnd.reduce((a, p) => a + p.t, 0) / tipEnd.length };
+      const length = Math.hypot(mean.s, mean.t);
+      const dir = { s: mean.s / length, t: mean.t / length };
+      const along = (p: { s: number; t: number }) => p.s * dir.s + p.t * dir.t;
+      const lateral = (p: { s: number; t: number }) => Math.abs(-p.s * dir.t + p.t * dir.s);
+      // Beyond the hub (past 7.5 mm from the pivot) only the bar exists: 3 mm wide.
+      const barOnly = plane.filter((p) => Math.abs(along(p)) > 0.0075);
+      expect(barOnly.length, `${name} bar vertices`).toBeGreaterThanOrEqual(4);
+      expect(Math.max(...barOnly.map(lateral)), `${name} bar half-width`).toBeLessThanOrEqual(0.0015 + 1e-4);
+      // The hub: vertices wider than the bar, all at 6 mm from the pivot, spread all round it.
+      const hub = plane.filter((p) => lateral(p) > 0.002);
+      expect(hub.length, `${name} hub vertices`).toBeGreaterThanOrEqual(12);
+      for (const p of hub) expect(Math.hypot(p.s, p.t), `${name} hub radius`).toBeCloseTo(0.006, 3);
+      const spread = Math.max(...hub.map((p) => Math.atan2(p.t, p.s))) - Math.min(...hub.map((p) => Math.atan2(p.t, p.s)));
+      expect(spread, `${name} hub is round`).toBeGreaterThan(Math.PI);
+      // and the bar is as long as it was: 16 mm to each side of the pivot
+      expect(Math.max(...plane.map(along))).toBeGreaterThan(0.0155);
+      expect(Math.max(...plane.map(along))).toBeLessThan(0.0165);
+    }
   });
 
   it("stand the cowl on the shell it replaces: the same rings, so the same surface", () => {

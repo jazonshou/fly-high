@@ -22,10 +22,12 @@ import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
  *
  * THE TARGETS, as angles from the eye (`catalogue.cockpitEye`) at the 75
  * degree lens, and what each number below was solved to:
- *  - the glareshield top straight ahead reads -8 to -11 degrees;
+ *  - the glareshield top straight ahead reads -8 to -11 degrees (built at -8.35,
+ *    the PM having asked for it 5 mm lower than the first build's -8.0);
  *  - the main instrument row is centred -15 degrees, each dial at least 4.5
  *    degrees across, and the second row -21;
- *  - the left windscreen post stands between azimuth -37 and -28 (it is at -32.5);
+ *  - the left windscreen post's axis stands at azimuth -35, hugging the left
+ *    edge of the frame (the D3 window is -37 to -31);
  *  - the cowl rises above the glareshield to about -4.7, as a Cessna's does.
  *
  * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
@@ -55,8 +57,12 @@ export const TRAINER_PANEL = Object.freeze({
   height: 0.5,
   /** Rotation about +Z, radians; negative leans the top forward. */
   lean: -0.12,
-  /** Height of the panel's rear-top edge, which is the sill line. */
-  topRearY: 0,
+  /**
+   * Height of the panel's rear-top edge: the sill line (0), less the 5 mm the PM
+   * asked the glareshield to come down. The dial centres are solved against the
+   * panel's rear face, so they follow it and stay at -15 and -21 degrees.
+   */
+  topRearY: -0.005,
   /**
    * Half its width. It has to carry the dial row, whose left edge is at z -0.40
    * (`TRAINER_DIAL_ROWS`), with a few centimetres to spare. That is wider than
@@ -91,19 +97,37 @@ export const TRAINER_DIAL_ROWS = Object.freeze([
   }),
 ]);
 
+/**
+ * A needle: a bar 3 mm across and 32 mm long through the dial's centre, with a
+ * round hub of 6 mm radius on it. The hub is merged into the needle's own mesh so
+ * the mesh count does not grow, and it is a little thicker than the bar so it
+ * stands proud of it.
+ */
+export const TRAINER_NEEDLE = Object.freeze({
+  width: 0.003,
+  length: 0.032,
+  thickness: 0.006,
+  hubRadius: 0.006,
+  hubThickness: 0.008,
+});
+
 /** Static needle tilt, radians, by dial: what `addInstrumentPanel` gave them, `(index - 2) * 0.38` in its order. */
 const NEEDLE_TILT: Readonly<Record<string, number>> = Object.freeze({
   airspeed: -0.76, attitude: -0.38, altimeter: 0, engine: 0.38, "vertical-speed": 0.76,
 });
 
 /**
- * The left windscreen post lies in the vertical plane through the eye at this
- * azimuth (degrees, negative to port). A vertical plane through the eye
- * projects to a vertical LINE on screen, so the whole post reads at one column
- * however raked it is, and the D3 window is -37 to -28.
+ * The left windscreen post's AXIS lies in the vertical plane through the eye at
+ * this azimuth (degrees, negative to port). A vertical plane through the eye
+ * projects to a vertical LINE on screen, so the whole post reads at one column.
+ * At -35 the post hugs the left edge of the frame (-37.5 at 16:9) and reads as a
+ * window frame instead of a bar standing in the view; its own thickness spreads
+ * it about 2.7 degrees either side of the axis (0.012 m at 0.276 m), so its outer
+ * edge touches the frame edge.
  */
-export const TRAINER_LEFT_POST_AZIMUTH_DEGREES = -32.5;
-const POST_RADIUS = 0.02;
+export const TRAINER_LEFT_POST_AZIMUTH_DEGREES = -35;
+export const TRAINER_POST_RADIUS = 0.012;
+const POST_RADIUS = TRAINER_POST_RADIUS;
 
 /**
  * The cabin's inner half-widths, measured off the built meshes (metres from the
@@ -192,9 +216,9 @@ export function trainerDialPlacements(): readonly { name: string; centre: Vector
  * NOT raked to the roof's outboard corner, which was the first design: that
  * corner is 0.06 m ahead of the eye and 0.05 m to port, so a post ending there
  * swelled toward the top into a dark wedge across 22% of the frame. Standing the
- * post 0.28 m away instead keeps it a bar about 8 degrees wide from bottom to
+ * post about 0.28 m away instead keeps it a bar of uniform width from bottom to
  * top. It runs from just below the sill to 0.27, which is above the top of the
- * frame at that azimuth (+20 degrees is 0.10 m over 0.28), because the roof
+ * frame at that azimuth (+19.5 degrees is 0.10 m over 0.28), because the roof
  * slab is narrower than the greenhouse (0.31 against 0.44) and there is nothing
  * up there for a post ending at the roof's height to meet: it would stop in
  * mid-air 15 degrees above the horizon.
@@ -331,14 +355,25 @@ export function buildTrainerCockpit(
     face.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
     face.position.copyFrom(at.add(normal.scale(0.005)));
     parts.push(face);
-    // The needle stands 8.5 mm off the panel, in front of the face, static as
+    // The needle stands 9.5 mm off the panel, in front of the face, static as
     // it always was. Its long axis is local Z; the tilt is about local X (the
     // dial's normal) and the lean of the panel is applied after it.
-    const needle = build.box(`trainer-${name}-needle`, 0.006, 0.006, 0.032, materials.instrumentMarking, root);
-    needle.position.copyFrom(at.add(normal.scale(0.0095)));
-    needle.rotationQuaternion = Quaternion.RotationAxis(new Vector3(0, 0, 1), TRAINER_PANEL.lean)
+    const pivot = at.add(normal.scale(0.0095));
+    const bar = build.box(
+      `trainer-${name}-needle-bar`, TRAINER_NEEDLE.thickness, TRAINER_NEEDLE.width, TRAINER_NEEDLE.length,
+      materials.instrumentMarking, root,
+    );
+    bar.position.copyFrom(pivot);
+    bar.rotationQuaternion = Quaternion.RotationAxis(new Vector3(0, 0, 1), TRAINER_PANEL.lean)
       .multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), NEEDLE_TILT[name] ?? 0));
-    parts.push(needle);
+    // The hub is a disc on the same axis as the face, set the same way.
+    const hub = build.cylinder(
+      `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2,
+      TRAINER_NEEDLE.hubRadius * 2, 16, materials.instrumentMarking, root,
+    );
+    hub.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
+    hub.position.copyFrom(pivot);
+    parts.push(build.mergeStatic(`trainer-${name}-needle`, [bar, hub], root));
   }
 
   // THE WINDSCREEN POSTS, sill to roof, each in one vertical plane through the
