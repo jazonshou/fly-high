@@ -17,9 +17,22 @@ import { mkdirSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
-const [outDir, url, expectTree, kind, heightRaw] = process.argv.slice(2);
+const [outDir, url, expectTree, kind, heightRaw, viewRaw] = process.argv.slice(2);
 if (!outDir || !url || !expectTree || !kind) {
-  throw new Error("usage: <outDir> <url> <expectTree> <kind> [height]");
+  throw new Error("usage: <outDir> <url> <expectTree> <kind> <height> [above|side]");
+}
+/**
+ * `above` looks straight down the spine; `side` looks straight at the flank
+ * from abeam. Both in the aeroplane's own frame and both at `timeOfDay:
+ * golden`, because a defect in how a part SITS in a surface only shows when
+ * the light is low enough for the two to return different amounts of it.
+ */
+const view = viewRaw ?? "above";
+// `side-port` exists because a low sun lights one flank and silhouettes the
+// other, and which one depends on the heading the aeroplane happens to be
+// flying. A backlit flank shows nothing about how a part sits in it.
+if (!["above", "side", "side-port"].includes(view)) {
+  throw new RangeError('view must be "above", "side" or "side-port"');
 }
 // VALIDATED, not defaulted. A shell loop that loses its second argument hands
 // this script `kind = "airliner 95"` and no height, and with a default height
@@ -83,7 +96,9 @@ await page.getByRole("button", { name: /^Start flying/ }).click();
 await page.waitForTimeout(30_000);
 
 /** Park the camera overhead, and keep parking it. */
-const parked = await page.evaluate(async ({ above, airframe }: { above: number; airframe: string }) => {
+const parked = await page.evaluate(async (
+  { above, airframe, view: wanted }: { above: number; airframe: string; view: string },
+) => {
   (globalThis as unknown as Record<string, unknown>).__name ??= (fn: unknown) => fn;
   const storeUrl = performance.getEntriesByType("resource")
     .map((r) => r.name).find((n) => /\/deps\/engineStore-[^/]*\.js/.test(n));
@@ -117,29 +132,36 @@ const parked = await page.evaluate(async ({ above, airframe }: { above: number; 
     const m = (body as unknown as { getWorldMatrix: () => { m: number[] } }).getWorldMatrix().m;
     const noseLength = Math.hypot(m[0]!, m[1]!, m[2]!) || 1;
     const roofLength = Math.hypot(m[4]!, m[5]!, m[6]!) || 1;
+    const wingLength = Math.hypot(m[8]!, m[9]!, m[10]!) || 1;
     const nose = [m[0]! / noseLength, m[1]! / noseLength, m[2]! / noseLength];
     const roof = [m[4]! / roofLength, m[5]! / roofLength, m[6]! / roofLength];
+    const wing = [m[8]! / wingLength, m[9]! / wingLength, m[10]! / wingLength];
     const cam = scene.activeCamera as unknown as {
       position: { set: (x: number, y: number, z: number) => void; constructor: new (x: number, y: number, z: number) => unknown };
       upVector: { set: (x: number, y: number, z: number) => void };
       setTarget: (v: unknown) => void;
     } | null;
     if (!cam) return;
+    // Abeam on the starboard side for `side`, overhead for `above`.
+    const flank = wanted.startsWith("side");
+    const side = wanted === "side-port" ? -1 : 1;
+    const out = flank ? [wing[0]! * side, wing[1]! * side, wing[2]! * side] : roof;
     cam.position.set(
-      c.x + roof[0]! * above,
-      c.y + roof[1]! * above,
-      c.z + roof[2]! * above,
+      c.x + out[0]! * above,
+      c.y + out[1]! * above,
+      c.z + out[2]! * above,
     );
-    // Nose up the frame.
-    cam.upVector.set(nose[0]!, nose[1]!, nose[2]!);
+    // Nose up the frame from overhead; roof up the frame from abeam.
+    const up = flank ? roof : nose;
+    cam.upVector.set(up[0]!, up[1]!, up[2]!);
     const Point = cam.position.constructor as new (x: number, y: number, z: number) => unknown;
     cam.setTarget(new Point(c.x, c.y, c.z));
   });
   return "parked";
-}, { above: height, airframe: kind });
+}, { above: height, airframe: kind, view });
 if (parked !== "parked") throw new Error(`VOID: could not park the camera (${parked}); nothing captured`);
 console.log(`camera parked ${height} m above the ${kind}`);
 await page.waitForTimeout(4_000);
-await page.screenshot({ path: `${outDir}/${kind}-spine.png`, type: "png" });
-console.log(`wrote ${outDir}/${kind}-spine.png`);
+await page.screenshot({ path: `${outDir}/${kind}-${view}.png`, type: "png" });
+console.log(`wrote ${outDir}/${kind}-${view}.png`);
 await browser.close();
