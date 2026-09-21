@@ -133,9 +133,11 @@ HUD's units setting (`cockpit/instrumentMappings.ts`, a pure module):
 | Cessna vertical speed | `verticalSpeed` (m/s) x 196.85 ft/min | -90 at 0, 0 at +2,000, -180 at -2,000, clamped |
 | Cessna engine | `engineRpm` (prop RPM) | -135 at 0 to +135 at 2,750, clamped |
 | Global attitude ball | `bank`, `pitch` (degrees) | the ball's horizon turns by MINUS the bank; the pitch bar slides down 1 mm a degree of nose-up, clamped at 25 |
+| Cessna attitude ball | `bank`, `pitch` (degrees) | the same ball at 0.75 of the size (radius 0.036 on the 0.08 dial): the bar slides 0.75 mm a degree, clamped at 25 |
 
-The Cessna's attitude dial has no mapping: its needle stays at 12 o'clock. The
-update runs inside the visual's `update()` and only while cockpit view is on (the
+The Cessna's attitude dial first had no mapping and its needle stood at 12
+o'clock; it now wears the Global's ball (see "The Cessna's attitude ball" below)
+and has no needle. The update runs inside the visual's `update()` and only while cockpit view is on (the
 visual already received the whole state every frame; no plumbing was needed).
 
 **The sign is held to the SCREEN, not to an angle.** A dial's normal points TOWARD
@@ -174,6 +176,24 @@ height above the terrain read the terrain's height plus that, which depends on t
 world. All deterministic, so the fourteen cockpit shots differ from before in their
 foreground and nothing else.
 
+**The Cessna's attitude ball.** The attitude dial has the Global's ball at 0.75 of its
+size and no needle. The ball's builder moved out of the Global's cockpit into
+`buildAttitudeBall` (`cockpit/cockpitPrimitives.ts`); the Global's 99 meshes are
+bit-identical before and after, positions and indices. On the Cessna: radius 0.036 on
+the 0.08 m dial (4 mm of face shows round it), sky and ground 1.5 mm in front of the
+face, the bar 1.5 mm in front of them, the bar the Global's 0.07 x 0.003 scaled to
+0.0525 x 0.00225, sliding 0.75 mm a degree (`pitchBarOffsetMetres` takes the ball's
+radius) and clamped at 25 degrees, where its corners are 3.1 mm inside the rim (the
+Global's 4.1). The dial's normal points TOWARD the pilot and a ball's pivot must point
+AWAY, so the ball hangs from a frame node whose axes are the pivot's (X the normal
+reversed, Y up the leaning face, Z the pilot's right); the sign of the turn was taken
+from the screen-space test and not from the Global's code, and a ball framed like a
+needle (X toward him) fails it. The panel leans 6.9 degrees off the image plane and the
+dial sits 15 degrees below the eye, so the Cessna's ball horizon is 0.46 degrees off
+the world's on the screen at a 20 degree bank (the Global's is exact): inside the
+test's one degree, where a flipped sign is out by 40. In the perf harness the ball
+reads level (its states carry pitch and bank 0) and the attitude needle is gone.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -186,6 +206,5 @@ baseline comparison of those shots sees a foreground change and no framing
 change.
 
 **Not built:** the 747's cockpit and the F-16's (the airliner's eye keeps
-`right` 0 until its flight deck is rebuilt). The Cessna's attitude dial has no
-mapping and stays static. Baselines are not promoted here; the single end-of-wave
-promotion absorbs the change.
+`right` 0 until its flight deck is rebuilt). Baselines are not promoted here; the
+single end-of-wave promotion absorbs the change.

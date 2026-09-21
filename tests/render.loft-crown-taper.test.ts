@@ -204,7 +204,12 @@ describe("the loft's crown taper", () => {
       // mesh by mesh against the tip it was cut from (da86f47), positions AND indices: this
       // step left the trainer's other 63 meshes, the jet's 76, the Global's 99 and the 747's
       // 91 bit-identical.
-      trainer: "a6cab9e5",
+            // RE-PINNED ONCE MORE for the trainer by the Cessna's attitude ball (jazonshou/cockpit-cessna-ball):
+      // its attitude needle mesh is gone and the ball's three pieces (sky, ground, pitch bar) stand in
+      // its place. Checked mesh by mesh against 8a45c97, positions AND indices: the trainer's other 67
+      // meshes, the jet's 78, the Global's 99 and the 747's 91 are bit-identical, which also holds the
+      // Global's ball to be unchanged by its builder moving into cockpitPrimitives.
+trainer: "00cb1d45",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",

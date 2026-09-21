@@ -6,11 +6,13 @@ import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
-import { basisQuaternion, glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import { basisQuaternion, buildAttitudeBall, glareshieldMaterial, slab, strip, type AttitudeBall } from "./cockpitPrimitives";
 import {
   airspeedNeedleDegrees,
   altimeterNeedleDegrees,
+  attitudeHorizonDegrees,
   engineNeedleDegrees,
+  pitchBarOffsetMetres,
   verticalSpeedNeedleDegrees,
 } from "./instrumentMappings";
 
@@ -86,6 +88,32 @@ export const TRAINER_PANEL = Object.freeze({
 
 /** Real gauge size. The dials this replaces were 0.17 to 0.20 m across. */
 export const TRAINER_DIAL_DIAMETER = 0.08;
+
+/**
+ * A gauge face: a disc 8 mm thick whose centre stands 5 mm off the panel's rear
+ * face along the dial's normal, so its front is 9 mm off it.
+ */
+const GAUGE_FACE_OFFSET = 0.005;
+const GAUGE_FACE_THICKNESS = 0.008;
+
+/**
+ * THE ATTITUDE BALL on the "attitude" dial, which has no needle: the Global's ball
+ * (`buildAttitudeBall`) at 0.75 of its size, so 0.036 m on the 0.08 m dial and 4 mm
+ * of face left round it. Its sky and ground stand 1.5 mm in front of the face
+ * (`proud`); the bar is the Global's 0.07 x 0.003 scaled by the same 0.75, and it
+ * slides 0.75 mm a degree (`pitchBarOffsetMetres` takes the radius), so at the 25
+ * degree clamp it is still inside the disc.
+ */
+export const TRAINER_ATTITUDE_BALL = Object.freeze({
+  radius: 0.036,
+  thickness: 0.002,
+  proud: 0.0015,
+  barOffset: 0.0015,
+  barLength: 0.0525,
+  barHeight: 0.00225,
+  segments: 24,
+  pivotName: "trainer-attitude-pivot",
+});
 
 /**
  * The dials, left to right, with the elevation from the eye at which each row
@@ -259,14 +287,14 @@ export function trainerPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vect
   return { bottom: new Vector3(x, bottom.y, -z), top: new Vector3(x, top.y, -z) };
 }
 
-/** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles. */
+/** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles and the ball. */
 export interface TrainerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
   /**
-   * Turn each driven needle to what `state` reads. The visual calls this from its
-   * `update` ONLY while cockpit view is on: outside it the parts are invisible and
-   * five rotations a frame would be spent on nothing.
+   * Turn each driven needle and the attitude ball to what `state` reads. The
+   * visual calls this from its `update` ONLY while cockpit view is on: outside it
+   * the parts are invisible and the rotations a frame would be spent on nothing.
    */
   update(state: FlightVisualState): void;
 }
@@ -276,9 +304,9 @@ export interface TrainerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Seventeen meshes in four groups: the cowl stand-in (1), the panel and its hood
+ * Nineteen meshes in four groups: the cowl stand-in (1), the panel and its hood
  * (2), the windscreen posts (2), the door panels with their sill caps (2), and the
- * dials and their needles (10, as before).
+ * dials (12: five gauge faces, four needles, and the attitude ball's three pieces).
  */
 export function buildTrainerCockpit(
   build: AircraftBuildContext,
@@ -287,6 +315,7 @@ export function buildTrainerCockpit(
 ): TrainerCockpit {
   const parts: AbstractMesh[] = [];
   const needles = new Map<string, { mesh: AbstractMesh; frame: Quaternion }>();
+  let attitudeBall: AttitudeBall | null = null;
 
   // THE COWL STAND-IN. The real cowl is part of the fuselage loft, which the
   // cockpit camera cannot show. This lofts the SAME sections from the one
@@ -330,11 +359,32 @@ export function buildTrainerCockpit(
   for (const placement of trainerDialPlacements()) {
     const { name, centre: at, normal } = placement;
     const face = build.cylinder(
-      `trainer-${name}-gauge`, 0.008, TRAINER_DIAL_DIAMETER, TRAINER_DIAL_DIAMETER, 24, materials.instrumentFace, root,
+      `trainer-${name}-gauge`, GAUGE_FACE_THICKNESS, TRAINER_DIAL_DIAMETER, TRAINER_DIAL_DIAMETER, 24, materials.instrumentFace, root,
     );
     face.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
-    face.position.copyFrom(at.add(normal.scale(0.005)));
+    face.position.copyFrom(at.add(normal.scale(GAUGE_FACE_OFFSET)));
     parts.push(face);
+    // Up the panel's face, in the vertical plane of the dial's normal.
+    const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
+    if (name === "attitude") {
+      // THE BALL, not a needle. Its pivot turns about ITS OWN X, so it hangs from a
+      // frame node whose axes are the pivot's (`buildAttitudeBall`): X AWAY from the
+      // pilot (the dial's normal reversed), Y up the face, Z = X x Y, the pilot's
+      // right. The needles' frames have X TOWARD him instead, which is why their
+      // turn is a negative rotation and the ball's is not; the screen-space test in
+      // `tests/render.cockpit-instruments.test.ts` decides which sign is right.
+      const ball = TRAINER_ATTITUDE_BALL;
+      const away = normal.scale(-1);
+      const frame = new TransformNode("trainer-attitude-frame", build.scene);
+      frame.parent = root;
+      frame.position.copyFrom(
+        at.add(normal.scale(GAUGE_FACE_OFFSET + GAUGE_FACE_THICKNESS / 2 + ball.proud + ball.thickness / 2)),
+      );
+      frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
+      attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
+      parts.push(...attitudeBall.parts);
+      continue;
+    }
     // THE NEEDLE, one mesh whose ORIGIN is the gauge's centre and whose local X
     // is the dial's normal, so turning the mesh about its own X turns the needle
     // about the dial's axis. `mergeStatic` bakes the parts' world matrices into
@@ -348,7 +398,6 @@ export function buildTrainerCockpit(
     // 12 o'clock. A positive rotation about X, an axis pointing at the pilot, is
     // ANTI-clockwise to him; `turnNeedle` owns that inversion.
     const origin = at.add(normal.scale(NEEDLE_ORIGIN_OFFSET));
-    const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
     const frameQ = basisQuaternion(normal, up, Vector3.Cross(normal, up));
     const frameNode = new TransformNode(`trainer-${name}-needle-frame`, build.scene);
     frameNode.parent = root;
@@ -418,11 +467,11 @@ export function buildTrainerCockpit(
     parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));
   }
 
-  // THE NEEDLES' STEP. Four of the five dials are driven; the fifth, "attitude",
-  // has no mapping and its needle stays at 12 o'clock. Each needle's transform is its frame with a turn about
-  // its own X. `clockwiseDegrees` is the angle as the pilot SEES it (12 o'clock
-  // 0, 3 o'clock +90); the dial's normal points TOWARD him, so a clockwise turn
-  // is a NEGATIVE rotation about it. Held to the screen by
+  // THE NEEDLES' STEP. Four dials have a needle; the fifth, "attitude", has the
+  // ball (below). Each needle's transform is its frame with a turn about its own
+  // X. `clockwiseDegrees` is the angle as the pilot SEES it (12 o'clock 0, 3
+  // o'clock +90); the dial's normal points TOWARD him, so a clockwise turn is a
+  // NEGATIVE rotation about it. Held to the screen by
   // `tests/render.cockpit-instruments.test.ts`, which projects the needle through
   // the cockpit camera: a flipped sign here passes every test of the angle alone.
   const spin = new Quaternion();
@@ -441,6 +490,13 @@ export function buildTrainerCockpit(
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
       turnNeedle("vertical-speed", verticalSpeedNeedleDegrees(state.verticalSpeed));
       turnNeedle("engine", engineNeedleDegrees(state.engineRpm, engineFullScale));
+      // THE BALL. Its pivot's local X points AWAY from the pilot, so a positive
+      // rotation is clockwise to him and the clockwise-as-seen angle (minus the
+      // bank) goes in as it is; the bar slides along the pivot's own up.
+      if (attitudeBall) {
+        attitudeBall.pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
+        attitudeBall.bar.position.y = pitchBarOffsetMetres(state.pitch, TRAINER_ATTITUDE_BALL.radius);
+      }
     },
   };
 }

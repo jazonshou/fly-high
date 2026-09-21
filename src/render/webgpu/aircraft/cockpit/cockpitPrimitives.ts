@@ -2,13 +2,14 @@ import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftBuildContext } from "../builders";
 
 /**
  * What every cockpit builder needs and none of them should carry its own copy
- * of: the glareshield's material, and the two box-shaped pieces (a thin panel
- * through four corners, and a horizontal strip along a line).
+ * of: the glareshield's material, the two box-shaped pieces (a thin panel
+ * through four corners, and a horizontal strip along a line), and the attitude
+ * ball.
  */
 
 /**
@@ -90,4 +91,100 @@ export function strip(
   mesh.position.copyFrom(from.add(to).scale(0.5));
   orient(mesh, xAxis, Vector3.Cross(zAxis, xAxis), zAxis);
   return mesh;
+}
+
+// ---- the attitude ball ---------------------------------------------------------
+
+/**
+ * What one attitude ball is made of. The Global's PFD and the Cessna's attitude
+ * dial are the same picture at two sizes, so they share one builder: only the
+ * numbers and the names differ.
+ */
+export interface AttitudeBallSpec {
+  /** Names: `${prefix}-sky`, `${prefix}-ground`, `${prefix}-pitch-bar`; the materials `${prefix}-sky`, `-ground`, `-bar`. */
+  readonly prefix: string;
+  readonly pivotName: string;
+  readonly radius: number;
+  /** The sky and ground halves' thickness, and the bar's. */
+  readonly thickness: number;
+  /** The bar stands this far in front of the halves' pilot-side face. */
+  readonly barOffset: number;
+  readonly barLength: number;
+  readonly barHeight: number;
+  readonly segments: number;
+}
+
+/** What `buildAttitudeBall` makes: the pivot the step turns, and the three pieces under it. */
+export interface AttitudeBall {
+  readonly pivot: TransformNode;
+  readonly sky: Mesh;
+  readonly ground: Mesh;
+  readonly bar: Mesh;
+  /** Sky, ground, bar: the order the pieces were made in. */
+  readonly parts: readonly Mesh[];
+}
+
+/**
+ * A half disc's outline, counter-clockwise with x across and y up. The upper
+ * half runs from (r, 0) over the top to (-r, 0); the lower half from (-r, 0)
+ * under the bottom to (r, 0). Both close along the diameter on y = 0.
+ */
+function halfDisc(radius: number, upper: boolean, segments: number): { x: number; y: number }[] {
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= segments; i += 1) {
+    const angle = (upper ? 0 : Math.PI) + (i / segments) * Math.PI;
+    points.push({ x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+  }
+  return points;
+}
+
+/**
+ * THE ATTITUDE BALL: a SKY half, a GROUND half and a thin white PITCH BAR, all
+ * children of ONE pivot node at `position` in `parent`'s frame. The step turns
+ * the pivot about its own X by the horizon's clockwise-as-seen angle and slides
+ * the bar along the pivot's own Y for pitch (`instrumentMappings.ts`).
+ *
+ * THE PIVOT'S FRAME. Local X points AWAY from the pilot, Y is up the face and Z is
+ * the pilot's right; the halves stand in the Y-Z plane and the bar is in front of
+ * them, on the pilot's side (local -X). A positive rotation about an axis pointing
+ * away from the viewer is CLOCKWISE to him. `parent` must give the pivot that
+ * frame: the Global's is the aircraft's own (X is the nose, the pilot looks along
+ * it); a dial that faces the pilot at an angle gives it a frame node.
+ *
+ * IT IS ROUND on purpose. A rotating rectangle would poke out of a dial at every
+ * bank angle but zero, and there is no clipping window here; a disc turned about
+ * its own centre stays exactly where it was.
+ */
+export function buildAttitudeBall(
+  build: AircraftBuildContext,
+  parent: TransformNode,
+  position: Vector3,
+  spec: AttitudeBallSpec,
+): AttitudeBall {
+  const sky = build.material(`${spec.prefix}-sky`, 0x6f93ad, {
+    roughness: 0.6, metallic: 0, emissive: 0x6f93ad, emissiveIntensity: 0.35,
+  });
+  const ground = build.material(`${spec.prefix}-ground`, 0x7d5a3a, {
+    roughness: 0.6, metallic: 0, emissive: 0x7d5a3a, emissiveIntensity: 0.3,
+  });
+  const white = build.material(`${spec.prefix}-bar`, 0xf4f7f8, {
+    roughness: 0.5, metallic: 0, emissive: 0xffffff, emissiveIntensity: 0.6,
+  });
+  const pivot = new TransformNode(spec.pivotName, build.scene);
+  pivot.parent = parent;
+  pivot.position.copyFrom(position);
+  // `verticalProfile` extrudes an x-y outline along z; turned a quarter about y
+  // the outline's x runs across the dial and its thickness runs fore and aft.
+  const halves: Mesh[] = [];
+  for (const [name, material, upper] of [
+    [`${spec.prefix}-sky`, sky, true],
+    [`${spec.prefix}-ground`, ground, false],
+  ] as const) {
+    const half = build.verticalProfile(name, halfDisc(spec.radius, upper, spec.segments), spec.thickness, material, pivot);
+    half.rotation.y = Math.PI / 2;
+    halves.push(half);
+  }
+  const bar = build.box(`${spec.prefix}-pitch-bar`, spec.thickness, spec.barHeight, spec.barLength, white, pivot);
+  bar.position.set(-(spec.thickness / 2 + spec.barOffset + spec.thickness / 2), 0, 0);
+  return { pivot, sky: halves[0]!, ground: halves[1]!, bar, parts: [halves[0]!, halves[1]!, bar] };
 }

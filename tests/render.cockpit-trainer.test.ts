@@ -121,9 +121,13 @@ afterAll(() => {
 });
 
 describe("the trainer's cockpit parts", () => {
-  it("are eight or fewer new meshes beyond the ten dial meshes, and keep the dial names", () => {
-    const dialNames = ["airspeed", "attitude", "altimeter", "engine", "vertical-speed"]
-      .flatMap((dial) => [`trainer-${dial}-gauge`, `trainer-${dial}-needle`]);
+  it("are eight or fewer new meshes beyond the twelve dial meshes, and keep the dial names", () => {
+    // five gauge faces, four needles (the attitude dial has a BALL instead: sky, ground, pitch bar)
+    const dialNames = [
+      ...["airspeed", "attitude", "altimeter", "engine", "vertical-speed"].map((dial) => `trainer-${dial}-gauge`),
+      ...["airspeed", "altimeter", "engine", "vertical-speed"].map((dial) => `trainer-${dial}-needle`),
+      "trainer-attitude-sky", "trainer-attitude-ground", "trainer-attitude-pitch-bar",
+    ];
     for (const name of dialNames) expect(cockpitOnly.map((part) => part.name)).toContain(name);
     const others = cockpitOnly.filter((part) => !dialNames.includes(part.name)).map((part) => part.name).sort();
     expect(others).toEqual([
@@ -185,7 +189,7 @@ describe("the trainer's cockpit parts", () => {
       // Every dial is where the pilot can see it: the first thing a ray toward it meets is the dial, or its needle.
       const d = centre.subtract(EYE_POINT);
       const hit = scene.pickWithRay(new Ray(EYE_POINT, d.normalize(), 5), drawnByCockpitCamera);
-      expect(hit?.pickedMesh?.name, `${dial} is hidden behind something`).toMatch(new RegExp(`trainer-${dial}-(gauge|needle)`));
+      expect(hit?.pickedMesh?.name, `${dial} is hidden behind something`).toMatch(new RegExp(`trainer-${dial}-(gauge|needle|sky|ground|pitch-bar)`));
     }
   });
 
@@ -250,6 +254,8 @@ describe("the trainer's cockpit parts", () => {
 
   it("draw each needle 3 mm wide with a round 6 mm hub at the dial's centre, all in the needle's own mesh", () => {
     for (const { name, centre, normal } of trainerDialPlacements()) {
+      // the attitude dial has a ball, not a needle (`tests/render.cockpit-instruments.test.ts`)
+      if (name === "attitude") continue;
       const needle = named(`trainer-${name}-needle`);
       expect(needle.metadata?.mergedFrom, `${name} needle is a merge of a bar and a hub`).toHaveLength(2);
       // In-plane coordinates: the panel-face plane, centred on the dial.

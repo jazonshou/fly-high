@@ -249,7 +249,12 @@ describe("a loft's crown seam", () => {
       // mesh by mesh against the tip it was cut from (da86f47), positions AND indices: this
       // step left the trainer's other 63 meshes, the jet's 76, the Global's 99 and the 747's
       // 91 bit-identical.
-      trainer: "06a8f37d",
+            // RE-PINNED ONCE MORE for the trainer by the Cessna's attitude ball (jazonshou/cockpit-cessna-ball):
+      // its attitude needle mesh is gone and the ball's three pieces (sky, ground, pitch bar) stand in
+      // its place. Checked mesh by mesh against 8a45c97, positions AND indices: the trainer's other 67
+      // meshes, the jet's 78, the Global's 99 and the 747's 91 are bit-identical, which also holds the
+      // Global's ball to be unchanged by its builder moving into cockpitPrimitives.
+trainer: "11e1459d",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

@@ -4,6 +4,7 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import type { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -209,7 +210,7 @@ describe("the Cessna's needles", () => {
 
   it("has each needle's origin on its gauge's centre, with local X the dial's normal, before and after it turns", () => {
     const { normal } = dialPlane();
-    for (const dial of ["airspeed", "attitude", "altimeter", "vertical-speed", "engine"]) {
+    for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
       const gauge = fixture.mesh(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
       for (const readings of [{}, { airspeed: 70, altitude: 900, verticalSpeed: -3, engineRpm: 2300 }]) {
         show(readings);
@@ -228,7 +229,7 @@ describe("the Cessna's needles", () => {
       const panel = fresh.mesh("trainer-instrument-panel");
       const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
       const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-      for (const dial of ["airspeed", "attitude", "altimeter", "vertical-speed", "engine"]) {
+      for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
         const mesh = fresh.mesh(`trainer-${dial}-needle`);
         const hub = mesh.getAbsolutePosition();
         const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02);
@@ -395,13 +396,39 @@ describe("the Cessna's needles turn only while cockpit view is on", () => {
   });
 });
 
-// ---- the Global's attitude ball ---------------------------------------------------------------
+// ---- the attitude balls -----------------------------------------------------------------------
 
-describe("the Global's attitude ball", () => {
+/**
+ * The Global's PFD ball and the Cessna's attitude dial are ONE builder at two sizes
+ * (`buildAttitudeBall`), and both are held to the same picture: the ball's horizon on
+ * the SCREEN parallel to the world's, its sky on the sky's side, its bar on the
+ * pitch's side. The Cessna's dial normal points TOWARD the pilot and the Global's
+ * pivot points away, so the sign is not taken from one on trust for the other: every
+ * assertion here is about what the camera draws.
+ */
+interface BallCase {
+  readonly kind: "bizjet" | "trainer";
+  readonly label: string;
+  readonly prefix: string;
+  readonly pivotName: string;
+  /** The bar's slide per degree of nose-up, metres: 1 mm on the Global's 0.048 m ball, 0.75 mm on the Cessna's 0.036 m one. */
+  readonly metresPerDegree: number;
+  readonly radius: number;
+}
+const BALLS: readonly BallCase[] = [
+  { kind: "bizjet", label: "Global", prefix: "bizjet-pfd", pivotName: "bizjet-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
+  { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
+];
+
+describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball", (_label, ball) => {
   let fixture: Fixture;
-  let restSkyDiameter: [number, number];
+  /** The sky half's diameter ends, by vertex index (found at rest): the pilot's-right end and the left end. */
+  let ends: [number, number];
+  /** The dial's plane in BODY coordinates, at rest: up the face and the pilot's right. */
+  let plane: { up: Vector3; right: Vector3 };
 
-  const pivot = () => fixture.scene.getTransformNodeByName("bizjet-pfd-attitude-pivot")!;
+  const pivot = () => fixture.scene.getTransformNodeByName(ball.pivotName)!;
+  const piece = (name: "sky" | "ground" | "pitch-bar") => fixture.mesh(`${ball.prefix}-${name}`);
 
   /** Fly a real simulator to the attitude, put the aircraft and the cockpit camera there, and let the visual and the HUD see the SAME state. */
   function fly(headingDegrees: number, pitchDegrees: number, bankDegrees: number): FlightVisualState {
@@ -413,7 +440,7 @@ describe("the Global's attitude ball", () => {
     fixture.aircraft.root.computeWorldMatrix(true);
     pivot().computeWorldMatrix(true);
     for (const mesh of fixture.scene.meshes) mesh.computeWorldMatrix(true);
-    pointCockpitCamera(fixture.camera, "bizjet", Vector3.Zero(), q);
+    pointCockpitCamera(fixture.camera, ball.kind, Vector3.Zero(), q);
     return state;
   }
   const side = (a: { x: number; y: number }, b: { x: number; y: number }, p: { x: number; y: number }) =>
@@ -429,12 +456,24 @@ describe("the Global's attitude ball", () => {
   };
 
   beforeAll(() => {
-    fixture = buildFixture("bizjet");
-    // the diameter's two ends, found at rest: the sky half's vertices on its horizontal edge, and by INDEX from then on
-    const sky = worldVertices(fixture.mesh("bizjet-pfd-sky"));
-    const centre = pivot().getAbsolutePosition();
-    const onEdge = sky.map((v, i) => ({ v, i })).filter(({ v }) => Math.abs(v.y - centre.y) < 1e-7);
-    restSkyDiameter = [
+    fixture = buildFixture(ball.kind);
+    if (ball.kind === "bizjet") {
+      plane = { up: new Vector3(0, 1, 0), right: new Vector3(0, 0, 1) };
+    } else {
+      // from the BUILT panel: the pilot looks along the dial's normal reversed, and his right is forward x up
+      const panel = fixture.mesh("trainer-instrument-panel");
+      panel.computeWorldMatrix(true);
+      const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
+      const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+      plane = { up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
+    }
+    // the diameter's two ends, found at rest in the PIVOT's own frame (the dial may lean): the sky half's vertices on y = 0
+    pivot().computeWorldMatrix(true);
+    const inverse = Matrix.Invert(pivot().getWorldMatrix());
+    const local = worldVertices(piece("sky")).map((v) => Vector3.TransformCoordinates(v, inverse));
+    // (a micrometre: the next vertex round the rim is millimetres away, and a leaning frame's matrices leave ~1e-8 of float noise)
+    const onEdge = local.map((v, i) => ({ v, i })).filter(({ v }) => Math.abs(v.y) < 1e-6);
+    ends = [
       onEdge.reduce((a, b) => (b.v.z > a.v.z ? b : a)).i,
       onEdge.reduce((a, b) => (b.v.z < a.v.z ? b : a)).i,
     ];
@@ -465,17 +504,18 @@ describe("the Global's attitude ball", () => {
     const realGround = project(fixture.camera, horizonPoint(0, -10));
     for (const p of [worldA, worldB, realSky, realGround]) expect(p.depth).toBeGreaterThan(0);
     // the BALL's horizon: its diameter, wherever the pivot has turned it
-    const sky = worldVertices(fixture.mesh("bizjet-pfd-sky"));
-    const ballA = project(fixture.camera, sky[restSkyDiameter[0]]!);
-    const ballB = project(fixture.camera, sky[restSkyDiameter[1]]!);
-    const skyAt = project(fixture.camera, centroid(fixture.mesh("bizjet-pfd-sky")));
-    const groundAt = project(fixture.camera, centroid(fixture.mesh("bizjet-pfd-ground")));
+    const sky = worldVertices(piece("sky"));
+    const ballA = project(fixture.camera, sky[ends[0]]!);
+    const ballB = project(fixture.camera, sky[ends[1]]!);
+    const skyAt = project(fixture.camera, centroid(piece("sky")));
+    const groundAt = project(fixture.camera, centroid(piece("ground")));
     // PARALLEL within a degree. (A small disc facing the pilot is parallel to the image plane, so the picture is a pure
-    // scaling of the instrument and its angles are exact; the world horizon under pitch and roll differs from the roll by
-    // about a tenth of a degree.)
+    // scaling of the instrument and its angles are exact; the Cessna's dial leans a few degrees off that plane and sits
+    // below the centre of the frame, which bends the angle a little more; the world horizon under pitch and roll differs
+    // from the roll by about a tenth of a degree. A flipped sign is out by twice the bank.)
     const world = lineAngle(worldA, worldB);
-    const ball = lineAngle(ballA, ballB);
-    expect(Math.abs(world - ball), `world horizon ${world.toFixed(2)} deg on the screen, the ball's ${ball.toFixed(2)}`).toBeLessThan(1);
+    const ballAngle = lineAngle(ballA, ballB);
+    expect(Math.abs(world - ballAngle), `world horizon ${world.toFixed(2)} deg on the screen, the ball's ${ballAngle.toFixed(2)}`).toBeLessThan(1);
     // and the sense is what a right bank looks like: the right end of the horizon UP (smaller y), so a negative slope
     if (bank !== 0) expect(Math.sign(world), "the world horizon tilts as a bank of this sense does").toBe(-Math.sign(bank));
     // the SKY half is on the same side of the horizon as the real sky, and the ground half on the ground's side
@@ -485,55 +525,142 @@ describe("the Global's attitude ball", () => {
     expect(side(ballLeft, ballRight, skyAt), "the ball's sky half is not on the sky's side").toBe(side(worldLeft, worldRight, realSky));
     expect(side(ballLeft, ballRight, groundAt), "the ball's ground half is not on the ground's side").toBe(side(worldLeft, worldRight, realGround));
     // the PITCH BAR: for nose-up it slides DOWN, onto the ground side of the ball's horizon; for nose-down, up onto the sky side
-    const bar = fixture.mesh("bizjet-pfd-pitch-bar");
+    const bar = piece("pitch-bar");
     const barAt = project(fixture.camera, bar.getBoundingInfo().boundingBox.centerWorld);
     if (pitch > 0) expect(side(ballLeft, ballRight, barAt), "nose up: the bar is not below the ball's horizon").toBe(side(ballLeft, ballRight, groundAt));
     if (pitch < 0) expect(side(ballLeft, ballRight, barAt), "nose down: the bar is not above the ball's horizon").toBe(side(ballLeft, ballRight, skyAt));
-    // 1 mm a degree, along the pivot's own up (negative for nose-up)
-    expect(bar.position.y).toBeCloseTo(-pitch / 1_000, 9);
+    // a millimetre a degree on the Global's ball, in proportion to the radius on another, along the pivot's own up
+    expect(bar.position.y).toBeCloseTo(-pitch * ball.metresPerDegree, 9);
     expect(state.pitch).toBeCloseTo(pitch, 5);
   });
 
   it.each(SCENARIOS)("in $label: the ball reads what the HUD renders, and turns the way the HUD's own horizon does", ({ heading, pitch, bank }) => {
     const state = fly(heading, pitch, bank);
-    const markup = renderHud(state, "bizjet");
+    const markup = renderHud(state, ball.kind);
     const hudPitch = Number(/Pitch (-?\d+) degrees/.exec(markup)?.[1]);
     const hudBank = Number(/bank (-?\d+) degrees/.exec(markup)?.[1]);
     // the HUD's horizon is a CSS transform: rotate(-bank deg), and CSS rotates CLOCKWISE for positive angles
     const hudRotate = Number(/rotate\((-?[\d.]+)deg\)/.exec(markup)?.[1]);
     const hudSlideDown = Number(/calc\(-50% \+ (-?[\d.]+)px\)/.exec(markup)?.[1]);
     expect(Number.isFinite(hudPitch + hudBank + hudRotate + hudSlideDown), `parsed the HUD's attitude from ${markup.slice(markup.indexOf("attitude"), markup.indexOf("attitude") + 200)}`).toBe(true);
-    // the ball, measured in the BODY frame: the diameter's direction (right end minus left end) and the bar's slide
+    // the ball, measured in the BODY frame along the dial's own axes: the diameter's direction (right end minus left end) and the bar's slide
     const bodyOf = (p: Vector3) => Vector3.TransformCoordinates(p, Matrix.Invert(fixture.aircraft.root.getWorldMatrix()));
-    const sky = worldVertices(fixture.mesh("bizjet-pfd-sky"));
-    const right = bodyOf(sky[restSkyDiameter[0]]!);
-    const left = bodyOf(sky[restSkyDiameter[1]]!);
-    const v = right.subtract(left);
+    const sky = worldVertices(piece("sky"));
+    const v = bodyOf(sky[ends[0]]!).subtract(bodyOf(sky[ends[1]]!));
     // clockwise as the pilot sees it: the right end goes DOWN, so atan2(-up, right)
-    const ballClockwise = (Math.atan2(-v.y, v.z) * 180) / Math.PI;
+    const ballClockwise = (Math.atan2(-Vector3.Dot(v, plane.up), Vector3.Dot(v, plane.right)) * 180) / Math.PI;
     expect(Math.round(-ballClockwise), "ball's bank against the HUD's").toBe(hudBank);
     expect(ballClockwise, "the ball turns by the same clockwise angle as the HUD's horizon").toBeCloseTo(hudRotate, 3);
-    const slideDownMetres = -fixture.mesh("bizjet-pfd-pitch-bar").position.y;
-    expect(Math.round(slideDownMetres * 1_000), "ball's pitch against the HUD's").toBe(hudPitch);
+    const slideDownMetres = -piece("pitch-bar").position.y;
+    expect(Math.round(slideDownMetres / ball.metresPerDegree), "ball's pitch against the HUD's").toBe(hudPitch);
     // the HUD's ladder slides DOWN for nose-up (positive px); so does the ball's bar
     expect(Math.sign(slideDownMetres)).toBe(Math.sign(hudSlideDown));
   });
 
   it("clamps the pitch bar at 25 degrees each way", () => {
-    fly(0, 40, 0);
-    expect(fixture.mesh("bizjet-pfd-pitch-bar").position.y).toBeCloseTo(-0.025, 9);
-    fly(0, -40, 0);
-    expect(fixture.mesh("bizjet-pfd-pitch-bar").position.y).toBeCloseTo(0.025, 9);
-    fly(0, 0, 0);
-    expect(fixture.mesh("bizjet-pfd-pitch-bar").position.y).toBeCloseTo(0, 9);
+    const slide = (pitch: number) => {
+      fixture.aircraft.update(stateWith({ pitch }), 1 / 60);
+      return piece("pitch-bar").position.y;
+    };
+    expect(slide(40)).toBeCloseTo(-25 * ball.metresPerDegree, 9);
+    expect(slide(-40)).toBeCloseTo(25 * ball.metresPerDegree, 9);
+    expect(slide(0)).toBeCloseTo(0, 9);
+  });
+
+  it("makes the sky the UPPER half in the sky's colour, the ground the lower in the earth's, and the bar white", () => {
+    fixture.aircraft.update(stateWith({ bank: 0, pitch: 0 }), 1 / 60);
+    pivot().computeWorldMatrix(true);
+    const inverse = Matrix.Invert(pivot().getWorldMatrix());
+    // in the pivot's own frame, y is up the dial
+    const localOf = (mesh: AbstractMesh) => worldVertices(mesh).map((v) => Vector3.TransformCoordinates(v, inverse));
+    expect(Math.min(...localOf(piece("sky")).map((v) => v.y)), "the sky half reaches below the horizon").toBeGreaterThan(-1e-6);
+    expect(Math.max(...localOf(piece("sky")).map((v) => v.y)), "the sky half is the whole upper half").toBeCloseTo(ball.radius, 4);
+    expect(Math.max(...localOf(piece("ground")).map((v) => v.y)), "the ground half reaches above the horizon").toBeLessThan(1e-6);
+    expect(Math.min(...localOf(piece("ground")).map((v) => v.y)), "the ground half is the whole lower half").toBeCloseTo(-ball.radius, 4);
+    const albedo = (mesh: AbstractMesh) => (mesh.material as PBRMaterial).albedoColor;
+    expect(albedo(piece("sky")).b, "sky: blue over red").toBeGreaterThan(albedo(piece("sky")).r);
+    expect(albedo(piece("ground")).r, "ground: red over blue").toBeGreaterThan(albedo(piece("ground")).b);
+    for (const channel of [albedo(piece("pitch-bar")).r, albedo(piece("pitch-bar")).g, albedo(piece("pitch-bar")).b]) expect(channel, "the bar is white").toBeGreaterThan(0.85);
+  });
+
+  it("keeps the pitch bar INSIDE the ball's disc at the clamp, at every bank", () => {
+    for (const pitch of [-90, -25, -10, 0, 10, 25, 90]) {
+      for (const bank of [0, 60, 150]) {
+        fixture.aircraft.update(stateWith({ pitch, bank }), 1 / 60);
+        pivot().computeWorldMatrix(true);
+        const inverse = Matrix.Invert(pivot().getWorldMatrix());
+        for (const v of worldVertices(piece("pitch-bar"))) {
+          const local = Vector3.TransformCoordinates(v, inverse);
+          // in the ball's own plane: y up the dial, z across it; 2 mm to spare so it never touches the rim
+          expect(Math.hypot(local.y, local.z), `pitch ${pitch} bank ${bank}: bar corner ${local.y.toFixed(4)}, ${local.z.toFixed(4)}`).toBeLessThan(ball.radius - 0.002);
+        }
+      }
+    }
   });
 });
 
-describe("the Global's ball turns only while cockpit view is on", () => {
+describe("the Cessna's attitude dial", () => {
+  let fixture: Fixture;
+  beforeAll(() => { fixture = buildFixture("trainer"); });
+  afterAll(() => disposeFixture(fixture));
+
+  /** The dial's plane, from the BUILT panel: the normal toward the pilot, up the face, the pilot's right. */
+  function plane(): { normal: Vector3; up: Vector3; right: Vector3 } {
+    const panel = fixture.mesh("trainer-instrument-panel");
+    panel.computeWorldMatrix(true);
+    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
+    const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    return { normal, up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
+  }
+
+  it("has a BALL and no needle: the other four dials keep theirs", () => {
+    expect(fixture.scene.getMeshByName("trainer-attitude-needle")).toBeNull();
+    for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+      expect(fixture.scene.getMeshByName(`trainer-${dial}-needle`), `${dial} needle`).not.toBeNull();
+    }
+    for (const name of ["sky", "ground", "pitch-bar"]) {
+      expect(fixture.mesh(`trainer-attitude-${name}`).metadata?.cockpitOnly, `${name} is a cockpit-only part`).toBe(true);
+    }
+  });
+
+  it("stands on its dial: radius 0.036 on the 0.08 dial, centred on it, sky and ground 1.5 mm in front of the face, the bar in front of them", () => {
+    const { normal, up, right } = plane();
+    const gauge = fixture.mesh("trainer-attitude-gauge");
+    const gaugeCentre = gauge.getBoundingInfo().boundingBox.centerWorld;
+    const along = (v: Vector3) => Vector3.Dot(v.subtract(gaugeCentre), normal);
+    const inPlane = (v: Vector3) => ({ u: Vector3.Dot(v.subtract(gaugeCentre), up), r: Vector3.Dot(v.subtract(gaugeCentre), right) });
+    const halves = [...worldVertices(fixture.mesh("trainer-attitude-sky")), ...worldVertices(fixture.mesh("trainer-attitude-ground"))];
+    // the face is 0.04 in radius; the ball 0.036, so 4 mm of face shows round it
+    expect(Math.max(...worldVertices(gauge).map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.04, 4);
+    expect(Math.max(...halves.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.036, 4);
+    // centred on the dial within a millimetre (the bounding box of a disc is centred on it)
+    const us = halves.map((v) => inPlane(v).u);
+    const rs = halves.map((v) => inPlane(v).r);
+    expect(Math.abs((Math.max(...us) + Math.min(...us)) / 2), "centred up the face").toBeLessThan(1e-3);
+    expect(Math.abs((Math.max(...rs) + Math.min(...rs)) / 2), "centred across the face").toBeLessThan(1e-3);
+    // the face's front, then the halves' back 1.5 mm in front of it, toward the pilot
+    const faceFront = Math.max(...worldVertices(gauge).map(along));
+    expect(Math.min(...halves.map(along)) - faceFront, "sky and ground stand 1.5 mm proud of the face").toBeCloseTo(0.0015, 5);
+    const bar = worldVertices(fixture.mesh("trainer-attitude-pitch-bar"));
+    expect(Math.min(...bar.map(along)), "the bar is in front of the sky and ground").toBeGreaterThan(Math.max(...halves.map(along)));
+  });
+
+  it("hangs its pivot in the frame the builder's turn assumes: X away from the pilot, Y up the dial, Z his right", () => {
+    const { normal, up, right } = plane();
+    const pivot = fixture.scene.getTransformNodeByName("trainer-attitude-pivot")!;
+    pivot.computeWorldMatrix(true);
+    const axis = (x: number, y: number, z: number) => Vector3.TransformNormal(new Vector3(x, y, z), pivot.getWorldMatrix()).normalize();
+    expect(Vector3.Dot(axis(1, 0, 0), normal.scale(-1))).toBeGreaterThan(0.99999);
+    expect(Vector3.Dot(axis(0, 1, 0), up)).toBeGreaterThan(0.99999);
+    expect(Vector3.Dot(axis(0, 0, 1), right)).toBeGreaterThan(0.99999);
+  });
+});
+
+describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's ball turns only while cockpit view is on", (_label, ball) => {
   it("leaves the pivot where it is outside cockpit view", () => {
-    const fixture = buildFixture("bizjet", false);
+    const fixture = buildFixture(ball.kind, false);
     try {
-      const pivot = fixture.scene.getTransformNodeByName("bizjet-pfd-attitude-pivot")!;
+      const pivot = fixture.scene.getTransformNodeByName(ball.pivotName)!;
       fixture.aircraft.update(stateWith({ bank: 30, pitch: 10 }), 1 / 60);
       expect(pivot.rotation.x).toBe(0);
       fixture.aircraft.setCockpitView(true);

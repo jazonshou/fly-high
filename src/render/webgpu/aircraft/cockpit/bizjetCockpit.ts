@@ -1,11 +1,11 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import { buildAttitudeBall, glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
 import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
@@ -237,9 +237,10 @@ export function bizjetScreenPlacements(): readonly { name: string; centre: Vecto
  * THE ATTITUDE DISPLAY on the pilot's LEFT screen (the outboard one of the port
  * pair): a ball filling the upper two-thirds of the screen, made of a SKY half, a
  * GROUND half and a thin white PITCH BAR, all children of one pivot node at the
- * ball's centre. They are static now; a later step (I) rotates the pivot about
- * the viewing axis (body X) by minus the bank angle and slides the bar along the
- * pivot's own Y for pitch, and nothing else on the screens moves.
+ * ball's centre (`buildAttitudeBall`, shared with the Cessna's attitude dial).
+ * The cockpit's `update` rotates the pivot about the viewing axis (body X) by
+ * minus the bank angle and slides the bar along the pivot's own Y for pitch, and
+ * nothing else on the screens moves.
  *
  * IT IS ROUND on purpose. A rotating rectangle would poke out of the screen at
  * every bank angle but zero, and there is no clipping window here; a disc turned
@@ -278,20 +279,6 @@ export function bizjetPfdCentre(): Vector3 {
     bizjetScreenTopY() - regionHeight / 2,
     screen.centre.z,
   );
-}
-
-/**
- * A half disc's outline, counter-clockwise with x across and y up. The upper
- * half runs from (r, 0) over the top to (-r, 0); the lower half from (-r, 0)
- * under the bottom to (r, 0). Both close along the diameter on y = 0.
- */
-function halfDisc(radius: number, upper: boolean, segments: number): { x: number; y: number }[] {
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i <= segments; i += 1) {
-    const angle = (upper ? 0 : Math.PI) + (i / segments) * Math.PI;
-    points.push({ x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
-  }
-  return points;
 }
 
 // ---- the posts ---------------------------------------------------------------
@@ -380,7 +367,7 @@ const WALL = Object.freeze({
  *
  * Eleven meshes: eight static (the panel, its hood, the screens, their bezels,
  * the two windscreen posts, the overhead, and the side walls with their sill
- * caps) and the three attitude pieces that stay separate for a later step. There
+ * caps) and the three attitude pieces, which stay separate because the pivot turns them. There
  * is no pedestal: it would top out at -30 degrees between the
  * seats, below the frame at every azimuth it could be seen from.
  */
@@ -451,38 +438,21 @@ export function buildBizjetCockpit(
 
   // THE ATTITUDE DISPLAY on the pilot's left screen: a sky half, a ground half
   // and a pitch bar, three separate meshes under one pivot node at the ball's
-  // centre (see `BIZJET_PFD`). They are the exception to the merging above: a
-  // later step turns the pivot, so they must stay separate from the screens.
+  // centre (see `BIZJET_PFD`). They are the exception to the merging above: the
+  // pivot turns them, so they must stay separate from the screens.
   const pfd = BIZJET_PFD;
   const radius = bizjetPfdRadius();
-  const sky = build.material("bizjet-pfd-sky", 0x6f93ad, {
-    roughness: 0.6, metallic: 0, emissive: 0x6f93ad, emissiveIntensity: 0.35,
+  const ball = buildAttitudeBall(build, root, bizjetPfdCentre(), {
+    prefix: "bizjet-pfd",
+    pivotName: pfd.pivotName,
+    radius,
+    thickness: pfd.thickness,
+    barOffset: pfd.barOffset,
+    barLength: pfd.barLength,
+    barHeight: pfd.barHeight,
+    segments: pfd.segments,
   });
-  const ground = build.material("bizjet-pfd-ground", 0x7d5a3a, {
-    roughness: 0.6, metallic: 0, emissive: 0x7d5a3a, emissiveIntensity: 0.3,
-  });
-  const white = build.material("bizjet-pfd-bar", 0xf4f7f8, {
-    roughness: 0.5, metallic: 0, emissive: 0xffffff, emissiveIntensity: 0.6,
-  });
-  const pivot = new TransformNode(pfd.pivotName, build.scene);
-  pivot.parent = root;
-  pivot.position.copyFrom(bizjetPfdCentre());
-  // `verticalProfile` extrudes an x-y outline along z; turned a quarter about y
-  // the outline's x runs across the panel and its thickness runs fore and aft.
-  for (const [name, material, upper] of [
-    ["bizjet-pfd-sky", sky, true],
-    ["bizjet-pfd-ground", ground, false],
-  ] as const) {
-    const half = build.verticalProfile(name, halfDisc(radius, upper, pfd.segments), pfd.thickness, material, pivot);
-    half.rotation.y = Math.PI / 2;
-    parts.push(half);
-  }
-  const bar = build.box(
-    "bizjet-pfd-pitch-bar", pfd.thickness, pfd.barHeight, pfd.barLength, white, pivot,
-  );
-  const barFront = -(pfd.thickness / 2 + pfd.barOffset + pfd.thickness / 2);
-  bar.position.set(barFront, 0, 0);
-  parts.push(bar);
+  parts.push(...ball.parts);
 
   // THE WINDSCREEN POSTS, each in one vertical plane through the eye for the
   // left one; the right is its mirror (out of the player's frame, and built for
@@ -554,8 +524,8 @@ export function buildBizjetCockpit(
   return {
     parts,
     update(state) {
-      pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
-      bar.position.y = pitchBarOffsetMetres(state.pitch);
+      ball.pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
+      ball.bar.position.y = pitchBarOffsetMetres(state.pitch);
     },
   };
 }
