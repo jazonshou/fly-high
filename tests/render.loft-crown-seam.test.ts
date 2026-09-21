@@ -248,9 +248,9 @@ describe("a loft's crown seam", () => {
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
       // re-pins above; the 747 is untouched by both.
-      jet: "ffc9a3d5",
+      jet: "b0eb20d5",
       bizjet: "7b2e0a8d",
-      airliner: "10dd7ee9",
+      airliner: "66da006d",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

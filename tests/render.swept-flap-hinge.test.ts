@@ -181,24 +181,19 @@ function worldRotation(node: { computeWorldMatrix: (force: boolean) => Matrix })
 /**
  * Surfaces whose hinge is KNOWN to be off its panel's line, each with why.
  *
- * Both are box rudders whose lean is a `rotation.z` applied about the box's
- * own centre — how a box fakes a swept panel against a vertical hinge. That
- * tilt swings the panel forward past the hinge node, so the hinge line runs
- * THROUGH it: on the 747, 2.26 m from the leading edge and 0.64 m from the
- * trailing edge. Simply raking the axis then swings the two edges opposite
- * ways and sends the trailing edge to PORT on right rudder — measured, and
- * caught by `render.webgpu-control-surface-sides`. Fixing it means re-seating
- * the panel on its hinge line, and a rigid rake tilts the CHORD too, which a
- * real raked fin does not, so the panel wants shearing rather than rotating.
- * Geometry work, not an axis change.
+ * EMPTY, and it was not. Both box rudders lived here: panels tilted about
+ * their own centres to fake a swept surface against a vertical hinge, which
+ * swung them forward past the hinge so the line ran THROUGH the panel — 2.26 m
+ * from the leading edge on the 747 — and tilted their chords by 25.9 degrees
+ * into the bargain. The entries were asserted to STILL FAIL, which is what
+ * stopped the list rotting and what told this file the day they were fixed.
  *
- * The entries are asserted to STILL FAIL below, so this list cannot go stale
- * the way a hand-maintained exception list silently does.
+ * Both are now sheared aerofoils whose leading edge IS the hinge line, turning
+ * 0.000002 and 0.0000009 degrees off it. Leave this list empty rather than
+ * deleting it: the next surface that cannot be raked wants its reason written
+ * down here, and asserted to still fail.
  */
-const DECLARED_UNRAKED: readonly (readonly [AircraftKind, string])[] = [
-  ["jet", "rudder"],
-  ["airliner", "rudder"],
-];
+const DECLARED_UNRAKED: readonly (readonly [AircraftKind, string])[] = [];
 
 /**
  * Surfaces whose axis is CORRECT while differing from their panel's leading
