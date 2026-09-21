@@ -236,9 +236,16 @@ describe("a loft's crown seam", () => {
     // These four were computed on 192ec3b, BEFORE the weld, and again after
     // it. They are the same four values; that is the claim, not just the pin.
     const pinned: Readonly<Record<AircraftKind, string>> = {
-      trainer: "cc9d14d5",
+      // RE-PINNED for the trainer and the Global by the cockpit work (jazonshou/cockpit-view),
+      // which replaced their cockpit meshes: the old panel, gauges and needles are gone and
+      // cockpit-only meshes (metadata.cockpitOnly) stand in their place. The claim above still
+      // holds and was checked mesh by mesh against House-Keeping's own source (positions AND
+      // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
+      // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
+      // the old cockpit or the new one. The jet and the 747 keep their pins, unchanged.
+      trainer: "b9751f9b",
       jet: "35f03ce5",
-      bizjet: "9871642d",
+      bizjet: "7b2e0a8d",
       airliner: "10dd7ee9",
     };
     for (const kind of AIRCRAFT_KINDS) {
