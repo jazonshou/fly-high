@@ -208,7 +208,10 @@ describe("the loft's crown taper", () => {
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",
-      bizjet: "58fd2565",
+      // Re-pinned for the Global's cabin window panes, whose single instanced
+      // base mesh is now bowed to the fuselage section. The crown taper is
+      // unused on this airframe too; what moved is the window line's pane.
+      bizjet: "6fc968fd",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

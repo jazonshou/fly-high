@@ -235,6 +235,14 @@ describe("a loft's crown seam", () => {
     // shading change.
     // These four were computed on 192ec3b, BEFORE the weld, and again after
     // it. They are the same four values; that is the claim, not just the pin.
+    //
+    // The BIZJET's has since moved once, for the cabin window panes: the
+    // single instanced pane's vertices are bowed to the fuselage section, so
+    // the base mesh changed shape. NOTE WHAT DID NOT MOVE IT — seating each
+    // pane at its own station is carried entirely in the thin-instance
+    // MATRICES, and this digest reads `getVerticesData(PositionKind)` and
+    // `getIndices()` only. Instance matrices are not in it, so half of that
+    // change is invisible here by construction.
     const pinned: Readonly<Record<AircraftKind, string>> = {
       // RE-PINNED for the trainer and the Global by the cockpit work (jazonshou/cockpit-view),
       // which replaced their cockpit meshes: the old panel, gauges and needles are gone and
@@ -255,7 +263,7 @@ describe("a loft's crown seam", () => {
       // one airframe, merged alongside the cockpit work's trainer and Global
       // re-pins above; the 747 is untouched by both.
       jet: "b0eb20d5",
-      bizjet: "7b2e0a8d",
+      bizjet: "048fb545",
       airliner: "66da006d",
     };
     for (const kind of AIRCRAFT_KINDS) {

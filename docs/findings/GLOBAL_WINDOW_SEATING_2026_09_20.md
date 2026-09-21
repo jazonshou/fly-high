@@ -42,20 +42,70 @@ If either fails, the run voids rather than printing a table.
 
 ## What is NOT the number
 
-Measuring the worst pane EDGE gives 82.6 mm, and that figure is mostly the
-oval, not the fit. A pane is a flat oval 0.58 m tall laid on a curved skin: for
-a half-height of 0.29 m on a 1.1 m radius that is 39 mm of sagitta before the
-pane's own 70 mm of thickness is counted. Only the face centre isolates the
-seating.
+The face CENTRE is the seating. The worst pane EDGE is a different and much
+larger number — **152.5 mm proud at the top edge, 19.9 mm sunk at the bottom** —
+because a pane is a FLAT oval 0.539 m tall laid on a curved skin, at a height
+where that skin is steeply sloped. Across one pane the half-width runs from
+1.341 m at its bottom edge to 1.178 m at its top: **163 mm of movement under a
+dead-flat face.** Seating such a pane perfectly at its centre still leaves its
+top edge 112 mm inside the aeroplane and its bottom 50 mm outside it.
 
-## The frame, which did not come out
+> **CORRECTION.** An earlier pass of this file reported that edge figure as
+> 82.6 mm. That reading was taken before the sign fault below was found, and it
+> was wrong: the true figure is 152.5 mm, nearly double. The centre figures
+> (34.8–55.2 mm) were taken after the fix and stand.
 
-`timeOfDay: golden` was the right instinct — a 35 mm bump on a 2.6 m fuselage
-needs grazing light — but at the headings the aeroplane flew, the low sun sat
-nearly along its track and BOTH flanks came out backlit. `spine-frames.mts`
-gained `side` and `side-port` views for this, and both frames are too dark to
-read a 35 mm standoff from. **No frame is offered as evidence.** The table
-above is the evidence; a dark frame would only decorate it.
+## The fix, and what it reads now
 
-If a frame is wanted, the cheap fix is to capture in `day` and accept flatter
-light, or to wait for a heading with the sun abeam.
+Two changes, because the defect was two defects.
+
+1. **Each pane is seated at its own station.** `CABIN_WINDOW_Z = 1.29` — "the
+   fuselage half-width at that height" — was the half-width at ONE station.
+   Each instance now asks `cabinHalfWidthAt` for its own, plus 5 mm of
+   clearance so the glass and the skin cannot fight in the depth buffer.
+2. **The pane is bowed to the section.** Done once, on the single instanced
+   base mesh, from the constant-section curve. A flat pane cannot lie in this
+   surface at all, for the reason above.
+
+| | before | after |
+|---|---|---|
+| outer face, all 28 panes, both sides | −19.9 to **+152.5 mm** | **+3.8 to +9.0 mm** |
+| face centre | 34.8 → 55.2 mm proud | ~5 mm proud, uniform |
+
+756 outer-face vertices measured, every one of them within 9 mm of the skin.
+The −63.8 mm that the all-vertex figure shows is the pane's own 70 mm of
+thickness — its inner face, buried in the fuselage.
+
+**Thin instances stay thin instances.** One base mesh, 28 matrices, no change
+to the draw count, and `mergeStatic` still refuses it.
+
+## Two more ways this went wrong
+
+**The port side bowed inward.** The pane used to be symmetric about its own
+local Y, so one rotation served both flanks and the port instances were quietly
+laid on with their local +Y pointing INTO the aeroplane. Nothing depended on
+it. The bow does — it is asymmetric in local Y — so with one rotation the port
+panes bowed the wrong way and read **270 mm proud** while starboard read 5. The
+port rotation now takes local X to −X, Y to −Z and Z to −Y, which is a proper
+rotation (a half turn about (0, 1, −1)); the mapping that seems more natural —
+leave X alone, send Y to −Z — is a REFLECTION and renders inside out.
+
+**And the height sense was assumed, not measured.** The airframe's own comment
+said the quarter turn sends local Z to world −Y. It does. But with the port
+fault in play, flipping that sense *also* changed the numbers, and for one run
+it looked like the culprit. What settled it was printing the actual
+local→world mapping of a base vertex through a real instance matrix, rather
+than reasoning about a quaternion: local z −0.193 lands at world y 0.649, and
+that is the end of the argument.
+
+## The frame
+
+`timeOfDay: golden` was the right instinct for a shading defect, but at the
+headings the aeroplane flew the low sun sat nearly along its track and BOTH
+flanks came out backlit. `spine-frames.mts` gained `side`, `side-port` and a
+light argument; the before/after pair is taken in `day`, where the windows read
+as plates stuck on the skin before and as panes set into it after.
+
+The frames support the table. They are not the evidence — 5 mm against 35 is
+not something a screenshot settles, and the instrument with its known-offset
+control is.

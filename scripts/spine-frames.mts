@@ -17,7 +17,7 @@ import { mkdirSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
-const [outDir, url, expectTree, kind, heightRaw, viewRaw] = process.argv.slice(2);
+const [outDir, url, expectTree, kind, heightRaw, viewRaw, lightRaw] = process.argv.slice(2);
 if (!outDir || !url || !expectTree || !kind) {
   throw new Error("usage: <outDir> <url> <expectTree> <kind> <height> [above|side]");
 }
@@ -33,6 +33,16 @@ const view = viewRaw ?? "above";
 // flying. A backlit flank shows nothing about how a part sits in it.
 if (!["above", "side", "side-port"].includes(view)) {
   throw new RangeError('view must be "above", "side" or "side-port"');
+}
+/**
+ * `golden` rakes the light, which is what a shading seam needs — but a low sun
+ * lights one flank and silhouettes the other, and at some headings it sits
+ * along the aeroplane's track and silhouettes BOTH. `day` is the fallback when
+ * the subject is a step in a surface rather than a break in its shading.
+ */
+const light = lightRaw ?? "golden";
+if (!["dawn", "day", "golden", "night"].includes(light)) {
+  throw new RangeError('light must be dawn, day, golden or night');
 }
 // VALIDATED, not defaulted. A shell loop that loses its second argument hands
 // this script `kind = "airliner 95"` and no height, and with a default height
@@ -72,7 +82,7 @@ for (const fatal of ["unhandledRejection", "uncaughtException"] as const) {
     });
   });
 }
-await page.addInitScript((wantedKind: string) => {
+await page.addInitScript(({ wantedKind, wantedLight }: { wantedKind: string; wantedLight: string }) => {
   try {
     const key = Object.keys(localStorage).find((k) => k.includes("settings")) ?? "aerolith.settings.v3";
     localStorage.setItem(key, JSON.stringify({
@@ -84,11 +94,11 @@ await page.addInitScript((wantedKind: string) => {
       // The whole point: a low sun. At `day` the light is near enough overhead
       // that both sides of the spine return the same amount of it and the seam
       // is invisible however wrong the normals are.
-      timeOfDay: "golden",
+      timeOfDay: wantedLight,
       airborneStartAgl: 900,
     }));
   } catch { /* first load has no settings yet */ }
-}, kind);
+}, { wantedKind: kind, wantedLight: light });
 await page.goto(url, { waitUntil: "domcontentloaded" });
 await page.locator('[aria-label="fly high start"]').waitFor({ timeout: 120_000 });
 await page.waitForTimeout(2_500);
