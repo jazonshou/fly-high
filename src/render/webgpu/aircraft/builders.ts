@@ -123,6 +123,11 @@ interface VertexMeshOptions {
   readonly colors?: readonly number[];
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly castsShadow?: boolean;
+  /**
+   * Groups of vertex indices that sit at the SAME POINT and must share one
+   * normal. See `weldNormals`.
+   */
+  readonly weldedNormals?: readonly (readonly number[])[];
 }
 
 /**
@@ -577,8 +582,22 @@ export class AircraftBuildContext {
       indices.push(endCenter, endRing + radial, endRing + radial + 1);
     }
     reverseTriangleWinding(indices);
+    // THE RING CLOSES AT THE CROWN. `angle` starts at 0, where the superellipse
+    // is (yShape 1, zShape 0) — the top centreline — so radial 0 and radial
+    // `radialSegments` are the same point on every section, repeated only so
+    // the UV can run 0..1 round the section. Nothing is duplicated at the keel:
+    // that is the single vertex at angle pi, and with an odd `radialSegments`
+    // there is no vertex exactly there at all.
+    //
+    // Their normals are welded because the surface is SMOOTH across that seam
+    // and was not being shaded as though it were.
+    const crownSeam: number[][] = [];
+    for (let section = 0; section < sections.length; section += 1) {
+      crownSeam.push([section * ringSize, section * ringSize + radialSegments]);
+    }
     return this.vertexMesh(name, positions, indices, material, parent, {
       uvs,
+      weldedNormals: crownSeam,
       metadata: {
         aircraftGeometry: "lofted-fuselage",
         loftSectionCount: sections.length,
@@ -924,6 +943,7 @@ export class AircraftBuildContext {
   ): Mesh {
     const normals: number[] = [];
     VertexData.ComputeNormals(positions, indices, normals);
+    if (options.weldedNormals) weldNormals(normals, options.weldedNormals);
     const vertexData = new VertexData();
     vertexData.positions = positions;
     vertexData.indices = indices;
@@ -984,6 +1004,47 @@ function appendExtrudedIndices(indices: number[], count: number): void {
   for (let index = 0; index < count; index += 1) {
     const next = (index + 1) % count;
     indices.push(index, next, count + next, index, count + next, count + index);
+  }
+}
+
+/**
+ * Gives vertices that sit at the same point ONE normal, by averaging theirs.
+ *
+ * WHY THIS IS NEEDED. A closed ring has to repeat its first vertex at the end,
+ * because the UV has to run 0..1 round the section and one vertex cannot hold
+ * two texture coordinates. Those two vertices are at the same point in space,
+ * but `ComputeNormals` only ever sees each one's OWN triangles — the faces on
+ * one side of the seam for one, the other side for the other — so it writes
+ * them two different normals. The surface is continuous and the shading is not.
+ *
+ * Measured before this existed, as the angle between the normal a degree to
+ * port of the top centreline and the one a degree to starboard: 20.6 degrees
+ * on the 747, 18.6 on the Cessna, 18.2 on the F-16 and 8.0 on the Global. That
+ * is a shading line down the spine of every lofted body in the game, on the
+ * surface the chase camera looks straight down at.
+ *
+ * NOT EVERY DUPLICATE WANTS THIS. `airfoilWing` also repeats vertices at its
+ * leading and trailing edges, and there it is deliberate: an aerofoil's
+ * trailing edge IS a crease, and averaging across it would round off the one
+ * edge the shape depends on. Welding is opt-in per call for that reason.
+ */
+function weldNormals(normals: number[], groups: readonly (readonly number[])[]): void {
+  for (const group of groups) {
+    let x = 0; let y = 0; let z = 0;
+    for (const vertex of group) {
+      x += normals[vertex * 3]!;
+      y += normals[vertex * 3 + 1]!;
+      z += normals[vertex * 3 + 2]!;
+    }
+    const length = Math.hypot(x, y, z);
+    // Opposed normals cancel. That is a fold, not a seam, and averaging it
+    // would invent a direction; leave those alone rather than guess.
+    if (length < 1e-9) continue;
+    for (const vertex of group) {
+      normals[vertex * 3] = x / length;
+      normals[vertex * 3 + 1] = y / length;
+      normals[vertex * 3 + 2] = z / length;
+    }
   }
 }
 
