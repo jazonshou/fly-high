@@ -22,6 +22,21 @@ export interface CommonRig {
   readonly root: TransformNode;
   readonly propeller: TransformNode;
   readonly cockpitParts: readonly AbstractMesh[];
+  /**
+   * Meshes that exist ONLY for the cockpit camera: `isVisible` is false until
+   * cockpit view is entered, true for exactly as long as it lasts, and false
+   * again on exit (`setCockpitVisibility`). Optional: an airframe whose
+   * cockpit is built into its ordinary parts has none.
+   *
+   * Visibility alone is enough, with no layer bit, because nothing draws an
+   * aircraft mesh except the flight camera (one `scene.render`) and the
+   * cascaded shadow generator, whose casters are the explicit list
+   * `FlightRenderer` builds from meshes that do not say `castsShadow: false`
+   * — which `configureCockpitOnlyParts` makes every one of these say. The sky
+   * probe renders only the sky dome, the cloud depth target only the terrain,
+   * and the planar water capture is retired.
+   */
+  readonly cockpitOnlyParts?: readonly AbstractMesh[];
   readonly wingSurfaces: readonly AbstractMesh[];
   /** Starboard first. Empty on an airframe whose ailerons ARE its flaps. */
   readonly ailerons: readonly TransformNode[];
@@ -323,11 +338,28 @@ export function configureCockpitLayers(parts: readonly AbstractMesh[]): void {
   }
 }
 
+/**
+ * Make `parts` cockpit-only: invisible until `setCockpitVisibility` turns them
+ * on, and never a shadow caster. Both invariants are enforced HERE rather than
+ * left to each builder, because either one forgotten is a defect nothing else
+ * would notice — a part visible from outside is a floating panel in every chase
+ * frame, and a part registered as a caster throws a shadow of the cockpit.
+ * `castsShadow` is set through a spread so a part's other metadata survives.
+ */
+export function configureCockpitOnlyParts(parts: readonly AbstractMesh[]): void {
+  for (const part of parts) {
+    part.isVisible = false;
+    part.metadata = { ...part.metadata, castsShadow: false };
+  }
+}
+
 export function setCockpitVisibility(rig: CommonRig, scene: Scene, enabled: boolean): void {
   for (const part of rig.cockpitParts) {
     part.layerMask = AIRCRAFT_EXTERIOR_LAYER_MASK;
     part.isVisible = true;
   }
+  // Visible for exactly as long as cockpit view lasts.
+  for (const part of rig.cockpitOnlyParts ?? []) part.isVisible = enabled;
   const camera = scene.activeCamera;
   if (camera) camera.layerMask = aircraftCameraLayerMask(camera.layerMask, enabled);
   // Wing roots are intentional cockpit reference geometry and stay visible;

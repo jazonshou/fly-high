@@ -159,50 +159,77 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
 
     const exteriorMaskBeforeCockpit = fixture.camera.layerMask;
-    // THE CABIN GLAZING, AND ONLY THE GLAZING, IS COCKPIT-EXCLUDED, which is
-    // what lets it drop its depth pre-pass and read as glass from outside. Both
-    // halves are pinned because each alone is a defect: visible to an exterior
-    // camera, or the cabin is a bare shell with the interior showing through;
-    // hidden from the cockpit camera, or the pilot's forward view is the
-    // near-black blue wash the pre-pass was there to prevent. The trade -- no
-    // glass from the seat, correct glazing everywhere else -- was put to the PM
-    // and authorised.
+    // THE TUBE AND THE GLASS ARE COCKPIT-EXCLUDED; THE ROOF AND THE CENTRE FRAME
+    // ARE NOT.
     //
-    // THE SHELL IS NOT HIDDEN. The opaque fuselage loft, the cabin roof and the
-    // centre frame cull their own insides, so from the seat they draw only what
-    // faces the pilot (the cowl ahead of the windscreen, the underside of the
-    // roof, the frame) and give the view the structure that says it is a
-    // cockpit. They used to be excluded with the glass and the pilot saw a slab
-    // and three floating propeller fragments. They must be visible to the
-    // cockpit camera as well as to every other one.
+    // The glass, which is what lets it drop its depth pre-pass and read as glass
+    // from outside. Both halves are pinned because each alone is a defect:
+    // visible to an exterior camera, or the cabin is a bare shell with the
+    // interior showing through; hidden from the cockpit camera, or the pilot's
+    // forward view is the near-black blue wash the pre-pass was there to
+    // prevent. The trade -- no glass from the seat -- was put to the PM and
+    // authorised.
+    //
+    // The fuselage tube, because its cabin-section top skin IS the window sill
+    // and the pilot's eye is above it: shown, it is the outside of a white
+    // deck filling the bottom third of the frame, hiding everything inside it.
+    // Its cowl, panel, dials and door panels are rebuilt as COCKPIT-ONLY parts.
+    //
+    // The roof and the centre frame hang over the pilot and are what a
+    // windscreen's framing is, so they must be visible to the cockpit camera as
+    // well as to every other one.
     const canopy = mesh(fixture.scene, "trainer-canopy");
-    const shell = ["trainer-fuselage", "trainer-cabin-roof", "windscreen-center-frame"]
+    const tube = mesh(fixture.scene, "trainer-fuselage");
+    const overhead = ["trainer-cabin-roof", "windscreen-center-frame"]
       .map((name) => mesh(fixture.scene, name));
+    const cockpitOnly = aircraft.cockpitOnlyParts ?? [];
     const maskBefore = new Map(fixture.scene.meshes.map((part) => [part, part.layerMask]));
-    expect(aircraft.cockpitParts).toEqual([canopy]);
+    expect(new Set(aircraft.cockpitParts)).toEqual(new Set([tube, canopy]));
+    expect(aircraft.cockpitParts).toHaveLength(2);
     expectVisibleToCamera(canopy, fixture.camera);
-    for (const part of shell) expectVisibleToCamera(part, fixture.camera);
+    expectVisibleToCamera(tube, fixture.camera);
+    for (const part of overhead) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
     expect(
       aircraft.cockpitParts.every((part) => part.layerMask === AIRCRAFT_EXTERIOR_LAYER_MASK),
     ).toBe(true);
+    // COCKPIT-ONLY PARTS: there are some, and before cockpit view they are
+    // invisible and never shadow casters.
+    expect(cockpitOnly.length).toBeGreaterThan(0);
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be invisible outside cockpit view`).toBe(false);
+      expect(part.metadata?.castsShadow, `${part.name} must not cast a shadow`).toBe(false);
+    }
+    // The renderer registers exactly the meshes that do not say castsShadow:
+    // false, so none of these can be among them.
+    const casters = new Set(aircraft.meshes.filter((part) => part.metadata?.castsShadow !== false));
+    for (const part of cockpitOnly) expect(casters.has(part)).toBe(false);
     aircraft.setCockpitView(true);
     // Still drawn and still a shadow caster — excluded from THIS camera only.
     expect(canopy.isVisible).toBe(true);
     expect(canopy.layerMask & fixture.camera.layerMask).toBe(0);
+    expect(tube.isVisible).toBe(true);
+    expect(tube.layerMask & fixture.camera.layerMask).toBe(0);
     expect(
       aircraft.cockpitParts.every(
         (part) => part.isVisible && (part.layerMask & fixture.camera.layerMask) === 0,
       ),
     ).toBe(true);
-    // The shell is visible to the cockpit camera too, and nothing about its
-    // layers moved to make it so.
-    for (const part of shell) {
+    // The roof and the centre frame are visible to the cockpit camera too, and
+    // nothing about their layers moved to make it so.
+    for (const part of overhead) {
       expect(part.isVisible).toBe(true);
       expect(part.isEnabled()).toBe(true);
       expect(part.layerMask & fixture.camera.layerMask).not.toBe(0);
       expect(part.layerMask).toBe(maskBefore.get(part));
+    }
+    // Cockpit-only parts are drawn now, on ordinary layers, and still never casters.
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be visible in cockpit view`).toBe(true);
+      expect(part.isEnabled()).toBe(true);
+      expect(part.layerMask & fixture.camera.layerMask).not.toBe(0);
+      expect(part.metadata?.castsShadow).toBe(false);
     }
     expect(mesh(fixture.scene, "port-main-wing-forward").isVisible).toBe(true);
     expect(
@@ -211,10 +238,15 @@ describe("Babylon WebGPU aircraft visual", () => {
     expectShadowCastersVisible(aircraft.meshes);
     aircraft.setCockpitView(false);
     expectVisibleToCamera(canopy, fixture.camera);
-    for (const part of shell) expectVisibleToCamera(part, fixture.camera);
+    expectVisibleToCamera(tube, fixture.camera);
+    for (const part of overhead) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
-    // MASKS RESTORED EXACTLY on exit: the camera's, and every mesh's.
+    // ON EXIT the cockpit-only parts are invisible again, and every mask is
+    // restored exactly: the camera's, and every mesh's.
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be invisible again after cockpit view`).toBe(false);
+    }
     expect(fixture.camera.layerMask).toBe(exteriorMaskBeforeCockpit);
     for (const [part, mask] of maskBefore) expect(part.layerMask).toBe(mask);
 

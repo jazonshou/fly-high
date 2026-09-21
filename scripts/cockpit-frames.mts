@@ -55,6 +55,14 @@ const WIDTH = Number(process.env.FRAME_WIDTH ?? 1600);
 const HEIGHT = Number(process.env.FRAME_HEIGHT ?? 900);
 /** Seconds to let each start settle before switching view: a phugoid is a frame of an aeroplane doing something. */
 const SETTLE_SECONDS = { air: Number(process.env.SETTLE_AIR ?? 22), runway: Number(process.env.SETTLE_RUNWAY ?? 10) };
+/**
+ * Which view to photograph: the cockpit (default), or the chase or orbit camera
+ * to prove nothing cockpit-only shows from outside. The camera key cycles
+ * chase -> cockpit -> orbit, and the HUD's label is what is believed.
+ */
+const VIEW = (process.env.VIEW ?? "cockpit") as "cockpit" | "chase" | "orbit";
+const WANTED_HUD = { cockpit: "COCKPIT", chase: "CHASE CAM", orbit: "ORBIT CAM" }[VIEW];
+if (!WANTED_HUD) throw new Error(`VIEW=${process.env.VIEW} is not cockpit, chase or orbit`);
 /** A lens to try instead of the shipped one, in degrees horizontal; null = the shipped lens. */
 const LENS_REQUEST = process.env.LENS === undefined || process.env.LENS === "" ? null : Number(process.env.LENS);
 if (LENS_REQUEST !== null && !(LENS_REQUEST > 20 && LENS_REQUEST < 150)) {
@@ -109,6 +117,8 @@ interface SceneReading {
   readonly eyeInBodyFrame: readonly [number, number, number];
   readonly rootQuaternion: readonly [number, number, number, number];
   readonly hud: string;
+  /** `isVisible` of every trainer cockpit-only mesh present in the scene, by name. */
+  readonly cockpitOnly: Readonly<Record<string, boolean>>;
 }
 
 async function readScene(page: import("playwright").Page): Promise<SceneReading> {
@@ -127,6 +137,7 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
     interface SceneLike {
       activeCamera: { position: Vec; fov: number; fovMode: number; minZ: number; layerMask: number } | null;
       transformNodes: { name: string; position: Vec; rotationQuaternion: Quat | null; metadata: { aircraftVisual?: boolean; aircraftKind?: string } | null }[];
+      meshes: { name: string; isVisible: boolean }[];
     }
     const scenes = holder.Instances.flatMap((engine) => engine.scenes as SceneLike[]);
     const scene = scenes.find((s) => s.transformNodes.some((n) => n.metadata?.aircraftVisual));
@@ -157,6 +168,11 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       eyeInBodyFrame: [body.x, body.y, body.z] as const,
       rootQuaternion: [q.x, q.y, q.z, q.w] as const,
       hud: document.body.innerText.replace(/\s+/g, " ").slice(0, 160),
+      cockpitOnly: Object.fromEntries(
+        scene.meshes
+          .filter((m) => /^trainer-(cowl-standin|instrument-panel|door-|windscreen-post-|(airspeed|attitude|altimeter|engine|vertical-speed)-(gauge|needle))/.test(m.name))
+          .map((m) => [m.name, m.isVisible]),
+      ),
     };
   });
 }
@@ -167,7 +183,7 @@ function hudView(hud: string): string {
 }
 
 async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
-  const label = `${kind}-${pose}${LENS_REQUEST === null ? "" : `-lens${LENS_REQUEST}`}`;
+  const label = `${kind}-${pose}${VIEW === "cockpit" ? "" : `-${VIEW}`}${LENS_REQUEST === null ? "" : `-lens${LENS_REQUEST}`}`;
   const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: 1 });
   let lensRewrites = 0;
   try {
@@ -209,9 +225,9 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     }
     await page.waitForTimeout(SETTLE_SECONDS[pose] * 1_000);
 
-    // The camera key CYCLES: press it until the HUD says COCKPIT.
+    // The camera key CYCLES: press it until the HUD names the wanted view.
     let reading = await readScene(page);
-    for (let press = 0; press < 4 && hudView(reading.hud) !== "COCKPIT"; press += 1) {
+    for (let press = 0; press < 4 && hudView(reading.hud) !== WANTED_HUD; press += 1) {
       await page.keyboard.press("KeyC");
       await page.waitForTimeout(1_400);
       reading = await readScene(page);
@@ -220,11 +236,31 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     reading = await readScene(page);
 
     // ASSERT before saving. Each of these has failed for real in this repo.
-    if (hudView(reading.hud) !== "COCKPIT") {
-      throw new Error(`${label}: HUD says ${hudView(reading.hud)}, not COCKPIT (${reading.hud})`);
+    if (hudView(reading.hud) !== WANTED_HUD) {
+      throw new Error(`${label}: HUD says ${hudView(reading.hud)}, not ${WANTED_HUD} (${reading.hud})`);
     }
     if (reading.aircraftKind !== kind) {
       throw new Error(`${label}: the scene holds a "${reading.aircraftKind}", not the requested "${kind}"`);
+    }
+    // Cockpit-only parts (the trainer has them): drawn in cockpit view, and in
+    // NO other. Read from the live scene, so a part that leaks into a chase or
+    // orbit frame fails here instead of being noticed, or not, in the PNG.
+    const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
+    if (kind === "trainer") {
+      if (cockpitOnlyNames.length < 16) {
+        throw new Error(`${label}: expected the trainer's 16 cockpit-only meshes in the scene, found ${cockpitOnlyNames.length}`);
+      }
+      const wrong = cockpitOnlyNames.filter((name) => reading.cockpitOnly[name] !== (VIEW === "cockpit"));
+      if (wrong.length > 0) {
+        throw new Error(`${label}: cockpit-only meshes with the wrong visibility for the ${VIEW} view: ${wrong.join(", ")}`);
+      }
+    }
+    if (VIEW !== "cockpit") {
+      const png = `${outDir}/${label}.png`;
+      await page.screenshot({ path: png, type: "png" });
+      writeFileSync(`${outDir}/${label}.json`, `${JSON.stringify({ label, kind, pose, view: VIEW, url, expectTree, ...reading }, null, 2)}\n`);
+      console.log(`${label}: HUD ${hudView(reading.hud)}, scene kind ${reading.aircraftKind}, ${cockpitOnlyNames.length} cockpit-only meshes, all INVISIBLE here (asserted from the live scene) -> ${png}`);
+      return;
     }
     if (LENS_REQUEST !== null && lensRewrites === 0) {
       throw new Error(`${label}: LENS=${LENS_REQUEST} was requested but the served cameraPresentation module was never rewritten; this frame is at the shipped lens`);

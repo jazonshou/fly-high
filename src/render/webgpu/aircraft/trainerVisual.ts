@@ -10,15 +10,17 @@ import {
 import {
   applyCommonPose,
   configureCockpitLayers,
+  configureCockpitOnlyParts,
   configureRoot,
   createGlowApplier,
   createLampApplier,
   node,
   setCockpitVisibility,
-  addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
+import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
+import { TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -54,7 +56,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const root = new TransformNode("aerolith-trainer", scene);
   configureRoot(root, "trainer");
 
-  const body = build.paintMaterial("trainer-body", {
+  const bodyRecipe = {
     seed: 0x41a2_1701,
     baseColor: 0xe8eee7,
     liveryColor: 0xcfe95d,
@@ -62,6 +64,17 @@ export function createTrainer(scene: Scene): AircraftVisual {
     metallic: 0.08,
     sootStrength: 0.92,
     wearStrength: 0.74,
+  } as const;
+  const body = build.paintMaterial("trainer-body", bodyRecipe);
+  // The body paint with NO livery: the livery colour set equal to the base, so
+  // `mix(value, livery, decal)` is the identity and the diagonal band the
+  // synthesis draws in UV space is gone, exactly as the 747's plain wing does
+  // it. It is for the cockpit's cowl stand-in, which is a loft with UVs of its
+  // own: a stripe laid across it in UV space would slash across the pilot's
+  // view at whatever angle the mapping happened to land on.
+  const cowlPaint = build.paintMaterial("trainer-cowl", {
+    ...bodyRecipe,
+    liveryColor: bodyRecipe.baseColor,
   });
   const accent = build.paintMaterial("trainer-accent", {
     seed: 0x41a2_1702,
@@ -202,29 +215,12 @@ export function createTrainer(scene: Scene): AircraftVisual {
 
   // The whole shell in one loft, cowling included — the 150 has no visible
   // joint there, and a separate nose body was costing a draw to produce a seam
-  // the real aeroplane does not have.
-  //
-  // `squareness` carries the type. A Continental O-200 lies on its side, so
-  // the cowl is WIDER THAN IT IS DEEP and nearly rectangular in section
-  // (zRadius > yRadius at x = 3.70, squareness 2.6); the cabin is a flat-sided
-  // box with a flat deck (squareness 6, which is what lets the glass below sit
-  // on it without mushrooming out over a rounded crown); the tailcone is a
-  // plain ellipse.
-  //
-  // The cabin sections stop at y = 0.00. That is the WINDOW SILL, not the
-  // roof: everything above it is the greenhouse, built separately in glass so
-  // the wrap-around rear window is real geometry rather than a painted band.
-  build.loft(
+  // the real aeroplane does not have. The sections live in `trainerShell.ts`
+  // (with the notes on what `squareness` carries and why the cabin stops at
+  // the window sill) because the cockpit's cowl stand-in lofts the SAME ones.
+  const fuselage = build.loft(
     "trainer-fuselage",
-    [
-      { x: -3.2, yRadius: 0.085, zRadius: 0.065, yOffset: 0.175 },
-      { x: -1.9, yRadius: 0.215, zRadius: 0.185, yOffset: 0.03, squareness: 2.2 },
-      { x: -0.7, yRadius: 0.44, zRadius: 0.33, yOffset: -0.23, squareness: 3.2 },
-      { x: 0.3, yRadius: 0.39, zRadius: 0.505, yOffset: -0.39, squareness: 6 },
-      { x: 1.6, yRadius: 0.39, zRadius: 0.505, yOffset: -0.39, squareness: 6 },
-      { x: 2.42, yRadius: 0.28, zRadius: 0.45, yOffset: -0.34, squareness: 4.5 },
-      { x: 3.7, yRadius: 0.17, zRadius: 0.29, yOffset: -0.17, squareness: 2.6 },
-    ],
+    TRAINER_FUSELAGE_SECTIONS,
     24,
     body,
     root,
@@ -522,19 +518,21 @@ export function createTrainer(scene: Scene): AircraftVisual {
     );
     headrest.position.set(1.02, -0.08, side * 0.26);
   }
-  // Panel top level with the sill, so the glareshield line and the bottom of
-  // the windscreen are the same line, as they are in the aeroplane.
-  addInstrumentPanel(
-    build,
-    "trainer",
-    root,
-    2.1,
-    -0.26,
-    0.86,
+  // The panel, the dials, the cowl the pilot sees, the door panels and the
+  // windscreen posts are COCKPIT-ONLY parts, built to angles from the pilot's
+  // left-seat eye in `cockpit/trainerCockpit.ts`. They have to be, because the
+  // fuselage tube is hidden from the cockpit camera (its top skin is the sill
+  // and the eye is above it), so anything that used to show only by being
+  // inside it must be rebuilt on this side. `configureCockpitOnlyParts` makes
+  // them invisible until cockpit view is entered and never a shadow caster.
+  const cockpitOnlyParts = buildTrainerCockpit(build, root, {
     interior,
+    dark,
     instrumentFace,
     instrumentMarking,
-  );
+    cowl: cowlPaint,
+  });
+  configureCockpitOnlyParts(cockpitOnlyParts);
 
   // Cowl fittings. The band sits on the cowl/firewall seam and is squashed in
   // Y to follow a section that is 0.43 m wide and 0.27 m deep — a round ring
@@ -734,13 +732,16 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const rig: CommonRig = {
     root,
     propeller,
-    // ONLY THE GLASS the pilot sits inside, which sorts badly from within: see
-    // the note on the glass material above for why. The opaque shell, the cabin
-    // roof and the centre frame stay on ordinary layers -- they cull their own
-    // insides, and what faces the pilot (cowl, roof line, centre frame) is
-    // what makes the view read as a cockpit. `configureCockpitLayers` puts the
-    // canopy on the exterior layer and the cockpit camera's mask excludes it.
-    cockpitParts: [canopy],
+    // THE FUSELAGE TUBE AND THE GLASS. The tube because the pilot's eye is above
+    // its top skin (which is the sill), so he would look down onto the outside
+    // of it; the glass because it sorts badly from within (see the note on the
+    // glass material above). The cabin roof and the centre frame are NOT here:
+    // they hang over the pilot and are exactly what a windscreen's framing is.
+    // `configureCockpitLayers` puts these on the exterior layer, which the
+    // cockpit camera's mask excludes.
+    cockpitParts: [fuselage, canopy],
+    // What stands in for the hidden tube: see `buildTrainerCockpit`.
+    cockpitOnlyParts,
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */
@@ -761,6 +762,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
     root,
     propeller,
     cockpitParts: rig.cockpitParts,
+    cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
