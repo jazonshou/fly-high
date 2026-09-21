@@ -10,6 +10,7 @@
  * everything below. Class P: no Babylon, no DOM, no Node APIs.
  */
 
+import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
@@ -2079,6 +2080,16 @@ export interface CockpitTerrainCoverageInput {
    * `COCKPIT_HORIZONTAL_FOV_DEGREES` (75), which these shots do not use.
    */
   readonly horizontalFovDegrees?: number;
+  /**
+   * Where the eye sits, in metres along the nose and up the aircraft's own up
+   * from its origin. Defaults to the trainer's `cockpitEye` — what a capture
+   * flies unless told otherwise — read from the catalogue rather than copied,
+   * which is what this used to do (1.15 / 1.12, from an airframe that no longer
+   * exists, so the oracle sat about a metre above the camera it describes).
+   * There is no lateral term: the perf harness pins the eye to the centreline
+   * (`PERF_COCKPIT_RIG`).
+   */
+  readonly eye?: Readonly<{ forward: number; up: number }>;
   readonly viewportWidth?: number;
   readonly viewportHeight?: number;
   readonly columns?: number;
@@ -2162,11 +2173,13 @@ export function cockpitTerrainCoverage(
   const forward = rotateCaptureVector([1, 0, 0], orientation);
   const up = rotateCaptureVector([0, 1, 0], orientation);
   const horizontal = rotateCaptureVector([0, 0, 1], orientation);
-  // Keep this paired with FlightRenderer's cockpit rig: 1.15 m through the
-  // nose and 1.12 m above the aircraft origin.
-  const cameraX = input.aircraftPosition[0] + forward[0] * 1.15 + up[0] * 1.12;
-  const cameraY = input.aircraftPosition[1] + forward[1] * 1.15 + up[1] * 1.12;
-  const cameraZ = input.aircraftPosition[2] + forward[2] * 1.15 + up[2] * 1.12;
+  // Paired with FlightRenderer's cockpit rig through the catalogue, not through
+  // a copy of its numbers: the same `cockpitEye` the renderer places the camera
+  // at, minus the lateral term the perf rig pins to zero.
+  const eye = input.eye ?? aircraftSpec("trainer").cockpitEye;
+  const cameraX = input.aircraftPosition[0] + forward[0] * eye.forward + up[0] * eye.up;
+  const cameraY = input.aircraftPosition[1] + forward[1] * eye.forward + up[1] * eye.up;
+  const cameraZ = input.aircraftPosition[2] + forward[2] * eye.forward + up[2] * eye.up;
   const horizontalScale = Math.tan((horizontalFovDegrees * Math.PI) / 360);
   const verticalScale = horizontalScale * viewportHeight / viewportWidth;
 

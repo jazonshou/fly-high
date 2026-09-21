@@ -8,6 +8,7 @@ import {
   PERF_CAPTURE_WIDTH,
   yawForSunBearing,
 } from "../scripts/perf-capture.mts";
+import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { createWorld, sampleTerrainHeight } from "../src/world";
@@ -117,14 +118,22 @@ function shotYawDegrees(): number {
   );
 }
 
-function angularExtent(hangarIndex: number) {
+/**
+ * The perf harness's eye for the trainer, from the catalogue: the same
+ * `cockpitEye` the renderer places the camera at, without the lateral term the
+ * perf rig pins to zero. This was a literal `1.15 / 1.12` from an airframe that
+ * no longer exists, so the projection sat about a metre above the real camera.
+ */
+const CAPTURE_EYE = aircraftSpec("trainer").cockpitEye;
+
+function angularExtent(hangarIndex: number, eyeSpec: Readonly<{ forward: number; up: number }> = CAPTURE_EYE) {
   const h = HANGARS[hangarIndex]!;
   const { x, z, ground } = cameraGround();
   const agl = SHOT.altitudeAglMeters ?? 0;
   const yaw = (shotYawDegrees() * Math.PI) / 180;
   const forward = [Math.cos(yaw), 0, -Math.sin(yaw)] as const;
   const right = [Math.sin(yaw), 0, Math.cos(yaw)] as const;
-  const eye = [x + forward[0] * 1.15, ground + agl + 1.12, z + forward[2] * 1.15] as const;
+  const eye = [x + forward[0] * eyeSpec.forward, ground + agl + eyeSpec.up, z + forward[2] * eyeSpec.forward] as const;
   let horizMin = Infinity, horizMax = -Infinity, vertMin = Infinity, vertMax = -Infinity;
   for (const da of [-h.footprint.depthMeters / 2, h.footprint.depthMeters / 2]) {
     for (const dc of [-h.footprint.widthMeters / 2, h.footprint.widthMeters / 2]) {
