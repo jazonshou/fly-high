@@ -299,17 +299,19 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   // yOffset below is (crown - belly)/2 and (crown + belly)/2 with the belly
   // held at -3.25, so the tube's underside is one unbroken line and only the
   // top of the aeroplane changes.
-  // The crown's own slope is what has to be smooth, not just its height: a
-  // taper that starts abruptly reads as a shoulder even when every section is
-  // round. Measured on the first attempt, the crown gained 25 mm per station
-  // up to x = 2 and then 90 mm per station after it -- a visible break right
-  // over the wing. These stations accelerate it instead, 3 mm/m at the wing to
-  // 57 mm/m at mid-hump and back to 40 by the peak.
-  { x: 0, yRadius: 3.26, zRadius: 3.25, yOffset: 0.01, crownZRadius: 3.24 },
-  { x: 6, yRadius: 3.325, zRadius: 3.25, yOffset: 0.075, crownZRadius: 3.16 },
-  { x: 12, yRadius: 3.455, zRadius: 3.25, yOffset: 0.205, crownZRadius: 2.99 },
-  { x: 18, yRadius: 3.625, zRadius: 3.25, yOffset: 0.375, crownZRadius: 2.8 },
-  { x: 23, yRadius: 3.765, zRadius: 3.25, yOffset: 0.515, crownZRadius: 2.66 },
+  // THE CROWN HAS TO RUN LEVEL over the deck, not merely reach the right
+  // height. A first attempt raised it evenly from the wing to the flight deck,
+  // and the frames showed the consequence: the crease was gone but so was the
+  // hump, because a 747's upper deck is a raised DECK -- the crown climbs
+  // behind the wing, runs flat the length of the deck, and fairs down. An even
+  // climb is a bulge. These stations give 5 mm/m at the wing, 87 at the steep
+  // part, then 17 and 2 over the deck itself, where it is level to the eye.
+  { x: 0, yRadius: 3.265, zRadius: 3.25, yOffset: 0.015, crownZRadius: 3.23 },
+  { x: 5, yRadius: 3.35, zRadius: 3.25, yOffset: 0.1, crownZRadius: 3.14 },
+  { x: 9, yRadius: 3.525, zRadius: 3.25, yOffset: 0.275, crownZRadius: 2.94 },
+  { x: 13, yRadius: 3.685, zRadius: 3.25, yOffset: 0.435, crownZRadius: 2.76 },
+  { x: 17, yRadius: 3.785, zRadius: 3.25, yOffset: 0.535, crownZRadius: 2.65 },
+  { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57, crownZRadius: 2.61 },
   // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
   // upper-deck contact point, exactly as the old separate hump loft did.
   { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },

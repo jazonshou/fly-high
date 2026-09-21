@@ -371,28 +371,28 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // separate hump changed the shape on purpose.
     //
     // The drop is the giveaway and it is worth reading rather than accepting:
-    // 10,520 vertices to 10,482 and 4,977 m^2 of surface to 4,689. Nearly 290
+    // 10,520 vertices to 10,511 and 4,977 m^2 of surface to 4,696. Nearly 280
     // square metres of that area was the two lobes' skin INSIDE each other,
     // drawn and shaded and never visible. One surface has no inside.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_482);
-    expect(census.indices).toBe(49_536);
+    expect(census.vertices).toBe(10_511);
+    expect(census.indices).toBe(49_704);
     expect(census.minimum.x).toBeCloseTo(-38, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4, 4);
     expect(census.minimum.z).toBeCloseTo(-34.35, 4);
     expect(census.maximum.x).toBeCloseTo(34, 4);
     expect(census.maximum.y).toBeCloseTo(13, 4);
     expect(census.maximum.z).toBeCloseTo(34.35, 4);
-    expect(census.positionSum.x).toBeCloseTo(21_423.6287, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26_276.1905, 1);
+    expect(census.positionSum.x).toBeCloseTo(21_597.6287, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26_250.4405, 1);
     expect(census.positionSum.z).toBeCloseTo(-22.032, 1);
-    expect(census.positionSquares).toBeCloseTo(6_789_682.22, 0);
-    expect(census.normalSum.x).toBeCloseTo(-353.972, 2);
-    expect(census.normalSum.y).toBeCloseTo(123.3517, 2);
+    expect(census.positionSquares).toBeCloseTo(6_789_650.46, 0);
+    expect(census.normalSum.x).toBeCloseTo(-354.3112, 2);
+    expect(census.normalSum.y).toBeCloseTo(124.9322, 2);
     expect(census.normalSum.z).toBeCloseTo(0.0935, 2);
-    expect(census.normalMoment).toBeCloseTo(10_053.7106, 1);
-    expect(census.signedVolume).toBeCloseTo(-3_208.8858, 2);
-    expect(census.area).toBeCloseTo(4_688.9651, 2);
+    expect(census.normalMoment).toBeCloseTo(10_162.039, 1);
+    expect(census.signedVolume).toBeCloseTo(-3_230.124, 2);
+    expect(census.area).toBeCloseTo(4_696.3482, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
