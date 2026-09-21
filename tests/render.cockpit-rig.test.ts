@@ -339,7 +339,7 @@ function portSeat(kind: AircraftKind): { name: string; z: number; note: string |
 }
 
 describe("cockpit eye against the pilot's seat", () => {
-  it.each(AIRCRAFT_KINDS)("%s: the eye is over the port seat, or on the centreline of a single seat (the 747 waits, see its TODO)", (kind) => {
+  it.each(AIRCRAFT_KINDS)("%s: the eye is over the port seat, or on the centreline of a single seat", (kind) => {
     const seat = portSeat(kind);
     if (seat.note) console.info(seat.note);
     const right = aircraftSpec(kind).cockpitEye.right;
@@ -347,19 +347,11 @@ describe("cockpit eye against the pilot's seat", () => {
       // One seat, on the centreline.
       expect(Math.abs(seat.z)).toBeLessThanOrEqual(0.02);
       expect(right).toBe(0);
-    } else if (kind === "airliner") {
-      // TODO(cockpit-view, 747): the eye belongs over the port seat, z -0.72,
-      // and this branch should become the two-seat assertion below once it is
-      // there. Until then it stays on the centreline: the 747's panel is laid
-      // out about the centreline and its flight deck cannot be rebuilt until
-      // the plane engineer's 747 work lands, so a left-seat eye would look
-      // across a centred panel and read worse than today. The seat is still
-      // measured, so the day the eye moves this test says where to.
-      expect(right).toBe(0);
-      expect(seat.z).toBeLessThan(-0.1);
-      expect(Math.abs(seat.z - -0.72)).toBeLessThanOrEqual(0.02);
     } else {
-      // Two seats: the pilot's is the PORT one (negative Z).
+      // Two seats: the pilot's is the PORT one (negative Z). The 747 joined this
+      // rule when its cockpit was built around a left-seat eye (right -0.72); it
+      // had waited on the centreline until its panel, which was laid out about the
+      // aeroplane, could be rebuilt.
       expect(seat.z).toBeLessThan(-0.1);
       expect(Math.abs(right - seat.z)).toBeLessThanOrEqual(0.02);
       // The control: the eye where it used to be — on the centreline, between

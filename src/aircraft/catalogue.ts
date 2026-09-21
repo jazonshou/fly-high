@@ -415,27 +415,26 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // 41.6%, and the look-down angle matches at 17.9 degrees on both. The
   // provisional 140/46 was not wrong, just 10% tighter.
   cinematic: Object.freeze({ radiusMeters: 155, heightMeters: 50, heightDriftMeters: 10 }),
-  // Measured against the built flight deck, and both provisional values were
-  // OUTSIDE THE AEROPLANE: forward 29.5 sat ahead of the instrument panel's
-  // own front face, and up 5.1 was 0.70 m above the upper-deck crown at 4.40.
-  // The "8.5 m above the centreline" in the old note was really the eye height
-  // above the GROUND, which is a different datum from every other entry here.
+  // The eye is SOLVED against the built flight-deck glazing (`scripts/airliner-eye-solve.mts`),
+  // in the PORT seat at z -0.72 (the mesh named `airliner-first-officer-seat`; see the
+  // Global's note on the swapped seat names). The requirements: y inside the glass's span
+  // (2.623 to 3.218); the port No.1 pane, the only glass straight ahead of a pilot at that z,
+  // reading as far above AND below the horizon as it can; at least 0.55 m from the glass and
+  // 0.15 m under the skin. The best point is T 9.53 (top +9.53, bottom -9.61) at
+  // (29.915, 2.935), where the glass distance is exactly 0.55; this is the round point with a
+  // margin: top +9.64, bottom -9.39, glass 0.558 m, skin above 0.474 m.
   //
-  // From the geometry: flight-deck floor y 1.95, seat cushion 1.96 to 2.80,
-  // panel 2.36 to 2.90 so its top edge is 2.90. The eye sits 1.15 m ahead of
-  // the panel face and 0.20 m above its top edge — 9.9 degrees of down-angle,
-  // against the Global's 9.6 and the 150's 9.8 — 1.15 m above the flight-deck
-  // floor and 8.30 m above the pavement.
+  // It exists only because the flight deck is built AROUND it (`cockpit/airlinerCockpit.ts`):
+  // the seats and headrests stand 0.05 m aft of it, the panel's face 0.75 m ahead, the
+  // hood's far edge at -10 degrees. The first version of this record had the seats 2 m behind
+  // the glass and the eye between them at (28.8, 3.1, 0), and from there no eye could read
+  // more than +5 / -7; the catalogue's earlier value, 29.5, sat ahead of the instrument
+  // panel's own front face, and 5.1 was 0.70 m above the upper-deck crown at 4.40.
   //
-  // `right` is 0 FOR NOW. The pilot's seat is the port one, at z -0.72
-  // (`airliner-first-officer-seat` by name; see the Global's note on the
-  // swapped seat names), and the eye belongs there. But the 747's instrument
-  // panel is still laid out about the centreline, and its flight deck cannot be
-  // rebuilt until the plane engineer's 747 work lands, so an eye in the left
-  // seat would look across a panel that is still centred on the aeroplane and
-  // read worse than today. Set this to -0.72 when the 747's cockpit is built;
-  // `tests/render.cockpit-rig.test.ts` carries the TODO that says so.
-  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1, right: 0 }),
+  // The opening is still only about 19 degrees tall where the type's is nearer 35: the
+  // model's panes lie 45 to 53 degrees UP on the nose crown, far forward, and the crown (3.10
+  // at x 31.0, z -0.72) is the ceiling of every one of them. That is a nose re-loft.
+  cockpitEye: Object.freeze({ forward: 29.9, up: 2.93, right: -0.72 }),
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it

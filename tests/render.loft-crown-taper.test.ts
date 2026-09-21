@@ -209,14 +209,20 @@ describe("the loft's crown taper", () => {
       // its place. Checked mesh by mesh against 8a45c97, positions AND indices: the trainer's other 67
       // meshes, the jet's 78, the Global's 99 and the 747's 91 are bit-identical, which also holds the
       // Global's ball to be unchanged by its builder moving into cockpitPrimitives.
-trainer: "00cb1d45",
+      // RE-PINNED YET AGAIN for the trainer by the drawn-faces fix (jazonshou/cockpit-747): the attitude
+      // ball's two halves are `solidPlate`s (three vertices of their own to a triangle, flat normals, a
+      // winding decided by geometry). Checked mesh by mesh against e87d9da, positions and indices,
+      // triangle count and area: only those two of the trainer's 70 meshes moved, and each keeps its 50
+      // unique positions, its 96 triangles and its area. The jet's pin is unchanged.
+      trainer: "9105d40d",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.
-      bizjet: "6fc968fd",
+      // Re-pinned for the Global's two ball halves (2 of 99 meshes), by the same change and evidence as the trainer's above.
+      bizjet: "f3c409bd",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
