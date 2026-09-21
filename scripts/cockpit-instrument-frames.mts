@@ -3,9 +3,9 @@
  * states the player can actually be in, and refuse to save a frame that is not
  * what it claims.
  *
- * The Cessna is photographed in level cruise, a climbing right turn and a descent
- * at idle; the Global in level flight, a 20 degree right bank and a 20 degree left
- * bank. The level frames are the Scenic-assist start left to settle; the others
+ * The Cessna is photographed in level cruise, a climbing right turn, a left bank
+ * and a descent at idle; the Global in level flight, a 20 degree right bank and a
+ * 20 degree left bank. Both wear an attitude ball. The level frames are the Scenic-assist start left to settle; the others
  * are flown by holding the real keys (Direct controls) under a closed loop that
  * reads the HUD's own pitch and bank, releases the key when the attitude is where
  * it is wanted and takes the frame while it holds.
@@ -22,8 +22,8 @@
  *     frame, and turned back into readings with the inverse of the mapping, and each
  *     must match the HUD within a tolerance that allows for the HUD's 75 ms
  *     refresh: airspeed +-3 kt, vertical speed +-200 ft/min, RPM +-60, bank +-3
- *     degrees, pitch +-2 degrees. A needle running the wrong way, or a dial on the
- *     wrong field, cannot pass. The altimeter has no HUD number (the HUD shows
+ *     degrees, pitch +-2 degrees. A needle or a ball running the wrong way, or a
+ *     dial on the wrong field, cannot pass. The altimeter has no HUD number (the HUD shows
  *     height above the ground); it is checked to be finite, and held to
  *     `tests/render.cockpit-instruments.test.ts` for the rest.
  *
@@ -60,6 +60,7 @@ const SCENARIOS: Readonly<Record<AircraftKind, readonly Scenario[]>> = {
   trainer: [
     { name: "level-cruise", mode: "scenic", target: {}, require: { pitch: { min: -4, max: 4 }, bank: { min: -3, max: 3 }, verticalSpeedFpm: { min: -350, max: 350 } } },
     { name: "climbing-right-turn", mode: "unassisted", target: { pitch: 6, bank: 20 }, require: { pitch: { min: 2, max: 14 }, bank: { min: 12, max: 30 }, verticalSpeedFpm: { min: 150, max: 3000 } } },
+    { name: "bank-left-20", mode: "unassisted", target: { pitch: 2, bank: -20 }, require: { bank: { min: -30, max: -12 } } },
     { name: "descent-at-idle", mode: "unassisted", target: { pitch: -5, bank: 0 }, throttle: "idle", require: { pitch: { min: -14, max: -1.5 }, bank: { min: -12, max: 12 }, verticalSpeedFpm: { min: -3000, max: -250 } } },
   ],
   bizjet: [
@@ -114,7 +115,7 @@ interface SceneReading {
   readonly eyeInBodyFrame: readonly [number, number, number];
   /** Trainer: the needle pose of each dial as degrees clockwise from 12 o'clock as the pilot sees it, in the dial's own plane. */
   readonly needleDegrees: Readonly<Record<string, number>> | null;
-  /** Global: the ball's pivot rotation about X (degrees, positive clockwise as seen) and the pitch bar's local y (metres, positive up). */
+  /** Both: the ball's pivot rotation about X (degrees, positive clockwise as seen) and the pitch bar's local y (metres, positive up). */
   readonly ball: { readonly pivotDegrees: number; readonly barMetres: number } | null;
   readonly cockpitOnlyVisible: number;
   readonly cockpitOnlyTotal: number;
@@ -193,11 +194,15 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       // The pilot's right is panel local X x local Y = local Z (the pilot looks along -X, the face's normal reversed).
       const right = inBody(panelRows[2]);
       needleDegrees = {};
-      for (const dial of ["airspeed", "attitude", "altimeter", "vertical-speed", "engine"]) {
+      for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
         const needle = scene.meshes.find((m) => m.name === `trainer-${dial}-needle`)!;
         const pointer = inBody(rows(needle)[1]);
         needleDegrees[dial] = (Math.atan2(dot(pointer, right), dot(pointer, up)) * 180) / Math.PI;
       }
+      // the attitude dial has a BALL, not a needle
+      const pivot = scene.transformNodes.find((n) => n.name === "trainer-attitude-pivot")!;
+      const bar = scene.meshes.find((m) => m.name === "trainer-attitude-pitch-bar")!;
+      ball = { pivotDegrees: ((pivot.rotation?.x ?? 0) * 180) / Math.PI, barMetres: bar.position.y };
     } else if (kind === "bizjet") {
       const pivot = scene.transformNodes.find((n) => n.name === "bizjet-pfd-attitude-pivot")!;
       const bar = scene.meshes.find((m) => m.name === "bizjet-pfd-pitch-bar")!;
@@ -356,12 +361,13 @@ async function runGroup(mode: "scenic" | "unassisted", scenarios: readonly Scena
         within("engine rpm", ((n.engine! + 135) / 270) * 2_750, hud.engine, 60);
         if (!Number.isFinite(n.altimeter)) throw new Error(`${label}: the altimeter needle is not finite`);
         checks.push(`altimeter ${(((n.altimeter! % 360) + 360) % 360 / 360 * 1_000).toFixed(0)} ft (mod 1,000; no HUD number)`);
-        if (Math.abs(n.attitude!) > 0.5) throw new Error(`${label}: the attitude dial's needle moved (${n.attitude}); it has no mapping`);
       }
       if (scene.ball) {
-        // the ball turns clockwise-as-seen by MINUS the bank; the bar slides DOWN 1 mm a degree of nose-up
+        // the ball turns clockwise-as-seen by MINUS the bank; the bar slides DOWN 1 mm a degree of nose-up on the Global's
+        // 0.048 m ball and 0.75 mm a degree on the Cessna's 0.036 m one
+        const metresPerDegree = KIND === "trainer" ? 0.00075 : 0.001;
         within("ball bank deg", -scene.ball.pivotDegrees, hud.bank, 3);
-        within("pitch bar deg", -scene.ball.barMetres * 1_000, hud.pitch, 2);
+        within("pitch bar deg", -scene.ball.barMetres / metresPerDegree, hud.pitch, 2);
       }
       writeFileSync(`${outDir}/${label}.json`, `${JSON.stringify({ label, kind: KIND, mode, scenario: scenario.name, url, expectTree, before, hud, scene, checks }, null, 2)}\n`);
       console.log(

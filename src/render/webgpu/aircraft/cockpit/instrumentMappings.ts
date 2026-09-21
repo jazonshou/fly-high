@@ -87,12 +87,21 @@ export function attitudeHorizonDegrees(bankDegrees: number): number {
 }
 
 /**
- * How far the pitch bar sits above the ball's horizon line, metres, along the
- * ball's own up: it slides DOWN (negative) for nose-up, 1 mm a degree, clamped
- * at +-25 degrees.
+ * The radius of the ball the bar's 1 mm a degree is quoted against: the Global's
+ * (0.048 m). A smaller ball, the Cessna's, scales the slide with its radius, so
+ * the bar reaches the same fraction of the disc at the clamp and stays inside it.
  */
-export function pitchBarOffsetMetres(pitchDegrees: number): number {
-  return -clamp(finiteOr(pitchDegrees, 0), -PITCH_BAR_LIMIT_DEGREES, PITCH_BAR_LIMIT_DEGREES) * PITCH_BAR_METRES_PER_DEGREE;
+export const PITCH_BAR_REFERENCE_RADIUS_METRES = 0.048;
+
+/**
+ * How far the pitch bar sits above the ball's horizon line, metres, along the
+ * ball's own up: it slides DOWN (negative) for nose-up, 1 mm a degree on the
+ * reference ball (`ballRadiusMetres` in proportion on another), clamped at +-25
+ * degrees.
+ */
+export function pitchBarOffsetMetres(pitchDegrees: number, ballRadiusMetres: number = PITCH_BAR_REFERENCE_RADIUS_METRES): number {
+  const scale = ballRadiusMetres / PITCH_BAR_REFERENCE_RADIUS_METRES;
+  return -clamp(finiteOr(pitchDegrees, 0), -PITCH_BAR_LIMIT_DEGREES, PITCH_BAR_LIMIT_DEGREES) * PITCH_BAR_METRES_PER_DEGREE * scale;
 }
 
 /** The reading a needle angle stands for: the inverse of the mapping, for tests that measure a needle and ask what it says. */
