@@ -317,12 +317,52 @@ renderer was on the GPU throughout and the OFF arm's spread against itself was
   excluded. It is a quarter of FULL's texture work with none of its ten-way
   accumulate, which is an argument and not a measurement.
 
-CHEAP merged ON, on these terms: it is to be priced off-versus-cheap, six to
-eight interleaved rounds at the swept viewport, on a machine with NOTHING else
-rendering, BEFORE the baseline promotion. Over about 1 % at cruise, the dial
-goes to 0 (or to a cheaper read, shown first) and the polygon is logged with
-the biome-tone-map note below. The promotion captures whatever state the dial
-ends in, so the order is price, decide, promote, never the reverse.
+CHEAP merged ON, on the condition that it be priced on a machine with nothing
+else rendering before any baseline promotion. It has been, twice, the same
+evening, with the owner's own game tab hidden (same-arm spread back to
+0.2-0.6 %, where it had been 5-7 %):
+
+* Six interleaved rounds, off against cheap, swept viewport: `high-10000ft-down`
+  paired -1.41 / -0.99 / -1.32 / -1.72 / -1.97 / +0.08 %, median -1.36 %
+  (+0.11 ms a frame); `cruise-horizon` median -0.04 %.
+* Six interleaved rounds, off / cheap / a third state (below):
+  `high-10000ft-down` cheap -2.15 / -2.23 / -1.48 / -2.55 / -1.81 / -2.30 %,
+  median -2.19 % (+0.19 ms); `cruise-horizon` 0.00 %. All twelve pairs negative.
+
+So CHEAP costs **1.4 to 2.2 % on `high-10000ft-down`, and that is a LOWER
+bound**: the OFF arm sits on the 120 fps cap even at the swept viewport (the
+harness reports 1.50 M rendered pixels, not the 2.7 M that size should give, so
+the window is evidently clamped), and its true headroom is hidden.
+`cruise-horizon` is on the cap on every arm: "cannot see", not "free". An
+attempt to get off the cap with the HIGH quality tier was abandoned after one
+arm: at that tier and viewport the shots run at 9 fps and one arm takes four
+minutes, which prices nothing. There is still no uncapped far-field shot on this
+host.
+
+**A retraction.** After the first series I gave a confident account of where
+the cost went: that naming a pair put every far fragment on the three-material
+path to sample a second layer which, at 128-256 m a texel, is minified to its
+mean anyway. A third dial state was built on that account (the primary sward as
+the no-splat path's one base layer, its albedo scaled by the ratio of the two
+reference albedos, no second layer sampled; parked on the local branch
+`jazonshou/terrain-far-sward-reference-tone`). Priced beside cheap it came in at
+-1.90 % against -2.19 %: 0.3 % apart, inside the same-arm noise. The second
+layer was NOT the cost. What the two states share is: three point loads and a
+top-two selection on every far fragment, and a base layer that now changes per
+128 m texel where one Grass layer used to serve the whole far field. That is a
+hypothesis, and is labelled as one this time.
+
+Against the line set for this change (about 1 % at cruise) neither state
+qualifies, and whether the polygon or 2 % of a worst-case look-down frame is the
+worse thing to ship is a product decision, put to the owner. The order stays
+price, decide, promote.
+
+**The real fix**, now thought to be the right one and not a fallback: a
+low-resolution BIOME-TONE MAP for the whole streaming window, one bilinear
+sample per fragment where this reads three point loads and sorts them, used by
+far ground AND by unresident pages, which also removes the half-second of green
+after a jump. Its cost is a new resource, its bake, and a binding against the
+16-sampler limit; it is its own piece of work.
 
 Left: an UNRESIDENT page still has no source. After a 9 km jump at 300 m AGL the
 whole frame is Grass-green for about half a second and then takes its dry tone
