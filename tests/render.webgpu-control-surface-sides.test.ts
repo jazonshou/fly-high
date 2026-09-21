@@ -237,6 +237,75 @@ describe("control surfaces move the way the pilot's controls promise", () => {
         expect(portRolled).toBeGreaterThan(portNeutral + 0.01);
       });
 
+      it("raises the STARBOARD flight spoilers in a roll to the right", () => {
+        // The 747's outboard spoilers rise differentially with roll, on the
+        // DOWN-GOING wing, to augment the ailerons. A positive pilot roll is
+        // right-wing-down, so right stick raises the STARBOARD panels — which
+        // reads equally true backwards to anyone not holding the body-axis
+        // contract in their head. Hence the control at the bottom.
+        if (kind !== "airliner") return;
+        const { scene, visual } = build(kind);
+        const starboard = "starboard-airliner-flight-spoilers-surface";
+        const port = "port-airliner-flight-spoilers-surface";
+
+        fly(visual, { aileron: 0 });
+        const starboardNeutral = trailingEdge(scene, starboard).y;
+        const portNeutral = trailingEdge(scene, port).y;
+
+        fly(visual, { aileron: 1 });
+        expect(trailingEdge(scene, starboard).y).toBeGreaterThan(starboardNeutral + 0.05);
+        expect(trailingEdge(scene, port).y).toBeCloseTo(portNeutral, 6);
+
+        fly(visual, { aileron: -1 });
+        expect(trailingEdge(scene, port).y).toBeGreaterThan(portNeutral + 0.05);
+        expect(trailingEdge(scene, starboard).y).toBeCloseTo(starboardNeutral, 6);
+
+        // THE FLIPPED MIX, AS THE FAILING CONTROL. Drive the same nodes with
+        // the two wings' angles swapped and the same measurement must report
+        // the opposite — which is what proves the measurement can tell them
+        // apart at all, rather than passing on any pair of numbers.
+        fly(visual, { aileron: 1 });
+        const correctStarboard = trailingEdge(scene, starboard).y;
+        const nodes = scene.transformNodes.filter((n) => /-flight-spoilers$/.test(n.name));
+        expect(nodes, "the flight spoiler nodes were renamed").toHaveLength(2);
+        const swapped = new Map(nodes.map((n) => [n, n.rotation.z]));
+        for (const node of nodes) {
+          const other = nodes.find((candidate) => candidate !== node)!;
+          node.rotation.z = swapped.get(other)!;
+        }
+        scene.meshes.forEach((mesh) => mesh.computeWorldMatrix(true));
+        expect(
+          trailingEdge(scene, starboard).y,
+          "the flipped mix passed the same assertion, so it proves nothing",
+        ).toBeLessThan(correctStarboard - 0.05);
+        expect(trailingEdge(scene, port).y).toBeGreaterThan(portNeutral + 0.05);
+      });
+
+      it("stows the GROUND spoilers in the air and deploys them on the ground", () => {
+        // Inboard panels, and the distinction is the whole reason the pose
+        // carries groups rather than one angle: in the air the speed brake is
+        // the outboard panels' job alone.
+        if (kind !== "airliner") return;
+        const { scene, visual } = build(kind);
+        const ground = "starboard-airliner-ground-spoilers-surface";
+        const flight = "starboard-airliner-flight-spoilers-surface";
+
+        fly(visual, { brake: 0 });
+        const groundStowed = trailingEdge(scene, ground).y;
+        const flightStowed = trailingEdge(scene, flight).y;
+
+        fly(visual, { brake: 1, onGround: false });
+        expect(trailingEdge(scene, ground).y, "a ground spoiler deployed in flight")
+          .toBeCloseTo(groundStowed, 6);
+        // The control: the FLIGHT panels did rise on the same command, so the
+        // null above is about the group and not about the brake being ignored.
+        expect(trailingEdge(scene, flight).y).toBeGreaterThan(flightStowed + 0.05);
+
+        fly(visual, { brake: 1, onGround: true, altitudeAgl: 0, altitude: 0 });
+        expect(trailingEdge(scene, ground).y, "a ground spoiler stayed down on the ground")
+          .toBeGreaterThan(groundStowed + 0.05);
+      });
+
       it("raises the elevator to pitch up", () => {
         const { scene, visual } = build(kind);
         const names = elevatorSurfaces(kind);
