@@ -704,6 +704,24 @@ function run(kind: AircraftKind): void {
       cowlTop.push(`az ${azDegrees >= 0 ? "+" : ""}${azDegrees}: ${cowl ? `${fixed(cowl.from, 2)} deg (top of the cowl, first hit x ${fixed(cowl.x, 3)}, y ${fixed(cowl.y, 3)})` : "no fuselage in this line"}`);
     }
     console.log(`  COWL TOP LINE (highest elevation at which trainer-fuselage is the first surface): ${cowlTop.join("; ")}`);
+    // The first surface at chosen elevations, with WHERE it is: this is the
+    // height of whatever the pilot is looking down onto below the sill line.
+    for (const azDegrees of [0, -15, 15]) {
+      const azRadians = azDegrees / DEG;
+      const lines: string[] = [];
+      for (const el of [-6, -8, -10, -12, -13, -15, -18, -21, -23]) {
+        const radians = el / DEG;
+        const direction = new Vector3(
+          Math.cos(radians) * Math.cos(azRadians), Math.sin(radians), Math.cos(radians) * Math.sin(azRadians),
+        );
+        const cell = cast(eye, direction, false);
+        const at = eye.add(direction.scale(cell.distance));
+        lines.push(cell.name === null
+          ? `el ${el}: (open)`
+          : `el ${el}: ${cell.name.replace("trainer-", "")} at x ${fixed(at.x, 3)}, y ${fixed(at.y, 3)}, z ${fixed(at.z, 3)}`);
+      }
+      console.log(`  FIRST SURFACE BELOW THE HORIZON at az ${azDegrees >= 0 ? "+" : ""}${azDegrees}:\n      ${lines.join("\n      ")}`);
+    }
     const straight = runsAt(0);
     const openRun = straight.filter((run) => run.name === "(open)")
       .find((run) => Math.max(run.from, run.to) >= 0 && Math.min(run.from, run.to) <= 0)
