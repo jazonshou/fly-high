@@ -201,7 +201,7 @@ describe("the loft's crown taper", () => {
       trainer: "a976d713",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
-      jet: "05f972ad",
+      jet: "8bb6edcd",
       bizjet: "58fd2565",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {

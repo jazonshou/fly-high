@@ -19,6 +19,7 @@ import {
   createGlowApplier,
   createLampApplier,
   hingeAlong,
+  yawHingeAlong,
   node,
   setCockpitVisibility,
   addInstrumentPanel,
@@ -847,33 +848,74 @@ export function createJet(scene: Scene): AircraftVisual {
     root,
   );
   wingSurfaces.push(fin);
+  /**
+   * THE RUDDER, as a sheared panel on the fin's trailing edge.
+   *
+   * It was a box tilted about its own centre — which is how a box fakes a
+   * swept panel against a vertical hinge, and it fakes it badly. The tilt
+   * swings the panel FORWARD past the hinge node, so the hinge line runs
+   * THROUGH the panel rather than along its leading edge, and it tilts the
+   * CHORDS too: this one's root chord rose 25.9 degrees from horizontal, which
+   * a real rudder's never does. The 747's was worse — its leading edge sat
+   * 1.86 m ahead of its own hinge.
+   *
+   * A panel does not need to be rotated to sit on a raked line. It needs to be
+   * SHEARED: the leading edge leans with the fin while the chords stay level.
+   * `verticalProfile` takes an arbitrary outline, so that is four points rather
+   * than a rotation, and the panel's leading edge IS the hinge line by
+   * construction. `yawHingeAlong` then gives the node an axis along that line
+   * while `preserveRestPose` keeps the geometry exactly where it was authored.
+   */
+  const FIN_ROOT_TRAILING = { x: -5.45, y: 0.42 };
+  const FIN_TIP_TRAILING = { x: -5.9, y: 3.02 };
+  /** A quarter of the fin's chord, tapering as the fin does. */
+  const RUDDER_ROOT_CHORD = 0.9;
+  const RUDDER_TIP_CHORD = 0.4;
+  /** Clear of the fin root fillet, and stopping just below the tip cap. */
+  const RUDDER_ROOT_FRACTION = 0.03;
+  const RUDDER_TIP_FRACTION = 0.97;
+  const finTrailingAt = (fraction: number) => ({
+    x: FIN_ROOT_TRAILING.x + (FIN_TIP_TRAILING.x - FIN_ROOT_TRAILING.x) * fraction,
+    y: FIN_ROOT_TRAILING.y + (FIN_TIP_TRAILING.y - FIN_ROOT_TRAILING.y) * fraction,
+  });
+  const rudderRoot = finTrailingAt(RUDDER_ROOT_FRACTION);
+  const rudderTip = finTrailingAt(RUDDER_TIP_FRACTION);
   const rudder = node("rudder", root, scene);
-  rudder.position.set(-5.45, 0.52, 0);
-  const rudderSurface = build.box("rudder-surface", 0.75, 2.35, 0.16, accent, rudder);
-  rudderSurface.position.set(-0.4, 1.15, 0);
-  // The hinge line leans 0.50 m aft over its 2.60 m; a box cannot be swept, so
-  // the panel is tilted to sit on that line instead of crossing it. Applied to
-  // the CHILD, because the node's own Y rotation is the deflection the pose
-  // owns every frame.
-  rudderSurface.rotation.z = Math.atan2(0.5, 2.6);
-  // NOT raked, and the reason is measured rather than assumed.
+  rudder.position.set(rudderRoot.x, rudderRoot.y, 0);
+  const rudderSpanX = rudderTip.x - rudderRoot.x;
+  const rudderSpanY = rudderTip.y - rudderRoot.y;
+  // AN AEROFOIL STOOD ON END, not a slab, and the trailing edge is the reason.
   //
-  // This panel's lean is a `rotation.z` applied about the BOX'S OWN CENTRE,
-  // which is how a box fakes a swept panel against a vertical hinge. That tilt
-  // swings the panel FORWARD past the hinge node: on the 747 the leading edge
-  // ends up 1.85 m ahead of it, so the hinge line runs THROUGH the panel,
-  // 2.26 m from the leading edge and 0.64 m from the trailing edge. Turning
-  // that about the fin's true rake swings the two edges opposite ways and the
-  // trailing edge goes to PORT on right rudder -- measured, and caught by
-  // `render.webgpu-control-surface-sides`.
-  //
-  // Raking it correctly means re-seating the panel so its leading edge lies on
-  // the hinge line, and a rigid rake also tilts the CHORD, which a real raked
-  // fin does not: the span leans and the chords stay level, so the panel wants
-  // to be sheared or lofted rather than rotated. That is a geometry change
-  // needing a look at the fin, not an axis change, so it is left alone here.
-  // The Global's rudder IS raked, because its panel is an aerofoil built along
-  // the hinge line and sits entirely aft of it.
+  // A constant-thickness panel ends in a SQUARE edge two vertices wide, and
+  // "which way did the trailing edge go" then has two answers: as the panel
+  // swings, the far face's corner becomes the aft-most one and the side test
+  // reads the deflection BACKWARDS. Measured on the first attempt here — right
+  // rudder put the aft-most vertex at z -0.194 where it had been +0.400, on a
+  // panel that was in fact swinging correctly to starboard. `airfoilWing`
+  // tapers to a sharp trailing edge, so there is one aft-most vertex and only
+  // one answer. It is also what the Global's rudder, the one raked rudder in
+  // the fleet that already worked, is built from.
+  const rudderSurface = build.airfoilWing(
+    "rudder-surface",
+    {
+      rootLeadingX: 0,
+      rootTrailingX: -RUDDER_ROOT_CHORD,
+      tipLeadingX: rudderSpanX,
+      tipTrailingX: rudderSpanX - RUDDER_TIP_CHORD,
+      rootZ: 0,
+      tipZ: rudderSpanY,
+      thicknessRatio: 0.16,
+      chordSegments: 8,
+      spanSegments: 3,
+    },
+    accent,
+    rudder,
+  );
+  // Stood upright on the CHILD, because the node's own Y rotation is the
+  // deflection the pose owns every frame.
+  rudderSurface.rotation.x = -Math.PI / 2;
+  // The hinge LINE: the panel's own leading edge, root to tip.
+  yawHingeAlong(rudder, new Vector3(rudderSpanX, rudderSpanY, 0), scene);
 
   // The two ventral strakes under the tail. They are not trim: on this airframe
   // they are what keeps directional stability at high angle of attack, where

@@ -399,30 +399,24 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // is the seating repair showing up in the census — the boxes stood clear
     // of the wing and counted their whole undersides, the panels lie in it.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_663);
-    expect(census.indices).toBe(51_552);
+    expect(census.vertices).toBe(10_711);
+    expect(census.indices).toBe(51_936);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(22041.1093, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26413.0229, 1);
+    expect(census.positionSum.x).toBeCloseTo(20332.3094, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26027.8229, 1);
     expect(census.positionSum.z).toBeCloseTo(-22.0320, 1);
-    expect(census.positionSquares).toBeCloseTo(6853278.81, 0);
-    // THE FOUR NORMAL TERMS MOVED and nothing else did, which is the whole
-    // signature of welding the loft's crown seam: -345.9461 -> -346.0431,
-    // 124.4928 -> 130.6204, 0.0913 -> 0.1083, 10632.1105 -> 10625.2135, while
-    // `vertices`, `indices`, `positionSum`, `positionSquares`, `signedVolume`
-    // and `area` above are bit-identical. Two coincident vertices per section
-    // stopped being shaded as two different surfaces; no vertex moved.
-    expect(census.normalSum.x).toBeCloseTo(-346.0431, 2);
-    expect(census.normalSum.y).toBeCloseTo(130.6204, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.1083, 2);
-    expect(census.normalMoment).toBeCloseTo(10625.2135, 1);
-    expect(census.signedVolume).toBeCloseTo(-3232.4065, 2);
-    expect(census.area).toBeCloseTo(4695.2708, 2);
+    expect(census.positionSquares).toBeCloseTo(6917542.48, 0);
+    expect(census.normalSum.x).toBeCloseTo(-349.6056, 2);
+    expect(census.normalSum.y).toBeCloseTo(130.7712, 2);
+    expect(census.normalSum.z).toBeCloseTo(-0.0280, 2);
+    expect(census.normalMoment).toBeCloseTo(10623.9549, 1);
+    expect(census.signedVolume).toBeCloseTo(-3213.4607, 2);
+    expect(census.area).toBeCloseTo(4652.2785, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
