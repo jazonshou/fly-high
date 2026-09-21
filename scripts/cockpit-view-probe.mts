@@ -462,7 +462,7 @@ function run(kind: AircraftKind): void {
     return cell.glass.length > 0 ? "~" : ".";
   }).join("")).join("\n");
 
-  console.log(`\n=== ${kind.toUpperCase()}  (${spec.name})  pose=${POSE}  skin=${SKIN ? "LEFT VISIBLE" : "hidden by layer mask"}  cull=${CULL ? "on" : "off"} ===`);
+  console.log(`\n=== ${kind.toUpperCase()}  (${spec.name})  pose=${POSE}  excluded by layer mask: ${SKIN ? "NOTHING (SKIN=1 leaves cockpitParts visible too)" : `${visual.cockpitParts.length} mesh(es) from cockpitParts`}  cull=${CULL ? "on" : "off"} ===`);
   console.log(
     `eye ${fixed(eye.x, 3)}, ${fixed(eye.y, 3)}, ${fixed(eye.z, 3)}  (catalogue cockpitEye forward ${spec.cockpitEye.forward},`
     + ` up ${spec.cockpitEye.up}, right ${spec.cockpitEye.right}; shift ${fixed(EYE_SHIFT.x)}, ${fixed(EYE_SHIFT.y)}, ${fixed(EYE_SHIFT.z)})`,
@@ -657,6 +657,139 @@ function run(kind: AircraftKind): void {
   console.log(`\nQ7 NEAR PLANE AND COINCIDENT SURFACES (both maps' rays)`);
   console.log(`  clipped by the near plane (opaque or glass hit with depth < ${NEAR_PLANE} m): ${tally.clipped.size === 0 ? "none" : [...tally.clipped.entries()].map(([n, c]) => `${n} x${c}`).join(", ")}`);
   console.log(`  opaque surfaces within 1 mm of each other (z-fight candidates): ${tally.coincident.size === 0 ? "none" : [...tally.coincident.entries()].map(([n, c]) => `${n} x${c}`).join(", ")}`);
+
+  // ---- SIGHT LINES (trainer): what stands between the eye and the world ----
+  //
+  // Added for the trainer's skin-visible rework. Azimuth is positive to
+  // starboard and elevation is above the eye's horizontal, both as angles from
+  // the eye (map A's convention, not a pinhole column). Each profile scans a
+  // vertical line every 0.05 degrees from +40 to -45 and lists the runs of
+  // "first opaque surface", so an opening is a run of "(open)" and a cowl line
+  // is where a run of the fuselage begins. Nothing is assumed about which mesh
+  // is which: the runs are named by what the rays actually hit.
+  if (kind === "trainer") {
+    const runsAt = (azDegrees: number) => {
+      const azRadians = azDegrees / DEG;
+      const runs: { name: string; from: number; to: number; x: number; y: number; z: number }[] = [];
+      for (let el = 40; el >= -45; el -= 0.05) {
+        const radians = el / DEG;
+        const direction = new Vector3(
+          Math.cos(radians) * Math.cos(azRadians), Math.sin(radians), Math.cos(radians) * Math.sin(azRadians),
+        );
+        const cell = cast(eye, direction, false);
+        const name = cell.name ?? "(open)";
+        const last = runs[runs.length - 1];
+        if (last && last.name === name) last.to = el;
+        else {
+          const at = cell.name === null ? eye : eye.add(direction.scale(cell.distance));
+          runs.push({ name, from: el, to: el, x: at.x, y: at.y, z: at.z });
+        }
+      }
+      return runs;
+    };
+    const frameHalfElevation = (azDegrees: number) =>
+      (Math.atan(tanHalfVertical * Math.cos((azDegrees * Math.PI) / 180)) * 180) / Math.PI;
+    console.log(`\nSIGHT LINES  (angles from the eye; the frame is az +-${fixed(HALF_AZIMUTH, 1)} and, at each azimuth below, the elevation shown)`);
+    const cowlTop: string[] = [];
+    for (const azDegrees of [-15, 0, 15]) {
+      const runs = runsAt(azDegrees);
+      console.log(`  az ${azDegrees >= 0 ? "+" : ""}${azDegrees} (frame el +-${fixed(frameHalfElevation(azDegrees), 2)}):`);
+      for (const run of runs) {
+        const lo = Math.min(run.from, run.to);
+        const hi = Math.max(run.from, run.to);
+        console.log(`      ${pad(run.name, 30)} el ${fixed(hi, 2).padStart(7)} .. ${fixed(lo, 2).padStart(7)}`
+          + `${run.name === "(open)" ? "" : `   first hit at (${fixed(run.x, 3)}, ${fixed(run.y, 3)}, ${fixed(run.z, 3)})`}`);
+      }
+      const cowl = runs.find((run) => /trainer-fuselage/.test(run.name));
+      cowlTop.push(`az ${azDegrees >= 0 ? "+" : ""}${azDegrees}: ${cowl ? `${fixed(cowl.from, 2)} deg (top of the cowl, first hit x ${fixed(cowl.x, 3)}, y ${fixed(cowl.y, 3)})` : "no fuselage in this line"}`);
+    }
+    console.log(`  COWL TOP LINE (highest elevation at which trainer-fuselage is the first surface): ${cowlTop.join("; ")}`);
+    const straight = runsAt(0);
+    const openRun = straight.filter((run) => run.name === "(open)")
+      .find((run) => Math.max(run.from, run.to) >= 0 && Math.min(run.from, run.to) <= 0)
+      ?? straight.filter((run) => run.name === "(open)")[0];
+    if (openRun) {
+      const index = straight.indexOf(openRun);
+      const above = straight[index - 1];
+      const below = straight[index + 1];
+      console.log(
+        `  WINDSCREEN OPENING straight ahead (az 0): top ${fixed(openRun.from, 2)} deg (bounded by ${above ? above.name : "nothing"}),`
+        + ` bottom ${fixed(openRun.to, 2)} deg (bounded by ${below ? below.name : "nothing"}), height ${fixed(openRun.from - openRun.to, 2)} deg`,
+      );
+    } else console.log("  WINDSCREEN OPENING straight ahead (az 0): NO open run at all");
+
+    const vertexAngles = (name: string) => {
+      const mesh = scene.meshes.find((m) => m.name === name);
+      if (!mesh) return null;
+      const seen = new Set<string>();
+      const points: { x: number; y: number; z: number; az: number; el: number }[] = [];
+      for (const vertex of worldVertices(mesh)) {
+        const key = `${vertex.x.toFixed(3)},${vertex.y.toFixed(3)},${vertex.z.toFixed(3)}`;
+        if (seen.has(key) || vertex.x - eye.x <= NEAR_PLANE) continue;
+        seen.add(key);
+        const a = azel(vertex, eye);
+        points.push({ x: vertex.x, y: vertex.y, z: vertex.z, az: a.az, el: a.el });
+      }
+      return { mesh, points };
+    };
+    const frame3 = vertexAngles("windscreen-center-frame");
+    if (frame3) {
+      const azs = frame3.points.map((v) => v.az);
+      const els = frame3.points.map((v) => v.el);
+      console.log(
+        `  CENTRE FRAME (windscreen-center-frame, ${frame3.mesh.isVisible && visibleMeshes.has(frame3.mesh) ? "visible" : "HIDDEN"} to the cockpit camera):`
+        + ` az ${fixed(Math.min(...azs), 2)}..${fixed(Math.max(...azs), 2)}, el ${fixed(Math.min(...els), 2)}..${fixed(Math.max(...els), 2)}`
+        + ` (its two ends: ${frame3.points.slice().sort((a, b) => a.el - b.el).filter((_, i, all) => i === 0 || i === all.length - 1).map((v) => `az ${fixed(v.az, 1)} el ${fixed(v.el, 1)} at (${fixed(v.x, 2)}, ${fixed(v.y, 2)}, ${fixed(v.z, 2)})`).join(" / ")})`,
+      );
+    }
+    const roof = vertexAngles("trainer-cabin-roof");
+    if (roof) {
+      const underside = Math.min(...roof.points.map((v) => v.y));
+      const front = roof.points.filter((v) => Math.abs(v.y - underside) < 1e-3).sort((a, b) => a.az - b.az);
+      console.log(`  ROOF UNDERSIDE (y ${fixed(underside, 3)}), every underside corner ahead of the near plane, by azimuth:`);
+      for (const v of front) console.log(`      az ${fixed(v.az, 2).padStart(7)}  el ${fixed(v.el, 2).padStart(7)}   at (${fixed(v.x, 3)}, ${fixed(v.y, 3)}, ${fixed(v.z, 3)})`);
+      const maxX = Math.max(...front.map((v) => v.x));
+      const edge = front.filter((v) => v.x > maxX - 0.185);
+      console.log(`  ROOF FRONT EDGE (x >= ${fixed(maxX - 0.185, 3)}, the front and its two chamfers): el ${fixed(Math.min(...edge.map((v) => v.el)), 2)}..${fixed(Math.max(...edge.map((v) => v.el)), 2)}, az ${fixed(Math.min(...edge.map((v) => v.az)), 2)}..${fixed(Math.max(...edge.map((v) => v.az)), 2)}`);
+    }
+    // The bottom-LEFT quarter of the real frame: columns 0..49, rows from the middle down.
+    const tally = new Map<string, {
+      count: number; minAz: number; maxAz: number; minEl: number; maxEl: number;
+      lo: [number, number, number]; hi: [number, number, number];
+    }>();
+    for (let j = FRAME_ROWS / 2; j < FRAME_ROWS; j += 1) {
+      for (let i = 0; i < FRAME_COLUMNS / 2; i += 1) {
+        const cell = frame[j]![i]!;
+        const key = cell.name ?? (cell.glass.length ? `(glass: ${[...new Set(cell.glass)].join(",")})` : "(nothing: sky or world)");
+        const radians = [cell.azimuth / DEG, cell.elevation / DEG] as const;
+        const at = cell.name === null ? [NaN, NaN, NaN] as const : [
+          eye.x + cell.distance * Math.cos(radians[1]) * Math.cos(radians[0]),
+          eye.y + cell.distance * Math.sin(radians[1]),
+          eye.z + cell.distance * Math.cos(radians[1]) * Math.sin(radians[0]),
+        ] as const;
+        const entry = tally.get(key) ?? {
+          count: 0, minAz: Infinity, maxAz: -Infinity, minEl: Infinity, maxEl: -Infinity,
+          lo: [Infinity, Infinity, Infinity] as [number, number, number],
+          hi: [-Infinity, -Infinity, -Infinity] as [number, number, number],
+        };
+        entry.count += 1;
+        entry.minAz = Math.min(entry.minAz, cell.azimuth); entry.maxAz = Math.max(entry.maxAz, cell.azimuth);
+        entry.minEl = Math.min(entry.minEl, cell.elevation); entry.maxEl = Math.max(entry.maxEl, cell.elevation);
+        for (let k = 0; k < 3; k += 1) {
+          if (Number.isFinite(at[k]!)) { entry.lo[k] = Math.min(entry.lo[k]!, at[k]!); entry.hi[k] = Math.max(entry.hi[k]!, at[k]!); }
+        }
+        tally.set(key, entry);
+      }
+    }
+    const total = (FRAME_ROWS / 2) * (FRAME_COLUMNS / 2);
+    console.log(`  BOTTOM-LEFT QUARTER of the frame (az ${fixed(-HALF_AZIMUTH, 1)}..0, el 0..${fixed(-HALF_ELEVATION, 2)}; ${total} cells):`);
+    for (const [name, entry] of [...tally.entries()].sort((a, b) => b[1].count - a[1].count)) {
+      console.log(
+        `      ${pad(name, 46)} x${String(entry.count).padStart(4)}   az ${fixed(entry.minAz, 1)}..${fixed(entry.maxAz, 1)}, el ${fixed(entry.minEl, 1)}..${fixed(entry.maxEl, 1)}`
+        + `${Number.isFinite(entry.lo[0]) ? `   hit points x ${fixed(entry.lo[0], 2)}..${fixed(entry.hi[0], 2)}, y ${fixed(entry.lo[1], 2)}..${fixed(entry.hi[1], 2)}, z ${fixed(entry.lo[2], 2)}..${fixed(entry.hi[2], 2)}` : ""}`,
+      );
+    }
+  }
 
   // ---- Q8: materials of the hidden parts ------------------------------------
   console.log(`\nQ8 MATERIALS OF cockpitParts (the meshes the layer mask hides)`);

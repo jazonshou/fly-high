@@ -91,8 +91,9 @@ export function createTrainer(scene: Scene): AircraftVisual {
     },
   });
   /*
-   * THE CABIN GLAZING IS HIDDEN FROM THE COCKPIT CAMERA, and that is what lets
-   * it lose its depth pre-pass and finally look like glass from outside.
+   * THE CABIN GLAZING -- AND ONLY THE GLAZING -- IS HIDDEN FROM THE COCKPIT
+   * CAMERA, and that is what lets it lose its depth pre-pass and finally look
+   * like glass from outside.
    *
    * `build.material` turns `needDepthPrePass` on for every alpha-blended
    * airframe material. On this aeroplane that was load-bearing in BOTH
@@ -113,22 +114,33 @@ export function createTrainer(scene: Scene): AircraftVisual {
    * inside `setCockpitView`, which Babylon does not honour at runtime because
    * the pipeline decision is already baked.
    *
-   * The fix is to stop asking one material to serve both views. The canopy
-   * joins `cockpitParts`, so the cockpit camera's layer mask excludes it: from
-   * the pilot's seat there is no cabin glass in the scene at all, and nothing
-   * left to sort badly. From every other camera it is ordinary glazing with no
-   * pre-pass.
+   * The fix is to stop asking one material to serve both views. The canopy is
+   * the one entry in `cockpitParts`, so the cockpit camera's layer mask
+   * excludes it: from the pilot's seat there is no cabin glass in the scene at
+   * all, and nothing left to sort badly. From every other camera it is
+   * ordinary glazing with no pre-pass.
    *
    * THE COST, stated rather than buried: a pilot in the cockpit view sees no
-   * glass. No tint, no reflection, no windscreen. What he does see is the
-   * STRUCTURE -- the fuselage shell, the cabin roof and the windscreen frame
-   * are all in `cockpitParts` too and are excluded with it, so the framing of
-   * the view comes from the same place it always did. The trade was put to the
+   * glass. No tint, no reflection, no windscreen pane. The trade was put to the
    * PM explicitly and authorised: a cosmetic loss inside against a real defect
    * outside, where the aeroplane is seen far more often.
    *
-   * `render.webgpu-aircraft` pins both halves -- visible to an exterior
-   * camera, excluded from the cockpit one -- so neither can be lost quietly.
+   * THE SKIN IS NOT HIDDEN, and it used to be. This list once held the whole
+   * opaque shell -- the fuselage loft, the cabin roof and the windscreen frame --
+   * on the theory that anything around the pilot would block his view. It did
+   * the opposite: with the shell excluded the pilot saw a slab and three
+   * propeller fragments floating in the sky, with no cowl, no roof line and no
+   * frame to say he was sitting inside an aeroplane. The shell needs no hiding.
+   * Its materials cull back faces, so from inside it draws only what FACES the
+   * pilot -- the top of the cowl ahead of the windscreen, the underside of the
+   * roof, the centre frame -- and its own inside disappears by itself. That is
+   * also why the cabin's side walls show the world: their insides are culled, so
+   * the cockpit has to put its own door panels where they were.
+   *
+   * `render.webgpu-aircraft` pins all of it -- the glass hidden from the
+   * cockpit camera and visible to an exterior one, the shell visible to both,
+   * and every mask restored exactly on exit -- so none of it can be lost
+   * quietly.
    */
   glass.needDepthPrePass = false;
 
@@ -202,7 +214,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // The cabin sections stop at y = 0.00. That is the WINDOW SILL, not the
   // roof: everything above it is the greenhouse, built separately in glass so
   // the wrap-around rear window is real geometry rather than a painted band.
-  const fuselage = build.loft(
+  build.loft(
     "trainer-fuselage",
     [
       { x: -3.2, yRadius: 0.085, zRadius: 0.065, yOffset: 0.175 },
@@ -270,12 +282,13 @@ export function createTrainer(scene: Scene): AircraftVisual {
     root,
   );
   cabinRoof.position.y = 0.205;
-  // Goes on the cockpit-excluded layer with the skin. It is 24 mm of metal,
-  // but it sits on the centreline half a metre from the pilot's eye, so from
-  // inside it is a black bar down the middle of the windscreen — which is
-  // exactly what the cockpit layer mask exists to prevent. The jet's canopy
-  // frame has always been handled this way.
-  const windscreenFrame = build.strutBetween(
+  // Visible from the pilot's seat, like the rest of the opaque shell (see the
+  // note on the glass above). It is 24 mm of metal down the middle of the
+  // windscreen, and it is the thing that tells the pilot he is looking
+  // through one. The pilot sits in the LEFT seat, so it stands to the right of
+  // his line of sight, as a centre frame does for the pilot on the left of a
+  // real 150.
+  build.strutBetween(
     "windscreen-center-frame",
     new Vector3(2.26, -0.02, 0),
     new Vector3(2, 0.21, 0),
@@ -721,14 +734,13 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const rig: CommonRig = {
     root,
     propeller,
-    // Only opaque exterior skin belongs on the cockpit-excluded layer. The
-    // clearcoat/transmission canopy stays on ordinary world layers so the
-    // windscreen remains visible from the pilot's camera. The cabin roof is
-    // opaque and directly overhead, so it joins the shell.
-    // The canopy is in here with the structure, which is the whole of the
-    // glazing fix: `configureCockpitLayers` puts it on the exterior layer and
-    // the cockpit camera's mask excludes it. See the glass material above.
-    cockpitParts: [fuselage, cabinRoof, windscreenFrame, canopy],
+    // ONLY THE GLASS the pilot sits inside, which sorts badly from within: see
+    // the note on the glass material above for why. The opaque shell, the cabin
+    // roof and the centre frame stay on ordinary layers -- they cull their own
+    // insides, and what faces the pilot (cowl, roof line, centre frame) is
+    // what makes the view read as a cockpit. `configureCockpitLayers` puts the
+    // canopy on the exterior layer and the cockpit camera's mask excludes it.
+    cockpitParts: [canopy],
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     /** No flaperons: this airframe's flaps and ailerons are separate surfaces. */

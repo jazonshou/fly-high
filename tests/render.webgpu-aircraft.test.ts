@@ -159,16 +159,29 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
 
     const exteriorMaskBeforeCockpit = fixture.camera.layerMask;
-    // THE CABIN GLAZING IS COCKPIT-EXCLUDED, which is what lets it drop its
-    // depth pre-pass and read as glass from outside. Both halves are pinned
-    // because each alone is a defect: visible to an exterior camera, or the
-    // cabin is a bare shell with the interior showing through; hidden from the
-    // cockpit camera, or the pilot's forward view is the near-black blue wash
-    // the pre-pass was there to prevent. The trade -- no glass from the seat,
-    // correct glazing everywhere else -- was put to the PM and authorised.
+    // THE CABIN GLAZING, AND ONLY THE GLAZING, IS COCKPIT-EXCLUDED, which is
+    // what lets it drop its depth pre-pass and read as glass from outside. Both
+    // halves are pinned because each alone is a defect: visible to an exterior
+    // camera, or the cabin is a bare shell with the interior showing through;
+    // hidden from the cockpit camera, or the pilot's forward view is the
+    // near-black blue wash the pre-pass was there to prevent. The trade -- no
+    // glass from the seat, correct glazing everywhere else -- was put to the PM
+    // and authorised.
+    //
+    // THE SHELL IS NOT HIDDEN. The opaque fuselage loft, the cabin roof and the
+    // centre frame cull their own insides, so from the seat they draw only what
+    // faces the pilot (the cowl ahead of the windscreen, the underside of the
+    // roof, the frame) and give the view the structure that says it is a
+    // cockpit. They used to be excluded with the glass and the pilot saw a slab
+    // and three floating propeller fragments. They must be visible to the
+    // cockpit camera as well as to every other one.
     const canopy = mesh(fixture.scene, "trainer-canopy");
-    expect(aircraft.cockpitParts).toContain(canopy);
+    const shell = ["trainer-fuselage", "trainer-cabin-roof", "windscreen-center-frame"]
+      .map((name) => mesh(fixture.scene, name));
+    const maskBefore = new Map(fixture.scene.meshes.map((part) => [part, part.layerMask]));
+    expect(aircraft.cockpitParts).toEqual([canopy]);
     expectVisibleToCamera(canopy, fixture.camera);
+    for (const part of shell) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
     expect(
@@ -183,6 +196,14 @@ describe("Babylon WebGPU aircraft visual", () => {
         (part) => part.isVisible && (part.layerMask & fixture.camera.layerMask) === 0,
       ),
     ).toBe(true);
+    // The shell is visible to the cockpit camera too, and nothing about its
+    // layers moved to make it so.
+    for (const part of shell) {
+      expect(part.isVisible).toBe(true);
+      expect(part.isEnabled()).toBe(true);
+      expect(part.layerMask & fixture.camera.layerMask).not.toBe(0);
+      expect(part.layerMask).toBe(maskBefore.get(part));
+    }
     expect(mesh(fixture.scene, "port-main-wing-forward").isVisible).toBe(true);
     expect(
       mesh(fixture.scene, "port-main-wing-forward").layerMask & fixture.camera.layerMask,
@@ -190,9 +211,12 @@ describe("Babylon WebGPU aircraft visual", () => {
     expectShadowCastersVisible(aircraft.meshes);
     aircraft.setCockpitView(false);
     expectVisibleToCamera(canopy, fixture.camera);
+    for (const part of shell) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
+    // MASKS RESTORED EXACTLY on exit: the camera's, and every mesh's.
     expect(fixture.camera.layerMask).toBe(exteriorMaskBeforeCockpit);
+    for (const [part, mask] of maskBefore) expect(part.layerMask).toBe(mask);
 
     aircraft.dispose();
     aircraft.dispose();
