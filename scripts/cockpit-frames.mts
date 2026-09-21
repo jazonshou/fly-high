@@ -117,7 +117,7 @@ interface SceneReading {
   readonly eyeInBodyFrame: readonly [number, number, number];
   readonly rootQuaternion: readonly [number, number, number, number];
   readonly hud: string;
-  /** `isVisible` of every trainer cockpit-only mesh present in the scene, by name. */
+  /** `isVisible` of every cockpit-only mesh (`metadata.cockpitOnly`) present in the scene, by name. */
   readonly cockpitOnly: Readonly<Record<string, boolean>>;
 }
 
@@ -137,7 +137,7 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
     interface SceneLike {
       activeCamera: { position: Vec; fov: number; fovMode: number; minZ: number; layerMask: number } | null;
       transformNodes: { name: string; position: Vec; rotationQuaternion: Quat | null; metadata: { aircraftVisual?: boolean; aircraftKind?: string } | null }[];
-      meshes: { name: string; isVisible: boolean }[];
+      meshes: { name: string; isVisible: boolean; metadata: { cockpitOnly?: boolean } | null }[];
     }
     const scenes = holder.Instances.flatMap((engine) => engine.scenes as SceneLike[]);
     const scene = scenes.find((s) => s.transformNodes.some((n) => n.metadata?.aircraftVisual));
@@ -170,7 +170,7 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       hud: document.body.innerText.replace(/\s+/g, " ").slice(0, 160),
       cockpitOnly: Object.fromEntries(
         scene.meshes
-          .filter((m) => /^trainer-(cowl-standin|instrument-panel|door-|windscreen-post-|(airspeed|attitude|altimeter|engine|vertical-speed)-(gauge|needle))/.test(m.name))
+          .filter((m) => m.metadata?.cockpitOnly === true)
           .map((m) => [m.name, m.isVisible]),
       ),
     };
@@ -242,13 +242,15 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     if (reading.aircraftKind !== kind) {
       throw new Error(`${label}: the scene holds a "${reading.aircraftKind}", not the requested "${kind}"`);
     }
-    // Cockpit-only parts (the trainer has them): drawn in cockpit view, and in
-    // NO other. Read from the live scene, so a part that leaks into a chase or
-    // orbit frame fails here instead of being noticed, or not, in the PNG.
+    // Cockpit-only parts (the trainer and the Global have them): drawn in cockpit
+    // view, and in NO other. Read from the live scene, so a part that leaks into a
+    // chase or orbit frame fails here instead of being noticed, or not, in the PNG.
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
-    if (kind === "trainer") {
-      if (cockpitOnlyNames.length < 16) {
-        throw new Error(`${label}: expected the trainer's 16 cockpit-only meshes in the scene, found ${cockpitOnlyNames.length}`);
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 16, bizjet: 10 };
+    const expectedCount = expectedCockpitOnly[kind];
+    if (expectedCount !== undefined) {
+      if (cockpitOnlyNames.length !== expectedCount) {
+        throw new Error(`${label}: expected the ${kind}'s ${expectedCount} cockpit-only meshes in the scene, found ${cockpitOnlyNames.length}`);
       }
       const wrong = cockpitOnlyNames.filter((name) => reading.cockpitOnly[name] !== (VIEW === "cockpit"));
       if (wrong.length > 0) {

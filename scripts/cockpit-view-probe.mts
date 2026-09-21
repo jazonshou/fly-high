@@ -147,6 +147,9 @@ const NOTES: Record<AircraftKind, KindNotes> = {
     seat: /^bizjet-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.52",
     sill: /flight-deck-window$/, sillEdge: "bottom",
     panel: /^bizjet-instrument-panel$/, glare: null,
+    // The panel is one mesh with its hood now (a board and a plate), so its
+    // bounding-box centre is not inside solid; the overhead is a single closed box.
+    control: /^bizjet-overhead$/,
   },
   airliner: {
     seat: /^airliner-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.72",

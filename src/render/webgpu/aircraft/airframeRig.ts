@@ -349,7 +349,9 @@ export function configureCockpitLayers(parts: readonly AbstractMesh[]): void {
 export function configureCockpitOnlyParts(parts: readonly AbstractMesh[]): void {
   for (const part of parts) {
     part.isVisible = false;
-    part.metadata = { ...part.metadata, castsShadow: false };
+    // `cockpitOnly` marks the part for whoever inspects a scene (the frame
+    // script asserts from the live scene that none is drawn outside cockpit view).
+    part.metadata = { ...part.metadata, castsShadow: false, cockpitOnly: true };
   }
 }
 

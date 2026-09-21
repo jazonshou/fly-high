@@ -326,20 +326,25 @@ const BIZJET: AircraftSpec = Object.freeze({
   // wingspan. Height scales with it so the orbit still looks down on the
   // aeroplane rather than along it.
   cinematic: Object.freeze({ radiusMeters: 65, heightMeters: 21, heightDriftMeters: 5 }),
-  // Measured against the built flight deck, on the same geometry as the
-  // trainer's: seats at x 11.44 / y 0.68, panel centred at x 12.55 / y 0.62
-  // and 0.54 m tall, so its top edge is y 0.89. Two wrong answers first —
-  // y 1.5 sat 0.88 m above the panel over a 0.55 m reach, 58 degrees down and
-  // outside a 56-degree field of view, so the cockpit rendered as an empty
-  // windscreen; y 0.82 sat BELOW the panel's top edge and filled two thirds
-  // of the screen with instrument. 1.05 clears the top edge by 0.16 m over a
-  // 0.95 m reach, the same proportion the 150 flies at.
+  // Solved by `scripts/global-eye-solve.mts` against the BUILT windscreen. The
+  // first eye here (11.6, 1.05) stood ABOVE the pane: the glass is a 0.16 m slab
+  // raked 34 degrees whose top edge is at y 0.98, so from y 1.05 the whole
+  // windscreen read -4 to -27 degrees, under the horizon. The constraints, with
+  // the pane seen straight ahead of the pilot: the eye inside the glass's own
+  // vertical span (y 0.72 to 0.85); the glass's top edge +14 to +18 degrees and
+  // its bottom edge -14 or lower; the nearest glass at least 0.55 m away; and at
+  // least 0.15 m of skin above the head. The feasible region is a thin sliver
+  // (forward 11.85 to 11.95 at y 0.78; nothing above y 0.81): further aft the top
+  // edge drops under +14, further forward the pane's top-back corner comes inside
+  // 0.55 m. This is the middle of it: top edge +15.1, bottom -21.3, glass 0.605 m
+  // away, 0.31 m of skin above.
   //
   // `right` -0.52 is the PORT seat's centre. That mesh is named
   // `bizjet-first-officer-seat` and the starboard one `bizjet-captain-seat`,
   // which is the wrong way round for an aeroplane whose captain sits on the
-  // left; the eye follows the geometry, not the name.
-  cockpitEye: Object.freeze({ forward: 11.6, up: 1.05, right: -0.52 }),
+  // left; the eye follows the geometry, not the name. Both seat pairs stand
+  // 0.05 m aft of the eye in x (seat centre 11.85).
+  cockpitEye: Object.freeze({ forward: 11.9, up: 0.78, right: -0.52 }),
   spawn: Object.freeze({
     // 200 m/s. 210 was above the speed at which this aeroplane flies level in
     // dense air near the ground, so it converted the excess into climb no

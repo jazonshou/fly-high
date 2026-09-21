@@ -17,6 +17,7 @@ import {
 import {
   applyCommonPose,
   configureCockpitLayers,
+  configureCockpitOnlyParts,
   hingeAlong,
   yawHingeAlong,
   configureRoot,
@@ -24,10 +25,10 @@ import {
   createLampApplier,
   node,
   setCockpitVisibility,
-  addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
 import { AircraftBuildContext, paintVertexBand } from "./builders";
+import { buildBizjetCockpit } from "./cockpit/bizjetCockpit";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -1415,6 +1416,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
   windscreen.position.set(12.72, 0.7, 0);
   windscreen.rotation.z = 0.6;
   windscreen.metadata = { ...windscreen.metadata, castsShadow: false };
+  const sideWindows: Mesh[] = [];
   for (const side of [1, -1] as const) {
     // EMBEDDED, not laid on. Measured, the old pane sat at |z| = 0.99 where
     // the skin at that height is 0.89 — a 1.8 m dark slab standing 0.10 m
@@ -1438,8 +1440,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
     sideWindow.rotation.x = -side * 0.3;
     sideWindow.rotation.y = side * 0.06;
     sideWindow.metadata = { ...sideWindow.metadata, castsShadow: false };
+    sideWindows.push(sideWindow);
   }
-  const windscreenFrame = build.strutBetween(
+  build.strutBetween(
     "bizjet-windscreen-center-post",
     new Vector3(13.0, 0.44, 0),
     new Vector3(12.34, 1.0, 0),
@@ -1448,6 +1451,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
     root,
   );
 
+  // The seats stand 0.05 m aft of the pilot's eye in x (`catalogue.cockpitEye`,
+  // forward 11.90): seat centre 11.85, headrest 11.57. They stood at 11.72 and
+  // 11.44 when the eye was at 11.6, and moved 0.13 m with it.
   for (const side of [1, -1] as const) {
     const seat = build.box(
       side > 0 ? "bizjet-captain-seat" : "bizjet-first-officer-seat",
@@ -1457,7 +1463,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    seat.position.set(11.72, 0.24, side * 0.52);
+    seat.position.set(11.85, 0.24, side * 0.52);
     seat.rotation.z = -0.09;
     seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
     const headrest = build.box(
@@ -1468,20 +1474,20 @@ export function createBizJet(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    headrest.position.set(11.44, 0.68, side * 0.52);
+    headrest.position.set(11.57, 0.68, side * 0.52);
     headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
   }
-  addInstrumentPanel(
-    build,
-    "bizjet",
-    root,
-    12.55,
-    0.62,
-    1.3,
+  // The panel, its hood, the four flat screens, the posts, the ceiling and the
+  // side walls are COCKPIT-ONLY parts, built to angles from the pilot's left-seat
+  // eye in `cockpit/bizjetCockpit.ts`. `configureCockpitOnlyParts` makes them
+  // invisible until cockpit view is entered and never a shadow caster.
+  const cockpitOnlyParts = buildBizjetCockpit(build, root, {
     interior,
+    dark,
     instrumentFace,
     instrumentMarking,
-  );
+  });
+  configureCockpitOnlyParts(cockpitOnlyParts);
 
   // THE ENGINES. Two GE Passport 20s on pylons off the REAR FUSELAGE, not
   // under the wing — this is a rear-engined aeroplane and hanging them under a
@@ -1728,10 +1734,23 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // starboard spool is the one it names; both are driven from the same
     // simulation-time phase below, so they can never be seen out of step.
     propeller: fanSpools[0]!,
-    // Only opaque skin that would block the pilot's view. The flight deck
-    // glass stays on ordinary world layers — a windscreen the pilot cannot see
-    // through is worse than no windscreen.
-    cockpitParts: [fuselage, radome, windscreenFrame],
+    // THE GLASS THE PILOT SITS BEHIND, and the RADOME. The windscreen and the
+    // two flight-deck windows are built with `transmission`, and from inside they
+    // draw as flat opaque slabs (measured against the shipped frame; the old
+    // comment here said they were see-through, which was wrong). The radome is a
+    // separate capped loft whose rear cap, at x 13.1, faces the pilot: with the
+    // radome visible it is a black disc across the middle and right of the
+    // windscreen (317 of the 2,800 cells of the probe's frame), and the only face
+    // of the radome the seat can ever see, so it goes.
+    //
+    // The fuselage and the centre post are NOT here: the eye is inside the
+    // fuselage shell (0.31 m of skin above it, 0.37 m to the port wall) and
+    // back-face culling hides the shell from inside, so it draws nothing of
+    // itself, while the centre post is what a windscreen's framing is. What
+    // replaces the hidden glass's framing is built as cockpit-only parts: see
+    // `buildBizjetCockpit`.
+    cockpitParts: [windscreen, ...sideWindows, radome],
+    cockpitOnlyParts,
     wingSurfaces,
     // Starboard first, because the side loop runs +1 first and
     // `applyCommonPose` drives `ailerons[0]` with the starboard deflection.
@@ -1781,6 +1800,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     root,
     propeller: rig.propeller,
     cockpitParts: rig.cockpitParts,
+    cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
