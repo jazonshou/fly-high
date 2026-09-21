@@ -422,9 +422,15 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // against the Global's 9.6 and the 150's 9.8 — 1.15 m above the flight-deck
   // floor and 8.30 m above the pavement.
   //
-  // `right` -0.72 is the PORT seat's centre, `airliner-first-officer-seat` by
-  // name (see the Global's note on the swapped seat names).
-  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1, right: -0.72 }),
+  // `right` is 0 FOR NOW. The pilot's seat is the port one, at z -0.72
+  // (`airliner-first-officer-seat` by name; see the Global's note on the
+  // swapped seat names), and the eye belongs there. But the 747's instrument
+  // panel is still laid out about the centreline, and its flight deck cannot be
+  // rebuilt until the plane engineer's 747 work lands, so an eye in the left
+  // seat would look across a panel that is still centred on the aeroplane and
+  // read worse than today. Set this to -0.72 when the 747's cockpit is built;
+  // `tests/render.cockpit-rig.test.ts` carries the TODO that says so.
+  cockpitEye: Object.freeze({ forward: 28.8, up: 3.1, right: 0 }),
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it
