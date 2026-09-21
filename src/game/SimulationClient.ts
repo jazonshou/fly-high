@@ -354,6 +354,18 @@ function lerpAngleDegrees(first: number, second: number, alpha: number): number 
   return (first + delta * alpha + 360) % 360;
 }
 
+/**
+ * The same shortest-way-round lerp for an angle whose home range is (-180, 180],
+ * which is bank's: `atan2` gives it a discontinuity at inverted flight, where +170
+ * and -170 are 20 degrees apart and their linear average is 0, wings level.
+ * Pitch does not need this (it comes from `asin`, so it stays within +-90 and
+ * never wraps), and heading has its own `[0, 360)` version above.
+ */
+function lerpSignedAngleDegrees(first: number, second: number, alpha: number): number {
+  const delta = ((second - first + 540) % 360) - 180;
+  return ((first + delta * alpha + 540) % 360) - 180;
+}
+
 function cloneVisualState(state: FlightVisualState): FlightVisualState {
   return {
     ...state,
@@ -419,7 +431,7 @@ export function interpolateFlightState(
   result.verticalSpeed = lerp(first.verticalSpeed, second.verticalSpeed, alpha);
   result.heading = lerpAngleDegrees(first.heading, second.heading, alpha);
   result.pitch = lerp(first.pitch, second.pitch, alpha);
-  result.bank = lerp(first.bank, second.bank, alpha);
+  result.bank = lerpSignedAngleDegrees(first.bank, second.bank, alpha);
   result.angleOfAttack = lerp(first.angleOfAttack, second.angleOfAttack, alpha);
   result.sideslip = lerp(first.sideslip, second.sideslip, alpha);
   result.throttle = lerp(first.throttle, second.throttle, alpha);

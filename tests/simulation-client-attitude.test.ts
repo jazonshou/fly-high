@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { extrapolateFlightState } from "../src/game/SimulationClient";
+import { extrapolateFlightState, interpolateFlightState } from "../src/game/SimulationClient";
+import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import { flyAt } from "./support/visualStateFromSimulator";
 import { readSource } from "./support/sourceText";
 
@@ -83,5 +84,44 @@ describe("an extrapolated frame carries the simulator's attitude", () => {
     ]) {
       expect(worker, `the worker no longer says ${line}`).toContain(line);
     }
+  });
+});
+
+describe("an interpolated frame turns bank the short way round", () => {
+  const between = (first: number, second: number, alpha: number, key: "bank" | "pitch" | "heading" = "bank") =>
+    interpolateFlightState({ ...INITIAL_VISUAL_STATE, [key]: first }, { ...INITIAL_VISUAL_STATE, [key]: second }, alpha)[key];
+
+  it("passes through 180 between +170 and -170, not through 0", () => {
+    // Two snapshots either side of inverted flight. A linear lerp of the numbers
+    // averages 170 and -170 to 0, which is wings LEVEL: the attitude ball would
+    // swing through upright for a frame in the middle of a roll.
+    expect(Math.abs(between(170, -170, 0.5))).toBeCloseTo(180, 6);
+    expect(between(170, -170, 0.25)).toBeCloseTo(175, 6);
+    expect(between(170, -170, 0.75)).toBeCloseTo(-175, 6);
+    expect(between(-170, 170, 0.25)).toBeCloseTo(-175, 6);
+    expect(between(-170, 170, 0.75)).toBeCloseTo(175, 6);
+    // and the endpoints are the endpoints
+    expect(between(170, -170, 0)).toBeCloseTo(170, 6);
+    expect(between(170, -170, 1)).toBeCloseTo(-170, 6);
+  });
+
+  it("is an ordinary lerp everywhere it does not wrap, and stays in (-180, 180]", () => {
+    expect(between(10, 30, 0.5)).toBeCloseTo(20, 6);
+    expect(between(-30, 40, 0.5)).toBeCloseTo(5, 6);
+    expect(between(-60, -20, 0.25)).toBeCloseTo(-50, 6);
+    expect(between(0, 0, 0.5)).toBeCloseTo(0, 6);
+    for (const [a, b] of [[179, -179], [-179, 179], [90, -90], [10, 350 - 360]] as const) {
+      for (const alpha of [0, 0.1, 0.5, 0.9, 1]) {
+        const value = between(a, b, alpha);
+        expect(value).toBeGreaterThanOrEqual(-180);
+        expect(value).toBeLessThan(180 + 1e-9);
+      }
+    }
+  });
+
+  it("leaves pitch linear (asin bounds it to +-90, so it never wraps) and heading on its own angular lerp", () => {
+    expect(between(80, -80, 0.5, "pitch")).toBeCloseTo(0, 6);
+    expect(between(-10, 30, 0.25, "pitch")).toBeCloseTo(0, 6);
+    expect(between(350, 10, 0.5, "heading")).toBeCloseTo(0, 6);
   });
 });
