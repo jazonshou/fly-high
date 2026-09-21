@@ -197,9 +197,11 @@ describe("the loft's crown taper", () => {
       // checked mesh by mesh against House-Keeping's own source (positions AND
       // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
       // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
-      // the old cockpit or the new one. The jet and the 747 keep their pins, unchanged.
+      // the old cockpit or the new one. The 747 keeps its pin; the jet's is re-pinned separately, below.
       trainer: "a976d713",
-      jet: "78ad9b4d",
+      // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
+      // crown taper is still unused on this airframe; what moved is the tail.
+      jet: "05f972ad",
       bizjet: "58fd2565",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {

@@ -242,9 +242,13 @@ describe("a loft's crown seam", () => {
       // holds and was checked mesh by mesh against House-Keeping's own source (positions AND
       // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
       // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
-      // the old cockpit or the new one. The jet and the 747 keep their pins, unchanged.
+      // the old cockpit or the new one. The 747 keeps its pin; the jet's is re-pinned separately, below.
       trainer: "b9751f9b",
-      jet: "35f03ce5",
+      // Re-pinned when the F-16 gained its airbrake shelves and its four
+      // petals were rebuilt to lie on them. A DELIBERATE geometry change on
+      // one airframe, merged alongside the cockpit work's trainer and Global
+      // re-pins above; the 747 is untouched by both.
+      jet: "ffc9a3d5",
       bizjet: "7b2e0a8d",
       airliner: "10dd7ee9",
     };
