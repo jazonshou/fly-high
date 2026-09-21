@@ -25,7 +25,13 @@ import {
   addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
-import { AircraftBuildContext, paintVertexBand, type LoftSection } from "./builders";
+import {
+  AircraftBuildContext,
+  nacaThickness,
+  paintVertexBand,
+  type LoftSection,
+  type SurfacePoint,
+} from "./builders";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -187,6 +193,76 @@ const WING_RAKE_HINGE_X = alongPanel(
   WING_RAKE_LEADING_X, WING_RAKE_TRAILING_X, HINGE_CHORD_FRACTION);
 
 /**
+ * THE SPOILERS, as two chord fractions rather than as a chord in metres.
+ *
+ * Both edges being fixed FRACTIONS is load-bearing, not tidiness. Within one
+ * wing panel the leading edge, the trailing edge and the chord plane are each
+ * affine in z, so a fixed-fraction edge is an exactly straight line in space —
+ * which is what lets `hingeAlong` turn the panel about its own forward edge
+ * without any part of the edge leaving the skin. An edge at a fixed distance
+ * in metres from the hinge line is not: it drifts in fraction as the chord
+ * tapers, its height stops being affine, and the hinge line acquires a sag.
+ *
+ * It also sizes the panels the way the aeroplane does. 13% of local chord is
+ * 1.66 m at the inboard ground spoilers and 0.79 m at the outermost flight
+ * spoiler, which is the taper a 747's spoilers actually have.
+ *
+ * The aft edge stops 2.5% of chord short of the 70% hinge line so the panel
+ * clears the flap's nose AT EVERY STATION. A panel whose aft edge is a fixed
+ * distance ahead of the hinge only clears it at the station that distance was
+ * measured at, and fouls the flap inboard of it.
+ */
+const SPOILER_HINGE_FRACTION = 0.545;
+const SPOILER_AFT_FRACTION = HINGE_CHORD_FRACTION - 0.025;
+/**
+ * 12 mm proud of the skin, and 60 mm thick so the rest of the panel is inside
+ * the wing. Flush would be correct on the aeroplane and wrong in a depth
+ * buffer: two surfaces at the same depth fight, and at chase range the panels
+ * would flicker. 12 mm is under a quarter of a pixel at the 65 m orbit — no
+ * step the eye can find — and far enough apart in z to settle the fight.
+ */
+const SPOILER_PROUD = 0.012;
+const SPOILER_THICKNESS = 0.06;
+/**
+ * One span segment would be exact — the skin is ruled in z within a panel —
+ * but two lets the normals interpolate across the panel instead of being
+ * constant over its whole width. The chord is a curve and needs its four.
+ */
+const SPOILER_SPAN_SEGMENTS = 2;
+const SPOILER_CHORD_SEGMENTS = 4;
+/**
+ * Two inboard ground spoilers ahead of the inner flap (4.4-11.9) and four
+ * outboard flight spoilers ahead of the outer one (16.6-23.1), leaving the
+ * inboard aileron's span clear between them.
+ *
+ * THE GROUPS ARE THE MESHES, and that falls out of the fixed-fraction edge
+ * above: every panel in a group sits on the 54.5% chord line of the SAME wing
+ * panel, so all of them lie on one straight line in space and all of them turn
+ * about it together. One hinge node and one mesh a group is therefore exact,
+ * not an approximation — and it is why going from ten panels to the twelve the
+ * aeroplane has SAVED six draw calls instead of costing two.
+ *
+ * The grouping is also what forces each group to stay inside one wing panel:
+ * a group straddling the Yehudi break at 12.5 would have a bent hinge line,
+ * and `buildSpoilerGroup` throws rather than draw one.
+ */
+const SPOILER_GROUPS = [
+  {
+    name: "ground-spoilers",
+    panels: [{ rootZ: 5, tipZ: 7.9 }, { rootZ: 8.3, tipZ: 11.2 }],
+  },
+  {
+    name: "flight-spoilers",
+    panels: [
+      { rootZ: 16.8, tipZ: 18.2 },
+      { rootZ: 18.4, tipZ: 19.8 },
+      { rootZ: 20, tipZ: 21.4 },
+      { rootZ: 21.6, tipZ: 23 },
+    ],
+  },
+] as const;
+
+/**
  * Chord-plane height at each station: the DIHEDRAL, and it is not constant.
  *
  * 3.4 degrees from the root to the Yehudi break, 5.6 to the rake break and 8.5
@@ -256,6 +332,13 @@ function hingeAt(z: number): number {
     : alongPanel(WING_KINK_HINGE_X, WING_RAKE_HINGE_X, outboardFraction(z));
 }
 
+/** The local dihedral angle, from the same two panels the chord plane uses. */
+function dihedralAt(z: number): number {
+  return insideKink(z)
+    ? Math.atan2(WING_KINK_Y - WING_ROOT_Y, WING_KINK_Z - WING_ROOT_Z)
+    : Math.atan2(WING_RAKE_Y - WING_KINK_Y, WING_RAKE_Z - WING_KINK_Z);
+}
+
 /** Chord-plane height, following the same two panels the dihedral is built in. */
 function chordPlaneAt(z: number): number {
   return insideKink(z)
@@ -264,27 +347,49 @@ function chordPlaneAt(z: number): number {
 }
 
 /**
- * The UPPER surface at 60% chord, which is where the spoilers and the top of a
- * pylon have to sit.
+ * THE WING SKIN, anywhere on it. Given a station and a chord fraction it
+ * returns the y of the upper or the lower surface, from the SAME two terms
+ * `builders.ts` draws the section from — `nacaThickness` for the half-
+ * thickness and 4c·t·(1-t) for the camber line — so a part seated with this
+ * is seated on the surface the wing actually has.
  *
- * Derived rather than eyeballed, because ten spoilers on a swept, tapered,
- * dihedralled wing each need a different answer and a single guessed height
- * would leave half of them floating and half of them sunk. The NACA four-digit
- * half-thickness at 60% chord is 0.3753 of the section's thickness ratio, and
- * the camber line adds 4c(t)(1-t) = 0.96 of the camber ratio at the same
- * station; `builders.ts` builds the section from exactly those two terms.
+ * This replaced a pair of helpers that evaluated the section at 60% chord and
+ * nowhere else, from a hand-copied 0.3753 (the true value there is 0.3789).
+ * One height per part is only ever right at one station: ten spoilers on a
+ * swept, tapered, dihedralled wing each need a different answer at each of
+ * their own corners, and a single number left them between 44 and 288 mm clear
+ * of the skin they are supposed to lie in.
  */
-function upperSurfaceY(z: number): number {
+function wingSkinY(z: number, chordFraction: number, upper: boolean): number {
+  // THE SECTION IS DRAWN OVER THE WING BOX, NOT OVER THE CHORD. `wingPanels`
+  // hands `airfoilWing` a trailing edge at the HINGE LINE, because aft of it
+  // the metal is flap. So the fixed wing is a complete aerofoil of 70% of the
+  // local chord, and a fraction of the true chord has to be rescaled into that
+  // box before the thickness law sees it. Evaluating the law on the full chord
+  // instead puts the skin about 3% of chord too high — 540 mm at the inboard
+  // spoiler station, which is how the first attempt at this repair managed to
+  // seat the panels WORSE than the boxes it replaced.
+  const boxChord = leadingAt(z) - hingeAt(z);
   const ratio = insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
-  const chord = leadingAt(z) - trailingAt(z);
-  return chordPlaneAt(z) + (0.3753 * ratio + 0.96 * WING_CAMBER) * chord;
+  const local = Math.min(1, Math.max(0, chordFraction / HINGE_CHORD_FRACTION));
+  const camber = 4 * WING_CAMBER * local * (1 - local) * boxChord;
+  const halfThickness = nacaThickness(local, ratio) * boxChord;
+  // And the section stands off the CHORD PLANE, which is tilted: each panel is
+  // built inside a node rolled to the local dihedral, so a half-thickness of h
+  // reaches h*cos(dihedral) in body y.
+  const offset = camber + (upper ? halfThickness : -halfThickness);
+  return chordPlaneAt(z) + offset * Math.cos(dihedralAt(z));
 }
 
-/** The LOWER surface at the same station, which is what a pylon hangs from. */
+/** Where a station's chord fraction lands in body x. */
+function chordFractionX(z: number, chordFraction: number): number {
+  const leading = leadingAt(z);
+  return leading - chordFraction * (leading - trailingAt(z));
+}
+
+/** The LOWER surface at 60% chord, which is what a pylon hangs from. */
 function lowerSurfaceY(z: number): number {
-  const ratio = insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
-  const chord = leadingAt(z) - trailingAt(z);
-  return chordPlaneAt(z) - (0.3753 * ratio - 0.96 * WING_CAMBER) * chord;
+  return wingSkinY(z, 0.6, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -995,9 +1100,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
   ): TransformNode {
     const hinge = node(name, root, scene);
     hinge.position.set(x, y, side * z);
-    hinge.rotation.x = -side * (insideKink(z)
-      ? Math.atan2(WING_KINK_Y - WING_ROOT_Y, WING_KINK_Z - WING_ROOT_Z)
-      : Math.atan2(WING_RAKE_Y - WING_KINK_Y, WING_RAKE_Z - WING_KINK_Z));
+    hinge.rotation.x = -side * dihedralAt(z);
     return hinge;
   }
 
@@ -1097,46 +1200,73 @@ export function createAirliner(scene: Scene): AircraftVisual {
       ), scene);
     }
 
-    // SPOILERS, on the upper surface just ahead of the hinge line. Five a side
-    // — the 747 carries six, and the sixth lives where the inboard aileron is
-    // on this model. `speedBrakeDrag: 0.1` is entirely these panels; there is
-    // no fuselage airbrake on a transport.
-    //
-    // Wing-coloured and FLUSH. Standing them proud in the accent paint makes
-    // them read as hazard decals stuck on the wing rather than as the wing's
-    // own skin, which is the note Jason left on the Global's first version.
-    // Each one sits on the SWEPT hinge line and at its own station's upper
-    // surface, so its aft edge meets the flap it lives in front of at every
-    // station rather than only at one.
-    for (const spoiler of [
-      { name: "one", z: 6.6, span: 2.3, chord: 1.9 },
-      { name: "two", z: 9.3, span: 2.3, chord: 1.7 },
-      { name: "three", z: 18.2, span: 2.6, chord: 1.3 },
-      { name: "four", z: 21.4, span: 2.6, chord: 1.2 },
-      { name: "five", z: 24.6, span: 2.6, chord: 1.1 },
-    ]) {
-      // The node is the panel's FORWARD edge and its hinge, so it stands one
-      // chord ahead of the flap hinge line and the panel reaches back to it.
-      const brake = wingHinge(
-        `${sideName}-airliner-${spoiler.name}-spoiler`,
-        side,
-        spoiler.z,
-        hingeAt(spoiler.z) + spoiler.chord,
-        upperSurfaceY(spoiler.z),
-      );
-      const panel = build.box(
-        `${brake.name}-surface`,
-        spoiler.chord,
-        // 45 mm: thick enough to catch a highlight along its edge, thin enough
-        // to be a panel line rather than a step.
-        0.045,
-        spoiler.span,
-        wing,
-        brake,
-      );
-      // Hinged at its forward edge, so the panel lies entirely aft of the node
-      // and a negative pose angle lifts its trailing edge into the air.
-      panel.position.x = -spoiler.chord * 0.5;
+    /**
+     * SPOILERS. Six a side, which is what the aeroplane has: two inboard
+     * ground spoilers lying ahead of the inner flap and four outboard flight
+     * spoilers ahead of the outer one, with the inboard aileron's span left
+     * clear between the two groups.
+     *
+     * THEY ARE CONFORMED, and that is the repair in this pass. Built as
+     * axis-aligned boxes seated at one station's skin height, they measured
+     * between 44 mm (panel five) and 288 mm (panel one) clear of the wing at
+     * their CLOSEST corner and up to 583 mm proud at their worst — white
+     * plates standing off a wing they are supposed to lie in, and the error
+     * shrank monotonically outboard because it was the wing's dihedral being
+     * read off a single station. A box cannot lie in this surface: over a
+     * 2.9 m panel the skin moves by the dihedral, by the taper and by the
+     * thickness law, and no single height is right at more than one corner.
+     *
+     * Each panel is now a grid whose every vertex is placed by `wingSkinY` AT
+     * ITS OWN STATION AND CHORD FRACTION, so the dihedral, the taper and the
+     * section are absorbed by construction rather than corrected for. Both
+     * edges are at fixed CHORD FRACTIONS, which is what makes the hinge line
+     * exactly straight: within one wing panel the chord plane and the chord
+     * are each affine in z, so a fixed-fraction edge is a straight line in
+     * space and `hingeAlong` can turn the panel about it without wringing it.
+     * The aft edge stands 2.5% of chord ahead of the 70% hinge line, so it
+     * clears the flap's nose at every station instead of only at one.
+     */
+    for (const group of SPOILER_GROUPS) {
+      const rootZ = group.panels[0]!.rootZ;
+      const tipZ = group.panels[group.panels.length - 1]!.tipZ;
+      if (insideKink(rootZ) !== insideKink(tipZ)) {
+        throw new RangeError(`${group.name} straddles the wing kink; its hinge line would bend`);
+      }
+      const hingeX = chordFractionX(rootZ, SPOILER_HINGE_FRACTION);
+      const hingeY = wingSkinY(rootZ, SPOILER_HINGE_FRACTION, true) + SPOILER_PROUD;
+      // The node IS the hinge, at the group's inboard end on the hinge line.
+      // No dihedral is applied here and none is needed: the direction handed
+      // to `hingeAlong` below carries the real line, rise included.
+      const brake = node(`${sideName}-airliner-${group.name}`, root, scene);
+      brake.position.set(hingeX, hingeY, side * rootZ);
+      const patches = group.panels.map((panel) => {
+        const patch: SurfacePoint[][] = [];
+        for (let span = 0; span <= SPOILER_SPAN_SEGMENTS; span += 1) {
+          const z = panel.rootZ
+            + (panel.tipZ - panel.rootZ) * (span / SPOILER_SPAN_SEGMENTS);
+          const row: SurfacePoint[] = [];
+          for (let chord = 0; chord <= SPOILER_CHORD_SEGMENTS; chord += 1) {
+            const fraction = SPOILER_HINGE_FRACTION
+              + (SPOILER_AFT_FRACTION - SPOILER_HINGE_FRACTION)
+                * (chord / SPOILER_CHORD_SEGMENTS);
+            row.push({
+              x: chordFractionX(z, fraction) - hingeX,
+              y: wingSkinY(z, fraction, true) + SPOILER_PROUD - hingeY,
+              z: side * (z - rootZ),
+            });
+          }
+          patch.push(row);
+        }
+        return patch;
+      });
+      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, wing, brake);
+      // The hinge LINE: the panels' own forward edge, end to end. Sweep from
+      // the x term, dihedral and taper from the y term.
+      hingeAlong(brake, new Vector3(
+        chordFractionX(tipZ, SPOILER_HINGE_FRACTION) - hingeX,
+        wingSkinY(tipZ, SPOILER_HINGE_FRACTION, true) + SPOILER_PROUD - hingeY,
+        side * (tipZ - rootZ),
+      ), scene);
       speedBrakes.push(brake);
     }
   }

@@ -117,7 +117,7 @@ function authoredParts(visual: AircraftVisual): Map<string, AbstractMesh> {
 // 140, not 141: the separate `airliner-upper-deck` loft is gone. The forward
 // fuselage carries the hump itself now, because two intersecting closed lofts
 // cannot be tangent-continuous and left a 38-degree crease at the flight deck.
-const BEFORE = { meshes: 140, casters: 113, draws: 367 } as const;
+const BEFORE = { meshes: 134, casters: 113, draws: 367 } as const;
 
 /** Every part that defines the shadow's OUTLINE on the ground. */
 const SILHOUETTE = new RegExp([
@@ -126,7 +126,7 @@ const SILHOUETTE = new RegExp([
   "-tailplane$",
   "^airliner-(vertical-stabilizer|dorsal-fin)$",
   "-engine-(nacelle|pylon)$",
-  "-(flap|spoiler|aileron|elevator)-surface$",
+  "-(flap|spoilers|aileron|elevator)-surface$",
   "^rudder-surface$",
   "-gear-(strut|side-brace|bogie-beam|door-leaf)$",
   "^airliner-nose-(strut|drag-brace)$",
@@ -173,10 +173,12 @@ describe("the 747-8's wing is one white surface", () => {
     const { scene } = build();
     const wingMounted = scene.meshes
       .map((mesh) => mesh.name)
-      .filter((name) => /wing$|-(flap|aileron|spoiler)-surface$|flap-track-canoe$/.test(name));
+      .filter((name) => /wing$|-(flap|aileron|spoilers)-surface$|flap-track-canoe$/.test(name));
     // NON-VACUITY: at least the two fixed wings, four flaps, four ailerons,
-    // ten spoilers and the canoes, whatever the fixed wing is later merged to.
-    expect(wingMounted.length).toBeGreaterThanOrEqual(2 + 4 + 4 + 10 + 1);
+    // four spoiler meshes -- two a side, each carrying the panels that share
+    // its hinge line -- and the canoes, whatever the fixed wing is later
+    // merged to.
+    expect(wingMounted.length).toBeGreaterThanOrEqual(2 + 4 + 4 + 4 + 1);
     for (const name of wingMounted) {
       const recipe = paintRecipe(scene, name);
       expect(recipe.liveryColor, `${name} still carries a livery band`).toBe(recipe.baseColor);
@@ -241,11 +243,11 @@ describe("the 747-8's draw budget", () => {
     const outline = [...authoredParts(visual)].filter(([name]) => SILHOUETTE.test(name));
     // NON-VACUITY: 4 fuselage lofts -- it was 5 until the upper deck stopped
     // being its own loft -- 8 wing panels, 2 tailplanes, fin and dorsal fin,
-    // 4 nacelles and 4 pylons, 4 flaps, 10 spoilers, 4 ailerons, 2 elevators,
+    // 4 nacelles and 4 pylons, 4 flaps, 4 spoiler meshes, 4 ailerons, 2 elevators,
     // the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors, 2 nose
     // members and 18 tyres.
     expect(outline.map(([name]) => name).sort()).toHaveLength(
-      4 + 8 + 2 + 2 + 4 + 4 + 4 + 10 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
+      4 + 8 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
     );
     for (const [name, mesh] of outline) {
       expect(issuesDraw(mesh), `${name} is not drawn`).toBe(true);
@@ -390,25 +392,31 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // 10,520 vertices to 10,543 and 4,977 m^2 of surface to 4,697. Nearly 280
     // square metres of that area was the two lobes' skin INSIDE each other,
     // drawn and shaded and never visible. One surface has no inside.
+    //
+    // Then 10,543 to 10,663 when the spoilers were rebuilt: twelve conformed
+    // panels of 30 vertices where there were ten boxes of 24. The AREA barely
+    // moved (4,696.6 to 4,695.3 m^2) even though two panels were added, which
+    // is the seating repair showing up in the census — the boxes stood clear
+    // of the wing and counted their whole undersides, the panels lie in it.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_543);
-    expect(census.indices).toBe(49_896);
-    expect(census.minimum.x).toBeCloseTo(-38, 4);
-    expect(census.minimum.y).toBeCloseTo(-6.4, 4);
-    expect(census.minimum.z).toBeCloseTo(-34.35, 4);
-    expect(census.maximum.x).toBeCloseTo(34, 4);
-    expect(census.maximum.y).toBeCloseTo(13, 4);
-    expect(census.maximum.z).toBeCloseTo(34.35, 4);
-    expect(census.positionSum.x).toBeCloseTo(22_574.8287, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26_245.1205, 1);
-    expect(census.positionSum.z).toBeCloseTo(-22.032, 1);
-    expect(census.positionSquares).toBeCloseTo(6_819_902.38, 0);
-    expect(census.normalSum.x).toBeCloseTo(-344.8462, 2);
-    expect(census.normalSum.y).toBeCloseTo(124.6511, 2);
+    expect(census.vertices).toBe(10_663);
+    expect(census.indices).toBe(51_552);
+    expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
+    expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
+    expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
+    expect(census.maximum.x).toBeCloseTo(34.0000, 4);
+    expect(census.maximum.y).toBeCloseTo(13.0000, 4);
+    expect(census.maximum.z).toBeCloseTo(34.3500, 4);
+    expect(census.positionSum.x).toBeCloseTo(22041.1093, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26413.0229, 1);
+    expect(census.positionSum.z).toBeCloseTo(-22.0320, 1);
+    expect(census.positionSquares).toBeCloseTo(6853278.81, 0);
+    expect(census.normalSum.x).toBeCloseTo(-345.9461, 2);
+    expect(census.normalSum.y).toBeCloseTo(124.4928, 2);
     expect(census.normalSum.z).toBeCloseTo(0.0913, 2);
-    expect(census.normalMoment).toBeCloseTo(10_546.9266, 1);
-    expect(census.signedVolume).toBeCloseTo(-3_230.6413, 2);
-    expect(census.area).toBeCloseTo(4_696.5661, 2);
+    expect(census.normalMoment).toBeCloseTo(10632.1105, 1);
+    expect(census.signedVolume).toBeCloseTo(-3232.4065, 2);
+    expect(census.area).toBeCloseTo(4695.2708, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -441,7 +449,7 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // control surfaces, 8 fan parts, 6 door leaves, 39 gear parts) and each
     // must still be its own mesh under its own name.
     const hung = visual.meshes.filter((mesh) => mesh.parent !== visual.root);
-    expect(hung).toHaveLength(74);
+    expect(hung).toHaveLength(68);
     for (const mesh of hung) {
       expect(mesh.metadata?.mergedFrom, `${mesh.name} moves and was folded`).toBeUndefined();
     }
