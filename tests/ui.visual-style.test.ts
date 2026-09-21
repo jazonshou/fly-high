@@ -97,6 +97,14 @@ describe("flight interface visual system", () => {
     expect(growOf(".start-screen__starts")).toBeGreaterThanOrEqual(1);
     expect(growOf(".start-screen__utility")).toBeGreaterThanOrEqual(1);
     expect(rule(".start-screen__utility > .seed-action")).toMatch(/flex:\s*1 1 0;/);
+    // The seed's floor is its own content, not a pixel guess. At a hand-picked
+    // 118px the caption, the seven characters and the refresh glyph did not
+    // fit, and the glyph was pushed out through the button's right edge by 5
+    // to 18px at every width from 590 to 820px (Jason's screenshot; measured in
+    // a 501-width browser sweep, 116 bad widths before, 0 after).
+    expect(rule(".start-screen__utility > .seed-action")).toMatch(/min-width:\s*max-content;/);
+    expect(rule(".start-screen__utility")).toMatch(/min-width:\s*max-content;/);
+    expect(rule(".start-screen__utility > .seed-action")).not.toMatch(/min-width:\s*\d+px/);
 
     // One square, one size, everywhere.
     expect(rule(".start-screen__minimal")).toMatch(/--start-square:\s*46px;/);
