@@ -354,8 +354,18 @@ hypothesis, and is labelled as one this time.
 
 Against the line set for this change (about 1 % at cruise) neither state
 qualifies, and whether the polygon or 2 % of a worst-case look-down frame is the
-worse thing to ship is a product decision, put to the owner. The order stays
-price, decide, promote.
+worse thing to ship was a product decision, put to the owner.
+
+**Decided, 2026-09-20: it stays ON.** The owner's words, relayed by the project
+manager: "Let's keep it on for now." He had the merged | cheap | full frames in
+front of him and a plain account of the cost: 1.4 to 2.2 % on the look-down shot
+as a lower bound, invisible on his own machine at the frame cap, more on a
+weaker GPU, with the ~1 % rule pointing the other way. It is an owner's override
+of that rule, made knowingly. `TERRAIN_FAR_SWARD_READ` stays at 1, the baseline
+candidate is captured with it on, and the priced cost above is ACCEPTED, not
+unmeasured. "For now" means the biome-tone map below remains the real fix, for a
+later wave; when it lands this read and its dial go. The order was kept: price,
+decide, promote.
 
 **The real fix**, now thought to be the right one and not a fallback: a
 low-resolution BIOME-TONE MAP for the whole streaming window, one bilinear
