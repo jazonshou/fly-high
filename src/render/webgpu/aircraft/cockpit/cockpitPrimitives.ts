@@ -28,15 +28,20 @@ export function glareshieldMaterial(build: AircraftBuildContext, name: string): 
   return material;
 }
 
-/** Orient a box so its local X, Y, Z axes point along the given orthonormal basis. */
-export function orient(mesh: AbstractMesh, xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): void {
+/** The rotation that takes local X, Y, Z onto the given orthonormal, right-handed basis. */
+export function basisQuaternion(xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): Quaternion {
   const matrix = Matrix.FromValues(
     xAxis.x, xAxis.y, xAxis.z, 0,
     yAxis.x, yAxis.y, yAxis.z, 0,
     zAxis.x, zAxis.y, zAxis.z, 0,
     0, 0, 0, 1,
   );
-  mesh.rotationQuaternion = Quaternion.FromRotationMatrix(matrix);
+  return Quaternion.FromRotationMatrix(matrix);
+}
+
+/** Orient a box so its local X, Y, Z axes point along the given orthonormal basis. */
+export function orient(mesh: AbstractMesh, xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): void {
+  mesh.rotationQuaternion = basisQuaternion(xAxis, yAxis, zAxis);
 }
 
 /**

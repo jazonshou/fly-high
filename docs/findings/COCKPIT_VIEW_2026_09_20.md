@@ -119,6 +119,61 @@ cockpit-only and the cockpit camera culls the shell from inside). A ceiling that
 followed the crown would make the opening's top edge read about +11 degrees
 instead of +15.
 
+## The instruments move (Step I)
+
+Jason, via the PM: needles that move with airspeed, altitude, vertical speed and
+RPM, and an attitude ball (*"3 yes"*). They are driven from the same
+`FlightVisualState` fields the 2D HUD reads, in fixed AVIATION units whatever the
+HUD's units setting (`cockpit/instrumentMappings.ts`, a pure module):
+
+| dial | reads | mapping (degrees clockwise from 12 o'clock as the pilot sees it) |
+| --- | --- | --- |
+| Cessna airspeed | `airspeed` (m/s, equivalent) x 1.94384 kt | -150 at 0 to +150 at 160 kt, clamped |
+| Cessna altimeter | `altitude` (m above sea level) x 3.28084 ft | one needle, 360 per 1,000 ft, wraps |
+| Cessna vertical speed | `verticalSpeed` (m/s) x 196.85 ft/min | -90 at 0, 0 at +2,000, -180 at -2,000, clamped |
+| Cessna engine | `engineRpm` (prop RPM) | -135 at 0 to +135 at 2,750, clamped |
+| Global attitude ball | `bank`, `pitch` (degrees) | the ball's horizon turns by MINUS the bank; the pitch bar slides down 1 mm a degree of nose-up, clamped at 25 |
+
+The Cessna's attitude dial has no mapping: its needle stays at 12 o'clock. The
+update runs inside the visual's `update()` and only while cockpit view is on (the
+visual already received the whole state every frame; no plumbing was needed).
+
+**The sign is held to the SCREEN, not to an angle.** A dial's normal points TOWARD
+the pilot, and a positive right-handed rotation about an axis pointing at the
+viewer looks ANTI-clockwise to that viewer, so a needle turned by +angle runs
+backwards while every angle-in/angle-out test passes. `tests/render.cockpit-instruments.test.ts`
+projects each needle's hub and tip through the cockpit camera (built from the
+renderer's own `cockpitRigPositionsToRef`, with Babylon's projection and the y-down
+screen convention written once in `tests/support/cockpitProjection.ts`) at two
+readings and requires the tip to have moved clockwise; the ball's horizon is held to
+the WORLD horizon projected through the same camera, within a degree, with the sky
+half on the sky's side and the pitch bar on the ground side for a climb. Every
+reading is also held to the number the HUD renders for the same state, and the
+altimeter test stands on ground that is not at 0 m (altitude 1,600, height above
+ground 1,500), because at sea level the two differ by a gear offset and a dial wired
+to the wrong field would pass. Twenty-two mutations (each sign flipped, each dial
+wired to the wrong field or scale, the update ungated, the origin not re-framed, ...)
+each fail a test.
+
+**Two defects in the state the instruments read**, both found by measuring, both
+fixed with their own commits: the extrapolated render state's bank was the NEGATIVE
+of the simulator's (`updateVisualAnglesFromOrientation` called body +Z port, which
+D-6 corrected on 2026-09-01), and bank was interpolated linearly, so +170 and -170
+degrees averaged to wings level.
+
+**What the perf harness's fixed states put on the dials.** Its states are
+`INITIAL_VISUAL_STATE` with the shot's airspeed and altitude and an orientation, so
+vertical speed is 0 (the needle at 9 o'clock), the engine is 2,250 RPM (+85.9
+degrees), pitch and bank read 0 whatever the orientation, and the rest is the shot's
+own: eleven of the fourteen cockpit shots fly at 0 m/s (airspeed needle on its
+-150 stop), `canopy-1200ft` at 62 m/s = 120.5 kt (+76.0), `high-10000ft-down` at
+92 m/s = 178.8 kt (clamped at +150). The altimeter reads the shot's altitude above
+sea level: `high-10000ft-down` 3,048 m = 10,000 ft (12 o'clock), `water-3m` 4 m =
+13 ft (+4.7), `water-400ft-glitter` 120 m = 394 ft (+141.7); the shots placed by
+height above the terrain read the terrain's height plus that, which depends on the
+world. All deterministic, so the fourteen cockpit shots differ from before in their
+foreground and nothing else.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -131,9 +186,6 @@ baseline comparison of those shots sees a foreground change and no framing
 change.
 
 **Not built:** the 747's cockpit and the F-16's (the airliner's eye keeps
-`right` 0 until its flight deck is rebuilt), and the moving instruments. Step I
-will drive the needles and the attitude ball from the same per-frame state the
-2D HUD reads: the Cessna's needles need re-baking about their hubs first (see
-above), and the Global's attitude ball is already built as separate pieces under
-one pivot node so that step only has to rotate and slide it. Baselines are not
-promoted here; the single end-of-wave promotion absorbs the change.
+`right` 0 until its flight deck is rebuilt). The Cessna's attitude dial has no
+mapping and stays static. Baselines are not promoted here; the single end-of-wave
+promotion absorbs the change.

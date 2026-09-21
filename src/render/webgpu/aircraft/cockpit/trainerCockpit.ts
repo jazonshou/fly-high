@@ -1,11 +1,18 @@
-import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
+import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
-import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import { basisQuaternion, glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import {
+  airspeedNeedleDegrees,
+  altimeterNeedleDegrees,
+  engineNeedleDegrees,
+  verticalSpeedNeedleDegrees,
+} from "./instrumentMappings";
 
 /**
  * What a pilot in a Cessna 150's LEFT seat sees, built to angles.
@@ -98,23 +105,39 @@ export const TRAINER_DIAL_ROWS = Object.freeze([
 ]);
 
 /**
- * A needle: a bar 3 mm across and 32 mm long through the dial's centre, with a
- * round hub of 6 mm radius on it. The hub is merged into the needle's own mesh so
- * the mesh count does not grow, and it is a little thicker than the bar so it
- * stands proud of it.
+ * A needle: a bar 3 mm across with a POINTER 28 mm long on one side of the dial's
+ * centre and a 6 mm tail on the other, and a round hub of 6 mm radius at the
+ * centre. The hub is merged into the needle's own mesh so the mesh count does not
+ * grow, and it is a little thicker than the bar so it stands proud of it. It is
+ * asymmetric because a needle turned through 300 degrees has to say which end is
+ * the tip; the bar it replaces was symmetric about the hub.
  */
 export const TRAINER_NEEDLE = Object.freeze({
   width: 0.003,
-  length: 0.032,
+  pointerLength: 0.028,
+  tailLength: 0.006,
   thickness: 0.006,
   hubRadius: 0.006,
   hubThickness: 0.008,
 });
 
-/** Static needle tilt, radians, by dial: what `addInstrumentPanel` gave them, `(index - 2) * 0.38` in its order. */
-const NEEDLE_TILT: Readonly<Record<string, number>> = Object.freeze({
-  airspeed: -0.76, attitude: -0.38, altimeter: 0, engine: 0.38, "vertical-speed": 0.76,
-});
+/**
+ * The airspeed dial's full-scale reading, knots: -150 degrees at 0 to +150 here,
+ * clamped. A property of THIS dial (the catalogue has no airspeed maximum for any
+ * airframe), so it lives beside the layout it belongs to.
+ */
+export const TRAINER_AIRSPEED_FULL_SCALE_KNOTS = 160;
+
+/** Where a needle's origin stands along the dial's normal: the gauge face's own centre, 5 mm off the panel. */
+const NEEDLE_ORIGIN_OFFSET = 0.005;
+
+/**
+ * How far in front of its origin the needle's geometry stands, along the dial's
+ * normal: the needle is 9.5 mm off the panel, in front of the face (whose front
+ * is at 9 mm). The ORIGIN stays on the dial's axis at the gauge's centre, so the
+ * needle turns about the axis; only the geometry stands proud of it.
+ */
+const NEEDLE_STAND_OFF = 0.0045;
 
 /**
  * The left windscreen post's AXIS lies in the vertical plane through the eye at
@@ -236,6 +259,18 @@ export function trainerPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vect
   return { bottom: new Vector3(x, bottom.y, -z), top: new Vector3(x, top.y, -z) };
 }
 
+/** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles. */
+export interface TrainerCockpit {
+  /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
+  readonly parts: readonly AbstractMesh[];
+  /**
+   * Turn each driven needle to what `state` reads. The visual calls this from its
+   * `update` ONLY while cockpit view is on: outside it the parts are invisible and
+   * five rotations a frame would be spent on nothing.
+   */
+  update(state: FlightVisualState): void;
+}
+
 /**
  * Build the cockpit. Returns every mesh it made, unconfigured: the caller marks
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
@@ -249,8 +284,9 @@ export function buildTrainerCockpit(
   build: AircraftBuildContext,
   root: TransformNode,
   materials: TrainerCockpitMaterials,
-): readonly AbstractMesh[] {
+): TrainerCockpit {
   const parts: AbstractMesh[] = [];
+  const needles = new Map<string, { mesh: AbstractMesh; frame: Quaternion }>();
 
   // THE COWL STAND-IN. The real cowl is part of the fuselage loft, which the
   // cockpit camera cannot show. This lofts the SAME sections from the one
@@ -299,25 +335,46 @@ export function buildTrainerCockpit(
     face.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
     face.position.copyFrom(at.add(normal.scale(0.005)));
     parts.push(face);
-    // The needle stands 9.5 mm off the panel, in front of the face, static as
-    // it always was. Its long axis is local Z; the tilt is about local X (the
-    // dial's normal) and the lean of the panel is applied after it.
-    const pivot = at.add(normal.scale(0.0095));
+    // THE NEEDLE, one mesh whose ORIGIN is the gauge's centre and whose local X
+    // is the dial's normal, so turning the mesh about its own X turns the needle
+    // about the dial's axis. `mergeStatic` bakes the parts' world matrices into
+    // vertices in BODY coordinates and leaves the mesh's origin at the aircraft's
+    // (measured: position (0, 0, 0), a needle 2 m away from it), so the merged
+    // mesh is re-framed: its vertices are carried into the dial's own frame and
+    // the mesh is given that frame as its transform. Nothing on screen moves.
+    //
+    // The frame is right-handed: X = the dial's normal (toward the pilot), Y = up
+    // the panel's face, Z = X x Y, which is PORT. The pointer rests along +Y,
+    // 12 o'clock. A positive rotation about X, an axis pointing at the pilot, is
+    // ANTI-clockwise to him; `turnNeedle` owns that inversion.
+    const origin = at.add(normal.scale(NEEDLE_ORIGIN_OFFSET));
+    const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
+    const frameQ = basisQuaternion(normal, up, Vector3.Cross(normal, up));
+    const frameNode = new TransformNode(`trainer-${name}-needle-frame`, build.scene);
+    frameNode.parent = root;
+    frameNode.position.copyFrom(origin);
+    frameNode.rotationQuaternion = frameQ.clone();
+    frameNode.computeWorldMatrix(true);
     const bar = build.box(
-      `trainer-${name}-needle-bar`, TRAINER_NEEDLE.thickness, TRAINER_NEEDLE.width, TRAINER_NEEDLE.length,
-      materials.instrumentMarking, root,
+      `trainer-${name}-needle-bar`, TRAINER_NEEDLE.thickness,
+      TRAINER_NEEDLE.pointerLength + TRAINER_NEEDLE.tailLength, TRAINER_NEEDLE.width,
+      materials.instrumentMarking, frameNode,
     );
-    bar.position.copyFrom(pivot);
-    bar.rotationQuaternion = Quaternion.RotationAxis(new Vector3(0, 0, 1), TRAINER_PANEL.lean)
-      .multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), NEEDLE_TILT[name] ?? 0));
-    // The hub is a disc on the same axis as the face, set the same way.
+    bar.position.set(NEEDLE_STAND_OFF, (TRAINER_NEEDLE.pointerLength - TRAINER_NEEDLE.tailLength) / 2, 0);
+    // The hub is a disc about the dial's axis (local X); a cylinder's own axis is Y.
     const hub = build.cylinder(
       `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2,
-      TRAINER_NEEDLE.hubRadius * 2, 16, materials.instrumentMarking, root,
+      TRAINER_NEEDLE.hubRadius * 2, 16, materials.instrumentMarking, frameNode,
     );
-    hub.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
-    hub.position.copyFrom(pivot);
-    parts.push(build.mergeStatic(`trainer-${name}-needle`, [bar, hub], root));
+    hub.rotation.z = Math.PI / 2;
+    hub.position.set(NEEDLE_STAND_OFF, 0, 0);
+    const needle = build.mergeStatic(`trainer-${name}-needle`, [bar, hub], root, { staticNodes: [frameNode] });
+    needle.bakeTransformIntoVertices(Matrix.Compose(Vector3.One(), frameQ, origin).invert());
+    needle.position.copyFrom(origin);
+    needle.rotationQuaternion = frameQ.clone();
+    needle.refreshBoundingInfo();
+    parts.push(needle);
+    needles.set(name, { mesh: needle, frame: frameQ });
   }
 
   // THE WINDSCREEN POSTS, sill to roof, each in one vertical plane through the
@@ -360,5 +417,30 @@ export function buildTrainerCockpit(
     );
     parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));
   }
-  return parts;
+
+  // THE NEEDLES' STEP. Four of the five dials are driven; the fifth, "attitude",
+  // has no mapping and its needle stays at 12 o'clock. Each needle's transform is its frame with a turn about
+  // its own X. `clockwiseDegrees` is the angle as the pilot SEES it (12 o'clock
+  // 0, 3 o'clock +90); the dial's normal points TOWARD him, so a clockwise turn
+  // is a NEGATIVE rotation about it. Held to the screen by
+  // `tests/render.cockpit-instruments.test.ts`, which projects the needle through
+  // the cockpit camera: a flipped sign here passes every test of the angle alone.
+  const spin = new Quaternion();
+  const dialAxis = new Vector3(1, 0, 0);
+  const turnNeedle = (name: string, clockwiseDegrees: number): void => {
+    const needle = needles.get(name);
+    if (!needle) return;
+    Quaternion.RotationAxisToRef(dialAxis, (-clockwiseDegrees * Math.PI) / 180, spin);
+    needle.frame.multiplyToRef(spin, needle.mesh.rotationQuaternion!);
+  };
+  const engineFullScale = aircraftSpec("trainer").engineReadout.maximum;
+  return {
+    parts,
+    update(state) {
+      turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
+      turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
+      turnNeedle("vertical-speed", verticalSpeedNeedleDegrees(state.verticalSpeed));
+      turnNeedle("engine", engineNeedleDegrees(state.engineRpm, engineFullScale));
+    },
+  };
 }
