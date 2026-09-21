@@ -399,15 +399,16 @@ describe("the Cessna's needles turn only while cockpit view is on", () => {
 // ---- the attitude balls -----------------------------------------------------------------------
 
 /**
- * The Global's PFD ball and the Cessna's attitude dial are ONE builder at two sizes
- * (`buildAttitudeBall`), and both are held to the same picture: the ball's horizon on
+ * The Global's PFD ball, the 747's PFD ball and the Cessna's attitude dial are ONE
+ * builder at three placements (`buildAttitudeBall`; the two PFDs are the same size),
+ * and all are held to the same picture: the ball's horizon on
  * the SCREEN parallel to the world's, its sky on the sky's side, its bar on the
  * pitch's side. The Cessna's dial normal points TOWARD the pilot and the Global's
  * pivot points away, so the sign is not taken from one on trust for the other: every
  * assertion here is about what the camera draws.
  */
 interface BallCase {
-  readonly kind: "bizjet" | "trainer";
+  readonly kind: "bizjet" | "trainer" | "airliner";
   readonly label: string;
   readonly prefix: string;
   readonly pivotName: string;
@@ -418,6 +419,7 @@ interface BallCase {
 const BALLS: readonly BallCase[] = [
   { kind: "bizjet", label: "Global", prefix: "bizjet-pfd", pivotName: "bizjet-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
   { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
+  { kind: "airliner", label: "747", prefix: "airliner-pfd", pivotName: "airliner-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
 ];
 
 describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball", (_label, ball) => {
@@ -457,7 +459,8 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
 
   beforeAll(() => {
     fixture = buildFixture(ball.kind);
-    if (ball.kind === "bizjet") {
+    if (ball.kind !== "trainer") {
+      // the Global's and the 747's PFDs face straight aft: the body's own axes
       plane = { up: new Vector3(0, 1, 0), right: new Vector3(0, 0, 1) };
     } else {
       // from the BUILT panel: the pilot looks along the dial's normal reversed, and his right is forward x up

@@ -138,7 +138,10 @@ const ENCLOSED = new RegExp([
   "-fan-spool-(fan|spinner)$",
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
-  "^airliner-(instrument-panel|[a-z-]+-gauge|[a-z-]+-needle)$",
+  // the cockpit's kit: 21 authored parts, all cockpit-only, so all outside the shadow map
+  "^airliner-(instrument-panel|overhead|hood|dash|windscreen-pillar|windscreen-post-port)$",
+  "^airliner-(screen|screen-bezel)-(port|starboard)-(pfd|nd|eicas)$",
+  "^airliner-pfd-(sky|ground|pitch-bar)$",
   "-(seat|headrest)$",
   "-axle-shaft$",
   "^airliner-nose-axle$",
@@ -226,6 +229,14 @@ describe("the 747-8's draw budget", () => {
     // enclosed parts out of the shadow map removed 25 casters (-> 88, 317
     // draws); folding the root-static parts per material removed 44 meshes
     // and 24 more casters.
+    //
+    // THE COCKPIT'S SEVEN MESHES ARE OUTSIDE THESE BOUNDS, and the bounds did not
+    // move when they were added. `issuesDraw` needs `isVisible`, and a cockpit-only
+    // part is INVISIBLE outside cockpit view (`configureCockpitOnlyParts`) and never
+    // a shadow caster, so it is counted by nothing here; the test below pins that
+    // property, and what the kit costs in cockpit view. The old gauge faces and
+    // needles were two drawn meshes and are gone (89 drawn, from 91; 205 draws,
+    // from 207); the old board was folded into the seats' mesh and is gone with it.
     expect(drawn.length).toBeLessThanOrEqual(97);
     expect(casters.length).toBeLessThanOrEqual(64);
     expect(draws).toBeLessThanOrEqual(225);
@@ -235,7 +246,34 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     // Nothing dropped and nothing carried twice: `authoredParts` throws on a
     // duplicate, and this pins the total.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes);
+    //
+    // 134 -> 144, DELIBERATELY, by the cockpit: the old instrument panel, its five
+    // gauges and its five needles are gone (-11), and the cockpit-only kit adds 21
+    // authored parts: the board and the overhead, the hood and the dash, six
+    // screens, six bezels, the pillar and the seam post, and the attitude ball's
+    // sky, ground and pitch bar. The seats and headrests are the same four parts,
+    // moved forward with the pilot.
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 21);
+  });
+
+  it("keeps the cockpit's seven meshes outside every draw bound: invisible and never casting until cockpit view", () => {
+    const { visual } = build();
+    const kit = visual.cockpitOnlyParts ?? [];
+    // seven, not eight: the pillar and the seam post are on the interior material with the board and the overhead
+    // and are merged into that mesh, where they had a mesh (and a draw state) of their own on the hood's matte one
+    expect(kit).toHaveLength(7);
+    for (const part of kit) {
+      expect(issuesDraw(part), `${part.name} is counted as a draw outside cockpit view`).toBe(false);
+      expect(castsShadow(part), `${part.name} casts a shadow`).toBe(false);
+    }
+    const before = visual.meshes.filter(issuesDraw).length;
+    visual.setCockpitView(true);
+    // in cockpit view they are drawn: seven draws, no shadow passes
+    const during = visual.meshes.filter(issuesDraw);
+    expect(during.length - before).toBe(7);
+    expect(during.filter(castsShadow).length).toBe(visual.meshes.filter((mesh) => issuesDraw(mesh) && castsShadow(mesh) && !kit.includes(mesh)).length);
+    visual.setCockpitView(false);
+    expect(visual.meshes.filter(issuesDraw)).toHaveLength(before);
   });
 
   it("keeps every part of the shadow's outline in the shadow map", () => {
@@ -259,10 +297,11 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const enclosed = [...authoredParts(visual)].filter(([name]) => ENCLOSED.test(name));
     // 4 fans, 4 spinners, 4 inlets, the window line, the chevrons, the centre
-    // post, the panel with 5 gauges and 5 needles, 2 seats, 2 headrests, 8
+    // post, the cockpit's 21 cockpit-only parts (there were the panel with 5 gauges
+    // and 5 needles, 11), 2 seats, 2 headrests, 8
     // main axle shafts and the nose one, 6 panes of glass and 8 lamps.
     expect(enclosed.map(([name]) => name).sort()).toHaveLength(
-      4 + 4 + 4 + 1 + 1 + 1 + 11 + 2 + 2 + 8 + 1 + 6 + 8,
+      4 + 4 + 4 + 1 + 1 + 1 + 21 + 2 + 2 + 8 + 1 + 6 + 8,
     );
     for (const [name, mesh] of enclosed) {
       expect(castsShadow(mesh), `${name} is still in the shadow map`).toBe(false);
@@ -398,25 +437,47 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // moved (4,696.6 to 4,695.3 m^2) even though two panels were added, which
     // is the seating repair showing up in the census — the boxes stood clear
     // of the wing and counted their whole undersides, the panels lie in it.
+    //
+    // RE-MEASURED AGAIN by the cockpit, and read rather than accepted. 10,711 vertices to 11,163 is +452:
+    // the old panel board (24), its five gauge faces (510) and its five needles (120) are gone, 654; the
+    // kit adds 1,106 (board 24, overhead 60, hood 24, dash 36, six screens 144, six bezels 144, the ball's
+    // three pieces 600, pillar 36, post 38), and the seats' 48 vertices only moved. The overhead, the dash,
+    // the pillar and the ball's two halves are `solidPlate`s: three vertices of their own to a triangle
+    // (20, 12, 12 and 2 x 96 triangles), which is why they weigh 60, 36, 36 and 2 x 288 vertices where a
+    // shared-vertex extrusion has 12, 8, 8 and 2 x 50. They were built inside out at first, and a ray cast
+    // could not say so (tests/render.cockpit-drawn-faces.test.ts asks what the GPU draws). The extents did
+    // not move: nothing in the flight deck is at the airframe's edge. The area rose 4,652 -> 4,669 m^2 (the
+    // overhead's two faces and the screens), and the signed volume by -0.20 m^3, which is the kit's closed
+    // solids counted the right way round: measured, -0.13 of it is the plates being wound outward.
+    //
+    // Then the seam post went from radius 0.03 to 0.025 (it read chunky in the first live
+    // frame): the counts did not move, the sums did, by what 5 mm of radius over 0.7 m of
+    // post is: the area by -0.025 m^2, the position sum by 0.02.
+    //
+    // Then the post's MESH was run 0.08 m past its design top, into the overhead (AIRLINER_POST.buryMetres), and
+    // the pillar and the post went onto the interior material and into its mesh. The counts did not move (11,163
+    // and 51,624, the same triangles) and nor did the extents. What moved is the post's top ring and cap, 19
+    // vertices, 0.08 m along the post's axis (-0.47, 0.66, 0.59): the position sum by (-0.72, +1.00, +0.89), the
+    // area by +0.0128 m^2 (a rod of radius 0.025 gaining 0.08 m of side is 0.013), the signed volume by -0.0002.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_711);
-    expect(census.indices).toBe(51_936);
+    expect(census.vertices).toBe(11_163);
+    expect(census.indices).toBe(51_624);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(20332.3094, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26027.8229, 1);
-    expect(census.positionSum.z).toBeCloseTo(-22.0320, 1);
-    expect(census.positionSquares).toBeCloseTo(6917542.48, 0);
-    expect(census.normalSum.x).toBeCloseTo(-349.6056, 2);
-    expect(census.normalSum.y).toBeCloseTo(130.7712, 2);
-    expect(census.normalSum.z).toBeCloseTo(-0.0280, 2);
-    expect(census.normalMoment).toBeCloseTo(10623.9549, 1);
-    expect(census.signedVolume).toBeCloseTo(-3213.4607, 2);
-    expect(census.area).toBeCloseTo(4652.2785, 2);
+    expect(census.positionSum.x).toBeCloseTo(34820.1448, 1);
+    expect(census.positionSum.y).toBeCloseTo(-24763.0524, 1);
+    expect(census.positionSum.z).toBeCloseTo(-465.8063, 1);
+    expect(census.positionSquares).toBeCloseTo(7384563.46, 0);
+    expect(census.normalSum.x).toBeCloseTo(-334.9543, 2);
+    expect(census.normalSum.y).toBeCloseTo(125.0464, 2);
+    expect(census.normalSum.z).toBeCloseTo(0.3310, 2);
+    expect(census.normalMoment).toBeCloseTo(11150.7291, 1);
+    expect(census.signedVolume).toBeCloseTo(-3213.6603, 2);
+    expect(census.area).toBeCloseTo(4669.2133, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -448,8 +509,11 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // a gear door, the undercarriage. There were 74 before the fold (21
     // control surfaces, 8 fan parts, 6 door leaves, 39 gear parts) and each
     // must still be its own mesh under its own name.
+    // 71, from 68: the attitude ball's three pieces hang from the PIVOT the cockpit's
+    // update turns, exactly as a hinged surface hangs from its hinge, and none of
+    // them is folded.
     const hung = visual.meshes.filter((mesh) => mesh.parent !== visual.root);
-    expect(hung).toHaveLength(68);
+    expect(hung).toHaveLength(71);
     for (const mesh of hung) {
       expect(mesh.metadata?.mergedFrom, `${mesh.name} moves and was folded`).toBeUndefined();
     }
@@ -499,6 +563,16 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
       // `airliner-upper-deck` was here until the hump became part of the
       // fuselage loft; the skin it used to hide is hidden by the fuselage now.
       "airliner-windscreen-center-post",
+      // AND THE FLIGHT DECK GLAZING, deliberately, by the cockpit: the glass is a
+      // refractive PBR, which draws as an opaque slab from inside, so from the
+      // pilot's seat it was two dark trapezoids across the windscreen. All six
+      // panes are carried by the one merged mesh.
+      "starboard-airliner-flight-deck-window-one",
+      "starboard-airliner-flight-deck-window-two",
+      "starboard-airliner-flight-deck-window-three",
+      "port-airliner-flight-deck-window-one",
+      "port-airliner-flight-deck-window-two",
+      "port-airliner-flight-deck-window-three",
     ].map((name) => {
       const carrier = parts.get(name);
       if (!carrier) throw new Error(`${name} is carried by no mesh`);
@@ -522,9 +596,11 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
 
     visual.setCockpitView(false);
     expect(camera.layerMask).toBe(exteriorMask);
+    const kit = new Set(visual.cockpitOnlyParts ?? []);
     for (const mesh of visual.meshes) {
       expect(mesh.layerMask & camera.layerMask, `${mesh.name} after restore`).not.toBe(0);
-      expect(mesh.isVisible, mesh.name).toBe(true);
+      // every part is visible again EXCEPT the cockpit-only kit, which is invisible outside cockpit view by design
+      expect(mesh.isVisible, mesh.name).toBe(!kit.has(mesh));
     }
   });
 

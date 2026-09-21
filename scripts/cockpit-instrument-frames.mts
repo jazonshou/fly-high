@@ -4,8 +4,8 @@
  * what it claims.
  *
  * The Cessna is photographed in level cruise, a climbing right turn, a left bank
- * and a descent at idle; the Global in level flight, a 20 degree right bank and a
- * 20 degree left bank. Both wear an attitude ball. The level frames are the Scenic-assist start left to settle; the others
+ * and a descent at idle; the Global and the 747 in level flight, a 20 degree right
+ * bank and a 20 degree left bank. All three wear an attitude ball. The level frames are the Scenic-assist start left to settle; the others
  * are flown by holding the real keys (Direct controls) under a closed loop that
  * reads the HUD's own pitch and bank, releases the key when the attitude is where
  * it is wanted and takes the frame while it holds.
@@ -27,7 +27,7 @@
  *     height above the ground); it is checked to be finite, and held to
  *     `tests/render.cockpit-instruments.test.ts` for the rest.
  *
- *   npx tsx scripts/cockpit-instrument-frames.mts <outDir> <url> <expectTree> <trainer|bizjet> [scenario,...]
+ *   npx tsx scripts/cockpit-instrument-frames.mts <outDir> <url> <expectTree> <trainer|bizjet|airliner> [scenario,...]
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
@@ -37,8 +37,8 @@ import type { AircraftKind } from "@/src/sim";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
 const [outDir, url, expectTree, kindArgument, scenariosArgument] = process.argv.slice(2);
-if (!outDir || !url || !expectTree || (kindArgument !== "trainer" && kindArgument !== "bizjet")) {
-  throw new Error("usage: <outDir> <url> <expectTree> <trainer|bizjet> [scenario,...]");
+if (!outDir || !url || !expectTree || (kindArgument !== "trainer" && kindArgument !== "bizjet" && kindArgument !== "airliner")) {
+  throw new Error("usage: <outDir> <url> <expectTree> <trainer|bizjet|airliner> [scenario,...]");
 }
 const KIND: AircraftKind = kindArgument;
 const WIDTH = Number(process.env.FRAME_WIDTH ?? 1600);
@@ -69,7 +69,11 @@ const SCENARIOS: Readonly<Record<AircraftKind, readonly Scenario[]>> = {
     { name: "bank-left-20", mode: "unassisted", target: { bank: -20 }, require: { bank: { min: -28, max: -14 } } },
   ],
   jet: [],
-  airliner: [],
+  airliner: [
+    { name: "level", mode: "scenic", target: {}, require: { pitch: { min: -4, max: 5 }, bank: { min: -3, max: 3 } } },
+    { name: "bank-right-20", mode: "unassisted", target: { bank: 20 }, require: { bank: { min: 14, max: 28 } } },
+    { name: "bank-left-20", mode: "unassisted", target: { bank: -20 }, require: { bank: { min: -28, max: -14 } } },
+  ],
 };
 const WANTED = new Set((scenariosArgument ?? "").split(",").filter(Boolean));
 const RUN = SCENARIOS[KIND].filter((s) => WANTED.size === 0 || WANTED.has(s.name));
@@ -203,9 +207,11 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       const pivot = scene.transformNodes.find((n) => n.name === "trainer-attitude-pivot")!;
       const bar = scene.meshes.find((m) => m.name === "trainer-attitude-pitch-bar")!;
       ball = { pivotDegrees: ((pivot.rotation?.x ?? 0) * 180) / Math.PI, barMetres: bar.position.y };
-    } else if (kind === "bizjet") {
-      const pivot = scene.transformNodes.find((n) => n.name === "bizjet-pfd-attitude-pivot")!;
-      const bar = scene.meshes.find((m) => m.name === "bizjet-pfd-pitch-bar")!;
+    } else if (kind === "bizjet" || kind === "airliner") {
+      // the Global's and the 747's PFD balls: the same builder, named for their airframe
+      const prefix = kind === "bizjet" ? "bizjet-pfd" : "airliner-pfd";
+      const pivot = scene.transformNodes.find((n) => n.name === `${prefix}-attitude-pivot`)!;
+      const bar = scene.meshes.find((m) => m.name === `${prefix}-pitch-bar`)!;
       ball = { pivotDegrees: ((pivot.rotation?.x ?? 0) * 180) / Math.PI, barMetres: bar.position.y };
     }
     const cockpitOnly = scene.meshes.filter((m) => m.metadata?.cockpitOnly === true);

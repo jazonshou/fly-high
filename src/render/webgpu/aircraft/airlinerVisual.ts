@@ -16,6 +16,7 @@ import {
 import {
   applyCommonPose,
   configureCockpitLayers,
+  configureCockpitOnlyParts,
   configureRoot,
   createGlowApplier,
   createLampApplier,
@@ -23,7 +24,6 @@ import {
   yawHingeAlong,
   node,
   setCockpitVisibility,
-  addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
 import {
@@ -34,6 +34,7 @@ import {
   type SurfacePoint,
 } from "./builders";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { AIRLINER_SEAT, airlinerSeatPlacement, buildAirlinerCockpit } from "./cockpit/airlinerCockpit";
 import type { AircraftVisual } from "./types";
 
 /**
@@ -1668,49 +1669,53 @@ export function createAirliner(scene: Scene): AircraftVisual {
     root,
   ));
 
+  // The seats stand around the pilot's eye (`catalogue.cockpitEye`, forward 29.9):
+  // seat centre 0.05 m aft of it, its highest corner 0.15 m below it, the headrest
+  // where it always was relative to the seat. They stood at 29.0 with the eye at
+  // 28.8, 2 m behind the glass, which is why no eye could see more than +5 / -7.
   const flightDeckFurniture: AbstractMesh[] = [];
+  const seating = airlinerSeatPlacement();
   for (const side of [1, -1] as const) {
     const seat = build.box(
       side > 0 ? "airliner-captain-seat" : "airliner-first-officer-seat",
-      0.62,
-      0.8,
-      0.58,
+      AIRLINER_SEAT.length,
+      AIRLINER_SEAT.height,
+      AIRLINER_SEAT.width,
       interior,
       root,
     );
-    seat.position.set(29, 2.38, side * 0.72);
-    seat.rotation.z = -0.07;
+    seat.position.set(seating.seatX, seating.seatY, side * AIRLINER_SEAT.z);
+    seat.rotation.z = AIRLINER_SEAT.tilt;
     seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
     const headrest = build.box(
       side > 0 ? "airliner-captain-headrest" : "airliner-first-officer-headrest",
-      0.24,
-      0.4,
-      0.46,
+      AIRLINER_SEAT.headrestLength,
+      AIRLINER_SEAT.headrestHeight,
+      AIRLINER_SEAT.headrestWidth,
       interior,
       root,
     );
-    headrest.position.set(28.58, 2.86, side * 0.72);
+    headrest.position.set(seating.headrestX, seating.headrestY, side * AIRLINER_SEAT.z);
     headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
     flightDeckFurniture.push(seat, headrest);
   }
-  // Panel centred at y = 2.63 and 0.54 m tall, so its top edge is 2.90 — see
-  // the catalogue note on where that puts the eye point.
-  //
-  // Sealed inside the nose loft, as the seats are, so none of it casts. The
-  // shared builder already says so for the gauges and needles and leaves the
-  // panel board itself a caster; on this airframe the board is under a roof.
-  const instrumentPanel = addInstrumentPanel(
-    build,
-    "airliner",
-    root,
-    29.95,
-    2.63,
-    2.4,
+  // THE OLD PANEL, ITS FIVE GAUGES AND ITS FIVE NEEDLES ARE GONE. A board laid out
+  // about the centreline, 1.15 m in front of a left-seat eye, with dials mostly
+  // below the frame, is replaced by the cockpit-only kit in
+  // `cockpit/airlinerCockpit.ts`: a panel and hood at -10 degrees, a dash, six
+  // screens laid out about the seats with an attitude ball on the pilot's PFD, an
+  // overhead, a pillar and a post. `configureCockpitOnlyParts` makes them invisible
+  // until cockpit view is entered and never a shadow caster.
+  const cockpit = buildAirlinerCockpit(build, root, {
     interior,
     instrumentFace,
     instrumentMarking,
-  );
-  for (const part of instrumentPanel) withoutShadow(part);
+  });
+  const cockpitOnlyParts = cockpit.parts;
+  configureCockpitOnlyParts(cockpitOnlyParts);
+  // The attitude ball turns only while cockpit view is on: outside it every part
+  // of it is invisible, and the visual already gets the whole state every frame.
+  let cockpitViewOn = false;
 
   // ------------------------------------------------------------- ENGINES ---
   const fanSpools: TransformNode[] = [];
@@ -2133,23 +2138,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   }
   build.mergeStatic("airliner-engine-cores", engineCores, root);
   build.mergeStatic("airliner-engine-inlets", engineInlets, root);
-  // The flight deck, one mesh per material: furniture and the panel board,
-  // the five gauge faces, the five needles.
-  build.mergeStatic(
-    "airliner-flight-deck-interior",
-    [...flightDeckFurniture, ...instrumentPanel.filter((part) => part.material === interior)],
-    root,
-  );
-  build.mergeStatic(
-    "airliner-instrument-faces",
-    instrumentPanel.filter((part) => part.material === instrumentFace),
-    root,
-  );
-  build.mergeStatic(
-    "airliner-instrument-needles",
-    instrumentPanel.filter((part) => part.material === instrumentMarking),
-    root,
-  );
+  // The flight deck's furniture, one mesh: the two seats and the two headrests. (The
+  // panel, its gauges and its needles are gone: see the cockpit kit above.)
+  build.mergeStatic("airliner-flight-deck-interior", flightDeckFurniture, root);
   // The glass keeps its own material, so it keeps the alpha path, the
   // disabled depth pre-pass and the airframe-transparency rendering group
   // that `finishMesh` derives from it. What it gives up is Babylon sorting
@@ -2158,7 +2149,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // are one glass, blended without a depth write, and two layers of the same
   // tint composite to the same colour in either order — but that is an
   // argument, not a frame, and it is the one thing here a GPU should confirm.
-  build.mergeStatic("airliner-flight-deck-glazing", flightDeckGlazing, root);
+  const flightDeckGlass = build.mergeStatic("airliner-flight-deck-glazing", flightDeckGlazing, root);
 
   const rig: AirlinerRig = {
     root,
@@ -2166,11 +2157,17 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // has four. The first spool is the one it names; all four are driven from
     // the same simulation-time phase below, so they cannot be seen out of step.
     propeller: fanSpools[0]!,
-    // Only opaque skin that would block the pilot's view. The flight deck glass
-    // stays on ordinary world layers — a windscreen the pilot cannot see
-    // through is worse than no windscreen — and the upper deck is on the list
-    // because on THIS aeroplane the flight deck's own roof is part of it.
-    cockpitParts: [fuselageShell, windscreenFrame],
+    // What the cockpit camera must not draw: the opaque skin that would block the
+    // pilot's view (the fuselage and radome shell, and the centre post), and the
+    // flight deck GLAZING. The glass is a refractive PBR, and a refractive
+    // material draws as an opaque slab from INSIDE: from the pilot's seat it was
+    // two dark trapezoids across the windscreen. What frames the view instead is
+    // the cockpit-only kit (`cockpit/airlinerCockpit.ts`). No loft end cap faces
+    // the pilot (the radome's rear cap, 28 m2, is at x 25.5, 4 m behind the eye,
+    // and the fuselage's front cap at x 30.6 is wound outward), which
+    // `tests/render.cockpit-airliner.test.ts` holds, so none is listed.
+    cockpitParts: [fuselageShell, windscreenFrame, flightDeckGlass],
+    cockpitOnlyParts,
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],
     inboardAilerons: [starboardInboardAileron, portInboardAileron],
@@ -2195,6 +2192,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     root,
     propeller: rig.propeller,
     cockpitParts: rig.cockpitParts,
+    cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
@@ -2205,6 +2203,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
+      if (cockpitViewOn) cockpit.update(state);
       // The inboard ailerons follow the outboard pair exactly. The real
       // aeroplane locks them out above about 200 kt; the sim has no gain
       // schedule to read that from, and an inboard aileron frozen at neutral
@@ -2240,6 +2239,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      cockpitViewOn = enabled;
       setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {

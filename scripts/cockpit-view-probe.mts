@@ -31,7 +31,12 @@
  *  - BACK-FACE CULLING per material (Babylon's pick ignores it, so this passes
  *    a triangle predicate whose winding sign is CALIBRATED against a closed box
  *    from the aircraft itself and reported);
- *  - TRANSLUCENT glass, which is looked through rather than hit;
+ *  - TRANSLUCENT glass, which is looked through rather than hit, EXCEPT glass on a
+ *    REFRACTIVE material (`subSurface.isRefractionEnabled`), which is a WALL: a
+ *    refractive PBR draws as an opaque slab from inside, and every probe eye is
+ *    inside the aircraft. The 747's flight-deck glazing is one, and printed as
+ *    "looked through" it hid two huge dark slabs from the map that the shipped
+ *    frame showed. Such a hit is an ordinary opaque hit, and the legend says so;
  *  - the NEAR PLANE (0.08 m along the view axis), which clips whatever is
  *    closer — a clipped hit is reported, not silently dropped.
  *
@@ -155,8 +160,8 @@ const NOTES: Record<AircraftKind, KindNotes> = {
     seat: /^airliner-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.72",
     // The six panes are ONE mesh since the merge; its box's bottom is the lowest pane's.
     sill: /^airliner-flight-deck-glazing$|flight-deck-window-one$/, sillEdge: "bottom",
-    // The panel board is merged into the flight-deck interior (seats, headrests, board).
-    panel: /^airliner-(instrument-panel|flight-deck-interior)$/, glare: null,
+    // The panel board and the overhead are one cockpit-only mesh, the hood and the dash another.
+    panel: /^airliner-cockpit-interior$/, glare: /^airliner-glareshield$/,
     control: /^port-navigation-light$/,
   },
 };
@@ -316,9 +321,11 @@ function run(kind: AircraftKind): void {
   const cameraMask = SKIN ? camera.layerMask | AIRCRAFT_EXTERIOR_LAYER_MASK : camera.layerMask;
   const sees = (mesh: AbstractMesh): boolean => mesh.isEnabled() && mesh.isVisible
     && mesh.visibility > 0 && (mesh.layerMask & cameraMask) !== 0 && mesh.getTotalVertices() > 0;
+  /** A refractive PBR draws as an OPAQUE slab from inside; the probe's eye is always inside. */
+  const refractive = (mesh: AbstractMesh): boolean => materialOf(mesh)?.subSurface?.isRefractionEnabled === true;
   const translucent = (mesh: AbstractMesh): boolean => {
     const material = materialOf(mesh);
-    return material !== null && material.needAlphaBlendingForMesh(mesh);
+    return material !== null && material.needAlphaBlendingForMesh(mesh) && !refractive(mesh);
   };
   const culls = (mesh: AbstractMesh): boolean => CULL && (materialOf(mesh)?.backFaceCulling ?? false);
   const visibleMeshes = new Set(scene.meshes.filter(sees));
@@ -494,9 +501,11 @@ function run(kind: AircraftKind): void {
   console.log(draw(wide));
   console.log(`\nMAP B — the real frame, ${FRAME_COLUMNS} x ${FRAME_ROWS}, azimuth +-${fixed(HALF_AZIMUTH, 1)}, elevation +-${fixed(HALF_ELEVATION, 1)} (character cells are ~2x taller than wide)`);
   console.log(draw(frame));
-  console.log(`\nlegend (cells in map A / map B):   '.' sky or nothing   '~' looked through glass, sky beyond`);
+  console.log(`\nlegend (cells in map A / map B):   '.' sky or nothing   '~' looked through glass, sky beyond   (refractive glass is a WALL from inside: it is a letter below, marked OPAQUE-FROM-INSIDE)`);
   for (const [name, count] of ordered) {
-    console.log(`  ${glyph.get(name)}  ${pad(name, 44)} ${String(count.wide).padStart(5)} / ${String(count.frame).padStart(5)}`);
+    const mesh = scene.meshes.find((m) => m.name === name);
+    const note = mesh && refractive(mesh) ? "   OPAQUE-FROM-INSIDE (refractive glass)" : "";
+    console.log(`  ${glyph.get(name)}  ${pad(name, 44)} ${String(count.wide).padStart(5)} / ${String(count.frame).padStart(5)}${note}`);
   }
 
   // ---- EYE CONTROL ----------------------------------------------------------

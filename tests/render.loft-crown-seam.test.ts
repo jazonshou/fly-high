@@ -262,14 +262,34 @@ describe("a loft's crown seam", () => {
       // its place. Checked mesh by mesh against 8a45c97, positions AND indices: the trainer's other 67
       // meshes, the jet's 78, the Global's 99 and the 747's 91 are bit-identical, which also holds the
       // Global's ball to be unchanged by its builder moving into cockpitPrimitives.
-trainer: "11e1459d",
+      // RE-PINNED YET AGAIN for the trainer and the Global by the drawn-faces fix (jazonshou/cockpit-747):
+      // the attitude ball's two halves are `solidPlate`s now, three vertices of their own to a triangle
+      // (50 vertices become 288 = 3 x 96 triangles) with flat normals and a winding decided by geometry,
+      // so the GPU draws the face the pilot faces and the 2 mm rim. Checked mesh by mesh against e87d9da
+      // (unique positions, triangle count, total area, world matrix, material, then positions AND
+      // indices): only the halves moved, and each has the same 50 unique positions, the same 96
+      // triangles and the same area to 1e-17. The trainer's other 68 of 70 meshes, the Global's other
+      // 97 of 99 and all 78 of the jet's are bit-identical, which is why the jet's pin below stays.
+      trainer: "c6fcfb25",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
       // re-pins above; the 747 is untouched by both.
       jet: "b0eb20d5",
-      bizjet: "048fb545",
-      airliner: "66da006d",
+      // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
+      bizjet: "a8ce6a25",
+      // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
+      // faces and needle meshes are gone, the seats and headrests moved forward with the
+      // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh
+      // against e87d9da, positions AND indices: the 747's other 88 of 91 meshes are
+      // bit-identical, and so is the jet's whole 78 (the trainer's and the Global's differ by their
+      // ball's halves alone, see their pins). The kit's plates (overhead, dash, pillar) and the ball's
+      // halves are `solidPlate`s, built so the GPU draws them (tests/render.cockpit-drawn-faces.test.ts):
+      // the meshes that hold one keep the unique positions, triangle count and area of the plain
+      // extrusion, and only the plates' vertices went from shared to three to a triangle. The pillar and
+      // the seam post are merged into the interior mesh (there is no windscreen-frame mesh), and the post's
+      // mesh runs 0.08 m past its design top into the overhead (AIRLINER_POST.buryMetres).
+      airliner: "d6f31000",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

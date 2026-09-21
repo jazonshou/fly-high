@@ -1,6 +1,8 @@
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftBuildContext } from "../builders";
@@ -27,6 +29,113 @@ export function glareshieldMaterial(build: AircraftBuildContext, name: string): 
   material.environmentIntensity = 0;
   material.metallicF0Factor = 0;
   return material;
+}
+
+/**
+ * An outline wound CLOCKWISE in its own x/y, whichever way it was handed in, for
+ * `AircraftBuildContext.verticalProfile`.
+ *
+ * THE TRAP. `verticalProfile` extrudes an outline and does NOT reverse its triangles,
+ * and Babylon's right-handed normal is the inverse of the mathematical one, so an outline
+ * wound COUNTER-clockwise is built INSIDE OUT: the GPU culls the faces the pilot faces and
+ * draws the far faces from inside, lit by normals pointing into the solid (the same trap
+ * `trainerVisual.ts`'s fin and `bizjetVisual.ts`'s pylons fell into). A ray cast cannot see
+ * it: it hits a triangle whichever way it faces. `tests/render.cockpit-drawn-faces.test.ts`
+ * asks the question the GPU asks, and this is what every outline here goes through.
+ */
+export function clockwise<T extends { readonly x: number; readonly y: number }>(outline: readonly T[]): T[] {
+  let twiceArea = 0;
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i]!;
+    const b = outline[(i + 1) % outline.length]!;
+    twiceArea += a.x * b.y - b.x * a.y;
+  }
+  // a positive signed area is counter-clockwise
+  return twiceArea > 0 ? [...outline].reverse() : [...outline];
+}
+
+/**
+ * A thin plate the GPU draws from every side it should be drawn from, and shades flat.
+ *
+ * `clockwise` fixes a plate's CAPS, and `AircraftBuildContext.verticalProfile` still winds its
+ * thin EDGE WALLS the opposite way to its caps (a shared-builder defect on the plane engineer's
+ * register, not fixed here): with the caps right, the walls a pilot standing beside a plate can
+ * see are culled, and the plate reads as a shell with one side missing. So this makes the
+ * winding right BY GEOMETRY and does not rely on the builder's index order, so the winding step
+ * swaps nothing on a triangle the builder has wound correctly.
+ *
+ * THE RULE, measured on a `build.box` face that visibly renders: a drawn face's cross product
+ * `(b - a) x (c - a)` points INTO the solid. For each triangle, if it points out (its dot with
+ * the vector to the solid's centroid is negative), swap two vertices. The centroid of the
+ * vertices is inside a CONVEX solid, which is all `verticalProfile` can extrude anyway (its
+ * fan triangulation needs a convex outline), and nothing here is a concave plate.
+ *
+ * FLAT NORMALS, while it is here: each triangle gets three vertices of its own, with the
+ * normal pointing OUT of the solid. The builder shares each outline vertex between a cap and
+ * two walls, so its computed normals average faces at right angles (and, before the winding
+ * was right, faces wound opposite ways); on a plate that fills a fifth of the frame that shades
+ * like a pillow. A box is flat-shaded, and a plate should be too. Three vertices a triangle
+ * is only worth it because a plate has a dozen of them.
+ *
+ * Use it for every plate AND the attitude ball's halves. The halves once went through `clockwise`
+ * alone on the argument that their 2 mm rim is never the nearest face; a grid of rays offset by
+ * a fraction of a degree found it was, for one to three rays of the two dozen that touch a half,
+ * on all three aircraft. The rim wall is the builder's mis-wound kind, and this is what fixes it.
+ */
+export function solidPlate(
+  build: AircraftBuildContext,
+  name: string,
+  outline: readonly { readonly x: number; readonly y: number }[],
+  thickness: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const mesh = build.verticalProfile(name, clockwise(outline), thickness, material, parent);
+  const kinds = [...mesh.getVerticesDataKinds()].sort();
+  if (kinds.join(",") !== [VertexBuffer.NormalKind, VertexBuffer.PositionKind, VertexBuffer.UVKind].sort().join(",")) {
+    throw new Error(`solidPlate "${name}": expected position, normal and uv, found ${kinds.join(", ")}`);
+  }
+  const source = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const uvSource = mesh.getVerticesData(VertexBuffer.UVKind)!;
+  const indices = mesh.getIndices()!;
+  const point = (index: number) => new Vector3(source[index * 3]!, source[index * 3 + 1]!, source[index * 3 + 2]!);
+  // in the mesh's LOCAL space, before any orient() or rotation; a proper rotation changes none of it
+  const centroid = new Vector3();
+  for (let i = 0; i < source.length / 3; i += 1) centroid.addInPlace(point(i));
+  centroid.scaleInPlace(3 / source.length);
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const out: number[] = [];
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    const a = point(corners[0]!);
+    const b = point(corners[1]!);
+    const c = point(corners[2]!);
+    let cross = Vector3.Cross(b.subtract(a), c.subtract(a));
+    const centre = a.add(b).add(c).scale(1 / 3);
+    if (Vector3.Dot(cross, centroid.subtract(centre)) < 0) {
+      corners.push(corners.splice(1, 1)[0]!); // swap the last two: [a, b, c] -> [a, c, b]
+      cross = cross.scale(-1);
+    }
+    // after the swap the cross product points INTO the solid, and a shading normal points OUT of it
+    const normal = cross.normalize().scale(-1);
+    for (const corner of corners) {
+      positions.push(source[corner * 3]!, source[corner * 3 + 1]!, source[corner * 3 + 2]!);
+      normals.push(normal.x, normal.y, normal.z);
+      uvs.push(uvSource[corner * 2]!, uvSource[corner * 2 + 1]!);
+      out.push(out.length);
+    }
+  }
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = uvs;
+  data.indices = out;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 /** The rotation that takes local X, Y, Z onto the given orthonormal, right-handed basis. */
@@ -180,7 +289,12 @@ export function buildAttitudeBall(
     [`${spec.prefix}-sky`, sky, true],
     [`${spec.prefix}-ground`, ground, false],
   ] as const) {
-    const half = build.verticalProfile(name, halfDisc(spec.radius, upper, spec.segments), spec.thickness, material, pivot);
+    // A `solidPlate`, run here in the half's LOCAL space, BEFORE the quarter-turn about y below (a proper
+    // rotation changes none of what it computes, but the order is the rule, as for `orient`). The halves
+    // were built inside out until then, and with only `clockwise` their 2 mm arc rim was still culled: on a
+    // 0.1 degree grid the rim is the nearest face for up to 4 percent of the rays that touch a half (75 of
+    // 1,949 on the 747's ground half).
+    const half = solidPlate(build, name, halfDisc(spec.radius, upper, spec.segments), spec.thickness, material, pivot);
     half.rotation.y = Math.PI / 2;
     halves.push(half);
   }
