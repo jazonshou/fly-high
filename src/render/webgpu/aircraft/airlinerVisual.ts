@@ -743,28 +743,31 @@ export function createAirliner(scene: Scene): AircraftVisual {
     liveryColor: 0xf4f5f3,
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
-  // THE WING IS PLAIN WHITE, and it is its own recipe for exactly one reason.
+  // THE WING USED TO HAVE ITS OWN MATERIAL, and it no longer needs one.
   //
-  // The shared paint synthesis draws its `livery-decal` feature as a diagonal
-  // band in UV space — `fract(u - 0.37v + 0.18)` near 0.5 — and every mesh is
-  // handed its own 0..1 tile. On a loft that band winds round the fuselage as
-  // the cheatline. On the wing it became a different blue slash on each of
-  // twenty-six separately-UV'd parts: eight fixed panels, four flaps, four
-  // ailerons and ten spoilers, every one at its own angle and none meeting
-  // its neighbour. No choice of UVs lands one diagonal band correctly on all
-  // of them at once, which is the note Jason left on the Global before its
-  // wing was fixed the same way.
+  // `airliner-wing` was the body recipe with `liveryColor` set equal to
+  // `baseColor`, which turns `mix(value, livery, decal)` into the identity and
+  // kills the UV-space `livery-decal` band — the row of disconnected blue
+  // slashes, one per separately-UV'd part, that was half of Jason's "the lines
+  // on the aircraft seem all disjointed".
   //
-  // So this is the body recipe with the livery colour set EQUAL to the base
-  // colour: `mix(value, livery, decal)` becomes the identity, the band is
-  // gone, and the panel lines, rivets, seams, filler, soot and leading-edge
-  // wear are bit-for-bit the body's own because the seed is. The fuselage
-  // keeps its cheatline; the wing reads as one white surface from root to
-  // tip, which is what an airline's wing is.
-  const wing = build.paintMaterial("airliner-wing", {
-    ...bodyRecipe,
-    liveryColor: bodyRecipe.baseColor,
-  });
+  // The BODY recipe then had the same treatment applied to it, airframe-wide,
+  // when the cheatline moved into body-space vertex paint. From that moment
+  // the two recipes were identical in every field, and this one was a second
+  // material producing bit-for-bit the same paint: the same seed, so the same
+  // panel lines, rivets, seams, filler, soot and leading-edge wear.
+  //
+  // WHAT IT COST, measured rather than argued: the airframe goes from 17
+  // materials to 16 and from 10 textures to 7. `paintMaterial` does not cache
+  // by recipe — it synthesises the surface and builds albedo, normal and
+  // metallic-roughness maps on every call — so an identical recipe meant a
+  // second synthesis and a second set of three maps of the same paint.
+  //
+  // What it did NOT cost, which is worth recording because it is the first
+  // thing one would assume: nothing. Mesh count and predicted draws are
+  // unchanged at 91 and 207. `mergeStatic` folds per material, but the wing's
+  // fixed panels are folded by their own explicit call and were never going to
+  // join anything else. Everything that asked for `wing` now asks for `body`.
   const accent = build.paintMaterial("airliner-accent", {
     seed: 0x7478_0002,
     baseColor: 0x1b3a6b,
@@ -1143,7 +1146,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           chordSegments: 14,
           spanSegments: panel.spanSegments,
         },
-        wing,
+        body,
         anchor,
       ));
     }
@@ -1198,7 +1201,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         // the plan view into stripes, and the body recipe's own livery band
         // did the same thing more quietly — a blue dash across every panel,
         // each at its own angle. See the note on `wing`.
-        wing,
+        body,
         hinge,
       );
       flaps.push(hinge);
@@ -1275,7 +1278,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         }
         return patch;
       });
-      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, wing, brake);
+      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, body, brake);
       // The hinge LINE: the panels' own forward edge, end to end. Sweep from
       // the x term, dihedral and taper from the y term.
       hingeAlong(brake, new Vector3(
@@ -1323,7 +1326,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         spanSegments: 2,
       },
       // Wing paint, for the reason the flaps carry it.
-      wing,
+      body,
       hinge,
     ));
     // All four ailerons sit on the same swept hinge line as the flaps, so they
@@ -1368,7 +1371,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     8,
     // Wing paint: a canoe is wing structure, and in the body recipe each of
     // the eight wore its own blue dash under an otherwise white wing.
-    wing,
+    body,
     root,
   );
   {
@@ -2091,7 +2094,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
    * four floats a vertex and changes nothing on screen.
    */
   for (const mesh of build.meshes) {
-    if (mesh.material !== body && mesh.material !== wing) continue;
+    if (mesh.material !== body) continue;
     if (mesh.getVerticesData(VertexBuffer.ColorKind)) continue;
     const vertices = mesh.getTotalVertices();
     if (vertices === 0) continue;
