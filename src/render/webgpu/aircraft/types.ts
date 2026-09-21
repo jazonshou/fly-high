@@ -37,6 +37,11 @@ export interface AircraftVisual {
   readonly propeller: TransformNode;
   /** Opaque exterior pieces isolated onto the cockpit-excluded camera layer. */
   readonly cockpitParts: readonly AbstractMesh[];
+  /**
+   * Parts drawn ONLY while cockpit view is on (see `CommonRig.cockpitOnlyParts`).
+   * Absent on an airframe that has none.
+   */
+  readonly cockpitOnlyParts?: readonly AbstractMesh[];
   /** All meshes owned by this visual, useful for shadow-caster registration. */
   readonly meshes: readonly AbstractMesh[];
   update(state: FlightVisualState, deltaSeconds: number): void;

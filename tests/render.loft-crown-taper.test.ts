@@ -191,9 +191,16 @@ describe("the loft's crown taper", () => {
     // moved: if that was deliberate, re-pin with the reason in the commit;
     // if it was not, the crown taper has stopped being the identity.
     const pinned: Readonly<Record<string, string>> = {
-      trainer: "af07fc1d",
+      // RE-PINNED for the trainer and the Global by the cockpit work (jazonshou/cockpit-view),
+      // which replaced their cockpit meshes: the old panel, gauges and needles are gone and
+      // cockpit-only meshes (metadata.cockpitOnly) stand in their place. Nothing else moved: it was
+      // checked mesh by mesh against House-Keeping's own source (positions AND
+      // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
+      // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
+      // the old cockpit or the new one. The jet and the 747 keep their pins, unchanged.
+      trainer: "a976d713",
       jet: "78ad9b4d",
-      bizjet: "a1c921a5",
+      bizjet: "58fd2565",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

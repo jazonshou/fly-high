@@ -166,6 +166,11 @@ import {
   cameraRigLiftToRef,
   cameraTrailMeters,
   chaseRigOffsetsToRef,
+  COCKPIT_AIM_DISTANCE_METERS,
+  cockpitEyeRightMeters,
+  cockpitFieldOfViewDegrees,
+  type CockpitRigOverride,
+  cockpitRigPositionsToRef,
   orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
@@ -422,6 +427,14 @@ export interface FlightRendererOptions {
    * accepted only together with `pinnedRenderScale`.
    */
   captureGpuTiming?: boolean;
+  /**
+   * Replace the gameplay cockpit rig — its lens and its lateral eye — with the
+   * previous one. Perf capture ONLY: its cockpit-mode shots were placed for a
+   * 56 degree lens and have to stay comparable. Interactive sessions leave it
+   * unset, and `tests/render.cockpit-rig.test.ts` fails if anything under
+   * `src/` other than this file and `cameraPresentation.ts` names it.
+   */
+  cockpitRigOverride?: CockpitRigOverride;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -614,6 +627,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
   private pinnedRenderScale: number | null;
+  /** Perf capture only; null for every player. See `FlightRendererOptions`. */
+  private readonly cockpitRigOverride: CockpitRigOverride | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
@@ -717,6 +732,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
     this.pinnedRenderScale = options.pinnedRenderScale ?? null;
+    this.cockpitRigOverride = options.cockpitRigOverride ?? null;
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
@@ -2739,14 +2755,26 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         .addInPlace(this.forward.scale(200));
     } else if (this.cameraMode === "cockpit") {
       const eye = aircraftSpec(this.aircraft.kind).cockpitEye;
-      this.desiredCamera.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(eye.forward))
-        .addInPlace(this.up.scale(eye.up));
-      this.desiredCameraTarget.copyFrom(this.desiredCamera)
-        .addInPlace(this.forward.scale(400));
-      // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
-      // was the widest view in the game, which is backwards.
-      fieldOfView = 56;
+      // The eye is where the pilot's head is — in the LEFT seat where there
+      // are two — and the aim point carries the same offset, so the view stays
+      // parallel to the body axis. Both are built by one pure function so a
+      // test can hold them to it (`cockpitRigPositionsToRef`).
+      cockpitRigPositionsToRef(
+        aircraftPosition,
+        this.forward,
+        this.up,
+        eye,
+        cockpitEyeRightMeters(eye, this.cockpitRigOverride),
+        COCKPIT_AIM_DISTANCE_METERS,
+        this.desiredCamera,
+        this.desiredCameraTarget,
+      );
+      // 75 degrees horizontal, wider than chase. The lens is a property of
+      // WHAT IS BEING LOOKED THROUGH: a cockpit is close enough to its own
+      // frame, panel and sill that a 56 degree telephoto (the old value, and
+      // "narrower than chase, as a cockpit must be") could not fit any of
+      // them in view. Perf capture keeps 56 through the override.
+      fieldOfView = cockpitFieldOfViewDegrees(this.cockpitRigOverride);
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
       const orbit = aircraftSpec(this.aircraft.kind).cinematic;
