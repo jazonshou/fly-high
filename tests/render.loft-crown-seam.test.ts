@@ -237,7 +237,11 @@ describe("a loft's crown seam", () => {
     // it. They are the same four values; that is the claim, not just the pin.
     const pinned: Readonly<Record<AircraftKind, string>> = {
       trainer: "cc9d14d5",
-      jet: "35f03ce5",
+      // Re-pinned when the F-16 gained its airbrake shelves and its four
+      // petals were rebuilt to lie on them. A DELIBERATE geometry change on
+      // one airframe; the other three are untouched, which is what makes this
+      // a re-pin rather than a regression.
+      jet: "ffc9a3d5",
       bizjet: "9871642d",
       airliner: "10dd7ee9",
     };

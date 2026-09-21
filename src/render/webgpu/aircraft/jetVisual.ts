@@ -1257,29 +1257,132 @@ export function createJet(scene: Scene): AircraftVisual {
   noseDoor.position.set(3.3, -1.2, 0);
   gearDoors.push(noseDoor);
 
-  // THE AIRBRAKE: four petals around the nozzle, hinged at their forward edge,
-  // upper pair opening up and lower pair opening down. `speedBrakeDrag` 0.19 —
-  // the largest of any airframe here — is what those four panels standing out
-  // into the jet efflux are worth.
+  // ------------------------------------------------------ THE AIRBRAKE BAY --
+  //
+  // THE AFT FUSELAGE IS SLAB-SIDED HERE, and it was not. The loft carries the
+  // body round to the nozzle as an oval, so there was nothing flat for an
+  // airbrake to lie on — measured at the petals' own height the skin is only
+  // 0.410 half-width at x -5.7 while their outboard edge sat at 0.640, so all
+  // four stood 230 mm off the aeroplane with their inboard edge 290 mm buried
+  // inside it, and the lower pair intersected the stabilators.
+  //
+  // The two shelves below are the structure the real aeroplane has between the
+  // nozzle and the stabilator roots: a flat face squaring off the boat-tail,
+  // which is what the brakes fold against. Its outer face runs from z 0.62 at
+  // x -4.3, where the body is 0.645 wide and the face is still inside the
+  // skin, to z 0.50 at x -6.5, where the body is 0.500 and the two are flush.
+  // Between them it stands a few centimetres proud at the waterline and more
+  // at the top and bottom edges, which is what a slab-sided fairing on a round
+  // body looks like and is the shape the F-16 actually has back there.
+  const SHELF_FORWARD_X = -4.3;
+  const SHELF_AFT_X = -6.5;
+  const SHELF_FORWARD_Z = 0.62;
+  const SHELF_AFT_Z = 0.5;
+  const SHELF_HALF_HEIGHT = 0.36;
+
+  for (const side of [1, -1] as const) {
+    const sideName = side > 0 ? "starboard" : "port";
+    // Inboard edge buried in the body; outboard edge is the brake face.
+    const shelf = build.planform(
+      `${sideName}-jet-airbrake-shelf`,
+      [
+        { x: SHELF_FORWARD_X, z: side * 0.18 },
+        { x: SHELF_FORWARD_X, z: side * SHELF_FORWARD_Z },
+        { x: SHELF_AFT_X, z: side * SHELF_AFT_Z },
+        { x: SHELF_AFT_X, z: side * 0.18 },
+      ],
+      SHELF_HALF_HEIGHT * 2,
+      body,
+      root,
+    );
+    wingSurfaces.push(shelf);
+  }
+
+  // THE PETALS: four panels lying ON those faces, hinged at their forward edge,
+  // upper pair opening up and lower pair down. `speedBrakeDrag` 0.19 — the
+  // largest of any airframe here — is what those four standing out into the
+  // jet efflux are worth.
   //
   // The signed list is local because `CommonRig.speedBrakes` is a bare node
   // array and one pose angle has to drive two opposite senses. `update` reads
   // this rather than the rig's copy. The UPPER petal on each side keeps the
   // plain `*-speed-brake` name and the pose's own sign, which is what
   // `tests/render.webgpu-aircraft.test.ts` measures.
+  /**
+   * THE PETALS CLEAR THE STABILATOR IN Z, WHICH IS WHAT FREES THE CHORD.
+   *
+   * The first version put them at z 0.20-0.50 and the stabilator's root rib is
+   * at 0.437, so the two shared a 63 mm strip of span and the hinge had to be
+   * driven aft until the x ranges stopped overlapping — first to -5.90, then
+   * to -6.10, leaving a 0.40 m brake on an aeroplane whose brakes are twice
+   * that. Ending the panel at 0.43, inboard of the rib, removes the overlap in
+   * SPAN instead, and then the hinge is free.
+   *
+   * The 211 mm forward sweep that forced -6.10 was an artefact of the panel
+   * being a vertical plate: a point offset from the rotation axis in y swings
+   * forward by |y|*sin(theta) as it opens. These panels lie flat ON the axis,
+   * so they sweep forward by half a thickness — 16 mm at full deflection.
+   *
+   * -5.85 is then set by the VENTRAL STRAKE rather than the tailplane: the
+   * strake reaches x -5.80 at z 0.31-0.74, and at -5.60 the lower petals'
+   * forward-outboard corner was inside it, 67 samples deep. -5.85 clears the
+   * strake by 50 mm and the stabilator's worst case by 80 mm, and leaves a
+   * 0.65 m brake instead of the 0.40 the first arrangement allowed.
+   */
+  const PETAL_HINGE_X = -5.85;
+  /** 50 mm short of the nozzle, which starts where the fuselage ends at -6.55. */
+  const PETAL_AFT_X = -6.5;
+  const PETAL_INBOARD_Z = 0.2;
+  const PETAL_OUTBOARD_Z = 0.43;
+  const PETAL_THICKNESS = 0.05;
+  /**
+   * 12 mm of the panel outside the shelf face and the rest inside it.
+   *
+   * A retracted airbrake is FLUSH, and flush is what a depth buffer cannot
+   * draw: two surfaces at one depth fight, and at chase range the panels would
+   * flicker. 12 mm is under a quarter of a pixel at the orbit distance and far
+   * enough apart in z to settle it. Seating the panel ON the face instead —
+   * which is what the first version of this did — leaves the whole 50 mm
+   * standing proud, and four plates 50 mm off the skin is the defect this pass
+   * exists to remove, only smaller.
+   */
+  const PETAL_PROUD = 0.012;
   const speedBrakePanels: { node: TransformNode; sense: 1 | -1 }[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
     for (const petal of [
-      { name: `${sideName}-speed-brake`, y: 0.32, sense: 1 as const },
-      { name: `${sideName}-lower-speed-brake`, y: -0.32, sense: -1 as const },
+      { name: `${sideName}-speed-brake`, roof: 1, sense: 1 as const },
+      { name: `${sideName}-lower-speed-brake`, roof: -1, sense: -1 as const },
     ]) {
       const brake = node(petal.name, root, scene);
-      brake.position.set(-5.7, petal.y, side * 0.38);
-      const panel = build.box(`${brake.name}-surface`, 0.9, 0.05, 0.52, body, brake);
-      // Hinged at its forward edge, so the panel lies entirely aft of the node
-      // and a negative pose angle lifts the upper petal's trailing edge.
-      panel.position.x = -0.45;
+      // THE PANEL LIES ON THE SHELF'S FLAT TOP OR BOTTOM, not on its side.
+      //
+      // That distinction is the whole reason the axis gate exists. A panel
+      // hinged at its forward edge must turn about THAT EDGE, and `rotation.z`
+      // — which is what `update` drives, one angle with two senses — turns it
+      // about the node's z axis. So the forward edge has to run in Z: chord in
+      // x, span outboard in z, thickness in y, lying flat. Built as a vertical
+      // plate on the shelf's SIDE instead, the forward edge runs in Y and the
+      // panel turns about an axis 90 degrees from its own hinge — which is
+      // exactly what `render.swept-flap-hinge` reported, to the degree.
+      brake.position.set(
+        PETAL_HINGE_X,
+        petal.roof * (SHELF_HALF_HEIGHT + PETAL_PROUD - PETAL_THICKNESS * 0.5),
+        0,
+      );
+      const panel = build.planform(
+        `${brake.name}-surface`,
+        [
+          { x: 0, z: side * PETAL_INBOARD_Z },
+          { x: 0, z: side * PETAL_OUTBOARD_Z },
+          { x: PETAL_AFT_X - PETAL_HINGE_X, z: side * PETAL_OUTBOARD_Z },
+          { x: PETAL_AFT_X - PETAL_HINGE_X, z: side * PETAL_INBOARD_Z },
+        ],
+        PETAL_THICKNESS,
+        body,
+        brake,
+      );
+      void panel;
       speedBrakePanels.push({ node: brake, sense: petal.sense });
     }
   }

@@ -192,7 +192,9 @@ describe("the loft's crown taper", () => {
     // if it was not, the crown taper has stopped being the identity.
     const pinned: Readonly<Record<string, string>> = {
       trainer: "af07fc1d",
-      jet: "78ad9b4d",
+      // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
+      // crown taper is still unused on this airframe; what moved is the tail.
+      jet: "05f972ad",
       bizjet: "a1c921a5",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
