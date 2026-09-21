@@ -4,6 +4,7 @@
 // window line is 228 panes, its chevrons are 48 teeth and its flap track
 // canoes are ten of one shape. As separate meshes those alone would be 286
 // draw calls — three times the whole Global.
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
@@ -24,7 +25,7 @@ import {
   addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
-import { AircraftBuildContext, type LoftSection } from "./builders";
+import { AircraftBuildContext, paintVertexBand, type LoftSection } from "./builders";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -211,6 +212,13 @@ const WING_OUTBOARD_THICKNESS = 0.095;
 const WING_CAMBER = 0.006;
 
 /** Linear interpolation along one of the three panels. */
+/** Hermite ramp; `edge0 > edge1` simply runs the ramp the other way. */
+function smoothStep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
 function alongPanel(rootValue: number, tipValue: number, fraction: number): number {
   return rootValue + (tipValue - rootValue) * fraction;
 }
@@ -452,6 +460,11 @@ function skinPoint(
  * instead of 10,944 — an eighth of this airframe's budget bought back for
  * something no camera in the game can resolve.
  */
+/** Linear-space navy, the rudder's own colour: vertex colour multiplies albedo. */
+const CHEATLINE_LINEAR: readonly [number, number, number] = [0.011, 0.042, 0.147];
+/** Half a metre either side of the window line, so it reads at 112 m. */
+const CHEATLINE_HALF_HEIGHT = 0.5;
+
 const MAIN_DECK_WINDOW_COUNT = 88;
 const MAIN_DECK_WINDOW_FORWARD_X = 24.2;
 const MAIN_DECK_WINDOW_Y = 0.2;
@@ -598,7 +611,6 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const bodyRecipe = {
     seed: 0x7478_0001,
     baseColor: 0xf4f5f3,
-    liveryColor: 0x1b3a6b,
     roughness: 0.31,
     metallic: 0.14,
     sootStrength: 0.3,
@@ -606,6 +618,23 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // The 64-pixel maps stretch over a 72 m fuselage — twice the Global's
     // reach, so the panel grid has to be weaker again or it reads as quilting.
     panelStrength: 0.34,
+    // THE LIVERY COLOUR IS THE BASE COLOUR, which retires the UV decal on the
+    // whole airframe rather than only on the wing.
+    //
+    // The paint synthesis draws its `livery-decal` feature as a diagonal band
+    // in UV SPACE -- `fract(u - 0.37v + 0.18)` near 0.5 -- and hands every
+    // mesh its own 0..1 tile. That is not a cheatline, it is a slash at
+    // whatever angle each mesh's UVs happen to give it, and on an aeroplane
+    // made of this many parts the result is a row of disconnected diagonals
+    // that never meet: exactly Jason's "the lines on the aircraft seem all
+    // disjointed". No choice of UVs fixes it, because the band is defined in
+    // a space each mesh owns separately.
+    //
+    // With the two colours equal, `mix(value, livery, decal)` is the identity
+    // and the band is gone. The real livery goes on below as body-space vertex
+    // paint, where a boundary is a height and a station and crosses a mesh
+    // join without knowing it is there.
+    liveryColor: 0xf4f5f3,
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
   // THE WING IS PLAIN WHITE, and it is its own recipe for exactly one reason.
@@ -723,7 +752,41 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // 72 m from radome to tailcone, in four lofts: the parallel barrel, the
   // upswept tailcone, the drooped radome and the upper deck riding on top.
   const fuselage = build.loft("airliner-fuselage", FUSELAGE_SECTIONS, 28, body, root);
-  const radome = build.loft("airliner-radome", NOSE_SECTIONS, 24, body, root);
+  // 28 segments, matching the fuselage's, and the cheatline is why. Vertex
+  // paint SAMPLES a continuous function at each mesh's own vertices and the
+  // renderer interpolates between them, so two lofts with different
+  // circumferential spacing rebuild the same edge up to half a spacing apart.
+  // On the Global that was a 53 mm step at the tail join until the two counts
+  // were matched; here the band would cross the nose join the same way.
+  const radome = build.loft("airliner-radome", NOSE_SECTIONS, 28, body, root);
+
+  /*
+   * THE CHEATLINE, in BODY COORDINATES.
+   *
+   * A height and a station range, evaluated at each vertex, so it crosses the
+   * fuselage/radome join without knowing the join is there -- which is the
+   * whole difference from the UV band it replaces. It is multiplied into the
+   * skin as vertex colour rather than laid on as decal geometry, so it cannot
+   * z-fight at any range, and the paint's panel lines survive under it.
+   *
+   * Level with the MAIN DECK window row, and deep enough to read: at the chase
+   * camera's 112 m standoff a pixel is about 9 cm, so a band under half a
+   * metre would shimmer rather than draw.
+   */
+  for (const skin of [fuselage, radome]) {
+    paintVertexBand(skin, CHEATLINE_LINEAR, (x, y, z) => {
+      // Dies out before the tailcone's taper and before the radome's tip,
+      // where a level band would ride up over a shape that is no longer a tube.
+      const station = smoothStep(-24.5, -22, x) * (1 - smoothStep(30.5, 32.5, x));
+      if (station <= 0) return 0;
+      // Flanks only: a band defined by height alone wraps under the belly
+      // wherever the section is narrower than the cabin's.
+      const flank = Math.min(1, Math.abs(z) / 1.6);
+      return station * flank
+        * (1 - smoothStep(CHEATLINE_HALF_HEIGHT, CHEATLINE_HALF_HEIGHT + 0.22,
+          Math.abs(y - MAIN_DECK_WINDOW_Y)));
+    });
+  }
   // Upswept, ending at (-38, +1.2) where the sim puts its tailcone contact
   // point. The upsweep is what buys a 72 m aeroplane its rotation angle: the
   // mains are at x = -3, so 10.4 degrees of tail-strike margin comes entirely
@@ -1832,6 +1895,29 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
   // camera clears; the tailcone and fairings behind them do not. One mesh has
   // one layer mask, so they cannot share one. The mask is put on the sources
+  /*
+   * EVERY part on a paint material carries a colour channel, painted or not.
+   *
+   * Vertex colour is an optional attribute, so after the cheatline only the
+   * fuselage and radome have one. `mergeStatic` refuses inputs whose vertex
+   * layouts differ -- correctly, since `MergeMeshes` would otherwise drop the
+   * channel from the merged result and quietly repaint the aeroplane white --
+   * so without this, adding a stripe to any other part is a build-time error
+   * rather than a stripe. White is the identity for a multiply, so this costs
+   * four floats a vertex and changes nothing on screen.
+   */
+  for (const mesh of build.meshes) {
+    if (mesh.material !== body && mesh.material !== wing) continue;
+    if (mesh.getVerticesData(VertexBuffer.ColorKind)) continue;
+    const vertices = mesh.getTotalVertices();
+    if (vertices === 0) continue;
+    mesh.setVerticesData(
+      VertexBuffer.ColorKind,
+      new Array<number>(vertices * 4).fill(1),
+      false,
+    );
+  }
+
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
   configureCockpitLayers([fuselage, radome, windscreenFrame]);

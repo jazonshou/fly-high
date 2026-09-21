@@ -3,6 +3,7 @@ import {
   AIRFRAME_TRANSPARENCY_RENDERING_GROUP_ID,
   keepOpaqueDepthForRenderingGroup,
 } from "../core/RenderingGroups";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
@@ -113,6 +114,50 @@ interface VertexMeshOptions {
   readonly colors?: readonly number[];
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly castsShadow?: boolean;
+}
+
+/**
+ * Multiplies a colour into a mesh's own vertices where `coverage` says so.
+ *
+ * Vertex colour lands on `surfaceAlbedo` after the albedo texture's sRGB
+ * decode, so the colour passed in is LINEAR and the paint's panel lines,
+ * rivets and soot all survive underneath it.
+ *
+ * The edge is only as sharp as the mesh is tessellated, and that is the
+ * honest limit of this technique: on the 48-segment fuselage loft a vertex
+ * every 0.14 m around the section means the stripe fades over about that
+ * much. It buys, in exchange, a line that cannot z-fight at any range —
+ * which a decal mesh a few millimetres off a 33 m fuselage certainly does.
+ */
+export function paintVertexBand(
+  mesh: Mesh,
+  linearColor: readonly [number, number, number],
+  coverage: (x: number, y: number, z: number) => number,
+): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!positions) return;
+  const count = positions.length / 3;
+  const existing = mesh.getVerticesData(VertexBuffer.ColorKind);
+  const colors = existing ? [...existing] : new Array<number>(count * 4).fill(1);
+  let painted = 0;
+  for (let vertex = 0; vertex < count; vertex += 1) {
+    const amount = Math.min(1, Math.max(0, coverage(
+      positions[vertex * 3]!,
+      positions[vertex * 3 + 1]!,
+      positions[vertex * 3 + 2]!,
+    )));
+    if (amount <= 0) continue;
+    painted += 1;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const base = colors[vertex * 4 + channel]!;
+      colors[vertex * 4 + channel] = base + (linearColor[channel]! - base) * amount;
+    }
+    colors[vertex * 4 + 3] = 1;
+  }
+  // A band that caught no vertex is a line nobody will ever see, and it is the
+  // silent failure this whole pass is about. Say so at build time instead.
+  if (painted === 0) throw new Error(`${mesh.name}: livery band covered no vertices`);
+  mesh.setVerticesData(VertexBuffer.ColorKind, colors, false);
 }
 
 export class AircraftBuildContext {

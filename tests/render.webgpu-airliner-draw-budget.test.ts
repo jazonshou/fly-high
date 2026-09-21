@@ -3,6 +3,7 @@
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -182,12 +183,27 @@ describe("the 747-8's wing is one white surface", () => {
     }
   });
 
-  it("leaves the fuselage its cheatline", () => {
+  it("leaves the fuselage its cheatline, painted where a mesh join cannot break it", () => {
+    // This used to read the fuselage's RECIPE and assert its livery colour
+    // differed from its base -- that is, that it still carried the paint
+    // synthesis's UV band. It does not any more, and should not: that band is
+    // a diagonal in each mesh's own 0..1 tile, so it stepped and changed angle
+    // at every join and never formed a line at all. The cheatline is vertex
+    // paint in body coordinates now, so this reads the actual colours.
     const { scene } = build();
     const shell = scene.meshes.find((mesh) => /^airliner-fuselage/.test(mesh.name));
     expect(shell, "no fuselage mesh to read the cheatline off").toBeDefined();
-    const recipe = paintRecipe(scene, shell!.name);
-    expect(recipe.liveryColor).not.toBe(recipe.baseColor);
+    const colors = shell!.getVerticesData(VertexBuffer.ColorKind);
+    expect(colors, "the fuselage carries no vertex colour at all").toBeTruthy();
+    let painted = 0;
+    let white = 0;
+    for (let vertex = 0; vertex < colors!.length / 4; vertex += 1) {
+      if (colors![vertex * 4]! < 0.5) painted += 1; else white += 1;
+    }
+    // Both halves: a cheatline that covered everything would pass a "has
+    // paint" check just as well as one that covered nothing.
+    expect(painted, "no vertex is in the cheatline").toBeGreaterThan(20);
+    expect(white, "every vertex is in the cheatline").toBeGreaterThan(200);
   });
 });
 
@@ -371,28 +387,28 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // separate hump changed the shape on purpose.
     //
     // The drop is the giveaway and it is worth reading rather than accepting:
-    // 10,520 vertices to 10,511 and 4,977 m^2 of surface to 4,696. Nearly 280
+    // 10,520 vertices to 10,543 and 4,977 m^2 of surface to 4,697. Nearly 280
     // square metres of that area was the two lobes' skin INSIDE each other,
     // drawn and shaded and never visible. One surface has no inside.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_511);
-    expect(census.indices).toBe(49_704);
+    expect(census.vertices).toBe(10_543);
+    expect(census.indices).toBe(49_896);
     expect(census.minimum.x).toBeCloseTo(-38, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4, 4);
     expect(census.minimum.z).toBeCloseTo(-34.35, 4);
     expect(census.maximum.x).toBeCloseTo(34, 4);
     expect(census.maximum.y).toBeCloseTo(13, 4);
     expect(census.maximum.z).toBeCloseTo(34.35, 4);
-    expect(census.positionSum.x).toBeCloseTo(21_597.6287, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26_250.4405, 1);
+    expect(census.positionSum.x).toBeCloseTo(22_574.8287, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26_245.1205, 1);
     expect(census.positionSum.z).toBeCloseTo(-22.032, 1);
-    expect(census.positionSquares).toBeCloseTo(6_789_650.46, 0);
-    expect(census.normalSum.x).toBeCloseTo(-354.3112, 2);
-    expect(census.normalSum.y).toBeCloseTo(124.9322, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.0935, 2);
-    expect(census.normalMoment).toBeCloseTo(10_162.039, 1);
-    expect(census.signedVolume).toBeCloseTo(-3_230.124, 2);
-    expect(census.area).toBeCloseTo(4_696.3482, 2);
+    expect(census.positionSquares).toBeCloseTo(6_819_902.38, 0);
+    expect(census.normalSum.x).toBeCloseTo(-344.8462, 2);
+    expect(census.normalSum.y).toBeCloseTo(124.6511, 2);
+    expect(census.normalSum.z).toBeCloseTo(0.0913, 2);
+    expect(census.normalMoment).toBeCloseTo(10_546.9266, 1);
+    expect(census.signedVolume).toBeCloseTo(-3_230.6413, 2);
+    expect(census.area).toBeCloseTo(4_696.5661, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
