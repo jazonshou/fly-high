@@ -518,15 +518,26 @@ function normalizeVisualQuaternion(orientation: FlightVisualState["orientation"]
   orientation.w *= inverse;
 }
 
+/**
+ * Heading, pitch and bank, in DEGREES, from the state's orientation: the same
+ * three angles the simulator's telemetry reports (`getFlightTelemetry`), which
+ * the worker converts to degrees, so a predicted frame agrees with a real one.
+ *
+ * Body +X is forward, +Y up and +Z STARBOARD (D-6, 2026-09-01: forward x up =
+ * starboard). This helper once called +Z port and took the y of the port wing
+ * as "right", which made its bank the NEGATIVE of the simulator's; heading and
+ * pitch were unaffected. Bank is positive for a right wing DOWN, i.e. the
+ * starboard wing's world y is negative: `atan2(-starboard.y, up.y)`.
+ */
 function updateVisualAnglesFromOrientation(state: FlightVisualState): void {
   const { x, y, z, w } = state.orientation;
-  // Body +X (forward), +Z (port), and +Y (up), rotated into world space.
   const forwardX = 1 - 2 * (y * y + z * z);
   const forwardY = 2 * (x * y + w * z);
   const forwardZ = 2 * (x * z - w * y);
-  const rightY = -2 * (y * z - w * x);
+  // World y of body +Z (starboard): the third column's y of the rotation matrix.
+  const starboardY = 2 * (y * z - w * x);
   const upY = 1 - 2 * (x * x + z * z);
   state.heading = ((Math.atan2(forwardX, forwardZ) * 180) / Math.PI + 360) % 360;
   state.pitch = (Math.asin(Math.min(1, Math.max(-1, forwardY))) * 180) / Math.PI;
-  state.bank = (Math.atan2(-rightY, upY) * 180) / Math.PI;
+  state.bank = (Math.atan2(-starboardY, upY) * 180) / Math.PI;
 }
