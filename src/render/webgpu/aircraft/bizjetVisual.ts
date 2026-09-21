@@ -505,11 +505,16 @@ export function createBizJet(scene: Scene): AircraftVisual {
     roughness: 0.7,
     metallic: 0.05,
   });
-  const instrumentMarking = build.material("bizjet-instrument-marking", 0x9fd9e8, {
-    roughness: 0.34,
+  // The screens' bezels, and nothing else now that the round dials are gone.
+  // A real bezel is dark grey, so by day this is a dark-grey rim with a faint lit
+  // edge: the base colour is dark and the emissive is a quarter of what it was
+  // (0.7 -> 0.175). It stays on the marking material's glow path
+  // (`applyGlow(instrumentMarking, ...)`), which scales it up at night.
+  const instrumentMarking = build.material("bizjet-instrument-marking", 0x2b3237, {
+    roughness: 0.5,
     metallic: 0,
     emissive: 0x4ba8c6,
-    emissiveIntensity: 0.7,
+    emissiveIntensity: 0.175,
   });
 
   // Same six lamps and the same two appliers as the other two airframes. The

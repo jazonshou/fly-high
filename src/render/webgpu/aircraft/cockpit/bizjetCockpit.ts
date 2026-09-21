@@ -4,7 +4,7 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
-import { slab, strip } from "./cockpitPrimitives";
+import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
 
 /**
  * What a pilot in the Global's LEFT seat sees, built to angles.
@@ -36,7 +36,7 @@ import { slab, strip } from "./cockpitPrimitives";
  *  - the hood's top edge straight ahead reads -10 degrees (+-1);
  *  - four flat screens, each 0.22 wide by 0.15 tall, the pilot's pair centred on
  *    the eye's own z, their top edge 1.5 degrees below the hood's underside;
- *  - the left windscreen post's axis at azimuth -29 (+-1.5), raked like the glass;
+ *  - the left windscreen post's axis at azimuth -34 (+-1.5), raked like the glass;
  *  - an overhead from the glass's top edge aft to 0.3 m behind the eye;
  *  - the pilot's LEFT screen is a PFD whose upper two-thirds is an attitude ball
  *    built from separate pieces under ONE pivot node, so a later step only has
@@ -49,12 +49,15 @@ import { slab, strip } from "./cockpitPrimitives";
 const DEG = Math.PI / 180;
 
 export interface BizjetCockpitMaterials {
-  /** Dark matte interior: the panel, the hood, the overhead and the walls. */
+  /** Dark matte interior: the panel board, the overhead and the walls. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
   /** The windscreen posts (the same as the centre post's). */
   readonly dark: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
-  /** Bezels. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
+  /**
+   * Bezels: a dark-grey rim with a faint lit edge by day. It carries the night
+   * glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one.
+   */
   readonly instrumentMarking: PBRMaterial;
 }
 
@@ -292,9 +295,14 @@ function halfDisc(radius: number, upper: boolean, segments: number): { x: number
 // ---- the posts ---------------------------------------------------------------
 
 export const BIZJET_POST = Object.freeze({
-  /** The left post's axis, in the vertical plane through the eye at this azimuth. */
-  azimuthDegrees: -29,
-  radius: 0.03,
+  /**
+   * The left post's axis, in the vertical plane through the eye at this azimuth.
+   * It was -29 with radius 0.03, and in the frame it stood a sixth of the way in
+   * and split the view: near its top it is only 0.32 m from the eye, so it has to
+   * be thinner AND further out to read as a window frame.
+   */
+  azimuthDegrees: -34,
+  radius: 0.02,
   /**
    * Clearance kept between the post's foot and the shell there. The strut's base
    * is 8% fatter than its top and the built fuselage is a 48-gon inscribed in the
@@ -368,7 +376,7 @@ const WALL = Object.freeze({
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Ten meshes: seven static (the panel with its hood, the screens, their bezels,
+ * Eleven meshes: eight static (the panel, its hood, the screens, their bezels,
  * the two windscreen posts, the overhead, and the side walls with their sill
  * caps) and the three attitude pieces that stay separate for a later step. There
  * is no pedestal: it would top out at -30 degrees between the
@@ -383,22 +391,26 @@ export function buildBizjetCockpit(
   const e = eye();
   const p = BIZJET_PANEL;
 
-  // THE PANEL AND ITS HOOD, one mesh. The board runs from below the frame up to
+  // THE PANEL AND ITS HOOD, two meshes. The board runs from below the frame up to
   // the hood's underside; the hood is a plate on it, standing `hoodOverhang`
   // aft of the face and level with the board's front. Its top is what the pilot
-  // reads as -10 degrees.
+  // reads as -10 degrees. The hood wears a material of its own (matte
+  // near-black, no reflection): a glareshield must not reflect in the windscreen,
+  // and on the interior material its top face was the brightest thing in the frame.
   const hoodTop = bizjetHoodTopY();
   const undersideY = hoodTop - p.hoodThickness;
   const board = build.box(
-    "bizjet-panel-board", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root,
+    "bizjet-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root,
   );
   board.position.set(p.faceX + p.thickness / 2, (p.bottomY + undersideY) / 2, 0);
   const hoodLength = p.thickness + p.hoodOverhang;
+  parts.push(board);
   const hood = build.box(
-    "bizjet-glareshield", hoodLength, p.hoodThickness, p.halfWidth * 2, materials.interior, root,
+    "bizjet-glareshield", hoodLength, p.hoodThickness, p.halfWidth * 2,
+    glareshieldMaterial(build, "bizjet-glareshield"), root,
   );
   hood.position.set(p.faceX - p.hoodOverhang + hoodLength / 2, hoodTop - p.hoodThickness / 2, 0);
-  parts.push(build.mergeStatic("bizjet-instrument-panel", [board, hood], root));
+  parts.push(hood);
 
   // THE SCREENS AND THEIR BEZELS: two meshes for eight boxes. A screen is a flat
   // glass display on the instrument-face material; its bezel is the marking

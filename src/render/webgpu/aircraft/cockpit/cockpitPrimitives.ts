@@ -6,10 +6,27 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftBuildContext } from "../builders";
 
 /**
- * The two box-shaped pieces every cockpit builder needs and none of them should
- * carry its own copy of: a thin panel through four corners, and a horizontal
- * strip along a line.
+ * What every cockpit builder needs and none of them should carry its own copy
+ * of: the glareshield's material, and the two box-shaped pieces (a thin panel
+ * through four corners, and a horizontal strip along a line).
  */
+
+/**
+ * A glareshield's material: matte near-black that reflects nothing. Its top face
+ * is the one interior surface lying at a grazing angle to the eye under an open
+ * sky, so on the ordinary interior material (rough dielectric, lit by the sky's
+ * image-based light) it read as a pale grey-blue shelf, the brightest thing in
+ * the frame. Roughness 1, no clearcoat, F0 and F90 both zero
+ * (`metallicF0Factor` 0) and no image-based light (`environmentIntensity` 0):
+ * only the sun and the lamps light it, and at this albedo (about 0.06 a channel,
+ * darker than the interior's 0.1 to 0.16) that is a near-black.
+ */
+export function glareshieldMaterial(build: AircraftBuildContext, name: string): PBRMaterial {
+  const material = build.material(name, 0x0e1012, { roughness: 1, metallic: 0 });
+  material.environmentIntensity = 0;
+  material.metallicF0Factor = 0;
+  return material;
+}
 
 /** Orient a box so its local X, Y, Z axes point along the given orthonormal basis. */
 export function orient(mesh: AbstractMesh, xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): void {

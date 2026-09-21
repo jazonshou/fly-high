@@ -133,7 +133,7 @@ const NOTES: Record<AircraftKind, KindNotes> = {
   trainer: {
     seat: /^port-seat$/, seatNote: "port seat, z -0.26",
     sill: /^trainer-canopy$/, sillEdge: "bottom",
-    panel: /^trainer-instrument-panel$/, glare: null,
+    panel: /^trainer-instrument-panel$/, glare: /^trainer-glareshield$/,
   },
   jet: {
     seat: /^jet-seat-pan$/, seatNote: "single seat on the centreline",
@@ -146,7 +146,7 @@ const NOTES: Record<AircraftKind, KindNotes> = {
     // port one is the pilot's regardless of what it is called.
     seat: /^bizjet-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.52",
     sill: /flight-deck-window$/, sillEdge: "bottom",
-    panel: /^bizjet-instrument-panel$/, glare: null,
+    panel: /^bizjet-instrument-panel$/, glare: /^bizjet-glareshield$/,
     // The panel is one mesh with its hood now (a board and a plate), so its
     // bounding-box centre is not inside solid; the overhead is a single closed box.
     control: /^bizjet-overhead$/,

@@ -130,11 +130,30 @@ describe("the trainer's cockpit parts", () => {
       "trainer-cowl-standin",
       "trainer-door-port",
       "trainer-door-starboard",
+      "trainer-glareshield",
       "trainer-instrument-panel",
       "trainer-windscreen-post-port",
       "trainer-windscreen-post-starboard",
     ]);
     expect(others.length).toBeLessThanOrEqual(8);
+  });
+
+  it("give the hood a matte near-black material of its own that reflects nothing, darker than the interior", () => {
+    const hood = named("trainer-glareshield").material as PBRMaterial;
+    const board = named("trainer-instrument-panel").material as PBRMaterial;
+    expect(hood).not.toBe(board);
+    // albedo ~0.06 a channel (0.04-0.08), roughness 1, no clearcoat, F0/F90 zero, no image-based light
+    for (const channel of [hood.albedoColor.r, hood.albedoColor.g, hood.albedoColor.b]) {
+      expect(channel).toBeGreaterThan(0.03);
+      expect(channel).toBeLessThan(0.08);
+    }
+    expect(hood.roughness).toBeGreaterThanOrEqual(0.99);
+    expect(hood.clearCoat.isEnabled).toBe(false);
+    expect(hood.environmentIntensity).toBe(0);
+    expect(hood.metallicF0Factor).toBe(0);
+    // ...and darker than the panel board it stands on
+    const luma = (m: PBRMaterial) => m.albedoColor.r + m.albedoColor.g + m.albedoColor.b;
+    expect(luma(hood)).toBeLessThan(luma(board));
   });
 
   it("put the main instrument row at -15 degrees and the second at -21, each dial at least 4.5 degrees across", () => {
@@ -171,8 +190,8 @@ describe("the trainer's cockpit parts", () => {
   });
 
   it("read the glareshield's top edge between -8.2 and -11 degrees straight ahead", () => {
-    const panel = named("trainer-instrument-panel");
-    const ahead = worldVertices(panel).filter((v) => v.x - EYE.forward > NEAR_PLANE);
+    const hood = named("trainer-glareshield");
+    const ahead = worldVertices(hood).filter((v) => v.x - EYE.forward > NEAR_PLANE);
     const top = Math.max(...ahead.map((v) => v.y));
     // A box has only corners, so the top edge is the line between its two
     // topmost corners, read where it crosses the eye's own z.
@@ -188,7 +207,7 @@ describe("the trainer's cockpit parts", () => {
     expect(el).toBeGreaterThan(-11);
     expect(el).toBeLessThan(-8.2);
     // ...and it is what the eye actually meets there: the panel, not the cowl behind it.
-    const seen = topLine("trainer-instrument-panel", 0);
+    const seen = topLine("trainer-glareshield", 0);
     expect(seen).not.toBeNull();
     expect(seen!).toBeGreaterThan(-11);
     expect(seen!).toBeLessThan(-8.2);
@@ -199,8 +218,8 @@ describe("the trainer's cockpit parts", () => {
     expect(cowl).not.toBeNull();
     expect(cowl!).toBeGreaterThan(-5.2);
     expect(cowl!).toBeLessThan(-4.2);
-    const panel = topLine("trainer-instrument-panel", 0)!;
-    expect(cowl!).toBeGreaterThan(panel);
+    const hood = topLine("trainer-glareshield", 0)!;
+    expect(cowl!).toBeGreaterThan(hood);
   });
 
   it("hug the left edge of the frame with the left windscreen post's axis at azimuth -35, and keep the right one out of the view", () => {

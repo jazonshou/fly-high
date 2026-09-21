@@ -5,7 +5,7 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
 import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
-import { slab, strip } from "./cockpitPrimitives";
+import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
 
 /**
  * What a pilot in a Cessna 150's LEFT seat sees, built to angles.
@@ -38,7 +38,7 @@ import { slab, strip } from "./cockpitPrimitives";
  */
 
 export interface TrainerCockpitMaterials {
-  /** Dark matte interior: the panel, the hood, the door panels and sill caps. */
+  /** Dark matte interior: the panel board, the door panels and sill caps. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
   /** The windscreen posts. */
   readonly dark: PBRMaterial;
@@ -241,9 +241,9 @@ export function trainerPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vect
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Nine to ten meshes in three groups: the cowl stand-in (1), the panel with its
- * hood (1), the windscreen posts (2), the door panels with their sill caps (2),
- * and the dials and their needles (10, as before).
+ * Seventeen meshes in four groups: the cowl stand-in (1), the panel and its hood
+ * (2), the windscreen posts (2), the door panels with their sill caps (2), and the
+ * dials and their needles (10, as before).
  */
 export function buildTrainerCockpit(
   build: AircraftBuildContext,
@@ -269,21 +269,24 @@ export function buildTrainerCockpit(
     root,
   ));
 
-  // THE PANEL AND ITS HOOD, one mesh. The hood is a thin plate on the panel's
-  // top, standing 0.08 m aft of the rear face, leaning with it.
+  // THE PANEL AND ITS HOOD, two meshes: the hood is a thin plate on the panel's
+  // top, standing 0.08 m aft of the rear face, leaning with it, and it wears a
+  // material of its own (matte near-black, no reflection) because on the interior
+  // material its top face read as the brightest surface in the frame.
   const { centre, local } = panelFrame();
   const panel = TRAINER_PANEL;
-  const board = build.box("trainer-panel-board", panel.thickness, panel.height, panel.halfWidth * 2, materials.interior, root);
+  const board = build.box("trainer-instrument-panel", panel.thickness, panel.height, panel.halfWidth * 2, materials.interior, root);
   board.position.copyFrom(centre);
   board.rotation.z = panel.lean;
+  parts.push(board);
   const hoodLength = panel.thickness + panel.hoodOverhang;
-  const hood = build.box("trainer-glareshield", hoodLength, panel.hoodThickness, panel.halfWidth * 2, materials.interior, root);
+  const hood = build.box("trainer-glareshield", hoodLength, panel.hoodThickness, panel.halfWidth * 2, glareshieldMaterial(build, "trainer-glareshield"), root);
   // Its centre in the panel's own frame: half a hood length forward of its aft
   // edge, which is `hoodOverhang` aft of the rear face, and half its thickness
   // above the panel's top.
   hood.position.copyFrom(centre.add(local(-panel.thickness / 2 - panel.hoodOverhang + hoodLength / 2, panel.height / 2 + panel.hoodThickness / 2)));
   hood.rotation.z = panel.lean;
-  parts.push(build.mergeStatic("trainer-instrument-panel", [board, hood], root));
+  parts.push(hood);
 
   // THE DIALS. Real size, in front of the left seat, on the panel's rear face
   // and a millimetre proud of it. The face cylinder's axis is local Y; turning

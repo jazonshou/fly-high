@@ -235,6 +235,7 @@ describe("the Global's cockpit parts", () => {
     const fixed = names.filter((name) => !name.startsWith("bizjet-pfd-"));
     expect(attitude).toEqual(["bizjet-pfd-ground", "bizjet-pfd-pitch-bar", "bizjet-pfd-sky"]);
     expect(fixed).toEqual([
+      "bizjet-glareshield",
       "bizjet-instrument-panel",
       "bizjet-overhead",
       "bizjet-screen-bezels",
@@ -272,12 +273,12 @@ describe("the Global's cockpit parts", () => {
   });
 
   it("read the hood's top edge at -10 degrees straight ahead, and it is what the eye meets there", () => {
-    const seen = elevationsHit("bizjet-instrument-panel", 0);
+    const seen = elevationsHit("bizjet-glareshield", 0);
     expect(seen.length).toBeGreaterThan(10);
     expect(Math.max(...seen)).toBeGreaterThan(-11);
     expect(Math.max(...seen)).toBeLessThan(-9);
-    // analytically, from the panel's own vertices: its highest, front-most corner in the eye's plane
-    const vertices = worldVertices(named("bizjet-instrument-panel"));
+    // analytically, from the hood's own vertices: its highest, front-most corner in the eye's plane
+    const vertices = worldVertices(named("bizjet-glareshield"));
     const topY = Math.max(...vertices.map((v) => v.y));
     const frontX = Math.max(...vertices.filter((v) => v.y > topY - 1e-6).map((v) => v.x));
     const el = Math.atan2(topY - EYE.up, frontX - EYE.forward) * DEG;
@@ -335,7 +336,7 @@ describe("the Global's cockpit parts", () => {
   });
 
   it("put the screens' top edge 1.5 degrees under the hood's underside, and show them below it", () => {
-    const panel = worldVertices(named("bizjet-instrument-panel"));
+    const panel = worldVertices(named("bizjet-glareshield"));
     const hoodTop = Math.max(...panel.map((v) => v.y));
     // the hood's aft edge: the smallest x among the vertices at the hood's top level
     const aft = Math.min(...panel.filter((v) => v.y > hoodTop - 1e-6).map((v) => v.x));
@@ -360,13 +361,21 @@ describe("the Global's cockpit parts", () => {
     }
   });
 
-  it("stand the left windscreen post's axis at azimuth -29 (+-1.5), raked like the glass, and the right one is its mirror", () => {
+  it("stand the left windscreen post's axis at azimuth -34 (+-1.5), 0.02 thick, raked like the glass, and the right one is its mirror", () => {
     const vertices = worldVertices(named("bizjet-windscreen-post-port"));
     const { bottom, top } = cylinderEnds(vertices);
     for (const end of [bottom, top]) {
-      expect(azel(end).az).toBeGreaterThan(-29 - 1.5);
-      expect(azel(end).az).toBeLessThan(-29 + 1.5);
+      expect(azel(end).az).toBeGreaterThan(-34 - 1.5);
+      expect(azel(end).az).toBeLessThan(-34 + 1.5);
     }
+    // 0.02 thick: a window frame and not a column (it was 0.03 and a sixth of the view). Each end's ring is at the
+    // strut's own radius from the axis, up to 8% fatter at the foot; the end is estimated from a ring whose seam vertex
+    // is duplicated, which puts the estimate off by up to a tenth of a radius, so the bound is 0.024/0.026 and 0.03
+    // (the old radius) cannot pass.
+    const ringRadius = (end: Vector3) => Math.max(...vertices.filter((v) => Vector3.Distance(v, end) < 0.05).map((v) => Vector3.Distance(v, end)));
+    expect(ringRadius(top)).toBeLessThan(0.024);
+    expect(ringRadius(top)).toBeGreaterThan(0.017);
+    expect(ringRadius(bottom)).toBeLessThan(0.026);
     // top toward the pilot by the BUILT glass's own rake: dx/dy along its front face
     const pane = worldVertices(named("bizjet-windscreen")).filter((v) => v.z > 0);
     const byHeight = [...pane].sort((a, b) => b.y - a.y);
@@ -516,12 +525,35 @@ describe("the Global's cockpit parts", () => {
 
   it("keep the panel and its hood within a few millimetres of the shell", () => {
     const clearances: number[] = [];
-    for (const v of worldVertices(named("bizjet-instrument-panel"))) {
+    for (const v of [...worldVertices(named("bizjet-instrument-panel")), ...worldVertices(named("bizjet-glareshield"))]) {
       const crown = castCrown(v.x, v.z);
       const wall = castWall(v.x, v.y, v.z < 0 ? -1 : 1);
       clearances.push(Number.isFinite(crown) && v.y > crown ? -(v.y - crown) : wall - Math.abs(v.z));
     }
     expect(Math.min(...clearances)).toBeGreaterThanOrEqual(-0.006);
+  });
+
+  it("give the hood a matte near-black material of its own, and the bezels a dark-grey rim with a faint lit edge", () => {
+    const hood = named("bizjet-glareshield").material as PBRMaterial;
+    const board = named("bizjet-instrument-panel").material as PBRMaterial;
+    expect(hood).not.toBe(board);
+    for (const channel of [hood.albedoColor.r, hood.albedoColor.g, hood.albedoColor.b]) {
+      expect(channel).toBeGreaterThan(0.03);
+      expect(channel).toBeLessThan(0.08);
+    }
+    expect(hood.roughness).toBeGreaterThanOrEqual(0.99);
+    expect(hood.clearCoat.isEnabled).toBe(false);
+    expect(hood.environmentIntensity).toBe(0);
+    expect(hood.metallicF0Factor).toBe(0);
+    const luma = (m: PBRMaterial) => m.albedoColor.r + m.albedoColor.g + m.albedoColor.b;
+    expect(luma(hood)).toBeLessThan(luma(board));
+    // Bezels: still on the shared marking material (the night glow path), but dark grey with a quarter of the old
+    // emissive (0.7 -> 0.175).
+    const bezel = named("bizjet-screen-bezels").material as PBRMaterial;
+    expect(bezel).toBe(scene.getMaterialByName("bizjet-instrument-marking"));
+    expect(bezel.emissiveIntensity).toBeGreaterThan(0.15);
+    expect(bezel.emissiveIntensity).toBeLessThan(0.2);
+    for (const channel of [bezel.albedoColor.r, bezel.albedoColor.g, bezel.albedoColor.b]) expect(channel).toBeLessThan(0.25);
   });
 
   it("hold the analytic shell to the built fuselage", () => {
@@ -594,7 +626,7 @@ describe("the Global's cockpit-only parts outside cockpit view", () => {
     localScene.activeCamera = localCamera;
     const visual = createWebGpuAircraft(localScene, "bizjet");
     const parts = visual.cockpitOnlyParts ?? [];
-    expect(parts.length).toBe(10);
+    expect(parts.length).toBe(11);
     const exteriorMask = localCamera.layerMask;
     for (const part of parts) {
       expect(part.isVisible, `${part.name} at rest`).toBe(false);
