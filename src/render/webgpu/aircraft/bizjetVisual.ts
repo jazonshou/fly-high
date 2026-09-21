@@ -27,7 +27,7 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
-import { AircraftBuildContext, paintVertexBand } from "./builders";
+import { AircraftBuildContext, paintVertexBand, type LoftSection } from "./builders";
 import { buildBizjetCockpit } from "./cockpit/bizjetCockpit";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
@@ -179,14 +179,82 @@ const FLAP_SEAL_SPAN = 0.14;
  * the aeroplane — one 12-sided oval, thin-instanced twenty-eight times, one
  * draw call.
  */
+/**
+ * The cabin tube's sections, named rather than inlined because THE WINDOW LINE
+ * HAS TO READ THEM. Twenty-eight panes seated at one constant half-width stood
+ * between 34.8 mm and 55.2 mm out of a body that narrows; a part can only lie
+ * in a surface if it can ask where the surface is.
+ */
+const FUSELAGE_SECTIONS: readonly LoftSection[] = [
+  { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
+  { x: -10.5, yRadius: 1.23, zRadius: 1.19, yOffset: 0.12 },
+  { x: -8, yRadius: 1.34, zRadius: 1.33, yOffset: 0.03 },
+  { x: -2, yRadius: 1.345, zRadius: 1.345 },
+  { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
+  { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
+  { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
+  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
+];
+
+/** The section the loft draws at a station, between its two nearest ribs. */
+function fuselageSectionAt(x: number): { yRadius: number; zRadius: number; yOffset: number } {
+  const first = FUSELAGE_SECTIONS[0]!;
+  const last = FUSELAGE_SECTIONS[FUSELAGE_SECTIONS.length - 1]!;
+  if (x <= first.x) return { yRadius: first.yRadius, zRadius: first.zRadius, yOffset: first.yOffset ?? 0 };
+  if (x >= last.x) return { yRadius: last.yRadius, zRadius: last.zRadius, yOffset: last.yOffset ?? 0 };
+  for (let i = 1; i < FUSELAGE_SECTIONS.length; i += 1) {
+    const after = FUSELAGE_SECTIONS[i]!;
+    if (after.x < x) continue;
+    const before = FUSELAGE_SECTIONS[i - 1]!;
+    const t = (x - before.x) / (after.x - before.x);
+    return {
+      yRadius: before.yRadius + (after.yRadius - before.yRadius) * t,
+      zRadius: before.zRadius + (after.zRadius - before.zRadius) * t,
+      yOffset: (before.yOffset ?? 0) + ((after.yOffset ?? 0) - (before.yOffset ?? 0)) * t,
+    };
+  }
+  return { yRadius: last.yRadius, zRadius: last.zRadius, yOffset: last.yOffset ?? 0 };
+}
+
+/**
+ * Half-width of the cabin skin at a station and a height.
+ *
+ * The sections are ellipses — `squareness` is unset, so the superellipse is the
+ * plain one — and the loft rules straight between neighbouring ribs, so
+ * interpolating the rib parameters and evaluating the ellipse is the surface
+ * the mesh draws to within its own faceting. Checked against a ray cast, which
+ * is what the seating table measures.
+ */
+function cabinHalfWidthAt(x: number, y: number): number {
+  const section = fuselageSectionAt(x);
+  const rise = (y - section.yOffset) / section.yRadius;
+  if (Math.abs(rise) >= 1) return 0;
+  return section.zRadius * Math.sqrt(1 - rise * rise);
+}
+
+/**
+ * Which way the pane's local Z runs once the quarter turn has laid it into the
+ * fuselage side. +1, measured: see the note at the bow below.
+ */
+const CABIN_WINDOW_HEIGHT_SENSE = -1;
+/** The station the single instanced pane is bowed to: the constant section. */
+const CABIN_WINDOW_SEAT_X = 0;
+/**
+ * 5 mm of glass outside the skin. Flush is what a depth buffer cannot draw,
+ * and this is the same clearance the 747's spoilers and the F-16's brakes take.
+ */
+const CABIN_WINDOW_PROUD = 0.005;
 const CABIN_WINDOW_COUNT = 14;
 const CABIN_WINDOW_FORWARD_X = 8.8;
 /** 0.92 m, measured off scaled side views and uniform the length of the cabin. */
 const CABIN_WINDOW_PITCH = 0.92;
 /** Centre 0.38 m above the fuselage centreline, where seated eyes are. */
 const CABIN_WINDOW_Y = 0.38;
-/** Fuselage half-width at that height, so the pane sits in the skin. */
-const CABIN_WINDOW_Z = 1.29;
+// `CABIN_WINDOW_Z = 1.29` USED TO LIVE HERE, described as "fuselage half-width
+// at that height, so the pane sits in the skin". It was the half-width at ONE
+// station, and the body narrows: the panes stood 34.8 mm out of the skin
+// through the constant section and 55.2 mm out at the forward-most one. Each
+// pane now asks `cabinHalfWidthAt` for its own station instead.
 /**
  * 0.385 m across by 0.539 m tall. Bombardier sells these as the largest
  * windows in the class — about 300 square inches — and they are visibly
@@ -559,16 +627,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // stripe's edge. 48 also stops the tube facetting where the light grazes it.
   const fuselage = build.loft(
     "bizjet-fuselage",
-    [
-      { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
-      { x: -10.5, yRadius: 1.23, zRadius: 1.19, yOffset: 0.12 },
-      { x: -8, yRadius: 1.34, zRadius: 1.33, yOffset: 0.03 },
-      { x: -2, yRadius: 1.345, zRadius: 1.345 },
-      { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
-      { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-      { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
-      { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-    ],
+    FUSELAGE_SECTIONS,
     48,
     body,
     root,
@@ -703,20 +762,73 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // turn about X then lays the oval into the fuselage side: local Z becomes
     // world -Y (the 0.58 m height) and the cylinder's own axis becomes world
     // Z, i.e. the 0.07 m pane thickness through the skin.
-    const paneRotation = Quaternion.RotationYawPitchRoll(0, Math.PI / 2, 0);
+    // ONE ROTATION PER SIDE, and this is new. The pane used to be symmetric
+    // about its own local Y, so a single rotation served both wings and the
+    // port instances were quietly laid on with their local +Y pointing OUT of
+    // the aeroplane's port flank — which is to say inward. Nothing depended on
+    // it. The bow below does: it is asymmetric in local Y, so with one
+    // rotation the port panes bow the wrong way, and the seating table read
+    // 270 mm proud on that side while starboard read 5.
+    //
+    // The port rotation takes local X to -X, local Y to -Z and local Z to -Y.
+    // That is a proper rotation (a half turn about (0, 1, -1)); the mapping
+    // that would seem more natural — leave X alone and send Y to -Z — is a
+    // REFLECTION, and Babylon would render it inside out.
+    const paneRotation = {
+      1: Quaternion.RotationYawPitchRoll(0, Math.PI / 2, 0),
+      [-1]: Quaternion.RotationAxis(new Vector3(0, 1, -1).normalize(), Math.PI),
+    } as Record<number, Quaternion>;
     const paneScale = new Vector3(1, 1, CABIN_WINDOW_HEIGHT_RATIO);
+
+    // THE PANE IS BOWED TO THE SECTION, and it has to be. A flat pane cannot
+    // lie in this surface at all: the window line sits well above the widest
+    // point, where the skin is steeply sloped, so across one pane's 0.539 m of
+    // height the half-width runs from 1.341 m at its bottom edge to 1.178 m at
+    // its top — 163 mm of movement under a face that was dead flat. Seating
+    // such a pane perfectly at its centre still leaves its top edge 112 mm
+    // inside the aeroplane and its bottom edge 50 mm outside it.
+    //
+    // Done ONCE, on the single instanced base mesh, from the CONSTANT-SECTION
+    // curve. Twenty-two of the twenty-eight panes sit on that section exactly;
+    // the six forward ones sit on a slightly narrower one and keep whatever
+    // residual that leaves, which the seating table reports rather than hides.
+    //
+    // The base mesh is also shifted so local Y = 0 is its OUTER FACE, which is
+    // what lets each instance be placed at the skin plus a clearance instead of
+    // at the skin plus a clearance minus half a thickness.
+    {
+      const positions = cabinWindow.getVerticesData(VertexBuffer.PositionKind)!;
+      const seated = cabinHalfWidthAt(CABIN_WINDOW_SEAT_X, CABIN_WINDOW_Y);
+      for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+        // Local Z is the pane's height before the instance scales it and the
+        // quarter turn lays it into world Y. THE SIGN IS MEASURED, not read off
+        // the rotation: the pane was symmetric in Z until this bow, so nothing
+        // in the airframe had ever depended on which way round it went, and
+        // guessing wrong puts the pane's top edge 231 mm OUT of the aeroplane
+        // instead of flush. `CABIN_WINDOW_HEIGHT_SENSE` is pinned by the
+        // seating table, which reads 5 mm one way and 270 the other.
+        const height = CABIN_WINDOW_Y
+          + CABIN_WINDOW_HEIGHT_SENSE * positions[vertex * 3 + 2]! * CABIN_WINDOW_HEIGHT_RATIO;
+        positions[vertex * 3 + 1] = positions[vertex * 3 + 1]! - 0.035
+          + (cabinHalfWidthAt(CABIN_WINDOW_SEAT_X, height) - seated);
+      }
+      cabinWindow.updateVerticesData(VertexBuffer.PositionKind, positions);
+      cabinWindow.createNormals(true);
+      cabinWindow.refreshBoundingInfo();
+    }
+
     const matrices = new Float32Array(CABIN_WINDOW_COUNT * 2 * 16);
     let offset = 0;
     for (const side of [1, -1] as const) {
       for (let index = 0; index < CABIN_WINDOW_COUNT; index += 1) {
+        const station = CABIN_WINDOW_FORWARD_X - index * CABIN_WINDOW_PITCH;
+        // AT ITS OWN STATION'S SKIN. One constant put the forward panes 55 mm
+        // out of a body that narrows from 1.291 m to 1.272 m along the row.
+        const seat = cabinHalfWidthAt(station, CABIN_WINDOW_Y) + CABIN_WINDOW_PROUD;
         Matrix.Compose(
           paneScale,
-          paneRotation,
-          new Vector3(
-            CABIN_WINDOW_FORWARD_X - index * CABIN_WINDOW_PITCH,
-            CABIN_WINDOW_Y,
-            side * CABIN_WINDOW_Z,
-          ),
+          paneRotation[side]!,
+          new Vector3(station, CABIN_WINDOW_Y, side * seat),
         ).copyToArray(matrices, offset);
         offset += 16;
       }
