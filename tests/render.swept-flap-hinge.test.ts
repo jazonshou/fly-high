@@ -90,6 +90,12 @@ function deflect(visual: AircraftVisual, amount: number): void {
     aileron: amount,
     elevator: amount,
     rudder: amount,
+    // The speed brake too. Leaving it out is how ten 747 spoilers, eight
+    // Global ones and the F-16's petals sat outside this sweep: a surface the
+    // pose never drives turns less than half a degree and is skipped as "not
+    // driven by this pose", so the gate reported a confident pass over an
+    // airframe whose spoilers it had never looked at.
+    brake: amount,
   };
   visual.update(state, 1 / 60);
 }
@@ -210,19 +216,40 @@ const ALL_MOVING: readonly (readonly [AircraftKind, string])[] = [
   ["jet", "elevator"],
 ];
 
-/** How many surfaces must deflect, so a rename cannot shrink the sweep. */
+/**
+ * How many surfaces must deflect, so a rename cannot shrink the sweep.
+ *
+ * These counts went from 6/4/9/11 to 6/8/17/15 when the pose above learned to
+ * pull the speed brake and this file stopped filtering `brake` out by name —
+ * sixteen more hinged surfaces, all of which hold their lines. What the sweep
+ * does NOT cover it says so about: see `DECLARED_UNRAKED` and `ALL_MOVING`.
+ */
 const EXPECTED_DEFLECTING: Readonly<Record<AircraftKind, number>> = {
   trainer: 6,
-  // Four, not six: this aeroplane's trailing edge is ONE flaperon a side,
+  // Eight: two flaperons, two stabilators, the rudder... and the F-16's four
+  // airbrake petals, which this gate could not see at all until `brake` came
+  // out of `SPINNING`. The aeroplane's trailing edge is ONE flaperon a side,
   // which is both its flap and its aileron, so there are two wing surfaces
   // rather than four.
-  jet: 4,
-  bizjet: 9,
-  airliner: 11,
+  jet: 8,
+  // Nine plus the Global's eight spoilers, four a side.
+  bizjet: 17,
+  // Eleven plus the 747's four spoiler GROUPS: six panels a side, but the two
+  // inboard share one hinge line and the four outboard share another, so they
+  // are four hinged nodes rather than twelve.
+  airliner: 15,
 };
 
-/** Parts that turn without being hinged: a spinning wheel has no hinge line. */
-const SPINNING = /wheel|propeller|spinner|fan|spool|gear|door|strut|axle|brake/i;
+/**
+ * Parts that turn without being hinged: a spinning wheel has no hinge line.
+ *
+ * `brake` USED TO BE IN THIS LIST, and it was reading as "wheel brake" while
+ * matching `starboard-speed-brake` — so the F-16's four airbrake petals, which
+ * are hinged panels and exactly what this gate is for, were filtered out by a
+ * word meant for something else. The wheel parts are caught by `wheel` and
+ * `axle` already.
+ */
+const SPINNING = /wheel|propeller|spinner|fan|spool|gear|door|strut|axle/i;
 
 interface Measured {
   name: string;

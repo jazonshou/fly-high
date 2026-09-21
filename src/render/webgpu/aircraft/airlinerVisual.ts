@@ -4,6 +4,7 @@
 // window line is 228 panes, its chevrons are 48 teeth and its flap track
 // canoes are ten of one shape. As separate meshes those alone would be 286
 // draw calls — three times the whole Global.
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
@@ -24,7 +25,13 @@ import {
   addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
-import { AircraftBuildContext, type LoftSection } from "./builders";
+import {
+  AircraftBuildContext,
+  nacaThickness,
+  paintVertexBand,
+  type LoftSection,
+  type SurfacePoint,
+} from "./builders";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -186,6 +193,76 @@ const WING_RAKE_HINGE_X = alongPanel(
   WING_RAKE_LEADING_X, WING_RAKE_TRAILING_X, HINGE_CHORD_FRACTION);
 
 /**
+ * THE SPOILERS, as two chord fractions rather than as a chord in metres.
+ *
+ * Both edges being fixed FRACTIONS is load-bearing, not tidiness. Within one
+ * wing panel the leading edge, the trailing edge and the chord plane are each
+ * affine in z, so a fixed-fraction edge is an exactly straight line in space —
+ * which is what lets `hingeAlong` turn the panel about its own forward edge
+ * without any part of the edge leaving the skin. An edge at a fixed distance
+ * in metres from the hinge line is not: it drifts in fraction as the chord
+ * tapers, its height stops being affine, and the hinge line acquires a sag.
+ *
+ * It also sizes the panels the way the aeroplane does. 13% of local chord is
+ * 1.66 m at the inboard ground spoilers and 0.79 m at the outermost flight
+ * spoiler, which is the taper a 747's spoilers actually have.
+ *
+ * The aft edge stops 2.5% of chord short of the 70% hinge line so the panel
+ * clears the flap's nose AT EVERY STATION. A panel whose aft edge is a fixed
+ * distance ahead of the hinge only clears it at the station that distance was
+ * measured at, and fouls the flap inboard of it.
+ */
+const SPOILER_HINGE_FRACTION = 0.545;
+const SPOILER_AFT_FRACTION = HINGE_CHORD_FRACTION - 0.025;
+/**
+ * 12 mm proud of the skin, and 60 mm thick so the rest of the panel is inside
+ * the wing. Flush would be correct on the aeroplane and wrong in a depth
+ * buffer: two surfaces at the same depth fight, and at chase range the panels
+ * would flicker. 12 mm is under a quarter of a pixel at the 65 m orbit — no
+ * step the eye can find — and far enough apart in z to settle the fight.
+ */
+const SPOILER_PROUD = 0.012;
+const SPOILER_THICKNESS = 0.06;
+/**
+ * One span segment would be exact — the skin is ruled in z within a panel —
+ * but two lets the normals interpolate across the panel instead of being
+ * constant over its whole width. The chord is a curve and needs its four.
+ */
+const SPOILER_SPAN_SEGMENTS = 2;
+const SPOILER_CHORD_SEGMENTS = 4;
+/**
+ * Two inboard ground spoilers ahead of the inner flap (4.4-11.9) and four
+ * outboard flight spoilers ahead of the outer one (16.6-23.1), leaving the
+ * inboard aileron's span clear between them.
+ *
+ * THE GROUPS ARE THE MESHES, and that falls out of the fixed-fraction edge
+ * above: every panel in a group sits on the 54.5% chord line of the SAME wing
+ * panel, so all of them lie on one straight line in space and all of them turn
+ * about it together. One hinge node and one mesh a group is therefore exact,
+ * not an approximation — and it is why going from ten panels to the twelve the
+ * aeroplane has SAVED six draw calls instead of costing two.
+ *
+ * The grouping is also what forces each group to stay inside one wing panel:
+ * a group straddling the Yehudi break at 12.5 would have a bent hinge line,
+ * and `buildSpoilerGroup` throws rather than draw one.
+ */
+const SPOILER_GROUPS = [
+  {
+    name: "ground-spoilers",
+    panels: [{ rootZ: 5, tipZ: 7.9 }, { rootZ: 8.3, tipZ: 11.2 }],
+  },
+  {
+    name: "flight-spoilers",
+    panels: [
+      { rootZ: 16.8, tipZ: 18.2 },
+      { rootZ: 18.4, tipZ: 19.8 },
+      { rootZ: 20, tipZ: 21.4 },
+      { rootZ: 21.6, tipZ: 23 },
+    ],
+  },
+] as const;
+
+/**
  * Chord-plane height at each station: the DIHEDRAL, and it is not constant.
  *
  * 3.4 degrees from the root to the Yehudi break, 5.6 to the rake break and 8.5
@@ -211,6 +288,13 @@ const WING_OUTBOARD_THICKNESS = 0.095;
 const WING_CAMBER = 0.006;
 
 /** Linear interpolation along one of the three panels. */
+/** Hermite ramp; `edge0 > edge1` simply runs the ramp the other way. */
+function smoothStep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
 function alongPanel(rootValue: number, tipValue: number, fraction: number): number {
   return rootValue + (tipValue - rootValue) * fraction;
 }
@@ -248,6 +332,13 @@ function hingeAt(z: number): number {
     : alongPanel(WING_KINK_HINGE_X, WING_RAKE_HINGE_X, outboardFraction(z));
 }
 
+/** The local dihedral angle, from the same two panels the chord plane uses. */
+function dihedralAt(z: number): number {
+  return insideKink(z)
+    ? Math.atan2(WING_KINK_Y - WING_ROOT_Y, WING_KINK_Z - WING_ROOT_Z)
+    : Math.atan2(WING_RAKE_Y - WING_KINK_Y, WING_RAKE_Z - WING_KINK_Z);
+}
+
 /** Chord-plane height, following the same two panels the dihedral is built in. */
 function chordPlaneAt(z: number): number {
   return insideKink(z)
@@ -256,27 +347,49 @@ function chordPlaneAt(z: number): number {
 }
 
 /**
- * The UPPER surface at 60% chord, which is where the spoilers and the top of a
- * pylon have to sit.
+ * THE WING SKIN, anywhere on it. Given a station and a chord fraction it
+ * returns the y of the upper or the lower surface, from the SAME two terms
+ * `builders.ts` draws the section from — `nacaThickness` for the half-
+ * thickness and 4c·t·(1-t) for the camber line — so a part seated with this
+ * is seated on the surface the wing actually has.
  *
- * Derived rather than eyeballed, because ten spoilers on a swept, tapered,
- * dihedralled wing each need a different answer and a single guessed height
- * would leave half of them floating and half of them sunk. The NACA four-digit
- * half-thickness at 60% chord is 0.3753 of the section's thickness ratio, and
- * the camber line adds 4c(t)(1-t) = 0.96 of the camber ratio at the same
- * station; `builders.ts` builds the section from exactly those two terms.
+ * This replaced a pair of helpers that evaluated the section at 60% chord and
+ * nowhere else, from a hand-copied 0.3753 (the true value there is 0.3789).
+ * One height per part is only ever right at one station: ten spoilers on a
+ * swept, tapered, dihedralled wing each need a different answer at each of
+ * their own corners, and a single number left them between 44 and 288 mm clear
+ * of the skin they are supposed to lie in.
  */
-function upperSurfaceY(z: number): number {
+function wingSkinY(z: number, chordFraction: number, upper: boolean): number {
+  // THE SECTION IS DRAWN OVER THE WING BOX, NOT OVER THE CHORD. `wingPanels`
+  // hands `airfoilWing` a trailing edge at the HINGE LINE, because aft of it
+  // the metal is flap. So the fixed wing is a complete aerofoil of 70% of the
+  // local chord, and a fraction of the true chord has to be rescaled into that
+  // box before the thickness law sees it. Evaluating the law on the full chord
+  // instead puts the skin about 3% of chord too high — 540 mm at the inboard
+  // spoiler station, which is how the first attempt at this repair managed to
+  // seat the panels WORSE than the boxes it replaced.
+  const boxChord = leadingAt(z) - hingeAt(z);
   const ratio = insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
-  const chord = leadingAt(z) - trailingAt(z);
-  return chordPlaneAt(z) + (0.3753 * ratio + 0.96 * WING_CAMBER) * chord;
+  const local = Math.min(1, Math.max(0, chordFraction / HINGE_CHORD_FRACTION));
+  const camber = 4 * WING_CAMBER * local * (1 - local) * boxChord;
+  const halfThickness = nacaThickness(local, ratio) * boxChord;
+  // And the section stands off the CHORD PLANE, which is tilted: each panel is
+  // built inside a node rolled to the local dihedral, so a half-thickness of h
+  // reaches h*cos(dihedral) in body y.
+  const offset = camber + (upper ? halfThickness : -halfThickness);
+  return chordPlaneAt(z) + offset * Math.cos(dihedralAt(z));
 }
 
-/** The LOWER surface at the same station, which is what a pylon hangs from. */
+/** Where a station's chord fraction lands in body x. */
+function chordFractionX(z: number, chordFraction: number): number {
+  const leading = leadingAt(z);
+  return leading - chordFraction * (leading - trailingAt(z));
+}
+
+/** The LOWER surface at 60% chord, which is what a pylon hangs from. */
 function lowerSurfaceY(z: number): number {
-  const ratio = insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
-  const chord = leadingAt(z) - trailingAt(z);
-  return chordPlaneAt(z) - (0.3753 * ratio - 0.96 * WING_CAMBER) * chord;
+  return wingSkinY(z, 0.6, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -293,9 +406,33 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
   { x: -20, yRadius: 3.25, zRadius: 3.25 },
   { x: -6, yRadius: 3.25, zRadius: 3.25 },
-  { x: 10, yRadius: 3.25, zRadius: 3.25 },
-  { x: 22, yRadius: 3.25, zRadius: 3.25 },
-  { x: 27.4, yRadius: 2.96, zRadius: 2.94, yOffset: -0.04 },
+  // From here forward the section stops being a circle and becomes an EGG:
+  // the belly stays pinned at y = -3.25 and the crown climbs, while
+  // `crownZRadius` leans the upper flanks in. Every section's yRadius and
+  // yOffset below is (crown - belly)/2 and (crown + belly)/2 with the belly
+  // held at -3.25, so the tube's underside is one unbroken line and only the
+  // top of the aeroplane changes.
+  // THE CROWN HAS TO RUN LEVEL over the deck, not merely reach the right
+  // height. A first attempt raised it evenly from the wing to the flight deck,
+  // and the frames showed the consequence: the crease was gone but so was the
+  // hump, because a 747's upper deck is a raised DECK -- the crown climbs
+  // behind the wing, runs flat the length of the deck, and fairs down. An even
+  // climb is a bulge. These stations give 5 mm/m at the wing, 87 at the steep
+  // part, then 17 and 2 over the deck itself, where it is level to the eye.
+  { x: 0, yRadius: 3.265, zRadius: 3.25, yOffset: 0.015, crownZRadius: 3.23 },
+  { x: 5, yRadius: 3.35, zRadius: 3.25, yOffset: 0.1, crownZRadius: 3.14 },
+  { x: 9, yRadius: 3.525, zRadius: 3.25, yOffset: 0.275, crownZRadius: 2.94 },
+  { x: 13, yRadius: 3.685, zRadius: 3.25, yOffset: 0.435, crownZRadius: 2.76 },
+  { x: 17, yRadius: 3.785, zRadius: 3.25, yOffset: 0.535, crownZRadius: 2.65 },
+  { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57, crownZRadius: 2.61 },
+  // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
+  // upper-deck contact point, exactly as the old separate hump loft did.
+  { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
+  // ...and then hands the crown down to the nose loft, narrowing enough by
+  // the last section to be swallowed by it rather than capped in the open.
+  { x: 28, yRadius: 3.575, zRadius: 3, yOffset: 0.675, crownZRadius: 2.45 },
+  { x: 29.6, yRadius: 3.15, zRadius: 2.6, yOffset: 0.65, crownZRadius: 2.2 },
+  { x: 30.6, yRadius: 2.55, zRadius: 2.05, yOffset: 0.6, crownZRadius: 1.8 },
 ];
 
 /**
@@ -336,54 +473,30 @@ const NOSE_SECTIONS: readonly LoftSection[] = [
   { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
 ];
 
-/**
- * THE HUMP. The raised forward upper deck, and the single most identifying
- * feature on the aeroplane — it has to read from every angle, so it is the
- * fuselage's own second lobe rather than a blister stuck on top.
+/*
+ * THE HUMP IS THE FUSELAGE NOW, not a second loft riding on it.
  *
- * Built as a separate closed loft that INTERSECTS the tube rather than as a
- * bigger ellipse for the whole forward fuselage, because a 747's forward
- * section is a double bubble: a 3.25 m lower circle and a wide upper lobe
- * riding on it. A single ellipse tall enough to reach the upper-deck crown
- * would also be widest at upper-deck height, which is backwards — a 747 is
- * widest at the MAIN deck floor — and the tube's own skin closes the shape
- * everywhere the hump is inside it.
+ * It used to be a separate closed loft intersecting the tube, on the reasoning
+ * that a 747's forward section is a double bubble and one ellipse tall enough
+ * to reach the upper-deck crown would also be widest at upper-deck height,
+ * which is backwards. That reasoning was right about the shape and wrong about
+ * the remedy: two intersecting closed surfaces cannot be tangent-continuous,
+ * so the best the arrangement could ever do was choose the angle of its crease.
+ * The file's own history records choosing it twice -- 41 degrees, then 31 after
+ * the upper lobe was widened.
  *
- * THE WIDTH IS THE WHOLE POINT, and the first version had it wrong. At
- * zRadius 2.55 about a centre 2.1 m up, the two lobes crossed at y = 2.0 with
- * 41 degrees between their surfaces: a hard groove high on the flank, and in
- * the rendered frames the deck read as a second fuselage laid on top of the
- * first rather than as a fuselage that swells into a raised deck. Widening it
- * to 2.95 and dropping the centre to 1.65 moves the crossing down to y = 1.39,
- * z = 2.94 and opens the included angle to 31 degrees — the upper lobe now
- * carries the whole upper half of the section and the crease falls where a
- * 747's fairing line actually runs, just above the main deck ceiling. The
- * crown is unchanged; only the shoulders moved.
+ * Measured on the built mesh by walking the section and comparing each
+ * sample's normal with the next, it was 23.5 degrees at x = 14, 30.1 at x = 22
+ * and 38.0 at x = 26 -- worst at the flight deck, which is the part of this
+ * aeroplane people look at. That is what Jason meant by the second level
+ * looking like a cylinder combined with the rest of the body.
  *
- * The crown reaches exactly 4.40 at x = 26, which is where `sim/aircraft.ts`
- * puts its upper-deck contact point. The deck runs 20 m of visible length back
- * to x = +13, where the crown drops under the tube's 3.25 and the fairing
- * ends: longer than the 747-400's, which is what the -8 is. The forward end
- * dives into the radome at x = 33 with its cap buried, so there is no flat
- * face at the front of the flight deck roof.
+ * `LoftSection.crownZRadius` is the degree of freedom that was missing: it
+ * lets ONE section be wide at the main deck and narrower at the crown. So
+ * `FUSELAGE_SECTIONS` above carries the hump itself, morphing from a circle
+ * aft of the wing to an egg at the flight deck, and there is no second surface
+ * to crease against.
  */
-const HUMP_SECTIONS: readonly LoftSection[] = [
-  { x: 7, yRadius: 0.85, zRadius: 1.2, yOffset: 1.05 },
-  { x: 11, yRadius: 1.7, zRadius: 2.05, yOffset: 1.3 },
-  { x: 14, yRadius: 2.25, zRadius: 2.55, yOffset: 1.5 },
-  { x: 18, yRadius: 2.6, zRadius: 2.85, yOffset: 1.62 },
-  { x: 22, yRadius: 2.73, zRadius: 2.95, yOffset: 1.65 },
-  { x: 26, yRadius: 2.75, zRadius: 2.95, yOffset: 1.65 },
-  // Forward of the cabin the deck HANDS THE CROWN OVER to the nose loft and
-  // dies inside it by x = 30.7. Carrying it further forward is what put a
-  // flight-deck capsule in a valley on the nose; see the note on NOSE_SECTIONS.
-  // The crown falls 4.25, 3.95 across these stations and the nose picks it up
-  // at 3.70, so the top line never steps.
-  { x: 28, yRadius: 2.6, zRadius: 2.62, yOffset: 1.65 },
-  { x: 29.2, yRadius: 2.25, zRadius: 2.2, yOffset: 1.7 },
-  { x: 30.1, yRadius: 1.55, zRadius: 1.6, yOffset: 1.6 },
-  { x: 30.7, yRadius: 0.55, zRadius: 0.65, yOffset: 1.15 },
-];
 
 /** Upper deck floor, 2.6 m above the main deck's and 2.25 m below the crown. */
 const UPPER_DECK_FLOOR_Y = 1.95;
@@ -420,10 +533,19 @@ function skinPoint(
   const yRadius = alongPanel(low.yRadius, high.yRadius, t);
   const zRadius = alongPanel(low.zRadius, high.zRadius, t);
   const yOffset = alongPanel(low.yOffset ?? 0, high.yOffset ?? 0, t);
+  const crownZRadius = alongPanel(
+    low.crownZRadius ?? low.zRadius,
+    high.crownZRadius ?? high.zRadius,
+    t,
+  );
   const rise = (y - yOffset) / yRadius;
-  const z = zRadius * Math.sqrt(Math.max(0, 1 - rise * rise));
-  // Outward normal of an ellipse at that point, as (dy, dz).
-  return { z, tilt: Math.atan2(rise / yRadius, z / (zRadius * zRadius)) };
+  // The same crown taper the loft builder applies, or every window forward of
+  // the wing would be placed against an ellipse the skin no longer is.
+  const lift = Math.max(0, rise) ** 2 * (3 - 2 * Math.max(0, rise));
+  const halfWidth = zRadius + (crownZRadius - zRadius) * lift;
+  const z = halfWidth * Math.sqrt(Math.max(0, 1 - rise * rise));
+  // Outward normal at that point, as (dy, dz).
+  return { z, tilt: Math.atan2(rise / yRadius, z / (halfWidth * halfWidth)) };
 }
 
 /**
@@ -443,6 +565,11 @@ function skinPoint(
  * instead of 10,944 — an eighth of this airframe's budget bought back for
  * something no camera in the game can resolve.
  */
+/** Linear-space navy, the rudder's own colour: vertex colour multiplies albedo. */
+const CHEATLINE_LINEAR: readonly [number, number, number] = [0.011, 0.042, 0.147];
+/** Half a metre either side of the window line, so it reads at 112 m. */
+const CHEATLINE_HALF_HEIGHT = 0.5;
+
 const MAIN_DECK_WINDOW_COUNT = 88;
 const MAIN_DECK_WINDOW_FORWARD_X = 24.2;
 const MAIN_DECK_WINDOW_Y = 0.2;
@@ -589,7 +716,6 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const bodyRecipe = {
     seed: 0x7478_0001,
     baseColor: 0xf4f5f3,
-    liveryColor: 0x1b3a6b,
     roughness: 0.31,
     metallic: 0.14,
     sootStrength: 0.3,
@@ -597,6 +723,23 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // The 64-pixel maps stretch over a 72 m fuselage — twice the Global's
     // reach, so the panel grid has to be weaker again or it reads as quilting.
     panelStrength: 0.34,
+    // THE LIVERY COLOUR IS THE BASE COLOUR, which retires the UV decal on the
+    // whole airframe rather than only on the wing.
+    //
+    // The paint synthesis draws its `livery-decal` feature as a diagonal band
+    // in UV SPACE -- `fract(u - 0.37v + 0.18)` near 0.5 -- and hands every
+    // mesh its own 0..1 tile. That is not a cheatline, it is a slash at
+    // whatever angle each mesh's UVs happen to give it, and on an aeroplane
+    // made of this many parts the result is a row of disconnected diagonals
+    // that never meet: exactly Jason's "the lines on the aircraft seem all
+    // disjointed". No choice of UVs fixes it, because the band is defined in
+    // a space each mesh owns separately.
+    //
+    // With the two colours equal, `mix(value, livery, decal)` is the identity
+    // and the band is gone. The real livery goes on below as body-space vertex
+    // paint, where a boundary is a height and a station and crosses a mesh
+    // join without knowing it is there.
+    liveryColor: 0xf4f5f3,
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
   // THE WING IS PLAIN WHITE, and it is its own recipe for exactly one reason.
@@ -714,8 +857,41 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // 72 m from radome to tailcone, in four lofts: the parallel barrel, the
   // upswept tailcone, the drooped radome and the upper deck riding on top.
   const fuselage = build.loft("airliner-fuselage", FUSELAGE_SECTIONS, 28, body, root);
-  const radome = build.loft("airliner-radome", NOSE_SECTIONS, 24, body, root);
-  const upperDeck = build.loft("airliner-upper-deck", HUMP_SECTIONS, 20, body, root);
+  // 28 segments, matching the fuselage's, and the cheatline is why. Vertex
+  // paint SAMPLES a continuous function at each mesh's own vertices and the
+  // renderer interpolates between them, so two lofts with different
+  // circumferential spacing rebuild the same edge up to half a spacing apart.
+  // On the Global that was a 53 mm step at the tail join until the two counts
+  // were matched; here the band would cross the nose join the same way.
+  const radome = build.loft("airliner-radome", NOSE_SECTIONS, 28, body, root);
+
+  /*
+   * THE CHEATLINE, in BODY COORDINATES.
+   *
+   * A height and a station range, evaluated at each vertex, so it crosses the
+   * fuselage/radome join without knowing the join is there -- which is the
+   * whole difference from the UV band it replaces. It is multiplied into the
+   * skin as vertex colour rather than laid on as decal geometry, so it cannot
+   * z-fight at any range, and the paint's panel lines survive under it.
+   *
+   * Level with the MAIN DECK window row, and deep enough to read: at the chase
+   * camera's 112 m standoff a pixel is about 9 cm, so a band under half a
+   * metre would shimmer rather than draw.
+   */
+  for (const skin of [fuselage, radome]) {
+    paintVertexBand(skin, CHEATLINE_LINEAR, (x, y, z) => {
+      // Dies out before the tailcone's taper and before the radome's tip,
+      // where a level band would ride up over a shape that is no longer a tube.
+      const station = smoothStep(-24.5, -22, x) * (1 - smoothStep(30.5, 32.5, x));
+      if (station <= 0) return 0;
+      // Flanks only: a band defined by height alone wraps under the belly
+      // wherever the section is narrower than the cabin's.
+      const flank = Math.min(1, Math.abs(z) / 1.6);
+      return station * flank
+        * (1 - smoothStep(CHEATLINE_HALF_HEIGHT, CHEATLINE_HALF_HEIGHT + 0.22,
+          Math.abs(y - MAIN_DECK_WINDOW_Y)));
+    });
+  }
   // Upswept, ending at (-38, +1.2) where the sim puts its tailcone contact
   // point. The upsweep is what buys a 72 m aeroplane its rotation angle: the
   // mains are at x = -3, so 10.4 degrees of tail-strike margin comes entirely
@@ -798,7 +974,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           y: MAIN_DECK_WINDOW_Y,
         },
         {
-          sections: HUMP_SECTIONS,
+          sections: FUSELAGE_SECTIONS,
           count: UPPER_DECK_WINDOW_COUNT,
           forwardX: UPPER_DECK_WINDOW_FORWARD_X,
           y: UPPER_DECK_WINDOW_Y,
@@ -924,9 +1100,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
   ): TransformNode {
     const hinge = node(name, root, scene);
     hinge.position.set(x, y, side * z);
-    hinge.rotation.x = -side * (insideKink(z)
-      ? Math.atan2(WING_KINK_Y - WING_ROOT_Y, WING_KINK_Z - WING_ROOT_Z)
-      : Math.atan2(WING_RAKE_Y - WING_KINK_Y, WING_RAKE_Z - WING_KINK_Z));
+    hinge.rotation.x = -side * dihedralAt(z);
     return hinge;
   }
 
@@ -1026,46 +1200,73 @@ export function createAirliner(scene: Scene): AircraftVisual {
       ), scene);
     }
 
-    // SPOILERS, on the upper surface just ahead of the hinge line. Five a side
-    // — the 747 carries six, and the sixth lives where the inboard aileron is
-    // on this model. `speedBrakeDrag: 0.1` is entirely these panels; there is
-    // no fuselage airbrake on a transport.
-    //
-    // Wing-coloured and FLUSH. Standing them proud in the accent paint makes
-    // them read as hazard decals stuck on the wing rather than as the wing's
-    // own skin, which is the note Jason left on the Global's first version.
-    // Each one sits on the SWEPT hinge line and at its own station's upper
-    // surface, so its aft edge meets the flap it lives in front of at every
-    // station rather than only at one.
-    for (const spoiler of [
-      { name: "one", z: 6.6, span: 2.3, chord: 1.9 },
-      { name: "two", z: 9.3, span: 2.3, chord: 1.7 },
-      { name: "three", z: 18.2, span: 2.6, chord: 1.3 },
-      { name: "four", z: 21.4, span: 2.6, chord: 1.2 },
-      { name: "five", z: 24.6, span: 2.6, chord: 1.1 },
-    ]) {
-      // The node is the panel's FORWARD edge and its hinge, so it stands one
-      // chord ahead of the flap hinge line and the panel reaches back to it.
-      const brake = wingHinge(
-        `${sideName}-airliner-${spoiler.name}-spoiler`,
-        side,
-        spoiler.z,
-        hingeAt(spoiler.z) + spoiler.chord,
-        upperSurfaceY(spoiler.z),
-      );
-      const panel = build.box(
-        `${brake.name}-surface`,
-        spoiler.chord,
-        // 45 mm: thick enough to catch a highlight along its edge, thin enough
-        // to be a panel line rather than a step.
-        0.045,
-        spoiler.span,
-        wing,
-        brake,
-      );
-      // Hinged at its forward edge, so the panel lies entirely aft of the node
-      // and a negative pose angle lifts its trailing edge into the air.
-      panel.position.x = -spoiler.chord * 0.5;
+    /**
+     * SPOILERS. Six a side, which is what the aeroplane has: two inboard
+     * ground spoilers lying ahead of the inner flap and four outboard flight
+     * spoilers ahead of the outer one, with the inboard aileron's span left
+     * clear between the two groups.
+     *
+     * THEY ARE CONFORMED, and that is the repair in this pass. Built as
+     * axis-aligned boxes seated at one station's skin height, they measured
+     * between 44 mm (panel five) and 288 mm (panel one) clear of the wing at
+     * their CLOSEST corner and up to 583 mm proud at their worst — white
+     * plates standing off a wing they are supposed to lie in, and the error
+     * shrank monotonically outboard because it was the wing's dihedral being
+     * read off a single station. A box cannot lie in this surface: over a
+     * 2.9 m panel the skin moves by the dihedral, by the taper and by the
+     * thickness law, and no single height is right at more than one corner.
+     *
+     * Each panel is now a grid whose every vertex is placed by `wingSkinY` AT
+     * ITS OWN STATION AND CHORD FRACTION, so the dihedral, the taper and the
+     * section are absorbed by construction rather than corrected for. Both
+     * edges are at fixed CHORD FRACTIONS, which is what makes the hinge line
+     * exactly straight: within one wing panel the chord plane and the chord
+     * are each affine in z, so a fixed-fraction edge is a straight line in
+     * space and `hingeAlong` can turn the panel about it without wringing it.
+     * The aft edge stands 2.5% of chord ahead of the 70% hinge line, so it
+     * clears the flap's nose at every station instead of only at one.
+     */
+    for (const group of SPOILER_GROUPS) {
+      const rootZ = group.panels[0]!.rootZ;
+      const tipZ = group.panels[group.panels.length - 1]!.tipZ;
+      if (insideKink(rootZ) !== insideKink(tipZ)) {
+        throw new RangeError(`${group.name} straddles the wing kink; its hinge line would bend`);
+      }
+      const hingeX = chordFractionX(rootZ, SPOILER_HINGE_FRACTION);
+      const hingeY = wingSkinY(rootZ, SPOILER_HINGE_FRACTION, true) + SPOILER_PROUD;
+      // The node IS the hinge, at the group's inboard end on the hinge line.
+      // No dihedral is applied here and none is needed: the direction handed
+      // to `hingeAlong` below carries the real line, rise included.
+      const brake = node(`${sideName}-airliner-${group.name}`, root, scene);
+      brake.position.set(hingeX, hingeY, side * rootZ);
+      const patches = group.panels.map((panel) => {
+        const patch: SurfacePoint[][] = [];
+        for (let span = 0; span <= SPOILER_SPAN_SEGMENTS; span += 1) {
+          const z = panel.rootZ
+            + (panel.tipZ - panel.rootZ) * (span / SPOILER_SPAN_SEGMENTS);
+          const row: SurfacePoint[] = [];
+          for (let chord = 0; chord <= SPOILER_CHORD_SEGMENTS; chord += 1) {
+            const fraction = SPOILER_HINGE_FRACTION
+              + (SPOILER_AFT_FRACTION - SPOILER_HINGE_FRACTION)
+                * (chord / SPOILER_CHORD_SEGMENTS);
+            row.push({
+              x: chordFractionX(z, fraction) - hingeX,
+              y: wingSkinY(z, fraction, true) + SPOILER_PROUD - hingeY,
+              z: side * (z - rootZ),
+            });
+          }
+          patch.push(row);
+        }
+        return patch;
+      });
+      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, wing, brake);
+      // The hinge LINE: the panels' own forward edge, end to end. Sweep from
+      // the x term, dihedral and taper from the y term.
+      hingeAlong(brake, new Vector3(
+        chordFractionX(tipZ, SPOILER_HINGE_FRACTION) - hingeX,
+        wingSkinY(tipZ, SPOILER_HINGE_FRACTION, true) + SPOILER_PROUD - hingeY,
+        side * (tipZ - rootZ),
+      ), scene);
       speedBrakes.push(brake);
     }
   }
@@ -1824,11 +2025,34 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
   // camera clears; the tailcone and fairings behind them do not. One mesh has
   // one layer mask, so they cannot share one. The mask is put on the sources
+  /*
+   * EVERY part on a paint material carries a colour channel, painted or not.
+   *
+   * Vertex colour is an optional attribute, so after the cheatline only the
+   * fuselage and radome have one. `mergeStatic` refuses inputs whose vertex
+   * layouts differ -- correctly, since `MergeMeshes` would otherwise drop the
+   * channel from the merged result and quietly repaint the aeroplane white --
+   * so without this, adding a stripe to any other part is a build-time error
+   * rather than a stripe. White is the identity for a multiply, so this costs
+   * four floats a vertex and changes nothing on screen.
+   */
+  for (const mesh of build.meshes) {
+    if (mesh.material !== body && mesh.material !== wing) continue;
+    if (mesh.getVerticesData(VertexBuffer.ColorKind)) continue;
+    const vertices = mesh.getTotalVertices();
+    if (vertices === 0) continue;
+    mesh.setVerticesData(
+      VertexBuffer.ColorKind,
+      new Array<number>(vertices * 4).fill(1),
+      false,
+    );
+  }
+
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
-  configureCockpitLayers([fuselage, radome, upperDeck, windscreenFrame]);
+  configureCockpitLayers([fuselage, radome, windscreenFrame]);
   const fuselageShell = build.mergeStatic(
-    "airliner-fuselage-shell", [fuselage, radome, upperDeck], root);
+    "airliner-fuselage-shell", [fuselage, radome], root);
   build.mergeStatic("airliner-body-exterior", bodyExterior, root);
   // The fin and tailplanes are body-painted too, and are kept apart from the
   // group above only because they are `wingSurfaces` and the nacelles are not:

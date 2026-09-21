@@ -3,6 +3,7 @@
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -113,7 +114,10 @@ function authoredParts(visual: AircraftVisual): Map<string, AbstractMesh> {
  * frame for the aeroplane alone. The in-game capture agrees: the scene issued
  * 491 draws with the 747 against 264 with the Cessna.
  */
-const BEFORE = { meshes: 141, casters: 113, draws: 367 } as const;
+// 140, not 141: the separate `airliner-upper-deck` loft is gone. The forward
+// fuselage carries the hump itself now, because two intersecting closed lofts
+// cannot be tangent-continuous and left a 38-degree crease at the flight deck.
+const BEFORE = { meshes: 134, casters: 113, draws: 367 } as const;
 
 /** Every part that defines the shadow's OUTLINE on the ground. */
 const SILHOUETTE = new RegExp([
@@ -122,7 +126,7 @@ const SILHOUETTE = new RegExp([
   "-tailplane$",
   "^airliner-(vertical-stabilizer|dorsal-fin)$",
   "-engine-(nacelle|pylon)$",
-  "-(flap|spoiler|aileron|elevator)-surface$",
+  "-(flap|spoilers|aileron|elevator)-surface$",
   "^rudder-surface$",
   "-gear-(strut|side-brace|bogie-beam|door-leaf)$",
   "^airliner-nose-(strut|drag-brace)$",
@@ -169,22 +173,39 @@ describe("the 747-8's wing is one white surface", () => {
     const { scene } = build();
     const wingMounted = scene.meshes
       .map((mesh) => mesh.name)
-      .filter((name) => /wing$|-(flap|aileron|spoiler)-surface$|flap-track-canoe$/.test(name));
+      .filter((name) => /wing$|-(flap|aileron|spoilers)-surface$|flap-track-canoe$/.test(name));
     // NON-VACUITY: at least the two fixed wings, four flaps, four ailerons,
-    // ten spoilers and the canoes, whatever the fixed wing is later merged to.
-    expect(wingMounted.length).toBeGreaterThanOrEqual(2 + 4 + 4 + 10 + 1);
+    // four spoiler meshes -- two a side, each carrying the panels that share
+    // its hinge line -- and the canoes, whatever the fixed wing is later
+    // merged to.
+    expect(wingMounted.length).toBeGreaterThanOrEqual(2 + 4 + 4 + 4 + 1);
     for (const name of wingMounted) {
       const recipe = paintRecipe(scene, name);
       expect(recipe.liveryColor, `${name} still carries a livery band`).toBe(recipe.baseColor);
     }
   });
 
-  it("leaves the fuselage its cheatline", () => {
+  it("leaves the fuselage its cheatline, painted where a mesh join cannot break it", () => {
+    // This used to read the fuselage's RECIPE and assert its livery colour
+    // differed from its base -- that is, that it still carried the paint
+    // synthesis's UV band. It does not any more, and should not: that band is
+    // a diagonal in each mesh's own 0..1 tile, so it stepped and changed angle
+    // at every join and never formed a line at all. The cheatline is vertex
+    // paint in body coordinates now, so this reads the actual colours.
     const { scene } = build();
     const shell = scene.meshes.find((mesh) => /^airliner-fuselage/.test(mesh.name));
     expect(shell, "no fuselage mesh to read the cheatline off").toBeDefined();
-    const recipe = paintRecipe(scene, shell!.name);
-    expect(recipe.liveryColor).not.toBe(recipe.baseColor);
+    const colors = shell!.getVerticesData(VertexBuffer.ColorKind);
+    expect(colors, "the fuselage carries no vertex colour at all").toBeTruthy();
+    let painted = 0;
+    let white = 0;
+    for (let vertex = 0; vertex < colors!.length / 4; vertex += 1) {
+      if (colors![vertex * 4]! < 0.5) painted += 1; else white += 1;
+    }
+    // Both halves: a cheatline that covered everything would pass a "has
+    // paint" check just as well as one that covered nothing.
+    expect(painted, "no vertex is in the cheatline").toBeGreaterThan(20);
+    expect(white, "every vertex is in the cheatline").toBeGreaterThan(200);
   });
 });
 
@@ -220,12 +241,13 @@ describe("the 747-8's draw budget", () => {
   it("keeps every part of the shadow's outline in the shadow map", () => {
     const { visual } = build();
     const outline = [...authoredParts(visual)].filter(([name]) => SILHOUETTE.test(name));
-    // NON-VACUITY: 5 fuselage lofts, 8 wing panels, 2 tailplanes, fin and
-    // dorsal fin, 4 nacelles and 4 pylons, 4 flaps, 10 spoilers, 4 ailerons,
-    // 2 elevators, the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors,
-    // 2 nose members and 18 tyres.
+    // NON-VACUITY: 4 fuselage lofts -- it was 5 until the upper deck stopped
+    // being its own loft -- 8 wing panels, 2 tailplanes, fin and dorsal fin,
+    // 4 nacelles and 4 pylons, 4 flaps, 4 spoiler meshes, 4 ailerons, 2 elevators,
+    // the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors, 2 nose
+    // members and 18 tyres.
     expect(outline.map(([name]) => name).sort()).toHaveLength(
-      5 + 8 + 2 + 2 + 4 + 4 + 4 + 10 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
+      4 + 8 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
     );
     for (const [name, mesh] of outline) {
       expect(issuesDraw(mesh), `${name} is not drawn`).toBe(true);
@@ -358,29 +380,43 @@ function geometryCensus(visual: AircraftVisual): GeometryCensus {
 
 describe("folding the 747-8's static parts changes how it is drawn, not what is drawn", () => {
   it("adds up to the same geometry the unmerged airframe did", () => {
-    // MEASURED ON THE UNMERGED AIRFRAME, with this same census, one commit
-    // before the fold: 10,520 vertices in 141 meshes. The tolerances are for
-    // a vertex buffer stored as 32-bit floats; every one of these moved by
-    // less than 1e-6 when the parts were folded.
+    // RE-MEASURED after the forward fuselage became ONE egg-sectioned loft.
+    //
+    // These began as the unmerged airframe's census, taken one commit before
+    // the static fold to prove the fold moved no geometry, and they still
+    // defend that: any future merge that moves a vertex fails here. What they
+    // no longer are is the two-loft aeroplane's numbers, because retiring the
+    // separate hump changed the shape on purpose.
+    //
+    // The drop is the giveaway and it is worth reading rather than accepting:
+    // 10,520 vertices to 10,543 and 4,977 m^2 of surface to 4,697. Nearly 280
+    // square metres of that area was the two lobes' skin INSIDE each other,
+    // drawn and shaded and never visible. One surface has no inside.
+    //
+    // Then 10,543 to 10,663 when the spoilers were rebuilt: twelve conformed
+    // panels of 30 vertices where there were ten boxes of 24. The AREA barely
+    // moved (4,696.6 to 4,695.3 m^2) even though two panels were added, which
+    // is the seating repair showing up in the census — the boxes stood clear
+    // of the wing and counted their whole undersides, the panels lie in it.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_520);
-    expect(census.indices).toBe(49_728);
-    expect(census.minimum.x).toBeCloseTo(-38, 4);
-    expect(census.minimum.y).toBeCloseTo(-6.4, 4);
-    expect(census.minimum.z).toBeCloseTo(-34.35, 4);
-    expect(census.maximum.x).toBeCloseTo(34, 4);
-    expect(census.maximum.y).toBeCloseTo(13, 4);
-    expect(census.maximum.z).toBeCloseTo(34.35, 4);
-    expect(census.positionSum.x).toBeCloseTo(22_693.9287, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26_071.4805, 1);
-    expect(census.positionSum.z).toBeCloseTo(-22.032, 1);
-    expect(census.positionSquares).toBeCloseTo(6_817_933.69, 0);
-    expect(census.normalSum.x).toBeCloseTo(-347.8594, 2);
-    expect(census.normalSum.y).toBeCloseTo(120.1245, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.1001, 2);
-    expect(census.normalMoment).toBeCloseTo(10_520.2737, 1);
-    expect(census.signedVolume).toBeCloseTo(-3_480.1423, 2);
-    expect(census.area).toBeCloseTo(4_977.1418, 2);
+    expect(census.vertices).toBe(10_663);
+    expect(census.indices).toBe(51_552);
+    expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
+    expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
+    expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
+    expect(census.maximum.x).toBeCloseTo(34.0000, 4);
+    expect(census.maximum.y).toBeCloseTo(13.0000, 4);
+    expect(census.maximum.z).toBeCloseTo(34.3500, 4);
+    expect(census.positionSum.x).toBeCloseTo(22041.1093, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26413.0229, 1);
+    expect(census.positionSum.z).toBeCloseTo(-22.0320, 1);
+    expect(census.positionSquares).toBeCloseTo(6853278.81, 0);
+    expect(census.normalSum.x).toBeCloseTo(-345.9461, 2);
+    expect(census.normalSum.y).toBeCloseTo(124.4928, 2);
+    expect(census.normalSum.z).toBeCloseTo(0.0913, 2);
+    expect(census.normalMoment).toBeCloseTo(10632.1105, 1);
+    expect(census.signedVolume).toBeCloseTo(-3232.4065, 2);
+    expect(census.area).toBeCloseTo(4695.2708, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -413,7 +449,7 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // control surfaces, 8 fan parts, 6 door leaves, 39 gear parts) and each
     // must still be its own mesh under its own name.
     const hung = visual.meshes.filter((mesh) => mesh.parent !== visual.root);
-    expect(hung).toHaveLength(74);
+    expect(hung).toHaveLength(68);
     for (const mesh of hung) {
       expect(mesh.metadata?.mergedFrom, `${mesh.name} moves and was folded`).toBeUndefined();
     }
@@ -460,7 +496,8 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     const formerCockpitParts = [
       "airliner-fuselage",
       "airliner-radome",
-      "airliner-upper-deck",
+      // `airliner-upper-deck` was here until the hump became part of the
+      // fuselage loft; the skin it used to hide is hidden by the fuselage now.
       "airliner-windscreen-center-post",
     ].map((name) => {
       const carrier = parts.get(name);

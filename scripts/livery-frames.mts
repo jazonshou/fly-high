@@ -76,7 +76,7 @@ async function view(): Promise<string> {
 
 /** The aeroplane's own pixels, so a crop lands on paint rather than on sky. */
 async function aircraftRect(): Promise<{ x: number; y: number; w: number; h: number } | null> {
-  return page.evaluate(async () => {
+  return page.evaluate(async (airframe: string) => {
     (globalThis as unknown as Record<string, unknown>).__name ??= (fn: unknown) => fn;
     const storeUrl = performance.getEntriesByType("resource")
       .map((r) => r.name).find((n) => /\/deps\/engineStore-[^/]*\.js/.test(n));
@@ -97,7 +97,10 @@ async function aircraftRect(): Promise<{ x: number; y: number; w: number; h: num
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     // Anything named for this airframe: fuselage, fin, nacelles, winglets.
     for (const mesh of scene.meshes) {
-      if (!/bizjet|aileron|elevator|rudder/.test(mesh.name) || mesh.getTotalVertices() === 0) continue;
+      // Anything belonging to THIS airframe. Matching one kind's prefix was a
+      // bizjet-only habit and cropped the 747 to its tail surfaces.
+      if (mesh.getTotalVertices() === 0) continue;
+      if (!new RegExp(`${airframe}|aileron|elevator|rudder|flaperon`).test(mesh.name)) continue;
       mesh.computeWorldMatrix(true);
       for (const p of mesh.getBoundingInfo().boundingBox.vectorsWorld) {
         const cw = p.x * m[3]! + p.y * m[7]! + p.z * m[11]! + m[15]!;
@@ -109,7 +112,7 @@ async function aircraftRect(): Promise<{ x: number; y: number; w: number; h: num
       }
     }
     return Number.isFinite(minX) ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null;
-  });
+  }, kind);
 }
 
 /**
@@ -135,7 +138,7 @@ async function stationRect(bodyX: number): Promise<{ x: number; y: number; w: nu
       meshes: { name: string; computeWorldMatrix: (f: boolean) => void; getWorldMatrix: () => { m: number[] } }[];
       getTransformMatrix: () => { m: number[] };
     } | undefined;
-    const anchor = scene?.meshes.find((mesh) => mesh.name === "bizjet-fuselage");
+    const anchor = scene?.meshes.find((mesh) => /fuselage|shell/.test(mesh.name));
     if (!scene || !anchor) return null;
     anchor.computeWorldMatrix(true);
     const w = anchor.getWorldMatrix().m;

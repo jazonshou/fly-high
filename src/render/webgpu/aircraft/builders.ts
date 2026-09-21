@@ -3,6 +3,7 @@ import {
   AIRFRAME_TRANSPARENCY_RENDERING_GROUP_ID,
   keepOpaqueDepthForRenderingGroup,
 } from "../core/RenderingGroups";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
@@ -52,6 +53,15 @@ export interface PlanformPoint {
   readonly z: number;
 }
 
+export interface SurfacePoint {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/** A patch of some other surface, as `[span][chord]` points in one frame. */
+export type SurfacePatch = readonly (readonly SurfacePoint[])[];
+
 export interface VerticalProfilePoint {
   readonly x: number;
   readonly y: number;
@@ -70,6 +80,27 @@ export interface LoftSection {
    * flat-wide fuselage a pure ellipse cannot express.
    */
   readonly squareness?: number;
+  /**
+   * Half-width at the CROWN, for a section that is not the same width all the
+   * way up — an egg rather than an ellipse.
+   *
+   * A wide-body's forward fuselage is widest at the main deck floor and
+   * narrower at the top, and a superellipse cannot say that: `zRadius` applies
+   * equally above and below the section's centre. Modelling it instead as two
+   * intersecting lofts, which is what the 747's raised upper deck was, leaves
+   * a crease where the two surfaces cross — 31 degrees of included angle on
+   * that aeroplane, which reads as a second tube laid on the first.
+   *
+   * With this, the half-width stays `zRadius` over the whole lower half and
+   * eases to `crownZRadius` by the crown, so the lower lobe is untouched and
+   * the upper one leans in. The ramp is a smoothstep of the section's own
+   * height, whose derivative is zero at both ends, so the taper does not
+   * introduce a crease of its own at the equator while removing one higher up.
+   *
+   * Defaults to `zRadius`, where the arithmetic is the identity and every
+   * existing loft is bit-identical.
+   */
+  readonly crownZRadius?: number;
 }
 
 export interface AirfoilWingOptions {
@@ -92,6 +123,50 @@ interface VertexMeshOptions {
   readonly colors?: readonly number[];
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly castsShadow?: boolean;
+}
+
+/**
+ * Multiplies a colour into a mesh's own vertices where `coverage` says so.
+ *
+ * Vertex colour lands on `surfaceAlbedo` after the albedo texture's sRGB
+ * decode, so the colour passed in is LINEAR and the paint's panel lines,
+ * rivets and soot all survive underneath it.
+ *
+ * The edge is only as sharp as the mesh is tessellated, and that is the
+ * honest limit of this technique: on the 48-segment fuselage loft a vertex
+ * every 0.14 m around the section means the stripe fades over about that
+ * much. It buys, in exchange, a line that cannot z-fight at any range —
+ * which a decal mesh a few millimetres off a 33 m fuselage certainly does.
+ */
+export function paintVertexBand(
+  mesh: Mesh,
+  linearColor: readonly [number, number, number],
+  coverage: (x: number, y: number, z: number) => number,
+): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!positions) return;
+  const count = positions.length / 3;
+  const existing = mesh.getVerticesData(VertexBuffer.ColorKind);
+  const colors = existing ? [...existing] : new Array<number>(count * 4).fill(1);
+  let painted = 0;
+  for (let vertex = 0; vertex < count; vertex += 1) {
+    const amount = Math.min(1, Math.max(0, coverage(
+      positions[vertex * 3]!,
+      positions[vertex * 3 + 1]!,
+      positions[vertex * 3 + 2]!,
+    )));
+    if (amount <= 0) continue;
+    painted += 1;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const base = colors[vertex * 4 + channel]!;
+      colors[vertex * 4 + channel] = base + (linearColor[channel]! - base) * amount;
+    }
+    colors[vertex * 4 + 3] = 1;
+  }
+  // A band that caught no vertex is a line nobody will ever see, and it is the
+  // silent failure this whole pass is about. Say so at build time instead.
+  if (painted === 0) throw new Error(`${mesh.name}: livery band covered no vertices`);
+  mesh.setVerticesData(VertexBuffer.ColorKind, colors, false);
 }
 
 export class AircraftBuildContext {
@@ -269,6 +344,137 @@ export class AircraftBuildContext {
     return this.vertexMesh(name, positions, indices, material, parent, { uvs });
   }
 
+  /**
+   * A thin panel whose TOP FACE IS A GIVEN PATCH OF SOME OTHER SURFACE, handed
+   * in as a grid of points, and whose bottom face is that patch dropped by a
+   * constant thickness.
+   *
+   * WHY A GRID AND NOT A BOX. A spoiler, an airbrake or an access panel lies
+   * IN the skin of something curved. Drawing it as a box and choosing one
+   * height for the whole box can only be right at one station: on a wing with
+   * dihedral, taper and a thickness that follows the local chord, every other
+   * station is wrong by however much the skin moved. On the 747 that error ran
+   * from 44 mm at the inboard panel to 288 mm at the outboard one, and the
+   * panels read as plates hovering over the wing with daylight beneath them.
+   *
+   * Handing in the grid moves the surface law to the caller, who is the only
+   * one who knows it, and leaves this method the parts that are the same for
+   * every such panel: topology, rim, winding and normals. The caller evaluates
+   * the skin AT EACH OF THE PANEL'S OWN VERTICES, so dihedral and twist are
+   * absorbed by construction rather than corrected for afterwards.
+   *
+   * Each patch is `[span][chord]` points in the parent's frame. SEVERAL PATCHES
+   * GO IN ONE MESH because panels that share a hinge line share a draw call:
+   * the 747's four outboard spoilers all lie on the 54.5% chord line of the
+   * same wing panel, so they turn together about one axis and there is no
+   * reason for them to be four meshes. Six panels a side cost four draws, not
+   * twelve.
+   *
+   * Winding is taken from the patch rather than required of it: the first
+   * quad's normal decides which way round the triangles go, so a panel
+   * mirrored to the other wing — whose grid runs the opposite way in z — comes
+   * out facing the same way without the call site having to know it is the
+   * mirrored one.
+   */
+  conformedPanels(
+    name: string,
+    patches: readonly SurfacePatch[],
+    thickness: number,
+    material: Material,
+    parent: TransformNode,
+  ): Mesh {
+    if (patches.length === 0) throw new RangeError("A conformed panel mesh needs at least one patch");
+    if (!(thickness > 0)) throw new RangeError("A conformed panel needs a positive thickness");
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    for (const grid of patches) {
+      this.appendConformedPatch(grid, thickness, positions, uvs, indices);
+    }
+    return this.vertexMesh(name, positions, indices, material, parent, {
+      uvs,
+      metadata: { aircraftGeometry: "conformed-panel", patches: patches.length },
+    });
+  }
+
+  private appendConformedPatch(
+    grid: SurfacePatch,
+    thickness: number,
+    positions: number[],
+    uvs: number[],
+    indices: number[],
+  ): void {
+    const base = positions.length / 3;
+    const spanRows = grid.length;
+    if (spanRows < 2) throw new RangeError("A conformed panel needs at least two span rows");
+    const chordColumns = grid[0]!.length;
+    if (chordColumns < 2) throw new RangeError("A conformed panel needs at least two chord columns");
+    for (const row of grid) {
+      if (row.length !== chordColumns) {
+        throw new RangeError("A conformed panel's span rows must all be the same length");
+      }
+    }
+
+    for (const face of [0, 1]) {
+      for (let span = 0; span < spanRows; span += 1) {
+        for (let chord = 0; chord < chordColumns; chord += 1) {
+          const point = grid[span]![chord]!;
+          positions.push(point.x, point.y - face * thickness, point.z);
+          uvs.push(chord / (chordColumns - 1), span / (spanRows - 1));
+        }
+      }
+    }
+
+    // Which way the first quad turns, so the top face ends up facing up on
+    // both wings. Cross the chordwise edge into the spanwise one; if that
+    // points down, the grid runs the other way round and every triangle below
+    // is emitted reversed.
+    const a0 = grid[0]![0]!;
+    const alongChord = { x: grid[0]![1]!.x - a0.x, y: grid[0]![1]!.y - a0.y, z: grid[0]![1]!.z - a0.z };
+    const alongSpan = { x: grid[1]![0]!.x - a0.x, y: grid[1]![0]!.y - a0.y, z: grid[1]![0]!.z - a0.z };
+    const upward = alongChord.z * alongSpan.x - alongChord.x * alongSpan.z;
+    if (upward === 0) throw new RangeError("A conformed panel's first quad is degenerate");
+    // INVERTED, because `upward` is the mathematical right-handed cross product
+    // and Babylon's RH mesh winding is its inverse — the same reversal
+    // `airfoilWing` applies to its whole index buffer at the end.
+    const flipped = upward > 0;
+    const quad = (p: number, q: number, r: number, s: number): void => {
+      if (flipped) indices.push(base + p, base + r, base + q, base + q, base + r, base + s);
+      else indices.push(base + p, base + q, base + r, base + q, base + s, base + r);
+    };
+
+    const underside = spanRows * chordColumns;
+    for (let span = 0; span < spanRows - 1; span += 1) {
+      for (let chord = 0; chord < chordColumns - 1; chord += 1) {
+        const corner = span * chordColumns + chord;
+        quad(corner, corner + 1, corner + chordColumns, corner + chordColumns + 1);
+        quad(
+          underside + corner + 1,
+          underside + corner,
+          underside + corner + chordColumns + 1,
+          underside + corner + chordColumns,
+        );
+      }
+    }
+
+    // The rim, walked as one boundary loop of the top face and stitched to the
+    // matching vertex of the bottom one. Walking a loop rather than doing four
+    // separate edges is what keeps the corners closed.
+    const loop: number[] = [];
+    for (let chord = 0; chord < chordColumns; chord += 1) loop.push(chord);
+    for (let span = 1; span < spanRows; span += 1) loop.push(span * chordColumns + chordColumns - 1);
+    for (let chord = chordColumns - 2; chord >= 0; chord -= 1) {
+      loop.push((spanRows - 1) * chordColumns + chord);
+    }
+    for (let span = spanRows - 2; span >= 1; span -= 1) loop.push(span * chordColumns);
+    for (let step = 0; step < loop.length; step += 1) {
+      const here = loop[step]!;
+      const next = loop[(step + 1) % loop.length]!;
+      quad(next, here, underside + next, underside + here);
+    }
+
+  }
+
   verticalProfile(
     name: string,
     outline: readonly VerticalProfilePoint[],
@@ -319,6 +525,10 @@ export class AircraftBuildContext {
       if (!(squareness >= 2)) {
         throw new RangeError("Aircraft loft squareness must be at least 2");
       }
+      const crownZRadius = section.crownZRadius ?? section.zRadius;
+      if (!(crownZRadius > 0)) {
+        throw new RangeError("Aircraft loft crown radius must be positive");
+      }
       const shapeExponent = 2 / squareness;
       for (let radial = 0; radial <= radialSegments; radial += 1) {
         const phase = radial / radialSegments;
@@ -329,10 +539,17 @@ export class AircraftBuildContext {
         // ellipse the pre-fix-pack loft produced.
         const yShape = Math.sign(cosine) * Math.abs(cosine) ** shapeExponent;
         const zShape = Math.sign(sine) * Math.abs(sine) ** shapeExponent;
+        // The crown taper: nothing on the lower half, easing to
+        // `crownZRadius` by the top. `rise` is 0 at and below the equator and
+        // 1 at the crown; the smoothstep gives it zero slope at both ends, so
+        // the widest point stays tangent-continuous.
+        const rise = Math.max(0, yShape);
+        const lift = rise * rise * (3 - 2 * rise);
+        const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
         positions.push(
           section.x,
           (section.yOffset ?? 0) + yShape * section.yRadius,
-          (section.zOffset ?? 0) + zShape * section.zRadius,
+          (section.zOffset ?? 0) + zShape * halfWidth,
         );
         uvs.push((section.x - minimumX) / length, phase);
       }
@@ -774,8 +991,17 @@ function mixNumber(a: number, b: number, amount: number): number {
   return a + (b - a) * amount;
 }
 
-/** Closed trailing-edge form of the classic NACA four-digit thickness law. */
-function nacaThickness(chordFraction: number, thicknessRatio: number): number {
+/**
+ * Closed trailing-edge form of the classic NACA four-digit thickness law.
+ *
+ * Exported because an airframe that wants to lay a part flush INTO the wing —
+ * a spoiler panel, a pylon shoulder — has to evaluate the same section the
+ * wing itself was drawn from. Re-deriving it at the call site is how a part
+ * ends up seated on a surface the wing does not have: the 747 carried a
+ * hand-evaluated 0.3753 for this function's value at 60% chord, where it is
+ * in fact 0.3789, and every pylon was seated 6 mm off as a result.
+ */
+export function nacaThickness(chordFraction: number, thicknessRatio: number): number {
   const x = Math.min(1, Math.max(0, chordFraction));
   return 5 * thicknessRatio * (
     0.2969 * Math.sqrt(x)
