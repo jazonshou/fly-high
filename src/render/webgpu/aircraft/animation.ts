@@ -16,10 +16,82 @@ export interface AircraftAnimationPose {
   readonly gearDoorTravel: number;
   readonly speedBrake: number;
   /**
+   * Spoiler deployment, per GROUP and per WING, in radians. POSITIVE IS
+   * DEPLOYED, unlike `speedBrake` above, which carries the sign its hinge
+   * wants; the caller negates.
+   *
+   * Only the 747 has spoilers grouped this way. The others fill it with zeros
+   * and drive their own panels from `speedBrake`, which is the single symmetric
+   * number they all want.
+   */
+  readonly spoilers: AircraftSpoilerPose;
+  /**
    * Trailing-edge-down rotation of every flap panel, in radians. Positive is
    * down, the same sense the ailerons and elevator use.
    */
   readonly flap: number;
+}
+
+/**
+ * HOW A LARGE TRANSPORT'S SPOILERS ACTUALLY WORK, which is three jobs from two
+ * inputs, and why one number could not do it.
+ *
+ * The twelve panels split into INBOARD GROUND SPOILERS and OUTBOARD FLIGHT
+ * SPOILERS. The ground spoilers deploy only on the ground — on touchdown they
+ * dump the wing's remaining lift on to the wheels — and stay stowed in the air.
+ * The flight spoilers do double duty: they rise symmetrically as the SPEED
+ * BRAKE, and they also rise DIFFERENTIALLY with roll input, on the down-going
+ * wing only, to augment the ailerons. The two demands are summed on each wing
+ * and limited to the panel's travel, so a speed-braking aeroplane rolled hard
+ * right does not ask its starboard panels for more than they have.
+ *
+ * That arrangement is the aeroplane's. THE ANGLES BELOW ARE NOT TRANSCRIBED —
+ * they are chosen for how they read at chase range, and are marked so rather
+ * than presented as a manual's figures.
+ */
+export interface AircraftSpoilerPose {
+  /** Inboard ground spoilers, both wings together. */
+  readonly ground: number;
+  readonly flightPort: number;
+  readonly flightStarboard: number;
+}
+
+const SPOILERS_STOWED: AircraftSpoilerPose = Object.freeze({
+  ground: 0,
+  flightPort: 0,
+  flightStarboard: 0,
+});
+
+/** Full travel, which is what the ground spoilers take and what caps the sum. */
+const SPOILER_FULL = 0.78;
+/** The speed brake in flight, deliberately short of full. */
+const SPOILER_FLIGHT_BRAKE = 0.35;
+/** What full roll input adds, on the down-going wing only. */
+const SPOILER_ROLL = 0.45;
+
+function resolveSpoilers(
+  kind: AircraftKind,
+  aileron: number,
+  brake: number,
+  onGround: boolean,
+): AircraftSpoilerPose {
+  if (kind !== "airliner") return SPOILERS_STOWED;
+  const symmetric = brake * (onGround ? SPOILER_FULL : SPOILER_FLIGHT_BRAKE);
+  // A POSITIVE `aileron` IS A ROLL TO THE RIGHT, which drops the right wing —
+  // so the STARBOARD panels are the ones that rise. The sign is pinned on the
+  // built meshes in `render.webgpu-control-surface-sides`, with the flipped
+  // mix asserted to fail the same measurement, because "right stick raises the
+  // right spoilers" reads equally true backwards to anyone not holding the
+  // body-axis contract in their head.
+  const starboardRoll = Math.max(0, aileron) * SPOILER_ROLL;
+  const portRoll = Math.max(0, -aileron) * SPOILER_ROLL;
+  const limit = (value: number) => Math.min(SPOILER_FULL, Math.max(0, value));
+  return {
+    // Ground spoilers are armed by the brake and grounded by the wheels.
+    ground: onGround ? brake * SPOILER_FULL : 0,
+    flightPort: limit(symmetric + portRoll),
+    flightStarboard: limit(symmetric + starboardRoll),
+  };
 }
 
 /**
@@ -170,6 +242,7 @@ export function resolveAircraftAnimationPose(
       gearOffsetY: -0.24 * (1 - easedGear),
       gearDoorTravel: Math.sin(Math.PI * gearTravel) * 1.05,
       speedBrake: -brake * 0.68,
+      spoilers: resolveSpoilers(kind, aileron, brake, state.onGround),
       flap: flaps * travel.flap,
     };
   }
@@ -202,6 +275,7 @@ export function resolveAircraftAnimationPose(
     gearOffsetY: 0,
     gearDoorTravel: 0,
     speedBrake: 0,
+    spoilers: SPOILERS_STOWED,
     flap: flaps * travel.flap,
   };
 }

@@ -96,6 +96,13 @@ function deflect(visual: AircraftVisual, amount: number): void {
     // driven by this pose", so the gate reported a confident pass over an
     // airframe whose spoilers it had never looked at.
     brake: amount,
+    // ON THE GROUND, and for the same reason. The 747's inboard spoilers are
+    // GROUND spoilers: they are stowed in the air by design, so an airborne
+    // pose cannot drive them and this sweep silently dropped from fifteen
+    // surfaces to thirteen the moment that behaviour was implemented. Every
+    // other surface here deflects on the ground too, so the pose costs
+    // nothing and covers two more hinges.
+    onGround: true,
   };
   visual.update(state, 1 / 60);
 }

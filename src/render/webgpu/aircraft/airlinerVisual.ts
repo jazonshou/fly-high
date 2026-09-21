@@ -1018,6 +1018,21 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const fixedTail: AbstractMesh[] = [];
   const flaps: TransformNode[] = [];
   const speedBrakes: TransformNode[] = [];
+  /**
+   * The same nodes, but knowing which GROUP and which WING each one is.
+   *
+   * `CommonRig.speedBrakes` is a bare array driven by one angle, which is all
+   * three other airframes want. This aeroplane's twelve panels do three jobs:
+   * the inboard pair are ground spoilers, the outboard four are flight
+   * spoilers that double as the speed brake AND rise differentially with roll.
+   * Reading that off the array's ORDER would work today and break the first
+   * time someone adds a group or swaps the loop.
+   */
+  const spoilerGroups: {
+    node: TransformNode;
+    group: (typeof SPOILER_GROUPS)[number]["name"];
+    side: 1 | -1;
+  }[] = [];
 
   // STARBOARD IS BODY +Z. Every side loop in this file runs [1, -1] and calls
   // +1 starboard, so the name and the sign cannot drift apart the way they did
@@ -1269,6 +1284,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         side * (tipZ - rootZ),
       ), scene);
       speedBrakes.push(brake);
+      spoilerGroups.push({ node: brake, group: group.name, side });
     }
   }
 
@@ -2199,7 +2215,15 @@ export function createAirliner(scene: Scene): AircraftVisual {
       for (const door of rig.gearDoors) {
         door.hinge.rotation.x = door.sign * pose.gearDoorTravel;
       }
-      for (const speedBrake of rig.speedBrakes) speedBrake.rotation.z = pose.speedBrake;
+      // NEGATED, because `pose.spoilers` states a deployment angle while the
+      // hinge wants the sign that lifts a trailing edge — the same sign
+      // `pose.speedBrake` already carries for the other three airframes.
+      for (const panel of spoilerGroups) {
+        const deployed = panel.group === "ground-spoilers"
+          ? pose.spoilers.ground
+          : (panel.side > 0 ? pose.spoilers.flightStarboard : pose.spoilers.flightPort);
+        panel.node.rotation.z = -deployed;
+      }
     },
     setLightState(lights) {
       if (disposed) return;
