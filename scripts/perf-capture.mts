@@ -2649,6 +2649,13 @@ export interface PerfCaptureReport {
      * plumbing was missing when the run was taken.
      */
     readonly profileOverride: Readonly<Record<string, unknown>> | null;
+    /**
+     * WHICH AEROPLANE FLEW IT, for the same reason as `profileOverride` above
+     * — and this report did not carry it until a same-tree kind comparison had
+     * to establish its own arms from the draw counts and the baseline SSIM,
+     * because nothing in the file named them.
+     */
+    readonly aircraft: string;
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;
