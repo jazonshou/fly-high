@@ -243,7 +243,13 @@ describe("a loft's crown seam", () => {
       // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
       // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
       // the old cockpit or the new one. The 747 keeps its pin; the jet's is re-pinned separately, below.
-      trainer: "b9751f9b",
+      // RE-PINNED AGAIN for the trainer by the instruments step (jazonshou/cockpit-instruments):
+      // its five needle meshes now live in a hub-local frame (vertices about the dial's centre,
+      // the mesh's own transform carrying the frame) and have a pointer and a tail. Checked
+      // mesh by mesh against the tip it was cut from (da86f47), positions AND indices: this
+      // step left the trainer's other 63 meshes, the jet's 76, the Global's 99 and the 747's
+      // 91 bit-identical.
+      trainer: "06a8f37d",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

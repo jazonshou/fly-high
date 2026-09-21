@@ -1486,13 +1486,17 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // side walls are COCKPIT-ONLY parts, built to angles from the pilot's left-seat
   // eye in `cockpit/bizjetCockpit.ts`. `configureCockpitOnlyParts` makes them
   // invisible until cockpit view is entered and never a shadow caster.
-  const cockpitOnlyParts = buildBizjetCockpit(build, root, {
+  const cockpit = buildBizjetCockpit(build, root, {
     interior,
     dark,
     instrumentFace,
     instrumentMarking,
   });
+  const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
+  // The attitude ball turns only while cockpit view is on: outside it every part
+  // of it is invisible, and the visual already gets the whole state every frame.
+  let cockpitViewOn = false;
 
   // THE ENGINES. Two GE Passport 20s on pylons off the REAR FUSELAGE, not
   // under the wing — this is a rear-engined aeroplane and hanging them under a
@@ -1816,6 +1820,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
+      if (cockpitViewOn) cockpit.update(state);
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;
@@ -1857,6 +1862,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      cockpitViewOn = enabled;
       setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {

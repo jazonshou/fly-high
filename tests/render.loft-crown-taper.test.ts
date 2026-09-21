@@ -198,7 +198,13 @@ describe("the loft's crown taper", () => {
       // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
       // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
       // the old cockpit or the new one. The 747 keeps its pin; the jet's is re-pinned separately, below.
-      trainer: "a976d713",
+      // RE-PINNED AGAIN for the trainer by the instruments step (jazonshou/cockpit-instruments):
+      // its five needle meshes now live in a hub-local frame (vertices about the dial's centre,
+      // the mesh's own transform carrying the frame) and have a pointer and a tail. Checked
+      // mesh by mesh against the tip it was cut from (da86f47), positions AND indices: this
+      // step left the trainer's other 63 meshes, the jet's 76, the Global's 99 and the 747's
+      // 91 bit-identical.
+      trainer: "a6cab9e5",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",

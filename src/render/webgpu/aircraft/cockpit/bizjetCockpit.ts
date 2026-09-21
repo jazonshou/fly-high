@@ -3,8 +3,10 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
+import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
  * What a pilot in the Global's LEFT seat sees, built to angles.
@@ -382,11 +384,22 @@ const WALL = Object.freeze({
  * is no pedestal: it would top out at -30 degrees between the
  * seats, below the frame at every azimuth it could be seen from.
  */
+/** What `buildBizjetCockpit` hands back: the meshes, and the step that moves the attitude ball. */
+export interface BizjetCockpit {
+  /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
+  readonly parts: readonly AbstractMesh[];
+  /**
+   * Turn the attitude ball to what `state` reads. The visual calls this from its
+   * `update` ONLY while cockpit view is on.
+   */
+  update(state: FlightVisualState): void;
+}
+
 export function buildBizjetCockpit(
   build: AircraftBuildContext,
   root: TransformNode,
   materials: BizjetCockpitMaterials,
-): readonly AbstractMesh[] {
+): BizjetCockpit {
   const parts: AbstractMesh[] = [];
   const e = eye();
   const p = BIZJET_PANEL;
@@ -467,7 +480,8 @@ export function buildBizjetCockpit(
   const bar = build.box(
     "bizjet-pfd-pitch-bar", pfd.thickness, pfd.barHeight, pfd.barLength, white, pivot,
   );
-  bar.position.set(-(pfd.thickness / 2 + pfd.barOffset + pfd.thickness / 2), 0, 0);
+  const barFront = -(pfd.thickness / 2 + pfd.barOffset + pfd.thickness / 2);
+  bar.position.set(barFront, 0, 0);
   parts.push(bar);
 
   // THE WINDSCREEN POSTS, each in one vertical plane through the eye for the
@@ -527,5 +541,21 @@ export function buildBizjetCockpit(
     ));
   }
   parts.push(build.mergeStatic("bizjet-side-walls", wallSources, root));
-  return parts;
+
+  // THE ATTITUDE BALL'S STEP: the pivot turns the sky, the ground and the bar
+  // about the viewing axis, and the bar slides along the pivot's own up.
+  //
+  // The pivot's local X is body +X, which points AWAY from the pilot (the dials'
+  // normals point toward him, which is the other way round), and a positive
+  // rotation about an axis pointing away from the viewer is CLOCKWISE to him. So
+  // the clockwise-as-seen angle `attitudeHorizonDegrees` (minus the bank) goes in
+  // as it is. Held to the screen by `tests/render.cockpit-instruments.test.ts`,
+  // which projects the ball's horizon and the real one through the same camera.
+  return {
+    parts,
+    update(state) {
+      pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
+      bar.position.y = pitchBarOffsetMetres(state.pitch);
+    },
+  };
 }

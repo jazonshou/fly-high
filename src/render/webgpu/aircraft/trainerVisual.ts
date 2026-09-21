@@ -525,14 +525,18 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // and the eye is above it), so anything that used to show only by being
   // inside it must be rebuilt on this side. `configureCockpitOnlyParts` makes
   // them invisible until cockpit view is entered and never a shadow caster.
-  const cockpitOnlyParts = buildTrainerCockpit(build, root, {
+  const cockpit = buildTrainerCockpit(build, root, {
     interior,
     dark,
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,
   });
+  const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
+  // The needles turn only while cockpit view is on: outside it every one of these
+  // parts is invisible, and the visual already gets the whole state every frame.
+  let cockpitViewOn = false;
 
   // Cowl fittings. The band sits on the cowl/firewall seam and is squashed in
   // Y to follow a section that is 0.43 m wide and 0.27 m deep — a round ring
@@ -781,6 +785,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
       for (const blade of propellerRig.blades) blade.isVisible = true;
       propellerRig.disc.isVisible = true;
       applyCommonPose(rig, pose, delta);
+      if (cockpitViewOn) cockpit.update(state);
     },
     setLightState(lights) {
       if (disposed) return;
@@ -794,6 +799,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      cockpitViewOn = enabled;
       setCockpitVisibility(rig, scene, enabled);
     },
     dispose() {

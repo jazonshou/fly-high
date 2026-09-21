@@ -278,9 +278,11 @@ describe("the trainer's cockpit parts", () => {
       for (const p of hub) expect(Math.hypot(p.s, p.t), `${name} hub radius`).toBeCloseTo(0.006, 3);
       const spread = Math.max(...hub.map((p) => Math.atan2(p.t, p.s))) - Math.min(...hub.map((p) => Math.atan2(p.t, p.s)));
       expect(spread, `${name} hub is round`).toBeGreaterThan(Math.PI);
-      // and the bar is as long as it was: 16 mm to each side of the pivot
-      expect(Math.max(...plane.map(along))).toBeGreaterThan(0.0155);
-      expect(Math.max(...plane.map(along))).toBeLessThan(0.0165);
+      // a POINTER 28 mm long on one side of the pivot and a tail no longer than the hub's radius on the other, so the
+      // tip is unambiguous through a 300 degree sweep (the bar it replaced was 16 mm each side and symmetric)
+      expect(Math.max(...plane.map(along))).toBeGreaterThan(0.0275);
+      expect(Math.max(...plane.map(along))).toBeLessThan(0.0285);
+      expect(Math.min(...plane.map(along))).toBeGreaterThan(-0.0065);
     }
   });
 

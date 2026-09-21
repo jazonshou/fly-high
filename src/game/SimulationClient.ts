@@ -354,6 +354,18 @@ function lerpAngleDegrees(first: number, second: number, alpha: number): number 
   return (first + delta * alpha + 360) % 360;
 }
 
+/**
+ * The same shortest-way-round lerp for an angle whose home range is (-180, 180],
+ * which is bank's: `atan2` gives it a discontinuity at inverted flight, where +170
+ * and -170 are 20 degrees apart and their linear average is 0, wings level.
+ * Pitch does not need this (it comes from `asin`, so it stays within +-90 and
+ * never wraps), and heading has its own `[0, 360)` version above.
+ */
+function lerpSignedAngleDegrees(first: number, second: number, alpha: number): number {
+  const delta = ((second - first + 540) % 360) - 180;
+  return ((first + delta * alpha + 540) % 360) - 180;
+}
+
 function cloneVisualState(state: FlightVisualState): FlightVisualState {
   return {
     ...state,
@@ -419,7 +431,7 @@ export function interpolateFlightState(
   result.verticalSpeed = lerp(first.verticalSpeed, second.verticalSpeed, alpha);
   result.heading = lerpAngleDegrees(first.heading, second.heading, alpha);
   result.pitch = lerp(first.pitch, second.pitch, alpha);
-  result.bank = lerp(first.bank, second.bank, alpha);
+  result.bank = lerpSignedAngleDegrees(first.bank, second.bank, alpha);
   result.angleOfAttack = lerp(first.angleOfAttack, second.angleOfAttack, alpha);
   result.sideslip = lerp(first.sideslip, second.sideslip, alpha);
   result.throttle = lerp(first.throttle, second.throttle, alpha);
@@ -518,15 +530,26 @@ function normalizeVisualQuaternion(orientation: FlightVisualState["orientation"]
   orientation.w *= inverse;
 }
 
+/**
+ * Heading, pitch and bank, in DEGREES, from the state's orientation: the same
+ * three angles the simulator's telemetry reports (`getFlightTelemetry`), which
+ * the worker converts to degrees, so a predicted frame agrees with a real one.
+ *
+ * Body +X is forward, +Y up and +Z STARBOARD (D-6, 2026-09-01: forward x up =
+ * starboard). This helper once called +Z port and took the y of the port wing
+ * as "right", which made its bank the NEGATIVE of the simulator's; heading and
+ * pitch were unaffected. Bank is positive for a right wing DOWN, i.e. the
+ * starboard wing's world y is negative: `atan2(-starboard.y, up.y)`.
+ */
 function updateVisualAnglesFromOrientation(state: FlightVisualState): void {
   const { x, y, z, w } = state.orientation;
-  // Body +X (forward), +Z (port), and +Y (up), rotated into world space.
   const forwardX = 1 - 2 * (y * y + z * z);
   const forwardY = 2 * (x * y + w * z);
   const forwardZ = 2 * (x * z - w * y);
-  const rightY = -2 * (y * z - w * x);
+  // World y of body +Z (starboard): the third column's y of the rotation matrix.
+  const starboardY = 2 * (y * z - w * x);
   const upY = 1 - 2 * (x * x + z * z);
   state.heading = ((Math.atan2(forwardX, forwardZ) * 180) / Math.PI + 360) % 360;
   state.pitch = (Math.asin(Math.min(1, Math.max(-1, forwardY))) * 180) / Math.PI;
-  state.bank = (Math.atan2(-rightY, upY) * 180) / Math.PI;
+  state.bank = (Math.atan2(-starboardY, upY) * 180) / Math.PI;
 }
