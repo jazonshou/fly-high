@@ -293,9 +293,31 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
   { x: -20, yRadius: 3.25, zRadius: 3.25 },
   { x: -6, yRadius: 3.25, zRadius: 3.25 },
-  { x: 10, yRadius: 3.25, zRadius: 3.25 },
-  { x: 22, yRadius: 3.25, zRadius: 3.25 },
-  { x: 27.4, yRadius: 2.96, zRadius: 2.94, yOffset: -0.04 },
+  // From here forward the section stops being a circle and becomes an EGG:
+  // the belly stays pinned at y = -3.25 and the crown climbs, while
+  // `crownZRadius` leans the upper flanks in. Every section's yRadius and
+  // yOffset below is (crown - belly)/2 and (crown + belly)/2 with the belly
+  // held at -3.25, so the tube's underside is one unbroken line and only the
+  // top of the aeroplane changes.
+  // The crown's own slope is what has to be smooth, not just its height: a
+  // taper that starts abruptly reads as a shoulder even when every section is
+  // round. Measured on the first attempt, the crown gained 25 mm per station
+  // up to x = 2 and then 90 mm per station after it -- a visible break right
+  // over the wing. These stations accelerate it instead, 3 mm/m at the wing to
+  // 57 mm/m at mid-hump and back to 40 by the peak.
+  { x: 0, yRadius: 3.26, zRadius: 3.25, yOffset: 0.01, crownZRadius: 3.24 },
+  { x: 6, yRadius: 3.325, zRadius: 3.25, yOffset: 0.075, crownZRadius: 3.16 },
+  { x: 12, yRadius: 3.455, zRadius: 3.25, yOffset: 0.205, crownZRadius: 2.99 },
+  { x: 18, yRadius: 3.625, zRadius: 3.25, yOffset: 0.375, crownZRadius: 2.8 },
+  { x: 23, yRadius: 3.765, zRadius: 3.25, yOffset: 0.515, crownZRadius: 2.66 },
+  // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
+  // upper-deck contact point, exactly as the old separate hump loft did.
+  { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
+  // ...and then hands the crown down to the nose loft, narrowing enough by
+  // the last section to be swallowed by it rather than capped in the open.
+  { x: 28, yRadius: 3.575, zRadius: 3, yOffset: 0.675, crownZRadius: 2.45 },
+  { x: 29.6, yRadius: 3.15, zRadius: 2.6, yOffset: 0.65, crownZRadius: 2.2 },
+  { x: 30.6, yRadius: 2.55, zRadius: 2.05, yOffset: 0.6, crownZRadius: 1.8 },
 ];
 
 /**
@@ -336,54 +358,30 @@ const NOSE_SECTIONS: readonly LoftSection[] = [
   { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
 ];
 
-/**
- * THE HUMP. The raised forward upper deck, and the single most identifying
- * feature on the aeroplane — it has to read from every angle, so it is the
- * fuselage's own second lobe rather than a blister stuck on top.
+/*
+ * THE HUMP IS THE FUSELAGE NOW, not a second loft riding on it.
  *
- * Built as a separate closed loft that INTERSECTS the tube rather than as a
- * bigger ellipse for the whole forward fuselage, because a 747's forward
- * section is a double bubble: a 3.25 m lower circle and a wide upper lobe
- * riding on it. A single ellipse tall enough to reach the upper-deck crown
- * would also be widest at upper-deck height, which is backwards — a 747 is
- * widest at the MAIN deck floor — and the tube's own skin closes the shape
- * everywhere the hump is inside it.
+ * It used to be a separate closed loft intersecting the tube, on the reasoning
+ * that a 747's forward section is a double bubble and one ellipse tall enough
+ * to reach the upper-deck crown would also be widest at upper-deck height,
+ * which is backwards. That reasoning was right about the shape and wrong about
+ * the remedy: two intersecting closed surfaces cannot be tangent-continuous,
+ * so the best the arrangement could ever do was choose the angle of its crease.
+ * The file's own history records choosing it twice -- 41 degrees, then 31 after
+ * the upper lobe was widened.
  *
- * THE WIDTH IS THE WHOLE POINT, and the first version had it wrong. At
- * zRadius 2.55 about a centre 2.1 m up, the two lobes crossed at y = 2.0 with
- * 41 degrees between their surfaces: a hard groove high on the flank, and in
- * the rendered frames the deck read as a second fuselage laid on top of the
- * first rather than as a fuselage that swells into a raised deck. Widening it
- * to 2.95 and dropping the centre to 1.65 moves the crossing down to y = 1.39,
- * z = 2.94 and opens the included angle to 31 degrees — the upper lobe now
- * carries the whole upper half of the section and the crease falls where a
- * 747's fairing line actually runs, just above the main deck ceiling. The
- * crown is unchanged; only the shoulders moved.
+ * Measured on the built mesh by walking the section and comparing each
+ * sample's normal with the next, it was 23.5 degrees at x = 14, 30.1 at x = 22
+ * and 38.0 at x = 26 -- worst at the flight deck, which is the part of this
+ * aeroplane people look at. That is what Jason meant by the second level
+ * looking like a cylinder combined with the rest of the body.
  *
- * The crown reaches exactly 4.40 at x = 26, which is where `sim/aircraft.ts`
- * puts its upper-deck contact point. The deck runs 20 m of visible length back
- * to x = +13, where the crown drops under the tube's 3.25 and the fairing
- * ends: longer than the 747-400's, which is what the -8 is. The forward end
- * dives into the radome at x = 33 with its cap buried, so there is no flat
- * face at the front of the flight deck roof.
+ * `LoftSection.crownZRadius` is the degree of freedom that was missing: it
+ * lets ONE section be wide at the main deck and narrower at the crown. So
+ * `FUSELAGE_SECTIONS` above carries the hump itself, morphing from a circle
+ * aft of the wing to an egg at the flight deck, and there is no second surface
+ * to crease against.
  */
-const HUMP_SECTIONS: readonly LoftSection[] = [
-  { x: 7, yRadius: 0.85, zRadius: 1.2, yOffset: 1.05 },
-  { x: 11, yRadius: 1.7, zRadius: 2.05, yOffset: 1.3 },
-  { x: 14, yRadius: 2.25, zRadius: 2.55, yOffset: 1.5 },
-  { x: 18, yRadius: 2.6, zRadius: 2.85, yOffset: 1.62 },
-  { x: 22, yRadius: 2.73, zRadius: 2.95, yOffset: 1.65 },
-  { x: 26, yRadius: 2.75, zRadius: 2.95, yOffset: 1.65 },
-  // Forward of the cabin the deck HANDS THE CROWN OVER to the nose loft and
-  // dies inside it by x = 30.7. Carrying it further forward is what put a
-  // flight-deck capsule in a valley on the nose; see the note on NOSE_SECTIONS.
-  // The crown falls 4.25, 3.95 across these stations and the nose picks it up
-  // at 3.70, so the top line never steps.
-  { x: 28, yRadius: 2.6, zRadius: 2.62, yOffset: 1.65 },
-  { x: 29.2, yRadius: 2.25, zRadius: 2.2, yOffset: 1.7 },
-  { x: 30.1, yRadius: 1.55, zRadius: 1.6, yOffset: 1.6 },
-  { x: 30.7, yRadius: 0.55, zRadius: 0.65, yOffset: 1.15 },
-];
 
 /** Upper deck floor, 2.6 m above the main deck's and 2.25 m below the crown. */
 const UPPER_DECK_FLOOR_Y = 1.95;
@@ -420,10 +418,19 @@ function skinPoint(
   const yRadius = alongPanel(low.yRadius, high.yRadius, t);
   const zRadius = alongPanel(low.zRadius, high.zRadius, t);
   const yOffset = alongPanel(low.yOffset ?? 0, high.yOffset ?? 0, t);
+  const crownZRadius = alongPanel(
+    low.crownZRadius ?? low.zRadius,
+    high.crownZRadius ?? high.zRadius,
+    t,
+  );
   const rise = (y - yOffset) / yRadius;
-  const z = zRadius * Math.sqrt(Math.max(0, 1 - rise * rise));
-  // Outward normal of an ellipse at that point, as (dy, dz).
-  return { z, tilt: Math.atan2(rise / yRadius, z / (zRadius * zRadius)) };
+  // The same crown taper the loft builder applies, or every window forward of
+  // the wing would be placed against an ellipse the skin no longer is.
+  const lift = Math.max(0, rise) ** 2 * (3 - 2 * Math.max(0, rise));
+  const halfWidth = zRadius + (crownZRadius - zRadius) * lift;
+  const z = halfWidth * Math.sqrt(Math.max(0, 1 - rise * rise));
+  // Outward normal at that point, as (dy, dz).
+  return { z, tilt: Math.atan2(rise / yRadius, z / (halfWidth * halfWidth)) };
 }
 
 /**
@@ -715,7 +722,6 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // upswept tailcone, the drooped radome and the upper deck riding on top.
   const fuselage = build.loft("airliner-fuselage", FUSELAGE_SECTIONS, 28, body, root);
   const radome = build.loft("airliner-radome", NOSE_SECTIONS, 24, body, root);
-  const upperDeck = build.loft("airliner-upper-deck", HUMP_SECTIONS, 20, body, root);
   // Upswept, ending at (-38, +1.2) where the sim puts its tailcone contact
   // point. The upsweep is what buys a 72 m aeroplane its rotation angle: the
   // mains are at x = -3, so 10.4 degrees of tail-strike margin comes entirely
@@ -798,7 +804,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           y: MAIN_DECK_WINDOW_Y,
         },
         {
-          sections: HUMP_SECTIONS,
+          sections: FUSELAGE_SECTIONS,
           count: UPPER_DECK_WINDOW_COUNT,
           forwardX: UPPER_DECK_WINDOW_FORWARD_X,
           y: UPPER_DECK_WINDOW_Y,
@@ -1826,9 +1832,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // one layer mask, so they cannot share one. The mask is put on the sources
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
-  configureCockpitLayers([fuselage, radome, upperDeck, windscreenFrame]);
+  configureCockpitLayers([fuselage, radome, windscreenFrame]);
   const fuselageShell = build.mergeStatic(
-    "airliner-fuselage-shell", [fuselage, radome, upperDeck], root);
+    "airliner-fuselage-shell", [fuselage, radome], root);
   build.mergeStatic("airliner-body-exterior", bodyExterior, root);
   // The fin and tailplanes are body-painted too, and are kept apart from the
   // group above only because they are `wingSurfaces` and the nacelles are not:

@@ -113,7 +113,10 @@ function authoredParts(visual: AircraftVisual): Map<string, AbstractMesh> {
  * frame for the aeroplane alone. The in-game capture agrees: the scene issued
  * 491 draws with the 747 against 264 with the Cessna.
  */
-const BEFORE = { meshes: 141, casters: 113, draws: 367 } as const;
+// 140, not 141: the separate `airliner-upper-deck` loft is gone. The forward
+// fuselage carries the hump itself now, because two intersecting closed lofts
+// cannot be tangent-continuous and left a 38-degree crease at the flight deck.
+const BEFORE = { meshes: 140, casters: 113, draws: 367 } as const;
 
 /** Every part that defines the shadow's OUTLINE on the ground. */
 const SILHOUETTE = new RegExp([
@@ -220,12 +223,13 @@ describe("the 747-8's draw budget", () => {
   it("keeps every part of the shadow's outline in the shadow map", () => {
     const { visual } = build();
     const outline = [...authoredParts(visual)].filter(([name]) => SILHOUETTE.test(name));
-    // NON-VACUITY: 5 fuselage lofts, 8 wing panels, 2 tailplanes, fin and
-    // dorsal fin, 4 nacelles and 4 pylons, 4 flaps, 10 spoilers, 4 ailerons,
-    // 2 elevators, the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors,
-    // 2 nose members and 18 tyres.
+    // NON-VACUITY: 4 fuselage lofts -- it was 5 until the upper deck stopped
+    // being its own loft -- 8 wing panels, 2 tailplanes, fin and dorsal fin,
+    // 4 nacelles and 4 pylons, 4 flaps, 10 spoilers, 4 ailerons, 2 elevators,
+    // the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors, 2 nose
+    // members and 18 tyres.
     expect(outline.map(([name]) => name).sort()).toHaveLength(
-      5 + 8 + 2 + 2 + 4 + 4 + 4 + 10 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
+      4 + 8 + 2 + 2 + 4 + 4 + 4 + 10 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
     );
     for (const [name, mesh] of outline) {
       expect(issuesDraw(mesh), `${name} is not drawn`).toBe(true);
@@ -358,29 +362,37 @@ function geometryCensus(visual: AircraftVisual): GeometryCensus {
 
 describe("folding the 747-8's static parts changes how it is drawn, not what is drawn", () => {
   it("adds up to the same geometry the unmerged airframe did", () => {
-    // MEASURED ON THE UNMERGED AIRFRAME, with this same census, one commit
-    // before the fold: 10,520 vertices in 141 meshes. The tolerances are for
-    // a vertex buffer stored as 32-bit floats; every one of these moved by
-    // less than 1e-6 when the parts were folded.
+    // RE-MEASURED after the forward fuselage became ONE egg-sectioned loft.
+    //
+    // These began as the unmerged airframe's census, taken one commit before
+    // the static fold to prove the fold moved no geometry, and they still
+    // defend that: any future merge that moves a vertex fails here. What they
+    // no longer are is the two-loft aeroplane's numbers, because retiring the
+    // separate hump changed the shape on purpose.
+    //
+    // The drop is the giveaway and it is worth reading rather than accepting:
+    // 10,520 vertices to 10,482 and 4,977 m^2 of surface to 4,689. Nearly 290
+    // square metres of that area was the two lobes' skin INSIDE each other,
+    // drawn and shaded and never visible. One surface has no inside.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(10_520);
-    expect(census.indices).toBe(49_728);
+    expect(census.vertices).toBe(10_482);
+    expect(census.indices).toBe(49_536);
     expect(census.minimum.x).toBeCloseTo(-38, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4, 4);
     expect(census.minimum.z).toBeCloseTo(-34.35, 4);
     expect(census.maximum.x).toBeCloseTo(34, 4);
     expect(census.maximum.y).toBeCloseTo(13, 4);
     expect(census.maximum.z).toBeCloseTo(34.35, 4);
-    expect(census.positionSum.x).toBeCloseTo(22_693.9287, 1);
-    expect(census.positionSum.y).toBeCloseTo(-26_071.4805, 1);
+    expect(census.positionSum.x).toBeCloseTo(21_423.6287, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26_276.1905, 1);
     expect(census.positionSum.z).toBeCloseTo(-22.032, 1);
-    expect(census.positionSquares).toBeCloseTo(6_817_933.69, 0);
-    expect(census.normalSum.x).toBeCloseTo(-347.8594, 2);
-    expect(census.normalSum.y).toBeCloseTo(120.1245, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.1001, 2);
-    expect(census.normalMoment).toBeCloseTo(10_520.2737, 1);
-    expect(census.signedVolume).toBeCloseTo(-3_480.1423, 2);
-    expect(census.area).toBeCloseTo(4_977.1418, 2);
+    expect(census.positionSquares).toBeCloseTo(6_789_682.22, 0);
+    expect(census.normalSum.x).toBeCloseTo(-353.972, 2);
+    expect(census.normalSum.y).toBeCloseTo(123.3517, 2);
+    expect(census.normalSum.z).toBeCloseTo(0.0935, 2);
+    expect(census.normalMoment).toBeCloseTo(10_053.7106, 1);
+    expect(census.signedVolume).toBeCloseTo(-3_208.8858, 2);
+    expect(census.area).toBeCloseTo(4_688.9651, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -460,7 +472,8 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     const formerCockpitParts = [
       "airliner-fuselage",
       "airliner-radome",
-      "airliner-upper-deck",
+      // `airliner-upper-deck` was here until the hump became part of the
+      // fuselage loft; the skin it used to hide is hidden by the fuselage now.
       "airliner-windscreen-center-post",
     ].map((name) => {
       const carrier = parts.get(name);
