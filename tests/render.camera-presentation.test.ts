@@ -174,8 +174,17 @@ describe("camera presentation", () => {
 
     it("leaves a wings-level rig untouched at any pitch or heading", () => {
       // The whole point of blending from wings-level rather than from world
-      // up: every unbanked frame — which is every perf-capture shot — is
-      // bit-identical to lifting along the aircraft's own up.
+      // up: every unbanked frame is bit-identical to lifting along the
+      // aircraft's own up.
+      //
+      // THIS COMMENT USED TO SAY "which is every perf-capture shot", AND THAT
+      // IS NOT TRUE. Two of the thirty-nine are banked on purpose —
+      // `motion-banked-turn` at 45 degrees and `page-thrash-turn` at 60 — so
+      // this proof covers thirty-seven of them and not those two. The claim
+      // mattered because it is what a promotion leans on when it asks whether
+      // a rig change can move a baseline: for those two shots the answer is
+      // "yes, by design", and the case that covers them is the next test
+      // down, `adopts exactly the bank the view adopts`.
       for (const pitch of [0, 0.1, -0.25, 0.6]) {
         for (const heading of [0, 1.2, -2.7, Math.PI]) {
           const { forward, up } = attitude(pitch, 0);
