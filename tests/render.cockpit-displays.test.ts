@@ -145,6 +145,32 @@ describe("the 747's displays, drawn", () => {
     }
   });
 
+  it("draws each screen the page its NAME says, so a swapped slot table cannot pass", () => {
+    // The screens are named for what they are, and that is the only ground truth for which page
+    // belongs on which: a pilot's `-pfd` screen must draw the PFD. Pairing screens to RECTANGLES is
+    // not enough -- swapping two `page` values leaves every rectangle and every UV untouched, and a
+    // mutation that put the PFD's picture on the ND passed the whole suite until this existed.
+    const expected: Readonly<Record<string, string>> = {
+      "port-pfd": "pfd",
+      "starboard-pfd": "pfd",
+      "port-nd": "nd",
+      "starboard-nd": "nd",
+      // the two centre screens are the EICAS pair, upper on the port side as the panel is laid out
+      "port-eicas": "eicas-upper",
+      "starboard-eicas": "eicas-lower",
+    };
+    const slots = displaySlots();
+    expect(slots.map((slot) => slot.screen).sort()).toEqual(Object.keys(expected).sort());
+    for (const slot of slots) {
+      expect(slot.page, `${slot.screen} draws the wrong page`).toBe(expected[slot.screen]);
+    }
+    // and each screen's name matches the placement it was built from, so the table cannot drift
+    // from the geometry either
+    for (const [index, placement] of airlinerScreenPlacements().entries()) {
+      expect(slots[index]!.screen).toBe(placement.name);
+    }
+  });
+
   it("gives every slot the screens' own shape, not a square", () => {
     // The screens are 0.22 x 0.15 m. A square slot squashes every page, whatever its resolution.
     const screen = AIRLINER_SCREENS.width / AIRLINER_SCREENS.height;
