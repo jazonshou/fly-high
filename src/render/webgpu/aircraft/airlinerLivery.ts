@@ -32,10 +32,10 @@ import type { LoftSection } from "./builders";
  *
  * THE TRAP: v IS AN ANGLE, SO A LEVEL BAND IS A CURVE IN THE IMAGE. Constant
  * world height is not constant v, because the section's radius and offset
- * change station by station. Measured, a band edge at y = -0.40 runs v 0.2696
- * at the cabin to 0.3141 at x = 30.6 -- 0.0445 of a circuit, 23 texels on the
- * 512-texel v axis. A straight row would sit level at the cabin and 23 texels
- * off at the nose. Every level feature here is therefore solved per texel
+ * change station by station. Measured, the band's top edge at y = -0.30 runs
+ * v 0.2647 at the cabin to 0.3074 at x = 30.6 -- 0.0427 of a circuit, 22
+ * texels on the 512-texel v axis. A straight row would sit level at the cabin
+ * and 22 texels off at the nose. Every level feature here is therefore solved per texel
  * column through `phaseOfHeight`, and nothing is painted as a row.
  */
 
@@ -134,7 +134,7 @@ export const WING_ROOT_SHADE = 0.88;
 /**
  * Main-deck panes sit at y = 0.2 and are 0.36 m tall (transcribed from
  * `airlinerVisual.ts`), so the pane bottoms are at 0.02 and the band's top
- * edge at -0.40 leaves 0.42 m of clear white behind every pane. That is the
+ * edge at -0.30 leaves 0.32 m of clear white behind every pane. That is the
  * spec's "BELOW the main-deck window line", and the one placement the vertex
  * band could not make: its ~0.8 m blur could not be placed to 0.42 m.
  */
@@ -147,10 +147,19 @@ export const MAIN_DECK_WINDOW_HEIGHT = 0.36;
  * what "dies out ... as the vertex band does now" means in that band's own
  * code. The forward fade is what lets the band be measured at x = 30.6 (the
  * last section, 99.3 % coverage) as the contract's table does.
+ *
+ * -0.80..-0.30, not the contract's -1.40..-0.40, because of the BELLY
+ * FAIRING. It meets the fuselage at y ~ -0.90 over x -6..0, so the lower half
+ * of a band down to -1.40 was inside the fairing from x ~ -10 to +6: the
+ * visible band halved in height over 16 m of mid-fuselage, from every angle,
+ * which frames at 0 and +12 degrees confirmed (0.45 m left at the wing root).
+ * A bottom edge at -0.80 clears the fairing's crossing (-0.893..-0.908), and
+ * the top moved up by 0.10 m to keep the band 0.5 m deep: about 10 px at the
+ * chase camera's 112 m standoff.
  */
 export const CHEATLINE = {
-  topY: -0.4,
-  bottomY: -1.4,
+  topY: -0.3,
+  bottomY: -0.8,
   aftEndX: -24.5,
   aftFullX: -22,
   forwardFullX: 30.5,
@@ -261,6 +270,67 @@ export function phaseOfHeight(
   const cosine = Math.min(1, Math.max(-1, Math.sign(rise) * cosMagnitude));
   const phase = Math.acos(cosine) / (2 * Math.PI);
   return flank === "starboard" ? phase : 1 - phase;
+}
+
+/**
+ * The v a RADOME vertex carries so the livery lands at that vertex's own height.
+ *
+ * Every height in the image is solved against the FUSELAGE's sections, so a
+ * v means a height only on the fuselage. The radome is a loft of its own, and
+ * from x ~ 27.0 (band bottom) and ~ 27.75 (band top) forward it is the OUTER
+ * skin. With its own phase the band sat 0.23-0.49 m low there, split into two
+ * strips at the crossover, and door 1 grew a ghost window 0.4 m under the real
+ * one. No single image could fix that: at x 26.9-27.8 both lofts are outer, at
+ * different heights. Each radome vertex's v has to say its own height.
+ *
+ * EXACT IN THE PAINTED WINDOW, MONOTONE EVERYWHERE. Between the band's bottom
+ * and door 1's top (0.25 m of margin each way) v is the phase the vertex's
+ * height has on the fuselage table, so everything painted lands where it is
+ * drawn. Outside it v runs linearly to the crown (0) and the keel (0.5), which
+ * keep their own phase, so the seam, the caps and the other flank are
+ * untouched. Two increasing pieces meeting where they agree cannot fold. The
+ * first version faded a full re-solve by latitude instead, and folded: where
+ * the nose's crown rises above the fuselage table (x ~ 30.4) v ran BACKWARDS
+ * for one step, and it squeezed to a tenth of a step at x = 31.4. This v is
+ * also the paint maps' v (the livery rides UV1), so a fold is mirrored panel
+ * lines on the nose. Forward of the paint (x > 32.5) it fades to the loft's
+ * own phase, which the tapering tip keeps.
+ *
+ * `radomeSections` is the radome's own table: a vertex's own phase and height
+ * say where it is on its ring, and the ring says where the window's edges are.
+ */
+export function radomeLiveryPhase(
+  radomeSections: readonly LoftSection[],
+  x: number,
+  y: number,
+  ownPhase: number,
+): number {
+  const port = ownPhase > 0.5;
+  const flank: LiveryFlank = port ? "port" : "starboard";
+  // Work on the starboard half, 0 crown .. 0.5 keel, and mirror back.
+  const own = port ? 1 - ownPhase : ownPhase;
+  const reach = 1 - smoothStep(32.5, 33.3, x);
+  if (reach <= 0) return ownPhase;
+  const windowTop = Math.max(CHEATLINE.topY, MAIN_DECK_FLOOR_Y + DOOR_HEIGHT) + 0.25;
+  const windowBottom = Math.min(CHEATLINE.bottomY, MAIN_DECK_FLOOR_Y) - 0.25;
+  const liveryAt = (height: number) => {
+    const phase = phaseOfHeight(AIRLINER_LIVERY_SECTIONS, x, height, "starboard");
+    if (phase === undefined) throw new RangeError(`y = ${height} is off the fuselage table at x = ${x}`);
+    return phase;
+  };
+  const ownTop = phaseOfHeight(radomeSections, x, windowTop, "starboard");
+  const ownBottom = phaseOfHeight(radomeSections, x, windowBottom, "starboard");
+  if (ownTop === undefined || ownBottom === undefined) {
+    throw new RangeError(`the painted window y ${windowBottom}..${windowTop} is off the radome at x = ${x}`);
+  }
+  let mapped: number;
+  if (own < ownTop) mapped = (own / ownTop) * liveryAt(windowTop);
+  else if (own > ownBottom) {
+    const bottom = liveryAt(windowBottom);
+    mapped = bottom + ((own - ownBottom) / (0.5 - ownBottom)) * (0.5 - bottom);
+  } else mapped = liveryAt(y);
+  const starboard = own + (mapped - own) * reach;
+  return flank === "port" ? 1 - starboard : starboard;
 }
 
 // ---------------------------------------------------------------------------

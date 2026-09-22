@@ -243,21 +243,57 @@ export class AircraftBuildContext {
     const synthesis = synthesizeAircraftSurface(recipe);
     const textures = createAircraftSurfaceTextures(this.scene, name, synthesis);
     this.textures.push(textures.albedo, textures.normal, textures.metallicRoughness);
+    textures.normal.level = 0.42;
+    return this.dressPaint(name, textures.albedo, textures.normal, textures.metallicRoughness, {
+      aircraftPaint: true,
+      aircraftPaintFeatures: [...AIRCRAFT_PAINT_FEATURES],
+      aircraftPaintRecipe: { ...recipe },
+      aircraftPaintFeatureCoverage: { ...synthesis.featureCoverage },
+    });
+  }
+
+  /**
+   * `painted`'s paint under another albedo: its normal and metallic-roughness
+   * maps are the SAME texture objects, not copies, and `albedo` becomes this
+   * context's to dispose.
+   *
+   * Not `painted.clone()`. `PBRMaterial.clone` clones every texture, and a
+   * cloned RawTexture comes back with the defaults: the normal map's 0.42 level
+   * became 1 (surface tilt p95 7.5 deg -> 17.3 deg), WRAP became CLAMP and
+   * anisotropy 8 became 4. Each clone also allocated a GPU texture that nothing
+   * owned, and neither the clone nor its textures were in `materials` or
+   * `textures`, so disposing the aircraft left them all behind.
+   */
+  repaintMaterial(name: string, painted: PBRMaterial, albedo: BaseTexture): PBRMaterial {
+    const { bumpTexture, metallicTexture } = painted;
+    if (!bumpTexture || !metallicTexture) {
+      throw new Error(`${painted.name} has no normal or metallic-roughness map to share; is it a paintMaterial?`);
+    }
+    this.textures.push(albedo);
+    return this.dressPaint(name, albedo, bumpTexture, metallicTexture, {
+      ...(painted.metadata as Record<string, unknown> | null),
+    });
+  }
+
+  /** The one construction `paintMaterial` and `repaintMaterial` share. */
+  private dressPaint(
+    name: string,
+    albedo: BaseTexture,
+    normal: BaseTexture,
+    metallicRoughness: BaseTexture,
+    metadata: Record<string, unknown>,
+  ): PBRMaterial {
     const material = this.material(name, 0xffffff, { roughness: 1, metallic: 1 });
-    material.albedoTexture = textures.albedo;
-    material.bumpTexture = textures.normal;
-    material.bumpTexture.level = 0.42;
-    material.metallicTexture = textures.metallicRoughness;
+    material.albedoTexture = albedo;
+    material.bumpTexture = normal;
+    material.metallicTexture = metallicRoughness;
     material.useAmbientOcclusionFromMetallicTextureRed = true;
     material.useRoughnessFromMetallicTextureAlpha = false;
     material.useRoughnessFromMetallicTextureGreen = true;
     material.useMetallnessFromMetallicTextureBlue = true;
     material.metadata = {
       ...(material.metadata as Record<string, unknown> | null),
-      aircraftPaint: true,
-      aircraftPaintFeatures: [...AIRCRAFT_PAINT_FEATURES],
-      aircraftPaintRecipe: { ...recipe },
-      aircraftPaintFeatureCoverage: { ...synthesis.featureCoverage },
+      ...metadata,
     };
     return material;
   }
@@ -559,8 +595,8 @@ export class AircraftBuildContext {
     // this loft's own sections, exactly as before.
     const uMinimumX = stationRange?.minimumX ?? minimumX;
     const uLength = stationRange?.length ?? length;
-    if (stationRange && !(uLength > 0)) {
-      throw new RangeError("An aircraft loft's station range must have positive length");
+    if (stationRange && !(Number.isFinite(uMinimumX) && Number.isFinite(uLength) && uLength > 0)) {
+      throw new RangeError("An aircraft loft's station range must be finite with positive length");
     }
     for (const section of sections) {
       if (!(section.yRadius > 0) || !(section.zRadius > 0)) {

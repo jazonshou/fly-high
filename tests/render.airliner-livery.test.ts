@@ -32,12 +32,12 @@ import {
  * a uniform image passes: "the window row is white" is true of a blank sheet.
  *
  * THE ONE THAT MATTERS is the level band (5 and 5b). v is an angle, so a band
- * at constant world height is a curve in the image -- 0.0445 of a circuit,
- * about 23 texels, between the cabin and x = 30.6. A generator that paints a
+ * at constant world height is a curve in the image -- 0.0427 of a circuit,
+ * about 22 texels, between the cabin and x = 30.6, for the top edge at -0.30. A generator that paints a
  * straight row passes every other test here and reproduces the defect the
  * texture exists to remove. 5 pins the bow to a tolerance, and 5b feeds the
  * same check a deliberately straight row painted by this file and asserts
- * that the check FAILS on it, by the 23 texels the contract predicts. A check
+ * that the check FAILS on it, by the 22 texels the solve predicts. A check
  * that cannot fail on the thing it guards against is not evidence.
  */
 
@@ -119,10 +119,11 @@ describe("airliner livery image", () => {
     }
     expect(transparent, "every alpha must be 255").toBe(0);
     // The opposite of "opaque and white": there is a band, and it is a
-    // minority of the sheet. 2 m of band round 20 m of section over 55 m of
-    // 60 is about 8 %; a sheet that is all one thing fails both bounds.
+    // minority of the sheet. 1 m of band (0.5 m a flank) round 20 m of section
+    // over 55 m of 60 is about 4 % (3.8 % measured); a sheet that is all one
+    // thing fails both bounds.
     expect(white / (livery.width * livery.height)).toBeGreaterThan(0.6);
-    expect(navy / (livery.width * livery.height)).toBeGreaterThan(0.05);
+    expect(navy / (livery.width * livery.height)).toBeGreaterThan(0.025);
     expect(navy / (livery.width * livery.height)).toBeLessThan(0.2);
   });
 
@@ -192,19 +193,21 @@ describe("airliner livery image", () => {
 
   it("5: the band CURVES -- its top edge at x = 30.6 is 0.040..0.049 of a circuit from x = -20", () => {
     // The contract's measured numbers, straight from the solve.
-    expect(phaseAt(-20, CHEATLINE.topY)).toBeCloseTo(0.2696, 3);
-    expect(phaseAt(30.6, CHEATLINE.topY)).toBeCloseTo(0.3141, 3);
+    // (The contract measured 0.2696 .. 0.3141, a bow of 0.0445, for its top
+    // edge at -0.40; the band moved up to -0.30 to clear the belly fairing.)
+    expect(phaseAt(-20, CHEATLINE.topY)).toBeCloseTo(0.2647, 3);
+    expect(phaseAt(30.6, CHEATLINE.topY)).toBeCloseTo(0.3074, 3);
     // And from the painted image, which is what the GPU will see.
     const bow = levelBandBow(livery);
     expect(
       bow.bowV,
       `band top edge: row ${bow.cabinRow} at x = -20, row ${bow.noseRow} at x = 30.6, `
-        + `bow ${bow.bowV.toFixed(4)} of a circuit; the contract measured 0.0445`,
+        + `bow ${bow.bowV.toFixed(4)} of a circuit; the solve gives 0.0427`,
     ).toBeGreaterThanOrEqual(0.04);
     expect(bow.bowV).toBeLessThanOrEqual(0.049);
   });
 
-  it("5b: REVERSE CONTROL -- a straight row fails the same check by ~23 texels at the nose", () => {
+  it("5b: REVERSE CONTROL -- a straight row fails the same check by ~22 texels at the nose", () => {
     // Painted HERE, not by the generator: the band's own cabin rows carried
     // straight forward at constant v, which is exactly the row a generator
     // that forgot section 3 of the contract would paint.
@@ -213,7 +216,11 @@ describe("airliner livery image", () => {
       height: livery.height,
       data: new Uint8Array(livery.width * livery.height * 4).fill(255),
     };
-    const topRow = rowOf(straight, phaseAt(-20, CHEATLINE.topY));
+    // Anchored to the row the generator's own edge READS as, not the solve's
+    // row: the edge texel is anti-aliased, and at -0.30 the solve lands at
+    // 135.53 of 512, so row 135 is 46 % navy (150, 164, 187) and reads white
+    // -- the solve's row is one above the painted edge.
+    const topRow = levelBandBow(livery).cabinRow;
     const bottomRow = rowOf(straight, phaseAt(-20, CHEATLINE.bottomY));
     const first = columnOf(straight, CHEATLINE.aftEndX);
     const last = columnOf(straight, CHEATLINE.forwardEndX);
@@ -237,22 +244,23 @@ describe("airliner livery image", () => {
       `the straight row measured a bow of ${control.bowV.toFixed(4)}, inside the 0.040..0.049 `
         + "window: the level-band check cannot tell a straight row from the curve",
     ).toBeLessThan(0.04);
-    // ...and by the amount the contract predicts: 0.0445 x 512 = 22.8 texels.
+    // ...and by the amount the solve predicts: 0.0427 x 512 = 21.9 texels.
     const texelsOff = Math.abs(control.noseRow - real.noseRow);
     expect(
       texelsOff,
       `straight row sits ${texelsOff} texels from the level band at x = 30.6 (rows `
-        + `${control.noseRow} vs ${real.noseRow}); the contract predicts about 23`,
-    ).toBeGreaterThanOrEqual(21);
-    expect(texelsOff).toBeLessThanOrEqual(25);
+        + `${control.noseRow} vs ${real.noseRow}); the solve predicts about 22`,
+    ).toBeGreaterThanOrEqual(20);
+    expect(texelsOff).toBeLessThanOrEqual(24);
   });
 
   it("6: paints no band where the body is too short -- and does where it is not", () => {
-    // Synthetic table: the barrel pinches to yRadius 1.0 at x = 4, where the
-    // band's bottom edge at -1.40 is below the keel and |rise| > 1.
+    // Synthetic table: the barrel pinches to yRadius 0.6 at x = 4, where the
+    // band's bottom edge at -0.80 is below the keel and |rise| > 1, while its
+    // top edge at -0.30 is still on the body.
     const pinched: readonly LoftSection[] = [
       { x: -26, yRadius: 3.25, zRadius: 3.25, yOffset: 0 },
-      { x: 4, yRadius: 1, zRadius: 3.25, yOffset: 0 },
+      { x: 4, yRadius: 0.6, zRadius: 3.25, yOffset: 0 },
       { x: 34, yRadius: 3.25, zRadius: 3.25, yOffset: 0 },
     ];
     expect(phaseOfHeight(pinched, 4, CHEATLINE.bottomY)).toBeUndefined();
@@ -306,7 +314,8 @@ describe("airliner livery image", () => {
     }
     // The opposite, so a blank sheet does not pass: the band exists one
     // station in.
-    expect(isNavy(texel(livery, columnOf(livery, 0), rowOf(livery, phaseAt(0, -0.9))))).toBe(true);
+    expect(isNavy(texel(livery, columnOf(livery, 0), rowOf(livery, phaseAt(0, (CHEATLINE.topY + CHEATLINE.bottomY) / 2)))))
+      .toBe(true);
   });
 
   it("honours the section's squareness rather than assuming an ellipse", () => {
